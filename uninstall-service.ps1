@@ -7,8 +7,9 @@
 #   - The venv
 #   - Log files in .\logs\
 #   - The Hugging Face model cache (~1.5 GB at %USERPROFILE%\.cache\huggingface)
-#   - nssm.exe (left in place for re-install)
-# Use -RemoveLocal to also delete logs and nssm.exe.
+#   - WhisperAPI.exe / WhisperAPI.xml (left in place for re-install)
+# Use -RemoveLocal to also delete logs, WhisperAPI.exe / WhisperAPI.xml,
+# and any legacy nssm.exe.
 
 param(
     [switch] $RemoveLocal
@@ -36,7 +37,9 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 $ServiceName = "WhisperAPI"
 $RepoDir     = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LogsDir     = Join-Path $RepoDir "logs"
-$LocalNssm   = Join-Path $RepoDir "nssm.exe"
+$WinSWExe    = Join-Path $RepoDir "$ServiceName.exe"
+$WinSWXml    = Join-Path $RepoDir "$ServiceName.xml"
+$LegacyNssm  = Join-Path $RepoDir "nssm.exe"
 
 # --- check service exists ---------------------------------------------------
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -53,7 +56,7 @@ if (-not $svc) {
             # Fall through to the polling loop below.
             Write-Host "  (stop signal sent; waiting for service to settle)" -ForegroundColor DarkGray
         }
-        # Poll until actually stopped, max 30s.
+        # Poll until actually stopped, max 30 s.
         $deadline = (Get-Date).AddSeconds(30)
         while ((Get-Date) -lt $deadline) {
             $cur = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -63,10 +66,17 @@ if (-not $svc) {
     }
 
     # --- delete ---------------------------------------------------------
-    # Use sc.exe rather than NSSM so this script doesn't depend on nssm.exe
-    # being present (the user might have already deleted it).
+    # Prefer WinSW's own uninstall when the wrapper is present (cleaner
+    # SCM-handoff). Fall back to sc.exe so the script works even if the
+    # user already deleted WhisperAPI.exe.
     Write-Host "Removing $ServiceName from the SCM..."
-    & sc.exe delete $ServiceName | Out-Null
+    if (Test-Path $WinSWExe) {
+        & $WinSWExe uninstall 2>&1 | Out-Null
+    } elseif (Test-Path $LegacyNssm) {
+        & $LegacyNssm remove $ServiceName confirm 2>&1 | Out-Null
+    } else {
+        & sc.exe delete $ServiceName | Out-Null
+    }
 
     # Poll until SCM forgets the service (it can linger briefly).
     $deadline = (Get-Date).AddSeconds(15)
@@ -76,7 +86,8 @@ if (-not $svc) {
     }
 
     if (Get-Service -Name $ServiceName -ErrorAction SilentlyContinue) {
-        Write-Host "WARNING: '$ServiceName' is still registered. A reboot may be required." -ForegroundColor Yellow
+        Write-Host "WARNING: '$ServiceName' is still registered. Close any open" -ForegroundColor Yellow
+        Write-Host "  services.msc / Event Viewer windows and retry, or reboot." -ForegroundColor Yellow
     } else {
         Write-Host "Service removed." -ForegroundColor Green
     }
@@ -88,9 +99,17 @@ if ($RemoveLocal) {
         Write-Host "Removing logs directory: $LogsDir"
         Remove-Item -Recurse -Force $LogsDir
     }
-    if (Test-Path $LocalNssm) {
-        Write-Host "Removing local nssm.exe: $LocalNssm"
-        Remove-Item -Force $LocalNssm
+    if (Test-Path $WinSWExe) {
+        Write-Host "Removing WhisperAPI.exe: $WinSWExe"
+        Remove-Item -Force $WinSWExe
+    }
+    if (Test-Path $WinSWXml) {
+        Write-Host "Removing WhisperAPI.xml: $WinSWXml"
+        Remove-Item -Force $WinSWXml
+    }
+    if (Test-Path $LegacyNssm) {
+        Write-Host "Removing legacy nssm.exe: $LegacyNssm"
+        Remove-Item -Force $LegacyNssm
     }
 }
 
@@ -98,7 +117,7 @@ Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 if (-not $RemoveLocal) {
     Write-Host "Logs are preserved at: $LogsDir"
-    Write-Host "Run with -RemoveLocal to also delete logs and nssm.exe."
+    Write-Host "Run with -RemoveLocal to also delete logs, WhisperAPI.exe / .xml, and any legacy nssm.exe."
 }
 Write-Host ""
 Write-Host "To reinstall: .\install-service.ps1"

@@ -232,14 +232,16 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
 async def post_restart(request: Request) -> JSONResponse:
     """Trigger a self-restart of the WhisperAPI Windows Service.
 
-    Schedules `os._exit(0)` ~1.5 s in the future, then returns 200. NSSM's
-    `AppExit=Restart` (set in install-service.ps1) relaunches the wrapped
-    python process automatically. The 1.5 s delay gives this response time
+    Spawns `WhisperAPI.exe restart!` (WinSW's documented self-restart
+    command) and schedules `os._exit(0)` ~1.5 s in the future, then
+    returns 200. WinSW relaunches the wrapper after we die, surviving
+    the SCM child-tree kill. The 1.5 s delay gives this response time
     to flush over loopback before uvicorn dies. End-to-end downtime is
     ~3-4 s for a no-preload deployment.
 
-    See restart_service.py for the rationale for picking NSSM auto-relaunch
-    over the (much more brittle) detached-helper-process pattern.
+    See restart_service.py for why we use WinSW's explicit `restart!`
+    rather than relying on <onfailure action="restart"/> on exit 0
+    (v2's onfailure semantics on graceful exits are unreliable).
     """
     try:
         from restart_service import trigger_self_restart

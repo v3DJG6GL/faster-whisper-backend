@@ -327,7 +327,7 @@ def _postprocess_text(text: str, trace: "list | None" = None) -> str:
 # can be diagnosed from the log alone. The per-pipeline transformation
 # trace is folded in only when TRACE_ENABLED.
 #
-# ANSI color is intentionally dropped: the service runs under NSSM (no TTY)
+# ANSI color is intentionally dropped: the service runs under WinSW (no TTY)
 # and the SSE log viewer reads raw bytes — escape codes hurt both consumers.
 _LOG_WIDTH = 78
 _NAME_COL = 32        # value column starts at this character
