@@ -311,9 +311,16 @@ def _postprocess_text(text: str, trace: "list | None" = None) -> str:
     step("0 REPLACE",        _apply_replacements)
     step("1 STRIP",          lambda t: t.translate(_PUNCTUATION_STRIP_TABLE))
     step("2 NORMALIZE",      lambda t: _NUMBER_RANGE_HYPHEN_PATTERN.sub(r"\1/\2", t))
-    step("3 STRIP TERMS",    _strip_whisper_terminators)
+    # When TRUST_MODEL_PUNCTUATION is on, the model's own .?! are preserved
+    # — skip the pause-induced-terminator strip entirely.
+    if not cfg.TRUST_MODEL_PUNCTUATION:
+        step("3 STRIP TERMS",    _strip_whisper_terminators)
     if cfg.DICTATION_ENABLED:
-        step("4 STRIP COMMAS",   lambda t: _NOISE_COMMA_PATTERN.sub("", t))
+        # Same idea as step 3: when TRUST_MODEL_PUNCTUATION is on, the model's
+        # own commas pass through. Step 8 still cleans commas next to dictation-
+        # emitted newlines, so "Müller, neuer Absatz" → "Müller\n\n" still works.
+        if not cfg.TRUST_MODEL_PUNCTUATION:
+            step("4 STRIP COMMAS",   lambda t: _NOISE_COMMA_PATTERN.sub("", t))
         step("5 DICTATION",      _apply_dictation)
         step("6 TIDY SPACING",   _tidy_spacing)
         step("7 DEDUP PUNCT",    lambda t: _PUNCTUATION_RUN_PATTERN.sub(_collapse_punctuation_run, t))

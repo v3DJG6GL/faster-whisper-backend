@@ -113,6 +113,7 @@ class AdminConfig(BaseModel):
 
     # --- Pipeline ---
     DICTATION_ENABLED: bool | None = None
+    TRUST_MODEL_PUNCTUATION: bool | None = None
     TRACE_ENABLED: bool | None = None
     PUNCTUATION_TO_KEEP: Annotated[str, Field(max_length=32)] | None = None
     DICTATION_MAP: dict[DictKey, DictVal] | None = None

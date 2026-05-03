@@ -120,9 +120,24 @@ CHARACTER_REPLACEMENTS = (("ß", "ss"), ("ẞ", "SS"))
 
 # Master switch. False disables Steps 4-9 (the dictation-specific steps:
 # strip-noise-commas, dictation-map, tidy-spacing, dedup-punct, tidy-newlines,
-# capitalize). The Whisper-terminator strip (Step 3) and Swiss orthography
+# capitalize). The Whisper-terminator strip (Step 3) and character-replace
 # (Step 0) still run.
 DICTATION_ENABLED = True
+
+# When True, the model's own punctuation passes through:
+#   Step 3 STRIP TERMS  becomes a no-op (Whisper-emitted .?! preserved)
+#   Step 4 STRIP COMMAS becomes a no-op (Whisper-emitted commas preserved)
+# Everything else (dictation map, dedup, tidy-newlines, capitalize) still
+# runs, so dictation phrases like "Punkt" / "Komma" / "neuer Absatz" still
+# work — and step 7 DEDUP collapses any collisions where the model already
+# auto-punctuated next to a dictation phrase.
+#
+# Default False: the original "speaker controls all punctuation" assumption,
+# right for stock OpenAI Whisper which sprinkles pause-induced punctuation
+# liberally. Set True for German finetunes with strong auto-punctuation
+# (tnfru/whisper-large-v3-german-ct2, primeline-derived models) so the
+# model's own commas + periods are kept.
+TRUST_MODEL_PUNCTUATION = False
 
 # Characters that survive the punctuation-strip pass. Date/time/number
 # separators (./-:,) plus sentence terminators (?!) which Step 3 then handles

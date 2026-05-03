@@ -129,8 +129,8 @@ Get-Service     WhisperAPI
 | 0 | REPLACE | Apply `CHARACTER_REPLACEMENTS` (ordered str.replace pairs; default `ß`→`ss`, `ẞ`→`SS`) |
 | 1 | STRIP | Drop punctuation except `./-:,?!` |
 | 2 | NORMALIZE | `10-23` → `10/23` |
-| 3 | STRIP TERMS | Strip Whisper-emitted `.?!` and lowercase the next word if it's a known German non-noun |
-| 4 | STRIP COMMAS | Drop Whisper soft-pause commas (keeps `1,000`) |
+| 3 | STRIP TERMS | Strip Whisper-emitted `.?!` and lowercase the next word if it's a known German non-noun. **Skipped when `TRUST_MODEL_PUNCTUATION=True`.** |
+| 4 | STRIP COMMAS | Drop Whisper soft-pause commas (keeps `1,000`). **Skipped when `TRUST_MODEL_PUNCTUATION=True`.** |
 | 5 | DICTATION | Replace spoken words: `Punkt` → `.`, `Komma` → `,`, `neue Zeile` → `\n`, etc. |
 | 6 | TIDY SPACING | Collapse spaces around inserted punctuation |
 | 7 | DEDUP PUNCT | Collapse `,.` / `,;` / `,:,` runs to one mark |
