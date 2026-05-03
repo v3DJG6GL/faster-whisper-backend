@@ -1,0 +1,224 @@
+# faster-whisper-backend
+
+Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) API with Swiss-German (CH-DE) dictation post-processing. Exposes an **OpenAI-compatible** `/v1/audio/transcriptions` endpoint for use with [vowen.ai](https://vowen.ai) and other Whisper clients.
+
+## Features
+
+- OpenAI-compatible API — drop-in replacement for `client.audio.transcriptions.create(...)`
+- GPU-accelerated (CUDA) via faster-whisper + CTranslate2
+- **Per-request model selection** — clients pass `model="large-v3"` / `"large-v3-turbo"` / any HF repo id; LRU-cached in VRAM
+- **CH-DE locale**: ß → ss, Swiss medical vocabulary in default prompt (Spital, Krankenkasse, FMH, CHF)
+- **German dictation map**: `"Punkt"` → `.`, `"Komma"` → `,`, `"neue Zeile"` → `\n`, `"Klammer auf"` → `(`, ~60 phrases total
+- Auto-capitalize after sentence ends; strips Whisper noise commas; lowercases mid-sentence non-nouns after stripped Whisper terminators
+- Live HTML log viewer at `/logs` (Server-Sent Events, color-coded pipeline trace per request)
+- Live system overview at `/stats` (loaded models + VRAM, GPU/CPU/RAM, request latency, recent transcriptions, sparklines — works fully offline, no CDN)
+- Optional admin WebUI at `/config` for editing all settings without redeploying (off by default; allowlist + bearer-token gated)
+- Cross-page nav with severity pills (WARN/ERR/CRIT in the last 60 s) on every page
+- Runs as a Windows Service (auto-start on boot)
+
+## Requirements
+
+- Windows 10/11
+- NVIDIA GPU + driver supporting CUDA 12.x (WSL2 driver works)
+- Python 3.13
+
+## Install
+
+```powershell
+# 1. Create venv and install deps
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+
+# 2. Install as Windows Service (auto-elevates via UAC, auto-downloads NSSM)
+.\install-service.ps1
+```
+
+First service start downloads the `large-v2` model (~1.5 GB) to `%USERPROFILE%\.cache\huggingface\hub\`.
+
+## Usage
+
+```python
+from openai import OpenAI
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+with open("audio.wav", "rb") as f:
+    r = client.audio.transcriptions.create(
+        model="whisper-1", file=f,
+        response_format="verbose_json",
+        timestamp_granularities=["word"],
+    )
+print(r.text)
+```
+
+## Configuration
+
+All knobs live in **`config.py`** at the repo root — models, default prompt, dictation map, German non-noun list, server host/port, log paths, faster-whisper transcribe defaults. Edit it directly to change behavior, then `Restart-Service WhisperAPI` to pick up the changes. The algorithm code in `main.py` doesn't need to be touched.
+
+Three layers of overrides, **env wins over file wins over in-repo default**:
+
+1. **`config.py`** — committed in-repo defaults.
+2. **`config.local.json`** (gitignored) — runtime overrides written by the admin WebUI; or hand-edited (see `config.local.example.json`). Validated against `config_store.AdminConfig`; unknown keys are rejected.
+3. **`WHISPER_*` env vars** (set on the service via NSSM's `AppEnvironmentExtra`) — per-machine deployment pins; always win.
+
+| Env var | Maps to `config.py` | Effect |
+|---|---|---|
+| `WHISPER_DEFAULT_MODEL` | `DEFAULT_MODEL` | Model used when request sends `whisper-1` or omits `model` |
+| `WHISPER_ALLOWED_MODELS` | `ALLOWED_MODELS` | Comma-separated allowlist; empty means any model passes |
+| `WHISPER_MAX_LOADED_MODELS` | `MAX_LOADED_MODELS` | How many models to keep hot in VRAM (LRU eviction) |
+| `WHISPER_PRELOAD_MODELS` | `PRELOAD_MODELS` | Comma-separated list to load eagerly at startup (no first-request warm-up) |
+| `WHISPER_DEFAULT_PROMPT` | `DEFAULT_PROMPT` | Initial prompt when request omits `prompt` (empty string disables) |
+| `WHISPER_DICTATION_MAP` | `DICTATION_ENABLED` | `0` disables spoken-symbol mapping |
+| `WHISPER_TRACE` | `TRACE_ENABLED` | `0` silences per-request trace blocks |
+| `WHISPER_LOG_FILE` | `LOG_FILE` | Rotating log file path |
+| `WHISPER_ADMIN_ALLOWED_HOSTS` | `ADMIN_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach `/config` (loopback always implicit) |
+| `WHISPER_STATS_ALLOWED_HOSTS` | `STATS_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach `/stats` (loopback always implicit) |
+
+### Allowed hosts
+
+`/config` and `/stats` are gated by IP/CIDR allowlists. Defaults are `["127.0.0.1", "::1"]` — loopback only. Loopback is *always* implicitly allowed regardless of the configured list, so a typo can never lock you out from the box itself.
+
+```python
+# Allow the local LAN to reach /stats but keep /config loopback-only:
+ADMIN_ALLOWED_HOSTS = ["127.0.0.1", "::1"]
+STATS_ALLOWED_HOSTS = ["127.0.0.1", "::1", "192.168.1.0/24"]
+```
+
+CIDR is accepted (`192.168.0.0/16`) and so are bare IPs (`10.0.0.5`).
+
+## Endpoints
+
+- `POST /v1/audio/transcriptions` — OpenAI-compatible transcription. Pass `model=<name>` to pick a specific model (any faster-whisper short name or HF repo id).
+- `GET  /v1/models` — list currently-loaded models, the configured default, and the allowlist (if set).
+- `GET  /logs` — live log viewer (browser).
+- `GET  /logs/stream` — raw SSE feed.
+- `GET  /stats` — system overview dashboard. Allowlist-gated (`STATS_ALLOWED_HOSTS`; loopback always allowed).
+- `GET  /stats/snapshot`, `GET /stats/stream` — JSON snapshot + SSE stream of the same data (~1 Hz).
+- `GET  /config` — admin WebUI (only when `WHISPER_ADMIN_UI=1`). Allowlist-gated (`ADMIN_ALLOWED_HOSTS`; loopback always allowed).
+- `GET/POST /config/state`, `POST /config/restart` — admin JSON endpoints; require bearer token if `WHISPER_ADMIN_TOKEN` is set.
+
+### Model selection examples
+
+```python
+# Use the configured default (Whisper-1 = OpenAI default name)
+client.audio.transcriptions.create(model="whisper-1", file=f)
+
+# Pick a specific faster-whisper short name
+client.audio.transcriptions.create(model="large-v3-turbo", file=f)
+
+# Use a German finetune from Hugging Face
+client.audio.transcriptions.create(model="primeline/whisper-large-v3-turbo-german", file=f)
+```
+
+First-use of any new model triggers a one-time download (~600 MB to ~1.5 GB depending on the model) into `%USERPROFILE%\.cache\huggingface\hub\`. Subsequent loads come from cache (~5–10 s into VRAM).
+
+## Service control
+
+```powershell
+Restart-Service WhisperAPI               # after editing main.py
+Stop-Service    WhisperAPI
+Get-Service     WhisperAPI
+.\uninstall-service.ps1                  # remove the service
+.\uninstall-service.ps1 -RemoveLocal     # also delete logs/ and nssm.exe
+```
+
+`Get-Content -Wait logs\whisper.log` to tail logs in a terminal, or open `http://localhost:8000/logs`.
+
+## Post-processing pipeline
+
+`_postprocess_text()` in `main.py` runs each request's text through 10 ordered steps:
+
+| # | Step | What it does |
+|---|---|---|
+| 0 | SWISSIFY | `ß` → `ss`, `ẞ` → `SS` |
+| 1 | STRIP | Drop punctuation except `./-:,?!` |
+| 2 | NORMALIZE | `10-23` → `10/23` |
+| 3 | STRIP TERMS | Strip Whisper-emitted `.?!` and lowercase the next word if it's a known German non-noun |
+| 4 | STRIP COMMAS | Drop Whisper soft-pause commas (keeps `1,000`) |
+| 5 | DICTATION | Replace spoken words: `Punkt` → `.`, `Komma` → `,`, `neue Zeile` → `\n`, etc. |
+| 6 | TIDY SPACING | Collapse spaces around inserted punctuation |
+| 7 | DEDUP PUNCT | Collapse `,.` / `,;` / `,:,` runs to one mark |
+| 8 | TIDY NEWLINES | Strip residue around `\n` / `\n\n` |
+| 9 | CAPITALIZE | Capitalize after `.?!` and after `\n+` |
+| 10 | TRIM EDGES | `lstrip()` + `rstrip(" \t\r")` (preserves trailing newline) |
+
+Customize the dictation map by editing `DICTATION_MAP` and `PUNCTUATION_TO_KEEP` in `config.py` — or, with the admin WebUI enabled, from the browser at `/config`.
+
+## Stats dashboard
+
+`http://localhost:8000/stats` shows a live dashboard updated over Server-Sent Events at ~1 Hz:
+
+- **GPU**: name, util %, VRAM used/total, temp, power draw, SM clock, current performance state.
+- **Host**: total CPU%, per-core mini-strip, RAM, free disk on the model cache drive.
+- **Process**: PID, RSS, threads, uptime.
+- **Loaded models** with per-model VRAM (NVML delta sample taken at construction time), warm/cold badge, and the cold-load history.
+- **Request metrics**: in-flight transcriptions, p50/p95/p99 latency, endpoint counters, 5xx counts in 1m/5m/15m windows.
+- **Recent transcriptions** ring (last 20) with model, audio length, wall-clock, real-time-factor, words emitted.
+
+Sparklines are rendered with [uPlot](https://github.com/leeoniya/uPlot), vendored under `static/` so the page works **fully offline** — no CDN fetch at page-load. To update the bundled version, see `static/VENDOR.md`.
+
+The `/stats` endpoint is allowlist-gated (`STATS_ALLOWED_HOSTS`). On a host without an NVIDIA GPU or with `nvidia-ml-py` missing, the GPU panel hides and the rest of the dashboard still works.
+
+The nav row at the top of every page (logs ↔ stats ↔ config) also surfaces three severity pills counting `WARNING` / `ERROR` / `CRITICAL` records in the last 60 s; clicking any pill jumps to `/logs` with that filter prefilled.
+
+## Admin WebUI (optional)
+
+A second WebUI at `/config` lets you edit any setting from `config.py` from the browser, with hot-reload for safe knobs (transcribe params, dictation map, prompt) and an automatic service restart for cold ones (server port, log file, preload list).
+
+**Off by default.** Two ways to enable, pick whichever fits your workflow:
+
+*Option 1 — edit `config.py`* (committed in-repo, simplest):
+
+```python
+ADMIN_UI_ENABLED = True
+ADMIN_TOKEN = "<paste-token-here>"   # or leave None for loopback-only
+```
+
+Then `Restart-Service WhisperAPI`.
+
+*Option 2 — env vars via NSSM* (good if `config.py` should stay committed without a token in it):
+
+```powershell
+# Generate a strong token (run once, paste into the env var below):
+[Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+
+# Edit AppEnvironmentExtra to add WHISPER_ADMIN_UI=1 and the token:
+nssm set WhisperAPI AppEnvironmentExtra `
+  "WHISPER_LOG_FILE=$PWD\logs\whisper.log" `
+  "WHISPER_ADMIN_UI=1" `
+  "WHISPER_ADMIN_TOKEN=<paste-token-here>"
+Restart-Service WhisperAPI
+```
+
+Then open `http://localhost:8000/config` **on the server itself** (the endpoint refuses non-loopback callers regardless of `SERVER_HOST`). The page asks for the token, stores it in `sessionStorage`, and attaches it to every fetch.
+
+Security model:
+- **Feature flag**: `WHISPER_ADMIN_UI=1` is required for the routes to be registered at all. Without it, `/config*` returns 404.
+- **Loopback only**: requests from non-loopback IPs return 403 — the public bind address (`SERVER_HOST=0.0.0.0`) doesn't expose the admin endpoints.
+- **Bearer token**: optional but strongly recommended. If `WHISPER_ADMIN_TOKEN` is set, every mutating endpoint requires `Authorization: Bearer <token>`. If unset, loopback alone is the gate.
+- **Server-side validation**: every payload is validated against `config_store.AdminConfig` (Pydantic v2). Unknown keys, out-of-range numbers, malformed paths, and oversize collections are rejected with 422.
+- **Auto-restart**: when a "cold" setting changes (server port, log file, preload list, …), a confirmation modal asks whether to restart the service. Confirming exits the python process after a ~1.5 s flush delay; NSSM's `AppExit=Restart` (set by `install-service.ps1`) relaunches it automatically. The page polls `/v1/models` until the new process is up, then reloads. Total downtime is ~3-4 s.
+
+Edits land in **`config.local.json`** at the repo root (gitignored). See `config.local.example.json` for the schema.
+
+## Files
+
+```
+main.py                    FastAPI app + post-processing pipeline + log viewer
+config.py                  All user-tunable settings (models, prompt, dictation map, ...)
+config_store.py            Admin-WebUI persistence layer (Pydantic schema, atomic writes)
+admin_routes.py            Admin /config endpoints + HTML page (loaded only when WHISPER_ADMIN_UI=1)
+stats_routes.py            /stats dashboard endpoints + HTML page (always on, allowlist-gated)
+metrics.py                 In-process request metrics (counters, latency ring, recent transcriptions)
+system_stats.py            GPU + host snapshot (pynvml + psutil; degrades gracefully if NVML missing)
+web_common.py              Shared helpers: allowlist gate, nav HTML, severity counts
+restart_service.py         Detached self-restart helper (Windows-only)
+config.local.json          Runtime overrides written by the admin UI (gitignored, optional)
+config.local.example.json  Example overrides file
+test.py                    Manual test client (vowen.ai compatibility)
+install-service.ps1        Windows Service installer (NSSM-based, self-elevating)
+uninstall-service.ps1      Service uninstaller
+requirements.txt           Direct deps; transitive resolved by pip
+static/                    Vendored uPlot release (offline /stats sparklines)
+.gitignore
+logs/                      Created at first run; rotates at 10 MB × 10 files
+```

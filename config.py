@@ -1,0 +1,410 @@
+"""
+Configuration for faster-whisper-backend.
+
+Edit the values in this file to tune the deployment. Each setting can ALSO
+be overridden at runtime via a matching WHISPER_* environment variable (set
+on the Windows Service via NSSM's AppEnvironmentExtra). The env var wins
+over the value here, so this file holds the in-repo defaults and env vars
+hold per-machine overrides.
+
+Conventions:
+- Module attribute names are UPPER_CASE.
+- Public symbols (no leading underscore) are intended to be edited.
+- Algorithm code (regex compilation, pipeline functions) lives in main.py.
+"""
+import os
+
+
+# =============================================================================
+# Models
+# =============================================================================
+
+# Model loaded when a client sends `model="whisper-1"` (OpenAI default) or
+# omits the field. Any faster-whisper short name or full HF repo id works.
+# Examples:
+#   "large-v2", "large-v3", "large-v3-turbo", "distil-large-v3"
+#   "Systran/faster-whisper-large-v3"
+#   "GalaktischeGurke/primeline-whisper-large-v3-german-ct2"
+DEFAULT_MODEL = "large-v2"
+
+# Restrict which models clients are allowed to load. An empty set means "any
+# model name passes through" — convenient on a private LAN, but lets a client
+# trigger a multi-GB download by sending an unknown name. Add entries to
+# enforce a known list. Curated CH-DE / German starter set; uncomment to
+# enable.
+ALLOWED_MODELS: "set[str]" = {
+    "large-v2",
+    "large-v3",
+    "GalaktischeGurke/primeline-whisper-large-v3-german-ct2",
+    # --- Systran's official faster-whisper builds (auto-resolved from HF) ---
+    # "large-v2",
+    # "large-v3",
+    # "large-v3-turbo",         # ~4x faster than large-v3, slight quality dip
+    # "distil-large-v3",        # smaller; English-leaning, may regress on CH-DE
+
+    # --- German-finetuned, pre-converted to CTranslate2 ----------------------
+    # "GalaktischeGurke/primeline-whisper-large-v3-german-ct2",
+    # "conkhidan/primeline-whisper-large-v3-turbo-german-ct2",
+}
+
+# Number of models to keep hot in VRAM. LRU eviction beyond this. Each
+# large-v3 model is ~1.5 GB on float16 CUDA; turbo/distill variants are
+# ~600 MB. Pick based on free VRAM after the OS / other apps.
+MAX_LOADED_MODELS = 3
+
+# Models to load eagerly at server startup. Listed models stay hot in VRAM
+# from boot, so the first request to each doesn't pay the 5-30 s warm-up.
+# If empty, only DEFAULT_MODEL is preloaded (current/historical behavior).
+# Keep len(PRELOAD_MODELS) <= MAX_LOADED_MODELS or LRU eviction starts
+# fighting your own preloads. Order doesn't matter for behavior, only for
+# load order at startup.
+PRELOAD_MODELS: "list[str]" = [
+    "large-v2",
+    "large-v3",
+    "GalaktischeGurke/primeline-whisper-large-v3-german-ct2",
+]
+
+# Primary load device + precision. CUDA + float16 is the GPU path.
+MODEL_DEVICE = "cuda"
+MODEL_COMPUTE_TYPE = "float16"
+
+# Fallback if the primary load fails (e.g. CUDA OOM, missing driver).
+# CPU + int8 fits anywhere but transcribes ~10x slower.
+MODEL_DEVICE_FALLBACK = "cpu"
+MODEL_COMPUTE_TYPE_FALLBACK = "int8"
+
+
+# =============================================================================
+# Locale (Swiss German / CH-DE)
+# =============================================================================
+
+# Whisper accepts only ISO-639-1 codes (no "de-CH"); we use "de" and rely on
+# the Swiss-flavored vocabulary in the prompt + the ß->ss step in the
+# postprocessing pipeline to push output toward Swiss-German orthography.
+DEFAULT_LANGUAGE = "de"
+
+# Server-side default initial_prompt, used when a request omits `prompt`.
+# Vocabulary cloud (no framing words like "Brief"/"Bericht"/"Notiz") so it
+# biases medical-jargon spelling without pushing short CMS-field inputs
+# toward letter-style salutations or sign-offs. Includes Swiss-specific
+# terms (Spital, Krankenkasse, FMH, CHF) to bias toward CH-DE rather than
+# DE-DE conventions.
+DEFAULT_PROMPT: "str | None" = (
+    "Medizin: Anamnese, Diagnose, Befund, Therapie, Medikation, Dosierung, "
+    "ICD-10, mg, ml, Z.n., Hypertonie, Diabetes mellitus, Patient, Spital, "
+    "Hausarzt, Praxis, Krankenkasse, Dr. med., FMH, CHF, Herr, Frau."
+)
+
+# Swiss German doesn't use ß; "Strasse" not "Straße", "weiss" not "weiß", etc.
+# Whisper's German model emits ß, so we replace it before any other rules run.
+# (str.translate can't do 1->2 char mapping, hence str.replace via tuple.)
+SWISS_ESZETT_REPLACEMENTS = (("ß", "ss"), ("ẞ", "SS"))
+
+
+# =============================================================================
+# Text post-processing pipeline
+# =============================================================================
+
+# Master switch. False disables Steps 4-9 (the dictation-specific steps:
+# strip-noise-commas, dictation-map, tidy-spacing, dedup-punct, tidy-newlines,
+# capitalize). The Whisper-terminator strip (Step 3) and Swiss orthography
+# (Step 0) still run.
+DICTATION_ENABLED = True
+
+# Characters that survive the punctuation-strip pass. Date/time/number
+# separators (./-:,) plus sentence terminators (?!) which Step 3 then handles
+# "smartly" — strip + lowercase the following word if clearly not a German
+# noun.
+PUNCTUATION_TO_KEEP = "./-:,?!"
+
+# Words allowed to be lowercased after a stripped Whisper terminator.
+# German nouns are always capitalized, so we use a fixed list of common
+# non-nouns (interrogatives, conjunctions, articles, prepositions, common
+# adverbs/verbs). Comparison is case-insensitive — keep entries lowercase.
+LOWERCASE_AFTER_STRIPPED_TERMINATOR: "frozenset[str]" = frozenset([
+    # Interrogatives
+    "wie", "was", "wer", "wann", "wo", "warum", "wieso", "weshalb",
+    "welche", "welcher", "welches", "welchem", "welchen",
+    # Conjunctions
+    "und", "oder", "aber", "doch", "denn", "weil", "wenn", "dann",
+    "dass", "obwohl", "während", "sondern", "deshalb", "trotzdem",
+    "falls", "ob",
+    # Articles
+    "der", "die", "das", "den", "dem", "des",
+    "ein", "eine", "einer", "einem", "einen", "eines",
+    "kein", "keine", "keiner", "keinem", "keinen",
+    # Common adverbs / particles
+    "auch", "nur", "noch", "schon", "hier", "da", "dort",
+    "heute", "morgen", "gestern", "jetzt", "nicht",
+    "sehr", "ganz", "etwas", "viel", "wenig", "oft", "immer",
+    # Common prepositions
+    "in", "auf", "an", "von", "mit", "zu", "bei", "aus",
+    "über", "unter", "vor", "nach", "für", "gegen", "ohne", "um",
+    "durch", "ab", "seit",
+    # Common verb forms at sentence start
+    "ist", "sind", "war", "waren", "hat", "haben",
+    "wird", "werden", "kann", "soll", "muss", "will",
+    "könnte", "sollte", "müsste", "wollte",
+])
+
+# Spoken word -> literal symbol. Word-bounded and case-insensitive.
+# Multi-word phrases ("eckige Klammer auf") MUST be listed before their
+# single-word components ("Klammer auf", "Klammer") — main.py sorts by length
+# so the longest phrase wins in the regex alternation.
+#
+# Tradeoff: a dictation system can't tell "der wichtigste Punkt der
+# Tagesordnung" (Punkt = literal noun) from "Schlusssatz Punkt"
+# (Punkt = "."). All such substitutions are unconditional. Disable globally
+# with DICTATION_ENABLED = False (or WHISPER_DICTATION_MAP=0).
+DICTATION_MAP: "dict[str, str]" = {
+    # --- Multi-word phrases (matched before their single-word components) ---
+    # Whisper frequently mishears the line/paragraph commands — we add the
+    # canonical form plus the most common ASR mistakes. Add more aliases
+    # here if you spot recurring mishearings.
+    "neuer Absatz": "\n\n",
+    "neuer Absätze": "\n\n",   # mishearing
+    "neue Absätze": "\n\n",    # plural mishearing
+    "neuer Apfel": "\n\n",     # mishearing
+    "neue Zeile": "\n",
+    "neue Zeilen": "\n",       # plural mishearing
+    "neue Teile": "\n",        # mishearing
+    "neue Seile": "\n",        # mishearing
+    "neue Säule": "\n",        # mishearing
+    "eckige Klammer auf": "[",
+    "eckige Klammer zu": "]",
+    "geschweifte Klammer auf": "{",
+    "geschweifte Klammer zu": "}",
+    "Anführungszeichen unten": "„",
+    "Anführungszeichen oben": "“",
+    "Klammer auf": "(",
+    "Klammer zu": ")",
+    "kleiner als": "<",
+    "größer als": ">",
+    # --- Single-word punctuation -------------------------------------------
+    "Punkt": ".",
+    "Komma": ",",
+    "Doppelpunkt": ":",
+    "Semikolon": ";",
+    "Strichpunkt": ";",
+    "Fragezeichen": "?",
+    "Ausrufezeichen": "!",
+    "Ausrufungszeichen": "!",
+    "Bindestrich": "-",
+    "Trennstrich": "-",
+    "Gedankenstrich": "–",
+    "Schrägstrich": "/",
+    "Backslash": "\\",
+    "Apostroph": "'",
+    "Unterstrich": "_",
+    "Sternchen": "*",
+    "Raute": "#",
+    "Gänsefüßchen": '"',
+    "Gänsefüsschen": '"',  # CH-DE spelling without ß
+    # "Franken" -> "CHF" (not "Fr.") on purpose: a trailing period would make
+    # Step 9 CAPITALIZE wrongly uppercase the following word ("Fr. Pro" instead
+    # of "Fr. pro"). CHF is also the more formal CH-DE medical convention.
+    "Franken": "CHF",
+    "Frankenzeichen": "CHF",
+    # --- Math / typographic symbols ----------------------------------------
+    "Prozent": "%",
+    "Prozentzeichen": "%",
+    "Paragraph": "§",
+    "Paragraphenzeichen": "§",
+    "Grad": "°",
+    "Gradzeichen": "°",
+    "Klammeraffe": "@",
+    "Plus": "+",
+    "Pluszeichen": "+",
+    "Minus": "-",
+    "Minuszeichen": "-",
+    "Gleich": "=",
+    "Gleichheitszeichen": "=",
+    "Tilde": "~",
+    "Pipe": "|",
+    "Dach": "^",
+    "Eurozeichen": "€",
+    "Dollarzeichen": "$",
+    "Et-Zeichen": "&",
+    "Und-Zeichen": "&",
+    "Kaufmannsund": "&",
+}
+
+
+# =============================================================================
+# Logging
+# =============================================================================
+
+# Default log file path lives next to this file in logs/. Changing it doesn't
+# require the directory to exist; main.py creates it at startup.
+LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs", "whisper.log")
+
+# Rotation: 10 MB per file, keep 10 historical files (~100 MB max).
+LOG_MAX_BYTES = 10 * 1024 * 1024
+LOG_BACKUP_COUNT = 10
+
+# Print a fancy multi-line trace block for every transcription request.
+# Disable for production / high-traffic deployments where the log volume
+# becomes problematic.
+TRACE_ENABLED = True
+
+
+# =============================================================================
+# Server (uvicorn)
+# =============================================================================
+
+SERVER_HOST = "0.0.0.0"
+SERVER_PORT = 8000
+SERVER_WORKERS = 1          # faster-whisper holds models in memory; >1 multiplies VRAM
+SERVER_LOG_LEVEL = "info"
+
+
+# =============================================================================
+# Whisper transcribe defaults (passed to WhisperModel.transcribe)
+# =============================================================================
+
+# Beam search width. Higher = better quality, slower. 10 is generous;
+# turbo/distill models often work fine at 5.
+BEAM_SIZE = 10
+BEST_OF = 5
+
+# Use the bundled Silero VAD to skip non-speech audio. Cuts wall time on
+# files with long silences; rarely worth disabling.
+VAD_FILTER = True
+
+# Silero VAD parameters. The library defaults (min_silence_duration_ms=2000,
+# speech_pad_ms=400) are tuned for long-form audio and EAT short dictation
+# clips — a 2-3 s utterance with brief leading/trailing silence collapses to
+# zero segments. The values below work for both short clips and long-form;
+# tighten further (250 / 100) for very short clips.
+VAD_MIN_SILENCE_MS: int = 500
+VAD_SPEECH_PAD_MS: int = 200
+VAD_THRESHOLD: float = 0.5
+
+# Pass each segment's text into the prompt context for the next segment.
+# Improves consistency on long-form audio; adds a tiny amount of latency.
+# WARNING: many German finetunes (primeline-derived: tnfru, GalaktischeGurke,
+# conkhidan) collapse to repeated punctuation when this is True. Set False if
+# your selected model's card says so.
+CONDITION_ON_PREVIOUS_TEXT = True
+
+# Compute word-level timestamps via DTW alignment. Required for the
+# `timestamp_granularities=["word"]` API option but EXPENSIVE and known to
+# break certain finetunes (faster-whisper#1212): finetuned Whisper models
+# can produce negative DTW timestamps which faster-whisper silently drops,
+# leaving you with 0 segments. Set to False to disable word-level DTW for
+# all requests — segment-level timestamps still work. Note: this takes
+# precedence over the per-request `timestamp_granularities` field.
+WORD_TIMESTAMPS_ENABLED = True
+
+# Quality-check thresholds passed straight to model.transcribe(). Whisper
+# drops a segment when:
+#   no_speech_prob > NO_SPEECH_THRESHOLD  AND  avg_logprob < LOG_PROB_THRESHOLD
+# OR when the segment text's gzip ratio exceeds COMPRESSION_RATIO_THRESHOLD.
+# Finetunes can shift the no_speech distribution enough that these checks
+# drop all real speech ("0 segments" symptom). When VAD_FILTER is True,
+# faster-whisper Discussion #349 recommends setting all three to None so
+# the VAD is the only gate. Use None to disable a check.
+NO_SPEECH_THRESHOLD: "float | None" = 0.6
+LOG_PROB_THRESHOLD: "float | None" = -1.0
+COMPRESSION_RATIO_THRESHOLD: "float | None" = 2.4
+
+
+# =============================================================================
+# Admin WebUI (optional /config browser editor)
+# =============================================================================
+# Both off by default. The /config endpoints are only registered when
+# ADMIN_UI_ENABLED is True. If ADMIN_TOKEN is None, the loopback-only check
+# is the sole gate — fine on a single-user machine, but set a token if you
+# want a second factor against other local users / processes.
+#
+# Generate a strong token with PowerShell:
+#   [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+#
+# These are intentionally NOT editable from the admin WebUI itself (avoids
+# foot-gun where you lock yourself out by toggling them in the browser).
+ADMIN_UI_ENABLED = True
+ADMIN_TOKEN: "str | None" = None
+
+# Allowlist of IPs / CIDRs allowed to reach the /config admin endpoints.
+# Loopback (127.0.0.1, ::1) is ALWAYS implicitly allowed — even if you put
+# a typo here you can still reach the page from the box itself.
+# Examples:
+#   ["127.0.0.1", "::1"]                       # default — loopback only
+#   ["127.0.0.1", "::1", "192.168.1.0/24"]     # also a LAN subnet
+#   ["0.0.0.0/0"]                              # anywhere (NOT recommended)
+ADMIN_ALLOWED_HOSTS: "list[str]" = ["127.0.0.1", "::1"]
+
+# Same for /stats. Default loopback-only.
+STATS_ALLOWED_HOSTS: "list[str]" = ["127.0.0.1", "::1"]
+
+
+# Snapshot the in-file defaults BEFORE config.local.json + env overrides apply.
+# Used by main.py's request log block to mark non-default scalar values with
+# `*` so the operator can see at a glance which knobs are overridden.
+_BASELINE: "dict[str, object]" = {
+    k: v for k, v in globals().items()
+    if k.isupper() and not k.startswith("_")
+}
+
+
+# =============================================================================
+# Runtime overrides from config.local.json (admin WebUI)
+# =============================================================================
+# Loaded between in-file defaults and env-var overrides so precedence is:
+#     ENV var  >  config.local.json  >  in-file default (above)
+# Failure to load NEVER raises — see config_store.load_overrides for details.
+try:
+    from config_store import load_overrides as _load_overrides
+
+    for _k, _v in _load_overrides().items():
+        globals()[_k] = _v
+except ImportError:
+    # config_store depends on pydantic; if it isn't installed we still want
+    # config.py to import cleanly so the rest of the app can run.
+    pass
+
+
+# =============================================================================
+# Environment variable overrides (deployment-time)
+# =============================================================================
+# Anything below here lets the env var win over the in-file default. Touch
+# only if you want to change the override syntax itself.
+
+DEFAULT_MODEL = os.environ.get("WHISPER_DEFAULT_MODEL", DEFAULT_MODEL)
+
+_env_allowed = os.environ.get("WHISPER_ALLOWED_MODELS")
+if _env_allowed is not None:
+    ALLOWED_MODELS = {s.strip() for s in _env_allowed.split(",") if s.strip()}
+
+MAX_LOADED_MODELS = int(os.environ.get("WHISPER_MAX_LOADED_MODELS", str(MAX_LOADED_MODELS)))
+
+_env_preload = os.environ.get("WHISPER_PRELOAD_MODELS")
+if _env_preload is not None:
+    PRELOAD_MODELS = [s.strip() for s in _env_preload.split(",") if s.strip()]
+
+_env_prompt = os.environ.get("WHISPER_DEFAULT_PROMPT")
+if _env_prompt is not None:
+    DEFAULT_PROMPT = _env_prompt or None  # explicit empty string => disable
+
+DICTATION_ENABLED = os.environ.get("WHISPER_DICTATION_MAP", "1" if DICTATION_ENABLED else "0") == "1"
+TRACE_ENABLED = os.environ.get("WHISPER_TRACE", "1" if TRACE_ENABLED else "0") == "1"
+
+LOG_FILE = os.environ.get("WHISPER_LOG_FILE", LOG_FILE)
+
+# WHISPER_ADMIN_UI: "1" to enable, anything else (or unset) to disable.
+ADMIN_UI_ENABLED = os.environ.get("WHISPER_ADMIN_UI", "1" if ADMIN_UI_ENABLED else "0") == "1"
+
+# WHISPER_ADMIN_TOKEN: empty string is treated the same as "no token".
+_env_admin_token = os.environ.get("WHISPER_ADMIN_TOKEN")
+if _env_admin_token is not None:
+    ADMIN_TOKEN = _env_admin_token or None
+
+# Comma-separated CIDR/IP allowlists for /config and /stats. Empty string is
+# treated as "no override" (use the in-file / local.json value).
+_env_admin_hosts = os.environ.get("WHISPER_ADMIN_ALLOWED_HOSTS")
+if _env_admin_hosts is not None and _env_admin_hosts.strip():
+    ADMIN_ALLOWED_HOSTS = [s.strip() for s in _env_admin_hosts.split(",") if s.strip()]
+
+_env_stats_hosts = os.environ.get("WHISPER_STATS_ALLOWED_HOSTS")
+if _env_stats_hosts is not None and _env_stats_hosts.strip():
+    STATS_ALLOWED_HOSTS = [s.strip() for s in _env_stats_hosts.split(",") if s.strip()]

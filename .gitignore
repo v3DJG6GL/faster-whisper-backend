@@ -1,0 +1,36 @@
+# Virtual environment (Windows-built, ~2 GB — rebuild from requirements.txt)
+venv/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Local environment / secrets
+.env
+.env.local
+*.local
+
+# Admin-WebUI runtime overrides (the .example.json variant IS committed)
+config.local.json
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Test artifacts / temp uploads
+*.log
+tmp/
+logs/
+*.wav
+*.mp3
+*.m4a
+
+# Auto-downloaded by install-service.ps1
+nssm.exe
