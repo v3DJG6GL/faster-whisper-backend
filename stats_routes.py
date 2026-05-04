@@ -136,7 +136,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     flex-shrink: 0; }
   header button:hover { background: #30363d; }
   {{NAV_CSS}}
-  .grid { padding: 0.875rem; width: 100%;
+  .grid { padding: 0.875rem; max-width: 1100px; margin: 0 auto;
     box-sizing: border-box; min-height: 60vh; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
     padding: 0.625rem 0.75rem; min-width: 0; height: 100%; box-sizing: border-box;
