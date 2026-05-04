@@ -120,6 +120,27 @@ def _resolved_value(field: str) -> Any:
     return val
 
 
+# Pydantic re-validates each rule so model_dump() emits keys in the
+# discriminated-union's declaration order — same on both `value` and
+# `default_value` so JSON.stringify on each yields identical strings
+# when the rule contents match. Without this, _BASELINE keeps source
+# order from config.py while the resolved value (after a local.json
+# overlay) carries Pydantic's parent-first MRO order, and the WebUI's
+# _isRuleDirty() always reports dirty on first paint.
+def _canon_rules(rules: Any) -> Any:
+    if not isinstance(rules, list):
+        return rules
+    from pydantic import TypeAdapter
+    adapter = TypeAdapter(config_store.PipelineRule)
+    out: list[Any] = []
+    for r in rules:
+        try:
+            out.append(adapter.validate_python(r).model_dump(exclude_none=True))
+        except Exception:
+            out.append(r)  # malformed — pass through; save-time validator catches it
+    return out
+
+
 def _provenance(field: str, env_pinned: dict[str, str], saved: dict[str, Any]) -> str:
     """Where the current effective value came from: 'env', 'local.json', or 'default'."""
     if field in env_pinned:
@@ -187,6 +208,13 @@ async def get_state() -> dict[str, Any]:
             "env_var": env_pinned.get(name),
             "restart_required": name in config_store.RESTART_REQUIRED_FIELDS,
         }
+
+    # PIPELINE_RULES: canonicalize key order on both sides of the wire so
+    # the WebUI's deep-equal compare (JSON.stringify) is reliable on first
+    # paint. See _canon_rules() for the why.
+    if "PIPELINE_RULES" in fields:
+        fields["PIPELINE_RULES"]["value"] = _canon_rules(fields["PIPELINE_RULES"]["value"])
+        fields["PIPELINE_RULES"]["default_value"] = _canon_rules(fields["PIPELINE_RULES"]["default_value"])
 
     # Surface the nested group structure to the client. Each group has a list
     # of subgroups: {title, subgroups: [{title: str | None, fields: [...]}]}.
@@ -580,11 +608,26 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     padding: 6px 10px; }
   .rule-row.locked { border-left: 3px solid #f2cc60; }
   .rule-row.terminal { border-left: 3px solid var(--dim); opacity: 0.85; }
-  .rule-row.dragging { opacity: 0.4; outline: 2px dashed var(--cyan); }
-  /* Drop-target indicator: thin colored line above the row to show the
-     insertion point. Box-shadow avoids layout shift (vs. border-top). */
-  .rule-row.drag-over-top { box-shadow: 0 -2px 0 0 var(--cyan); }
-  .rule-row.drag-over-bottom { box-shadow: 0 2px 0 0 var(--cyan); }
+  /* Button-like interactive feel on every rule row. :active propagates
+     up from descendants so pressing the drag-handle still tints the row. */
+  .rule-row { transition: background-color 120ms ease; cursor: default; }
+  .rule-row:not(.terminal):hover { background: #1c2230; }
+  .rule-row:not(.terminal):active { background: #232a36; }
+  .rule-row[tabindex]:focus-visible { outline: 2px solid var(--cyan);
+    outline-offset: -1px; }
+  /* Suppress :hover noise while a drag is in flight — otherwise every
+     row the cursor crosses pulses. */
+  .rule-list.dnd-active .rule-row:hover { background: #161b22; }
+  .rule-row.dragging { opacity: 0.3; outline: 2px dashed var(--cyan); }
+  /* Placeholder slot — the empty cyan-bordered space the dragged row
+     will land in. Height set inline at dragstart to match source row. */
+  .rule-placeholder {
+    border: 1px dashed var(--cyan);
+    background: rgba(56, 189, 248, 0.08);
+    border-radius: 4px;
+    margin-bottom: 4px;
+    transition: height 120ms ease;
+  }
   .rule-row.disabled { opacity: 0.55; }
   .rule-row .row-header { display: flex; align-items: center; gap: 8px;
     font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
@@ -1176,8 +1219,71 @@ function pipelineRulesEditor(name, initialRules) {
 
   // Drag state across rule rows.
   let dragSrcIdx = null;
+  let dragSrcEl = null;     // the <div class="rule-row"> currently dragging
+  // One shared placeholder div — HTML5 DnD allows only one drag at a time
+  // per browser tab, so a single node is sufficient. Inserted on dragstart
+  // (after a setTimeout(0) so Chrome's drag-image snapshot captures the
+  // full row), moves around on dragenter, removed on dragend.
+  const placeholder = document.createElement('div');
+  placeholder.className = 'rule-placeholder';
   // Expanded-row state, keyed by rule.name (slug). Survives full repaints.
   const expandedNames = new Set();
+
+  // List-level (delegated) drag handlers. dragenter moves the placeholder
+  // around as the cursor crosses rows; drop fires once at the placeholder's
+  // final position. Per-row handlers only fire dragstart/dragend.
+  list.addEventListener('dragover', (e) => {
+    if (!dragSrcEl) return;
+    e.preventDefault();                          // required for drop to fire
+    e.dataTransfer.dropEffect = 'move';
+  });
+  list.addEventListener('dragenter', (e) => {
+    if (!dragSrcEl) return;
+    const targetRow = e.target.closest && e.target.closest('.rule-row');
+    if (!targetRow || targetRow === dragSrcEl) return;
+    // Terminal row stays last — placeholder snaps just above it.
+    if (targetRow.classList.contains('terminal')) {
+      list.insertBefore(placeholder, targetRow);
+      return;
+    }
+    const rect = targetRow.getBoundingClientRect();
+    const before = (e.clientY - rect.top) < rect.height / 2;
+    list.insertBefore(placeholder, before ? targetRow : targetRow.nextSibling);
+  });
+  list.addEventListener('drop', (e) => {
+    if (!dragSrcEl) return;
+    e.preventDefault();
+    // Convert placeholder DOM position → rules-array index by counting
+    // visible .rule-row siblings before it (source is hidden, excluded).
+    let newIdx = 0;
+    for (const child of list.children) {
+      if (child === placeholder) break;
+      if (child.classList.contains('rule-row') && child !== dragSrcEl) newIdx++;
+    }
+    const oldIdx = dragSrcIdx;
+    if (newIdx === oldIdx) return;     // dropped in place
+    const src = rules[oldIdx];
+    const targetEl = placeholder.nextElementSibling;
+    const movingLocked = src.locked
+      || (targetEl && targetEl.classList && targetEl.classList.contains('locked'));
+    if (movingLocked) {
+      const ok = confirm(
+        'Reordering ' + src.name + ' near a locked rule may break the\n' +
+        'pipeline (e.g. dictation must run before its tidy rules).\n\n' +
+        'Proceed anyway?'
+      );
+      if (!ok) return;                 // dragend cleans up
+    }
+    const [moved] = rules.splice(oldIdx, 1);
+    rules.splice(newIdx, 0, moved);
+    // Defensive: keep terminal last.
+    const tIdx = rules.findIndex(r => r.type === 'terminal');
+    if (tIdx >= 0 && tIdx !== rules.length - 1) {
+      const [tr] = rules.splice(tIdx, 1);
+      rules.push(tr);
+    }
+    commitFull();
+  });
 
   // --- baseline / dirtiness helpers (drive reset-button visibility) ----
   function _baselineList() { return fieldDef(name).default_value || []; }
@@ -1242,6 +1348,7 @@ function pipelineRulesEditor(name, initialRules) {
     const row = document.createElement('div');
     row.className = 'rule-row';
     row.dataset.idx = idx;
+    row.tabIndex = 0;     // keyboard-focusable; CSS :focus-visible draws ring
     if (rule.locked) row.classList.add('locked');
     if (!rule.enabled) row.classList.add('disabled');
     if (rule.type === 'terminal') row.classList.add('terminal');
@@ -1262,24 +1369,33 @@ function pipelineRulesEditor(name, initialRules) {
       drag.draggable = true;
       drag.addEventListener('dragstart', (e) => {
         dragSrcIdx = idx;
+        dragSrcEl = row;
         // Firefox requires setData() — without it, the drag never fires.
         try { e.dataTransfer.setData('text/plain', String(idx)); } catch (_) {}
         e.dataTransfer.effectAllowed = 'move';
-        // Use the WHOLE row as the drag ghost (not just the handle glyph)
-        // so the user sees what they're moving. setDragImage must run
-        // synchronously inside dragstart.
+        // Whole row as the drag ghost (not just the handle glyph) so
+        // the user sees what they're moving. Must run synchronously.
         try { e.dataTransfer.setDragImage(row, 12, 12); } catch (_) {}
-        // Apply .dragging on the next tick — browsers snapshot the drag
-        // ghost synchronously at dragstart, before any class change in
-        // the same frame would take effect. The class still applies to
-        // the source row visible in the list (faded look).
-        setTimeout(() => row.classList.add('dragging'), 0);
+        // Match placeholder height to source so layout doesn't jump
+        // when we hide the source on the next tick.
+        placeholder.style.height = row.offsetHeight + 'px';
+        list.classList.add('dnd-active');
+        // CRITICAL: defer hide + class-add so Chrome's drag-image
+        // snapshot (taken at end of the dragstart tick) captures the
+        // full row, not a blank ghost.
+        setTimeout(() => {
+          row.classList.add('dragging');
+          row.parentNode.insertBefore(placeholder, row.nextSibling);
+          row.style.display = 'none';
+        }, 0);
       });
       drag.addEventListener('dragend', () => {
+        // Always cleanup here — fires even on cancelled drops (Esc, off-screen).
+        row.style.display = '';
         row.classList.remove('dragging');
-        // Clear any lingering drop indicators across all rows.
-        list.querySelectorAll('.drag-over-top, .drag-over-bottom')
-          .forEach(r => r.classList.remove('drag-over-top', 'drag-over-bottom'));
+        if (placeholder.parentNode) placeholder.remove();
+        list.classList.remove('dnd-active');
+        dragSrcEl = null;
         dragSrcIdx = null;
       });
     }
@@ -1358,61 +1474,8 @@ function pipelineRulesEditor(name, initialRules) {
     }
     row.appendChild(head);
 
-    // Drop zone (whole row accepts drops). dragenter/dragleave paint a
-    // colored insertion line above or below the target so the user sees
-    // where the dragged row will land.
-    row.addEventListener('dragenter', (e) => {
-      if (dragSrcIdx === null || dragSrcIdx === idx) return;
-      e.preventDefault();
-      // Insertion-line side: above when dragging downward into a higher
-      // index, below otherwise. Falls back to top for terminal rows.
-      const above = dragSrcIdx > idx || rule.type === 'terminal';
-      row.classList.add(above ? 'drag-over-top' : 'drag-over-bottom');
-      row.classList.remove(above ? 'drag-over-bottom' : 'drag-over-top');
-    });
-    row.addEventListener('dragover', (e) => {
-      if (dragSrcIdx === null || dragSrcIdx === idx) return;
-      // preventDefault is required for drop to fire.
-      e.preventDefault();
-      e.dataTransfer.dropEffect = 'move';
-    });
-    row.addEventListener('dragleave', (e) => {
-      // Only clear when the cursor truly leaves the row, not when it
-      // enters a child element. relatedTarget is the element entered.
-      if (e.relatedTarget && row.contains(e.relatedTarget)) return;
-      row.classList.remove('drag-over-top', 'drag-over-bottom');
-    });
-    row.addEventListener('drop', (e) => {
-      e.preventDefault();
-      row.classList.remove('drag-over-top', 'drag-over-bottom');
-      if (dragSrcIdx === null || dragSrcIdx === idx) return;
-      const src = rules[dragSrcIdx];
-      let target = idx;
-      // Refuse to drop AFTER the terminal row.
-      if (rules[idx] && rules[idx].type === 'terminal') {
-        target = idx;  // dropping ONTO terminal puts the moved row above it
-      }
-      const movingLocked = src.locked || (rules[idx] && rules[idx].locked);
-      if (movingLocked) {
-        const ok = confirm(
-          'Reordering ' + src.name + ' near a locked rule may break the\n' +
-          'pipeline (e.g. dictation must run before its tidy rules).\n\n' +
-          'Proceed anyway?'
-        );
-        if (!ok) return;
-      }
-      // Move src to target position.
-      const [moved] = rules.splice(dragSrcIdx, 1);
-      const insertAt = target > dragSrcIdx ? target : target;
-      rules.splice(insertAt, 0, moved);
-      // Keep terminal row last.
-      const tIdx = rules.findIndex(r => r.type === 'terminal');
-      if (tIdx >= 0 && tIdx !== rules.length - 1) {
-        const [tr] = rules.splice(tIdx, 1);
-        rules.push(tr);
-      }
-      commitFull();
-    });
+    // Drop logic lives at list level (see top of pipelineRulesEditor) —
+    // the shared placeholder follows the cursor between rows there.
 
     // Body (collapsed by default).
     const body = document.createElement('div');
