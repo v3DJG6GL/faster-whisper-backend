@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import re
 import secrets
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -43,19 +44,44 @@ logger = logging.getLogger("whisper-api")
 # params / Pipeline / …) so an operator reading a log can find the matching
 # config knobs by section name with no translation.
 _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
-    ("Models", [(None, [
-        "DEFAULT_MODEL", "ALLOWED_MODELS", "PRELOAD_MODELS",
-        "MAX_LOADED_MODELS", "MODEL_IDLE_TIMEOUT_S",
-        "MODEL_DEVICE", "MODEL_COMPUTE_TYPE",
-        "MODEL_DEVICE_FALLBACK", "MODEL_COMPUTE_TYPE_FALLBACK",
+    ("Models", [
+        (None, [
+            "DEFAULT_MODEL", "ALLOWED_MODELS", "PRELOAD_MODELS",
+            "MAX_LOADED_MODELS", "MODEL_IDLE_TIMEOUT_S",
+            "MODEL_DEVICE", "MODEL_COMPUTE_TYPE",
+            "MODEL_DEVICE_FALLBACK", "MODEL_COMPUTE_TYPE_FALLBACK",
+        ]),
+        ("Advanced — load-time hardware", [
+            "DOWNLOAD_ROOT", "LOCAL_FILES_ONLY", "USE_AUTH_TOKEN",
+            "CPU_THREADS", "NUM_WORKERS", "DEVICE_INDEX",
+        ]),
+    ]),
+    ("Decode params", [
+        (None, [
+            "DEFAULT_LANGUAGE", "DEFAULT_PROMPT", "DEFAULT_HOTWORDS",
+            "BEAM_SIZE", "BEST_OF",
+            "VAD_FILTER", "VAD_MIN_SILENCE_MS", "VAD_SPEECH_PAD_MS", "VAD_THRESHOLD",
+            "CONDITION_ON_PREVIOUS_TEXT", "WORD_TIMESTAMPS_ENABLED",
+            "NO_SPEECH_THRESHOLD", "LOG_PROB_THRESHOLD", "COMPRESSION_RATIO_THRESHOLD",
+        ]),
+        ("Advanced — beam & sampling", [
+            "TEMPERATURE", "PATIENCE", "LENGTH_PENALTY",
+            "REPETITION_PENALTY", "NO_REPEAT_NGRAM_SIZE",
+            "PROMPT_RESET_ON_TEMPERATURE",
+        ]),
+        ("Advanced — language detection (active when DEFAULT_LANGUAGE empty)", [
+            "MULTILINGUAL", "LANGUAGE_DETECTION_THRESHOLD",
+            "LANGUAGE_DETECTION_SEGMENTS",
+        ]),
+        ("Advanced — anti-hallucination & token control", [
+            "HALLUCINATION_SILENCE_THRESHOLD", "SUPPRESS_BLANK", "SUPPRESS_TOKENS",
+            "PREPEND_PUNCTUATIONS", "APPEND_PUNCTUATIONS",
+        ]),
+    ]),
+    ("Output wrappers", [(None, [
+        "OUTPUT_PREFIX", "OUTPUT_SUFFIX",
     ])]),
-    ("Decode params", [(None, [
-        "DEFAULT_LANGUAGE", "DEFAULT_PROMPT",
-        "BEAM_SIZE", "BEST_OF",
-        "VAD_FILTER", "VAD_MIN_SILENCE_MS", "VAD_SPEECH_PAD_MS", "VAD_THRESHOLD",
-        "CONDITION_ON_PREVIOUS_TEXT", "WORD_TIMESTAMPS_ENABLED",
-        "NO_SPEECH_THRESHOLD", "LOG_PROB_THRESHOLD", "COMPRESSION_RATIO_THRESHOLD",
-    ])]),
+    ("Per-model overrides", [(None, ["MODEL_OVERRIDES"])]),
     ("Pipeline", [(None, ["PIPELINE_RULES"])]),
     ("Logging", [(None, [
         "LOG_FILE", "LOG_MAX_BYTES", "LOG_BACKUP_COUNT", "TRACE_ENABLED",
@@ -63,8 +89,8 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ("Server (uvicorn)", [(None, [
         "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",
     ])]),
-    ("Access (allowlists)", [(None, [
-        "ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS",
+    ("Access (allowlists + token)", [(None, [
+        "ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS", "ADMIN_TOKEN",
     ])]),
 ]
 
@@ -89,20 +115,61 @@ require_admin_host = web_common.require_allowed_host(lambda: cfg.ADMIN_ALLOWED_H
 
 _bearer = HTTPBearer(auto_error=False)
 
+# --- Token rotation with 60 s grace window ----------------------------------
+#
+# When an admin rotates ADMIN_TOKEN (or clears it), the previous value stays
+# valid for 60 s so the editing session can update its stored token without
+# getting locked out mid-flight. After the grace window expires, only the
+# current cfg.ADMIN_TOKEN is accepted. Loopback bypass is unaffected — the
+# loopback caller can always edit/clear the token without auth.
+_TOKEN_GRACE_S = 60.0
+_previous_token: "str | None" = None
+_previous_token_expires_at: float = 0.0   # time.monotonic()
+
+
+def _record_previous_token(old: "str | None") -> None:
+    """Stash the pre-rotate token + expiry. Called from post_state when
+    ADMIN_TOKEN changes. Empty old token is recorded as None (== bypass)."""
+    global _previous_token, _previous_token_expires_at
+    _previous_token = old or None
+    _previous_token_expires_at = time.monotonic() + _TOKEN_GRACE_S
+
+
+def _previous_token_valid() -> "str | None":
+    """Return the previous token IF it's still inside the grace window,
+    else clear it and return None."""
+    global _previous_token, _previous_token_expires_at
+    if not _previous_token:
+        return None
+    if time.monotonic() > _previous_token_expires_at:
+        _previous_token = None
+        _previous_token_expires_at = 0.0
+        return None
+    return _previous_token
+
 
 def require_admin_token(
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> None:
     """If cfg.ADMIN_TOKEN is set, require a matching bearer token. If unset,
-    this is a no-op — the loopback check alone is the gate."""
+    this is a no-op — the loopback check alone is the gate.
+
+    During a 60 s grace window after rotate (see _record_previous_token), the
+    pre-rotate token is also accepted so the editing session can update its
+    stored token without disruption."""
     expected = cfg.ADMIN_TOKEN
     if not expected:
         return
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "bearer token required")
-    if not secrets.compare_digest(creds.credentials, expected):
-        logger.warning("[config] rejected bad bearer token from a loopback caller")
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
+    presented = creds.credentials
+    if secrets.compare_digest(presented, expected):
+        return
+    grace = _previous_token_valid()
+    if grace and secrets.compare_digest(presented, grace):
+        return
+    logger.warning("[config] rejected bad bearer token")
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
 
 
 # --- router ------------------------------------------------------------------
@@ -111,7 +178,11 @@ router = APIRouter(prefix="/config")
 
 
 def _resolved_value(field: str) -> Any:
-    """Read the current effective value of a config field by attribute name."""
+    """Read the current effective value of a config field by attribute name.
+    For ADMIN_TOKEN, return only a presence sentinel (the UI never needs the
+    raw value, only whether one is set)."""
+    if field == "ADMIN_TOKEN":
+        return "***" if getattr(cfg, "ADMIN_TOKEN", None) else ""
     val = getattr(cfg, field, None)
     # Convert un-JSON-able types so the WebUI gets clean data.
     if isinstance(val, (set, frozenset)):
@@ -277,6 +348,11 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                             f"could not write config.local.json: {e}")
 
+    # Capture the pre-save ADMIN_TOKEN so we can install the 60 s grace window
+    # if it's about to change. Loopback callers don't need this, but token-
+    # gated remote sessions would lock themselves out otherwise.
+    _prev_admin_token = getattr(cfg, "ADMIN_TOKEN", None)
+
     # Apply hot edits to the running cfg module so the next request sees them.
     # We re-load from disk so the in-memory values get the same coercions
     # (set/frozenset/tuple) load_overrides applies.
@@ -301,6 +377,16 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         else:
             hot_changed.append(name)
 
+    # Token rotate: install grace window when ADMIN_TOKEN actually changed.
+    # Empty / unset old token → no grace needed (no one was authenticating
+    # with a token anyway). Loopback bypass means the local admin always
+    # has access regardless.
+    if "ADMIN_TOKEN" in written and _prev_admin_token \
+            and getattr(cfg, "ADMIN_TOKEN", None) != _prev_admin_token:
+        _record_previous_token(_prev_admin_token)
+        logger.info("[config] ADMIN_TOKEN rotated — previous token valid for "
+                    "%d s grace window", int(_TOKEN_GRACE_S))
+
     if needs_cache_rebuild:
         try:
             import main as _main
@@ -309,11 +395,53 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         except Exception as e:
             logger.error("[config] cache rebuild failed: %s", e)
 
+    # Eviction-on-edit: when a load-time field changed (globally or per-model),
+    # drop the affected loaded model(s) from the cache so the next request
+    # reloads them with the new settings. In-flight transcribes finish on the
+    # old WhisperModel instance via Python ref-counting (drain-then-evict).
+    evicted: list[str] = []
+    try:
+        import main as _main
+        load_time_changed_globally = bool(
+            set(written.keys()) & config_store.LOAD_TIME_FIELDS
+        )
+        if load_time_changed_globally:
+            # Affects every loaded model that doesn't have a per-model
+            # override winning over the changed global field. Conservative
+            # fallback: evict ALL models. They reload lazily so this is cheap.
+            ev = await _main.drain_then_evict(None)
+            evicted.extend(ev)
+        if "MODEL_OVERRIDES" in written:
+            # Per-model override changed for one or more model ids — figure
+            # out which ones touched a load-time field and evict only those.
+            new_overrides = coerced.get("MODEL_OVERRIDES") or {}
+            old_overrides = (
+                # The pre-save effective value of MODEL_OVERRIDES. We don't
+                # have a clean snapshot, but `coerced` is post-save and
+                # `written` only contains diffs vs disk; combined with the
+                # cfg.MODEL_OVERRIDES that was active before setattr ran above
+                # we can't reconstruct cleanly. Easiest: any model id that
+                # appears in the new dict and has a load-time field set
+                # gets evicted (idempotent for unchanged models — they just
+                # reload once).
+                {}
+            )
+            for model_id, ovr in new_overrides.items():
+                if not isinstance(ovr, dict):
+                    continue
+                if set(ovr.keys()) & config_store.LOAD_TIME_FIELDS:
+                    ev = await _main.drain_then_evict(model_id)
+                    evicted.extend(ev)
+    except Exception as e:
+        # Never let eviction failure break the save response. The user's
+        # change still persisted; worst case they restart manually.
+        logger.error("[config] eviction-on-edit failed: %s", e)
+
     client_host = request.client.host if request.client else "?"
     logger.info(
-        "[config] admin update from=%s saved=%d hot=%s cold=%s pinned=%s",
+        "[config] admin update from=%s saved=%d hot=%s cold=%s pinned=%s evicted=%s",
         client_host, len(written), hot_changed, cold_changed,
-        [n for n in written if n in env_pinned],
+        [n for n in written if n in env_pinned], evicted,
     )
 
     return JSONResponse({
@@ -321,6 +449,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         "hot_applied": hot_changed,
         "cold_pending": cold_changed,
         "env_pinned_ignored": sorted(n for n in written if n in env_pinned),
+        "evicted": evicted,
         "requires_restart": bool(cold_changed),
     })
 
@@ -1093,6 +1222,15 @@ function makeEditor(name) {
   // drag-to-reorder, per-row test badge). Routed by name BEFORE shape checks
   // since the value is a list.
   if (name === 'PIPELINE_RULES') return pipelineRulesEditor(name, v || []);
+  // MODEL_OVERRIDES is a dict[model_id, dict[field, value]] — too freeform
+  // for the standard editors. Render as a JSON textarea with parse-validation
+  // on every input. Save sends the parsed object; pydantic validates server-
+  // side. Future polish: master-detail UI per the original design.
+  if (name === 'MODEL_OVERRIDES') return modelOverridesEditor(name, v || {});
+  // ADMIN_TOKEN: never render the raw value; show "Set ✓ / Not set" with
+  // explicit Rotate / Clear actions. Confirm dialogs remind the admin
+  // about the 60 s grace window after rotate.
+  if (name === 'ADMIN_TOKEN') return adminTokenEditor(name, v);
   // Type dispatch — keep this strict. Order matters: check shape (object vs.
   // array vs. boolean vs. number) BEFORE name-based heuristics, otherwise
   // misses like MAX_LOADED_MODELS routing to a list editor sneak in.
@@ -1123,6 +1261,290 @@ function makeEditor(name) {
     return nullableNumberEditor(name, v);
   }
   return stringEditor(name, v == null ? '' : v);
+}
+
+function adminTokenEditor(name, v) {
+  // ADMIN_TOKEN is sensitive — never render the raw value.
+  // Status pill + [Rotate] [Clear] buttons. Rotate opens a modal-style inline
+  // form for the new token (typed twice to catch typos). Clear sets to empty.
+  // After save, the previous token has 60 s grace at the server side.
+  const wrap = document.createElement('div');
+
+  function statusPill(set) {
+    const span = document.createElement('span');
+    span.className = 'badge ' + (set ? 'live' : '');
+    span.textContent = set ? 'Set ✓' : 'Not set (loopback-only)';
+    return span;
+  }
+
+  function render() {
+    wrap.innerHTML = '';
+    const cur = currentValue(name);
+    const isSet = !!cur;
+
+    const top = document.createElement('div');
+    top.style.display = 'flex';
+    top.style.gap = '0.5rem';
+    top.style.alignItems = 'center';
+    top.style.flexWrap = 'wrap';
+    top.appendChild(statusPill(isSet));
+
+    const rotateBtn = document.createElement('button');
+    rotateBtn.type = 'button';
+    rotateBtn.textContent = isSet ? '↻ Rotate' : '+ Set token';
+    rotateBtn.addEventListener('click', () => {
+      const t1 = prompt('Enter the new ADMIN_TOKEN (32+ chars recommended):');
+      if (t1 === null) return;
+      const t1s = t1.trim();
+      if (!t1s) {
+        alert('Empty token — use Clear to disable token auth.');
+        return;
+      }
+      const t2 = prompt('Re-enter the new ADMIN_TOKEN to confirm:');
+      if (t2 === null) return;
+      if (t1s !== t2.trim()) {
+        alert('Tokens do not match. No change made.');
+        return;
+      }
+      const grace = isSet
+        ? '\n\nAfter save, the previous token stays valid for 60 s as a grace '
+          + 'window so this session can update its stored token.'
+        : '';
+      if (!confirm('Set ADMIN_TOKEN to the new value?' + grace)) return;
+      setDirty(name, t1s);
+      render();
+    });
+    top.appendChild(rotateBtn);
+
+    if (isSet) {
+      const clearBtn = document.createElement('button');
+      clearBtn.type = 'button';
+      clearBtn.textContent = '⌫ Clear';
+      clearBtn.title = 'Disable token auth (loopback bypass remains)';
+      clearBtn.addEventListener('click', () => {
+        if (!confirm('Disable ADMIN_TOKEN auth?\n\n'
+            + 'Loopback (127.0.0.1, ::1) remains the only gate.\n'
+            + 'After save, the previous token stays valid for 60 s.')) return;
+        setDirty(name, '');
+        render();
+      });
+      top.appendChild(clearBtn);
+    }
+
+    // If the user has typed a new token but not saved yet, show a tiny hint.
+    if (Object.prototype.hasOwnProperty.call(dirty, name)) {
+      const pending = document.createElement('span');
+      pending.className = 'badge';
+      pending.style.color = 'var(--yellow, #f2cc60)';
+      pending.textContent = 'pending — click Save to apply';
+      top.appendChild(pending);
+    }
+
+    wrap.appendChild(top);
+  }
+
+  render();
+  document.addEventListener('admin:dirty', (e) => {
+    if (!e.detail || e.detail.name === name) render();
+  });
+  return wrap;
+}
+
+function modelOverridesEditor(name, v) {
+  // Per-model override editor. v is dict[model_id, dict[field, value]].
+  //
+  // V1 implementation: JSON textarea + helper buttons. Functionally complete
+  // (server-side validation rejects bad shapes / orphaned ids). The polished
+  // master-detail sidebar UI is a follow-up enhancement; this unblocks the
+  // feature now.
+  //
+  // Helper buttons:
+  //   [+ add model]    Inserts a stub entry for a model id picked from
+  //                    ALLOWED_MODELS, opens it in the textarea ready to edit.
+  //   [reset]          Clears the textarea to {}.
+  // The current value updates `dirty[MODEL_OVERRIDES]` on every keystroke
+  // when the JSON is parseable.
+  const wrap = document.createElement('div');
+
+  const status = document.createElement('div');
+  status.className = 'help';
+  status.style.fontFamily = 'var(--font-mono, monospace)';
+
+  const ta = document.createElement('textarea');
+  ta.style.fontFamily = 'var(--font-mono, monospace)';
+  ta.style.width = '100%';
+  ta.spellcheck = false;
+  function dump(obj) {
+    try { return JSON.stringify(obj || {}, null, 2); }
+    catch { return '{}'; }
+  }
+  ta.value = dump(v);
+  ta.rows = Math.max(8, Math.min(30, ta.value.split('\n').length + 1));
+
+  function refreshStatus(parsed, err) {
+    if (err) {
+      status.textContent = '⚠ JSON parse error: ' + err.message;
+      status.style.color = 'var(--red, #ff7b72)';
+      return;
+    }
+    const ids = Object.keys(parsed || {});
+    if (ids.length === 0) {
+      status.textContent = 'No per-model overrides — every model uses globals.';
+      status.style.color = 'var(--dim, #6e7681)';
+    } else {
+      const counts = ids.map(id => {
+        const fields = Object.keys(parsed[id] || {}).length;
+        return id + ' (' + fields + ' override' + (fields === 1 ? '' : 's') + ')';
+      });
+      status.textContent = ids.length + ' model(s) with overrides: ' + counts.join(', ');
+      status.style.color = 'var(--green, #7ee787)';
+    }
+  }
+
+  function onChange() {
+    let parsed = {}, err = null;
+    try { parsed = JSON.parse(ta.value || '{}'); }
+    catch (e) { err = e; }
+    refreshStatus(parsed, err);
+    if (!err) setDirty(name, parsed);
+  }
+  ta.addEventListener('input', onChange);
+
+  // helper bar
+  const bar = document.createElement('div');
+  bar.style.display = 'flex';
+  bar.style.gap = '0.5rem';
+  bar.style.alignItems = 'center';
+  bar.style.flexWrap = 'wrap';
+  bar.style.marginBottom = '0.5rem';
+
+  const addBtn = document.createElement('button');
+  addBtn.type = 'button';
+  addBtn.textContent = '+ add model override';
+  addBtn.addEventListener('click', () => {
+    const allowed = Array.isArray(currentValue('ALLOWED_MODELS'))
+      ? currentValue('ALLOWED_MODELS') : [];
+    if (allowed.length === 0) {
+      alert('ALLOWED_MODELS is empty — type a model id directly into the JSON textarea.');
+      return;
+    }
+    let cur = {};
+    try { cur = JSON.parse(ta.value || '{}'); } catch {}
+    const taken = new Set(Object.keys(cur));
+    const free = allowed.filter(m => !taken.has(m));
+    if (free.length === 0) {
+      alert('Every allowed model already has an override entry.');
+      return;
+    }
+    const pick = prompt(
+      'Add override for which model id?\n\nAvailable:\n  ' + free.join('\n  '),
+      free[0],
+    );
+    if (!pick || !free.includes(pick)) return;
+    cur[pick] = { BEAM_SIZE: null };
+    // null in the value tells the user "fill me in"; pydantic ignores Nones.
+    ta.value = dump(cur);
+    onChange();
+  });
+  bar.appendChild(addBtn);
+
+  const clearBtn = document.createElement('button');
+  clearBtn.type = 'button';
+  clearBtn.textContent = '⌫ clear all';
+  clearBtn.addEventListener('click', () => {
+    if (!confirm('Clear all per-model overrides?')) return;
+    ta.value = '{}';
+    onChange();
+  });
+  bar.appendChild(clearBtn);
+
+  const fmtBtn = document.createElement('button');
+  fmtBtn.type = 'button';
+  fmtBtn.textContent = '⌥ format';
+  fmtBtn.title = 'Re-indent the JSON';
+  fmtBtn.addEventListener('click', () => {
+    try {
+      const parsed = JSON.parse(ta.value || '{}');
+      ta.value = dump(parsed);
+      onChange();
+    } catch (e) {
+      alert('Cannot format: ' + e.message);
+    }
+  });
+  bar.appendChild(fmtBtn);
+
+  wrap.appendChild(bar);
+  wrap.appendChild(ta);
+  wrap.appendChild(status);
+
+  // Field reference (collapsible)
+  const ref = document.createElement('details');
+  ref.style.marginTop = '0.5rem';
+  const sum = document.createElement('summary');
+  sum.textContent = 'Available override fields (per-model)';
+  sum.style.cursor = 'pointer';
+  sum.style.color = 'var(--dim, #6e7681)';
+  ref.appendChild(sum);
+  const refList = document.createElement('div');
+  refList.className = 'help';
+  refList.style.fontFamily = 'var(--font-mono, monospace)';
+  refList.style.fontSize = '0.85em';
+  refList.style.whiteSpace = 'pre';
+  refList.textContent = [
+    '// Load-time (drain-then-evict on edit):',
+    '"MODEL_DEVICE": "cuda"|"cpu",',
+    '"MODEL_COMPUTE_TYPE": "float16"|"int8"|"bfloat16"|"int8_float16"|"float32",',
+    '"MODEL_DEVICE_FALLBACK": "cuda"|"cpu",',
+    '"MODEL_COMPUTE_TYPE_FALLBACK": "float16"|"int8"|...,',
+    '"REVISION": "main"|"<git-sha>",',
+    '"NUM_WORKERS": 1..8,  "DEVICE_INDEX": 0..15,',
+    '',
+    '// Decode (per-call):',
+    '"DEFAULT_LANGUAGE": "de", "DEFAULT_PROMPT": "...", "DEFAULT_HOTWORDS": "...",',
+    '"BEAM_SIZE": 1..20, "BEST_OF": 1..20,',
+    '"CONDITION_ON_PREVIOUS_TEXT": true|false,',
+    '"WORD_TIMESTAMPS_ENABLED": true|false,',
+    '"NO_SPEECH_THRESHOLD": 0..1, "LOG_PROB_THRESHOLD": -10..0,',
+    '"COMPRESSION_RATIO_THRESHOLD": 0..10,',
+    '"TEMPERATURE": "0.0,0.2,...", "PATIENCE": 0.5..5,',
+    '"LENGTH_PENALTY": 0.1..5, "REPETITION_PENALTY": 0.5..5,',
+    '"NO_REPEAT_NGRAM_SIZE": 0..10, "PROMPT_RESET_ON_TEMPERATURE": 0..1,',
+    '',
+    '// VAD:',
+    '"VAD_FILTER": true|false, "VAD_MIN_SILENCE_MS": 0..10000,',
+    '"VAD_SPEECH_PAD_MS": 0..2000, "VAD_THRESHOLD": 0..1,',
+    '',
+    '// Language detection (active when DEFAULT_LANGUAGE empty):',
+    '"MULTILINGUAL": true|false, "LANGUAGE_DETECTION_THRESHOLD": 0..1,',
+    '"LANGUAGE_DETECTION_SEGMENTS": 1..10,',
+    '',
+    '// Anti-hallucination & token control:',
+    '"HALLUCINATION_SILENCE_THRESHOLD": 0..60, "SUPPRESS_BLANK": true|false,',
+    '"SUPPRESS_TOKENS": "-1"|"<comma-ints>", ',
+    '"PREPEND_PUNCTUATIONS": "<chars>", "APPEND_PUNCTUATIONS": "<chars>",',
+    '',
+    '// Output wrappers + pipeline scoping:',
+    '"OUTPUT_PREFIX": "...", "OUTPUT_SUFFIX": "...",',
+    '"PIPELINE_RULES_EXCLUDE": ["dictation-map", ...]',
+    '',
+    '// Example:',
+    '{',
+    '  "GalaktischeGurke/primeline-whisper-large-v3-german-ct2": {',
+    '    "CONDITION_ON_PREVIOUS_TEXT": false,',
+    '    "PIPELINE_RULES_EXCLUDE": ["dictation-map"],',
+    '    "OUTPUT_PREFIX": "[de] "',
+    '  },',
+    '  "large-v3": {',
+    '    "BEAM_SIZE": 8,',
+    '    "MODEL_COMPUTE_TYPE": "bfloat16"',
+    '  }',
+    '}',
+  ].join('\n');
+  ref.appendChild(refList);
+  wrap.appendChild(ref);
+
+  refreshStatus(v || {}, null);
+  return wrap;
 }
 
 function modelDropdownEditor(name, v) {

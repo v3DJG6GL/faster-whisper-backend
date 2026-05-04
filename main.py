@@ -130,7 +130,9 @@ class _CompiledRule:
       callback:map                → dict[str_lower, str] lookup
       callback:dedup              → None (callback hardcoded)
       callback:upper              → None (callback hardcoded)
+    `name` is the rule slug used for per-model PIPELINE_RULES_EXCLUDE matching.
     """
+    name: str
     label: str
     type: str
     pattern: "re.Pattern[str]"
@@ -245,7 +247,8 @@ def rebuild_caches() -> None:
             logger.warning("[pipeline] rule %r has invalid regex (%s) — skipping",
                            rule.get("name"), e)
             continue
-        compiled.append(_CompiledRule(rule.get("label", rule.get("name", "?")),
+        compiled.append(_CompiledRule(rule.get("name", "?"),
+                                       rule.get("label", rule.get("name", "?")),
                                        rtype, cre, payload))
     _COMPILED_RULES = compiled
     _TERMINAL_LABEL = terminal_label
@@ -269,11 +272,31 @@ def _apply_rule(rule: _CompiledRule, text: str) -> str:
 rebuild_caches()
 
 
-def _postprocess_text(text: str, trace: "list | None" = None) -> str:
+def _postprocess_text(text: str, model_name: "str | None" = None,
+                       trace: "list | None" = None) -> str:
     """Run the unified pipeline rule list on `text`. If `trace` is a list,
     each rule that changes the text appends `(label_with_ordinal, before, after)`
-    so the per-request log block can render a diff view."""
+    so the per-request log block can render a diff view.
+
+    Per-model PIPELINE_RULES_EXCLUDE: the rule is skipped (no-op) when its
+    slug appears in MODEL_OVERRIDES[model_name]['PIPELINE_RULES_EXCLUDE'].
+    Bodies still live in the global PIPELINE_RULES list — only inclusion
+    differs per model.
+    """
+    exclude: "set[str]" = set()
+    if model_name:
+        overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
+        m_over = overrides.get(model_name) if isinstance(overrides, dict) else None
+        if isinstance(m_over, dict):
+            ex = m_over.get("PIPELINE_RULES_EXCLUDE") or []
+            if isinstance(ex, list):
+                exclude = set(ex)
     for ordinal, rule in enumerate(_COMPILED_RULES, start=1):
+        if rule.name in exclude:
+            if trace is not None:
+                trace.append((f"{ordinal} {rule.label} [SKIPPED for {model_name}]",
+                              text, text))
+            continue
         before = text
         text = _apply_rule(rule, before)
         if trace is not None and before != text:
@@ -556,6 +579,36 @@ def _resolve_model_name(requested: str) -> str:
     return requested
 
 
+# =============================================================================
+# Per-model config resolution (per-model override > global default)
+# =============================================================================
+# cfg_for(model_id, field) is the canonical reader for any G/PM-scoped setting.
+# It walks: cfg.MODEL_OVERRIDES[model_id][field] (if set and not None) → cfg.X
+# (global default). Pure-G fields (DEFAULT_MODEL, ALLOWED_MODELS, server, log)
+# are read with plain cfg.X — they have no per-model meaning.
+#
+# Precedence (highest to lowest):
+#   request-arg  >  per-model override  >  global default  >  faster-whisper
+# The first three are this function's business; the last is whatever
+# faster-whisper itself defaults to when we omit a kwarg.
+
+def cfg_for(model_id: "str | None", field: str):
+    """Resolve a G/PM config field for the given model_id.
+
+    Returns the per-model override if present and non-None, else the global
+    cfg.X. Pass model_id=None to skip the override layer (useful at startup
+    paths where no specific model is known).
+    """
+    overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
+    if model_id and isinstance(overrides, dict):
+        m_over = overrides.get(model_id)
+        if isinstance(m_over, dict):
+            v = m_over.get(field)
+            if v is not None:
+                return v
+    return getattr(cfg, field)
+
+
 async def _get_or_load_model(name: str) -> WhisperModel:
     cached = _loaded_models.get(name)
     if cached is not None:
@@ -594,24 +647,60 @@ async def _get_or_load_model(name: str) -> WhisperModel:
         # CTranslate2's caching allocator (cached freed memory gets reused).
         vram_before = system_stats.gpu_mem_used_bytes()
         load_t0 = time.perf_counter()
-        loaded_device = cfg.MODEL_DEVICE
-        loaded_compute = cfg.MODEL_COMPUTE_TYPE
+        # Per-model override > global default. Each loaded model can pin its
+        # own device/compute_type/etc. independently.
+        primary_device = cfg_for(name, "MODEL_DEVICE")
+        primary_compute = cfg_for(name, "MODEL_COMPUTE_TYPE")
+        fallback_device = cfg_for(name, "MODEL_DEVICE_FALLBACK")
+        fallback_compute = cfg_for(name, "MODEL_COMPUTE_TYPE_FALLBACK")
+        # Load-time hardware kwargs (also per-model overrideable).
+        load_kwargs = {
+            "device": primary_device,
+            "compute_type": primary_compute,
+            "device_index": cfg_for(name, "DEVICE_INDEX"),
+            "cpu_threads": cfg_for(name, "CPU_THREADS"),
+            "num_workers": cfg_for(name, "NUM_WORKERS"),
+        }
+        # Optional load-time fields — only forwarded if non-default to keep
+        # WhisperModel(...) clean for the common path.
+        _download_root = cfg_for(name, "DOWNLOAD_ROOT")
+        if _download_root:
+            load_kwargs["download_root"] = _download_root
+        if cfg_for(name, "LOCAL_FILES_ONLY"):
+            load_kwargs["local_files_only"] = True
+        _auth_token = cfg_for(name, "USE_AUTH_TOKEN")
+        if _auth_token:
+            load_kwargs["use_auth_token"] = _auth_token
+        # PM-only field (no global counterpart): read directly from override.
+        _overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
+        _m_over = _overrides.get(name) if isinstance(_overrides, dict) else None
+        _revision = _m_over.get("REVISION") if isinstance(_m_over, dict) else None
+        if _revision:
+            load_kwargs["revision"] = _revision
+
+        loaded_device = primary_device
+        loaded_compute = primary_compute
         try:
             new_model = await loop.run_in_executor(
                 None,
-                lambda: WhisperModel(name, device=cfg.MODEL_DEVICE, compute_type=cfg.MODEL_COMPUTE_TYPE),
+                lambda: WhisperModel(name, **load_kwargs),
             )
-            logger.info("Model loaded on %s: %s", cfg.MODEL_DEVICE, name)
+            logger.info("Model loaded on %s: %s", primary_device, name)
         except Exception as e:
             logger.error("%s load failed for %s, falling back to %s: %s",
-                         cfg.MODEL_DEVICE, name, cfg.MODEL_DEVICE_FALLBACK, e)
+                         primary_device, name, fallback_device, e)
+            fallback_kwargs = {
+                **load_kwargs,
+                "device": fallback_device,
+                "compute_type": fallback_compute,
+            }
             new_model = await loop.run_in_executor(
                 None,
-                lambda: WhisperModel(name, device=cfg.MODEL_DEVICE_FALLBACK, compute_type=cfg.MODEL_COMPUTE_TYPE_FALLBACK),
+                lambda: WhisperModel(name, **fallback_kwargs),
             )
-            loaded_device = cfg.MODEL_DEVICE_FALLBACK
-            loaded_compute = cfg.MODEL_COMPUTE_TYPE_FALLBACK
-            logger.info("Model loaded on %s: %s", cfg.MODEL_DEVICE_FALLBACK, name)
+            loaded_device = fallback_device
+            loaded_compute = fallback_compute
+            logger.info("Model loaded on %s: %s", fallback_device, name)
 
         load_secs = time.perf_counter() - load_t0
         metrics.record_model_load(name, load_secs)
@@ -632,6 +721,37 @@ async def _get_or_load_model(name: str) -> WhisperModel:
 
         _loaded_models[name] = new_model
         return new_model
+
+
+async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
+    """Drain-then-evict pattern. Drops the cached entry for `model_id` (or all
+    entries when None) so the next request for that id reloads the model with
+    current cfg / per-model settings.
+
+    "Drain" comes for free from Python reference counting: in-flight transcribe
+    requests already hold their own `model` reference (captured via `_get_or_
+    load_model` before the executor call), so they continue running on the
+    old WhisperModel instance until they finish. Only NEW requests for the
+    evicted id pay the reload cost. Returns the list of evicted ids.
+
+    Called from admin_routes.post_state when a load-time field (MODEL_DEVICE,
+    MODEL_COMPUTE_TYPE, NUM_WORKERS, DEVICE_INDEX, …) changes either globally
+    or in a per-model override. Either case can require reload to take
+    effect; this helper makes that reload lazy and non-disruptive.
+    """
+    evicted: list[str] = []
+    async with _model_load_lock:
+        if model_id is None:
+            names = list(_loaded_models.keys())
+        else:
+            names = [model_id] if model_id in _loaded_models else []
+        for name in names:
+            logger.info("[evict-on-edit] dropping %s from cache; "
+                        "reload on next request", name)
+            _loaded_models.pop(name, None)
+            system_stats.unregister_loaded_model(name)
+            evicted.append(name)
+    return evicted
 
 
 async def _idle_evictor() -> None:
@@ -793,39 +913,114 @@ async def transcribe(
                 tmp_file.write(audio_content)
                 tmp_path = tmp_file.name
 
-            # word_timestamps: AND of the global config knob and the per-request
-            # ask. Disabled globally (cfg.WORD_TIMESTAMPS_ENABLED=False) bypasses
+            # word_timestamps: AND of the (per-model-overrideable) global
+            # config knob and the per-request ask. Disabled (False) bypasses
             # the DTW alignment path entirely — required for primeline-style
             # finetunes that hit faster-whisper#1212.
-            want_word_ts = cfg.WORD_TIMESTAMPS_ENABLED and include_words
+            want_word_ts = cfg_for(resolved_model, "WORD_TIMESTAMPS_ENABLED") and include_words
 
             # Empty string is NOT equivalent to None for tnfru / primeline
             # finetunes — passing "" to model.transcribe(initial_prompt=...)
             # triggers the failure mode their model card warns about. Coerce.
-            _prompt = prompt or cfg.DEFAULT_PROMPT
+            _prompt = prompt or cfg_for(resolved_model, "DEFAULT_PROMPT")
             initial_prompt_arg = _prompt if _prompt else None
 
+            _vad_filter = cfg_for(resolved_model, "VAD_FILTER")
             vad_parameters = dict(
-                min_silence_duration_ms=cfg.VAD_MIN_SILENCE_MS,
-                speech_pad_ms=cfg.VAD_SPEECH_PAD_MS,
-                threshold=cfg.VAD_THRESHOLD,
-            ) if cfg.VAD_FILTER else None
+                min_silence_duration_ms=cfg_for(resolved_model, "VAD_MIN_SILENCE_MS"),
+                speech_pad_ms=cfg_for(resolved_model, "VAD_SPEECH_PAD_MS"),
+                threshold=cfg_for(resolved_model, "VAD_THRESHOLD"),
+            ) if _vad_filter else None
 
             transcribe_kwargs = dict(
-                language=language or cfg.DEFAULT_LANGUAGE,
-                beam_size=cfg.BEAM_SIZE,
-                best_of=cfg.BEST_OF,
+                language=language or cfg_for(resolved_model, "DEFAULT_LANGUAGE"),
+                beam_size=cfg_for(resolved_model, "BEAM_SIZE"),
+                best_of=cfg_for(resolved_model, "BEST_OF"),
                 temperature=temperature,
-                vad_filter=cfg.VAD_FILTER,
+                vad_filter=_vad_filter,
                 vad_parameters=vad_parameters,
                 word_timestamps=want_word_ts,
-                condition_on_previous_text=cfg.CONDITION_ON_PREVIOUS_TEXT,
+                condition_on_previous_text=cfg_for(resolved_model, "CONDITION_ON_PREVIOUS_TEXT"),
                 initial_prompt=initial_prompt_arg,
-                no_speech_threshold=cfg.NO_SPEECH_THRESHOLD,
-                log_prob_threshold=cfg.LOG_PROB_THRESHOLD,
-                compression_ratio_threshold=cfg.COMPRESSION_RATIO_THRESHOLD,
+                no_speech_threshold=cfg_for(resolved_model, "NO_SPEECH_THRESHOLD"),
+                log_prob_threshold=cfg_for(resolved_model, "LOG_PROB_THRESHOLD"),
+                compression_ratio_threshold=cfg_for(resolved_model, "COMPRESSION_RATIO_THRESHOLD"),
             )
-            segments_iter, info = model.transcribe(tmp_path, **transcribe_kwargs)
+            # Optional advanced kwargs — only forwarded when set, so the
+            # transcribe_kwargs dict stays clean for the common path.
+            _hotwords = cfg_for(resolved_model, "DEFAULT_HOTWORDS")
+            if _hotwords:
+                transcribe_kwargs["hotwords"] = _hotwords
+            _temp_str = cfg_for(resolved_model, "TEMPERATURE")
+            if _temp_str:
+                # Per-model override of the temperature ladder. Comma-separated
+                # floats; falls back to the per-request `temperature` (default
+                # 0.0) when unset.
+                try:
+                    ladder = tuple(float(t.strip()) for t in _temp_str.split(",") if t.strip())
+                    if ladder:
+                        transcribe_kwargs["temperature"] = ladder
+                except ValueError:
+                    pass
+            _patience = cfg_for(resolved_model, "PATIENCE")
+            if _patience and _patience != 1.0:
+                transcribe_kwargs["patience"] = _patience
+            _length_penalty = cfg_for(resolved_model, "LENGTH_PENALTY")
+            if _length_penalty and _length_penalty != 1.0:
+                transcribe_kwargs["length_penalty"] = _length_penalty
+            _repetition_penalty = cfg_for(resolved_model, "REPETITION_PENALTY")
+            if _repetition_penalty and _repetition_penalty != 1.0:
+                transcribe_kwargs["repetition_penalty"] = _repetition_penalty
+            _no_repeat_ngram = cfg_for(resolved_model, "NO_REPEAT_NGRAM_SIZE")
+            if _no_repeat_ngram:
+                transcribe_kwargs["no_repeat_ngram_size"] = _no_repeat_ngram
+            _prompt_reset_t = cfg_for(resolved_model, "PROMPT_RESET_ON_TEMPERATURE")
+            if _prompt_reset_t is not None and _prompt_reset_t != 0.5:
+                transcribe_kwargs["prompt_reset_on_temperature"] = _prompt_reset_t
+            if cfg_for(resolved_model, "MULTILINGUAL"):
+                transcribe_kwargs["multilingual"] = True
+            _lang_thresh = cfg_for(resolved_model, "LANGUAGE_DETECTION_THRESHOLD")
+            if _lang_thresh is not None and _lang_thresh != 0.5:
+                transcribe_kwargs["language_detection_threshold"] = _lang_thresh
+            _lang_segs = cfg_for(resolved_model, "LANGUAGE_DETECTION_SEGMENTS")
+            if _lang_segs and _lang_segs != 1:
+                transcribe_kwargs["language_detection_segments"] = _lang_segs
+            _hallu_silence = cfg_for(resolved_model, "HALLUCINATION_SILENCE_THRESHOLD")
+            if _hallu_silence is not None:
+                transcribe_kwargs["hallucination_silence_threshold"] = _hallu_silence
+            _suppress_blank = cfg_for(resolved_model, "SUPPRESS_BLANK")
+            if _suppress_blank is False:
+                transcribe_kwargs["suppress_blank"] = False
+            _suppress_tokens_str = cfg_for(resolved_model, "SUPPRESS_TOKENS")
+            if _suppress_tokens_str is not None:
+                if _suppress_tokens_str.strip():
+                    try:
+                        transcribe_kwargs["suppress_tokens"] = [
+                            int(t.strip()) for t in _suppress_tokens_str.split(",") if t.strip()
+                        ]
+                    except ValueError:
+                        pass
+                else:
+                    transcribe_kwargs["suppress_tokens"] = None
+            _prepend_p = cfg_for(resolved_model, "PREPEND_PUNCTUATIONS")
+            if _prepend_p:
+                transcribe_kwargs["prepend_punctuations"] = _prepend_p
+            _append_p = cfg_for(resolved_model, "APPEND_PUNCTUATIONS")
+            if _append_p:
+                transcribe_kwargs["append_punctuations"] = _append_p
+
+            # Run the synchronous CTranslate2 inference in a thread executor
+            # so the event loop stays responsive. CT2 releases the GIL
+            # internally, so two concurrent requests on different models can
+            # decode in parallel (subject to GPU compute scheduling). The
+            # generator returned by transcribe() does its work lazily on
+            # iteration, so we materialize it inside the executor too.
+            def _do_transcribe(_model=model, _path=tmp_path,
+                               _kw=transcribe_kwargs):
+                _segs, _info = _model.transcribe(_path, **_kw)
+                return list(_segs), _info
+            loop = _asyncio_for_models.get_running_loop()
+            segments_iter, info = await loop.run_in_executor(None, _do_transcribe)
 
             all_words = []
             segments_list = []
@@ -894,11 +1089,22 @@ async def transcribe(
             # since the user explicitly asked for the line break.
             raw_full_text = "".join(raw_full_text_parts)
             trace: "list | None" = [] if cfg.TRACE_ENABLED else None
-            full_text_str = _postprocess_text(raw_full_text, trace=trace)
+            full_text_str = _postprocess_text(raw_full_text, model_name=resolved_model, trace=trace)
+            # Output wrappers (G/PM): plain prefix/suffix concatenated to
+            # the final transcript text after the pipeline runs and BEFORE
+            # the final whitespace trim. Per-model overrides win.
+            _output_prefix = cfg_for(resolved_model, "OUTPUT_PREFIX") or ""
+            _output_suffix = cfg_for(resolved_model, "OUTPUT_SUFFIX") or ""
+            if _output_prefix or _output_suffix:
+                _wrap_before = full_text_str
+                full_text_str = _output_prefix + full_text_str + _output_suffix
+                if trace is not None and _wrap_before != full_text_str:
+                    trace.append((f"{len(_COMPILED_RULES) + 1} output-wrapper",
+                                  _wrap_before, full_text_str))
             before_trim = full_text_str
             full_text_str = full_text_str.lstrip(" \t\r").rstrip(" \t\r")
             if trace is not None and before_trim != full_text_str:
-                trace.append((f"{len(_COMPILED_RULES) + 1} {_TERMINAL_LABEL}",
+                trace.append((f"{len(_COMPILED_RULES) + 2} {_TERMINAL_LABEL}",
                               before_trim, full_text_str))
 
             # Always emit the rich diagnostic block — it's how empty-output

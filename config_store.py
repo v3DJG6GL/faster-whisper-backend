@@ -25,7 +25,7 @@ import time
 from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 from typing import Union
 
 
@@ -43,21 +43,59 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "MODEL_IDLE_TIMEOUT_S": "WHISPER_MODEL_IDLE_TIMEOUT_S",
     "PRELOAD_MODELS": "WHISPER_PRELOAD_MODELS",
     "DEFAULT_PROMPT": "WHISPER_DEFAULT_PROMPT",
+    "DEFAULT_HOTWORDS": "WHISPER_DEFAULT_HOTWORDS",
+    "OUTPUT_PREFIX": "WHISPER_OUTPUT_PREFIX",
+    "OUTPUT_SUFFIX": "WHISPER_OUTPUT_SUFFIX",
+    "TEMPERATURE": "WHISPER_TEMPERATURE",
+    "PATIENCE": "WHISPER_PATIENCE",
+    "LENGTH_PENALTY": "WHISPER_LENGTH_PENALTY",
+    "REPETITION_PENALTY": "WHISPER_REPETITION_PENALTY",
+    "NO_REPEAT_NGRAM_SIZE": "WHISPER_NO_REPEAT_NGRAM_SIZE",
+    "PROMPT_RESET_ON_TEMPERATURE": "WHISPER_PROMPT_RESET_ON_TEMPERATURE",
+    "MULTILINGUAL": "WHISPER_MULTILINGUAL",
+    "LANGUAGE_DETECTION_THRESHOLD": "WHISPER_LANGUAGE_DETECTION_THRESHOLD",
+    "LANGUAGE_DETECTION_SEGMENTS": "WHISPER_LANGUAGE_DETECTION_SEGMENTS",
+    "HALLUCINATION_SILENCE_THRESHOLD": "WHISPER_HALLUCINATION_SILENCE_THRESHOLD",
+    "SUPPRESS_BLANK": "WHISPER_SUPPRESS_BLANK",
+    "SUPPRESS_TOKENS": "WHISPER_SUPPRESS_TOKENS",
+    "PREPEND_PUNCTUATIONS": "WHISPER_PREPEND_PUNCTUATIONS",
+    "APPEND_PUNCTUATIONS": "WHISPER_APPEND_PUNCTUATIONS",
+    "DOWNLOAD_ROOT": "WHISPER_DOWNLOAD_ROOT",
+    "LOCAL_FILES_ONLY": "WHISPER_LOCAL_FILES_ONLY",
+    "USE_AUTH_TOKEN": "WHISPER_USE_AUTH_TOKEN",
+    "CPU_THREADS": "WHISPER_CPU_THREADS",
+    "NUM_WORKERS": "WHISPER_NUM_WORKERS",
+    "DEVICE_INDEX": "WHISPER_DEVICE_INDEX",
     "TRACE_ENABLED": "WHISPER_TRACE",
     "LOG_FILE": "WHISPER_LOG_FILE",
     "ADMIN_ALLOWED_HOSTS": "WHISPER_ADMIN_ALLOWED_HOSTS",
     "STATS_ALLOWED_HOSTS": "WHISPER_STATS_ALLOWED_HOSTS",
+    "ADMIN_TOKEN": "WHISPER_ADMIN_TOKEN",
+    # Per-model overrides use a different convention; see config.py override
+    # block. They are not flagged in the admin UI as "env-pinned" since the
+    # mapping is dynamic; the dynamic mapping is exposed separately.
 }
 
 # Cold settings — editing these requires a service restart for the new value
 # to take effect. The WebUI shows a 'restart' badge and offers to trigger a
-# self-restart after save.
+# self-restart after save. Note: MODEL_DEVICE / MODEL_COMPUTE_TYPE were
+# previously listed here but are now hot — admin save triggers drain-then-
+# evict on the affected loaded models so they reload with the new values.
 RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset({
     "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",
     "LOG_FILE", "LOG_MAX_BYTES", "LOG_BACKUP_COUNT",
     "PRELOAD_MODELS",
+})
+
+# Load-time fields. Editing these (globally OR per-model in MODEL_OVERRIDES)
+# triggers drain-then-evict on the affected loaded models so the next request
+# reloads them with the new values. These are read at WhisperModel(...)
+# construction time; changes only take effect after re-load.
+LOAD_TIME_FIELDS: frozenset[str] = frozenset({
     "MODEL_DEVICE", "MODEL_COMPUTE_TYPE",
     "MODEL_DEVICE_FALLBACK", "MODEL_COMPUTE_TYPE_FALLBACK",
+    "REVISION", "NUM_WORKERS", "DEVICE_INDEX",
+    "DOWNLOAD_ROOT", "LOCAL_FILES_ONLY", "USE_AUTH_TOKEN", "CPU_THREADS",
 })
 
 # Hot settings whose derived caches need rebuild after edit. The admin route
@@ -166,6 +204,96 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "the decoded text is above this value, treat the decode as "
         "failed (triggers a temperature-fallback retry). Catches "
         "repetition loops. Default 2.4.",
+    "DEFAULT_HOTWORDS":
+        "Persistent vocabulary biasing — re-injected into the prompt of "
+        "every decoder window. Distinct from DEFAULT_PROMPT (which fades "
+        "as decoded text accumulates): hotwords stay constant. Useful "
+        "for domain terms, drug names, person names. Ignored when prefix "
+        "is set per-call. (faster-whisper)",
+
+    # --- Decode params (advanced) ---
+    "TEMPERATURE":
+        "Fallback ladder for decoding when compression / log-prob checks "
+        "fail. Comma-separated floats (e.g. '0.0,0.2,0.4,0.6,0.8,1.0'). "
+        "Lower / shorter ladders fail faster on distil models. (faster-whisper)",
+    "PATIENCE":
+        "Beam-search patience factor; >1 keeps the beam alive longer. "
+        "Default 1.0. Try 1.5 if long sentences get clipped.",
+    "LENGTH_PENALTY":
+        "Beam-scoring length-norm exponent. >1 favors longer outputs, "
+        "<1 favors shorter. Default 1.0. Tweak only if outputs are "
+        "systematically too short or too padded.",
+    "REPETITION_PENALTY":
+        "Multiplies logit of already-emitted tokens by 1/penalty. >1 "
+        "discourages loops. Default 1.0. Try 1.05–1.2 for stutter audio.",
+    "NO_REPEAT_NGRAM_SIZE":
+        "Hard ban on n-grams of this size repeating. 0 = off. Try 3 "
+        "for stubborn repetition loops. Caveat: blocks legitimate "
+        "repeats too.",
+    "PROMPT_RESET_ON_TEMPERATURE":
+        "When the temperature ladder fallback exceeds this value, drop "
+        "the running text prompt to escape bad context. Default 0.5. "
+        "Only relevant when CONDITION_ON_PREVIOUS_TEXT=True.",
+
+    # --- Language detection (active when DEFAULT_LANGUAGE is empty) ---
+    "MULTILINGUAL":
+        "Re-run language detection on every segment instead of once. "
+        "Default false. Enable for code-switching audio. (faster-whisper)",
+    "LANGUAGE_DETECTION_THRESHOLD":
+        "Min probability the top language token must reach for detection "
+        "to be accepted. Default 0.5. Raise for stricter detection.",
+    "LANGUAGE_DETECTION_SEGMENTS":
+        "How many leading 30 s chunks to sample for language detection. "
+        "Default 1. Bump to 2-5 if files start with silence/music.",
+
+    # --- Anti-hallucination & token control ---
+    "HALLUCINATION_SILENCE_THRESHOLD":
+        "With WORD_TIMESTAMPS_ENABLED=true, skip silent stretches longer "
+        "than this many seconds when a possible hallucination is detected. "
+        "Default disabled. Try 2.0 if Whisper invents 'thanks for watching' "
+        "filler in long silences.",
+    "SUPPRESS_BLANK":
+        "Suppress blank token at start of decoder sampling. Default true. "
+        "Almost never disable; only useful when debugging tokenizer behavior.",
+    "SUPPRESS_TOKENS":
+        "Comma-separated token IDs to ban from output. '-1' = expand to "
+        "the model's default non-speech symbol set; '' = no suppression. "
+        "Token IDs vary by tokenizer.",
+    "PREPEND_PUNCTUATIONS":
+        "With WORD_TIMESTAMPS_ENABLED, glue these characters onto the "
+        "FOLLOWING word's timing. Locale-specific.",
+    "APPEND_PUNCTUATIONS":
+        "With WORD_TIMESTAMPS_ENABLED, glue these characters onto the "
+        "PRECEDING word's timing. Add ؟ ، for Arabic, etc.",
+
+    # --- Output wrappers ---
+    "OUTPUT_PREFIX":
+        "Plain text prepended to the final transcript text after the "
+        "post-processing pipeline runs (before final whitespace trim). "
+        "Empty / unset = no prefix. NOT a faster-whisper param.",
+    "OUTPUT_SUFFIX":
+        "Plain text appended to the final transcript text after the "
+        "post-processing pipeline runs (before final whitespace trim). "
+        "Empty / unset = no suffix. NOT a faster-whisper param.",
+
+    # --- Load-time, hardware (advanced) ---
+    "DOWNLOAD_ROOT":
+        "Directory where HuggingFace model snapshots are cached. Empty = "
+        "standard HF cache dir (~/.cache/huggingface).",
+    "LOCAL_FILES_ONLY":
+        "If true, never hit the network — only resolve from local cache. "
+        "Default false. Use for air-gapped deploys.",
+    "USE_AUTH_TOKEN":
+        "HuggingFace auth token for gated/private repos. Account-scoped.",
+    "CPU_THREADS":
+        "CPU threads for inference. 0 = library default (typically 4). "
+        "Non-zero overrides OMP_NUM_THREADS for the worker pool.",
+    "NUM_WORKERS":
+        "Replicates the model so concurrent transcribe() calls run in true "
+        "parallel. Default 1. Costs ~Nx VRAM for activation buffers.",
+    "DEVICE_INDEX":
+        "GPU index to bind to. Default 0. Set per-model on multi-GPU boxes "
+        "to pin a model to a specific card.",
 
     # --- Pipeline ---
     "PIPELINE_RULES":
@@ -173,6 +301,18 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "row is a regex or named-callback rule; drag to reorder, edit, "
         "disable, or add custom rules. Reset to defaults if anything breaks. "
         "The final 'trim edges' row always runs last.",
+    "PIPELINE_RULES_EXCLUDE":
+        "(Per-model only) List of pipeline rule slugs to skip when this "
+        "model is serving the request. Use to drop e.g. 'dictation-map' "
+        "for German fine-tunes that already emit punctuation symbols.",
+    "MODEL_OVERRIDES":
+        "Per-model override bundle. Maps model id → override dict. Each "
+        "override may set any of the per-model-overrideable fields; "
+        "absent fields inherit the global default. Edited via the per-"
+        "model pane of the admin UI.",
+    "REVISION":
+        "(Per-model only) HuggingFace git revision (branch, tag, commit) "
+        "to pin the model snapshot to. Empty = HEAD of default branch.",
 
     # --- Logging ---
     "TRACE_ENABLED":
@@ -209,6 +349,11 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "STATS_ALLOWED_HOSTS":
         "IP/CIDR allowlist for /stats endpoints. Loopback always allowed; "
         "default is loopback only.",
+    "ADMIN_TOKEN":
+        "Bearer token required on every /config request from non-loopback "
+        "clients. Loopback always bypasses. After rotate, the previous "
+        "token stays valid for 60 s as a grace window so the editing admin "
+        "isn't immediately locked out. Empty / unset = loopback-only access.",
 }
 
 
@@ -313,6 +458,82 @@ PipelineRule = Annotated[
 ]
 
 
+# =============================================================================
+# Per-model overrides
+# =============================================================================
+# A ModelOverride bundle lives at MODEL_OVERRIDES[model_id]. Every field is
+# Optional — absent means "inherit the global default". The runtime helper
+# main.cfg_for(model_id, field) walks: per-model override > global > faster-
+# whisper default. Same precedence as everywhere else, just with one more
+# layer interposed.
+#
+# Validation: models may only carry override values that pass the same
+# constraints as the corresponding global field. Pipeline rule scoping uses
+# PIPELINE_RULES_EXCLUDE: a flat list of rule slugs to skip for this model.
+# Rule bodies are NEVER per-model — they stay in the single global PIPELINE_RULES
+# list, edited in the global pipeline editor. The per-model pane only toggles
+# inclusion via a checklist.
+
+class ModelOverride(BaseModel):
+    """Per-model override bundle. All fields optional; absent = inherit global."""
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+
+    # --- Load-time (eviction-on-edit) ---
+    MODEL_DEVICE: DeviceLit | None = None
+    MODEL_COMPUTE_TYPE: ComputeLit | None = None
+    MODEL_DEVICE_FALLBACK: DeviceLit | None = None
+    MODEL_COMPUTE_TYPE_FALLBACK: ComputeLit | None = None
+    REVISION: Annotated[str, Field(min_length=1, max_length=128)] | None = None
+    NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = None
+    DEVICE_INDEX: Annotated[int, Field(ge=0, le=15)] | None = None
+
+    # --- Decode params (call-time) ---
+    DEFAULT_LANGUAGE: Annotated[str, Field(pattern=r"^[a-z]{2}$")] | None = None
+    DEFAULT_PROMPT: Annotated[str, Field(max_length=2048)] | None = None
+    DEFAULT_HOTWORDS: Annotated[str, Field(max_length=2048)] | None = None
+    BEAM_SIZE: Annotated[int, Field(ge=1, le=20)] | None = None
+    BEST_OF: Annotated[int, Field(ge=1, le=20)] | None = None
+    CONDITION_ON_PREVIOUS_TEXT: bool | None = None
+    WORD_TIMESTAMPS_ENABLED: bool | None = None
+    NO_SPEECH_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    LOG_PROB_THRESHOLD: Annotated[float, Field(ge=-10.0, le=0.0)] | None = None
+    COMPRESSION_RATIO_THRESHOLD: Annotated[float, Field(ge=0.0, le=10.0)] | None = None
+    TEMPERATURE: Annotated[str, Field(max_length=64)] | None = None
+    PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
+    LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = None
+    REPETITION_PENALTY: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
+    NO_REPEAT_NGRAM_SIZE: Annotated[int, Field(ge=0, le=10)] | None = None
+    PROMPT_RESET_ON_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+
+    # --- VAD ---
+    VAD_FILTER: bool | None = None
+    VAD_MIN_SILENCE_MS: Annotated[int, Field(ge=0, le=10000)] | None = None
+    VAD_SPEECH_PAD_MS: Annotated[int, Field(ge=0, le=2000)] | None = None
+    VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+
+    # --- Language detection ---
+    MULTILINGUAL: bool | None = None
+    LANGUAGE_DETECTION_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    LANGUAGE_DETECTION_SEGMENTS: Annotated[int, Field(ge=1, le=10)] | None = None
+
+    # --- Anti-hallucination & token control ---
+    HALLUCINATION_SILENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=60.0)] | None = None
+    SUPPRESS_BLANK: bool | None = None
+    SUPPRESS_TOKENS: Annotated[str, Field(max_length=256)] | None = None
+    PREPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = None
+    APPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = None
+
+    # --- Output wrappers ---
+    OUTPUT_PREFIX: Annotated[str, Field(max_length=512)] | None = None
+    OUTPUT_SUFFIX: Annotated[str, Field(max_length=512)] | None = None
+
+    # --- Pipeline scoping (PM-only) ---
+    PIPELINE_RULES_EXCLUDE: Annotated[
+        list[RuleSlug],
+        Field(max_length=200),
+    ] | None = None
+
+
 class AdminConfig(BaseModel):
     """Pydantic schema for config.local.json. Every field is Optional; absent
     means "do not override". Bounds and patterns enforce resource caps and
@@ -352,6 +573,42 @@ class AdminConfig(BaseModel):
     LOG_PROB_THRESHOLD: Annotated[float, Field(ge=-10.0, le=0.0)] | None = _F("LOG_PROB_THRESHOLD")
     COMPRESSION_RATIO_THRESHOLD: Annotated[float, Field(ge=0.0, le=10.0)] | None = _F("COMPRESSION_RATIO_THRESHOLD")
 
+    # --- Decode params (advanced) ---
+    DEFAULT_HOTWORDS: Annotated[str, Field(max_length=2048)] | None = _F("DEFAULT_HOTWORDS")
+    TEMPERATURE: Annotated[str, Field(max_length=64)] | None = _F("TEMPERATURE")
+    PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = _F("PATIENCE")
+    LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = _F("LENGTH_PENALTY")
+    REPETITION_PENALTY: Annotated[float, Field(ge=0.5, le=5.0)] | None = _F("REPETITION_PENALTY")
+    NO_REPEAT_NGRAM_SIZE: Annotated[int, Field(ge=0, le=10)] | None = _F("NO_REPEAT_NGRAM_SIZE")
+    PROMPT_RESET_ON_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("PROMPT_RESET_ON_TEMPERATURE")
+
+    # --- Language detection (active when DEFAULT_LANGUAGE is empty) ---
+    MULTILINGUAL: bool | None = _F("MULTILINGUAL")
+    LANGUAGE_DETECTION_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("LANGUAGE_DETECTION_THRESHOLD")
+    LANGUAGE_DETECTION_SEGMENTS: Annotated[int, Field(ge=1, le=10)] | None = _F("LANGUAGE_DETECTION_SEGMENTS")
+
+    # --- Anti-hallucination & token control ---
+    HALLUCINATION_SILENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=60.0)] | None = _F("HALLUCINATION_SILENCE_THRESHOLD")
+    SUPPRESS_BLANK: bool | None = _F("SUPPRESS_BLANK")
+    SUPPRESS_TOKENS: Annotated[str, Field(max_length=256)] | None = _F("SUPPRESS_TOKENS")
+    PREPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = _F("PREPEND_PUNCTUATIONS")
+    APPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = _F("APPEND_PUNCTUATIONS")
+
+    # --- Output wrappers (NOT a faster-whisper param; backend-level) ---
+    OUTPUT_PREFIX: Annotated[str, Field(max_length=512)] | None = _F("OUTPUT_PREFIX")
+    OUTPUT_SUFFIX: Annotated[str, Field(max_length=512)] | None = _F("OUTPUT_SUFFIX")
+
+    # --- Load-time, hardware (advanced) ---
+    DOWNLOAD_ROOT: Annotated[str, Field(max_length=512)] | None = _F("DOWNLOAD_ROOT")
+    LOCAL_FILES_ONLY: bool | None = _F("LOCAL_FILES_ONLY")
+    USE_AUTH_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("USE_AUTH_TOKEN")
+    CPU_THREADS: Annotated[int, Field(ge=0, le=128)] | None = _F("CPU_THREADS")
+    NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F("NUM_WORKERS")
+    DEVICE_INDEX: Annotated[int, Field(ge=0, le=15)] | None = _F("DEVICE_INDEX")
+
+    # --- Per-model overrides ---
+    MODEL_OVERRIDES: dict[ModelId, ModelOverride] | None = _F("MODEL_OVERRIDES")
+
     # --- Pipeline ---
     PIPELINE_RULES: Annotated[list[PipelineRule], Field(max_length=200)] | None = _F("PIPELINE_RULES")
     TRACE_ENABLED: bool | None = _F("TRACE_ENABLED")
@@ -378,6 +635,10 @@ class AdminConfig(BaseModel):
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
     ] | None = _F("STATS_ALLOWED_HOSTS")
+    # ADMIN_TOKEN is editable from the UI behind a rotate-with-grace flow
+    # (see admin_routes.py post_state). Loopback bypass + 60 s dual-token
+    # window prevent lockout. Empty string = clear (disable token auth).
+    ADMIN_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("ADMIN_TOKEN")
 
     @field_validator("LOG_FILE")
     @classmethod
@@ -484,6 +745,92 @@ class AdminConfig(BaseModel):
                 f"terminal rule must be the last entry "
                 f"(found at index {terminal_idx}, list has {len(v)} rules)"
             )
+        return v
+
+    @model_validator(mode="after")
+    def _no_orphan_overrides(self) -> "AdminConfig":
+        """Refuse to save if ALLOWED_MODELS is being shrunk in a way that
+        orphans entries in MODEL_OVERRIDES. Admin must clean up overrides
+        first (or keep the model in the allowlist). Never silent data loss.
+
+        Only fires when both ALLOWED_MODELS *and* MODEL_OVERRIDES are
+        present in the same payload. If only one is being saved, the cross-
+        check is skipped — the merged-with-existing payload that
+        save_overrides() builds will catch the conflict instead.
+        """
+        if self.ALLOWED_MODELS is None or self.MODEL_OVERRIDES is None:
+            return self
+        allowed = set(self.ALLOWED_MODELS)
+        if not allowed:
+            # Empty allowlist = "anything goes" per config.py convention;
+            # we don't need to enforce overrides being a subset.
+            return self
+        orphans = sorted(set(self.MODEL_OVERRIDES.keys()) - allowed)
+        if orphans:
+            raise ValueError(
+                f"MODEL_OVERRIDES references models not in ALLOWED_MODELS: "
+                f"{orphans}. Remove the override(s) first or add them back "
+                f"to the allowlist."
+            )
+        return self
+
+    @field_validator("MODEL_OVERRIDES")
+    @classmethod
+    def _validate_overrides_keys(
+        cls, v: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Reject empty keys / null values; the per-key ModelId pattern is
+        already enforced by the dict-key Annotated type. Empty override
+        bundles (no fields set) are allowed — they're ignored at runtime."""
+        if v is None:
+            return v
+        for k in v:
+            if not k or not k.strip():
+                raise ValueError("MODEL_OVERRIDES keys must be non-empty model ids")
+        return v
+
+    @field_validator("TEMPERATURE")
+    @classmethod
+    def _validate_temperature(cls, v: str | None) -> str | None:
+        """temperature is stored as a comma-separated string (e.g. '0,0.2,0.4').
+        Empty / None = library default. Validate parseable floats, ascending
+        order is NOT enforced (faster-whisper accepts any order)."""
+        if v is None or not v.strip():
+            return v
+        for token in v.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                f = float(token)
+            except ValueError:
+                raise ValueError(
+                    f"temperature must be comma-separated floats; got '{token}'"
+                )
+            if not (0.0 <= f <= 1.0):
+                raise ValueError(
+                    f"temperature values must be in [0.0, 1.0]; got {f}"
+                )
+        return v
+
+    @field_validator("SUPPRESS_TOKENS")
+    @classmethod
+    def _validate_suppress_tokens(cls, v: str | None) -> str | None:
+        """suppress_tokens is stored as a comma-separated string of ints.
+        '-1' is the library sentinel for default suppression set; '' = no
+        suppression."""
+        if v is None or not v.strip():
+            return v
+        for token in v.split(","):
+            token = token.strip()
+            if not token:
+                continue
+            try:
+                int(token)
+            except ValueError:
+                raise ValueError(
+                    f"suppress_tokens must be comma-separated ints; got '{token}'"
+                )
         return v
 
     @field_validator("ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS")

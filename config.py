@@ -441,6 +441,125 @@ COMPRESSION_RATIO_THRESHOLD: "float | None" = 2.4
 
 
 # =============================================================================
+# Whisper transcribe defaults — advanced (most users keep defaults)
+# =============================================================================
+
+# Persistent vocabulary biasing. Re-injected into the prompt of every decoder
+# window — distinct from DEFAULT_PROMPT (which fades as decoded text
+# accumulates). Useful for domain terms, drug names, person names. Ignored
+# when prefix is set per-call.
+DEFAULT_HOTWORDS: "str | None" = None
+
+# Temperature fallback ladder (comma-separated floats). The decoder retries
+# at each temperature when compression / log-prob checks fail. faster-whisper
+# default is "0.0,0.2,0.4,0.6,0.8,1.0". Empty/None = library default.
+TEMPERATURE: "str | None" = None
+
+# Beam search patience; >1 keeps the beam alive longer. Default 1.0.
+PATIENCE: float = 1.0
+
+# Beam scoring length-norm exponent. >1 favors longer outputs. Default 1.0.
+LENGTH_PENALTY: float = 1.0
+
+# Multiplies logit of already-emitted tokens by 1/penalty. >1 discourages
+# repetition loops. Default 1.0 (off). Try 1.05–1.2 for stutter audio.
+REPETITION_PENALTY: float = 1.0
+
+# Hard ban on n-grams of this size repeating. 0 = off.
+NO_REPEAT_NGRAM_SIZE: int = 0
+
+# Drop the running text prompt when temperature ladder fallback exceeds this
+# value. Default 0.5. Only relevant when CONDITION_ON_PREVIOUS_TEXT=True.
+PROMPT_RESET_ON_TEMPERATURE: float = 0.5
+
+
+# =============================================================================
+# Language detection (active when DEFAULT_LANGUAGE is empty)
+# =============================================================================
+
+# Re-detect language on every segment instead of only the first.
+MULTILINGUAL: bool = False
+
+# Min probability for the top language token to be accepted.
+LANGUAGE_DETECTION_THRESHOLD: float = 0.5
+
+# How many leading 30 s chunks to sample for language detection.
+LANGUAGE_DETECTION_SEGMENTS: int = 1
+
+
+# =============================================================================
+# Anti-hallucination & token control
+# =============================================================================
+
+# With WORD_TIMESTAMPS_ENABLED, skip silent stretches longer than this many
+# seconds when a possible hallucination is suspected. None = disabled.
+HALLUCINATION_SILENCE_THRESHOLD: "float | None" = None
+
+# Suppress blank token at start of decoder sampling. Default True. Almost
+# never disable; only useful when debugging tokenizer behavior.
+SUPPRESS_BLANK: bool = True
+
+# Comma-separated token IDs to ban from output. "-1" = expand to model's
+# default non-speech set; "" = no suppression.
+SUPPRESS_TOKENS: "str | None" = "-1"
+
+# With WORD_TIMESTAMPS_ENABLED, glue these characters onto the FOLLOWING /
+# PRECEDING word's timing. Locale-specific.
+PREPEND_PUNCTUATIONS: str = "\"'“¿([{-"
+APPEND_PUNCTUATIONS: str = "\"'.。,，!！?？:：”)]}、"
+
+
+# =============================================================================
+# Output wrappers — backend-level, NOT a faster-whisper param
+# =============================================================================
+# Plain strings prepended/appended to the final transcript text after the
+# post-processing pipeline runs (before the final whitespace trim). Use to
+# tag transcripts with model-specific banners, e.g.:
+#   OUTPUT_PREFIX = "[de] "
+#   OUTPUT_SUFFIX = " (errors possible)"
+# Per-model overrides via MODEL_OVERRIDES win.
+OUTPUT_PREFIX: str = ""
+OUTPUT_SUFFIX: str = ""
+
+
+# =============================================================================
+# Load-time, hardware (advanced)
+# =============================================================================
+
+# Directory where HuggingFace model snapshots are cached. None = standard
+# HF cache dir (~/.cache/huggingface).
+DOWNLOAD_ROOT: "str | None" = None
+
+# If True, never hit the network — only resolve from local cache.
+LOCAL_FILES_ONLY: bool = False
+
+# HuggingFace auth token for gated/private repos. None = no token.
+USE_AUTH_TOKEN: "str | None" = None
+
+# CPU threads for inference. 0 = library default (typically 4).
+CPU_THREADS: int = 0
+
+# Replicates the model so concurrent transcribe() calls run in true parallel.
+# Costs ~Nx VRAM for activation buffers (weights are shared).
+NUM_WORKERS: int = 1
+
+# GPU index to bind to. 0 = first CUDA device.
+DEVICE_INDEX: int = 0
+
+
+# =============================================================================
+# Per-model overrides (MODEL_OVERRIDES)
+# =============================================================================
+# Map of model_id -> dict of override fields. Each override may set any
+# per-model-overrideable field; absent fields inherit the global default.
+# Edited via the per-model pane of the admin UI; persisted in
+# config.local.json. Env-var convention to pin per-model fields:
+#   WHISPER_MODEL_OVERRIDE__<encoded_id>__<FIELD>
+# where <encoded_id> URL-encodes "/" as "__SLASH__" and "." as "__DOT__".
+MODEL_OVERRIDES: "dict[str, dict[str, object]]" = {}
+
+
+# =============================================================================
 # Admin WebUI (optional /config browser editor)
 # =============================================================================
 # Both off by default. The /config endpoints are only registered when
@@ -539,3 +658,224 @@ if _env_admin_hosts is not None and _env_admin_hosts.strip():
 _env_stats_hosts = os.environ.get("WHISPER_STATS_ALLOWED_HOSTS")
 if _env_stats_hosts is not None and _env_stats_hosts.strip():
     STATS_ALLOWED_HOSTS = [s.strip() for s in _env_stats_hosts.split(",") if s.strip()]
+
+
+# --- Advanced decode params -------------------------------------------------
+
+_env_hotwords = os.environ.get("WHISPER_DEFAULT_HOTWORDS")
+if _env_hotwords is not None:
+    DEFAULT_HOTWORDS = _env_hotwords or None
+
+_env_temperature = os.environ.get("WHISPER_TEMPERATURE")
+if _env_temperature is not None:
+    TEMPERATURE = _env_temperature or None
+
+_env_patience = os.environ.get("WHISPER_PATIENCE")
+if _env_patience is not None:
+    try:
+        PATIENCE = float(_env_patience)
+    except ValueError:
+        pass
+
+_env_length_penalty = os.environ.get("WHISPER_LENGTH_PENALTY")
+if _env_length_penalty is not None:
+    try:
+        LENGTH_PENALTY = float(_env_length_penalty)
+    except ValueError:
+        pass
+
+_env_repetition_penalty = os.environ.get("WHISPER_REPETITION_PENALTY")
+if _env_repetition_penalty is not None:
+    try:
+        REPETITION_PENALTY = float(_env_repetition_penalty)
+    except ValueError:
+        pass
+
+_env_no_repeat_ngram = os.environ.get("WHISPER_NO_REPEAT_NGRAM_SIZE")
+if _env_no_repeat_ngram is not None:
+    try:
+        NO_REPEAT_NGRAM_SIZE = int(_env_no_repeat_ngram)
+    except ValueError:
+        pass
+
+_env_prompt_reset_t = os.environ.get("WHISPER_PROMPT_RESET_ON_TEMPERATURE")
+if _env_prompt_reset_t is not None:
+    try:
+        PROMPT_RESET_ON_TEMPERATURE = float(_env_prompt_reset_t)
+    except ValueError:
+        pass
+
+
+# --- Language detection -----------------------------------------------------
+
+_env_multilingual = os.environ.get("WHISPER_MULTILINGUAL")
+if _env_multilingual is not None:
+    MULTILINGUAL = _env_multilingual == "1"
+
+_env_lang_thresh = os.environ.get("WHISPER_LANGUAGE_DETECTION_THRESHOLD")
+if _env_lang_thresh is not None:
+    try:
+        LANGUAGE_DETECTION_THRESHOLD = float(_env_lang_thresh)
+    except ValueError:
+        pass
+
+_env_lang_segments = os.environ.get("WHISPER_LANGUAGE_DETECTION_SEGMENTS")
+if _env_lang_segments is not None:
+    try:
+        LANGUAGE_DETECTION_SEGMENTS = int(_env_lang_segments)
+    except ValueError:
+        pass
+
+
+# --- Anti-hallucination & token control -------------------------------------
+
+_env_hallu_silence = os.environ.get("WHISPER_HALLUCINATION_SILENCE_THRESHOLD")
+if _env_hallu_silence is not None and _env_hallu_silence.strip():
+    try:
+        HALLUCINATION_SILENCE_THRESHOLD = float(_env_hallu_silence)
+    except ValueError:
+        pass
+
+_env_supp_blank = os.environ.get("WHISPER_SUPPRESS_BLANK")
+if _env_supp_blank is not None:
+    SUPPRESS_BLANK = _env_supp_blank == "1"
+
+_env_supp_tokens = os.environ.get("WHISPER_SUPPRESS_TOKENS")
+if _env_supp_tokens is not None:
+    SUPPRESS_TOKENS = _env_supp_tokens or None
+
+_env_prepend_punct = os.environ.get("WHISPER_PREPEND_PUNCTUATIONS")
+if _env_prepend_punct is not None:
+    PREPEND_PUNCTUATIONS = _env_prepend_punct
+
+_env_append_punct = os.environ.get("WHISPER_APPEND_PUNCTUATIONS")
+if _env_append_punct is not None:
+    APPEND_PUNCTUATIONS = _env_append_punct
+
+
+# --- Output wrappers --------------------------------------------------------
+
+_env_out_prefix = os.environ.get("WHISPER_OUTPUT_PREFIX")
+if _env_out_prefix is not None:
+    OUTPUT_PREFIX = _env_out_prefix
+
+_env_out_suffix = os.environ.get("WHISPER_OUTPUT_SUFFIX")
+if _env_out_suffix is not None:
+    OUTPUT_SUFFIX = _env_out_suffix
+
+
+# --- Load-time, hardware ----------------------------------------------------
+
+_env_download_root = os.environ.get("WHISPER_DOWNLOAD_ROOT")
+if _env_download_root is not None:
+    DOWNLOAD_ROOT = _env_download_root or None
+
+_env_local_files_only = os.environ.get("WHISPER_LOCAL_FILES_ONLY")
+if _env_local_files_only is not None:
+    LOCAL_FILES_ONLY = _env_local_files_only == "1"
+
+_env_use_auth_token = os.environ.get("WHISPER_USE_AUTH_TOKEN")
+if _env_use_auth_token is not None:
+    USE_AUTH_TOKEN = _env_use_auth_token or None
+
+_env_cpu_threads = os.environ.get("WHISPER_CPU_THREADS")
+if _env_cpu_threads is not None:
+    try:
+        CPU_THREADS = int(_env_cpu_threads)
+    except ValueError:
+        pass
+
+_env_num_workers = os.environ.get("WHISPER_NUM_WORKERS")
+if _env_num_workers is not None:
+    try:
+        NUM_WORKERS = int(_env_num_workers)
+    except ValueError:
+        pass
+
+_env_device_index = os.environ.get("WHISPER_DEVICE_INDEX")
+if _env_device_index is not None:
+    try:
+        DEVICE_INDEX = int(_env_device_index)
+    except ValueError:
+        pass
+
+
+# --- Per-model overrides via env (WHISPER_MODEL_OVERRIDE__<id>__<FIELD>) ----
+# Convention: model id is encoded by replacing "/" with "__SLASH__" and "." with
+# "__DOT__" so HF-style ids round-trip cleanly through env var names. Field
+# names are UPPER_CASE matching the AdminConfig field. Values are parsed in
+# the same way as their global counterparts (int, float, bool, string).
+def _decode_model_id(s: str) -> str:
+    return s.replace("__SLASH__", "/").replace("__DOT__", ".")
+
+
+def _coerce_override_value(field: str, raw: str) -> object:
+    """Coerce a raw env-var string to the right type for a ModelOverride field.
+    Falls back to the raw string for fields we can't easily classify (the
+    pydantic validator will catch type mismatches at save-merge time)."""
+    bool_fields = {
+        "CONDITION_ON_PREVIOUS_TEXT", "WORD_TIMESTAMPS_ENABLED",
+        "VAD_FILTER", "MULTILINGUAL", "SUPPRESS_BLANK", "LOCAL_FILES_ONLY",
+    }
+    int_fields = {
+        "BEAM_SIZE", "BEST_OF", "VAD_MIN_SILENCE_MS", "VAD_SPEECH_PAD_MS",
+        "NO_REPEAT_NGRAM_SIZE", "LANGUAGE_DETECTION_SEGMENTS",
+        "NUM_WORKERS", "DEVICE_INDEX", "CPU_THREADS",
+    }
+    float_fields = {
+        "VAD_THRESHOLD", "NO_SPEECH_THRESHOLD", "LOG_PROB_THRESHOLD",
+        "COMPRESSION_RATIO_THRESHOLD", "PATIENCE", "LENGTH_PENALTY",
+        "REPETITION_PENALTY", "PROMPT_RESET_ON_TEMPERATURE",
+        "LANGUAGE_DETECTION_THRESHOLD", "HALLUCINATION_SILENCE_THRESHOLD",
+    }
+    list_fields = {"PIPELINE_RULES_EXCLUDE"}
+    if field in bool_fields:
+        return raw == "1"
+    if field in int_fields:
+        try:
+            return int(raw)
+        except ValueError:
+            return raw
+    if field in float_fields:
+        try:
+            return float(raw)
+        except ValueError:
+            return raw
+    if field in list_fields:
+        return [s.strip() for s in raw.split(",") if s.strip()]
+    return raw
+
+
+_OVERRIDE_PREFIX = "WHISPER_MODEL_OVERRIDE__"
+for _k, _v in os.environ.items():
+    if not _k.startswith(_OVERRIDE_PREFIX):
+        continue
+    _rest = _k[len(_OVERRIDE_PREFIX):]
+    # Split on the LAST "__<UPPER>" occurrence. We can't just split on "__"
+    # because the encoded id contains "__SLASH__" and "__DOT__".
+    # Strategy: find the last "__" that isn't part of __SLASH__/__DOT__ by
+    # walking from the right.
+    _idx = -1
+    _i = len(_rest) - 1
+    while _i >= 0:
+        # find a "__" boundary
+        _pos = _rest.rfind("__", 0, _i + 1)
+        if _pos < 0:
+            break
+        # is it the boundary BEFORE __SLASH__ / __DOT__ / __FIELD__?
+        # We're scanning right-to-left looking for the boundary that
+        # separates the encoded id from the field name. Skip if the segment
+        # to the right starts with one of our encoded markers.
+        _tail = _rest[_pos + 2:]
+        if _tail.startswith("SLASH__") or _tail.startswith("DOT__"):
+            _i = _pos - 1
+            continue
+        _idx = _pos
+        break
+    if _idx <= 0:
+        continue
+    _enc_id = _rest[:_idx]
+    _field = _rest[_idx + 2:]
+    _model_id = _decode_model_id(_enc_id)
+    _entry = MODEL_OVERRIDES.setdefault(_model_id, {})
+    _entry[_field] = _coerce_override_value(_field, _v)
