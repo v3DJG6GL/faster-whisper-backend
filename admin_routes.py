@@ -3734,4 +3734,5 @@ document.addEventListener('DOMContentLoaded', async () => {
 })();
 </script>
 {{SCALE_PICKER_JS}}
+{{SEV_POLLER_JS}}
 </body></html>"""

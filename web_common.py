@@ -235,6 +235,45 @@ SCALE_PICKER_JS = """
 """
 
 
+# Severity pill poller — placed at the end of <body> on every page that shows
+# the nav. Polls /sev every 5 s and writes the counts into the three pills.
+# Server-side severity_counts() is the authoritative source (true 60 s window
+# from real log-record timestamps). Pages with their own faster updates
+# (e.g. /stats SSE, /logs per-line bumps) overwrite the same pills more
+# often — the poller is a backstop that keeps every page consistent.
+#
+# Skips the work if no pills exist on the page (e.g. tests, future pages).
+SEV_POLLER_JS = """
+<script>(function(){
+  if(!document.getElementById('sev-warn'))return;
+  function setPill(id, n){
+    var el=document.getElementById(id); if(!el)return;
+    var numEl=el.querySelector('.n'); if(!numEl)return;
+    var prev=+numEl.textContent || 0;
+    numEl.textContent=n;
+    el.classList.toggle('hot',  n > 0);
+    el.classList.toggle('zero', n === 0);
+    if(n > prev){
+      el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+    }
+  }
+  function tick(){
+    fetch('/sev', {cache:'no-store'})
+      .then(function(r){ return r.ok ? r.json() : null; })
+      .then(function(j){
+        if(!j) return;
+        setPill('sev-warn', j.warn|0);
+        setPill('sev-err',  j.err |0);
+        setPill('sev-crit', j.crit|0);
+      })
+      .catch(function(){});
+  }
+  tick();
+  setInterval(tick, 5000);
+})();</script>
+"""
+
+
 def _nav_items(current: str) -> list[tuple[str, str, bool]]:
     """Return [(label, href, active), ...] honoring cfg.ADMIN_UI_ENABLED."""
     items: list[tuple[str, str, bool]] = [
@@ -281,6 +320,7 @@ def render_page(template: str, current: str) -> str:
       - {{NAV_CSS}}              → shared header/scale-token CSS
       - {{SCALE_PICKER}}         → scale dropdown (header)
       - {{SCALE_PICKER_JS}}      → wire-up script (end of body)
+      - {{SEV_POLLER_JS}}        → 5-s pill re-sync (end of body)
       - {{SCALE_BOOTSTRAP_HEAD}} → tiny pre-paint script (top of <head>)
 
     Pages that don't include a given placeholder are returned unchanged."""
@@ -290,5 +330,6 @@ def render_page(template: str, current: str) -> str:
         .replace("{{NAV_CSS}}", NAV_CSS)
         .replace("{{SCALE_PICKER}}", SCALE_PICKER_HTML)
         .replace("{{SCALE_PICKER_JS}}", SCALE_PICKER_JS)
+        .replace("{{SEV_POLLER_JS}}", SEV_POLLER_JS)
         .replace("{{SCALE_BOOTSTRAP_HEAD}}", SCALE_BOOTSTRAP_HEAD)
     )

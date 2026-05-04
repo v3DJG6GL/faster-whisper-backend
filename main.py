@@ -1178,7 +1178,11 @@ async def transcribe(
             ))
 
             _audio_dur = float(info.duration)
-            _words = len(all_words)
+            # Word count from the final post-processed text — matches what the
+            # client actually receives. Counting len(all_words) instead would
+            # yield 0 whenever WORD_TIMESTAMPS_ENABLED is off or the request
+            # didn't ask for word-level granularity (the common case).
+            _words = len(full_text_str.split())
 
             if response_format == "text":
                 return full_text_str
@@ -1284,6 +1288,13 @@ async def _stream_log_lines():
     """Yield SSE events: one for each existing tail line, then live tail."""
     for line in _read_tail(cfg.LOG_FILE, _LOG_VIEWER_INITIAL_LINES):
         yield f"data: {line}\n\n"
+
+    # Sentinel — the client's `bumpSev` previously stamped backlog WARNINGs/
+    # ERRORs at Date.now() and kept them "fresh" for 60 s, inflating the nav
+    # pills relative to the server-side severity_counts() (which uses the
+    # records' real timestamps). The client flips into "live" mode on this
+    # marker and ignores classifications until then.
+    yield "data: __LIVE_TAIL__\n\n"
 
     # Live tail: open at end-of-file, poll for new lines. Reopen on rotation
     # (when the file shrinks below our last position).
@@ -1450,7 +1461,13 @@ _LOG_VIEWER_HTML = """<!doctype html>
       el.classList.remove('hidden');
     }
   }
+  // The server emits `__LIVE_TAIL__` between the initial 500-line backlog
+  // and the live poll loop. We render the backlog but skip it for severity
+  // accounting — pill counts are driven by the shared SEV_POLLER_JS hitting
+  // /sev every 5 s (server-side severity_counts() is the source of truth).
+  let liveTail = false;
   function append(line) {
+    if (line === '__LIVE_TAIL__') { liveTail = true; return; }
     const el = document.createElement('span');
     const cls = classify(line);
     el.className = 'line ' + cls;
@@ -1459,47 +1476,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
     log.appendChild(el);
     while (log.childElementCount > 5000) log.firstChild.remove();
     if (!paused) window.scrollTo(0, document.body.scrollHeight);
-    // Bump the nav severity pills based on the line's classification.
-    if (cls === 'warning') bumpSev('warn');
-    else if (cls === 'error') bumpSev(/CRITICAL/.test(line) ? 'crit' : 'err');
   }
-
-  // --- Live severity pills ------------------------------------------------
-  // Server-rendered initial values are "best effort at page load"; the client
-  // takes over from here. Maintains a sliding 60-s ring that mirrors the
-  // server's severity_counts() window.
-  const sevWindow = [];   // [{t, kind}]
-  function setPill(id, n) {
-    const el = document.getElementById(id); if (!el) return;
-    const numEl = el.querySelector('.n');
-    const prev = +numEl.textContent;
-    numEl.textContent = n;
-    el.classList.toggle('hot', n > 0);
-    el.classList.toggle('zero', n === 0);
-    if (n > prev) {
-      // Restart the flash animation by toggling the class.
-      el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
-    }
-  }
-  function bumpSev(kind) {
-    const now = Date.now();
-    if (kind) sevWindow.push({ t: now, kind });
-    const cutoff = now - 60_000;
-    while (sevWindow.length && sevWindow[0].t < cutoff) sevWindow.shift();
-    let warn = 0, err = 0, crit = 0;
-    for (const e of sevWindow) {
-      if (e.kind === 'crit') crit++;
-      else if (e.kind === 'err') err++;
-      else if (e.kind === 'warn') warn++;
-    }
-    setPill('sev-warn', warn);
-    setPill('sev-err',  err);
-    setPill('sev-crit', crit);
-  }
-  // Reset to 0 on first render (server-baked counts may already be stale).
-  bumpSev(null);
-  // Tick every 5 s to expire entries that fall out of the 60-s window.
-  setInterval(() => bumpSev(null), 5000);
 
   filterEl.addEventListener('input', () => {
     filterText = filterEl.value.toLowerCase();
@@ -1557,6 +1534,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
   })();
 </script>
 {{SCALE_PICKER_JS}}
+{{SEV_POLLER_JS}}
 </body></html>"""
 
 
@@ -1572,6 +1550,19 @@ async def logs_viewer():
 @app.get("/logs/stream")
 async def logs_stream():
     return StreamingResponse(_stream_log_lines(), media_type="text/event-stream")
+
+
+@app.get("/sev")
+async def severity_snapshot():
+    """Tiny JSON endpoint polled by every page's nav-row pill poller.
+
+    Returns the same `severity_counts()` 60-s window the server uses
+    everywhere else (nav HTML render, /stats payload). Wide-open like /logs
+    — three integers, no PII. The poller in web_common.SEV_POLLER_JS hits
+    this every 5 s on /logs, /stats, and /config so all three pages stay
+    synced to the server-side truth."""
+    import web_common
+    return web_common.severity_counts()
 
 
 # =============================================================================

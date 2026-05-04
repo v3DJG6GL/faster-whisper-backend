@@ -816,4 +816,5 @@ fetch('/stats/snapshot', { cache: 'no-store' })
 })();
 </script>
 {{SCALE_PICKER_JS}}
+{{SEV_POLLER_JS}}
 </body></html>"""
