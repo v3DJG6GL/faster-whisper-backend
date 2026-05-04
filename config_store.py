@@ -385,7 +385,7 @@ ModelId = Annotated[str, Field(min_length=1, max_length=96, pattern=_MODEL_ID_PA
 # pattern here is for hygiene (catching typos) rather than injection defense.
 _DICTATION_KEY_PATTERN = r"^[\w \-.,!?ßẞÄÖÜäöü]{1,64}$"
 DictKey = Annotated[str, Field(min_length=1, max_length=64, pattern=_DICTATION_KEY_PATTERN)]
-DictVal = Annotated[str, Field(max_length=8)]
+DictVal = Annotated[str, Field(max_length=64)]
 
 LogLevel = Literal["debug", "info", "warning", "error", "critical"]
 DeviceLit = Literal["cuda", "cpu"]
@@ -436,7 +436,7 @@ class MapRule(_RuleBase):
     map: dict[
         Annotated[str, Field(min_length=1, max_length=64,
                              pattern=r"^[\w \-.,!?ßẞÄÖÜäöü]{1,64}$")],
-        Annotated[str, Field(max_length=8)],
+        Annotated[str, Field(max_length=64)],
     ] = Field(default_factory=dict, max_length=500)
 
 
