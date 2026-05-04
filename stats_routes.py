@@ -92,6 +92,7 @@ async def stats_stream() -> StreamingResponse:
 
 _STATS_VIEWER_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>faster-whisper-backend · stats</title>
 {{SCALE_BOOTSTRAP_HEAD}}
 <link rel="stylesheet" href="/static/uplot.min.css">
@@ -105,10 +106,15 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     --red: #ff7b72; --magenta: #d2a8ff; --bold: #f0f6fc;
     --border: #30363d;
   }
-  /* Font tokens + html font-size + color-scheme live in {{NAV_CSS}}. */
+  /* Font tokens, --font-sans, --font-mono and html font-size live in
+     {{NAV_CSS}}. Chrome (titles, buttons, badges, card headers) uses
+     --font-sans; uPlot's axis labels and the spark-head numeric readouts
+     stay in --font-mono so digits align (font-variant-numeric: tabular-nums
+     hint relies on the mono stack for crisp tabular alignment). */
   html, body { background: var(--bg); color: var(--fg);
-    font: 1rem/1.5 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    font: 1rem/1.5 var(--font-sans);
     margin: 0; padding: 0; min-height: 100%; }
+  input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
   header { position: sticky; top: 0; background: var(--panel); border-bottom: 1px solid var(--border);
     z-index: 10; padding: 0; }
   header > .header-inner { display: flex; gap: 0.75rem; align-items: center;
@@ -143,7 +149,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .bar.crit > i { background: var(--red); }
   .spark-wrap  { margin-top: 0.625rem; min-width: 0; }
   .spark-head  { display: flex; justify-content: space-between; align-items: baseline;
-                 font: var(--fs-xs) ui-monospace, "Cascadia Code", Menlo, monospace;
+                 font: var(--fs-xs) var(--font-mono);
                  color: var(--dim); margin-bottom: 2px; }
   .spark-label { letter-spacing: .03em; text-transform: uppercase; }
   .spark-now   { color: var(--bold); font-weight: 600;
@@ -443,6 +449,21 @@ function pushHistory(snap) {
 //   - `unit` suffix on those ticks.
 //   - auto-padding (10% top/bottom) when no fixed range — keeps unbounded
 //     metrics like temperature / latency from pinning to the bottom.
+//
+// uPlot's canvas rendering needs px (not rem). These helpers read the
+// current --fs-base via getComputedStyle so axis sizing tracks the scale
+// picker. `--fs-base` is set by SCALE_BOOTSTRAP_HEAD BEFORE this script
+// runs, so on first load the axes match the saved scale. Live picker
+// changes don't refit the canvas — switching scale visibly updates HTML
+// chrome but axis labels stay at construction-time size until the next
+// page load. Acceptable trade-off vs destroying/rebuilding sparks (which
+// would blank the chart until the next SSE tick).
+function _remPx(n) {
+  const base = parseFloat(getComputedStyle(document.documentElement).fontSize) || 15;
+  return Math.round(n * base);
+}
+function _axisFontPx() { return _remPx(0.733); }   // matches --fs-xs
+const _MONO_STACK = 'Consolas, "Cascadia Code", "JetBrains Mono", Menlo, ui-monospace, monospace';
 const sparks = {};   // name -> uPlot instance
 function makeSpark(elId, color, opts={}) {
   const el = document.getElementById(elId);
@@ -451,16 +472,23 @@ function makeSpark(elId, color, opts={}) {
   const yScale = opts.range
     ? { range: opts.range }
     : { range: { min: { pad: 0.1, mode: 1 }, max: { pad: 0.1, mode: 1 } } };
+  // uPlot's canvas API needs px values, not rem. Read them from --fs-base
+  // so axis labels track the scale picker — see _axisFontPx below.
+  const axisFontPx = _axisFontPx();
   return new uPlot({
-    width: w, height: 72, padding: [4, 6, 0, 0],
+    width: w, height: 72,
+    // Left padding (was 0) plus axis size (was 28, now ~3rem) gives uPlot
+    // room to draw "100%" without GridStack's overflow-x:hidden clipping
+    // the leading "1" against the tile edge.
+    padding: [4, 6, 0, _remPx(0.25)],
     cursor: { show: false },
     legend: { show: false },
     select: { show: false },
     scales: { x: { time: false }, y: yScale },
     axes: [
       { show: false },
-      { show: true, size: 28, gap: 4,
-        font: '10px ui-monospace, Menlo, monospace',
+      { show: true, size: _remPx(2.6), gap: 4,
+        font: axisFontPx + 'px ' + _MONO_STACK,
         stroke: '#6e7681',
         grid:  { stroke: '#21262d', width: 1 },
         ticks: { stroke: '#30363d', width: 1, size: 3 },

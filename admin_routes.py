@@ -136,10 +136,30 @@ def _canon_rules(rules: Any) -> Any:
     out: list[Any] = []
     for r in rules:
         try:
-            out.append(adapter.validate_python(r).model_dump(exclude_none=True))
+            dumped = adapter.validate_python(r).model_dump(exclude_none=True)
+            out.append(_sort_dicts(dumped))
         except Exception:
             out.append(r)  # malformed — pass through; save-time validator catches it
     return out
+
+
+# `model_dump()` preserves insertion order on nested dict fields (e.g. the
+# `map` on a callback:map rule). The resolved value (after a local.json
+# overlay) and the baseline `default_value` (from cfg._BASELINE) can carry
+# different insertion orders even when contents are equal — which makes
+# JSON.stringify(value) !== JSON.stringify(default_value) and the WebUI's
+# _isRuleDirty() falsely reports dirty on first paint, AND clicking reset
+# visibly re-sorts the rows. Recursively sorting nested dict keys (applied
+# identically to value AND default_value) makes the equality check reliable.
+# Forced alphabetical is the right canonical order for `cb:map` rules: the
+# longest-first word-bounded regex is rebuilt server-side from these keys,
+# so display order has no functional meaning.
+def _sort_dicts(obj: Any) -> Any:
+    if isinstance(obj, dict):
+        return {k: _sort_dicts(obj[k]) for k in sorted(obj)}
+    if isinstance(obj, list):
+        return [_sort_dicts(x) for x in obj]
+    return obj
 
 
 def _provenance(field: str, env_pinned: dict[str, str], saved: dict[str, Any]) -> str:
@@ -502,6 +522,7 @@ async def post_restart(request: Request) -> JSONResponse:
 
 _CONFIG_VIEWER_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>faster-whisper-backend · config</title>
 {{SCALE_BOOTSTRAP_HEAD}}
 <style>
@@ -511,11 +532,15 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     --red: #ff7b72; --magenta: #d2a8ff; --bold: #f0f6fc;
     --border: #30363d; --input-bg: #0d1117;
   }
-  /* Font-size tokens + html { font-size: var(--fs-base); color-scheme: dark }
-     live in {{NAV_CSS}} so all pages share one scaling knob. */
+  /* Font-size tokens, --font-sans, --font-mono and html { font-size: var(--fs-base) }
+     live in {{NAV_CSS}} so all pages share one scaling knob.
+     Chrome (titles, labels, descriptions, buttons, badges) uses --font-sans;
+     code-y contexts (input/textarea values, log lines, regex panels, the
+     dictation-map key/value cells) opt into --font-mono via the rules below. */
   html, body { background: var(--bg); color: var(--fg);
-    font: 1rem/1.5 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    font: 1rem/1.5 var(--font-sans);
     margin: 0; padding: 0; min-height: 100%; }
+  input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
   header { position: sticky; top: 0; background: var(--panel); border-bottom: 1px solid var(--border);
     z-index: 10; padding: 0; }
   header > .header-inner { display: flex; gap: 0.75rem; align-items: center;
@@ -546,8 +571,17 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     padding: 0.625rem 0.875rem 0.75rem; margin-bottom: 0.875rem; }
   h2 { color: var(--bold); font-size: 0.933rem; margin: 0 0 0.5rem; padding-bottom: 0.375rem;
     border-bottom: 1px solid var(--border); }
-  .field { display: grid; grid-template-columns: 230px 1fr; gap: 0.625rem;
-    align-items: start; padding: 0.375rem 0; border-bottom: 1px dashed #21262d; }
+  /* Subgrid: each subgroup wraps its fields in .group-fields so all rows
+     share one column track. The label column auto-sizes to whatever the
+     longest label in THAT section needs; the value column gets the rest.
+     Sections are independent — a tight section won't widen because of a
+     wide one elsewhere. Subgrid: Chrome 117+, Firefox 71+, Safari 16+. */
+  .group-fields { display: grid;
+    grid-template-columns: minmax(min-content, max-content) 1fr;
+    column-gap: 0.625rem; }
+  .field { display: grid; grid-template-columns: subgrid;
+    grid-column: 1 / -1; gap: 0.625rem; align-items: start;
+    padding: 0.375rem 0; border-bottom: 1px dashed #21262d; }
   .field:last-child { border-bottom: none; }
   .label-col { display: flex; flex-direction: column; gap: 0.25rem; }
   .label-col .name { color: var(--bold); }
@@ -558,12 +592,18 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   .badge.restart { color: var(--yellow); border-color: #4d3e1f; }
   .badge.env { color: var(--magenta); border-color: #4a2e6f; }
   .badge.local { color: var(--cyan); border-color: #194f73; }
+  /* font-size/line-height inherit from body (=1rem/1.5); font-family
+     comes from the generic `input,textarea,select { font-family: var(--font-mono) }`
+     rule in the body block. Avoid `font: inherit` here — that's a shorthand
+     that pulls in font-family from the parent (which is now sans), defeating
+     the chrome/code split. */
   .input-col input, .input-col textarea, .input-col select {
     width: 100%; box-sizing: border-box;
     background: var(--input-bg); color: var(--fg); border: 1px solid var(--border);
-    padding: 0.3125rem 0.5rem; border-radius: 4px; font: inherit; }
+    padding: 0.3125rem 0.5rem; border-radius: 4px;
+    font-size: inherit; line-height: inherit; }
   .input-col input[type=checkbox] { width: auto; }
-  .input-col textarea { font-family: inherit; min-height: 4rem; resize: vertical; }
+  .input-col textarea { min-height: 4rem; resize: vertical; }
   /* --- Native widget overrides — bring all browser-default controls
      (checkbox, number-spinner, select, textarea, unclassed buttons)
      into the GitHub-dark palette. ----------------------------------- */
@@ -617,7 +657,11 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   main button:not([class]):hover { background: #30363d; border-color: #484f58; }
   main button:not([class]):active { background: #161b22; }
   main button:not([class]):disabled { opacity: 0.45; cursor: not-allowed; }
-  .input-col .help { color: var(--dim); font-size: var(--fs-xs); margin-top: 0.1875rem; }
+  .input-col .help { color: var(--help); font-size: var(--fs-sm); margin-top: 0.1875rem; }
+  /* Vertical checkbox list (PRELOAD_MODELS, etc.). Both gaps in rem so they
+     scale with --fs-base — fixes "compressed checklist" at higher scales. */
+  .cb-list { display: flex; flex-direction: column; gap: 0.4rem; }
+  .cb-row  { display: flex; gap: 0.5rem; align-items: center; cursor: pointer; }
   .err { color: var(--red); font-size: var(--fs-xs); margin-top: 0.1875rem; }
   /* Field row dimming when a parent toggle makes this row irrelevant.
      pointer-events stays alive so the user can still see the contents and
@@ -641,7 +685,7 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   .reset-link:hover { color: var(--bold); }
   /* Regex editor + status badge */
   .regex-wrap { display: flex; flex-direction: column; gap: 0.25rem; }
-  .regex-status { font-size: var(--fs-xs); font-family: ui-monospace, Menlo, monospace; }
+  .regex-status { font-size: var(--fs-xs); font-family: var(--font-mono); }
   .regex-status.ok { color: var(--green); }
   .regex-status.err { color: var(--red); }
   .regex-status.warn { color: var(--yellow); }
@@ -655,7 +699,7 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   .regex-test-panel textarea { resize: vertical; max-width: 100%; }
   .regex-test-out { margin-top: 0.625rem; }
   .regex-test-pass { margin: 0.375rem 0; }
-  .regex-test-head { font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-sm);
+  .regex-test-head { font-family: var(--font-mono); font-size: var(--fs-sm);
     color: var(--dim); }
   .regex-test-head .tag { display: inline-block; padding: 0 0.375rem; margin-left: 0.375rem;
     border-radius: 3px; font-size: var(--fs-xs); }
@@ -665,7 +709,7 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   .regex-test-head .tag.empty { background: #21262d; color: var(--dim); font-style: italic; }
   .regex-test-result { background: #0d1117; border: 1px solid var(--border);
     padding: 0.25rem 0.5rem; border-radius: 3px; margin: 0.25rem 0;
-    font-family: ui-monospace, Menlo, monospace; font-size: var(--fs-sm);
+    font-family: var(--font-mono); font-size: var(--fs-sm);
     white-space: pre-wrap; word-break: break-word; max-height: 7.5rem; overflow: auto; }
   .regex-test-final { margin-top: 0.625rem; padding-top: 0.625rem; border-top: 1px solid var(--border); }
   .field .dep-note { color: var(--dim); font-size: var(--fs-xs); margin-top: 0.1875rem;
@@ -749,7 +793,8 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     text-align: left; }
   table.dict th { background: #1c2129; color: var(--dim); font-weight: 500; font-size: var(--fs-xs); }
   table.dict td input { width: 100%; box-sizing: border-box; background: transparent;
-    color: var(--fg); border: none; padding: 0; font: inherit; }
+    color: var(--fg); border: none; padding: 0;
+    font-size: inherit; line-height: inherit; }
   table.dict td input:focus { outline: 1px solid var(--cyan); outline-offset: -1px; }
   table.dict button.del { background: transparent; border: 1px solid var(--border);
     color: var(--red); padding: 0.125rem 0.375rem; border-radius: 3px; cursor: pointer; font-size: var(--fs-xs); }
@@ -771,7 +816,7 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   .login p { color: var(--dim); margin: 0.375rem 0 0.75rem; }
   .login input { width: 100%; box-sizing: border-box; background: var(--input-bg);
     color: var(--fg); border: 1px solid var(--border); padding: 0.5rem;
-    border-radius: 4px; font: inherit; }
+    border-radius: 4px; font-size: inherit; line-height: inherit; }
   .login button { margin-top: 0.625rem; background: #238636; border: 1px solid #2ea043;
     color: var(--bold); padding: 0.4375rem 0.875rem; border-radius: 4px; cursor: pointer;
     font: inherit; }
@@ -1170,15 +1215,10 @@ function modelMultiSelectEditor(name, v) {
     }
 
     const list = document.createElement('div');
-    list.style.display = 'flex';
-    list.style.flexDirection = 'column';
-    list.style.gap = '4px';
+    list.className = 'cb-list';
     for (const m of universe) {
       const lbl = document.createElement('label');
-      lbl.style.display = 'flex';
-      lbl.style.gap = '6px';
-      lbl.style.alignItems = 'center';
-      lbl.style.cursor = 'pointer';
+      lbl.className = 'cb-row';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = preloadSet.has(m);
@@ -1666,9 +1706,6 @@ function pipelineRulesEditor(name, initialRules) {
       const ta = document.createElement('textarea');
       ta.value = (rule.wordlist || []).join('\n');
       ta.rows = 6;
-      ta.style.width = '100%';
-      ta.style.fontFamily = 'ui-monospace, Menlo, Consolas, monospace';
-      ta.style.fontSize = '12px';
       ta.addEventListener('input', () => {
         rule.wordlist = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
         commitData();
@@ -1692,7 +1729,7 @@ function pipelineRulesEditor(name, initialRules) {
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
       addBtn.textContent = '+ add entry';
-      addBtn.style.marginTop = '6px';
+      addBtn.style.marginTop = '0.4rem';
       addBtn.addEventListener('click', () => {
         // Append a new <tr> directly so the surrounding row body stays
         // expanded and other expanded rows keep their input state.
@@ -1739,10 +1776,6 @@ function pipelineRulesEditor(name, initialRules) {
     inp.autocomplete = 'off';
     const raw = val == null ? '' : val;
     inp.value = (kind === 'escape') ? _esc(raw) : raw;
-    inp.style.fontFamily = 'ui-monospace, Menlo, Consolas, monospace';
-    inp.style.fontSize = '12px';
-    inp.style.width = '100%';
-    inp.style.boxSizing = 'border-box';
     inp.addEventListener('input', () => onInput(
       kind === 'escape' ? _unesc(inp.value) : inp.value
     ));
@@ -1756,11 +1789,11 @@ function pipelineRulesEditor(name, initialRules) {
     const td1 = document.createElement('td');
     const td2 = document.createElement('td');
     const td3 = document.createElement('td');
-    td3.style.width = '40px';
+    td3.style.width = '2.5rem';
     const ki = document.createElement('input');
-    ki.type = 'text'; ki.value = _esc(key); ki.style.fontFamily = 'ui-monospace, monospace'; ki.style.width = '100%';
+    ki.type = 'text'; ki.value = _esc(key);
     const vi = document.createElement('input');
-    vi.type = 'text'; vi.value = _esc(val); vi.style.fontFamily = 'ui-monospace, monospace'; vi.style.width = '100%';
+    vi.type = 'text'; vi.value = _esc(val);
     // Map keys/values may contain \n etc.; <input> strips real newlines,
     // so we display \n as literal 2-char escape and decode on read.
     function _readMap(parent) {
@@ -2298,9 +2331,14 @@ function render() {
         h3.textContent = sub.title;
         sec.appendChild(h3);
       }
+      // Wrap fields in a single grid container so .field can use
+      // grid-template-columns: subgrid and share one auto-sized label column
+      // across all rows in this subgroup.
+      const fieldsWrap = document.createElement('div');
+      fieldsWrap.className = 'group-fields';
       for (const fname of sub.fields) {
         try {
-          sec.appendChild(fieldRow(fname));
+          fieldsWrap.appendChild(fieldRow(fname));
         } catch (err) {
           console.error('failed to render field', fname, err);
           const errRow = document.createElement('div');
@@ -2308,9 +2346,10 @@ function render() {
           errRow.innerHTML = '<div class="label-col"><div class="name">' + fname
             + '</div></div><div class="input-col"><div class="err">'
             + 'render failed: ' + (err.message || err) + '</div></div>';
-          sec.appendChild(errRow);
+          fieldsWrap.appendChild(errRow);
         }
       }
+      sec.appendChild(fieldsWrap);
     }
     // The Pipeline section gets the full-pipeline test panel appended at the
     // bottom (after PIPELINE_RULES renders). Single panel — runs the whole
@@ -2474,7 +2513,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
   if (!probe.ok) {
-    document.body.innerHTML = '<main style="padding:20px;color:#ff7b72">'
+    document.body.innerHTML = '<main style="padding:1.25rem;color:#ff7b72">'
       + 'Could not load /config/state (' + probe.status + '). '
       + 'Check service logs.</main>';
     return;

@@ -1048,6 +1048,7 @@ async def _stream_log_lines():
 
 _LOG_VIEWER_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>faster-whisper-backend · live logs</title>
 {{SCALE_BOOTSTRAP_HEAD}}
 <style>
@@ -1057,11 +1058,15 @@ _LOG_VIEWER_HTML = """<!doctype html>
     --red: #ff7b72; --magenta: #d2a8ff; --bold: #f0f6fc;
     --border: #30363d;
   }
-  /* Font tokens + html font-size + color-scheme live in {{NAV_CSS}}. */
+  /* Font tokens, --font-sans, --font-mono and html font-size live in
+     {{NAV_CSS}}. Header chrome (title, pills, buttons) gets --font-sans
+     by default; the log lines themselves opt into --font-mono via .line
+     so timestamps and tabular fields stay aligned. */
   html { height: 100%; }
   body { background: var(--bg); color: var(--fg);
-    font: 1rem/1.5 ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+    font: 1rem/1.5 var(--font-sans);
     margin: 0; padding: 0; min-height: 100%; }
+  input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
   header { position: sticky; top: 0; background: #161b22; border-bottom: 1px solid #30363d;
     z-index: 10; padding: 0; }
   header > .header-inner { display: flex; gap: 0.75rem; align-items: center;
@@ -1079,9 +1084,19 @@ _LOG_VIEWER_HTML = """<!doctype html>
     padding: 0.25rem 0.625rem; border-radius: 4px; cursor: pointer; font: inherit;
     flex-shrink: 0; }
   header button:hover { background: #30363d; }
-  #log { padding: 0.5rem 0.875rem; max-width: 1100px; margin: 0 auto;
-    white-space: pre; overflow-anchor: none; }
-  .line { display: block; }
+  /* width:100% + box-sizing:border-box are the fix for the "tiny centered
+     column with text clipped at the start" rendering — without them the
+     1100px max-width sits on a content-sized box that overflows the
+     viewport. pre-wrap (was: pre) wraps long lines inside the visible
+     column instead of forcing a horizontal scrollbar that hides the start
+     of every line. */
+  #log { padding: 0.5rem 0.875rem;
+    width: 100%; max-width: 1100px; margin: 0 auto;
+    box-sizing: border-box;
+    font-family: var(--font-mono);
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    overflow-anchor: none; }
+  .line { display: block; word-break: break-word; }
   .line.hidden { display: none; }
   .line.rule    { color: var(--dim); }
   .line.title   { color: var(--bold); font-weight: 600; }

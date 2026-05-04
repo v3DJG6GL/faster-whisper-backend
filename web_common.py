@@ -133,7 +133,12 @@ NAV_CSS = """
 /* Global scaling tokens — every page uses these so a single :root knob
    (`--fs-base`) re-scales the WHOLE UI. Bump --fs-base to scale up; the
    scale-picker dropdown writes inline-style to override at runtime.
-   Spacing/padding everywhere uses rem so it scales with font. */
+   Spacing/padding everywhere uses rem so it scales with font.
+   Font stacks split chrome (sans) from code/values/log (mono): Segoe UI
+   ships on every Windows since Vista; Consolas on every Windows; both
+   listed first so we never fall through to Times New Roman / Courier New
+   on boxes without ui-monospace or Cascadia Code installed. --help is
+   one notch brighter than --dim for description text. */
 :root {
   --fs-base:  15px;
   --fs-xs:    0.733rem;   /* ~11px @ 15px base */
@@ -142,6 +147,11 @@ NAV_CSS = """
   --fs-lg:    1rem;       /* 15px (= base) */
   --fs-xl:    1.2rem;     /* ~18px */
   --fs-xxl:   1.467rem;   /* ~22px */
+  --font-sans: "Segoe UI", -apple-system, BlinkMacSystemFont, "Helvetica Neue",
+               Arial, sans-serif;
+  --font-mono: Consolas, "Cascadia Code", "JetBrains Mono", Menlo,
+               ui-monospace, monospace;
+  --help: #8b949e;
 }
 html { font-size: var(--fs-base); color-scheme: dark; }
 header .spacer { flex: 1; }
