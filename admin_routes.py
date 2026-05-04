@@ -1001,11 +1001,15 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   /* ============================================================ */
   /* MODEL_OVERRIDES master-detail editor                          */
   /* ============================================================ */
-  /* Two-column layout: sidebar of models + main pane of fields.
+  /* Full-row .field (no label-col / help text). Inside, two columns:
+     a sidebar of models on the left and the detail pane on the right.
      Below 56rem the sidebar collapses to a horizontal scroller above
      the pane (KDE Linux narrow-viewport requirement).               */
-  .mo-wrap { display: grid; grid-template-columns: 16rem 1fr;
-    gap: 0.875rem; align-items: start; }
+  .field-fullrow { grid-column: 1 / -1;
+    grid-template-columns: none !important; }
+  .mo-wrap { display: grid;
+    grid-template-columns: minmax(13rem, 18rem) 1fr;
+    gap: 0.875rem; align-items: start; width: 100%; }
   .mo-sidebar { display: flex; flex-direction: column; gap: 0.25rem;
     background: #0d1117; border: 1px solid var(--border); border-radius: 4px;
     padding: 0.5rem; min-width: 0; }
@@ -1018,39 +1022,44 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mo-list-item .mo-count { color: var(--dim); font-size: var(--fs-xs);
     flex-shrink: 0; }
+  /* Collapse indicator on the active sidebar entry. ▾ when the detail
+     pane is expanded, ▸ when collapsed. Hidden on inactive entries. */
+  .mo-list-item .mo-collapse-ind { color: var(--dim);
+    font-size: var(--fs-xs); flex-shrink: 0; opacity: 0; }
+  .mo-list-item.active .mo-collapse-ind { opacity: 0.85; }
+  /* Top sidebar row: replaces the old "Global (read-only ref)" entry.
+     Whole row toggles diff-mode dim. Looks like a list item but is a label
+     wrapping a checkbox. */
+  .mo-sidebar-toggle { display: flex; align-items: center; gap: 0.5rem;
+    padding: 0.4rem 0.6rem; border-radius: 4px; cursor: pointer;
+    border-left: 3px solid transparent; user-select: none;
+    border-bottom: 1px solid var(--border); padding-bottom: 0.55rem;
+    margin-bottom: 0.25rem; }
+  .mo-sidebar-toggle:hover { background: #1c2230; }
+  .mo-sidebar-toggle input[type="checkbox"] { flex-shrink: 0; }
+  .mo-sidebar-toggle .mo-toggle-label { color: var(--bold);
+    font-size: var(--fs-sm); flex: 1; min-width: 0; }
+  .mo-sidebar-toggle .mo-toggle-hint { color: var(--dim);
+    font-size: var(--fs-xs); font-style: italic; }
   .mo-list-add { margin-top: 0.4rem; padding-top: 0.4rem;
     border-top: 1px solid var(--border); }
   .mo-list-add select { width: 100%; box-sizing: border-box;
     background: var(--input-bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px;
     padding: 0.25rem 0.5rem; font: inherit; font-size: var(--fs-sm); }
-  .mo-diff-toggle { margin-top: 0.5rem; padding-top: 0.5rem;
-    border-top: 1px solid var(--border); font-size: var(--fs-sm); }
   .mo-remove-btn { margin-top: 0.5rem; color: var(--red) !important;
     text-align: left; }
   .mo-mainpane { display: flex; flex-direction: column; gap: 0.5rem;
     min-width: 0; }
-  .mo-edit-head { padding: 0.4rem 0.6rem; background: #0d1117;
-    border: 1px solid var(--border); border-radius: 4px;
-    font-size: var(--fs-sm); }
-  .mo-edit-head .mo-name { font-family: var(--font-mono); color: var(--cyan); }
-  /* Collapsible detail pane: <details> wraps the form sections; .mo-edit-head
-     doubles as the <summary>. Mirrors the Advanced-subgroup chevron from
-     details.subgroup-details (above), but scoped under .mo-mainpane > so it
-     only paints the per-model wrapper, not nested subgroups inside. */
-  .mo-mainpane > details.mo-detail { margin: 0; }
-  .mo-mainpane > details.mo-detail > summary.mo-edit-head {
-    list-style: none; cursor: pointer; user-select: none;
-    display: flex; align-items: center; }
-  .mo-mainpane > details.mo-detail > summary.mo-edit-head::-webkit-details-marker {
-    display: none; }
-  .mo-mainpane > details.mo-detail > summary.mo-edit-head::before {
-    content: '▸'; transition: transform 120ms ease;
-    margin-right: 0.4rem; opacity: 0.7; }
-  .mo-mainpane > details.mo-detail[open] > summary.mo-edit-head::before {
-    transform: rotate(90deg); }
-  .mo-mainpane > details.mo-detail > .mo-detail-body {
-    display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
+  /* Collapsed detail pane: form body hidden, sidebar still scrollable.
+     State stored in localStorage['mo.detail.<id>'] = '0' for collapsed. */
+  .mo-mainpane.collapsed > .mo-detail-body { display: none; }
+  .mo-mainpane.collapsed::before {
+    content: 'detail collapsed — click the active model in the sidebar to expand';
+    display: block; padding: 0.6rem 0.75rem;
+    color: var(--dim); font-style: italic; font-size: var(--fs-sm);
+    background: #0d1117; border: 1px dashed var(--border); border-radius: 4px; }
+  .mo-detail-body { display: flex; flex-direction: column; gap: 0.5rem; }
   .mo-section { padding: 0.625rem 0.75rem; background: #0d1117;
     border: 1px solid var(--border); border-radius: 4px; }
   .mo-section > h4 { margin: 0 0 0.5rem 0; font-size: var(--fs-sm);
@@ -1148,11 +1157,15 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     .mo-wrap { grid-template-columns: 1fr; }
     .mo-sidebar { flex-direction: row; overflow-x: auto;
       align-items: stretch; }
+    .mo-sidebar-toggle { border-left: none; border-bottom: none;
+      margin-bottom: 0; padding-bottom: 0.4rem;
+      border-right: 1px solid var(--border); padding-right: 0.55rem;
+      flex: 0 0 auto; }
     .mo-list-item { flex: 0 0 auto; border-left: none;
       border-bottom: 3px solid transparent; }
     .mo-list-item.active { border-left: none;
       border-bottom-color: var(--cyan); }
-    .mo-list-add, .mo-diff-toggle, .mo-remove-btn { flex: 0 0 auto; }
+    .mo-list-add, .mo-remove-btn { flex: 0 0 auto; }
   }
   {{NAV_CSS}}
 </style></head>
@@ -1330,10 +1343,25 @@ function makeBadges(name) {
   return wrap;
 }
 
+// Field rows like MODEL_OVERRIDES are master-detail widgets that have their
+// own visual structure (sidebar + detail pane) and do not benefit from the
+// shared label-col / +reset / help-text chrome — the section header above
+// already conveys what the widget is, and the widget renders its own legend.
+// Listed here so fieldRow() can render them edge-to-edge in the section's
+// .group-fields grid (grid-column: 1 / -1, no label-col, no description).
+const FULLROW_FIELDS = new Set(['MODEL_OVERRIDES']);
+
 function fieldRow(name) {
   const row = document.createElement('div');
   row.className = 'field';
   row.dataset.field = name;   // used by applyFieldDependencies()
+
+  if (FULLROW_FIELDS.has(name)) {
+    row.classList.add('field-fullrow');
+    row.appendChild(makeEditor(name));
+    return row;
+  }
+
   const labelCol = document.createElement('div');
   labelCol.className = 'label-col';
   const nameEl = document.createElement('div');
@@ -1544,21 +1572,28 @@ function adminTokenEditor(name, v) {
 // =============================================================================
 // MODEL_OVERRIDES editor — master-detail UI
 // =============================================================================
-// Sidebar lists [Global (read-only ref), per-model entries with override
-// counts, + add model]. Main pane switches between a Global ref view (resolved
-// global values, jump-links to the in-page edit rows) and a per-model edit
-// view (6 sections + Pipeline rules checklist). Per-field rows show ●/○
-// inherit/override dots, an input widget when overridden, "inherits {global}"
-// + "+ override" when not. Diff-to-global toggle dims rows whose value
-// matches the global. Advanced expanders persist open/closed state in
-// localStorage. Pipeline rules render via makeRuleListEditor(mode="checklist").
+// Sidebar: [Global ☑ dim toggle] + per-model entries (with override counts +
+// collapse indicator on the active row) + [+ add model dropdown] +
+// [× remove model entry]. The toggle row replaces the old "Global (read-only
+// ref)" navigation entry AND the standalone "Compare diff to global"
+// checkbox. Main pane: per-model edit view (6 field sections + Pipeline
+// rules checklist) — no top header bar, no chevron. Clicking the active
+// sidebar entry collapses/expands the detail pane (state persisted in
+// localStorage['mo.detail.<id>']). Per-field rows show ●/○ inherit/override
+// dots, an input widget when overridden, "inherits {global}" + "+ override"
+// when not. Diff-to-global toggle dims rows whose value matches the resolved
+// global. Live: every input change refreshes dot/match/count/inherits text
+// in place via refreshMarkers(field) — no input rebuild, focus preserved.
+// Advanced subgroups persist their own open/closed state under mo.adv.<id>.
 function modelOverridesEditor(name, v) {
   // Authoritative state. Local mutable copy of the saved overrides; full
   // snapshot pushed via setDirty(name, snapshot) on every edit so the existing
   // /config/state save flow sees one consistent payload.
   let overrides = JSON.parse(JSON.stringify(v || {}));
-  let selectedId = null;     // null = Global view; else a model id
-  let diffMode = false;
+  // Diff-mode default ON: most useful first state — the user immediately
+  // sees which fields differ from global. Toggleable via the top sidebar row.
+  let selectedId = null;     // chosen during initial paint below
+  let diffMode = true;
 
   // Section / field grouping. Mirrors the plan's master-detail layout.
   const SECTIONS = [
@@ -1655,10 +1690,14 @@ function modelOverridesEditor(name, v) {
       overrides[modelId][field] = value;
     }
     persist();
+    // Live update: dot, data-matches-global, sidebar count, "inherits" text
+    // refresh in place — no full re-render means typing focus is preserved.
+    refreshMarkers(field);
   }
   function clearOverride(modelId, field) {
     if (overrides[modelId]) delete overrides[modelId][field];
     persist();
+    refreshMarkers(field);
   }
   function countOverrides(modelId) {
     const m = overrides[modelId];
@@ -1682,6 +1721,52 @@ function modelOverridesEditor(name, v) {
     return String(v);
   }
 
+  // -------- live marker refresh ------------------------------------------
+  // Recompute the per-row dot / data-matches-global / "inherits {global}"
+  // text and the sidebar override count + dot, WITHOUT rebuilding any input
+  // widgets. Cheap (handful of querySelectorAll), preserves typing focus.
+  // `field` (optional): only that field's row gets updated. Otherwise all.
+  function refreshMarkers(field) {
+    // 1. Sidebar: per-model entry override count + dot.
+    for (const li of sidebar.querySelectorAll('.mo-list-item')) {
+      const id = li.dataset.modelId;
+      if (!id) continue;
+      const n = countOverrides(id);
+      const cnt = li.querySelector('.mo-count');
+      if (cnt) cnt.textContent = n ? '(' + n + ')' : '';
+      const dot = li.querySelector('.mo-dot');
+      if (dot) {
+        dot.classList.toggle('override', n > 0);
+        dot.classList.toggle('inherit',  n === 0);
+      }
+    }
+
+    // 2. Per-row markers in the detail pane.
+    const rows = mainpane.querySelectorAll('.mo-row[data-mo-field]');
+    for (const row of rows) {
+      const f = row.dataset.moField;
+      if (field && f !== field) continue;
+      const overrideVal = getOverrideValue(selectedId, f);
+      const isOverridden = overrideVal !== undefined;
+      const globalVal = globalValue(f);
+      const matches = !isOverridden ||
+        JSON.stringify(overrideVal) === JSON.stringify(globalVal);
+      row.dataset.overridden = isOverridden ? 'true' : 'false';
+      row.dataset.matchesGlobal = matches ? 'true' : 'false';
+      const dot = row.querySelector('.mo-dot');
+      if (dot) {
+        dot.classList.toggle('override', isOverridden);
+        dot.classList.toggle('inherit',  !isOverridden);
+      }
+      // Only the not-overridden branch renders a .mo-inherits hint; if the
+      // global value just changed, that text needs to follow. (When the row
+      // IS overridden, the input widget shows the override value — already
+      // live via the input element itself; no DOM patch needed.)
+      const inh = row.querySelector('.mo-inherits');
+      if (inh) inh.textContent = 'inherits ' + fmtValue(globalVal);
+    }
+  }
+
   // -------- DOM scaffolding ----------------------------------------------
   const wrap = document.createElement('div');
   wrap.className = 'mo-wrap';
@@ -1701,28 +1786,58 @@ function modelOverridesEditor(name, v) {
     // an entry). Sort alphabetically for deterministic order.
     const ids = Object.keys(overrides).sort();
 
-    // Item #1: Global (read-only ref). Dot is filled if ANY model has any override.
-    const gItem = document.createElement('div');
-    gItem.className = 'mo-list-item';
-    if (selectedId === null) gItem.classList.add('active');
-    const anyOverridden = ids.some(id => countOverrides(id) > 0);
-    gItem.innerHTML = '<span class="mo-dot ' + (anyOverridden ? 'override' : 'inherit') + '"></span>'
-      + '<span class="mo-list-label">Global (read-only ref)</span>';
-    gItem.addEventListener('click', () => { selectedId = null; renderAll(); });
-    sidebar.appendChild(gItem);
+    // Top row: diff-mode toggle. Replaces the old "Global (read-only ref)"
+    // entry AND the standalone "Compare diff to global" checkbox. The whole
+    // row toggles diffMode; clicking anywhere flips the checkbox.
+    const toggleWrap = document.createElement('label');
+    toggleWrap.className = 'mo-sidebar-toggle';
+    toggleWrap.title = 'Dim per-model rows whose value equals the resolved global';
+    const toggleCb = document.createElement('input');
+    toggleCb.type = 'checkbox';
+    toggleCb.checked = diffMode;
+    toggleCb.addEventListener('change', () => {
+      diffMode = toggleCb.checked;
+      mainpane.classList.toggle('diff-mode', diffMode);
+    });
+    toggleWrap.appendChild(toggleCb);
+    const toggleLbl = document.createElement('span');
+    toggleLbl.className = 'mo-toggle-label';
+    toggleLbl.textContent = 'Global — dim what matches';
+    toggleWrap.appendChild(toggleLbl);
+    sidebar.appendChild(toggleWrap);
 
     // Per-model entries.
     for (const id of ids) {
       const item = document.createElement('div');
       item.className = 'mo-list-item';
+      item.dataset.modelId = id;
       if (id === selectedId) item.classList.add('active');
       const n = countOverrides(id);
       const dot = '<span class="mo-dot ' + (n > 0 ? 'override' : 'inherit') + '"></span>';
       // Long HF-style ids would blow the sidebar width — let CSS truncate.
       const lbl = '<span class="mo-list-label" title="' + id + '">' + id + '</span>';
-      const cnt = '<span class="mo-count">(' + n + ')</span>';
-      item.innerHTML = dot + lbl + cnt;
-      item.addEventListener('click', () => { selectedId = id; renderAll(); });
+      const cnt = '<span class="mo-count">' + (n ? '(' + n + ')' : '') + '</span>';
+      // Collapse indicator: ▾ when expanded, ▸ when collapsed. Only the
+      // active row reveals it via .active CSS opacity.
+      const collapsed = (localStorage.getItem('mo.detail.' + id) === '0');
+      const ind = '<span class="mo-collapse-ind">' + (collapsed ? '▸' : '▾') + '</span>';
+      item.innerHTML = dot + lbl + cnt + ind;
+      item.addEventListener('click', () => {
+        if (selectedId === id) {
+          // Active row → toggle collapse for this model.
+          const isCollapsed = (localStorage.getItem('mo.detail.' + id) === '0');
+          try {
+            localStorage.setItem('mo.detail.' + id, isCollapsed ? '1' : '0');
+          } catch (_) {}
+          applyCollapseState();
+          // Refresh the indicator on this entry only.
+          const indEl = item.querySelector('.mo-collapse-ind');
+          if (indEl) indEl.textContent = isCollapsed ? '▾' : '▸';
+        } else {
+          selectedId = id;
+          renderAll();
+        }
+      });
       sidebar.appendChild(item);
     }
 
@@ -1761,22 +1876,6 @@ function modelOverridesEditor(name, v) {
     }
     sidebar.appendChild(addRow);
 
-    // Diff-to-global toggle — dims rows whose value matches the global.
-    const diffWrap = document.createElement('label');
-    diffWrap.className = 'cb-row mo-diff-toggle';
-    const diffCb = document.createElement('input');
-    diffCb.type = 'checkbox'; diffCb.checked = diffMode;
-    diffCb.addEventListener('change', () => {
-      diffMode = diffCb.checked;
-      mainpane.classList.toggle('diff-mode', diffMode);
-    });
-    diffWrap.appendChild(diffCb);
-    const diffLbl = document.createElement('span');
-    diffLbl.textContent = 'Compare diff to global';
-    diffLbl.title = 'Dim rows whose value equals the resolved global default';
-    diffWrap.appendChild(diffLbl);
-    sidebar.appendChild(diffWrap);
-
     // Remove-current-model affordance — only when a model is selected.
     if (selectedId) {
       const rmBtn = document.createElement('button');
@@ -1787,7 +1886,11 @@ function modelOverridesEditor(name, v) {
       rmBtn.addEventListener('click', () => {
         if (!confirm('Delete all overrides for ' + selectedId + '?')) return;
         delete overrides[selectedId];
-        selectedId = null;
+        // Pick a sensible new selection: first remaining override-bearing
+        // model, else first allowed model, else null.
+        const remaining = Object.keys(overrides).sort();
+        if (remaining.length > 0) selectedId = remaining[0];
+        else selectedId = allowed[0] || null;
         persist();
         renderAll();
       });
@@ -1795,85 +1898,49 @@ function modelOverridesEditor(name, v) {
     }
   }
 
+  // -------- collapse state ------------------------------------------------
+  // Apply the saved collapsed/expanded state of the currently-selected
+  // model to the mainpane. localStorage['mo.detail.<id>'] === '0' means
+  // explicitly collapsed; anything else (including absence) means expanded.
+  function applyCollapseState() {
+    if (!selectedId) {
+      mainpane.classList.remove('collapsed');
+      return;
+    }
+    const isCollapsed = (localStorage.getItem('mo.detail.' + selectedId) === '0');
+    mainpane.classList.toggle('collapsed', isCollapsed);
+  }
+
   // -------- main pane: dispatcher ----------------------------------------
   function renderMain() {
     mainpane.innerHTML = '';
     mainpane.classList.toggle('diff-mode', diffMode);
     if (selectedId === null) {
-      renderGlobalRefView();
+      renderEmptyState();
     } else {
       renderModelEditView();
     }
+    applyCollapseState();
   }
 
-  // -------- main pane: Global ref view -----------------------------------
-  function renderGlobalRefView() {
-    const intro = document.createElement('div');
-    intro.className = 'help';
-    intro.textContent = 'Resolved global defaults (read-only). Edit them in their normal sections elsewhere on this page.';
-    mainpane.appendChild(intro);
-    for (const sec of SECTIONS) {
-      const secEl = document.createElement('div');
-      secEl.className = 'mo-section';
-      const h4 = document.createElement('h4');
-      h4.textContent = sec.title;
-      secEl.appendChild(h4);
-      const allFields = [...sec.basic, ...sec.adv];
-      for (const f of allFields) {
-        const row = document.createElement('div');
-        row.className = 'mo-row mo-row-ref';
-        const dot = document.createElement('span');
-        dot.className = 'mo-dot inherit';
-        const lbl = document.createElement('span');
-        lbl.className = 'mo-name';
-        lbl.textContent = f;
-        const val = document.createElement('span');
-        val.className = 'mo-value-cell mo-inherits';
-        val.textContent = fmtValue(globalValue(f));
-        const jump = document.createElement('button');
-        jump.type = 'button';
-        jump.className = 'reset-link';
-        jump.textContent = '↑ edit';
-        jump.title = 'Scroll to the global field row';
-        jump.addEventListener('click', () => jumpToField(f));
-        row.appendChild(dot);
-        row.appendChild(lbl);
-        row.appendChild(val);
-        row.appendChild(jump);
-        secEl.appendChild(row);
-      }
-      mainpane.appendChild(secEl);
-    }
+  // -------- main pane: empty state (no allowed models) -------------------
+  function renderEmptyState() {
+    const note = document.createElement('div');
+    note.className = 'help';
+    note.textContent = 'No model selected. Add a model to ALLOWED_MODELS in the Models section above, '
+      + 'then add an override entry from the sidebar.';
+    mainpane.appendChild(note);
   }
 
   // -------- main pane: Model edit view -----------------------------------
   function renderModelEditView() {
-    // Wrap the whole detail pane in <details> so the user can collapse it
-    // (the form for a single model can be very long). Default open; the
-    // per-model lsKey only ever stores '0' to mean "explicitly collapsed".
-    // Pattern + chevron CSS mirror the Advanced-subgroup <details> below.
-    const det = document.createElement('details');
-    det.className = 'mo-detail';
-    const lsKey = 'mo.detail.' + selectedId;
-    det.open = localStorage.getItem(lsKey) !== '0';
-    det.addEventListener('toggle', () => {
-      try { localStorage.setItem(lsKey, det.open ? '1' : '0'); } catch (_) {}
-    });
-
-    const head = document.createElement('summary');
-    head.className = 'mo-edit-head';
-    head.innerHTML = '<strong>Editing: </strong><span class="mo-name">' + selectedId + '</span>';
-    det.appendChild(head);
-
     const body = document.createElement('div');
     body.className = 'mo-detail-body';
     for (const sec of SECTIONS) {
       body.appendChild(renderSection(sec));
     }
     body.appendChild(renderPipelineSection());
-    det.appendChild(body);
-
-    mainpane.appendChild(det);
+    mainpane.appendChild(body);
   }
 
   function renderSection(sec) {
@@ -2153,11 +2220,13 @@ function modelOverridesEditor(name, v) {
     }
   }
 
-  // Initial selection: the alphabetically-first model with overrides, else
-  // Global. Avoids a blank main pane on first paint when overrides exist.
+  // Initial selection: the alphabetically-first model with overrides;
+  // otherwise null (renders the empty-state hint in the detail pane). The
+  // Global ref view is gone — when no model has an override yet the user
+  // is told to use the "+ add model override" dropdown.
   (function() {
-    const ids = Object.keys(overrides).filter(id => countOverrides(id) > 0).sort();
-    if (ids.length > 0) selectedId = ids[0];
+    const overridden = Object.keys(overrides).filter(id => countOverrides(id) > 0).sort();
+    if (overridden.length > 0) selectedId = overridden[0];
   })();
 
   function renderAll() {
@@ -2169,6 +2238,18 @@ function modelOverridesEditor(name, v) {
   // dropdown sources from there). Same event the DEFAULT_MODEL dropdown
   // and PRELOAD_MODELS multi-select listen for.
   document.addEventListener('admin:model-lists-changed', renderSidebar);
+  // Live diff: when a global field changes (in any other editor on the
+  // page) the per-model rows' "matches global" / "inherits {x}" / dot
+  // states must follow. Filter our own MODEL_OVERRIDES dirty-events out
+  // (we already updated locally) and PIPELINE_RULES (handled by the
+  // checklist's own admin:dirty listener).
+  document.addEventListener('admin:dirty', (e) => {
+    if (!e.detail) { refreshMarkers(); return; }
+    const n = e.detail.name;
+    if (n === name) return;
+    if (n === 'PIPELINE_RULES') return;
+    refreshMarkers(n);
+  });
   return wrap;
 }
 
