@@ -1208,7 +1208,7 @@ function modelMultiSelectEditor(name, v) {
       const t = document.createElement('textarea');
       t.value = preload.join('\n');
       t.rows = Math.min(Math.max(preload.length, 2), 8);
-      t.placeholder = 'one model id per line';
+      t.placeholder = 'One model id per line';
       t.addEventListener('input', () => {
         const lines = t.value.split('\n').map(s => s.trim()).filter(Boolean);
         setDirty(name, lines);
@@ -1715,7 +1715,7 @@ function pipelineRulesEditor(name, initialRules) {
       }));
       const wlLbl = document.createElement('div');
       wlLbl.className = 'help';
-      wlLbl.textContent = 'wordlist (one entry per line, case-insensitive):';
+      wlLbl.textContent = 'Wordlist (one entry per line, case-insensitive):';
       box.appendChild(wlLbl);
       const ta = document.createElement('textarea');
       ta.value = (rule.wordlist || []).join('\n');
@@ -2193,10 +2193,10 @@ function linesEditor(name, v) {
   const t = document.createElement('textarea');
   t.value = v.join('\n');
   t.rows = Math.min(Math.max(v.length, 2), 10);
-  t.placeholder = 'one entry per line';
+  t.placeholder = 'One entry per line';
   const help = document.createElement('div');
   help.className = 'help';
-  help.textContent = 'one entry per line. blank lines ignored.';
+  help.textContent = 'One entry per line. Blank lines ignored.';
   const update = () => {
     const lines = t.value.split('\n').map(s => s.trim()).filter(Boolean);
     setDirty(name, lines);
