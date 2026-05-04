@@ -138,8 +138,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "(faster-whisper)",
     "MODEL_COMPUTE_TYPE":
         "Numerical precision (CTranslate2).\n"
-        "• float16: half-precision, weights + layers in FP16 (NVIDIA CC ≥ 7.0).\n"
-        "• bfloat16: brain-float, half-precision (NVIDIA Ampere+ / CC ≥ 8.0).\n"
+        "• float16: half-precision, weights + layers in FP16 "
+        "(NVIDIA Volta+ / CUDA Compute Capability ≥ 7.0).\n"
+        "• bfloat16: brain-float, half-precision "
+        "(NVIDIA Ampere+ / CUDA Compute Capability ≥ 8.0).\n"
         "• int8: 8-bit weight quantization (smallest, fastest on CPU).\n"
         "• int8_float16: int8 weights + FP16 activations (smallest GPU footprint).\n"
         "• float32: full precision, largest + slowest.",

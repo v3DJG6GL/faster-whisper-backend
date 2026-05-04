@@ -1034,6 +1034,23 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     border: 1px solid var(--border); border-radius: 4px;
     font-size: var(--fs-sm); }
   .mo-edit-head .mo-name { font-family: var(--font-mono); color: var(--cyan); }
+  /* Collapsible detail pane: <details> wraps the form sections; .mo-edit-head
+     doubles as the <summary>. Mirrors the Advanced-subgroup chevron from
+     details.subgroup-details (above), but scoped under .mo-mainpane > so it
+     only paints the per-model wrapper, not nested subgroups inside. */
+  .mo-mainpane > details.mo-detail { margin: 0; }
+  .mo-mainpane > details.mo-detail > summary.mo-edit-head {
+    list-style: none; cursor: pointer; user-select: none;
+    display: flex; align-items: center; }
+  .mo-mainpane > details.mo-detail > summary.mo-edit-head::-webkit-details-marker {
+    display: none; }
+  .mo-mainpane > details.mo-detail > summary.mo-edit-head::before {
+    content: '▸'; transition: transform 120ms ease;
+    margin-right: 0.4rem; opacity: 0.7; }
+  .mo-mainpane > details.mo-detail[open] > summary.mo-edit-head::before {
+    transform: rotate(90deg); }
+  .mo-mainpane > details.mo-detail > .mo-detail-body {
+    display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.5rem; }
   .mo-section { padding: 0.625rem 0.75rem; background: #0d1117;
     border: 1px solid var(--border); border-radius: 4px; }
   .mo-section > h4 { margin: 0 0 0.5rem 0; font-size: var(--fs-sm);
@@ -1824,14 +1841,32 @@ function modelOverridesEditor(name, v) {
 
   // -------- main pane: Model edit view -----------------------------------
   function renderModelEditView() {
-    const head = document.createElement('div');
+    // Wrap the whole detail pane in <details> so the user can collapse it
+    // (the form for a single model can be very long). Default open; the
+    // per-model lsKey only ever stores '0' to mean "explicitly collapsed".
+    // Pattern + chevron CSS mirror the Advanced-subgroup <details> below.
+    const det = document.createElement('details');
+    det.className = 'mo-detail';
+    const lsKey = 'mo.detail.' + selectedId;
+    det.open = localStorage.getItem(lsKey) !== '0';
+    det.addEventListener('toggle', () => {
+      try { localStorage.setItem(lsKey, det.open ? '1' : '0'); } catch (_) {}
+    });
+
+    const head = document.createElement('summary');
     head.className = 'mo-edit-head';
     head.innerHTML = '<strong>Editing: </strong><span class="mo-name">' + selectedId + '</span>';
-    mainpane.appendChild(head);
+    det.appendChild(head);
+
+    const body = document.createElement('div');
+    body.className = 'mo-detail-body';
     for (const sec of SECTIONS) {
-      mainpane.appendChild(renderSection(sec));
+      body.appendChild(renderSection(sec));
     }
-    mainpane.appendChild(renderPipelineSection());
+    body.appendChild(renderPipelineSection());
+    det.appendChild(body);
+
+    mainpane.appendChild(det);
   }
 
   function renderSection(sec) {
