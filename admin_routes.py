@@ -1594,6 +1594,9 @@ function modelOverridesEditor(name, v) {
   // sees which fields differ from global. Toggleable via the top sidebar row.
   let selectedId = null;     // chosen during initial paint below
   let diffMode = true;
+  // Live handle to the per-model pipeline section so refreshPipelineSection()
+  // can replaceWith() it on global PIPELINE_RULES changes.
+  let pipelineSectionEl = null;
 
   // Section / field grouping. Mirrors the plan's master-detail layout.
   const SECTIONS = [
@@ -1765,6 +1768,17 @@ function modelOverridesEditor(name, v) {
       const inh = row.querySelector('.mo-inherits');
       if (inh) inh.textContent = 'inherits ' + fmtValue(globalVal);
     }
+  }
+
+  // Re-render the per-model pipeline checklist in place. The checklist has
+  // no typing/drag/scroll/expanded-body state, so a clean rebuild is cheaper
+  // and more correct than per-row patching across add/remove/rename/reorder.
+  function refreshPipelineSection() {
+    if (!pipelineSectionEl || !pipelineSectionEl.parentElement) return;
+    if (selectedId === null) return;        // empty-state pane has no section
+    const fresh = renderPipelineSection();
+    pipelineSectionEl.replaceWith(fresh);
+    pipelineSectionEl = fresh;
   }
 
   // -------- DOM scaffolding ----------------------------------------------
@@ -1939,7 +1953,8 @@ function modelOverridesEditor(name, v) {
     for (const sec of SECTIONS) {
       body.appendChild(renderSection(sec));
     }
-    body.appendChild(renderPipelineSection());
+    pipelineSectionEl = renderPipelineSection();
+    body.appendChild(pipelineSectionEl);
     mainpane.appendChild(body);
   }
 
@@ -2187,7 +2202,7 @@ function modelOverridesEditor(name, v) {
         if (inc.length) overrides[selectedId].PIPELINE_RULES_INCLUDE = inc;
         else            delete overrides[selectedId].PIPELINE_RULES_INCLUDE;
         persist();
-        renderSidebar();   // override count changed
+        refreshMarkers();  // sidebar count + dot, in place (parity with field rows)
       },
       onJumpToGlobal: (slug) => jumpToRule(slug),
     };
@@ -2241,13 +2256,14 @@ function modelOverridesEditor(name, v) {
   // Live diff: when a global field changes (in any other editor on the
   // page) the per-model rows' "matches global" / "inherits {x}" / dot
   // states must follow. Filter our own MODEL_OVERRIDES dirty-events out
-  // (we already updated locally) and PIPELINE_RULES (handled by the
-  // checklist's own admin:dirty listener).
+  // (we already updated locally). PIPELINE_RULES routes to the checklist
+  // refresher instead of refreshMarkers — the per-model rule rows live
+  // outside the .mo-row[data-mo-field] world refreshMarkers walks.
   document.addEventListener('admin:dirty', (e) => {
-    if (!e.detail) { refreshMarkers(); return; }
+    if (!e.detail) { refreshMarkers(); refreshPipelineSection(); return; }
     const n = e.detail.name;
     if (n === name) return;
-    if (n === 'PIPELINE_RULES') return;
+    if (n === 'PIPELINE_RULES') { refreshPipelineSection(); return; }
     refreshMarkers(n);
   });
   return wrap;
@@ -2725,6 +2741,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           row.classList.toggle('excluded', newForcedOut);
           row.classList.toggle('globally-disabled', !globallyEnabled && !newForcedIn);
           row.classList.toggle('force-included', newForcedIn);
+          // Diff-mode dim follows the new forced state synchronously — no
+          // attribute means the dim CSS would freeze on the render-time value.
+          row.dataset.matchesGlobal = (!newForcedOut && !newForcedIn) ? 'true' : 'false';
           // Update tags + status text.
           status.textContent = newForcedOut ? 'EXCLUDED' : '';
           if (gdTag) gdTag.style.display = (!globallyEnabled && !newForcedIn) ? '' : 'none';
