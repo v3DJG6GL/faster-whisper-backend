@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import time
 from collections import deque
 from typing import Callable
 
@@ -78,10 +77,12 @@ def require_allowed_host(allowlist_ref: Callable[[], list[str]]) -> Callable[[Re
     return _dep
 
 
-# --- Severity ring (in-memory log-level counts, last 60s) ---------------------
+# --- Severity ring (in-memory log-level counts, since process start) ---------
 # A logging.Handler appends (timestamp, levelno) on every record. The /stats
 # page and the nav row read severity_counts() at request time. Bounded ring
-# (maxlen=2000) keeps memory predictable under burst logging.
+# (maxlen=2000) keeps memory predictable under burst logging — once the ring
+# fills, oldest entries fall off and the per-level counters cap accordingly.
+# (We keep the timestamp tuple in case a future window-based view wants it.)
 _SEVERITY_LOG: deque[tuple[float, int]] = deque(maxlen=2000)
 
 
@@ -102,15 +103,16 @@ class SeverityCounter(logging.Handler):
             pass
 
 
-def severity_counts(window_sec: float = 60.0) -> dict[str, int]:
-    """Return {warn, err, crit} counts from the last `window_sec` seconds."""
-    cutoff = time.time() - window_sec
+def severity_counts() -> dict[str, int]:
+    """Return {warn, err, crit} counts since process start.
+
+    Reads the entire in-memory _SEVERITY_LOG ring. The ring is bounded at
+    2000 entries — under sustained WARNING+ traffic, oldest entries fall off
+    and the counter caps. In practice this matches a per-run "session
+    counter" the user investigates via the /logs?filter=<level> link on each
+    pill. Restart resets to zero."""
     warn = err = crit = 0
-    # Iterate from the right (newest first) and break once we cross the
-    # cutoff — the deque is append-ordered, so older entries follow.
-    for ts, lvl in reversed(_SEVERITY_LOG):
-        if ts < cutoff:
-            break
+    for _ts, lvl in _SEVERITY_LOG:
         if lvl >= logging.CRITICAL:
             crit += 1
         elif lvl >= logging.ERROR:
@@ -304,7 +306,7 @@ def nav_html(current: str) -> str:
     for level, key in (("warn", "WARNING"), ("err", "ERROR"), ("crit", "CRITICAL")):
         n = counts[level]
         cls = f"sevpill {level} {'hot' if n else 'zero'}"
-        title = f"{key}+ in the last 60 s — click to filter logs"
+        title = f"{key}+ since process start — click to filter logs"
         parts.append(
             f'<a id="sev-{level}" class="{cls}" '
             f'href="/logs?filter={key}" title="{title}">'
