@@ -813,6 +813,26 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     text-transform: uppercase; letter-spacing: 0.06em;
     margin: 0.875rem 0 0.375rem 0; padding-bottom: 0.1875rem;
     border-bottom: 1px solid var(--border); }
+  /* Collapsible subgroup: <summary> mirrors h3.subgroup styling, plus a
+     leading chevron that flips when the <details> is open. Native
+     disclosure-triangle is suppressed — list-style: none on summary +
+     ::-webkit-details-marker for older WebKit. State persists in
+     localStorage (see render() in JS). */
+  details.subgroup-details { margin: 0.875rem 0 0.375rem 0; }
+  details.subgroup-details > summary.subgroup-summary {
+    color: var(--dim); font-size: var(--fs-sm); font-weight: 500;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    padding-bottom: 0.1875rem; border-bottom: 1px solid var(--border);
+    cursor: pointer; user-select: none; list-style: none;
+    display: flex; align-items: center; gap: 0.4rem; }
+  details.subgroup-details > summary.subgroup-summary::-webkit-details-marker { display: none; }
+  details.subgroup-details > summary.subgroup-summary::before {
+    content: '▸'; color: var(--dim); font-size: 0.8em;
+    transition: transform 120ms ease; display: inline-block; }
+  details.subgroup-details[open] > summary.subgroup-summary::before {
+    transform: rotate(90deg); }
+  details.subgroup-details > summary.subgroup-summary:hover { color: var(--fg); }
+  details.subgroup-details > .group-fields { margin-top: 0.375rem; }
   /* Reset-to-default link button — small, italic, only visible when the
      current value differs from the in-repo default. Sits below the help
      text, so it doesn't crowd the editor itself. */
@@ -963,6 +983,121 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     color: var(--fg); display: none; }
   #toast.show { display: block; }
   #toast.err { border-color: #5a2424; color: var(--red); }
+  /* ============================================================ */
+  /* MODEL_OVERRIDES master-detail editor                          */
+  /* ============================================================ */
+  /* Two-column layout: sidebar of models + main pane of fields.
+     Below 56rem the sidebar collapses to a horizontal scroller above
+     the pane (KDE Linux narrow-viewport requirement).               */
+  .mo-wrap { display: grid; grid-template-columns: 16rem 1fr;
+    gap: 0.875rem; align-items: start; }
+  .mo-sidebar { display: flex; flex-direction: column; gap: 0.25rem;
+    background: #0d1117; border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.5rem; min-width: 0; }
+  .mo-list-item { padding: 0.4rem 0.6rem; border-radius: 4px; cursor: pointer;
+    display: flex; align-items: center; gap: 0.5rem;
+    border-left: 3px solid transparent; min-width: 0; }
+  .mo-list-item:hover { background: #1c2230; }
+  .mo-list-item.active { background: #1c2230; border-left-color: var(--cyan); }
+  .mo-list-item .mo-list-label { flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mo-list-item .mo-count { color: var(--dim); font-size: var(--fs-xs);
+    flex-shrink: 0; }
+  .mo-list-add { margin-top: 0.4rem; padding-top: 0.4rem;
+    border-top: 1px solid var(--border); }
+  .mo-list-add select { width: 100%; box-sizing: border-box;
+    background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.25rem 0.5rem; font: inherit; font-size: var(--fs-sm); }
+  .mo-diff-toggle { margin-top: 0.5rem; padding-top: 0.5rem;
+    border-top: 1px solid var(--border); font-size: var(--fs-sm); }
+  .mo-remove-btn { margin-top: 0.5rem; color: var(--red) !important;
+    text-align: left; }
+  .mo-mainpane { display: flex; flex-direction: column; gap: 0.5rem;
+    min-width: 0; }
+  .mo-edit-head { padding: 0.4rem 0.6rem; background: #0d1117;
+    border: 1px solid var(--border); border-radius: 4px;
+    font-size: var(--fs-sm); }
+  .mo-edit-head .mo-name { font-family: var(--font-mono); color: var(--cyan); }
+  .mo-section { padding: 0.625rem 0.75rem; background: #0d1117;
+    border: 1px solid var(--border); border-radius: 4px; }
+  .mo-section > h4 { margin: 0 0 0.5rem 0; font-size: var(--fs-sm);
+    color: var(--bold); display: flex; align-items: center; flex-wrap: wrap; }
+  /* Per-field row: ● label | input | ↶ button. Grid keeps columns aligned
+     across rows of the same section. Min-content on the label column so
+     long field names size the column to fit; rest goes to the input cell. */
+  .mo-row { display: grid;
+    grid-template-columns: 0.75rem minmax(min-content, max-content) 1fr auto;
+    gap: 0.5rem; align-items: center;
+    padding: 0.25rem 0; border-bottom: 1px dashed #21262d; min-width: 0; }
+  .mo-row:last-child { border-bottom: none; }
+  .mo-row .mo-name { font-family: var(--font-mono); color: var(--bold);
+    font-size: var(--fs-sm); white-space: nowrap; }
+  .mo-row .mo-value-cell { display: flex; align-items: center;
+    gap: 0.5rem; min-width: 0; }
+  .mo-row .mo-value-cell input[type="text"],
+  .mo-row .mo-value-cell input[type="number"],
+  .mo-row .mo-value-cell select,
+  .mo-row .mo-value-cell textarea {
+    background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.25rem 0.4rem;
+    font: inherit; font-family: var(--font-mono); font-size: var(--fs-sm);
+    width: 100%; box-sizing: border-box; }
+  .mo-row .mo-value-cell select { appearance: none; -webkit-appearance: none;
+    background: var(--input-bg) url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'><path fill='%236e7681' d='M0 0l5 6 5-6z'/></svg>") no-repeat right 0.5rem center;
+    padding-right: 1.5rem; cursor: pointer; }
+  .mo-row .mo-value-cell textarea { min-height: 2.5rem; resize: vertical; }
+  .mo-row .mo-value-cell input[type="number"]::-webkit-inner-spin-button,
+  .mo-row .mo-value-cell input[type="number"]::-webkit-outer-spin-button {
+    -webkit-appearance: none; margin: 0; }
+  .mo-row .mo-value-cell input[type="number"] { -moz-appearance: textfield; }
+  .mo-row .mo-row-ctrl { display: flex; gap: 0.4rem; align-items: center;
+    flex-shrink: 0; }
+  .mo-row.mo-row-ref .mo-value-cell { font-family: var(--font-mono);
+    color: var(--fg); font-size: var(--fs-sm); }
+  /* Inherit/override dot indicator. Filled cyan = override active, dim
+     outline = inherits global. */
+  .mo-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%;
+    flex-shrink: 0; }
+  .mo-dot.override { background: var(--cyan);
+    box-shadow: 0 0 4px rgba(121, 192, 255, 0.5); }
+  .mo-dot.inherit { background: transparent; border: 1px solid var(--dim);
+    box-sizing: border-box; }
+  .mo-inherits { color: var(--dim); font-style: italic;
+    font-size: var(--fs-sm); }
+  /* Diff-to-global mode: dim rows whose value matches the resolved global.
+     Reuses the same opacity/grayscale recipe as .field.dep-irrelevant. */
+  .mo-mainpane.diff-mode .mo-row[data-matches-global="true"] {
+    opacity: 0.45; filter: grayscale(0.6); }
+  /* Per-model pipeline rules checklist: makeRuleListEditor renders each
+     rule with .rule-row; checklist mode adds .checklist-mode on the wrap
+     and per-row .excluded marker. Compact layout: checkbox | label | pill | view.   */
+  .pipeline-rules-wrap.checklist-mode .rule-row {
+    padding: 0.25rem 0.5rem; }
+  .pipeline-rules-wrap.checklist-mode .rule-row .row-header {
+    display: flex; align-items: center; gap: 0.5rem; }
+  .pipeline-rules-wrap.checklist-mode .rule-row.excluded .rule-label {
+    color: var(--dim); text-decoration: line-through; }
+  .pipeline-rules-wrap.checklist-mode .rule-row .rule-checklist-status {
+    font-size: var(--fs-xs); color: var(--yellow); font-style: italic; }
+  .pipeline-rules-wrap.checklist-mode .rule-row.terminal {
+    border-left-color: var(--dim); }
+  .rule-checklist-footer { color: var(--dim); margin-top: 0.4rem;
+    font-size: var(--fs-sm); }
+  /* Narrow viewport: stack sidebar above main pane; let it scroll
+     horizontally so long lists stay accessible. Threshold 56rem matches
+     the existing scale-aware breakpoint convention elsewhere. */
+  @media (max-width: 56rem) {
+    .mo-wrap { grid-template-columns: 1fr; }
+    .mo-sidebar { flex-direction: row; overflow-x: auto;
+      align-items: stretch; }
+    .mo-list-item { flex: 0 0 auto; border-left: none;
+      border-bottom: 3px solid transparent; }
+    .mo-list-item.active { border-left: none;
+      border-bottom-color: var(--cyan); }
+    .mo-list-add, .mo-diff-toggle, .mo-remove-btn { flex: 0 0 auto; }
+  }
   {{NAV_CSS}}
 </style></head>
 <body>
@@ -1117,7 +1252,7 @@ function setDirty(name, value) {
   applyFieldDependencies();
 }
 
-// Field dependencies are now handled inside the pipelineRulesEditor itself
+// Field dependencies are now handled inside makeRuleListEditor itself
 // (per-row enabled/locked/seeded state). No top-level field-to-field
 // dimming rules survive the PIPELINE_RULES unification.
 function applyFieldDependencies() { /* no-op */ }
@@ -1221,7 +1356,7 @@ function makeEditor(name) {
   // PIPELINE_RULES gets its own list-of-rules editor (mixed row types,
   // drag-to-reorder, per-row test badge). Routed by name BEFORE shape checks
   // since the value is a list.
-  if (name === 'PIPELINE_RULES') return pipelineRulesEditor(name, v || []);
+  if (name === 'PIPELINE_RULES') return makeRuleListEditor(name, v || [], 'full', {});
   // MODEL_OVERRIDES is a dict[model_id, dict[field, value]] — too freeform
   // for the standard editors. Render as a JSON textarea with parse-validation
   // on every input. Save sends the parsed object; pydantic validates server-
@@ -1350,200 +1485,595 @@ function adminTokenEditor(name, v) {
   return wrap;
 }
 
+// =============================================================================
+// MODEL_OVERRIDES editor — master-detail UI
+// =============================================================================
+// Sidebar lists [Global (read-only ref), per-model entries with override
+// counts, + add model]. Main pane switches between a Global ref view (resolved
+// global values, jump-links to the in-page edit rows) and a per-model edit
+// view (6 sections + Pipeline rules checklist). Per-field rows show ●/○
+// inherit/override dots, an input widget when overridden, "inherits {global}"
+// + "+ override" when not. Diff-to-global toggle dims rows whose value
+// matches the global. Advanced expanders persist open/closed state in
+// localStorage. Pipeline rules render via makeRuleListEditor(mode="checklist").
 function modelOverridesEditor(name, v) {
-  // Per-model override editor. v is dict[model_id, dict[field, value]].
-  //
-  // V1 implementation: JSON textarea + helper buttons. Functionally complete
-  // (server-side validation rejects bad shapes / orphaned ids). The polished
-  // master-detail sidebar UI is a follow-up enhancement; this unblocks the
-  // feature now.
-  //
-  // Helper buttons:
-  //   [+ add model]    Inserts a stub entry for a model id picked from
-  //                    ALLOWED_MODELS, opens it in the textarea ready to edit.
-  //   [reset]          Clears the textarea to {}.
-  // The current value updates `dirty[MODEL_OVERRIDES]` on every keystroke
-  // when the JSON is parseable.
-  const wrap = document.createElement('div');
+  // Authoritative state. Local mutable copy of the saved overrides; full
+  // snapshot pushed via setDirty(name, snapshot) on every edit so the existing
+  // /config/state save flow sees one consistent payload.
+  let overrides = JSON.parse(JSON.stringify(v || {}));
+  let selectedId = null;     // null = Global view; else a model id
+  let diffMode = false;
 
-  const status = document.createElement('div');
-  status.className = 'help';
-  status.style.fontFamily = 'var(--font-mono, monospace)';
+  // Section / field grouping. Mirrors the plan's master-detail layout.
+  const SECTIONS = [
+    { id: 'hardware', title: 'Hardware', advTitle: 'load-time hardware',
+      basic: ['MODEL_DEVICE','MODEL_COMPUTE_TYPE','MODEL_DEVICE_FALLBACK','MODEL_COMPUTE_TYPE_FALLBACK'],
+      adv:   ['REVISION','NUM_WORKERS','DEVICE_INDEX'] },
+    { id: 'decode', title: 'Decode params', advTitle: 'beam & sampling',
+      basic: ['DEFAULT_LANGUAGE','DEFAULT_PROMPT','DEFAULT_HOTWORDS',
+              'BEAM_SIZE','BEST_OF',
+              'CONDITION_ON_PREVIOUS_TEXT','WORD_TIMESTAMPS_ENABLED',
+              'NO_SPEECH_THRESHOLD','LOG_PROB_THRESHOLD','COMPRESSION_RATIO_THRESHOLD'],
+      adv:   ['TEMPERATURE','PATIENCE','LENGTH_PENALTY','REPETITION_PENALTY',
+              'NO_REPEAT_NGRAM_SIZE','PROMPT_RESET_ON_TEMPERATURE'] },
+    { id: 'vad', title: 'VAD', advTitle: null,
+      basic: ['VAD_FILTER','VAD_MIN_SILENCE_MS','VAD_SPEECH_PAD_MS','VAD_THRESHOLD'],
+      adv:   [] },
+    { id: 'langdet', title: 'Language detection (active when DEFAULT_LANGUAGE empty)',
+      advTitle: 'all detection knobs',
+      basic: [],
+      adv:   ['MULTILINGUAL','LANGUAGE_DETECTION_THRESHOLD','LANGUAGE_DETECTION_SEGMENTS'] },
+    { id: 'antihalluc', title: 'Anti-hallucination & token control',
+      advTitle: 'all anti-hallucination knobs',
+      basic: [],
+      adv:   ['HALLUCINATION_SILENCE_THRESHOLD','SUPPRESS_BLANK','SUPPRESS_TOKENS',
+              'PREPEND_PUNCTUATIONS','APPEND_PUNCTUATIONS'] },
+    { id: 'output', title: 'Output wrappers', advTitle: null,
+      basic: ['OUTPUT_PREFIX','OUTPUT_SUFFIX'], adv: [] },
+  ];
 
-  const ta = document.createElement('textarea');
-  ta.style.fontFamily = 'var(--font-mono, monospace)';
-  ta.style.width = '100%';
-  ta.spellcheck = false;
-  function dump(obj) {
-    try { return JSON.stringify(obj || {}, null, 2); }
-    catch { return '{}'; }
+  // LOAD_TIME_FIELDS subset that overlaps with ModelOverride. Editing any of
+  // these triggers drain-then-evict on save (no service restart).
+  // Mirror of config_store.LOAD_TIME_FIELDS minus globals-only entries.
+  const LOAD_TIME_FIELDS = new Set([
+    'MODEL_DEVICE','MODEL_COMPUTE_TYPE',
+    'MODEL_DEVICE_FALLBACK','MODEL_COMPUTE_TYPE_FALLBACK',
+    'REVISION','NUM_WORKERS','DEVICE_INDEX',
+  ]);
+
+  // Per-field widget metadata. Mirrors ModelOverride pydantic constraints
+  // (config_store.py:481+). Kept compact — extend a row only if behavior
+  // differs from a generic input.
+  const FIELD_META = {
+    MODEL_DEVICE:                { kind: 'enum', opts: ['cuda','cpu'] },
+    MODEL_COMPUTE_TYPE:          { kind: 'enum', opts: ['float16','int8_float16','int8','float32','bfloat16'] },
+    MODEL_DEVICE_FALLBACK:       { kind: 'enum', opts: ['cuda','cpu'] },
+    MODEL_COMPUTE_TYPE_FALLBACK: { kind: 'enum', opts: ['float16','int8_float16','int8','float32','bfloat16'] },
+    REVISION:                    { kind: 'string', placeholder: 'main | <git-sha>' },
+    NUM_WORKERS:                 { kind: 'int',   min: 1, max: 8 },
+    DEVICE_INDEX:                { kind: 'int',   min: 0, max: 15 },
+    DEFAULT_LANGUAGE:            { kind: 'string', placeholder: 'e.g. en, de (empty = auto)' },
+    DEFAULT_PROMPT:              { kind: 'textarea' },
+    DEFAULT_HOTWORDS:            { kind: 'textarea' },
+    BEAM_SIZE:                   { kind: 'int',   min: 1, max: 20 },
+    BEST_OF:                     { kind: 'int',   min: 1, max: 20 },
+    CONDITION_ON_PREVIOUS_TEXT:  { kind: 'bool' },
+    WORD_TIMESTAMPS_ENABLED:     { kind: 'bool' },
+    NO_SPEECH_THRESHOLD:         { kind: 'nullable_float', min: 0, max: 1, step: 0.05 },
+    LOG_PROB_THRESHOLD:          { kind: 'nullable_float', min: -10, max: 0, step: 0.1 },
+    COMPRESSION_RATIO_THRESHOLD: { kind: 'nullable_float', min: 0, max: 10, step: 0.1 },
+    TEMPERATURE:                 { kind: 'string', placeholder: '0.0,0.2,0.4,0.6,0.8,1.0' },
+    PATIENCE:                    { kind: 'float', min: 0.5, max: 5,   step: 0.1 },
+    LENGTH_PENALTY:              { kind: 'float', min: 0.1, max: 5,   step: 0.1 },
+    REPETITION_PENALTY:          { kind: 'float', min: 0.5, max: 5,   step: 0.05 },
+    NO_REPEAT_NGRAM_SIZE:        { kind: 'int',   min: 0, max: 10 },
+    PROMPT_RESET_ON_TEMPERATURE: { kind: 'float', min: 0, max: 1,     step: 0.05 },
+    VAD_FILTER:                  { kind: 'bool' },
+    VAD_MIN_SILENCE_MS:          { kind: 'int',   min: 0, max: 10000 },
+    VAD_SPEECH_PAD_MS:           { kind: 'int',   min: 0, max: 2000 },
+    VAD_THRESHOLD:               { kind: 'float', min: 0, max: 1,     step: 0.05 },
+    MULTILINGUAL:                { kind: 'bool' },
+    LANGUAGE_DETECTION_THRESHOLD:{ kind: 'float', min: 0, max: 1,     step: 0.05 },
+    LANGUAGE_DETECTION_SEGMENTS: { kind: 'int',   min: 1, max: 10 },
+    HALLUCINATION_SILENCE_THRESHOLD: { kind: 'nullable_float', min: 0, max: 60, step: 0.5 },
+    SUPPRESS_BLANK:              { kind: 'bool' },
+    SUPPRESS_TOKENS:             { kind: 'string', placeholder: '-1 | comma-ints | (empty = none)' },
+    PREPEND_PUNCTUATIONS:        { kind: 'string' },
+    APPEND_PUNCTUATIONS:         { kind: 'string' },
+    OUTPUT_PREFIX:               { kind: 'string' },
+    OUTPUT_SUFFIX:               { kind: 'string' },
+  };
+
+  // -------- helpers ------------------------------------------------------
+  function getOverrideValue(modelId, field) {
+    const m = overrides[modelId];
+    if (!m) return undefined;
+    const val = m[field];
+    return (val === null || val === undefined) ? undefined : val;
   }
-  ta.value = dump(v);
-  ta.rows = Math.max(8, Math.min(30, ta.value.split('\n').length + 1));
-
-  function refreshStatus(parsed, err) {
-    if (err) {
-      status.textContent = '⚠ JSON parse error: ' + err.message;
-      status.style.color = 'var(--red, #ff7b72)';
-      return;
-    }
-    const ids = Object.keys(parsed || {});
-    if (ids.length === 0) {
-      status.textContent = 'No per-model overrides — every model uses globals.';
-      status.style.color = 'var(--dim, #6e7681)';
+  function setOverrideValue(modelId, field, value) {
+    if (!overrides[modelId]) overrides[modelId] = {};
+    if (value === undefined) {
+      delete overrides[modelId][field];
     } else {
-      const counts = ids.map(id => {
-        const fields = Object.keys(parsed[id] || {}).length;
-        return id + ' (' + fields + ' override' + (fields === 1 ? '' : 's') + ')';
-      });
-      status.textContent = ids.length + ' model(s) with overrides: ' + counts.join(', ');
-      status.style.color = 'var(--green, #7ee787)';
+      overrides[modelId][field] = value;
     }
+    persist();
+  }
+  function clearOverride(modelId, field) {
+    if (overrides[modelId]) delete overrides[modelId][field];
+    persist();
+  }
+  function countOverrides(modelId) {
+    const m = overrides[modelId];
+    if (!m) return 0;
+    return Object.keys(m).filter(k => m[k] !== undefined && m[k] !== null).length;
+  }
+  function persist() {
+    setDirty(name, JSON.parse(JSON.stringify(overrides)));
+  }
+  // Resolve the global value for a given field. Reads via currentValue() so
+  // unsaved edits in the surrounding global field rows propagate live (the
+  // "inherits {global}" hint reflects the in-progress global edit).
+  function globalValue(field) {
+    try { return currentValue(field); } catch (_) { return null; }
+  }
+  function fmtValue(v) {
+    if (v === null || v === undefined) return '∅';
+    if (typeof v === 'boolean') return v ? '☑ on' : '☐ off';
+    if (Array.isArray(v))       return '[' + v.length + ' item' + (v.length === 1 ? '' : 's') + ']';
+    if (typeof v === 'string')  return v === '' ? '""' : v;
+    return String(v);
   }
 
-  function onChange() {
-    let parsed = {}, err = null;
-    try { parsed = JSON.parse(ta.value || '{}'); }
-    catch (e) { err = e; }
-    refreshStatus(parsed, err);
-    if (!err) setDirty(name, parsed);
-  }
-  ta.addEventListener('input', onChange);
+  // -------- DOM scaffolding ----------------------------------------------
+  const wrap = document.createElement('div');
+  wrap.className = 'mo-wrap';
+  const sidebar = document.createElement('aside');
+  sidebar.className = 'mo-sidebar';
+  const mainpane = document.createElement('div');
+  mainpane.className = 'mo-mainpane';
+  wrap.appendChild(sidebar);
+  wrap.appendChild(mainpane);
 
-  // helper bar
-  const bar = document.createElement('div');
-  bar.style.display = 'flex';
-  bar.style.gap = '0.5rem';
-  bar.style.alignItems = 'center';
-  bar.style.flexWrap = 'wrap';
-  bar.style.marginBottom = '0.5rem';
-
-  const addBtn = document.createElement('button');
-  addBtn.type = 'button';
-  addBtn.textContent = '+ add model override';
-  addBtn.addEventListener('click', () => {
+  // -------- sidebar -------------------------------------------------------
+  function renderSidebar() {
+    sidebar.innerHTML = '';
     const allowed = Array.isArray(currentValue('ALLOWED_MODELS'))
       ? currentValue('ALLOWED_MODELS') : [];
-    if (allowed.length === 0) {
-      alert('ALLOWED_MODELS is empty — type a model id directly into the JSON textarea.');
-      return;
+    // List every key in overrides, even those with 0 fields (admin just added
+    // an entry). Sort alphabetically for deterministic order.
+    const ids = Object.keys(overrides).sort();
+
+    // Item #1: Global (read-only ref). Dot is filled if ANY model has any override.
+    const gItem = document.createElement('div');
+    gItem.className = 'mo-list-item';
+    if (selectedId === null) gItem.classList.add('active');
+    const anyOverridden = ids.some(id => countOverrides(id) > 0);
+    gItem.innerHTML = '<span class="mo-dot ' + (anyOverridden ? 'override' : 'inherit') + '"></span>'
+      + '<span class="mo-list-label">Global (read-only ref)</span>';
+    gItem.addEventListener('click', () => { selectedId = null; renderAll(); });
+    sidebar.appendChild(gItem);
+
+    // Per-model entries.
+    for (const id of ids) {
+      const item = document.createElement('div');
+      item.className = 'mo-list-item';
+      if (id === selectedId) item.classList.add('active');
+      const n = countOverrides(id);
+      const dot = '<span class="mo-dot ' + (n > 0 ? 'override' : 'inherit') + '"></span>';
+      // Long HF-style ids would blow the sidebar width — let CSS truncate.
+      const lbl = '<span class="mo-list-label" title="' + id + '">' + id + '</span>';
+      const cnt = '<span class="mo-count">(' + n + ')</span>';
+      item.innerHTML = dot + lbl + cnt;
+      item.addEventListener('click', () => { selectedId = id; renderAll(); });
+      sidebar.appendChild(item);
     }
-    let cur = {};
-    try { cur = JSON.parse(ta.value || '{}'); } catch {}
-    const taken = new Set(Object.keys(cur));
-    const free = allowed.filter(m => !taken.has(m));
-    if (free.length === 0) {
-      alert('Every allowed model already has an override entry.');
-      return;
+
+    // + add model — inline dropdown of allowed models without an entry yet.
+    const addRow = document.createElement('div');
+    addRow.className = 'mo-list-add';
+    const free = allowed.filter(m => !overrides[m]);
+    if (free.length > 0) {
+      const sel = document.createElement('select');
+      const ph = document.createElement('option');
+      ph.value = ''; ph.textContent = '+ add model override...';
+      ph.selected = true; ph.disabled = true;
+      sel.appendChild(ph);
+      for (const m of free) {
+        const o = document.createElement('option'); o.value = m; o.textContent = m;
+        sel.appendChild(o);
+      }
+      sel.addEventListener('change', () => {
+        if (!sel.value) return;
+        overrides[sel.value] = {};
+        selectedId = sel.value;
+        persist();
+        renderAll();
+      });
+      addRow.appendChild(sel);
+    } else if (allowed.length === 0) {
+      const note = document.createElement('div');
+      note.className = 'help';
+      note.textContent = 'ALLOWED_MODELS is empty — add models in the Models section above.';
+      addRow.appendChild(note);
+    } else {
+      const note = document.createElement('div');
+      note.className = 'help';
+      note.textContent = 'Every allowed model already has an entry.';
+      addRow.appendChild(note);
     }
-    const pick = prompt(
-      'Add override for which model id?\n\nAvailable:\n  ' + free.join('\n  '),
-      free[0],
-    );
-    if (!pick || !free.includes(pick)) return;
-    cur[pick] = { BEAM_SIZE: null };
-    // null in the value tells the user "fill me in"; pydantic ignores Nones.
-    ta.value = dump(cur);
-    onChange();
-  });
-  bar.appendChild(addBtn);
+    sidebar.appendChild(addRow);
 
-  const clearBtn = document.createElement('button');
-  clearBtn.type = 'button';
-  clearBtn.textContent = '⌫ clear all';
-  clearBtn.addEventListener('click', () => {
-    if (!confirm('Clear all per-model overrides?')) return;
-    ta.value = '{}';
-    onChange();
-  });
-  bar.appendChild(clearBtn);
+    // Diff-to-global toggle — dims rows whose value matches the global.
+    const diffWrap = document.createElement('label');
+    diffWrap.className = 'cb-row mo-diff-toggle';
+    const diffCb = document.createElement('input');
+    diffCb.type = 'checkbox'; diffCb.checked = diffMode;
+    diffCb.addEventListener('change', () => {
+      diffMode = diffCb.checked;
+      mainpane.classList.toggle('diff-mode', diffMode);
+    });
+    diffWrap.appendChild(diffCb);
+    const diffLbl = document.createElement('span');
+    diffLbl.textContent = 'Compare diff to global';
+    diffLbl.title = 'Dim rows whose value equals the resolved global default';
+    diffWrap.appendChild(diffLbl);
+    sidebar.appendChild(diffWrap);
 
-  const fmtBtn = document.createElement('button');
-  fmtBtn.type = 'button';
-  fmtBtn.textContent = '⌥ format';
-  fmtBtn.title = 'Re-indent the JSON';
-  fmtBtn.addEventListener('click', () => {
-    try {
-      const parsed = JSON.parse(ta.value || '{}');
-      ta.value = dump(parsed);
-      onChange();
-    } catch (e) {
-      alert('Cannot format: ' + e.message);
+    // Remove-current-model affordance — only when a model is selected.
+    if (selectedId) {
+      const rmBtn = document.createElement('button');
+      rmBtn.type = 'button';
+      rmBtn.className = 'reset-link mo-remove-btn';
+      rmBtn.textContent = '× remove model entry';
+      rmBtn.title = 'Delete all overrides for ' + selectedId;
+      rmBtn.addEventListener('click', () => {
+        if (!confirm('Delete all overrides for ' + selectedId + '?')) return;
+        delete overrides[selectedId];
+        selectedId = null;
+        persist();
+        renderAll();
+      });
+      sidebar.appendChild(rmBtn);
     }
-  });
-  bar.appendChild(fmtBtn);
+  }
 
-  wrap.appendChild(bar);
-  wrap.appendChild(ta);
-  wrap.appendChild(status);
+  // -------- main pane: dispatcher ----------------------------------------
+  function renderMain() {
+    mainpane.innerHTML = '';
+    mainpane.classList.toggle('diff-mode', diffMode);
+    if (selectedId === null) {
+      renderGlobalRefView();
+    } else {
+      renderModelEditView();
+    }
+  }
 
-  // Field reference (collapsible)
-  const ref = document.createElement('details');
-  ref.style.marginTop = '0.5rem';
-  const sum = document.createElement('summary');
-  sum.textContent = 'Available override fields (per-model)';
-  sum.style.cursor = 'pointer';
-  sum.style.color = 'var(--dim, #6e7681)';
-  ref.appendChild(sum);
-  const refList = document.createElement('div');
-  refList.className = 'help';
-  refList.style.fontFamily = 'var(--font-mono, monospace)';
-  refList.style.fontSize = '0.85em';
-  refList.style.whiteSpace = 'pre';
-  refList.textContent = [
-    '// Load-time (drain-then-evict on edit):',
-    '"MODEL_DEVICE": "cuda"|"cpu",',
-    '"MODEL_COMPUTE_TYPE": "float16"|"int8"|"bfloat16"|"int8_float16"|"float32",',
-    '"MODEL_DEVICE_FALLBACK": "cuda"|"cpu",',
-    '"MODEL_COMPUTE_TYPE_FALLBACK": "float16"|"int8"|...,',
-    '"REVISION": "main"|"<git-sha>",',
-    '"NUM_WORKERS": 1..8,  "DEVICE_INDEX": 0..15,',
-    '',
-    '// Decode (per-call):',
-    '"DEFAULT_LANGUAGE": "de", "DEFAULT_PROMPT": "...", "DEFAULT_HOTWORDS": "...",',
-    '"BEAM_SIZE": 1..20, "BEST_OF": 1..20,',
-    '"CONDITION_ON_PREVIOUS_TEXT": true|false,',
-    '"WORD_TIMESTAMPS_ENABLED": true|false,',
-    '"NO_SPEECH_THRESHOLD": 0..1, "LOG_PROB_THRESHOLD": -10..0,',
-    '"COMPRESSION_RATIO_THRESHOLD": 0..10,',
-    '"TEMPERATURE": "0.0,0.2,...", "PATIENCE": 0.5..5,',
-    '"LENGTH_PENALTY": 0.1..5, "REPETITION_PENALTY": 0.5..5,',
-    '"NO_REPEAT_NGRAM_SIZE": 0..10, "PROMPT_RESET_ON_TEMPERATURE": 0..1,',
-    '',
-    '// VAD:',
-    '"VAD_FILTER": true|false, "VAD_MIN_SILENCE_MS": 0..10000,',
-    '"VAD_SPEECH_PAD_MS": 0..2000, "VAD_THRESHOLD": 0..1,',
-    '',
-    '// Language detection (active when DEFAULT_LANGUAGE empty):',
-    '"MULTILINGUAL": true|false, "LANGUAGE_DETECTION_THRESHOLD": 0..1,',
-    '"LANGUAGE_DETECTION_SEGMENTS": 1..10,',
-    '',
-    '// Anti-hallucination & token control:',
-    '"HALLUCINATION_SILENCE_THRESHOLD": 0..60, "SUPPRESS_BLANK": true|false,',
-    '"SUPPRESS_TOKENS": "-1"|"<comma-ints>", ',
-    '"PREPEND_PUNCTUATIONS": "<chars>", "APPEND_PUNCTUATIONS": "<chars>",',
-    '',
-    '// Output wrappers + pipeline scoping:',
-    '"OUTPUT_PREFIX": "...", "OUTPUT_SUFFIX": "...",',
-    '"PIPELINE_RULES_EXCLUDE": ["dictation-map", ...]',
-    '',
-    '// Example:',
-    '{',
-    '  "GalaktischeGurke/primeline-whisper-large-v3-german-ct2": {',
-    '    "CONDITION_ON_PREVIOUS_TEXT": false,',
-    '    "PIPELINE_RULES_EXCLUDE": ["dictation-map"],',
-    '    "OUTPUT_PREFIX": "[de] "',
-    '  },',
-    '  "large-v3": {',
-    '    "BEAM_SIZE": 8,',
-    '    "MODEL_COMPUTE_TYPE": "bfloat16"',
-    '  }',
-    '}',
-  ].join('\n');
-  ref.appendChild(refList);
-  wrap.appendChild(ref);
+  // -------- main pane: Global ref view -----------------------------------
+  function renderGlobalRefView() {
+    const intro = document.createElement('div');
+    intro.className = 'help';
+    intro.textContent = 'Resolved global defaults (read-only). Edit them in their normal sections elsewhere on this page.';
+    mainpane.appendChild(intro);
+    for (const sec of SECTIONS) {
+      const secEl = document.createElement('div');
+      secEl.className = 'mo-section';
+      const h4 = document.createElement('h4');
+      h4.textContent = sec.title;
+      secEl.appendChild(h4);
+      const allFields = [...sec.basic, ...sec.adv];
+      for (const f of allFields) {
+        const row = document.createElement('div');
+        row.className = 'mo-row mo-row-ref';
+        const dot = document.createElement('span');
+        dot.className = 'mo-dot inherit';
+        const lbl = document.createElement('span');
+        lbl.className = 'mo-name';
+        lbl.textContent = f;
+        const val = document.createElement('span');
+        val.className = 'mo-value-cell mo-inherits';
+        val.textContent = fmtValue(globalValue(f));
+        const jump = document.createElement('button');
+        jump.type = 'button';
+        jump.className = 'reset-link';
+        jump.textContent = '↑ edit';
+        jump.title = 'Scroll to the global field row';
+        jump.addEventListener('click', () => jumpToField(f));
+        row.appendChild(dot);
+        row.appendChild(lbl);
+        row.appendChild(val);
+        row.appendChild(jump);
+        secEl.appendChild(row);
+      }
+      mainpane.appendChild(secEl);
+    }
+  }
 
-  refreshStatus(v || {}, null);
+  // -------- main pane: Model edit view -----------------------------------
+  function renderModelEditView() {
+    const head = document.createElement('div');
+    head.className = 'mo-edit-head';
+    head.innerHTML = '<strong>Editing: </strong><span class="mo-name">' + selectedId + '</span>';
+    mainpane.appendChild(head);
+    for (const sec of SECTIONS) {
+      mainpane.appendChild(renderSection(sec));
+    }
+    mainpane.appendChild(renderPipelineSection());
+  }
+
+  function renderSection(sec) {
+    const secEl = document.createElement('div');
+    secEl.className = 'mo-section';
+    const h4 = document.createElement('h4');
+    h4.textContent = sec.title;
+    if (sec.id === 'hardware') {
+      const reload = document.createElement('span');
+      reload.className = 'badge restart';
+      reload.textContent = 'drain-then-evict on edit';
+      reload.style.marginLeft = '0.5rem';
+      h4.appendChild(reload);
+    }
+    secEl.appendChild(h4);
+    for (const f of sec.basic) {
+      secEl.appendChild(renderFieldRow(f));
+    }
+    if (sec.adv.length) {
+      const det = document.createElement('details');
+      det.className = 'subgroup-details mo-advanced';
+      const sum = document.createElement('summary');
+      sum.className = 'subgroup-summary';
+      sum.textContent = 'Advanced — ' + (sec.advTitle || 'more knobs');
+      det.appendChild(sum);
+      const lsKey = 'mo.adv.' + sec.id;
+      det.open = localStorage.getItem(lsKey) === '1';
+      det.addEventListener('toggle', () => {
+        try { localStorage.setItem(lsKey, det.open ? '1' : '0'); } catch (_) {}
+      });
+      const advWrap = document.createElement('div');
+      for (const f of sec.adv) advWrap.appendChild(renderFieldRow(f));
+      det.appendChild(advWrap);
+      secEl.appendChild(det);
+    }
+    return secEl;
+  }
+
+  function renderFieldRow(field) {
+    const meta = FIELD_META[field] || { kind: 'string' };
+    const overrideVal = getOverrideValue(selectedId, field);
+    const isOverridden = overrideVal !== undefined;
+    const globalVal = globalValue(field);
+
+    const row = document.createElement('div');
+    row.className = 'mo-row mo-row-edit';
+    // Use a distinct attribute (not data-field) so the diff dim selector
+    // doesn't collide with the global fieldRow's data-field. The global
+    // editor uses data-field on its rows; we use data-mo-field to keep the
+    // jump-link selectors unambiguous.
+    row.dataset.moField = field;
+    row.dataset.overridden = isOverridden ? 'true' : 'false';
+    // matches-global: not overridden, OR overridden but the value happens to
+    // equal the global. The latter is degenerate but cheap to detect, and
+    // useful — the row is functionally inherited.
+    const matches = !isOverridden || JSON.stringify(overrideVal) === JSON.stringify(globalVal);
+    row.dataset.matchesGlobal = matches ? 'true' : 'false';
+
+    const dot = document.createElement('span');
+    dot.className = 'mo-dot ' + (isOverridden ? 'override' : 'inherit');
+    row.appendChild(dot);
+
+    const labelWrap = document.createElement('span');
+    labelWrap.className = 'mo-name';
+    labelWrap.textContent = field;
+    if (LOAD_TIME_FIELDS.has(field)) {
+      const reload = document.createElement('span');
+      reload.className = 'badge restart';
+      reload.textContent = '⚠ reload';
+      reload.title = 'Editing this field evicts and reloads the model on save';
+      reload.style.marginLeft = '0.4rem';
+      labelWrap.appendChild(reload);
+    }
+    row.appendChild(labelWrap);
+
+    const valueCell = document.createElement('span');
+    valueCell.className = 'mo-value-cell';
+    if (isOverridden) {
+      valueCell.appendChild(makeInputWidget(field, meta, overrideVal));
+    } else {
+      const inh = document.createElement('span');
+      inh.className = 'mo-inherits';
+      inh.textContent = 'inherits ' + fmtValue(globalVal);
+      valueCell.appendChild(inh);
+    }
+    row.appendChild(valueCell);
+
+    const ctrl = document.createElement('span');
+    ctrl.className = 'mo-row-ctrl';
+    if (isOverridden) {
+      const reset = document.createElement('button');
+      reset.type = 'button';
+      reset.className = 'reset-link';
+      reset.textContent = '↶ reset';
+      reset.title = 'Restore inherited value (' + fmtValue(globalVal) + ')';
+      reset.addEventListener('click', () => {
+        clearOverride(selectedId, field);
+        renderMain();
+        renderSidebar();
+      });
+      ctrl.appendChild(reset);
+    } else {
+      const add = document.createElement('button');
+      add.type = 'button';
+      add.className = 'reset-link';
+      add.textContent = '+ override';
+      add.title = 'Set a per-model override starting from the inherited value';
+      add.addEventListener('click', () => {
+        // Seed with the current global value so the admin starts from the
+        // inherited value (not from a zero/empty default that overrides it).
+        const seed = (globalVal === null || globalVal === undefined)
+          ? defaultForKind(meta.kind) : globalVal;
+        setOverrideValue(selectedId, field, seed);
+        renderMain();
+        renderSidebar();
+      });
+      ctrl.appendChild(add);
+    }
+    row.appendChild(ctrl);
+    return row;
+  }
+
+  function defaultForKind(kind) {
+    if (kind === 'bool') return false;
+    if (kind === 'int' || kind === 'float' || kind === 'nullable_float') return 0;
+    return '';
+  }
+
+  function makeInputWidget(field, meta, currentVal) {
+    if (meta.kind === 'bool') {
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !!currentVal;
+      cb.addEventListener('change', () => setOverrideValue(selectedId, field, cb.checked));
+      return cb;
+    }
+    if (meta.kind === 'enum') {
+      const sel = document.createElement('select');
+      for (const o of (meta.opts || [])) {
+        const opt = document.createElement('option');
+        opt.value = o; opt.textContent = o;
+        if (o === currentVal) opt.selected = true;
+        sel.appendChild(opt);
+      }
+      sel.addEventListener('change', () => setOverrideValue(selectedId, field, sel.value));
+      return sel;
+    }
+    if (meta.kind === 'int' || meta.kind === 'float') {
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      if (meta.min !== undefined) inp.min = meta.min;
+      if (meta.max !== undefined) inp.max = meta.max;
+      if (meta.step !== undefined) inp.step = meta.step;
+      else if (meta.kind === 'int') inp.step = 1;
+      inp.value = currentVal == null ? '' : currentVal;
+      inp.addEventListener('input', () => {
+        const raw = inp.value;
+        if (raw === '') return;     // wait for a complete number
+        const n = meta.kind === 'int' ? parseInt(raw, 10) : parseFloat(raw);
+        if (Number.isFinite(n)) setOverrideValue(selectedId, field, n);
+      });
+      return inp;
+    }
+    if (meta.kind === 'nullable_float') {
+      // Empty input = null = "explicitly disabled" override (different from
+      // not-overridden, which is "use global"). Send null on empty.
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      if (meta.min !== undefined) inp.min = meta.min;
+      if (meta.max !== undefined) inp.max = meta.max;
+      if (meta.step !== undefined) inp.step = meta.step;
+      inp.value = currentVal == null ? '' : currentVal;
+      inp.addEventListener('input', () => {
+        const raw = inp.value;
+        if (raw === '') {
+          setOverrideValue(selectedId, field, null);
+          return;
+        }
+        const n = parseFloat(raw);
+        if (Number.isFinite(n)) setOverrideValue(selectedId, field, n);
+      });
+      return inp;
+    }
+    if (meta.kind === 'textarea') {
+      const ta = document.createElement('textarea');
+      ta.rows = 3;
+      ta.value = currentVal == null ? '' : currentVal;
+      ta.addEventListener('input', () => setOverrideValue(selectedId, field, ta.value));
+      return ta;
+    }
+    // string fallback (and TEMPERATURE / SUPPRESS_TOKENS / PUNCTUATIONS)
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    if (meta.placeholder) inp.placeholder = meta.placeholder;
+    inp.value = currentVal == null ? '' : currentVal;
+    inp.addEventListener('input', () => setOverrideValue(selectedId, field, inp.value));
+    return inp;
+  }
+
+  // -------- main pane: pipeline rules checklist --------------------------
+  function renderPipelineSection() {
+    const secEl = document.createElement('div');
+    secEl.className = 'mo-section';
+    const h4 = document.createElement('h4');
+    h4.textContent = 'Pipeline rules (scoping only)';
+    secEl.appendChild(h4);
+    const note = document.createElement('div');
+    note.className = 'help';
+    note.textContent = 'Exclude pipeline rules for this model. Rule bodies are edited globally — toggle here only controls whether each rule runs in this model\'s pipeline.';
+    secEl.appendChild(note);
+
+    let rules = [];
+    try { rules = currentValue('PIPELINE_RULES') || []; } catch (_) { rules = []; }
+    const cur = (overrides[selectedId] && overrides[selectedId].PIPELINE_RULES_EXCLUDE) || [];
+    const excludeSet = new Set(cur);
+    const ruleOpts = {
+      excludeSet,
+      onToggle: (slug, excluded) => {
+        if (excluded) excludeSet.add(slug);
+        else excludeSet.delete(slug);
+        const list = [...excludeSet];
+        if (!overrides[selectedId]) overrides[selectedId] = {};
+        if (list.length) overrides[selectedId].PIPELINE_RULES_EXCLUDE = list;
+        else delete overrides[selectedId].PIPELINE_RULES_EXCLUDE;
+        persist();
+        renderSidebar();   // override count changed
+      },
+      onJumpToGlobal: (slug) => jumpToRule(slug),
+    };
+    secEl.appendChild(makeRuleListEditor('PIPELINE_RULES', rules, 'checklist', ruleOpts));
+    return secEl;
+  }
+
+  // -------- jump-link helpers --------------------------------------------
+  // The global field row uses `data-field="X"`; per-model rows here use
+  // `data-mo-field="X"` to avoid clashing. Scope the global selector to
+  // .field (the existing per-row class) so we always land on the right node.
+  function jumpToField(field) {
+    const target = document.querySelector('main .field[data-field="' + field + '"]');
+    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+  function jumpToRule(slug) {
+    const fieldRow = document.querySelector('main .field[data-field="PIPELINE_RULES"]');
+    if (!fieldRow) return;
+    const ruleRow = fieldRow.querySelector('.rule-row[data-slug="' + slug + '"]');
+    if (ruleRow) {
+      ruleRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      // Auto-expand the rule body if collapsed, so the admin lands directly
+      // in its editor rather than just at the row header.
+      if (!ruleRow.classList.contains('expanded')) {
+        const btn = ruleRow.querySelector(':scope > .row-header > .expand-btn');
+        if (btn) btn.click();
+      }
+    } else {
+      fieldRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }
+
+  // Initial selection: the alphabetically-first model with overrides, else
+  // Global. Avoids a blank main pane on first paint when overrides exist.
+  (function() {
+    const ids = Object.keys(overrides).filter(id => countOverrides(id) > 0).sort();
+    if (ids.length > 0) selectedId = ids[0];
+  })();
+
+  function renderAll() {
+    renderSidebar();
+    renderMain();
+  }
+  renderAll();
+  // Re-render the sidebar on ALLOWED_MODELS changes (the "+ add model"
+  // dropdown sources from there). Same event the DEFAULT_MODEL dropdown
+  // and PRELOAD_MODELS multi-select listen for.
+  document.addEventListener('admin:model-lists-changed', renderSidebar);
   return wrap;
 }
 
@@ -1780,19 +2310,35 @@ async function _testOneRule(rule) {
   return (j.steps && j.steps[0]) || null;
 }
 
-function pipelineRulesEditor(name, initialRules) {
+function makeRuleListEditor(name, initialRules, mode, opts) {
+  // mode: "full" (default) → editable list with drag-reorder, add/delete,
+  //         per-row body editor, per-row test badge. Used for the global
+  //         PIPELINE_RULES editor.
+  //       "checklist" → compact read-only-ish list with one checkbox per
+  //         rule (writes to MODEL_OVERRIDES[id].PIPELINE_RULES_EXCLUDE) and
+  //         a "↑ view" jump-link to the global editor. Used by the per-model
+  //         override pane. opts.excludeSet (Set<slug>) drives initial state;
+  //         opts.onToggle(slug, excluded) and opts.onJumpToGlobal(slug) are
+  //         the two callbacks.
   // initialRules: list of rule dicts as stored in PIPELINE_RULES.
-  // Local mutable copy lives in a closure; setDirty(name, snapshot) on every
-  // edit so save tracks the whole list as one entry.
+  // Local mutable copy lives in a closure; in "full" mode setDirty(name, snapshot)
+  // on every edit so save tracks the whole list as one entry. In "checklist"
+  // mode the list is purely read-only — toggles call opts.onToggle directly.
+  mode = mode || 'full';
+  opts = opts || {};
+  const isChecklist = mode === 'checklist';
   let rules = JSON.parse(JSON.stringify(initialRules || []));
   const wrap = document.createElement('div');
   wrap.className = 'pipeline-rules-wrap';
+  if (isChecklist) wrap.classList.add('checklist-mode');
 
-  const advWarn = document.createElement('div');
-  advWarn.className = 'advanced-warn';
-  advWarn.innerHTML = '⚠ <strong>advanced</strong> — incorrect regex breaks transcription. '
-    + 'Use the test panel below to dry-run before saving. ↺ Reset to default if you get stuck.';
-  wrap.appendChild(advWarn);
+  if (!isChecklist) {
+    const advWarn = document.createElement('div');
+    advWarn.className = 'advanced-warn';
+    advWarn.innerHTML = '⚠ <strong>advanced</strong> — incorrect regex breaks transcription. '
+      + 'Use the test panel below to dry-run before saving. ↺ Reset to default if you get stuck.';
+    wrap.appendChild(advWarn);
+  }
 
   const list = document.createElement('div');
   list.className = 'rule-list';
@@ -1813,6 +2359,8 @@ function pipelineRulesEditor(name, initialRules) {
   // List-level (delegated) drag handlers. dragenter moves the placeholder
   // around as the cursor crosses rows; drop fires once at the placeholder's
   // final position. Per-row handlers only fire dragstart/dragend.
+  // Checklist mode is read-only — drag-to-reorder is meaningless there.
+  if (!isChecklist) {
   list.addEventListener('dragover', (e) => {
     if (!dragSrcEl) return;
     e.preventDefault();                          // required for drop to fire
@@ -1865,6 +2413,7 @@ function pipelineRulesEditor(name, initialRules) {
     }
     commitFull();
   });
+  }  // end if (!isChecklist) — drag handlers
 
   // --- baseline / dirtiness helpers (drive reset-button visibility) ----
   function _baselineList() { return fieldDef(name).default_value || []; }
@@ -1887,6 +2436,7 @@ function pipelineRulesEditor(name, initialRules) {
   function _anyRuleDirty() { return rules.some(r => _isRuleDirty(r)); }
 
   function refreshControlsVisibility() {
+    if (isChecklist) return;   // checklist rows have no reset/dirty controls
     // Per-row reset buttons: hide when rule matches its baseline.
     list.querySelectorAll('.rule-row').forEach(r => {
       const idx = parseInt(r.dataset.idx, 10);
@@ -1911,10 +2461,15 @@ function pipelineRulesEditor(name, initialRules) {
   // any other expanded rows. Structural changes (add/delete/reorder/reset/
   // toggle-enabled) DO rebuild because the visible row layout changes.
   function commitData() {
+    if (isChecklist) return;   // checklist mode is read-only — no setDirty
     setDirty(name, JSON.parse(JSON.stringify(rules)));
     refreshControlsVisibility();
   }
   function commitFull() {
+    if (isChecklist) {
+      paintAll();
+      return;
+    }
     setDirty(name, JSON.parse(JSON.stringify(rules)));
     paintAll();
   }
@@ -1929,6 +2484,76 @@ function pipelineRulesEditor(name, initialRules) {
     const row = document.createElement('div');
     row.className = 'rule-row';
     row.dataset.idx = idx;
+    row.dataset.slug = rule.name || '';
+
+    // -------- Checklist mode: compact one-checkbox row + jump-link --------
+    // No drag handle, no body, no test badge, no add/delete/reset. Bodies
+    // are still edited globally; this row is just an exclusion toggle for
+    // the model selected in the master-detail UI.
+    if (isChecklist) {
+      const excluded = !!(opts.excludeSet && opts.excludeSet.has(rule.name));
+      const isTerminal = rule.type === 'terminal';
+      if (isTerminal) row.classList.add('terminal');
+      if (excluded) row.classList.add('excluded');
+      const head = document.createElement('div');
+      head.className = 'row-header';
+
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = !excluded;
+      // Terminal can't be excluded (it's the always-last hardcoded trim).
+      if (isTerminal) {
+        cb.disabled = true;
+        cb.title = 'Terminal trim — always runs, cannot be excluded per model';
+      } else {
+        cb.title = excluded
+          ? 'Excluded for this model — will not run in its pipeline'
+          : 'Active for this model — will run in its pipeline';
+        cb.addEventListener('change', () => {
+          if (opts.onToggle) opts.onToggle(rule.name, !cb.checked);
+          row.classList.toggle('excluded', !cb.checked);
+          // Update footer count.
+          if (footer) footer.textContent = _footerText();
+        });
+      }
+      head.appendChild(cb);
+
+      const lbl = document.createElement('span');
+      lbl.className = 'rule-label';
+      lbl.textContent = rule.label || rule.name;
+      head.appendChild(lbl);
+
+      const pill = document.createElement('span');
+      pill.className = 'type-pill';
+      pill.textContent = _typePill(rule.type);
+      head.appendChild(pill);
+
+      if (!isTerminal) {
+        const view = document.createElement('button');
+        view.type = 'button';
+        view.className = 'reset-link';
+        view.textContent = '↑ view';
+        view.title = 'Scroll to global PIPELINE_RULES editor and expand this rule';
+        view.addEventListener('click', () => {
+          if (opts.onJumpToGlobal) opts.onJumpToGlobal(rule.name);
+        });
+        head.appendChild(view);
+      }
+
+      const status = document.createElement('span');
+      status.className = 'rule-checklist-status';
+      status.textContent = excluded ? 'EXCLUDED' : '';
+      head.appendChild(status);
+      // Re-update the EXCLUDED text whenever the checkbox changes.
+      cb.addEventListener('change', () => {
+        status.textContent = cb.checked ? '' : 'EXCLUDED';
+      });
+
+      row.appendChild(head);
+      return row;
+    }
+    // ----------------------------------------------------------------------
+
     row.tabIndex = 0;     // keyboard-focusable; CSS :focus-visible draws ring
     if (rule.locked) row.classList.add('locked');
     if (!rule.enabled) row.classList.add('disabled');
@@ -2055,7 +2680,7 @@ function pipelineRulesEditor(name, initialRules) {
     }
     row.appendChild(head);
 
-    // Drop logic lives at list level (see top of pipelineRulesEditor) —
+    // Drop logic lives at list level (see top of makeRuleListEditor) —
     // the shared placeholder follows the cursor between rows there.
 
     // Body (collapsed by default).
@@ -2262,6 +2887,25 @@ function pipelineRulesEditor(name, initialRules) {
     td1.appendChild(ki); td2.appendChild(vi); td3.appendChild(del);
     tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
     return tr;
+  }
+
+  // Footer + bottom controls. In checklist mode we ONLY show the footer
+  // count; full mode adds add-rule + reset-order + reset-all buttons.
+  let footer = null;
+  function _footerText() {
+    const total = rules.filter(r => r.type !== 'terminal').length;
+    const excluded = (opts.excludeSet ? opts.excludeSet.size : 0);
+    const active = total - excluded;
+    return total + ' rule' + (total === 1 ? '' : 's') + ' total · '
+      + active + ' active for this model';
+  }
+  if (isChecklist) {
+    footer = document.createElement('div');
+    footer.className = 'help rule-checklist-footer';
+    footer.textContent = _footerText();
+    wrap.appendChild(footer);
+    paintAll();
+    return wrap;
   }
 
   // Bottom controls.
@@ -2759,17 +3403,11 @@ function render() {
     h.textContent = g.title;
     sec.appendChild(h);
     // Each group now has subgroups; iterate them. A subgroup with title===null
-    // emits no subheader (back-compat with old single-list layout).
+    // emits no subheader (back-compat with old single-list layout). A subgroup
+    // WITH a title is wrapped in <details>/<summary> so the admin can collapse
+    // long-tail "Advanced —" sections; open/closed state persists in
+    // localStorage keyed by `adv.global.{group}.{sub}`.
     for (const sub of (g.subgroups || [{ title: null, fields: g.fields || [] }])) {
-      if (sub.title) {
-        const h3 = document.createElement('h3');
-        h3.className = 'subgroup';
-        h3.textContent = sub.title;
-        sec.appendChild(h3);
-      }
-      // Wrap fields in a single grid container so .field can use
-      // grid-template-columns: subgrid and share one auto-sized label column
-      // across all rows in this subgroup.
       const fieldsWrap = document.createElement('div');
       fieldsWrap.className = 'group-fields';
       for (const fname of sub.fields) {
@@ -2785,7 +3423,23 @@ function render() {
           fieldsWrap.appendChild(errRow);
         }
       }
-      sec.appendChild(fieldsWrap);
+      if (sub.title) {
+        const det = document.createElement('details');
+        det.className = 'subgroup-details';
+        const sum = document.createElement('summary');
+        sum.className = 'subgroup-summary';
+        sum.textContent = sub.title;
+        det.appendChild(sum);
+        det.appendChild(fieldsWrap);
+        const lsKey = 'adv.global.' + g.title + '.' + sub.title;
+        det.open = localStorage.getItem(lsKey) === '1';
+        det.addEventListener('toggle', () => {
+          try { localStorage.setItem(lsKey, det.open ? '1' : '0'); } catch (_) {}
+        });
+        sec.appendChild(det);
+      } else {
+        sec.appendChild(fieldsWrap);
+      }
     }
     // The Pipeline section gets the full-pipeline test panel appended at the
     // bottom (after PIPELINE_RULES renders). Single panel — runs the whole
