@@ -628,121 +628,67 @@ _model_load_lock = _asyncio_for_models.Lock()
 
 
 # =============================================================================
-# Token rule compilation cache
+# SUPPRESS_CHARS resolution cache
 # =============================================================================
-# Cache compiled TOKEN_RULES output keyed on (model_id, rules_hash). Holds
-# the materialised faster-whisper kwarg deltas (extra suppress IDs, prompt /
-# hotwords appendage, optional prefix). Invalidated on model unload (the
-# cached suppress-IDs depend on the model's tokenizer). Re-keyed when
-# TOKEN_RULES content changes (rules_hash is sha1 of the canonicalised
-# active rule list).
-@dataclass(frozen=True)
-class _CompiledTokenRules:
-    suppress_token_ids: tuple[int, ...]      # to merge into suppress_tokens
-    prompt_extra: str                        # to append to initial_prompt
-    hotwords_extra: str                      # to append to hotwords
-    prefix: "str | None"                     # forced prefix (last enabled wins)
+# Resolve the user's SUPPRESS_CHARS string to vocabulary token IDs via the
+# loaded model's hf_tokenizer. The encoding depends on the model's BPE
+# table, so the cache key is (model_id, chars_str). Invalidated on model
+# unload (LRU/idle/evict-on-edit) and naturally rekeyed when SUPPRESS_CHARS
+# changes.
+_suppress_chars_cache: "dict[tuple[str, str], tuple[int, ...]]" = {}
 
 
-_token_rules_cache: "dict[tuple[str, str], _CompiledTokenRules]" = {}
-
-
-def _compile_token_rules(model_id: str,
-                         model: "WhisperModel",
-                         rules: "list[dict]",
-                         active_set: "set[str]") -> _CompiledTokenRules:
-    """Compile the post-include/exclude TOKEN_RULES list into a kwarg-delta
-    bundle. Memoised per (model_id, sha1(active rules)). The returned
-    CompiledTokenRules is then merged into transcribe_kwargs at request time.
-
-    `active_set` is the set of slug names actually in effect for this request:
-    rules globally enabled, plus per-model TOKEN_RULES_INCLUDE, minus per-
-    model TOKEN_RULES_EXCLUDE. Filtering is the caller's job; this function
-    only iterates `rules` whose name is in `active_set`."""
-    import hashlib, json
-    canonical = json.dumps(
-        [r for r in rules if (r.get("name") in active_set) and r.get("enabled")],
-        sort_keys=True, separators=(",", ":"), default=str,
-    )
-    cache_key = (model_id, hashlib.sha1(canonical.encode("utf-8")).hexdigest())
-    cached = _token_rules_cache.get(cache_key)
+def _resolve_suppress_chars(model_id: str,
+                            model: "WhisperModel",
+                            chars: "str | None") -> "tuple[int, ...]":
+    """Return the sorted tuple of vocab IDs to suppress for the given chars.
+    Each char is encoded both bare and with a leading space — Whisper's BPE
+    often tokenizes a punct char differently in those positions (mirrors
+    faster-whisper's own non_speech_tokens approach). Multi-piece results
+    are skipped with a warning (suppressing only the first piece would
+    block every word that starts with that piece)."""
+    if not chars:
+        return ()
+    key = (model_id, chars)
+    cached = _suppress_chars_cache.get(key)
     if cached is not None:
         return cached
-
-    suppress_ids: set[int] = set()
-    prompt_parts: list[str] = []
-    hotword_parts: list[str] = []
-    prefix: "str | None" = None
     tok = getattr(model, "hf_tokenizer", None)
-
-    for r in rules:
-        if r.get("name") not in active_set or not r.get("enabled"):
-            continue
-        rtype = r.get("type")
-        if rtype == "suppress-chars" and tok is not None:
-            for ch in (r.get("pattern") or ""):
-                if ch.isspace():
-                    continue
-                # Encode both with and without leading space — Whisper's BPE
-                # often tokenizes a punct char differently in those positions
-                # (matches faster-whisper's own non_speech_tokens approach).
-                for variant in (ch, " " + ch):
-                    try:
-                        enc = tok.encode(variant, add_special_tokens=False)
-                    except Exception:
-                        continue
-                    ids = getattr(enc, "ids", None)
-                    if ids is None and isinstance(enc, list):
-                        ids = enc
-                    if ids is None:
-                        continue
-                    if len(ids) == 1:
-                        suppress_ids.add(int(ids[0]))
-                    else:
-                        logger.warning(
-                            "TOKEN_RULES suppress-chars %r tokenises to %d pieces; skipping",
-                            variant, len(ids),
-                        )
-        elif rtype == "suppress-tokens-raw":
-            for tid in (r.get("token_ids") or []):
+    ids: set[int] = set()
+    if tok is not None:
+        for ch in chars:
+            if ch.isspace():
+                continue
+            for variant in (ch, " " + ch):
                 try:
-                    suppress_ids.add(int(tid))
-                except (TypeError, ValueError):
+                    enc = tok.encode(variant, add_special_tokens=False)
+                except Exception:
                     continue
-        elif rtype == "bias-prompt":
-            p = r.get("pattern")
-            if p:
-                prompt_parts.append(p)
-        elif rtype == "bias-hotwords":
-            p = r.get("pattern")
-            if p:
-                hotword_parts.append(p)
-        elif rtype == "force-prefix":
-            p = r.get("pattern")
-            if p:
-                prefix = p   # last enabled wins (validator caps to 1)
-
-    out = _CompiledTokenRules(
-        suppress_token_ids=tuple(sorted(suppress_ids)),
-        prompt_extra=" ".join(prompt_parts),
-        hotwords_extra=" ".join(hotword_parts),
-        prefix=prefix,
-    )
-    _token_rules_cache[cache_key] = out
-    if out.suppress_token_ids or out.prompt_extra or out.hotwords_extra or out.prefix:
-        logger.info(
-            "TOKEN_RULES compiled for %s: suppress=%r prompt=%r hotwords=%r prefix=%r",
-            model_id, out.suppress_token_ids, out.prompt_extra,
-            out.hotwords_extra, out.prefix,
-        )
+                raw_ids = getattr(enc, "ids", None)
+                if raw_ids is None and isinstance(enc, list):
+                    raw_ids = enc
+                if raw_ids is None:
+                    continue
+                if len(raw_ids) == 1:
+                    ids.add(int(raw_ids[0]))
+                else:
+                    logger.warning(
+                        "SUPPRESS_CHARS %r tokenises to %d pieces; skipping",
+                        variant, len(raw_ids),
+                    )
+    out = tuple(sorted(ids))
+    _suppress_chars_cache[key] = out
+    if out:
+        logger.info("SUPPRESS_CHARS resolved for %s (%r): %r",
+                    model_id, chars, out)
     return out
 
 
-def _drop_token_rules_cache(model_id: str) -> None:
-    """Drop all cache entries for a given model. Called from the unload path."""
-    for k in list(_token_rules_cache):
+def _drop_suppress_chars_cache(model_id: str) -> None:
+    """Drop all cache entries for a given model. Called from unload paths."""
+    for k in list(_suppress_chars_cache):
         if k[0] == model_id:
-            _token_rules_cache.pop(k, None)
+            _suppress_chars_cache.pop(k, None)
 
 
 def _resolve_model_name(requested: str) -> str:
@@ -810,7 +756,7 @@ async def _get_or_load_model(name: str) -> WhisperModel:
             evicted_name, _ = _loaded_models.popitem(last=False)
             logger.info("Evicting model from VRAM (LRU, max=%d): %s",
                         cfg.MAX_LOADED_MODELS, evicted_name)
-            _drop_token_rules_cache(evicted_name)
+            _drop_suppress_chars_cache(evicted_name)
             system_stats.unregister_loaded_model(evicted_name)
 
         logger.info("Loading model: %s", name)
@@ -924,7 +870,7 @@ async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
             logger.info("[evict-on-edit] dropping %s from cache; "
                         "reload on next request", name)
             _loaded_models.pop(name, None)
-            _drop_token_rules_cache(name)
+            _drop_suppress_chars_cache(name)
             system_stats.unregister_loaded_model(name)
             evicted.append(name)
     return evicted
@@ -966,7 +912,7 @@ async def _idle_evictor() -> None:
                     logger.info("[idle-evict] unloading %s after %ds idle",
                                 name, timeout)
                     _loaded_models.pop(name, None)
-                    _drop_token_rules_cache(name)
+                    _drop_suppress_chars_cache(name)
                     system_stats.unregister_loaded_model(name)
             gc.collect()
             try:
@@ -1179,73 +1125,26 @@ async def transcribe(
                         pass
                 else:
                     transcribe_kwargs["suppress_tokens"] = None
+            # SUPPRESS_CHARS — chars resolved to vocab IDs via the loaded
+            # model's tokenizer, then merged into the effective suppress_tokens
+            # list. Genuinely additive: existing IDs from SUPPRESS_TOKENS are
+            # preserved.
+            _suppress_chars = cfg_for(resolved_model, "SUPPRESS_CHARS")
+            if _suppress_chars:
+                extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars)
+                if extra_ids:
+                    existing = transcribe_kwargs.get("suppress_tokens")
+                    if existing is None:
+                        merged_ids = sorted({-1, *extra_ids})
+                    else:
+                        merged_ids = sorted(set(existing) | set(extra_ids))
+                    transcribe_kwargs["suppress_tokens"] = merged_ids
             _prepend_p = cfg_for(resolved_model, "PREPEND_PUNCTUATIONS")
             if _prepend_p:
                 transcribe_kwargs["prepend_punctuations"] = _prepend_p
             _append_p = cfg_for(resolved_model, "APPEND_PUNCTUATIONS")
             if _append_p:
                 transcribe_kwargs["append_punctuations"] = _append_p
-
-            # ---- TOKEN_RULES — in-decoding controls (parallel to PIPELINE_RULES) ----
-            # Resolve the active rule set: globally-enabled rules, plus per-
-            # model TOKEN_RULES_INCLUDE (force-enable), minus per-model
-            # TOKEN_RULES_EXCLUDE (force-disable). Then compile against the
-            # loaded model's tokenizer. Compiled output is cached per
-            # (model_id, rules_hash).
-            _token_rules = getattr(cfg, "TOKEN_RULES", None) or []
-            if _token_rules:
-                _tr_overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-                _m_over = _tr_overrides.get(resolved_model) if isinstance(_tr_overrides, dict) else None
-                _tr_inc: set[str] = set()
-                _tr_exc: set[str] = set()
-                if isinstance(_m_over, dict):
-                    _tr_inc = set(_m_over.get("TOKEN_RULES_INCLUDE") or [])
-                    _tr_exc = set(_m_over.get("TOKEN_RULES_EXCLUDE") or [])
-                # Materialise rules as plain dicts (the loader hands us either
-                # dicts or pydantic objects depending on path).
-                _rules_as_dicts: list[dict] = []
-                for r in _token_rules:
-                    if isinstance(r, dict):
-                        _rules_as_dicts.append(r)
-                    else:
-                        _rules_as_dicts.append(
-                            r.model_dump() if hasattr(r, "model_dump") else dict(r.__dict__)
-                        )
-                # Active = (enabled OR force-included) AND NOT force-excluded.
-                _active = {
-                    r["name"] for r in _rules_as_dicts
-                    if (r.get("enabled") or r.get("name") in _tr_inc)
-                       and r.get("name") not in _tr_exc
-                }
-                # Apply force-include override on the rule dicts so the compile
-                # step sees them as enabled.
-                _rules_for_compile = [
-                    {**r, "enabled": True} if r.get("name") in _active else r
-                    for r in _rules_as_dicts
-                ]
-                _compiled = _compile_token_rules(
-                    resolved_model, model, _rules_for_compile, _active,
-                )
-                # Merge into transcribe_kwargs.
-                if _compiled.suppress_token_ids:
-                    existing = transcribe_kwargs.get("suppress_tokens")
-                    if existing is None:
-                        merged = sorted({-1, *_compiled.suppress_token_ids})
-                    else:
-                        merged = sorted(set(existing) | set(_compiled.suppress_token_ids))
-                    transcribe_kwargs["suppress_tokens"] = merged
-                if _compiled.prompt_extra:
-                    base = transcribe_kwargs.get("initial_prompt") or ""
-                    transcribe_kwargs["initial_prompt"] = (
-                        (base + " " + _compiled.prompt_extra).strip()
-                    )
-                if _compiled.hotwords_extra:
-                    base = transcribe_kwargs.get("hotwords") or ""
-                    transcribe_kwargs["hotwords"] = (
-                        (base + " " + _compiled.hotwords_extra).strip()
-                    )
-                if _compiled.prefix:
-                    transcribe_kwargs["prefix"] = _compiled.prefix
 
             # Run the synchronous CTranslate2 inference in a thread executor
             # so the event loop stays responsive. CT2 releases the GIL

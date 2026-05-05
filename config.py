@@ -362,49 +362,6 @@ PIPELINE_RULES: list[dict] = [
 
 
 # =============================================================================
-# Token rules (in-decoding controls; parallel to PIPELINE_RULES)
-# =============================================================================
-# Rule types and their effect at the decoder layer:
-#   • suppress-chars     — hard logit mask of single-char tokens (.,?!:;).
-#                          Use to stop auto-inserted punctuation.
-#   • suppress-tokens-raw — raw vocab IDs to mask. Power-user; tokenizer-
-#                          version dependent.
-#   • bias-prompt        — appended to DEFAULT_PROMPT; soft style steering
-#                          that fades past the first decode window.
-#   • bias-hotwords      — appended to DEFAULT_HOTWORDS; soft boost via the
-#                          <|startofprev|> block. NO-OP if force-prefix is set.
-#   • force-prefix       — hard prefix injection at every window. DISABLES
-#                          hotwords (faster-whisper transcribe.py:1542).
-#                          At most one enabled force-prefix rule allowed.
-#
-# All seeded rules below are DISABLED by default — they change decoding
-# behaviour and shouldn't take effect without an admin flipping the switch.
-TOKEN_RULES: list[dict] = [
-    {
-        "name": "suppress-punctuation",
-        "label": "Suppress auto-punctuation (.,?!:;)",
-        "type": "suppress-chars",
-        "pattern": ".,?!:;",
-        "enabled": False, "locked": False, "seeded": True,
-    },
-    {
-        "name": "arabic-numerals-prompt",
-        "label": "Bias toward Arabic numerals (prompt)",
-        "type": "bias-prompt",
-        "pattern": "Verwende arabische Ziffern: 1, 2, 3, 95, 100, 1000.",
-        "enabled": False, "locked": False, "seeded": True,
-    },
-    {
-        "name": "arabic-numerals-hotwords",
-        "label": "Bias toward Arabic numerals (hotwords)",
-        "type": "bias-hotwords",
-        "pattern": "1 2 3 4 5 6 7 8 9 10 20 30 40 50 60 70 80 90 100 1000",
-        "enabled": False, "locked": False, "seeded": True,
-    },
-]
-
-
-# =============================================================================
 # Logging
 # =============================================================================
 
@@ -545,6 +502,13 @@ SUPPRESS_BLANK: bool = True
 # Comma-separated token IDs to ban from output. "-1" = expand to model's
 # default non-speech set; "" = no suppression.
 SUPPRESS_TOKENS: "str | None" = "-1"
+
+# Single chars to hard-mask via the loaded model's tokenizer. Resolved at
+# request time to vocab IDs and merged into the effective suppress_tokens
+# list. Empty / None = no extra suppression. Set to ".,?!:;" for verbatim
+# dictation: model can't auto-insert punctuation, so spoken "Punkt" /
+# "Komma" surface as words for the dictation-map PIPELINE_RULE to convert.
+SUPPRESS_CHARS: "str | None" = None
 
 # With WORD_TIMESTAMPS_ENABLED, glue these characters onto the FOLLOWING /
 # PRECEDING word's timing. Locale-specific.
@@ -786,6 +750,10 @@ if _env_supp_blank is not None:
 _env_supp_tokens = os.environ.get("WHISPER_SUPPRESS_TOKENS")
 if _env_supp_tokens is not None:
     SUPPRESS_TOKENS = _env_supp_tokens or None
+
+_env_supp_chars = os.environ.get("WHISPER_SUPPRESS_CHARS")
+if _env_supp_chars is not None:
+    SUPPRESS_CHARS = _env_supp_chars or None
 
 _env_prepend_punct = os.environ.get("WHISPER_PREPEND_PUNCTUATIONS")
 if _env_prepend_punct is not None:
