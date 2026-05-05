@@ -451,9 +451,12 @@ COMPRESSION_RATIO_THRESHOLD: "float | None" = 2.4
 DEFAULT_HOTWORDS: "str | None" = None
 
 # Temperature fallback ladder (comma-separated floats). The decoder retries
-# at each temperature when compression / log-prob checks fail. faster-whisper
-# default is "0.0,0.2,0.4,0.6,0.8,1.0". Empty/None = library default.
-TEMPERATURE: "str | None" = None
+# at each temperature when compression / log-prob checks fail. Ship the
+# faster-whisper / OpenAI Whisper standard ladder explicitly so the admin UI's
+# "Reset to default" gives users the safety net (a single value disables the
+# fallback ladder and lets hallucination loops slip through). Empty = library
+# default (currently identical, but explicit is safer for surprises).
+TEMPERATURE: "str | None" = "0.0,0.2,0.4,0.6,0.8,1.0"
 
 # Beam search patience; >1 keeps the beam alive longer. Default 1.0.
 PATIENCE: float = 1.0
