@@ -2,14 +2,14 @@
 # via WinSW (https://github.com/winsw/winsw, v2.12.0). Run from any
 # PowerShell prompt:
 #   .\install-service.ps1
-#   .\install-service.ps1 -WithConvert     # also install ~2 GB of HF→CT2 deps
+#   .\install-service.ps1 -WithConvert     # also install ~2 GB of HF->CT2 deps
 # (Self-elevates to admin via UAC if not already running elevated.)
 #
 # WinSW.exe is auto-downloaded into this folder if missing. No package
 # manager (choco/scoop/winget) required.
 #
-# Conversion extras (HF→CT2 auto-conversion): the script asks at install
-# time whether to install them when they're missing — install them later
+# Conversion extras (HF->CT2 auto-conversion): the script asks at install
+# time whether to install them when they're missing -- install them later
 # from /config's AUTO_CONVERT_HF_MODELS toggle requirement. Already-
 # installed extras are detected and the prompt is skipped silently.
 # -WithConvert forces install without prompting (CI / scripted use).
@@ -109,21 +109,21 @@ if (-not (Test-Path $Python)) {
     Write-Host "venv ready." -ForegroundColor Green
 }
 
-# --- optional: install HF→CT2 conversion extras ----------------------------
+# --- optional: install HF->CT2 conversion extras ----------------------------
 # Required only when AUTO_CONVERT_HF_MODELS=true in /config. Adds ~2 GB
 # (transformers + torch + accelerate).
 #
 # Decision tree:
-#   -WithConvert flag → install without prompting (CI / scripted use).
-#   Already installed → silent skip (idempotent re-run).
-#   Otherwise        → interactive y/N prompt.
+#   -WithConvert flag -> install without prompting (CI / scripted use).
+#   Already installed -> silent skip (idempotent re-run).
+#   Otherwise        -> interactive y/N prompt.
 
 function Test-ConvertDepsInstalled {
     # Probe by trying to import all three deps in the venv. Exit code 0 = all
     # present. Python writes the ImportError traceback to stderr; under
     # $ErrorActionPreference=Stop, PowerShell turns that into a terminating
     # NativeCommandError before the 2>$null redirect kicks in. Relax the
-    # pref locally and merge stderr→stdout so the probe stays silent
+    # pref locally and merge stderr->stdout so the probe stays silent
     # regardless of import outcome.
     $oldPref = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
@@ -153,7 +153,7 @@ if ($WithConvert) {
     Write-Host "Conversion extras already installed (transformers + torch + accelerate)." -ForegroundColor DarkGray
 } else {
     Write-Host ""
-    Write-Host "Optional: HF→CT2 conversion extras are NOT installed." -ForegroundColor Yellow
+    Write-Host "Optional: HF->CT2 conversion extras are NOT installed." -ForegroundColor Yellow
     Write-Host "  These let the backend auto-convert HuggingFace transformers"
     Write-Host "  Whisper checkpoints (e.g. Flurin17/whisper-large-v3-turbo-swiss-german)"
     Write-Host "  to CTranslate2 format on first load. Footprint: ~2 GB (torch + transformers"
