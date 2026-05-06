@@ -120,8 +120,18 @@ if (-not (Test-Path $Python)) {
 
 function Test-ConvertDepsInstalled {
     # Probe by trying to import all three deps in the venv. Exit code 0 = all
-    # present. Stdout/stderr suppressed; we only care about the boolean.
-    & $Python -c "import torch, transformers, accelerate" 2>$null | Out-Null
+    # present. Python writes the ImportError traceback to stderr; under
+    # $ErrorActionPreference=Stop, PowerShell turns that into a terminating
+    # NativeCommandError before the 2>$null redirect kicks in. Relax the
+    # pref locally and merge stderr→stdout so the probe stays silent
+    # regardless of import outcome.
+    $oldPref = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Python -c "import torch, transformers, accelerate" 2>&1 | Out-Null
+    } finally {
+        $ErrorActionPreference = $oldPref
+    }
     return ($LASTEXITCODE -eq 0)
 }
 
