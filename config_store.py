@@ -64,6 +64,9 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "DOWNLOAD_ROOT": "WHISPER_DOWNLOAD_ROOT",
     "LOCAL_FILES_ONLY": "WHISPER_LOCAL_FILES_ONLY",
     "USE_AUTH_TOKEN": "WHISPER_USE_AUTH_TOKEN",
+    "AUTO_CONVERT_HF_MODELS": "WHISPER_AUTO_CONVERT_HF_MODELS",
+    "CONVERT_QUANTIZATION": "WHISPER_CONVERT_QUANTIZATION",
+    "CONVERTED_MODELS_DIR": "WHISPER_CONVERTED_MODELS_DIR",
     "CPU_THREADS": "WHISPER_CPU_THREADS",
     "NUM_WORKERS": "WHISPER_NUM_WORKERS",
     "DEVICE_INDEX": "WHISPER_DEVICE_INDEX",
@@ -97,6 +100,7 @@ LOAD_TIME_FIELDS: frozenset[str] = frozenset({
     "MODEL_DEVICE_FALLBACK", "MODEL_COMPUTE_TYPE_FALLBACK",
     "REVISION", "NUM_WORKERS", "DEVICE_INDEX",
     "DOWNLOAD_ROOT", "LOCAL_FILES_ONLY", "USE_AUTH_TOKEN", "CPU_THREADS",
+    "AUTO_CONVERT_HF_MODELS", "CONVERT_QUANTIZATION", "CONVERTED_MODELS_DIR",
 })
 
 # Hot settings whose derived caches need rebuild after edit. The admin route
@@ -296,6 +300,24 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Default false. Use for air-gapped deploys.",
     "USE_AUTH_TOKEN":
         "HuggingFace auth token for gated/private repos. Account-scoped.",
+    "AUTO_CONVERT_HF_MODELS":
+        "Auto-convert HuggingFace transformers Whisper models to CTranslate2 "
+        "format on first load when no `model.bin` is present in the repo. "
+        "Requires `pip install -r requirements-convert.txt` (transformers + "
+        "torch + accelerate, ~2 GB). Output cached under CONVERTED_MODELS_DIR "
+        "and loaded directly on subsequent starts. Conversion takes 1–3 min "
+        "per model; happens during PRELOAD_MODELS startup or the first "
+        "request that hits an unconverted model.",
+    "CONVERT_QUANTIZATION":
+        "On-disk weight quantisation when auto-converting HF→CT2. The "
+        "saved precision is independent of MODEL_COMPUTE_TYPE (CT2 up- or "
+        "down-casts at load). float16 = sweet spot for HF Whisper finetunes "
+        "(matches source dtype, ~1.6 GB for large-v3-turbo). int8_float16 "
+        "halves disk for marginal accuracy loss. Allowed: float32, float16, "
+        "bfloat16, int16, int8, int8_float32, int8_float16, int8_bfloat16.",
+    "CONVERTED_MODELS_DIR":
+        "Output root for auto-converted CT2 models. Layout: "
+        "<root>/<sanitized-id>/<quantization>/. Empty = ~/.cache/whisper-ct2.",
     "CPU_THREADS":
         "CPU threads for inference. 0 = library default (typically 4). "
         "Non-zero overrides OMP_NUM_THREADS for the worker pool.",
@@ -645,6 +667,9 @@ class AdminConfig(BaseModel):
     DOWNLOAD_ROOT: Annotated[str, Field(max_length=512)] | None = _F("DOWNLOAD_ROOT")
     LOCAL_FILES_ONLY: bool | None = _F("LOCAL_FILES_ONLY")
     USE_AUTH_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("USE_AUTH_TOKEN")
+    AUTO_CONVERT_HF_MODELS: bool | None = _F("AUTO_CONVERT_HF_MODELS")
+    CONVERT_QUANTIZATION: Annotated[str, Field(max_length=32)] | None = _F("CONVERT_QUANTIZATION")
+    CONVERTED_MODELS_DIR: Annotated[str, Field(max_length=512)] | None = _F("CONVERTED_MODELS_DIR")
     CPU_THREADS: Annotated[int, Field(ge=0, le=128)] | None = _F("CPU_THREADS")
     NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F("NUM_WORKERS")
     DEVICE_INDEX: Annotated[int, Field(ge=0, le=15)] | None = _F("DEVICE_INDEX")
@@ -859,6 +884,23 @@ class AdminConfig(BaseModel):
         for k in v:
             if not k or not k.strip():
                 raise ValueError("MODEL_OVERRIDES keys must be non-empty model ids")
+        return v
+
+    @field_validator("CONVERT_QUANTIZATION")
+    @classmethod
+    def _validate_convert_quantisation(cls, v: str | None) -> str | None:
+        """Match CT2's `ACCEPTED_MODEL_TYPES` (ctranslate2 specs/model_spec.py).
+        Empty / None = use the runtime default (float16)."""
+        if v is None or not v.strip():
+            return v
+        allowed = {
+            "float32", "float16", "bfloat16", "int16",
+            "int8", "int8_float32", "int8_float16", "int8_bfloat16",
+        }
+        if v not in allowed:
+            raise ValueError(
+                f"CONVERT_QUANTIZATION must be one of {sorted(allowed)}; got {v!r}"
+            )
         return v
 
     @field_validator("TEMPERATURE")

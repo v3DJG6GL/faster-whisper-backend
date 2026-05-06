@@ -4,6 +4,7 @@ import ctypes
 import logging
 import logging.handlers
 import re
+import shutil
 import tempfile
 import time
 from contextlib import asynccontextmanager
@@ -773,6 +774,179 @@ def cfg_for(model_id: "str | None", field: str):
     return getattr(cfg, field)
 
 
+# =============================================================================
+# Auto HF→CT2 conversion (opt-in via AUTO_CONVERT_HF_MODELS)
+# =============================================================================
+# Cache structure: <root>/<sanitised_id>/<quantization>/{model.bin, ...}
+# - root: cfg.CONVERTED_MODELS_DIR or ~/.cache/whisper-ct2
+# - sanitised_id: model id with "/" replaced by "__"
+# - quantization: e.g. "float16" — encoded in the path so changing the cfg
+#                 doesn't collide with the previously-saved version.
+#
+# Locking strategy:
+# - Per-model asyncio.Lock (held during conversion, NOT held during the
+#   subsequent WhisperModel load — so cached-model fast paths for OTHER
+#   models stay snappy).
+# - filelock.FileLock for cross-process safety (uvicorn --workers > 1).
+# - Atomic publish: write to <output_dir>.tmp, then os.rename to final.
+#   Crash mid-conversion leaves no false-positive "model.bin exists" state.
+
+_CT2_QUANTIZATIONS = {
+    "float32", "float16", "bfloat16", "int16",
+    "int8", "int8_float32", "int8_float16", "int8_bfloat16",
+}
+
+# Per-model asyncio locks for conversion. Lazy-populated.
+_convert_locks: "dict[str, _asyncio_for_models.Lock]" = {}
+_convert_locks_meta = _asyncio_for_models.Lock()
+
+
+def _converted_root() -> str:
+    """Resolve the output root for converted models. Honours
+    cfg.CONVERTED_MODELS_DIR when set, else ~/.cache/whisper-ct2."""
+    return getattr(cfg, "CONVERTED_MODELS_DIR", None) or os.path.join(
+        os.path.expanduser("~"), ".cache", "whisper-ct2"
+    )
+
+
+def _converted_dir_for(model_id: str, quantization: str) -> str:
+    """Compute the deterministic output directory for `model_id` at the given
+    quantisation. Sanitisation: HF repo IDs only contain `[A-Za-z0-9_.-]` plus
+    one `/`, so a single replace is enough."""
+    sanitised = model_id.replace("/", "__").replace(os.sep, "__")
+    return os.path.join(_converted_root(), sanitised, quantization)
+
+
+def _model_needs_conversion(model_id: str) -> bool:
+    """Return True if `model_id` is an HF transformers Whisper checkpoint
+    (has model.safetensors / pytorch_model.bin but no model.bin in the repo).
+    False for already-CT2 repos and for local paths.
+
+    Implementation: probe the HF Hub file list. Network call (~1 s) but only
+    runs when AUTO_CONVERT_HF_MODELS is on AND the converted-output cache
+    misses, so it's at worst once per model per process lifetime."""
+    # Local path that exists → never convert.
+    if os.path.isdir(model_id):
+        return not os.path.isfile(os.path.join(model_id, "model.bin"))
+    # Heuristic: HF repo id always contains a single "/".
+    if "/" not in model_id or model_id.count("/") != 1:
+        return False
+    try:
+        from huggingface_hub import list_repo_files
+        files = set(list_repo_files(model_id))
+    except Exception as e:
+        logger.warning("auto-convert: could not probe %s file list (%s); "
+                       "assuming no conversion needed", model_id, e)
+        return False
+    if "model.bin" in files:
+        return False  # already CT2
+    if "model.safetensors" in files or "pytorch_model.bin" in files:
+        return True
+    # Unknown layout — let WhisperModel try and fail naturally.
+    return False
+
+
+def _convert_blocking(model_id: str, output_dir: str, quantization: str) -> None:
+    """Synchronous CT2 conversion. Runs in a thread executor so the event
+    loop stays responsive. Lazy-imports torch / transformers / ctranslate2
+    converter machinery; missing extras → RuntimeError with pip command.
+
+    Atomic publish: writes to `<output_dir>.tmp` then renames to `output_dir`
+    so a crash mid-write leaves no false-positive (next start re-detects the
+    missing model.bin and retries cleanly)."""
+    try:
+        from ctranslate2.converters import TransformersConverter
+        import transformers  # noqa: F401  ensure dep present
+        import torch  # noqa: F401
+    except ImportError as e:
+        raise RuntimeError(
+            f"AUTO_CONVERT_HF_MODELS=true but the conversion extras are not "
+            f"installed (missing {e.name!r}). Run: "
+            f"pip install -r requirements-convert.txt"
+        ) from e
+
+    tmp_dir = output_dir + ".tmp"
+    # Clean any stale tmp from a prior crashed run.
+    if os.path.isdir(tmp_dir):
+        shutil.rmtree(tmp_dir)
+
+    logger.info("auto-convert: %s → %s (quantisation=%s)",
+                model_id, output_dir, quantization)
+    t0 = time.perf_counter()
+    converter = TransformersConverter(
+        model_name_or_path=model_id,
+        # tokenizer.json + preprocessor_config.json are required by faster-
+        # whisper at runtime (transcribe.py:700, :732). vocabulary.json is
+        # generated by CT2 itself; copying the HF vocab.json is harmless but
+        # not necessary.
+        copy_files=["tokenizer.json", "preprocessor_config.json"],
+        # Loading the source as fp16 keeps RAM ~halved during conversion;
+        # HF Whisper checkpoints typically ship as fp16 anyway, no precision
+        # loss. low_cpu_mem_usage avoids HF's duplicate-on-CPU intermediate.
+        load_as_float16=(quantization in ("float16", "int8_float16")),
+        low_cpu_mem_usage=True,
+    )
+    converter.convert(tmp_dir, quantization=quantization, force=True)
+    # Atomic publish.
+    os.rename(tmp_dir, output_dir)
+    logger.info("auto-convert: %s completed in %.1fs",
+                model_id, time.perf_counter() - t0)
+
+
+async def _ensure_ct2_model(name: str) -> str:
+    """If `name` is an HF transformers Whisper repo and AUTO_CONVERT_HF_MODELS
+    is on, ensure a CT2 conversion exists locally and return its path.
+    Otherwise return `name` unchanged.
+
+    Locking: per-name asyncio.Lock + filelock.FileLock (cross-process).
+    Conversion runs in a thread executor (blocking torch / numpy work)."""
+    if not getattr(cfg, "AUTO_CONVERT_HF_MODELS", False):
+        return name
+    quantization = getattr(cfg, "CONVERT_QUANTIZATION", None) or "float16"
+    if quantization not in _CT2_QUANTIZATIONS:
+        logger.warning("auto-convert: invalid CONVERT_QUANTIZATION %r; "
+                       "falling back to float16", quantization)
+        quantization = "float16"
+    output_dir = _converted_dir_for(name, quantization)
+    # Fast path: already converted (idempotent across restarts).
+    if os.path.isfile(os.path.join(output_dir, "model.bin")):
+        return output_dir
+    # Skip the file-list probe + conversion for already-CT2 repos and
+    # local paths.
+    if not _model_needs_conversion(name):
+        return name
+
+    # Per-model asyncio lock (lazy create). Ensures only one conversion of
+    # a given model proceeds within this worker, without serialising loads
+    # of OTHER models behind a global lock.
+    async with _convert_locks_meta:
+        lk = _convert_locks.setdefault(name, _asyncio_for_models.Lock())
+    async with lk:
+        # Re-check inside the lock — another coroutine may have just finished.
+        if os.path.isfile(os.path.join(output_dir, "model.bin")):
+            return output_dir
+        # Cross-process file-lock so multi-worker uvicorn doesn't double-convert.
+        from filelock import FileLock, Timeout as FileLockTimeout
+        os.makedirs(os.path.dirname(output_dir), exist_ok=True)
+        lock_path = output_dir + ".lock"
+        try:
+            with FileLock(lock_path, timeout=600):
+                # Re-check after winning the cross-process race.
+                if os.path.isfile(os.path.join(output_dir, "model.bin")):
+                    return output_dir
+                loop = _asyncio_for_models.get_running_loop()
+                await loop.run_in_executor(
+                    None, _convert_blocking, name, output_dir, quantization,
+                )
+        except FileLockTimeout:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Auto-convert of {name!r} timed out waiting for "
+                       f"a peer worker (>10 min). Check the lock file: {lock_path}",
+            )
+    return output_dir
+
+
 async def _get_or_load_model(name: str) -> WhisperModel:
     cached = _loaded_models.get(name)
     if cached is not None:
@@ -786,6 +960,13 @@ async def _get_or_load_model(name: str) -> WhisperModel:
             detail=f"Model '{name}' is not in the allowed list. "
                    f"Allowed: {sorted(cfg.ALLOWED_MODELS)}",
         )
+
+    # Auto-convert HF transformers Whisper repos to CT2 format if enabled.
+    # Runs OUTSIDE _model_load_lock so loads of OTHER cached models stay
+    # snappy during the (rare, slow) conversion step. Returns `name`
+    # unchanged if conversion is off, repo is already CT2, or it's a
+    # local path with model.bin.
+    load_path = await _ensure_ct2_model(name)
 
     async with _model_load_lock:
         # Re-check under the lock — another request may have loaded it.
@@ -846,9 +1027,11 @@ async def _get_or_load_model(name: str) -> WhisperModel:
         loaded_device = primary_device
         loaded_compute = primary_compute
         try:
+            # `load_path` is `name` for already-CT2 / local repos; for
+            # auto-converted HF repos it's the local converted directory.
             new_model = await loop.run_in_executor(
                 None,
-                lambda: WhisperModel(name, **load_kwargs),
+                lambda: WhisperModel(load_path, **load_kwargs),
             )
             logger.info("Model loaded on %s: %s", primary_device, name)
         except Exception as e:
@@ -861,7 +1044,7 @@ async def _get_or_load_model(name: str) -> WhisperModel:
             }
             new_model = await loop.run_in_executor(
                 None,
-                lambda: WhisperModel(name, **fallback_kwargs),
+                lambda: WhisperModel(load_path, **fallback_kwargs),
             )
             loaded_device = fallback_device
             loaded_compute = fallback_compute

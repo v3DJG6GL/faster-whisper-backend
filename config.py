@@ -546,6 +546,18 @@ LOCAL_FILES_ONLY: bool = False
 # HuggingFace auth token for gated/private repos. None = no token.
 USE_AUTH_TOKEN: "str | None" = None
 
+# Auto-convert HuggingFace transformers Whisper models to CTranslate2 format
+# on first load (when no model.bin is present). Requires
+# `pip install -r requirements-convert.txt`.
+AUTO_CONVERT_HF_MODELS: bool = False
+
+# On-disk weight quantisation for auto-conversion. Independent of
+# MODEL_COMPUTE_TYPE; CT2 up/down-casts at load.
+CONVERT_QUANTIZATION: str = "float16"
+
+# Output root for auto-converted CT2 models. None = ~/.cache/whisper-ct2.
+CONVERTED_MODELS_DIR: "str | None" = None
+
 # CPU threads for inference. 0 = library default (typically 4).
 CPU_THREADS: int = 0
 
@@ -791,6 +803,18 @@ if _env_local_files_only is not None:
 _env_use_auth_token = os.environ.get("WHISPER_USE_AUTH_TOKEN")
 if _env_use_auth_token is not None:
     USE_AUTH_TOKEN = _env_use_auth_token or None
+
+_env_auto_convert = os.environ.get("WHISPER_AUTO_CONVERT_HF_MODELS")
+if _env_auto_convert is not None:
+    AUTO_CONVERT_HF_MODELS = _env_auto_convert == "1"
+
+_env_convert_quant = os.environ.get("WHISPER_CONVERT_QUANTIZATION")
+if _env_convert_quant is not None:
+    CONVERT_QUANTIZATION = _env_convert_quant or "float16"
+
+_env_converted_dir = os.environ.get("WHISPER_CONVERTED_MODELS_DIR")
+if _env_converted_dir is not None:
+    CONVERTED_MODELS_DIR = _env_converted_dir or None
 
 _env_cpu_threads = os.environ.get("WHISPER_CPU_THREADS")
 if _env_cpu_threads is not None:

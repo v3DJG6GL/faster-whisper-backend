@@ -54,6 +54,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
         ]),
         ("Advanced — load-time hardware", [
             "DOWNLOAD_ROOT", "LOCAL_FILES_ONLY", "USE_AUTH_TOKEN",
+            "AUTO_CONVERT_HF_MODELS", "CONVERT_QUANTIZATION", "CONVERTED_MODELS_DIR",
             "CPU_THREADS", "NUM_WORKERS", "DEVICE_INDEX",
         ]),
     ]),
