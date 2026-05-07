@@ -195,6 +195,51 @@ header .scale-picker {
   appearance: none; -webkit-appearance: none;
   flex-shrink: 0;
 }
+/* ---- Responsive header ----
+   The header is a single flex row that, at narrow widths or scaled-up
+   --fs-base, would otherwise push its right-edge items (save, status)
+   off-screen. We let it wrap onto multiple rows and shrink the title
+   intrinsically, with container queries dropping low-priority labels
+   before resorting to wrap. Container size queries are evaluated in
+   rem against the actual rendered header width, so they respect the
+   --fs-base scale token (unlike @media). */
+header { container-type: inline-size; container-name: hdr; }
+header > .header-inner { flex-wrap: wrap; row-gap: 0.4rem; }
+/* Spacer collapses to zero on a wrapped row; on a single row it still
+   does its "push the action cluster right" job. */
+header .spacer { flex: 1 1 0; min-width: 0; }
+/* Title may shrink and ellipsise instead of forcing the row to grow.
+   max-width caps how much it can take before truncating so it doesn't
+   dominate small windows. Overrides the page-local `flex-shrink: 0`
+   rule because NAV_CSS is injected later in the cascade. */
+header .title {
+  flex-shrink: 1; min-width: 0; max-width: 22rem;
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* Status pill is informational; let it shrink and ellipsise. */
+header #status {
+  flex-shrink: 1; min-width: 0; max-width: 12rem;
+  overflow: hidden; text-overflow: ellipsis;
+}
+/* Wrap-anchor: zero-size sentinel placed before the action cluster.
+   Hidden by default; at stage 3 it expands to flex-basis:100% to force
+   the actions onto their own row, keeping title+nav+pills clean. */
+header .wrap-anchor { flex-basis: 0; height: 0; display: none; }
+/* Stage 1 (≤ 60rem): drop sevpill text label, keep the count. */
+@container hdr (max-width: 60rem) {
+  header .sevpill .lbl { display: none; }
+  header .sevpill { padding: 0.125rem 0.4rem; }
+}
+/* Stage 2 (≤ 46rem): hide informational status pill, tighten nav. */
+@container hdr (max-width: 46rem) {
+  header #status { display: none; }
+  header .navlink { padding: 0.1875rem 0.4rem; }
+}
+/* Stage 3 (≤ 36rem): drop logout, force action cluster to its own row. */
+@container hdr (max-width: 36rem) {
+  header #logout-btn { display: none; }
+  header .wrap-anchor { display: block; flex-basis: 100%; }
+}
 """
 
 

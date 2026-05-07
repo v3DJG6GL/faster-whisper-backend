@@ -1187,6 +1187,7 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     <span class="title">faster-whisper-backend · config</span>
     {{NAV}}
     <span class="spacer"></span>
+    <span class="wrap-anchor"></span>
     {{SCALE_PICKER}}
     <button id="logout-btn" title="forget token in this tab">logout</button>
     <button id="reload-btn">reload</button>

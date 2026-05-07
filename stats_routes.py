@@ -220,6 +220,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <span class="title">faster-whisper-backend · stats</span>
   {{NAV}}
   <span class="spacer"></span>
+  <span class="wrap-anchor"></span>
   {{SCALE_PICKER}}
   <button id="reset-layout-btn" title="reset stats tile layout to defaults">↺ layout</button>
   <span id="status" class="pill live">live</span>

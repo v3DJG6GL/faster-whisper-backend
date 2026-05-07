@@ -1727,6 +1727,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
     <span id="log-zoom-pct">100%</span>
     <button id="log-zoom-in" type="button" aria-label="increase log size">+</button>
   </span>
+  <span class="wrap-anchor"></span>
   {{SCALE_PICKER}}
   <button id="pauseBtn">pause</button>
   <button id="clearBtn">clear</button>
