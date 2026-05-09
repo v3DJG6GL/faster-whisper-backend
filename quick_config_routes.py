@@ -29,6 +29,7 @@ buffer contents and don't persist them.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from typing import Any, Literal
@@ -110,9 +111,31 @@ def require_user_or_admin_token(
 
 
 class QuickPatchPayload(BaseModel):
-    """POST body shape: {"rules_patch": {slug: {field: value, ...}, ...}}."""
+    """POST body shape:
+        {"rules_patch": {slug: {field: value, ...}, ...},
+         "fingerprints": {slug: <hex>, ...}}      # optional, recommended
+
+    `fingerprints` carries the per-rule hash each slug had when the
+    client loaded /state. Server compares against the current rule's
+    fingerprint and reports a conflict for any mismatch. Without it,
+    last-writer-wins (legacy behavior; clients are expected to send it
+    now). See _rule_fingerprint()."""
     model_config = {"extra": "forbid"}
     rules_patch: dict[str, dict[str, Any]]
+    fingerprints: dict[str, str] | None = None
+
+
+def _rule_fingerprint(rule: dict[str, Any]) -> str:
+    """Stable short hash of a rule dict for optimistic concurrency
+    control (HTTP-ETag style). Order-insensitive on dict fields. Uses
+    sha1 because it's fast and we don't need cryptographic strength —
+    the worst case of a collision is "two different rule states hash
+    the same" which is statistically irrelevant at our buffer cap. Cut
+    to 12 hex chars (~48 bits) to keep the wire payload small."""
+    canonical = json.dumps(
+        rule, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    )
+    return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:12]
 
 
 @router.get("", dependencies=[Depends(require_admin_host)])
@@ -145,8 +168,15 @@ async def get_state(
             continue
         if rd.get("exposed"):
             exposed.append(rd)
+    canonical = _canon_rules(exposed)
+    # Tag each rule with a fingerprint of its canonical form. Client
+    # echoes back per-rule on save; server uses it to detect concurrent
+    # edits. Fingerprint is computed AFTER _canon_rules so client and
+    # server hash the same canonical bytes.
+    for rd in canonical:
+        rd["_fp"] = _rule_fingerprint(rd)
     return {
-        "rules": _canon_rules(exposed),
+        "rules": canonical,
         "token_required": bool(
             getattr(cfg, "USER_TOKEN", None) or getattr(cfg, "ADMIN_TOKEN", None)
         ),
@@ -176,8 +206,11 @@ async def post_state(
     through the merge step.
     """
     rules_patch = payload.rules_patch or {}
+    fingerprints = payload.fingerprints or {}
     if not rules_patch:
-        return JSONResponse({"saved": [], "requires_restart": False})
+        return JSONResponse(
+            {"saved": [], "conflicts": [], "requires_restart": False}
+        )
 
     # Snapshot the current PIPELINE_RULES as plain dicts so we can overlay
     # patches deterministically. Keep order; the merged list will replace
@@ -192,8 +225,13 @@ async def post_state(
         else:
             current_rules.append(dict(r))
     by_slug = {r.get("name"): i for i, r in enumerate(current_rules)}
+    # Canonicalize for fingerprint comparison — must hash the same shape
+    # /state served. _canon_rules drops None fields and sorts dict keys.
+    canonical_now = {r["name"]: r for r in _canon_rules(current_rules)
+                     if isinstance(r, dict) and r.get("name")}
 
     saved: list[str] = []
+    conflicts: list[dict[str, Any]] = []
     for slug, patch in rules_patch.items():
         if not isinstance(patch, dict):
             raise HTTPException(
@@ -227,8 +265,33 @@ async def post_state(
                     f"field '{field}' is not editable on rule '{slug}' "
                     f"(type={rtype}) from /quick-config",
                 )
+        # Optimistic-concurrency check: if the client included a
+        # fingerprint for this rule, it must match what's on disk now.
+        # Mismatch → another writer (admin or another /quick-config tab)
+        # changed this rule between load and save. Skip the patch and
+        # report conflict rather than silently overwrite. Patches without
+        # a fingerprint fall through to the legacy last-writer-wins path
+        # (kept so older clients / curl scripts still work).
+        client_fp = fingerprints.get(slug)
+        if client_fp:
+            current = canonical_now.get(slug, {})
+            current_fp = _rule_fingerprint(current) if current else None
+            if current_fp != client_fp:
+                conflicts.append({"slug": slug, "current_fp": current_fp})
+                continue
         target.update(patch)
         saved.append(slug)
+
+    # If every patch conflicted, skip the save+rebuild entirely — nothing
+    # to write. Return the conflict list so the client can refetch.
+    if not saved:
+        return JSONResponse({
+            "saved": [],
+            "conflicts": conflicts,
+            "hot_applied": [], "cold_pending": [],
+            "env_pinned_ignored": [], "evicted": [],
+            "requires_restart": False,
+        })
 
     # Hand off the merged list to the same save path the admin uses. This
     # re-runs the full Pydantic validation including the 2 s ReDoS guard;
@@ -258,12 +321,13 @@ async def post_state(
 
     client_host = request.client.host if request.client else "?"
     logger.info(
-        "[quick-config] update from=%s role=%s saved=%s",
-        client_host, role, saved,
+        "[quick-config] update from=%s role=%s saved=%s conflicts=%s",
+        client_host, role, saved, [c["slug"] for c in conflicts],
     )
 
     return JSONResponse({
         "saved": saved,
+        "conflicts": conflicts,
         **applied,
         "requires_restart": bool(applied["cold_pending"]),
     })
@@ -815,9 +879,13 @@ async function doClearRecent() {
   }
 }
 
-// Build the rules_patch dict by diffing live vs initial.
-function buildPatch() {
+// Build the rules_patch dict + per-rule fingerprints by diffing live vs initial.
+// The fingerprint is the `_fp` field the server stamped on each rule at /state
+// load — sending it back lets the server detect that another writer changed
+// this rule since we loaded, instead of silently overwriting their edit.
+function buildPatchAndFingerprints() {
   const patch = {};
+  const fingerprints = {};
   const byName = new Map(initialRules.map(r => [r.name, r]));
   for (const slug of dirty) {
     const live = liveRules.find(r => r.name === slug);
@@ -831,9 +899,12 @@ function buildPatch() {
         delta[k] = a;
       }
     }
-    if (Object.keys(delta).length) patch[slug] = delta;
+    if (Object.keys(delta).length) {
+      patch[slug] = delta;
+      if (orig._fp) fingerprints[slug] = orig._fp;
+    }
   }
-  return patch;
+  return { patch, fingerprints };
 }
 
 const _ALLOWED_BY_TYPE = {
@@ -865,10 +936,11 @@ async function load() {
 }
 
 async function doSave() {
-  const patch = buildPatch();
+  const { patch, fingerprints } = buildPatchAndFingerprints();
   if (!Object.keys(patch).length) return;
   setStatus('saving…');
-  const r = await api('POST', '/quick-config/state', { rules_patch: patch });
+  const r = await api('POST', '/quick-config/state',
+                      { rules_patch: patch, fingerprints });
   if (r.status === 422) {
     // Validation error — likely involves a rule the user can't see (admin
     // pipeline has bad regex etc.). Surface a generic message rather than
@@ -884,7 +956,58 @@ async function doSave() {
     setStatus('save failed');
     return;
   }
-  showToast('saved', 'ok');
+  const result = await r.json();
+  const conflicts = result.conflicts || [];
+  const saved = result.saved || [];
+  if (conflicts.length) {
+    // Another writer changed one or more rules between our load and save.
+    // The server applied the non-conflicting patches; the conflicted ones
+    // are still dirty in our local state. Refetch to get the new baseline,
+    // but PRESERVE the conflicted edits so the user can decide whether to
+    // re-apply them on top of the new state.
+    const conflictSlugs = conflicts.map(c => c.slug);
+    const conflictedEdits = new Map();
+    for (const slug of conflictSlugs) {
+      const live = liveRules.find(r => r.name === slug);
+      if (live) conflictedEdits.set(slug, JSON.parse(JSON.stringify(live)));
+    }
+    if (saved.length) {
+      showToast('Saved ' + saved.length + '. Conflict on: '
+                + conflictSlugs.join(', ') + ' — reloading.', 'err');
+    } else {
+      showToast('Conflict on: ' + conflictSlugs.join(', ')
+                + ' — someone else just changed this. Reloading.', 'err');
+    }
+    await load();
+    // Re-apply the user's conflicted edits onto the freshly loaded state
+    // so their work isn't lost — they can review and re-save.
+    let stillDirty = 0;
+    for (const [slug, edit] of conflictedEdits) {
+      const idx = liveRules.findIndex(r => r.name === slug);
+      if (idx < 0) continue;  // rule was deleted server-side; abandon edit
+      // Overlay the user's edit onto the new server state. Allowed-fields
+      // only — leaves admin-only fields (label, locked, exposed, _fp) at
+      // their fresh server values.
+      const allowed = _ALLOWED_BY_TYPE[liveRules[idx].type] || new Set(['enabled']);
+      for (const k of allowed) {
+        if (k in edit) liveRules[idx][k] = edit[k];
+      }
+      dirty.add(slug);
+      stillDirty++;
+    }
+    if (stillDirty) {
+      renderCards();
+      updateButtons();
+      const suffix = saved.length ? ' (others saved)' : '';
+      setStatus(stillDirty + ' edit'
+                + (stillDirty === 1 ? '' : 's')
+                + ' to re-review' + suffix);
+    }
+    return;
+  }
+  showToast(saved.length
+    ? ('saved ' + saved.length + ' rule' + (saved.length === 1 ? '' : 's'))
+    : 'nothing to save', 'ok');
   await load();
 }
 
