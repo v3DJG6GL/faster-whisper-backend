@@ -183,9 +183,11 @@ router = APIRouter(prefix="/config")
 def _resolved_value(field: str) -> Any:
     """Read the current effective value of a config field by attribute name.
     For ADMIN_TOKEN, return only a presence sentinel (the UI never needs the
-    raw value, only whether one is set)."""
+    raw value, only whether one is set). Unset returns None to match the
+    in-repo baseline so the WebUI's reset-to-default button correctly hides
+    when there's nothing to reset."""
     if field == "ADMIN_TOKEN":
-        return "***" if getattr(cfg, "ADMIN_TOKEN", None) else ""
+        return "***" if getattr(cfg, "ADMIN_TOKEN", None) else None
     val = getattr(cfg, field, None)
     # Convert un-JSON-able types so the WebUI gets clean data.
     if isinstance(val, (set, frozenset)):
@@ -1439,7 +1441,10 @@ function fieldRow(name) {
 }
 
 function makeEditor(name) {
-  const v = fieldDef(name).value;
+  // Read through the dirty overlay so re-renders triggered by setDirty
+  // (e.g. "↺ Reset to default" or list-editor mutations) reflect the
+  // pending value immediately, not the stale server value.
+  const v = currentValue(name);
   // PIPELINE_RULES gets its own list-of-rules editor (mixed row types,
   // drag-to-reorder, per-row test badge). Routed by name BEFORE shape checks
   // since the value is a list.
