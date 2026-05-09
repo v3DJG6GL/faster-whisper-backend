@@ -541,7 +541,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   <section id="recent-panel">
     <div class="recent-header">
       <h2>Recent transcriptions</h2>
-      <span class="recent-label">in-memory only, cleared on page reload</span>
+      <span class="recent-label" title="Held in server memory, capped at 20. Wiped on service restart or by the 'clear recent' button. Survives page reloads.">in-memory only, max 20, cleared on service restart</span>
       <span class="spacer"></span>
       <button id="clear-recent">clear recent</button>
     </div>
