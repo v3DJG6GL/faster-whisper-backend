@@ -446,10 +446,19 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
     flex-direction: column; gap: 0.25rem; font-family: var(--font-mono);
     font-size: var(--fs-sm); }
   .card .rule-editor input, .card .rule-editor textarea {
+    box-sizing: border-box;
     background: var(--input-bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 3px;
     padding: 0.25rem 0.4rem; font: inherit; font-family: var(--font-mono);
     font-size: var(--fs-sm); }
+  /* Browser-default focus outline draws OUTSIDE the input's box, so when
+     the input fills its td (width:100%) the blue ring overflows the
+     table cell on the right. Negative outline-offset overlays the
+     existing 1px border instead. */
+  .card .rule-editor input:focus-visible,
+  .card .rule-editor textarea:focus-visible {
+    outline: 2px solid var(--cyan); outline-offset: -2px;
+  }
   .card .rule-editor textarea { width: 100%; resize: vertical; }
   .card .rule-editor .map-table { width: 100%; }
   .card .rule-editor .map-table input { width: 100%; }
