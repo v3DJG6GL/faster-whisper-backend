@@ -2456,8 +2456,9 @@ function _slugify(s) {
 }
 
 // _esc, _unesc, _PIPELINE_TYPES, _typePill, renderTypeEditor,
-// _makeMonoLabeledInput, _makeMapRow live in {{RULE_EDITOR_JS}} above so
-// /quick-config can reuse them. Don't redefine them here.
+// _makeMonoLabeledInput, _makeMapRow live in web_common.RULE_EDITOR_JS,
+// rendered into a sibling script tag above so /quick-config can reuse
+// them. Don't redefine them here.
 
 function _ensureUniqueSlug(slug, existing) {
   if (!existing.has(slug)) return slug;
