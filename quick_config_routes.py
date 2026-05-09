@@ -330,8 +330,8 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
     font: inherit; }
   #token-modal .actions { display: flex; gap: 0.5rem; margin-top: 0.75rem;
     justify-content: flex-end; }
+  {{NAV_CSS}}
 </style>
-{{NAV_CSS}}
 </head>
 <body>
 
