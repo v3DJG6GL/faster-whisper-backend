@@ -3008,7 +3008,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       }));
       box.appendChild(_makeMonoLabeledInput('replacement', rule.replacement, (v) => {
         rule.replacement = v; commitData();
-      }, 'escape'));
+      }));
       return box;
     }
 
@@ -3295,7 +3295,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       };
       if (t === 'regex') {
         newRule.pattern = patInp.value;
-        newRule.replacement = _unesc(replInp.value);
+        newRule.replacement = replInp.value;
       } else if (t === 'callback:map') {
         newRule.map = {};
       } else {
