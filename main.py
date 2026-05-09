@@ -1917,6 +1917,19 @@ if cfg.ADMIN_UI_ENABLED:
                 "set, so any caller from the allowlist can edit config)",
                 cfg.ADMIN_ALLOWED_HOSTS,
             )
+        # /quick-config piggybacks on the admin UI: same allowlist, separate
+        # USER_TOKEN. Exposes only PIPELINE_RULES the admin has flagged
+        # `exposed: true` so end-users can edit map entries / wordlists
+        # without seeing the rest of the admin chrome.
+        from quick_config_routes import router as _quick_router
+        app.include_router(_quick_router)
+        if getattr(cfg, "USER_TOKEN", None):
+            logger.info("Quick-config UI enabled at /quick-config "
+                        "(allowlist + USER_TOKEN, ADMIN_TOKEN also accepted)")
+        else:
+            logger.info("Quick-config UI enabled at /quick-config "
+                        "(allowlist=%s; USER_TOKEN not set)",
+                        cfg.ADMIN_ALLOWED_HOSTS)
     except Exception as _e:
         logger.error("Failed to load admin router: %s", _e)
 

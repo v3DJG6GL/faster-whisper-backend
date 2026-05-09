@@ -21,8 +21,6 @@ from __future__ import annotations
 import logging
 import os
 import re
-import secrets
-import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -33,6 +31,7 @@ from pydantic import ValidationError
 import config as cfg
 import config_store
 import web_common
+from web_common import TokenWithGrace
 
 logger = logging.getLogger("whisper-api")
 
@@ -93,7 +92,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
         "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",
     ])]),
     ("Access (allowlists + token)", [(None, [
-        "ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS", "ADMIN_TOKEN",
+        "ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS", "ADMIN_TOKEN", "USER_TOKEN",
     ])]),
 ]
 
@@ -125,30 +124,12 @@ _bearer = HTTPBearer(auto_error=False)
 # getting locked out mid-flight. After the grace window expires, only the
 # current cfg.ADMIN_TOKEN is accepted. Loopback bypass is unaffected — the
 # loopback caller can always edit/clear the token without auth.
-_TOKEN_GRACE_S = 60.0
-_previous_token: "str | None" = None
-_previous_token_expires_at: float = 0.0   # time.monotonic()
-
-
-def _record_previous_token(old: "str | None") -> None:
-    """Stash the pre-rotate token + expiry. Called from post_state when
-    ADMIN_TOKEN changes. Empty old token is recorded as None (== bypass)."""
-    global _previous_token, _previous_token_expires_at
-    _previous_token = old or None
-    _previous_token_expires_at = time.monotonic() + _TOKEN_GRACE_S
-
-
-def _previous_token_valid() -> "str | None":
-    """Return the previous token IF it's still inside the grace window,
-    else clear it and return None."""
-    global _previous_token, _previous_token_expires_at
-    if not _previous_token:
-        return None
-    if time.monotonic() > _previous_token_expires_at:
-        _previous_token = None
-        _previous_token_expires_at = 0.0
-        return None
-    return _previous_token
+#
+# USER_TOKEN guard lives here too even though only /quick-config consults it,
+# because admin_routes.post_state is the single place tokens get rotated and
+# both guards need their pre-save snapshots installed from the same handler.
+ADMIN_TOKEN_GUARD = TokenWithGrace(lambda: cfg.ADMIN_TOKEN)
+USER_TOKEN_GUARD = TokenWithGrace(lambda: getattr(cfg, "USER_TOKEN", None))
 
 
 def require_admin_token(
@@ -157,19 +138,14 @@ def require_admin_token(
     """If cfg.ADMIN_TOKEN is set, require a matching bearer token. If unset,
     this is a no-op — the loopback check alone is the gate.
 
-    During a 60 s grace window after rotate (see _record_previous_token), the
-    pre-rotate token is also accepted so the editing session can update its
-    stored token without disruption."""
-    expected = cfg.ADMIN_TOKEN
-    if not expected:
+    During a 60 s grace window after rotate, the pre-rotate token is also
+    accepted so the editing session can update its stored token without
+    disruption."""
+    if not ADMIN_TOKEN_GUARD.is_set():
         return
     if creds is None or creds.scheme.lower() != "bearer":
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "bearer token required")
-    presented = creds.credentials
-    if secrets.compare_digest(presented, expected):
-        return
-    grace = _previous_token_valid()
-    if grace and secrets.compare_digest(presented, grace):
+    if ADMIN_TOKEN_GUARD.matches(creds.credentials):
         return
     logger.warning("[config] rejected bad bearer token")
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid token")
@@ -188,6 +164,8 @@ def _resolved_value(field: str) -> Any:
     when there's nothing to reset."""
     if field == "ADMIN_TOKEN":
         return "***" if getattr(cfg, "ADMIN_TOKEN", None) else None
+    if field == "USER_TOKEN":
+        return "***" if getattr(cfg, "USER_TOKEN", None) else None
     val = getattr(cfg, field, None)
     # Convert un-JSON-able types so the WebUI gets clean data.
     if isinstance(val, (set, frozenset)):
@@ -353,11 +331,49 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                             f"could not write config.local.json: {e}")
 
-    # Capture the pre-save ADMIN_TOKEN so we can install the 60 s grace window
-    # if it's about to change. Loopback callers don't need this, but token-
-    # gated remote sessions would lock themselves out otherwise.
-    _prev_admin_token = getattr(cfg, "ADMIN_TOKEN", None)
+    # Capture pre-save token values so we can install the 60 s grace window
+    # if either is about to change. Loopback callers don't need this, but
+    # token-gated remote sessions would lock themselves out otherwise.
+    prev_admin_token = getattr(cfg, "ADMIN_TOKEN", None)
+    prev_user_token = getattr(cfg, "USER_TOKEN", None)
 
+    applied = await _apply_hot_changes(
+        written,
+        prev_admin_token=prev_admin_token,
+        prev_user_token=prev_user_token,
+    )
+
+    client_host = request.client.host if request.client else "?"
+    logger.info(
+        "[config] admin update from=%s saved=%d hot=%s cold=%s pinned=%s evicted=%s",
+        client_host, len(written), applied["hot_applied"], applied["cold_pending"],
+        applied["env_pinned_ignored"], applied["evicted"],
+    )
+
+    return JSONResponse({
+        "saved": sorted(written.keys()),
+        **applied,
+        "requires_restart": bool(applied["cold_pending"]),
+    })
+
+
+async def _apply_hot_changes(
+    written: dict[str, Any],
+    *,
+    prev_admin_token: "str | None",
+    prev_user_token: "str | None",
+) -> dict[str, Any]:
+    """Apply hot edits from a config save to the running cfg module, install
+    token grace windows, rebuild caches, and evict load-time-affected models.
+
+    Shared by /config/state (admin) and /quick-config/state (end-user). For
+    /quick-config only PIPELINE_RULES can change, so most branches here
+    simply skip — but the helper handles all cases uniformly so the two
+    paths stay in lockstep.
+
+    Returns a dict suitable to splat into the JSON response envelope:
+      hot_applied, cold_pending, env_pinned_ignored, evicted.
+    """
     # Apply hot edits to the running cfg module so the next request sees them.
     # We re-load from disk so the in-memory values get the same coercions
     # (set/frozenset/tuple) load_overrides applies.
@@ -382,15 +398,20 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         else:
             hot_changed.append(name)
 
-    # Token rotate: install grace window when ADMIN_TOKEN actually changed.
-    # Empty / unset old token → no grace needed (no one was authenticating
-    # with a token anyway). Loopback bypass means the local admin always
-    # has access regardless.
-    if "ADMIN_TOKEN" in written and _prev_admin_token \
-            and getattr(cfg, "ADMIN_TOKEN", None) != _prev_admin_token:
-        _record_previous_token(_prev_admin_token)
+    # Token rotate: install grace windows when ADMIN_TOKEN or USER_TOKEN
+    # actually changed. Empty / unset old token → no grace needed (no one
+    # was authenticating with that token anyway). Loopback bypass means
+    # the local admin always has access regardless.
+    if "ADMIN_TOKEN" in written and prev_admin_token \
+            and getattr(cfg, "ADMIN_TOKEN", None) != prev_admin_token:
+        ADMIN_TOKEN_GUARD.record_rotation(prev_admin_token)
         logger.info("[config] ADMIN_TOKEN rotated — previous token valid for "
-                    "%d s grace window", int(_TOKEN_GRACE_S))
+                    "%d s grace window", int(TokenWithGrace.GRACE_S))
+    if "USER_TOKEN" in written and prev_user_token \
+            and getattr(cfg, "USER_TOKEN", None) != prev_user_token:
+        USER_TOKEN_GUARD.record_rotation(prev_user_token)
+        logger.info("[config] USER_TOKEN rotated — previous token valid for "
+                    "%d s grace window", int(TokenWithGrace.GRACE_S))
 
     if needs_cache_rebuild:
         try:
@@ -420,17 +441,6 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
             # Per-model override changed for one or more model ids — figure
             # out which ones touched a load-time field and evict only those.
             new_overrides = coerced.get("MODEL_OVERRIDES") or {}
-            old_overrides = (
-                # The pre-save effective value of MODEL_OVERRIDES. We don't
-                # have a clean snapshot, but `coerced` is post-save and
-                # `written` only contains diffs vs disk; combined with the
-                # cfg.MODEL_OVERRIDES that was active before setattr ran above
-                # we can't reconstruct cleanly. Easiest: any model id that
-                # appears in the new dict and has a load-time field set
-                # gets evicted (idempotent for unchanged models — they just
-                # reload once).
-                {}
-            )
             for model_id, ovr in new_overrides.items():
                 if not isinstance(ovr, dict):
                     continue
@@ -456,21 +466,12 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
             os.environ.pop("HF_TOKEN", None)
             logger.info("[config] HF_TOKEN cleared (USE_AUTH_TOKEN unset)")
 
-    client_host = request.client.host if request.client else "?"
-    logger.info(
-        "[config] admin update from=%s saved=%d hot=%s cold=%s pinned=%s evicted=%s",
-        client_host, len(written), hot_changed, cold_changed,
-        [n for n in written if n in env_pinned], evicted,
-    )
-
-    return JSONResponse({
-        "saved": sorted(written.keys()),
+    return {
         "hot_applied": hot_changed,
         "cold_pending": cold_changed,
         "env_pinned_ignored": sorted(n for n in written if n in env_pinned),
         "evicted": evicted,
-        "requires_restart": bool(cold_changed),
-    })
+    }
 
 
 @router.post("/test-pipeline",
@@ -926,6 +927,10 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   .rule-row .drag-handle:active { cursor: grabbing; }
   .rule-row.locked .drag-handle { cursor: not-allowed; }
   .rule-row .ordinal { color: var(--dim); min-width: 1.5rem; text-align: right; }
+  .rule-row .expose-toggle { display: inline-flex; gap: 0.25rem; align-items: center;
+    font-size: var(--fs-xs); color: var(--dim); user-select: none; cursor: pointer;
+    padding: 0 0.25rem; border-radius: 3px; }
+  .rule-row .expose-toggle.on { color: var(--green); }
   .rule-row .rule-label { flex: 1; color: var(--fg); }
   .rule-row .rule-slug { color: var(--dim); font-size: var(--fs-xs); font-style: italic; }
   .rule-row .type-pill { display: inline-block; padding: 0 0.375rem; border-radius: 3px;
@@ -1222,6 +1227,8 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
 </div>
 
 <div id="toast"></div>
+
+{{RULE_EDITOR_JS}}
 
 <script>
 (() => {
@@ -2448,36 +2455,9 @@ function _slugify(s) {
     .slice(0, 64) || 'rule';
 }
 
-// Display \n, \r, \t, \\ as literal 2-char escape sequences in <input>
-// cells. Single-line inputs strip newlines per WHATWG spec (the value
-// sanitization algorithm), so without this the user sees an empty field
-// for any value containing a newline and would silently overwrite it
-// with "" on save.
-function _esc(s) {
-  if (s == null) return '';
-  return String(s)
-    .replace(/\\/g, '\\\\')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t');
-}
-function _unesc(s) {
-  if (s == null) return '';
-  let out = '';
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] === '\\' && i + 1 < s.length) {
-      const nxt = s[++i];
-      if (nxt === 'n') out += '\n';
-      else if (nxt === 'r') out += '\r';
-      else if (nxt === 't') out += '\t';
-      else if (nxt === '\\') out += '\\';
-      else out += '\\' + nxt;  // keep both chars: \1, \d, \w, \. survive intact
-    } else {
-      out += s[i];
-    }
-  }
-  return out;
-}
+// _esc, _unesc, _PIPELINE_TYPES, _typePill, renderTypeEditor,
+// _makeMonoLabeledInput, _makeMapRow live in {{RULE_EDITOR_JS}} above so
+// /quick-config can reuse them. Don't redefine them here.
 
 function _ensureUniqueSlug(slug, existing) {
   if (!existing.has(slug)) return slug;
@@ -2485,16 +2465,6 @@ function _ensureUniqueSlug(slug, existing) {
   while (existing.has(`${slug}-${n}`)) n++;
   return `${slug}-${n}`;
 }
-
-const _PIPELINE_TYPES = [
-  { type: 'regex',                       pill: 'regex' },
-  { type: 'callback:lowercase-wordlist', pill: 'cb:wordlist' },
-  { type: 'callback:map',                pill: 'cb:map' },
-  { type: 'callback:dedup',              pill: 'cb:dedup' },
-  { type: 'callback:upper',              pill: 'cb:upper' },
-  { type: 'terminal',                    pill: 'terminal' },
-];
-const _typePill = (t) => (_PIPELINE_TYPES.find(x => x.type === t) || {}).pill || t;
 
 // Live status check for one rule against the current test panel sample.
 // Hits POST /config/test-pipeline with a single-rule list. Returns the step
@@ -2878,6 +2848,29 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     });
     head.appendChild(cb);
 
+    // "Show on /quick-config" — admin marks a rule as exposed to end users.
+    // Skipped for terminal rules (no useful body to edit). The checkbox sits
+    // beside the enabled toggle so the two flags read as a pair.
+    if (rule.type !== 'terminal') {
+      const expWrap = document.createElement('label');
+      expWrap.className = 'expose-toggle';
+      expWrap.title = 'Show this rule on /quick-config so end-users can edit its body';
+      const expCb = document.createElement('input');
+      expCb.type = 'checkbox';
+      expCb.checked = !!rule.exposed;
+      expCb.addEventListener('change', () => {
+        rule.exposed = expCb.checked;
+        expWrap.classList.toggle('on', expCb.checked);
+        commitFull();
+      });
+      if (rule.exposed) expWrap.classList.add('on');
+      expWrap.appendChild(expCb);
+      const expTxt = document.createElement('span');
+      expTxt.textContent = 'simple';
+      expWrap.appendChild(expTxt);
+      head.appendChild(expWrap);
+    }
+
     const ord = document.createElement('span');
     ord.className = 'ordinal';
     ord.textContent = String(idx + 1);
@@ -2990,7 +2983,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       body.appendChild(labelWrap);
     }
 
-    body.appendChild(renderTypeEditor(rule, idx));
+    body.appendChild(renderTypeEditor(rule, commitData));
 
     if (rule.type !== 'terminal') {
       const status = document.createElement('div');
@@ -3034,163 +3027,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
     row.appendChild(body);
     return row;
-  }
-
-  function renderTypeEditor(rule, idx) {
-    const box = document.createElement('div');
-    box.className = 'rule-editor';
-
-    if (rule.type === 'terminal') {
-      const note = document.createElement('div');
-      note.className = 'help';
-      note.textContent = 'Hardcoded terminal step: lstrip(" \\t\\r") + rstrip(" \\t\\r"). '
-        + 'Always runs last. Preserves a leading or trailing newline ("\\n") emitted by '
-        + '"neue Zeile" / "neuer Absatz" at the edges of the utterance.';
-      box.appendChild(note);
-      return box;
-    }
-
-    if (rule.type === 'regex') {
-      box.appendChild(_makeMonoLabeledInput('pattern', rule.pattern, (v) => {
-        rule.pattern = v; commitData();
-      }));
-      box.appendChild(_makeMonoLabeledInput('replacement', rule.replacement, (v) => {
-        rule.replacement = v; commitData();
-      }));
-      return box;
-    }
-
-    if (rule.type === 'callback:lowercase-wordlist') {
-      box.appendChild(_makeMonoLabeledInput('pattern', rule.pattern, (v) => {
-        rule.pattern = v; commitData();
-      }));
-      const wlLbl = document.createElement('div');
-      wlLbl.className = 'help';
-      wlLbl.textContent = 'Wordlist (one entry per line, case-insensitive):';
-      box.appendChild(wlLbl);
-      const ta = document.createElement('textarea');
-      ta.value = (rule.wordlist || []).join('\n');
-      ta.rows = 6;
-      ta.addEventListener('input', () => {
-        rule.wordlist = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
-        commitData();
-      });
-      box.appendChild(ta);
-      return box;
-    }
-
-    if (rule.type === 'callback:map') {
-      const note = document.createElement('div');
-      note.className = 'help';
-      note.textContent = 'Pattern auto-built from map keys (longest-first, '
-        + 'word-bounded, case-insensitive). Edit entries below.';
-      box.appendChild(note);
-      const tbl = document.createElement('table');
-      tbl.className = 'map-table';
-      tbl.style.width = '100%';
-      const rows = Object.entries(rule.map || {});
-      rows.forEach(([k, v]) => tbl.appendChild(_makeMapRow(rule, k, v)));
-      box.appendChild(tbl);
-      const addBtn = document.createElement('button');
-      addBtn.type = 'button';
-      addBtn.textContent = '+ add entry';
-      addBtn.style.marginTop = '0.4rem';
-      addBtn.addEventListener('click', () => {
-        // Append a new <tr> directly so the surrounding row body stays
-        // expanded and other expanded rows keep their input state.
-        if (!rule.map) rule.map = {};
-        const k = '_new_' + Object.keys(rule.map).length;
-        rule.map[k] = '';
-        const newTr = _makeMapRow(rule, k, '');
-        tbl.appendChild(newTr);
-        commitData();
-        // Focus the new key cell so the user can start typing immediately.
-        const ki = newTr.querySelector('td:first-child input');
-        if (ki) { ki.focus(); ki.select(); }
-      });
-      box.appendChild(addBtn);
-      return box;
-    }
-
-    if (rule.type === 'callback:dedup' || rule.type === 'callback:upper') {
-      box.appendChild(_makeMonoLabeledInput('pattern', rule.pattern, (v) => {
-        rule.pattern = v; commitData();
-      }));
-      const note = document.createElement('div');
-      note.className = 'help';
-      note.textContent = rule.type === 'callback:dedup'
-        ? 'Callback: collapse each match — last non-comma wins; pure-comma run → single comma.'
-        : 'Callback: uppercase group(2) (or whole match if pattern has fewer than 2 groups).';
-      box.appendChild(note);
-      return box;
-    }
-
-    return box;
-  }
-
-  function _makeMonoLabeledInput(label, val, onInput, kind) {
-    // kind === 'escape' → display \n/\r/\t/\\ as literal 2-char escapes,
-    // decode on input. Required for fields like regex `replacement` that
-    // can hold real newlines (single-line <input> strips them otherwise).
-    const lbl = document.createElement('div');
-    lbl.className = 'help';
-    lbl.textContent = label + ':';
-    const inp = document.createElement('input');
-    inp.type = 'text';
-    inp.spellcheck = false;
-    inp.autocomplete = 'off';
-    const raw = val == null ? '' : val;
-    inp.value = (kind === 'escape') ? _esc(raw) : raw;
-    inp.addEventListener('input', () => onInput(
-      kind === 'escape' ? _unesc(inp.value) : inp.value
-    ));
-    const wrap = document.createElement('div');
-    wrap.appendChild(lbl); wrap.appendChild(inp);
-    return wrap;
-  }
-
-  function _makeMapRow(rule, key, val) {
-    const tr = document.createElement('tr');
-    const td1 = document.createElement('td');
-    const td2 = document.createElement('td');
-    const td3 = document.createElement('td');
-    td3.style.width = '2.5rem';
-    const ki = document.createElement('input');
-    ki.type = 'text'; ki.value = _esc(key);
-    const vi = document.createElement('input');
-    vi.type = 'text'; vi.value = _esc(val);
-    // Map keys/values may contain \n etc.; <input> strips real newlines,
-    // so we display \n as literal 2-char escape and decode on read.
-    function _readMap(parent) {
-      const m = {};
-      parent.querySelectorAll('tr').forEach(r => {
-        const k = _unesc(r.querySelector('td:first-child input').value);
-        const v = _unesc(r.querySelector('td:nth-child(2) input').value);
-        if (k) m[k] = v;
-      });
-      return m;
-    }
-    function rebuild() {
-      const parent = tr.parentNode;
-      if (!parent) return;
-      rule.map = _readMap(parent);
-      commitData();
-    }
-    ki.addEventListener('input', rebuild);
-    vi.addEventListener('input', rebuild);
-    const del = document.createElement('button');
-    del.type = 'button'; del.textContent = '×';
-    del.addEventListener('click', () => {
-      const parent = tr.parentNode;
-      tr.remove();
-      if (parent) {
-        rule.map = _readMap(parent);
-        commitData();
-      }
-    });
-    td1.appendChild(ki); td2.appendChild(vi); td3.appendChild(del);
-    tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
-    return tr;
   }
 
   // Footer + bottom controls. In checklist mode we ONLY show the footer

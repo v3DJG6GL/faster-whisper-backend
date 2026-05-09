@@ -596,6 +596,10 @@ MODEL_OVERRIDES: "dict[str, dict[str, object]]" = {}
 # foot-gun where you lock yourself out by toggling them in the browser).
 ADMIN_UI_ENABLED = True
 ADMIN_TOKEN: "str | None" = None
+# Bearer token for end-user access to /quick-config (the simplified page
+# exposing only rules the admin has flagged with `exposed: true`). Distinct
+# from ADMIN_TOKEN; ADMIN_TOKEN also satisfies /quick-config auth.
+USER_TOKEN: "str | None" = None
 
 # Allowlist of IPs / CIDRs allowed to reach the /config admin endpoints.
 # Loopback (127.0.0.1, ::1) is ALWAYS implicitly allowed — even if you put
@@ -670,6 +674,11 @@ ADMIN_UI_ENABLED = os.environ.get("WHISPER_ADMIN_UI", "1" if ADMIN_UI_ENABLED el
 _env_admin_token = os.environ.get("WHISPER_ADMIN_TOKEN")
 if _env_admin_token is not None:
     ADMIN_TOKEN = _env_admin_token or None
+
+# WHISPER_USER_TOKEN: empty string is treated the same as "no token".
+_env_user_token = os.environ.get("WHISPER_USER_TOKEN")
+if _env_user_token is not None:
+    USER_TOKEN = _env_user_token or None
 
 # Comma-separated CIDR/IP allowlists for /config and /stats. Empty string is
 # treated as "no override" (use the in-file / local.json value).

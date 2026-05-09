@@ -75,6 +75,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "ADMIN_ALLOWED_HOSTS": "WHISPER_ADMIN_ALLOWED_HOSTS",
     "STATS_ALLOWED_HOSTS": "WHISPER_STATS_ALLOWED_HOSTS",
     "ADMIN_TOKEN": "WHISPER_ADMIN_TOKEN",
+    "USER_TOKEN": "WHISPER_USER_TOKEN",
     # Per-model overrides use a different convention; see config.py override
     # block. They are not flagged in the admin UI as "env-pinned" since the
     # mapping is dynamic; the dynamic mapping is exposed separately.
@@ -393,6 +394,11 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "clients. Loopback always bypasses. After rotate, the previous "
         "token stays valid for 60 s as a grace window so the editing admin "
         "isn't immediately locked out. Empty / unset = loopback-only access.",
+    "USER_TOKEN":
+        "Bearer token for end-user access to /quick-config (the simplified "
+        "page exposing only rules the admin has flagged). Distinct from "
+        "ADMIN_TOKEN; ADMIN_TOKEN also works on /quick-config. Same 60 s "
+        "grace window after rotate. Empty / unset = loopback-only access.",
 }
 
 
@@ -441,6 +447,10 @@ class _RuleBase(BaseModel):
     enabled: bool = True
     locked: bool = False
     seeded: bool = False
+    # When True, the rule is shown on /quick-config so end-users (USER_TOKEN
+    # session) can edit its body fields. Toggle is admin-only — see the
+    # per-type allow-list enforcement in quick_config_routes.py.
+    exposed: bool = False
 
 
 class RegexRule(_RuleBase):
@@ -707,6 +717,7 @@ class AdminConfig(BaseModel):
     # (see admin_routes.py post_state). Loopback bypass + 60 s dual-token
     # window prevent lockout. Empty string = clear (disable token auth).
     ADMIN_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("ADMIN_TOKEN")
+    USER_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("USER_TOKEN")
 
     @field_validator("LOG_FILE")
     @classmethod

@@ -1,22 +1,77 @@
 """
-Shared helpers used by the /logs, /config, and /stats web pages.
+Shared helpers used by the /logs, /config, /stats, and /quick-config pages.
 
   - require_allowed_host(allowlist) — FastAPI dependency that 403s callers
     not in the allowlist. Allowlist accepts bare IPs or CIDRs.
   - nav_html(current, request)      — server-rendered nav row HTML.
   - severity_counts()               — log-level counters (last 60 s).
+  - TokenWithGrace                  — bearer token with 60 s rotation grace.
 """
 
 from __future__ import annotations
 
 import ipaddress
 import logging
+import secrets
+import time
 from collections import deque
 from typing import Callable
 
 from fastapi import HTTPException, Request, status
 
 import config as cfg
+
+
+class TokenWithGrace:
+    """Bearer token whose previous value is honored for 60 s after rotation,
+    so an editing session can refresh its stored token mid-flight without
+    locking itself out.
+
+    `current_ref` is a zero-arg callable returning the current token (or
+    None / empty for "no token set"). The indirection lets the WebUI edit
+    the value on cfg at runtime and the next match() call picks up the new
+    one. Loopback bypass is handled by the IP-gate dependency, not here.
+    """
+    GRACE_S = 60.0
+
+    def __init__(self, current_ref: Callable[[], "str | None"]) -> None:
+        self._current_ref = current_ref
+        self._previous: "str | None" = None
+        self._previous_expires_at: float = 0.0
+
+    def record_rotation(self, old: "str | None") -> None:
+        """Stash the pre-rotate token + expiry. Empty old token recorded as
+        None (== bypass). Call from the admin save handler when the value
+        changes."""
+        self._previous = old or None
+        self._previous_expires_at = time.monotonic() + self.GRACE_S
+
+    def _previous_valid(self) -> "str | None":
+        if not self._previous:
+            return None
+        if time.monotonic() > self._previous_expires_at:
+            self._previous = None
+            self._previous_expires_at = 0.0
+            return None
+        return self._previous
+
+    def is_set(self) -> bool:
+        """Return True if the current value is set (not None / not empty)."""
+        return bool(self._current_ref())
+
+    def matches(self, presented: str) -> bool:
+        """Constant-time match against the current value, with 60 s grace
+        for the previous value. If the current value is unset, returns
+        False (caller should treat this as "auth disabled" via is_set())."""
+        expected = self._current_ref()
+        if not expected:
+            return False
+        if secrets.compare_digest(presented, expected):
+            return True
+        grace = self._previous_valid()
+        if grace and secrets.compare_digest(presented, grace):
+            return True
+        return False
 
 
 # IPv4-mapped-in-IPv6 prefix surfaces on Windows dual-stack `::` binds when a
@@ -321,6 +376,218 @@ SEV_POLLER_JS = """
 """
 
 
+# Per-rule body editors shared by /config (full editor with drag-reorder etc.)
+# and /quick-config (read-only header + body editor only). Defined as
+# top-level functions so both pages can call them with their own
+# `commitData` callback. The `commitData` argument is invoked by every
+# input/change event inside an editor; each page implements its own dirty-
+# tracking on top of that callback.
+#
+# Keep the per-type rendering here in lockstep with config_store.py rule
+# schemas. Adding a new rule type requires:
+#   1. New Pydantic class in config_store.py
+#   2. New `if (rule.type === '<type>')` branch in renderTypeEditor below
+#   3. New entry in _PIPELINE_TYPES for the pill label
+RULE_EDITOR_JS = r"""<script>
+// Display \n, \r, \t, \\ as literal 2-char escape sequences in <input>
+// cells. Single-line inputs strip newlines per WHATWG spec, so without
+// this the user sees an empty field for any value containing a newline.
+function _esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
+}
+function _unesc(s) {
+  if (s == null) return '';
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length) {
+      const nxt = s[++i];
+      if (nxt === 'n') out += '\n';
+      else if (nxt === 'r') out += '\r';
+      else if (nxt === 't') out += '\t';
+      else if (nxt === '\\') out += '\\';
+      else out += '\\' + nxt;  // keep both chars: \1, \d, \w, \. survive intact
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
+const _PIPELINE_TYPES = [
+  { type: 'regex',                       pill: 'regex' },
+  { type: 'callback:lowercase-wordlist', pill: 'cb:wordlist' },
+  { type: 'callback:map',                pill: 'cb:map' },
+  { type: 'callback:dedup',              pill: 'cb:dedup' },
+  { type: 'callback:upper',              pill: 'cb:upper' },
+  { type: 'terminal',                    pill: 'terminal' },
+];
+const _typePill = (t) => (_PIPELINE_TYPES.find(x => x.type === t) || {}).pill || t;
+
+function _makeMonoLabeledInput(label, val, onInput, kind) {
+  // kind === 'escape' → display \n/\r/\t/\\ as literal 2-char escapes,
+  // decode on input. Required for fields like regex `replacement` that
+  // can hold real newlines (single-line <input> strips them otherwise).
+  const lbl = document.createElement('div');
+  lbl.className = 'help';
+  lbl.textContent = label + ':';
+  const inp = document.createElement('input');
+  inp.type = 'text';
+  inp.spellcheck = false;
+  inp.autocomplete = 'off';
+  const raw = val == null ? '' : val;
+  inp.value = (kind === 'escape') ? _esc(raw) : raw;
+  inp.addEventListener('input', () => onInput(
+    kind === 'escape' ? _unesc(inp.value) : inp.value
+  ));
+  const wrap = document.createElement('div');
+  wrap.appendChild(lbl); wrap.appendChild(inp);
+  return wrap;
+}
+
+function _makeMapRow(rule, key, val, commitData) {
+  const tr = document.createElement('tr');
+  const td1 = document.createElement('td');
+  const td2 = document.createElement('td');
+  const td3 = document.createElement('td');
+  td3.style.width = '2.5rem';
+  const ki = document.createElement('input');
+  ki.type = 'text'; ki.value = _esc(key);
+  const vi = document.createElement('input');
+  vi.type = 'text'; vi.value = _esc(val);
+  // Map keys/values may contain \n etc.; <input> strips real newlines,
+  // so we display \n as literal 2-char escape and decode on read.
+  function _readMap(parent) {
+    const m = {};
+    parent.querySelectorAll('tr').forEach(r => {
+      const k = _unesc(r.querySelector('td:first-child input').value);
+      const v = _unesc(r.querySelector('td:nth-child(2) input').value);
+      if (k) m[k] = v;
+    });
+    return m;
+  }
+  function rebuild() {
+    const parent = tr.parentNode;
+    if (!parent) return;
+    rule.map = _readMap(parent);
+    commitData();
+  }
+  ki.addEventListener('input', rebuild);
+  vi.addEventListener('input', rebuild);
+  const del = document.createElement('button');
+  del.type = 'button'; del.textContent = '×';
+  del.addEventListener('click', () => {
+    const parent = tr.parentNode;
+    tr.remove();
+    if (parent) {
+      rule.map = _readMap(parent);
+      commitData();
+    }
+  });
+  td1.appendChild(ki); td2.appendChild(vi); td3.appendChild(del);
+  tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
+  return tr;
+}
+
+function renderTypeEditor(rule, commitData) {
+  const box = document.createElement('div');
+  box.className = 'rule-editor';
+
+  if (rule.type === 'terminal') {
+    const note = document.createElement('div');
+    note.className = 'help';
+    note.textContent = 'Hardcoded terminal step: lstrip(" \\t\\r") + rstrip(" \\t\\r"). '
+      + 'Always runs last. Preserves a leading or trailing newline ("\\n") emitted by '
+      + '"neue Zeile" / "neuer Absatz" at the edges of the utterance.';
+    box.appendChild(note);
+    return box;
+  }
+
+  if (rule.type === 'regex') {
+    box.appendChild(_makeMonoLabeledInput('pattern', rule.pattern, (v) => {
+      rule.pattern = v; commitData();
+    }));
+    box.appendChild(_makeMonoLabeledInput('replacement', rule.replacement, (v) => {
+      rule.replacement = v; commitData();
+    }));
+    return box;
+  }
+
+  if (rule.type === 'callback:lowercase-wordlist') {
+    box.appendChild(_makeMonoLabeledInput('pattern', rule.pattern, (v) => {
+      rule.pattern = v; commitData();
+    }));
+    const wlLbl = document.createElement('div');
+    wlLbl.className = 'help';
+    wlLbl.textContent = 'Wordlist (one entry per line, case-insensitive):';
+    box.appendChild(wlLbl);
+    const ta = document.createElement('textarea');
+    ta.value = (rule.wordlist || []).join('\n');
+    ta.rows = 6;
+    ta.addEventListener('input', () => {
+      rule.wordlist = ta.value.split('\n').map(s => s.trim()).filter(Boolean);
+      commitData();
+    });
+    box.appendChild(ta);
+    return box;
+  }
+
+  if (rule.type === 'callback:map') {
+    const note = document.createElement('div');
+    note.className = 'help';
+    note.textContent = 'Pattern auto-built from map keys (longest-first, '
+      + 'word-bounded, case-insensitive). Edit entries below.';
+    box.appendChild(note);
+    const tbl = document.createElement('table');
+    tbl.className = 'map-table';
+    tbl.style.width = '100%';
+    const rows = Object.entries(rule.map || {});
+    rows.forEach(([k, v]) => tbl.appendChild(_makeMapRow(rule, k, v, commitData)));
+    box.appendChild(tbl);
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = '+ add entry';
+    addBtn.style.marginTop = '0.4rem';
+    addBtn.addEventListener('click', () => {
+      // Append a new <tr> directly so the surrounding row body stays
+      // expanded and other expanded rows keep their input state.
+      if (!rule.map) rule.map = {};
+      const k = '_new_' + Object.keys(rule.map).length;
+      rule.map[k] = '';
+      const newTr = _makeMapRow(rule, k, '', commitData);
+      tbl.appendChild(newTr);
+      commitData();
+      // Focus the new key cell so the user can start typing immediately.
+      const ki = newTr.querySelector('td:first-child input');
+      if (ki) { ki.focus(); ki.select(); }
+    });
+    box.appendChild(addBtn);
+    return box;
+  }
+
+  if (rule.type === 'callback:dedup' || rule.type === 'callback:upper') {
+    box.appendChild(_makeMonoLabeledInput('pattern', rule.pattern, (v) => {
+      rule.pattern = v; commitData();
+    }));
+    const note = document.createElement('div');
+    note.className = 'help';
+    note.textContent = rule.type === 'callback:dedup'
+      ? 'Callback: collapse each match — last non-comma wins; pure-comma run → single comma.'
+      : 'Callback: uppercase group(2) (or whole match if pattern has fewer than 2 groups).';
+    box.appendChild(note);
+    return box;
+  }
+
+  return box;
+}
+</script>
+"""
+
+
 def _nav_items(current: str) -> list[tuple[str, str, bool]]:
     """Return [(label, href, active), ...] honoring cfg.ADMIN_UI_ENABLED."""
     items: list[tuple[str, str, bool]] = [
@@ -369,6 +636,7 @@ def render_page(template: str, current: str) -> str:
       - {{SCALE_PICKER_JS}}      → wire-up script (end of body)
       - {{SEV_POLLER_JS}}        → 5-s pill re-sync (end of body)
       - {{SCALE_BOOTSTRAP_HEAD}} → tiny pre-paint script (top of <head>)
+      - {{RULE_EDITOR_JS}}       → shared per-rule body editors
 
     Pages that don't include a given placeholder are returned unchanged."""
     return (
@@ -379,4 +647,5 @@ def render_page(template: str, current: str) -> str:
         .replace("{{SCALE_PICKER_JS}}", SCALE_PICKER_JS)
         .replace("{{SEV_POLLER_JS}}", SEV_POLLER_JS)
         .replace("{{SCALE_BOOTSTRAP_HEAD}}", SCALE_BOOTSTRAP_HEAD)
+        .replace("{{RULE_EDITOR_JS}}", RULE_EDITOR_JS)
     )
