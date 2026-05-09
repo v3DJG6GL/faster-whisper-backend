@@ -43,10 +43,9 @@ _STOPWORDS = frozenset({
     "nach", "vor", "über", "unter", "durch",
 })
 
-# Per-transcription extraction caps: keep candidates relevant; bound
+# Per-transcription extraction cap: keep candidates relevant; bound
 # memory and SSE payload size.
 _TOKEN_CAP = 100
-_BIGRAM_CAP = 50
 
 recent_traces: deque[dict[str, Any]] = deque(maxlen=_BUFFER_MAX)
 
@@ -76,30 +75,6 @@ def _tokenize(text: str) -> list[str]:
     return list(seen.values())
 
 
-def _bigrams(text: str) -> list[str]:
-    """Adjacent non-stopword pairs from `text`. Skip pairs where either
-    side is a stopword. Dedupe case-insensitively. Cap at _BIGRAM_CAP."""
-    raw = [m.group(0) for m in _TOKEN_RE.finditer(text or "")]
-    out: list[str] = []
-    seen: set[str] = set()
-    for a, b in zip(raw, raw[1:]):
-        if a.lower() in _STOPWORDS or b.lower() in _STOPWORDS:
-            continue
-        if not (_TOKEN_MIN_LEN <= len(a) <= _TOKEN_MAX_LEN):
-            continue
-        if not (_TOKEN_MIN_LEN <= len(b) <= _TOKEN_MAX_LEN):
-            continue
-        bg = f"{a} {b}"
-        key = bg.lower()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(bg)
-        if len(out) >= _BIGRAM_CAP:
-            break
-    return out
-
-
 def record_trace(
     *,
     model: str,
@@ -114,7 +89,12 @@ def record_trace(
     `steps` is a list of (label, before, after) tuples — same shape
     main.py builds when cfg.TRACE_ENABLED. Pass [] when tracing is off
     so the autocomplete feature still works (raw + final + tokens are
-    the only fields the autocomplete needs)."""
+    the only fields the autocomplete needs).
+
+    Only single-word tokens are emitted as autocomplete candidates;
+    multi-word phrases proved noisy in practice (e.g. "Rückenschmerzen
+    Weitere" pairing a content word with a filler) and the user's
+    mapping target is almost always a single misrecognized token."""
     entry: dict[str, Any] = {
         "ts": time.time(),
         "model": model,
@@ -123,7 +103,6 @@ def record_trace(
                   for s in (steps or [])],
         "final": final or "",
         "tokens": _tokenize(final or ""),
-        "bigrams": _bigrams(final or ""),
     }
     recent_traces.append(entry)
     _broadcast({"event": "trace", "data": entry})

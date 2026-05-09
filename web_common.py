@@ -574,15 +574,25 @@ function renderTypeEditor(rule, commitData, opts) {
     addBtn.addEventListener('click', () => {
       // Append a new <tr> directly so the surrounding row body stays
       // expanded and other expanded rows keep their input state.
+      // Pass empty key/val: _readMap rebuilds the dict from DOM inputs
+      // on every change and skips empty-key rows, so the new row's
+      // blank input doesn't need a placeholder slug in rule.map. No
+      // commitData() here — the first keystroke triggers it via the
+      // input's rebuild listener (an empty row contributes nothing
+      // to the saved dict).
       if (!rule.map) rule.map = {};
-      const k = '_new_' + Object.keys(rule.map).length;
-      rule.map[k] = '';
-      const newTr = _makeMapRow(rule, k, '', commitData, opts.datalistId);
+      const newTr = _makeMapRow(rule, '', '', commitData, opts.datalistId);
       tbl.appendChild(newTr);
-      commitData();
-      // Focus the new key cell so the user can start typing immediately.
+      // Focus + open the autocomplete dropdown immediately so the user
+      // sees recent-transcription candidates without a second click.
+      // Synchronous showPicker() inside this user-initiated handler
+      // preserves transient activation (Chrome 99+, Firefox 149+, no-op
+      // on older browsers — degrades to focus-only).
       const ki = newTr.querySelector('td:first-child input');
-      if (ki) { ki.focus(); ki.select(); }
+      if (ki) {
+        ki.focus();
+        try { ki.showPicker(); } catch (_) { /* unsupported */ }
+      }
     });
     box.appendChild(addBtn);
     return box;
