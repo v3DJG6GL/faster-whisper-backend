@@ -2466,7 +2466,7 @@ function _unesc(s) {
       else if (nxt === 'r') out += '\r';
       else if (nxt === 't') out += '\t';
       else if (nxt === '\\') out += '\\';
-      else out += nxt;       // unknown escape: pass through
+      else out += '\\' + nxt;  // keep both chars: \1, \d, \w, \. survive intact
     } else {
       out += s[i];
     }
