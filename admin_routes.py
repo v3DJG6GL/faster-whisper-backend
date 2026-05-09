@@ -720,7 +720,8 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   header button#discard-btn:not(:disabled):hover { background: #531f1f;
     border-color: #7d2d2d; }
   header button:disabled { opacity: 0.4; cursor: not-allowed; }
-  main { padding: 0.875rem; max-width: 1100px; margin: 0 auto; }
+  main { padding: 0.875rem; max-width: 1100px; margin: 0 auto;
+    container-type: inline-size; container-name: form; }
   section { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
     padding: 0.625rem 0.875rem 0.75rem; margin-bottom: 0.875rem; }
   h2 { color: var(--bold); font-size: 0.933rem; margin: 0 0 0.5rem; padding-bottom: 0.375rem;
@@ -737,6 +738,17 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     grid-column: 1 / -1; gap: 0.625rem; align-items: start;
     padding: 0.375rem 0; border-bottom: 1px dashed #21262d; }
   .field:last-child { border-bottom: none; }
+  /* Narrow form: stack label-col ABOVE input-col instead of beside it.
+     Wide layout wastes vertical space below short labels; narrow layout
+     wastes HORIZONTAL space (the empty area under "PIPELINE_RULES" while
+     the rule editor gets squeezed). Container query measures `main`'s
+     rendered width in rem so it tracks the --fs-base scale. */
+  @container form (max-width: 46rem) {
+    .group-fields { grid-template-columns: 1fr; row-gap: 0.25rem; }
+    .field { row-gap: 0.25rem; padding: 0.5rem 0; }
+    .label-col { flex-direction: row; flex-wrap: wrap; align-items: baseline;
+      gap: 0.5rem; }
+  }
   .label-col { display: flex; flex-direction: column; gap: 0.25rem; }
   .label-col .name { color: var(--bold); }
   .badges { display: flex; gap: 0.25rem; flex-wrap: wrap; }
@@ -921,7 +933,12 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   }
   .rule-row.disabled { opacity: 0.55; }
   .rule-row .row-header { display: flex; align-items: center; gap: 0.5rem;
+    flex-wrap: wrap; row-gap: 0.25rem;
     font-family: var(--font-mono); font-size: var(--fs-sm); }
+  /* Allow the label to actually shrink within the flex row, so the
+     row stays on one line at typical widths and wraps to the row-gap
+     line when truly narrow (rather than overflowing horizontally). */
+  .rule-row .rule-label { min-width: 0; }
   .rule-row .drag-handle { cursor: grab; user-select: none; color: var(--dim);
     padding: 0.125rem 0.25rem; }
   .rule-row .drag-handle:active { cursor: grabbing; }
