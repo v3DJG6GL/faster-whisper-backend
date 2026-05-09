@@ -596,6 +596,7 @@ def _nav_items(current: str) -> list[tuple[str, str, bool]]:
     ]
     if getattr(cfg, "ADMIN_UI_ENABLED", False):
         items.append(("config", "/config", current == "config"))
+        items.append(("quick", "/quick-config", current == "quick-config"))
     return items
 
 
