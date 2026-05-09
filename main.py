@@ -7,7 +7,13 @@ import re
 import shutil
 import tempfile
 import time
+import uuid
 from contextlib import asynccontextmanager
+
+# Per-process token, regenerated on every interpreter start. Surfaced via
+# /v1/models so the WebUI's restart flow can detect the new process even
+# if its 1 s polling missed the brief "service down" window.
+BOOT_ID = uuid.uuid4().hex
 
 import config as cfg
 # system_stats imports psutil + pynvml at module load and primes psutil's
@@ -1547,6 +1553,7 @@ async def list_models():
                 names.append(n)
     return {
         "object": "list",
+        "boot_id": BOOT_ID,
         "data": [
             {
                 "id": n,

@@ -3823,6 +3823,17 @@ async function doRestart() {
   $('restart-modal').classList.remove('show');
   $('restart-progress').classList.add('show');
   $('restart-progress-msg').textContent = 'Asking the server to spawn the restart helper.';
+
+  // Capture the current process identity BEFORE asking it to restart, so
+  // the polling loop can detect "different process now serving" even if
+  // its polling interval missed the brief "service down" window. Falls
+  // back to the old sawDown heuristic if the server lacks boot_id.
+  let preBootId = null;
+  try {
+    const m0 = await fetch('/v1/models', { cache: 'no-store' });
+    if (m0.ok) preBootId = (await m0.json()).boot_id || null;
+  } catch {}
+
   const r = await api('POST', '/config/restart', {});
   if (!r.ok) {
     $('restart-progress').classList.remove('show');
@@ -3836,25 +3847,30 @@ async function doRestart() {
     'Helper spawned (' + (result.method || 'unknown method') + '). '
     + 'Service will stop in ' + (result.delay_sec || 3) + ' s.';
 
-  // Poll /v1/models. We need to see the service genuinely go DOWN first
-  // (failed fetch), then come back UP. Until we see a down poll we never
-  // declare success — otherwise an unchanged service satisfies the check.
-  // Deadline is generous because PRELOAD_MODELS blocks uvicorn's lifespan
-  // startup — N preloads × ~5-10 s per large-v3 = up to several minutes.
+  // Poll /v1/models. Two success criteria: (1) boot_id changed
+  // (definitive — new process is up), or (2) we saw the service go down
+  // and then come back. Deadline is generous because PRELOAD_MODELS
+  // blocks uvicorn's lifespan startup.
   const RESTART_TIMEOUT_MS = 5 * 60 * 1000;
   const deadline = Date.now() + RESTART_TIMEOUT_MS;
   let sawDown = false;
   while (Date.now() < deadline) {
-    await new Promise(r => setTimeout(r, 1000));
+    await new Promise(r => setTimeout(r, 500));
     try {
       const m = await fetch('/v1/models', { cache: 'no-store' });
-      if (m.ok && sawDown) {
-        $('restart-progress').classList.remove('show');
-        toast('service is back; reloading');
-        setTimeout(() => location.reload(), 600);
-        return;
+      if (m.ok) {
+        let postBootId = null;
+        try { postBootId = (await m.json()).boot_id || null; } catch {}
+        const bootChanged = preBootId && postBootId && postBootId !== preBootId;
+        if (bootChanged || sawDown) {
+          $('restart-progress').classList.remove('show');
+          toast('service is back; reloading');
+          setTimeout(() => location.reload(), 600);
+          return;
+        }
+      } else {
+        sawDown = true;
       }
-      if (!m.ok) sawDown = true;
     } catch {
       sawDown = true;
       $('restart-progress-msg').textContent =
