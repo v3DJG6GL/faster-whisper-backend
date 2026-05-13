@@ -614,6 +614,35 @@ ADMIN_ALLOWED_HOSTS: "list[str]" = ["127.0.0.1", "::1"]
 STATS_ALLOWED_HOSTS: "list[str]" = ["127.0.0.1", "::1"]
 
 
+# =============================================================================
+# Transcription error reports
+# =============================================================================
+# Users can flag a wrong transcription from /quick-config; admins triage on
+# /reports. The store is durable PHI: plaintext SQLite next to
+# config.local.json. Whole-disk encryption is the deployment's responsibility.
+
+# DB file path. Default sits next to config.local.json. SQLite uses three
+# files at runtime (.sqlite3, -wal, -shm); .gitignore matches all three.
+REPORTS_DB = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "reports.local.sqlite3"
+)
+
+# Soft cap. On overflow create_report() evicts oldest closed reports first
+# (resolved/dismissed), then oldest open. Tune lower for memory-tight LAN
+# deployments; the admin page is client-side filtered so the practical
+# upper bound is around what a browser can render in one DOM.
+REPORTS_MAX = 1000
+
+# Auto-delete reports older than this many days. Sweep runs on startup and
+# hourly thereafter. Set to 0 to disable (admin must clear manually).
+REPORTS_RETENTION_DAYS = 90
+
+# Master switch for end-user (USER_TOKEN role) report submission. Set to
+# False to make /quick-config/reports/api/submit return 403 for everyone
+# except admins. The button stays visible but submission is rejected.
+REPORTS_ALLOW_USER_SUBMIT = True
+
+
 # Snapshot the in-file defaults BEFORE config.local.json + env overrides apply.
 # Used by main.py's request log block to mark non-default scalar values with
 # `*` so the operator can see at a glance which knobs are overridden.
@@ -689,6 +718,32 @@ if _env_admin_hosts is not None and _env_admin_hosts.strip():
 _env_stats_hosts = os.environ.get("WHISPER_STATS_ALLOWED_HOSTS")
 if _env_stats_hosts is not None and _env_stats_hosts.strip():
     STATS_ALLOWED_HOSTS = [s.strip() for s in _env_stats_hosts.split(",") if s.strip()]
+
+
+# --- Reports store --------------------------------------------------------
+_env_reports_db = os.environ.get("WHISPER_REPORTS_DB")
+if _env_reports_db is not None and _env_reports_db.strip():
+    REPORTS_DB = _env_reports_db.strip()
+
+_env_reports_max = os.environ.get("WHISPER_REPORTS_MAX")
+if _env_reports_max is not None and _env_reports_max.strip():
+    try:
+        REPORTS_MAX = int(_env_reports_max)
+    except ValueError:
+        pass
+
+_env_reports_retention = os.environ.get("WHISPER_REPORTS_RETENTION_DAYS")
+if _env_reports_retention is not None and _env_reports_retention.strip():
+    try:
+        REPORTS_RETENTION_DAYS = int(_env_reports_retention)
+    except ValueError:
+        pass
+
+_env_reports_allow_user = os.environ.get("WHISPER_REPORTS_ALLOW_USER_SUBMIT")
+if _env_reports_allow_user is not None and _env_reports_allow_user.strip():
+    REPORTS_ALLOW_USER_SUBMIT = _env_reports_allow_user.strip().lower() in (
+        "1", "true", "yes", "on"
+    )
 
 
 # --- Advanced decode params -------------------------------------------------

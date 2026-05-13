@@ -589,13 +589,21 @@ def _format_request_block(
     raw: str,
     final: str,
     steps: "list | None" = None,
+    request_id: str | None = None,
 ) -> str:
     """Full per-request log block. `steps` is the per-pipeline trace; passed
-    in only when cfg.TRACE_ENABLED so the block stays a single message."""
+    in only when cfg.TRACE_ENABLED so the block stays a single message.
+
+    `request_id` (uuid4 hex) is the cross-reference key between this
+    durable log block and a report submitted via /quick-config. When
+    present, the title line carries `req=<id[:8]>` so an admin reading
+    a /reports row can grep the log for the matching block."""
     title_rule = "═" * _LOG_WIDTH
     rule = "─" * _LOG_WIDTH
 
     status = "[!] empty output" if len(seg_diag) == 0 else "✓ ok"
+    if request_id:
+        status = f"req={request_id[:8]}  {status}"
     title = "  /v1/audio/transcriptions"
     pad = max(1, _LOG_WIDTH - len(title) - len(status))
     title_line = f"{title}{' ' * pad}{status}"
@@ -1158,6 +1166,22 @@ async def _idle_evictor() -> None:
         return
 
 
+async def _reports_retention_loop() -> None:
+    """Hourly retention sweep for the reports store. Lazy-imports
+    cfg.REPORTS_RETENTION_DAYS each tick so admin /config edits take
+    effect on the next cycle without a service restart. Cancellation
+    on shutdown is the normal exit path."""
+    import reports_store
+    while True:
+        try:
+            await _asyncio_for_models.sleep(3600)
+            reports_store.sweep_retention()
+        except _asyncio_for_models.CancelledError:
+            raise
+        except Exception as _re:
+            logger.error("[reports] retention loop error: %s", _re)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # If PRELOAD_MODELS is empty, fall back to preloading just DEFAULT_MODEL
@@ -1187,6 +1211,22 @@ async def lifespan(app: FastAPI):
 
     evictor_task = _asyncio_for_models.create_task(_idle_evictor())
 
+    # Open the reports SQLite store (durable, plaintext PHI on disk) and
+    # run an immediate retention sweep before serving traffic. Failure
+    # here is non-fatal: the rest of the app must keep working even if
+    # the reports surface is broken, but the /reports page will error.
+    reports_sweep_task = None
+    try:
+        import reports_store
+        reports_store.init_db(cfg.REPORTS_DB)
+        reports_store.sweep_retention()
+        logger.info("Reports store initialized at %s", cfg.REPORTS_DB)
+        reports_sweep_task = _asyncio_for_models.create_task(
+            _reports_retention_loop()
+        )
+    except Exception as _re:
+        logger.error("Failed to initialize reports store: %s", _re)
+
     yield
 
     evictor_task.cancel()
@@ -1194,6 +1234,12 @@ async def lifespan(app: FastAPI):
         await evictor_task
     except (_asyncio_for_models.CancelledError, Exception):
         pass
+    if reports_sweep_task is not None:
+        reports_sweep_task.cancel()
+        try:
+            await reports_sweep_task
+        except (_asyncio_for_models.CancelledError, Exception):
+            pass
 
     _loaded_models.clear()
     # Best-effort NVML shutdown so the service exit doesn't leak driver
@@ -1482,6 +1528,12 @@ async def transcribe(
                 trace.append((f"{len(_COMPILED_RULES) + 2} {_TERMINAL_LABEL}",
                               before_trim, full_text_str))
 
+            # Cross-reference key for /reports submissions: stamped on both
+            # the log block (req=<id[:8]> in the title line) and the
+            # /quick-config ring-buffer entry, so an admin reviewing a
+            # report can grep the log for the matching block.
+            request_id = uuid.uuid4().hex
+
             # Always emit the rich diagnostic block — it's how empty-output
             # failures are debugged. The per-pipeline transformation trace
             # is only included when cfg.TRACE_ENABLED is on.
@@ -1494,6 +1546,7 @@ async def transcribe(
                 raw=raw_full_text,
                 final=full_text_str,
                 steps=trace if trace is not None else None,
+                request_id=request_id,
             ))
 
             # Mirror the same trace into the /quick-config recent-buffer so
@@ -1503,6 +1556,7 @@ async def transcribe(
             try:
                 import quick_config_state
                 quick_config_state.record_trace(
+                    request_id=request_id,
                     model=resolved_model,
                     raw=raw_full_text,
                     steps=trace if trace is not None else [],
@@ -1953,6 +2007,18 @@ if cfg.ADMIN_UI_ENABLED:
             logger.info("Quick-config UI enabled at /quick-config "
                         "(allowlist=%s; USER_TOKEN not set)",
                         cfg.ADMIN_ALLOWED_HOSTS)
+        # /reports: admin-only triage page for user-submitted transcription
+        # error reports. The submission endpoint /quick-config/reports/api/submit
+        # lives on the same router so it's gated by the same admin-host +
+        # user-or-admin-token combination.
+        from reports_routes import router as _reports_router
+        app.include_router(_reports_router)
+        logger.info(
+            "Reports UI enabled at /reports (admin token required; "
+            "user submissions %s)",
+            "enabled" if getattr(cfg, "REPORTS_ALLOW_USER_SUBMIT", True)
+            else "disabled",
+        )
     except Exception as _e:
         logger.error("Failed to load admin router: %s", _e)
 

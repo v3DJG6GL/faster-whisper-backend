@@ -399,6 +399,23 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "page exposing only rules the admin has flagged). Distinct from "
         "ADMIN_TOKEN; ADMIN_TOKEN also works on /quick-config. Same 60 s "
         "grace window after rotate. Empty / unset = loopback-only access.",
+
+    # --- Reports store ---
+    "REPORTS_DB":
+        "Path to the SQLite file holding transcription error reports. "
+        "Contains plaintext PHI on a medical deployment — keep on an "
+        "encrypted volume.",
+    "REPORTS_MAX":
+        "Soft cap on the report count. On overflow, oldest closed reports "
+        "(resolved/dismissed) are evicted first, then oldest open.",
+    "REPORTS_RETENTION_DAYS":
+        "Auto-delete reports older than this many days. Sweep runs on "
+        "startup and hourly thereafter. 0 = retention sweep disabled "
+        "(admin must clear manually).",
+    "REPORTS_ALLOW_USER_SUBMIT":
+        "Master switch for end-user (USER_TOKEN role) report submission. "
+        "Off = only admins can submit; the button stays visible but the "
+        "endpoint returns 403 for non-admin callers.",
 }
 
 
@@ -718,6 +735,12 @@ class AdminConfig(BaseModel):
     # window prevent lockout. Empty string = clear (disable token auth).
     ADMIN_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("ADMIN_TOKEN")
     USER_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("USER_TOKEN")
+
+    # --- Reports store ---
+    REPORTS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("REPORTS_DB")
+    REPORTS_MAX: Annotated[int, Field(ge=10, le=100_000)] | None = _F("REPORTS_MAX")
+    REPORTS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F("REPORTS_RETENTION_DAYS")
+    REPORTS_ALLOW_USER_SUBMIT: bool | None = _F("REPORTS_ALLOW_USER_SUBMIT")
 
     @field_validator("LOG_FILE")
     @classmethod

@@ -77,6 +77,7 @@ def _tokenize(text: str) -> list[str]:
 
 def record_trace(
     *,
+    request_id: str | None = None,
     model: str,
     raw: str,
     steps: list,
@@ -85,6 +86,12 @@ def record_trace(
     """Append a new trace to the ring buffer and broadcast to all SSE
     subscribers. Called from main.py's transcribe handler after the
     existing logger.info(_format_request_block(...)) line.
+
+    `request_id` is the uuid4 hex stamped on the request by main.py.
+    Surfaced on each trace entry so /quick-config can correlate a
+    user-submitted report with the durable text log (which prints
+    `req=<id[:8]>` in the per-request block). None for any pre-feature
+    or upstream call that omits it.
 
     `steps` is a list of (label, before, after) tuples — same shape
     main.py builds when cfg.TRACE_ENABLED. Pass [] when tracing is off
@@ -97,6 +104,7 @@ def record_trace(
     mapping target is almost always a single misrecognized token."""
     entry: dict[str, Any] = {
         "ts": time.time(),
+        "request_id": request_id,
         "model": model,
         "raw": raw or "",
         "steps": [list(s) if isinstance(s, (tuple, list)) else s

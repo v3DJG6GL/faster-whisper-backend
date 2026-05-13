@@ -626,6 +626,7 @@ def _nav_items(current: str) -> list[tuple[str, str, bool]]:
     if getattr(cfg, "ADMIN_UI_ENABLED", False):
         items.append(("config", "/config", current == "config"))
         items.append(("quick", "/quick-config", current == "quick-config"))
+        items.append(("reports", "/reports", current == "reports"))
     return items
 
 
@@ -640,7 +641,7 @@ def nav_html(current: str) -> str:
     # JS adds `body.role-admin` after a successful state-load, revealing
     # them. /quick-config in a USER_TOKEN session never gets that class
     # so the admin links stay hidden. The "quick" link is for everyone.
-    admin_only_labels = {"logs", "stats", "config"}
+    admin_only_labels = {"logs", "stats", "config", "reports"}
     parts: list[str] = ['<span class="navrow">']
     for label, href, active in _nav_items(current):
         classes = ["navlink"]

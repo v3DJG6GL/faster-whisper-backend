@@ -175,6 +175,18 @@ async def get_state(
     # server hash the same canonical bytes.
     for rd in canonical:
         rd["_fp"] = _rule_fingerprint(rd)
+    # Server-authoritative "this transcription has been reported" set,
+    # capped at 100 newest. The /quick-config page syncs its badges
+    # from this list on every state load so a report submitted in one
+    # browser shows up in another. Failure to load the reports store
+    # (init_db never ran, etc.) is non-fatal — the client falls back
+    # to its localStorage hint.
+    reported_ids: list[str] = []
+    try:
+        import reports_store
+        reported_ids = reports_store.recent_reported_request_ids(limit=100)
+    except Exception:
+        reported_ids = []
     return {
         "rules": canonical,
         "token_required": bool(
@@ -182,6 +194,10 @@ async def get_state(
         ),
         "service_name": "WhisperAPI",
         "role": role,
+        "reported_request_ids": reported_ids,
+        "reports_submit_enabled": bool(
+            getattr(cfg, "REPORTS_ALLOW_USER_SUBMIT", True)
+        ),
     }
 
 
@@ -526,6 +542,70 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .trace-step .step-after { color: var(--fg); }
   .trace-step .step-arrow { color: var(--green); margin-right: 0.25rem; }
 
+  /* Per-trace report row + inline form */
+  .trace-actions { display: flex; align-items: center; gap: 0.5rem;
+    margin-top: 0.5rem; flex-wrap: wrap; }
+  .trace-report-btn { background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 3px;
+    padding: 0.125rem 0.5rem; font: inherit; font-size: var(--fs-xs);
+    cursor: pointer; }
+  .trace-report-btn:hover { background: #21262d; color: var(--bold); }
+  .trace-reported-badge { color: var(--green); font-size: var(--fs-xs);
+    border: 1px solid var(--green); border-radius: 3px;
+    padding: 0.05rem 0.4rem; font-family: var(--font-sans); }
+  .trace-report-form { display: none; margin-top: 0.5rem;
+    border-top: 1px dashed var(--border); padding-top: 0.5rem; }
+  .trace-report-form.open { display: block; }
+  .trace-report-form .form-label { font-size: var(--fs-sm);
+    color: var(--fg); margin: 0.5rem 0 0.25rem; display: block;
+    font-family: var(--font-sans); }
+  .trace-report-form .form-label .help { color: var(--help);
+    font-size: var(--fs-xs); font-weight: normal; margin-left: 0.25rem; }
+  .rep-final-words { font-family: var(--font-mono); font-size: var(--fs-sm);
+    line-height: 1.6; padding: 0.375rem 0.5rem; background: var(--input-bg);
+    border: 1px solid var(--border); border-radius: 3px;
+    word-wrap: break-word; }
+  .rep-final-words .word { cursor: pointer; padding: 0 0.05rem;
+    border-radius: 2px; }
+  .rep-final-words .word:hover { background: #21262d; }
+  .rep-final-words .word.selected { color: var(--red);
+    text-decoration: line-through; background: rgba(255, 123, 114, 0.12); }
+  .rep-corrections { display: flex; flex-wrap: wrap; gap: 0.375rem;
+    margin-top: 0.375rem; }
+  .rep-corrections:empty { display: none; }
+  .rep-correction { display: inline-flex; align-items: center;
+    gap: 0.25rem; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 3px; padding: 0.125rem 0.4rem; font-family: var(--font-mono);
+    font-size: var(--fs-sm); }
+  .rep-correction .rep-wrong { color: var(--red);
+    text-decoration: line-through; }
+  .rep-correction .rep-arrow { color: var(--dim); }
+  .rep-correction .rep-correct { background: var(--input-bg);
+    color: var(--green); border: 1px solid var(--border); border-radius: 3px;
+    padding: 0 0.25rem; font: inherit; font-family: var(--font-mono);
+    font-size: var(--fs-sm); min-width: 6rem; }
+  .rep-correction .rep-correct:focus-visible { outline: 1px solid var(--cyan);
+    outline-offset: 0; }
+  .rep-correction .rep-correction-remove { background: transparent;
+    border: none; color: var(--dim); cursor: pointer;
+    font-size: var(--fs-md); padding: 0 0.25rem; line-height: 1; }
+  .rep-correction .rep-correction-remove:hover { color: var(--red); }
+  .trace-report-form textarea { box-sizing: border-box; width: 100%;
+    background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 3px;
+    padding: 0.25rem 0.4rem; font-family: var(--font-sans);
+    font-size: var(--fs-sm); resize: vertical; }
+  .trace-report-form textarea:focus-visible {
+    outline: 2px solid var(--cyan); outline-offset: -2px; }
+  .rep-actions { display: flex; gap: 0.5rem; margin-top: 0.5rem;
+    justify-content: flex-end; }
+  .rep-actions button { background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 3px;
+    padding: 0.125rem 0.625rem; font: inherit; font-size: var(--fs-sm);
+    cursor: pointer; }
+  .rep-actions button.primary { color: var(--green); border-color: var(--green); }
+  .rep-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
   {{NAV_CSS}}
 </style>
 </head>
@@ -798,7 +878,283 @@ function renderTrace(entry) {
     + escapeHtml(entry.final || '');
   item.appendChild(final);
 
+  // Action row: "Report" button + (conditional) "✓ reported" badge.
+  // The inline form is lazy — built on first click, kept in DOM after
+  // submit so subsequent visits see the badge. The `open` class on the
+  // form is what gates the pushTrace re-render guard.
+  const actions = document.createElement('div');
+  actions.className = 'trace-actions';
+  const reportBtn = document.createElement('button');
+  reportBtn.type = 'button';
+  reportBtn.className = 'trace-report-btn';
+  reportBtn.textContent = 'Report for analysis';
+  reportBtn.addEventListener('click', () => toggleReportForm(item, entry));
+  actions.appendChild(reportBtn);
+  const badge = document.createElement('span');
+  badge.className = 'trace-reported-badge';
+  badge.textContent = '✓ reported';
+  badge.style.display = isReported(entry.request_id) ? 'inline-flex' : 'none';
+  actions.appendChild(badge);
+  item.appendChild(actions);
+
   return item;
+}
+
+// ---------- "Report for analysis" inline form ----------------------------
+//
+// Each trace gets a lazy form: built on the first "Report" click and
+// kept in DOM thereafter. The form supports three complementary inputs:
+//   (a) per-word corrections — click a word chip in `final` to mark it
+//       wrong, then type the replacement. Multiple corrections allowed.
+//   (b) "what you meant to say" — free-text rewrite for full rephrases.
+//   (c) free-text comment — anything else for the admin.
+// At least one of (a-with-non-empty-correct), (b), or (c) must be
+// non-empty for the server to accept the submission.
+
+const _REPORTED_KEY = 'whisper-reported-ids';
+const _REPORTED_MAX = 200;
+// Server-authoritative set, refreshed on every load() of /state.
+// Survives across browsers/devices. localStorage is a per-tab UX hint
+// that lets a freshly submitted badge show instantly without waiting
+// for the next /state poll.
+let _serverReportedSet = new Set();
+
+function getReportedIds() {
+  try { return JSON.parse(localStorage.getItem(_REPORTED_KEY) || '[]'); }
+  catch (_) { return []; }
+}
+function isReported(rid) {
+  if (!rid) return false;
+  if (_serverReportedSet.has(rid)) return true;
+  const ids = getReportedIds();
+  return ids.indexOf(rid) !== -1;
+}
+function markReported(rid) {
+  if (!rid) return;
+  const ids = getReportedIds();
+  if (ids.indexOf(rid) !== -1) return;
+  ids.unshift(rid);
+  if (ids.length > _REPORTED_MAX) ids.length = _REPORTED_MAX;
+  try { localStorage.setItem(_REPORTED_KEY, JSON.stringify(ids)); }
+  catch (_) { /* quota — accept that the badge won't survive a reload */ }
+}
+
+function syncReportedBadges() {
+  // Called after /state load to flip badges visible/hidden on every
+  // trace item currently in the DOM, using the freshly fetched server
+  // list. Cheap; the recent panel holds at most 20 items.
+  document.querySelectorAll('.trace-item').forEach((item) => {
+    const badge = item.querySelector('.trace-reported-badge');
+    if (!badge) return;
+    let rid = '';
+    try { rid = (JSON.parse(item.dataset.entry || '{}') || {}).request_id || ''; }
+    catch (_) {}
+    badge.style.display = isReported(rid) ? 'inline-flex' : 'none';
+  });
+}
+
+// Tokenization that matches quick_config_state.py:_TOKEN_RE — letters
+// (incl. German), digits, hyphen, underscore. We don't split on
+// punctuation: that ships punctuation as its own non-clickable span
+// (rendered as a plain text node between word spans).
+const _WORD_RE = /[A-Za-zÀ-ɏ][\w\-À-ɏ]*/g;
+
+function _wordifyFinal(form, finalText) {
+  const container = form.querySelector('.rep-final-words');
+  container.innerHTML = '';
+  if (!finalText) {
+    container.innerHTML = '<span class="empty-recent">(no final text)</span>';
+    return;
+  }
+  let last = 0;
+  let wordIdx = 0;
+  _WORD_RE.lastIndex = 0;
+  let m;
+  while ((m = _WORD_RE.exec(finalText)) !== null) {
+    if (m.index > last) {
+      container.appendChild(
+        document.createTextNode(finalText.slice(last, m.index))
+      );
+    }
+    const span = document.createElement('span');
+    span.className = 'word';
+    span.dataset.idx = String(wordIdx);
+    span.textContent = m[0];
+    span.addEventListener('click', () => {
+      toggleCorrection(form, parseInt(span.dataset.idx, 10), span.textContent);
+    });
+    container.appendChild(span);
+    last = m.index + m[0].length;
+    wordIdx++;
+  }
+  if (last < finalText.length) {
+    container.appendChild(document.createTextNode(finalText.slice(last)));
+  }
+}
+
+function _buildReportForm(entry) {
+  const form = document.createElement('div');
+  form.className = 'trace-report-form';
+  form.innerHTML =
+    '<div class="form-label">Mark wrong words'
+    + ' <span class="help">(click a word; type the correction; press Enter to add another)</span>'
+    + '</div>'
+    + '<div class="rep-final-words"></div>'
+    + '<div class="rep-corrections"></div>'
+    + '<label class="form-label">What you meant to say'
+    + ' <span class="help">(optional — use this for full rephrases)</span>'
+    + '</label>'
+    + '<textarea class="rep-intended" rows="2"'
+    + ' placeholder="e.g. Varicosis links Vena saphena magna"></textarea>'
+    + '<label class="form-label">Comment'
+    + ' <span class="help">(optional)</span>'
+    + '</label>'
+    + '<textarea class="rep-comment" rows="3"'
+    + ' placeholder="What went wrong? Anything else the admin should know?"></textarea>'
+    + '<div class="rep-actions">'
+    + '  <button type="button" class="rep-cancel">Cancel</button>'
+    + '  <button type="button" class="rep-submit primary">Submit report</button>'
+    + '</div>';
+  form._corrections = [];  // [{wrong, correct, idx}]
+  form._entry = entry;
+  _wordifyFinal(form, entry.final || '');
+  form.querySelector('.rep-cancel').addEventListener('click', () => {
+    form.classList.remove('open');
+  });
+  form.querySelector('.rep-submit').addEventListener('click', () => {
+    submitReport(form);
+  });
+  return form;
+}
+
+function toggleReportForm(item, entry) {
+  let form = item.querySelector('.trace-report-form');
+  if (!form) {
+    form = _buildReportForm(entry);
+    item.appendChild(form);
+  }
+  form.classList.toggle('open');
+  if (form.classList.contains('open')) {
+    // Focus the first textarea if there are no corrections yet, else
+    // the first correction input.
+    const firstCorr = form.querySelector('.rep-correct');
+    if (firstCorr) firstCorr.focus();
+    else form.querySelector('.rep-intended').focus();
+  }
+}
+
+function toggleCorrection(form, idx, word) {
+  const existingI = form._corrections.findIndex(c => c.idx === idx);
+  const wordSpan = form.querySelector(
+    '.rep-final-words .word[data-idx="' + idx + '"]'
+  );
+  if (existingI >= 0) {
+    form._corrections.splice(existingI, 1);
+    if (wordSpan) wordSpan.classList.remove('selected');
+    _renderCorrections(form);
+    return;
+  }
+  form._corrections.push({ wrong: word, correct: '', idx: idx });
+  if (wordSpan) wordSpan.classList.add('selected');
+  _renderCorrections(form);
+  // Auto-focus the newly added input for fast typing.
+  const inputs = form.querySelectorAll('.rep-correction .rep-correct');
+  const lastInput = inputs[inputs.length - 1];
+  if (lastInput) lastInput.focus();
+}
+
+function _renderCorrections(form) {
+  const box = form.querySelector('.rep-corrections');
+  box.innerHTML = '';
+  form._corrections.forEach((c, i) => {
+    const chip = document.createElement('div');
+    chip.className = 'rep-correction';
+    chip.dataset.idx = String(c.idx);
+    const w = document.createElement('span');
+    w.className = 'rep-wrong';
+    w.textContent = c.wrong;
+    const a = document.createElement('span');
+    a.className = 'rep-arrow';
+    a.textContent = '→';
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.className = 'rep-correct';
+    inp.placeholder = 'correct word';
+    inp.value = c.correct;
+    inp.addEventListener('input', () => { c.correct = inp.value; });
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        // Move focus to the next input if any, else nudge the user
+        // toward the intended-text textarea.
+        const inputs = Array.from(form.querySelectorAll('.rep-correct'));
+        const next = inputs[i + 1];
+        if (next) next.focus();
+        else form.querySelector('.rep-intended').focus();
+      }
+    });
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'rep-correction-remove';
+    x.textContent = '×';
+    x.setAttribute('aria-label', 'remove correction');
+    x.addEventListener('click', () => {
+      toggleCorrection(form, c.idx, c.wrong);
+    });
+    chip.appendChild(w);
+    chip.appendChild(a);
+    chip.appendChild(inp);
+    chip.appendChild(x);
+    box.appendChild(chip);
+  });
+}
+
+async function submitReport(form) {
+  const entry = form._entry || {};
+  const intended = form.querySelector('.rep-intended').value.trim();
+  const comment = form.querySelector('.rep-comment').value.trim();
+  const corrections = form._corrections
+    .map(c => ({ wrong: c.wrong, correct: c.correct.trim(), idx: c.idx }))
+    .filter(c => c.correct.length > 0);
+  if (!corrections.length && !intended && !comment) {
+    showToast('Mark a wrong word, write what you meant to say, or leave a comment.', 'err');
+    return;
+  }
+  const submitBtn = form.querySelector('.rep-submit');
+  submitBtn.disabled = true;
+  try {
+    const r = await api('POST', '/quick-config/reports/api/submit', {
+      trace_ts: entry.ts || 0,
+      request_id: entry.request_id || null,
+      model: entry.model || '',
+      raw: entry.raw || '',
+      final: entry.final || '',
+      steps: entry.steps || [],
+      corrections: corrections,
+      intended_text: intended,
+      user_comment: comment,
+    });
+    if (!r.ok) {
+      let msg = 'Report failed (' + r.status + ')';
+      try { const j = await r.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
+      showToast(msg, 'err');
+      return;
+    }
+    if (entry.request_id) markReported(entry.request_id);
+    // Update the badge + collapse the form. Keep the form's filled-in
+    // values intact so the user can re-open it if they want to add more.
+    const item = form.closest('.trace-item');
+    if (item) {
+      const badge = item.querySelector('.trace-reported-badge');
+      if (badge) badge.style.display = 'inline-flex';
+    }
+    form.classList.remove('open');
+    showToast('Report sent — thank you.', 'ok');
+  } catch (e) {
+    showToast('Report failed: ' + e, 'err');
+  } finally {
+    submitBtn.disabled = false;
+  }
 }
 
 function pushTrace(entry) {
@@ -807,8 +1163,16 @@ function pushTrace(entry) {
   const empty = list.querySelector('.empty-recent');
   if (empty) empty.remove();
   list.insertBefore(renderTrace(entry), list.firstChild);
+  // Trim to _BUFFER_MAX, but never evict an item whose report form is
+  // currently open — the user is mid-edit. Worst case the list grows
+  // a few entries beyond the server-side cap until they finish typing.
   while (list.children.length > _BUFFER_MAX) {
-    list.removeChild(list.lastChild);
+    const tail = list.lastChild;
+    if (tail && tail.querySelector &&
+        tail.querySelector('.trace-report-form.open')) {
+      break;
+    }
+    list.removeChild(tail);
   }
   rebuildDatalist();
 }
@@ -1018,6 +1382,10 @@ async function load() {
   // sessions never get the class so admin chrome stays hidden.
   if (j.role === 'admin') document.body.classList.add('role-admin');
   else document.body.classList.remove('role-admin');
+  // Server-authoritative "reported" set — refreshes every load. Badges
+  // in already-rendered .trace-item nodes update in-place.
+  _serverReportedSet = new Set(j.reported_request_ids || []);
+  syncReportedBadges();
   renderCards();
   updateButtons();
 }

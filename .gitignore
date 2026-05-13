@@ -15,6 +15,11 @@ __pycache__/
 # Admin-WebUI runtime overrides (the .example.json variant IS committed)
 config.local.json
 
+# Transcription error reports — durable PHI store (SQLite + WAL/SHM sidecars)
+reports.local.sqlite3
+reports.local.sqlite3-shm
+reports.local.sqlite3-wal
+
 # Editor / IDE
 .vscode/
 .idea/
