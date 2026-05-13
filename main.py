@@ -1288,8 +1288,13 @@ async def transcribe(
                 threshold=cfg_for(resolved_model, "VAD_THRESHOLD"),
             ) if _vad_filter else None
 
+            # Coerce empty to None — faster-whisper validates the value against
+            # its accepted-codes list, so "" raises ValueError; None triggers
+            # the first-30s auto-detect path, which is what an empty
+            # DEFAULT_LANGUAGE is documented to mean.
+            _language = language or cfg_for(resolved_model, "DEFAULT_LANGUAGE")
             transcribe_kwargs = dict(
-                language=language or cfg_for(resolved_model, "DEFAULT_LANGUAGE"),
+                language=_language if _language else None,
                 beam_size=cfg_for(resolved_model, "BEAM_SIZE"),
                 best_of=cfg_for(resolved_model, "BEST_OF"),
                 temperature=temperature,
