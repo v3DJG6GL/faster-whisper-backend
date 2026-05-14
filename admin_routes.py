@@ -3677,7 +3677,7 @@ async function _renderAdminOnlyIfNonAdmin() {
           + '<a href="/quick-config" style="color:#79c0ff;'
           + 'border:1px solid #79c0ff;padding:0.45rem 1rem;'
           + 'border-radius:4px;text-decoration:none;">Open /quick-config</a> '
-          + '<button onclick="sessionStorage.removeItem(\'whisper_api_key\');'
+          + '<button onclick="sessionStorage.removeItem(\\u0027whisper_api_key\\u0027);'
           + 'location.reload()" style="margin-left:0.5rem;'
           + 'padding:0.45rem 1rem;border-radius:4px;border:1px solid #30363d;'
           + 'background:#0d1117;color:#c9d1d9;cursor:pointer;">Sign out</button>'

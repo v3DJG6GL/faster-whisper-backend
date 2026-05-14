@@ -1471,7 +1471,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       + '<a href="/quick-config" style="color:var(--cyan);'
       + 'border:1px solid var(--cyan);padding:0.45rem 1rem;'
       + 'border-radius:4px;text-decoration:none;">Open /quick-config</a> '
-      + '<button onclick="sessionStorage.removeItem(\'whisper_api_key\');'
+      + '<button onclick="sessionStorage.removeItem(\\u0027whisper_api_key\\u0027);'
       + 'location.reload()" style="margin-left:0.5rem;">Sign out</button>'
       + '</p></div>';
   }
