@@ -650,6 +650,17 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .rep-final-words .word:hover { background: #21262d; }
   .rep-final-words .word.selected { color: var(--red);
     text-decoration: line-through; background: rgba(255, 123, 114, 0.12); }
+  /* Inline replacement next to a struck-through word — mirrors the
+     /captures word strip and /reports' .diff-ins green look so the
+     correction reads as track-changes inline, not just in the chip
+     panel below. */
+  .rep-final-words .word-replacement {
+    color: var(--green); font-weight: 600;
+    background: rgba(126, 231, 135, 0.10);
+    padding: 0 0.25rem; margin-left: 0.25rem;
+    border-radius: 2px;
+    font-family: var(--font-mono);
+  }
   .rep-corrections { display: flex; flex-wrap: wrap; gap: 0.375rem;
     margin-top: 0.375rem; }
   .rep-corrections:empty { display: none; }
@@ -1212,6 +1223,48 @@ function _selectWord(form, idx, on) {
   if (span) span.classList.toggle('selected', !!on);
 }
 
+// Inline replacement next to a struck-through word — mirrors the
+// .diff-ins green look from /reports' renderDiff so the user sees
+// the correction inline in the words strip, not just in the chip
+// panel below.
+function _setReplacementInline(form, chip) {
+  if (typeof chip.idx !== 'number') return;
+  const lastIdx = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
+  const anchor = form.querySelector(
+    '.rep-final-words .word[data-idx="' + lastIdx + '"]'
+  );
+  if (!anchor) return;
+  let existing = anchor.nextSibling;
+  if (!existing || !existing.classList ||
+      !existing.classList.contains('word-replacement')) {
+    existing = null;
+  }
+  const text = (chip.correct || '').trim();
+  if (!text) {
+    if (existing) existing.parentNode.removeChild(existing);
+    return;
+  }
+  if (!existing) {
+    existing = document.createElement('span');
+    existing.className = 'word-replacement';
+    anchor.parentNode.insertBefore(existing, anchor.nextSibling);
+  }
+  existing.textContent = text;
+}
+
+function _clearReplacementInline(form, chip) {
+  if (typeof chip.idx !== 'number') return;
+  const lastIdx = (typeof chip.idx_end === 'number') ? chip.idx_end : chip.idx;
+  const anchor = form.querySelector(
+    '.rep-final-words .word[data-idx="' + lastIdx + '"]'
+  );
+  if (!anchor) return;
+  const nxt = anchor.nextSibling;
+  if (nxt && nxt.classList && nxt.classList.contains('word-replacement')) {
+    nxt.parentNode.removeChild(nxt);
+  }
+}
+
 function _spanText(form, a, b) {
   // Slice the original final string so inter-word punctuation/whitespace
   // is preserved (e.g. "A, B C" stays "A, B C", not "A B C").
@@ -1241,6 +1294,7 @@ function _removeChip(form, chipIdx) {
   const chip = form._corrections[chipIdx];
   if (!chip) return;
   for (let j = chip.idx; j <= chip.idx_end; j++) _selectWord(form, j, false);
+  _clearReplacementInline(form, chip);
   form._corrections.splice(chipIdx, 1);
   _renderCorrections(form);
 }
@@ -1293,6 +1347,9 @@ function toggleCorrection(form, idx, word, shiftKey) {
 function _renderCorrections(form) {
   const box = form.querySelector('.rep-corrections');
   box.innerHTML = '';
+  // Refresh inline replacement siblings for all current chips so
+  // re-renders keep the strip in sync with the chip-panel state.
+  form._corrections.forEach(c => _setReplacementInline(form, c));
   form._corrections.forEach((c, i) => {
     const chip = document.createElement('div');
     chip.className = 'rep-correction';
@@ -1308,7 +1365,10 @@ function _renderCorrections(form) {
     inp.className = 'rep-correct';
     inp.placeholder = 'correct word';
     inp.value = c.correct;
-    inp.addEventListener('input', () => { c.correct = inp.value; });
+    inp.addEventListener('input', () => {
+      c.correct = inp.value;
+      _setReplacementInline(form, c);
+    });
     inp.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
