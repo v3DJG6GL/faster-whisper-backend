@@ -46,11 +46,19 @@ CREATE TABLE IF NOT EXISTS capture_groups (
   member_hashes_json          TEXT NOT NULL,
   inter_segment_silence_ms    INTEGER NOT NULL DEFAULT 300,
   is_stale                    INTEGER NOT NULL DEFAULT 0,
-  is_locked                   INTEGER NOT NULL DEFAULT 0
+  is_locked                   INTEGER NOT NULL DEFAULT 0,
+  corrections_json            TEXT NOT NULL DEFAULT '[]'
 );
 CREATE INDEX IF NOT EXISTS idx_capture_groups_user
   ON capture_groups(user_id, created_ts DESC);
 """
+
+# Idempotent ALTER TABLE additions for DBs created under an older schema.
+# Run after _SCHEMA so a fresh DB (with the column already present in
+# CREATE TABLE) raises OperationalError and we swallow it.
+_MIGRATIONS: tuple[str, ...] = (
+    "ALTER TABLE capture_groups ADD COLUMN corrections_json TEXT NOT NULL DEFAULT '[]'",
+)
 
 
 # ---------------------------------------------------------------------
@@ -66,6 +74,12 @@ def init(conn: sqlite3.Connection, captures_audio_root: str) -> None:
     _groups_audio_dir = os.path.join(captures_audio_root, "groups")
     os.makedirs(_groups_audio_dir, exist_ok=True)
     _conn.executescript(_SCHEMA)
+    for stmt in _MIGRATIONS:
+        try:
+            _conn.execute(stmt)
+        except sqlite3.OperationalError:
+            # Column already present (fresh DB or migrated previously).
+            pass
 
 
 def _require_conn() -> sqlite3.Connection:
@@ -111,6 +125,12 @@ def abs_path_for(relpath: str) -> str:
 # ---------------------------------------------------------------------
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
+    try:
+        corrections = json.loads(row["corrections_json"] or "[]")
+        if not isinstance(corrections, list):
+            corrections = []
+    except (TypeError, ValueError):
+        corrections = []
     return {
         "id":                          row["id"],
         "user_id":                     row["user_id"],
@@ -123,6 +143,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "inter_segment_silence_ms":    int(row["inter_segment_silence_ms"]),
         "is_stale":                    bool(row["is_stale"]),
         "is_locked":                   bool(row["is_locked"]),
+        "corrections":                 corrections,
     }
 
 
@@ -225,11 +246,12 @@ def update_group(
     patch: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Patch transcript / is_locked / inter_segment_silence_ms /
-    transcript_join_strategy / is_stale. Returns the updated row."""
+    transcript_join_strategy / is_stale / corrections_json. Returns the
+    updated row."""
     allowed = {
         "transcript", "transcript_join_strategy",
         "inter_segment_silence_ms", "is_locked", "is_stale",
-        "member_hashes_json", "merged_duration_ms",
+        "member_hashes_json", "merged_duration_ms", "corrections_json",
     }
     sets: list[str] = []
     args: list[Any] = []

@@ -377,6 +377,7 @@ class PatchGroupIn(BaseModel):
     join_strategy: Literal["space", "period_space", "newline"] | None = None
     silence_ms: int | None = Field(default=None, ge=0, le=2000)
     is_locked: bool | None = None
+    corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
 
 
 _JOIN_STR = {"space": " ", "period_space": ". ", "newline": "\n"}
@@ -594,7 +595,46 @@ async def get_group_api(
     if not user.get("is_admin") and g["user_id"] != user.get("user_id"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not your group")
     g["members"] = capture_groups_store.get_members(gid)
+    g["merged_words"] = _build_merged_words(
+        g["members"], int(g["inter_segment_silence_ms"]),
+    )
     return JSONResponse({"group": g})
+
+
+def _build_merged_words(
+    members: list[dict[str, Any]],
+    silence_ms: int,
+) -> list[dict[str, Any]]:
+    """Project each member's per-word timestamps onto the merged-audio
+    timeline. Member i starts at (Σ_{j<i} dur_j) + i × silence_s seconds —
+    i.e. cumulative member duration plus one silence gap PER preceding
+    member. start/end are returned in seconds (matches audio.currentTime
+    and the single-capture karaoke band's expectation).
+
+    `get_members` strips heavy fields for the list view, so we re-fetch
+    each capture to get `words`. Cost is bounded — ≤30 members, ≤a few
+    hundred words total per ≤28 s group — and only runs on expand."""
+    silence_s = max(0, int(silence_ms)) / 1000.0
+    merged: list[dict[str, Any]] = []
+    cum = 0.0
+    for i, m in enumerate(members):
+        offset = cum + i * silence_s
+        cap = captures_store.get_capture(m["id"]) or {}
+        for w in cap.get("words") or []:
+            start = w.get("start")
+            end = w.get("end", start)
+            word = w.get("word", "")
+            if start is None or end is None:
+                continue
+            merged.append({
+                "word":       word,
+                "start":      float(start) + offset,
+                "end":        float(end) + offset,
+                "member_idx": i,
+                "member_id":  m["id"],
+            })
+        cum += float(m.get("duration_seconds") or 0.0)
+    return merged
 
 
 @router.patch(
@@ -628,6 +668,11 @@ async def patch_group_api(
         rebuild_audio = True
     if payload.is_locked is not None:
         patch["is_locked"] = 1 if payload.is_locked else 0
+    if payload.corrections is not None:
+        import json as _json
+        patch["corrections_json"] = _json.dumps(
+            [c.model_dump() for c in payload.corrections], ensure_ascii=False,
+        )
 
     if rebuild_audio:
         # Re-run the merge with the new silence. Member set is unchanged.
@@ -2511,19 +2556,18 @@ _CAPTURES_HTML = r"""<!doctype html>
         var audio = document.createElement('audio');
         audio.controls = true;
         audio.style.marginTop = '0.5rem';
-        api('GET', '/captures/api/groups/' + encodeURIComponent(g.id) + '/audio')
-          .catch(function() { return null; });
-        audio.src = '/captures/api/groups/' + encodeURIComponent(g.id) + '/audio?t='
-          + encodeURIComponent(getToken());
-        // Use Authorization header by re-fetching as blob to avoid token in URL.
-        audio.removeAttribute('src');
+        audio.preload = 'metadata';
         fetch('/captures/api/groups/' + encodeURIComponent(g.id) + '/audio',
               { headers: { Authorization: 'Bearer ' + getToken() } })
-          .then(function(r) { return r.blob(); })
+          .then(function(r) {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.blob();
+          })
           .then(function(b) { audio.src = URL.createObjectURL(b); })
           .catch(function(_) {});
         body.appendChild(audio);
 
+        // --- Group transcript textarea (the "ground truth" / gtArea) ---
         var ta = document.createElement('textarea');
         ta.value = detail.transcript || '';
         ta.style.cssText = 'width:100%;min-height:6rem;margin-top:0.5rem;'
@@ -2531,16 +2575,147 @@ _CAPTURES_HTML = r"""<!doctype html>
           + 'border:1px solid var(--border);border-radius:4px;'
           + 'padding:0.5rem;font-family:var(--font-mono);'
           + 'font-size:var(--fs-md);box-sizing:border-box;';
+
+        // --- Group state for the shared karaoke/chip helpers ---
+        // Mirrors single-capture state shape so renderChips / onWordClick /
+        // applyCorrectionsToGround / markDirty etc. all work as-is.
+        var groupState = {
+          gid: detail.id,
+          audio: audio,
+          words: detail.merged_words || [],
+          finalText: detail.transcript || '',  // base for applyCorrections
+          correctedText: detail.transcript || '',
+          corrections: (detail.corrections || []).map(function(c) {
+            return {
+              wrong:   c.wrong   || '',
+              correct: c.correct || '',
+              idx:     typeof c.idx     === 'number' ? c.idx     : null,
+              idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
+            };
+          }),
+          wordEls: [],
+          activeWordIdx: -1,
+          chipBox: null,
+          gtArea: ta,
+          dirty: false,
+        };
+
+        // --- Karaoke word strip (read-only when group is locked) ---
+        if (groupState.words.length > 0) {
+          var stripWrap = document.createElement('div');
+          stripWrap.className = 'cc-section';
+          stripWrap.innerHTML = '<h3>Words (karaoke — click to seek; '
+            + 'shift-click another to mark a multi-word span; click a '
+            + 'marked word to clear)</h3>';
+          if (detail.is_stale) {
+            stripWrap.insertAdjacentHTML('beforeend',
+              '<div class="help" style="color:var(--cyan);">'
+              + '⚠ audio drift detected — regenerate to realign timings'
+              + '</div>');
+          }
+          var strip = document.createElement('div');
+          strip.className = 'word-strip';
+          var prevMember = -1;
+          groupState.words.forEach(function(w, i) {
+            var sp = document.createElement('span');
+            sp.className = 'word';
+            sp.dataset.idx = String(i);
+            sp.dataset.start = String(w.start || 0);
+            sp.dataset.end = String(w.end || 0);
+            sp.dataset.member = String(w.member_idx || 0);
+            // Member boundary: dashed left-border + extra left padding.
+            if (w.member_idx !== prevMember && prevMember !== -1) {
+              sp.style.borderLeft = '2px dashed var(--border)';
+              sp.style.marginLeft = '0.4rem';
+              sp.style.paddingLeft = '0.4rem';
+            }
+            prevMember = w.member_idx;
+            sp.textContent = (w.word || '').replace(/^\s+/, ' ');
+            sp.addEventListener('click', function(e) {
+              onWordClick(groupState, i, !!e.shiftKey);
+            });
+            strip.appendChild(sp);
+            groupState.wordEls.push(sp);
+          });
+          stripWrap.appendChild(strip);
+          body.appendChild(stripWrap);
+
+          // Karaoke highlight via timeupdate (mirrors single-capture flow).
+          audio.addEventListener('timeupdate', function() {
+            var t = audio.currentTime;
+            var idx = -1;
+            for (var i = 0; i < groupState.words.length; i++) {
+              var s = groupState.words[i].start || 0;
+              var e = groupState.words[i].end || 0;
+              if (s <= t && t < e) { idx = i; break; }
+            }
+            if (idx !== groupState.activeWordIdx) {
+              if (groupState.activeWordIdx >= 0) {
+                var prev = groupState.wordEls[groupState.activeWordIdx];
+                if (prev) prev.classList.remove('active');
+              }
+              groupState.activeWordIdx = idx;
+              if (idx >= 0) {
+                var cur = groupState.wordEls[idx];
+                if (cur) {
+                  cur.classList.add('active');
+                  cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                }
+              }
+            }
+          });
+
+          // --- Group corrections (chip box; auto-applies on blur/Enter) ---
+          var corrSec = document.createElement('div');
+          corrSec.className = 'cc-section';
+          corrSec.innerHTML = '<h3>Word corrections</h3>'
+            + '<div class="help">Click a word above to mark it; shift-click '
+            + 'another to extend the range; type the corrected text in the '
+            + 'chip. Edits auto-apply to the merged transcript on blur / '
+            + 'Enter. Group corrections layer on top of per-member '
+            + 'corrections during export.</div>';
+          var chipBox = document.createElement('div');
+          chipBox.className = 'cc-corrections';
+          corrSec.appendChild(chipBox);
+          body.appendChild(corrSec);
+          groupState.chipBox = chipBox;
+          renderChips(groupState);
+          // Reflect any pre-existing word selections from saved corrections.
+          groupState.corrections.forEach(function(c) {
+            if (typeof c.idx !== 'number') return;
+            var end = (typeof c.idx_end === 'number') ? c.idx_end : c.idx;
+            for (var j = c.idx; j <= end; j++) selectWord(groupState, j, true);
+          });
+        }
+
         body.appendChild(ta);
+        ta.addEventListener('input', function() {
+          groupState.correctedText = ta.value;
+          // Treat manual typing as the new "final" base so subsequent chip
+          // applies stack on top of the user's edits rather than reverting.
+          groupState.finalText = ta.value;
+          markDirty(groupState);
+        });
 
         var btnRow = document.createElement('div');
         btnRow.style.cssText = 'display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;';
         var saveTBtn = document.createElement('button');
-        saveTBtn.textContent = 'Save transcript';
+        saveTBtn.textContent = 'Save transcript & corrections';
         saveTBtn.className = 'primary';
         saveTBtn.onclick = function() {
+          var payload = {
+            transcript: ta.value,
+            corrections: groupState.corrections.map(function(c) {
+              return {
+                wrong:   c.wrong   || '',
+                correct: c.correct || '',
+                idx:     typeof c.idx     === 'number' ? c.idx     : null,
+                idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
+              };
+            }),
+          };
           api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id),
-              { transcript: ta.value })
+              payload)
             .then(function() { toast('Saved'); return load(); })
             .catch(function(e) { if (e.message !== 'unauthorized') toast(e.message, true); });
         };
