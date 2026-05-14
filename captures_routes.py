@@ -169,10 +169,12 @@ async def by_request_id_api(request_id: str) -> JSONResponse:
     return JSONResponse({"captures": captures_store.find_by_request_id(request_id)})
 
 
-# Literal-path routes (export, clear) MUST be declared BEFORE the
+# Literal-path GET routes (export, groups) MUST be declared BEFORE the
 # parameterized /captures/api/{cid} route — FastAPI/Starlette match in
 # declaration order, and the `{cid}` placeholder would otherwise swallow
-# any literal-named GET like /captures/api/export with cid="export".
+# any literal-named GET like /captures/api/export with cid="export" or
+# /captures/api/groups with cid="groups" (which silently 404s the
+# group-list fetch and hides newly created groups from the UI).
 @router.get(
     "/captures/api/export",
     dependencies=[
@@ -195,6 +197,29 @@ async def export_captures_api(
         media_type="application/gzip",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+@router.get(
+    "/captures/api/groups",
+    dependencies=[Depends(require_admin_host)],
+)
+async def list_groups_api(
+    user_filter: str | None = Query(None, alias="user_id"),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """List packed training-sample groups. Admin sees all groups (or
+    narrow to one user via `?user_id=`); non-admin sees only their own.
+
+    Declared above `/captures/api/{cid}` because GET with cid="groups"
+    would otherwise resolve to the single-capture handler and 404 — the
+    UI's `load()` then silently swallows the failure and renders no
+    groups, making merged groups invisible after creation."""
+    import capture_groups_store
+    if not user.get("is_admin"):
+        scope = user.get("user_id")
+    else:
+        scope = user_filter
+    return JSONResponse({"groups": capture_groups_store.list_groups(user_id=scope)})
 
 
 @router.get(
@@ -552,22 +577,6 @@ def _insert_group_with_gid(
         "[groups] created gid=%s user=%s n=%d dur=%.1fs",
         gid[:8], (user_id or "?")[:8], len(member_ids), duration_ms / 1000.0,
     )
-
-
-@router.get(
-    "/captures/api/groups",
-    dependencies=[Depends(require_admin_host)],
-)
-async def list_groups_api(
-    user_filter: str | None = Query(None, alias="user_id"),
-    user: dict[str, Any] = Depends(get_current_user),
-) -> JSONResponse:
-    import capture_groups_store
-    if not user.get("is_admin"):
-        scope = user.get("user_id")
-    else:
-        scope = user_filter
-    return JSONResponse({"groups": capture_groups_store.list_groups(user_id=scope)})
 
 
 @router.get(
