@@ -1904,7 +1904,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     gtSec.innerHTML = '<h3>Ground truth (exported text)</h3>'
       + '<div class="help">This is the string Whisper learns to emit '
       + 'for this audio. Defaults to the post-pipeline <em>final</em> text; '
-      + 'edit freely. <button class="apply-corr">Apply corrections → here</button></div>';
+      + 'edit freely. Word-chip edits auto-apply on blur / Enter.</div>';
     var gtArea = document.createElement('textarea');
     gtArea.className = 'cc-ground';
     gtArea.value = state.correctedText || state.finalText;
@@ -1915,11 +1915,6 @@ _CAPTURES_HTML = r"""<!doctype html>
     gtSec.appendChild(gtArea);
     body.appendChild(gtSec);
     state.gtArea = gtArea;
-
-    gtSec.querySelector('.apply-corr').addEventListener('click', function(e) {
-      e.preventDefault();
-      applyCorrectionsToGround(state);
-    });
 
     // --- notes ---
     var notesSec = document.createElement('div');
@@ -2037,6 +2032,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     renderChips(state);
     focusLastInput(state);
     markDirty(state);
+    applyCorrectionsToGround(state);
   }
 
   function extendLastChip(state, idx) {
@@ -2063,6 +2059,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     renderChips(state);
     focusLastInput(state);
     markDirty(state);
+    applyCorrectionsToGround(state);
   }
 
   function removeChip(state, i) {
@@ -2111,13 +2108,26 @@ _CAPTURES_HTML = r"""<!doctype html>
         c.correct = inp.value;
         markDirty(state);
       });
+      inp.addEventListener('blur', function() {
+        applyCorrectionsToGround(state);
+      });
+      inp.addEventListener('keydown', function(ev) {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          applyCorrectionsToGround(state);
+          inp.blur();
+        }
+      });
       chip.appendChild(inp);
 
       var rm = document.createElement('button');
       rm.className = 'remove';
       rm.type = 'button';
       rm.textContent = '×';
-      rm.addEventListener('click', function() { removeChip(state, i); });
+      rm.addEventListener('click', function() {
+        removeChip(state, i);
+        applyCorrectionsToGround(state);
+      });
       chip.appendChild(rm);
 
       box.appendChild(chip);
