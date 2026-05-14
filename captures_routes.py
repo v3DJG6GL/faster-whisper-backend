@@ -28,6 +28,7 @@ import json
 import logging
 import os
 import tarfile
+import threading
 import time
 from datetime import datetime
 from typing import Any, Literal
@@ -825,6 +826,87 @@ async def dissolve_group_api(
     return JSONResponse({"ok": True})
 
 
+# Per-gid lock so a burst of audio requests for the same missing WAV
+# at startup doesn't trigger N concurrent merges. The route runs the
+# sync merge inside Starlette's threadpool, so a plain threading.Lock
+# is the right primitive (asyncio.Lock would only help if the merge
+# itself awaited).
+_rebuild_locks: dict[str, threading.Lock] = {}
+_rebuild_locks_guard = threading.Lock()
+
+
+def _get_rebuild_lock(gid: str) -> threading.Lock:
+    with _rebuild_locks_guard:
+        lock = _rebuild_locks.get(gid)
+        if lock is None:
+            lock = threading.Lock()
+            _rebuild_locks[gid] = lock
+        return lock
+
+
+def _ensure_group_wav(g: dict[str, Any]) -> str:
+    """Resolve the merged-WAV abs path. If the file is missing on
+    disk but every member capture still has its row + audio, rebuild
+    the WAV in place and return its abs path. If unrecoverable, raise
+    HTTPException(410).
+
+    Merged WAVs are deterministic functions of (members, silence_ms,
+    join_strategy) — treating them as cached derived data instead of
+    a precious one-shot artifact means no deletion path (clear_all,
+    legacy reconcile, crash mid-write, manual cleanup, etc.) surfaces
+    as a hard 404 to the user. The "Regenerate" button still exists
+    for the legitimate force-rebuild case (user edited silence/join).
+    """
+    import capture_groups_store
+    try:
+        abs_p = capture_groups_store.abs_path_for(g["merged_wav_relpath"])
+    except ValueError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "merged audio missing")
+    if os.path.exists(abs_p):
+        return abs_p
+
+    members = capture_groups_store.get_members(g["id"])
+    if not members:
+        raise HTTPException(
+            status.HTTP_410_GONE,
+            "members deleted — group is unrecoverable",
+        )
+    for m in members:
+        cap = captures_store.get_capture(m["id"])
+        if cap is None:
+            raise HTTPException(
+                status.HTTP_410_GONE,
+                f"member {m['id'][:8]} row deleted — group is unrecoverable",
+            )
+        member_abs = captures_store.abs_audio_path(cap["audio_relpath"])
+        if not os.path.exists(member_abs):
+            raise HTTPException(
+                status.HTTP_410_GONE,
+                f"member {m['id'][:8]} audio is gone — group is unrecoverable",
+            )
+
+    member_ids = [m["id"] for m in members]
+    lock = _get_rebuild_lock(g["id"])
+    with lock:
+        if os.path.exists(abs_p):
+            return abs_p
+        logger.warning(
+            "[groups] gid=%s auto-rebuilding missing WAV from %d members",
+            g["id"][:8], len(member_ids),
+        )
+        duration_ms, hashes = _build_merged_wav(
+            gid=g["id"],
+            member_ids=member_ids,
+            silence_ms=int(g["inter_segment_silence_ms"]),
+        )
+        capture_groups_store.update_group(g["id"], {
+            "merged_duration_ms": int(duration_ms),
+            "member_hashes_json": json.dumps(hashes, sort_keys=True),
+            "is_stale":           0,
+        })
+    return abs_p
+
+
 @router.get(
     "/captures/api/groups/{gid}/audio",
     dependencies=[Depends(require_admin_host)],
@@ -834,20 +916,15 @@ async def get_group_audio_api(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
 ):
-    """Stream the merged WAV. Same Range-aware handler shape as the
-    per-capture audio endpoint."""
+    """Stream the merged WAV, self-healing if it's missing on disk
+    but reconstructable from member captures."""
     import capture_groups_store
     g = capture_groups_store.get_group(gid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
     if not user.get("is_admin") and g["user_id"] != user.get("user_id"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not your group")
-    try:
-        abs_p = capture_groups_store.abs_path_for(g["merged_wav_relpath"])
-    except ValueError:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "merged audio missing")
-    if not os.path.exists(abs_p):
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "merged audio missing")
+    abs_p = _ensure_group_wav(g)
     return FileResponse(
         abs_p,
         media_type="audio/wav",
