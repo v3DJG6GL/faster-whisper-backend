@@ -954,8 +954,13 @@ function syncReportedBadges() {
 const _WORD_RE = /[A-Za-zÀ-ɏ][\w\-À-ɏ]*/g;
 
 function _wordifyFinal(form, finalText) {
+  // Tokenize `final` into clickable word spans + track char offsets so a
+  // multi-word chip can slice the original string and preserve any
+  // inter-word punctuation/whitespace.
   const container = form.querySelector('.rep-final-words');
   container.innerHTML = '';
+  form._finalText = finalText || '';
+  form._wordPositions = [];   // [{idx, start, end, text}]
   if (!finalText) {
     container.innerHTML = '<span class="empty-recent">(no final text)</span>';
     return;
@@ -974,10 +979,14 @@ function _wordifyFinal(form, finalText) {
     span.className = 'word';
     span.dataset.idx = String(wordIdx);
     span.textContent = m[0];
-    span.addEventListener('click', () => {
-      toggleCorrection(form, parseInt(span.dataset.idx, 10), span.textContent);
+    span.addEventListener('click', (e) => {
+      toggleCorrection(form, parseInt(span.dataset.idx, 10),
+                       span.textContent, !!e.shiftKey);
     });
     container.appendChild(span);
+    form._wordPositions.push({
+      idx: wordIdx, start: m.index, end: m.index + m[0].length, text: m[0],
+    });
     last = m.index + m[0].length;
     wordIdx++;
   }
@@ -991,7 +1000,8 @@ function _buildReportForm(entry) {
   form.className = 'trace-report-form';
   form.innerHTML =
     '<div class="form-label">Mark wrong words'
-    + ' <span class="help">(click a word; type the correction; press Enter to add another)</span>'
+    + ' <span class="help">(click a word; shift-click another to extend'
+    + ' the range; type the correction; press Enter to add another)</span>'
     + '</div>'
     + '<div class="rep-final-words"></div>'
     + '<div class="rep-corrections"></div>'
@@ -1009,7 +1019,10 @@ function _buildReportForm(entry) {
     + '  <button type="button" class="rep-cancel">Cancel</button>'
     + '  <button type="button" class="rep-submit primary">Submit report</button>'
     + '</div>';
-  form._corrections = [];  // [{wrong, correct, idx}]
+  form._corrections = [];  // [{wrong, correct, idx, idx_end}]
+                            // idx_end is the inclusive range end; single-word
+                            // chips set idx_end === idx so range-aware code
+                            // doesn't need to special-case them.
   form._entry = entry;
   _wordifyFinal(form, entry.final || '');
   form.querySelector('.rep-cancel').addEventListener('click', () => {
@@ -1037,24 +1050,97 @@ function toggleReportForm(item, entry) {
   }
 }
 
-function toggleCorrection(form, idx, word) {
-  const existingI = form._corrections.findIndex(c => c.idx === idx);
-  const wordSpan = form.querySelector(
+// Range-aware chip helpers ------------------------------------------------
+//
+// A chip spans [chip.idx … chip.idx_end] inclusive. Single-word chips set
+// idx_end === idx so every helper can iterate the range uniformly.
+function _chipCovers(chip, idx) {
+  return chip.idx <= idx && idx <= chip.idx_end;
+}
+
+function _selectWord(form, idx, on) {
+  const span = form.querySelector(
     '.rep-final-words .word[data-idx="' + idx + '"]'
   );
-  if (existingI >= 0) {
-    form._corrections.splice(existingI, 1);
-    if (wordSpan) wordSpan.classList.remove('selected');
-    _renderCorrections(form);
+  if (span) span.classList.toggle('selected', !!on);
+}
+
+function _spanText(form, a, b) {
+  // Slice the original final string so inter-word punctuation/whitespace
+  // is preserved (e.g. "A, B C" stays "A, B C", not "A B C").
+  const pos = form._wordPositions || [];
+  const finalText = form._finalText || '';
+  if (!pos[a] || !pos[b]) {
+    // Fallback: join textContent of the matching spans.
+    const parts = [];
+    for (let i = a; i <= b; i++) {
+      const s = form.querySelector(
+        '.rep-final-words .word[data-idx="' + i + '"]'
+      );
+      if (s) parts.push(s.textContent);
+    }
+    return parts.join(' ');
+  }
+  return finalText.slice(pos[a].start, pos[b].end);
+}
+
+function _focusLastInput(form) {
+  const inputs = form.querySelectorAll('.rep-correction .rep-correct');
+  const last = inputs[inputs.length - 1];
+  if (last) last.focus();
+}
+
+function _removeChip(form, chipIdx) {
+  const chip = form._corrections[chipIdx];
+  if (!chip) return;
+  for (let j = chip.idx; j <= chip.idx_end; j++) _selectWord(form, j, false);
+  form._corrections.splice(chipIdx, 1);
+  _renderCorrections(form);
+}
+
+function _extendLastChip(form, idx) {
+  // Grow the most-recent chip to include `idx`, then absorb any earlier
+  // chip whose range overlaps the new one. The user-typed `correct`
+  // value on the last chip is preserved; absorbed chips lose theirs.
+  const lastI = form._corrections.length - 1;
+  const last = form._corrections[lastI];
+  if (!last) return;
+  const newStart = Math.min(last.idx, idx);
+  const newEnd   = Math.max(last.idx_end, idx);
+  form._corrections = form._corrections.filter((c, i) => {
+    if (i === lastI) return true;
+    const overlaps = !(c.idx_end < newStart || c.idx > newEnd);
+    if (overlaps) {
+      for (let j = c.idx; j <= c.idx_end; j++) _selectWord(form, j, false);
+    }
+    return !overlaps;
+  });
+  last.idx = newStart;
+  last.idx_end = newEnd;
+  last.wrong = _spanText(form, newStart, newEnd);
+  for (let j = newStart; j <= newEnd; j++) _selectWord(form, j, true);
+  _renderCorrections(form);
+  _focusLastInput(form);
+}
+
+function toggleCorrection(form, idx, word, shiftKey) {
+  const last = form._corrections[form._corrections.length - 1];
+  if (shiftKey && last) {
+    _extendLastChip(form, idx);
     return;
   }
-  form._corrections.push({ wrong: word, correct: '', idx: idx });
-  if (wordSpan) wordSpan.classList.add('selected');
+  // Click on a word that's already inside any chip removes that chip.
+  // Splitting a multi-word chip in two is intentionally out of scope —
+  // simpler to nuke and re-create.
+  const existingI = form._corrections.findIndex(c => _chipCovers(c, idx));
+  if (existingI >= 0) {
+    _removeChip(form, existingI);
+    return;
+  }
+  form._corrections.push({ wrong: word, correct: '', idx: idx, idx_end: idx });
+  _selectWord(form, idx, true);
   _renderCorrections(form);
-  // Auto-focus the newly added input for fast typing.
-  const inputs = form.querySelectorAll('.rep-correction .rep-correct');
-  const lastInput = inputs[inputs.length - 1];
-  if (lastInput) lastInput.focus();
+  _focusLastInput(form);
 }
 
 function _renderCorrections(form) {
@@ -1093,7 +1179,10 @@ function _renderCorrections(form) {
     x.textContent = '×';
     x.setAttribute('aria-label', 'remove correction');
     x.addEventListener('click', () => {
-      toggleCorrection(form, c.idx, c.wrong);
+      // Find the chip's current index — _renderCorrections rebuilds
+      // the list, so the closure-captured `i` may be stale.
+      const idx = form._corrections.indexOf(c);
+      if (idx >= 0) _removeChip(form, idx);
     });
     chip.appendChild(w);
     chip.appendChild(a);
@@ -1108,7 +1197,17 @@ async function submitReport(form) {
   const intended = form.querySelector('.rep-intended').value.trim();
   const comment = form.querySelector('.rep-comment').value.trim();
   const corrections = form._corrections
-    .map(c => ({ wrong: c.wrong, correct: c.correct.trim(), idx: c.idx }))
+    .map(c => {
+      const out = {
+        wrong: c.wrong,
+        correct: (c.correct || '').trim(),
+        idx: c.idx,
+      };
+      if (typeof c.idx_end === 'number' && c.idx_end !== c.idx) {
+        out.idx_end = c.idx_end;
+      }
+      return out;
+    })
     .filter(c => c.correct.length > 0);
   if (!corrections.length && !intended && !comment) {
     showToast('Mark a wrong word, write what you meant to say, or leave a comment.', 'err');

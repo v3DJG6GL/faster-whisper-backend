@@ -84,6 +84,10 @@ class CorrectionIn(BaseModel):
     wrong: str = ""
     correct: str = ""
     idx: int | None = None
+    # Inclusive end-of-range for multi-word selections. Omitted (or equal
+    # to idx) for single-word corrections. Validation happens server-side
+    # in reports_store._clean_corrections.
+    idx_end: int | None = None
 
 
 class ReportSubmitIn(BaseModel):

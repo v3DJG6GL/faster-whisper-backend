@@ -145,7 +145,11 @@ def _truncate_steps(steps: list) -> list:
 def _clean_corrections(items: list) -> list[dict[str, Any]]:
     """Filter to entries with a non-empty `correct` field, apply length
     caps, and cap the list at _CAP_CORRECTIONS. Anything malformed is
-    dropped silently — this is end-user input, we tolerate it."""
+    dropped silently — this is end-user input, we tolerate it.
+
+    Optional `idx_end` lets a chip span multiple adjacent words from
+    the original final text. Stored only when it's a valid int with
+    `idx <= idx_end < 10_000`; otherwise the entry stays single-word."""
     out: list[dict[str, Any]] = []
     for it in items or []:
         if not isinstance(it, dict):
@@ -158,6 +162,11 @@ def _clean_corrections(items: list) -> list[dict[str, Any]]:
         idx = it.get("idx")
         if isinstance(idx, int) and 0 <= idx < 10_000:
             entry["idx"] = idx
+            idx_end = it.get("idx_end")
+            if (isinstance(idx_end, int)
+                    and idx <= idx_end < 10_000
+                    and idx_end != idx):
+                entry["idx_end"] = idx_end
         out.append(entry)
         if len(out) >= _CAP_CORRECTIONS:
             break
