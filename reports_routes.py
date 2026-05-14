@@ -307,7 +307,6 @@ _REPORTS_HTML = """<!doctype html>
 <title>Whisper — Reports</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {{SCALE_BOOTSTRAP_HEAD}}
-{{NAV_CSS}}
 <style>
   :root {
     --bg: #0d1117;
@@ -528,6 +527,8 @@ _REPORTS_HTML = """<!doctype html>
     display: flex; gap: 0.5rem; justify-content: flex-end;
     margin-top: 0.75rem;
   }
+
+  {{NAV_CSS}}
 </style>
 </head>
 <body>
