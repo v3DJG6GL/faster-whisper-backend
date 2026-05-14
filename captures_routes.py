@@ -594,11 +594,20 @@ async def get_group_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
     if not user.get("is_admin") and g["user_id"] != user.get("user_id"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "not your group")
-    g["members"] = capture_groups_store.get_members(gid)
+    return JSONResponse({"group": _enrich_group(g)})
+
+
+def _enrich_group(g: dict[str, Any]) -> dict[str, Any]:
+    """Add `members` + `merged_words` to a group dict so PATCH and
+    regenerate responses share the same shape as GET. The client can
+    then do an in-place card refresh from any response without a
+    follow-up GET."""
+    import capture_groups_store
+    g["members"] = capture_groups_store.get_members(g["id"])
     g["merged_words"] = _build_merged_words(
         g["members"], int(g["inter_segment_silence_ms"]),
     )
-    return JSONResponse({"group": g})
+    return g
 
 
 def _build_merged_words(
@@ -688,7 +697,7 @@ async def patch_group_api(
         patch["is_stale"] = 0
 
     updated = capture_groups_store.update_group(gid, patch)
-    return JSONResponse({"group": updated})
+    return JSONResponse({"group": _enrich_group(updated)})
 
 
 @router.post(
@@ -719,7 +728,7 @@ async def regenerate_group_api(
         "merged_duration_ms": duration_ms,
         "member_hashes_json": _json.dumps(hashes, sort_keys=True),
     })
-    return JSONResponse({"group": updated})
+    return JSONResponse({"group": _enrich_group(updated)})
 
 
 @router.delete(
@@ -1030,6 +1039,16 @@ _CAPTURES_HTML = r"""<!doctype html>
     white-space: pre;
   }
   .word-strip .word:hover { background: #21262d; }
+  /* Alternating per-member tints inside a GROUP's karaoke band. The hue
+     is deliberately subtle — must read as "same row, different segment",
+     not "different speaker". Single-capture word strips don't add either
+     class, so they look unchanged. The .active / .selected rules below
+     override these via their own background, so the karaoke + selection
+     highlights always win visually over the segment tint. */
+  .word-strip .word.mem-even { background: rgba(80, 160, 220, 0.10); }
+  .word-strip .word.mem-odd  { background: rgba(220, 180, 100, 0.10); }
+  .word-strip .word.mem-even:hover { background: rgba(80, 160, 220, 0.22); }
+  .word-strip .word.mem-odd:hover  { background: rgba(220, 180, 100, 0.22); }
   .word-strip .word.active {
     background: var(--active-word-bg); color: var(--active-word-color);
   }
@@ -2553,6 +2572,11 @@ _CAPTURES_HTML = r"""<!doctype html>
     api('GET', '/captures/api/groups/' + encodeURIComponent(g.id))
       .then(function(j) {
         var detail = j.group || g;
+
+        // --- Skeleton: audio slot, transcript textarea, karaoke band,
+        // chip box, settings row, button row, members list. All built
+        // once; their CONTENT is filled (and refilled) by
+        // applyServerGroup() below. ---
         var audio = document.createElement('audio');
         audio.controls = true;
         audio.style.marginTop = '0.5rem';
@@ -2560,71 +2584,22 @@ _CAPTURES_HTML = r"""<!doctype html>
         var audioSlot = document.createElement('div');
         audioSlot.appendChild(audio);
         body.appendChild(audioSlot);
-        fetch('/captures/api/groups/' + encodeURIComponent(g.id) + '/audio',
-              { headers: { Authorization: 'Bearer ' + getToken() } })
-          .then(function(r) {
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            return r.blob();
-          })
-          .then(function(b) { audio.src = URL.createObjectURL(b); })
-          .catch(function(err) {
-            // Replace the dead audio element with an actionable banner.
-            // Old groups created during the route-shadow chaos period may
-            // have a row but no merged WAV on disk; regenerate rebuilds.
-            audioSlot.innerHTML = '';
-            var banner = document.createElement('div');
-            banner.className = 'cc-section';
-            banner.style.cssText = 'background:#3a2424;border:1px solid '
-              + 'var(--border);border-radius:4px;padding:0.5rem 0.75rem;'
-              + 'margin-top:0.5rem;display:flex;align-items:center;'
-              + 'gap:0.75rem;flex-wrap:wrap;';
-            banner.innerHTML = '<span style="color:#ffd1d1;">'
-              + '⚠ Audio unavailable for this group ('
-              + escapeHtml(err && err.message || 'fetch failed') + ').'
-              + '</span>';
-            var fixBtn = document.createElement('button');
-            fixBtn.textContent = 'Regenerate audio';
-            fixBtn.className = 'primary';
-            fixBtn.onclick = function() {
-              fixBtn.disabled = true;
-              api('POST', '/captures/api/groups/'
-                  + encodeURIComponent(g.id) + '/regenerate')
-                .then(function() { toast('Regenerated'); return load(); })
-                .catch(function(e) {
-                  fixBtn.disabled = false;
-                  if (e.message !== 'unauthorized') toast(e.message, true);
-                });
-            };
-            banner.appendChild(fixBtn);
-            audioSlot.appendChild(banner);
-          });
 
-        // --- Group transcript textarea (the "ground truth" / gtArea) ---
+        // Group transcript textarea (the "ground truth" / gtArea).
         var ta = document.createElement('textarea');
-        ta.value = detail.transcript || '';
         ta.style.cssText = 'width:100%;min-height:6rem;margin-top:0.5rem;'
           + 'background:var(--input-bg);color:var(--fg);'
           + 'border:1px solid var(--border);border-radius:4px;'
           + 'padding:0.5rem;font-family:var(--font-mono);'
           + 'font-size:var(--fs-md);box-sizing:border-box;';
 
-        // --- Group state for the shared karaoke/chip helpers ---
-        // Mirrors single-capture state shape so renderChips / onWordClick /
-        // applyCorrectionsToGround / markDirty etc. all work as-is.
         var groupState = {
           gid: detail.id,
           audio: audio,
-          words: detail.merged_words || [],
-          finalText: detail.transcript || '',  // base for applyCorrections
-          correctedText: detail.transcript || '',
-          corrections: (detail.corrections || []).map(function(c) {
-            return {
-              wrong:   c.wrong   || '',
-              correct: c.correct || '',
-              idx:     typeof c.idx     === 'number' ? c.idx     : null,
-              idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
-            };
-          }),
+          words: [],
+          finalText: '',
+          correctedText: '',
+          corrections: [],
           wordEls: [],
           activeWordIdx: -1,
           chipBox: null,
@@ -2632,93 +2607,61 @@ _CAPTURES_HTML = r"""<!doctype html>
           dirty: false,
         };
 
-        // --- Karaoke word strip (read-only when group is locked) ---
-        if (groupState.words.length > 0) {
-          var stripWrap = document.createElement('div');
-          stripWrap.className = 'cc-section';
-          stripWrap.innerHTML = '<h3>Words (karaoke — click to seek; '
-            + 'shift-click another to mark a multi-word span; click a '
-            + 'marked word to clear)</h3>';
-          if (detail.is_stale) {
-            stripWrap.insertAdjacentHTML('beforeend',
-              '<div class="help" style="color:var(--cyan);">'
-              + '⚠ audio drift detected — regenerate to realign timings'
-              + '</div>');
+        // Karaoke band skeleton.
+        var stripWrap = document.createElement('div');
+        stripWrap.className = 'cc-section';
+        stripWrap.innerHTML = '<h3>Words (karaoke — click to seek; '
+          + 'shift-click another to mark a multi-word span; click a '
+          + 'marked word to clear)</h3>';
+        var staleHint = document.createElement('div');
+        staleHint.className = 'help';
+        staleHint.style.color = 'var(--cyan)';
+        stripWrap.appendChild(staleHint);
+        var strip = document.createElement('div');
+        strip.className = 'word-strip';
+        stripWrap.appendChild(strip);
+        body.appendChild(stripWrap);
+
+        // Karaoke highlight via timeupdate (attached once; reads the
+        // live groupState.words). Survives applyServerGroup re-renders.
+        audio.addEventListener('timeupdate', function() {
+          var t = audio.currentTime;
+          var idx = -1;
+          for (var i = 0; i < groupState.words.length; i++) {
+            var s = groupState.words[i].start || 0;
+            var e = groupState.words[i].end || 0;
+            if (s <= t && t < e) { idx = i; break; }
           }
-          var strip = document.createElement('div');
-          strip.className = 'word-strip';
-          var prevMember = -1;
-          groupState.words.forEach(function(w, i) {
-            var sp = document.createElement('span');
-            sp.className = 'word';
-            sp.dataset.idx = String(i);
-            sp.dataset.start = String(w.start || 0);
-            sp.dataset.end = String(w.end || 0);
-            sp.dataset.member = String(w.member_idx || 0);
-            // Member boundary: dashed left-border + extra left padding.
-            if (w.member_idx !== prevMember && prevMember !== -1) {
-              sp.style.borderLeft = '2px dashed var(--border)';
-              sp.style.marginLeft = '0.4rem';
-              sp.style.paddingLeft = '0.4rem';
+          if (idx !== groupState.activeWordIdx) {
+            if (groupState.activeWordIdx >= 0) {
+              var prev = groupState.wordEls[groupState.activeWordIdx];
+              if (prev) prev.classList.remove('active');
             }
-            prevMember = w.member_idx;
-            sp.textContent = (w.word || '').replace(/^\s+/, ' ');
-            sp.addEventListener('click', function(e) {
-              onWordClick(groupState, i, !!e.shiftKey);
-            });
-            strip.appendChild(sp);
-            groupState.wordEls.push(sp);
-          });
-          stripWrap.appendChild(strip);
-          body.appendChild(stripWrap);
-
-          // Karaoke highlight via timeupdate (mirrors single-capture flow).
-          audio.addEventListener('timeupdate', function() {
-            var t = audio.currentTime;
-            var idx = -1;
-            for (var i = 0; i < groupState.words.length; i++) {
-              var s = groupState.words[i].start || 0;
-              var e = groupState.words[i].end || 0;
-              if (s <= t && t < e) { idx = i; break; }
-            }
-            if (idx !== groupState.activeWordIdx) {
-              if (groupState.activeWordIdx >= 0) {
-                var prev = groupState.wordEls[groupState.activeWordIdx];
-                if (prev) prev.classList.remove('active');
-              }
-              groupState.activeWordIdx = idx;
-              if (idx >= 0) {
-                var cur = groupState.wordEls[idx];
-                if (cur) {
-                  cur.classList.add('active');
-                  cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-                }
+            groupState.activeWordIdx = idx;
+            if (idx >= 0) {
+              var cur = groupState.wordEls[idx];
+              if (cur) {
+                cur.classList.add('active');
+                cur.scrollIntoView({ block: 'nearest', inline: 'nearest' });
               }
             }
-          });
+          }
+        });
 
-          // --- Group corrections (chip box; auto-applies on blur/Enter) ---
-          var corrSec = document.createElement('div');
-          corrSec.className = 'cc-section';
-          corrSec.innerHTML = '<h3>Word corrections</h3>'
-            + '<div class="help">Click a word above to mark it; shift-click '
-            + 'another to extend the range; type the corrected text in the '
-            + 'chip. Edits auto-apply to the merged transcript on blur / '
-            + 'Enter. Group corrections layer on top of per-member '
-            + 'corrections during export.</div>';
-          var chipBox = document.createElement('div');
-          chipBox.className = 'cc-corrections';
-          corrSec.appendChild(chipBox);
-          body.appendChild(corrSec);
-          groupState.chipBox = chipBox;
-          renderChips(groupState);
-          // Reflect any pre-existing word selections from saved corrections.
-          groupState.corrections.forEach(function(c) {
-            if (typeof c.idx !== 'number') return;
-            var end = (typeof c.idx_end === 'number') ? c.idx_end : c.idx;
-            for (var j = c.idx; j <= end; j++) selectWord(groupState, j, true);
-          });
-        }
+        // Group corrections chip box (auto-applies on blur/Enter).
+        var corrSec = document.createElement('div');
+        corrSec.className = 'cc-section';
+        corrSec.innerHTML = '<h3>Word corrections</h3>'
+          + '<div class="help">Click a word above to mark it; shift-click '
+          + 'another to extend the range; type the corrected text in the '
+          + 'chip. Edits auto-apply to the merged transcript on blur / '
+          + 'Enter. Group corrections layer on top of per-member '
+          + 'corrections during export.</div>';
+        var chipBox = document.createElement('div');
+        chipBox.className = 'cc-corrections';
+        corrSec.appendChild(chipBox);
+        body.appendChild(corrSec);
+        groupState.chipBox = chipBox;
 
         body.appendChild(ta);
         ta.addEventListener('input', function() {
@@ -2729,11 +2672,7 @@ _CAPTURES_HTML = r"""<!doctype html>
           markDirty(groupState);
         });
 
-        // --- Merge settings (silence gap + join strategy) ---
-        // Editing either field will trigger an audio rebuild on Save (the
-        // server PATCH path already re-runs _build_merged_wav when
-        // silence_ms changes). Mirrors the merge modal's controls so the
-        // affordance is consistent.
+        // --- Merge settings row (silence gap + join strategy) ---
         var settingsSec = document.createElement('div');
         settingsSec.className = 'cc-section';
         settingsSec.style.cssText = 'display:flex;gap:1rem;align-items:center;'
@@ -2747,7 +2686,6 @@ _CAPTURES_HTML = r"""<!doctype html>
           opt.value = v;
           opt.textContent = v === 'space' ? 'space'
             : v === 'period_space' ? 'period + space' : 'newline';
-          if (v === (detail.transcript_join_strategy || 'space')) opt.selected = true;
           joinSel.appendChild(opt);
         });
         joinLabel.appendChild(joinSel);
@@ -2761,7 +2699,6 @@ _CAPTURES_HTML = r"""<!doctype html>
           var opt = document.createElement('option');
           opt.value = String(v);
           opt.textContent = v + ' ms';
-          if (v === (detail.inter_segment_silence_ms || 300)) opt.selected = true;
           silSel.appendChild(opt);
         });
         silLabel.appendChild(silSel);
@@ -2773,6 +2710,8 @@ _CAPTURES_HTML = r"""<!doctype html>
         settingsSec.appendChild(settingsHint);
         body.appendChild(settingsSec);
 
+        // Mutable baselines so applyServerGroup can update them and
+        // settingsDirty() reads the latest "saved" state.
         var origJoin = detail.transcript_join_strategy || 'space';
         var origSil  = detail.inter_segment_silence_ms || 300;
         function settingsDirty() {
@@ -2781,28 +2720,199 @@ _CAPTURES_HTML = r"""<!doctype html>
         }
         function refreshSettingsHint() {
           if (settingsDirty()) {
-            settingsHint.textContent = 'changes pending — Save to rebuild audio';
+            settingsHint.textContent =
+              'changes pending — Save or Regenerate to rebuild audio';
             settingsHint.style.color = 'var(--cyan)';
-            regenBtn.classList.add('cta');
+            if (regenBtn) regenBtn.classList.add('cta');
           } else {
             settingsHint.textContent = '';
-            regenBtn.classList.remove('cta');
+            if (regenBtn) regenBtn.classList.remove('cta');
           }
         }
         joinSel.addEventListener('change', refreshSettingsHint);
         silSel.addEventListener('change', refreshSettingsHint);
 
+        // --- Button row (Save / Regenerate / Lock / Dissolve) ---
         var btnRow = document.createElement('div');
         btnRow.style.cssText = 'display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;';
         var saveTBtn = document.createElement('button');
         saveTBtn.textContent = 'Save transcript & corrections';
         saveTBtn.className = 'primary';
+        btnRow.appendChild(saveTBtn);
+        var regenBtn = document.createElement('button');
+        btnRow.appendChild(regenBtn);
+        var lockBtn = document.createElement('button');
+        btnRow.appendChild(lockBtn);
+        var dissolveBtn = document.createElement('button');
+        dissolveBtn.textContent = 'Dissolve group';
+        dissolveBtn.className = 'danger';
+        btnRow.appendChild(dissolveBtn);
+        body.appendChild(btnRow);
+
+        // --- Members list (replaced on each applyServerGroup) ---
+        var membersDiv = document.createElement('div');
+        membersDiv.className = 'group-members';
+        body.appendChild(membersDiv);
+
+        // --- refreshAudio: re-fetches the blob; on failure shows the
+        // missing-audio banner in place of the <audio> element. The
+        // banner's button hits applyServerGroup so success heals the
+        // open card without a load() wipe. ---
+        function refreshAudio() {
+          // Reclaim the <audio> element if the banner replaced it.
+          if (audio.src && audio.src.indexOf('blob:') === 0) {
+            try { URL.revokeObjectURL(audio.src); } catch (_) {}
+          }
+          audio.removeAttribute('src');
+          if (audioSlot.firstChild !== audio) {
+            audioSlot.innerHTML = '';
+            audioSlot.appendChild(audio);
+          }
+          fetch('/captures/api/groups/' + encodeURIComponent(g.id) + '/audio',
+                { headers: { Authorization: 'Bearer ' + getToken() } })
+            .then(function(r) {
+              if (!r.ok) throw new Error('HTTP ' + r.status);
+              return r.blob();
+            })
+            .then(function(b) { audio.src = URL.createObjectURL(b); })
+            .catch(function(err) {
+              audioSlot.innerHTML = '';
+              var banner = document.createElement('div');
+              banner.className = 'cc-section';
+              banner.style.cssText = 'background:#3a2424;border:1px solid '
+                + 'var(--border);border-radius:4px;padding:0.5rem 0.75rem;'
+                + 'margin-top:0.5rem;display:flex;align-items:center;'
+                + 'gap:0.75rem;flex-wrap:wrap;';
+              banner.innerHTML = '<span style="color:#ffd1d1;">'
+                + '⚠ Audio unavailable for this group ('
+                + escapeHtml(err && err.message || 'fetch failed') + ').'
+                + '</span>';
+              var fixBtn = document.createElement('button');
+              fixBtn.textContent = 'Regenerate audio';
+              fixBtn.className = 'primary';
+              fixBtn.onclick = function() {
+                fixBtn.disabled = true;
+                api('POST', '/captures/api/groups/'
+                    + encodeURIComponent(g.id) + '/regenerate')
+                  .then(function(j) {
+                    toast('Regenerated');
+                    applyServerGroup(j.group || {});
+                  })
+                  .catch(function(e) {
+                    fixBtn.disabled = false;
+                    if (e.message !== 'unauthorized') toast(e.message, true);
+                  });
+              };
+              banner.appendChild(fixBtn);
+              audioSlot.appendChild(banner);
+            });
+        }
+
+        // --- applyServerGroup: the single source of truth for "the
+        // server told us the group looks like X, now reflect X in the
+        // open card." Called once on initial expand and again after
+        // every Save / Regenerate. Replaces the previous load()-wipe
+        // pattern. ---
+        function applyServerGroup(d) {
+          // 1. groupState data.
+          groupState.words = d.merged_words || [];
+          groupState.corrections = (d.corrections || []).map(function(c) {
+            return {
+              wrong:   c.wrong   || '',
+              correct: c.correct || '',
+              idx:     typeof c.idx     === 'number' ? c.idx     : null,
+              idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
+            };
+          });
+          groupState.finalText = d.transcript || '';
+          groupState.correctedText = d.transcript || '';
+          groupState.wordEls = [];
+          groupState.activeWordIdx = -1;
+          ta.value = d.transcript || '';
+
+          // 2. Dropdowns + baselines.
+          silSel.value = String(d.inter_segment_silence_ms || 300);
+          joinSel.value = d.transcript_join_strategy || 'space';
+          origSil  = d.inter_segment_silence_ms || 300;
+          origJoin = d.transcript_join_strategy || 'space';
+          refreshSettingsHint();
+
+          // 3. Stale hint + regen label.
+          staleHint.textContent = d.is_stale
+            ? '⚠ audio drift detected — regenerate to realign timings'
+            : '';
+          regenBtn.textContent = d.is_stale
+            ? 'Regenerate audio (clear stale)'
+            : 'Regenerate audio';
+
+          // 4. Lock / Dissolve label & visibility.
+          lockBtn.textContent = d.is_locked ? 'Unlock' : 'Lock';
+          dissolveBtn.style.display = d.is_locked ? 'none' : '';
+
+          // 5. Word strip (alternating per-member tints via mem-even /
+          // mem-odd classes; styles in the .word-strip CSS block).
+          strip.innerHTML = '';
+          var prevMember = -1;
+          groupState.words.forEach(function(w, i) {
+            var sp = document.createElement('span');
+            sp.className = 'word ' + ((w.member_idx % 2 === 0) ? 'mem-even' : 'mem-odd');
+            sp.dataset.idx = String(i);
+            sp.dataset.start = String(w.start || 0);
+            sp.dataset.end = String(w.end || 0);
+            sp.dataset.member = String(w.member_idx || 0);
+            // Small horizontal breathing room at member boundaries (no
+            // hard rule — the tint shift does the work visually).
+            if (w.member_idx !== prevMember && prevMember !== -1) {
+              sp.style.marginLeft = '0.4rem';
+            }
+            prevMember = w.member_idx;
+            sp.textContent = (w.word || '').replace(/^\s+/, ' ');
+            sp.addEventListener('click', function(e) {
+              onWordClick(groupState, i, !!e.shiftKey);
+            });
+            strip.appendChild(sp);
+            groupState.wordEls.push(sp);
+          });
+
+          // 6. Chips + pre-marked word selections from saved corrections.
+          renderChips(groupState);
+          groupState.corrections.forEach(function(c) {
+            if (typeof c.idx !== 'number') return;
+            var end = (typeof c.idx_end === 'number') ? c.idx_end : c.idx;
+            for (var j = c.idx; j <= end; j++) selectWord(groupState, j, true);
+          });
+
+          // 7. Members list.
+          membersDiv.innerHTML = '<p style="font-size:var(--fs-sm);'
+            + 'color:var(--help);margin:0.4rem 0;">Members ('
+            + (d.members || []).length + ')</p>';
+          (d.members || []).forEach(function(m) {
+            var line = document.createElement('div');
+            line.style.cssText = 'font-size:var(--fs-sm);color:var(--dim);padding:0.2rem 0;';
+            line.innerHTML = '[' + (m.group_order + 1) + '] '
+              + (m.duration_seconds || 0).toFixed(1) + 's · '
+              + escapeHtml((m.corrected_text || m.final || m.raw || '').slice(0, 120));
+            membersDiv.appendChild(line);
+          });
+
+          // 8. Audio (re-fetch; merged WAV may have been rebuilt).
+          refreshAudio();
+
+          // 9. Keep the collapsed-list in-memory entry in sync without
+          // triggering a full render — this way the group's "stale"
+          // pill, created_ts, etc. on the closed card header stays
+          // truthful after a save.
+          var idx = _allGroups.findIndex(function(x) { return x.id === d.id; });
+          if (idx >= 0) Object.assign(_allGroups[idx], d);
+        }
+
+        // --- Save handler: PATCH everything; mutate the card in place. ---
         saveTBtn.onclick = function() {
           var payload = {
-            transcript: ta.value,
+            transcript:   ta.value,
             join_strategy: joinSel.value,
-            silence_ms: parseInt(silSel.value, 10),
-            corrections: groupState.corrections.map(function(c) {
+            silence_ms:    parseInt(silSel.value, 10),
+            corrections:   groupState.corrections.map(function(c) {
               return {
                 wrong:   c.wrong   || '',
                 correct: c.correct || '',
@@ -2811,72 +2921,70 @@ _CAPTURES_HTML = r"""<!doctype html>
               };
             }),
           };
+          saveTBtn.disabled = true;
           api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id),
               payload)
-            .then(function() { toast('Saved'); return load(); })
-            .catch(function(e) { if (e.message !== 'unauthorized') toast(e.message, true); });
-        };
-        btnRow.appendChild(saveTBtn);
-        // Regenerate is always visible (the user can rebuild the merged
-        // WAV any time — recovers missing audio after a backup restore,
-        // refreshes after editing a member's audio, etc.).
-        var regenBtn = document.createElement('button');
-        regenBtn.textContent = detail.is_stale
-          ? 'Regenerate audio (clear stale)'
-          : 'Regenerate audio';
-        regenBtn.onclick = function() {
-          if (settingsDirty()) {
-            toast('Save first to apply the new silence/join, then regenerate.', true);
-            return;
-          }
-          regenBtn.disabled = true;
-          api('POST', '/captures/api/groups/' + encodeURIComponent(g.id) + '/regenerate')
-            .then(function() { toast('Regenerated'); return load(); })
+            .then(function(j) {
+              applyServerGroup(j.group || {});
+              toast('Saved');
+              reloadCounts();
+            })
             .catch(function(e) {
-              regenBtn.disabled = false;
+              if (e.message !== 'unauthorized') toast(e.message, true);
+            })
+            .then(function() { saveTBtn.disabled = false; });
+        };
+
+        // --- Regenerate handler: when settings are dirty, fold them
+        // into a PATCH (server rebuilds audio); otherwise hit the
+        // dedicated /regenerate endpoint. Either way, in-place refresh
+        // via applyServerGroup. No "Save first" toast. ---
+        regenBtn.onclick = function() {
+          regenBtn.disabled = true;
+          var dirty = settingsDirty();
+          var p = dirty
+            ? api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id), {
+                join_strategy: joinSel.value,
+                silence_ms:    parseInt(silSel.value, 10),
+              })
+            : api('POST', '/captures/api/groups/' + encodeURIComponent(g.id) + '/regenerate');
+          p.then(function(j) {
+              applyServerGroup(j.group || {});
+              toast(dirty ? 'Settings applied, audio regenerated.' : 'Regenerated');
+              reloadCounts();
+            })
+            .catch(function(e) {
+              if (e.message !== 'unauthorized') toast(e.message, true);
+            })
+            .then(function() { regenBtn.disabled = false; });
+        };
+
+        // --- Lock toggle ---
+        lockBtn.onclick = function() {
+          api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id),
+              { is_locked: !(lockBtn.textContent === 'Unlock') })
+            .then(function(j) {
+              applyServerGroup(j.group || {});
+              toast('Updated');
+            })
+            .catch(function(e) {
               if (e.message !== 'unauthorized') toast(e.message, true);
             });
         };
-        btnRow.appendChild(regenBtn);
-        var lockBtn = document.createElement('button');
-        lockBtn.textContent = detail.is_locked ? 'Unlock' : 'Lock';
-        lockBtn.onclick = function() {
-          api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id),
-              { is_locked: !detail.is_locked })
-            .then(function() { toast('Updated'); return load(); })
-            .catch(function(e) { if (e.message !== 'unauthorized') toast(e.message, true); });
+
+        // --- Dissolve (full reload — the group disappears from the list). ---
+        dissolveBtn.onclick = function() {
+          if (!confirm('Dissolve this group? Members return to the flat list; merged WAV is unlinked.'))
+            return;
+          api('DELETE', '/captures/api/groups/' + encodeURIComponent(g.id))
+            .then(function() { toast('Dissolved'); return load(); })
+            .catch(function(e) {
+              if (e.message !== 'unauthorized') toast(e.message, true);
+            });
         };
-        btnRow.appendChild(lockBtn);
 
-        if (!detail.is_locked) {
-          var dissolveBtn = document.createElement('button');
-          dissolveBtn.textContent = 'Dissolve group';
-          dissolveBtn.className = 'danger';
-          dissolveBtn.onclick = function() {
-            if (!confirm('Dissolve this group? Members return to the flat list; merged WAV is unlinked.'))
-              return;
-            api('DELETE', '/captures/api/groups/' + encodeURIComponent(g.id))
-              .then(function() { toast('Dissolved'); return load(); })
-              .catch(function(e) { if (e.message !== 'unauthorized') toast(e.message, true); });
-          };
-          btnRow.appendChild(dissolveBtn);
-        }
-        body.appendChild(btnRow);
-
-        // Member list
-        var membersDiv = document.createElement('div');
-        membersDiv.className = 'group-members';
-        membersDiv.innerHTML = '<p style="font-size:var(--fs-sm);color:var(--help);margin:0.4rem 0;">Members (' + (detail.members||[]).length + ')</p>';
-        (detail.members || []).forEach(function(m) {
-          var line = document.createElement('div');
-          line.style.cssText = 'font-size:var(--fs-sm);color:var(--dim);padding:0.2rem 0;';
-          line.innerHTML = '[' + (m.group_order + 1) + '] '
-            + (m.duration_seconds || 0).toFixed(1) + 's · '
-            + escapeHtml((m.corrected_text || m.final || m.raw || '').slice(0, 120));
-          membersDiv.appendChild(line);
-        });
-        body.appendChild(membersDiv);
-
+        // Initial fill.
+        applyServerGroup(detail);
         body.dataset.built = '1';
       })
       .catch(function(e) {
