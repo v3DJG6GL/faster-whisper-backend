@@ -307,6 +307,20 @@ def dissolve_group(gid: str) -> None:
     logger.info("[groups] dissolved gid=%s", gid[:8])
 
 
+def clear_all_groups() -> int:
+    """Drop every row from capture_groups. Caller is responsible for
+    removing the merged WAV files (captures_store.clear_all handles
+    that as part of its filesystem wipe). Returns count deleted."""
+    conn = _require_conn()
+    with _lock:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM capture_groups",
+        ).fetchone()
+        n = int(row[0]) if row else 0
+        conn.execute("DELETE FROM capture_groups")
+    return n
+
+
 def reconcile_on_startup() -> tuple[int, int]:
     """Audit the merged-group WAV subtree (`<CAPTURES_DIR>/groups/`).
     Mirrors `captures_store.reconcile_on_startup` but scoped to this
@@ -361,12 +375,11 @@ def reconcile_on_startup() -> tuple[int, int]:
                     except OSError:
                         pass
 
-    if rows_missing or files_unlinked:
-        logger.warning(
-            "[groups] reconcile: %d rows with missing WAV, "
-            "%d orphan files removed",
-            rows_missing, files_unlinked,
-        )
+    logger.info(
+        "[groups] reconcile: %d rows with missing WAV, "
+        "%d orphan files removed",
+        rows_missing, files_unlinked,
+    )
     return rows_missing, files_unlinked
 
 

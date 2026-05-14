@@ -435,11 +435,15 @@ def _drop_oldest_with_status(
     conn: sqlite3.Connection, status: str, limit: int,
 ) -> int:
     """Delete up to `limit` oldest rows of a given status, also unlinking
-    audio files. Returns the count deleted."""
+    audio files. Returns the count deleted. Group members are excluded
+    from eviction — losing a member silently breaks the owning
+    merged-WAV; if the user wants to evict, they must dissolve the
+    group first (or use clear_all)."""
     if limit <= 0:
         return 0
     rows = conn.execute(
-        "SELECT id, audio_relpath FROM captures WHERE status = ?"
+        "SELECT id, audio_relpath FROM captures"
+        " WHERE status = ? AND group_id IS NULL"
         " ORDER BY created_ts ASC LIMIT ?",
         (status, limit),
     ).fetchall()
@@ -460,11 +464,13 @@ def _drop_oldest_by_bytes(
     conn: sqlite3.Connection, status: str, bytes_needed: int,
 ) -> int:
     """Delete oldest rows of a given status until `bytes_needed` bytes
-    are freed. Returns bytes actually freed."""
+    are freed. Returns bytes actually freed. Group members are
+    excluded — see _drop_oldest_with_status for the rationale."""
     if bytes_needed <= 0:
         return 0
     rows = conn.execute(
-        "SELECT id, audio_relpath FROM captures WHERE status = ?"
+        "SELECT id, audio_relpath FROM captures"
+        " WHERE status = ? AND group_id IS NULL"
         " ORDER BY created_ts ASC",
         (status,),
     ).fetchall()
@@ -667,20 +673,38 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
 # ---------------------------------------------------------------------
 
 def delete_capture(cid: str) -> bool:
-    """Drop a single capture row + its audio file. Returns True if the
-    row existed."""
+    """Drop a single capture row + its audio file. If the capture was
+    a member of a group, the group is auto-dissolved — a merged
+    sample is reconstructable only from its complete member set, so
+    losing a member makes the group's WAV a frozen artifact of a
+    state that can never be rebuilt. Returns True if the row existed."""
     conn = _require_conn()
     with _lock:
         row = conn.execute(
-            "SELECT audio_relpath FROM captures WHERE id = ?", (cid,),
+            "SELECT audio_relpath, group_id FROM captures WHERE id = ?",
+            (cid,),
         ).fetchone()
         if row is None:
             return False
+        gid = row["group_id"]
         conn.execute("DELETE FROM captures WHERE id = ?", (cid,))
     try:
         _safe_unlink(abs_audio_path(row["audio_relpath"]))
     except ValueError:
         pass
+    if gid:
+        try:
+            import capture_groups_store
+            capture_groups_store.dissolve_group(gid)
+            logger.info(
+                "[captures] auto-dissolved gid=%s after member %s delete",
+                gid[:8], cid[:8],
+            )
+        except Exception as _e:
+            logger.warning(
+                "[captures] auto-dissolve of gid=%s failed: %s",
+                gid[:8], _e,
+            )
     logger.info("[captures] deleted id=%s", cid[:8])
     return True
 
@@ -688,25 +712,35 @@ def delete_capture(cid: str) -> bool:
 def clear_all(reporter_host: str = "") -> int:
     """Wipe every row + every audio file under the captures dir.
     WARNING-logs the count + caller host for audit. Returns the count
-    deleted."""
+    of captures deleted.
+
+    Also wipes capture_groups — the filesystem rmtree below clears
+    the groups/ subtree along with the hex fanout dirs, so leaving
+    capture_groups rows alive would leave them pointing at vanished
+    files (the user's '404 merged audio missing' symptom)."""
     conn = _require_conn()
     audio_dir = _require_audio_dir()
+    n_groups = 0
+    try:
+        import capture_groups_store
+        n_groups = capture_groups_store.clear_all_groups()
+    except Exception as _e:
+        logger.warning(
+            "[captures] clear_all_groups failed (continuing): %s", _e,
+        )
     with _lock:
         row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
         n = int(row[0]) if row else 0
         conn.execute("DELETE FROM captures")
         conn.execute("VACUUM")
-    # Remove every file under the captures dir. We could be more surgical
-    # and only delete files we have rows for, but the row table is empty
-    # at this point — anything still on disk is orphaned, drop it all.
     if os.path.isdir(audio_dir):
         for sub in os.listdir(audio_dir):
             sub_path = os.path.join(audio_dir, sub)
             if os.path.isdir(sub_path):
                 shutil.rmtree(sub_path, ignore_errors=True)
     logger.warning(
-        "[captures] admin from %s cleared %d captures",
-        reporter_host or "<unknown>", n,
+        "[captures] admin from %s cleared %d captures + %d groups",
+        reporter_host or "<unknown>", n, n_groups,
     )
     return n
 
@@ -770,18 +804,18 @@ def reconcile_on_startup() -> tuple[int, int]:
                     _safe_unlink(p)
                     files_unlinked += 1
 
-    if rows_marked or files_unlinked:
-        logger.warning(
-            "[captures] reconcile: %d rows marked audio_missing, "
-            "%d orphan files removed",
-            rows_marked, files_unlinked,
-        )
+    logger.info(
+        "[captures] reconcile: %d rows marked audio_missing, "
+        "%d orphan files removed",
+        rows_marked, files_unlinked,
+    )
     return rows_marked, files_unlinked
 
 
 def sweep_retention() -> int:
     """Delete rows + audio files older than cfg.CAPTURES_RETENTION_DAYS.
-    Returns count deleted."""
+    Returns count deleted. Group members are excluded — see
+    _drop_oldest_with_status for the rationale."""
     try:
         import config as cfg
         days = int(getattr(cfg, "CAPTURES_RETENTION_DAYS", 0))
@@ -793,7 +827,8 @@ def sweep_retention() -> int:
     conn = _require_conn()
     with _lock:
         rows = conn.execute(
-            "SELECT id, audio_relpath FROM captures WHERE created_ts < ?",
+            "SELECT id, audio_relpath FROM captures"
+            " WHERE created_ts < ? AND group_id IS NULL",
             (cutoff,),
         ).fetchall()
         if not rows:
