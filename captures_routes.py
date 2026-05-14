@@ -2557,6 +2557,9 @@ _CAPTURES_HTML = r"""<!doctype html>
         audio.controls = true;
         audio.style.marginTop = '0.5rem';
         audio.preload = 'metadata';
+        var audioSlot = document.createElement('div');
+        audioSlot.appendChild(audio);
+        body.appendChild(audioSlot);
         fetch('/captures/api/groups/' + encodeURIComponent(g.id) + '/audio',
               { headers: { Authorization: 'Bearer ' + getToken() } })
           .then(function(r) {
@@ -2564,8 +2567,37 @@ _CAPTURES_HTML = r"""<!doctype html>
             return r.blob();
           })
           .then(function(b) { audio.src = URL.createObjectURL(b); })
-          .catch(function(_) {});
-        body.appendChild(audio);
+          .catch(function(err) {
+            // Replace the dead audio element with an actionable banner.
+            // Old groups created during the route-shadow chaos period may
+            // have a row but no merged WAV on disk; regenerate rebuilds.
+            audioSlot.innerHTML = '';
+            var banner = document.createElement('div');
+            banner.className = 'cc-section';
+            banner.style.cssText = 'background:#3a2424;border:1px solid '
+              + 'var(--border);border-radius:4px;padding:0.5rem 0.75rem;'
+              + 'margin-top:0.5rem;display:flex;align-items:center;'
+              + 'gap:0.75rem;flex-wrap:wrap;';
+            banner.innerHTML = '<span style="color:#ffd1d1;">'
+              + '⚠ Audio unavailable for this group ('
+              + escapeHtml(err && err.message || 'fetch failed') + ').'
+              + '</span>';
+            var fixBtn = document.createElement('button');
+            fixBtn.textContent = 'Regenerate audio';
+            fixBtn.className = 'primary';
+            fixBtn.onclick = function() {
+              fixBtn.disabled = true;
+              api('POST', '/captures/api/groups/'
+                  + encodeURIComponent(g.id) + '/regenerate')
+                .then(function() { toast('Regenerated'); return load(); })
+                .catch(function(e) {
+                  fixBtn.disabled = false;
+                  if (e.message !== 'unauthorized') toast(e.message, true);
+                });
+            };
+            banner.appendChild(fixBtn);
+            audioSlot.appendChild(banner);
+          });
 
         // --- Group transcript textarea (the "ground truth" / gtArea) ---
         var ta = document.createElement('textarea');
@@ -2697,6 +2729,69 @@ _CAPTURES_HTML = r"""<!doctype html>
           markDirty(groupState);
         });
 
+        // --- Merge settings (silence gap + join strategy) ---
+        // Editing either field will trigger an audio rebuild on Save (the
+        // server PATCH path already re-runs _build_merged_wav when
+        // silence_ms changes). Mirrors the merge modal's controls so the
+        // affordance is consistent.
+        var settingsSec = document.createElement('div');
+        settingsSec.className = 'cc-section';
+        settingsSec.style.cssText = 'display:flex;gap:1rem;align-items:center;'
+          + 'flex-wrap:wrap;margin-top:0.5rem;';
+        var joinLabel = document.createElement('label');
+        joinLabel.style.cssText = 'display:flex;gap:0.4rem;align-items:center;';
+        joinLabel.appendChild(document.createTextNode('Join style: '));
+        var joinSel = document.createElement('select');
+        ['space','period_space','newline'].forEach(function(v) {
+          var opt = document.createElement('option');
+          opt.value = v;
+          opt.textContent = v === 'space' ? 'space'
+            : v === 'period_space' ? 'period + space' : 'newline';
+          if (v === (detail.transcript_join_strategy || 'space')) opt.selected = true;
+          joinSel.appendChild(opt);
+        });
+        joinLabel.appendChild(joinSel);
+        settingsSec.appendChild(joinLabel);
+
+        var silLabel = document.createElement('label');
+        silLabel.style.cssText = 'display:flex;gap:0.4rem;align-items:center;';
+        silLabel.appendChild(document.createTextNode('Silence gap: '));
+        var silSel = document.createElement('select');
+        [0,100,200,300,400,500,750,1000].forEach(function(v) {
+          var opt = document.createElement('option');
+          opt.value = String(v);
+          opt.textContent = v + ' ms';
+          if (v === (detail.inter_segment_silence_ms || 300)) opt.selected = true;
+          silSel.appendChild(opt);
+        });
+        silLabel.appendChild(silSel);
+        settingsSec.appendChild(silLabel);
+
+        var settingsHint = document.createElement('span');
+        settingsHint.className = 'help';
+        settingsHint.style.marginLeft = '0.5rem';
+        settingsSec.appendChild(settingsHint);
+        body.appendChild(settingsSec);
+
+        var origJoin = detail.transcript_join_strategy || 'space';
+        var origSil  = detail.inter_segment_silence_ms || 300;
+        function settingsDirty() {
+          return joinSel.value !== origJoin
+              || parseInt(silSel.value, 10) !== origSil;
+        }
+        function refreshSettingsHint() {
+          if (settingsDirty()) {
+            settingsHint.textContent = 'changes pending — Save to rebuild audio';
+            settingsHint.style.color = 'var(--cyan)';
+            regenBtn.classList.add('cta');
+          } else {
+            settingsHint.textContent = '';
+            regenBtn.classList.remove('cta');
+          }
+        }
+        joinSel.addEventListener('change', refreshSettingsHint);
+        silSel.addEventListener('change', refreshSettingsHint);
+
         var btnRow = document.createElement('div');
         btnRow.style.cssText = 'display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;';
         var saveTBtn = document.createElement('button');
@@ -2705,6 +2800,8 @@ _CAPTURES_HTML = r"""<!doctype html>
         saveTBtn.onclick = function() {
           var payload = {
             transcript: ta.value,
+            join_strategy: joinSel.value,
+            silence_ms: parseInt(silSel.value, 10),
             corrections: groupState.corrections.map(function(c) {
               return {
                 wrong:   c.wrong   || '',
@@ -2720,16 +2817,27 @@ _CAPTURES_HTML = r"""<!doctype html>
             .catch(function(e) { if (e.message !== 'unauthorized') toast(e.message, true); });
         };
         btnRow.appendChild(saveTBtn);
-        if (detail.is_stale) {
-          var regenBtn = document.createElement('button');
-          regenBtn.textContent = 'Regenerate audio (clear stale)';
-          regenBtn.onclick = function() {
-            api('POST', '/captures/api/groups/' + encodeURIComponent(g.id) + '/regenerate')
-              .then(function() { toast('Regenerated'); return load(); })
-              .catch(function(e) { if (e.message !== 'unauthorized') toast(e.message, true); });
-          };
-          btnRow.appendChild(regenBtn);
-        }
+        // Regenerate is always visible (the user can rebuild the merged
+        // WAV any time — recovers missing audio after a backup restore,
+        // refreshes after editing a member's audio, etc.).
+        var regenBtn = document.createElement('button');
+        regenBtn.textContent = detail.is_stale
+          ? 'Regenerate audio (clear stale)'
+          : 'Regenerate audio';
+        regenBtn.onclick = function() {
+          if (settingsDirty()) {
+            toast('Save first to apply the new silence/join, then regenerate.', true);
+            return;
+          }
+          regenBtn.disabled = true;
+          api('POST', '/captures/api/groups/' + encodeURIComponent(g.id) + '/regenerate')
+            .then(function() { toast('Regenerated'); return load(); })
+            .catch(function(e) {
+              regenBtn.disabled = false;
+              if (e.message !== 'unauthorized') toast(e.message, true);
+            });
+        };
+        btnRow.appendChild(regenBtn);
         var lockBtn = document.createElement('button');
         lockBtn.textContent = detail.is_locked ? 'Unlock' : 'Lock';
         lockBtn.onclick = function() {
