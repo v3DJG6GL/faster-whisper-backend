@@ -68,8 +68,6 @@ CREATE TABLE IF NOT EXISTS capture_groups (
   inter_segment_silence_ms    INTEGER NOT NULL DEFAULT 300,
   is_stale                    INTEGER NOT NULL DEFAULT 0,
   is_locked                   INTEGER NOT NULL DEFAULT 0,
-  corrections_json            TEXT NOT NULL DEFAULT '[]',
-  corrections_migrated_at     REAL,
   status                      TEXT NOT NULL DEFAULT 'new',
   admin_notes                 TEXT NOT NULL DEFAULT ''
 );
@@ -78,8 +76,12 @@ CREATE INDEX IF NOT EXISTS idx_capture_groups_user
 """
 
 _MIGRATIONS: tuple[str, ...] = (
-    "ALTER TABLE capture_groups ADD COLUMN corrections_json TEXT NOT NULL DEFAULT '[]'",
-    "ALTER TABLE capture_groups ADD COLUMN corrections_migrated_at REAL",
+    # Old DBs still carry these two columns from the one-time-projection
+    # cache design. Drop them idempotently — fresh DBs see "no such
+    # column" and swallow it; upgraded DBs succeed and reclaim the space.
+    "ALTER TABLE capture_groups DROP COLUMN corrections_json",
+    "ALTER TABLE capture_groups DROP COLUMN corrections_migrated_at",
+    # Live columns that may need adding on older DBs that pre-date them.
     "ALTER TABLE capture_groups ADD COLUMN status TEXT NOT NULL DEFAULT 'new'",
     "ALTER TABLE capture_groups ADD COLUMN admin_notes TEXT NOT NULL DEFAULT ''",
 )
@@ -158,12 +160,10 @@ def abs_path_for(relpath: str) -> str:
 # ---------------------------------------------------------------------
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
-    try:
-        corrections = json.loads(row["corrections_json"] or "[]")
-        if not isinstance(corrections, list):
-            corrections = []
-    except (TypeError, ValueError):
-        corrections = []
+    # `corrections` is derived from current member chips on every read
+    # (see captures_routes._enrich_group / list_groups_api). The DB row
+    # has no chip storage of its own — single source of truth lives on
+    # the member captures.
     return {
         "id":                          row["id"],
         "user_id":                     row["user_id"],
@@ -176,11 +176,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "inter_segment_silence_ms":    int(row["inter_segment_silence_ms"]),
         "is_stale":                    bool(row["is_stale"]),
         "is_locked":                   bool(row["is_locked"]),
-        "corrections":                 corrections,
-        "corrections_migrated_at":     (
-            float(row["corrections_migrated_at"])
-            if row["corrections_migrated_at"] is not None else None
-        ),
         "status":                      row["status"] or "new",
         "admin_notes":                 row["admin_notes"] or "",
     }
@@ -297,13 +292,17 @@ def update_group(
     patch: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Patch transcript / is_locked / inter_segment_silence_ms /
-    transcript_join_strategy / is_stale / corrections_json / status /
-    admin_notes. Returns the updated row."""
+    transcript_join_strategy / is_stale / status / admin_notes /
+    member_hashes_json / merged_duration_ms. Returns the updated row.
+
+    Chip state (the user-facing "corrections" list) is NOT on the
+    group row — it's derived from members on every read. Patch chip
+    edits via `captures_store.update_capture` on each member instead."""
     allowed = {
         "transcript", "transcript_join_strategy",
         "inter_segment_silence_ms", "is_locked", "is_stale",
-        "member_hashes_json", "merged_duration_ms", "corrections_json",
-        "corrections_migrated_at", "status", "admin_notes",
+        "member_hashes_json", "merged_duration_ms",
+        "status", "admin_notes",
     }
     sets: list[str] = []
     args: list[Any] = []

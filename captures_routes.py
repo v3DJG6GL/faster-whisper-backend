@@ -96,6 +96,12 @@ class PatchCaptureIn(BaseModel):
     status: Literal["new", "reviewed", "ready", "dismissed"] | None = None
     corrected_text: str | None = None
     corrections: list[CorrectionIn] | None = None
+    # Snapshot of `corrections` the client loaded with this capture.
+    # When provided alongside `corrections`, the server applies a
+    # three-way merge against the current DB state so a concurrent
+    # write (report cascade, another admin in another tab) doesn't
+    # get clobbered by the user's save. Omitted → legacy replace.
+    baseline_corrections: list[CorrectionIn] | None = None
     admin_notes: str | None = None
 
 
@@ -343,7 +349,19 @@ async def patch_capture_api(cid: str, payload: PatchCaptureIn) -> JSONResponse:
     if payload.corrected_text is not None:
         patch["corrected_text"] = payload.corrected_text
     if payload.corrections is not None:
-        patch["corrections"] = [c.model_dump() for c in payload.corrections]
+        edited = [c.model_dump() for c in payload.corrections]
+        if payload.baseline_corrections is not None:
+            # Three-way merge: apply the user's deltas to the current
+            # DB state, not just replace. Protects against concurrent
+            # report cascades and cross-tab admin saves.
+            import text_corrections
+            cap_now = captures_store.get_capture(cid) or {}
+            current = cap_now.get("corrections") or []
+            baseline = [c.model_dump() for c in payload.baseline_corrections]
+            edited = text_corrections.three_way_merge_corrections(
+                baseline, edited, current,
+            )
+        patch["corrections"] = edited
     if payload.admin_notes is not None:
         patch["admin_notes"] = payload.admin_notes
     try:
@@ -405,6 +423,11 @@ class PatchGroupIn(BaseModel):
     silence_ms: int | None = Field(default=None, ge=0, le=2000)
     is_locked: bool | None = None
     corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
+    # Snapshot of the group-derived chips at GET time. When provided
+    # alongside `corrections`, the server applies a three-way merge
+    # against the current member-projected chips so concurrent reports
+    # / cross-tab admin saves survive. Omitted → legacy replace.
+    baseline_corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
     status: Literal["new", "reviewed", "ready", "dismissed"] | None = None
     admin_notes: str | None = Field(default=None, max_length=8000)
 
@@ -571,19 +594,6 @@ async def create_group_api(
     transcript = payload.transcript.strip() or _build_default_transcript(
         captures, payload.join_strategy,
     )
-    # Project each member's chip corrections into the new group with
-    # global word indices BEFORE the INSERT — that way the INSERT
-    # writes the final group row in one shot. No follow-up UPDATE
-    # means no window where captures are wired into a group whose
-    # corrections_json hasn't been written yet (which is what produced
-    # the half-committed state behind the original "already in a group"
-    # 500 bug). `captures` already carries each member's `words` +
-    # `corrections` (decoded by captures_store._row_to_dict), so the
-    # projector reads them in-memory without re-hitting the DB.
-    migrated = _project_member_corrections(captures)
-    migrated_json = json.dumps(migrated, ensure_ascii=False)
-    migrated_ts = time.time()
-
     duration_ms, hashes = _build_merged_wav(
         gid=gid,
         member_ids=member_ids,
@@ -599,8 +609,6 @@ async def create_group_api(
             silence_ms=payload.silence_ms,
             member_hash_map=hashes,
             duration_ms=duration_ms,
-            corrections_json=migrated_json,
-            corrections_migrated_at=migrated_ts,
         )
     except Exception:
         # Insert failed — roll back the WAV we just wrote so the
@@ -624,28 +632,20 @@ def _insert_group_with_gid(
     silence_ms: int,
     member_hash_map: dict[str, str],
     duration_ms: int,
-    corrections_json: str = "[]",
-    corrections_migrated_at: float | None = None,
 ) -> None:
     """Direct insert that honours a pre-allocated gid (needed because the
     audio file is written at the gid path before this call). Mirrors the
     transactional shape of capture_groups_store.create_group.
 
-    `corrections_json` + `corrections_migrated_at` are written in the
-    same INSERT so the group row is complete in one transaction — no
-    follow-up UPDATE → no half-committed state if the caller crashes
-    immediately after the INSERT."""
+    Group chip state lives on the member captures, not on the group
+    row — every read re-projects from members — so no chip plumbing
+    appears here."""
     import capture_groups_store
     import json as _json
     import time as _time
 
     relpath = capture_groups_store._relpath_for(gid)
     now = _time.time()
-    migrated_ts = (
-        corrections_migrated_at
-        if corrections_migrated_at is not None
-        else now
-    )
     conn = capture_groups_store._require_conn()
     with capture_groups_store._lock:
         with conn:
@@ -654,15 +654,13 @@ def _insert_group_with_gid(
                 " (id, user_id, created_ts, merged_wav_relpath,"
                 "  merged_duration_ms, transcript,"
                 "  transcript_join_strategy, member_hashes_json,"
-                "  inter_segment_silence_ms, is_stale, is_locked,"
-                "  corrections_json, corrections_migrated_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,0,0,?,?)",
+                "  inter_segment_silence_ms, is_stale, is_locked)"
+                " VALUES (?,?,?,?,?,?,?,?,?,0,0)",
                 (
                     gid, user_id, now, relpath, int(duration_ms),
                     transcript, join_strategy,
                     _json.dumps(member_hash_map, sort_keys=True),
                     int(silence_ms),
-                    corrections_json, migrated_ts,
                 ),
             )
             for order, mid in enumerate(member_ids):
@@ -1029,14 +1027,25 @@ async def patch_group_api(
     if payload.corrections is not None:
         # Fan group-level chip edits DOWN to the owning members. Group
         # corrections are derived from members on every read (see
-        # `_enrich_group`); writing to `group.corrections_json` here
-        # would be discarded by the next GET. Translate each chip's
-        # global word idx back to a member-local idx and replace each
-        # member's chip list with its slice of the new state.
-        cleaned = [c.model_dump() for c in payload.corrections]
-        by_member = _split_corrections_to_members(
-            cleaned, capture_groups_store.get_members(gid),
-        )
+        # `_enrich_group`); writing to a group-level chip column would
+        # be discarded by the next GET.
+        #
+        # When the client also sends `baseline_corrections` (a snapshot
+        # of what it loaded), apply a three-way merge against the
+        # current member-projected chips BEFORE the split — that way a
+        # concurrent report cascade or cross-tab admin save isn't
+        # clobbered by the user's payload, and the user's deltas
+        # (additions, removals, edits) are applied on top.
+        members_now = capture_groups_store.get_members(gid)
+        edited = [c.model_dump() for c in payload.corrections]
+        if payload.baseline_corrections is not None:
+            import text_corrections
+            baseline = [c.model_dump() for c in payload.baseline_corrections]
+            current = _project_member_corrections(members_now)
+            edited = text_corrections.three_way_merge_corrections(
+                baseline, edited, current,
+            )
+        by_member = _split_corrections_to_members(edited, members_now)
         for member_id, chips in by_member.items():
             captures_store.update_capture(member_id, {"corrections": chips})
 
@@ -2330,6 +2339,10 @@ _CAPTURES_HTML = r"""<!doctype html>
           idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
         };
       }),
+      // Frozen snapshot of `corrections` at GET time. Sent back to the
+      // server with the PATCH so it can three-way-merge against any
+      // concurrent writes that landed between this load and the save.
+      baselineCorrections: JSON.parse(JSON.stringify(r.corrections || [])),
       correctedText: r.corrected_text || '',
       adminNotes: r.admin_notes || '',
       newStatus: r.status || 'new',
@@ -2831,11 +2844,20 @@ _CAPTURES_HTML = r"""<!doctype html>
       var body = {
         status: state.newStatus,
         corrections: corrections,
+        // Snapshot the server returned with the original GET. Lets the
+        // server three-way-merge our edits against any concurrent
+        // writes (report cascade, another admin in another tab) so
+        // those changes survive.
+        baseline_corrections: state.baselineCorrections || [],
         admin_notes: state.adminNotes,
       };
       var j = await api('PATCH',
         '/captures/api/' + encodeURIComponent(state.cid), body);
       Object.assign(r, j.capture);
+      // Refresh baseline from server's authoritative response so the
+      // next save measures deltas from this new ground truth.
+      state.baselineCorrections =
+        JSON.parse(JSON.stringify(j.capture.corrections || []));
       clearDirty(state);
       toast('Saved.');
       reloadCounts();
@@ -3491,6 +3513,12 @@ _CAPTURES_HTML = r"""<!doctype html>
               idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
             };
           });
+          // Frozen snapshot of the server's chip set at THIS moment.
+          // Sent back with the next PATCH so the server can apply the
+          // user's deltas on top of any concurrent member-chip writes
+          // (report cascades, cross-tab admin saves).
+          groupState.baselineCorrections =
+            JSON.parse(JSON.stringify(d.corrections || []));
           groupState.finalText = d.transcript || '';
           groupState.correctedText = d.transcript || '';
           groupState.adminNotes = d.admin_notes || '';
@@ -3613,6 +3641,11 @@ _CAPTURES_HTML = r"""<!doctype html>
                 idx_end: typeof c.idx_end === 'number' ? c.idx_end : null,
               };
             }),
+            // Snapshot the server returned when we loaded; pairs with
+            // `corrections` so the server can three-way-merge our
+            // deltas against any concurrent member-chip writes that
+            // landed in between.
+            baseline_corrections: groupState.baselineCorrections || [],
           };
           saveTBtn.disabled = true;
           api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id),
