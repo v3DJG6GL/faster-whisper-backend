@@ -227,7 +227,10 @@ async def list_groups_api(
         scope = user.get("user_id")
     else:
         scope = user_filter
-    return JSONResponse({"groups": capture_groups_store.list_groups(user_id=scope)})
+    groups = capture_groups_store.list_groups(user_id=scope)
+    for g in groups:
+        g["username"] = api_keys_store.get_username(g.get("user_id"))
+    return JSONResponse({"groups": groups})
 
 
 @router.get(
@@ -393,17 +396,51 @@ class PatchGroupIn(BaseModel):
     silence_ms: int | None = Field(default=None, ge=0, le=2000)
     is_locked: bool | None = None
     corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
+    status: Literal["new", "reviewed", "ready", "dismissed"] | None = None
+    admin_notes: str | None = Field(default=None, max_length=8000)
 
 
 _JOIN_STR = {"space": " ", "period_space": ". ", "newline": "\n"}
 
 
+def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
+    """Substitute each chip's `wrong` text with its `correct` text in
+    `text`. Walk in idx order so multi-word spans replace as a unit.
+    If `wrong` isn't found verbatim (whitespace drift / regex specials),
+    that chip is left alone. Mirrors the JS applyCorrectionsToGround
+    logic so server- and client-derived transcripts agree byte-for-byte."""
+    if not corrections:
+        return text or ""
+    out = text or ""
+    def _sk(c):
+        i = c.get("idx")
+        try:
+            return (0, int(i))
+        except (TypeError, ValueError):
+            return (1, 0)
+    ordered = sorted(
+        (c for c in corrections if isinstance(c, dict)), key=_sk,
+    )
+    for c in ordered:
+        wrong = c.get("wrong") or ""
+        correct = c.get("correct") or ""
+        if not wrong or not correct:
+            continue
+        i = out.find(wrong)
+        if i >= 0:
+            out = out[:i] + correct + out[i + len(wrong):]
+    return out
+
+
 def _build_default_transcript(members: list[dict[str, Any]], strategy: str) -> str:
-    """Concatenate member transcripts with the chosen join string. Prefers
-    corrected_text > final > raw per-member, matching export ordering."""
+    """Concatenate member transcripts with chips applied. Each member's
+    post-processing text (`final`) gets its chip corrections layered on
+    top before the join, so the merged result reflects what the export
+    pipeline would actually produce."""
     parts: list[str] = []
     for m in members:
-        t = (m.get("corrected_text") or m.get("final") or m.get("raw") or "").strip()
+        base = m.get("final") or m.get("raw") or ""
+        t = _apply_chips_to_text(base, m.get("corrections") or []).strip()
         if t:
             parts.append(t)
     return _JOIN_STR.get(strategy, " ").join(parts)
@@ -676,6 +713,14 @@ def _enrich_group(g: dict[str, Any]) -> dict[str, Any]:
         m["username"] = api_keys_store.get_username(m.get("user_id"))
     g["members"] = members
     g["username"] = api_keys_store.get_username(g.get("user_id"))
+    # The stored `transcript` is a snapshot taken at create / save time.
+    # The UI shows it as a read-only preview, so the rendered text must
+    # reflect current members + current chips, not the snapshot. Recompute
+    # here so /captures always displays the same string the export
+    # tarball would carry right now.
+    g["transcript"] = _build_default_transcript(
+        members, g.get("transcript_join_strategy") or "space",
+    )
 
     if g.get("corrections_migrated_at") is None:
         now = time.time()
@@ -906,8 +951,6 @@ async def patch_group_api(
 
     patch: dict[str, Any] = {}
     rebuild_audio = False
-    if payload.transcript is not None:
-        patch["transcript"] = payload.transcript.strip()
     if payload.join_strategy is not None and \
             payload.join_strategy != g["transcript_join_strategy"]:
         patch["transcript_join_strategy"] = payload.join_strategy
@@ -917,6 +960,10 @@ async def patch_group_api(
         rebuild_audio = True
     if payload.is_locked is not None:
         patch["is_locked"] = 1 if payload.is_locked else 0
+    if payload.status is not None:
+        patch["status"] = payload.status
+    if payload.admin_notes is not None:
+        patch["admin_notes"] = payload.admin_notes
     if payload.corrections is not None:
         import json as _json
         patch["corrections_json"] = _json.dumps(
@@ -935,6 +982,17 @@ async def patch_group_api(
         patch["member_hashes_json"] = _json.dumps(hashes, sort_keys=True)
         patch["merged_duration_ms"] = duration_ms
         patch["is_stale"] = 0
+
+    # Always derive `transcript` from current members + chips. The UI
+    # shows a read-only preview of this; storing the derived value keeps
+    # the export tarball self-consistent without requiring a separate
+    # regenerate step. The client-sent `transcript` field is ignored —
+    # chips are the single source of truth.
+    join_for_derive = patch.get(
+        "transcript_join_strategy", g["transcript_join_strategy"] or "space",
+    )
+    members_now = capture_groups_store.get_members(gid)
+    patch["transcript"] = _build_default_transcript(members_now, join_for_derive)
 
     updated = capture_groups_store.update_group(gid, patch)
     return JSONResponse({"group": _enrich_group(updated)})
@@ -1119,10 +1177,21 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
     # 1. Capture groups (the packed-for-fine-tune training samples).
     user_filter_scope: str | None = None  # admin-only path; no per-user scope
     for g in capture_groups_store.list_groups(user_id=user_filter_scope):
-        text = (g.get("transcript") or "").strip()
+        # Status gate — groups have the same status field as captures.
+        # "all" means no filter; anything else must match exactly.
+        if only_status and only_status != "all":
+            if (g.get("status") or "new") != only_status:
+                continue
+        # Always rebuild the transcript at export time from members +
+        # chips, so the exported text reflects current corrections even
+        # if the stored snapshot is stale.
+        gid = g["id"]
+        members = capture_groups_store.get_members(gid)
+        text = _build_default_transcript(
+            members, g.get("transcript_join_strategy") or "space",
+        ).strip()
         if not text:
             continue
-        gid = g["id"]
         audio_name = f"audio/{gid}.wav"
         manifest_lines.append(json.dumps({
             "audio_filepath": audio_name,
@@ -1131,10 +1200,11 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             "duration": float(g.get("merged_duration_ms") or 0) / 1000.0,
             "source": "group",
             "user_id": g.get("user_id") or "",
+            "status": g.get("status") or "new",
+            "admin_notes": g.get("admin_notes") or "",
             "is_stale": bool(g.get("is_stale")),
             "is_locked": bool(g.get("is_locked")),
-            "member_count":
-                len(capture_groups_store.get_members(gid)),
+            "member_count": len(members),
             "created_ts": float(g.get("created_ts") or 0.0),
         }, ensure_ascii=False).encode("utf-8") + b"\n")
 
@@ -1160,7 +1230,10 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
         if row.get("group_id"):
             continue
         cid = row["id"]
-        text = row.get("corrected_text") or row.get("final") or ""
+        # Chip-applied post-processing text is what the export should
+        # carry — `corrected_text` is dead surface; chips are canonical.
+        base = row.get("final") or row.get("raw") or ""
+        text = _apply_chips_to_text(base, row.get("corrections") or [])
         if not text.strip():
             continue
         ext = (row.get("audio_format") or "bin").lower().lstrip(".")
@@ -1750,10 +1823,9 @@ _CAPTURES_HTML = r"""<!doctype html>
       <span class="summary" id="merge-summary"></span>
     </div>
     <p style="margin: 0.5rem 0 0.25rem; color: var(--help); font-size: var(--fs-sm);">
-      Transcript (edit before commit; <span class="seam-marker">¶</span>
-      markers show segment boundaries):
+      Final result preview (derived from members + chips):
     </p>
-    <textarea id="merge-transcript" spellcheck="false"></textarea>
+    <div id="merge-transcript" class="cc-ground" role="textbox" aria-readonly="true"></div>
     <div class="actions">
       <button id="merge-cancel">Cancel</button>
       <button id="merge-commit" class="primary">Commit merge</button>
@@ -2115,7 +2187,10 @@ _CAPTURES_HTML = r"""<!doctype html>
     preview.style.whiteSpace = 'nowrap';
     preview.style.overflow = 'hidden';
     preview.style.textOverflow = 'ellipsis';
-    preview.textContent = r.corrected_text || r.final || r.raw || '(empty)';
+    preview.textContent =
+      _applyChipsToText(r.final || r.raw || '', r.corrections || [])
+      || r.raw
+      || '(empty)';
     card.appendChild(preview);
 
     var body = document.createElement('div');
@@ -2224,12 +2299,12 @@ _CAPTURES_HTML = r"""<!doctype html>
       }
     });
 
-    // --- word strip ---
-    var stripWrap = document.createElement('div');
-    stripWrap.className = 'cc-section';
-    stripWrap.innerHTML = '<h3>Words (karaoke — click to seek; '
-      + 'shift-click another to mark a multi-word span; click a marked '
-      + 'word to clear)</h3>';
+    // --- Corrections section: karaoke band + chip list inside one card. ---
+    var corrSec = document.createElement('div');
+    corrSec.className = 'cc-section';
+    corrSec.innerHTML = '<h3>Corrections</h3>'
+      + '<div class="help">Click a word to mark it; shift-click another '
+      + 'to extend the range; type the corrected text in the chip below.</div>';
     var strip = document.createElement('div');
     strip.className = 'word-strip';
     state.words.forEach(function(w, i) {
@@ -2252,8 +2327,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       strip.appendChild(sp);
       state.wordEls.push(sp);
     });
-    stripWrap.appendChild(strip);
-    body.appendChild(stripWrap);
+    corrSec.appendChild(strip);
 
     // Karaoke highlighting via timeupdate (~4 Hz; battery-friendly).
     function onTimeUpdate() {
@@ -2299,15 +2373,12 @@ _CAPTURES_HTML = r"""<!doctype html>
       row.appendChild(v);
       return row;
     }
-    body.appendChild(textLine('raw',   'raw',   r.raw));
-    body.appendChild(textLine('final', 'final', r.final));
+    body.appendChild(textLine('raw',             'raw',             r.raw));
+    body.appendChild(textLine('post-processing', 'post-processing', r.final));
 
-    // --- corrections section ---
-    var corrSec = document.createElement('div');
-    corrSec.className = 'cc-section';
-    corrSec.innerHTML = '<h3>Word corrections</h3>'
-      + '<div class="help">Click a word above to mark it. Shift-click '
-      + 'another to extend the range. Type the corrected text in the chip.</div>';
+    // Chip list nests inside the same Corrections section started above,
+    // so the word band and its chip editors render as one harmonized
+    // surface (matches the group view's layout).
     var chipBox = document.createElement('div');
     chipBox.className = 'cc-corrections';
     corrSec.appendChild(chipBox);
@@ -2315,17 +2386,17 @@ _CAPTURES_HTML = r"""<!doctype html>
     state.chipBox = chipBox;
     renderChips(state);
 
-    // --- ground truth (read-only preview) ---
+    // --- Final result (read-only preview) ---
     // Locked output preview: shows what Whisper would learn to emit
-    // for this audio = current pipeline output + word-chip corrections.
-    // Not editable — to change the text, edit chips above or change
-    // the pipeline rules on /quick-config.
+    // for this audio = post-processing text + word-chip corrections.
+    // Not editable — to change it, edit chips above or change pipeline
+    // rules on /quick-config.
     var gtSec = document.createElement('div');
     gtSec.className = 'cc-section';
-    gtSec.innerHTML = '<h3>Ground truth (exported text)</h3>'
-      + '<div class="help">Computed from <em>final</em> + word corrections '
-      + '+ current pipeline rules. To change it, edit the chips above or '
-      + 'update rules on /quick-config.</div>';
+    gtSec.innerHTML = '<h3>Final result</h3>'
+      + '<div class="help">Computed from <em>post-processing</em> + word '
+      + 'corrections + current pipeline rules. To change it, edit chips '
+      + 'above or update rules on /quick-config.</div>';
     var gtArea = document.createElement('div');
     gtArea.className = 'cc-ground';
     gtArea.setAttribute('role', 'textbox');
@@ -2884,10 +2955,40 @@ _CAPTURES_HTML = r"""<!doctype html>
   var JOIN_STR = { space: ' ', period_space: '. ', newline: '\n' };
   function _seamMarker() { return '¶'; }   // ¶
 
+  function _applyChipsToText(text, corrections) {
+    // Mirror of Python _apply_chips_to_text — walk chips in idx order
+    // and substitute `wrong` → `correct` in the text. Used to layer
+    // each member's chip corrections on top of post-processing before
+    // joining into the group's final-result preview.
+    if (!corrections || !corrections.length) return text || '';
+    var out = text || '';
+    var ordered = corrections.slice().filter(function(c) {
+      return c && typeof c === 'object';
+    });
+    ordered.sort(function(a, b) {
+      var ai = typeof a.idx === 'number' ? a.idx : 1e9;
+      var bi = typeof b.idx === 'number' ? b.idx : 1e9;
+      return ai - bi;
+    });
+    ordered.forEach(function(c) {
+      var wrong = c.wrong || '';
+      var correct = c.correct || '';
+      if (!wrong || !correct) return;
+      var i = out.indexOf(wrong);
+      if (i >= 0) out = out.slice(0, i) + correct + out.slice(i + wrong.length);
+    });
+    return out;
+  }
+
   function _buildDefaultTranscript(rows, strategy) {
+    // Chips-applied join. Each member's post-processing text gets its
+    // chips substituted in before the join, matching the server-side
+    // _build_default_transcript so the merge-preview matches what the
+    // group's stored transcript will actually be.
     var sep = JOIN_STR[strategy] || ' ';
     return rows.map(function(r) {
-      return (r.corrected_text || r.final || r.raw || '').trim();
+      var base = r.final || r.raw || '';
+      return _applyChipsToText(base, r.corrections || []).trim();
     }).filter(Boolean).join(sep);
   }
 
@@ -2897,9 +2998,10 @@ _CAPTURES_HTML = r"""<!doctype html>
     rows.forEach(function(r, i) {
       var line = document.createElement('div');
       line.className = 'seg-line';
+      var memberText = _applyChipsToText(r.final || r.raw || '', r.corrections || []);
       line.innerHTML = '<span class="seg-time">[' + (i + 1) + '] '
         + (r.duration_seconds || 0).toFixed(1) + 's</span>'
-        + escapeHtml((r.corrected_text || r.final || r.raw || '').slice(0, 200));
+        + escapeHtml(memberText.slice(0, 200));
       el.appendChild(line);
     });
   }
@@ -2913,7 +3015,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     var silSel = document.getElementById('merge-silence');
     var ta = document.getElementById('merge-transcript');
     function refreshTranscript() {
-      ta.value = _buildDefaultTranscript(rows, joinSel.value);
+      ta.textContent = _buildDefaultTranscript(rows, joinSel.value);
     }
     refreshTranscript();
     joinSel.onchange = refreshTranscript;
@@ -2932,9 +3034,11 @@ _CAPTURES_HTML = r"""<!doctype html>
       modal.classList.remove('show');
     };
     document.getElementById('merge-commit').onclick = function() {
+      // Server derives the transcript from members + chips on create
+      // (mirrors the locked preview); we don't send a client-side string.
       var payload = {
         member_ids: rows.map(function(r) { return r.id; }),
-        transcript: ta.value || '',
+        transcript: '',
         join_strategy: joinSel.value,
         silence_ms: parseInt(silSel.value, 10) || 300,
       };
@@ -2968,6 +3072,8 @@ _CAPTURES_HTML = r"""<!doctype html>
         escapeHtml(absTime(g.created_ts)) + '">' +
         escapeHtml(fmtWhen(g.created_ts)) + '</span>' +
       '<span class="pill group-pill">group</span>' +
+      '<span class="pill status-' + escapeHtml(g.status || 'new') + '">' +
+        escapeHtml(g.status || 'new') + '</span>' +
       (g.username
         ? '<span class="pill" title="speaker">' + escapeHtml(g.username) + '</span>'
         : '<span class="pill" title="speaker (unknown user)">' +
@@ -3025,13 +3131,32 @@ _CAPTURES_HTML = r"""<!doctype html>
         audioSlot.appendChild(audio);
         body.appendChild(audioSlot);
 
-        // Group transcript textarea (the "ground truth" / gtArea).
-        var ta = document.createElement('textarea');
-        ta.style.cssText = 'width:100%;min-height:6rem;margin-top:0.5rem;'
-          + 'background:var(--input-bg);color:var(--fg);'
-          + 'border:1px solid var(--border);border-radius:4px;'
-          + 'padding:0.5rem;font-family:var(--font-mono);'
-          + 'font-size:var(--fs-md);box-sizing:border-box;';
+        // Per-member raw + post-processing reference rows. Same shape
+        // as the single-capture textLine, but iterated per member so
+        // the group surface mirrors what each captured segment carried.
+        function _textLine(klass, label, value) {
+          var row = document.createElement('div');
+          row.className = 'cc-textline ' + klass;
+          var tag = document.createElement('span');
+          tag.className = 'tag';
+          tag.textContent = label;
+          row.appendChild(tag);
+          var v = document.createElement('span');
+          v.className = 'val' + (value ? '' : ' dim');
+          v.textContent = value || '(empty)';
+          row.appendChild(v);
+          return row;
+        }
+        var refsWrap = document.createElement('div');
+        body.appendChild(refsWrap);
+
+        // Group "Final result" read-only preview (the gtArea).
+        // Identical lock-down to single-capture GT: this is a derived
+        // view of (members + chips). To change it, edit chips above.
+        var ta = document.createElement('div');
+        ta.className = 'cc-ground';
+        ta.setAttribute('role', 'textbox');
+        ta.setAttribute('aria-readonly', 'true');
 
         var groupState = {
           gid: detail.id,
@@ -3044,23 +3169,27 @@ _CAPTURES_HTML = r"""<!doctype html>
           activeWordIdx: -1,
           chipBox: null,
           gtArea: ta,
+          adminNotes: '',
+          newStatus: 'new',
           dirty: false,
+          dirtyEl: null,
         };
 
-        // Karaoke band skeleton.
-        var stripWrap = document.createElement('div');
-        stripWrap.className = 'cc-section';
-        stripWrap.innerHTML = '<h3>Words (karaoke — click to seek; '
-          + 'shift-click another to mark a multi-word span; click a '
-          + 'marked word to clear)</h3>';
+        // ---- Corrections section: karaoke band + chip list together. ----
+        var corrSec = document.createElement('div');
+        corrSec.className = 'cc-section';
+        corrSec.innerHTML = '<h3>Corrections</h3>'
+          + '<div class="help">Click a word to mark it; shift-click '
+          + 'another to extend the range; type the corrected text in '
+          + 'the chip below. Edits auto-apply to the final-result '
+          + 'preview on blur / Enter.</div>';
         var staleHint = document.createElement('div');
         staleHint.className = 'help';
         staleHint.style.color = 'var(--cyan)';
-        stripWrap.appendChild(staleHint);
+        corrSec.appendChild(staleHint);
         var strip = document.createElement('div');
         strip.className = 'word-strip';
-        stripWrap.appendChild(strip);
-        body.appendChild(stripWrap);
+        corrSec.appendChild(strip);
 
         // Karaoke highlight via timeupdate (attached once; reads the
         // live groupState.words). Survives applyServerGroup re-renders.
@@ -3088,29 +3217,23 @@ _CAPTURES_HTML = r"""<!doctype html>
           }
         });
 
-        // Group corrections chip box (auto-applies on blur/Enter).
-        var corrSec = document.createElement('div');
-        corrSec.className = 'cc-section';
-        corrSec.innerHTML = '<h3>Word corrections</h3>'
-          + '<div class="help">Click a word above to mark it; shift-click '
-          + 'another to extend the range; type the corrected text in the '
-          + 'chip. Edits auto-apply to the merged transcript on blur / '
-          + 'Enter. Group corrections layer on top of per-member '
-          + 'corrections during export.</div>';
+        // Chip list nests inside the same Corrections section so the
+        // word strip and its chips read as one harmonized surface.
         var chipBox = document.createElement('div');
         chipBox.className = 'cc-corrections';
         corrSec.appendChild(chipBox);
         body.appendChild(corrSec);
         groupState.chipBox = chipBox;
 
-        body.appendChild(ta);
-        ta.addEventListener('input', function() {
-          groupState.correctedText = ta.value;
-          // Treat manual typing as the new "final" base so subsequent chip
-          // applies stack on top of the user's edits rather than reverting.
-          groupState.finalText = ta.value;
-          markDirty(groupState);
-        });
+        // ---- Final result section (read-only preview). ----
+        var gtSec = document.createElement('div');
+        gtSec.className = 'cc-section';
+        gtSec.innerHTML = '<h3>Final result</h3>'
+          + '<div class="help">Computed from members\' post-processing '
+          + 'text + word corrections. To change it, edit chips above or '
+          + 'update rules on /quick-config.</div>';
+        gtSec.appendChild(ta);
+        body.appendChild(gtSec);
 
         // --- Merge settings row (silence gap + join strategy) ---
         var settingsSec = document.createElement('div');
@@ -3172,22 +3295,56 @@ _CAPTURES_HTML = r"""<!doctype html>
         joinSel.addEventListener('change', refreshSettingsHint);
         silSel.addEventListener('change', refreshSettingsHint);
 
-        // --- Button row (Save / Regenerate / Lock / Dissolve) ---
-        var btnRow = document.createElement('div');
-        btnRow.style.cssText = 'display:flex;gap:0.5rem;margin-top:0.5rem;flex-wrap:wrap;';
+        // --- Admin notes (matches single-capture layout). ---
+        var notesSec = document.createElement('div');
+        notesSec.className = 'cc-section cc-notes';
+        notesSec.innerHTML = '<h3>Admin notes</h3>';
+        var notesArea = document.createElement('textarea');
+        notesArea.addEventListener('input', function() {
+          groupState.adminNotes = notesArea.value;
+          markDirty(groupState);
+        });
+        notesSec.appendChild(notesArea);
+        body.appendChild(notesSec);
+
+        // --- Action row: status + save / regenerate / lock / dissolve ---
+        var actions = document.createElement('div');
+        actions.className = 'cc-actions';
+        var statusLbl = document.createElement('label');
+        statusLbl.textContent = 'status';
+        var statusSel = document.createElement('select');
+        ['new', 'reviewed', 'ready', 'dismissed'].forEach(function(v) {
+          var o = document.createElement('option');
+          o.value = v; o.textContent = v;
+          statusSel.appendChild(o);
+        });
+        statusSel.addEventListener('change', function() {
+          groupState.newStatus = statusSel.value;
+          markDirty(groupState);
+        });
+        statusLbl.appendChild(statusSel);
+        actions.appendChild(statusLbl);
+        var dirtyEl = document.createElement('span');
+        dirtyEl.className = 'dirty hidden';
+        dirtyEl.textContent = 'unsaved';
+        actions.appendChild(dirtyEl);
+        groupState.dirtyEl = dirtyEl;
+        var spc = document.createElement('span');
+        spc.className = 'spacer';
+        actions.appendChild(spc);
         var saveTBtn = document.createElement('button');
-        saveTBtn.textContent = 'Save transcript & corrections';
+        saveTBtn.textContent = 'Save';
         saveTBtn.className = 'primary';
-        btnRow.appendChild(saveTBtn);
+        actions.appendChild(saveTBtn);
         var regenBtn = document.createElement('button');
-        btnRow.appendChild(regenBtn);
+        actions.appendChild(regenBtn);
         var lockBtn = document.createElement('button');
-        btnRow.appendChild(lockBtn);
+        actions.appendChild(lockBtn);
         var dissolveBtn = document.createElement('button');
         dissolveBtn.textContent = 'Dissolve group';
         dissolveBtn.className = 'danger';
-        btnRow.appendChild(dissolveBtn);
-        body.appendChild(btnRow);
+        actions.appendChild(dissolveBtn);
+        body.appendChild(actions);
 
         // --- Members list (replaced on each applyServerGroup) ---
         var membersDiv = document.createElement('div');
@@ -3266,9 +3423,26 @@ _CAPTURES_HTML = r"""<!doctype html>
           });
           groupState.finalText = d.transcript || '';
           groupState.correctedText = d.transcript || '';
+          groupState.adminNotes = d.admin_notes || '';
+          groupState.newStatus = d.status || 'new';
           groupState.wordEls = [];
           groupState.activeWordIdx = -1;
-          ta.value = d.transcript || '';
+          ta.textContent = d.transcript || '';
+
+          // Per-member raw + post-processing reference rows.
+          refsWrap.innerHTML = '';
+          (d.members || []).forEach(function(m, i) {
+            var prefix = '[' + (i + 1) + '] ';
+            refsWrap.appendChild(_textLine('raw',
+              prefix + 'raw', m.raw || ''));
+            refsWrap.appendChild(_textLine('post-processing',
+              prefix + 'post-processing', m.final || ''));
+          });
+
+          // Status dropdown + admin notes (sync from server snapshot).
+          statusSel.value = d.status || 'new';
+          notesArea.value = d.admin_notes || '';
+          clearDirty(groupState);
 
           // 2. Dropdowns + baselines.
           silSel.value = String(d.inter_segment_silence_ms || 300);
@@ -3336,9 +3510,10 @@ _CAPTURES_HTML = r"""<!doctype html>
           (d.members || []).forEach(function(m) {
             var line = document.createElement('div');
             line.style.cssText = 'font-size:var(--fs-sm);color:var(--dim);padding:0.2rem 0;';
+            var memberText = _applyChipsToText(m.final || m.raw || '', m.corrections || []);
             line.innerHTML = '[' + (m.group_order + 1) + '] '
               + (m.duration_seconds || 0).toFixed(1) + 's · '
-              + escapeHtml((m.corrected_text || m.final || m.raw || '').slice(0, 120));
+              + escapeHtml(memberText.slice(0, 120));
             membersDiv.appendChild(line);
           });
 
@@ -3356,9 +3531,10 @@ _CAPTURES_HTML = r"""<!doctype html>
         // --- Save handler: PATCH everything; mutate the card in place. ---
         saveTBtn.onclick = function() {
           var payload = {
-            transcript:   ta.value,
             join_strategy: joinSel.value,
             silence_ms:    parseInt(silSel.value, 10),
+            status:        groupState.newStatus,
+            admin_notes:   groupState.adminNotes,
             corrections:   groupState.corrections.map(function(c) {
               return {
                 wrong:   c.wrong   || '',

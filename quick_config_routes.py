@@ -701,47 +701,6 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .rep-actions button.primary { color: var(--green); border-color: var(--green); }
   .rep-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
 
-  /* Reapply-rules modal + progress strip. Re-uses the token-modal
-     overlay style; modal chrome is sans, the captures/groups counters
-     render as monospace numerics so the progress eye-tracks easily. */
-  #reapply-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.65);
-    display: none; align-items: center; justify-content: center; z-index: 9; }
-  #reapply-modal.show { display: flex; }
-  #reapply-modal .box {
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 6px; padding: 1.2rem 1.4rem 1rem;
-    width: 32rem; max-width: 92vw; font-family: var(--font-sans);
-    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
-  }
-  #reapply-modal h3 { margin: 0 0 0.5rem 0; color: var(--bold);
-    font-size: var(--fs-xl); }
-  #reapply-modal p { margin: 0 0 0.6rem 0; line-height: 1.5;
-    font-size: var(--fs-sm); }
-  #reapply-modal p .n { font-family: var(--font-mono); color: var(--bold); }
-  #reapply-modal small { color: var(--dim); font-size: var(--fs-xs);
-    display: block; line-height: 1.5; }
-  #reapply-modal .actions { margin-top: 0.9rem; display: flex; gap: 0.5rem;
-    justify-content: flex-end; }
-  #reapply-modal .actions button { background: var(--input-bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 3px;
-    padding: 0.25rem 0.625rem; font: inherit; font-size: var(--fs-sm);
-    cursor: pointer; }
-  #reapply-modal .actions button.primary { color: var(--green);
-    border-color: var(--green); }
-  #reapply-modal .actions button:disabled { opacity: 0.4; cursor: not-allowed; }
-  .reapply-progress { font-family: var(--font-mono); font-size: var(--fs-sm);
-    color: var(--fg); background: var(--input-bg);
-    border: 1px solid var(--border); border-radius: 3px;
-    padding: 0.4rem 0.5rem; margin: 0.4rem 0 0.2rem; }
-  .reapply-progress .label { color: var(--dim); font-family: var(--font-sans);
-    font-size: var(--fs-xs); display: block; margin-bottom: 0.2rem; }
-  .reapply-progress .bar { display: block; height: 0.4rem;
-    background: var(--border); border-radius: 2px; overflow: hidden;
-    margin: 0.25rem 0; }
-  .reapply-progress .bar > .fill { display: block; height: 100%;
-    background: var(--green); width: 0%; transition: width 0.3s ease-out; }
-  header button.reapply { color: var(--cyan); border-color: var(--cyan); }
-
   /* Non-modal silent-reapply strip — shown under the header bar after
      Save kicks off the reapply job automatically. Fades out 3s after
      completion. */
@@ -780,7 +739,6 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
     {{NAV}}
     <span class="spacer"></span>
     {{SCALE_PICKER}}
-    <button id="reapply-btn" class="reapply" title="Manually re-run the pipeline over every stored capture. Save already does this automatically when rules change — use this to force a re-run (e.g. after restoring defaults).">re-apply rules</button>
     <button id="discard-btn" disabled>discard</button>
     <button id="save-btn" class="primary" disabled>save</button>
     <span id="status">loading…</span>
@@ -811,27 +769,6 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
 </main>
 
 <div id="toast"></div>
-
-<div id="reapply-modal">
-  <div class="box">
-    <h3>Re-apply rules to existing captures</h3>
-    <div id="reapply-prompt">
-      <p>Re-run the current pipeline over <span class="n" id="reapply-n">…</span> stored captures and rebuild affected (unlocked) group transcripts now?</p>
-      <small>Updates each capture's <code>final</code> text from <code>raw</code>. Manual word corrections (chips) and <code>corrected_text</code> overrides are preserved. Locked groups are skipped. Runs in the background — you can keep working.</small>
-    </div>
-    <div id="reapply-progress-wrap" hidden>
-      <div class="reapply-progress">
-        <span class="label" id="reapply-label">Starting…</span>
-        <span class="bar"><span class="fill" id="reapply-fill"></span></span>
-        <span id="reapply-stats">0 / 0 captures · 0 updated · 0 groups</span>
-      </div>
-    </div>
-    <div class="actions">
-      <button id="reapply-cancel">close</button>
-      <button id="reapply-go" class="primary">apply now</button>
-    </div>
-  </div>
-</div>
 
 <div id="token-modal">
   <div class="box">
@@ -1837,99 +1774,13 @@ async function doSave() {
     : 'nothing to save', 'ok');
   if (result.captures_eligible_for_reapply && result.captures_count > 0) {
     // Auto-trigger the reapply job silently — admins shouldn't have to
-    // click twice. The header strip shows progress; the manual
-    // Re-Apply button + modal remain for explicit on-demand re-runs.
+    // click twice. The header strip shows progress; there's no manual
+    // re-apply button anymore.
     startReapplyJobSilent(result.captures_count);
   }
   await load();
 }
 
-// --- Reapply-rules modal + progress polling ---
-//
-// The /quick-config/reapply-rules POST is idempotent — concurrent
-// starts return the existing job's state. Polling GET /status drives
-// the progress strip until status flips to "done" or "error".
-
-let _reapplyPoll = null;
-
-function openReapplyModal(n) {
-  const modal = document.getElementById('reapply-modal');
-  document.getElementById('reapply-n').textContent = String(n);
-  document.getElementById('reapply-prompt').hidden = false;
-  document.getElementById('reapply-progress-wrap').hidden = true;
-  document.getElementById('reapply-go').disabled = false;
-  document.getElementById('reapply-go').textContent = 'apply now';
-  modal.classList.add('show');
-}
-function closeReapplyModal() {
-  document.getElementById('reapply-modal').classList.remove('show');
-  if (_reapplyPoll) { clearInterval(_reapplyPoll); _reapplyPoll = null; }
-}
-async function doReapplyStart() {
-  document.getElementById('reapply-go').disabled = true;
-  document.getElementById('reapply-go').textContent = 'running…';
-  document.getElementById('reapply-prompt').hidden = true;
-  document.getElementById('reapply-progress-wrap').hidden = false;
-  const r = await api('POST', '/quick-config/reapply-rules');
-  if (!r.ok) {
-    showToast('reapply failed: HTTP ' + r.status, 'err');
-    closeReapplyModal();
-    return;
-  }
-  pollReapplyOnce();
-  _reapplyPoll = setInterval(pollReapplyOnce, 1500);
-}
-async function pollReapplyOnce() {
-  let r;
-  try { r = await api('GET', '/quick-config/reapply-rules/status'); }
-  catch (_) { return; }
-  if (!r.ok) return;
-  const s = await r.json();
-  const fill = document.getElementById('reapply-fill');
-  const stats = document.getElementById('reapply-stats');
-  const label = document.getElementById('reapply-label');
-  const pct = s.total > 0
-    ? Math.round((s.processed / s.total) * 100) : (s.status === 'done' ? 100 : 0);
-  fill.style.width = pct + '%';
-  stats.textContent = (s.processed || 0) + ' / ' + (s.total || 0)
-    + ' captures · ' + (s.captures_updated || 0) + ' updated · '
-    + (s.groups_updated || 0) + ' groups';
-  if (s.status === 'running') { label.textContent = 'Running…'; }
-  else if (s.status === 'done') {
-    label.textContent = 'Done';
-    document.getElementById('reapply-go').textContent = 'done';
-    if (_reapplyPoll) { clearInterval(_reapplyPoll); _reapplyPoll = null; }
-  } else if (s.status === 'error') {
-    label.textContent = 'Error: ' + (s.error || 'unknown');
-    document.getElementById('reapply-go').textContent = 'failed';
-    if (_reapplyPoll) { clearInterval(_reapplyPoll); _reapplyPoll = null; }
-  } else if (s.status === 'idle') {
-    label.textContent = (s.note || 'idle');
-    if (_reapplyPoll) { clearInterval(_reapplyPoll); _reapplyPoll = null; }
-  }
-}
-async function openReapplyFromButton() {
-  // Manual trigger: probe the server's current state. If a job is
-  // already running, jump straight to the progress view.
-  const r = await api('GET', '/quick-config/reapply-rules/status');
-  if (!r.ok) { showToast('status check failed: HTTP ' + r.status, 'err'); return; }
-  const s = await r.json();
-  // We don't know the total here unless a job ran. Show the modal in
-  // prompt-mode with a placeholder; the user confirms, server snapshots
-  // the row count, polling fills it in.
-  openReapplyModal('many');
-  if (s.status === 'running') {
-    document.getElementById('reapply-prompt').hidden = true;
-    document.getElementById('reapply-progress-wrap').hidden = false;
-    document.getElementById('reapply-go').disabled = true;
-    document.getElementById('reapply-go').textContent = 'running…';
-    pollReapplyOnce();
-    _reapplyPoll = setInterval(pollReapplyOnce, 1500);
-  }
-}
-document.getElementById('reapply-go').addEventListener('click', doReapplyStart);
-document.getElementById('reapply-cancel').addEventListener('click', closeReapplyModal);
-document.getElementById('reapply-btn').addEventListener('click', openReapplyFromButton);
 
 // --- Silent reapply strip (auto-triggered after Save) ---
 //

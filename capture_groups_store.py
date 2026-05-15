@@ -48,10 +48,14 @@ CREATE TABLE IF NOT EXISTS capture_groups (
   is_stale                    INTEGER NOT NULL DEFAULT 0,
   is_locked                   INTEGER NOT NULL DEFAULT 0,
   corrections_json            TEXT NOT NULL DEFAULT '[]',
-  corrections_migrated_at     REAL
+  corrections_migrated_at     REAL,
+  status                      TEXT NOT NULL DEFAULT 'new',
+  admin_notes                 TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_capture_groups_user
   ON capture_groups(user_id, created_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_capture_groups_status
+  ON capture_groups(status);
 """
 
 # Idempotent ALTER TABLE additions for DBs created under an older schema.
@@ -60,7 +64,12 @@ CREATE INDEX IF NOT EXISTS idx_capture_groups_user
 _MIGRATIONS: tuple[str, ...] = (
     "ALTER TABLE capture_groups ADD COLUMN corrections_json TEXT NOT NULL DEFAULT '[]'",
     "ALTER TABLE capture_groups ADD COLUMN corrections_migrated_at REAL",
+    "ALTER TABLE capture_groups ADD COLUMN status TEXT NOT NULL DEFAULT 'new'",
+    "ALTER TABLE capture_groups ADD COLUMN admin_notes TEXT NOT NULL DEFAULT ''",
 )
+
+_VALID_STATUS = frozenset({"new", "reviewed", "ready", "dismissed"})
+_CAP_ADMIN_NOTES = 8000
 
 
 # ---------------------------------------------------------------------
@@ -150,6 +159,8 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
             float(row["corrections_migrated_at"])
             if row["corrections_migrated_at"] is not None else None
         ),
+        "status":                      row["status"] or "new",
+        "admin_notes":                 row["admin_notes"] or "",
     }
 
 
@@ -236,15 +247,27 @@ def list_groups(
 
 def get_members(gid: str) -> list[dict[str, Any]]:
     """Return member captures in their declared group_order, decoded
-    enough for the UI (transcript + duration; no heavy words/segments)."""
+    enough for the UI (transcript + duration; no heavy words/segments).
+    Includes corrections_json so chip-aware joiners can apply each
+    member's corrections to its post-processing text before merging."""
     conn = _require_conn()
     rows = conn.execute(
         "SELECT id, created_ts, duration_seconds, raw, final,"
-        " corrected_text, status, group_order, user_id"
+        " corrected_text, corrections_json, status, group_order, user_id"
         " FROM captures WHERE group_id = ? ORDER BY group_order ASC",
         (gid,),
     ).fetchall()
-    return [dict(r) for r in rows]
+    out: list[dict[str, Any]] = []
+    for r in rows:
+        d = dict(r)
+        try:
+            d["corrections"] = json.loads(d.pop("corrections_json", "[]") or "[]")
+            if not isinstance(d["corrections"], list):
+                d["corrections"] = []
+        except (TypeError, ValueError):
+            d["corrections"] = []
+        out.append(d)
+    return out
 
 
 def update_group(
@@ -252,19 +275,24 @@ def update_group(
     patch: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Patch transcript / is_locked / inter_segment_silence_ms /
-    transcript_join_strategy / is_stale / corrections_json. Returns the
-    updated row."""
+    transcript_join_strategy / is_stale / corrections_json / status /
+    admin_notes. Returns the updated row."""
     allowed = {
         "transcript", "transcript_join_strategy",
         "inter_segment_silence_ms", "is_locked", "is_stale",
         "member_hashes_json", "merged_duration_ms", "corrections_json",
-        "corrections_migrated_at",
+        "corrections_migrated_at", "status", "admin_notes",
     }
     sets: list[str] = []
     args: list[Any] = []
     for k, v in patch.items():
         if k not in allowed:
             raise ValueError(f"field {k!r} not patchable")
+        if k == "status":
+            if v not in _VALID_STATUS:
+                raise ValueError(f"invalid status: {v!r}")
+        if k == "admin_notes":
+            v = str(v or "")[:_CAP_ADMIN_NOTES]
         sets.append(f"{k} = ?")
         args.append(v)
     if not sets:
