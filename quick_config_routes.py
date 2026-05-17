@@ -326,7 +326,7 @@ async def post_state(
 
     captures_eligible = False
     captures_count = 0
-    if saved and getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False):
+    if getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False):
         try:
             import captures_store
             captures_count = captures_store.count()
