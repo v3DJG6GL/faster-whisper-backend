@@ -71,7 +71,7 @@ class ReportSubmitIn(BaseModel):
 
 
 # ---------------------------------------------------------------------
-# Rate limit (per reporter host)
+# Rate limit (per reporter — keyed on user_id, or host fallback)
 # ---------------------------------------------------------------------
 # Fixed-window counter, reset on roll. ~15 LOC, no third-party dep. The
 # threat model is "accidental double-click / runaway script", not a
@@ -626,7 +626,7 @@ _REPORTS_HTML = """<!doctype html>
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 6px; padding: 1.4rem 1.5rem 1.2rem;
     width: 30rem; max-width: 92vw;
-    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+    box-shadow: 0 0.75rem 2.5rem rgba(0,0,0,0.5);
   }
   #token-modal h3 {
     margin: 0 0 0.5rem 0; color: var(--bold); font-size: var(--fs-xl);
