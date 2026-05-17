@@ -3950,6 +3950,20 @@ _CAPTURES_HTML = r"""<!doctype html>
   function _toggleGroupExpand(card, g) {
     if (card.classList.contains('open')) {
       card.classList.remove('open');
+      // Mirror singleton collapse(): pause + revoke the blob URL and
+      // wipe the body so the next expand re-fetches and re-binds —
+      // otherwise hidden audio keeps playing and the blob leaks until
+      // the next render() wipe.
+      var st = _openGroups[g.id];
+      if (st && st.audio) {
+        try { st.audio.pause(); } catch(_) {}
+        if (st.audio.src && st.audio.src.indexOf('blob:') === 0) {
+          try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
+        }
+      }
+      delete _openGroups[g.id];
+      var bodyEl = card.querySelector('.cc-body');
+      if (bodyEl) { bodyEl.dataset.built = '0'; bodyEl.innerHTML = ''; }
       return;
     }
     card.classList.add('open');
