@@ -1305,12 +1305,12 @@ _REPORTS_HTML = """<!doctype html>
     }
   }
 
-  async function reloadCounts() {
-    try {
-      var j = await api('GET', '/reports/api/list');
-      _counts = j.counts || _counts;
-      updateCounts();
-    } catch (_) { /* non-fatal */ }
+  function reloadCounts() {
+    _counts = { open: 0, resolved: 0, dismissed: 0 };
+    _allReports.forEach(function(r) {
+      if (_counts.hasOwnProperty(r.status)) _counts[r.status] += 1;
+    });
+    updateCounts();
   }
 
   // -------------------------------------------------------------------

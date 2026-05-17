@@ -450,8 +450,10 @@ def clear_all(reporter_host: str = "") -> int:
     # VACUUM rewrites the entire DB file and blocks other writers — run
     # it outside _lock so unrelated writes (e.g. a fresh report submit
     # arriving during the wipe) aren't stalled. Connection is autocommit,
-    # no transaction needed.
-    conn.execute("VACUUM")
+    # no transaction needed. Skip when nothing was deleted — VACUUM on an
+    # already-empty table is pure I/O for zero space recovery.
+    if n > 0:
+        conn.execute("VACUUM")
     logger.warning(
         "[reports] admin from %s cleared %d reports",
         reporter_host or "<unknown>", n,
