@@ -162,10 +162,13 @@ async def submit_report(
     captures_updated = 0
     if corrections and payload.request_id:
         import captures_store
+        import text_corrections
         matches = captures_store.find_by_request_id(payload.request_id)
         for cap in matches:
             existing = cap.get("corrections") or []
-            merged = reports_store._merge_corrections(existing, corrections)
+            merged = text_corrections.three_way_merge_corrections(
+                baseline=[], edited=corrections, current=existing,
+            )
             if merged != existing:
                 captures_store.update_capture(
                     cap["id"], {"corrections": merged},
@@ -1252,11 +1255,8 @@ _REPORTS_HTML = """<!doctype html>
 
   function onExport() {
     var tok = getToken();
-    if (!tok && hasAdminToken) {
-      showTokenModal(function() { onExport(); });
-      return;
-    }
     // Fetch via JS to send Authorization header; download as blob.
+    // No token? Let the 401 branch below trigger the token modal.
     fetch('/reports/api/export', {
       headers: tok ? { 'Authorization': 'Bearer ' + tok } : {},
     }).then(function(resp) {
@@ -1311,8 +1311,6 @@ _REPORTS_HTML = """<!doctype html>
   // -------------------------------------------------------------------
   // Load
   // -------------------------------------------------------------------
-  var hasAdminToken = false;  // set by /state response; gates "ask for token"
-
   async function load() {
     try {
       var j = await api('GET', '/reports/api/list');

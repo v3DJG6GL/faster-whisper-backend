@@ -179,38 +179,12 @@ def find_by_request_user(
     return _row_to_dict(row) if row else None
 
 
-def _merge_corrections(existing: list, incoming: list) -> list:
-    """Merge two cleaned corrections lists. Anchored chips key on
-    `(idx, idx_end)` so multi-word chips at the same start idx but
-    with different spans don't collide. Anchorless chips (no integer
-    idx) dedupe on `(wrong, correct)` so multiple free-form chips don't
-    collapse onto a single (None, None) key. Incoming wins on key match."""
-    anchored: dict[tuple[int, int], dict[str, Any]] = {}
-    anchorless: dict[tuple[str, str], dict[str, Any]] = {}
-
-    def _ingest(items):
-        for c in (items or []):
-            if not isinstance(c, dict):
-                continue
-            i = c.get("idx")
-            if isinstance(i, int):
-                e = c.get("idx_end")
-                anchored[(i, e if isinstance(e, int) else i)] = c
-            else:
-                anchorless[(str(c.get("wrong") or ""), str(c.get("correct") or ""))] = c
-
-    _ingest(existing)
-    _ingest(incoming)
-
-    def _sort_key(c):
-        i = c.get("idx")
-        try:
-            return (0, int(i))
-        except (TypeError, ValueError):
-            return (1, 0)
-    return sorted(anchored.values(), key=_sort_key) + sorted(
-        anchorless.values(), key=_sort_key,
-    )
+# Resubmit merge reuses text_corrections.three_way_merge_corrections with an
+# empty baseline — start from existing, overlay incoming on key match, dedupe
+# anchorless on (wrong, correct). That helper is the single source of truth
+# for chip-merge keying (anchored on (idx, idx_end), anchorless on
+# (wrong, correct)) and the captures-routes group-PATCH path already uses it
+# — keep the two stores in lockstep so future chip-merge tweaks land once.
 
 
 def upsert_report(
@@ -250,7 +224,9 @@ def upsert_report(
 
     conn = _require_conn()
     if existing is not None:
-        merged = _merge_corrections(existing.get("corrections") or [], corr_in)
+        merged = text_corrections.three_way_merge_corrections(
+            baseline=[], edited=corr_in, current=existing.get("corrections") or [],
+        )
         rid = existing["id"]
         with _lock:
             conn.execute(
@@ -361,27 +337,18 @@ def get_report(rid: str) -> dict[str, Any] | None:
     return _row_to_dict(row) if row else None
 
 
-def list_reports_for_request_id(
-    request_id: str,
-    exclude_id: "str | None" = None,
-) -> list[dict[str, Any]]:
-    """Return every report row sharing this `request_id`, optionally
-    excluding one by id. Used by the report-delete cascade to compute
-    which chips other surviving reports still claim — so deleting one
-    report doesn't strip chips that a different report would re-add."""
+def list_reports_for_request_id(request_id: str) -> list[dict[str, Any]]:
+    """Return every report row sharing this `request_id`. Used by the
+    report-delete cascade to compute which chips other surviving reports
+    still claim — so deleting one report doesn't strip chips a sibling
+    would re-add. Snapshot is taken AFTER the delete (see
+    _delete_report_and_cascade) so no caller needs an "exclude" lever."""
     conn = _require_conn()
-    if exclude_id:
-        cur = conn.execute(
-            "SELECT * FROM reports WHERE request_id = ? AND id != ?"
-            " ORDER BY created_ts DESC",
-            (request_id, exclude_id),
-        )
-    else:
-        cur = conn.execute(
-            "SELECT * FROM reports WHERE request_id = ?"
-            " ORDER BY created_ts DESC",
-            (request_id,),
-        )
+    cur = conn.execute(
+        "SELECT * FROM reports WHERE request_id = ?"
+        " ORDER BY created_ts DESC",
+        (request_id,),
+    )
     return [_row_to_dict(r) for r in cur.fetchall()]
 
 
