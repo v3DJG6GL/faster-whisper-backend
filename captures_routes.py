@@ -2989,9 +2989,6 @@ _CAPTURES_HTML = r"""<!doctype html>
     state.words.forEach(function(w, i) {
       var sp = document.createElement('span');
       sp.className = 'word';
-      sp.dataset.idx = String(i);
-      sp.dataset.start = String(w.start || 0);
-      sp.dataset.end = String(w.end || 0);
       sp.textContent = (w.word || '').replace(/^\s+/, ' ');
       if (w.removed) {
         sp.classList.add('rule-removed');
@@ -3907,7 +3904,6 @@ _CAPTURES_HTML = r"""<!doctype html>
   function _renderGroupCard(g) {
     var card = document.createElement('div');
     card.className = 'capture-card is-group';
-    card.dataset.gid = g.id;
     var head = document.createElement('div');
     head.className = 'cc-head';
     head.innerHTML =
@@ -4363,10 +4359,6 @@ _CAPTURES_HTML = r"""<!doctype html>
           groupState.words.forEach(function(w, i) {
             var sp = document.createElement('span');
             sp.className = 'word ' + ((w.member_idx % 2 === 0) ? 'mem-even' : 'mem-odd');
-            sp.dataset.idx = String(i);
-            sp.dataset.start = String(w.start || 0);
-            sp.dataset.end = String(w.end || 0);
-            sp.dataset.member = String(w.member_idx || 0);
             // Small horizontal breathing room at member boundaries (no
             // hard rule — the tint shift does the work visually).
             if (w.member_idx !== prevMember && prevMember !== -1) {
