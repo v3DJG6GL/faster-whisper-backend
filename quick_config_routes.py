@@ -3,12 +3,14 @@ End-user simple-config WebUI for faster-whisper-backend.
 
 Mounted at /quick-config. Endpoints:
 
-  GET  /quick-config              HTML page (loopback / ADMIN_ALLOWED_HOSTS)
-  GET  /quick-config/state        Returns ONLY the rules an admin marked exposed
-  POST /quick-config/state        Patch enabled / body fields on exposed rules
-  GET  /quick-config/recent       Snapshot of the recent-traces ring buffer
-  GET  /quick-config/stream       SSE stream of recent traces (live updates)
-  POST /quick-config/recent/clear Wipe the recent-traces buffer
+  GET  /quick-config                      HTML page (loopback / ADMIN_ALLOWED_HOSTS)
+  GET  /quick-config/state                Returns ONLY the rules an admin marked exposed
+  POST /quick-config/state                Patch enabled / body fields on exposed rules
+  POST /quick-config/reapply-rules        Kick off bulk-reapply job over existing captures
+  GET  /quick-config/reapply-rules/status Poll bulk-reapply job state
+  GET  /quick-config/recent               Snapshot of the recent-traces ring buffer
+  GET  /quick-config/stream               SSE stream of recent traces (live updates)
+  POST /quick-config/recent/clear         Wipe the recent-traces buffer
 
 Security model:
   1. IP gate:           require_admin_host (loopback always permitted)
