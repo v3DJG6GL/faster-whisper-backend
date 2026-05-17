@@ -1668,23 +1668,6 @@ async def get_group_audio_api(
 # Export: streamed tar.gz
 # ---------------------------------------------------------------------
 
-_EXPORT_MANIFEST_KEYS = (
-    "audio_filepath",
-    "text",
-    "duration",
-    "language",
-    "source",
-    "user_id",
-    "status",
-    "created_ts",
-    "model",
-    "request_id",
-    "member_count",
-    "admin_notes",
-    "corrections",
-)
-
-
 def _build_manifest_row(
     *,
     audio_filepath: str,
