@@ -1218,7 +1218,6 @@ async function api(method, path, body) {
   if (r.status === 401) {
     sessionStorage.removeItem(TOKEN_KEY);
     showLogin('token rejected');
-    throw new Error('unauthorized');
   }
   return r;
 }
