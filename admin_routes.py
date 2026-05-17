@@ -727,7 +727,7 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   /* Checkbox: replace native white square with a dark themed one. */
   input[type="checkbox"] {
     appearance: none; -webkit-appearance: none;
-    width: 16px; height: 16px;
+    width: 1rem; height: 1rem;
     border: 1px solid var(--border); border-radius: 3px;
     background: var(--input-bg); cursor: pointer;
     position: relative; vertical-align: middle;
@@ -736,8 +736,8 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   input[type="checkbox"]:hover { border-color: var(--cyan); }
   input[type="checkbox"]:checked { background: #1f6feb; border-color: #388bfd; }
   input[type="checkbox"]:checked::after {
-    content: ""; position: absolute; left: 4px; top: 0;
-    width: 4px; height: 9px;
+    content: ""; position: absolute; left: 0.25rem; top: 0;
+    width: 0.25rem; height: 0.5625rem;
     border: solid var(--bold); border-width: 0 2px 2px 0;
     transform: rotate(45deg);
   }
