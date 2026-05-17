@@ -74,34 +74,19 @@ _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
 # as a fallback. The query-string path is otherwise unused and logged
 # with a WARNING when hit (a leak vector for keys via URL access logs).
 
-def _resolve_key_from_request(
-    request: Request,
-) -> dict[str, Any] | None:
-    """Try header `Authorization: Bearer <key>` first; fall back to
-    `?key=<raw_key>` for SSE. Returns user record or None."""
-    auth_header = request.headers.get("authorization") or ""
-    if auth_header.lower().startswith("bearer "):
-        raw = auth_header.split(" ", 1)[1].strip()
-        if raw:
-            import api_keys_store
-            return api_keys_store.lookup_by_raw_key(raw)
-    raw = request.query_params.get("key")
-    if raw:
-        import api_keys_store
-        logger.warning(
-            "[quick-config] API key passed via ?key= query param —"
-            " avoid this except for SSE (which has no Authorization header)."
-        )
-        return api_keys_store.lookup_by_raw_key(raw)
-    return None
-
-
 def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
-    """SSE-aware variant of get_current_user. Honors ?key= as a fallback."""
+    """SSE-aware variant of get_current_user. Honors ?key= as a fallback
+    since EventSource cannot set Authorization headers."""
     import api_keys_store
     if not api_keys_store.is_locked_down():
         return dict(api_keys_store.OPEN_MODE_USER)
-    rec = _resolve_key_from_request(request)
+    auth_header = request.headers.get("authorization") or ""
+    raw = ""
+    if auth_header.lower().startswith("bearer "):
+        raw = auth_header.split(" ", 1)[1].strip()
+    if not raw:
+        raw = request.query_params.get("key") or ""
+    rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
     if rec is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
@@ -181,7 +166,6 @@ async def get_state(
     # at 100 newest per user. Failure (init_db never ran, etc.) is
     # non-fatal — the client falls back to its localStorage hint and
     # an empty chip map.
-    reported_ids: list[str] = []
     reported_chips: dict[str, dict[str, Any]] = {}
     try:
         import reports_store
@@ -199,23 +183,14 @@ async def get_state(
                     reported_chips[rid] = {
                         "corrections": rep.get("corrections") or [],
                     }
-            reported_ids = list(reported_chips.keys())
-        # No fallback when uid is empty: reports are per-user. Returning
-        # the server-wide recent_reported_request_ids would leak other
-        # users' request_ids to anyone hitting open mode.
+        # No fallback when uid is empty: reports are per-user; open-mode
+        # callers see no reported-badge state at all.
     except Exception:
         pass
     return {
         "rules": canonical,
-        "service_name": "WhisperAPI",
         "role": "admin" if user.get("is_admin") else "user",
-        "user_id": user.get("user_id"),
-        "username": user.get("username"),
-        "reported_request_ids": reported_ids,
         "reported_chips": reported_chips,
-        "reports_submit_enabled": bool(
-            getattr(cfg, "REPORTS_ALLOW_USER_SUBMIT", True)
-        ),
     }
 
 
@@ -357,7 +332,7 @@ async def post_state(
     if saved and getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False):
         try:
             import captures_store
-            captures_count = captures_store.total_count()
+            captures_count = captures_store.count()
             captures_eligible = captures_count > 0
         except Exception as _e:
             logger.warning("[quick-config] capture count lookup failed: %s", _e)
@@ -1102,8 +1077,7 @@ function markReported(rid) {
 function unmarkReported(rid) {
   // Called when the user explicitly removes their report. Drops the rid
   // from the localStorage hint AND the in-memory server set so the
-  // badge clears immediately, without waiting for the next /state poll
-  // to refresh _serverReportedSet from recent_reported_request_ids.
+  // badge clears immediately, without waiting for the next /state poll.
   if (!rid) return;
   const ids = getReportedIds().filter((x) => x !== rid);
   try { localStorage.setItem(_REPORTED_KEY, JSON.stringify(ids)); }
@@ -1808,8 +1782,8 @@ async function load() {
   // form-open. Badges in already-rendered .trace-item nodes update
   // in-place via syncReportedBadges; chip rehydration is lazy (only
   // applied when the user opens a report form).
-  _serverReportedSet = new Set(j.reported_request_ids || []);
   _serverReportedChips = j.reported_chips || {};
+  _serverReportedSet = new Set(Object.keys(_serverReportedChips));
   syncReportedBadges();
   renderCards();
   updateButtons();
