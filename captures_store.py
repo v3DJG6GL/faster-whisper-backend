@@ -458,15 +458,25 @@ def _total_audio_bytes(conn: sqlite3.Connection) -> int:
     # members from eviction (they are owned by capture_groups_store), so
     # counting their bytes here would let the total cross the cap with
     # nothing the evictor can drop, causing a full scan on every insert.
+    # Include the VAD-trimmed companion: _drop_oldest_by_bytes credits its
+    # size to `freed`, so this counter must also include it or the cap
+    # stays loose by total-trimmed-bytes.
     total = 0
     rows = conn.execute(
-        "SELECT audio_relpath FROM captures WHERE group_id IS NULL"
+        "SELECT audio_relpath, audio_trimmed_relpath FROM captures"
+        " WHERE group_id IS NULL"
     )
     for row in rows:
         try:
             total += os.path.getsize(abs_audio_path(row["audio_relpath"]))
         except (OSError, ValueError):
-            continue
+            pass
+        trimmed = row["audio_trimmed_relpath"]
+        if trimmed:
+            try:
+                total += os.path.getsize(abs_audio_path(trimmed))
+            except (OSError, ValueError):
+                pass
     return total
 
 
