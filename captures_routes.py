@@ -4154,7 +4154,11 @@ _CAPTURES_HTML = r"""<!doctype html>
               var j = await api('PATCH',
                 '/captures/api/groups/' + encodeURIComponent(g.id),
                 { status: v });
-              if (j && j.group) applyServerGroup(j.group);
+              // applyServerGroup would overwrite corrections / adminNotes /
+              // notesArea / joinSel / silSel and clearDirty — discarding
+              // the user's unsaved edits. Skip the wholesale resync when
+              // dirty; the local newStatus was already set above.
+              if (j && j.group && !groupState.dirty) applyServerGroup(j.group);
               reloadCounts();
               toast('Status: ' + v);
             } catch (e) {
@@ -4448,7 +4452,16 @@ _CAPTURES_HTML = r"""<!doctype html>
           api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id),
               { is_locked: !(lockBtn.textContent === 'Unlock') })
             .then(function(j) {
-              applyServerGroup(j.group || {});
+              var d = j.group || {};
+              // applyServerGroup would clobber unsaved chip/notes/settings
+              // edits. When dirty, apply only the lock-related visuals.
+              if (!groupState.dirty) {
+                applyServerGroup(d);
+              } else {
+                var isLocked = !!d.is_locked;
+                lockBtn.textContent = isLocked ? 'Unlock' : 'Lock';
+                dissolveBtn.style.display = isLocked ? 'none' : '';
+              }
               toast('Updated');
             })
             .catch(function(e) {
