@@ -791,6 +791,33 @@ except ImportError:
 # Anything below here lets the env var win over the in-file default. Touch
 # only if you want to change the override syntax itself.
 
+def _truthy(s: str) -> bool:
+    return s.strip().lower() in ("1", "true", "yes", "on")
+
+def _env_int(name: str, current: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return current
+    try:
+        return int(raw)
+    except ValueError:
+        return current
+
+def _env_float(name: str, current: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return current
+    try:
+        return float(raw)
+    except ValueError:
+        return current
+
+def _env_bool(name: str, current: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return current
+    return _truthy(raw)
+
 DEFAULT_MODEL = os.environ.get("WHISPER_DEFAULT_MODEL", DEFAULT_MODEL)
 
 _env_allowed = os.environ.get("WHISPER_ALLOWED_MODELS")
@@ -840,33 +867,14 @@ _env_reports_db = os.environ.get("WHISPER_REPORTS_DB")
 if _env_reports_db is not None and _env_reports_db.strip():
     REPORTS_DB = _env_reports_db.strip()
 
-_env_reports_max = os.environ.get("WHISPER_REPORTS_MAX")
-if _env_reports_max is not None and _env_reports_max.strip():
-    try:
-        REPORTS_MAX = int(_env_reports_max)
-    except ValueError:
-        pass
-
-_env_reports_retention = os.environ.get("WHISPER_REPORTS_RETENTION_DAYS")
-if _env_reports_retention is not None and _env_reports_retention.strip():
-    try:
-        REPORTS_RETENTION_DAYS = int(_env_reports_retention)
-    except ValueError:
-        pass
-
-def _truthy(s: str) -> bool:
-    return s.strip().lower() in ("1", "true", "yes", "on")
-
-_env_reports_allow_user = os.environ.get("WHISPER_REPORTS_ALLOW_USER_SUBMIT")
-if _env_reports_allow_user is not None and _env_reports_allow_user.strip():
-    REPORTS_ALLOW_USER_SUBMIT = _truthy(_env_reports_allow_user)
+REPORTS_MAX = _env_int("WHISPER_REPORTS_MAX", REPORTS_MAX)
+REPORTS_RETENTION_DAYS = _env_int("WHISPER_REPORTS_RETENTION_DAYS", REPORTS_RETENTION_DAYS)
+REPORTS_ALLOW_USER_SUBMIT = _env_bool("WHISPER_REPORTS_ALLOW_USER_SUBMIT", REPORTS_ALLOW_USER_SUBMIT)
 
 
 # --- Captures (fine-tuning data store) ------------------------------------
 
-_env_cap_enabled = os.environ.get("WHISPER_CAPTURE_RECORDINGS_ENABLED")
-if _env_cap_enabled is not None and _env_cap_enabled.strip():
-    CAPTURE_RECORDINGS_ENABLED = _truthy(_env_cap_enabled)
+CAPTURE_RECORDINGS_ENABLED = _env_bool("WHISPER_CAPTURE_RECORDINGS_ENABLED", CAPTURE_RECORDINGS_ENABLED)
 
 _env_cap_db = os.environ.get("WHISPER_CAPTURES_DB")
 if _env_cap_db is not None and _env_cap_db.strip():
@@ -876,54 +884,17 @@ _env_cap_dir = os.environ.get("WHISPER_CAPTURES_DIR")
 if _env_cap_dir is not None and _env_cap_dir.strip():
     CAPTURES_DIR = _env_cap_dir.strip()
 
-_env_cap_max = os.environ.get("WHISPER_CAPTURES_MAX")
-if _env_cap_max is not None and _env_cap_max.strip():
-    try:
-        CAPTURES_MAX = int(_env_cap_max)
-    except ValueError:
-        pass
-
-_env_cap_max_mb = os.environ.get("WHISPER_CAPTURES_MAX_MB")
-if _env_cap_max_mb is not None and _env_cap_max_mb.strip():
-    try:
-        CAPTURES_MAX_MB = int(_env_cap_max_mb)
-    except ValueError:
-        pass
-
-_env_cap_retention = os.environ.get("WHISPER_CAPTURES_RETENTION_DAYS")
-if _env_cap_retention is not None and _env_cap_retention.strip():
-    try:
-        CAPTURES_RETENTION_DAYS = int(_env_cap_retention)
-    except ValueError:
-        pass
-
-_env_cap_sample = os.environ.get("WHISPER_CAPTURE_RECORDINGS_SAMPLE_RATE")
-if _env_cap_sample is not None and _env_cap_sample.strip():
-    try:
-        CAPTURE_RECORDINGS_SAMPLE_RATE = float(_env_cap_sample)
-    except ValueError:
-        pass
-
-_env_cap_min = os.environ.get("WHISPER_CAPTURE_RECORDINGS_MIN_DURATION_SEC")
-if _env_cap_min is not None and _env_cap_min.strip():
-    try:
-        CAPTURE_RECORDINGS_MIN_DURATION_SEC = float(_env_cap_min)
-    except ValueError:
-        pass
-
-_env_cap_maxdur = os.environ.get("WHISPER_CAPTURE_RECORDINGS_MAX_DURATION_SEC")
-if _env_cap_maxdur is not None and _env_cap_maxdur.strip():
-    try:
-        CAPTURE_RECORDINGS_MAX_DURATION_SEC = float(_env_cap_maxdur)
-    except ValueError:
-        pass
-
-_env_cap_hardlim = os.environ.get("WHISPER_CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT")
-if _env_cap_hardlim is not None and _env_cap_hardlim.strip():
-    try:
-        CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT = int(_env_cap_hardlim)
-    except ValueError:
-        pass
+CAPTURES_MAX = _env_int("WHISPER_CAPTURES_MAX", CAPTURES_MAX)
+CAPTURES_MAX_MB = _env_int("WHISPER_CAPTURES_MAX_MB", CAPTURES_MAX_MB)
+CAPTURES_RETENTION_DAYS = _env_int("WHISPER_CAPTURES_RETENTION_DAYS", CAPTURES_RETENTION_DAYS)
+CAPTURE_RECORDINGS_SAMPLE_RATE = _env_float(
+    "WHISPER_CAPTURE_RECORDINGS_SAMPLE_RATE", CAPTURE_RECORDINGS_SAMPLE_RATE)
+CAPTURE_RECORDINGS_MIN_DURATION_SEC = _env_float(
+    "WHISPER_CAPTURE_RECORDINGS_MIN_DURATION_SEC", CAPTURE_RECORDINGS_MIN_DURATION_SEC)
+CAPTURE_RECORDINGS_MAX_DURATION_SEC = _env_float(
+    "WHISPER_CAPTURE_RECORDINGS_MAX_DURATION_SEC", CAPTURE_RECORDINGS_MAX_DURATION_SEC)
+CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT = _env_int(
+    "WHISPER_CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT", CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT)
 
 
 # --- Advanced decode params -------------------------------------------------
@@ -936,75 +907,28 @@ _env_temperature = os.environ.get("WHISPER_TEMPERATURE")
 if _env_temperature is not None:
     TEMPERATURE = _env_temperature or None
 
-_env_patience = os.environ.get("WHISPER_PATIENCE")
-if _env_patience is not None:
-    try:
-        PATIENCE = float(_env_patience)
-    except ValueError:
-        pass
-
-_env_length_penalty = os.environ.get("WHISPER_LENGTH_PENALTY")
-if _env_length_penalty is not None:
-    try:
-        LENGTH_PENALTY = float(_env_length_penalty)
-    except ValueError:
-        pass
-
-_env_repetition_penalty = os.environ.get("WHISPER_REPETITION_PENALTY")
-if _env_repetition_penalty is not None:
-    try:
-        REPETITION_PENALTY = float(_env_repetition_penalty)
-    except ValueError:
-        pass
-
-_env_no_repeat_ngram = os.environ.get("WHISPER_NO_REPEAT_NGRAM_SIZE")
-if _env_no_repeat_ngram is not None:
-    try:
-        NO_REPEAT_NGRAM_SIZE = int(_env_no_repeat_ngram)
-    except ValueError:
-        pass
-
-_env_prompt_reset_t = os.environ.get("WHISPER_PROMPT_RESET_ON_TEMPERATURE")
-if _env_prompt_reset_t is not None:
-    try:
-        PROMPT_RESET_ON_TEMPERATURE = float(_env_prompt_reset_t)
-    except ValueError:
-        pass
+PATIENCE = _env_float("WHISPER_PATIENCE", PATIENCE)
+LENGTH_PENALTY = _env_float("WHISPER_LENGTH_PENALTY", LENGTH_PENALTY)
+REPETITION_PENALTY = _env_float("WHISPER_REPETITION_PENALTY", REPETITION_PENALTY)
+NO_REPEAT_NGRAM_SIZE = _env_int("WHISPER_NO_REPEAT_NGRAM_SIZE", NO_REPEAT_NGRAM_SIZE)
+PROMPT_RESET_ON_TEMPERATURE = _env_float(
+    "WHISPER_PROMPT_RESET_ON_TEMPERATURE", PROMPT_RESET_ON_TEMPERATURE)
 
 
 # --- Language detection -----------------------------------------------------
 
-_env_multilingual = os.environ.get("WHISPER_MULTILINGUAL")
-if _env_multilingual is not None and _env_multilingual.strip():
-    MULTILINGUAL = _truthy(_env_multilingual)
-
-_env_lang_thresh = os.environ.get("WHISPER_LANGUAGE_DETECTION_THRESHOLD")
-if _env_lang_thresh is not None:
-    try:
-        LANGUAGE_DETECTION_THRESHOLD = float(_env_lang_thresh)
-    except ValueError:
-        pass
-
-_env_lang_segments = os.environ.get("WHISPER_LANGUAGE_DETECTION_SEGMENTS")
-if _env_lang_segments is not None:
-    try:
-        LANGUAGE_DETECTION_SEGMENTS = int(_env_lang_segments)
-    except ValueError:
-        pass
+MULTILINGUAL = _env_bool("WHISPER_MULTILINGUAL", MULTILINGUAL)
+LANGUAGE_DETECTION_THRESHOLD = _env_float(
+    "WHISPER_LANGUAGE_DETECTION_THRESHOLD", LANGUAGE_DETECTION_THRESHOLD)
+LANGUAGE_DETECTION_SEGMENTS = _env_int(
+    "WHISPER_LANGUAGE_DETECTION_SEGMENTS", LANGUAGE_DETECTION_SEGMENTS)
 
 
 # --- Anti-hallucination & token control -------------------------------------
 
-_env_hallu_silence = os.environ.get("WHISPER_HALLUCINATION_SILENCE_THRESHOLD")
-if _env_hallu_silence is not None and _env_hallu_silence.strip():
-    try:
-        HALLUCINATION_SILENCE_THRESHOLD = float(_env_hallu_silence)
-    except ValueError:
-        pass
-
-_env_supp_blank = os.environ.get("WHISPER_SUPPRESS_BLANK")
-if _env_supp_blank is not None and _env_supp_blank.strip():
-    SUPPRESS_BLANK = _truthy(_env_supp_blank)
+HALLUCINATION_SILENCE_THRESHOLD = _env_float(
+    "WHISPER_HALLUCINATION_SILENCE_THRESHOLD", HALLUCINATION_SILENCE_THRESHOLD)
+SUPPRESS_BLANK = _env_bool("WHISPER_SUPPRESS_BLANK", SUPPRESS_BLANK)
 
 _env_supp_tokens = os.environ.get("WHISPER_SUPPRESS_TOKENS")
 if _env_supp_tokens is not None:
@@ -1040,17 +964,13 @@ _env_download_root = os.environ.get("WHISPER_DOWNLOAD_ROOT")
 if _env_download_root is not None:
     DOWNLOAD_ROOT = _env_download_root or None
 
-_env_local_files_only = os.environ.get("WHISPER_LOCAL_FILES_ONLY")
-if _env_local_files_only is not None and _env_local_files_only.strip():
-    LOCAL_FILES_ONLY = _truthy(_env_local_files_only)
+LOCAL_FILES_ONLY = _env_bool("WHISPER_LOCAL_FILES_ONLY", LOCAL_FILES_ONLY)
 
 _env_use_auth_token = os.environ.get("WHISPER_USE_AUTH_TOKEN")
 if _env_use_auth_token is not None:
     USE_AUTH_TOKEN = _env_use_auth_token or None
 
-_env_auto_convert = os.environ.get("WHISPER_AUTO_CONVERT_HF_MODELS")
-if _env_auto_convert is not None and _env_auto_convert.strip():
-    AUTO_CONVERT_HF_MODELS = _truthy(_env_auto_convert)
+AUTO_CONVERT_HF_MODELS = _env_bool("WHISPER_AUTO_CONVERT_HF_MODELS", AUTO_CONVERT_HF_MODELS)
 
 _env_convert_quant = os.environ.get("WHISPER_CONVERT_QUANTIZATION")
 if _env_convert_quant is not None:
@@ -1060,26 +980,9 @@ _env_converted_dir = os.environ.get("WHISPER_CONVERTED_MODELS_DIR")
 if _env_converted_dir is not None:
     CONVERTED_MODELS_DIR = _env_converted_dir or None
 
-_env_cpu_threads = os.environ.get("WHISPER_CPU_THREADS")
-if _env_cpu_threads is not None:
-    try:
-        CPU_THREADS = int(_env_cpu_threads)
-    except ValueError:
-        pass
-
-_env_num_workers = os.environ.get("WHISPER_NUM_WORKERS")
-if _env_num_workers is not None:
-    try:
-        NUM_WORKERS = int(_env_num_workers)
-    except ValueError:
-        pass
-
-_env_device_index = os.environ.get("WHISPER_DEVICE_INDEX")
-if _env_device_index is not None:
-    try:
-        DEVICE_INDEX = int(_env_device_index)
-    except ValueError:
-        pass
+CPU_THREADS = _env_int("WHISPER_CPU_THREADS", CPU_THREADS)
+NUM_WORKERS = _env_int("WHISPER_NUM_WORKERS", NUM_WORKERS)
+DEVICE_INDEX = _env_int("WHISPER_DEVICE_INDEX", DEVICE_INDEX)
 
 
 # --- Per-model overrides via env (WHISPER_MODEL_OVERRIDE__<id>__<FIELD>) ----
