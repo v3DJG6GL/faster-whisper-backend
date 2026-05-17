@@ -480,17 +480,17 @@ def reconcile_on_startup() -> tuple[int, int, int]:
                 if name.endswith(".tmp"):
                     try:
                         os.unlink(full)
-                        files_unlinked += 1
                     except OSError:
-                        pass
+                        continue
+                    files_unlinked += 1
                     continue
                 p = os.path.abspath(full)
                 if p not in known_paths:
                     try:
                         os.unlink(p)
-                        files_unlinked += 1
                     except OSError:
-                        pass
+                        continue
+                    files_unlinked += 1
 
     # Pass 3: orphan-FK sweep. A capture whose group_id points to a
     # missing group row gets returned to the flat list.
