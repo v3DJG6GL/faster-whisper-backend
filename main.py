@@ -268,7 +268,10 @@ def rebuild_caches() -> None:
                     continue
                 alternation = "|".join(re.escape(k) for k in sorted(m, key=len, reverse=True))
                 cre = re.compile(r"\b(" + alternation + r")\b", re.IGNORECASE)
-                payload: object = {k.lower(): v for k, v in m.items()}
+                # Pre-bind the per-rule replacer once at compile time. _apply_rule
+                # then becomes a uniform pattern.sub(payload, text) for every rule
+                # type — no closure allocation on the hot path (twice per request).
+                payload: object = _make_map_replacer({k.lower(): v for k, v in m.items()})
             else:
                 pattern = rule.get("pattern", "")
                 if not pattern:
@@ -278,9 +281,12 @@ def rebuild_caches() -> None:
                 if rtype == "regex":
                     payload = rule.get("replacement", "") or ""
                 elif rtype == "callback:lowercase-wordlist":
-                    payload = frozenset(w.lower() for w in (rule.get("wordlist", []) or []))
-                elif rtype in ("callback:dedup", "callback:upper"):
-                    payload = None
+                    wordlist = frozenset(w.lower() for w in (rule.get("wordlist", []) or []))
+                    payload = _make_lowercase_wordlist_replacer(wordlist)
+                elif rtype == "callback:dedup":
+                    payload = _dedup_callback
+                elif rtype == "callback:upper":
+                    payload = _upper_callback
                 else:
                     logger.warning("[pipeline] unknown rule type %r — skipping", rtype)
                     continue
@@ -296,18 +302,11 @@ def rebuild_caches() -> None:
 
 
 def _apply_rule(rule: _CompiledRule, text: str) -> str:
-    """Dispatch on rule type. Hot path — keep it tight."""
-    if rule.type == "regex":
-        return rule.pattern.sub(rule.payload, text)  # type: ignore[arg-type]
-    if rule.type == "callback:lowercase-wordlist":
-        return rule.pattern.sub(_make_lowercase_wordlist_replacer(rule.payload), text)  # type: ignore[arg-type]
-    if rule.type == "callback:map":
-        return rule.pattern.sub(_make_map_replacer(rule.payload), text)  # type: ignore[arg-type]
-    if rule.type == "callback:dedup":
-        return rule.pattern.sub(_dedup_callback, text)
-    if rule.type == "callback:upper":
-        return rule.pattern.sub(_upper_callback, text)
-    return text
+    """Dispatch on rule type. Hot path — payload is pre-bound at
+    rebuild_caches() time (a replacement string for `regex`, a pre-built
+    callable for every callback:* type), so every type collapses to a
+    single pattern.sub call with no per-request closure allocation."""
+    return rule.pattern.sub(rule.payload, text)  # type: ignore[arg-type]
 
 
 rebuild_caches()
@@ -1464,7 +1463,7 @@ async def transcribe(
 
         try:
             audio_content = await file.read()
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp_file:
                 tmp_file.write(audio_content)
                 tmp_path = tmp_file.name
 
@@ -1700,17 +1699,21 @@ async def transcribe(
             # Captures-form text — same pipeline minus the captures-specific
             # exclude set (default-skips `dictation-map` + `capitalize-after-
             # terminator` so the stored text matches Whisper's raw output
-            # under SUPPRESS_CHARS for fine-tune training). Computed
-            # unconditionally — cheap; only stored if the capture is
-            # persisted below. No trace participation: the runtime trace
+            # under SUPPRESS_CHARS for fine-tune training). Only computed when
+            # the capture eligibility gate has already passed at handler
+            # entry — sampling missed / captures disabled / count cap full
+            # are the common case and shouldn't pay for a second pipeline
+            # walk per request. No trace participation: the runtime trace
             # describes the user-facing pipeline, not the training-form
             # variant.
-            training_text_str = _postprocess_text(
-                raw_full_text,
-                model_name=resolved_model,
-                trace=None,
-                extra_excludes=cfg.CAPTURES_PIPELINE_RULES_EXCLUDE,
-            )
+            training_text_str = ""
+            if will_capture:
+                training_text_str = _postprocess_text(
+                    raw_full_text,
+                    model_name=resolved_model,
+                    trace=None,
+                    extra_excludes=cfg.CAPTURES_PIPELINE_RULES_EXCLUDE,
+                )
             # Output wrappers (G/PM): plain prefix/suffix concatenated to
             # the final transcript text after the pipeline runs and BEFORE
             # the final whitespace trim. Per-model overrides win.
@@ -1855,6 +1858,13 @@ async def transcribe(
                 except OSError:
                     pass
 
+    except Exception:
+        # Catches failures BEFORE the inner try (e.g. _get_or_load_model
+        # raising HTTPException, await request.form() blowing up), which
+        # previously bypassed `_status = "error"` and inflated the success
+        # counter with failed requests.
+        _status = "error"
+        raise
     finally:
         metrics.in_flight_transcriptions -= 1
         metrics.record_transcription(
