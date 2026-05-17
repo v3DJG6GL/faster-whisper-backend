@@ -839,20 +839,6 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     border-radius: 4px; padding: 0.625rem 0.75rem; margin: 0.5rem 0 0.875rem 0; }
   .regex-test-panel textarea { resize: vertical; max-width: 100%; }
   .regex-test-out { margin-top: 0.625rem; }
-  .regex-test-pass { margin: 0.375rem 0; }
-  .regex-test-head { font-family: var(--font-mono); font-size: var(--fs-sm);
-    color: var(--dim); }
-  .regex-test-head .tag { display: inline-block; padding: 0 0.375rem; margin-left: 0.375rem;
-    border-radius: 3px; font-size: var(--fs-xs); }
-  .regex-test-head .tag.ok { background: #033a16; color: #7ee787; }
-  .regex-test-head .tag.err { background: #3a0d0d; color: #ff7b72; }
-  .regex-test-head .tag.warn { background: #2d1f0a; color: #f2cc60; }
-  .regex-test-head .tag.empty { background: #21262d; color: var(--dim); font-style: italic; }
-  .regex-test-result { background: #0d1117; border: 1px solid var(--border);
-    padding: 0.25rem 0.5rem; border-radius: 3px; margin: 0.25rem 0;
-    font-family: var(--font-mono); font-size: var(--fs-sm);
-    white-space: pre-wrap; word-break: break-word; max-height: 7.5rem; overflow: auto; }
-  .regex-test-final { margin-top: 0.625rem; padding-top: 0.625rem; border-top: 1px solid var(--border); }
   .field .dep-note { color: var(--dim); font-size: var(--fs-xs); margin-top: 0.1875rem;
     font-style: italic; }
   /* Pipeline rules editor */
@@ -1300,6 +1286,19 @@ function setDirty(name, value) {
   // Notify per-field listeners (currently the ↺ Reset button) so they can
   // refresh their "value differs from default?" display.
   document.dispatchEvent(new CustomEvent('admin:dirty', { detail: { name } }));
+}
+
+// Re-render listeners on the model-overrides + model-list editors used to
+// document.addEventListener() on every render — loadState() rebuilds those
+// editors on every reload / save / login, leaking one listener per render.
+// Register once per (event, key) instead; subsequent registrations remove
+// the prior one so old closures (and their pinned DOM) can be GC'd.
+const _adminListeners = {};
+function _registerAdminListener(event, key, fn) {
+  const k = event + '|' + key;
+  if (_adminListeners[k]) document.removeEventListener(event, _adminListeners[k]);
+  _adminListeners[k] = fn;
+  document.addEventListener(event, fn);
 }
 
 function makeBadges(name) {
@@ -2167,14 +2166,14 @@ function modelOverridesEditor(name, v) {
   // Re-render the sidebar on ALLOWED_MODELS changes (the "+ add model"
   // dropdown sources from there). Same event the DEFAULT_MODEL dropdown
   // and PRELOAD_MODELS multi-select listen for.
-  document.addEventListener('admin:model-lists-changed', renderSidebar);
+  _registerAdminListener('admin:model-lists-changed', 'modelOverrides:sidebar', renderSidebar);
   // Live diff: when a global field changes (in any other editor on the
   // page) the per-model rows' "matches global" / "inherits {x}" / dot
   // states must follow. Filter our own MODEL_OVERRIDES dirty-events out
   // (we already updated locally). PIPELINE_RULES routes to the checklist
   // refresher instead of refreshMarkers — the per-model rule rows live
   // outside the .mo-row[data-mo-field] world refreshMarkers walks.
-  document.addEventListener('admin:dirty', (e) => {
+  _registerAdminListener('admin:dirty', 'modelOverrides:dirty', (e) => {
     if (!e.detail) { refreshMarkers(); refreshPipelineSection(); return; }
     const n = e.detail.name;
     if (n === name) return;
@@ -2245,7 +2244,7 @@ function modelDropdownEditor(name, v) {
     wrap.appendChild(sel);
   }
   render();
-  document.addEventListener('admin:model-lists-changed', render);
+  _registerAdminListener('admin:model-lists-changed', 'modelDropdown:' + name, render);
   return wrap;
 }
 
@@ -2321,7 +2320,7 @@ function modelMultiSelectEditor(name, v) {
     wrap.appendChild(help);
   }
   render();
-  document.addEventListener('admin:model-lists-changed', render);
+  _registerAdminListener('admin:model-lists-changed', 'modelMultiSelect:' + name, render);
   return wrap;
 }
 
@@ -3128,7 +3127,7 @@ function pipelineTestPanel() {
 
   const presetWrap = document.createElement('div');
   presetWrap.className = 'preset-select';
-  presetWrap.innerHTML = '<span class="help" style="margin-right:6px">preset:</span>';
+  presetWrap.innerHTML = '<span class="help" style="margin-right:0.375rem">preset:</span>';
   const sel = document.createElement('select');
   for (const k of Object.keys(TEST_PRESETS)) {
     const o = document.createElement('option');
