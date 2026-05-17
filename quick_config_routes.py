@@ -63,9 +63,6 @@ _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     "callback:lowercase-wordlist": frozenset({"enabled", "pattern", "wordlist"}),
     "callback:dedup":              frozenset({"enabled", "pattern"}),
     "callback:upper":              frozenset({"enabled", "pattern"}),
-    # terminal: NEVER patchable from /quick-config (defense in depth — the
-    # admin UI already hides the expose checkbox for terminal rules).
-    "terminal":                    frozenset(),
 }
 
 
@@ -926,7 +923,7 @@ function escapeHtml(s) {
   div.textContent = s == null ? '' : String(s);
   return div.innerHTML;
 }
-// absTime / relTime / fmtWhen / timeTick are injected via TIME_HELPERS_JS.
+// absTime is injected via TIME_HELPERS_JS.
 
 function renderTrace(entry) {
   const item = document.createElement('div');
@@ -939,9 +936,7 @@ function renderTrace(entry) {
   meta.className = 'trace-meta';
   const ts = document.createElement('span');
   ts.className = 'trace-ts';
-  ts.dataset.ts = entry.ts || 0;
   ts.textContent = absTime(entry.ts || 0);
-  ts.title = fmtWhen(entry.ts || 0);
   meta.appendChild(ts);
   if (entry.model) {
     const mdl = document.createElement('span');
