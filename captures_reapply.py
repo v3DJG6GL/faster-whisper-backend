@@ -79,20 +79,25 @@ def _run() -> None:
         captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
 
         conn = captures_store._require_conn()
-        rows = conn.execute(
-            "SELECT id, raw, final, text_for_training, model, group_id"
-            " FROM captures ORDER BY created_ts DESC"
-        ).fetchall()
+        total_row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
         with _state_lock:
-            _state["total"] = len(rows)
+            _state["total"] = int(total_row[0]) if total_row else 0
 
         affected_group_ids: set[str] = set()
-        for r in rows:
+        # Stream rows via the cursor instead of fetchall — the captures
+        # table can be tens of thousands of rows and we only ever look
+        # at one at a time. fetchall() pins them all in Python memory.
+        cur = conn.execute(
+            "SELECT id, raw, final, text_for_training, model, group_id"
+            " FROM captures ORDER BY created_ts DESC"
+        )
+        for r in cur:
             cid = r["id"]
+            raw_text = r["raw"] or ""
             patch: dict[str, str] = {}
             try:
                 new_final = main._postprocess_text(
-                    r["raw"] or "", model_name=r["model"],
+                    raw_text, model_name=r["model"],
                 )
             except Exception as e:
                 logger.warning(
@@ -105,20 +110,23 @@ def _run() -> None:
                 patch["final"] = new_final
                 if r["group_id"]:
                     affected_group_ids.add(r["group_id"])
-            # Also recompute the training-form text so /captures display
-            # and the export reflect any edits to PIPELINE_RULES (the
-            # admin's primary intent when triggering reapply).
-            try:
-                new_training = main._postprocess_text(
-                    r["raw"] or "", model_name=r["model"],
-                    extra_excludes=captures_excludes,
-                )
-            except Exception as e:
-                logger.warning(
-                    "[reapply] capture %s training-form skipped: %s",
-                    cid[:8], e,
-                )
-                new_training = None
+            # Training-form text reflects PIPELINE_RULES minus the
+            # captures-specific excludes. When no excludes are configured
+            # the pipeline output is identical — skip the second run.
+            if captures_excludes:
+                try:
+                    new_training = main._postprocess_text(
+                        raw_text, model_name=r["model"],
+                        extra_excludes=captures_excludes,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        "[reapply] capture %s training-form skipped: %s",
+                        cid[:8], e,
+                    )
+                    new_training = None
+            else:
+                new_training = new_final
             if new_training is not None and new_training != (r["text_for_training"] or ""):
                 patch["text_for_training"] = new_training
             if patch:

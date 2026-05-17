@@ -71,6 +71,13 @@ def trim_wav(
 
     Atomic write: writes to dst_path + ".tmp" and os.replace.
     """
+    def _no_trim(orig_ms: int) -> dict:
+        return {
+            "trimmed": False, "lead_ms": 0, "trail_ms": 0,
+            "orig_duration_ms": orig_ms,
+            "new_duration_ms": orig_ms,
+        }
+
     # Lazy import — VAD pulls numpy + the Silero model on first call;
     # we don't want the module to be unimportable on hosts without
     # faster-whisper installed (e.g. CI lint).
@@ -81,18 +88,12 @@ def trim_wav(
         logger.warning(
             "[vad-trim] faster_whisper.vad unavailable (%s); skipping trim", e,
         )
-        return {
-            "trimmed": False, "lead_ms": 0, "trail_ms": 0,
-            "orig_duration_ms": 0, "new_duration_ms": 0,
-        }
+        return _no_trim(0)
 
     pcm, n_samples = audio_merge.read_pcm(src_path)
     orig_duration_ms = int(round(n_samples * 1000 / _REQ_RATE))
     if n_samples == 0:
-        return {
-            "trimmed": False, "lead_ms": 0, "trail_ms": 0,
-            "orig_duration_ms": 0, "new_duration_ms": 0,
-        }
+        return _no_trim(0)
 
     # int16 PCM bytes → float32 [-1, 1] numpy array. Silero VAD's
     # threshold function operates on normalised float audio.
@@ -114,11 +115,7 @@ def trim_wav(
             "[vad-trim] no speech detected in %s; skipping",
             os.path.basename(src_path),
         )
-        return {
-            "trimmed": False, "lead_ms": 0, "trail_ms": 0,
-            "orig_duration_ms": orig_duration_ms,
-            "new_duration_ms": orig_duration_ms,
-        }
+        return _no_trim(orig_duration_ms)
 
     first_start = int(speeches[0]["start"])
     last_end = int(speeches[-1]["end"])
@@ -126,11 +123,7 @@ def trim_wav(
     start_sample = max(0, first_start - margin_samples)
     end_sample = min(n_samples, last_end + margin_samples)
     if start_sample >= end_sample:
-        return {
-            "trimmed": False, "lead_ms": 0, "trail_ms": 0,
-            "orig_duration_ms": orig_duration_ms,
-            "new_duration_ms": orig_duration_ms,
-        }
+        return _no_trim(orig_duration_ms)
 
     # Bail out if the trim wouldn't actually save anything meaningful
     # (under ~50 ms on either side) AND we're overwriting in place.
@@ -140,11 +133,7 @@ def trim_wav(
     trailing_trimmed = n_samples - end_sample
     if (leading_trimmed + trailing_trimmed) < int(_REQ_RATE * 0.05):
         if os.path.abspath(src_path) == os.path.abspath(dst_path):
-            return {
-                "trimmed": False, "lead_ms": 0, "trail_ms": 0,
-                "orig_duration_ms": orig_duration_ms,
-                "new_duration_ms": orig_duration_ms,
-            }
+            return _no_trim(orig_duration_ms)
 
     out_bytes = pcm[start_sample * audio_merge.BYTES_PER_SAMPLE:
                     end_sample * audio_merge.BYTES_PER_SAMPLE]

@@ -123,7 +123,9 @@ def merge_wavs(
     # Atomic write: tmp + fsync + os.replace, with the same 3-retry
     # Windows-AV-lock loop captures_store uses.
     tmp_path = dst_path + ".tmp"
-    os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+    # `or "."` so a bare-filename dst_path (no dirname) doesn't pass "" to
+    # os.makedirs, which raises FileNotFoundError on some platforms.
+    os.makedirs(os.path.dirname(dst_path) or ".", exist_ok=True)
     try:
         with wave.open(tmp_path, "wb") as w:
             w.setnchannels(_REQ_CHANNELS)
@@ -180,8 +182,11 @@ def merge_wavs(
             if result and result.get("trimmed"):
                 lead_trim_ms = int(result.get("lead_ms") or 0)
                 trail_trim_ms = int(result.get("trail_ms") or 0)
-                with wave.open(dst_path, "rb") as _w:
-                    total_samples = _w.getnframes()
+                # trim_wav returns post-trim duration; derive samples from
+                # that instead of re-opening the WAV we just wrote.
+                total_samples = int(
+                    int(result.get("new_duration_ms") or 0) * _REQ_RATE / 1000
+                )
     except Exception as _ve:
         logger.warning("[merge] VAD trim skipped: %s", _ve)
 
