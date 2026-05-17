@@ -291,9 +291,11 @@ def update_group(
     gid: str,
     patch: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Patch transcript / is_locked / inter_segment_silence_ms /
-    transcript_join_strategy / is_stale / status / admin_notes /
-    member_hashes_json / merged_duration_ms. Returns the updated row.
+    """Patch transcript / transcript_join_strategy /
+    inter_segment_silence_ms / is_locked / is_stale /
+    member_hashes_json / merged_duration_ms / status / admin_notes /
+    language / merged_lead_trim_ms / merged_trail_trim_ms. Returns the
+    updated row.
 
     Chip state (the user-facing "corrections" list) is NOT on the
     group row — it's derived from members on every read. Patch chip
