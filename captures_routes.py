@@ -953,8 +953,7 @@ def _insert_group_with_gid(
     trail_trim_ms: int = 0,
 ) -> None:
     """Direct insert that honours a pre-allocated gid (needed because the
-    audio file is written at the gid path before this call). Mirrors the
-    transactional shape of capture_groups_store.create_group.
+    audio file is written at the gid path before this call).
 
     Group chip state lives on the member captures, not on the group
     row — every read re-projects from members — so no chip plumbing

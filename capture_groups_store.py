@@ -24,7 +24,6 @@ import os
 import sqlite3
 import threading
 import time
-import uuid
 from typing import Any
 
 logger = logging.getLogger("whisper-api")
@@ -234,68 +233,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 # ---------------------------------------------------------------------
 # Create / read / mutate / dissolve
 # ---------------------------------------------------------------------
-
-def create_group(
-    *,
-    user_id: str,
-    member_ids: list[str],
-    transcript: str,
-    transcript_join_strategy: str,
-    inter_segment_silence_ms: int,
-    member_hash_map: dict[str, str],
-    merged_duration_ms: int,
-    language: str | None = None,
-    merged_lead_trim_ms: int = 0,
-    merged_trail_trim_ms: int = 0,
-) -> str:
-    """Insert the group row AND wire members' (group_id, group_order)
-    in the same transaction. Returns the new group_id.
-
-    Callers must build the merged WAV BEFORE this call — we record its
-    relpath, but don't write the file ourselves.
-
-    `language` is the BCP-47-ish tag (e.g. "de") detected by Whisper at
-    capture time. Typically derived from the first member by the caller.
-    """
-    if len(member_ids) < 2:
-        raise ValueError("group must have at least 2 members")
-    gid = uuid.uuid4().hex
-    relpath = _relpath_for(gid)
-    now = time.time()
-    conn = _require_conn()
-    with _lock:
-        with conn:                          # BEGIN/COMMIT transaction
-            conn.execute(
-                "INSERT INTO capture_groups"
-                " (id, user_id, created_ts, merged_wav_relpath,"
-                "  merged_duration_ms, transcript,"
-                "  transcript_join_strategy, member_hashes_json,"
-                "  inter_segment_silence_ms, is_stale, is_locked,"
-                "  language, merged_lead_trim_ms, merged_trail_trim_ms)"
-                " VALUES (?,?,?,?,?,?,?,?,?,0,0,?,?,?)",
-                (
-                    gid, user_id, now, relpath, int(merged_duration_ms),
-                    transcript, transcript_join_strategy,
-                    json.dumps(member_hash_map, sort_keys=True),
-                    int(inter_segment_silence_ms),
-                    language or None,
-                    int(merged_lead_trim_ms or 0),
-                    int(merged_trail_trim_ms or 0),
-                ),
-            )
-            for order, mid in enumerate(member_ids):
-                conn.execute(
-                    "UPDATE captures SET group_id = ?, group_order = ?"
-                    " WHERE id = ? AND group_id IS NULL",
-                    (gid, order, mid),
-                )
-    logger.info(
-        "[groups] created gid=%s user=%s n=%d dur=%.1fs",
-        gid[:8], user_id[:8] if user_id else "?",
-        len(member_ids), merged_duration_ms / 1000.0,
-    )
-    return gid
-
 
 def get_group(gid: str) -> dict[str, Any] | None:
     conn = _require_conn()
