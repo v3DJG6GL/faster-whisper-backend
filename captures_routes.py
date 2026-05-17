@@ -734,8 +734,8 @@ def _apply_chips_to_text(text: str, corrections: list[dict[str, Any]]) -> str:
     """Substitute each chip's `wrong` text with its `correct` text in
     `text`. Walk in idx order so multi-word spans replace as a unit.
     If `wrong` isn't found verbatim (whitespace drift / regex specials),
-    that chip is left alone. Mirrors the JS applyCorrectionsToGround
-    logic so server- and client-derived transcripts agree byte-for-byte."""
+    that chip is left alone. Mirrored byte-for-byte by the JS twin
+    `_applyChipsToText` so server- and client-derived transcripts agree."""
     if not corrections:
         return text or ""
     out = text or ""
