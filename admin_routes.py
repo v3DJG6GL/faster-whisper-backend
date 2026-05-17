@@ -2041,8 +2041,8 @@ function modelOverridesEditor(name, v) {
       return inp;
     }
     if (meta.kind === 'nullable_float') {
-      // Empty input = null = "explicitly disabled" override (different from
-      // not-overridden, which is "use global"). Send null on empty.
+      // Empty input clears the override (cfg_for treats null and missing
+      // identically — there is no "explicitly disabled" state to preserve).
       const inp = document.createElement('input');
       inp.type = 'number';
       if (meta.min !== undefined) inp.min = meta.min;
@@ -2052,7 +2052,7 @@ function modelOverridesEditor(name, v) {
       inp.addEventListener('input', () => {
         const raw = inp.value;
         if (raw === '') {
-          setOverrideValue(selectedId, field, null);
+          setOverrideValue(selectedId, field, undefined);
           return;
         }
         const n = parseFloat(raw);
