@@ -175,6 +175,7 @@ def _build_proposal(
     gap_s: float,
     target_s: float,
     language: str,
+    user_id: str,
 ) -> dict[str, Any]:
     scored = _build_group_score(members, gap_s, target_s)
     return {
@@ -182,6 +183,9 @@ def _build_proposal(
         "member_previews": [
             {
                 "id": m["id"],
+                "user_id": m.get("user_id") or "",
+                # username is filled by the endpoint via api_keys_store.get_usernames
+                "username": None,
                 "created_ts": float(m["created_ts"]),
                 "duration_s": float(m["duration_seconds"]),
                 "status": m.get("status") or "",
@@ -192,6 +196,9 @@ def _build_proposal(
         "total_duration_s": round(scored["total_dur"], 3),
         "wall_duration_s": round(scored["wall_dur"], 3),
         "language": language,
+        "user_id": user_id,
+        # username is filled by the endpoint (same lookup as member_previews)
+        "username": None,
         "member_count": len(members),
         "fill_score": round(scored["fill_score"], 4),
         "density_score": round(scored["density_score"], 4),
@@ -283,31 +290,35 @@ def propose_merges(
     if cur:
         sessions.append(cur)
 
-    # Per session × language → candidates.
-    all_candidates: list[tuple[float, list[dict[str, Any]], str]] = []
+    # Per session × user × language → candidates. user_id partition matters
+    # because create_group_api enforces same-user (captures_routes.py:878-882);
+    # without it, the admin "all users" view could emit proposals that the
+    # merge endpoint rejects.
+    all_candidates: list[tuple[float, list[dict[str, Any]], str, str]] = []
     for sess in sessions:
-        by_lang: dict[str, list[dict[str, Any]]] = {}
+        by_keys: dict[tuple[str, str], list[dict[str, Any]]] = {}
         for r in sess:
             lang = _bcp47_primary(r.get("language"))
-            if not lang:
+            uid = r.get("user_id") or ""
+            if not lang or not uid:
                 continue
-            by_lang.setdefault(lang, []).append(r)
-        for lang, bucket in by_lang.items():
+            by_keys.setdefault((uid, lang), []).append(r)
+        for (uid, lang), bucket in by_keys.items():
             for score, members in _generate_candidates_for_bucket(
                 bucket, gap_s, dup_threshold, target_s, _GROUP_HARD_CAP_S
             ):
-                all_candidates.append((score, members, lang))
+                all_candidates.append((score, members, lang, uid))
 
     # Rank, then take non-overlapping greedy.
     all_candidates.sort(key=lambda c: c[0], reverse=True)
     claimed: set[str] = set()
     proposals: list[dict[str, Any]] = []
-    for _, members, lang in all_candidates:
+    for _, members, lang, uid in all_candidates:
         if any(m["id"] in claimed for m in members):
             continue
         for m in members:
             claimed.add(m["id"])
-        proposals.append(_build_proposal(members, gap_s, target_s, lang))
+        proposals.append(_build_proposal(members, gap_s, target_s, lang, uid))
         if len(proposals) >= max_proposals:
             break
 
