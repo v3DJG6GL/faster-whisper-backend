@@ -818,22 +818,41 @@ def _env_bool(name: str, current: bool) -> bool:
         return current
     return _truthy(raw)
 
+def _env_str(name: str, current: str) -> str:
+    """Stripped-string env passthrough — empty / unset → keep current."""
+    raw = os.environ.get(name)
+    return raw.strip() if raw and raw.strip() else current
+
+def _env_str_or_none(name: str, current: "str | None") -> "str | None":
+    """Env override where explicit empty string means "disable" (→ None).
+    Unset env → keep current."""
+    raw = os.environ.get(name)
+    return (raw or None) if raw is not None else current
+
+def _env_str_passthrough(name: str, current: str) -> str:
+    """Raw-string env override — empty string is preserved as a real value."""
+    raw = os.environ.get(name)
+    return raw if raw is not None else current
+
+def _env_csv_list(name: str, current: list[str]) -> list[str]:
+    """Comma-separated list parse — empty / unset → keep current."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return current
+    return [s.strip() for s in raw.split(",") if s.strip()]
+
 DEFAULT_MODEL = os.environ.get("WHISPER_DEFAULT_MODEL", DEFAULT_MODEL)
 
 _env_allowed = os.environ.get("WHISPER_ALLOWED_MODELS")
 if _env_allowed is not None:
     ALLOWED_MODELS = {s.strip() for s in _env_allowed.split(",") if s.strip()}
 
-MAX_LOADED_MODELS = int(os.environ.get("WHISPER_MAX_LOADED_MODELS", str(MAX_LOADED_MODELS)))
-MODEL_IDLE_TIMEOUT_S = int(os.environ.get("WHISPER_MODEL_IDLE_TIMEOUT_S", str(MODEL_IDLE_TIMEOUT_S)))
+MAX_LOADED_MODELS = _env_int("WHISPER_MAX_LOADED_MODELS", MAX_LOADED_MODELS)
+MODEL_IDLE_TIMEOUT_S = _env_int("WHISPER_MODEL_IDLE_TIMEOUT_S", MODEL_IDLE_TIMEOUT_S)
 
-_env_preload = os.environ.get("WHISPER_PRELOAD_MODELS")
-if _env_preload is not None:
-    PRELOAD_MODELS = [s.strip() for s in _env_preload.split(",") if s.strip()]
+PRELOAD_MODELS = _env_csv_list("WHISPER_PRELOAD_MODELS", PRELOAD_MODELS)
 
-_env_prompt = os.environ.get("WHISPER_DEFAULT_PROMPT")
-if _env_prompt is not None:
-    DEFAULT_PROMPT = _env_prompt or None  # explicit empty string => disable
+DEFAULT_PROMPT = _env_str_or_none("WHISPER_DEFAULT_PROMPT", DEFAULT_PROMPT)
 
 TRACE_ENABLED = os.environ.get("WHISPER_TRACE", "1" if TRACE_ENABLED else "0") == "1"
 
@@ -843,29 +862,17 @@ LOG_FILE = os.environ.get("WHISPER_LOG_FILE", LOG_FILE)
 ADMIN_UI_ENABLED = os.environ.get("WHISPER_ADMIN_UI", "1" if ADMIN_UI_ENABLED else "0") == "1"
 
 # --- API key auth -----------------------------------------------------------
-_env_api_keys_db = os.environ.get("WHISPER_API_KEYS_DB")
-if _env_api_keys_db is not None and _env_api_keys_db.strip():
-    API_KEYS_DB = _env_api_keys_db.strip()
-
-_env_bootstrap = os.environ.get("WHISPER_BOOTSTRAP_ADMIN_KEY")
-if _env_bootstrap is not None and _env_bootstrap.strip():
-    BOOTSTRAP_ADMIN_KEY = _env_bootstrap.strip()
+API_KEYS_DB = _env_str("WHISPER_API_KEYS_DB", API_KEYS_DB)
+BOOTSTRAP_ADMIN_KEY = _env_str("WHISPER_BOOTSTRAP_ADMIN_KEY", BOOTSTRAP_ADMIN_KEY)
 
 # Comma-separated CIDR/IP allowlists for /config and /stats. Empty string is
 # treated as "no override" (use the in-file / local.json value).
-_env_admin_hosts = os.environ.get("WHISPER_ADMIN_ALLOWED_HOSTS")
-if _env_admin_hosts is not None and _env_admin_hosts.strip():
-    ADMIN_ALLOWED_HOSTS = [s.strip() for s in _env_admin_hosts.split(",") if s.strip()]
-
-_env_stats_hosts = os.environ.get("WHISPER_STATS_ALLOWED_HOSTS")
-if _env_stats_hosts is not None and _env_stats_hosts.strip():
-    STATS_ALLOWED_HOSTS = [s.strip() for s in _env_stats_hosts.split(",") if s.strip()]
+ADMIN_ALLOWED_HOSTS = _env_csv_list("WHISPER_ADMIN_ALLOWED_HOSTS", ADMIN_ALLOWED_HOSTS) or ADMIN_ALLOWED_HOSTS
+STATS_ALLOWED_HOSTS = _env_csv_list("WHISPER_STATS_ALLOWED_HOSTS", STATS_ALLOWED_HOSTS) or STATS_ALLOWED_HOSTS
 
 
 # --- Reports store --------------------------------------------------------
-_env_reports_db = os.environ.get("WHISPER_REPORTS_DB")
-if _env_reports_db is not None and _env_reports_db.strip():
-    REPORTS_DB = _env_reports_db.strip()
+REPORTS_DB = _env_str("WHISPER_REPORTS_DB", REPORTS_DB)
 
 REPORTS_MAX = _env_int("WHISPER_REPORTS_MAX", REPORTS_MAX)
 REPORTS_RETENTION_DAYS = _env_int("WHISPER_REPORTS_RETENTION_DAYS", REPORTS_RETENTION_DAYS)
@@ -876,13 +883,8 @@ REPORTS_ALLOW_USER_SUBMIT = _env_bool("WHISPER_REPORTS_ALLOW_USER_SUBMIT", REPOR
 
 CAPTURE_RECORDINGS_ENABLED = _env_bool("WHISPER_CAPTURE_RECORDINGS_ENABLED", CAPTURE_RECORDINGS_ENABLED)
 
-_env_cap_db = os.environ.get("WHISPER_CAPTURES_DB")
-if _env_cap_db is not None and _env_cap_db.strip():
-    CAPTURES_DB = _env_cap_db.strip()
-
-_env_cap_dir = os.environ.get("WHISPER_CAPTURES_DIR")
-if _env_cap_dir is not None and _env_cap_dir.strip():
-    CAPTURES_DIR = _env_cap_dir.strip()
+CAPTURES_DB = _env_str("WHISPER_CAPTURES_DB", CAPTURES_DB)
+CAPTURES_DIR = _env_str("WHISPER_CAPTURES_DIR", CAPTURES_DIR)
 
 CAPTURES_MAX = _env_int("WHISPER_CAPTURES_MAX", CAPTURES_MAX)
 CAPTURES_MAX_MB = _env_int("WHISPER_CAPTURES_MAX_MB", CAPTURES_MAX_MB)
@@ -899,13 +901,8 @@ CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT = _env_int(
 
 # --- Advanced decode params -------------------------------------------------
 
-_env_hotwords = os.environ.get("WHISPER_DEFAULT_HOTWORDS")
-if _env_hotwords is not None:
-    DEFAULT_HOTWORDS = _env_hotwords or None
-
-_env_temperature = os.environ.get("WHISPER_TEMPERATURE")
-if _env_temperature is not None:
-    TEMPERATURE = _env_temperature or None
+DEFAULT_HOTWORDS = _env_str_or_none("WHISPER_DEFAULT_HOTWORDS", DEFAULT_HOTWORDS)
+TEMPERATURE = _env_str_or_none("WHISPER_TEMPERATURE", TEMPERATURE)
 
 PATIENCE = _env_float("WHISPER_PATIENCE", PATIENCE)
 LENGTH_PENALTY = _env_float("WHISPER_LENGTH_PENALTY", LENGTH_PENALTY)
@@ -930,45 +927,25 @@ HALLUCINATION_SILENCE_THRESHOLD = _env_float(
     "WHISPER_HALLUCINATION_SILENCE_THRESHOLD", HALLUCINATION_SILENCE_THRESHOLD)
 SUPPRESS_BLANK = _env_bool("WHISPER_SUPPRESS_BLANK", SUPPRESS_BLANK)
 
-_env_supp_tokens = os.environ.get("WHISPER_SUPPRESS_TOKENS")
-if _env_supp_tokens is not None:
-    SUPPRESS_TOKENS = _env_supp_tokens or None
-
-_env_supp_chars = os.environ.get("WHISPER_SUPPRESS_CHARS")
-if _env_supp_chars is not None:
-    SUPPRESS_CHARS = _env_supp_chars or None
-
-_env_prepend_punct = os.environ.get("WHISPER_PREPEND_PUNCTUATIONS")
-if _env_prepend_punct is not None:
-    PREPEND_PUNCTUATIONS = _env_prepend_punct
-
-_env_append_punct = os.environ.get("WHISPER_APPEND_PUNCTUATIONS")
-if _env_append_punct is not None:
-    APPEND_PUNCTUATIONS = _env_append_punct
+SUPPRESS_TOKENS = _env_str_or_none("WHISPER_SUPPRESS_TOKENS", SUPPRESS_TOKENS)
+SUPPRESS_CHARS = _env_str_or_none("WHISPER_SUPPRESS_CHARS", SUPPRESS_CHARS)
+PREPEND_PUNCTUATIONS = _env_str_passthrough("WHISPER_PREPEND_PUNCTUATIONS", PREPEND_PUNCTUATIONS)
+APPEND_PUNCTUATIONS = _env_str_passthrough("WHISPER_APPEND_PUNCTUATIONS", APPEND_PUNCTUATIONS)
 
 
 # --- Output wrappers --------------------------------------------------------
 
-_env_out_prefix = os.environ.get("WHISPER_OUTPUT_PREFIX")
-if _env_out_prefix is not None:
-    OUTPUT_PREFIX = _env_out_prefix
-
-_env_out_suffix = os.environ.get("WHISPER_OUTPUT_SUFFIX")
-if _env_out_suffix is not None:
-    OUTPUT_SUFFIX = _env_out_suffix
+OUTPUT_PREFIX = _env_str_passthrough("WHISPER_OUTPUT_PREFIX", OUTPUT_PREFIX)
+OUTPUT_SUFFIX = _env_str_passthrough("WHISPER_OUTPUT_SUFFIX", OUTPUT_SUFFIX)
 
 
 # --- Load-time, hardware ----------------------------------------------------
 
-_env_download_root = os.environ.get("WHISPER_DOWNLOAD_ROOT")
-if _env_download_root is not None:
-    DOWNLOAD_ROOT = _env_download_root or None
+DOWNLOAD_ROOT = _env_str_or_none("WHISPER_DOWNLOAD_ROOT", DOWNLOAD_ROOT)
 
 LOCAL_FILES_ONLY = _env_bool("WHISPER_LOCAL_FILES_ONLY", LOCAL_FILES_ONLY)
 
-_env_use_auth_token = os.environ.get("WHISPER_USE_AUTH_TOKEN")
-if _env_use_auth_token is not None:
-    USE_AUTH_TOKEN = _env_use_auth_token or None
+USE_AUTH_TOKEN = _env_str_or_none("WHISPER_USE_AUTH_TOKEN", USE_AUTH_TOKEN)
 
 AUTO_CONVERT_HF_MODELS = _env_bool("WHISPER_AUTO_CONVERT_HF_MODELS", AUTO_CONVERT_HF_MODELS)
 
@@ -976,9 +953,7 @@ _env_convert_quant = os.environ.get("WHISPER_CONVERT_QUANTIZATION")
 if _env_convert_quant is not None:
     CONVERT_QUANTIZATION = _env_convert_quant or "float16"
 
-_env_converted_dir = os.environ.get("WHISPER_CONVERTED_MODELS_DIR")
-if _env_converted_dir is not None:
-    CONVERTED_MODELS_DIR = _env_converted_dir or None
+CONVERTED_MODELS_DIR = _env_str_or_none("WHISPER_CONVERTED_MODELS_DIR", CONVERTED_MODELS_DIR)
 
 CPU_THREADS = _env_int("WHISPER_CPU_THREADS", CPU_THREADS)
 NUM_WORKERS = _env_int("WHISPER_NUM_WORKERS", NUM_WORKERS)
