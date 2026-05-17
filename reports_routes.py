@@ -2,9 +2,13 @@
 
 Two surfaces:
 
-  /quick-config/reports/api/submit  — end-user POST. Gated by
-    require_admin_host + get_current_user. The form lives inline on
-    each .trace-item in /quick-config; this is the receiver.
+  /quick-config/reports/api/*       — end-user routes. Gated by
+    require_admin_host + get_current_user. The form + delete control
+    live inline on each .trace-item in /quick-config:
+    POST   /quick-config/reports/api/submit                — receiver
+    DELETE /quick-config/reports/api/by-request/{request_id} — caller
+                                                              undoes
+                                                              own row
 
   /reports                          — admin page + APIs:
     GET   /reports                  HTML triage page
