@@ -2760,8 +2760,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     _setExpandLabel();
     expandBtn.addEventListener('click', () => {
       row.classList.toggle('expanded');
-      if (row.classList.contains('expanded')) expandedNames.add(rule.name);
-      else expandedNames.delete(rule.name);
+      if (row.classList.contains('expanded')) {
+        expandedNames.add(rule.name);
+        if (rule.type !== 'terminal') refresh();
+      } else {
+        expandedNames.delete(rule.name);
+      }
       _setExpandLabel();
     });
     head.appendChild(expandBtn);
@@ -2882,7 +2886,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       // Refresh on any input change inside the body.
       body.addEventListener('input', refresh);
       body.addEventListener('change', refresh);
-      requestAnimationFrame(refresh);
+      // Only kick off the initial test if this row is rendered expanded;
+      // for collapsed rows the body is display:none, so the test output
+      // would be invisible. The expand-click handler fires refresh() on
+      // first reveal instead.
+      if (row.classList.contains('expanded')) requestAnimationFrame(refresh);
     }
 
     row.appendChild(body);
