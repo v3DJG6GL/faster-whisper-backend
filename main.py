@@ -349,8 +349,9 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
             if isinstance(inc, list):
                 include = set(inc)
     if extra_excludes:
-        exclude = exclude | set(extra_excludes)
-        include = include - set(extra_excludes)
+        extra = set(extra_excludes)
+        exclude = exclude | extra
+        include = include - extra
     for ordinal, rule in enumerate(_COMPILED_RULES, start=1):
         # Force-EXCLUDE wins outright — admin explicitly turned this off.
         if rule.name in exclude:
@@ -1704,19 +1705,12 @@ async def transcribe(
             # persisted below. No trace participation: the runtime trace
             # describes the user-facing pipeline, not the training-form
             # variant.
-            try:
-                training_text_str = _postprocess_text(
-                    raw_full_text,
-                    model_name=resolved_model,
-                    trace=None,
-                    extra_excludes=getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None),
-                )
-            except Exception as _tte:
-                logger.warning(
-                    "[capture] training-form pipeline failed (using final as fallback): %s",
-                    _tte,
-                )
-                training_text_str = full_text_str
+            training_text_str = _postprocess_text(
+                raw_full_text,
+                model_name=resolved_model,
+                trace=None,
+                extra_excludes=cfg.CAPTURES_PIPELINE_RULES_EXCLUDE,
+            )
             # Output wrappers (G/PM): plain prefix/suffix concatenated to
             # the final transcript text after the pipeline runs and BEFORE
             # the final whitespace trim. Per-model overrides win.

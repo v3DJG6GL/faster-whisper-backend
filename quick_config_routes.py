@@ -157,19 +157,16 @@ async def get_state(
     """Return ONLY the rules currently flagged exposed=True. The terminal
     rule is filtered out unconditionally (admin UI already hides its expose
     toggle, but enforce here too as defense in depth)."""
-    exposed: list[dict[str, Any]] = []
-    for r in cfg.PIPELINE_RULES:
-        # cfg.PIPELINE_RULES holds raw dicts (post-coercion) — getattr won't
-        # work on plain dicts, so handle both shapes.
-        if isinstance(r, dict):
-            rd = r
-        else:
-            rd = r.model_dump() if hasattr(r, "model_dump") else dict(r)
-        if rd.get("type") == "terminal":
-            continue
-        if rd.get("exposed"):
-            exposed.append(rd)
-    canonical = _canon_rules(exposed)
+    # _canon_rules accepts plain dicts OR Pydantic models and runs each
+    # through TypeAdapter(PipelineRule).validate_python — one place to
+    # normalise both shapes. Filter the canonical output (it's been
+    # through model_dump so .get is always available).
+    canonical = [
+        r for r in _canon_rules(list(cfg.PIPELINE_RULES))
+        if isinstance(r, dict)
+        and r.get("type") != "terminal"
+        and r.get("exposed")
+    ]
     # Tag each rule with a fingerprint of its canonical form. Client
     # echoes back per-rule on save; server uses it to detect concurrent
     # edits. Fingerprint is computed AFTER _canon_rules so client and
@@ -203,10 +200,9 @@ async def get_state(
                         "corrections": rep.get("corrections") or [],
                     }
             reported_ids = list(reported_chips.keys())
-        else:
-            # No user_id (shouldn't happen post-auth, but keep parity
-            # with the old behaviour as a safety net).
-            reported_ids = reports_store.recent_reported_request_ids(limit=100)
+        # No fallback when uid is empty: reports are per-user. Returning
+        # the server-wide recent_reported_request_ids would leak other
+        # users' request_ids to anyone hitting open mode.
     except Exception:
         pass
     return {
@@ -1123,20 +1119,14 @@ function syncReportedBadges() {
   // list. Cheap; the recent panel holds at most 20 items. Also flips
   // the "Remove report" button visibility per open report form.
   document.querySelectorAll('.trace-item').forEach((item) => {
+    let rid = '';
+    try { rid = (JSON.parse(item.dataset.entry || '{}') || {}).request_id || ''; }
+    catch (_) {}
+    const reported = isReported(rid);
     const badge = item.querySelector('.trace-reported-badge');
-    if (badge) {
-      let rid = '';
-      try { rid = (JSON.parse(item.dataset.entry || '{}') || {}).request_id || ''; }
-      catch (_) {}
-      badge.style.display = isReported(rid) ? 'inline-flex' : 'none';
-    }
+    if (badge) badge.style.display = reported ? 'inline-flex' : 'none';
     const removeBtn = item.querySelector('.rep-remove');
-    if (removeBtn) {
-      let rid = '';
-      try { rid = (JSON.parse(item.dataset.entry || '{}') || {}).request_id || ''; }
-      catch (_) {}
-      removeBtn.style.display = isReported(rid) ? 'inline-flex' : 'none';
-    }
+    if (removeBtn) removeBtn.style.display = reported ? 'inline-flex' : 'none';
   });
 }
 
@@ -1956,8 +1946,8 @@ function _hideStripSoon() {
 async function _pollStripOnce() {
   let r;
   try { r = await api('GET', '/quick-config/reapply-rules/status'); }
-  catch (_) { return; }
-  if (!r.ok) return;
+  catch (_) { return null; }
+  if (!r.ok) return null;
   const s = await r.json();
   const strip = document.getElementById('reapply-strip');
   const fill = strip.querySelector('.r-fill');
@@ -1983,6 +1973,7 @@ async function _pollStripOnce() {
     if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
     // Don't auto-hide on error — the user needs to see it.
   }
+  return s.status || null;
 }
 async function startReapplyJobSilent(n) {
   _showStrip(n);
@@ -1994,9 +1985,15 @@ async function startReapplyJobSilent(n) {
       'Re-apply failed: HTTP ' + r.status;
     return;
   }
-  _pollStripOnce();
-  if (_stripPoll) clearInterval(_stripPoll);
-  _stripPoll = setInterval(_pollStripOnce, 1500);
+  // Reset any prior interval before scheduling — guards against a double
+  // click triggering two concurrent polls.
+  if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
+  const status = await _pollStripOnce();
+  // Only schedule the recurring poll while the job is actually running;
+  // status==='done'|'error' already cleared the strip via _pollStripOnce.
+  if (status === 'running') {
+    _stripPoll = setInterval(_pollStripOnce, 1500);
+  }
 }
 
 function doDiscard() {

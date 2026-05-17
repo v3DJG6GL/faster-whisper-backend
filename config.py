@@ -751,7 +751,6 @@ CAPTURES_PIPELINE_RULES_EXCLUDE: "set[str]" = {
 # Singletons: manual button on the /captures detail page (opt-in per
 #   sample; original audio is preserved at audio_relpath either way).
 CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS = True
-CAPTURES_VAD_TRIM_ENABLED_FOR_SINGLETONS = False
 CAPTURES_VAD_TRIM_MARGIN_MS = 300
 
 

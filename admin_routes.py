@@ -119,7 +119,6 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
         ]),
         ("Silence trim (Silero VAD)", [
             "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS",
-            "CAPTURES_VAD_TRIM_ENABLED_FOR_SINGLETONS",
             "CAPTURES_VAD_TRIM_MARGIN_MS",
         ]),
     ]),
