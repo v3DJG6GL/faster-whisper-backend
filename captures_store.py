@@ -532,6 +532,19 @@ def _drop_oldest_by_bytes(
 # Read
 # ---------------------------------------------------------------------
 
+# Column projection for list/find queries that don't need words/segments.
+# Hoisted to a constant so list_captures and find_by_request_id can't
+# silently drift apart when a new column is added.
+_LIST_COLUMNS = (
+    "id, created_ts, request_id, model, language,"
+    " duration_seconds, audio_relpath, audio_format,"
+    " raw, final, text_for_training, audio_trimmed_relpath,"
+    " audio_trim_lead_ms, audio_trim_trail_ms,"
+    " corrected_text, corrections_json, admin_notes,"
+    " status, reviewed_ts, user_id, group_id, group_order"
+)
+
+
 def list_captures(
     *,
     status: str | None = None,
@@ -564,13 +577,7 @@ def list_captures(
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     params.append(int(limit))
     cur = conn.execute(
-        f"SELECT id, created_ts, request_id, model, language,"
-        f" duration_seconds, audio_relpath, audio_format,"
-        f" raw, final, text_for_training, audio_trimmed_relpath,"
-        f" audio_trim_lead_ms, audio_trim_trail_ms,"
-        f" corrected_text, corrections_json, admin_notes,"
-        f" status, reviewed_ts, user_id, group_id, group_order"
-        f" FROM captures{where}"
+        f"SELECT {_LIST_COLUMNS} FROM captures{where}"
         f" ORDER BY created_ts DESC LIMIT ?",
         params,
     )
@@ -613,13 +620,8 @@ def find_by_request_id(request_id: str) -> list[dict[str, Any]]:
     (submit_report merge path; report-delete cascade)."""
     conn = _require_conn()
     cur = conn.execute(
-        "SELECT id, created_ts, request_id, model, language,"
-        " duration_seconds, audio_relpath, audio_format,"
-        " raw, final, text_for_training, audio_trimmed_relpath,"
-        " audio_trim_lead_ms, audio_trim_trail_ms,"
-        " corrected_text, corrections_json, admin_notes,"
-        " status, reviewed_ts, user_id, group_id, group_order"
-        " FROM captures WHERE request_id = ? ORDER BY created_ts DESC",
+        f"SELECT {_LIST_COLUMNS} FROM captures WHERE request_id = ?"
+        f" ORDER BY created_ts DESC",
         (request_id,),
     )
     return [_row_to_dict(r, include_words=False) for r in cur.fetchall()]
@@ -745,14 +747,6 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         )
         if cur.rowcount == 0:
             return None
-    # If the capture belongs to a group, recheck the audio-content hash;
-    # transcript-only edits don't change audio so the hash will match and
-    # nothing flips, but a future audio-edit code path is now wired.
-    try:
-        import capture_groups_store
-        capture_groups_store.recompute_stale_for_member(cid)
-    except Exception:
-        pass
     return get_capture(cid)
 
 

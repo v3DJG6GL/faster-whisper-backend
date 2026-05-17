@@ -138,27 +138,26 @@ def init(conn: sqlite3.Connection, captures_audio_root: str) -> None:
     # a populated language. Rows with `language` already set are left
     # alone. Cheap on small stores; bounded SELECT-per-group on large.
     try:
+        # One-shot correlated UPDATE: for each group missing a language,
+        # pull the first non-empty language from its member captures in
+        # group_order. After this lands once on a deployed DB the WHERE
+        # clause matches zero rows and the statement is a fast no-op.
         cur = _conn.execute(
-            "SELECT id FROM capture_groups"
-            " WHERE language IS NULL OR language = ''"
+            "UPDATE capture_groups SET language = ("
+            "  SELECT language FROM captures"
+            "   WHERE group_id = capture_groups.id"
+            "     AND language IS NOT NULL AND language != ''"
+            "   ORDER BY group_order ASC LIMIT 1"
+            ") WHERE (language IS NULL OR language = '')"
+            "   AND EXISTS ("
+            "     SELECT 1 FROM captures"
+            "      WHERE group_id = capture_groups.id"
+            "        AND language IS NOT NULL AND language != ''"
+            "   )"
         )
-        targets = [r[0] for r in cur.fetchall()]
-        for gid in targets:
-            row = _conn.execute(
-                "SELECT language FROM captures"
-                " WHERE group_id = ? AND language IS NOT NULL AND language != ''"
-                " ORDER BY group_order ASC LIMIT 1",
-                (gid,),
-            ).fetchone()
-            lang = (row[0] if row else "") or ""
-            if lang:
-                _conn.execute(
-                    "UPDATE capture_groups SET language = ? WHERE id = ?",
-                    (lang, gid),
-                )
-        if targets:
+        if cur.rowcount:
             logger.info(
-                "[groups] language-backfill checked %d groups", len(targets),
+                "[groups] language-backfill set %d groups", cur.rowcount,
             )
     except sqlite3.OperationalError as e:
         # Schema not as expected (e.g. very old DB pre-migration order);
@@ -213,18 +212,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     # (see captures_routes._enrich_group / list_groups_api). The DB row
     # has no chip storage of its own — single source of truth lives on
     # the member captures.
-    try:
-        language = row["language"]
-    except (IndexError, KeyError):
-        language = None
-    try:
-        lead_trim = int(row["merged_lead_trim_ms"] or 0)
-    except (IndexError, KeyError, TypeError):
-        lead_trim = 0
-    try:
-        trail_trim = int(row["merged_trail_trim_ms"] or 0)
-    except (IndexError, KeyError, TypeError):
-        trail_trim = 0
     return {
         "id":                          row["id"],
         "user_id":                     row["user_id"],
@@ -239,9 +226,9 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "is_locked":                   bool(row["is_locked"]),
         "status":                      row["status"] or "new",
         "admin_notes":                 row["admin_notes"] or "",
-        "language":                    language or "",
-        "merged_lead_trim_ms":         lead_trim,
-        "merged_trail_trim_ms":        trail_trim,
+        "language":                    row["language"] or "",
+        "merged_lead_trim_ms":         int(row["merged_lead_trim_ms"] or 0),
+        "merged_trail_trim_ms":        int(row["merged_trail_trim_ms"] or 0),
     }
 
 
@@ -317,9 +304,6 @@ def get_group(gid: str) -> dict[str, Any] | None:
         "SELECT * FROM capture_groups WHERE id = ?", (gid,),
     ).fetchone()
     return _row_to_dict(row) if row else None
-
-
-_VALID_STATUS = {"new", "reviewed", "ready", "dismissed"}
 
 
 def list_groups(
