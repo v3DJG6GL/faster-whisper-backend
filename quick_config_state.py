@@ -98,7 +98,8 @@ def _extract_bigrams(text: str) -> list[str]:
     Example: "Hans Peter, und Anna Müller" → ["Hans Peter", "Anna Müller"]
     (the comma blocks the "Peter und" pair; "und" is a stopword
     anyway, which blocks "und Anna")."""
-    matches = list(_TOKEN_RE.finditer(text or ""))
+    src = text or ""
+    matches = list(_TOKEN_RE.finditer(src))
     seen: dict[str, str] = {}
     for a, b in zip(matches, matches[1:]):
         ta, tb = a.group(0), b.group(0)
@@ -108,7 +109,7 @@ def _extract_bigrams(text: str) -> list[str]:
             continue
         if ta.lower() in _STOPWORDS or tb.lower() in _STOPWORDS:
             continue
-        between = (text or "")[a.end():b.start()]
+        between = src[a.end():b.start()]
         if between.strip():
             continue
         phrase = f"{ta} {tb}"

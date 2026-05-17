@@ -210,7 +210,7 @@ async def post_state(
     Pydantic schema (which accepts `locked` as a real field) by routing it
     through the merge step.
     """
-    rules_patch = payload.rules_patch or {}
+    rules_patch = payload.rules_patch
     fingerprints = payload.fingerprints or {}
     if not rules_patch:
         return JSONResponse({
@@ -326,13 +326,11 @@ async def post_state(
         saved, [c["slug"] for c in conflicts],
     )
 
-    captures_eligible = False
     captures_count = 0
     if getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False):
         try:
             import captures_store
             captures_count = captures_store.count()
-            captures_eligible = captures_count > 0
         except Exception as _e:
             logger.warning("[quick-config] capture count lookup failed: %s", _e)
 
@@ -341,7 +339,6 @@ async def post_state(
         "conflicts": conflicts,
         **applied,
         "requires_restart": bool(applied["cold_pending"]),
-        "captures_eligible_for_reapply": captures_eligible,
         "captures_count": captures_count,
     })
 
@@ -1872,7 +1869,7 @@ async function doSave() {
   showToast(saved.length
     ? ('saved ' + saved.length + ' rule' + (saved.length === 1 ? '' : 's'))
     : 'nothing to save', 'ok');
-  if (result.captures_eligible_for_reapply && result.captures_count > 0) {
+  if (result.captures_count > 0) {
     // Auto-trigger the reapply job silently — admins shouldn't have to
     // click twice. The header strip shows progress; there's no manual
     // re-apply button anymore.
