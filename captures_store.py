@@ -917,13 +917,13 @@ def reconcile_on_startup() -> tuple[int, int]:
             for name in files:
                 if name.endswith(".tmp"):
                     # Crash mid-write — delete the partial.
-                    _safe_unlink(os.path.join(root, name))
-                    files_unlinked += 1
+                    if _safe_unlink(os.path.join(root, name)):
+                        files_unlinked += 1
                     continue
                 p = os.path.abspath(os.path.join(root, name))
                 if p not in known_paths:
-                    _safe_unlink(p)
-                    files_unlinked += 1
+                    if _safe_unlink(p):
+                        files_unlinked += 1
 
     logger.info(
         "[captures] reconcile: %d rows marked audio_missing, "
