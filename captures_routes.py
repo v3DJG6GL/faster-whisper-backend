@@ -638,7 +638,6 @@ class CreateGroupIn(BaseModel):
 
 class PatchGroupIn(BaseModel):
     model_config = {"extra": "forbid"}
-    transcript: str | None = Field(default=None, max_length=20_000)
     join_strategy: Literal["space", "period_space"] | None = None
     silence_ms: int | None = Field(default=None, ge=0, le=2000)
     is_locked: bool | None = None
