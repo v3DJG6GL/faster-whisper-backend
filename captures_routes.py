@@ -1346,7 +1346,8 @@ def _build_merged_words(
       - Subtract `merged_lead_trim_ms / 1000` from every word's start/end.
       - Drop words whose interval falls entirely outside the trimmed
         clip's [0, effective_duration_s] range; clamp partial overlaps.
-    Un-trimmed groups (lead = 0, duration = full) take the no-op path.
+    Un-trimmed groups still run the same loop (offset has no lead term,
+    eff_dur_s == full duration), so no clamps/drops actually fire.
 
     `get_members` strips heavy fields for the list view, so we re-fetch
     each capture to get `words`. Each member's words are run through
