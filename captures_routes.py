@@ -1716,7 +1716,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
 
     Hard filters applied regardless of `only_status`:
       - `is_stale=true` (group audio/text drift) → skipped
-      - `is_locked=true` (admin-flagged anomaly) → skipped
+      - `is_locked=true` (admin lock; mirrors reapply skip) → skipped
       - `status=audio_missing` (file is gone) → skipped
       - missing WAV on disk → both manifest entry AND tar entry skipped
         (prevents the manifest from referencing files that don't exist
@@ -1740,9 +1740,9 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
         if only_status:
             if (g.get("status") or "new") != only_status:
                 continue
-        # Hard filters (apply even on `only_status=all`). These rows are
-        # never valid training data: stale = audio/text drift, locked =
-        # admin-flagged anomaly.
+        # Hard filters (apply even on `only_status=all`). Stale = audio/
+        # text drift; locked = admin lock (same skip as captures_reapply,
+        # so this stays consistent with what the trainer last saw).
         if g.get("is_stale") or g.get("is_locked"):
             continue
         # Always rebuild the transcript at export time from members +
