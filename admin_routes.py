@@ -1521,9 +1521,9 @@ function modelOverridesEditor(name, v) {
     'REVISION','NUM_WORKERS','DEVICE_INDEX',
   ]);
 
-  // Per-field widget metadata. Mirrors ModelOverride pydantic constraints
-  // (config_store.py:481+). Kept compact — extend a row only if behavior
-  // differs from a generic input.
+  // Per-field widget metadata. Mirrors ModelOverride pydantic constraints.
+  // Kept compact — extend a row only if behavior differs from a generic
+  // input.
   const FIELD_META = {
     MODEL_DEVICE:                { kind: 'enum', opts: ['cuda','cpu'] },
     MODEL_COMPUTE_TYPE:          { kind: 'enum', opts: ['float16','int8_float16','int8','float32','bfloat16'] },
