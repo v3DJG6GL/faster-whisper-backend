@@ -580,17 +580,23 @@ async def reprocess_capture_api(cid: str) -> JSONResponse:
             status.HTTP_500_INTERNAL_SERVER_ERROR,
             f"pipeline failed on `final`: {e}",
         )
-    try:
-        new_training = main._postprocess_text(
-            raw,
-            model_name=row.get("model"),
-            extra_excludes=captures_excludes,
-        )
-    except Exception as e:
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"pipeline failed on `text_for_training`: {e}",
-        )
+    # When no captures-specific excludes are configured, the training-text
+    # pass would produce byte-identical output to `final` — skip the
+    # second full pipeline pass and reuse.
+    if captures_excludes:
+        try:
+            new_training = main._postprocess_text(
+                raw,
+                model_name=row.get("model"),
+                extra_excludes=captures_excludes,
+            )
+        except Exception as e:
+            raise HTTPException(
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+                f"pipeline failed on `text_for_training`: {e}",
+            )
+    else:
+        new_training = new_final
     patch: dict[str, Any] = {}
     if new_final != (row.get("final") or ""):
         patch["final"] = new_final
@@ -1182,15 +1188,20 @@ def _refresh_final_if_stale(row: dict[str, Any]) -> str:
     # CAPTURES_PIPELINE_RULES_EXCLUDE) without an underlying PIPELINE_RULES
     # change, and stale training text would mislead reviewers and
     # the export.
-    try:
-        captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
-        fresh_training = main._postprocess_text(
-            raw,
-            model_name=row.get("model"),
-            extra_excludes=captures_excludes,
-        )
-    except Exception:
-        fresh_training = None
+    captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
+    if captures_excludes:
+        try:
+            fresh_training = main._postprocess_text(
+                raw,
+                model_name=row.get("model"),
+                extra_excludes=captures_excludes,
+            )
+        except Exception:
+            fresh_training = None
+    else:
+        # No captures-specific excludes — training text is identical to
+        # final, skip the second pipeline pass.
+        fresh_training = fresh_final
     if fresh_training is not None and fresh_training != stored_training:
         patch["text_for_training"] = fresh_training
         row["text_for_training"] = fresh_training
@@ -2651,8 +2662,6 @@ _CAPTURES_HTML = r"""<!doctype html>
   var _openRows = {};   // cid -> { audio, blobUrl, wordEls, words, finalText, dirty, corrections, ... }
   var _selection = new Set();   // capture ids currently selected for merge
   var _lastSelectId = null;     // anchor for shift-range select
-  var _isAdmin = false;
-  var _selfUserId = null;
 
   // -------------------------------------------------------------------
   // Selection helpers
@@ -2940,7 +2949,6 @@ _CAPTURES_HTML = r"""<!doctype html>
       // server with the PATCH so it can three-way-merge against any
       // concurrent writes that landed between this load and the save.
       baselineCorrections: JSON.parse(JSON.stringify(r.corrections || [])),
-      correctedText: r.corrected_text || '',
       adminNotes: r.admin_notes || '',
       newStatus: r.status || 'new',
       wordEls: [],
@@ -3749,53 +3757,11 @@ _CAPTURES_HTML = r"""<!doctype html>
   }
 
   // -------------------------------------------------------------------
-  // Render loop
+  // Render loop — assigned (not function-declared) so the groups-aware
+  // override further down replaces it without leaving a dead shadowed
+  // singleton-only definition in the file.
   // -------------------------------------------------------------------
-  function render() {
-    var rows = applyFilters(_allCaptures);
-    var list = document.getElementById('list');
-    // Preserve open-state across re-renders: keep DOM nodes for open
-    // cards intact, rebuild closed ones.
-    var openIds = Object.keys(_openRows);
-    list.innerHTML = '';
-    if (rows.length === 0) {
-      var empty = document.createElement('div');
-      empty.className = 'empty-state';
-      if (_allCaptures.length === 0) {
-        empty.innerHTML = '<strong>No captures yet.</strong><br>'
-          + 'Enable <em>CAPTURE_RECORDINGS_ENABLED</em> in /config and send '
-          + 'transcription requests; eligible ones land here for review.'
-          + '<div class="help-doc">Each capture stores the original audio + '
-          + 'word-level timestamps + the model\'s raw and post-pipeline '
-          + 'text. Review karaoke-style, correct mistranscriptions, mark as '
-          + '<strong>ready</strong>, then <strong>Export ready</strong> to '
-          + 'get a HuggingFace-compatible <code>manifest.jsonl + audio/</code> '
-          + 'tar.gz.</div>';
-      } else {
-        empty.innerHTML = 'No captures match the current filters.';
-      }
-      list.appendChild(empty);
-      return;
-    }
-    rows.forEach(function(r) {
-      list.appendChild(renderCard(r));
-    });
-    // Reopen any rows that were open before re-render
-    openIds.forEach(function(cid) {
-      var card = list.querySelector('.capture-card[data-id="' + cid + '"]');
-      if (card) {
-        // Mark open again; lazy-build will skip if data already present
-        // (but on re-fetch we want fresh data, so always rebuild).
-        var r = _allCaptures.find(function(x) { return x.id === cid; });
-        if (r) toggleExpand(card, r);
-      } else {
-        // Row disappeared from the filter — drop its open state.
-        var st = _openRows[cid];
-        if (st && st.blobUrl) URL.revokeObjectURL(st.blobUrl);
-        delete _openRows[cid];
-      }
-    });
-  }
+  var render;
 
   // -------------------------------------------------------------------
   // Load
@@ -3805,8 +3771,6 @@ _CAPTURES_HTML = r"""<!doctype html>
       var j = await api('GET', '/captures/api/list?status=all&limit=500');
       _allCaptures = j.captures || [];
       _counts = j.counts || {};
-      _isAdmin = !!j.is_admin;
-      _selfUserId = j.user_id || null;
       // Pull groups in parallel-shape; failure is non-fatal (admin sees no groups).
       try {
         var jg = await api('GET', '/captures/api/groups');
@@ -3817,7 +3781,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       updateCounts();
       _clearSelection();
       render();
-      if (_isAdmin) document.body.classList.add('role-admin');
+      if (j.is_admin) document.body.classList.add('role-admin');
     } catch (e) {
       if (e.message === 'unauthorized' || e.message === 'not-admin') return;
       toast('Failed to load captures: ' + e.message, true);
@@ -4047,7 +4011,6 @@ _CAPTURES_HTML = r"""<!doctype html>
           audio: audio,
           words: [],
           finalText: '',
-          correctedText: '',
           corrections: [],
           wordEls: [],
           activeWordIdx: -1,
@@ -4330,7 +4293,6 @@ _CAPTURES_HTML = r"""<!doctype html>
           groupState.baselineCorrections =
             JSON.parse(JSON.stringify(d.corrections || []));
           groupState.finalText = d.transcript || '';
-          groupState.correctedText = d.transcript || '';
           groupState.adminNotes = d.admin_notes || '';
           groupState.newStatus = d.status || 'new';
           groupState.wordEls = [];
