@@ -31,8 +31,8 @@ err_count: Counter[str] = Counter()         # path -> 5xx total
 # Bumped/dec'd by the transcribe handler with try/finally.
 in_flight_transcriptions: int = 0
 
-# (path, duration_ms) — global latency ring used for p50/p95/p99.
-_latency: deque[tuple[str, float]] = deque(maxlen=_LATENCY_MAX)
+# Global latency ring (ms) used for p50/p95/p99.
+_latency: deque[float] = deque(maxlen=_LATENCY_MAX)
 
 # Last N transcriptions: dict per item — see record_transcription().
 recent_tx: deque[dict[str, Any]] = deque(maxlen=_RECENT_TX_MAX)
@@ -55,7 +55,7 @@ def record_request(path: str, status: int, duration_ms: float) -> None:
         while _errors_ts and _errors_ts[0] < cutoff:
             _errors_ts.popleft()
     if path not in SSE_PATHS:
-        _latency.append((path, duration_ms))
+        _latency.append(duration_ms)
 
 
 def record_transcription(model: str, audio_dur: float, proc_dur: float,
@@ -104,7 +104,7 @@ def _errors_in(seconds: float) -> int:
 
 def metrics_snapshot() -> dict[str, Any]:
     """Build the JSON payload returned by /stats/snapshot and /stats/stream."""
-    durations = sorted(d for _, d in _latency)
+    durations = sorted(_latency)
     loads_summary = {}
     for m, v in model_loads.items():
         if not v:
