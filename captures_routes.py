@@ -2497,6 +2497,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     <span id="capture-state" class="capture-state off">capture OFF</span>
     <button id="btn-refresh">Refresh</button>
     <button id="btn-reprocess-all" title="Re-run PIPELINE_RULES on every capture's raw text. Use after editing rules.">Reprocess all</button>
+    <button id="btn-propose" title="Suggest ranked merges into ~26 s training samples (same-session, same-language, duplicate-aware)">Auto-propose merges</button>
     <button id="btn-export" title="Download ready captures as a tar.gz (manifest.jsonl + audio/)">Export ready</button>
     <button id="btn-clear" class="danger" title="Permanently delete every capture">Clear all</button>
   </div>
@@ -2506,7 +2507,6 @@ _CAPTURES_HTML = r"""<!doctype html>
     <span class="meter" id="ab-meter">Σ 0.00 s / 28.00 s</span>
     <span class="summary" id="ab-warn"></span>
     <span class="spacer"></span>
-    <button id="ab-propose">Auto-propose merges</button>
     <button id="ab-merge" class="primary" disabled>Merge into group</button>
     <button id="ab-clear">Clear selection</button>
   </div>
@@ -4889,7 +4889,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   document.getElementById('btn-reprocess-all').addEventListener('click', onReprocessAll);
   document.getElementById('ab-merge').addEventListener('click', _openMergeModal);
   document.getElementById('ab-clear').addEventListener('click', _clearSelection);
-  document.getElementById('ab-propose').addEventListener('click', _openProposeModal);
+  document.getElementById('btn-propose').addEventListener('click', _openProposeModal);
   document.getElementById('propose-refresh').addEventListener('click', _loadProposals);
   document.getElementById('propose-close').addEventListener('click', function() {
     document.getElementById('propose-modal').classList.remove('show');
