@@ -789,18 +789,11 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
      edit if they want — we just signal "this is currently unused". */
   .field.dep-irrelevant { opacity: 0.45; }
   .field.dep-irrelevant .input-col { filter: grayscale(0.6); }
-  /* Subgroup heading inside a section: smaller than h2, lighter weight,
-     small dividing line so it's visibly distinct from the section header
-     but doesn't draw the eye like a top-level section change. */
-  h3.subgroup { color: var(--dim); font-size: var(--fs-sm); font-weight: 500;
-    text-transform: uppercase; letter-spacing: 0.06em;
-    margin: 0.875rem 0 0.375rem 0; padding-bottom: 0.1875rem;
-    border-bottom: 1px solid var(--border); }
-  /* Collapsible subgroup: <summary> mirrors h3.subgroup styling, plus a
-     leading chevron that flips when the <details> is open. Native
-     disclosure-triangle is suppressed — list-style: none on summary +
-     ::-webkit-details-marker for older WebKit. State persists in
-     localStorage (see render() in JS). */
+  /* Collapsible subgroup heading: smaller than h2, lighter weight, with
+     a small dividing line so it's visibly distinct from the section
+     header. Native disclosure-triangle is suppressed — list-style: none
+     on summary + ::-webkit-details-marker for older WebKit. State
+     persists in localStorage (see render() in JS). */
   details.subgroup-details { margin: 0.875rem 0 0.375rem 0; }
   details.subgroup-details > summary.subgroup-summary {
     color: var(--dim); font-size: var(--fs-sm); font-weight: 500;
@@ -844,13 +837,13 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   /* Pipeline rules editor */
   .pipeline-rules-wrap { display: flex; flex-direction: column; gap: 0.375rem; }
   .rule-list { display: flex; flex-direction: column; gap: 0.25rem; }
-  .rule-row { background: #161b22; border: 1px solid var(--border); border-radius: 4px;
-    padding: 0.375rem 0.625rem; }
-  .rule-row.locked { border-left: 3px solid #f2cc60; }
-  .rule-row.terminal { border-left: 3px solid var(--dim); opacity: 0.85; }
   /* Button-like interactive feel on every rule row. :active propagates
      up from descendants so pressing the drag-handle still tints the row. */
-  .rule-row { transition: background-color 120ms ease; cursor: default; }
+  .rule-row { background: #161b22; border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.375rem 0.625rem; transition: background-color 120ms ease;
+    cursor: default; }
+  .rule-row.locked { border-left: 3px solid #f2cc60; }
+  .rule-row.terminal { border-left: 3px solid var(--dim); opacity: 0.85; }
   .rule-row:not(.terminal):hover { background: #1c2230; }
   .rule-row:not(.terminal):active { background: #232a36; }
   .rule-row[tabindex]:focus-visible { outline: 2px solid var(--cyan);
@@ -2537,10 +2530,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     refreshControlsVisibility();
   }
   function commitFull() {
-    if (isChecklist) {
-      paintAll();
-      return;
-    }
     setDirty(name, JSON.parse(JSON.stringify(rules)));
     paintAll();
   }
