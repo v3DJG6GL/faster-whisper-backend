@@ -745,7 +745,8 @@ def render_page(template: str, current: str) -> str:
       - {{NAV_CSS}}              → shared header/scale-token CSS
       - {{SCALE_PICKER}}         → scale dropdown (header)
       - {{SCALE_PICKER_JS}}      → wire-up script (end of body)
-      - {{SEV_POLLER_JS}}        → 5-s pill re-sync (end of body)
+      - {{SEV_POLLER_JS}}        → 5-s pill re-sync + open-mode admin-
+                                   key warning banner (end of body)
       - {{SCALE_BOOTSTRAP_HEAD}} → tiny pre-paint script (top of <head>)
       - {{RULE_EDITOR_JS}}       → shared per-rule body editors
       - {{TIME_HELPERS_JS}}      → absTime / relTime / fmtWhen / timeTick
