@@ -44,6 +44,11 @@ _db_path: str | None = None
 # In-memory hash → user row index. Rebuilt on mutation.
 _KEY_INDEX: dict[str, dict[str, Any]] = {}
 
+# Cached "an active admin key exists" — refreshed by _rebuild_index_locked()
+# on every user/key mutation. Default False = open mode (matches the original
+# pre-init behaviour where the SQL fallback raised and was caught).
+_IS_LOCKED_DOWN: bool = False
+
 # Debounce window for last_used_ts writes (seconds).
 _LAST_USED_DEBOUNCE_S = 60.0
 
@@ -159,8 +164,12 @@ def _row_to_key_dict(row: sqlite3.Row) -> dict[str, Any]:
 # ---------------------------------------------------------------------
 
 def _rebuild_index_locked() -> None:
-    """Rebuild _KEY_INDEX from the DB. Caller holds _lock (or is in init)."""
-    global _KEY_INDEX
+    """Rebuild _KEY_INDEX from the DB. Caller holds _lock (or is in init).
+    Also refresh _IS_LOCKED_DOWN — the answer only changes when an admin
+    key/user is created or revoked, all of which already pass through
+    this function, so the hot is_locked_down() check on every
+    authenticated request avoids a JOIN COUNT(*) SQL roundtrip."""
+    global _KEY_INDEX, _IS_LOCKED_DOWN
     conn = _require_conn()
     rows = conn.execute(
         "SELECT k.key_hash, k.id AS key_id, u.id AS user_id, u.username, u.is_admin"
@@ -176,12 +185,7 @@ def _rebuild_index_locked() -> None:
             "is_admin": bool(r["is_admin"]),
         }
     _KEY_INDEX = idx
-
-
-def _invalidate_index() -> None:
-    """Mark the index for rebuild; called after any mutation."""
-    with _lock:
-        _rebuild_index_locked()
+    _IS_LOCKED_DOWN = any(v["is_admin"] for v in idx.values())
 
 
 # ---------------------------------------------------------------------
@@ -381,6 +385,17 @@ def list_keys(user_id: str | None = None, *, include_revoked: bool = False) -> l
     return [_row_to_key_dict(r) for r in rows]
 
 
+def active_key_counts() -> dict[str, int]:
+    """Return {user_id: active_key_count} in one SQL roundtrip — the batched
+    companion to len(list_keys(user_id=u)) over a /api/users response."""
+    conn = _require_conn()
+    cur = conn.execute(
+        "SELECT user_id, COUNT(*) AS n FROM api_keys"
+        " WHERE revoked_ts IS NULL GROUP BY user_id"
+    )
+    return {r["user_id"]: int(r["n"]) for r in cur.fetchall()}
+
+
 def get_key(key_id: str) -> dict[str, Any] | None:
     conn = _require_conn()
     row = conn.execute(
@@ -462,10 +477,6 @@ def is_locked_down() -> bool:
     """Server is locked down iff at least one active admin key exists.
     Open mode (return False) lets every request through as the synthetic
     admin so the operator can bootstrap. A periodic WARNING is logged
-    by the auth module while open."""
-    try:
-        return count_active_admin_keys() >= 1
-    except Exception:
-        # If the DB hasn't been opened yet treat as open — main.py
-        # decides ordering.
-        return False
+    by the auth module while open. Reads the cache populated by
+    _rebuild_index_locked() — no SQL on the per-request hot path."""
+    return _IS_LOCKED_DOWN

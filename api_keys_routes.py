@@ -78,10 +78,12 @@ async def api_keys_page() -> HTMLResponse:
 async def list_users_api() -> JSONResponse:
     users = api_keys_store.list_users()
     # Annotate each user with their active key count for the card header.
-    out: list[dict[str, Any]] = []
-    for u in users:
-        keys = api_keys_store.list_keys(user_id=u["id"])
-        out.append({**u, "active_key_count": len(keys)})
+    # Batched: one GROUP BY query instead of N list_keys() roundtrips.
+    counts = api_keys_store.active_key_counts()
+    out = [
+        {**u, "active_key_count": counts.get(u["id"], 0)}
+        for u in users
+    ]
     return JSONResponse({
         "users": out,
         "open_mode": not api_keys_store.is_locked_down(),
