@@ -158,9 +158,10 @@ async def list_captures_api(
     # Per-row pipeline self-heal happens in get_capture_api (expand) only.
     # Running it here would be 2 _postprocess_text calls × `limit` rows per
     # list render, which dominates response time on /captures with limit=500.
+    usernames = api_keys_store.get_usernames([r.get("user_id") for r in rows])
     for r in rows:
         _apply_trim_to_capture_row(r)
-        r["username"] = api_keys_store.get_username(r.get("user_id"))
+        r["username"] = usernames.get(r.get("user_id"))
     return JSONResponse({
         "captures": rows,
         "counts": captures_store.counts_by_status(),
@@ -181,9 +182,10 @@ async def list_captures_api(
 )
 async def by_request_id_api(request_id: str) -> JSONResponse:
     rows = captures_store.find_by_request_id(request_id)
+    usernames = api_keys_store.get_usernames([r.get("user_id") for r in rows])
     for r in rows:
         _apply_trim_to_capture_row(r)
-        r["username"] = api_keys_store.get_username(r.get("user_id"))
+        r["username"] = usernames.get(r.get("user_id"))
     return JSONResponse({"captures": rows})
 
 
@@ -244,6 +246,7 @@ async def list_groups_api(
     groups = capture_groups_store.list_groups(
         user_id=scope, status=status_filter,
     )
+    usernames = api_keys_store.get_usernames([g.get("user_id") for g in groups])
     for g in groups:
         # Re-derive transcript + corrections per group so the collapsed
         # card preview reflects chip-applied final text (matches the
@@ -255,7 +258,7 @@ async def list_groups_api(
             members, g.get("transcript_join_strategy") or "space",
         )
         g["corrections"] = _project_member_corrections(members)
-        g["username"] = api_keys_store.get_username(g.get("user_id"))
+        g["username"] = usernames.get(g.get("user_id"))
     return JSONResponse({"groups": groups})
 
 
@@ -1119,11 +1122,14 @@ def _enrich_group(g: dict[str, Any]) -> dict[str, Any]:
     import capture_groups_store
     members = capture_groups_store.get_members(g["id"])
     _hydrate_members(members)
+    usernames = api_keys_store.get_usernames(
+        [m.get("user_id") for m in members] + [g.get("user_id")]
+    )
     for m in members:
         _refresh_final_if_stale(m)
-        m["username"] = api_keys_store.get_username(m.get("user_id"))
+        m["username"] = usernames.get(m.get("user_id"))
     g["members"] = members
-    g["username"] = api_keys_store.get_username(g.get("user_id"))
+    g["username"] = usernames.get(g.get("user_id"))
     g["transcript"] = _build_default_transcript(
         members, g.get("transcript_join_strategy") or "space",
     )
@@ -1458,16 +1464,22 @@ async def patch_group_api(
         patch["merged_trail_trim_ms"] = int(trail_trim_ms or 0)
         patch["is_stale"] = 0
 
-    # Always derive `transcript` from current members + chips. The UI
-    # shows a read-only preview of this; storing the derived value keeps
-    # the export tarball self-consistent without requiring a separate
-    # regenerate step. The client-sent `transcript` field is ignored —
-    # chips are the single source of truth.
-    join_for_derive = patch.get(
-        "transcript_join_strategy", g["transcript_join_strategy"] or "space",
+    # Re-derive `transcript` from current members + chips ONLY when the
+    # inputs that feed the derivation actually changed (corrections,
+    # join_strategy) or when the audio was rebuilt (silence change). The
+    # common status/admin_notes/is_locked auto-save click would otherwise
+    # trigger a get_members + transcript rebuild + DB write on every click.
+    transcript_inputs_changed = (
+        payload.corrections is not None
+        or rebuild_audio
+        or "transcript_join_strategy" in patch
     )
-    members_now = capture_groups_store.get_members(gid)
-    patch["transcript"] = _build_default_transcript(members_now, join_for_derive)
+    if transcript_inputs_changed:
+        join_for_derive = patch.get(
+            "transcript_join_strategy", g["transcript_join_strategy"] or "space",
+        )
+        members_now = capture_groups_store.get_members(gid)
+        patch["transcript"] = _build_default_transcript(members_now, join_for_derive)
 
     updated = capture_groups_store.update_group(gid, patch)
     return JSONResponse({"group": _enrich_group(updated)})
@@ -1620,6 +1632,7 @@ async def get_group_audio_api(
 ):
     """Stream the merged WAV, self-healing if it's missing on disk
     but reconstructable from member captures."""
+    _check_audio_rate(request.client.host if request.client else "")
     import capture_groups_store
     g = capture_groups_store.get_group(gid)
     if g is None:
