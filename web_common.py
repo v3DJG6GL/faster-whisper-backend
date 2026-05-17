@@ -401,6 +401,32 @@ function timeTick(sel, ms) {
 """
 
 
+# Admin-only landing card used by pages that 401/403 a non-admin caller
+# (api_keys, reports, captures). Inserted into the page's existing
+# <script> IIFE so callers can invoke _renderNotAdminLanding() directly.
+NOT_ADMIN_LANDING_JS = """
+function _renderNotAdminLanding() {
+  document.body.classList.remove('role-admin');
+  var main = document.getElementsByTagName('main')[0];
+  if (!main) return;
+  main.innerHTML =
+    '<div style="max-width:36rem;margin:4rem auto;text-align:center;'
+    + 'padding:2rem;background:var(--panel);border:1px solid var(--border);'
+    + 'border-radius:0.375rem;">'
+    + '<h2 style="margin:0 0 0.5rem;color:var(--bold);">Admin only</h2>'
+    + '<p style="color:var(--help);">This page requires an admin API key. '
+    + 'Sign in with an admin key or go to your personal page.</p>'
+    + '<p style="margin-top:1.2rem;">'
+    + '<a href="/quick-config" style="color:var(--cyan);'
+    + 'border:1px solid var(--cyan);padding:0.45rem 1rem;'
+    + 'border-radius:0.25rem;text-decoration:none;">Open /quick-config</a> '
+    + '<button onclick="sessionStorage.removeItem(\\u0027whisper_api_key\\u0027);'
+    + 'location.reload()" style="margin-left:0.5rem;">Sign out</button>'
+    + '</p></div>';
+}
+"""
+
+
 SEV_POLLER_JS = """
 <script>(function(){
   if(!document.getElementById('sev-warn'))return;
@@ -728,6 +754,7 @@ def render_page(template: str, current: str) -> str:
       - {{SCALE_BOOTSTRAP_HEAD}} → tiny pre-paint script (top of <head>)
       - {{RULE_EDITOR_JS}}       → shared per-rule body editors
       - {{TIME_HELPERS_JS}}      → absTime / relTime / fmtWhen / timeTick
+      - {{NOT_ADMIN_LANDING_JS}} → _renderNotAdminLanding() helper
 
     Pages that don't include a given placeholder are returned unchanged."""
     return (
@@ -740,4 +767,5 @@ def render_page(template: str, current: str) -> str:
         .replace("{{SCALE_BOOTSTRAP_HEAD}}", SCALE_BOOTSTRAP_HEAD)
         .replace("{{RULE_EDITOR_JS}}", RULE_EDITOR_JS)
         .replace("{{TIME_HELPERS_JS}}", TIME_HELPERS_JS)
+        .replace("{{NOT_ADMIN_LANDING_JS}}", NOT_ADMIN_LANDING_JS)
     )

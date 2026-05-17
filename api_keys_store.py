@@ -128,7 +128,7 @@ def _split_display_parts(raw_key: str) -> tuple[str, str]:
     4 chars. Stored in plaintext so the admin UI can render
     `wk_a1b2…d4e5` without retaining the raw key."""
     prefix = raw_key[:8]
-    last4 = raw_key[-4:] if len(raw_key) >= 4 else raw_key
+    last4 = raw_key[-4:]
     return prefix, last4
 
 

@@ -389,31 +389,8 @@ _API_KEYS_HTML = r"""<!doctype html>
     return fetch(path, opts);
   }
 
-  // ---- Admin-only landing ----
-  // When an admin-gated API call returns 403, we ask /auth/whoami to
-  // distinguish "I'm signed in as a non-admin user" from a real
-  // server-side problem. On non-admin, we swap <main> for a friendly
-  // landing card and return true so the caller skips the generic
-  // error toast.
-  function _renderNotAdminLanding() {
-    document.body.classList.remove('role-admin');
-    var main = document.getElementsByTagName('main')[0];
-    if (!main) return;
-    main.innerHTML =
-      '<div style="max-width:36rem;margin:4rem auto;text-align:center;'
-      + 'padding:2rem;background:var(--panel);border:1px solid var(--border);'
-      + 'border-radius:6px;">'
-      + '<h2 style="margin:0 0 0.5rem;color:var(--bold);">Admin only</h2>'
-      + '<p style="color:var(--help);">This page requires an admin API key. '
-      + 'Sign in with an admin key or go to your personal page.</p>'
-      + '<p style="margin-top:1.2rem;">'
-      + '<a href="/quick-config" style="color:var(--cyan);'
-      + 'border:1px solid var(--cyan);padding:0.45rem 1rem;'
-      + 'border-radius:4px;text-decoration:none;">Open /quick-config</a> '
-      + '<button onclick="sessionStorage.removeItem(\\u0027whisper_api_key\\u0027);'
-      + 'location.reload()" style="margin-left:0.5rem;">Sign out</button>'
-      + '</p></div>';
-  }
+  {{NOT_ADMIN_LANDING_JS}}
+
   async function _check403(r) {
     if (!r || r.status !== 403) return false;
     try {
@@ -452,8 +429,6 @@ _API_KEYS_HTML = r"""<!doctype html>
     setTimeout(function(){ el.style.display = 'none'; }, 3000);
   }
 
-  // fmtTs alias: keys table uses absTime only (narrow column, no relative).
-  function fmtTs(ts) { return absTime(ts); }
 
   function showTokenModal() {
     return new Promise(function(resolve){
@@ -541,6 +516,7 @@ _API_KEYS_HTML = r"""<!doctype html>
   }
 
   function renderUser(u) {
+    // list_users filters revoked, so u.revoked_ts is always nullish.
     var card = document.createElement('div');
     card.className = 'card';
     var h = document.createElement('h3');
@@ -549,12 +525,6 @@ _API_KEYS_HTML = r"""<!doctype html>
     pill.className = 'pill ' + (u.is_admin ? 'admin' : '');
     pill.textContent = u.is_admin ? 'admin' : 'user';
     h.appendChild(pill);
-    if (u.revoked_ts) {
-      var rp = document.createElement('span');
-      rp.className = 'pill revoked';
-      rp.textContent = 'revoked';
-      h.appendChild(rp);
-    }
     var keyCount = document.createElement('span');
     keyCount.className = 'pill';
     keyCount.textContent = u.active_key_count + ' active key' +
@@ -564,7 +534,7 @@ _API_KEYS_HTML = r"""<!doctype html>
 
     var tb = document.createElement('div');
     tb.className = 'toolbar';
-    if (!u.revoked_ts) {
+    {
       var labelInp = document.createElement('input');
       labelInp.type = 'text';
       labelInp.placeholder = 'label (e.g., desktop)';
@@ -632,15 +602,15 @@ _API_KEYS_HTML = r"""<!doctype html>
           row.innerHTML =
             '<div class="label">' + escapeHtml(k.label || '(no label)') + '</div>' +
             '<div class="id">' + escapeHtml(k.key_prefix) + '&hellip;' + escapeHtml(k.key_last4) + '</div>' +
-            '<div class="ts">created ' + escapeHtml(fmtTs(k.created_ts)) + '</div>' +
-            '<div class="ts">used '    + escapeHtml(fmtTs(k.last_used_ts)) + '</div>';
+            '<div class="ts">created ' + escapeHtml(absTime(k.created_ts)) + '</div>' +
+            '<div class="ts">used '    + escapeHtml(absTime(k.last_used_ts)) + '</div>';
           var actionCell = document.createElement('div');
           if (k.revoked_ts) {
             var rp = document.createElement('span');
             rp.className = 'pill revoked';
             rp.textContent = 'revoked';
             actionCell.appendChild(rp);
-          } else if (!u.revoked_ts) {
+          } else {
             var b = document.createElement('button');
             b.className = 'danger';
             b.textContent = 'revoke';

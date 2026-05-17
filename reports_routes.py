@@ -823,29 +823,8 @@ _REPORTS_HTML = """<!doctype html>
     return await resp.json();
   }
 
-  // ---- Admin-only landing ----
-  // Shared with /captures, /api-keys, /config, /stats. Renders a
-  // friendly "this page requires admin" card in place of <main> when
-  // the signed-in API key resolves to a non-admin user.
-  function _renderNotAdminLanding() {
-    document.body.classList.remove('role-admin');
-    var main = document.getElementsByTagName('main')[0];
-    if (!main) return;
-    main.innerHTML =
-      '<div style="max-width:36rem;margin:4rem auto;text-align:center;'
-      + 'padding:2rem;background:var(--panel);border:1px solid var(--border);'
-      + 'border-radius:6px;">'
-      + '<h2 style="margin:0 0 0.5rem;color:var(--bold);">Admin only</h2>'
-      + '<p style="color:var(--help);">This page requires an admin API key. '
-      + 'Sign in with an admin key or go to your personal page.</p>'
-      + '<p style="margin-top:1.2rem;">'
-      + '<a href="/quick-config" style="color:var(--cyan);'
-      + 'border:1px solid var(--cyan);padding:0.45rem 1rem;'
-      + 'border-radius:4px;text-decoration:none;">Open /quick-config</a> '
-      + '<button onclick="sessionStorage.removeItem(\\u0027whisper_api_key\\u0027);'
-      + 'location.reload()" style="margin-left:0.5rem;">Sign out</button>'
-      + '</p></div>';
-  }
+  {{NOT_ADMIN_LANDING_JS}}
+
   async function _renderAdminOnlyIfNonAdmin() {
     try {
       var tok = getToken();
