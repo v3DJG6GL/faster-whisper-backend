@@ -20,7 +20,6 @@ the raw key is copied to the clipboard, then never retrievable.
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -87,8 +86,6 @@ async def list_users_api() -> JSONResponse:
     return JSONResponse({
         "users": out,
         "open_mode": not api_keys_store.is_locked_down(),
-        "active_admins": api_keys_store.count_active_admins(),
-        "active_admin_keys": api_keys_store.count_active_admin_keys(),
     })
 
 
