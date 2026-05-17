@@ -429,6 +429,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
             excess -= evicted_status
             evicted += evicted_status
 
+    bytes_freed = 0
     if mb_cap >= 1:
         # Walk every row to sum audio bytes — there's no cached size
         # column, so this is O(N) getsize calls per insert. Hot-path
@@ -437,19 +438,20 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
         byte_cap = mb_cap * 1024 * 1024
         total_bytes = _total_audio_bytes(conn)
         if total_bytes > byte_cap:
-            before = total_bytes
             for status in _EVICTION_ORDER:
                 if total_bytes <= byte_cap:
                     break
-                total_bytes -= _drop_oldest_by_bytes(
+                freed = _drop_oldest_by_bytes(
                     conn, status, total_bytes - byte_cap,
                 )
-            if total_bytes < before:
-                evicted += 1  # log marker; precise count is in the helper
+                total_bytes -= freed
+                bytes_freed += freed
 
-    if evicted:
+    if evicted or bytes_freed:
         logger.info(
-            "[captures] evicted to cap: row_cap=%d, mb_cap=%d", row_cap, mb_cap,
+            "[captures] evicted to cap: row_cap=%d, mb_cap=%d,"
+            " rows_dropped=%d, bytes_freed=%d",
+            row_cap, mb_cap, evicted, bytes_freed,
         )
 
 
@@ -474,14 +476,14 @@ def _drop_oldest_with_status(
     conn: sqlite3.Connection, status: str, limit: int,
 ) -> int:
     """Delete up to `limit` oldest rows of a given status, also unlinking
-    audio files. Returns the count deleted. Group members are excluded
-    from eviction — losing a member silently breaks the owning
-    merged-WAV; if the user wants to evict, they must dissolve the
-    group first (or use clear_all)."""
+    audio files (primary + trimmed companion). Returns the count deleted.
+    Group members are excluded from eviction — losing a member silently
+    breaks the owning merged-WAV; if the user wants to evict, they must
+    dissolve the group first (or use clear_all)."""
     if limit <= 0:
         return 0
     rows = conn.execute(
-        "SELECT id, audio_relpath FROM captures"
+        "SELECT id, audio_relpath, audio_trimmed_relpath FROM captures"
         " WHERE status = ? AND group_id IS NULL"
         " ORDER BY created_ts ASC LIMIT ?",
         (status, limit),
@@ -496,6 +498,12 @@ def _drop_oldest_with_status(
             _safe_unlink(abs_audio_path(r["audio_relpath"]))
         except ValueError:
             pass
+        trimmed = r["audio_trimmed_relpath"]
+        if trimmed:
+            try:
+                _safe_unlink(abs_audio_path(trimmed))
+            except ValueError:
+                pass
     return len(rows)
 
 
@@ -508,7 +516,7 @@ def _drop_oldest_by_bytes(
     if bytes_needed <= 0:
         return 0
     rows = conn.execute(
-        "SELECT id, audio_relpath FROM captures"
+        "SELECT id, audio_relpath, audio_trimmed_relpath FROM captures"
         " WHERE status = ? AND group_id IS NULL"
         " ORDER BY created_ts ASC",
         (status,),
@@ -528,6 +536,13 @@ def _drop_oldest_by_bytes(
         drop_ids.append(r["id"])
         if abs_p:
             drop_paths.append(abs_p)
+        trimmed = r["audio_trimmed_relpath"]
+        if trimmed:
+            try:
+                abs_t = abs_audio_path(trimmed)
+                drop_paths.append(abs_t)
+            except ValueError:
+                pass
         freed += sz
     if drop_ids:
         placeholders = ",".join("?" * len(drop_ids))
@@ -692,8 +707,10 @@ def counts_by_status() -> dict[str, int]:
 # ---------------------------------------------------------------------
 
 def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
-    """Apply a partial update. Allowed fields: corrected_text, corrections,
-    admin_notes, status. Returns the updated row or None if not found."""
+    """Apply a partial update. Allowed fields: status, corrected_text,
+    corrections, admin_notes, final, text_for_training,
+    audio_trimmed_relpath, audio_trim_lead_ms, audio_trim_trail_ms.
+    Returns the updated row or None if not found."""
     if not patch:
         return get_capture(cid)
     sets: list[str] = []
@@ -931,7 +948,7 @@ def sweep_retention() -> int:
     conn = _require_conn()
     with _lock:
         rows = conn.execute(
-            "SELECT id, audio_relpath FROM captures"
+            "SELECT id, audio_relpath, audio_trimmed_relpath FROM captures"
             " WHERE created_ts < ? AND group_id IS NULL",
             (cutoff,),
         ).fetchall()
@@ -947,6 +964,12 @@ def sweep_retention() -> int:
             _safe_unlink(abs_audio_path(r["audio_relpath"]))
         except ValueError:
             pass
+        trimmed = r["audio_trimmed_relpath"]
+        if trimmed:
+            try:
+                _safe_unlink(abs_audio_path(trimmed))
+            except ValueError:
+                pass
     logger.warning(
         "[captures] retention sweep deleted %d rows older than %d days",
         len(rows), days,
