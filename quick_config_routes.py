@@ -252,9 +252,7 @@ async def post_state(
     # stays last).
     current_rules: list[dict[str, Any]] = []
     for r in cfg.PIPELINE_RULES:
-        if isinstance(r, dict):
-            current_rules.append(dict(r))
-        elif hasattr(r, "model_dump"):
+        if hasattr(r, "model_dump"):
             current_rules.append(r.model_dump())
         else:
             current_rules.append(dict(r))

@@ -3,8 +3,9 @@ Shared helpers used by the /logs, /config, /stats, and /quick-config pages.
 
   - require_allowed_host(allowlist) — FastAPI dependency that 403s callers
     not in the allowlist. Allowlist accepts bare IPs or CIDRs.
-  - nav_html(current, request)      — server-rendered nav row HTML.
-  - severity_counts()               — log-level counters (last 60 s).
+  - nav_html(current)               — server-rendered nav row HTML.
+  - severity_counts()               — WARNING+ counts since process start
+                                      (bounded by the 2000-entry ring).
 """
 
 from __future__ import annotations

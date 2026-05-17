@@ -27,7 +27,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 import config as cfg
 import config_store
@@ -35,6 +35,11 @@ import web_common
 from auth import require_admin
 
 logger = logging.getLogger("whisper-api")
+
+# Discriminated-union adapter for PIPELINE_RULES canonicalization. Built once
+# at import time — TypeAdapter construction walks every rule subclass and is
+# the dominant cost of _canon_rules, called twice per /config/state request.
+_PIPELINE_RULE_ADAPTER: TypeAdapter = TypeAdapter(config_store.PipelineRule)
 
 # Fields the WebUI is allowed to surface. Keep this as the single source of
 # truth for the form layout — drives section grouping in the HTML and the
@@ -170,12 +175,10 @@ def _resolved_value(field: str) -> Any:
 def _canon_rules(rules: Any) -> Any:
     if not isinstance(rules, list):
         return rules
-    from pydantic import TypeAdapter
-    adapter = TypeAdapter(config_store.PipelineRule)
     out: list[Any] = []
     for r in rules:
         try:
-            dumped = adapter.validate_python(r).model_dump(exclude_none=True)
+            dumped = _PIPELINE_RULE_ADAPTER.validate_python(r).model_dump(exclude_none=True)
             out.append(_sort_dicts(dumped))
         except Exception:
             out.append(r)  # malformed — pass through; save-time validator catches it
@@ -619,9 +622,9 @@ async def post_restart(request: Request) -> JSONResponse:
 
 
 # --- HTML template ------------------------------------------------------------
-# Vanilla JS, no build step. Mirrors the /logs viewer styling. Sections, table
-# editor for DICTATION_MAP, textarea-per-line editors for list/set fields, save
-# flow with restart modal + post-restart polling.
+# Vanilla JS, no build step. Mirrors the /logs viewer styling. Sections,
+# per-rule PIPELINE_RULES editor, textarea-per-line editors for list/set
+# fields, save flow with restart modal + post-restart polling.
 
 _CONFIG_VIEWER_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
@@ -1297,15 +1300,7 @@ function setDirty(name, value) {
   // Notify per-field listeners (currently the ↺ Reset button) so they can
   // refresh their "value differs from default?" display.
   document.dispatchEvent(new CustomEvent('admin:dirty', { detail: { name } }));
-  // Re-evaluate "is row X irrelevant given the current state of toggle Y?"
-  // Cheap (handful of fields), runs after every edit so the UI tracks live.
-  applyFieldDependencies();
 }
-
-// Field dependencies are now handled inside makeRuleListEditor itself
-// (per-row enabled/locked/seeded state). No top-level field-to-field
-// dimming rules survive the PIPELINE_RULES unification.
-function applyFieldDependencies() { /* no-op */ }
 
 function makeBadges(name) {
   const d = fieldDef(name);
@@ -1335,7 +1330,7 @@ const FULLROW_FIELDS = new Set(['MODEL_OVERRIDES']);
 function fieldRow(name) {
   const row = document.createElement('div');
   row.className = 'field';
-  row.dataset.field = name;   // used by applyFieldDependencies()
+  row.dataset.field = name;   // used by jumpToRule() + the global admin:dirty handler
 
   if (FULLROW_FIELDS.has(name)) {
     row.classList.add('field-fullrow');
@@ -1398,22 +1393,35 @@ function fieldRow(name) {
   });
   resetWrap.appendChild(resetBtn);
   inputCol.appendChild(resetWrap);
-  // Toggle reset visibility on every input event by checking dirty + current.
-  function refreshReset() {
+  // Initial visibility uses the local resetWrap (the row isn't in the DOM
+  // yet during render()); subsequent updates flow through the single
+  // delegated 'admin:dirty' listener installed at DOMContentLoaded
+  // (refreshFieldReset, by data-field lookup). Previously each fieldRow()
+  // call registered its own document-level listener; row.replaceWith() and
+  // full re-renders never removed them, so listeners (and pinned DOM nodes)
+  // accumulated unboundedly across reload/discard/reset cycles.
+  (function paintInitialResetVisibility() {
     const cur = currentValue(name);
     const def = fieldDef(name).default_value;
     const same = JSON.stringify(cur) === JSON.stringify(def);
     resetWrap.style.display = same ? 'none' : '';
-  }
-  refreshReset();
-  // Subscribe to dirty changes for this field via a custom event we'll fire
-  // from setDirty(). Simpler than wiring per-editor change listeners.
-  document.addEventListener('admin:dirty', (e) => {
-    if (!e.detail || e.detail.name === name) refreshReset();
-  });
+  })();
 
   row.appendChild(inputCol);
   return row;
+}
+
+// Refresh one field's "↺ Reset to default" visibility by looking up the
+// current row in the DOM. Called from the delegated admin:dirty listener.
+function refreshFieldReset(name) {
+  const row = document.querySelector('main .field[data-field="' + name + '"]');
+  if (!row) return;
+  const wrap = row.querySelector('.reset-wrap');
+  if (!wrap) return;
+  const cur = currentValue(name);
+  const def = fieldDef(name).default_value;
+  const same = JSON.stringify(cur) === JSON.stringify(def);
+  wrap.style.display = same ? 'none' : '';
 }
 
 function makeEditor(name) {
@@ -2125,12 +2133,7 @@ function modelOverridesEditor(name, v) {
 
   // -------- jump-link helpers --------------------------------------------
   // The global field row uses `data-field="X"`; per-model rows here use
-  // `data-mo-field="X"` to avoid clashing. Scope the global selector to
-  // .field (the existing per-row class) so we always land on the right node.
-  function jumpToField(field) {
-    const target = document.querySelector('main .field[data-field="' + field + '"]');
-    if (target) target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }
+  // `data-mo-field="X"` to avoid clashing.
   function jumpToRule(slug) {
     const fieldRow = document.querySelector('main .field[data-field="PIPELINE_RULES"]');
     if (!fieldRow) return;
@@ -2998,12 +3001,15 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   resetAllBtn.type = 'button';
   resetAllBtn.className = 'reset-link';
   resetAllBtn.textContent = '↺ Reset all to defaults';
-  resetAllBtn.title = 'Restore the 13 seeded rules to their in-repo defaults; custom rules untouched';
+  const _seededCount = (fieldDef(name).default_value || [])
+    .filter(b => b && b.seeded && b.type !== 'terminal').length;
+  resetAllBtn.title = 'Restore the ' + _seededCount
+    + ' seeded rules to their in-repo defaults; custom rules untouched';
   resetAllBtn.addEventListener('click', () => {
     const baseline = fieldDef(name).default_value || [];
     const customs = rules.filter(r => !r.seeded && r.type !== 'terminal');
     const ok = confirm(
-      'Reset 13 seeded rules to their in-repo defaults.\n' +
+      'Reset ' + _seededCount + ' seeded rules to their in-repo defaults.\n' +
       (customs.length ? `Your ${customs.length} custom rule(s) will be kept at their current positions.\n\n` : '\n') +
       'Continue?'
     );
@@ -3323,128 +3329,6 @@ function linesEditor(name, v) {
   wrap.appendChild(t); wrap.appendChild(help);
   return wrap;
 }
-function tupleListEditor(name, v) {
-  // Simple table for [from,to] string pairs.
-  const wrap = document.createElement('div');
-  const rows = v.map(p => Array.isArray(p) ? [...p] : [p, '']);
-  const tbl = document.createElement('table');
-  tbl.className = 'dict';
-  tbl.innerHTML = '<thead><tr><th>from</th><th>to</th><th></th></tr></thead>';
-  const body = document.createElement('tbody');
-  tbl.appendChild(body);
-  function emit() {
-    const pairs = [];
-    for (const tr of body.children) {
-      const a = tr.children[0].firstChild.value;
-      const b = tr.children[1].firstChild.value;
-      if (a !== '' || b !== '') pairs.push([a, b]);
-    }
-    setDirty(name, pairs);
-  }
-  function addRow(a, b) {
-    const tr = document.createElement('tr');
-    for (const cell of [a, b]) {
-      const td = document.createElement('td');
-      const i = document.createElement('input');
-      i.type = 'text'; i.value = cell;
-      i.addEventListener('input', emit);
-      td.appendChild(i);
-      tr.appendChild(td);
-    }
-    const td = document.createElement('td');
-    const del = document.createElement('button');
-    del.className = 'del'; del.textContent = '×';
-    del.addEventListener('click', () => { tr.remove(); emit(); });
-    td.appendChild(del);
-    tr.appendChild(td);
-    body.appendChild(tr);
-  }
-  for (const [a, b] of rows) addRow(a, b);
-  wrap.appendChild(tbl);
-  const addWrap = document.createElement('div');
-  addWrap.className = 'add-row';
-  const add = document.createElement('button');
-  add.textContent = '+ add';
-  add.addEventListener('click', () => { addRow('', ''); });
-  addWrap.appendChild(add);
-  wrap.appendChild(addWrap);
-  return wrap;
-}
-// `<input type="text">` strips newlines on get/set, so values like "\n" or
-// "\n\n" (DICTATION_MAP entries for "neue Zeile" / "neuer Absatz") render
-// as blank cells and would be silently lost on save. We round-trip control
-// characters as escape sequences so the user can see and edit them. Order
-// matters in escapeForInput: backslash first so we don't double-escape.
-function escapeForInput(s) {
-  return String(s).replace(/\\/g, '\\\\')
-                  .replace(/\n/g, '\\n')
-                  .replace(/\r/g, '\\r')
-                  .replace(/\t/g, '\\t');
-}
-function unescapeFromInput(s) {
-  // Single-pass so "\\n" round-trips to "\n" (literal backslash + n), not a newline.
-  return String(s).replace(/\\([nrt\\])/g, (_, c) => (
-    { n: '\n', r: '\r', t: '\t', '\\': '\\' }[c]
-  ));
-}
-
-function dictTableEditor(name, dict) {
-  const wrap = document.createElement('div');
-  const tbl = document.createElement('table');
-  tbl.className = 'dict';
-  tbl.innerHTML = '<thead><tr><th>spoken word</th><th>symbol</th><th></th></tr></thead>';
-  const body = document.createElement('tbody');
-  tbl.appendChild(body);
-  function emit() {
-    const out = {};
-    for (const tr of body.children) {
-      const k = tr.children[0].firstChild.value.trim();
-      const v = unescapeFromInput(tr.children[1].firstChild.value);
-      if (k) out[k] = v;
-    }
-    setDirty(name, out);
-  }
-  function addRow(k, v) {
-    const tr = document.createElement('tr');
-    const td1 = document.createElement('td');
-    const i1 = document.createElement('input');
-    i1.type = 'text'; i1.value = k; i1.placeholder = 'e.g. Punkt';
-    i1.addEventListener('input', emit);
-    td1.appendChild(i1);
-    tr.appendChild(td1);
-    const td2 = document.createElement('td');
-    const i2 = document.createElement('input');
-    i2.type = 'text';
-    i2.value = escapeForInput(v);
-    i2.placeholder = 'e.g. .  (use \\n for newline, \\t for tab)';
-    i2.addEventListener('input', emit);
-    td2.appendChild(i2);
-    tr.appendChild(td2);
-    const td3 = document.createElement('td');
-    const del = document.createElement('button');
-    del.className = 'del'; del.textContent = '×';
-    del.addEventListener('click', () => { tr.remove(); emit(); });
-    td3.appendChild(del);
-    tr.appendChild(td3);
-    body.appendChild(tr);
-  }
-  for (const k of Object.keys(dict)) addRow(k, dict[k]);
-  wrap.appendChild(tbl);
-  const help = document.createElement('div');
-  help.className = 'help';
-  help.textContent = 'Symbol column: use \\n for newline, \\n\\n for paragraph break, '
-    + '\\t for tab, \\\\ for a literal backslash.';
-  wrap.appendChild(help);
-  const addWrap = document.createElement('div');
-  addWrap.className = 'add-row';
-  const add = document.createElement('button');
-  add.textContent = '+ add row';
-  add.addEventListener('click', () => { addRow('', ''); });
-  addWrap.appendChild(add);
-  wrap.appendChild(addWrap);
-  return wrap;
-}
-
 function render() {
   const main = $('main');
   main.innerHTML = '';
@@ -3500,9 +3384,6 @@ function render() {
     }
     main.appendChild(sec);
   }
-  // Run dependency dimming once after the form is built; subsequent updates
-  // are driven by setDirty().
-  applyFieldDependencies();
 }
 
 async function save() {
@@ -3618,6 +3499,12 @@ async function doRestart() {
 }
 
 document.addEventListener('DOMContentLoaded', async () => {
+  // Single delegated 'admin:dirty' listener — refreshes one field's reset
+  // visibility per dispatch. Replaces the per-fieldRow subscription that
+  // leaked a listener on every render/reset cycle.
+  document.addEventListener('admin:dirty', (e) => {
+    if (e && e.detail && e.detail.name) refreshFieldReset(e.detail.name);
+  });
   $('login-btn').addEventListener('click', async () => {
     const t = $('login-token').value.trim();
     if (!t) return;

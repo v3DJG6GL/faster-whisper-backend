@@ -11,11 +11,10 @@ sample + a `group_id`/`group_order` FK on the existing captures table
 row + the merged WAV; members get their `group_id` NULL'd out and
 return to the flat list.
 
-Member-content drift is detected via per-member PCM-content hashes
-stored in `member_hashes_json`. When an admin edits a member's
-transcript, `recompute_stale_for_member` rehashes the file and marks
-the group stale if the audio bytes changed — the merged WAV needs a
-rebuild.
+Member-content drift is recorded via per-member PCM-content hashes
+stored in `member_hashes_json` at merge time; downstream consumers
+compare against the snapshot when they need to decide whether the
+merged WAV is still authoritative.
 """
 from __future__ import annotations
 
@@ -523,41 +522,3 @@ def find_group_for_member(capture_id: str) -> str | None:
         "SELECT group_id FROM captures WHERE id = ?", (capture_id,),
     ).fetchone()
     return row["group_id"] if row and row["group_id"] else None
-
-
-def recompute_stale_for_member(capture_id: str) -> None:
-    """Called from captures_store.update_capture whenever a member's
-    audio could have changed (currently: a transcript edit doesn't
-    change audio, but future audio re-uploads will). For now we
-    invoke it on every member edit as defense-in-depth; the hash
-    compare is cheap (~50 ms for 15 s)."""
-    gid = find_group_for_member(capture_id)
-    if not gid:
-        return
-    g = get_group(gid)
-    if not g:
-        return
-    # Re-hash the member's current PCM bytes and compare against the
-    # snapshot stored at merge time.
-    expected = g["member_hashes"].get(capture_id)
-    if not expected:
-        return
-    import audio_merge
-    import captures_store
-    cap = captures_store.get_capture(capture_id)
-    if not cap:
-        return
-    try:
-        abs_p = captures_store.abs_audio_path(cap["audio_relpath"])
-        current = audio_merge.hash_wav_pcm(abs_p)
-    except Exception as e:
-        logger.warning(
-            "[groups] hash check failed for %s: %s", capture_id[:8], e,
-        )
-        return
-    if current != expected:
-        mark_stale(gid, stale=True)
-        logger.info(
-            "[groups] gid=%s marked stale (member %s drift)",
-            gid[:8], capture_id[:8],
-        )

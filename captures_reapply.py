@@ -84,14 +84,17 @@ def _run() -> None:
             _state["total"] = int(total_row[0]) if total_row else 0
 
         affected_group_ids: set[str] = set()
-        # Stream rows via the cursor instead of fetchall — the captures
-        # table can be tens of thousands of rows and we only ever look
-        # at one at a time. fetchall() pins them all in Python memory.
-        cur = conn.execute(
+        # Materialise the small projection up front — captures_store.update_capture
+        # writes back to the same connection inside the loop, and an open
+        # cursor on the same connection can skip/revisit rows when the
+        # underlying table is mutated mid-walk. Payload is just ids +
+        # short text columns (no words_json / segments_json), so memory
+        # stays bounded even at tens of thousands of rows.
+        rows = conn.execute(
             "SELECT id, raw, final, text_for_training, model, group_id"
             " FROM captures ORDER BY created_ts DESC"
-        )
-        for r in cur:
+        ).fetchall()
+        for r in rows:
             cid = r["id"]
             raw_text = r["raw"] or ""
             patch: dict[str, str] = {}

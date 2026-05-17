@@ -314,13 +314,11 @@ def create_capture(
             pass
         raise RuntimeError(f"audio transcode failed: {e}") from e
 
-    # fsync the data before swap so a crash between rename and SQLite
-    # insert doesn't leave a zero-length file on disk.
-    try:
-        with open(tmp_path, "rb") as f:
-            os.fsync(f.fileno())
-    except OSError:
-        pass
+    # Atomic visibility is handled by writing to .tmp + os.replace below;
+    # transcode_to_wav_16k_mono already closed the write fd, and re-opening
+    # read-only just to fsync is a no-op on Windows (fsync needs write
+    # access) and the .tmp+replace dance already guards the
+    # crash-between-rename-and-insert window.
     last_err: Exception | None = None
     for attempt in range(3):
         try:
@@ -430,8 +428,10 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
             evicted += evicted_status
 
     if mb_cap >= 1:
-        # Compute current total size by walking rows. Cheap because we
-        # only call getsize when over the row cap path.
+        # Walk every row to sum audio bytes — there's no cached size
+        # column, so this is O(N) getsize calls per insert. Hot-path
+        # cost is tolerated only because typical N is in the few-thousand
+        # range and the captures dir lives on local disk.
         byte_cap = mb_cap * 1024 * 1024
         total_bytes = _total_audio_bytes(conn)
         if total_bytes > byte_cap:
