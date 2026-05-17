@@ -753,6 +753,27 @@ CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS = True
 CAPTURES_VAD_TRIM_MARGIN_MS = 300
 
 
+# Auto-merge proposer (/captures "Auto-propose merges" panel) ---------------
+#
+# Heuristic ranks groupings of ungrouped captures into ~26-second training
+# samples honoring the existing 28 s hard cap. Knobs:
+#   SESSION_GAP_S    — captures more than this many seconds apart start a
+#                      new session bucket (tractability + density score).
+#   MIN_CLIP_S       — exclude captures shorter than this from proposals.
+#   DUP_THRESHOLD    — difflib.ratio above this rejects pairing in a group
+#                      (near-duplicate redictation / echo guard).
+#   MAX_PROPOSALS    — cap on returned proposals per request.
+#   TARGET_S         — fill-score peak; should sit 1+ s below the 28 s cliff
+#                      so the proposer doesn't camp at the rejection edge.
+#   CACHE_TTL_S      — proposer result TTL; invalidated on capture writes.
+CAPTURES_PROPOSER_SESSION_GAP_S = 600
+CAPTURES_PROPOSER_MIN_CLIP_S = 1.0
+CAPTURES_PROPOSER_DUP_THRESHOLD = 0.85
+CAPTURES_PROPOSER_MAX_PROPOSALS = 20
+CAPTURES_PROPOSER_TARGET_S = 26.0
+CAPTURES_PROPOSER_CACHE_TTL_S = 60
+
+
 # Snapshot the in-file defaults BEFORE config.local.json + env overrides apply.
 # Used by main.py's request log block to mark non-default scalar values with
 # `*` so the operator can see at a glance which knobs are overridden — and
@@ -898,6 +919,19 @@ CAPTURE_RECORDINGS_MAX_DURATION_SEC = _env_float(
     "WHISPER_CAPTURE_RECORDINGS_MAX_DURATION_SEC", CAPTURE_RECORDINGS_MAX_DURATION_SEC)
 CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT = _env_int(
     "WHISPER_CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT", CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT)
+
+CAPTURES_PROPOSER_SESSION_GAP_S = _env_int(
+    "WHISPER_CAPTURES_PROPOSER_SESSION_GAP_S", CAPTURES_PROPOSER_SESSION_GAP_S)
+CAPTURES_PROPOSER_MIN_CLIP_S = _env_float(
+    "WHISPER_CAPTURES_PROPOSER_MIN_CLIP_S", CAPTURES_PROPOSER_MIN_CLIP_S)
+CAPTURES_PROPOSER_DUP_THRESHOLD = _env_float(
+    "WHISPER_CAPTURES_PROPOSER_DUP_THRESHOLD", CAPTURES_PROPOSER_DUP_THRESHOLD)
+CAPTURES_PROPOSER_MAX_PROPOSALS = _env_int(
+    "WHISPER_CAPTURES_PROPOSER_MAX_PROPOSALS", CAPTURES_PROPOSER_MAX_PROPOSALS)
+CAPTURES_PROPOSER_TARGET_S = _env_float(
+    "WHISPER_CAPTURES_PROPOSER_TARGET_S", CAPTURES_PROPOSER_TARGET_S)
+CAPTURES_PROPOSER_CACHE_TTL_S = _env_int(
+    "WHISPER_CAPTURES_PROPOSER_CACHE_TTL_S", CAPTURES_PROPOSER_CACHE_TTL_S)
 
 
 # --- Advanced decode params -------------------------------------------------

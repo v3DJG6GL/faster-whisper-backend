@@ -355,6 +355,11 @@ def dissolve_group(gid: str) -> None:
     except (OSError, ValueError) as e:
         logger.warning("[groups] failed to unlink %s: %s",
                        g["merged_wav_relpath"], e)
+    try:
+        import captures_merge_proposer
+        captures_merge_proposer.invalidate(g.get("user_id"))
+    except Exception:
+        pass
     logger.info("[groups] dissolved gid=%s", gid[:8])
 
 

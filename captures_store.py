@@ -781,7 +781,15 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         )
         if cur.rowcount == 0:
             return None
-    return get_capture(cid)
+    row = get_capture(cid)
+    # Lazy import — captures_merge_proposer imports this module; a top-
+    # level import would loop. Safe to call with None on a missing row.
+    try:
+        import captures_merge_proposer
+        captures_merge_proposer.invalidate(row.get("user_id") if row else None)
+    except Exception:
+        pass
+    return row
 
 
 # ---------------------------------------------------------------------
@@ -797,13 +805,14 @@ def delete_capture(cid: str) -> bool:
     conn = _require_conn()
     with _lock:
         row = conn.execute(
-            "SELECT audio_relpath, audio_trimmed_relpath, group_id"
+            "SELECT audio_relpath, audio_trimmed_relpath, group_id, user_id"
             " FROM captures WHERE id = ?",
             (cid,),
         ).fetchone()
         if row is None:
             return False
         gid = row["group_id"]
+        uid = row["user_id"]
         conn.execute("DELETE FROM captures WHERE id = ?", (cid,))
     try:
         _safe_unlink(abs_audio_path(row["audio_relpath"]))
@@ -829,6 +838,11 @@ def delete_capture(cid: str) -> bool:
                 "[captures] auto-dissolve of gid=%s failed: %s",
                 gid[:8], _e,
             )
+    try:
+        import captures_merge_proposer
+        captures_merge_proposer.invalidate(uid)
+    except Exception:
+        pass
     logger.info("[captures] deleted id=%s", cid[:8])
     return True
 
