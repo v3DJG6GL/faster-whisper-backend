@@ -1945,11 +1945,9 @@ async def _stream_log_lines():
     for line in _read_tail(cfg.LOG_FILE, _LOG_VIEWER_INITIAL_LINES):
         yield f"data: {line}\n\n"
 
-    # Sentinel — the client's `bumpSev` previously stamped backlog WARNINGs/
-    # ERRORs at Date.now() and kept them "fresh" for 60 s, inflating the nav
-    # pills relative to the server-side severity_counts() (which uses the
-    # records' real timestamps). The client flips into "live" mode on this
-    # marker and ignores classifications until then.
+    # Sentinel — marks the boundary between backlog and the live poll
+    # loop. The client's append() early-returns on this line; pill counts
+    # are driven entirely by SEV_POLLER_JS against severity_counts().
     yield "data: __LIVE_TAIL__\n\n"
 
     # Live tail: open at end-of-file, poll for new lines. Reopen on rotation
