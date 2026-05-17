@@ -2634,6 +2634,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   var _allGroups = [];
   var _counts = {};
   var _openRows = {};   // cid -> { audio, blobUrl, wordEls, words, finalText, dirty, corrections, ... }
+  var _openGroups = {}; // gid -> { audio } — for blob-URL cleanup on render() / beforeunload
   var _selection = new Set();   // capture ids currently selected for merge
   var _lastSelectId = null;     // anchor for shift-range select
 
@@ -4483,6 +4484,7 @@ _CAPTURES_HTML = r"""<!doctype html>
         // Initial fill.
         applyServerGroup(detail);
         body.dataset.built = '1';
+        _openGroups[g.id] = { audio: audio };
       })
       .catch(function(e) {
         card.classList.remove('open');
@@ -4495,6 +4497,15 @@ _CAPTURES_HTML = r"""<!doctype html>
     var rows = applyFilters(_allCaptures);
     var list = document.getElementById('list');
     var openIds = Object.keys(_openRows);
+    // Group cards don't persist open state across render — innerHTML wipe
+    // destroys their <audio>, so revoke any tracked blob URL first.
+    Object.keys(_openGroups).forEach(function(gid) {
+      var st = _openGroups[gid];
+      if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
+        try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
+      }
+    });
+    _openGroups = {};
     list.innerHTML = '';
     // Build a merged timeline: ungrouped captures + group cards (members
     // are nested inside group cards, so we exclude them from the flat list).
@@ -4573,6 +4584,12 @@ _CAPTURES_HTML = r"""<!doctype html>
       var st = _openRows[cid];
       if (st && st.blobUrl) {
         try { URL.revokeObjectURL(st.blobUrl); } catch(_) {}
+      }
+    });
+    Object.keys(_openGroups).forEach(function(gid) {
+      var st = _openGroups[gid];
+      if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
+        try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
       }
     });
   });
