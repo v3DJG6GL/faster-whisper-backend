@@ -120,7 +120,7 @@ def loaded_models_snapshot() -> list[dict[str, Any]]:
         out = []
         now = time.time()
         for info in _loaded_models.values():
-            mb = (info["vram_bytes"] / (1024 * 1024)) if info["vram_bytes"] else None
+            mb = (info["vram_bytes"] / (1024 * 1024)) if info["vram_bytes"] is not None else None
             out.append({
                 "name": info["name"],
                 "device": info["device"],

@@ -83,7 +83,6 @@ def require_allowed_host(allowlist_ref: Callable[[], list[str]]) -> Callable[[Re
 # page and the nav row read severity_counts() at request time. Bounded ring
 # (maxlen=2000) keeps memory predictable under burst logging — once the ring
 # fills, oldest entries fall off and the per-level counters cap accordingly.
-# (We keep the timestamp tuple in case a future window-based view wants it.)
 _SEVERITY_LOG: deque[tuple[float, int]] = deque(maxlen=2000)
 
 
