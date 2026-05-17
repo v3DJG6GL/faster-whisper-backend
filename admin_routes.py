@@ -2570,7 +2570,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       // them. Once force-included the row is "alive" — undim it so the
       // effective state is visible at a glance.
       if (!globallyEnabled && !forcedIn) row.classList.add('globally-disabled');
-      if (!globallyEnabled && forcedIn) row.classList.add('force-included');
       // Diff-to-global hook: a rule whose slug is in neither EXCLUDE nor
       // INCLUDE is "functionally inherited" — same contract as .mo-row's
       // data-matches-global. The diff-mode CSS dims rows tagged 'true'.
@@ -2608,7 +2607,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           const newForcedIn  = !globallyEnabled && cb.checked;
           row.classList.toggle('excluded', newForcedOut);
           row.classList.toggle('globally-disabled', !globallyEnabled && !newForcedIn);
-          row.classList.toggle('force-included', newForcedIn);
           // Diff-mode dim follows the new forced state synchronously — no
           // attribute means the dim CSS would freeze on the render-time value.
           row.dataset.matchesGlobal = (!newForcedOut && !newForcedIn) ? 'true' : 'false';
