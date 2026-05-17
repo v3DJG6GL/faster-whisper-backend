@@ -1708,7 +1708,6 @@ async def transcribe(
             # walk per request. No trace participation: the runtime trace
             # describes the user-facing pipeline, not the training-form
             # variant.
-            training_text_str = ""
             if will_capture:
                 training_text_str = _postprocess_text(
                     raw_full_text,
