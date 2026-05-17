@@ -125,7 +125,6 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d["corrections"] = json.loads(d.pop("corrections_json", "[]") or "[]")
     except (TypeError, ValueError):
         d["corrections"] = []
-    d.pop("snapshot_trusted_client", None)
     return d
 
 

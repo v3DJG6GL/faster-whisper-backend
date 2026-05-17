@@ -1719,7 +1719,7 @@ function _applyFieldDiff(serverValue, diff) {
   return diff.value;
 }
 
-function _diffKindFor(ruleType, field) {
+function _diffKindFor(field) {
   if (_DICT_FIELDS.has(field)) return 'dict';
   if (_LIST_FIELDS.has(field)) return 'list';
   return 'scalar';
@@ -1833,7 +1833,7 @@ async function doSave() {
       const allowed = _ALLOWED_BY_TYPE[live.type] || new Set(['enabled']);
       const fieldDiffs = {};
       for (const k of allowed) {
-        const d = _fieldDiff(orig[k], live[k], _diffKindFor(live.type, k));
+        const d = _fieldDiff(orig[k], live[k], _diffKindFor(k));
         if (d) fieldDiffs[k] = d;
       }
       if (Object.keys(fieldDiffs).length) diffsBySlug.set(slug, fieldDiffs);
