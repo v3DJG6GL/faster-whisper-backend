@@ -1124,13 +1124,11 @@ def _enrich_group(g: dict[str, Any]) -> dict[str, Any]:
     chip-dependent fields (transcript + corrections) from current
     member state.
 
-    Source of truth for chips is each MEMBER's `corrections` list. The
-    group's own `corrections_json` column is a leftover cache from the
-    earlier "one-time projection" design; it's never read here. With
+    Source of truth for chips is each MEMBER's `corrections` list. With
     every read going through this function, report cascades and direct
     member-chip edits on /captures flow through to the group's
-    Corrections section automatically — no separate migration pass or
-    in-DB chip storage needed at the group level."""
+    Corrections section automatically — no in-DB chip storage needed
+    at the group level."""
     import capture_groups_store
     members = capture_groups_store.get_members(g["id"])
     _hydrate_members(members)
