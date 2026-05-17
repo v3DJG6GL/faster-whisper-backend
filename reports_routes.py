@@ -161,19 +161,16 @@ async def submit_report(
     # into a fix" by just clicking Submit.
     captures_updated = 0
     if corrections and payload.request_id:
-        try:
-            import captures_store
-            matches = captures_store.find_by_request_id(payload.request_id)
-            for cap in matches:
-                existing = cap.get("corrections") or []
-                merged = reports_store._merge_corrections(existing, corrections)
-                if merged != existing:
-                    captures_store.update_capture(
-                        cap["id"], {"corrections": merged},
-                    )
-                    captures_updated += 1
-        except Exception as e:
-            logger.warning("[reports] capture chip-merge failed: %s", e)
+        import captures_store
+        matches = captures_store.find_by_request_id(payload.request_id)
+        for cap in matches:
+            existing = cap.get("corrections") or []
+            merged = reports_store._merge_corrections(existing, corrections)
+            if merged != existing:
+                captures_store.update_capture(
+                    cap["id"], {"corrections": merged},
+                )
+                captures_updated += 1
 
     return JSONResponse({
         "ok": True,
@@ -216,8 +213,11 @@ class PatchReportIn(BaseModel):
 )
 async def list_reports_api() -> JSONResponse:
     rows = reports_store.list_reports()
+    usernames = api_keys_store.get_usernames(
+        [r.get("user_id") for r in rows],
+    )
     for r in rows:
-        r["username"] = api_keys_store.get_username(r.get("user_id"))
+        r["username"] = usernames.get(r.get("user_id"))
     return JSONResponse({
         "reports": rows,
         "counts": reports_store.counts_by_status(),
@@ -265,28 +265,25 @@ def _delete_report_and_cascade(report: dict[str, Any]) -> int:
     request_id = report.get("request_id")
     report_chips = report.get("corrections") or []
 
-    # Compute "surviving" chips: union of corrections from all OTHER
-    # reports sharing this request_id (NOT including the one we're
-    # about to delete).
+    reports_store.delete_report(rid)
+
+    # Compute "surviving" chips AFTER the delete: any concurrent submit
+    # that landed during this handler is now visible and its chips are
+    # protected from the prune. Without this re-snapshot order, a chip
+    # from a freshly-submitted report can get stripped because we
+    # snapshotted survivors before it became durable.
     survivor_keys: set[tuple[Any, Any]] = set()
     if request_id:
-        for other in reports_store.list_reports_for_request_id(
-            request_id, exclude_id=rid,
-        ):
+        for other in reports_store.list_reports_for_request_id(request_id):
             for c in (other.get("corrections") or []):
                 if isinstance(c, dict):
                     survivor_keys.add((c.get("idx"), c.get("correct")))
 
-    # The strip-set is THIS report's chips minus what other reports
-    # still claim. If everything overlaps with a survivor, prune-set is
-    # empty and the cascade is a no-op.
     prune_set = [
         c for c in report_chips
         if isinstance(c, dict)
         and (c.get("idx"), c.get("correct")) not in survivor_keys
     ]
-
-    reports_store.delete_report(rid)
 
     if request_id and prune_set:
         return captures_store.prune_chips_for_request_id(
@@ -309,8 +306,11 @@ async def delete_my_report_api(
     capture sharing the request_id (filtered against surviving reports
     from other users, so we don't strip chips someone else still
     claims)."""
-    uid = user.get("user_id") or "(open-mode)"
-    existing = reports_store.find_by_request_user(request_id, uid)
+    # find_by_request_user returns None for falsy user_id (open-mode), so
+    # the 404 path is the same — no sentinel string needed.
+    existing = reports_store.find_by_request_user(
+        request_id, user.get("user_id"),
+    )
     if not existing:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, "no report to delete",

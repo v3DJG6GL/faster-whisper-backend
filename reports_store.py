@@ -297,34 +297,6 @@ def upsert_report(
     return rid, False
 
 
-def create_report(
-    *,
-    request_id: "str | None",
-    trace_ts: float,
-    model: str,
-    raw: str,
-    final: str,
-    steps: list,
-    corrections: list,
-    intended_text: str,
-    user_comment: str,
-    reporter_role: str,
-    reporter_host: str,
-) -> str:
-    """Compatibility shim — delegates to upsert_report with user_id=None
-    so callers that haven't been migrated still get a fresh row each
-    time (no upsert possible without user_id). New code should call
-    upsert_report directly."""
-    rid, _ = upsert_report(
-        user_id=None, request_id=request_id, trace_ts=trace_ts,
-        model=model, raw=raw, final=final, steps=steps,
-        corrections=corrections, intended_text=intended_text,
-        user_comment=user_comment, reporter_role=reporter_role,
-        reporter_host=reporter_host,
-    )
-    return rid
-
-
 def _evict_to_cap(conn: sqlite3.Connection) -> None:
     """Enforce REPORTS_MAX: when total > cap, delete oldest closed first,
     then oldest open. Single transaction; logs only the count.
@@ -531,10 +503,11 @@ def clear_all(reporter_host: str = "") -> int:
         row = conn.execute("SELECT COUNT(*) FROM reports").fetchone()
         n = int(row[0]) if row else 0
         conn.execute("DELETE FROM reports")
-        # VACUUM is safe outside an explicit transaction because the
-        # connection is in autocommit mode. Reclaims pages so the file
-        # shrinks back after a bulk delete.
-        conn.execute("VACUUM")
+    # VACUUM rewrites the entire DB file and blocks other writers — run
+    # it outside _lock so unrelated writes (e.g. a fresh report submit
+    # arriving during the wipe) aren't stalled. Connection is autocommit,
+    # no transaction needed.
+    conn.execute("VACUUM")
     logger.warning(
         "[reports] admin from %s cleared %d reports",
         reporter_host or "<unknown>", n,

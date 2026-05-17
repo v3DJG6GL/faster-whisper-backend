@@ -251,6 +251,34 @@ def get_username(user_id: "str | None") -> "str | None":
     return u.get("username") if u else None
 
 
+def get_usernames(user_ids: "list[str | None]") -> "dict[str, str | None]":
+    """Batched companion to get_username: one SQL roundtrip for many ids.
+    Returns a dict keyed by every truthy input id mapping to its
+    username (None for unknown / sentinel ids). The empty-id and
+    "(open-mode)" sentinel are not represented in the dict; callers
+    should still default to None for those.
+
+    Use this on listing routes that would otherwise call get_username
+    once per row — a /reports list with 500 rows = 500 SQL hits where
+    one is enough."""
+    real_ids = {
+        uid for uid in user_ids
+        if isinstance(uid, str) and uid and uid != "(open-mode)"
+    }
+    out: dict[str, "str | None"] = {uid: None for uid in real_ids}
+    if not real_ids:
+        return out
+    conn = _require_conn()
+    placeholders = ",".join("?" * len(real_ids))
+    cur = conn.execute(
+        f"SELECT id, username FROM users WHERE id IN ({placeholders})",
+        list(real_ids),
+    )
+    for row in cur:
+        out[row["id"]] = row["username"]
+    return out
+
+
 def revoke_user(user_id: str) -> None:
     """Soft-delete a user and revoke all their keys. Last-admin guard
     must be checked by the caller — this function unconditionally

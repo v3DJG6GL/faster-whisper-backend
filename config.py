@@ -612,7 +612,7 @@ REPORTS_DB = os.path.join(
     os.path.dirname(os.path.abspath(__file__)), "reports.local.sqlite3"
 )
 
-# Soft cap. On overflow create_report() evicts oldest closed reports first
+# Soft cap. On overflow upsert_report() evicts oldest closed reports first
 # (resolved/dismissed), then oldest open. Tune lower for memory-tight LAN
 # deployments; the admin page is client-side filtered so the practical
 # upper bound is around what a browser can render in one DOM.
