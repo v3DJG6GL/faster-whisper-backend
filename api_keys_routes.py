@@ -362,8 +362,6 @@ _API_KEYS_HTML = r"""<!doctype html>
   </div>
 </div>
 
-<div id="toast"></div>
-
 {{SCALE_PICKER_JS}}
 {{SEV_POLLER_JS}}
 {{TIME_HELPERS_JS}}

@@ -222,16 +222,11 @@ def create_user(username: str, is_admin: bool) -> str:
     return uid
 
 
-def list_users(*, include_revoked: bool = False) -> list[dict[str, Any]]:
+def list_users() -> list[dict[str, Any]]:
     conn = _require_conn()
-    if include_revoked:
-        rows = conn.execute(
-            "SELECT * FROM users ORDER BY created_ts DESC"
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT * FROM users WHERE revoked_ts IS NULL ORDER BY created_ts DESC"
-        ).fetchall()
+    rows = conn.execute(
+        "SELECT * FROM users WHERE revoked_ts IS NULL ORDER BY created_ts DESC"
+    ).fetchall()
     return [_row_to_user_dict(r) for r in rows]
 
 
@@ -369,18 +364,12 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
     return raw_key, rec
 
 
-def list_keys(user_id: str | None = None, *, include_revoked: bool = False) -> list[dict[str, Any]]:
+def list_keys(user_id: str) -> list[dict[str, Any]]:
     conn = _require_conn()
-    clauses = []
-    args: list[Any] = []
-    if user_id is not None:
-        clauses.append("user_id = ?")
-        args.append(user_id)
-    if not include_revoked:
-        clauses.append("revoked_ts IS NULL")
-    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     rows = conn.execute(
-        f"SELECT * FROM api_keys{where} ORDER BY created_ts DESC", args,
+        "SELECT * FROM api_keys WHERE user_id = ? AND revoked_ts IS NULL"
+        " ORDER BY created_ts DESC",
+        (user_id,),
     ).fetchall()
     return [_row_to_key_dict(r) for r in rows]
 

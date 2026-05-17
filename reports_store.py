@@ -63,8 +63,7 @@ CREATE TABLE IF NOT EXISTS reports (
   reporter_host   TEXT NOT NULL DEFAULT '',
   status          TEXT NOT NULL DEFAULT 'open',
   admin_notes     TEXT NOT NULL DEFAULT '',
-  resolved_ts     REAL,
-  snapshot_trusted_client INTEGER NOT NULL DEFAULT 1
+  resolved_ts     REAL
 );
 CREATE INDEX IF NOT EXISTS idx_reports_created    ON reports(created_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_status     ON reports(status);
@@ -126,7 +125,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d["corrections"] = json.loads(d.pop("corrections_json", "[]") or "[]")
     except (TypeError, ValueError):
         d["corrections"] = []
-    d["snapshot_trusted_client"] = bool(d.get("snapshot_trusted_client"))
+    d.pop("snapshot_trusted_client", None)
     return d
 
 
@@ -255,16 +254,16 @@ def upsert_report(
             " id, created_ts, trace_ts, request_id, model,"
             " raw, final, steps_json, corrections_json,"
             " intended_text, user_comment, reporter_role, reporter_host,"
-            " status, admin_notes, resolved_ts, snapshot_trusted_client,"
+            " status, admin_notes, resolved_ts,"
             " user_id"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 rid, now, float(trace_ts or now), request_id, model,
                 raw_t, final_t,
                 json.dumps(steps_t, ensure_ascii=False),
                 json.dumps(corr_in, ensure_ascii=False),
                 intended_t, comment_t, role_t, reporter_host or "",
-                "open", "", None, 1, user_id,
+                "open", "", None, user_id,
             ),
         )
         _evict_to_cap(conn)
@@ -350,22 +349,6 @@ def list_reports_for_request_id(request_id: str) -> list[dict[str, Any]]:
         (request_id,),
     )
     return [_row_to_dict(r) for r in cur.fetchall()]
-
-
-def recent_reported_request_ids(limit: int = 100) -> list[str]:
-    """Return up to `limit` distinct request_ids that have at least one
-    report. Newest-report-first ordering. Feeds the server-authoritative
-    '✓ reported' badge in /quick-config."""
-    conn = _require_conn()
-    cur = conn.execute(
-        "SELECT request_id, MAX(created_ts) AS ts FROM reports"
-        " WHERE request_id IS NOT NULL"
-        " GROUP BY request_id"
-        " ORDER BY ts DESC"
-        " LIMIT ?",
-        (int(limit),),
-    )
-    return [r["request_id"] for r in cur.fetchall() if r["request_id"]]
 
 
 def recent_reports_for_user(
@@ -467,9 +450,7 @@ def clear_all(reporter_host: str = "") -> int:
     the count + caller host for audit."""
     conn = _require_conn()
     with _lock:
-        row = conn.execute("SELECT COUNT(*) FROM reports").fetchone()
-        n = int(row[0]) if row else 0
-        conn.execute("DELETE FROM reports")
+        n = conn.execute("DELETE FROM reports").rowcount
     # VACUUM rewrites the entire DB file and blocks other writers — run
     # it outside _lock so unrelated writes (e.g. a fresh report submit
     # arriving during the wipe) aren't stalled. Connection is autocommit,
