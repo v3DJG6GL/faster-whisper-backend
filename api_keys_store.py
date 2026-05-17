@@ -47,7 +47,6 @@ class LastAdminError(Exception):
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
-_db_path: str | None = None
 
 # In-memory hash → user row index. Rebuilt on mutation.
 _KEY_INDEX: dict[str, dict[str, Any]] = {}
@@ -97,8 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_user   ON api_keys(user_id);
 def init_db(db_path: str) -> None:
     """Open the SQLite DB (WAL) and ensure the schema exists. Idempotent.
     Builds the in-memory key index from active rows."""
-    global _conn, _db_path
-    _db_path = db_path
+    global _conn
     db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
     os.makedirs(db_dir, exist_ok=True)
     _conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
@@ -299,9 +297,16 @@ def revoke_user(user_id: str) -> None:
             (user_id,),
         ).fetchone()
         if row and int(row["is_admin"]) == 1:
+            # Count remaining active admin KEYS (not users) — is_locked_down
+            # is driven by active admin keys, so revoking an admin user with
+            # the only admin keys flips the server to OPEN mode even if
+            # another keyless admin user still exists. Mirror revoke_key's
+            # JOIN count and exclude the keys we're about to cascade-revoke.
             row2 = conn.execute(
-                "SELECT COUNT(*) FROM users"
-                " WHERE id != ? AND is_admin = 1 AND revoked_ts IS NULL",
+                "SELECT COUNT(*) FROM api_keys k"
+                " JOIN users u ON u.id = k.user_id"
+                " WHERE k.user_id != ? AND k.revoked_ts IS NULL"
+                " AND u.revoked_ts IS NULL AND u.is_admin = 1",
                 (user_id,),
             ).fetchone()
             if int(row2[0]) == 0:
