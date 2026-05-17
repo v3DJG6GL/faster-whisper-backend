@@ -65,8 +65,12 @@ _EVICTION_ORDER = ("dismissed", "audio_missing", "reviewed", "new", "ready")
 #
 #   1. _SCHEMA_CORE  — table + indexes that reference ONLY original
 #      columns. Safe to run against a pre-flag DB.
-#   2. _MIGRATIONS   — ALTER TABLE ADD COLUMN for user_id, group_id,
-#      group_order. Idempotent (catches the "duplicate column" error).
+#   2. _MIGRATIONS   — ALTER TABLE ADD COLUMN for every column added
+#      after the first ship (currently: user_id, group_id, group_order,
+#      text_for_training, audio_trimmed_relpath, audio_trim_lead_ms,
+#      audio_trim_trail_ms). Idempotent — each stmt runs in its own
+#      try/except so a fresh DB whose CREATE TABLE already includes
+#      the column swallows "duplicate column …" and keeps going.
 #   3. _SCHEMA_USER_GROUP_INDEXES — indexes that reference user_id /
 #      group_id. MUST run AFTER step 2 — if we packaged them into
 #      _SCHEMA_CORE with executescript(), the index creation on a
