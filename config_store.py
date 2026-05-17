@@ -26,7 +26,6 @@ from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
-from typing import Union
 
 
 _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -590,7 +589,7 @@ class TerminalRule(_RuleBase):
 
 
 PipelineRule = Annotated[
-    Union[RegexRule, LowercaseWordlistRule, MapRule, DedupRule, UpperRule, TerminalRule],
+    RegexRule | LowercaseWordlistRule | MapRule | DedupRule | UpperRule | TerminalRule,
     Field(discriminator="type"),
 ]
 
@@ -884,8 +883,8 @@ class AdminConfig(BaseModel):
         seen: set[str] = set()
         terminal_idx: int | None = None
         for idx, rule in enumerate(v):
-            slug = rule.get("name") if isinstance(rule, dict) else getattr(rule, "name", None)
-            rtype = rule.get("type") if isinstance(rule, dict) else getattr(rule, "type", None)
+            slug = getattr(rule, "name", None)
+            rtype = getattr(rule, "type", None)
             if slug in seen:
                 raise ValueError(f"duplicate rule name '{slug}' at index {idx}")
             if slug is not None:
@@ -900,7 +899,7 @@ class AdminConfig(BaseModel):
             # time; skip it here.
             if rtype == "callback:map":
                 continue
-            pattern = rule.get("pattern") if isinstance(rule, dict) else getattr(rule, "pattern", None)
+            pattern = getattr(rule, "pattern", None)
             if not pattern:
                 continue
             try:
@@ -909,8 +908,7 @@ class AdminConfig(BaseModel):
                 raise ValueError(f"rule {idx} ({slug!r}): invalid regex: {e}")
             replacement = ""
             if rtype == "regex":
-                replacement = (rule.get("replacement") if isinstance(rule, dict)
-                               else getattr(rule, "replacement", "")) or ""
+                replacement = getattr(rule, "replacement", "") or ""
             result_holder: dict[str, Any] = {"done": False, "err": None}
             def _run(_compiled=compiled, _repl=replacement) -> None:
                 try:
@@ -921,14 +919,18 @@ class AdminConfig(BaseModel):
             t = threading.Thread(target=_run, daemon=True)
             t.start()
             t.join(timeout=2.0)
+            # Check err before done: when the regex raises (e.g. invalid
+            # backref), _run sets err and leaves done=False, so the
+            # done-first check would misreport every regex error as a
+            # 2 s timeout.
+            if result_holder["err"] is not None:
+                raise ValueError(
+                    f"rule {idx} ({slug!r}): regex test failed: {result_holder['err']}"
+                )
             if not result_holder["done"]:
                 raise ValueError(
                     f"rule {idx} ({slug!r}): regex took > 2 s on a 1 KB fixture "
                     "(likely catastrophic backtracking). Simplify the pattern."
-                )
-            if result_holder["err"] is not None:
-                raise ValueError(
-                    f"rule {idx} ({slug!r}): regex test failed: {result_holder['err']}"
                 )
         if terminal_idx is not None and terminal_idx != len(v) - 1:
             raise ValueError(

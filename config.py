@@ -854,17 +854,15 @@ if _env_reports_retention is not None and _env_reports_retention.strip():
     except ValueError:
         pass
 
+def _truthy(s: str) -> bool:
+    return s.strip().lower() in ("1", "true", "yes", "on")
+
 _env_reports_allow_user = os.environ.get("WHISPER_REPORTS_ALLOW_USER_SUBMIT")
 if _env_reports_allow_user is not None and _env_reports_allow_user.strip():
-    REPORTS_ALLOW_USER_SUBMIT = _env_reports_allow_user.strip().lower() in (
-        "1", "true", "yes", "on"
-    )
+    REPORTS_ALLOW_USER_SUBMIT = _truthy(_env_reports_allow_user)
 
 
 # --- Captures (fine-tuning data store) ------------------------------------
-
-def _truthy(s: str) -> bool:
-    return s.strip().lower() in ("1", "true", "yes", "on")
 
 _env_cap_enabled = os.environ.get("WHISPER_CAPTURE_RECORDINGS_ENABLED")
 if _env_cap_enabled is not None and _env_cap_enabled.strip():
