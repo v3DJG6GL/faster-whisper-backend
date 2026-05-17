@@ -2964,9 +2964,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // Bottom controls.
   const ctrls = document.createElement('div');
   ctrls.className = 'rule-list-controls';
-  ctrls.style.marginTop = '8px';
+  ctrls.style.marginTop = '0.5rem';
   ctrls.style.display = 'flex';
-  ctrls.style.gap = '8px';
+  ctrls.style.gap = '0.5rem';
 
   const addBtn = document.createElement('button');
   addBtn.type = 'button';
@@ -3047,18 +3047,18 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const labelInp = document.createElement('input');
     labelInp.type = 'text';
     labelInp.placeholder = 'Friendly label (e.g. "Expand Uhr to :00")';
-    labelInp.style.width = '100%'; labelInp.style.marginTop = '4px';
+    labelInp.style.width = '100%'; labelInp.style.marginTop = '0.25rem';
 
     const ok = document.createElement('button');
-    ok.type = 'button'; ok.textContent = 'Add'; ok.style.marginTop = '6px';
+    ok.type = 'button'; ok.textContent = 'Add'; ok.style.marginTop = '0.375rem';
     const cancel = document.createElement('button');
-    cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.style.marginLeft = '6px';
+    cancel.type = 'button'; cancel.textContent = 'Cancel'; cancel.style.marginLeft = '0.375rem';
 
     body.appendChild(_labeledRow('Type', typeSel));
     body.appendChild(_labeledRow('Label', labelInp));
     const hint = document.createElement('div');
     hint.className = 'help';
-    hint.style.marginTop = '6px';
+    hint.style.marginTop = '0.375rem';
     hint.textContent = 'Type-specific fields (pattern, replacement, wordlist, map) '
       + 'open in the rule body after Add.';
     body.appendChild(hint);
@@ -3105,7 +3105,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
   function _labeledRow(label, el) {
     const wr = document.createElement('div');
-    wr.style.marginTop = '4px';
+    wr.style.marginTop = '0.25rem';
     const l = document.createElement('div');
     l.className = 'help'; l.textContent = label + ':';
     wr.appendChild(l); wr.appendChild(el);
@@ -3147,8 +3147,6 @@ function pipelineTestPanel() {
   sample.rows = 2;
   sample.style.width = '100%';
   sample.style.boxSizing = 'border-box';
-  sample.style.fontFamily = 'ui-monospace, Menlo, Consolas, monospace';
-  sample.style.fontSize = '12px';
   wrap.appendChild(sample);
 
   sel.addEventListener('change', () => {
@@ -3158,7 +3156,7 @@ function pipelineTestPanel() {
   const runBtn = document.createElement('button');
   runBtn.type = 'button';
   runBtn.textContent = 'Run all enabled rules';
-  runBtn.style.marginTop = '6px';
+  runBtn.style.marginTop = '0.375rem';
   wrap.appendChild(runBtn);
 
   const out = document.createElement('div');
@@ -3228,12 +3226,12 @@ function nullableNumberEditor(name, v) {
   // Re-enabling restores the last-known number (or 0 if there was none).
   const wrap = document.createElement('span');
   wrap.className = 'nullable-wrap';
-  wrap.style.display = 'flex'; wrap.style.gap = '6px'; wrap.style.alignItems = 'center';
+  wrap.style.display = 'flex'; wrap.style.gap = '0.375rem'; wrap.style.alignItems = 'center';
 
   const i = document.createElement('input');
   i.type = 'number'; i.step = 'any';
   const btn = document.createElement('button');
-  btn.style.padding = '2px 8px';
+  btn.style.padding = '0.125rem 0.5rem';
 
   // Last non-null value the user typed, used to restore on "enable" click.
   let lastVal = (v == null) ? 0 : v;
