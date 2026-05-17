@@ -774,6 +774,16 @@ def _drop_suppress_chars_cache(model_id: str) -> None:
             _suppress_chars_cache.pop(k, None)
 
 
+def _drop_loaded_model(name: str) -> None:
+    """Single unload entry point: pop the cached WhisperModel, drop its
+    suppress-chars entries, and unregister from the system_stats registry.
+    Caller is responsible for holding _model_load_lock when the unload is
+    racy with loads (LRU eviction and idle eviction paths)."""
+    _loaded_models.pop(name, None)
+    _drop_suppress_chars_cache(name)
+    system_stats.unregister_loaded_model(name)
+
+
 def _resolve_model_name(requested: str) -> str:
     """Map OpenAI-compatible 'whisper-1' (or empty) to our configured default;
     pass anything else through as a faster-whisper / HF model identifier."""
@@ -1016,11 +1026,10 @@ async def _get_or_load_model(name: str) -> WhisperModel:
 
         # Evict the least-recently-used model(s) until we have room.
         while len(_loaded_models) >= cfg.MAX_LOADED_MODELS:
-            evicted_name, _ = _loaded_models.popitem(last=False)
+            evicted_name = next(iter(_loaded_models))
             logger.info("Evicting model from VRAM (LRU, max=%d): %s",
                         cfg.MAX_LOADED_MODELS, evicted_name)
-            _drop_suppress_chars_cache(evicted_name)
-            system_stats.unregister_loaded_model(evicted_name)
+            _drop_loaded_model(evicted_name)
 
         logger.info("Loading model: %s", name)
         loop = _asyncio_for_models.get_running_loop()
@@ -1134,9 +1143,7 @@ async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
         for name in names:
             logger.info("[evict-on-edit] dropping %s from cache; "
                         "reload on next request", name)
-            _loaded_models.pop(name, None)
-            _drop_suppress_chars_cache(name)
-            system_stats.unregister_loaded_model(name)
+            _drop_loaded_model(name)
             evicted.append(name)
     return evicted
 
@@ -1176,9 +1183,7 @@ async def _idle_evictor() -> None:
                         continue   # raced with another path
                     logger.info("[idle-evict] unloading %s after %ds idle",
                                 name, timeout)
-                    _loaded_models.pop(name, None)
-                    _drop_suppress_chars_cache(name)
-                    system_stats.unregister_loaded_model(name)
+                    _drop_loaded_model(name)
             gc.collect()
             try:
                 import torch
@@ -1368,29 +1373,19 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    evictor_task.cancel()
-    try:
-        await evictor_task
-    except (_asyncio_for_models.CancelledError, Exception):
-        pass
-    if reports_sweep_task is not None:
-        reports_sweep_task.cancel()
+    async def _cancel(task) -> None:
+        if task is None:
+            return
+        task.cancel()
         try:
-            await reports_sweep_task
+            await task
         except (_asyncio_for_models.CancelledError, Exception):
             pass
-    if captures_sweep_task is not None:
-        captures_sweep_task.cancel()
-        try:
-            await captures_sweep_task
-        except (_asyncio_for_models.CancelledError, Exception):
-            pass
-    if open_mode_task is not None:
-        open_mode_task.cancel()
-        try:
-            await open_mode_task
-        except (_asyncio_for_models.CancelledError, Exception):
-            pass
+
+    await _cancel(evictor_task)
+    await _cancel(reports_sweep_task)
+    await _cancel(captures_sweep_task)
+    await _cancel(open_mode_task)
 
     _loaded_models.clear()
     # Best-effort NVML shutdown so the service exit doesn't leak driver
