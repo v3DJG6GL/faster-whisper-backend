@@ -1350,10 +1350,12 @@ def _build_merged_words(
     eff_dur_s == full duration), so no clamps/drops actually fire.
 
     `get_members` strips heavy fields for the list view, so we re-fetch
-    each capture to get `words`. Each member's words are run through
-    `_per_word_postprocess` so the displayed text matches what's in
-    `final` / what gets exported. Cost is bounded — ≤30 members,
-    ≤a few hundred words total per ≤28 s group — and only runs on expand."""
+    each capture to get `words`. Each member's words then go through
+    `_align_words_to_final`, which runs `main._postprocess_text` per raw
+    word and LCS-aligns the result to `final` so the displayed text
+    matches what's in `final` / what gets exported. Cost is bounded —
+    ≤30 members, ≤a few hundred words total per ≤28 s group — and only
+    runs on expand."""
     silence_s = max(0, int(silence_ms)) / 1000.0
     lead_s = max(0, int(merged_lead_trim_ms or 0)) / 1000.0
     eff_dur_s: float | None = None
