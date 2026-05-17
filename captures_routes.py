@@ -3622,8 +3622,9 @@ _CAPTURES_HTML = r"""<!doctype html>
   }
 
   // Re-run the pipeline on the stored `raw` so the training-form text
-  // reflects current PIPELINE_RULES edits. Updates the visible word-
-  // strip + preview in place when the text changed.
+  // reflects current PIPELINE_RULES edits. Updates the preview text in
+  // place; the word-strip (post-edit tints, rule-removed markers, raw-
+  // word tooltips) only refreshes on the next expand of this row.
   async function onReprocess(state, r, btn) {
     var origLabel = btn.textContent;
     btn.disabled = true;
