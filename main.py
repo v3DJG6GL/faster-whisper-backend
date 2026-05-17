@@ -1883,7 +1883,6 @@ async def transcribe(
 async def list_models():
     """OpenAI-style model listing — currently-loaded models plus the configured
     default. Useful for clients to discover what's available without trial."""
-    import time
     now = int(time.time())
     names: list[str] = list(_loaded_models.keys())
     if cfg.DEFAULT_MODEL not in names:
