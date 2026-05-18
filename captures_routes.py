@@ -2668,19 +2668,36 @@ _CAPTURES_HTML = r"""<!doctype html>
     display: flex; flex-direction: column; gap: 0.3rem;
     margin: 0.4rem 0 0.2rem; width: 100%;
   }
-  .merge-preview-controls {
+  /* Compact audio player — reused for the merge preview AND for the
+     single-capture / group-expand audio rows on /captures. */
+  .compact-player {
     display: flex; align-items: center; gap: 0.4rem;
+    margin: 0.4rem 0;
   }
-  .merge-preview-scrub {
+  .compact-player .audio-hidden {
+    display: none;
+  }
+  .compact-player-btn {
+    background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 3px;
+    padding: 0.15rem 0.5rem; cursor: pointer;
+    font-size: var(--fs-sm); font-family: var(--font-mono);
+    min-width: 1.8rem; text-align: center;
+  }
+  .compact-player-btn:hover:not(:disabled) {
+    background: #21262d; color: var(--bold);
+  }
+  .compact-player-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .compact-player-scrub {
     flex: 1; height: 0.5rem; margin: 0; cursor: pointer;
     accent-color: var(--accent, #58a6ff);
   }
-  .merge-preview-scrub:disabled { cursor: not-allowed; opacity: 0.4; }
-  .merge-preview-time {
+  .compact-player-scrub:disabled { cursor: not-allowed; opacity: 0.4; }
+  .compact-player-time {
     font-family: var(--font-mono); font-size: var(--fs-xs);
     color: var(--help); min-width: 2.2rem; text-align: right;
   }
-  .merge-preview-time-sep {
+  .compact-player-time-sep {
     color: var(--help); font-size: var(--fs-xs);
   }
   .merge-preview-panel .word-strip {
@@ -3316,9 +3333,8 @@ _CAPTURES_HTML = r"""<!doctype html>
 
     // --- audio player ---
     var audio = document.createElement('audio');
-    audio.controls = true;
     audio.preload = 'metadata';
-    body.appendChild(audio);
+    body.appendChild(_attachCompactPlayer(audio));
     state.audio = audio;
 
     // Authenticated audio fetch → blob URL. The server always serves
@@ -4371,6 +4387,79 @@ _CAPTURES_HTML = r"""<!doctype html>
     return m + ':' + (sec < 10 ? '0' : '') + sec;
   }
 
+  // Wrap an <audio> element in a compact play/pause + scrubber + time
+  // strip. Replaces native <audio controls> in single-capture and group-
+  // expand panels for visual consistency with the merge-preview controls.
+  // The audio stays in the DOM (inside the wrapper, hidden) so it can
+  // load + play normally; the wrapper exposes the same affordances.
+  // Returns the wrapper element; caller still owns the audio reference
+  // for setting .src etc.
+  function _attachCompactPlayer(audio) {
+    audio.removeAttribute('controls');
+    audio.classList.add('audio-hidden');
+
+    var wrap = document.createElement('div');
+    wrap.className = 'compact-player';
+
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'compact-player-btn';
+    btn.textContent = '▶';
+    btn.title = 'Play / pause (Space)';
+
+    var scrub = document.createElement('input');
+    scrub.type = 'range'; scrub.min = '0'; scrub.max = '1000'; scrub.value = '0';
+    scrub.className = 'compact-player-scrub';
+    scrub.disabled = true;
+
+    var timeEl = document.createElement('span');
+    timeEl.className = 'compact-player-time';
+    timeEl.textContent = '0:00';
+    var sep = document.createElement('span');
+    sep.className = 'compact-player-time-sep'; sep.textContent = '/';
+    var totalEl = document.createElement('span');
+    totalEl.className = 'compact-player-time';
+    totalEl.textContent = '0:00';
+
+    wrap.appendChild(btn);
+    wrap.appendChild(scrub);
+    wrap.appendChild(timeEl);
+    wrap.appendChild(sep);
+    wrap.appendChild(totalEl);
+    wrap.appendChild(audio);  // hidden, but lives inside the wrapper
+
+    var seeking = false;
+    btn.addEventListener('click', function() {
+      if (audio.paused) {
+        audio.play().catch(function(e) {
+          if (e && e.name !== 'AbortError') toast(e.message || 'play failed', true);
+        });
+      } else {
+        audio.pause();
+      }
+    });
+    audio.addEventListener('play',  function() { btn.textContent = '⏸'; });
+    audio.addEventListener('pause', function() { btn.textContent = '▶'; });
+    audio.addEventListener('timeupdate', function() {
+      if (!seeking && audio.duration) {
+        scrub.value = (audio.currentTime / audio.duration) * 1000;
+      }
+      timeEl.textContent = _fmtTime(audio.currentTime || 0);
+    });
+    function updateTotal() {
+      totalEl.textContent = _fmtTime(audio.duration || 0);
+      scrub.disabled = !isFinite(audio.duration) || audio.duration <= 0;
+    }
+    audio.addEventListener('loadedmetadata', updateTotal);
+    audio.addEventListener('durationchange', updateTotal);
+    scrub.addEventListener('input', function() {
+      seeking = true;
+      if (audio.duration) audio.currentTime = (scrub.value / 1000) * audio.duration;
+    });
+    scrub.addEventListener('change', function() { seeking = false; });
+    return wrap;
+  }
+
   // Bind the shared audio's `timeupdate` / scrubber-input / pause / play
   // to this panel's UI. Returns a teardown function that detaches the
   // listeners (called when switching to a different preview).
@@ -4458,18 +4547,18 @@ _CAPTURES_HTML = r"""<!doctype html>
     panel.className = 'merge-preview-panel';
     panel.hidden = true;
     var controls = document.createElement('div');
-    controls.className = 'merge-preview-controls';
+    controls.className = 'compact-player';
     var scrub = document.createElement('input');
     scrub.type = 'range'; scrub.min = '0'; scrub.max = '1000'; scrub.value = '0';
-    scrub.className = 'merge-preview-scrub';
+    scrub.className = 'compact-player-scrub';
     scrub.disabled = true;
     var timeEl = document.createElement('span');
-    timeEl.className = 'merge-preview-time';
+    timeEl.className = 'compact-player-time';
     timeEl.textContent = '0:00';
     var sep = document.createElement('span');
-    sep.className = 'merge-preview-time-sep'; sep.textContent = '/';
+    sep.className = 'compact-player-time-sep'; sep.textContent = '/';
     var totalEl = document.createElement('span');
-    totalEl.className = 'merge-preview-time';
+    totalEl.className = 'compact-player-time';
     totalEl.textContent = '0:00';
     controls.appendChild(scrub);
     controls.appendChild(timeEl);
@@ -4861,12 +4950,8 @@ _CAPTURES_HTML = r"""<!doctype html>
         // once; their CONTENT is filled (and refilled) by
         // applyServerGroup() below. ---
         var audio = document.createElement('audio');
-        audio.controls = true;
-        audio.style.marginTop = '0.5rem';
         audio.preload = 'metadata';
-        var audioSlot = document.createElement('div');
-        audioSlot.appendChild(audio);
-        body.appendChild(audioSlot);
+        body.appendChild(_attachCompactPlayer(audio));
 
         // Per-member raw + post-processing reference rows. Same shape
         // as the single-capture textLine, but iterated per member so
