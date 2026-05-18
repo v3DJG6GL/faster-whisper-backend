@@ -259,7 +259,10 @@ _API_KEYS_HTML = r"""<!doctype html>
     color: var(--fg); padding: 0.25rem 0.625rem; border-radius: 4px;
     cursor: pointer; font: inherit; font-size: var(--fs-sm); }
   header button.primary { color: var(--green); border-color: var(--green); }
-  main { padding: 1rem; max-width: 56rem; margin: 0 auto; }
+  /* Widened from 56rem to claim the unused right gutter on the user-key
+     cards — admin keys + permissions matrix benefit from extra horizontal
+     space and the per-row layout reads better without forced wrapping. */
+  main { padding: 1rem; max-width: 72rem; margin: 0 auto; }
   .banner-open {
     background: #5a2424; color: #fff; padding: 0.6rem 1rem;
     text-align: center; font-weight: 600;
@@ -276,13 +279,26 @@ _API_KEYS_HTML = r"""<!doctype html>
     background: #2d1414; }
   .pill.live { color: var(--green); border-color: #1d4f2c; }
   .key-row { display: grid;
-    grid-template-columns: minmax(8rem,1fr) 9rem 9rem 9rem auto;
+    /* `created` / `used` cells stack their label + value on two lines
+       (see .ts below), so we give them just enough width for one HH:MM:SS
+       + YYYY.MM.DD pair on the value line without forcing a wrap. The
+       label/id columns claim the remaining flexible width. */
+    grid-template-columns: minmax(8rem,1fr) 9rem minmax(7.5rem,auto) minmax(7.5rem,auto) auto;
     gap: 0.6rem; align-items: center; padding: 0.3rem 0;
     border-top: 1px solid var(--border); font-size: var(--fs-sm); }
   .key-row:first-child { border-top: none; }
   .key-row .label { color: var(--fg); }
   .key-row .id { color: var(--dim); font-family: var(--font-mono); }
-  .key-row .ts { color: var(--dim); font-size: var(--fs-xs); }
+  /* Two-line cells: small dim caption ("created", "used") on top, mono
+     value below. Reads like a labelled field instead of "created HH:MM:SS
+     | YYYY.MM.DD" wrapping mid-string. */
+  .key-row .ts { display: flex; flex-direction: column;
+    line-height: 1.2; gap: 0.05rem; }
+  .key-row .ts .ts-label { color: var(--dim); font-size: var(--fs-xs);
+    text-transform: lowercase; }
+  .key-row .ts .ts-value { color: var(--fg); font-size: var(--fs-sm);
+    font-family: var(--font-mono); white-space: nowrap; }
+  .key-row .ts.empty .ts-value { color: var(--dim); font-style: italic; }
   button.danger { color: var(--red); border-color: #5a2424; }
   .toolbar { display: flex; gap: 0.5rem; margin: 0.5rem 0; flex-wrap: wrap; }
   input[type=text], input[type=password] { box-sizing: border-box;
@@ -861,11 +877,23 @@ _API_KEYS_HTML = r"""<!doctype html>
         j.keys.forEach(function(k) {
           var row = document.createElement('div');
           row.className = 'key-row';
+          function _tsCell(label, ts) {
+            // "created" / "used" on line 1 (small caption); the timestamp
+            // value on line 2 (mono, full HH:MM:SS | YYYY.MM.DD). Empty
+            // ts (e.g. never-used key) renders an em-dash so the cell
+            // doesn't shrink and misalign the grid.
+            var hasValue = !!ts;
+            var v = hasValue ? escapeHtml(absTime(ts)) : '—';
+            return '<div class="ts' + (hasValue ? '' : ' empty') + '">'
+                 + '<div class="ts-label">' + label + '</div>'
+                 + '<div class="ts-value">' + v + '</div>'
+                 + '</div>';
+          }
           row.innerHTML =
             '<div class="label">' + escapeHtml(k.label || '(no label)') + '</div>' +
             '<div class="id">' + escapeHtml(k.key_prefix) + '&hellip;' + escapeHtml(k.key_last4) + '</div>' +
-            '<div class="ts">created ' + escapeHtml(absTime(k.created_ts)) + '</div>' +
-            '<div class="ts">used '    + escapeHtml(absTime(k.last_used_ts)) + '</div>';
+            _tsCell('created', k.created_ts) +
+            _tsCell('used',    k.last_used_ts);
           var actionCell = document.createElement('div');
           if (k.revoked_ts) {
             var rp = document.createElement('span');
