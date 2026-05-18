@@ -1263,6 +1263,10 @@ def render_page(template: str, current: str) -> str:
       - {{TAG_PICKER_JS}}        → window._renderTagPicker(opts) widget
                                    shared by /config rule editor +
                                    /config/api-keys permissions matrix
+      - {{HEADER_TITLE}}         → uniform page-title string —
+                                   "faster-whisper-backend · <slug>"
+                                   used by both <title> and the
+                                   <span class="title"> in the header
 
     Pages that don't include a given placeholder are returned unchanged."""
     return (
@@ -1284,6 +1288,7 @@ def render_page(template: str, current: str) -> str:
         .replace("{{NOT_ADMIN_LANDING_JS}}", NOT_ADMIN_LANDING_JS)
         .replace("{{PAGE_META}}", _page_meta_tag(current))
         .replace("{{TAG_PICKER_JS}}", TAG_PICKER_JS)
+        .replace("{{HEADER_TITLE}}", _header_title_for(current))
     )
 
 
@@ -1318,6 +1323,32 @@ _PAGE_PATH_BY_CURRENT: dict[str, str] = {
     "config":       "/config",
     "api-keys":     "/config/api-keys",
 }
+
+
+# Human-readable slug per page, used in the uniform header string
+# `faster-whisper-backend · <slug>`. Centralising this here means
+# adding a page or renaming one is a single-line change instead of
+# touching every template's <title> + <span class="title">.
+_HEADER_SLUG_BY_CURRENT: dict[str, str] = {
+    "logs":         "logs",
+    "stats":        "stats",
+    "config":       "config",
+    "api-keys":     "API keys",
+    "quick-config": "quick config",
+    "reports":      "reports",
+    "captures":     "captures",
+}
+
+
+def _header_title_for(current: str) -> str:
+    """Build the uniform page-title string substituted into every page's
+    <title> AND its <span class="title"> via {{HEADER_TITLE}}. Format:
+    `faster-whisper-backend · <slug>`. Unknown `current` values fall
+    back to the app name alone."""
+    slug = _HEADER_SLUG_BY_CURRENT.get(current, "")
+    if not slug:
+        return "faster-whisper-backend"
+    return f"faster-whisper-backend · {slug}"
 
 
 def _page_meta_tag(current: str) -> str:

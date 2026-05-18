@@ -2242,7 +2242,7 @@ _CAPTURES_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Whisper — Captures</title>
+<title>{{HEADER_TITLE}}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {{PAGE_META}}
 {{SCALE_BOOTSTRAP_HEAD}}
@@ -3067,7 +3067,7 @@ _CAPTURES_HTML = r"""<!doctype html>
 <body>
 <header>
   <div class="header-inner">
-    <span class="title">Whisper — Captures</span>
+    <span class="title">{{HEADER_TITLE}}</span>
     {{NAV}}
     <span class="spacer"></span>
     {{SCALE_PICKER}}

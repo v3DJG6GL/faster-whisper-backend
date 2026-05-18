@@ -138,7 +138,7 @@ async def stats_stream() -> StreamingResponse:
 _STATS_VIEWER_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>faster-whisper-backend · stats</title>
+<title>{{HEADER_TITLE}}</title>
 {{PAGE_META}}
 {{SCALE_BOOTSTRAP_HEAD}}
 <link rel="stylesheet" href="/static/uplot.min.css">
@@ -257,7 +257,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 </style></head>
 <body>
 <header><div class="header-inner">
-  <span class="title">faster-whisper-backend · stats</span>
+  <span class="title">{{HEADER_TITLE}}</span>
   {{NAV}}
   <span class="spacer"></span>
   <span class="wrap-anchor"></span>

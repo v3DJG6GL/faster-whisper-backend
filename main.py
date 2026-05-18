@@ -1976,7 +1976,7 @@ async def _stream_log_lines():
 _LOG_VIEWER_HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>faster-whisper-backend · live logs</title>
+<title>{{HEADER_TITLE}}</title>
 {{PAGE_META}}
 {{SCALE_BOOTSTRAP_HEAD}}
 <script>(function(){var v=localStorage.getItem('whisper-log-zoom');
@@ -2060,7 +2060,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
 </style></head>
 <body>
 <header><div class="header-inner">
-  <span class="title">faster-whisper-backend · logs</span>
+  <span class="title">{{HEADER_TITLE}}</span>
   {{NAV}}
   <input id="filter" type="text" placeholder="filter (case-insensitive substring)…">
   <span class="log-zoom" title="zoom log content only">

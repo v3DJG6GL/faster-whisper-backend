@@ -518,7 +518,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Quick config — WhisperAPI</title>
+<title>{{HEADER_TITLE}}</title>
 {{PAGE_META}}
 {{SCALE_BOOTSTRAP_HEAD}}
 <style>
@@ -794,7 +794,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
 
 <header>
   <div class="header-inner">
-    <span class="title">Quick config</span>
+    <span class="title">{{HEADER_TITLE}}</span>
     {{NAV}}
     <span class="spacer"></span>
     {{SCALE_PICKER}}

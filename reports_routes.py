@@ -459,7 +459,7 @@ _REPORTS_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Whisper — Reports</title>
+<title>{{HEADER_TITLE}}</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {{PAGE_META}}
 {{SCALE_BOOTSTRAP_HEAD}}
@@ -719,7 +719,7 @@ _REPORTS_HTML = """<!doctype html>
 <body>
 <header>
   <div class="header-inner">
-    <span class="title">Whisper — Reports</span>
+    <span class="title">{{HEADER_TITLE}}</span>
     {{NAV}}
     <span class="spacer"></span>
     {{SCALE_PICKER}}

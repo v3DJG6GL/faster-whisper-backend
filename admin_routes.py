@@ -630,7 +630,7 @@ async def post_restart(request: Request) -> JSONResponse:
 _CONFIG_VIEWER_HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>faster-whisper-backend · config</title>
+<title>{{HEADER_TITLE}}</title>
 {{PAGE_META}}
 {{SCALE_BOOTSTRAP_HEAD}}
 <style>
@@ -1115,7 +1115,7 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
 
 <div id="app-wrap" style="display:none">
   <header><div class="header-inner">
-    <span class="title">faster-whisper-backend · config</span>
+    <span class="title">{{HEADER_TITLE}}</span>
     {{NAV}}
     <span class="spacer"></span>
     <span class="wrap-anchor"></span>
