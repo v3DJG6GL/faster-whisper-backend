@@ -2688,11 +2688,37 @@ _CAPTURES_HTML = r"""<!doctype html>
     background: #21262d; color: var(--bold);
   }
   .compact-player-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* Slider matches the page aesthetic: thin rectangular track in the
+     same color as .meter-bar, progress fill in accent, a small vertical
+     playhead-style thumb (no circles — the UI is all rectangles). */
   .compact-player-scrub {
-    flex: 1; height: 0.5rem; margin: 0; cursor: pointer;
-    accent-color: var(--accent, #58a6ff);
+    flex: 1; margin: 0; padding: 0; cursor: pointer;
+    -webkit-appearance: none; -moz-appearance: none; appearance: none;
+    background: transparent; height: 0.9rem;
+  }
+  .compact-player-scrub:focus { outline: none; }
+  .compact-player-scrub::-webkit-slider-runnable-track {
+    height: 0.25rem; background: var(--border); border-radius: 1px;
+  }
+  .compact-player-scrub::-moz-range-track {
+    height: 0.25rem; background: var(--border); border-radius: 1px; border: none;
+  }
+  .compact-player-scrub::-moz-range-progress {
+    height: 0.25rem; background: var(--accent, #58a6ff); border-radius: 1px;
+  }
+  .compact-player-scrub::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 0.25rem; height: 0.8rem; border-radius: 1px;
+    background: var(--accent, #58a6ff); border: none;
+    margin-top: -0.275rem; cursor: pointer;
+  }
+  .compact-player-scrub::-moz-range-thumb {
+    width: 0.25rem; height: 0.8rem; border-radius: 1px;
+    background: var(--accent, #58a6ff); border: none; cursor: pointer;
   }
   .compact-player-scrub:disabled { cursor: not-allowed; opacity: 0.4; }
+  .compact-player-scrub:disabled::-webkit-slider-thumb { background: var(--help); }
+  .compact-player-scrub:disabled::-moz-range-thumb { background: var(--help); }
   .compact-player-time {
     font-family: var(--font-mono); font-size: var(--fs-xs);
     color: var(--help); min-width: 2.2rem; text-align: right;
@@ -4951,7 +4977,10 @@ _CAPTURES_HTML = r"""<!doctype html>
         // applyServerGroup() below. ---
         var audio = document.createElement('audio');
         audio.preload = 'metadata';
-        body.appendChild(_attachCompactPlayer(audio));
+        var audioPlayerWrap = _attachCompactPlayer(audio);
+        var audioSlot = document.createElement('div');
+        audioSlot.appendChild(audioPlayerWrap);
+        body.appendChild(audioSlot);
 
         // Per-member raw + post-processing reference rows. Same shape
         // as the single-capture textLine, but iterated per member so
@@ -5204,9 +5233,10 @@ _CAPTURES_HTML = r"""<!doctype html>
             try { URL.revokeObjectURL(audio.src); } catch (_) {}
           }
           audio.removeAttribute('src');
-          if (audioSlot.firstChild !== audio) {
+          // Reclaim the compact-player wrapper if the banner replaced it.
+          if (audioSlot.firstChild !== audioPlayerWrap) {
             audioSlot.innerHTML = '';
-            audioSlot.appendChild(audio);
+            audioSlot.appendChild(audioPlayerWrap);
           }
           fetch('/captures/api/groups/' + encodeURIComponent(g.id) + '/audio',
                 { headers: { Authorization: 'Bearer ' + getToken() } })
