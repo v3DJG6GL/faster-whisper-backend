@@ -2187,6 +2187,37 @@ _CAPTURES_HTML = r"""<!doctype html>
   .toolbar .capture-state.on  { color: var(--green); border-color: #2d5a37; }
   .toolbar .capture-state.off { color: var(--dim);   border-color: var(--border); }
 
+  /* Proposer-action row — both merge-proposer entry points live here,
+     visually separated from the utility toolbar so reviewers can find
+     the fast-path workflow at a glance. */
+  .proposer-actions {
+    display: flex; gap: 0.6rem; justify-content: center;
+    padding: 0.6rem 0.75rem; margin: 0 0 0.75rem;
+    background: linear-gradient(180deg,
+      rgba(88, 166, 255, 0.08) 0%,
+      rgba(88, 166, 255, 0.03) 100%);
+    border: 1px solid rgba(88, 166, 255, 0.25);
+    border-radius: 6px;
+  }
+  .proposer-actions .proposer-action {
+    flex: 1; max-width: 24rem;
+    padding: 0.55rem 1rem;
+    font-size: var(--fs-md); font-weight: 600;
+    background: var(--panel); color: var(--accent, #58a6ff);
+    border: 1px solid var(--accent, #58a6ff);
+    border-radius: 4px; cursor: pointer;
+    transition: background 0.12s, transform 0.05s;
+  }
+  .proposer-actions .proposer-action:hover {
+    background: rgba(88, 166, 255, 0.15);
+  }
+  .proposer-actions .proposer-action:active {
+    transform: translateY(1px);
+  }
+  .proposer-actions .proposer-action:disabled {
+    opacity: 0.4; cursor: not-allowed;
+  }
+
   /* Radio-style status button group. Used in the toolbar filter and
      in the per-row + per-group action rows. Replaces the previous
      <select> dropdowns; a 1-click switch is faster than open-pick. */
@@ -2919,9 +2950,16 @@ _CAPTURES_HTML = r"""<!doctype html>
     <span id="capture-state" class="capture-state off">capture OFF</span>
     <button id="btn-refresh">Refresh</button>
     <button id="btn-reprocess-all" title="Re-run PIPELINE_RULES on every capture's raw text. Use after editing rules.">Reprocess all</button>
-    <button id="btn-propose" title="Suggest ranked merges into ~26 s training samples (same-session, same-language, duplicate-aware)">Auto-propose merges</button>
     <button id="btn-export" title="Download ready captures as a tar.gz (manifest.jsonl + audio/)">Export ready</button>
     <button id="btn-clear" class="danger" title="Permanently delete every capture">Clear all</button>
+  </div>
+
+  <!-- Dedicated proposer-actions row: prominent + visually separated from
+       the utility toolbar above. Both entry points to the merge proposer
+       live here so they're easy to spot during data curation. -->
+  <div class="proposer-actions">
+    <button id="btn-propose" class="proposer-action" title="Suggest ranked merges into ~26 s training samples; review one at a time in a list">✨ Auto-propose merges</button>
+    <button id="btn-batch" class="proposer-action" title="Step through proposals one at a time with keyboard / swipe shortcuts (Ctrl+← dismiss / Ctrl+→ accept / Space pause)">⚡ Batch review merges</button>
   </div>
 
   <div id="action-bar">
@@ -5406,11 +5444,17 @@ _CAPTURES_HTML = r"""<!doctype html>
     }
   }
 
-  function _openProposeModal() {
+  function _openProposeModal(opts) {
     var modal = document.getElementById('propose-modal');
     modal.classList.add('show');
-    _loadProposals();
+    var startInBatch = opts && opts.startInBatch;
+    _loadProposals().then(function() {
+      if (startInBatch && _proposals.length > 0 && !_batchActive) {
+        _enterBatchMode();
+      }
+    });
   }
+  function _openProposeBatch() { _openProposeModal({ startInBatch: true }); }
 
   // -------------------------------------------------------------------
   // Group row rendering — packed-for-fine-tune training samples
@@ -6132,7 +6176,8 @@ _CAPTURES_HTML = r"""<!doctype html>
   document.getElementById('btn-reprocess-all').addEventListener('click', onReprocessAll);
   document.getElementById('ab-merge').addEventListener('click', _openMergeModal);
   document.getElementById('ab-clear').addEventListener('click', _clearSelection);
-  document.getElementById('btn-propose').addEventListener('click', _openProposeModal);
+  document.getElementById('btn-propose').addEventListener('click', function() { _openProposeModal(); });
+  document.getElementById('btn-batch').addEventListener('click', _openProposeBatch);
   function _closePropose() {
     if (_batchActive) _exitBatchMode();
     _stopAnyPreview();
