@@ -134,7 +134,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Dep
 # Auth dep used by /v1/audio/transcriptions and /auth/whoami. In open mode
 # (no admin key in DB) it returns the synthetic admin so the operator can
 # bootstrap; in locked-down mode it 401s on missing/invalid bearer.
-from auth import get_current_user as _get_current_user_dep
+from auth import Permissions, get_current_user as _get_current_user_dep
 from faster_whisper import WhisperModel
 
 
@@ -2188,8 +2188,41 @@ _LOG_VIEWER_HTML = """<!doctype html>
 </body></html>"""
 
 
+def _require_logs_page_sse(request: Request) -> dict:
+    """SSE-aware variant of require_page("logs"). EventSource can't set
+    Authorization, so accept `?key=<raw_key>` as a fallback. In OPEN
+    mode (no admin key yet) the synthetic admin sails through; in
+    locked-down mode the bearer must resolve to a user with scope(
+    "logs") != "none"."""
+    import api_keys_store
+    if not api_keys_store.is_locked_down():
+        return dict(api_keys_store.OPEN_MODE_USER)
+    auth_header = request.headers.get("authorization") or ""
+    raw = ""
+    if auth_header.lower().startswith("bearer "):
+        raw = auth_header.split(" ", 1)[1].strip()
+    if not raw:
+        raw = request.query_params.get("key") or ""
+    rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
+    if rec is None:
+        raise HTTPException(
+            401, "invalid or missing API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    perms = Permissions(
+        rec.get("permissions_raw") or {}, bool(rec.get("is_admin")),
+    )
+    if not perms.can("logs"):
+        raise HTTPException(403, "no access to /logs")
+    return rec
+
+
 @app.get("/logs", response_class=HTMLResponse)
 async def logs_viewer():
+    # HTML page is open — the bearer isn't available on initial
+    # navigation. The SSE /logs/stream endpoint gates by
+    # `require_page("logs")` with a ?key= fallback for EventSource;
+    # the page's first stream-open 403s for non-permitted users.
     import web_common
     return HTMLResponse(
         web_common.render_page(_LOG_VIEWER_HTML, current="logs"),
@@ -2197,7 +2230,10 @@ async def logs_viewer():
     )
 
 
-@app.get("/logs/stream")
+@app.get(
+    "/logs/stream",
+    dependencies=[Depends(_require_logs_page_sse)],
+)
 async def logs_stream():
     return StreamingResponse(_stream_log_lines(), media_type="text/event-stream")
 

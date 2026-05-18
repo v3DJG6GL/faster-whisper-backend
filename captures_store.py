@@ -627,17 +627,28 @@ def list_captures(
 
 
 def iter_captures_for_export(
-    *, status: str | None = None,
+    *,
+    status: str | None = None,
+    user_id: str | None = None,
 ):
     """Generator yielding capture rows (full payload incl. words) in
     deterministic order. Used by the export endpoint to stream a tarball
-    without holding the whole result set in memory."""
+    without holding the whole result set in memory.
+
+    `user_id=None` means "no filter" (admin / scope=all). A string
+    narrows to a single owner — symmetric to `list_captures`, ready
+    for the day non-admin scope=own users get export access (the
+    endpoint stays admin-only for now per the plan)."""
     conn = _require_conn()
-    where = ""
+    clauses: list[str] = []
     params: list[Any] = []
     if status and status != "all":
-        where = " WHERE status = ?"
+        clauses.append("status = ?")
         params.append(status)
+    if user_id is not None:
+        clauses.append("user_id = ?")
+        params.append(user_id)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     cur = conn.execute(
         f"SELECT * FROM captures{where} ORDER BY created_ts ASC", params,
     )

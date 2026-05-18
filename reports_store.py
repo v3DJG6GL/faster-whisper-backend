@@ -321,13 +321,26 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
 # Read
 # ---------------------------------------------------------------------
 
-def list_reports() -> list[dict[str, Any]]:
-    """Return all reports, newest first. Client filters/searches in-page;
-    the soft cap keeps the row count under what a browser can render."""
+def list_reports(user_id: str | None = None) -> list[dict[str, Any]]:
+    """Return reports newest-first. `user_id=None` means "no filter"
+    (admin / scope=all context); a string narrows to a single owner.
+    Client filters/searches in-page; the soft cap keeps the row count
+    under what a browser can render.
+
+    Symmetric to `captures_store.list_captures(user_id=...)`. The
+    permission layer threads the right value via
+    `Permissions.effective_user_id_for("reports", caller_uid)` so the
+    "own vs all" decision lives in one place."""
     conn = _require_conn()
-    cur = conn.execute(
-        "SELECT * FROM reports ORDER BY created_ts DESC"
-    )
+    if user_id is None:
+        cur = conn.execute(
+            "SELECT * FROM reports ORDER BY created_ts DESC"
+        )
+    else:
+        cur = conn.execute(
+            "SELECT * FROM reports WHERE user_id = ? ORDER BY created_ts DESC",
+            (user_id,),
+        )
     return [_row_to_dict(r) for r in cur.fetchall()]
 
 

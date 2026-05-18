@@ -46,7 +46,7 @@ from admin_routes import (
     _canon_rules,
     require_admin_host,
 )
-from auth import get_current_user
+from auth import Permissions, get_current_user, require_page
 
 logger = logging.getLogger("whisper-api")
 
@@ -72,23 +72,34 @@ _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
 # as a fallback.
 
 def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
-    """SSE-aware variant of get_current_user. Honors ?key= as a fallback
-    since EventSource cannot set Authorization headers."""
+    """SSE-aware variant of get_current_user + require_page("quick_config").
+    Honors `?key=` as a fallback since EventSource cannot set Authorization
+    headers. Attaches the Permissions policy object and rejects callers
+    whose quick_config scope is "none" — same gate the rest of the
+    /quick-config router uses, just adapted to the SSE auth flow."""
     import api_keys_store
     if not api_keys_store.is_locked_down():
-        return dict(api_keys_store.OPEN_MODE_USER)
-    auth_header = request.headers.get("authorization") or ""
-    raw = ""
-    if auth_header.lower().startswith("bearer "):
-        raw = auth_header.split(" ", 1)[1].strip()
-    if not raw:
-        raw = request.query_params.get("key") or ""
-    rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
-    if rec is None:
+        rec = dict(api_keys_store.OPEN_MODE_USER)
+    else:
+        auth_header = request.headers.get("authorization") or ""
+        raw = ""
+        if auth_header.lower().startswith("bearer "):
+            raw = auth_header.split(" ", 1)[1].strip()
+        if not raw:
+            raw = request.query_params.get("key") or ""
+        rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
+        if rec is None:
+            raise HTTPException(
+                status.HTTP_401_UNAUTHORIZED,
+                "invalid or missing API key",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+    rec["permissions"] = Permissions(
+        rec.get("permissions_raw") or {}, bool(rec.get("is_admin")),
+    )
+    if not rec["permissions"].can("quick_config"):
         raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "invalid or missing API key",
-            headers={"WWW-Authenticate": "Bearer"},
+            status.HTTP_403_FORBIDDEN, "no access to /quick-config",
         )
     return rec
 
@@ -121,7 +132,15 @@ def _rule_fingerprint(rule: dict[str, Any]) -> str:
     return hashlib.sha1(canonical.encode("utf-8")).hexdigest()[:12]
 
 
-@router.get("", dependencies=[Depends(require_admin_host)])
+@router.get(
+    "",
+    # HTML page is host-only — the login modal runs in this page's
+    # own JS, so the bearer isn't available on the initial navigation.
+    # The per-page permission check lives on each API route below; if
+    # the user lacks /quick-config access, the page's first state fetch
+    # 403s and the JS renders a "no access" landing.
+    dependencies=[Depends(require_admin_host)],
+)
 async def get_quick_config_page() -> HTMLResponse:
     return HTMLResponse(
         web_common.render_page(_QUICK_CONFIG_HTML, current="quick-config"),
@@ -131,7 +150,10 @@ async def get_quick_config_page() -> HTMLResponse:
 
 @router.get(
     "/state",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[
+        Depends(require_admin_host),
+        Depends(require_page("quick_config")),
+    ],
 )
 async def get_state(
     user: dict[str, Any] = Depends(get_current_user),
@@ -193,7 +215,10 @@ async def get_state(
 
 @router.post(
     "/state",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[
+        Depends(require_admin_host),
+        Depends(require_page("quick_config")),
+    ],
 )
 async def post_state(
     payload: QuickPatchPayload,
@@ -357,7 +382,10 @@ async def post_state(
 
 @router.post(
     "/reapply-rules",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[
+        Depends(require_admin_host),
+        Depends(require_page("quick_config")),
+    ],
 )
 async def post_reapply_rules(
     user: dict[str, Any] = Depends(get_current_user),
@@ -372,7 +400,10 @@ async def post_reapply_rules(
 
 @router.get(
     "/reapply-rules/status",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[
+        Depends(require_admin_host),
+        Depends(require_page("quick_config")),
+    ],
 )
 async def get_reapply_rules_status(
     user: dict[str, Any] = Depends(get_current_user),
@@ -392,32 +423,69 @@ async def get_reapply_rules_status(
 
 @router.get(
     "/recent",
-    dependencies=[Depends(require_admin_host), Depends(get_current_user)],
+    dependencies=[
+        Depends(require_admin_host),
+        Depends(require_page("quick_config")),
+    ],
 )
-async def get_recent() -> dict[str, Any]:
+async def get_recent(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
     """Snapshot of the recent-traces buffer. The /stream endpoint replays
     the snapshot on connect, so most clients won't need /recent — it
     exists as a cheap polling fallback for environments without
-    EventSource."""
-    return {"recent": list(quick_config_state.recent_traces)}
+    EventSource.
+
+    Scope-aware: `scope=own` filters the buffer to entries the caller
+    owns; `scope=all` returns the full buffer. Closes the previous leak
+    where every authenticated user saw all users' raw dictation."""
+    perms = user["permissions"]
+    caller_uid = user.get("user_id") or ""
+    if perms.scope("quick_config") == "all":
+        traces = list(quick_config_state.recent_traces)
+    else:
+        traces = [
+            t for t in quick_config_state.recent_traces
+            if (t or {}).get("user_id") == caller_uid
+        ]
+    return {"recent": traces}
 
 
 @router.get(
     "/stream",
-    dependencies=[Depends(require_admin_host), Depends(require_user_or_admin_sse)],
+    dependencies=[Depends(require_admin_host)],
 )
-async def stream_recent(request: Request) -> StreamingResponse:
+async def stream_recent(
+    request: Request,
+    user: dict[str, Any] = Depends(require_user_or_admin_sse),
+) -> StreamingResponse:
     """Server-sent events stream of recent transcriptions.
 
     On connect, replays the current buffer (`event: trace` for each entry,
     oldest first). After the replay, pushes any new transcription as
     another `event: trace`. Sends a `: keepalive` SSE comment line every
-    15 s so reverse proxies don't kill an idle connection."""
+    15 s so reverse proxies don't kill an idle connection.
+
+    Scope-aware: `scope=own` filters replay AND live items to the
+    caller's user_id; `scope=all` lets everything through. Live items
+    flow through quick_config_state.subscribe()'s shared queue — every
+    subscriber gets every event — so filtering happens here per
+    subscriber rather than at the publisher (no extra queue infra)."""
+    perms = user["permissions"]
+    caller_uid = user.get("user_id") or ""
+    sees_all = perms.scope("quick_config") == "all"
+
+    def _visible(entry: dict[str, Any] | None) -> bool:
+        if sees_all:
+            return True
+        return bool(entry) and entry.get("user_id") == caller_uid
+
     async def gen():
         q = quick_config_state.subscribe()
         try:
             for entry in list(quick_config_state.recent_traces):
-                yield f"event: trace\ndata: {json.dumps(entry)}\n\n"
+                if _visible(entry):
+                    yield f"event: trace\ndata: {json.dumps(entry)}\n\n"
             while True:
                 if await request.is_disconnected():
                     break
@@ -425,6 +493,8 @@ async def stream_recent(request: Request) -> StreamingResponse:
                     item = await asyncio.wait_for(q.get(), timeout=15.0)
                     ev = item.get("event", "trace")
                     payload = item.get("data") or {}
+                    if ev == "trace" and not _visible(payload):
+                        continue
                     yield f"event: {ev}\ndata: {json.dumps(payload)}\n\n"
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"

@@ -39,7 +39,7 @@ import config as cfg
 import reports_store
 import web_common
 from admin_routes import require_admin_host
-from auth import get_current_user, require_admin
+from auth import get_current_user, require_admin, require_page
 
 router = APIRouter()
 
@@ -106,7 +106,10 @@ def _check_rate_limit(key: str) -> None:
 
 @router.post(
     "/quick-config/reports/api/submit",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[
+        Depends(require_admin_host),
+        Depends(require_page("quick_config")),
+    ],
 )
 async def submit_report(
     payload: ReportSubmitIn,
@@ -191,6 +194,11 @@ async def submit_report(
 
 @router.get(
     "/reports",
+    # HTML page is host-only — the login modal runs in this page's
+    # own JS, so the bearer isn't available on the initial navigation.
+    # API endpoints below gate by `require_page("reports")`; if the
+    # user lacks access, the first list-fetch 403s and the JS renders
+    # a "no access" landing.
     dependencies=[Depends(require_admin_host)],
     response_class=HTMLResponse,
 )
@@ -213,11 +221,20 @@ class PatchReportIn(BaseModel):
     "/reports/api/list",
     dependencies=[
         Depends(require_admin_host),
-        Depends(require_admin),
+        Depends(require_page("reports")),
     ],
 )
-async def list_reports_api() -> JSONResponse:
-    rows = reports_store.list_reports()
+async def list_reports_api(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Scope-aware report list. `scope=own` users see only their own
+    reports; `scope=all` users (incl. admins) see every report. Closes
+    the previous "list_reports returns ALL rows" leak the moment non-
+    admins can reach the page."""
+    perms = user["permissions"]
+    caller_uid = user.get("user_id") or ""
+    effective_user = perms.effective_user_id_for("reports", caller_uid)
+    rows = reports_store.list_reports(user_id=effective_user)
     usernames = api_keys_store.get_usernames(
         [r.get("user_id") for r in rows],
     )
@@ -227,6 +244,8 @@ async def list_reports_api() -> JSONResponse:
         "reports": rows,
         "counts": reports_store.counts_by_status(),
         "retention_days": int(getattr(cfg, "REPORTS_RETENTION_DAYS", 0)),
+        "is_admin": bool(user.get("is_admin")),
+        "scope": perms.scope("reports"),
     })
 
 
@@ -234,10 +253,21 @@ async def list_reports_api() -> JSONResponse:
     "/reports/api/{rid}",
     dependencies=[
         Depends(require_admin_host),
-        Depends(require_admin),
+        Depends(require_page("reports")),
     ],
 )
-async def patch_report_api(rid: str, payload: PatchReportIn) -> JSONResponse:
+async def patch_report_api(
+    rid: str, payload: PatchReportIn,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Mark a report status/notes. `scope=own` users can edit only their
+    own; `scope=all` users (incl. admins) can edit any."""
+    existing = reports_store.get_report(rid)
+    if existing is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
+    user["permissions"].assert_can_read_row(
+        existing, "reports", user.get("user_id") or "",
+    )
     patch: dict[str, Any] = {}
     if payload.status is not None:
         patch["status"] = payload.status
@@ -299,7 +329,10 @@ def _delete_report_and_cascade(report: dict[str, Any]) -> int:
 
 @router.delete(
     "/quick-config/reports/api/by-request/{request_id}",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[
+        Depends(require_admin_host),
+        Depends(require_page("quick_config")),
+    ],
 )
 async def delete_my_report_api(
     request_id: str,
@@ -331,13 +364,22 @@ async def delete_my_report_api(
     "/reports/api/{rid}",
     dependencies=[
         Depends(require_admin_host),
-        Depends(require_admin),
+        Depends(require_page("reports")),
     ],
 )
-async def delete_report_api(rid: str) -> JSONResponse:
+async def delete_report_api(
+    rid: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Delete a single report. `scope=own` users can delete only their
+    own; `scope=all` users (incl. admins) can delete any. Bulk wipe is
+    via /clear which stays admin-only."""
     report = reports_store.get_report(rid)
     if report is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
+    user["permissions"].assert_can_read_row(
+        report, "reports", user.get("user_id") or "",
+    )
     captures_cleaned = _delete_report_and_cascade(report)
     return JSONResponse({"ok": True, "captures_cleaned": captures_cleaned})
 

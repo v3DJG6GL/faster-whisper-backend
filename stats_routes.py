@@ -22,17 +22,50 @@ import json
 import time
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 import config as cfg
 import metrics
 import system_stats
 import web_common
+from auth import Permissions, require_page
 
 router = APIRouter()
 
 _require_stats_host = web_common.require_allowed_host(lambda: cfg.STATS_ALLOWED_HOSTS)
+
+
+def _require_stats_page_sse(request: Request) -> dict[str, Any]:
+    """SSE-aware variant of `require_page("stats")`. EventSource cannot
+    set Authorization, so we accept ?key=<raw_key> as a fallback.
+
+    In OPEN mode (no admin key yet) the synthetic admin sails through;
+    in locked-down mode the bearer must resolve to a user with
+    scope("stats") != "none"."""
+    import api_keys_store
+    if not api_keys_store.is_locked_down():
+        return dict(api_keys_store.OPEN_MODE_USER)
+    auth_header = request.headers.get("authorization") or ""
+    raw = ""
+    if auth_header.lower().startswith("bearer "):
+        raw = auth_header.split(" ", 1)[1].strip()
+    if not raw:
+        raw = request.query_params.get("key") or ""
+    rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
+    if rec is None:
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "invalid or missing API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    perms = Permissions(
+        rec.get("permissions_raw") or {}, bool(rec.get("is_admin")),
+    )
+    if not perms.can("stats"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "no access to /stats")
+    rec["permissions"] = perms
+    return rec
 
 
 def _build_payload() -> dict[str, Any]:
@@ -45,7 +78,14 @@ def _build_payload() -> dict[str, Any]:
     }
 
 
-@router.get("/stats", response_class=HTMLResponse, dependencies=[Depends(_require_stats_host)])
+@router.get(
+    "/stats",
+    response_class=HTMLResponse,
+    # HTML page is host-only — the bearer isn't available on initial
+    # navigation. API endpoints below gate by `require_page("stats")`;
+    # the page's first snapshot fetch 403s for non-permitted users.
+    dependencies=[Depends(_require_stats_host)],
+)
 async def stats_page() -> HTMLResponse:
     """Single-file inline HTML page. `no-store` so a browser never serves a
     stale build after a service restart."""
@@ -59,13 +99,25 @@ async def stats_page() -> HTMLResponse:
     )
 
 
-@router.get("/stats/snapshot", dependencies=[Depends(_require_stats_host)])
+@router.get(
+    "/stats/snapshot",
+    dependencies=[
+        Depends(_require_stats_host),
+        Depends(require_page("stats")),
+    ],
+)
 async def stats_snapshot() -> dict[str, Any]:
     """One-shot JSON. Useful for scripts and for the page's initial render."""
     return _build_payload()
 
 
-@router.get("/stats/stream", dependencies=[Depends(_require_stats_host)])
+@router.get(
+    "/stats/stream",
+    dependencies=[
+        Depends(_require_stats_host),
+        Depends(_require_stats_page_sse),
+    ],
+)
 async def stats_stream() -> StreamingResponse:
     """1 Hz SSE stream of the snapshot payload. The 1-second data cadence
     already counts as traffic for idle-proxy timeout purposes — no separate

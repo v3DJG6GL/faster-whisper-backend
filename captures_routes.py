@@ -48,11 +48,21 @@ import config as cfg
 import text_corrections
 import web_common
 from admin_routes import require_admin_host
-from auth import get_current_user, require_admin
+from auth import get_current_user, require_admin, require_page
 
 logger = logging.getLogger("whisper-api")
 
-router = APIRouter()
+# Router-level dependency: only the IP gate. The page-permission gate
+# (`require_page("captures")`) must NOT live at router level because it
+# transitively requires a bearer (via get_current_user), and the HTML
+# page is fetched by browser navigation which can't pass Authorization
+# headers — the login modal runs in the page's own JS. Page-perm gates
+# therefore live per-API-route, where fetch() already attaches the
+# bearer. Mutation routes additionally `Depends(require_admin)` for
+# system-wide writes (clear, reprocess-all, export).
+router = APIRouter(
+    dependencies=[Depends(require_admin_host)],
+)
 
 
 # ---------------------------------------------------------------------
@@ -80,6 +90,33 @@ def _check_audio_rate(host: str) -> None:
             status.HTTP_429_TOO_MANY_REQUESTS,
             "Too many audio requests from this host.",
         )
+
+
+def _audit_cross_user_read(
+    user: dict[str, Any], row: dict[str, Any] | None,
+    kind: str, row_id: str,
+) -> None:
+    """Emit an INFO line when a non-admin viewer reads a row owned by a
+    different user (scope=all path). Self-reads + admin-host requests
+    that already have access don't audit — only the data-leaving-the-
+    user-pool case is interesting. Cheap; makes DSGVO Art. 9 data-
+    subject access requests answerable from the standard log stream.
+    Silent for admin users (they bypass scope and would otherwise
+    audit every read on their own dashboard)."""
+    if user.get("is_admin"):
+        return
+    caller_uid = user.get("user_id") or ""
+    owner_uid = (row or {}).get("user_id") or ""
+    if not owner_uid or owner_uid == caller_uid:
+        return
+    logger.info(
+        "[audit] cross-user-read user=%s(uid=%s) read %s id=%s owner=%s",
+        user.get("username") or "?",
+        caller_uid[:8] if caller_uid else "?",
+        kind,
+        (row_id or "?")[:8],
+        owner_uid[:8],
+    )
 
 
 # ---------------------------------------------------------------------
@@ -121,7 +158,6 @@ class ClearIn(BaseModel):
 
 @router.get(
     "/captures",
-    dependencies=[Depends(require_admin_host)],
     response_class=HTMLResponse,
 )
 async def captures_page() -> HTMLResponse:
@@ -139,7 +175,7 @@ async def captures_page() -> HTMLResponse:
 
 @router.get(
     "/captures/api/list",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def list_captures_api(
     status_filter: str = Query("all", alias="status"),
@@ -148,12 +184,16 @@ async def list_captures_api(
     user_filter: str | None = Query(None, alias="user_id"),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    """Admin sees all; non-admin sees only their own captures. Admin can
-    additionally narrow by `?user_id=...` for the per-user dropdown."""
-    if not user.get("is_admin"):
-        effective_user = user.get("user_id")
-    else:
-        effective_user = user_filter  # None = show all
+    """Scope-aware list. `scope=own` users see only their own captures;
+    `scope=all` users (incl. admins) see every capture and may narrow
+    via the admin-only `?user_id=...` query for the per-user dropdown."""
+    perms = user["permissions"]
+    caller_uid = user.get("user_id") or ""
+    effective_user = perms.effective_user_id_for("captures", caller_uid)
+    # Admin-only ?user_id= override (non-admin's query is ignored — they
+    # are already scoped to their own data by effective_user_id_for).
+    if user.get("is_admin") and user_filter:
+        effective_user = user_filter
     rows = captures_store.list_captures(
         status=status_filter, limit=limit, before_ts=before_ts,
         user_id=effective_user,
@@ -178,7 +218,7 @@ async def list_captures_api(
 
 @router.get(
     "/captures/api/propose-merges",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def propose_merges_api(
     user_filter: str | None = Query(None, alias="user_id"),
@@ -186,16 +226,21 @@ async def propose_merges_api(
 ) -> JSONResponse:
     """Ranked auto-merge proposals for the /captures fine-tuning data UI.
 
-    Non-admin callers always see their own captures only; the `user_id`
-    query is ignored for them. Admin callers may pass `?user_id=...` to
-    scope, or omit for an all-users view. Results are cached per scope
-    with a TTL (cfg.CAPTURES_PROPOSER_CACHE_TTL_S), invalidated on any
-    capture/group write."""
-    is_admin = bool(user.get("is_admin"))
+    Scope-aware: `scope=own` users see proposals built from their own
+    captures only (the `user_id` query is ignored — that's an admin-
+    only override). `scope=all` users (incl. admins) see cross-user
+    proposals; admins may further narrow via `?user_id=...`. Results
+    are cached per scope with a TTL (cfg.CAPTURES_PROPOSER_CACHE_TTL_S),
+    invalidated on any capture/group write."""
+    perms = user["permissions"]
     caller_uid = str(user.get("user_id") or "")
+    sees_all = perms.scope("captures") == "all"
     proposals, cached = captures_merge_proposer.propose_merges(
-        user_id_filter=user_filter if is_admin else None,
-        is_admin=is_admin,
+        # Only scope=all callers can narrow via ?user_id=; the proposer
+        # ignores user_id_filter when is_admin=False (caller scoped to
+        # caller_user_id partition).
+        user_id_filter=user_filter if sees_all else None,
+        is_admin=sees_all,
         caller_user_id=caller_uid,
     )
     if proposals:
@@ -220,13 +265,22 @@ async def propose_merges_api(
 
 @router.get(
     "/captures/api/by-request/{request_id}",
-    dependencies=[
-        Depends(require_admin_host),
-        Depends(require_admin),
-    ],
+    dependencies=[Depends(require_page("captures"))],
 )
-async def by_request_id_api(request_id: str) -> JSONResponse:
+async def by_request_id_api(
+    request_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Cross-link from /reports → captures sharing a request_id. Non-admin
+    callers (scope=own) see only rows they own; admin-equivalent (scope=
+    all) sees every match. The endpoint backs the reports-page "show
+    capture" jump, so the same scope rules that gate /captures itself
+    apply here."""
     rows = captures_store.find_by_request_id(request_id)
+    perms = user["permissions"]
+    if perms.scope("captures") == "own":
+        caller_uid = user.get("user_id")
+        rows = [r for r in rows if r.get("user_id") == caller_uid]
     usernames = api_keys_store.get_usernames([r.get("user_id") for r in rows])
     for r in rows:
         _apply_trim_to_capture_row(r)
@@ -243,7 +297,7 @@ async def by_request_id_api(request_id: str) -> JSONResponse:
 @router.get(
     "/captures/api/export",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_page("captures")),
         Depends(require_admin),
     ],
 )
@@ -266,16 +320,17 @@ async def export_captures_api(
 
 @router.get(
     "/captures/api/groups",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def list_groups_api(
     user_filter: str | None = Query(None, alias="user_id"),
     status_filter: str | None = Query(None, alias="status"),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    """List packed training-sample groups. Admin sees all groups (or
-    narrow to one user via `?user_id=`); non-admin sees only their own.
-    Optional `?status=` filter accepts the same enum as PatchGroupIn
+    """List packed training-sample groups. `scope=own` users see only
+    their own groups; `scope=all` users (incl. admins) see every group
+    and may narrow via the admin-only `?user_id=...` query. Optional
+    `?status=` filter accepts the same enum as PatchGroupIn
     (new/reviewed/ready/dismissed); unknown values fall through to no
     filter, matching list_captures_api's tolerance.
 
@@ -284,9 +339,10 @@ async def list_groups_api(
     UI's `load()` then silently swallows the failure and renders no
     groups, making merged groups invisible after creation."""
     import capture_groups_store
-    if not user.get("is_admin"):
-        scope = user.get("user_id")
-    else:
+    perms = user["permissions"]
+    caller_uid = user.get("user_id") or ""
+    scope = perms.effective_user_id_for("captures", caller_uid)
+    if user.get("is_admin") and user_filter:
         scope = user_filter
     groups = capture_groups_store.list_groups(
         user_id=scope, status=status_filter,
@@ -309,15 +365,21 @@ async def list_groups_api(
 
 @router.get(
     "/captures/api/{cid}",
-    dependencies=[
-        Depends(require_admin_host),
-        Depends(require_admin),
-    ],
+    dependencies=[Depends(require_page("captures"))],
 )
-async def get_capture_api(cid: str) -> JSONResponse:
+async def get_capture_api(
+    cid: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
     row = captures_store.get_capture(cid)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+    # Scope guard. 404 (not 403) on cross-user access — a 403 would
+    # confirm the row exists (OWASP IDOR cheatsheet).
+    user["permissions"].assert_can_read_row(
+        row, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, row, "capture", cid)
     _refresh_final_if_stale(row)
     row["words"] = _align_words_to_final(
         row.get("words") or [],
@@ -374,16 +436,21 @@ def _sniff_audio_mime(abs_path: str, fallback_ext: str) -> str:
 
 @router.get(
     "/captures/api/{cid}/audio",
-    dependencies=[
-        Depends(require_admin_host),
-        Depends(require_admin),
-    ],
+    dependencies=[Depends(require_page("captures"))],
 )
-async def get_audio_api(cid: str, request: Request) -> FileResponse:
+async def get_audio_api(
+    cid: str,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> FileResponse:
     _check_audio_rate(request.client.host if request.client else "")
     row = captures_store.get_capture(cid)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+    user["permissions"].assert_can_read_row(
+        row, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, row, "audio", cid)
     # Prefer the trimmed WAV when one exists — that's what the export
     # uses, so reviewers should hear the same thing. Falls back to the
     # original if the trimmed file is missing on disk for any reason.
@@ -415,12 +482,23 @@ async def get_audio_api(cid: str, request: Request) -> FileResponse:
 
 @router.patch(
     "/captures/api/{cid}",
-    dependencies=[
-        Depends(require_admin_host),
-        Depends(require_admin),
-    ],
+    dependencies=[Depends(require_page("captures"))],
 )
-async def patch_capture_api(cid: str, payload: PatchCaptureIn) -> JSONResponse:
+async def patch_capture_api(
+    cid: str,
+    payload: PatchCaptureIn,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Edit a single capture (corrections, status, notes). `scope=own`
+    users can edit only their own; `scope=all` users (incl. admins)
+    can edit any capture. 404 (not 403) on cross-user access."""
+    row = captures_store.get_capture(cid)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+    user["permissions"].assert_can_read_row(
+        row, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, row, "capture-patch", cid)
     patch: dict[str, Any] = {}
     if payload.status is not None:
         patch["status"] = payload.status
@@ -432,8 +510,7 @@ async def patch_capture_api(cid: str, payload: PatchCaptureIn) -> JSONResponse:
             # Three-way merge: apply the user's deltas to the current
             # DB state, not just replace. Protects against concurrent
             # report cascades and cross-tab admin saves.
-            cap_now = captures_store.get_capture(cid) or {}
-            current = cap_now.get("corrections") or []
+            current = row.get("corrections") or []
             baseline = [c.model_dump() for c in payload.baseline_corrections]
             edited = text_corrections.three_way_merge_corrections(
                 baseline, edited, current,
@@ -452,12 +529,22 @@ async def patch_capture_api(cid: str, payload: PatchCaptureIn) -> JSONResponse:
 
 @router.delete(
     "/captures/api/{cid}",
-    dependencies=[
-        Depends(require_admin_host),
-        Depends(require_admin),
-    ],
+    dependencies=[Depends(require_page("captures"))],
 )
-async def delete_capture_api(cid: str) -> JSONResponse:
+async def delete_capture_api(
+    cid: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Delete a single capture. `scope=own` users can delete only their
+    own; `scope=all` users (incl. admins) can delete any. Bulk wipe is
+    via /clear which stays admin-only."""
+    row = captures_store.get_capture(cid)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+    user["permissions"].assert_can_read_row(
+        row, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, row, "capture-delete", cid)
     if not captures_store.delete_capture(cid):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     return JSONResponse({"ok": True})
@@ -466,7 +553,7 @@ async def delete_capture_api(cid: str) -> JSONResponse:
 @router.post(
     "/captures/api/clear",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_page("captures")),
         Depends(require_admin),
     ],
 )
@@ -487,18 +574,19 @@ async def clear_captures_api(payload: ClearIn, request: Request) -> JSONResponse
 
 @router.post(
     "/captures/api/{cid}/trim",
-    dependencies=[
-        Depends(require_admin_host),
-        Depends(require_admin),
-    ],
+    dependencies=[Depends(require_page("captures"))],
 )
-async def trim_capture_audio_api(cid: str) -> JSONResponse:
+async def trim_capture_audio_api(
+    cid: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
     """Cut leading/trailing silence from a singleton's WAV via Silero VAD.
 
     Writes the trimmed audio to a NEW file (`<id>.trimmed.wav`) so the
     original `audio_relpath` is preserved. The audio GET endpoint then
     prefers the trimmed path; export emits the trimmed file as the
-    sample's `audio_filepath`.
+    sample's `audio_filepath`. `scope=own` users can trim only their
+    own captures.
 
     Returns:
       {"trimmed": True} on success.
@@ -509,6 +597,10 @@ async def trim_capture_audio_api(cid: str) -> JSONResponse:
     row = captures_store.get_capture(cid)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+    user["permissions"].assert_can_read_row(
+        row, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, row, "capture-trim", cid)
     src_rel = row.get("audio_relpath") or ""
     if not src_rel:
         raise HTTPException(status.HTTP_410_GONE, "audio file is gone")
@@ -558,22 +650,27 @@ async def trim_capture_audio_api(cid: str) -> JSONResponse:
 
 @router.post(
     "/captures/api/{cid}/untrim",
-    dependencies=[
-        Depends(require_admin_host),
-        Depends(require_admin),
-    ],
+    dependencies=[Depends(require_page("captures"))],
 )
-async def untrim_capture_audio_api(cid: str) -> JSONResponse:
+async def untrim_capture_audio_api(
+    cid: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
     """Restore a singleton's untrimmed audio: unlink the `<id>.trimmed.wav`
     companion file and clear the offset columns. The audio GET endpoint
     then serves the original `audio_relpath` again, and the karaoke band
     uses un-shifted word times (which are still in original-audio time
     in the DB — the trim was non-destructive at the data layer).
+    `scope=own` users can untrim only their own captures.
 
     Idempotent: returns OK even if the capture was never trimmed."""
     row = captures_store.get_capture(cid)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+    user["permissions"].assert_can_read_row(
+        row, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, row, "capture-untrim", cid)
     trimmed_rel = row.get("audio_trimmed_relpath")
     if trimmed_rel:
         try:
@@ -596,12 +693,12 @@ async def untrim_capture_audio_api(cid: str) -> JSONResponse:
 
 @router.post(
     "/captures/api/{cid}/reprocess",
-    dependencies=[
-        Depends(require_admin_host),
-        Depends(require_admin),
-    ],
+    dependencies=[Depends(require_page("captures"))],
 )
-async def reprocess_capture_api(cid: str) -> JSONResponse:
+async def reprocess_capture_api(
+    cid: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
     """Re-run the post-processing pipeline on the stored `raw` text and
     update both `final` and `text_for_training` to reflect the current
     PIPELINE_RULES (and the captures-specific exclude set).
@@ -610,11 +707,16 @@ async def reprocess_capture_api(cid: str) -> JSONResponse:
     a new dictation-map entry), a reviewer wants this specific capture
     re-derived without waiting for the bulk reapply job. The bulk job
     /quick-config/reapply-rules also handles this row eventually, but
-    the per-row trigger gives immediate feedback in the UI.
+    the per-row trigger gives immediate feedback in the UI. `scope=own`
+    users can reprocess only their own captures.
     """
     row = captures_store.get_capture(cid)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+    user["permissions"].assert_can_read_row(
+        row, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, row, "capture-reprocess", cid)
     import main
     raw = row.get("raw") or ""
     captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
@@ -654,7 +756,7 @@ async def reprocess_capture_api(cid: str) -> JSONResponse:
 @router.post(
     "/captures/api/reprocess-all",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_page("captures")),
         Depends(require_admin),
     ],
 )
@@ -885,11 +987,12 @@ def _validate_merge_payload(
             "members must all belong to the same user",
         )
     owner_user_id = next(iter(user_ids))
-    if not user.get("is_admin") and owner_user_id != user.get("user_id"):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "non-admin users can only group their own captures",
-        )
+    # Scope guard via the policy object. scope=all (incl. admin) bypasses;
+    # scope=own requires the caller to BE the owner. 404 (not 403) matches
+    # the captures detail endpoints — don't leak existence.
+    user["permissions"].assert_can_read_row(
+        {"user_id": owner_user_id}, "captures", user.get("user_id") or "",
+    )
 
     total_audio_ms = sum(
         int(round(float(c.get("duration_seconds") or 0.0) * 1000))
@@ -973,7 +1076,7 @@ def _merged_wav_patch(
 
 @router.post(
     "/captures/api/groups",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def create_group_api(
     payload: CreateGroupIn,
@@ -1044,7 +1147,7 @@ async def create_group_api(
 
 @router.post(
     "/captures/api/groups/preview-audio",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def preview_merge_audio_api(
     payload: PreviewMergeIn,
@@ -1102,7 +1205,7 @@ async def preview_merge_audio_api(
 
 @router.post(
     "/captures/api/groups/preview-words",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def preview_merge_words_api(
     payload: PreviewMergeIn,
@@ -1130,7 +1233,7 @@ async def preview_merge_words_api(
 
 @router.post(
     "/captures/api/groups/preview-save-chips",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def preview_save_chips_api(
     payload: PreviewSaveChipsIn,
@@ -1228,7 +1331,7 @@ def _insert_group_with_gid(
 
 @router.get(
     "/captures/api/groups/{gid}",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def get_group_api(
     gid: str,
@@ -1238,8 +1341,11 @@ async def get_group_api(
     g = capture_groups_store.get_group(gid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
-    if not user.get("is_admin") and g["user_id"] != user.get("user_id"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "not your group")
+    # 404 (not 403) on cross-user — leaking existence violates OWASP IDOR.
+    user["permissions"].assert_can_read_row(
+        g, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, g, "group", gid)
     return JSONResponse({"group": _enrich_group(g)})
 
 
@@ -1643,7 +1749,7 @@ def _build_merged_words(
 
 @router.patch(
     "/captures/api/groups/{gid}",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def patch_group_api(
     gid: str,
@@ -1654,8 +1760,10 @@ async def patch_group_api(
     g = capture_groups_store.get_group(gid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
-    if not user.get("is_admin") and g["user_id"] != user.get("user_id"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "not your group")
+    user["permissions"].assert_can_read_row(
+        g, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, g, "group-patch", gid)
     if g["is_locked"] and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "group is locked")
 
@@ -1750,7 +1858,7 @@ async def patch_group_api(
 
 @router.post(
     "/captures/api/groups/{gid}/regenerate",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def regenerate_group_api(
     gid: str,
@@ -1762,8 +1870,10 @@ async def regenerate_group_api(
     g = capture_groups_store.get_group(gid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
-    if not user.get("is_admin") and g["user_id"] != user.get("user_id"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "not your group")
+    user["permissions"].assert_can_read_row(
+        g, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, g, "group-regenerate", gid)
     members = capture_groups_store.get_members(gid)
     with _get_rebuild_lock(gid):
         duration_ms, hashes, lead_trim_ms, trail_trim_ms = _build_merged_wav(
@@ -1779,7 +1889,7 @@ async def regenerate_group_api(
 
 @router.delete(
     "/captures/api/groups/{gid}",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def dissolve_group_api(
     gid: str,
@@ -1789,8 +1899,10 @@ async def dissolve_group_api(
     g = capture_groups_store.get_group(gid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
-    if not user.get("is_admin") and g["user_id"] != user.get("user_id"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "not your group")
+    user["permissions"].assert_can_read_row(
+        g, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, g, "group-delete", gid)
     if g["is_locked"] and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "group is locked")
     capture_groups_store.dissolve_group(gid)
@@ -1878,7 +1990,7 @@ def _ensure_group_wav(g: dict[str, Any]) -> str:
 
 @router.get(
     "/captures/api/groups/{gid}/audio",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_page("captures"))],
 )
 async def get_group_audio_api(
     gid: str,
@@ -1892,8 +2004,10 @@ async def get_group_audio_api(
     g = capture_groups_store.get_group(gid)
     if g is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
-    if not user.get("is_admin") and g["user_id"] != user.get("user_id"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "not your group")
+    user["permissions"].assert_can_read_row(
+        g, "captures", user.get("user_id") or "",
+    )
+    _audit_cross_user_read(user, g, "group-audio", gid)
     abs_p = _ensure_group_wav(g)
     return FileResponse(
         abs_p,
