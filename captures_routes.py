@@ -27,13 +27,15 @@ import io
 import json
 import logging
 import os
+import re
 import tarfile
+import tempfile
 import threading
 import time
 from datetime import datetime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from fastapi.responses import (
     FileResponse, HTMLResponse, JSONResponse, Response, StreamingResponse,
 )
@@ -678,6 +680,14 @@ class CreateGroupIn(BaseModel):
     silence_ms: int = Field(default=300, ge=0, le=2000)
 
 
+class PreviewMergeIn(BaseModel):
+    """Preview the merged audio without creating a group. Skips
+    join_strategy (audio merge doesn't depend on it)."""
+    model_config = {"extra": "forbid"}
+    member_ids: list[str] = Field(min_length=2, max_length=30)
+    silence_ms: int = Field(default=300, ge=0, le=2000)
+
+
 class PatchGroupIn(BaseModel):
     model_config = {"extra": "forbid"}
     join_strategy: Literal["space", "period_space"] | None = None
@@ -818,29 +828,38 @@ def _build_default_transcript(members: list[dict[str, Any]], strategy: str) -> s
     return _JOIN_STR.get(strategy, " ").join(parts)
 
 
-def _build_merged_wav(
-    *,
-    gid: str,
+def _validate_merge_payload(
     member_ids: list[str],
     silence_ms: int,
-) -> tuple[int, dict[str, str], int, int]:
-    """Resolve member audio paths, run the merge, return (duration_ms,
-    member_hash_map, lead_trim_ms, trail_trim_ms). Caller must have
-    validated member_ids belong to the same user and total ≤28 s.
+    user: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str, list[str], int]:
+    """Shared validation for create_group_api and the preview-audio endpoint.
 
-    The trim offsets are non-zero only when CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS
-    auto-trims the merged WAV — they're needed by _build_merged_words to
-    keep per-member karaoke timestamps in sync with the trimmed audio."""
-    import audio_merge
-    import capture_groups_store
+    Validates: deduped member_ids, every capture exists, none is already in
+    a group, all members belong to the same user (and the caller is either
+    that user or admin), audio files are present on disk, total duration
+    (audio + inter-segment silence) ≤ 28 s.
 
+    Returns (captures, owner_user_id, member_paths, total_audio_ms) so
+    downstream callers don't re-fetch the same rows."""
+    if len(member_ids) != len(set(member_ids)):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "duplicate capture in member_ids",
+        )
+
+    captures: list[dict[str, Any]] = []
     member_paths: list[str] = []
-    hashes: dict[str, str] = {}
+    user_ids: set[str] = set()
     for mid in member_ids:
         cap = captures_store.get_capture(mid)
         if cap is None:
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND, f"capture {mid} not found",
+            )
+        if cap.get("group_id"):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"capture {mid} is already in a group",
             )
         abs_p = captures_store.abs_audio_path(cap["audio_relpath"])
         if not os.path.exists(abs_p):
@@ -848,6 +867,70 @@ def _build_merged_wav(
                 status.HTTP_410_GONE, f"capture {mid} audio is missing",
             )
         member_paths.append(abs_p)
+        user_ids.add(cap.get("user_id") or "")
+        captures.append(cap)
+    if len(user_ids) != 1:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "members must all belong to the same user",
+        )
+    owner_user_id = next(iter(user_ids))
+    if not user.get("is_admin") and owner_user_id != user.get("user_id"):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "non-admin users can only group their own captures",
+        )
+
+    total_audio_ms = sum(
+        int(round(float(c.get("duration_seconds") or 0.0) * 1000))
+        for c in captures
+    )
+    total_gap_ms = int(silence_ms) * max(0, len(member_ids) - 1)
+    if total_audio_ms + total_gap_ms > 28_000:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"merged duration would exceed 28 s "
+            f"({(total_audio_ms + total_gap_ms) / 1000:.2f}s)",
+        )
+    return captures, owner_user_id, member_paths, total_audio_ms
+
+
+def _build_merged_wav(
+    *,
+    gid: str,
+    member_ids: list[str],
+    silence_ms: int,
+    member_paths: list[str] | None = None,
+) -> tuple[int, dict[str, str], int, int]:
+    """Resolve member audio paths (or accept pre-resolved ones), run the
+    merge, return (duration_ms, member_hash_map, lead_trim_ms,
+    trail_trim_ms). When `member_paths` is None, looks them up via
+    captures_store + validates each file exists. Caller must have validated
+    member_ids belong to the same user and total ≤28 s.
+
+    The trim offsets are non-zero only when CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS
+    auto-trims the merged WAV — they're needed by _build_merged_words to
+    keep per-member karaoke timestamps in sync with the trimmed audio."""
+    import audio_merge
+    import capture_groups_store
+
+    if member_paths is None:
+        member_paths = []
+        for mid in member_ids:
+            cap = captures_store.get_capture(mid)
+            if cap is None:
+                raise HTTPException(
+                    status.HTTP_404_NOT_FOUND, f"capture {mid} not found",
+                )
+            abs_p = captures_store.abs_audio_path(cap["audio_relpath"])
+            if not os.path.exists(abs_p):
+                raise HTTPException(
+                    status.HTTP_410_GONE, f"capture {mid} audio is missing",
+                )
+            member_paths.append(abs_p)
+
+    hashes: dict[str, str] = {}
+    for mid, abs_p in zip(member_ids, member_paths):
         hashes[mid] = audio_merge.hash_wav_pcm(abs_p)
 
     dst_relpath = capture_groups_store._relpath_for(gid)
@@ -898,59 +981,17 @@ async def create_group_api(
     import uuid as _uuid
 
     member_ids = payload.member_ids
-    if len(member_ids) != len(set(member_ids)):
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "duplicate capture in member_ids",
-        )
-
-    captures: list[dict[str, Any]] = []
-    user_ids = set()
-    for mid in member_ids:
-        cap = captures_store.get_capture(mid)
-        if cap is None:
-            raise HTTPException(
-                status.HTTP_404_NOT_FOUND, f"capture {mid} not found",
-            )
-        if cap.get("group_id"):
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"capture {mid} is already in a group",
-            )
-        user_ids.add(cap.get("user_id") or "")
-        captures.append(cap)
-    if len(user_ids) != 1:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "members must all belong to the same user",
-        )
-    owner_user_id = next(iter(user_ids))
-    # Authorization: admin can merge anyone's captures; non-admin can
-    # only merge their own.
-    if not user.get("is_admin") and owner_user_id != user.get("user_id"):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN,
-            "non-admin users can only group their own captures",
-        )
+    captures, owner_user_id, member_paths, _total_audio_ms = (
+        _validate_merge_payload(member_ids, payload.silence_ms, user)
+    )
 
     # Build merged WAV — gid generated upfront so the build path is
     # known before the DB insert (mirrors captures_store).
     gid = _uuid.uuid4().hex
-    # Pre-flight duration check (server-side defense; UI also enforces).
-    total_audio_ms = sum(
-        int(round(float(c.get("duration_seconds") or 0.0) * 1000))
-        for c in captures
-    )
-    total_gap_ms = payload.silence_ms * max(0, len(member_ids) - 1)
-    if total_audio_ms + total_gap_ms > 28_000:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"merged duration would exceed 28 s "
-            f"({(total_audio_ms + total_gap_ms) / 1000:.2f}s)",
-        )
-
     transcript = _build_default_transcript(captures, payload.join_strategy)
     duration_ms, hashes, lead_trim_ms, trail_trim_ms = _build_merged_wav(
         gid=gid,
+        member_paths=member_paths,
         member_ids=member_ids,
         silence_ms=payload.silence_ms,
     )
@@ -989,6 +1030,64 @@ async def create_group_api(
             pass
         raise
     return JSONResponse({"group_id": gid})
+
+
+@router.post(
+    "/captures/api/groups/preview-audio",
+    dependencies=[Depends(require_admin_host)],
+)
+async def preview_merge_audio_api(
+    payload: PreviewMergeIn,
+    request: Request,
+    background: BackgroundTasks,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> FileResponse:
+    """Build the merged WAV exactly as create_group_api would, stream it
+    back to the caller as audio/wav, and delete the temp file after the
+    response completes. Does NOT persist a capture_groups row.
+
+    Used by the /captures Auto-propose merges modal + the manual merge-
+    modal to let users preview the merged audio before committing."""
+    import audio_merge
+
+    _check_audio_rate(request.client.host if request.client else "")
+
+    _captures, _owner, member_paths, _total_audio_ms = (
+        _validate_merge_payload(payload.member_ids, payload.silence_ms, user)
+    )
+
+    # tempfile.NamedTemporaryFile(delete=False) so FileResponse can stream
+    # the closed file; background unlink fires after the response finishes.
+    fd, tmp_path = tempfile.mkstemp(prefix="preview_merge_", suffix=".wav")
+    os.close(fd)
+    try:
+        audio_merge.merge_wavs(
+            member_paths, tmp_path, gap_ms=payload.silence_ms,
+        )
+    except audio_merge.WavFormatError as e:
+        try: os.unlink(tmp_path)
+        except OSError: pass
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    except ValueError as e:
+        try: os.unlink(tmp_path)
+        except OSError: pass
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    except Exception:
+        try: os.unlink(tmp_path)
+        except OSError: pass
+        raise
+
+    def _cleanup():
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+    background.add_task(_cleanup)
+    return FileResponse(
+        path=tmp_path,
+        media_type="audio/wav",
+        filename="preview.wav",
+    )
 
 
 def _insert_group_with_gid(
@@ -1262,13 +1361,29 @@ def _refresh_final_if_stale(row: dict[str, Any]) -> None:
             )
 
 
+_ALIGN_PUNCT_RE = re.compile(r"^[^\w]+|[^\w]+$", re.UNICODE)
+
+
 def _align_key(s: str) -> str:
-    """Normalise a token for LCS comparison: strip surrounding
-    whitespace + casefold. Internal punctuation is preserved so
-    'Hello,' and 'Hello' don't cross-match — the rule rewrote the
-    word with the comma for a reason and we want it surfaced as a
-    `raw_word` diff."""
-    return (s or "").strip().casefold()
+    """Normalise a token for LCS comparison: strip surrounding whitespace
+    AND leading/trailing non-word punctuation, then casefold. Internal
+    punctuation (apostrophes, internal hyphens) is preserved so "don't"
+    or "Sciene-fiction" still compare faithfully.
+
+    Stripping edge punctuation is necessary because the inference pipeline
+    (callback:map: "Komma" → ",", "Punkt" → ".") attaches the symbol to
+    the preceding token when joining; without normalisation, "existiert"
+    (raw) and "existiert," (final after Komma→, glue) won't LCS-match,
+    falsely flagging the raw word as removed-by-rule in the corrections
+    word-strip.
+
+    The visual diff signal (rule changed the word) is still surfaced via
+    `item["raw_word"]` when display != raw (see _align_words_to_final
+    L1351-1357) — the user sees the dotted-underline + tooltip without
+    the misleading strike-through."""
+    s = (s or "").strip()
+    s = _ALIGN_PUNCT_RE.sub("", s)
+    return s.casefold()
 
 
 def _align_words_to_final(
@@ -2508,6 +2623,24 @@ _CAPTURES_HTML = r"""<!doctype html>
   #propose-list .proposal .members .m .m-spk {
     color: #8aaad0;
   }
+
+  /* Shared merge-preview play button (used in propose-modal and merge-modal) */
+  .merge-preview-btn {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 3px;
+    padding: 0.15rem 0.5rem; cursor: pointer;
+    font-size: var(--fs-sm); font-family: var(--font-mono);
+  }
+  .merge-preview-btn:hover:not(:disabled) {
+    background: #21262d; color: var(--bold);
+  }
+  .merge-preview-btn:disabled {
+    opacity: 0.4; cursor: not-allowed;
+  }
+  .merge-preview-btn .dur {
+    color: var(--help); font-size: var(--fs-xs);
+  }
   #propose-list .proposal .meter-bar {
     display: inline-block; width: 7rem; height: 0.4rem;
     background: var(--border); border-radius: 2px; overflow: hidden;
@@ -2588,6 +2721,7 @@ _CAPTURES_HTML = r"""<!doctype html>
         </select>
       </label>
       <span class="summary" id="merge-summary"></span>
+      <span id="merge-preview-slot"></span>
     </div>
     <p style="margin: 0.5rem 0 0.25rem; color: var(--help); font-size: var(--fs-sm);">
       Final result preview (derived from members + chips):
@@ -4062,11 +4196,29 @@ _CAPTURES_HTML = r"""<!doctype html>
         n + ' segments · Σ ' + total.toFixed(2) + ' s / 28.00 s';
     }
     refreshSummary();
-    silSel.onchange = refreshSummary;
+    silSel.onchange = function() {
+      refreshSummary();
+      if (previewBtn) previewBtn._refreshDur();
+    };
+    // Rebuild the preview button per open so it captures the current rows.
+    var slot = document.getElementById('merge-preview-slot');
+    slot.innerHTML = '';
+    var previewBtn = _makeMergePreviewBtn(
+      function() { return rows.map(function(r) { return r.id; }); },
+      function() { return parseInt(silSel.value, 10) || 300; },
+      function() {
+        var totalAudio = rows.reduce(function(s, r) { return s + (r.duration_seconds || 0); }, 0);
+        var gap = (parseInt(silSel.value, 10) || 0) / 1000;
+        return totalAudio + gap * Math.max(0, rows.length - 1);
+      }
+    );
+    slot.appendChild(previewBtn);
     document.getElementById('merge-cancel').onclick = function() {
+      _stopAnyPreview();
       modal.classList.remove('show');
     };
     document.getElementById('merge-commit').onclick = function() {
+      _stopAnyPreview();
       // Server derives the transcript from members + chips on create
       // (mirrors the locked preview).
       var payload = {
@@ -4085,6 +4237,100 @@ _CAPTURES_HTML = r"""<!doctype html>
         });
     };
     modal.classList.add('show');
+  }
+
+  // -------------------------------------------------------------------
+  // Merge preview audio — shared play button used by the propose-modal
+  // proposal cards AND the manual merge-modal. Streams a temp WAV from
+  // POST /captures/api/groups/preview-audio (built same way as the
+  // committed merge but never persisted).
+  // -------------------------------------------------------------------
+  var _previewAudio = null;       // single <audio> element shared across buttons
+  var _previewBlobUrl = null;     // current blob URL (revoked on stop)
+  var _previewActiveBtn = null;   // currently-playing button (updates label/icon)
+
+  function _stopAnyPreview() {
+    if (_previewAudio) {
+      try { _previewAudio.pause(); } catch (_) {}
+      try { _previewAudio.removeAttribute('src'); _previewAudio.load(); } catch (_) {}
+    }
+    if (_previewBlobUrl) {
+      try { URL.revokeObjectURL(_previewBlobUrl); } catch (_) {}
+      _previewBlobUrl = null;
+    }
+    if (_previewActiveBtn) {
+      _previewActiveBtn._setIcon('▶');
+      _previewActiveBtn.disabled = false;
+      _previewActiveBtn = null;
+    }
+  }
+
+  // memberIdsFn() → array of capture ids (read at click time so the latest
+  //                 selection / proposal members are used)
+  // silenceMsFn() → silence_ms read from the modal's dropdown at click time
+  // durationFn()  → predicted total duration in seconds (display only)
+  function _makeMergePreviewBtn(memberIdsFn, silenceMsFn, durationFn) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'merge-preview-btn';
+    btn.title = 'Preview the merged audio (no group is created)';
+    var iconEl = document.createElement('span');
+    iconEl.textContent = '▶';
+    var durEl = document.createElement('span');
+    durEl.className = 'dur';
+    btn.appendChild(iconEl);
+    btn.appendChild(durEl);
+    btn._setIcon = function(s) { iconEl.textContent = s; };
+    btn._refreshDur = function() {
+      var d = durationFn();
+      durEl.textContent = (typeof d === 'number' && isFinite(d))
+        ? d.toFixed(1) + ' s' : '';
+    };
+    btn._refreshDur();
+
+    btn.addEventListener('click', async function() {
+      // If THIS button is the active player, stop and exit (toggle).
+      if (_previewActiveBtn === btn) { _stopAnyPreview(); return; }
+      _stopAnyPreview();
+      var ids = memberIdsFn() || [];
+      if (ids.length < 2) { toast('Need at least 2 members to preview', true); return; }
+      btn.disabled = true;
+      btn._setIcon('…');
+      try {
+        var headers = { 'Content-Type': 'application/json' };
+        var tok = getToken();
+        if (tok) headers['Authorization'] = 'Bearer ' + tok;
+        var resp = await fetch('/captures/api/groups/preview-audio', {
+          method: 'POST', headers: headers,
+          body: JSON.stringify({
+            member_ids: ids,
+            silence_ms: silenceMsFn() || 300,
+          }),
+        });
+        if (!resp.ok) {
+          var msg = 'preview failed (' + resp.status + ')';
+          try { var j = await resp.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
+          throw new Error(msg);
+        }
+        var blob = await resp.blob();
+        _previewBlobUrl = URL.createObjectURL(blob);
+        if (!_previewAudio) {
+          _previewAudio = document.createElement('audio');
+          _previewAudio.addEventListener('ended', _stopAnyPreview);
+        }
+        _previewAudio.src = _previewBlobUrl;
+        _previewActiveBtn = btn;
+        btn._setIcon('⏸');
+        btn.disabled = false;
+        await _previewAudio.play();
+      } catch (e) {
+        btn.disabled = false;
+        btn._setIcon('▶');
+        _previewActiveBtn = null;
+        if (e && e.message) toast(e.message, true);
+      }
+    });
+    return btn;
   }
 
   // -------------------------------------------------------------------
@@ -4174,6 +4420,15 @@ _CAPTURES_HTML = r"""<!doctype html>
       row1.appendChild(spk);
     }
 
+    row1.appendChild(_makeMergePreviewBtn(
+      function() { return p.member_ids; },
+      function() {
+        var sel = document.getElementById('propose-silence');
+        return (sel && parseInt(sel.value, 10)) || 300;
+      },
+      function() { return p.total_duration_s; }
+    ));
+
     var sp = document.createElement('span');
     sp.style.flex = '1';
     row1.appendChild(sp);
@@ -4257,6 +4512,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       toast(missing.length + ' member(s) no longer eligible — try Refresh', true);
       return;
     }
+    _stopAnyPreview();
     var join = (document.getElementById('propose-join') || {}).value || 'space';
     var silenceMs = parseInt((document.getElementById('propose-silence') || {}).value, 10) || 300;
     var origText = btn ? btn.textContent : '';
@@ -5018,6 +5274,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   document.getElementById('ab-clear').addEventListener('click', _clearSelection);
   document.getElementById('btn-propose').addEventListener('click', _openProposeModal);
   function _closePropose() {
+    _stopAnyPreview();
     document.getElementById('propose-modal').classList.remove('show');
   }
   document.getElementById('propose-refresh').addEventListener('click', _loadProposals);
