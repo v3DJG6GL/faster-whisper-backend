@@ -2515,6 +2515,20 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     refreshControlsVisibility();
   }
 
+  // Union of every tag currently set on any rule in this list — used as
+  // the tag-picker autocomplete source so admins don't have to retype
+  // an existing tag's spelling. Computed at render time so newly-added
+  // tags propagate without a reload.
+  function _allRuleTags() {
+    const seen = {};
+    for (const r of rules) {
+      for (const t of (r.tags || [])) {
+        if (typeof t === 'string' && t) seen[t] = true;
+      }
+    }
+    return Object.keys(seen).sort();
+  }
+
   function renderRow(rule, idx) {
     const row = document.createElement('div');
     row.className = 'rule-row';
@@ -2714,6 +2728,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // "Show on /quick-config" — admin marks a rule as exposed to end users.
     // Skipped for terminal rules (no useful body to edit). The checkbox sits
     // beside the enabled toggle so the two flags read as a pair.
+    let _untaggedBadge = null;  // updated on tag change + expose change
     if (rule.type !== 'terminal') {
       const expWrap = document.createElement('label');
       expWrap.className = 'expose-toggle';
@@ -2724,6 +2739,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       expCb.addEventListener('change', () => {
         rule.exposed = expCb.checked;
         expWrap.classList.toggle('on', expCb.checked);
+        _syncUntaggedBadge();
         commitFull();
       });
       if (rule.exposed) expWrap.classList.add('on');
@@ -2732,7 +2748,44 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       expTxt.textContent = 'simple';
       expWrap.appendChild(expTxt);
       head.appendChild(expWrap);
+
+      // Per-rule tag picker. Mounted next to the expose toggle because
+      // tagging is what makes "exposed" actually mean "visible to a
+      // subset"; the two flags pair conceptually.
+      const tagWrap = document.createElement('span');
+      tagWrap.className = 'rule-tag-wrap';
+      const picker = window._renderTagPicker({
+        initial: Array.isArray(rule.tags) ? rule.tags : [],
+        available: _allRuleTags(),
+        placeholder: '+ tag',
+        onChange: (newTags) => {
+          rule.tags = newTags;
+          _syncUntaggedBadge();
+          commitFull();
+        },
+      });
+      tagWrap.appendChild(picker.el);
+      head.appendChild(tagWrap);
+
+      // Yellow "visible to all users" badge — shown when the rule is
+      // exposed AND has no tags (the asymmetric default that lets it
+      // reach every non-admin user). Helps admins spot rules they
+      // probably wanted to scope but forgot to tag.
+      _untaggedBadge = document.createElement('span');
+      _untaggedBadge.className = 'rule-untagged-badge';
+      _untaggedBadge.textContent = '· visible to all users';
+      _untaggedBadge.title = 'Exposed but untagged — every authenticated user '
+        + 'with /quick-config access sees this rule. Add tags to scope it '
+        + 'to specific users.';
+      head.appendChild(_untaggedBadge);
     }
+    function _syncUntaggedBadge() {
+      if (!_untaggedBadge) return;
+      const isUntagged = !rule.tags || !rule.tags.length;
+      const visible = !!rule.exposed && isUntagged;
+      _untaggedBadge.style.display = visible ? '' : 'none';
+    }
+    _syncUntaggedBadge();
 
     const ord = document.createElement('span');
     ord.className = 'ordinal';
@@ -3556,4 +3609,5 @@ document.addEventListener('DOMContentLoaded', async () => {
 </script>
 {{SCALE_PICKER_JS}}
 {{SEV_POLLER_JS}}
+{{TAG_PICKER_JS}}
 </body></html>"""

@@ -97,6 +97,19 @@ async def api_keys_page() -> HTMLResponse:
 async def list_users_api() -> JSONResponse:
     import config as cfg
     import config_store
+    # Snapshot of every exposed (non-terminal) rule's tag list. Lets
+    # the matrix UI render the "Will see: N of M rules" preview live
+    # as the admin edits a user's tags — no extra roundtrip.
+    exposed_rule_tags: list[list[str]] = []
+    for r in (cfg.PIPELINE_RULES or []):
+        rd = r.model_dump() if hasattr(r, "model_dump") else r
+        if not isinstance(rd, dict):
+            continue
+        if rd.get("type") == "terminal":
+            continue
+        if not rd.get("exposed"):
+            continue
+        exposed_rule_tags.append(list(rd.get("tags") or []))
     users = api_keys_store.list_users()
     # Annotate each user with their active key count for the card header.
     # Batched: one GROUP BY query instead of N list_keys() roundtrips.
@@ -125,6 +138,8 @@ async def list_users_api() -> JSONResponse:
         # use" hints. Empty list means no rule is tagged yet, which
         # is the day-0 migration state.
         "available_tags": config_store.pipeline_rule_tags(cfg.PIPELINE_RULES),
+        # Tag list per exposed rule — for the "Will see: N of M" preview.
+        "exposed_rule_tags": exposed_rule_tags,
     })
 
 
@@ -417,6 +432,14 @@ _API_KEYS_HTML = r"""<!doctype html>
   .perm-empty {
     color: var(--dim); padding: 0.6rem 0; font-style: italic;
     font-size: var(--fs-sm); }
+  /* Visibility preview under each user's tag picker: "Will see: N of M".
+     Caption-sized, dim. Goes muted when there are no exposed rules at
+     all so the admin understands the preview is unactionable. */
+  .perm-matrix .tag-preview {
+    margin-top: 0.2rem; font-size: var(--fs-xs);
+    color: var(--dim); font-family: var(--font-sans);
+  }
+  .perm-matrix .tag-preview.muted { font-style: italic; opacity: 0.7; }
   {{NAV_CSS}}
 </style></head>
 <body>
@@ -501,6 +524,7 @@ _API_KEYS_HTML = r"""<!doctype html>
 {{SCALE_PICKER_JS}}
 {{SEV_POLLER_JS}}
 {{TIME_HELPERS_JS}}
+{{TAG_PICKER_JS}}
 <script>
 (function() {
   'use strict';
@@ -686,6 +710,16 @@ _API_KEYS_HTML = r"""<!doctype html>
       return;
     }
 
+    // Tag-picker autocomplete source: union of every tag currently set
+    // on any pipeline rule. Computed server-side (list_users_api) so
+    // an admin tagging a rule on /config sees the new tag in the
+    // matrix autocomplete after a reload.
+    var availableTags = j.available_tags || [];
+    // Per-exposed-rule tag list, used by the per-row "Will see: N of M"
+    // visibility preview. Computed live as the admin edits a user's
+    // tags — no extra roundtrip.
+    var exposedRuleTags = j.exposed_rule_tags || [];
+
     var table = document.createElement('table');
     table.className = 'perm-matrix';
     var thead = document.createElement('thead');
@@ -704,6 +738,19 @@ _API_KEYS_HTML = r"""<!doctype html>
       th.appendChild(tip);
       headRow.appendChild(th);
     });
+    // Quick-config tag picker column. Tooltip explains the asymmetric
+    // empty-list semantics (user with no tags sees only untagged rules).
+    var thTags = document.createElement('th');
+    thTags.textContent = 'quick-config tags';
+    var tagsTip = document.createElement('span');
+    tagsTip.className = 'tip';
+    tagsTip.textContent = '?';
+    tagsTip.title = 'Per-user filter for /quick-config rules. A user '
+      + 'sees a rule when their tags intersect the rule’s tags '
+      + '— OR when the rule has no tags (visible to everyone). '
+      + 'A user with no tags sees only untagged rules. Admins see all.';
+    thTags.appendChild(tagsTip);
+    headRow.appendChild(thTags);
     var thSave = document.createElement('th');
     thSave.textContent = '';
     headRow.appendChild(thSave);
@@ -750,6 +797,57 @@ _API_KEYS_HTML = r"""<!doctype html>
         tr.appendChild(td);
       });
 
+      // Per-user quick-config tag picker. Stash the controller on the
+      // row so savePerms() can read the current tag list at submit time
+      // without scanning DOM. Admins get a greyed-out "—" cell.
+      var tdTags = document.createElement('td');
+      if (u.is_admin) {
+        tdTags.className = 'admin-cell';
+        tdTags.textContent = '—';
+        tdTags.title = 'admins see every rule regardless of tags';
+      } else {
+        var preview = document.createElement('div');
+        preview.className = 'tag-preview';
+        function _refreshPreview(userTags) {
+          var total = exposedRuleTags.length;
+          var seen = 0;
+          var hasTag = function(t) { return userTags.indexOf(t) !== -1; };
+          for (var i = 0; i < exposedRuleTags.length; i++) {
+            var rt = exposedRuleTags[i];
+            if (!rt.length) { seen++; continue; }   // untagged = visible
+            for (var k = 0; k < rt.length; k++) {
+              if (hasTag(rt[k])) { seen++; break; }
+            }
+          }
+          if (!total) {
+            preview.textContent = 'No rules exposed yet.';
+            preview.className = 'tag-preview muted';
+          } else if (userTags.length === 0) {
+            preview.textContent = 'Will see: ' + seen + ' of ' + total
+              + ' (untagged only)';
+            preview.className = 'tag-preview';
+          } else {
+            preview.textContent = 'Will see: ' + seen + ' of ' + total
+              + ' exposed rule' + (total === 1 ? '' : 's');
+            preview.className = 'tag-preview';
+          }
+        }
+        var picker = window._renderTagPicker({
+          initial: (u.permissions && u.permissions.quick_config_tags) || [],
+          available: availableTags,
+          placeholder: '+ tag',
+          onChange: function(newTags) {
+            tr.classList.add('dirty');
+            _refreshPreview(newTags);
+          },
+        });
+        tr._tagPicker = picker;
+        tdTags.appendChild(picker.el);
+        tdTags.appendChild(preview);
+        _refreshPreview(picker.getTags());
+      }
+      tr.appendChild(tdTags);
+
       var tdSave = document.createElement('td');
       if (!u.is_admin) {
         var btn = document.createElement('button');
@@ -774,10 +872,13 @@ _API_KEYS_HTML = r"""<!doctype html>
     tr.querySelectorAll('select').forEach(function(sel) {
       pages[sel.dataset.page] = sel.value;
     });
+    var body = { pages: pages };
+    // Tag picker is row-scoped; the controller was stashed at render.
+    if (tr._tagPicker) body.quick_config_tags = tr._tagPicker.getTags();
     btn.disabled = true;
     api('PATCH',
         '/config/api-keys/api/users/' + encodeURIComponent(uid) + '/permissions',
-        { pages: pages })
+        body)
       .then(function(r) {
         if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
         return r.json();

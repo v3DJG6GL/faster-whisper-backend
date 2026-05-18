@@ -310,6 +310,59 @@ header .page-link.allowed { display: inline-flex; }
 .no-access-landing button:hover {
   background: #21262d; color: var(--bold);
 }
+
+/* Tag-picker widget — shared between /config rule editor and the
+   /config/api-keys permissions matrix. Renders as a single
+   border-bounded row of pills + an inline text input.
+   Validation: TAG_RE = lowercase a-z0-9- only, 1-32 chars, no
+   leading/trailing hyphen. Bad input gets a red border via .invalid.
+   The autocomplete dropdown is position:absolute relative to the
+   picker, so each .tag-picker is position:relative. */
+.tag-picker { position: relative; display: inline-block;
+  min-width: 12rem; max-width: 24rem; vertical-align: middle; }
+.tag-picker.disabled { opacity: 0.45; pointer-events: none; }
+.tag-picker-pills { display: flex; flex-wrap: wrap; gap: 0.25rem;
+  align-items: center; padding: 0.15rem 0.3rem;
+  background: var(--input-bg); border: 1px solid var(--border);
+  border-radius: 4px; min-height: 1.6rem; }
+.tag-picker-pills:focus-within { border-color: var(--cyan, #58a6ff); }
+.tag-pill { display: inline-flex; align-items: center; gap: 0.15rem;
+  font-size: var(--fs-xs); padding: 0.05rem 0.4rem;
+  background: rgba(121, 192, 255, 0.12);
+  color: var(--cyan, #58a6ff);
+  border-radius: 999px; border: 1px solid rgba(121, 192, 255, 0.3);
+  font-family: var(--font-sans); white-space: nowrap; }
+.tag-pill-x { background: none; border: 0;
+  color: var(--cyan, #58a6ff); cursor: pointer;
+  padding: 0 0.15rem; line-height: 1; font: inherit;
+  font-size: var(--fs-sm); }
+.tag-pill-x:hover { color: var(--red, #ff7b72); }
+.tag-picker-input { flex: 1; min-width: 5rem; border: 0;
+  background: transparent; color: var(--fg); font: inherit;
+  font-size: var(--fs-sm); padding: 0.1rem 0.2rem; outline: 0;
+  font-family: var(--font-sans); }
+.tag-picker-input.invalid { color: var(--red, #ff7b72); }
+.tag-picker-input::placeholder { color: var(--dim); }
+.tag-picker-suggest { position: absolute; left: 0; top: 100%;
+  z-index: 20; margin-top: 0.15rem;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 4px; max-height: 12rem; overflow-y: auto;
+  font-size: var(--fs-sm); min-width: 10rem;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4); }
+.tag-picker-suggest-item { padding: 0.25rem 0.6rem;
+  cursor: pointer; color: var(--fg); }
+.tag-picker-suggest-item:hover {
+  background: var(--input-bg); color: var(--cyan, #58a6ff);
+}
+
+/* Yellow warning badge for exposed-but-untagged rules — admin's clue
+   that a rule is currently visible to every user. */
+.rule-untagged-badge { display: inline-flex; align-items: center;
+  font-size: var(--fs-xs); padding: 0.05rem 0.4rem;
+  margin-left: 0.5rem; color: var(--yellow, #f2cc60);
+  background: rgba(242, 204, 96, 0.08);
+  border: 1px solid rgba(242, 204, 96, 0.3);
+  border-radius: 999px; white-space: nowrap; }
 """
 
 
@@ -603,6 +656,175 @@ function _renderNotAdminLanding() {
 # `_renderNoAccessLanding` for /logs, /stats, /quick-config without
 # requiring their templates to opt in to the older placeholder.
 NOT_ADMIN_LANDING_GLOBAL_JS = "<script>" + NOT_ADMIN_LANDING_JS + "</script>"
+
+
+# Shared tag-picker widget used on /config (per-rule tag editor) and
+# /config/api-keys (per-user tag editor in the permissions matrix).
+# DOM-pure factory: `_renderTagPicker(opts) -> { el, getTags, setTags,
+# setAvailable }`. Caller mounts the returned element wherever and
+# subscribes to `opts.onChange(newTags)`.
+#
+# Tag format matches the server-side `config_store.TAG_RE`: lowercase
+# letters/digits/hyphens, 1-32 chars, no leading/trailing hyphen.
+# Validation happens BOTH client-side (visual red border on bad input)
+# AND server-side (set_user_permissions / Pydantic validator) so a
+# JS-side bypass can't smuggle malformed tags into the DB.
+#
+# Autocomplete: caller passes `available` = the union of every tag
+# currently in use (rule tags for the matrix UI, or all rule tags for
+# the rule editor). The widget suggests matches as the user types;
+# clicking a suggestion adds the tag.
+TAG_PICKER_JS = r"""
+<script>(function(){
+  var TAG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+  function _norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
+
+  function _renderTagPicker(opts) {
+    opts = opts || {};
+    var tags = Array.isArray(opts.initial) ? opts.initial.slice() : [];
+    var available = Array.isArray(opts.available) ? opts.available.slice() : [];
+    var disabled = !!opts.disabled;
+
+    var el = document.createElement('div');
+    el.className = 'tag-picker' + (disabled ? ' disabled' : '');
+
+    var pills = document.createElement('div');
+    pills.className = 'tag-picker-pills';
+    el.appendChild(pills);
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'tag-picker-input';
+    input.placeholder = opts.placeholder || '+ tag';
+    input.autocomplete = 'off';
+    if (disabled) input.disabled = true;
+
+    var suggest = document.createElement('div');
+    suggest.className = 'tag-picker-suggest';
+    suggest.hidden = true;
+    el.appendChild(suggest);
+
+    function _hasTag(s) { return tags.indexOf(s) !== -1; }
+    function _notify() {
+      if (typeof opts.onChange === 'function') opts.onChange(tags.slice());
+    }
+
+    function _render() {
+      pills.innerHTML = '';
+      tags.forEach(function(t) {
+        var pill = document.createElement('span');
+        pill.className = 'tag-pill';
+        pill.textContent = t;
+        if (!disabled) {
+          var x = document.createElement('button');
+          x.type = 'button';
+          x.className = 'tag-pill-x';
+          x.textContent = '×';
+          x.title = 'Remove "' + t + '"';
+          x.addEventListener('click', function(e) {
+            e.preventDefault();
+            var i = tags.indexOf(t);
+            if (i >= 0) {
+              tags.splice(i, 1);
+              _render();
+              _notify();
+            }
+          });
+          pill.appendChild(x);
+        }
+        pills.appendChild(pill);
+      });
+      pills.appendChild(input);
+    }
+
+    function _tryAdd(raw) {
+      var t = _norm(raw);
+      if (!t) return false;
+      if (!TAG_RE.test(t)) {
+        input.classList.add('invalid');
+        input.title = 'Invalid tag — lowercase a-z0-9- only, max 32 chars, no leading/trailing hyphen';
+        return false;
+      }
+      input.classList.remove('invalid');
+      input.title = '';
+      if (_hasTag(t)) { input.value = ''; return false; }
+      tags.push(t);
+      tags.sort();
+      input.value = '';
+      _render();
+      _notify();
+      return true;
+    }
+
+    function _hideSuggest() { suggest.hidden = true; suggest.innerHTML = ''; }
+    function _updateSuggest(prefix) {
+      var matches = available.filter(function(a) {
+        return a !== prefix && a.indexOf(prefix) === 0 && !_hasTag(a);
+      }).slice(0, 8);
+      if (!matches.length) { _hideSuggest(); return; }
+      suggest.innerHTML = '';
+      matches.forEach(function(a) {
+        var item = document.createElement('div');
+        item.className = 'tag-picker-suggest-item';
+        item.textContent = a;
+        // mousedown not click so input's blur doesn't fire first and
+        // hide the suggest before the click registers.
+        item.addEventListener('mousedown', function(e) {
+          e.preventDefault();
+          _tryAdd(a);
+          _hideSuggest();
+          input.focus();
+        });
+        suggest.appendChild(item);
+      });
+      suggest.hidden = false;
+    }
+
+    input.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter' || e.key === ',') {
+        e.preventDefault();
+        _tryAdd(input.value);
+        _hideSuggest();
+      } else if (e.key === 'Backspace' && !input.value && tags.length) {
+        tags.pop();
+        _render();
+        _notify();
+      } else if (e.key === 'Escape') {
+        input.value = '';
+        input.classList.remove('invalid');
+        _hideSuggest();
+      }
+    });
+    input.addEventListener('input', function() {
+      var v = _norm(input.value);
+      if (!v) { input.classList.remove('invalid'); _hideSuggest(); return; }
+      input.classList.toggle('invalid', !TAG_RE.test(v));
+      _updateSuggest(v);
+    });
+    input.addEventListener('blur', function() {
+      // Auto-commit a trailing typed value on blur — easy to forget Enter.
+      if (input.value.trim()) _tryAdd(input.value);
+      setTimeout(_hideSuggest, 150);
+    });
+
+    _render();
+
+    return {
+      el: el,
+      getTags: function() { return tags.slice(); },
+      setTags: function(t) {
+        tags = Array.isArray(t) ? t.slice() : [];
+        _render();
+      },
+      setAvailable: function(a) {
+        available = Array.isArray(a) ? a.slice() : [];
+      },
+    };
+  }
+
+  window._renderTagPicker = _renderTagPicker;
+})();</script>
+"""
 
 
 SEV_POLLER_JS = """
@@ -1012,6 +1234,9 @@ def render_page(template: str, current: str) -> str:
                                    (+ _renderNotAdminLanding alias)
       - {{PAGE_META}}            → <meta name="page-key" ...> carrier so
                                    shared JS knows which page it's on
+      - {{TAG_PICKER_JS}}        → window._renderTagPicker(opts) widget
+                                   shared by /config rule editor +
+                                   /config/api-keys permissions matrix
 
     Pages that don't include a given placeholder are returned unchanged."""
     return (
@@ -1032,6 +1257,7 @@ def render_page(template: str, current: str) -> str:
         .replace("{{TIME_HELPERS_JS}}", TIME_HELPERS_JS)
         .replace("{{NOT_ADMIN_LANDING_JS}}", NOT_ADMIN_LANDING_JS)
         .replace("{{PAGE_META}}", _page_meta_tag(current))
+        .replace("{{TAG_PICKER_JS}}", TAG_PICKER_JS)
     )
 
 
