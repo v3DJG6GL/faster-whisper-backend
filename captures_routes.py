@@ -4696,6 +4696,57 @@ _CAPTURES_HTML = r"""<!doctype html>
     state.cursorIdx = idx;
     _redrawCursor(state);
   }
+  // Move cursor by one VISUAL line up or down in the wrapped word-strip.
+  // Uses getBoundingClientRect to first locate the nearest line in the
+  // target direction, then picks the word on that line whose horizontal
+  // center is closest to the current cursor's. Falls back to first/last
+  // word when there's no line in the chosen direction.
+  function _moveCursorLine(state, direction) {
+    if (!state.wordEls || state.wordEls.length === 0) return;
+    if (state.cursorIdx < 0) {
+      _moveCursor(state, direction === 'down' ? 0 : state.words.length - 1);
+      return;
+    }
+    var current = state.wordEls[state.cursorIdx];
+    if (!current) return;
+    var curRect = current.getBoundingClientRect();
+    var curMidX = curRect.left + curRect.width / 2;
+    var lineH = Math.max(curRect.height || 0, 12);
+    var ahead = direction === 'down';
+    // Pass 1: find the nearest line-top in the target direction.
+    var nextLineTop = null;
+    for (var i = 0; i < state.wordEls.length; i++) {
+      var el = state.wordEls[i];
+      if (!el) continue;
+      var r = el.getBoundingClientRect();
+      var dy = r.top - curRect.top;
+      var threshold = lineH * 0.5;
+      if (ahead) {
+        if (dy < threshold) continue;
+        if (nextLineTop === null || r.top < nextLineTop) nextLineTop = r.top;
+      } else {
+        if (dy > -threshold) continue;
+        if (nextLineTop === null || r.top > nextLineTop) nextLineTop = r.top;
+      }
+    }
+    if (nextLineTop === null) {
+      // No line in that direction → clamp to first / last word.
+      _moveCursor(state, ahead ? state.words.length - 1 : 0);
+      return;
+    }
+    // Pass 2: pick the horizontally-closest word on the target line.
+    var best = -1, bestDx = Infinity;
+    for (var j = 0; j < state.wordEls.length; j++) {
+      var ej = state.wordEls[j];
+      if (!ej) continue;
+      var rj = ej.getBoundingClientRect();
+      if (Math.abs(rj.top - nextLineTop) > lineH * 0.5) continue;
+      var midX = rj.left + rj.width / 2;
+      var dx = Math.abs(midX - curMidX);
+      if (dx < bestDx) { bestDx = dx; best = j; }
+    }
+    if (best >= 0) _moveCursor(state, best);
+  }
   // Locate the chip covering state.cursorIdx; create one if absent +
   // requested. Returns the chip's <input> DOM (focused) or null.
   function _focusChipForCursor(state, createIfAbsent) {
@@ -4737,7 +4788,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     // Hint line: visible only while the strip itself has focus.
     var hint = document.createElement('div');
     hint.className = 'word-strip-hint';
-    hint.textContent = '← / → navigate · type to edit · Enter accept · Del / Backspace remove · Esc release';
+    hint.textContent = '← / → word · ↑ / ↓ line · type to edit · Enter accept · Del remove · Esc release';
     if (strip.parentNode) {
       strip.parentNode.insertBefore(hint, strip.nextSibling);
     }
@@ -4764,6 +4815,12 @@ _CAPTURES_HTML = r"""<!doctype html>
       } else if (k === 'ArrowRight') {
         e.preventDefault();
         _moveCursor(state, Math.min(n - 1, (state.cursorIdx < 0 ? -1 : state.cursorIdx) + 1));
+      } else if (k === 'ArrowUp') {
+        e.preventDefault();
+        _moveCursorLine(state, 'up');
+      } else if (k === 'ArrowDown') {
+        e.preventDefault();
+        _moveCursorLine(state, 'down');
       } else if (k === 'Home') {
         e.preventDefault();
         _moveCursor(state, 0);
