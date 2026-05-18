@@ -516,6 +516,42 @@ RuleSlug = Annotated[str, Field(min_length=1, max_length=64,
                                 pattern=r"^[a-z0-9-]+$")]
 RuleLabel = Annotated[str, Field(min_length=1, max_length=80)]
 
+# Tag format — Kubernetes label-style: lowercase letters/digits/hyphens,
+# 1-32 chars, no leading/trailing hyphen. Tags filter which users see
+# which rules on /quick-config. Re-used by api_keys_store for the
+# per-user `quick_config_tags` validator so admins can't drift the two
+# schemas apart.
+TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+
+
+def normalize_tags(raw: Any) -> list[str]:
+    """Canonicalise a raw tag list: trim, lowercase, drop empties, dedup,
+    sort. Raises ValueError on any tag that doesn't match TAG_RE. Empty
+    list is permitted (semantic varies by call site)."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("tags must be a list of strings")
+    seen: set[str] = set()
+    out: list[str] = []
+    for t in raw:
+        if not isinstance(t, str):
+            raise ValueError(f"tag must be a string, got {type(t).__name__}")
+        norm = t.strip().lower()
+        if not norm:
+            continue
+        if not TAG_RE.match(norm):
+            raise ValueError(
+                f"invalid tag {t!r} — lowercase a-z0-9- only, max 32 chars,"
+                " no leading/trailing hyphen"
+            )
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+    out.sort()
+    return out
+
 
 class _RuleBase(BaseModel):
     """Common fields for every PipelineRule row."""
@@ -529,6 +565,17 @@ class _RuleBase(BaseModel):
     # session) can edit its body fields. Toggle is admin-only — see the
     # per-type allow-list enforcement in quick_config_routes.py.
     exposed: bool = False
+    # Tag list for per-user visibility. Asymmetric semantics: an empty
+    # list means "visible to every authenticated user" (zero-config
+    # migration); a populated list means "visible only to users whose
+    # `quick_config_tags` intersects this list". Admins always see
+    # everything. See auth.Permissions.can_see_rule().
+    tags: list[str] = Field(default_factory=list, max_length=32)
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags(cls, v: Any) -> list[str]:
+        return normalize_tags(v)
 
 
 class RegexRule(_RuleBase):
@@ -1225,6 +1272,25 @@ def save_overrides(payload: dict[str, Any], path: str = OVERRIDES_PATH) -> dict[
         if new_v != old_v:
             changed[k] = new_v
     return changed
+
+
+def pipeline_rule_tags(rules: Any) -> list[str]:
+    """Return the deduped, sorted union of every tag across the given
+    rule list. Used by `/config/state` + `/config/api-keys/api/users`
+    to populate autocomplete in the tag-picker widget so admins don't
+    have to remember the exact spelling.
+
+    Accepts both dicts (post _canon_rules) and Pydantic models."""
+    seen: set[str] = set()
+    for r in (rules or []):
+        if hasattr(r, "model_dump"):
+            r = r.model_dump()
+        if not isinstance(r, dict):
+            continue
+        for t in (r.get("tags") or []):
+            if isinstance(t, str) and t:
+                seen.add(t)
+    return sorted(seen)
 
 
 def env_pinned_fields() -> dict[str, str]:
