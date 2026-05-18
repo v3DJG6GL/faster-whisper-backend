@@ -688,6 +688,16 @@ class PreviewMergeIn(BaseModel):
     silence_ms: int = Field(default=300, ge=0, le=2000)
 
 
+class PreviewSaveChipsIn(BaseModel):
+    """Save chip corrections from a not-yet-merged proposal. Chips carry
+    GLOBAL word indices into the merged karaoke strip; server fans them
+    out to per-member captures via _split_corrections_to_members."""
+    model_config = {"extra": "forbid"}
+    member_ids: list[str] = Field(min_length=2, max_length=30)
+    silence_ms: int = Field(default=300, ge=0, le=2000)
+    corrections: list[CorrectionIn] = Field(default_factory=list, max_length=200)
+
+
 class PatchGroupIn(BaseModel):
     model_config = {"extra": "forbid"}
     join_strategy: Literal["space", "period_space"] | None = None
@@ -1098,10 +1108,11 @@ async def preview_merge_words_api(
     payload: PreviewMergeIn,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    """Return the projected merged words for a hypothetical merge —
-    timestamps aligned to the audio that POST /preview-audio would stream
-    for the same payload. Lets the UI overlay karaoke highlighting on the
-    preview player without persisting a group row.
+    """Return the projected merged words + projected corrections + joined
+    transcript for a hypothetical merge — timestamps aligned to the audio
+    that POST /preview-audio would stream for the same payload. Lets the
+    UI overlay karaoke highlighting AND seed the chip-correction box on
+    the preview panel without persisting a group row.
 
     Pure CPU; no rate-limit (bounded by ≤30 members × few hundred words +
     memoized per-word _postprocess_text). Same validation gates as the
@@ -1110,7 +1121,51 @@ async def preview_merge_words_api(
         _validate_merge_payload(payload.member_ids, payload.silence_ms, user)
     )
     words = _build_merged_words(captures, payload.silence_ms)
-    return JSONResponse({"words": words})
+    return JSONResponse({
+        "words": words,
+        "corrections": _project_member_corrections(captures),
+        "transcript": _build_default_transcript(captures, "space"),
+    })
+
+
+@router.post(
+    "/captures/api/groups/preview-save-chips",
+    dependencies=[Depends(require_admin_host)],
+)
+async def preview_save_chips_api(
+    payload: PreviewSaveChipsIn,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Persist chip corrections from a not-yet-merged proposal. Fans the
+    global-indexed chips out to each member capture's local indices via
+    _split_corrections_to_members, then REPLACES each member's
+    `corrections` field. Same fan-out semantics as the group-level chip
+    save (captures_routes.py:1643+ patch_group_api path).
+
+    Re-fetches every touched member and returns the canonical chips so
+    the client can reproject (via _project_member_corrections) to refresh
+    its baseline without a full /preview-words round-trip."""
+    captures, owner_user_id, _member_paths, _total_audio_ms = (
+        _validate_merge_payload(payload.member_ids, payload.silence_ms, user)
+    )
+    chips_in = [c.model_dump(exclude_none=True) for c in payload.corrections]
+    per_member = _split_corrections_to_members(chips_in, captures)
+
+    saved: dict[str, int] = {}
+    members_corrections: dict[str, list[dict[str, Any]]] = {}
+    for cap in captures:
+        mid = cap["id"]
+        member_chips = per_member.get(mid, [])
+        updated = captures_store.update_capture(mid, {"corrections": member_chips})
+        canonical = (updated or {}).get("corrections") or []
+        members_corrections[mid] = canonical
+        saved[mid] = len(canonical)
+
+    captures_merge_proposer.invalidate(owner_user_id)
+    return JSONResponse({
+        "saved": saved,
+        "members_corrections": members_corrections,
+    })
 
 
 def _insert_group_with_gid(
@@ -2732,6 +2787,100 @@ _CAPTURES_HTML = r"""<!doctype html>
     font-size: var(--fs-sm);
     max-height: 8rem; overflow: auto;
   }
+  .merge-preview-panel .merge-preview-cc {
+    /* Tighter margins than the default .cc-section since we're nested
+       inside an already-padded proposal panel. */
+    margin: 0.5rem 0 0; padding: 0.4rem 0.6rem;
+  }
+  .merge-preview-panel .merge-preview-cc h3 {
+    font-size: var(--fs-sm); margin: 0 0 0.2rem;
+  }
+  .merge-preview-panel .merge-preview-cc .help {
+    font-size: var(--fs-xs); margin-bottom: 0.3rem;
+  }
+  .merge-preview-panel .merge-preview-cc .cc-ground {
+    max-height: 6rem; overflow: auto;
+  }
+
+  /* Batch / Tinder-style review mode */
+  #propose-batch {
+    margin: 0.5rem 0;
+  }
+  #propose-batch .batch-banner {
+    display: flex; align-items: center; gap: 0.6rem;
+    padding: 0.4rem 0.6rem; margin-bottom: 0.5rem;
+    background: var(--input-bg); border: 1px solid var(--border);
+    border-radius: 4px; font-size: var(--fs-sm); color: var(--help);
+  }
+  #propose-batch .batch-banner .spacer { flex: 1; }
+  #propose-batch .batch-banner .count { font-family: var(--font-mono); color: var(--bold); }
+  #propose-batch .batch-card {
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.75rem 0.9rem; background: var(--input-bg);
+    transition: transform 0.25s ease-out, opacity 0.25s ease-out;
+    will-change: transform, opacity;
+    /* Inner proposal renders identically to a list-mode card. */
+  }
+  #propose-batch .batch-card.swiping {
+    transition: none;
+  }
+  #propose-batch .batch-card.gone-right {
+    transform: translateX(120%) rotate(8deg); opacity: 0;
+  }
+  #propose-batch .batch-card.gone-left {
+    transform: translateX(-120%) rotate(-8deg); opacity: 0;
+  }
+  #propose-batch .batch-card .proposal {
+    /* Reuse the proposal-card layout from list mode but hide its inline
+       Accept button — batch mode uses the big action row instead. */
+    border: none; padding: 0; margin: 0; background: transparent;
+  }
+  #propose-batch .batch-card .proposal .row1 .primary {
+    display: none;
+  }
+  #propose-batch .batch-actions {
+    display: flex; gap: 0.5rem; align-items: center;
+    margin-top: 0.6rem;
+  }
+  #propose-batch .batch-actions button {
+    flex: 1; padding: 0.5rem 0.75rem;
+    font-size: var(--fs-md);
+    border-radius: 4px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--panel); color: var(--fg);
+  }
+  #propose-batch .batch-actions .dismiss {
+    color: var(--red); border-color: #5a2424;
+  }
+  #propose-batch .batch-actions .accept {
+    color: var(--green); border-color: #2e5d2e; font-weight: 700;
+  }
+  #propose-batch .batch-actions .replay {
+    flex: 0 0 auto; min-width: 3rem;
+  }
+  #propose-batch .batch-actions button:hover:not(:disabled) {
+    background: #21262d;
+  }
+  #propose-batch .batch-hint {
+    font-size: var(--fs-xs); color: var(--help); text-align: center;
+    margin-top: 0.4rem; font-family: var(--font-mono);
+  }
+  #propose-batch .batch-done {
+    text-align: center; padding: 1.5rem 1rem;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--input-bg);
+  }
+  #propose-batch .batch-done h4 {
+    margin: 0 0 0.5rem; color: var(--bold);
+  }
+  #propose-batch .batch-done .summary {
+    color: var(--help); font-size: var(--fs-sm); margin-bottom: 1rem;
+  }
+  #propose-batch .batch-done .actions {
+    display: flex; gap: 0.5rem; justify-content: center;
+  }
+  #propose-batch-top.active {
+    background: var(--accent, #58a6ff); color: var(--bg); border-color: var(--accent, #58a6ff);
+  }
   #propose-list .proposal .meter-bar {
     display: inline-block; width: 7rem; height: 0.4rem;
     background: var(--border); border-radius: 2px; overflow: hidden;
@@ -2830,6 +2979,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   <div class="box">
     <div class="propose-top">
       <h3>Proposed merges</h3>
+      <button id="propose-batch-top" title="Step through proposals one at a time with keyboard / swipe shortcuts">Batch review</button>
       <button id="propose-refresh-top">Refresh</button>
       <button id="propose-close-top">Close</button>
     </div>
@@ -2855,6 +3005,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       <span class="dim small">Applied to every Accept in this popup.</span>
     </div>
     <div id="propose-list"></div>
+    <div id="propose-batch" hidden></div>
     <div class="actions">
       <button id="propose-refresh">Refresh</button>
       <span class="spacer"></span>
@@ -3897,6 +4048,13 @@ _CAPTURES_HTML = r"""<!doctype html>
   function markDirty(state) {
     state.dirty = true;
     if (state.dirtyEl) state.dirtyEl.classList.remove('hidden');
+    // Optional auto-save hook — proposal panels use this to debounce a
+    // PATCH to the affected member captures whenever the chip set
+    // changes. The capture/group flows leave this unset and rely on
+    // their explicit Save button instead.
+    if (typeof state.onMarkDirty === 'function') {
+      try { state.onMarkDirty(); } catch (_) {}
+    }
   }
   function clearDirty(state) {
     state.dirty = false;
@@ -4386,10 +4544,13 @@ _CAPTURES_HTML = r"""<!doctype html>
     }
   }
 
-  function _renderWordStrip(stripEl, words) {
+  // onClick (optional): function(idx, shiftKey) called when a word span
+  // is clicked. Used by proposal panels to wire onWordClick(state, …)
+  // for chip creation; merge-modal (read-only word-strip) passes nothing.
+  function _renderWordStrip(stripEl, words, onClick) {
     stripEl.innerHTML = '';
     var els = [];
-    words.forEach(function(w) {
+    words.forEach(function(w, i) {
       var sp = document.createElement('span');
       sp.className = 'word';
       sp.textContent = (w.word || '').replace(/^\s+/, ' ');
@@ -4399,6 +4560,11 @@ _CAPTURES_HTML = r"""<!doctype html>
       } else if (w.raw_word) {
         sp.classList.add('post-edited');
         sp.title = 'raw: ' + w.raw_word;
+      }
+      if (onClick) {
+        sp.addEventListener('click', function(e) {
+          onClick(i, !!e.shiftKey);
+        });
       }
       stripEl.appendChild(sp);
       els.push(sp);
@@ -4590,16 +4756,45 @@ _CAPTURES_HTML = r"""<!doctype html>
     controls.appendChild(timeEl);
     controls.appendChild(sep);
     controls.appendChild(totalEl);
+
+    // Corrections section — mirrors the single-capture / group-expand
+    // layout so reviewers get the same word-strip + chip list + final-
+    // result preview affordances inside each proposal panel.
+    var corrSec = document.createElement('div');
+    corrSec.className = 'cc-section merge-preview-cc';
+    corrSec.innerHTML = '<h3>Corrections</h3>'
+      + '<div class="help">Click a word to mark it; shift-click another to '
+      + 'extend the range; type the corrected text in the chip below. '
+      + 'Edits save automatically to the source captures.</div>';
     var stripEl = document.createElement('div');
     stripEl.className = 'merge-preview-strip word-strip';
+    corrSec.appendChild(stripEl);
+    var chipBox = document.createElement('div');
+    chipBox.className = 'cc-corrections';
+    corrSec.appendChild(chipBox);
+
+    var gtSec = document.createElement('div');
+    gtSec.className = 'cc-section merge-preview-cc';
+    gtSec.innerHTML = '<h3>Final result</h3>'
+      + '<div class="help">Computed from members\' post-processing text + '
+      + 'word corrections. To change it, edit chips above.</div>';
+    var gtArea = document.createElement('div');
+    gtArea.className = 'cc-ground';
+    gtArea.setAttribute('role', 'textbox');
+    gtArea.setAttribute('aria-readonly', 'true');
+    gtSec.appendChild(gtArea);
+
     panel.appendChild(controls);
-    panel.appendChild(stripEl);
+    panel.appendChild(corrSec);
+    panel.appendChild(gtSec);
 
     panel._toggleBtn = toggleBtn;
     panel._scrub = scrub;
     panel._time = timeEl;
     panel._total = totalEl;
     panel._strip = stripEl;
+    panel._chipBox = chipBox;
+    panel._gtArea = gtArea;
 
     toggleBtn.addEventListener('click', async function() {
       var audio = _getPreviewAudio();
@@ -4645,11 +4840,47 @@ _CAPTURES_HTML = r"""<!doctype html>
         var blob = await audioResp.blob();
         var wordsJ = await wordsResp.json();
         var wordsArr = wordsJ.words || [];
+        var seededChips = wordsJ.corrections || [];
+        var transcript = wordsJ.transcript || '';
+        // Build a synthetic state object the existing chip helpers
+        // (renderChips, onWordClick, applyCorrectionsToGround, etc.) can
+        // operate on. baselineCorrections snapshots the server's view so
+        // the debounced save sends the user's intent against a stable
+        // baseline; the server REPLACES per-member chips on save, so
+        // baseline + edits = final state in one round-trip.
+        var state = {
+          words: wordsArr,
+          corrections: JSON.parse(JSON.stringify(seededChips)),
+          baselineCorrections: JSON.parse(JSON.stringify(seededChips)),
+          finalText: transcript,
+          wordEls: [],
+          chipBox: chipBox,
+          gtArea: gtArea,
+          dirtyEl: null,
+          activeWordIdx: -1,
+          dirty: false,
+        };
         // Wire UI before src so events fire correctly.
         panel.hidden = false;
         _previewActivePanel = panel;
-        var wordEls = _renderWordStrip(stripEl, wordsArr);
-        _previewBound = _bindPanelToAudio(audio, panel, wordsArr, wordEls);
+        state.wordEls = _renderWordStrip(stripEl, wordsArr, function(i, sh) {
+          onWordClick(state, i, sh);
+        });
+        // Debounced save — fires whenever markDirty is invoked (chip
+        // input, chip removal, chip extend). 250 ms matches the cadence
+        // the rest of /captures uses informally.
+        var saveTimer = null;
+        state.onMarkDirty = function() {
+          if (saveTimer) clearTimeout(saveTimer);
+          saveTimer = setTimeout(function() {
+            _saveProposalChips(state, ids, silenceMsFn() || 300).catch(function(e) {
+              if (e && e.message) toast(e.message, true);
+            });
+          }, 250);
+        };
+        renderChips(state);
+        applyCorrectionsToGround(state);
+        _previewBound = _bindPanelToAudio(audio, panel, wordsArr, state.wordEls);
         _previewBlobUrl = URL.createObjectURL(blob);
         audio.src = _previewBlobUrl;
         toggleBtn._setIcon('⏸');
@@ -4664,6 +4895,40 @@ _CAPTURES_HTML = r"""<!doctype html>
     });
 
     return { toggleBtn: toggleBtn, panel: panel };
+  }
+
+  // Persist proposal chips: POSTs to /preview-save-chips which fans the
+  // global-indexed chips to per-member captures. On success, refresh
+  // baselineCorrections so the next save sends the user's current
+  // intent against the now-canonical server state.
+  async function _saveProposalChips(state, memberIds, silenceMs) {
+    var headers = { 'Content-Type': 'application/json' };
+    var tok = getToken();
+    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    var chips = state.corrections
+      .filter(function(c) { return (c.correct || '').trim(); })
+      .map(function(c) {
+        var o = { wrong: c.wrong || '', correct: (c.correct || '').trim() };
+        if (typeof c.idx === 'number') {
+          o.idx = c.idx;
+          if (typeof c.idx_end === 'number' && c.idx_end !== c.idx) {
+            o.idx_end = c.idx_end;
+          }
+        }
+        return o;
+      });
+    var resp = await fetch('/captures/api/groups/preview-save-chips', {
+      method: 'POST', headers: headers,
+      body: JSON.stringify({
+        member_ids: memberIds, silence_ms: silenceMs, corrections: chips,
+      }),
+    });
+    if (!resp.ok) {
+      var msg = 'chip save failed (' + resp.status + ')';
+      try { var j = await resp.json(); if (j && j.detail) msg = j.detail; } catch (_) {}
+      throw new Error(msg);
+    }
+    state.baselineCorrections = JSON.parse(JSON.stringify(state.corrections));
   }
 
   // -------------------------------------------------------------------
@@ -4881,6 +5146,263 @@ _CAPTURES_HTML = r"""<!doctype html>
       if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
         toast(e.message || 'merge failed', true);
       }
+    }
+  }
+
+  // -------------------------------------------------------------------
+  // Batch (Tinder-swipe) review mode — focused single-card review with
+  // keyboard + touch shortcuts so the reviewer can blow through a stack
+  // of proposals without mouse-hopping. Dismiss is local-only per UX
+  // decision; accept fires the same /groups POST as list-mode Accept.
+  // -------------------------------------------------------------------
+  var _batchActive = false;
+  var _batchAccepted = 0;
+  var _batchDismissed = 0;
+  var _batchCurrentCard = null;
+  var _batchKeyHandler = null;
+  var _batchTouchState = null;
+
+  function _enterBatchMode() {
+    if (_batchActive) return;
+    _batchActive = true;
+    _batchAccepted = 0;
+    _batchDismissed = 0;
+    document.getElementById('propose-list').hidden = true;
+    document.getElementById('propose-batch').hidden = false;
+    document.getElementById('propose-batch-top').classList.add('active');
+    document.getElementById('propose-batch-top').textContent = 'Exit batch';
+    _batchKeyHandler = function(e) { _onBatchKey(e); };
+    document.addEventListener('keydown', _batchKeyHandler);
+    _renderBatchCard();
+  }
+
+  function _exitBatchMode() {
+    if (!_batchActive) return;
+    _batchActive = false;
+    _stopAnyPreview();
+    document.removeEventListener('keydown', _batchKeyHandler);
+    _batchKeyHandler = null;
+    _batchCurrentCard = null;
+    document.getElementById('propose-list').hidden = false;
+    document.getElementById('propose-batch').hidden = true;
+    document.getElementById('propose-batch').innerHTML = '';
+    document.getElementById('propose-batch-top').classList.remove('active');
+    document.getElementById('propose-batch-top').textContent = 'Batch review';
+  }
+
+  function _renderBatchCard() {
+    var host = document.getElementById('propose-batch');
+    host.innerHTML = '';
+    _batchCurrentCard = null;
+    _stopAnyPreview();
+
+    if (!_proposals.length) {
+      _renderBatchDone(host);
+      return;
+    }
+    var p = _proposals[0];
+
+    var banner = document.createElement('div');
+    banner.className = 'batch-banner';
+    banner.innerHTML = '<span>Reviewing <span class="count">'
+      + 1 + ' / ' + _proposals.length + '</span></span>'
+      + '<span class="spacer"></span>'
+      + '<span><span class="count">' + _batchAccepted + '</span> accepted · '
+      + '<span class="count">' + _batchDismissed + '</span> dismissed</span>';
+    host.appendChild(banner);
+
+    var card = document.createElement('div');
+    card.className = 'batch-card';
+    // Reuse the same per-proposal card render as list mode. CSS hides
+    // the inline Accept (we use the batch action row below).
+    card.appendChild(_buildProposalCard(p));
+    host.appendChild(card);
+    _batchCurrentCard = card;
+
+    var actions = document.createElement('div');
+    actions.className = 'batch-actions';
+    var dismissBtn = document.createElement('button');
+    dismissBtn.type = 'button'; dismissBtn.className = 'dismiss';
+    dismissBtn.textContent = '✗ Dismiss';
+    dismissBtn.addEventListener('click', function() { _advanceBatch('dismiss'); });
+    var replayBtn = document.createElement('button');
+    replayBtn.type = 'button'; replayBtn.className = 'replay';
+    replayBtn.title = 'Replay from start (Ctrl+↑)';
+    replayBtn.textContent = '⏪';
+    replayBtn.addEventListener('click', function() { _batchReplay(); });
+    var acceptBtn = document.createElement('button');
+    acceptBtn.type = 'button'; acceptBtn.className = 'accept primary';
+    acceptBtn.textContent = '✓ Accept';
+    acceptBtn.addEventListener('click', function() { _advanceBatch('accept'); });
+    actions.appendChild(dismissBtn);
+    actions.appendChild(replayBtn);
+    actions.appendChild(acceptBtn);
+    host.appendChild(actions);
+
+    var hint = document.createElement('div');
+    hint.className = 'batch-hint';
+    hint.textContent = 'Ctrl+← Dismiss · Ctrl+→ Accept · Space pause · Ctrl+↑ Replay · Esc Exit';
+    host.appendChild(hint);
+
+    // Touch swipe gestures on the card itself.
+    card.addEventListener('touchstart', _onBatchTouchStart, { passive: true });
+    card.addEventListener('touchmove',  _onBatchTouchMove,  { passive: true });
+    card.addEventListener('touchend',   _onBatchTouchEnd,   { passive: true });
+
+    // Auto-play: click the preview toggle inside the rendered card so
+    // audio + karaoke + chip box all wire up. Synchronous click in
+    // response to a user gesture (the click that triggered render via
+    // _enterBatchMode or _advanceBatch) is allowed by autoplay policy.
+    setTimeout(function() {
+      var tBtn = card.querySelector('.merge-preview-btn');
+      if (tBtn) tBtn.click();
+    }, 0);
+  }
+
+  function _renderBatchDone(host) {
+    var done = document.createElement('div');
+    done.className = 'batch-done';
+    done.innerHTML = '<h4>All done.</h4>'
+      + '<div class="summary"><span class="count">' + _batchAccepted
+      + '</span> accepted · <span class="count">' + _batchDismissed
+      + '</span> dismissed</div>';
+    var acts = document.createElement('div');
+    acts.className = 'actions';
+    var refreshBtn = document.createElement('button');
+    refreshBtn.type = 'button'; refreshBtn.className = 'primary';
+    refreshBtn.textContent = 'Refresh batch';
+    refreshBtn.addEventListener('click', async function() {
+      await _loadProposals();
+      _batchAccepted = 0; _batchDismissed = 0;
+      _renderBatchCard();
+    });
+    var listBtn = document.createElement('button');
+    listBtn.type = 'button';
+    listBtn.textContent = 'Back to list';
+    listBtn.addEventListener('click', _exitBatchMode);
+    var closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.textContent = 'Close';
+    closeBtn.addEventListener('click', _closePropose);
+    acts.appendChild(refreshBtn);
+    acts.appendChild(listBtn);
+    acts.appendChild(closeBtn);
+    done.appendChild(acts);
+    host.appendChild(done);
+  }
+
+  async function _advanceBatch(action) {
+    if (!_batchActive || !_proposals.length) return;
+    var p = _proposals[0];
+    var card = _batchCurrentCard;
+
+    if (action === 'accept') {
+      // Mirror _acceptProposal's behavior but adapted for batch — we
+      // don't have a per-card Accept button to flip into "Merging…".
+      var byId = {};
+      _allCaptures.forEach(function(r) { byId[r.id] = r; });
+      var missing = (p.member_ids || []).filter(function(id) {
+        var r = byId[id]; return !r || r.group_id;
+      });
+      if (missing.length) {
+        toast(missing.length + ' member(s) no longer eligible — try Refresh', true);
+        return;
+      }
+      _stopAnyPreview();
+      var join = (document.getElementById('propose-join') || {}).value || 'space';
+      var silenceMs = parseInt((document.getElementById('propose-silence') || {}).value, 10) || 300;
+      try {
+        await api('POST', '/captures/api/groups', {
+          member_ids: p.member_ids,
+          join_strategy: join,
+          silence_ms: silenceMs,
+        });
+        toast('Group created (' + (p.member_count || p.member_ids.length) + ' clips)');
+        _batchAccepted++;
+        // Splice accepted + any overlapping proposals (their members are
+        // now grouped, so they'd be invalid anyway).
+        var consumed = {};
+        p.member_ids.forEach(function(id) { consumed[id] = true; });
+        _proposals = _proposals.filter(function(other) {
+          if (other === p) return false;
+          return !(other.member_ids || []).some(function(id) { return consumed[id]; });
+        });
+        load();   // refresh main captures list in background
+      } catch (e) {
+        if (e && e.message !== 'unauthorized' && e.message !== 'not-admin') {
+          toast(e.message || 'merge failed', true);
+        }
+        return;   // don't advance on failure; let user retry
+      }
+    } else if (action === 'dismiss') {
+      _batchDismissed++;
+      _proposals.shift();
+    }
+
+    if (card) {
+      card.classList.add(action === 'accept' ? 'gone-right' : 'gone-left');
+      setTimeout(_renderBatchCard, 260);  // wait for CSS transition
+    } else {
+      _renderBatchCard();
+    }
+  }
+
+  function _batchReplay() {
+    if (_previewAudio) {
+      try { _previewAudio.currentTime = 0; _previewAudio.play(); } catch (_) {}
+    }
+  }
+
+  function _onBatchKey(e) {
+    if (!_batchActive) return;
+    // Don't hijack typing in chip inputs.
+    var tag = (e.target && e.target.tagName || '').toLowerCase();
+    if (tag === 'input' || tag === 'textarea') {
+      // Allow Esc to exit even from inputs.
+      if (e.key === 'Escape') { e.preventDefault(); _exitBatchMode(); }
+      return;
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault(); _exitBatchMode(); return;
+    }
+    if (e.key === ' ' || e.code === 'Space') {
+      e.preventDefault();
+      if (_previewAudio) {
+        if (_previewAudio.paused) _previewAudio.play().catch(function() {});
+        else _previewAudio.pause();
+      }
+      return;
+    }
+    if (!e.ctrlKey) return;
+    if (e.key === 'ArrowRight') { e.preventDefault(); _advanceBatch('accept'); }
+    else if (e.key === 'ArrowLeft')  { e.preventDefault(); _advanceBatch('dismiss'); }
+    else if (e.key === 'ArrowUp')    { e.preventDefault(); _batchReplay(); }
+  }
+
+  function _onBatchTouchStart(e) {
+    if (!e.touches || !e.touches.length) return;
+    _batchTouchState = { x0: e.touches[0].clientX, x: e.touches[0].clientX };
+    if (_batchCurrentCard) _batchCurrentCard.classList.add('swiping');
+  }
+  function _onBatchTouchMove(e) {
+    if (!_batchTouchState || !e.touches || !e.touches.length) return;
+    _batchTouchState.x = e.touches[0].clientX;
+    var dx = _batchTouchState.x - _batchTouchState.x0;
+    if (_batchCurrentCard) {
+      _batchCurrentCard.style.transform =
+        'translateX(' + dx + 'px) rotate(' + (dx / 25) + 'deg)';
+    }
+  }
+  function _onBatchTouchEnd() {
+    if (!_batchTouchState) return;
+    var dx = _batchTouchState.x - _batchTouchState.x0;
+    _batchTouchState = null;
+    if (_batchCurrentCard) {
+      _batchCurrentCard.classList.remove('swiping');
+      _batchCurrentCard.style.transform = '';
+    }
+    if (Math.abs(dx) > 100) {
+      _advanceBatch(dx > 0 ? 'accept' : 'dismiss');
     }
   }
 
@@ -5612,13 +6134,19 @@ _CAPTURES_HTML = r"""<!doctype html>
   document.getElementById('ab-clear').addEventListener('click', _clearSelection);
   document.getElementById('btn-propose').addEventListener('click', _openProposeModal);
   function _closePropose() {
+    if (_batchActive) _exitBatchMode();
     _stopAnyPreview();
     document.getElementById('propose-modal').classList.remove('show');
+  }
+  function _toggleBatchMode() {
+    if (_batchActive) _exitBatchMode();
+    else _enterBatchMode();
   }
   document.getElementById('propose-refresh').addEventListener('click', _loadProposals);
   document.getElementById('propose-close').addEventListener('click', _closePropose);
   document.getElementById('propose-refresh-top').addEventListener('click', _loadProposals);
   document.getElementById('propose-close-top').addEventListener('click', _closePropose);
+  document.getElementById('propose-batch-top').addEventListener('click', _toggleBatchMode);
 
   // Revoke any open audio blob URLs on tab close — also handled per-row
   // on collapse, but this is the safety net.
