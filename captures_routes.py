@@ -4443,15 +4443,26 @@ _CAPTURES_HTML = r"""<!doctype html>
         }
         var blob = await audioResp.blob();
         var wordsJ = await wordsResp.json();
-        _previewBlobUrl = URL.createObjectURL(blob);
-        audioEl.src = _previewBlobUrl;
-        var wordEls = _renderWordStrip(stripEl, wordsJ.words || []);
-        _bindKaraoke(audioEl, wordsJ.words || [], wordEls);
+        // Unhide the panel BEFORE wiring the audio src — Firefox aborts
+        // the media fetch on display:none ancestors, which surfaces as
+        // "The fetching process for the media resource was aborted by
+        // the user agent at the user's request." on the play() promise.
         panel.hidden = false;
         _previewActiveWrap = panel;
+        var wordEls = _renderWordStrip(stripEl, wordsJ.words || []);
+        _bindKaraoke(audioEl, wordsJ.words || [], wordEls);
+        _previewBlobUrl = URL.createObjectURL(blob);
+        audioEl.src = _previewBlobUrl;
         toggleBtn._setIcon('⏸');
         toggleBtn.disabled = false;
-        await audioEl.play();
+        try {
+          await audioEl.play();
+        } catch (e) {
+          // AbortError fires when the user clicks the native ⏸ or
+          // another card's ▶ before the autoplay attempt completes —
+          // benign; the audio element settles into the paused state.
+          if (e && e.name !== 'AbortError') throw e;
+        }
       } catch (e) {
         toggleBtn.disabled = false;
         toggleBtn._setIcon('▶');
