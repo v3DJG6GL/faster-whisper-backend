@@ -2364,8 +2364,8 @@ _CAPTURES_HTML = r"""<!doctype html>
      only appears when the strip itself is focused — that's the visual
      cue that keystrokes will land here. */
   .word-strip .word.cursor {
-    outline: 2px dashed var(--accent, #58a6ff);
-    outline-offset: -2px;
+    outline: 1px dashed var(--accent, #58a6ff);
+    outline-offset: -1px;
     border-radius: 2px;
   }
   .word-strip { outline: none; }
@@ -5389,10 +5389,15 @@ _CAPTURES_HTML = r"""<!doctype html>
   var _batchCurrentCard = null;
   var _batchKeyHandler = null;
   var _batchTouchState = null;
+  // True when batch mode was entered directly from the /captures page
+  // (via ⚡ Batch review merges) — i.e. the user never saw the list view
+  // and shouldn't be dumped into it when they hit "Exit batch".
+  var _batchEnteredDirectly = false;
 
-  function _enterBatchMode() {
+  function _enterBatchMode(opts) {
     if (_batchActive) return;
     _batchActive = true;
+    _batchEnteredDirectly = !!(opts && opts.direct);
     _batchAccepted = 0;
     _batchDismissed = 0;
     document.getElementById('propose-list').hidden = true;
@@ -5406,7 +5411,9 @@ _CAPTURES_HTML = r"""<!doctype html>
 
   function _exitBatchMode() {
     if (!_batchActive) return;
+    var wasDirect = _batchEnteredDirectly;
     _batchActive = false;
+    _batchEnteredDirectly = false;
     _stopAnyPreview();
     document.removeEventListener('keydown', _batchKeyHandler);
     _batchKeyHandler = null;
@@ -5416,6 +5423,12 @@ _CAPTURES_HTML = r"""<!doctype html>
     document.getElementById('propose-batch').innerHTML = '';
     document.getElementById('propose-batch-top').classList.remove('active');
     document.getElementById('propose-batch-top').textContent = 'Batch review';
+    // If the user entered batch mode DIRECTLY from the page, they never
+    // wanted to see the list — exiting the batch should close the whole
+    // popup rather than drop them into a view they didn't ask for.
+    if (wasDirect) {
+      document.getElementById('propose-modal').classList.remove('show');
+    }
   }
 
   function _renderBatchCard() {
@@ -5661,7 +5674,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     var startInBatch = opts && opts.startInBatch;
     _loadProposals().then(function() {
       if (startInBatch && _proposals.length > 0 && !_batchActive) {
-        _enterBatchMode();
+        _enterBatchMode({ direct: true });
       }
     });
   }
