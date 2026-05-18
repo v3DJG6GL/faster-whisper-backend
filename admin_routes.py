@@ -1209,11 +1209,15 @@ async function loadState() {
     // Valid bearer but no admin scope — render the shared landing
     // instead of falling through to the generic toast (which would
     // leave the page blank). Refresh whoami so the landing can list
-    // pages this user CAN reach.
+    // pages this user CAN reach. showApp() is mandatory: <main> lives
+    // inside #app-wrap which is display:none until showApp flips it;
+    // rendering into a hidden subtree leaves the user with a blank
+    // page on F5 reload.
     try {
       const w = await fetch('/auth/whoami', { headers: authHeaders() });
       if (w.ok) window.__whoami = await w.json();
     } catch (_) {}
+    showApp();
     _renderNoAccessLanding({ page: 'config' });
     return;
   }
@@ -3594,14 +3598,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     return;
   }
   if (probe.status === 403) {
-    // 403 with a presented bearer = signed-in but not admin. Render a
-    // friendly landing card instead of the opaque "check service logs"
-    // panel. /quick-config is what end-users actually want.
+    // 403 with a presented bearer = signed-in but not admin. Render the
+    // shared no-access landing. CRITICAL: the landing replaces <main>'s
+    // innerHTML, but <main> lives inside `#app-wrap` which is hidden by
+    // default — so we must call showApp() first or the landing renders
+    // into a display:none subtree and the user sees a blank page.
     try {
       const wr = await fetch('/auth/whoami', { headers: authHeaders() });
       if (wr.ok) {
         const wj = await wr.json();
-        if (wj && wj.is_admin === false) { _renderNotAdminLanding(); return; }
+        try { window.__whoami = wj; } catch (_) {}
+        if (wj && wj.is_admin === false) {
+          showApp();
+          _renderNoAccessLanding({ page: 'config' });
+          return;
+        }
       }
     } catch (_) {}
   }
