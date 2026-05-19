@@ -122,17 +122,22 @@ class Permissions:
         return list(self._tags)
 
     def can_see_rule(self, rule: dict[str, Any]) -> bool:
-        """Visibility check for a single PIPELINE_RULES entry.
+        """Visibility check for a single PIPELINE_RULES entry on
+        /quick-config.
 
-        Admins see everything. Non-admins: the rule must be `exposed`
-        AND the rule's tags must intersect the user's tags — except
-        when the rule has an empty tag list, which is the "visible to
-        everyone" migration default.
+        Everyone (including admins) is filtered by `exposed=True` —
+        /quick-config is the curated end-user view, not a mirror of
+        /config. Admins manage the full unfiltered list at /config.
+
+        Within exposed rules, admins bypass the tag filter (they see
+        every exposed rule). Non-admins additionally need rule.tags
+        to intersect user.tags — except when rule.tags is empty,
+        which is the "visible to everyone" migration default.
         """
-        if self._is_admin:
-            return True
         if not (rule or {}).get("exposed"):
             return False
+        if self._is_admin:
+            return True  # exposed + admin = see it regardless of tags
         rule_tags = set(rule.get("tags") or [])
         if not rule_tags:
             return True  # untagged rule = permissive (migration path)
