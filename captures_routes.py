@@ -993,6 +993,14 @@ def _validate_merge_payload(
     user["permissions"].assert_can_read_row(
         {"user_id": owner_user_id}, "captures", user.get("user_id") or "",
     )
+    # Audit the cross-user merge surface so a non-admin scope=all caller
+    # reading another user's captures via /groups, /preview-audio,
+    # /preview-words or /preview-save-chips is recorded — matches the
+    # per-row audit calls at every other capture/group endpoint.
+    _audit_cross_user_read(
+        user, {"user_id": owner_user_id}, "merge",
+        ",".join(member_ids[:3]) + ("+" if len(member_ids) > 3 else ""),
+    )
 
     total_audio_ms = sum(
         int(round(float(c.get("duration_seconds") or 0.0) * 1000))
