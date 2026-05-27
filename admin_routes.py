@@ -105,6 +105,14 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
         "REPORTS_DB", "REPORTS_MAX", "REPORTS_RETENTION_DAYS",
         "REPORTS_ALLOW_USER_SUBMIT",
     ])]),
+    ("Recent transcriptions", [(None, [
+        "RECENT_TRANSCRIPTIONS_DB",
+        "RECENT_TRANSCRIPTIONS_MAX",
+        "RECENT_TRANSCRIPTIONS_TTL_DAYS",
+        "RECENT_TRANSCRIPTIONS_PAGE_SIZE",
+        "RECENT_TRANSCRIPTIONS_PRUNE_EVERY",
+        "STATS_RECENT_TX_DISPLAY",
+    ])]),
     ("Capture & fine-tuning", [
         (None, [
             "CAPTURE_RECORDINGS_ENABLED",
@@ -1629,19 +1637,22 @@ function makeEditor(name) {
   if (name === 'PIPELINE_RULES') return makeRuleListEditor(name, v || [], 'full', {});
   // Captures-specific exclude list — same checklist widget as per-model
   // PIPELINE_RULES_EXCLUDE, sourced from the live PIPELINE_RULES. The
-  // widget's `excludeSet` drives the visible state; `onToggle(slug,
-  // excluded)` reflects the new state, which we collect into the flat
-  // list this field stores as.
+  // checklist passes `cb.checked` (= "rule will run") to onToggle, so the
+  // semantic here is inverted from the field name: checked → REMOVE from
+  // EXCLUDE, unchecked → ADD to EXCLUDE. `terminalToggleable: true` lets
+  // the trainer drop "Trim edges" too — captures may want to preserve
+  // trailing whitespace that the live /transcribe path strips.
   if (name === 'CAPTURES_PIPELINE_RULES_EXCLUDE') {
     const allRules = currentValue('PIPELINE_RULES') || [];
     return makeRuleListEditor(name, allRules, 'checklist', {
       excludeSet: new Set(v || []),
       includeSet: new Set(),
-      onToggle: (slug, excluded) => {
+      terminalToggleable: true,
+      onToggle: (slug, wantActive) => {
         const cur = currentValue(name) || [];
-        const next = excluded
-          ? Array.from(new Set([...cur, slug]))
-          : cur.filter(s => s !== slug);
+        const next = wantActive
+          ? cur.filter(s => s !== slug)
+          : Array.from(new Set([...cur, slug]));
         setDirty(name, next);
       },
     });
@@ -2853,9 +2864,29 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.checked = effective;
-      if (isTerminal) {
+      // Per-model PIPELINE_RULES_EXCLUDE: the live /transcribe path
+      // re-trims after wrappers unconditionally, so a per-model exclude
+      // on `trim-edges` is a no-op — the checkbox stays locked to avoid
+      // misleading the admin. CAPTURES_PIPELINE_RULES_EXCLUDE opts in to
+      // toggling via `terminalToggleable: true`, since the captures
+      // pipeline honors the exclude end-to-end.
+      if (isTerminal && !opts.terminalToggleable) {
         cb.disabled = true;
         cb.title = 'Terminal trim — always runs, cannot be excluded per model';
+      } else if (isTerminal) {
+        cb.title = forcedOut
+          ? 'Force-disabled for captures. Check to let the trim strip '
+          + 'trailing whitespace from training text.'
+          : 'Active for captures. Uncheck to preserve trailing whitespace '
+          + 'in stored training text (live /transcribe still trims).';
+        cb.addEventListener('change', () => {
+          if (opts.onToggle) opts.onToggle(rule.name, cb.checked, globallyEnabled);
+          const newForcedOut = !cb.checked;
+          row.classList.toggle('excluded', newForcedOut);
+          row.dataset.matchesGlobal = newForcedOut ? 'false' : 'true';
+          status.textContent = newForcedOut ? 'EXCLUDED' : '';
+          if (footer) footer.textContent = _footerText();
+        });
       } else {
         // Tooltip combines all the state so the admin sees WHY the box is
         // checked or not at a glance.

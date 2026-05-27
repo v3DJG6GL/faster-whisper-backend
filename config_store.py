@@ -84,6 +84,12 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "REPORTS_MAX": "WHISPER_REPORTS_MAX",
     "REPORTS_RETENTION_DAYS": "WHISPER_REPORTS_RETENTION_DAYS",
     "REPORTS_ALLOW_USER_SUBMIT": "WHISPER_REPORTS_ALLOW_USER_SUBMIT",
+    "RECENT_TRANSCRIPTIONS_DB": "WHISPER_RECENT_TRANSCRIPTIONS_DB",
+    "RECENT_TRANSCRIPTIONS_MAX": "WHISPER_RECENT_TRANSCRIPTIONS_MAX",
+    "RECENT_TRANSCRIPTIONS_TTL_DAYS": "WHISPER_RECENT_TRANSCRIPTIONS_TTL_DAYS",
+    "RECENT_TRANSCRIPTIONS_PAGE_SIZE": "WHISPER_RECENT_TRANSCRIPTIONS_PAGE_SIZE",
+    "RECENT_TRANSCRIPTIONS_PRUNE_EVERY": "WHISPER_RECENT_TRANSCRIPTIONS_PRUNE_EVERY",
+    "STATS_RECENT_TX_DISPLAY": "WHISPER_STATS_RECENT_TX_DISPLAY",
     "CAPTURE_RECORDINGS_ENABLED": "WHISPER_CAPTURE_RECORDINGS_ENABLED",
     "CAPTURES_DB": "WHISPER_CAPTURES_DB",
     "CAPTURES_DIR": "WHISPER_CAPTURES_DIR",
@@ -422,6 +428,34 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Master switch for end-user (non-admin API-key) report submission. "
         "Off = only admins can submit; the button stays visible but the "
         "endpoint returns 403 for non-admin callers.",
+
+    # --- Recent transcriptions store ---
+    "RECENT_TRANSCRIPTIONS_DB":
+        "Path to the SQLite file holding the persistent /quick-config "
+        "trace panel + /stats \"Recent transcriptions\" widget data. "
+        "Plaintext PHI on a medical deployment — keep on an encrypted "
+        "volume.",
+    "RECENT_TRANSCRIPTIONS_MAX":
+        "Hard row-count cap. 0 = unbounded (TTL-only pruning). Lazy "
+        "pruning runs every RECENT_TRANSCRIPTIONS_PRUNE_EVERY inserts, "
+        "so on-disk count can briefly exceed this by up to PRUNE_EVERY "
+        "rows before the next sweep.",
+    "RECENT_TRANSCRIPTIONS_TTL_DAYS":
+        "Auto-delete entries older than this many days. 0 = TTL "
+        "disabled (count-cap only). Combined with the row cap: "
+        "whichever bound is tighter wins.",
+    "RECENT_TRANSCRIPTIONS_PAGE_SIZE":
+        "Number of entries the browser fetches per page on "
+        "/quick-config (initial load + each \"Load older\" click). "
+        "Also clamps the server-side LIMIT.",
+    "RECENT_TRANSCRIPTIONS_PRUNE_EVERY":
+        "Lazy-prune cadence — every Nth insert runs a single DELETE "
+        "that enforces both the row cap and the TTL. 0 disables lazy "
+        "pruning entirely (rows accumulate until manual /clear).",
+    "STATS_RECENT_TX_DISPLAY":
+        "/stats dashboard \"Recent transcriptions\" widget row count. "
+        "The widget is intentionally a small ticker — bumping this "
+        "past ~50 makes it scroll awkwardly without adding signal.",
 
     # --- Captures (fine-tuning data store) ---
     "CAPTURE_RECORDINGS_ENABLED":
@@ -853,6 +887,16 @@ class AdminConfig(BaseModel):
     REPORTS_MAX: Annotated[int, Field(ge=10, le=100_000)] | None = _F("REPORTS_MAX")
     REPORTS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F("REPORTS_RETENTION_DAYS")
     REPORTS_ALLOW_USER_SUBMIT: bool | None = _F("REPORTS_ALLOW_USER_SUBMIT")
+
+    # --- Recent transcriptions store (persistent /quick-config + /stats) ---
+    # MAX/TTL/PRUNE_EVERY accept 0 to mean "disabled"; combined bound is
+    # "tighter of MAX and TTL wins."
+    RECENT_TRANSCRIPTIONS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("RECENT_TRANSCRIPTIONS_DB")
+    RECENT_TRANSCRIPTIONS_MAX: Annotated[int, Field(ge=0, le=100_000)] | None = _F("RECENT_TRANSCRIPTIONS_MAX")
+    RECENT_TRANSCRIPTIONS_TTL_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F("RECENT_TRANSCRIPTIONS_TTL_DAYS")
+    RECENT_TRANSCRIPTIONS_PAGE_SIZE: Annotated[int, Field(ge=10, le=1000)] | None = _F("RECENT_TRANSCRIPTIONS_PAGE_SIZE")
+    RECENT_TRANSCRIPTIONS_PRUNE_EVERY: Annotated[int, Field(ge=0, le=10_000)] | None = _F("RECENT_TRANSCRIPTIONS_PRUNE_EVERY")
+    STATS_RECENT_TX_DISPLAY: Annotated[int, Field(ge=1, le=100)] | None = _F("STATS_RECENT_TX_DISPLAY")
 
     # --- Captures (fine-tuning data store) ---
     CAPTURE_RECORDINGS_ENABLED: bool | None = _F("CAPTURE_RECORDINGS_ENABLED")

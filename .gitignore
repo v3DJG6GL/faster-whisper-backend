@@ -26,6 +26,11 @@ captures.local.sqlite3-shm
 captures.local.sqlite3-wal
 captures/
 
+# Persistent recent-transcriptions store (SQLite + WAL/SHM)
+recent_transcriptions.local.sqlite3
+recent_transcriptions.local.sqlite3-shm
+recent_transcriptions.local.sqlite3-wal
+
 # Editor / IDE
 .vscode/
 .idea/

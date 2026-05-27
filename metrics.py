@@ -1,24 +1,28 @@
 """
 In-process request metrics for the /stats dashboard.
 
-Bounded ring buffers + a few counters. No SQLite, no Prometheus, no external
-metrics backend. All updates happen on the asyncio event loop (uvicorn runs
+Bounded ring buffers + a few counters. No Prometheus, no external metrics
+backend. All updates happen on the asyncio event loop (uvicorn runs
 SERVER_WORKERS=1) so plain `Counter[k] += 1` and `deque.append` are safe
-without explicit locking. If the deployment ever switches to a threadpool
-executor for transcription, wrap the few read-modify-write sites in a
-threading.Lock — until then, no locks are needed.
+without explicit locking.
+
+The "Recent transcriptions" widget on /stats is sourced from the durable
+`transcriptions_store` SQLite database (same source as /quick-config's
+trace panel) — see metrics_snapshot() below. Survives restart.
 """
 
 from __future__ import annotations
 
+import logging
 import time
 from collections import Counter, deque
 from typing import Any
 
+logger = logging.getLogger("whisper-api")
+
 START_TS = time.time()
 
 _LATENCY_MAX = 200          # ring for p50/p95/p99
-_RECENT_TX_MAX = 20         # ring for /stats "recent transcriptions"
 _ERROR_WINDOW_SEC = 15 * 60
 _MODEL_LOAD_KEEP = 50       # bounded per-model history
 
@@ -33,9 +37,6 @@ in_flight_transcriptions: int = 0
 
 # Global latency ring (ms) used for p50/p95/p99.
 _latency: deque[float] = deque(maxlen=_LATENCY_MAX)
-
-# Last N transcriptions: dict per item — see record_transcription().
-recent_tx: deque[dict[str, Any]] = deque(maxlen=_RECENT_TX_MAX)
 
 # 5xx timestamps for rolling 1/5/15 min windows.
 _errors_ts: deque[float] = deque()
@@ -59,18 +60,35 @@ def record_request(path: str, status: int, duration_ms: float) -> None:
 
 
 def record_transcription(model: str, audio_dur: float, proc_dur: float,
-                         status: str, words: int) -> None:
-    """Called from the transcribe handler once info.duration is known."""
-    recent_tx.append({
-        "ts": time.time(),
-        "model": model,
-        "audio_dur": round(audio_dur, 2),
-        "proc_dur": round(proc_dur, 3),
-        # RTF = audio_duration / wall_clock — the canonical Whisper number.
-        "rtf": round(audio_dur / proc_dur, 2) if proc_dur > 0 else None,
-        "status": status,
-        "words": words,
-    })
+                         status: str, words: int,
+                         request_id: str | None = None,
+                         user_id: str | None = None) -> None:
+    """Called from the transcribe handler's outer finally on every
+    /transcribe request (both success and error paths). UPSERTs the
+    timing half of the recent-transcriptions row keyed by request_id;
+    record_trace() in quick_config_state has already inserted the rich
+    half on the success path, so this call only patches timing fields
+    in. On the error path it inserts a minimal row so /stats still
+    counts the request."""
+    if not request_id:
+        return
+    try:
+        import config as cfg
+        import transcriptions_store
+        transcriptions_store.record_timing(
+            request_id=request_id,
+            model=model,
+            audio_dur_s=round(audio_dur, 3) if audio_dur else None,
+            proc_dur_s=round(proc_dur, 3),
+            status=status,
+            words_count=int(words or 0),
+            user_id=user_id,
+            prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
+            max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
+            ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_TTL_DAYS", 30)),
+        )
+    except Exception as e:
+        logger.warning("[metrics] record_transcription persist failed: %s", e)
 
 
 def record_model_load(model: str, load_seconds: float) -> None:
@@ -117,6 +135,14 @@ def metrics_snapshot() -> dict[str, Any]:
             "last5_avg": round(sum(tail) / len(tail), 2),
             "count": len(v),
         }
+    try:
+        import config as cfg
+        import transcriptions_store
+        limit = int(getattr(cfg, "STATS_RECENT_TX_DISPLAY", 20))
+        recent = transcriptions_store.list_recent(limit=max(1, limit))
+    except Exception as e:
+        logger.warning("[metrics] list_recent failed: %s", e)
+        recent = []
     return {
         "uptime_sec": round(time.time() - START_TS, 1),
         "in_flight_transcriptions": in_flight_transcriptions,
@@ -133,6 +159,6 @@ def metrics_snapshot() -> dict[str, Any]:
             "p95": round(_quantile(durations, 0.95), 1),
             "p99": round(_quantile(durations, 0.99), 1),
         },
-        "recent_transcriptions": list(recent_tx),
+        "recent_transcriptions": recent,
         "model_loads": loads_summary,
     }

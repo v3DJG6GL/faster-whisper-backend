@@ -428,6 +428,49 @@ REPORTS_ALLOW_USER_SUBMIT = True
 
 
 # =============================================================================
+# Recent transcriptions (persistent /quick-config trace panel + /stats widget)
+# =============================================================================
+# Every /transcribe request UPSERTs a row into the recent-transcriptions
+# SQLite store. The store backs both the /quick-config trace panel
+# (full payload: raw/final/steps/tokens/bigrams) and the /stats dashboard
+# "Recent transcriptions" widget (timing-only projection). Survives
+# service restart; pruned lazily by row-cap AND TTL.
+
+# DB file path. Default sits next to config.local.json. SQLite uses three
+# runtime files (.sqlite3, -wal, -shm); .gitignore matches all three.
+RECENT_TRANSCRIPTIONS_DB = os.path.join(_REPO_DIR, "recent_transcriptions.local.sqlite3")
+
+# Hard row-count cap. 0 = unbounded (TTL-only pruning). Lazy pruning runs
+# every RECENT_TRANSCRIPTIONS_PRUNE_EVERY inserts, so the actual on-disk
+# row count may briefly exceed this by up to PRUNE_EVERY entries before
+# the next sweep. 500 is the documented default — keeps the UI useful
+# without ballooning the DB when traces are large.
+RECENT_TRANSCRIPTIONS_MAX = 500
+
+# Auto-delete entries older than this many days. 0 = disabled
+# (count-cap only). Combined with the row cap: whichever bound is tighter
+# wins.
+RECENT_TRANSCRIPTIONS_TTL_DAYS = 30
+
+# Number of entries the browser fetches per page. The freshest page is
+# delivered via SSE on connect; "Load older" walks back through the store
+# in batches of this size using the created_ts cursor. Also clamps the
+# server-side LIMIT, so a hostile client can't request a huge page.
+RECENT_TRANSCRIPTIONS_PAGE_SIZE = 100
+
+# Lazy-prune cadence — every Nth insert runs a single DELETE that
+# enforces both the row cap and the TTL. 0 disables lazy pruning (rows
+# accumulate until a manual /clear or service restart sweep). 50 is the
+# documented default.
+RECENT_TRANSCRIPTIONS_PRUNE_EVERY = 50
+
+# /stats "Recent transcriptions" widget row count. The dashboard is
+# intentionally a small ticker — bumping this past ~50 makes the widget
+# scroll badly without adding value.
+STATS_RECENT_TX_DISPLAY = 20
+
+
+# =============================================================================
 # API key auth (multi-user identity)
 # =============================================================================
 # Per-user API keys gate /v1/audio/transcriptions and every WebUI endpoint.
@@ -693,6 +736,21 @@ REPORTS_DB = _env_str("WHISPER_REPORTS_DB", REPORTS_DB)
 REPORTS_MAX = _env_int("WHISPER_REPORTS_MAX", REPORTS_MAX)
 REPORTS_RETENTION_DAYS = _env_int("WHISPER_REPORTS_RETENTION_DAYS", REPORTS_RETENTION_DAYS)
 REPORTS_ALLOW_USER_SUBMIT = _env_bool("WHISPER_REPORTS_ALLOW_USER_SUBMIT", REPORTS_ALLOW_USER_SUBMIT)
+
+
+# --- Recent transcriptions store ------------------------------------------
+RECENT_TRANSCRIPTIONS_DB = _env_str(
+    "WHISPER_RECENT_TRANSCRIPTIONS_DB", RECENT_TRANSCRIPTIONS_DB)
+RECENT_TRANSCRIPTIONS_MAX = _env_int(
+    "WHISPER_RECENT_TRANSCRIPTIONS_MAX", RECENT_TRANSCRIPTIONS_MAX)
+RECENT_TRANSCRIPTIONS_TTL_DAYS = _env_int(
+    "WHISPER_RECENT_TRANSCRIPTIONS_TTL_DAYS", RECENT_TRANSCRIPTIONS_TTL_DAYS)
+RECENT_TRANSCRIPTIONS_PAGE_SIZE = _env_int(
+    "WHISPER_RECENT_TRANSCRIPTIONS_PAGE_SIZE", RECENT_TRANSCRIPTIONS_PAGE_SIZE)
+RECENT_TRANSCRIPTIONS_PRUNE_EVERY = _env_int(
+    "WHISPER_RECENT_TRANSCRIPTIONS_PRUNE_EVERY", RECENT_TRANSCRIPTIONS_PRUNE_EVERY)
+STATS_RECENT_TX_DISPLAY = _env_int(
+    "WHISPER_STATS_RECENT_TX_DISPLAY", STATS_RECENT_TX_DISPLAY)
 
 
 # --- Captures (fine-tuning data store) ------------------------------------

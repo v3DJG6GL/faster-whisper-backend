@@ -1,34 +1,34 @@
 """
-In-memory ring buffer for /quick-config trace panel + cb:map autocomplete.
+Tokenization + SSE broadcast layer for /quick-config recent transcriptions.
 
-Holds the last N transcription traces (raw whisper output, per-step
-before/after, final post-pipeline text) plus pre-tokenized
-words + adjacent two-word phrases (bigrams) for the autocomplete
-datalist on /quick-config. The bigram pass exists for the common
-"whisper split a compound" case — user dictates "Hanspeter", model
-emits "Hans Peter"; typing "Hans" should offer both single-word and
-two-word completions so the user can pick the phrase as a cb:map
-key in one step.
+Durable storage lives in `transcriptions_store` (SQLite, WAL). This
+module:
+  * tokenizes each transcription into single words + adjacent two-word
+    phrases (bigrams) for the cb:map autocomplete datalist on
+    /quick-config;
+  * forwards each finished trace to the SQLite store via record_trace();
+  * broadcasts the trace to live SSE subscribers so the UI updates in
+    real time without polling.
 
-Lost on service restart, capped at _BUFFER_MAX entries. The buffer
-contains literal patient dictation snippets on a medical-deployment
-host — DO NOT log buffer contents and DO NOT persist them. The
-on-disk log file already holds the same trace via main._format_request_block;
-that's the canonical durable record. This module exists only to
-surface those traces to /quick-config without making the page parse
-the log file.
+The bigram pass exists for the common "whisper split a compound" case
+— user dictates "Hanspeter", model emits "Hans Peter"; typing "Hans"
+should offer both single-word and two-word completions so the user
+can pick the phrase as a cb:map key in one step.
+
+The trace + tokens carry literal patient dictation snippets on a
+medical-deployment host — DO NOT log buffer contents. The on-disk log
+file already holds the same trace via main._format_request_block; the
+new SQLite store is the canonical structured durable record.
 """
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import time
-from collections import deque
 from typing import Any
 
-# Capped at 20 to match metrics.recent_tx; small RAM footprint, bounded
-# PHI surface, fits on one /quick-config screen without pagination.
-_BUFFER_MAX = 20
+logger = logging.getLogger("whisper-api")
 
 # Token shape: at least one letter, then word-chars (letters/digits/-),
 # 2 to 64 chars. Drops single-char punctuation noise without aggressively
@@ -56,8 +56,6 @@ _TOKEN_CAP = 100
 # multiplicative effect (N tokens → ~N-1 bigrams) plus per-trace
 # datalist contribution would otherwise dominate the option list.
 _BIGRAM_CAP = 50
-
-recent_traces: deque[dict[str, Any]] = deque(maxlen=_BUFFER_MAX)
 
 # Each subscriber is a bounded asyncio.Queue. Bounded so a slow / stuck
 # SSE client can't grow memory without limit; on overflow we drop the
@@ -129,50 +127,77 @@ def record_trace(
     raw: str,
     steps: list,
     final: str,
+    language: str | None = None,
     user_id: str | None = None,
 ) -> None:
-    """Append a new trace to the ring buffer and broadcast to all SSE
-    subscribers. Called from main.py's transcribe handler after the
-    existing logger.info(_format_request_block(...)) line.
+    """Persist a finished trace to the durable store and broadcast it to
+    every live SSE subscriber. Called from main.py's transcribe handler
+    after the existing logger.info(_format_request_block(...)) line.
 
-    `request_id` is the uuid4 hex stamped on the request by main.py.
-    Surfaced on each trace entry so /quick-config can correlate a
-    user-submitted report with the durable text log (which prints
-    `req=<id[:8]>` in the per-request block). None for any pre-feature
-    or upstream call that omits it.
+    `request_id` is the uuid4 hex stamped on the request by main.py;
+    surfaced on each entry so /quick-config can correlate a user-
+    submitted report with the durable text log (`req=<id[:8]>` in the
+    per-request block) AND so the later metrics.record_transcription()
+    call can patch timing fields onto the same row via UPSERT.
 
     `steps` is a list of (label, before, after) tuples — same shape
     main.py builds when cfg.TRACE_ENABLED. Pass [] when tracing is off
     so the autocomplete feature still works (raw + final + tokens are
-    the only fields the autocomplete needs).
-
-    Emits both single-word tokens AND adjacent two-word phrases
-    (bigrams). The bigram pass catches the common "whisper split a
-    compound" case: user dictates "Hanspeter", model emits "Hans
-    Peter"; the datalist on /quick-config will then offer "Hans Peter"
-    when the user types "Hans" in a cb:map left field. Bigrams are
-    filtered with the same stopword + length rules as tokens to avoid
-    noise."""
+    the only fields the autocomplete needs)."""
+    if not request_id:
+        # No request_id means we cannot key the UPSERT and the entry
+        # cannot be jumped-to from /reports. Skip silently — the live
+        # SSE broadcast still fires below.
+        pass
     try:
         import api_keys_store
         username = api_keys_store.get_username(user_id)
     except Exception:
         username = None
     final_text = final or ""
+    tokens = _tokenize(final_text)
+    bigrams = _extract_bigrams(final_text)
+    created_ts = time.time()
     entry: dict[str, Any] = {
-        "ts": time.time(),
+        "ts": created_ts,
+        "created_ts": created_ts,
         "request_id": request_id,
         "model": model,
+        "language": language,
         "raw": raw or "",
+        "raw_text": raw or "",
         "steps": [list(s) if isinstance(s, (tuple, list)) else s
                   for s in (steps or [])],
         "final": final_text,
-        "tokens": _tokenize(final_text),
-        "bigrams": _extract_bigrams(final_text),
+        "final_text": final_text,
+        "tokens": tokens,
+        "bigrams": bigrams,
         "user_id": user_id,
         "username": username,
+        "status": "ok",
     }
-    recent_traces.append(entry)
+    if request_id:
+        try:
+            import config as cfg
+            import transcriptions_store
+            transcriptions_store.record_trace(
+                request_id=request_id,
+                model=model,
+                raw=raw or "",
+                final=final_text,
+                steps=entry["steps"],
+                tokens=tokens,
+                bigrams=bigrams,
+                language=language,
+                user_id=user_id,
+                username=username,
+                created_ts=created_ts,
+                prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
+                max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
+                ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_TTL_DAYS", 30)),
+            )
+        except Exception as e:
+            logger.warning("[recent-tx] persist failed: %s", e)
     _broadcast({"event": "trace", "data": entry})
 
 

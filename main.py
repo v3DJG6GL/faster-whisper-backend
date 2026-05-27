@@ -179,8 +179,12 @@ class _CompiledRule:
 
 
 _COMPILED_RULES: list[_CompiledRule] = []
-# Captured from the terminal rule's label in cfg.PIPELINE_RULES at cache build
-# time. Falls back to the constant below if the user removed the terminal row.
+# Captured from the terminal rule's name/label in cfg.PIPELINE_RULES at cache
+# build time. Falls back to the constants below if the user removed the
+# terminal row. The slug is used to honor exclude-set membership (a captures
+# pipeline can drop the trim by listing `trim-edges` in
+# CAPTURES_PIPELINE_RULES_EXCLUDE).
+_TERMINAL_NAME: str = "trim-edges"
 _TERMINAL_LABEL: str = "Trim edges (always-last)"
 
 
@@ -248,12 +252,14 @@ def rebuild_caches() -> None:
     usually catches these, but a hand-edited config.py or a runtime
     catastrophic-backtracking case might surface here).
     """
-    global _COMPILED_RULES, _TERMINAL_LABEL
+    global _COMPILED_RULES, _TERMINAL_NAME, _TERMINAL_LABEL
     compiled: list[_CompiledRule] = []
+    terminal_name = _TERMINAL_NAME
     terminal_label = _TERMINAL_LABEL
     for rule in cfg.PIPELINE_RULES:
         rtype = rule.get("type")
         if rtype == "terminal":
+            terminal_name = rule.get("name", terminal_name)
             terminal_label = rule.get("label", terminal_label)
             continue
         rule_enabled = bool(rule.get("enabled", True))
@@ -298,6 +304,7 @@ def rebuild_caches() -> None:
                                        rule.get("label", rule.get("name", "?")),
                                        rtype, cre, payload, rule_enabled))
     _COMPILED_RULES = compiled
+    _TERMINAL_NAME = terminal_name
     _TERMINAL_LABEL = terminal_label
 
 
@@ -334,6 +341,13 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     leaving the runtime /transcribe response untouched. Rules in
     `extra_excludes` are skipped even when they appear in INCLUDE — the
     captures-specific intent overrides the per-model force-on.
+
+    The terminal "trim-edges" step (filtered out of _COMPILED_RULES at
+    rebuild time) runs as the always-last step here, gated by the same
+    exclude set so a trainer can preserve trailing whitespace by adding
+    the slug to CAPTURES_PIPELINE_RULES_EXCLUDE. The live /transcribe
+    path applies an additional unconditional trim after the output
+    wrappers, so per-model exclusion of trim-edges has no effect there.
     """
     exclude: "set[str]" = set()
     include: "set[str]" = set()
@@ -379,6 +393,18 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                 )
             elif before != text:
                 trace.append((f"{ordinal} {rule.label}", before, text))
+    term_ordinal = len(_COMPILED_RULES) + 1
+    if _TERMINAL_NAME in exclude:
+        if trace is not None:
+            trace.append(
+                (f"{term_ordinal} {_TERMINAL_LABEL} [EXCLUDED for {model_name}]",
+                 text, text)
+            )
+    else:
+        before_trim = text
+        text = text.lstrip(" \t\r").rstrip(" \t\r")
+        if trace is not None and before_trim != text:
+            trace.append((f"{term_ordinal} {_TERMINAL_LABEL}", before_trim, text))
     return text
 
 
@@ -1348,6 +1374,20 @@ async def lifespan(app: FastAPI):
     except Exception as _re:
         logger.error("Failed to initialize reports store: %s", _re)
 
+    # Open the durable recent-transcriptions store. Replaces the legacy
+    # in-memory ring buffers (quick_config_state.recent_traces +
+    # metrics.recent_tx) so the /quick-config trace panel + /stats
+    # dashboard widget survive service restart and scale beyond 20 rows.
+    try:
+        import transcriptions_store
+        transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
+        logger.info(
+            "Recent-transcriptions store initialized at %s",
+            cfg.RECENT_TRANSCRIPTIONS_DB,
+        )
+    except Exception as _te:
+        logger.error("Failed to initialize recent-transcriptions store: %s", _te)
+
     # Open the captures store. Audio + word-timestamps for Whisper
     # fine-tuning, gated by CAPTURE_RECORDINGS_ENABLED. Reconcile drift
     # before serving (row says audio exists / disk says it doesn't, or
@@ -1449,12 +1489,17 @@ async def transcribe(
 
     # Bracket the entire request with metrics.in_flight + record_transcription
     # so failed loads / failed transcriptions still surface in the dashboard.
+    # request_id is generated up-front (was deferred to post-transcribe) so
+    # the outer finally can correlate timing-only writes to the SQLite store
+    # on the error path too.
     metrics.in_flight_transcriptions += 1
     _t0 = time.perf_counter()
     _status = "ok"
     _audio_dur: float = 0.0
     _words: int = 0
     tmp_path = None
+    request_id = uuid.uuid4().hex
+    _user_id = user.get("user_id")
     try:
         model = await _get_or_load_model(resolved_model)
 
@@ -1716,31 +1761,34 @@ async def transcribe(
                     extra_excludes=cfg.CAPTURES_PIPELINE_RULES_EXCLUDE,
                 )
             # Output wrappers (G/PM): plain prefix/suffix concatenated to
-            # the final transcript text after the pipeline runs and BEFORE
-            # the final whitespace trim. Per-model overrides win.
+            # the final transcript text after the pipeline runs (including
+            # the in-pipeline terminal trim) and BEFORE a defensive
+            # post-wrapper trim. Per-model overrides win.
             _output_prefix = cfg_for(resolved_model, "OUTPUT_PREFIX") or ""
             _output_suffix = cfg_for(resolved_model, "OUTPUT_SUFFIX") or ""
             if _output_prefix or _output_suffix:
                 _wrap_before = full_text_str
                 full_text_str = _output_prefix + full_text_str + _output_suffix
                 if trace is not None and _wrap_before != full_text_str:
-                    trace.append((f"{len(_COMPILED_RULES) + 1} output-wrapper",
+                    trace.append((f"{len(_COMPILED_RULES) + 2} output-wrapper",
                                   _wrap_before, full_text_str))
-            # Terminal trim — symmetric strip of spaces/tabs/CR on BOTH
-            # edges. Preserves a leading or trailing "\n" emitted by
-            # "neue Zeile" / "neuer Absatz" at the edges of the utterance,
-            # since the user explicitly asked for the line break.
+            # Post-wrapper trim — strips whitespace that the wrapper config
+            # itself may carry. Runs unconditionally (the per-model exclude
+            # only governs the in-pipeline trim). Preserves a leading or
+            # trailing "\n" emitted by "neue Zeile" / "neuer Absatz" at the
+            # edges of the utterance, since the user explicitly asked for
+            # the line break.
             before_trim = full_text_str
             full_text_str = full_text_str.lstrip(" \t\r").rstrip(" \t\r")
             if trace is not None and before_trim != full_text_str:
-                trace.append((f"{len(_COMPILED_RULES) + 2} {_TERMINAL_LABEL}",
+                trace.append((f"{len(_COMPILED_RULES) + 3} {_TERMINAL_LABEL}",
                               before_trim, full_text_str))
 
-            # Cross-reference key for /reports submissions: stamped on both
-            # the log block (req=<id[:8]> in the title line) and the
-            # /quick-config ring-buffer entry, so an admin reviewing a
-            # report can grep the log for the matching block.
-            request_id = uuid.uuid4().hex
+            # request_id was generated at handler entry (so the outer
+            # finally can record_timing() on the error path too); it is
+            # stamped on the log block (req=<id[:8]> in the title line),
+            # on each /reports submission, and on the recent-transcriptions
+            # store row for the /quick-config trace panel.
 
             # Persist the capture if eligibility passed at handler entry
             # AND duration falls in the configured window AND we have
@@ -1810,10 +1858,12 @@ async def transcribe(
                 captured_id=captured_id,
             ))
 
-            # Mirror the same trace into the /quick-config recent-buffer so
-            # the trace panel + cb:map autocomplete have data. RAM-only,
-            # capped at 20, lost on restart. Lazy import keeps main.py
-            # decoupled at module-load time.
+            # Persist the trace to the durable recent-transcriptions store
+            # (SQLite, WAL) and broadcast it to /quick-config SSE
+            # subscribers in one step. Lazy import keeps main.py decoupled
+            # at module-load time. metrics.record_transcription() in the
+            # outer finally adds the timing half via UPSERT on the same
+            # request_id.
             try:
                 import quick_config_state
                 quick_config_state.record_trace(
@@ -1822,7 +1872,8 @@ async def transcribe(
                     raw=raw_full_text,
                     steps=trace if trace is not None else [],
                     final=full_text_str,
-                    user_id=user.get("user_id"),
+                    language=info.language,
+                    user_id=_user_id,
                 )
             except Exception as _qc_err:
                 logger.error("[quick-config] record_trace failed: %s", _qc_err)
@@ -1878,6 +1929,8 @@ async def transcribe(
             proc_dur=time.perf_counter() - _t0,
             status=_status,
             words=_words,
+            request_id=request_id,
+            user_id=_user_id,
         )
 
 

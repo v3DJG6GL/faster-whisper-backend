@@ -350,21 +350,6 @@ def get_report(rid: str) -> dict[str, Any] | None:
     return _row_to_dict(row) if row else None
 
 
-def list_reports_for_request_id(request_id: str) -> list[dict[str, Any]]:
-    """Return every report row sharing this `request_id`. Used by the
-    report-delete cascade to compute which chips other surviving reports
-    still claim — so deleting one report doesn't strip chips a sibling
-    would re-add. Snapshot is taken AFTER the delete (see
-    _delete_report_and_cascade) so no caller needs an "exclude" lever."""
-    conn = _require_conn()
-    cur = conn.execute(
-        "SELECT * FROM reports WHERE request_id = ?"
-        " ORDER BY created_ts DESC",
-        (request_id,),
-    )
-    return [_row_to_dict(r) for r in cur.fetchall()]
-
-
 def recent_reports_for_user(
     user_id: str, limit: int = 100,
 ) -> list[dict[str, Any]]:

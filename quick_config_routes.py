@@ -40,6 +40,7 @@ from pydantic import BaseModel, ValidationError
 import config as cfg
 import config_store
 import quick_config_state
+import transcriptions_store
 import web_common
 from admin_routes import (
     _apply_hot_changes,
@@ -439,26 +440,50 @@ async def get_reapply_rules_status(
     ],
 )
 async def get_recent(
+    request: Request,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """Snapshot of the recent-traces buffer. The /stream endpoint replays
-    the snapshot on connect, so most clients won't need /recent — it
-    exists as a cheap polling fallback for environments without
-    EventSource.
+    """Newest-first slice of the durable recent-transcriptions store.
+    The /stream endpoint replays the same slice on connect; /recent
+    additionally supports the "Load older" pagination cursor.
 
-    Scope-aware: `scope=own` filters the buffer to entries the caller
-    owns; `scope=all` returns the full buffer. Closes the previous leak
-    where every authenticated user saw all users' raw dictation."""
+    Query params:
+      before_ts (float, optional) — cursor: return rows STRICTLY older
+        than this created_ts. Omit / 0 to fetch the freshest slice.
+      limit (int, optional)       — clamped to cfg.RECENT_TRANSCRIPTIONS_PAGE_SIZE.
+
+    Response:
+      {recent: [...], next_before_ts: <float|null>}
+        next_before_ts is the oldest entry's created_ts when the slice
+        was fully filled (caller can re-query with that as before_ts);
+        null when this is the last batch.
+
+    Scope-aware: scope=own users see only their own rows; scope=all
+    users (admins) see every row. The username column is materialized
+    at write so the read path doesn't hit api_keys_store."""
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
-    if perms.scope("quick_config") == "all":
-        traces = list(quick_config_state.recent_traces)
-    else:
-        traces = [
-            t for t in quick_config_state.recent_traces
-            if (t or {}).get("user_id") == caller_uid
-        ]
-    return {"recent": traces}
+    sees_all = perms.scope("quick_config") == "all"
+
+    page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
+    try:
+        q_before = float(request.query_params.get("before_ts", "") or 0.0)
+    except (TypeError, ValueError):
+        q_before = 0.0
+    try:
+        q_limit = int(request.query_params.get("limit", "") or page_size)
+    except (TypeError, ValueError):
+        q_limit = page_size
+    q_limit = max(1, min(q_limit, page_size))
+
+    user_filter = None if sees_all else caller_uid
+    traces = transcriptions_store.list_recent(
+        before_ts=q_before if q_before > 0 else None,
+        limit=q_limit,
+        user_id_filter=user_filter,
+    )
+    next_before = traces[-1]["created_ts"] if len(traces) >= q_limit else None
+    return {"recent": traces, "next_before_ts": next_before}
 
 
 @router.get(
@@ -493,7 +518,15 @@ async def stream_recent(
     async def gen():
         q = quick_config_state.subscribe()
         try:
-            for entry in list(quick_config_state.recent_traces):
+            # Replay the freshest page from the durable store (oldest-
+            # first so the client receives them in chronological order,
+            # matching the prior in-memory deque iteration semantics).
+            page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
+            replay = transcriptions_store.list_recent(
+                limit=page_size,
+                user_id_filter=None if sees_all else caller_uid,
+            )
+            for entry in reversed(replay):
                 if _visible(entry):
                     yield f"event: trace\ndata: {json.dumps(entry)}\n\n"
             while True:
@@ -651,6 +684,12 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .recent-header .recent-label { font-size: var(--fs-xs); color: var(--dim);
     font-style: italic; }
   .recent-header .spacer { flex: 1; }
+  .recent-pager { display: flex; justify-content: center; padding: 0.5rem 0 1rem; }
+  .recent-pager button { background: transparent; color: var(--cyan);
+    border: 1px solid var(--border); padding: 0.4rem 0.9rem;
+    border-radius: 4px; font: inherit; cursor: pointer; }
+  .recent-pager button:hover { background: var(--panel); }
+  .recent-pager button[disabled] { opacity: 0.5; cursor: default; }
   .empty-recent { color: var(--dim); font-style: italic; padding: 1rem 0;
     font-size: var(--fs-sm); }
   .trace-item { background: var(--panel); border: 1px solid var(--border);
@@ -817,10 +856,13 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   <section id="recent-panel">
     <div class="recent-header">
       <h2>Recent transcriptions</h2>
-      <span class="recent-label" title="Held in server memory, capped at 20. Wiped on service restart. Survives page reloads.">in-memory only, max 20, cleared on service restart</span>
+      <span class="recent-label" title="Persisted in SQLite (WAL). Caps and TTL are configurable at /config.">persistent · paginated</span>
     </div>
     <div id="recent-list">
       <div class="empty-recent">No transcriptions yet — they'll appear here as you dictate.</div>
+    </div>
+    <div id="recent-pager" class="recent-pager">
+      <button type="button" id="btn-load-older" class="ghost" style="display:none;">Load older</button>
     </div>
   </section>
 </main>
@@ -1016,13 +1058,17 @@ function renderCards() {
 
 // ---------- Recent transcriptions panel + autocomplete -------------------
 //
-// SSE-driven. /quick-config/stream replays the buffer on connect (oldest
-// first) then pushes new traces as `event: trace`. EventSource auto-
-// reconnects with a 3 s backoff per the WHATWG spec — no custom retry
-// logic needed.
-const _BUFFER_MAX = 20;
+// SSE-driven for the freshest page; durable store backs the "Load older"
+// pagination cursor. /quick-config/stream replays the freshest server-
+// configured page on connect (oldest-first), then pushes new traces as
+// `event: trace`. EventSource auto-reconnects with a 3 s backoff per
+// the WHATWG spec — no custom retry logic needed. _oldestLoadedTs tracks
+// the bottom edge of the in-DOM list so "Load older" can issue a
+// before_ts cursor.
 const _MAX_DATALIST = 200;
 let _es = null;
+let _oldestLoadedTs = null;
+let _loadOlderBusy = false;
 
 function escapeHtml(s) {
   const div = document.createElement('div');
@@ -1117,7 +1163,9 @@ function renderTrace(entry) {
   const reportBtn = document.createElement('button');
   reportBtn.type = 'button';
   reportBtn.className = 'trace-report-btn';
-  reportBtn.textContent = 'Report for analysis';
+  reportBtn.textContent = 'Report a problem';
+  reportBtn.title = 'For single-word fixes, edit the pipeline rules above. '
+                  + 'Use this form for issues larger than a single word.';
   reportBtn.addEventListener('click', () => toggleReportForm(item, entry));
   actions.appendChild(reportBtn);
   const badge = document.createElement('span');
@@ -1130,7 +1178,7 @@ function renderTrace(entry) {
   return item;
 }
 
-// ---------- "Report for analysis" inline form ----------------------------
+// ---------- "Report a problem" inline form -------------------------------
 //
 // Each trace gets a lazy form: built on the first "Report" click and
 // kept in DOM thereafter. The form supports three complementary inputs:
@@ -1262,7 +1310,11 @@ function _buildReportForm(entry) {
   const form = document.createElement('div');
   form.className = 'trace-report-form';
   form.innerHTML =
-    '<div class="form-label">Mark wrong words'
+    '<div class="help rep-scope-hint">'
+    + 'For a single wrong word, prefer editing the pipeline rules above. '
+    + 'Use this report when the issue is larger than a single word.'
+    + '</div>'
+    + '<div class="form-label">Mark wrong words'
     + ' <span class="help">(click a word; shift-click another to extend'
     + ' the range; type the correction; press Enter to add another)</span>'
     + '</div>'
@@ -1586,13 +1638,8 @@ async function submitReport(form) {
     form.classList.remove('open');
     let body = {};
     try { body = await r.json(); } catch (_) {}
-    const nCaps = body.captures_updated || 0;
     const wasUpdated = !!body.was_updated;
-    let msg = wasUpdated ? 'Report updated — thank you.' : 'Report sent — thank you.';
-    if (nCaps > 0) {
-      msg += ' Applied to ' + nCaps + ' capture' + (nCaps === 1 ? '' : 's') + '.';
-    }
-    showToast(msg, 'ok');
+    showToast(wasUpdated ? 'Report updated — thank you.' : 'Report sent — thank you.', 'ok');
   } catch (e) {
     showToast('Report failed: ' + e, 'err');
   } finally {
@@ -1601,10 +1648,9 @@ async function submitReport(form) {
 }
 
 async function removeReport(form) {
-  // Withdraw the user's report for this trace. The server cascades a
-  // chip-prune to every capture sharing the request_id (subject to
-  // "don't strip what another surviving report still claims"), then
-  // we hide the badge locally so the UI feels instant.
+  // Withdraw the user's report for this trace. Reports are an
+  // independent store: removing one does NOT touch any capture's chip
+  // corrections (those are managed at /captures via batch-review).
   const entry = form._entry || {};
   const rid = entry.request_id || '';
   if (!rid) {
@@ -1636,15 +1682,7 @@ async function removeReport(form) {
     delete _serverReportedChips[rid];
     syncReportedBadges();
     form.classList.remove('open');
-    let body = {};
-    try { body = await r.json(); } catch (_) {}
-    const nCaps = body.captures_cleaned || 0;
-    let msg = 'Report removed.';
-    if (nCaps > 0) {
-      msg += ' Chips cleared from ' + nCaps
-        + ' capture' + (nCaps === 1 ? '' : 's') + '.';
-    }
-    showToast(msg, 'ok');
+    showToast('Report removed.', 'ok');
   } catch (e) {
     showToast('Remove failed: ' + e, 'err');
   } finally {
@@ -1658,18 +1696,61 @@ function pushTrace(entry) {
   const empty = list.querySelector('.empty-recent');
   if (empty) empty.remove();
   list.insertBefore(renderTrace(entry), list.firstChild);
-  // Trim to _BUFFER_MAX, but never evict an item whose report form is
-  // currently open — the user is mid-edit. Worst case the list grows
-  // a few entries beyond the server-side cap until they finish typing.
-  while (list.children.length > _BUFFER_MAX) {
-    const tail = list.lastChild;
-    if (tail && tail.querySelector &&
-        tail.querySelector('.trace-report-form.open')) {
-      break;
-    }
-    list.removeChild(tail);
+  // Server caps row count via RECENT_TRANSCRIPTIONS_MAX + TTL prune; no
+  // client-side trim. The "Load older" cursor walks back through the
+  // store from whatever the user has on screen.
+  if (_oldestLoadedTs == null || (entry.ts && entry.ts < _oldestLoadedTs)) {
+    // First SSE event after a fresh connect seeds the cursor; subsequent
+    // pushes are newer than the current bottom and don't move it.
+    if (_oldestLoadedTs == null) _oldestLoadedTs = entry.ts || null;
   }
   rebuildDatalist();
+}
+
+function appendTraceAtBottom(entry) {
+  const list = document.getElementById('recent-list');
+  if (!list) return;
+  const pager = document.getElementById('recent-pager');
+  list.insertBefore(renderTrace(entry), pager);
+}
+
+async function loadOlder() {
+  if (_loadOlderBusy) return;
+  const list = document.getElementById('recent-list');
+  const btn = document.getElementById('btn-load-older');
+  if (!list || !btn) return;
+  if (_oldestLoadedTs == null) {
+    // Bootstrap: derive cursor from the oldest .trace-item currently rendered.
+    const items = list.querySelectorAll('.trace-item');
+    if (items.length) {
+      try {
+        const data = JSON.parse(items[items.length - 1].dataset.entry || '{}');
+        _oldestLoadedTs = data.ts || null;
+      } catch (_) {}
+    }
+  }
+  if (_oldestLoadedTs == null) { btn.style.display = 'none'; return; }
+  _loadOlderBusy = true;
+  btn.disabled = true;
+  const prevLabel = btn.textContent;
+  btn.textContent = 'Loading…';
+  try {
+    const r = await api('GET',
+      '/quick-config/recent?before_ts=' + encodeURIComponent(_oldestLoadedTs));
+    if (!r.ok) { showToast('Load older failed (' + r.status + ')', 'err'); return; }
+    const j = await r.json();
+    const rows = (j && j.recent) || [];
+    for (const entry of rows) appendTraceAtBottom(entry);
+    _oldestLoadedTs = j && j.next_before_ts ? j.next_before_ts : null;
+    if (rows.length) rebuildDatalist();
+    btn.style.display = _oldestLoadedTs ? '' : 'none';
+  } catch (e) {
+    showToast('Load older failed: ' + e, 'err');
+  } finally {
+    _loadOlderBusy = false;
+    btn.disabled = false;
+    btn.textContent = prevLabel;
+  }
 }
 
 function rebuildDatalist() {
@@ -2049,11 +2130,24 @@ function doDiscard() {
 
 document.getElementById('save-btn').addEventListener('click', doSave);
 document.getElementById('discard-btn').addEventListener('click', doDiscard);
+const _loadOlderBtn = document.getElementById('btn-load-older');
+if (_loadOlderBtn) _loadOlderBtn.addEventListener('click', loadOlder);
 
 load().then(() => {
   // Only open the SSE stream after the rules state has loaded — avoids
   // racing the token prompt with the EventSource connection.
   startStream();
+  // The "Load older" affordance only makes sense once we know there's
+  // something older than the freshest page to fetch — show it after the
+  // initial SSE replay populates the cursor (deferred 1 s; the replay is
+  // synchronous after connect-open). If next_before_ts comes back null
+  // on the first click, the button hides itself again.
+  setTimeout(() => {
+    const btn = document.getElementById('btn-load-older');
+    const list = document.getElementById('recent-list');
+    if (!btn || !list) return;
+    if (list.querySelectorAll('.trace-item').length > 0) btn.style.display = '';
+  }, 1500);
 });
 })();
 </script>

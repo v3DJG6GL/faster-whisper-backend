@@ -19,6 +19,12 @@ Two surfaces:
     GET   /reports/api/export       full JSON dump (envelope-wrapped)
   Mutating routes use Depends(require_admin) — admin-only API keys.
 
+Reports are an independent store: submitting or deleting a report does
+NOT touch any capture's chip corrections. End users edit PIPELINE_RULES
+at /quick-config for single-word fixes; the captures-side merge-proposal
++ batch-review flow at /captures handles bulk corrections on stored
+training data.
+
 Per-user rate limit on submission: in-memory fixed-window counter
 keyed on the resolved user_id from the API key, falling back to
 request.client.host when no user_id is present.
@@ -155,36 +161,10 @@ async def submit_report(
         reporter_role="admin" if is_admin else "user",
         reporter_host=host,
     )
-
-    # Apply the report's corrections as visible chip corrections on
-    # every capture matching this report's request_id. The chips show
-    # up at /captures and are re-editable like any other chip — i.e.
-    # the report effectively becomes a per-capture correction, NOT a
-    # global PIPELINE_RULES change. This keeps the shared pipeline
-    # untouched (important since /quick-config is user-accessible) and
-    # the admin still gets a single-action way to "promote a report
-    # into a fix" by just clicking Submit.
-    captures_updated = 0
-    if corrections and payload.request_id:
-        import captures_store
-        import text_corrections
-        matches = captures_store.find_by_request_id(payload.request_id)
-        for cap in matches:
-            existing = cap.get("corrections") or []
-            merged = text_corrections.three_way_merge_corrections(
-                baseline=[], edited=corrections, current=existing,
-            )
-            if merged != existing:
-                captures_store.update_capture(
-                    cap["id"], {"corrections": merged},
-                )
-                captures_updated += 1
-
     return JSONResponse({
         "ok": True,
         "id": rid,
         "was_updated": was_updated,
-        "captures_updated": captures_updated,
     })
 
 
@@ -282,51 +262,6 @@ async def patch_report_api(
     return JSONResponse({"ok": True, "report": updated})
 
 
-def _delete_report_and_cascade(report: dict[str, Any]) -> int:
-    """Delete a single report row AND prune its corrections from every
-    capture that currently carries them as chips.
-
-    The prune is keyed on (idx, correct) and filters against the chips
-    that OTHER surviving reports for the same request_id still claim —
-    so if two reports both put `(idx=3, correct='Test,')` on a capture
-    and we delete one of them, the chip stays put because the other
-    report still asserts it.
-
-    Returns the count of captures whose chip list shrank. The deleted
-    report itself is gone from the DB on return."""
-    import captures_store
-
-    rid = report.get("id")
-    request_id = report.get("request_id")
-    report_chips = report.get("corrections") or []
-
-    reports_store.delete_report(rid)
-
-    # Compute "surviving" chips AFTER the delete: any concurrent submit
-    # that landed during this handler is now visible and its chips are
-    # protected from the prune. Without this re-snapshot order, a chip
-    # from a freshly-submitted report can get stripped because we
-    # snapshotted survivors before it became durable.
-    survivor_keys: set[tuple[Any, Any]] = set()
-    if request_id:
-        for other in reports_store.list_reports_for_request_id(request_id):
-            for c in (other.get("corrections") or []):
-                if isinstance(c, dict):
-                    survivor_keys.add((c.get("idx"), c.get("correct")))
-
-    prune_set = [
-        c for c in report_chips
-        if isinstance(c, dict)
-        and (c.get("idx"), c.get("correct")) not in survivor_keys
-    ]
-
-    if request_id and prune_set:
-        return captures_store.prune_chips_for_request_id(
-            request_id, prune_set,
-        )
-    return 0
-
-
 @router.delete(
     "/quick-config/reports/api/by-request/{request_id}",
     dependencies=[
@@ -340,10 +275,8 @@ async def delete_my_report_api(
 ) -> JSONResponse:
     """Delete the caller's report for a given request_id. One report
     per (user_id, request_id) is enforced by upsert_report, so this
-    targets exactly the caller's row. Cascades chip cleanup on every
-    capture sharing the request_id (filtered against surviving reports
-    from other users, so we don't strip chips someone else still
-    claims)."""
+    targets exactly the caller's row. Does NOT touch capture chips —
+    reports and captures are independent stores."""
     # find_by_request_user returns None when user_id is falsy (e.g. an
     # unauthenticated caller); the 404 path below covers both that and
     # an authenticated caller whose user_id has no matching report row.
@@ -356,8 +289,8 @@ async def delete_my_report_api(
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, "no report to delete",
         )
-    captures_cleaned = _delete_report_and_cascade(existing)
-    return JSONResponse({"ok": True, "captures_cleaned": captures_cleaned})
+    reports_store.delete_report(existing.get("id"))
+    return JSONResponse({"ok": True})
 
 
 @router.delete(
@@ -373,15 +306,15 @@ async def delete_report_api(
 ) -> JSONResponse:
     """Delete a single report. `scope=own` users can delete only their
     own; `scope=all` users (incl. admins) can delete any. Bulk wipe is
-    via /clear which stays admin-only."""
+    via /clear which stays admin-only. Does NOT touch capture chips."""
     report = reports_store.get_report(rid)
     if report is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
     user["permissions"].assert_can_read_row(
         report, "reports", user.get("user_id") or "",
     )
-    captures_cleaned = _delete_report_and_cascade(report)
-    return JSONResponse({"ok": True, "captures_cleaned": captures_cleaned})
+    reports_store.delete_report(rid)
+    return JSONResponse({"ok": True})
 
 
 @router.post(
@@ -392,31 +325,9 @@ async def delete_report_api(
     ],
 )
 async def clear_reports_api(request: Request) -> JSONResponse:
-    import captures_store
-
     host = request.client.host if request.client else ""
-    # Snapshot every report's (request_id, corrections) before the wipe
-    # so the cascade has data to act on. No survivor-subtraction needed:
-    # we're deleting EVERY report, so no other report can possibly still
-    # claim a chip.
-    all_reports = reports_store.list_reports()
-    by_req: dict[str, list[dict[str, Any]]] = {}
-    for r in all_reports:
-        req_id = r.get("request_id")
-        if not req_id:
-            continue
-        by_req.setdefault(req_id, []).extend(r.get("corrections") or [])
-
     n = reports_store.clear_all(reporter_host=host)
-
-    captures_cleaned = 0
-    for req_id, chips in by_req.items():
-        captures_cleaned += captures_store.prune_chips_for_request_id(
-            req_id, chips,
-        )
-    return JSONResponse({
-        "ok": True, "deleted": n, "captures_cleaned": captures_cleaned,
-    })
+    return JSONResponse({"ok": True, "deleted": n})
 
 
 @router.get(
