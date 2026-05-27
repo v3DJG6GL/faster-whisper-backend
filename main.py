@@ -2408,7 +2408,10 @@ def _require_logs_page_sse(request: Request) -> dict:
     Authorization, so accept `?key=<raw_key>` as a fallback. In OPEN
     mode (no admin key yet) the synthetic admin sails through; in
     locked-down mode the bearer must resolve to a user with scope(
-    "logs") != "none"."""
+    "logs") == "all" — the log file isn't user-partitionable (a single
+    request block carries every user's transcripts, filenames, and
+    final text via _format_request_block), so "own" can't be enforced
+    line-by-line and is rejected as access-only at the schema layer."""
     import api_keys_store
     if not api_keys_store.is_locked_down():
         return dict(api_keys_store.OPEN_MODE_USER)
@@ -2427,7 +2430,9 @@ def _require_logs_page_sse(request: Request) -> dict:
     perms = Permissions(
         rec.get("permissions_raw") or {}, bool(rec.get("is_admin")),
     )
-    if not perms.can("logs"):
+    # scope("logs") (not can("logs")) — defends against legacy DB rows
+    # still storing "own" from before logs joined ACCESS_ONLY_PAGES.
+    if perms.scope("logs") != "all":
         raise HTTPException(403, "no access to /logs")
     return rec
 

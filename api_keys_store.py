@@ -83,7 +83,7 @@ SCOPED_PAGES: frozenset[str] = frozenset(
 
 # Pages without a per-user notion — only none|all is meaningful.
 # (stats is server-wide aggregate metrics; "own" would be nonsensical.)
-ACCESS_ONLY_PAGES: frozenset[str] = frozenset(("stats",))
+ACCESS_ONLY_PAGES: frozenset[str] = frozenset(("stats", "logs"))
 
 # Allowed scope values per page, used by set_user_permissions() validation.
 _ALLOWED_SCOPES: dict[str, tuple[str, ...]] = {
@@ -93,10 +93,10 @@ _ALLOWED_SCOPES: dict[str, tuple[str, ...]] = {
 
 # Safe-by-default for new + existing non-admin users:
 #   per-data pages → "own" (see their own records),
-#   stats          → "none" (no leak of server health).
+#   stats / logs   → "none" (server-wide views, not user-partitionable).
 DEFAULT_NONADMIN_PERMS: dict[str, Any] = {
     "pages": {
-        "logs":         "own",
+        "logs":         "none",
         "stats":        "none",
         "quick_config": "own",
         "reports":      "own",

@@ -56,3 +56,4 @@ WhisperAPI.wrapper.log
 nssm.exe
 SIMPLIFY_NOTES.md
 CODE-REVIEW_NOTES.md
+SECURITY-REVIEW_NOTES.md
