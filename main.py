@@ -2060,8 +2060,16 @@ _LOG_VIEWER_HTML = """<!doctype html>
     font-size: var(--fs-xs); white-space: nowrap; flex-shrink: 0; }
   header .pill.live { color: var(--green); border: 1px solid #1f4d2a; }
   header .pill.paused { color: var(--yellow); border: 1px solid #4d3e1f; }
-  header input { flex: 1; background: #0d1117; color: var(--fg); border: 1px solid #30363d;
-    padding: 0.25rem 0.5rem; border-radius: 4px; font: inherit; min-width: 0; }
+  /* Filter input: flex-grow fills remaining row space, but a real min-width
+     keeps it usable when title + nav + sev pills + zoom + scale-picker +
+     pause/clear/live take up most of the row. With min-width:0 it would
+     collapse to a few px and only "fi" of the placeholder was visible.
+     The min-width is large enough that flex-wrap on the header pushes
+     the action cluster (zoom/scale/pause/clear/live) to a new row before
+     the input degenerates. */
+  header input { flex: 1 1 16rem; background: #0d1117; color: var(--fg);
+    border: 1px solid #30363d; padding: 0.25rem 0.5rem; border-radius: 4px;
+    font: inherit; min-width: 12rem; }
   header button { background: #21262d; color: var(--fg); border: 1px solid #30363d;
     padding: 0.25rem 0.625rem; border-radius: 4px; cursor: pointer; font: inherit;
     flex-shrink: 0; }
