@@ -139,10 +139,28 @@ def metrics_snapshot() -> dict[str, Any]:
         import config as cfg
         import transcriptions_store
         limit = int(getattr(cfg, "STATS_RECENT_TX_DISPLAY", 20))
-        recent = transcriptions_store.list_recent(limit=max(1, limit))
+        rows = transcriptions_store.list_recent(limit=max(1, limit))
     except Exception as e:
         logger.warning("[metrics] list_recent failed: %s", e)
-        recent = []
+        rows = []
+    # /stats is page-scoped {none, all} (no scope='own'); a non-admin
+    # holder of pages.stats='all' must not be able to read other users'
+    # transcripts via this widget. Project to the timing-only shape the
+    # /stats JS actually renders and coerce nulls to numeric defaults so
+    # `r.audio_dur.toFixed(1)` on error-path rows doesn't freeze the
+    # live view.
+    recent = [
+        {
+            "ts": r.get("ts"),
+            "model": r.get("model") or "",
+            "audio_dur": r.get("audio_dur") or 0.0,
+            "proc_dur": r.get("proc_dur") or 0.0,
+            "rtf": r.get("rtf"),
+            "words": r.get("words") or 0,
+            "status": r.get("status") or "error",
+        }
+        for r in rows
+    ]
     return {
         "uptime_sec": round(time.time() - START_TS, 1),
         "in_flight_transcriptions": in_flight_transcriptions,
