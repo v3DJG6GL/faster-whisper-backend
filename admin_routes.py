@@ -93,7 +93,9 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ("Per-model overrides", [(None, ["MODEL_OVERRIDES"])]),
     ("Pipeline", [(None, ["PIPELINE_RULES"])]),
     ("Logging", [(None, [
-        "LOG_FILE", "LOG_MAX_BYTES", "LOG_BACKUP_COUNT", "TRACE_ENABLED",
+        "LOG_FILE", "LOG_MAX_BYTES", "LOG_BACKUP_COUNT",
+        "LOG_VIEWER_INITIAL_LINES", "LOG_VIEWER_DOM_MAX",
+        "TRACE_ENABLED",
     ])]),
     ("Server (uvicorn)", [(None, [
         "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",

@@ -174,6 +174,21 @@ LOG_FILE = os.path.join(_REPO_DIR, "logs", "whisper.log")
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 10
 
+# /logs viewer tunables.
+#
+# LOG_VIEWER_INITIAL_LINES — backlog streamed to the /logs page on
+# connect. When the active whisper.log has fewer lines than this (e.g.
+# right after rotation), the reader spills into the rotated chain
+# (whisper.log.1, .2, …) until the target is reached. Upper bound
+# 100_000 caps disk + RAM cost.
+LOG_VIEWER_INITIAL_LINES = 2000
+#
+# LOG_VIEWER_DOM_MAX — max number of log lines retained in the browser
+# DOM during a live tail. 0 = auto (= LOG_VIEWER_INITIAL_LINES × 4),
+# computed at template-render time. The cap applies only to the live-
+# append path; "Load older" pagination grows the DOM beyond it.
+LOG_VIEWER_DOM_MAX = 0
+
 # Print a fancy multi-line trace block for every transcription request.
 # Disable for production / high-traffic deployments where the log volume
 # becomes problematic.
@@ -717,6 +732,10 @@ DEFAULT_PROMPT = _env_str_or_none("WHISPER_DEFAULT_PROMPT", DEFAULT_PROMPT)
 TRACE_ENABLED = _env_bool("WHISPER_TRACE", TRACE_ENABLED)
 
 LOG_FILE = _env_str_passthrough("WHISPER_LOG_FILE", LOG_FILE)
+LOG_VIEWER_INITIAL_LINES = _env_int(
+    "WHISPER_LOG_VIEWER_INITIAL_LINES", LOG_VIEWER_INITIAL_LINES)
+LOG_VIEWER_DOM_MAX = _env_int(
+    "WHISPER_LOG_VIEWER_DOM_MAX", LOG_VIEWER_DOM_MAX)
 
 ADMIN_UI_ENABLED = _env_bool("WHISPER_ADMIN_UI", ADMIN_UI_ENABLED)
 

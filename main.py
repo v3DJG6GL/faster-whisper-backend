@@ -1971,9 +1971,6 @@ async def list_models():
 import io
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-_LOG_VIEWER_INITIAL_LINES = 500
-
-
 def _read_tail(path: str, n: int) -> list[str]:
     """Return the last n lines of `path` (or fewer if the file is shorter)."""
     if not os.path.exists(path):
@@ -1993,9 +1990,72 @@ def _read_tail(path: str, n: int) -> list[str]:
     return text.splitlines()[-n:]
 
 
+def _rotated_chain(active_path: str) -> list[str]:
+    """Newest→oldest list of paths in the rotation chain: the active log
+    followed by .1, .2, … up to LOG_BACKUP_COUNT. Files that don't exist
+    are silently skipped — rotation may have produced fewer backups than
+    the configured count, and a freshly-deployed service starts with
+    just the active file."""
+    out = [active_path]
+    for i in range(1, int(getattr(cfg, "LOG_BACKUP_COUNT", 10)) + 1):
+        p = f"{active_path}.{i}"
+        if os.path.exists(p):
+            out.append(p)
+    return out
+
+
+def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[str], int | None]":
+    """Read up to `want` lines from the rotation chain (newest→oldest),
+    starting `skip` lines back from the chain head. Returns
+    (lines_oldest_first, next_skip).
+
+    next_skip is None when the chain has no more older content — either
+    we returned a partial page (fewer than `want` lines) or we exactly
+    reached the chain tail. Otherwise next_skip == skip + len(lines)
+    and the caller may re-call with that value to fetch the next
+    older window.
+
+    Walks the chain newest-file first (active log → .1 → .2 → …),
+    reading each file backward in 8 KB blocks until we've accumulated
+    `skip + want` lines across the chain. One file is held in memory
+    at a time; ~10 MB worst case for the default LOG_MAX_BYTES."""
+    target = skip + want
+    # `collected` is built in oldest→newest order: each older file's
+    # tail is prepended to the running list as we walk the chain
+    # newest→oldest. By construction the OLDEST line in the chain
+    # window we've seen so far sits at collected[0].
+    collected: list[str] = []
+    for path in _rotated_chain(active_path):
+        try:
+            with open(path, "rb") as f:
+                f.seek(0, io.SEEK_END)
+                size = f.tell()
+                block = 8192
+                data = b""
+                need = target - len(collected)
+                while size > 0 and data.count(b"\n") <= need:
+                    read = min(block, size)
+                    size -= read
+                    f.seek(size)
+                    data = f.read(read) + data
+        except OSError:
+            continue
+        collected = data.decode("utf-8", errors="replace").splitlines() + collected
+        if len(collected) >= target:
+            break
+    # Slice in newest-first frame so `skip` is unambiguous.
+    newest_first = list(reversed(collected))
+    window = newest_first[skip:skip + want]
+    exhausted = (skip + len(window)) >= len(newest_first)
+    next_skip = None if exhausted else skip + len(window)
+    return list(reversed(window)), next_skip
+
+
 async def _stream_log_lines():
     """Yield SSE events: one for each existing tail line, then live tail."""
-    for line in _read_tail(cfg.LOG_FILE, _LOG_VIEWER_INITIAL_LINES):
+    initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
+    backlog, _ = _read_chain_window(cfg.LOG_FILE, skip=0, want=initial)
+    for line in backlog:
         yield f"data: {line}\n\n"
 
     # Sentinel — marks the boundary between backlog and the live poll
@@ -2106,6 +2166,13 @@ _LOG_VIEWER_HTML = """<!doctype html>
   .log-zoom button:disabled { opacity: 0.35; cursor: not-allowed; }
   .log-zoom #log-zoom-pct { color: var(--dim); font-variant-numeric: tabular-nums;
     min-width: 2.75rem; text-align: center; }
+  #load-older-row { display: flex; justify-content: center;
+    padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+  #loadOlderBtn { background: transparent; color: var(--cyan);
+    border: 1px solid var(--border); padding: 0.375rem 1rem;
+    border-radius: 4px; font: inherit; cursor: pointer; }
+  #loadOlderBtn:hover:not([disabled]) { background: var(--panel); }
+  #loadOlderBtn[disabled] { opacity: 0.5; cursor: default; }
   .line.hidden { display: none; }
   .line.rule    { color: var(--dim); }
   .line.title   { color: var(--bold); font-weight: 600; }
@@ -2136,6 +2203,9 @@ _LOG_VIEWER_HTML = """<!doctype html>
   <button id="clearBtn">clear</button>
   <span id="status" class="pill live">live</span>
 </div></header>
+<div id="load-older-row">
+  <button id="loadOlderBtn" type="button" style="display:none;">Load older</button>
+</div>
 <div id="log"></div>
 <script>
   const log = document.getElementById('log');
@@ -2173,18 +2243,26 @@ _LOG_VIEWER_HTML = """<!doctype html>
       el.classList.remove('hidden');
     }
   }
+  // DOM cap for live-tail appends only. The "Load older" path bypasses
+  // this so the user can scroll back through arbitrarily many rotated
+  // lines without their click silently dropping the freshest content.
+  const _LOG_DOM_MAX = {{LOG_VIEWER_DOM_MAX}};
   function append(line) {
     // __LIVE_TAIL__ sentinel marks the boundary between backlog and the
-    // live poll loop; client-side severity counting was removed when
-    // pill counts moved to SEV_POLLER_JS / server-side severity_counts.
-    if (line === '__LIVE_TAIL__') return;
+    // live poll loop. After it fires we know the freshest page is in the
+    // DOM and the "Load older" button can become active.
+    if (line === '__LIVE_TAIL__') {
+      const lo = document.getElementById('loadOlderBtn');
+      if (lo) lo.style.display = '';
+      return;
+    }
     const el = document.createElement('span');
     const cls = classify(line);
     el.className = 'line ' + cls;
     el.textContent = line + '\\n';
     applyFilter(el);
     log.appendChild(el);
-    while (log.childElementCount > 5000) log.firstChild.remove();
+    while (log.childElementCount > _LOG_DOM_MAX) log.firstChild.remove();
     if (!paused) window.scrollTo(0, document.body.scrollHeight);
   }
 
@@ -2199,7 +2277,63 @@ _LOG_VIEWER_HTML = """<!doctype html>
     statusEl.className = 'pill ' + (paused ? 'paused' : 'live');
     if (!paused) window.scrollTo(0, document.body.scrollHeight);
   });
-  clearBtn.addEventListener('click', () => { log.innerHTML = ''; });
+  clearBtn.addEventListener('click', () => {
+    log.innerHTML = '';
+    // Resetting the DOM after Clear: the next live append re-fills
+    // from the bottom, but the older-chain pointer is unchanged so
+    // the user can still walk back if they want.
+  });
+
+  // "Load older" cursor: how many lines from the chain head are already
+  // in the DOM. Seeded with the initial backlog size; each successful
+  // /logs/older response bumps it by the returned-batch length.
+  let _logsSkip = {{LOG_VIEWER_INITIAL_LINES}};
+  let _logsOlderBusy = false;
+  const loadOlderBtn = document.getElementById('loadOlderBtn');
+  if (loadOlderBtn) {
+    loadOlderBtn.addEventListener('click', async () => {
+      if (_logsOlderBusy) return;
+      _logsOlderBusy = true;
+      loadOlderBtn.disabled = true;
+      const prevLabel = loadOlderBtn.textContent;
+      loadOlderBtn.textContent = 'Loading…';
+      try {
+        // _logsKey() returns "?key=<encoded>" or ""; convert to the
+        // "&key=…" suffix this URL needs since we already have a "?".
+        const keyq = _logsKey().replace(/^\\?/, '&');
+        const url = '/logs/older?skip=' + encodeURIComponent(_logsSkip)
+                  + '&limit={{LOG_VIEWER_INITIAL_LINES}}' + keyq;
+        const r = await fetch(url);
+        if (!r.ok) {
+          console.warn('load-older failed', r.status);
+          return;
+        }
+        const j = await r.json();
+        const lines = (j && j.lines) || [];
+        // Prepend to top of #log, preserving line order (oldest-first
+        // batch → first inserted ends up at the very top, last inserted
+        // sits just above the existing content). Filter is reapplied per
+        // line so the new batch honors any active substring search.
+        const frag = document.createDocumentFragment();
+        for (const line of lines) {
+          const el = document.createElement('span');
+          el.className = 'line ' + classify(line);
+          el.textContent = line + '\\n';
+          applyFilter(el);
+          frag.appendChild(el);
+        }
+        log.insertBefore(frag, log.firstChild);
+        _logsSkip += lines.length;
+        if (j.next_skip == null) loadOlderBtn.style.display = 'none';
+      } catch (e) {
+        console.warn('load-older error', e);
+      } finally {
+        _logsOlderBusy = false;
+        loadOlderBtn.disabled = false;
+        loadOlderBtn.textContent = prevLabel;
+      }
+    });
+  }
 
   // EventSource can't set Authorization headers — pass the bearer via
   // ?key=<raw> so the server-side `_require_logs_page_sse` fallback
@@ -2308,6 +2442,27 @@ async def logs_viewer():
 )
 async def logs_stream():
     return StreamingResponse(_stream_log_lines(), media_type="text/event-stream")
+
+
+@app.get(
+    "/logs/older",
+    dependencies=[Depends(_require_logs_page_sse)],
+)
+async def logs_older(skip: int = 0, limit: int = 0):
+    """Fetch the next older page from the rotation chain. `skip` is the
+    number of lines from the chain head that have already been loaded
+    into the browser DOM; `limit` defaults to LOG_VIEWER_INITIAL_LINES
+    and is server-clamped to the same value (per-click max page size).
+
+    Response: `{lines: [...], next_skip: <int|null>}`. lines are
+    oldest-first so the client can prepend them to the top of the
+    log container as a contiguous older window. next_skip=null means
+    the rotation chain is exhausted — the client hides the button."""
+    initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
+    want = max(1, min(limit or initial, initial))
+    skip = max(0, int(skip))
+    lines, next_skip = _read_chain_window(cfg.LOG_FILE, skip=skip, want=want)
+    return {"lines": lines, "next_skip": next_skip}
 
 
 @app.get("/auth/whoami")

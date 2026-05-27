@@ -1321,10 +1321,18 @@ def render_page(template: str, current: str) -> str:
                                    <span class="title"> in the header
 
     Pages that don't include a given placeholder are returned unchanged."""
+    # Resolve the /logs DOM cap: 0 in config means "auto = initial × 4".
+    # Computed here so the JS gets a final integer and doesn't need its
+    # own resolver. Per-render lookup is fine — render_page runs once
+    # per page load and the cost is two attribute reads.
+    _log_initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
+    _log_dom = int(getattr(cfg, "LOG_VIEWER_DOM_MAX", 0)) or (_log_initial * 4)
     return (
         template
         .replace("{{NAV}}", nav_html(current))
         .replace("{{NAV_CSS}}", NAV_CSS)
+        .replace("{{LOG_VIEWER_INITIAL_LINES}}", str(_log_initial))
+        .replace("{{LOG_VIEWER_DOM_MAX}}", str(_log_dom))
         .replace("{{SCALE_PICKER}}", SCALE_PICKER_HTML)
         .replace("{{SCALE_PICKER_JS}}", SCALE_PICKER_JS)
         .replace(

@@ -75,6 +75,8 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "DEVICE_INDEX": "WHISPER_DEVICE_INDEX",
     "TRACE_ENABLED": "WHISPER_TRACE",
     "LOG_FILE": "WHISPER_LOG_FILE",
+    "LOG_VIEWER_INITIAL_LINES": "WHISPER_LOG_VIEWER_INITIAL_LINES",
+    "LOG_VIEWER_DOM_MAX": "WHISPER_LOG_VIEWER_DOM_MAX",
     "ADMIN_ALLOWED_HOSTS": "WHISPER_ADMIN_ALLOWED_HOSTS",
     "STATS_ALLOWED_HOSTS": "WHISPER_STATS_ALLOWED_HOSTS",
     # Reports + captures fields — also surfaced in the AdminConfig schema and
@@ -392,6 +394,17 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "LOG_BACKUP_COUNT":
         "Number of rotated log files to retain (.1, .2, …). Older files "
         "are deleted. 0 disables rotation.",
+    "LOG_VIEWER_INITIAL_LINES":
+        "Backlog lines streamed to the /logs page on connect. When the "
+        "active log has fewer lines than this (e.g. right after rotation) "
+        "the viewer spills into the rotated chain (.1, .2, …) to fill the "
+        "backlog. Raise on chatty TRACE_ENABLED deployments where the "
+        "default leaves only a handful of requests visible.",
+    "LOG_VIEWER_DOM_MAX":
+        "Max number of log lines retained in the browser DOM during live "
+        "tail. 0 = auto (= LOG_VIEWER_INITIAL_LINES × 4). The cap applies "
+        "only to live-tail appends — \"Load older\" pagination is allowed "
+        "to grow the DOM beyond it.",
 
     # --- Server (uvicorn) ---
     "SERVER_HOST":
@@ -864,6 +877,8 @@ class AdminConfig(BaseModel):
     LOG_FILE: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("LOG_FILE")
     LOG_MAX_BYTES: Annotated[int, Field(ge=1024 * 1024, le=1024 * 1024 * 1024)] | None = _F("LOG_MAX_BYTES")
     LOG_BACKUP_COUNT: Annotated[int, Field(ge=1, le=100)] | None = _F("LOG_BACKUP_COUNT")
+    LOG_VIEWER_INITIAL_LINES: Annotated[int, Field(ge=10, le=100_000)] | None = _F("LOG_VIEWER_INITIAL_LINES")
+    LOG_VIEWER_DOM_MAX: Annotated[int, Field(ge=0, le=1_000_000)] | None = _F("LOG_VIEWER_DOM_MAX")
 
     # --- Server ---
     SERVER_HOST: Annotated[str, Field(min_length=1, max_length=64)] | None = _F("SERVER_HOST")
