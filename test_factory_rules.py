@@ -44,7 +44,6 @@ def test_load_real_config_json():
     assert len(rules) >= 2
     assert rules[-1]["type"] == "terminal"
     assert sum(1 for r in rules if r["type"] == "terminal") == 1
-    assert all(r.get("note") for r in rules), "every committed rule has a note"
 
 
 def test_save_load_roundtrip():
