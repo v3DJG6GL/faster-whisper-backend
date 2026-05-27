@@ -419,7 +419,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 // --- GridStack init: drag-to-reorder + click-to-resize tiles ---------------
 // Layout state persists in localStorage; [↺ layout] in the header clears it.
 // uPlot sparklines re-fit on resizestop via setSize().
-const GS_LAYOUT_KEY = 'whisper-stats-layout';
+const GS_LAYOUT_KEY = 'whisper-stats-layout-v2';
 const grid = GridStack.init({
   column: 12,
   // String form so cells track --fs-base (the scale picker). At 100% scale,
@@ -427,7 +427,7 @@ const grid = GridStack.init({
   // Saved layouts (column units) preserve unchanged across scale changes.
   cellHeight: '4rem',
   margin: 6,
-  float: false,
+  float: true,
   resizable: { handles: 'se,s,e' },
   draggable: { handle: '.card h3' },
   alwaysShowResizeHandle: false,
