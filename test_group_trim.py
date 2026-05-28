@@ -51,18 +51,18 @@ def _install_fake_vad(monkeypatch):
     """Inject a faster_whisper.vad whose get_speech_timestamps marks every
     contiguous non-zero run as a speech segment."""
     def get_speech_timestamps(audio, opts, sampling_rate=RATE):
-        segs = []
-        start = None
-        for i, v in enumerate(audio):
-            nz = abs(float(v)) > 1e-6
-            if nz and start is None:
-                start = i
-            elif not nz and start is not None:
-                segs.append({"start": start, "end": i})
-                start = None
-        if start is not None:
-            segs.append({"start": start, "end": len(audio)})
-        return segs
+        # Vectorized contiguous non-zero runs (kept fast for multi-second clips).
+        nz = np.abs(audio) > 1e-6
+        if not nz.any():
+            return []
+        d = np.diff(nz.astype(np.int8))
+        starts = list(np.where(d == 1)[0] + 1)
+        ends = list(np.where(d == -1)[0] + 1)
+        if nz[0]:
+            starts = [0] + starts
+        if nz[-1]:
+            ends = ends + [len(audio)]
+        return [{"start": int(s), "end": int(e)} for s, e in zip(starts, ends)]
 
     class VadOptions:
         def __init__(self, **kw):
@@ -162,6 +162,28 @@ def test_merge_trims_each_member(monkeypatch):
     assert res["members"][1]["new_duration_ms"] == 400
     # merged = 400 + 300 gap + 400 = 1100ms.
     assert res["duration_ms"] == 1100
+
+
+def test_merge_accepts_raw_over_cap_when_trimmed_fits(monkeypatch):
+    # Two members of ~15 s raw each (mostly silence) → raw sum ~30 s exceeds the
+    # 28 s cap, but each trims to ~13 s so the merged WAV (~26.5 s) fits. This is
+    # exactly the proposer/batch case that used to be rejected by the raw cap.
+    _install_fake_vad(monkeypatch)
+    m1, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
+    m2, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
+    with tempfile.TemporaryDirectory() as d:
+        p1, p2 = f"{d}/m1.wav", f"{d}/m2.wav"
+        out = f"{d}/merged.wav"
+        _write_wav(p1, m1)
+        _write_wav(p2, m2)
+        res = audio_merge.merge_wavs(
+            [p1, p2], out, gap_ms=300, trim=True,
+            edge_pad_ms=50, max_internal_gap_ms=300,
+        )
+    # Each member: 13 s speech + 2×50 ms pad = 13.1 s; merged = 13.1+0.3+13.1.
+    assert res["members"][0]["new_duration_ms"] == 13100
+    assert res["duration_ms"] == 26500
+    assert res["duration_ms"] <= 28_000
 
 
 def test_merge_trim_false_is_identity(monkeypatch):
@@ -274,7 +296,7 @@ def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path):
     P._TRIM_DUR_CACHE.clear()
 
     row = {"id": "cap1", "audio_relpath": "x", "duration_seconds": 1.0}
-    d1 = P._trimmed_duration_s(row)
+    d1 = P.trimmed_duration_s(row)
     # speech 600ms + 2×50ms pad = 700ms, well under the raw 1.0s.
     assert 0.65 <= d1 <= 0.75
 
@@ -282,7 +304,7 @@ def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path):
     def _boom(_p):
         raise AssertionError("read_pcm called on a cache hit")
     monkeypatch.setattr(audio_merge, "read_pcm", _boom)
-    assert P._trimmed_duration_s(row) == d1
+    assert P.trimmed_duration_s(row) == d1
 
 
 def test_proposer_trim_disabled_returns_raw(monkeypatch):
@@ -291,7 +313,7 @@ def test_proposer_trim_disabled_returns_raw(monkeypatch):
                         raising=False)
     P._TRIM_DUR_CACHE.clear()
     row = {"id": "c", "audio_relpath": "x", "duration_seconds": 3.5}
-    assert P._trimmed_duration_s(row) == 3.5
+    assert P.trimmed_duration_s(row) == 3.5
 
 
 def test_build_proposal_uses_trimmed_durations():

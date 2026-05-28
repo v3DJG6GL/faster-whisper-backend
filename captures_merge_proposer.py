@@ -58,11 +58,14 @@ _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _TRIM_DUR_CACHE: dict[str, tuple[float, int, int, float]] = {}
 
 
-def _trimmed_duration_s(row: dict[str, Any]) -> float:
+def trimmed_duration_s(row: dict[str, Any]) -> float:
     """Trimmed audio duration (seconds) a capture contributes to a merged
     group. Mirrors what audio_merge.merge_wavs would cut per member. Falls back
     to raw `duration_seconds` when group trimming is disabled, the audio can't
-    be read, or VAD is unavailable (matches audio_vad_trim's own fallback)."""
+    be read, or VAD is unavailable (matches audio_vad_trim's own fallback).
+
+    Public so captures_routes (merge validation + the manual merge-estimate
+    endpoint) can reuse the same cached per-capture trim as the proposer."""
     raw = float(row.get("duration_seconds") or 0.0)
     if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False):
         return raw
@@ -330,7 +333,7 @@ def propose_merges(
     # through _dur(), so a proposal's "packs to X s" reflects the real merged
     # length and fill_score targets trimmed speech, not raw audio.
     for r in eligible:
-        r["_trim_dur_s"] = _trimmed_duration_s(r)
+        r["_trim_dur_s"] = trimmed_duration_s(r)
 
     # Sort chronological ascending so session segmentation walks forward in time.
     eligible.sort(key=lambda r: float(r["created_ts"]))

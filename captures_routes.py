@@ -944,15 +944,23 @@ def _validate_merge_payload(
     member_ids: list[str],
     silence_ms: int,
     user: dict[str, Any],
+    *,
+    enforce_cap: bool = True,
 ) -> tuple[list[dict[str, Any]], str, list[str], int]:
     """Shared validation for create_group_api and the preview-audio endpoint.
 
     Validates: deduped member_ids, every capture exists, none is already in
     a group, all members belong to the same user (and the caller is either
-    that user or admin), audio files are present on disk, total duration
-    (audio + inter-segment silence) ≤ 28 s.
+    that user or admin), audio files are present on disk, and — when
+    `enforce_cap` — the TRIMMED merged duration (per-member VAD trim + inter-
+    segment silence) ≤ 28 s. The cap is measured on trimmed audio because
+    that's what the merged WAV actually is (and what the proposer packs to);
+    measuring raw would reject groups that comfortably fit after trimming.
 
-    Returns (captures, owner_user_id, member_paths, total_audio_ms) so
+    `enforce_cap=False` skips only the cap (used by the merge-estimate
+    endpoint, which needs the totals even when they exceed 28 s).
+
+    Returns (captures, owner_user_id, member_paths, total_trimmed_ms) so
     downstream callers don't re-fetch the same rows."""
     if len(member_ids) != len(set(member_ids)):
         raise HTTPException(
@@ -1002,18 +1010,22 @@ def _validate_merge_payload(
         ",".join(member_ids[:3]) + ("+" if len(member_ids) > 3 else ""),
     )
 
-    total_audio_ms = sum(
-        int(round(float(c.get("duration_seconds") or 0.0) * 1000))
+    # Cap on TRIMMED audio — what the merged WAV actually is. Reuses the
+    # proposer's cached per-capture trim so the batch flow (already warm) pays
+    # nothing here; a cold manual merge trims each member once (then cached).
+    import captures_merge_proposer
+    total_trimmed_ms = sum(
+        int(round(captures_merge_proposer.trimmed_duration_s(c) * 1000))
         for c in captures
     )
     total_gap_ms = int(silence_ms) * max(0, len(member_ids) - 1)
-    if total_audio_ms + total_gap_ms > 28_000:
+    if enforce_cap and (total_trimmed_ms + total_gap_ms) > 28_000:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"merged duration would exceed 28 s "
-            f"({(total_audio_ms + total_gap_ms) / 1000:.2f}s)",
+            f"({(total_trimmed_ms + total_gap_ms) / 1000:.2f}s)",
         )
-    return captures, owner_user_id, member_paths, total_audio_ms
+    return captures, owner_user_id, member_paths, total_trimmed_ms
 
 
 def _build_merged_wav(
@@ -1293,6 +1305,37 @@ async def preview_merge_words_api(
         "words": words,
         "corrections": _project_member_corrections(captures),
         "transcript": _build_default_transcript(captures, "space"),
+    })
+
+
+@router.post(
+    "/captures/api/groups/merge-estimate",
+    dependencies=[Depends(require_page("captures"))],
+)
+async def merge_estimate_api(
+    payload: PreviewMergeIn,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Return the raw + TRIMMED merged-duration totals for a hypothetical
+    merge so the manual-selection meter can show (and gate on) the real
+    post-trim length instead of the raw sum. Skips the 28 s cap so the UI can
+    display an over-cap value and disable Merge itself. Same ownership gates
+    as the other merge endpoints; reuses the proposer's cached per-capture
+    trim."""
+    import captures_merge_proposer
+    captures, _owner, _paths, trimmed_ms = _validate_merge_payload(
+        payload.member_ids, payload.silence_ms, user, enforce_cap=False,
+    )
+    raw_ms = sum(
+        int(round(float(c.get("duration_seconds") or 0.0) * 1000))
+        for c in captures
+    )
+    gap_ms = int(payload.silence_ms) * max(0, len(payload.member_ids) - 1)
+    return JSONResponse({
+        "raw_total_s": (raw_ms + gap_ms) / 1000.0,
+        "trimmed_total_s": (trimmed_ms + gap_ms) / 1000.0,
+        "hard_cap_s": 28.0,
+        "fits": (trimmed_ms + gap_ms) <= 28_000,
     })
 
 
@@ -3608,10 +3651,12 @@ _CAPTURES_HTML = r"""<!doctype html>
     var meter = document.getElementById('ab-meter');
     var gap_ms = 300;
     var totalWithGaps = totalSec + (gap_ms / 1000) * Math.max(0, n - 1);
-    meter.textContent = 'Σ ' + totalWithGaps.toFixed(2) + ' s / 28.00 s';
+    // Instant raw estimate (prefixed ~), refined to the trimmed total by a
+    // debounced merge-estimate fetch below. The 28 s cap is on TRIMMED audio
+    // now, so the raw sum must not hard-gate Merge — a selection that trims to
+    // ≤28 s is valid even if its raw sum is larger.
+    meter.textContent = 'Σ ~' + totalWithGaps.toFixed(2) + ' s / 28.00 s';
     meter.classList.remove('amber', 'red');
-    if (totalWithGaps > 28) meter.classList.add('red');
-    else if (totalWithGaps > 24) meter.classList.add('amber');
 
     // Warn on cross-speaker mixes — server enforces, UI nudges.
     var userIds = new Set(rows.map(function(r) { return r.user_id || ''; }));
@@ -3628,8 +3673,40 @@ _CAPTURES_HTML = r"""<!doctype html>
       warn.textContent = '';
     }
 
-    var canMerge = n >= 2 && !mixedUsers && !hasGrouped && totalWithGaps <= 28;
-    document.getElementById('ab-merge').disabled = !canMerge;
+    var baseOk = n >= 2 && !mixedUsers && !hasGrouped;
+    var mergeBtn = document.getElementById('ab-merge');
+    mergeBtn.disabled = !baseOk;
+    if (baseOk) {
+      _fetchTrimEstimate(rows.map(function(r) { return r.id; }), gap_ms,
+                         meter, mergeBtn);
+    }
+  }
+
+  // Debounced trimmed-duration estimate for the manual-selection meter. Mirrors
+  // batch mode (server computes the trimmed total via the same cached helper);
+  // here it's fetched lazily for the current selection. A token guards against
+  // out-of-order responses when the selection changes mid-flight.
+  var _meterEstimateTimer = null;
+  var _meterEstimateToken = 0;
+  function _fetchTrimEstimate(ids, gap_ms, meter, mergeBtn) {
+    if (_meterEstimateTimer) clearTimeout(_meterEstimateTimer);
+    var token = ++_meterEstimateToken;
+    _meterEstimateTimer = setTimeout(function() {
+      api('POST', '/captures/api/groups/merge-estimate',
+          { member_ids: ids, silence_ms: gap_ms })
+        .then(function(j) {
+          if (token !== _meterEstimateToken) return;  // superseded
+          var t = j.trimmed_total_s || 0;
+          meter.textContent = 'Σ ' + t.toFixed(2) + ' s / 28.00 s';
+          meter.classList.remove('amber', 'red');
+          if (!j.fits) meter.classList.add('red');
+          else if (t > 24) meter.classList.add('amber');
+          mergeBtn.disabled = !j.fits;
+        })
+        .catch(function() {
+          // Keep the raw estimate; the server still validates trimmed on merge.
+        });
+    }, 300);
   }
 
   function _clearSelection() {
@@ -4865,14 +4942,26 @@ _CAPTURES_HTML = r"""<!doctype html>
     }
     refreshTranscript();
     joinSel.onchange = refreshTranscript;
-    // Live summary
+    // Live summary — instant raw estimate (~), refined to the trimmed total
+    // (the real merged length) via the same merge-estimate endpoint the
+    // action-bar meter uses.
+    var _summaryToken = 0;
     function refreshSummary() {
       var n = rows.length;
       var totalAudio = rows.reduce(function(s, r) { return s + (r.duration_seconds || 0); }, 0);
-      var gap = (parseInt(silSel.value, 10) || 0) / 1000;
-      var total = totalAudio + gap * Math.max(0, n - 1);
-      document.getElementById('merge-summary').textContent =
-        n + ' segments · Σ ' + total.toFixed(2) + ' s / 28.00 s';
+      var gapMs = parseInt(silSel.value, 10) || 0;
+      var total = totalAudio + (gapMs / 1000) * Math.max(0, n - 1);
+      var el = document.getElementById('merge-summary');
+      el.textContent = n + ' segments · Σ ~' + total.toFixed(2) + ' s / 28.00 s';
+      var token = ++_summaryToken;
+      api('POST', '/captures/api/groups/merge-estimate',
+          { member_ids: rows.map(function(r) { return r.id; }), silence_ms: gapMs })
+        .then(function(j) {
+          if (token !== _summaryToken) return;
+          el.textContent = n + ' segments · Σ '
+            + (j.trimmed_total_s || 0).toFixed(2) + ' s / 28.00 s';
+        })
+        .catch(function() {});
     }
     refreshSummary();
     silSel.onchange = function() {
