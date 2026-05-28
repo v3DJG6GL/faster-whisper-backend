@@ -2504,66 +2504,62 @@ _CAPTURES_HTML = r"""<!doctype html>
     margin: 0; padding: 0; }
   main { max-width: 75rem; margin: 0 auto; padding: 1rem 1.25rem 4rem; }
   h2 { font-size: var(--fs-xl); margin: 0 0 0.5rem; color: var(--bold); }
-  .toolbar {
-    display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
-    margin: 0.5rem 0 0.875rem; padding: 0.5rem 0.625rem;
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 6px;
-  }
-  .toolbar label { font-size: var(--fs-sm); color: var(--help); }
-  /* Used in place of <label> when the wrapped control is a button
-     group; avoids HTML's auto-click-through to first labelable. */
-  .toolbar .filt-label, .cc-actions .cc-status-label {
+  /* The page toolbar (status/model/search filters, capture-state badge +
+     actions) now lives in the sticky header subbar — styled by NAV_CSS,
+     consistent with every other page. The proposer-action status label is
+     the only piece that keeps a page-local rule. */
+  .cc-actions .cc-status-label {
     font-size: var(--fs-sm); color: var(--help);
     display: inline-flex; align-items: center; gap: 0.35rem;
   }
-  .toolbar select, .toolbar input[type="text"] {
-    background: var(--input-bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 4px;
-    padding: 0.25rem 0.4rem; font-size: var(--fs-md);
-    font-family: var(--font-sans);
-  }
-  .toolbar input[type="text"] { min-width: 14rem; }
-  .toolbar .spacer { flex: 1; }
-  .toolbar .counts { color: var(--help); font-size: var(--fs-sm);
-    margin-right: 0.5rem; }
-  .toolbar .counts .n { color: var(--bold); font-weight: 600; }
-  .toolbar .capture-state {
-    font-size: var(--fs-sm); padding: 0.15rem 0.5rem; border-radius: 4px;
-    border: 1px solid var(--border);
-  }
-  .toolbar .capture-state.on  { color: var(--green); border-color: #2d5a37; }
-  .toolbar .capture-state.off { color: var(--dim);   border-color: var(--border); }
 
-  /* Proposer-action row — both merge-proposer entry points live here,
-     visually separated from the utility toolbar so reviewers can find
-     the fast-path workflow at a glance. */
-  .proposer-actions {
-    display: flex; gap: 0.6rem; justify-content: center;
-    padding: 0.6rem 0.75rem; margin: 0 0 0.75rem;
-    background: linear-gradient(180deg,
-      rgba(88, 166, 255, 0.08) 0%,
-      rgba(88, 166, 255, 0.03) 100%);
-    border: 1px solid rgba(88, 166, 255, 0.25);
-    border-radius: 6px;
+  /* Merge-proposer entry points (Batch review / Auto-propose) live in the
+     header's row-3 action bar. They keep a blue accent so they read as the
+     prominent fast-path workflow, distinct from the grey utility buttons
+     beside them. A single class selector (.proposer-action) already outranks
+     the centralized `header button` rule on specificity, so these win the
+     cascade wherever they sit. */
+  .proposer-action {
+    background: rgba(88, 166, 255, 0.12); color: var(--accent, #58a6ff);
+    border: 1px solid rgba(88, 166, 255, 0.5); border-radius: 4px;
+    padding: 0.3rem 0.8rem; font-size: var(--fs-md); font-weight: 600;
+    font-family: var(--font-sans); line-height: 1.3; cursor: pointer;
+    white-space: nowrap; flex-shrink: 0; transition: background 0.12s;
   }
-  .proposer-actions .proposer-action {
-    flex: 1; max-width: 24rem;
-    padding: 0.55rem 1rem;
-    font-size: var(--fs-md); font-weight: 600;
-    background: var(--panel); color: var(--accent, #58a6ff);
-    border: 1px solid var(--accent, #58a6ff);
-    border-radius: 4px; cursor: pointer;
-    transition: background 0.12s, transform 0.05s;
-  }
-  .proposer-actions .proposer-action:hover {
-    background: rgba(88, 166, 255, 0.15);
-  }
-  .proposer-actions .proposer-action:active {
-    transform: translateY(1px);
-  }
-  .proposer-actions .proposer-action:disabled {
-    opacity: 0.4; cursor: not-allowed;
+  .proposer-action:hover:not(:disabled) { background: rgba(88, 166, 255, 0.22); }
+  .proposer-action:active:not(:disabled) { transform: translateY(1px); }
+  .proposer-action:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Row-3 search sits in the MIDDLE of the action bar, growing to fill the
+     gap between the left merge buttons and the right utility cluster (so its
+     long placeholder never truncates — the reason it moved off row 2). The
+     left cluster shrinks to content width so the search, not the cluster,
+     absorbs the free space. input[type="text"] in the selector beats the
+     equal-specificity NAV_CSS rule so min-width can drop below its 10rem. */
+  header .subbar-actions .subbar-left { flex: 0 0 auto; }
+  header .subbar-actions .subbar-search { flex: 1 1 auto; min-width: 0;
+    display: inline-flex; align-items: center; gap: 0.35rem; }
+  /* The magnifier replaces the "search" label text to save horizontal space
+     so the action row stays on one line longer; the input keeps an aria-label
+     for assistive tech. Sized in em so it tracks the scale picker. */
+  header .subbar-search .search-ico { flex: 0 0 auto; width: 0.95em; height: 0.95em;
+    stroke: var(--help); fill: none; stroke-width: 2; }
+  /* Search shrinks down to a small floor (input[type="text"] in the selector
+     beats the equal-specificity NAV_CSS min-width:10rem) so the buttons keep
+     their one-line layout as the viewport narrows. */
+  header .subbar-actions .subbar-search input[type="text"] {
+    flex: 1 1 auto; min-width: 2rem; max-width: none; }
+  /* Safety net for narrow windows: once the two button clusters can no longer
+     share a line even with search at its floor, shrinking just orphans the
+     utility cluster under a stretched search. Below the breakpoint we instead
+     stack cleanly — both clusters on line 1 (merge left, utility pushed
+     right), search dropped to its own full-width line (`order:1` +
+     `flex-basis:100%`). Root font is --fs-base (15px), so 1rem = 15px.
+     Measured one-line cutoff with these labels: ~960px holds, ~940px orphans,
+     so we stack at/below 64rem (960px) — just above the orphan onset, no gap. */
+  @container hdr (max-width: 64rem) {
+    header .subbar-actions .subbar-left { flex: 1 1 auto; }
+    header .subbar-actions .subbar-search { order: 1; flex-basis: 100%; }
   }
 
   /* Radio-style status button group. Used in the toolbar filter and
@@ -3312,36 +3308,44 @@ _CAPTURES_HTML = r"""<!doctype html>
     <span class="spacer"></span>
     <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
   </div>
+  <!-- Row 2 — quick filters + indicators only (status switch, model, counts,
+       capture-state). Search lives on row 3 so its long placeholder has room
+       and this row never truncates. -->
+  <div class="subbar">
+    <span class="subbar-title">Captures</span>
+    <div class="subbar-left">
+      <span class="filt-label">status <span id="filt-status-wrap"></span></span>
+      <label>model
+        <select id="filt-model">
+          <option value="all">all</option>
+        </select>
+      </label>
+      <span class="counts" id="counts"></span>
+      <span id="capture-state" class="capture-state off">capture OFF</span>
+    </div>
+  </div>
+  <!-- Row 3 — action bar, three zones: merge-proposer entry points left (blue
+       accent, the prominent fast-path workflow), search filling the middle,
+       utility buttons right. -->
+  <div class="subbar subbar-actions">
+    <div class="subbar-left">
+      <button id="btn-batch" class="proposer-action" title="Step through proposals one at a time with keyboard / swipe shortcuts (Ctrl+← dismiss / Ctrl+→ accept / Space pause)">✨ Batch propose merges</button>
+      <button id="btn-propose" class="proposer-action" title="Suggest ranked merges into ~26 s training samples; review one at a time in a list">⚡ Propose merges</button>
+    </div>
+    <label class="subbar-search" title="search">
+      <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
+      <input id="filt-search" type="text" aria-label="search" placeholder="text in raw / final / corrected">
+    </label>
+    <div class="subbar-right">
+      <button id="btn-refresh">Refresh</button>
+      <button id="btn-reprocess-all" title="Re-run PIPELINE_RULES on every capture's raw text. Use after editing rules.">Reprocess all</button>
+      <button id="btn-export" title="Download ready captures as a tar.gz (manifest.jsonl + audio/)">Export ready</button>
+      <button id="btn-clear" class="danger" title="Permanently delete every capture">Clear all</button>
+    </div>
+  </div>
 </header>
 
 <main>
-  <div class="toolbar">
-    <span class="filt-label">status <span id="filt-status-wrap"></span></span>
-    <label>model
-      <select id="filt-model">
-        <option value="all">all</option>
-      </select>
-    </label>
-    <label>search
-      <input id="filt-search" type="text" placeholder="text in raw / final / corrected">
-    </label>
-    <span class="counts" id="counts"></span>
-    <span class="spacer"></span>
-    <span id="capture-state" class="capture-state off">capture OFF</span>
-    <button id="btn-refresh">Refresh</button>
-    <button id="btn-reprocess-all" title="Re-run PIPELINE_RULES on every capture's raw text. Use after editing rules.">Reprocess all</button>
-    <button id="btn-export" title="Download ready captures as a tar.gz (manifest.jsonl + audio/)">Export ready</button>
-    <button id="btn-clear" class="danger" title="Permanently delete every capture">Clear all</button>
-  </div>
-
-  <!-- Dedicated proposer-actions row: prominent + visually separated from
-       the utility toolbar above. Both entry points to the merge proposer
-       live here so they're easy to spot during data curation. -->
-  <div class="proposer-actions">
-    <button id="btn-propose" class="proposer-action" title="Suggest ranked merges into ~26 s training samples; review one at a time in a list">✨ Auto-propose merges</button>
-    <button id="btn-batch" class="proposer-action" title="Step through proposals one at a time with keyboard / swipe shortcuts (Ctrl+← dismiss / Ctrl+→ accept / Space pause)">⚡ Batch review merges</button>
-  </div>
-
   <div id="action-bar">
     <span class="summary"><strong id="ab-count">0</strong> selected</span>
     <span class="meter" id="ab-meter">Σ 0.00 s / 28.00 s</span>
