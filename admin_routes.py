@@ -783,25 +783,8 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
     font: 1rem/1.5 var(--font-sans);
     margin: 0; padding: 0; min-height: 100%; }
   input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
-  /* header / .header-inner / .title layout now centralized in NAV_CSS. */
-  header .pill { padding: 0.125rem 0.5rem; border-radius: 4px; background: #21262d; color: var(--dim);
-    font-size: var(--fs-xs); white-space: nowrap; flex-shrink: 0; }
-  header .pill.ok { color: var(--green); border: 1px solid #1f4d2a; }
-  header .pill.warn { color: var(--yellow); border: 1px solid #4d3e1f; }
-  header .pill.err { color: var(--red); border: 1px solid #5a2424; }
-  header button { background: #21262d; color: var(--fg); border: 1px solid var(--border);
-    padding: 0.25rem 0.625rem; border-radius: 4px; cursor: pointer; font: inherit;
-    flex-shrink: 0; }
-  header button:hover { background: #30363d; }
-  header button.primary { background: #238636; border-color: #2ea043; color: var(--bold); }
-  header button.primary:hover { background: #2ea043; }
-  /* Discard button: red-tinted "warning" feel when there are unsaved edits.
-     Disabled state inherits the generic header button:disabled (opacity 0.4). */
-  header button#discard-btn:not(:disabled) { background: #3a0d0d;
-    border-color: #5a2424; color: var(--red); }
-  header button#discard-btn:not(:disabled):hover { background: #531f1f;
-    border-color: #7d2d2d; }
-  header button:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* header / .header-inner / .title / page-toolbar controls (buttons,
+     pills, the red-tinted #discard-btn) are all centralized in NAV_CSS. */
   main { padding: 0.875rem; max-width: 68.75rem; margin: 0 auto;
     container-type: inline-size; container-name: form; }
   section { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
@@ -1342,6 +1325,7 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
       <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
     </div>
     <div class="subbar">
+      <span class="subbar-title">Configuration</span>
       <div class="subbar-right">
         <button id="restart-btn" title="restart the WhisperAPI Windows Service">restart</button>
         <button id="discard-btn" title="discard all unsaved changes" disabled>discard</button>

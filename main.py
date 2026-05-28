@@ -2124,26 +2124,8 @@ _LOG_VIEWER_HTML = """<!doctype html>
     font: 1rem/1.5 var(--font-sans);
     margin: 0; padding: 0; min-height: 100%; }
   input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
-  /* header / .header-inner / .title layout now centralized in NAV_CSS. */
-  header .pill { padding: 0.125rem 0.5rem; border-radius: 4px; background: #21262d; color: var(--dim);
-    font-size: var(--fs-xs); white-space: nowrap; flex-shrink: 0; }
-  header .pill.live { color: var(--green); border: 1px solid #1f4d2a; }
-  header .pill.paused { color: var(--yellow); border: 1px solid #4d3e1f; }
-  /* Filter input: bounded width so it stays usable on narrow rows
-     (was collapsing to "fi" when the row was tight) without ballooning
-     to fill the whole second row after a wrap (the previous fix grew
-     it to ~80rem). flex-grow=0 keeps the column to its content-width
-     baseline; min-width guarantees the placeholder fits; max-width
-     caps the width on wide viewports. Any leftover row space sits
-     between the input and the action cluster — visually clean. */
-  header input { flex: 0 1 auto; width: 24rem; background: #0d1117;
-    color: var(--fg); border: 1px solid #30363d;
-    padding: 0.25rem 0.5rem; border-radius: 4px; font: inherit;
-    min-width: 12rem; max-width: 32rem; }
-  header button { background: #21262d; color: var(--fg); border: 1px solid #30363d;
-    padding: 0.25rem 0.625rem; border-radius: 4px; cursor: pointer; font: inherit;
-    flex-shrink: 0; }
-  header button:hover { background: #30363d; }
+  /* header / .header-inner / .title / page-toolbar controls (buttons,
+     pills, the #filter input) are all centralized in NAV_CSS. */
   /* width:100% + box-sizing:border-box are the fix for the "tiny centered
      column with text clipped at the start" rendering — without them the
      container sits on a content-sized box that overflows the viewport.
@@ -2206,6 +2188,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
     <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
   </div>
   <div class="subbar">
+    <span class="subbar-title">Logs</span>
     <div class="subbar-left">
       <input id="filter" type="text" placeholder="filter (case-insensitive substring)…">
     </div>

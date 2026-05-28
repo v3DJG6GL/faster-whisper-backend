@@ -567,16 +567,8 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   html, body { background: var(--bg); color: var(--fg);
     font-family: var(--font-sans); font-size: var(--fs-base); margin: 0; }
   a { color: var(--cyan); }
-  /* header / .header-inner / .title layout now centralized in NAV_CSS. */
-  header button { background: var(--panel); border: 1px solid var(--border);
-    color: var(--fg); padding: 0.25rem 0.625rem; border-radius: 4px;
-    cursor: pointer; font: inherit; font-size: var(--fs-sm);
-    flex-shrink: 0; white-space: nowrap; }
-  header button:disabled { opacity: 0.4; cursor: not-allowed; }
-  header button.primary { color: var(--green); border-color: var(--green); }
-  header button.danger { color: var(--red); }
-  header #status { color: var(--dim); font-size: var(--fs-sm);
-    flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* header / .header-inner / .title / page-toolbar controls (buttons,
+     pills, the #status text) are all centralized in NAV_CSS. */
   main { padding: 1rem; max-width: 60rem; margin: 0 auto; }
   .card { background: var(--panel); border: 1px solid var(--border);
     border-radius: 4px; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
@@ -843,6 +835,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
     <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
   </div>
   <div class="subbar">
+    <span class="subbar-title">Quick config</span>
     <div class="subbar-right">
       <button id="discard-btn" disabled>discard</button>
       <button id="save-btn" class="primary" disabled>save</button>

@@ -395,24 +395,9 @@ _REPORTS_HTML = """<!doctype html>
     margin: 0; padding: 0; }
   main { max-width: 75rem; margin: 0 auto; padding: 1rem 1.25rem 4rem; }
   h2 { font-size: var(--fs-xl); margin: 0 0 0.5rem; color: var(--bold); }
-  .toolbar {
-    display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
-    margin: 0.5rem 0 0.875rem; padding: 0.5rem 0.625rem;
-    background: var(--panel); border: 1px solid var(--border);
-    border-radius: 6px;
-  }
-  .toolbar label { font-size: var(--fs-sm); color: var(--help); }
-  .toolbar select, .toolbar input[type="text"] {
-    background: var(--input-bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 4px;
-    padding: 0.25rem 0.4rem; font-size: var(--fs-md);
-    font-family: var(--font-sans);
-  }
-  .toolbar input[type="text"] { min-width: 16rem; }
-  .toolbar .spacer { flex: 1; }
-  .toolbar .counts { color: var(--help); font-size: var(--fs-sm);
-    margin-right: 0.5rem; }
-  .toolbar .counts .n { color: var(--bold); font-weight: 600; }
+  /* The page toolbar (status/model/search filters + actions) now lives in
+     the sticky header subbar — styled by NAV_CSS, consistent with every
+     other page. */
   button {
     background: var(--input-bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px;
@@ -636,33 +621,36 @@ _REPORTS_HTML = """<!doctype html>
     <span class="spacer"></span>
     <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
   </div>
+  <div class="subbar">
+    <span class="subbar-title">Reports</span>
+    <div class="subbar-left">
+      <label>status
+        <select id="filt-status">
+          <option value="all">all</option>
+          <option value="open" selected>open</option>
+          <option value="resolved">resolved</option>
+          <option value="dismissed">dismissed</option>
+        </select>
+      </label>
+      <label>model
+        <select id="filt-model">
+          <option value="all">all</option>
+        </select>
+      </label>
+      <label>search
+        <input id="filt-search" type="text" placeholder="text in raw / final / corrections / comment / notes">
+      </label>
+      <span class="counts" id="counts"></span>
+    </div>
+    <div class="subbar-right">
+      <button id="btn-refresh" title="Reload">Refresh</button>
+      <button id="btn-export" title="Download all reports as JSON">Export</button>
+      <button id="btn-clear" class="danger" title="Permanently delete every report">Clear all</button>
+    </div>
+  </div>
 </header>
 
 <main>
-  <div class="toolbar">
-    <label>status
-      <select id="filt-status">
-        <option value="all">all</option>
-        <option value="open" selected>open</option>
-        <option value="resolved">resolved</option>
-        <option value="dismissed">dismissed</option>
-      </select>
-    </label>
-    <label>model
-      <select id="filt-model">
-        <option value="all">all</option>
-      </select>
-    </label>
-    <label>search
-      <input id="filt-search" type="text" placeholder="text in raw / final / corrections / comment / notes">
-    </label>
-    <span class="counts" id="counts"></span>
-    <span class="spacer"></span>
-    <button id="btn-refresh" title="Reload">Refresh</button>
-    <button id="btn-export" title="Download all reports as JSON">Export</button>
-    <button id="btn-clear" class="danger" title="Permanently delete every report">Clear all</button>
-  </div>
-
   <div id="list"></div>
 </main>
 

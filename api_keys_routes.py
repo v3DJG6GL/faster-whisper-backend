@@ -457,6 +457,9 @@ _API_KEYS_HTML = r"""<!doctype html>
     <span class="spacer"></span>
     <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
   </div>
+  <div class="subbar">
+    <span class="subbar-title">API keys</span>
+  </div>
 </header>
 
 <main>

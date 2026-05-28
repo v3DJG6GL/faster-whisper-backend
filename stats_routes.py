@@ -166,15 +166,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     font: 1rem/1.5 var(--font-sans);
     margin: 0; padding: 0; min-height: 100%; }
   input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
-  /* header / .header-inner / .title layout now centralized in NAV_CSS. */
-  header .pill { padding: 0.125rem 0.5rem; border-radius: 4px; background: #21262d; color: var(--dim);
-    font-size: var(--fs-xs); white-space: nowrap; flex-shrink: 0; }
-  header .pill.live { color: var(--green); border: 1px solid #1f4d2a; }
-  header .pill.paused { color: var(--yellow); border: 1px solid #4d3e1f; }
-  header button { background: #21262d; color: var(--fg); border: 1px solid var(--border);
-    padding: 0.25rem 0.625rem; border-radius: 4px; cursor: pointer; font: inherit;
-    flex-shrink: 0; }
-  header button:hover { background: #30363d; }
+  /* header / .header-inner / .title / page-toolbar controls (buttons,
+     pills) are all centralized in NAV_CSS. */
   {{NAV_CSS}}
   .grid { padding: 0.875rem; max-width: 68.75rem; margin: 0 auto;
     box-sizing: border-box; min-height: 60vh; }
@@ -265,6 +258,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
   </div>
   <div class="subbar">
+    <span class="subbar-title">Stats</span>
     <div class="subbar-right">
       <button id="reset-layout-btn" title="reset stats tile layout to defaults">↺ layout</button>
       <span id="status" class="pill live">live</span>

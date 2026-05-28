@@ -209,6 +209,7 @@ header .scale-picker {
    `header button` / `header .pill`, which still match inside the subbar. */
 header { position: sticky; top: 0; z-index: 10;
   background: var(--panel); border-bottom: 1px solid var(--border);
+  box-shadow: 0 6px 20px -14px rgba(0,0,0,0.7);
   container-type: inline-size; container-name: hdr; }
 
 /* row 1 — global bar */
@@ -246,20 +247,81 @@ header .icon-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset:
    author rule must beat `.icon-btn { display:inline-flex }` for [hidden]. */
 header .auth-action[hidden] { display: none; }
 
-/* row 2 — page subbar (inset tray, darker than the global bar) */
+/* row 2 — page toolbar. Shares the global bar's --panel surface so the
+   whole header reads as ONE cohesive slab; a single internal hairline
+   divides the two tiers. The page title anchors the left edge so the
+   action cluster never floats alone over the page background (the old
+   `background: var(--bg)` made this row the same colour as the page, so
+   it looked like buttons stuck to a transparent strip). */
 header .subbar { display: flex; align-items: center; gap: 0.6rem;
   flex-wrap: wrap; row-gap: 0.4rem;
   max-width: 68.75rem; margin: 0 auto; width: 100%;
-  padding: 0.5rem 1rem; box-sizing: border-box;
-  background: var(--bg); border-top: 1px solid var(--border); }
+  padding: 0.45rem 1rem; box-sizing: border-box;
+  border-top: 1px solid var(--border); }
+/* page title — fills the left, with a small green tick echoing the brand
+   separator so the toolbar feels designed rather than empty-on-the-left. */
+header .subbar-title { flex: 0 0 auto; display: inline-flex; align-items: center;
+  gap: 0.5rem; font: 600 var(--fs-md)/1.2 var(--font-sans); color: var(--bold);
+  white-space: nowrap; }
+header .subbar-title::before { content: ""; flex: 0 0 auto;
+  width: 3px; height: 0.95em; border-radius: 2px; background: var(--green); }
 header .subbar-left  { display: flex; align-items: center; gap: 0.5rem;
-  flex: 1 1 auto; min-width: 0; }
+  flex: 1 1 auto; min-width: 0; flex-wrap: wrap; row-gap: 0.4rem; }
 header .subbar-right { display: flex; align-items: center; gap: 0.5rem;
   flex: 0 0 auto; margin-left: auto; flex-wrap: wrap; row-gap: 0.4rem;
   justify-content: flex-end; }
+/* When a filter group (.subbar-left) is present it grows to push the action
+   cluster to the right edge on its own, so `margin-left:auto` is not needed —
+   and dropping it means that when the actions can't fit and wrap to a second
+   line, they align under the title on the LEFT instead of floating at the
+   bottom-right with an empty diagonal above them. */
+header .subbar-left ~ .subbar-right { margin-left: 0; }
 header .subbar #filter { flex: 1 1 auto; min-width: 8rem; max-width: 32rem; }
 header .subbar .sep { align-self: stretch; width: 1px; background: var(--border);
   margin: 0.1rem 0.15rem; }
+
+/* Canonical page-toolbar controls. Every page renders identical buttons,
+   pills and filter inputs inside the header; page-local CSS no longer
+   redefines `header button` / `header .pill` (they used to drift — e.g.
+   /quick-config shrank its buttons to --fs-sm), so the toolbar now matches
+   across all pages. This block is injected after each page's own <style>,
+   so these rules win the cascade on equal specificity. */
+header button { background: #21262d; color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.3rem 0.7rem; font: inherit; font-size: var(--fs-md);
+  line-height: 1.3; cursor: pointer; white-space: nowrap; flex-shrink: 0; }
+header button:hover:not(:disabled) { background: #30363d; color: var(--bold); }
+header button:disabled { opacity: 0.4; cursor: not-allowed; }
+header button.primary { background: #238636; border-color: #2ea043; color: var(--bold); }
+header button.primary:hover:not(:disabled) { background: #2ea043; }
+header button.danger:not(:disabled) { color: var(--red); border-color: #5a2424; }
+header button.danger:not(:disabled):hover { background: #3a0d0d; border-color: #7d2d2d; }
+header button#discard-btn:not(:disabled) { background: #3a0d0d;
+  border-color: #5a2424; color: var(--red); }
+header button#discard-btn:not(:disabled):hover { background: #531f1f; border-color: #7d2d2d; }
+header .pill { padding: 0.125rem 0.5rem; border-radius: 4px; background: #21262d;
+  color: var(--dim); font-size: var(--fs-xs); white-space: nowrap; flex-shrink: 0; }
+header .pill.live, header .pill.ok     { color: var(--green);  border: 1px solid #1f4d2a; }
+header .pill.paused, header .pill.warn { color: var(--yellow); border: 1px solid #4d3e1f; }
+header .pill.err { color: var(--red); border: 1px solid #5a2424; }
+header .subbar #status:not(.pill) { color: var(--dim); font-size: var(--fs-sm);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+header .subbar label { display: inline-flex; align-items: center; gap: 0.3rem;
+  font-size: var(--fs-sm); color: var(--help); white-space: nowrap; }
+header .subbar select, header .subbar input[type="text"] {
+  background: var(--input-bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.25rem 0.4rem; font: inherit; font-size: var(--fs-sm);
+  font-family: var(--font-sans); }
+header .subbar input[type="text"] { min-width: 10rem; }
+header .subbar .counts { color: var(--help); font-size: var(--fs-sm); white-space: nowrap; }
+header .subbar .counts .n { color: var(--bold); font-weight: 600; }
+header .subbar .capture-state { font-size: var(--fs-sm);
+  padding: 0.15rem 0.5rem; border-radius: 4px; border: 1px solid var(--border); }
+header .subbar .capture-state.on  { color: var(--green); border-color: #2d5a37; }
+header .subbar .capture-state.off { color: var(--dim);   border-color: var(--border); }
+header .subbar .filt-label { display: inline-flex; align-items: center; gap: 0.35rem;
+  font-size: var(--fs-sm); color: var(--help); white-space: nowrap; }
 
 /* responsive: shed the sevpill word labels, then tighten nav + drop divider */
 @container hdr (max-width: 60rem) {
