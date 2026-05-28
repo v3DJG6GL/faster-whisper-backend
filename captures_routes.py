@@ -2561,6 +2561,10 @@ _CAPTURES_HTML = r"""<!doctype html>
     header .subbar-actions .subbar-left { flex: 1 1 auto; }
     header .subbar-actions .subbar-search { order: 1; flex-basis: 100%; }
   }
+  /* Counts get their own line below the status/model/capture-state row: the
+     live string ("667 new · 0 reviewed · 5 ready · 0 dismissed") is long and
+     would otherwise push the capture-state badge to wrap on its own. */
+  header .subbar #counts { flex-basis: 100%; }
 
   /* Radio-style status button group. Used in the toolbar filter and
      in the per-row + per-group action rows. Replaces the previous
@@ -3320,9 +3324,9 @@ _CAPTURES_HTML = r"""<!doctype html>
           <option value="all">all</option>
         </select>
       </label>
-      <span class="counts" id="counts"></span>
       <span id="capture-state" class="capture-state off">capture OFF</span>
     </div>
+    <span class="counts" id="counts"></span>
   </div>
   <!-- Row 3 — action bar, three zones: merge-proposer entry points left (blue
        accent, the prominent fast-path workflow), search filling the middle,

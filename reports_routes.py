@@ -397,7 +397,10 @@ _REPORTS_HTML = """<!doctype html>
   h2 { font-size: var(--fs-xl); margin: 0 0 0.5rem; color: var(--bold); }
   /* The page toolbar (status/model/search filters + actions) now lives in
      the sticky header subbar — styled by NAV_CSS, consistent with every
-     other page. */
+     other page. Counts ("12 open · 0 resolved · 0 dismissed") sit on their
+     own full-width line below the filter/action row so they don't push the
+     action buttons to wrap. */
+  header .subbar #counts { flex-basis: 100%; }
   button {
     background: var(--input-bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px;
@@ -640,13 +643,13 @@ _REPORTS_HTML = """<!doctype html>
       <label>search
         <input id="filt-search" type="text" placeholder="text in raw / final / corrections / comment / notes">
       </label>
-      <span class="counts" id="counts"></span>
     </div>
     <div class="subbar-right">
       <button id="btn-refresh" title="Reload">Refresh</button>
       <button id="btn-export" title="Download all reports as JSON">Export</button>
       <button id="btn-clear" class="danger" title="Permanently delete every report">Clear all</button>
     </div>
+    <span class="counts" id="counts"></span>
   </div>
 </header>
 
