@@ -1861,7 +1861,37 @@ def _emit_member_words(
             entry["raw_word"] = w["raw_word"]
         if w.get("removed"):
             entry["removed"] = True
+        # Training-text token for this raw word (CAPTURES_PIPELINE_RULES_EXCLUDE
+        # respected). The Corrections strip shows `word` (runtime `final`); the
+        # Final-result karaoke uses `train_word` so it matches what the export
+        # emits. Absent when training text == final (no excluded rule differs).
+        if w.get("train_word") is not None:
+            entry["train_word"] = w["train_word"]
+            if w.get("train_removed"):
+                entry["train_removed"] = True
         merged.append(entry)
+
+
+def _align_member_words(m: dict[str, Any]) -> list[dict[str, Any]]:
+    """Align a member's raw words to its runtime `final` (for the Corrections
+    strip), and — when the training text differs (CAPTURES_PIPELINE_RULES_EXCLUDE
+    drops some rules) — also align to `text_for_training` and attach the
+    per-word `train_word`/`train_removed`. One entry per raw word, so both
+    alignments are index-parallel and chip word-indices stay valid."""
+    words = m.get("words") or []
+    final = m.get("final") or ""
+    training = m.get("text_for_training") or final
+    ws = _align_words_to_final(words, final, model_name=m.get("model"))
+    if training != final:
+        wt = _align_words_to_final(words, training, model_name=m.get("model"))
+        for i, w in enumerate(ws):
+            tw = wt[i] if i < len(wt) else None
+            if tw is None:
+                continue
+            w["train_word"] = tw.get("word") or ""
+            if tw.get("removed"):
+                w["train_removed"] = True
+    return ws
 
 
 def _build_merged_words(
@@ -1926,10 +1956,7 @@ def _build_merged_words(
                 segments = [[0, int(dur_ms), 0]]
                 new_dur_ms = dur_ms
             member_offset_s = cum_ms / 1000.0 + i * silence_s
-            ws = _align_words_to_final(
-                m.get("words") or [], m.get("final") or "",
-                model_name=m.get("model"),
-            )
+            ws = _align_member_words(m)
             _emit_member_words(
                 merged, ws, i=i, member_offset_s=member_offset_s,
                 eff_dur_s=eff_dur_s, segments=segments,
@@ -1942,10 +1969,7 @@ def _build_merged_words(
     cum = 0.0
     for i, m in enumerate(members):
         member_offset_s = cum + i * silence_s - lead_s
-        ws = _align_words_to_final(
-            m.get("words") or [], m.get("final") or "",
-            model_name=m.get("model"),
-        )
+        ws = _align_member_words(m)
         _emit_member_words(
             merged, ws, i=i, member_offset_s=member_offset_s,
             eff_dur_s=eff_dur_s, segments=None,
@@ -4514,8 +4538,13 @@ _CAPTURES_HTML = r"""<!doctype html>
         continue;
       }
       var w = words[i];
-      if (w && w.removed) { state.wordToGround[i] = null; i++; continue; }
-      var txt = ((w && w.word) || '').trim();
+      // Prefer the training-text token (CAPTURES_PIPELINE_RULES_EXCLUDE
+      // respected) so the Final result matches the export; fall back to the
+      // runtime `word` when no distinct training token was attached.
+      var hasTrain = (w && w.train_word !== undefined);
+      var removed = hasTrain ? !!w.train_removed : !!(w && w.removed);
+      if (removed) { state.wordToGround[i] = null; i++; continue; }
+      var txt = (hasTrain ? (w.train_word || '') : ((w && w.word) || '')).trim();
       if (!txt) { state.wordToGround[i] = null; i++; continue; }
       var sp2 = document.createElement('span');
       sp2.className = 'word';
@@ -4980,7 +5009,11 @@ _CAPTURES_HTML = r"""<!doctype html>
         var totalAudio = rows.reduce(function(s, r) { return s + (r.duration_seconds || 0); }, 0);
         var gap = (parseInt(silSel.value, 10) || 0) / 1000;
         return totalAudio + gap * Math.max(0, rows.length - 1);
-      }
+      },
+      // Render the karaoke Final result into the modal's prominent
+      // #merge-transcript box (no duplicate in-panel Final result), so it
+      // highlights word-by-word on playback like the batch view.
+      { groundEl: document.getElementById('merge-transcript') }
     );
     slot.appendChild(previewCtl.toggleBtn);
     if (panelHost) panelHost.appendChild(previewCtl.panel);
@@ -5440,7 +5473,14 @@ _CAPTURES_HTML = r"""<!doctype html>
   }
 
   // Returns { toggleBtn, panel } — caller appends each to its own host.
-  function _makeMergePreviewBtn(memberIdsFn, silenceMsFn, durationFn) {
+  // opts.groundEl (optional): render the karaoke Final result into this
+  // external element instead of a Final-result section inside the panel. The
+  // manual merge modal passes its #merge-transcript so that prominent box
+  // karaokes (no duplicate Final result); batch/proposal cards omit it and get
+  // the in-panel Final result.
+  function _makeMergePreviewBtn(memberIdsFn, silenceMsFn, durationFn, opts) {
+    opts = opts || {};
+    var externalGround = opts.groundEl || null;
     var toggleBtn = document.createElement('button');
     toggleBtn.type = 'button';
     toggleBtn.className = 'merge-preview-btn';
@@ -5505,20 +5545,27 @@ _CAPTURES_HTML = r"""<!doctype html>
     chipBox.className = 'cc-corrections';
     corrSec.appendChild(chipBox);
 
-    var gtSec = document.createElement('div');
-    gtSec.className = 'cc-section merge-preview-cc';
-    gtSec.innerHTML = '<h3>Final result</h3>'
-      + '<div class="help">Computed from members\' post-processing text + '
-      + 'word corrections. To change it, edit chips above.</div>';
-    var gtArea = document.createElement('div');
-    gtArea.className = 'cc-ground';
-    gtArea.setAttribute('role', 'textbox');
-    gtArea.setAttribute('aria-readonly', 'true');
-    gtSec.appendChild(gtArea);
+    // Final result: an external element (manual modal's #merge-transcript) or
+    // an in-panel section (batch/proposal cards).
+    var gtArea;
+    if (externalGround) {
+      gtArea = externalGround;
+    } else {
+      var gtSec = document.createElement('div');
+      gtSec.className = 'cc-section merge-preview-cc';
+      gtSec.innerHTML = '<h3>Final result</h3>'
+        + '<div class="help">Computed from members\' post-processing text + '
+        + 'word corrections. To change it, edit chips above.</div>';
+      gtArea = document.createElement('div');
+      gtArea.className = 'cc-ground';
+      gtArea.setAttribute('role', 'textbox');
+      gtArea.setAttribute('aria-readonly', 'true');
+      gtSec.appendChild(gtArea);
+    }
 
     panel.appendChild(controls);
     panel.appendChild(corrSec);
-    panel.appendChild(gtSec);
+    if (!externalGround) panel.appendChild(gtSec);
 
     panel._toggleBtn = toggleBtn;
     panel._scrub = scrub;

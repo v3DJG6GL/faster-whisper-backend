@@ -255,6 +255,38 @@ def test_build_merged_words_per_member(monkeypatch):
     assert out[1]["member_idx"] == 1
 
 
+def test_align_member_words_attaches_training_tokens(monkeypatch):
+    cr = _routes()
+
+    # Fake aligner: one item per raw word, display token = target token by index.
+    def fake_align(words, final, model_name=None):
+        toks = (final or "").split()
+        return [
+            {"word": toks[i] if i < len(toks) else "",
+             "start": w.get("start"), "end": w.get("end")}
+            for i, w in enumerate(words)
+        ]
+    monkeypatch.setattr(cr, "_align_words_to_final", fake_align)
+
+    # final applies dictation-map ("Komma"→"Komma"); training excludes it.
+    m = {
+        "words": [{"start": 0, "end": 1}, {"start": 1, "end": 2}],
+        "final": "Komma World", "text_for_training": "comma world", "model": None,
+    }
+    ws = cr._align_member_words(m)
+    assert ws[0]["word"] == "Komma"
+    assert ws[0]["train_word"] == "comma"
+    assert ws[1]["word"] == "World"
+    assert ws[1]["train_word"] == "world"
+
+    # When training == final, no separate train token is attached (ground falls
+    # back to `word`).
+    m2 = {"words": [{"start": 0, "end": 1}], "final": "hi",
+          "text_for_training": "hi", "model": None}
+    ws2 = cr._align_member_words(m2)
+    assert "train_word" not in ws2[0]
+
+
 def test_build_merged_words_legacy(monkeypatch):
     cr = _routes()
     monkeypatch.setattr(
