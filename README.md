@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="static/logo.svg" alt="faster-whisper-backend logo" width="88" height="88">
+</p>
+
 # faster-whisper-backend
 
 Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) API with Swiss-German (CH-DE) dictation post-processing. Exposes an **OpenAI-compatible** `/v1/audio/transcriptions` endpoint for use with [vowen.ai](https://vowen.ai) and other Whisper clients.
@@ -207,6 +211,18 @@ Other layers:
 
 Edits land in **`config.local.json`** at the repo root (gitignored). See `config.local.example.json` for the schema. The one exception is the Pipeline section's **promote** action, which writes the committed **`config.json`** instead (see [Post-processing pipeline](#post-processing-pipeline)).
 
+## Brand
+
+The mark is an **audio waveform skewed forward** — *whisper* (the equalizer bars) meets *faster* (the rightward lean reads as motion / fast-forward) — on a rounded terminal-dark tile. The wordmark is a monospace lockup, `faster` (dim) + `whisper` (bold), with a green `>` prompt marking this as the **backend** service, distinct from the upstream [faster-whisper](https://github.com/SYSTRAN/faster-whisper) library it wraps.
+
+The palette mirrors the WebUI's GitHub-dark theme — cyan `#79c0ff` → green `#7ee787` on `#0d1117`, monospace wordmark. The same mark is the favicon and sits in the sticky header of every admin page. Assets live in `static/`:
+
+| File | Use |
+| --- | --- |
+| `logo.svg` | full icon mark (scalable) |
+| `favicon.svg` | simplified 3-bar mark for small sizes |
+| `favicon.ico`, `favicon-16.png`, `favicon-32.png`, `apple-touch-icon.png` | raster fallbacks (Safari / legacy) |
+
 ## Files
 
 ```
@@ -235,7 +251,7 @@ test.py                    Manual test client (vowen.ai compatibility)
 install-service.ps1        Windows Service installer (WinSW-based, self-elevating, auto-bootstraps venv)
 uninstall-service.ps1      Service uninstaller
 requirements.txt           Direct deps; transitive resolved by pip
-static/                    Vendored uPlot release (offline /stats sparklines)
+static/                    Brand assets (logo.svg, favicon.*) + vendored uPlot/GridStack (offline /stats)
 .gitignore
 logs/                      Created at first run; rotates at 10 MB × 10 files
 ```
