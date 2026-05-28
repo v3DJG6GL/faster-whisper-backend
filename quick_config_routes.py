@@ -31,6 +31,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -322,6 +323,21 @@ async def post_state(
             if current_fp != client_fp:
                 conflicts.append({"slug": slug, "current_fp": current_fp})
                 continue
+        # Server-owned map_meta: stamp added/value-changed cb:map entries with
+        # the current epoch (added-or-last-updated), drop meta for removed keys.
+        # Done here — after the conflict check, before the overlay — so the
+        # client can't forge timestamps and the fingerprint above still compared
+        # against the shape /state served. The mutation lands on `target` (an
+        # element of current_rules) and so reaches save_overrides below.
+        if rtype == "callback:map" and "map" in patch:
+            old_map = target.get("map") or {}
+            new_map = patch["map"] or {}
+            meta = dict(target.get("map_meta") or {})
+            now = int(time.time())
+            for k, v in new_map.items():
+                if k not in old_map or old_map[k] != v:
+                    meta[k] = now
+            target["map_meta"] = {k: meta[k] for k in new_map if k in meta}
         target.update(patch)
         saved.append(slug)
 
@@ -602,6 +618,22 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .card .rule-editor textarea { width: 100%; resize: vertical; }
   .card .rule-editor .map-table { width: 100%; }
   .card .rule-editor .map-table input { width: 100%; }
+  /* Inline "added / last-updated" date column (last cell). Dim + mono, fixed
+     width so the key/value inputs keep their space. */
+  .card .rule-editor .map-table td.map-date-cell {
+    width: 11rem; padding-left: 0.4rem; text-align: right;
+    white-space: nowrap; vertical-align: middle; }
+  .card .rule-editor .map-date {
+    color: var(--dim); font-size: var(--fs-xs); font-family: var(--font-mono); }
+  /* Collapse the oldest entries behind the toggle. _readMap still reads them
+     (display:none keeps them in the DOM). */
+  .card .rule-editor .map-table:not(.show-all) tr.map-row-collapsed {
+    display: none; }
+  .card .rule-editor button.map-toggle {
+    align-self: flex-start; background: none; border: none; padding: 0.2rem 0;
+    color: var(--dim); font-size: var(--fs-sm); cursor: pointer; }
+  .card .rule-editor button.map-toggle:hover:not(:disabled) {
+    background: none; color: var(--cyan); }
   .card .rule-editor button { background: var(--panel);
     border: 1px solid var(--border); color: var(--fg);
     padding: 0.4rem 0.9rem; border-radius: 3px; cursor: pointer;
@@ -1050,6 +1082,8 @@ function renderCards() {
       datalistId: 'recent-words',
       makeSaveBtn: () => _buildPerCardSaveBtn(slug),
       commitOnEnter: doSave,
+      showMapDates: true,
+      collapseMapAfter: 15,
     });
     card.appendChild(editor);
 
@@ -2133,6 +2167,10 @@ document.getElementById('save-btn').addEventListener('click', doSave);
 document.getElementById('discard-btn').addEventListener('click', doDiscard);
 const _loadOlderBtn = document.getElementById('btn-load-older');
 if (_loadOlderBtn) _loadOlderBtn.addEventListener('click', loadOlder);
+
+// Keep cb:map entry dates fresh: timeTick re-queries [data-ts] every tick, so
+// it also picks up rows created by later renderCards() calls.
+timeTick('.map-date[data-ts]');
 
 load().then(() => {
   // Only open the SSE stream after the rules state has loaded — avoids

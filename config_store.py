@@ -672,6 +672,18 @@ class MapRule(_RuleBase):
                              pattern=r"^[\w \-.,!?ßẞÄÖÜäöü]{1,64}$")],
         Annotated[str, Field(max_length=64)],
     ] = Field(default_factory=dict, max_length=500)
+    # Server-owned: epoch seconds per `map` key, set when an entry is added or
+    # its value last changed (see quick_config_routes.post_state). Never written
+    # by the client — drives newest-first ordering + the inline date column on
+    # /quick-config. Keys not present in `map` are dropped by the validator so
+    # the two stay consistent even when an admin edits the map via /config.
+    map_meta: dict[str, int] = Field(default_factory=dict, max_length=500)
+
+    @field_validator("map_meta", mode="after")
+    @classmethod
+    def _prune_map_meta(cls, v: dict[str, int], info: Any) -> dict[str, int]:
+        keys = info.data.get("map") or {}
+        return {k: ts for k, ts in v.items() if k in keys}
 
 
 class DedupRule(_RuleBase):

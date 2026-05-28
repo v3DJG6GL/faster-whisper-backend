@@ -1164,7 +1164,7 @@ function _makeMonoLabeledInput(label, val, onInput, onEnter) {
   return wrap;
 }
 
-function _makeMapRow(rule, key, val, commitData, datalistId, onEnter) {
+function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDate) {
   const tr = document.createElement('tr');
   const td1 = document.createElement('td');
   const td2 = document.createElement('td');
@@ -1212,6 +1212,25 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter) {
   });
   td1.appendChild(ki); td2.appendChild(vi); td3.appendChild(del);
   tr.appendChild(td1); tr.appendChild(td2); tr.appendChild(td3);
+  // Inline "added / last-updated" date, /quick-config only (showDate). Appended
+  // LAST so the td:first-child / td:nth-child(2) selectors _readMap uses to
+  // locate the key/value inputs are unaffected. New rows (no ts yet) show "—"
+  // until the next server save stamps map_meta.
+  if (showDate) {
+    const td4 = document.createElement('td');
+    td4.className = 'map-date-cell';
+    const span = document.createElement('span');
+    span.className = 'map-date';
+    if (ts) {
+      span.setAttribute('data-ts', String(ts));
+      span.textContent = fmtWhen(ts);
+      span.title = absTime(ts);
+    } else {
+      span.textContent = '—';
+    }
+    td4.appendChild(span);
+    tr.appendChild(td4);
+  }
   return tr;
 }
 
@@ -1314,11 +1333,45 @@ function renderTypeEditor(rule, commitData, opts) {
     note.textContent = 'Pattern auto-built from map keys (longest-first, '
       + 'word-bounded, case-insensitive). Edit entries below.';
     box.appendChild(note);
+    const showDate = !!opts.showMapDates;
+    const meta = rule.map_meta || {};
     const tbl = document.createElement('table');
     tbl.className = 'map-table';
     tbl.style.width = '100%';
-    const rows = Object.entries(rule.map || {});
-    rows.forEach(([k, v]) => tbl.appendChild(_makeMapRow(rule, k, v, commitData, opts.datalistId, onEnter)));
+    // Order by map_meta (added / last-updated), oldest first → newest last, so
+    // the freshest entries sit next to the "+ add entry" bar. Un-stamped keys
+    // (factory entries never edited here) sort as oldest, then alphabetically.
+    const rows = Object.entries(rule.map || {}).sort((a, b) => {
+      const ta = meta[a[0]] || 0, tb = meta[b[0]] || 0;
+      if (ta !== tb) return ta - tb;
+      return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0);
+    });
+    const collapseAfter = opts.collapseMapAfter || 0;
+    const hiddenCount = (collapseAfter && rows.length > collapseAfter)
+      ? rows.length - collapseAfter : 0;
+    // Toggle for the older (collapsed) head — only when there's an overflow.
+    if (hiddenCount) {
+      const toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.className = 'map-toggle';
+      let shown = false;
+      const paint = () => {
+        tbl.classList.toggle('show-all', shown);
+        toggle.textContent = shown
+          ? '▾ Hide ' + hiddenCount + ' older'
+          : '▸ Show ' + hiddenCount + ' older mapping' + (hiddenCount === 1 ? '' : 's');
+      };
+      toggle.addEventListener('click', () => { shown = !shown; paint(); });
+      paint();
+      box.appendChild(toggle);
+    }
+    rows.forEach(([k, v], i) => {
+      const tr = _makeMapRow(rule, k, v, commitData, opts.datalistId, onEnter, meta[k] || 0, showDate);
+      // Hide the oldest `hiddenCount` rows behind the toggle (CSS display:none,
+      // so _readMap still reads every row when building the patch).
+      if (i < hiddenCount) tr.classList.add('map-row-collapsed');
+      tbl.appendChild(tr);
+    });
     box.appendChild(tbl);
     const addBtn = document.createElement('button');
     addBtn.type = 'button';
@@ -1334,7 +1387,7 @@ function renderTypeEditor(rule, commitData, opts) {
       // input's rebuild listener (an empty row contributes nothing
       // to the saved dict).
       if (!rule.map) rule.map = {};
-      const newTr = _makeMapRow(rule, '', '', commitData, opts.datalistId, onEnter);
+      const newTr = _makeMapRow(rule, '', '', commitData, opts.datalistId, onEnter, 0, opts.showMapDates);
       tbl.appendChild(newTr);
       // Focus + open the autocomplete dropdown immediately so the user
       // sees recent-transcription candidates without a second click.

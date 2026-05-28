@@ -2704,11 +2704,15 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     return o;
   }
   // Content equality ignoring the vestigial `seeded` flag (config.json is
-  // always seeded:true; a local-only rule is seeded:false — not a real diff).
+  // always seeded:true; a local-only rule is seeded:false — not a real diff)
+  // and the server-owned `map_meta` timestamps (present on disk once a cb:map
+  // entry is touched via /quick-config, absent from the config.json baseline —
+  // not a functional diff, so it must not flip the origin badge to 'edited').
   function _ruleContentEqual(a, b) {
     const strip = (r) => {
       const c = Object.assign({}, r);
       delete c.seeded;
+      delete c.map_meta;
       return _sortDeep(c);
     };
     return JSON.stringify(strip(a)) === JSON.stringify(strip(b));

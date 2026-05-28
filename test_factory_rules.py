@@ -31,6 +31,15 @@ def _terminal():
     return {"name": "trim-edges", "label": "Trim edges", "type": "terminal"}
 
 
+def _map_rule(name, mapping=None, map_meta=None, **kw):
+    r = {"name": name, "label": name, "type": "callback:map",
+         "map": mapping if mapping is not None else {"foo": "=>"}}
+    if map_meta is not None:
+        r["map_meta"] = map_meta
+    r.update(kw)
+    return r
+
+
 def _tmp_path():
     fd, path = tempfile.mkstemp(suffix=".json")
     os.close(fd)
@@ -100,6 +109,33 @@ def test_save_normalizes_seeded():
     finally:
         if os.path.exists(path):
             os.unlink(path)
+
+
+def test_map_meta_round_trips():
+    """The server-owned `map_meta` timestamps survive a save/load cycle."""
+    path = _tmp_path()
+    try:
+        meta = {"foo": 1700000000, "bar": 1700000123}
+        rule = _map_rule("words", mapping={"foo": "=>", "bar": "->"}, map_meta=meta)
+        cs.save_factory_rules([rule, _terminal()], path=path)
+        loaded = cs.load_factory_rules(path=path)
+        assert loaded[0]["map_meta"] == meta, loaded[0]
+    finally:
+        if os.path.exists(path):
+            os.unlink(path)
+
+
+def test_map_meta_prunes_unknown_keys():
+    """A map_meta key with no matching `map` entry is dropped on validation."""
+    rule = cs.MapRule(**_map_rule(
+        "words", mapping={"foo": "=>"}, map_meta={"foo": 5, "ghost": 9}))
+    assert rule.map_meta == {"foo": 5}, rule.map_meta
+
+
+def test_map_meta_defaults_empty():
+    """A cb:map rule with no map_meta validates and defaults to {}."""
+    rule = cs.MapRule(**_map_rule("words", mapping={"foo": "=>"}))
+    assert rule.map_meta == {}
 
 
 def test_bad_regex_rejected():
