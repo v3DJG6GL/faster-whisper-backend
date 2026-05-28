@@ -3306,7 +3306,7 @@ _CAPTURES_HTML = r"""<!doctype html>
 <body>
 <header>
   <div class="header-inner">
-    <span class="title">{{HEADER_TITLE}}</span>
+    <span class="title">{{HEADER_BRAND}}</span>
     {{NAV}}
     <span class="spacer"></span>
     {{SCALE_PICKER}}

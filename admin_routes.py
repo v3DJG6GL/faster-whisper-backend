@@ -1334,7 +1334,7 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
 
 <div id="app-wrap" style="display:none">
   <header><div class="header-inner">
-    <span class="title">{{HEADER_TITLE}}</span>
+    <span class="title">{{HEADER_BRAND}}</span>
     {{NAV}}
     <span class="spacer"></span>
     <span class="wrap-anchor"></span>

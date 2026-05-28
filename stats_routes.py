@@ -257,7 +257,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 </style></head>
 <body>
 <header><div class="header-inner">
-  <span class="title">{{HEADER_TITLE}}</span>
+  <span class="title">{{HEADER_BRAND}}</span>
   {{NAV}}
   <span class="spacer"></span>
   <span class="wrap-anchor"></span>

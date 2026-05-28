@@ -227,6 +227,19 @@ header .title {
   flex-shrink: 1; min-width: 0; max-width: 22rem;
   overflow: hidden; text-overflow: ellipsis;
 }
+/* Brand lockup inside the header title: skewed-waveform mark + monospace
+   wordmark (faster=dim/whisper=bold) + green prompt + backend + page slug.
+   Mirrors the standalone logo; the mark scales with --fs-base via em. */
+header .title { display: inline-flex; align-items: center; gap: 0.5rem; }
+header .brand-mark { width: 1.55em; height: 1.55em; flex-shrink: 0; display: block; }
+header .brand-word { font-family: var(--font-mono); font-weight: 700;
+  letter-spacing: 0; white-space: nowrap; }
+header .brand-word .bw-a { color: var(--dim);  font-weight: 400; }
+header .brand-word .bw-b { color: var(--bold); font-weight: 700; }
+header .brand-word .bw-sep { color: var(--green); font-weight: 700; margin: 0 0.28em; }
+header .brand-word .bw-c { color: var(--dim);  font-weight: 400; }
+header .brand-slug { color: var(--dim); font-weight: 400; white-space: nowrap;
+  margin-left: 0.15em; }
 /* Status pill is informational; let it shrink and ellipsise. */
 header #status {
   flex-shrink: 1; min-width: 0; max-width: 12rem;
@@ -366,10 +379,18 @@ header .page-link.allowed { display: inline-flex; }
 """
 
 
-# Bootstrap script — applies the persisted UI scale BEFORE the page's CSS
-# parses, avoiding a flash-of-default-size on every navigation. Belongs in
-# <head> as the very first <script>.
+# Injected at the top of every page's <head>:
+#   1. the favicon links — scalable SVG first (modern browsers), then PNG +
+#      ICO fallbacks (Safari/legacy don't render SVG favicons) and an
+#      apple-touch-icon. All brand-mark assets live in static/.
+#   2. a bootstrap script that applies the persisted UI scale BEFORE the
+#      page's CSS parses, avoiding a flash-of-default-size on navigation.
 SCALE_BOOTSTRAP_HEAD = (
+    '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">'
+    '<link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">'
+    '<link rel="icon" type="image/png" sizes="16x16" href="/static/favicon-16.png">'
+    '<link rel="icon" href="/static/favicon.ico" sizes="any">'
+    '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">'
     "<script>(function(){var v=localStorage.getItem('whisper-ui-fs-base');"
     "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');})();</script>"
 )
@@ -1317,8 +1338,9 @@ def render_page(template: str, current: str) -> str:
                                    /config/api-keys permissions matrix
       - {{HEADER_TITLE}}         → uniform page-title string —
                                    "faster-whisper-backend · <slug>"
-                                   used by both <title> and the
-                                   <span class="title"> in the header
+                                   plain text, used inside <title>
+      - {{HEADER_BRAND}}         → branded header lockup (waveform mark +
+                                   wordmark + slug) for <span class="title">
 
     Pages that don't include a given placeholder are returned unchanged."""
     # Resolve the /logs DOM cap: 0 in config means "auto = initial × 4".
@@ -1349,6 +1371,7 @@ def render_page(template: str, current: str) -> str:
         .replace("{{PAGE_META}}", _page_meta_tag(current))
         .replace("{{TAG_PICKER_JS}}", TAG_PICKER_JS)
         .replace("{{HEADER_TITLE}}", _header_title_for(current))
+        .replace("{{HEADER_BRAND}}", _header_brand_for(current))
     )
 
 
@@ -1402,13 +1425,51 @@ _HEADER_SLUG_BY_CURRENT: dict[str, str] = {
 
 def _header_title_for(current: str) -> str:
     """Build the uniform page-title string substituted into every page's
-    <title> AND its <span class="title"> via {{HEADER_TITLE}}. Format:
+    <title> via {{HEADER_TITLE}} (plain text — no markup). Format:
     `faster-whisper-backend · <slug>`. Unknown `current` values fall
     back to the app name alone."""
     slug = _HEADER_SLUG_BY_CURRENT.get(current, "")
     if not slug:
         return "faster-whisper-backend"
     return f"faster-whisper-backend · {slug}"
+
+
+# Inline brand mark: the forward-skewed audio-waveform tile (same geometry
+# as static/logo.svg). Sized in em so it tracks the --fs-base UI scale.
+_BRAND_MARK_SVG = (
+    '<svg class="brand-mark" viewBox="0 0 120 120" aria-hidden="true" focusable="false">'
+    '<defs><linearGradient id="fw-hdr" x1="0" y1="0" x2="1" y2="1">'
+    '<stop offset="0" stop-color="#79c0ff"/><stop offset="1" stop-color="#7ee787"/>'
+    '</linearGradient></defs>'
+    '<rect x="6" y="6" width="108" height="108" rx="26" fill="#161b22" '
+    'stroke="#30363d" stroke-width="2"/>'
+    '<g transform="translate(13 2) skewX(-9)" fill="url(#fw-hdr)">'
+    '<rect x="16" y="74" width="11" height="20" rx="5.5"/>'
+    '<rect x="35" y="52" width="11" height="42" rx="5.5"/>'
+    '<rect x="54" y="22" width="11" height="72" rx="5.5"/>'
+    '<rect x="73" y="44" width="11" height="50" rx="5.5"/>'
+    '<rect x="92" y="66" width="11" height="28" rx="5.5"/>'
+    '</g></svg>'
+)
+
+
+def _header_brand_for(current: str) -> str:
+    """Build the branded header lockup substituted into every page's
+    <span class="title"> via {{HEADER_BRAND}} (HTML — kept separate from
+    the plain-text {{HEADER_TITLE}} used inside <title>). Renders the
+    waveform mark + compact wordmark `fasterwhisper › backend` + the page
+    slug. `current` values map via _HEADER_SLUG_BY_CURRENT; unknown ones
+    render the wordmark alone."""
+    slug = _HEADER_SLUG_BY_CURRENT.get(current, "")
+    slug_html = f'<span class="brand-slug">· {slug}</span>' if slug else ""
+    return (
+        f"{_BRAND_MARK_SVG}"
+        '<span class="brand-word">'
+        '<span class="bw-a">faster</span><span class="bw-b">whisper</span>'
+        '<span class="bw-sep">&gt;</span><span class="bw-c">backend</span>'
+        "</span>"
+        f"{slug_html}"
+    )
 
 
 def _page_meta_tag(current: str) -> str:

@@ -836,7 +836,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
 
 <header>
   <div class="header-inner">
-    <span class="title">{{HEADER_TITLE}}</span>
+    <span class="title">{{HEADER_BRAND}}</span>
     {{NAV}}
     <span class="spacer"></span>
     {{SCALE_PICKER}}

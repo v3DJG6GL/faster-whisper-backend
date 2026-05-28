@@ -2198,7 +2198,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
 </style></head>
 <body>
 <header><div class="header-inner">
-  <span class="title">{{HEADER_TITLE}}</span>
+  <span class="title">{{HEADER_BRAND}}</span>
   {{NAV}}
   <input id="filter" type="text" placeholder="filter (case-insensitive substring)…">
   <span class="log-zoom" title="zoom log content only">
