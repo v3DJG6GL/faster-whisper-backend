@@ -486,6 +486,25 @@ STATS_RECENT_TX_DISPLAY = 20
 
 
 # =============================================================================
+# Per-key / per-user usage rollup
+# =============================================================================
+# Durable daily rollup (one row per key per day) backing the per-user/per-key
+# usage numbers on /api-keys and the usage-over-time section on /stats. Kept
+# separate from RECENT_TRANSCRIPTIONS because that store prunes to a rolling
+# window and so can't back lifetime totals. See usage_store.py.
+
+# DB file path. Default sits next to config.local.json. SQLite uses three
+# runtime files (.sqlite3, -wal, -shm); .gitignore matches all three.
+USAGE_DB = os.path.join(_REPO_DIR, "usage.local.sqlite3")
+
+# Auto-delete rollup rows older than this many days. 0 = unbounded (the
+# default): the rollup is at most one row per active key per day, so it
+# stays tiny and lifetime totals stay complete. Set >0 only if you want a
+# bounded retention window.
+USAGE_RETENTION_DAYS = 0
+
+
+# =============================================================================
 # API key auth (multi-user identity)
 # =============================================================================
 # Per-user API keys gate /v1/audio/transcriptions and every WebUI endpoint.
@@ -781,6 +800,11 @@ RECENT_TRANSCRIPTIONS_PRUNE_EVERY = _env_int(
     "WHISPER_RECENT_TRANSCRIPTIONS_PRUNE_EVERY", RECENT_TRANSCRIPTIONS_PRUNE_EVERY)
 STATS_RECENT_TX_DISPLAY = _env_int(
     "WHISPER_STATS_RECENT_TX_DISPLAY", STATS_RECENT_TX_DISPLAY)
+
+
+# --- Usage rollup store ---------------------------------------------------
+USAGE_DB = _env_str("WHISPER_USAGE_DB", USAGE_DB)
+USAGE_RETENTION_DAYS = _env_int("WHISPER_USAGE_RETENTION_DAYS", USAGE_RETENTION_DAYS)
 
 
 # --- Captures (fine-tuning data store) ------------------------------------

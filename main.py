@@ -1388,6 +1388,18 @@ async def lifespan(app: FastAPI):
     except Exception as _te:
         logger.error("Failed to initialize recent-transcriptions store: %s", _te)
 
+    # Open the durable usage-rollup store and seed it (one-time) from the
+    # recent-transcriptions store. Backs the per-key/per-user usage numbers
+    # on /api-keys and the usage-over-time section on /stats. Init AFTER
+    # transcriptions_store — the backfill reads from it. Non-fatal.
+    try:
+        import usage_store
+        usage_store.init_db(cfg.USAGE_DB)
+        usage_store.backfill_from_transcriptions()
+        logger.info("Usage rollup store initialized at %s", cfg.USAGE_DB)
+    except Exception as _ue:
+        logger.error("Failed to initialize usage store: %s", _ue)
+
     # Open the captures store. Audio + word-timestamps for Whisper
     # fine-tuning, gated by CAPTURE_RECORDINGS_ENABLED. Reconcile drift
     # before serving (row says audio exists / disk says it doesn't, or
@@ -1500,6 +1512,7 @@ async def transcribe(
     tmp_path = None
     request_id = uuid.uuid4().hex
     _user_id = user.get("user_id")
+    _key_id = user.get("key_id")
     try:
         model = await _get_or_load_model(resolved_model)
 
@@ -1931,6 +1944,7 @@ async def transcribe(
             words=_words,
             request_id=request_id,
             user_id=_user_id,
+            key_id=_key_id,
         )
 
 

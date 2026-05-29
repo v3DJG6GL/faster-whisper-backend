@@ -112,6 +112,68 @@ async def stats_snapshot() -> dict[str, Any]:
 
 
 @router.get(
+    "/stats/usage",
+    dependencies=[
+        Depends(_require_stats_host),
+        Depends(require_page("stats")),
+    ],
+)
+async def stats_usage(
+    days: int = 30,
+    bucket: str = "day",
+    by: str = "user",
+    metric: str = "audio_s",
+) -> dict[str, Any]:
+    """Historical usage: a total-throughput-over-time series plus a
+    per-user (or per-key) leaderboard for the window. Served once per page
+    load / selector change — NOT part of the 1 Hz SSE payload.
+
+    `days<=0` is lifetime (no lower bound). `bucket` ∈ {day, week}. `by` ∈
+    {user, key}. `metric` ranks the leaderboard. Gated by the page's
+    `stats` access (which has no 'own' scope — see api_keys_store
+    ACCESS_ONLY_PAGES), so the data returned here is global."""
+    import api_keys_store
+    import usage_store
+
+    bucket = "week" if bucket == "week" else "day"
+    by = "key" if by == "key" else "user"
+    start_day: int | None = None
+    if days and days > 0:
+        start_day = usage_store.today_epoch_day() - int(days) + 1
+
+    series = usage_store.series(start_day=start_day, bucket=bucket)
+    board = usage_store.leaderboard(
+        start_day=start_day, by=by, metric=metric, limit=50,
+    )
+
+    # Resolve display names server-side (the /stats client has no api-keys
+    # data). Revoked users/keys still resolve; sentinels stay literal.
+    if by == "user":
+        names = api_keys_store.get_usernames([r["user_id"] for r in board])
+        for r in board:
+            uid = r["user_id"]
+            r["label"] = names.get(uid) or uid
+    else:
+        names = api_keys_store.get_usernames([r["user_id"] for r in board])
+        for r in board:
+            kid = r["key_id"]
+            key = (api_keys_store.get_key(kid)
+                   if kid and not kid.startswith("(") else None)
+            lbl = (key or {}).get("label") or ""
+            disp = (key or {}).get("key_prefix")
+            r["label"] = (lbl or (disp + "…" if disp else kid))
+            r["user_label"] = names.get(r["user_id"]) or r["user_id"]
+
+    return {
+        "series": series,
+        "leaderboard": board,
+        "by": by,
+        "bucket": bucket,
+        "days": days,
+    }
+
+
+@router.get(
     "/stats/stream",
     dependencies=[
         Depends(_require_stats_host),
@@ -223,6 +285,37 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .err-strip .seg.hot b { color: var(--red); }
   .empty { color: var(--dim); font-style: italic; }
   .hidden { display: none !important; }
+  /* Usage-over-time section — a standalone full-width panel below the
+     GridStack tiles (kept out of the draggable grid so its chart + table
+     don't fight the tile layout). */
+  .usage-wrap { padding: 0 0.875rem 1.25rem; max-width: 68.75rem;
+    margin: 0 auto; box-sizing: border-box; }
+  .usage-card { height: auto; overflow: visible; }
+  .usage-toolbar { display: flex; flex-wrap: wrap; align-items: baseline;
+    gap: 0.4rem 0.9rem; margin-bottom: 0.5rem; }
+  .usage-toolbar h3 { margin: 0; }
+  .usage-toolbar .spacer { flex: 1 1 auto; }
+  .usage-seg { display: inline-flex; align-items: center; gap: 0.4rem; }
+  .usage-seg .seg-label { color: var(--dim); font-size: var(--fs-xs);
+    text-transform: uppercase; letter-spacing: .04em; }
+  .seg-ctrl { display: inline-flex; border: 1px solid var(--border);
+    border-radius: 6px; overflow: hidden; }
+  .seg-ctrl button { background: var(--bg); color: var(--dim);
+    border: none; border-left: 1px solid var(--border);
+    padding: 0.15rem 0.55rem; font: inherit; font-size: var(--fs-sm);
+    line-height: 1.3; cursor: pointer; }
+  .seg-ctrl button:first-child { border-left: none; }
+  .seg-ctrl button:hover { color: var(--fg); }
+  .seg-ctrl button.active { background: var(--panel); color: var(--cyan);
+    font-weight: 600; }
+  .usage-chart { width: 100%; height: 14rem; min-width: 0; }
+  .usage-note { color: var(--dim); font-size: var(--fs-xs);
+    margin: 0.15rem 0 0.5rem; }
+  table.usage-board td.rank { color: var(--dim);
+    font-variant-numeric: tabular-nums; width: 2rem; }
+  table.usage-board td.name { color: var(--fg); }
+  table.usage-board td.name .sub { color: var(--dim);
+    font-size: var(--fs-xs); margin-left: 0.4rem; }
   /* GridStack integration — drag-to-reorder + click-to-resize tiles. */
   .grid-stack { background: transparent; }
   .grid-stack-item-content { background: transparent; padding: 0; overflow: visible; }
@@ -410,6 +503,52 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
    </div></div>
   </div>
  </div>
+</div>
+
+<div class="usage-wrap">
+  <div class="card usage-card">
+    <div class="usage-toolbar">
+      <h3>Usage over time</h3>
+      <span class="spacer"></span>
+      <div class="usage-seg"><span class="seg-label">range</span>
+        <div class="seg-ctrl" id="usage-range">
+          <button data-v="7">7d</button>
+          <button data-v="30" class="active">30d</button>
+          <button data-v="90">90d</button>
+          <button data-v="0">all</button>
+        </div>
+      </div>
+      <div class="usage-seg"><span class="seg-label">bucket</span>
+        <div class="seg-ctrl" id="usage-bucket">
+          <button data-v="day" class="active">day</button>
+          <button data-v="week">week</button>
+        </div>
+      </div>
+      <div class="usage-seg"><span class="seg-label">metric</span>
+        <div class="seg-ctrl" id="usage-metric">
+          <button data-v="audio_s" class="active">audio</button>
+          <button data-v="words">words</button>
+          <button data-v="requests">requests</button>
+          <button data-v="errors">errors</button>
+        </div>
+      </div>
+      <div class="usage-seg"><span class="seg-label">by</span>
+        <div class="seg-ctrl" id="usage-by">
+          <button data-v="user" class="active">user</button>
+          <button data-v="key">key</button>
+        </div>
+      </div>
+    </div>
+    <div id="usage-chart" class="usage-chart"></div>
+    <div class="usage-note">Buckets are UTC days.</div>
+    <table class="tbl usage-board"><thead><tr>
+      <th class="rank">#</th><th>name</th>
+      <th class="num">requests</th><th class="num">words</th>
+      <th class="num">audio</th><th class="num">err</th>
+    </tr></thead><tbody id="usage-board-rows">
+      <tr><td colspan="6" class="empty">— loading —</td></tr>
+    </tbody></table>
+  </div>
 </div>
 
 <script>
@@ -862,6 +1001,162 @@ fetch('/stats/snapshot', { headers: _statsAuthHeaders(), cache: 'no-store' })
   .catch(err => console.warn('[stats] initial fetch failed', err))
   .finally(openStream);
 
+})();
+</script>
+
+<script>
+// --- Usage-over-time section (independent of the live SSE dashboard) -------
+// Self-contained IIFE: builds its own uPlot time-series chart + leaderboard,
+// fetched once on load and on every selector change. Does NOT use the
+// TIME_HELPERS_JS helpers (not injected on this page) — day labels are
+// formatted inline from the UTC epoch-day the server returns.
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const chartEl = $('usage-chart');
+if (!chartEl || typeof uPlot === 'undefined') return;
+
+function authHeaders() {
+  let t;
+  try { t = sessionStorage.getItem('whisper_api_key') || ''; } catch(_) { t = ''; }
+  return t ? { Authorization: 'Bearer ' + t } : {};
+}
+function remPx(n) {
+  const base = parseFloat(getComputedStyle(document.documentElement).fontSize) || 15;
+  return Math.round(n * base);
+}
+const MONO = 'Consolas, "Cascadia Code", "JetBrains Mono", Menlo, ui-monospace, monospace';
+
+function fmtCount(n) {
+  n = Number(n || 0);
+  if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+  return String(Math.round(n));
+}
+function fmtDur(sec) {
+  sec = Number(sec || 0);
+  if (sec < 60) return sec.toFixed(sec < 10 ? 1 : 0) + 's';
+  if (sec < 3600) return (sec / 60).toFixed(1).replace(/\.0$/, '') + 'm';
+  if (sec < 86400) return (sec / 3600).toFixed(1).replace(/\.0$/, '') + 'h';
+  return (sec / 86400).toFixed(1).replace(/\.0$/, '') + 'd';
+}
+const METRIC_LABEL = { audio_s: 'audio', words: 'words', requests: 'requests', errors: 'errors' };
+function fmtMetric(metric, v) {
+  return metric === 'audio_s' ? fmtDur(v) : fmtCount(v);
+}
+
+let chart = null;
+function buildChart(metric) {
+  if (chart) { chart.destroy(); chart = null; }
+  const color = metric === 'errors' ? '#ff7b72' : '#79c0ff';
+  const w = chartEl.clientWidth || 600;
+  const h = chartEl.clientHeight || 220;
+  chart = new uPlot({
+    width: w, height: h,
+    padding: [remPx(0.5), remPx(0.6), remPx(0.2), remPx(0.4)],
+    legend: { show: false },
+    cursor: { y: false },
+    scales: { x: { time: true }, y: { range: { min: { pad: 0.05, mode: 1 }, max: { pad: 0.1, mode: 1 } } } },
+    axes: [
+      { stroke: '#6e7681', grid: { stroke: '#21262d', width: 1 },
+        ticks: { stroke: '#30363d', width: 1, size: 3 },
+        font: remPx(0.733) + 'px ' + MONO },
+      { stroke: '#6e7681', size: remPx(2.8), gap: 4,
+        grid: { stroke: '#21262d', width: 1 },
+        ticks: { stroke: '#30363d', width: 1, size: 3 },
+        font: remPx(0.733) + 'px ' + MONO,
+        values: (u, splits) => splits.map(v => fmtMetric(metric, v)) },
+    ],
+    series: [
+      { value: (u, ts) => ts == null ? '' : new Date(ts * 1000).toISOString().slice(0, 10) },
+      { label: METRIC_LABEL[metric] || metric, stroke: color, width: 1.5,
+        fill: color + '22', points: { show: true, size: 4 }, spanGaps: true },
+    ],
+  }, [[], []], chartEl);
+}
+
+let _raf = 0;
+new ResizeObserver(() => {
+  if (_raf || !chart) return;
+  _raf = requestAnimationFrame(() => {
+    _raf = 0;
+    const cw = chartEl.clientWidth, ch = chartEl.clientHeight;
+    if (cw > 0 && ch > 0) chart.setSize({ width: cw, height: ch });
+  });
+}).observe(chartEl);
+
+function renderBoard(board, by, metric) {
+  const tb = $('usage-board-rows');
+  if (!board || !board.length) {
+    tb.innerHTML = '<tr><td colspan="6" class="empty">— no usage in this window —</td></tr>';
+    return;
+  }
+  tb.innerHTML = board.map((r, i) => {
+    const sub = by === 'key' && r.user_label
+      ? '<span class="sub">' + esc(r.user_label) + '</span>' : '';
+    return '<tr>'
+      + '<td class="rank">' + (i + 1) + '</td>'
+      + '<td class="name">' + esc(r.label || '?') + sub + '</td>'
+      + '<td class="num">' + fmtCount(r.requests) + '</td>'
+      + '<td class="num">' + fmtCount(r.words) + '</td>'
+      + '<td class="num">' + fmtDur(r.audio_s) + '</td>'
+      + '<td class="num">' + fmtCount(r.errors) + '</td>'
+      + '</tr>';
+  }).join('');
+}
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function segVal(id) {
+  const g = $(id);
+  const b = g && g.querySelector('button.active');
+  return b ? b.dataset.v : '';
+}
+
+let _seq = 0;
+function loadUsage() {
+  const days = segVal('usage-range');
+  const bucket = segVal('usage-bucket');
+  const metric = segVal('usage-metric');
+  const by = segVal('usage-by');
+  const q = '?days=' + encodeURIComponent(days)
+          + '&bucket=' + encodeURIComponent(bucket)
+          + '&metric=' + encodeURIComponent(metric)
+          + '&by=' + encodeURIComponent(by);
+  const mine = ++_seq;
+  fetch('/stats/usage' + q, { headers: authHeaders(), cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      if (!j || mine !== _seq) return;   // stale response — a newer change won
+      buildChart(metric);
+      const xs = j.series.map(p => p.day * 86400);
+      const ys = j.series.map(p => p[metric]);
+      chart.setData([xs, ys]);
+      renderBoard(j.leaderboard, by, metric);
+    })
+    .catch(err => {
+      console.warn('[stats] usage fetch failed', err);
+      $('usage-board-rows').innerHTML =
+        '<tr><td colspan="6" class="empty">— usage unavailable —</td></tr>';
+    });
+}
+
+['usage-range', 'usage-bucket', 'usage-metric', 'usage-by'].forEach(id => {
+  const g = $(id);
+  if (!g) return;
+  g.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (!b || !g.contains(b) || b.classList.contains('active')) return;
+    g.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+    b.classList.add('active');
+    loadUsage();
+  });
+});
+loadUsage();
 })();
 </script>
 {{SCALE_PICKER_JS}}

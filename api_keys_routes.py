@@ -185,6 +185,29 @@ async def list_user_keys_api(uid: str) -> JSONResponse:
     return JSONResponse({"keys": api_keys_store.list_keys(user_id=uid)})
 
 
+@router.get(
+    "/api/usage",
+    dependencies=[Depends(require_admin_host), Depends(require_admin)],
+)
+async def usage_api(days: int = 0) -> JSONResponse:
+    """Per-user and per-key usage rollup for the cards. `days=0` (default)
+    is lifetime; `days=N` is the trailing N-day window. Returned as id-keyed
+    maps so the front-end can join onto the users + keys it already renders
+    (no server-side name resolution needed). Per-user totals include every
+    one of that user's keys plus any pre-feature backfilled usage; per-key
+    totals cover only real keys (backfill has no key id)."""
+    import usage_store
+    start_day = None
+    if days and days > 0:
+        start_day = usage_store.today_epoch_day() - int(days) + 1
+    by_user = usage_store.totals_by_user(start_day=start_day)
+    by_key = {
+        r["key_id"]: r
+        for r in usage_store.totals_by_key(start_day=start_day)
+    }
+    return JSONResponse({"by_user": by_user, "by_key": by_key, "days": days})
+
+
 @router.post(
     "/api/users/{uid}/keys",
     dependencies=[Depends(require_admin_host), Depends(require_admin)],
@@ -294,23 +317,51 @@ _API_KEYS_HTML = r"""<!doctype html>
     background: #2d1414; }
   .pill.live { color: var(--green); border-color: #1d4f2c; }
   .key-row { display: grid;
-    /* `created` / `used` cells stack their label + value on two lines
-       (see .ts below), so we give them just enough width for one HH:MM:SS
-       + YYYY.MM.DD pair on the value line without forcing a wrap. The
-       label/id columns claim the remaining flexible width. */
-    grid-template-columns: minmax(8rem,1fr) 9rem minmax(7.5rem,auto) minmax(7.5rem,auto) auto;
-    gap: 0.6rem; align-items: center; padding: 0.3rem 0;
+    /* label / id / usage stats / activity (created+used stacked) / action.
+       The usage block carries the new per-key counters; the two timestamps
+       collapse into one stacked "activity" cell so the previously crammed
+       created/used pair reads cleanly and the freed left-side width goes to
+       the stats that admins actually scan. */
+    grid-template-columns: minmax(6rem,0.9fr) 8.5rem minmax(11rem,1.2fr) minmax(8rem,auto) auto;
+    gap: 0.6rem; align-items: center; padding: 0.4rem 0;
     border-top: 1px solid var(--border); font-size: var(--fs-sm); }
   .key-row:first-child { border-top: none; }
-  .key-row .label { color: var(--fg); }
+  .key-row .label { color: var(--fg); word-break: break-word; }
   .key-row .id { color: var(--dim); font-family: var(--font-mono); }
-  /* Two-line cells: small dim caption ("created", "used") on top, mono
-     value below. Reads like a labelled field instead of "created HH:MM:SS
-     | YYYY.MM.DD" wrapping mid-string. */
-  .key-row .ts { display: flex; flex-direction: column;
-    line-height: 1.2; gap: 0.05rem; }
-  .key-row .ts .ts-label { color: var(--dim); font-size: var(--fs-xs);
+  /* Per-key usage: a row of compact stat chips (value over caption). Mono
+     values so digits stay tabular; dim captions. Wraps gracefully on narrow
+     viewports. */
+  /* Two-row grid: every stat's value lands on row 1, its caption on row 2,
+     so values align across stats no matter their text width/content (a
+     plain flex row left the % stat baseline-drifting). .stat is display:
+     contents so its value+caption become direct grid items. */
+  .usage-cell { display: inline-grid; grid-auto-flow: column;
+    grid-template-rows: auto auto; align-items: start; justify-content: start;
+    gap: 0.05rem 0.9rem; line-height: 1.15; }
+  .usage-cell .stat { display: contents; }
+  .usage-cell .stat .v { grid-row: 1; color: var(--fg);
+    font-family: var(--font-mono); font-size: var(--fs-sm); white-space: nowrap; }
+  .usage-cell .stat .k { grid-row: 2; color: var(--dim); font-size: var(--fs-xs);
     text-transform: lowercase; }
+  .usage-cell .stat.err .v { color: var(--yellow); }
+  .usage-cell.empty { display: block; color: var(--dim); font-style: italic;
+    font-size: var(--fs-xs); }
+  /* Per-user summary strip under the card header: one mono line of the
+     user's lifetime totals across all their keys. */
+  .user-usage { display: flex; flex-wrap: wrap; gap: 0.15rem 1.1rem;
+    margin: 0.1rem 0 0.4rem 0; }
+  .user-usage .stat { display: flex; align-items: baseline; gap: 0.3rem; }
+  .user-usage .stat .v { color: var(--cyan); font-family: var(--font-mono);
+    font-size: var(--fs-md); }
+  .user-usage .stat .k { color: var(--dim); font-size: var(--fs-xs);
+    text-transform: lowercase; }
+  /* The stacked activity cell reuses the .ts two-line pattern but holds
+     both created and used, one above the other. */
+  .key-row .activity { display: flex; flex-direction: column; gap: 0.2rem; }
+  .key-row .ts { display: flex; flex-direction: row; align-items: baseline;
+    gap: 0.35rem; line-height: 1.2; }
+  .key-row .ts .ts-label { color: var(--dim); font-size: var(--fs-xs);
+    text-transform: lowercase; min-width: 3.2rem; }
   .key-row .ts .ts-value { color: var(--fg); font-size: var(--fs-sm);
     font-family: var(--font-mono); white-space: nowrap; }
   .key-row .ts.empty .ts-value { color: var(--dim); font-style: italic; }
@@ -919,6 +970,13 @@ _API_KEYS_HTML = r"""<!doctype html>
     h.appendChild(keyCount);
     card.appendChild(h);
 
+    // Lifetime usage strip — sums every one of this user's keys (plus any
+    // pre-feature backfilled usage) from the rollup fetched in load().
+    var usageStrip = document.createElement('div');
+    usageStrip.innerHTML = userUsageHtml(
+      (window.__usage && window.__usage.by_user || {})[u.id]);
+    card.appendChild(usageStrip.firstChild);
+
     var tb = document.createElement('div');
     tb.className = 'toolbar';
     {
@@ -987,10 +1045,9 @@ _API_KEYS_HTML = r"""<!doctype html>
           var row = document.createElement('div');
           row.className = 'key-row';
           function _tsCell(label, ts) {
-            // "created" / "used" on line 1 (small caption); the timestamp
-            // value on line 2 (mono, full HH:MM:SS | YYYY.MM.DD). Empty
-            // ts (e.g. never-used key) renders an em-dash so the cell
-            // doesn't shrink and misalign the grid.
+            // Caption + value on one line; created and used stack inside the
+            // shared .activity cell. Empty ts (never-used key) renders an
+            // em-dash so the cell keeps its height and the grid stays aligned.
             var hasValue = !!ts;
             var v = hasValue ? escapeHtml(absTime(ts)) : '—';
             return '<div class="ts' + (hasValue ? '' : ' empty') + '">'
@@ -998,11 +1055,15 @@ _API_KEYS_HTML = r"""<!doctype html>
                  + '<div class="ts-value">' + v + '</div>'
                  + '</div>';
           }
+          var keyUsage = (window.__usage && window.__usage.by_key || {})[k.id];
           row.innerHTML =
             '<div class="label">' + escapeHtml(k.label || '(no label)') + '</div>' +
             '<div class="id">' + escapeHtml(k.key_prefix) + '&hellip;' + escapeHtml(k.key_last4) + '</div>' +
-            _tsCell('created', k.created_ts) +
-            _tsCell('used',    k.last_used_ts);
+            usageCellHtml(keyUsage) +
+            '<div class="activity">' +
+              _tsCell('created', k.created_ts) +
+              _tsCell('used',    k.last_used_ts) +
+            '</div>';
           var actionCell = document.createElement('div');
           if (k.revoked_ts) {
             var rp = document.createElement('span');
@@ -1045,6 +1106,58 @@ _API_KEYS_HTML = r"""<!doctype html>
     return String(s == null ? '' : s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  // --- usage formatting + rendering helpers --------------------------
+  function fmtCount(n) {
+    n = Number(n || 0);
+    if (n >= 1e9) return (n / 1e9).toFixed(1).replace(/\.0$/, '') + 'B';
+    if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+    if (n >= 1e3) return (n / 1e3).toFixed(1).replace(/\.0$/, '') + 'k';
+    return String(n);
+  }
+  function fmtDuration(sec) {
+    sec = Number(sec || 0);
+    if (sec < 60) return sec.toFixed(sec < 10 ? 1 : 0) + 's';
+    if (sec < 3600) return (sec / 60).toFixed(1).replace(/\.0$/, '') + 'm';
+    if (sec < 86400) return (sec / 3600).toFixed(1).replace(/\.0$/, '') + 'h';
+    return (sec / 86400).toFixed(1).replace(/\.0$/, '') + 'd';
+  }
+  function fmtErrRate(reqs, errs) {
+    reqs = Number(reqs || 0); errs = Number(errs || 0);
+    if (!reqs) return '0%';
+    var p = (errs / reqs) * 100;
+    return (p < 10 ? p.toFixed(1) : p.toFixed(0)) + '%';
+  }
+  function _stat(value, caption, cls) {
+    return '<div class="stat' + (cls ? ' ' + cls : '') + '">'
+         + '<span class="v">' + value + '</span>'
+         + '<span class="k">' + caption + '</span></div>';
+  }
+  // Compact per-key stat block for a .key-row usage cell.
+  function usageCellHtml(stat) {
+    if (!stat || !stat.requests) {
+      return '<div class="usage-cell empty">no usage yet</div>';
+    }
+    return '<div class="usage-cell">'
+      + _stat(fmtCount(stat.requests), 'requests')
+      + _stat(fmtCount(stat.words), 'words')
+      + _stat(fmtDuration(stat.audio_s), 'audio')
+      + _stat(fmtErrRate(stat.requests, stat.errors), 'errors',
+              stat.errors ? 'err' : '')
+      + '</div>';
+  }
+  // One-line lifetime summary strip under a user card header.
+  function userUsageHtml(stat) {
+    if (!stat || !stat.requests) {
+      return '<div class="user-usage"><span class="hint">No usage recorded yet.</span></div>';
+    }
+    return '<div class="user-usage">'
+      + _stat(fmtCount(stat.requests), 'requests')
+      + _stat(fmtCount(stat.words), 'words')
+      + _stat(fmtDuration(stat.audio_s), 'audio')
+      + _stat(fmtErrRate(stat.requests, stat.errors), 'errors')
+      + '</div>';
   }
 
   async function load() {
@@ -1092,6 +1205,14 @@ _API_KEYS_HTML = r"""<!doctype html>
       ct.innerHTML = '<p class="hint">No users yet. Add one above to create the first admin.</p>';
       return;
     }
+    // Pull the usage rollup once (lifetime) so per-user strips and per-key
+    // cells can join against it client-side. Best-effort — a usage failure
+    // must never blank the key-management UI.
+    window.__usage = { by_user: {}, by_key: {} };
+    try {
+      var ur = await api('GET', '/config/api-keys/api/usage');
+      if (ur.ok) window.__usage = await ur.json();
+    } catch (_) {}
     renderMatrix(j);
     j.users.forEach(function(u) { ct.appendChild(renderUser(u)); });
   }

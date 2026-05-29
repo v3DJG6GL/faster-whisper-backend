@@ -62,14 +62,19 @@ def record_request(path: str, status: int, duration_ms: float) -> None:
 def record_transcription(model: str, audio_dur: float, proc_dur: float,
                          status: str, words: int,
                          request_id: str | None = None,
-                         user_id: str | None = None) -> None:
+                         user_id: str | None = None,
+                         key_id: str | None = None) -> None:
     """Called from the transcribe handler's outer finally on every
     /transcribe request (both success and error paths). UPSERTs the
     timing half of the recent-transcriptions row keyed by request_id;
     record_trace() in quick_config_state has already inserted the rich
     half on the success path, so this call only patches timing fields
     in. On the error path it inserts a minimal row so /stats still
-    counts the request."""
+    counts the request.
+
+    Also bumps the durable per-key/per-user usage rollup (usage_store),
+    which — unlike recent_transcriptions — is never pruned to a rolling
+    window, so it backs lifetime totals on /api-keys and /stats."""
     if not request_id:
         return
     try:
@@ -89,6 +94,17 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
         )
     except Exception as e:
         logger.warning("[metrics] record_transcription persist failed: %s", e)
+    try:
+        import usage_store
+        usage_store.record_usage(
+            key_id=key_id,
+            user_id=user_id,
+            audio_s=audio_dur or 0.0,
+            words=int(words or 0),
+            status=status,
+        )
+    except Exception as e:
+        logger.warning("[metrics] usage rollup failed: %s", e)
 
 
 def record_model_load(model: str, load_seconds: float) -> None:
