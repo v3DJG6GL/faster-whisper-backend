@@ -3790,7 +3790,8 @@ _CAPTURES_HTML = r"""<!doctype html>
     var seen = {};
     _allCaptures.forEach(function(r) { if (r.model) seen[r.model] = true; });
     var opts = ['<option value="all">all</option>'];
-    Object.keys(seen).sort().forEach(function(m) {
+    // German-aware, case-insensitive ordering (model IDs can be mixed-case).
+    Object.keys(seen).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare).forEach(function(m) {
       opts.push('<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>');
     });
     sel.innerHTML = opts.join('');

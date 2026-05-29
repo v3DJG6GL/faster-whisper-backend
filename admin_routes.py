@@ -1912,8 +1912,8 @@ function modelOverridesEditor(name, v) {
     const allowed = Array.isArray(currentValue('ALLOWED_MODELS'))
       ? currentValue('ALLOWED_MODELS') : [];
     // List every key in overrides, even those with 0 fields (admin just added
-    // an entry). Sort alphabetically for deterministic order.
-    const ids = Object.keys(overrides).sort();
+    // an entry). German-aware, case-insensitive order (model IDs are mixed-case).
+    const ids = Object.keys(overrides).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
 
     // Top row: diff-mode toggle. Replaces the old "Global (read-only ref)"
     // entry AND the standalone "Compare diff to global" checkbox. The whole
@@ -2017,7 +2017,7 @@ function modelOverridesEditor(name, v) {
         delete overrides[selectedId];
         // Pick a sensible new selection: first remaining override-bearing
         // model, else first allowed model, else null.
-        const remaining = Object.keys(overrides).sort();
+        const remaining = Object.keys(overrides).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
         if (remaining.length > 0) selectedId = remaining[0];
         else selectedId = allowed[0] || null;
         persist();
@@ -2348,7 +2348,7 @@ function modelOverridesEditor(name, v) {
   // Global ref view is gone — when no model has an override yet the user
   // is told to use the "+ add model override" dropdown.
   (function() {
-    const overridden = Object.keys(overrides).filter(id => countOverrides(id) > 0).sort();
+    const overridden = Object.keys(overrides).filter(id => countOverrides(id) > 0).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
     if (overridden.length > 0) selectedId = overridden[0];
   })();
 

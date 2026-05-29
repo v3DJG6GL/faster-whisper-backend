@@ -860,7 +860,7 @@ function render(snap) {
   const paths = Array.from(new Set([
     ...Object.keys(snap.requests || {}),
     ...Object.keys(snap.errors_total || {}),
-  ])).sort();
+  ])).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
   for (const p of paths) {
     const n = snap.requests[p] || 0;
     const errs = snap.errors_total[p] || 0;

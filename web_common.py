@@ -1090,6 +1090,12 @@ SEV_POLLER_JS = """
 #   2. New `if (rule.type === '<type>')` branch in renderTypeEditor below
 #   3. New entry in _PIPELINE_TYPES for the pill label
 RULE_EDITOR_JS = r"""<script>
+// German-aware, case-insensitive collator for ordering human-visible lists
+// (cb:map keys). sensitivity:'base' folds case + accent so 'anemi' sorts next
+// to 'Amoxyzylin' and umlauts land in German position (ä≈a); numeric:true gives
+// natural number order (item2 before item10). Display only — never used for
+// equality/fingerprint/persistence sorts, which stay byte-stable.
+const _coll = new Intl.Collator('de', { sensitivity: 'base', numeric: true });
 // Display \n, \r, \t, \\ as literal 2-char escape sequences in <input>
 // cells. Single-line inputs strip newlines per WHATWG spec, so without
 // this the user sees an empty field for any value containing a newline.
@@ -1344,7 +1350,7 @@ function renderTypeEditor(rule, commitData, opts) {
     const rows = Object.entries(rule.map || {}).sort((a, b) => {
       const ta = meta[a[0]] || 0, tb = meta[b[0]] || 0;
       if (ta !== tb) return ta - tb;
-      return a[0] < b[0] ? -1 : (a[0] > b[0] ? 1 : 0);
+      return _coll.compare(a[0], b[0]);
     });
     const collapseAfter = opts.collapseMapAfter || 0;
     const hiddenCount = (collapseAfter && rows.length > collapseAfter)
