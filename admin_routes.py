@@ -100,9 +100,15 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ("Server (uvicorn)", [(None, [
         "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",
     ])]),
-    ("Access (allowlists)", [(None, [
-        "ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS",
-    ])]),
+    ("Access (allowlists)", [
+        (None, [
+            "ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS",
+        ]),
+        ("Browser sessions (cookie auth)", [
+            "SESSION_COOKIE_SECURE", "SESSION_TTL_SECONDS",
+            "SESSION_COOKIE_NAME", "SESSION_CSRF_COOKIE_NAME",
+        ]),
+    ]),
     ("Reports", [(None, [
         "REPORTS_DB", "REPORTS_MAX", "REPORTS_RETENTION_DAYS",
         "REPORTS_ALLOW_USER_SUBMIT",
@@ -1308,8 +1314,8 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
 <div id="login-wrap" class="login" style="display:none">
   <h1>faster-whisper-backend · admin</h1>
   <p>Paste your <strong>API key</strong> to continue. Keys are issued in
-  <code>/settings/api-keys</code> by an admin. The key stays in your browser's
-  <code>sessionStorage</code> until you close the tab.</p>
+  <code>/settings/api-keys</code> by an admin. You'll stay signed in on this
+  browser until you sign out.</p>
   <input id="login-token" type="password" autocomplete="off" placeholder="wk_…">
   <button id="login-btn">Unlock</button>
   <p id="login-err" class="err"></p>
@@ -1365,16 +1371,10 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
 (() => {
 'use strict';
 
-const TOKEN_KEY = 'whisper_api_key';
 let state = null;          // last server state
 let dirty = {};            // field -> new value (only changed)
 
 const $ = (id) => document.getElementById(id);
-
-function authHeaders() {
-  const t = sessionStorage.getItem(TOKEN_KEY);
-  return t ? { 'Authorization': 'Bearer ' + t } : {};
-}
 
 function toast(msg, isErr) {
   const el = $('toast');
@@ -1385,16 +1385,20 @@ function toast(msg, isErr) {
 }
 
 async function api(method, path, body) {
-  const opts = { method, headers: { ...authHeaders() } };
+  // Auth rides the HttpOnly session cookie (sent automatically). Mutations
+  // also carry the double-submit CSRF token.
+  const opts = { method, headers: {} };
+  if (method !== 'GET' && method !== 'HEAD') {
+    opts.headers['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
+  }
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body);
   }
   const r = await fetch(path, opts);
   if (r.status === 401) {
-    sessionStorage.removeItem(TOKEN_KEY);
     window.dispatchEvent(new Event('whisper:auth-changed'));
-    showLogin('token rejected');
+    showLogin('session expired — sign in again');
   }
   return r;
 }
@@ -1422,7 +1426,7 @@ async function loadState() {
     // rendering into a hidden subtree leaves the user with a blank
     // page on F5 reload.
     try {
-      const w = await fetch('/auth/whoami', { headers: authHeaders() });
+      const w = await fetch('/auth/whoami');
       if (w.ok) window.__whoami = await w.json();
     } catch (_) {}
     showApp();
@@ -4199,7 +4203,16 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('login-btn').addEventListener('click', async () => {
     const t = $('login-token').value.trim();
     if (!t) return;
-    sessionStorage.setItem(TOKEN_KEY, t);
+    let r;
+    try {
+      r = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: t }),
+      });
+    } catch (_) { showLogin('network error — try again'); return; }
+    if (!r.ok) { showLogin('that key was rejected'); return; }
+    $('login-token').value = '';
     window.dispatchEvent(new Event('whisper:auth-changed'));
     showApp();
     await loadState();
@@ -4237,13 +4250,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     () => $('restart-modal').classList.remove('show'));
   $('restart-now').addEventListener('click', doRestart);
 
-  // Probe the state endpoint to figure out whether a token is required.
-  const probe = await fetch('/settings/state', {
-    headers: authHeaders(),
-    cache: 'no-store',
-  });
+  // Probe the state endpoint to figure out whether a sign-in is required.
+  const probe = await fetch('/settings/state', { cache: 'no-store' });
   if (probe.status === 401) {
-    showLogin('Bearer token required.');
+    showLogin('Sign in to continue.');
     return;
   }
   if (probe.status === 403) {
@@ -4253,7 +4263,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // default — so we must call showApp() first or the landing renders
     // into a display:none subtree and the user sees a blank page.
     try {
-      const wr = await fetch('/auth/whoami', { headers: authHeaders() });
+      const wr = await fetch('/auth/whoami');
       if (wr.ok) {
         const wj = await wr.json();
         try { window.__whoami = wj; } catch (_) {}

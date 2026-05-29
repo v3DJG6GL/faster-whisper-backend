@@ -48,7 +48,7 @@ from admin_routes import (
     _canon_rules,
     require_admin_host,
 )
-from auth import Permissions, get_current_user, require_page
+from auth import Permissions, get_current_user, require_page, user_from_session_cookie
 
 logger = logging.getLogger("whisper-api")
 
@@ -75,10 +75,11 @@ _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
 
 def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
     """SSE-aware variant of get_current_user + require_page("quick_config").
-    Honors `?key=` as a fallback since EventSource cannot set Authorization
-    headers. Attaches the Permissions policy object and rejects callers
-    whose quick_config scope is "none" — same gate the rest of the
-    /quick-config router uses, just adapted to the SSE auth flow."""
+    Resolves auth from (in order) the bearer header, the HttpOnly session
+    cookie (EventSource sends it automatically), then `?key=` — the last is
+    the legacy fallback for non-browser SSE clients that can set neither a
+    header nor a cookie. Attaches the Permissions policy object and rejects
+    callers whose quick_config scope is "none"."""
     import api_keys_store
     if not api_keys_store.is_locked_down():
         rec = dict(api_keys_store.OPEN_MODE_USER)
@@ -87,9 +88,12 @@ def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
         raw = ""
         if auth_header.lower().startswith("bearer "):
             raw = auth_header.split(" ", 1)[1].strip()
-        if not raw:
-            raw = request.query_params.get("key") or ""
         rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
+        if rec is None:
+            rec = user_from_session_cookie(request)
+        if rec is None:
+            key = request.query_params.get("key") or ""
+            rec = api_keys_store.lookup_by_raw_key(key) if key else None
         if rec is None:
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED,
@@ -980,25 +984,31 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
 (() => {
 'use strict';
 
-const TOKEN_KEY = 'whisper_api_key';
 let initialRules = [];      // last-loaded rules from server (deep-copy snapshot)
 let liveRules = [];         // editable rules — diffed against initialRules to build patch
 let dirty = new Set();      // slugs with changes
 
-function getToken() { return sessionStorage.getItem(TOKEN_KEY) || ''; }
-function setToken(t) {
-  if (t) sessionStorage.setItem(TOKEN_KEY, t);
-  else sessionStorage.removeItem(TOKEN_KEY);
-  // Notify the shared web_common chrome (_refreshAuthChrome in
-  // OPEN_MODE_BANNER_JS) so the nav-link visibility updates without a
-  // page reload.
-  try { window.dispatchEvent(new Event('whisper:auth-changed')); } catch(_) {}
+// Exchange a pasted key for the HttpOnly session cookie. Returns true on
+// success. Dispatches whisper:auth-changed so the shared chrome refreshes.
+async function doLogin(key) {
+  try {
+    const r = await fetch('/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ key }),
+    });
+    if (!r.ok) return false;
+    try { window.dispatchEvent(new Event('whisper:auth-changed')); } catch(_) {}
+    return true;
+  } catch (_) { return false; }
 }
 
 async function api(method, path, body) {
+  // Session cookie sent automatically; mutations carry the CSRF token.
   const h = { 'Accept': 'application/json' };
-  const t = getToken();
-  if (t) h['Authorization'] = 'Bearer ' + t;
+  if (method !== 'GET' && method !== 'HEAD') {
+    h['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
+  }
   const opts = { method, headers: h };
   if (body !== undefined) {
     h['Content-Type'] = 'application/json';
@@ -1048,18 +1058,16 @@ async function ensureToken() {
   if (r.status === 401) {
     const t = await promptToken();
     if (!t) return null;
-    setToken(t);
-    r = await api('GET', '/quick-config/state');
-    if (r.status === 401) {
-      setToken('');
-      showToast('invalid token', 'err');
+    if (!(await doLogin(t))) {
+      showToast('invalid key', 'err');
       return null;
     }
+    r = await api('GET', '/quick-config/state');
   }
   if (r.status === 403 && typeof _renderNoAccessLanding === 'function') {
     // Refresh whoami so the landing can list reachable pages.
     try {
-      const w = await fetch('/auth/whoami', { headers: authHeaders() });
+      const w = await fetch('/auth/whoami');
       if (w.ok) window.__whoami = await w.json();
     } catch (_) {}
     _renderNoAccessLanding({ page: 'quick_config' });
@@ -1874,12 +1882,9 @@ function rebuildDatalist() {
 
 function startStream() {
   if (_es) { try { _es.close(); } catch (_) {} _es = null; }
-  // EventSource has no Authorization-header support; the server's auth
-  // dep accepts ?key=<...> as a fallback specifically for SSE.
-  const tok = getToken();
-  const url = '/quick-config/stream'
-    + (tok ? '?key=' + encodeURIComponent(tok) : '');
-  _es = new EventSource(url);
+  // EventSource sends the HttpOnly session cookie automatically (same-origin),
+  // so the SSE auth dep resolves it without the legacy ?key= query param.
+  _es = new EventSource('/quick-config/stream');
   _es.addEventListener('trace', (e) => {
     try { pushTrace(JSON.parse(e.data)); } catch (_) {}
   });

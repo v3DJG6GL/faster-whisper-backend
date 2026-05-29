@@ -13,8 +13,8 @@ Endpoints (all admin-only):
 Last-admin guard: revoking the only admin key (or only admin user)
 returns 409. Prevents accidental lockout.
 
-The HTML page is a single-file React-less app: vanilla JS + sessionStorage
-bearer (same pattern as /settings). Generates keys with a show-once modal —
+The HTML page is a single-file React-less app: vanilla JS + an HttpOnly
+session cookie (same pattern as /settings). Generates keys with a show-once modal —
 the raw key is copied to the clipboard, then never retrievable.
 """
 from __future__ import annotations
@@ -587,26 +587,28 @@ _API_KEYS_HTML = r"""<!doctype html>
 (function() {
   'use strict';
 
-  var TOKEN_KEY = 'whisper_api_key';
-  function getToken() {
-    try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch(_) { return ''; }
-  }
-  function setToken(v) {
-    try { sessionStorage.setItem(TOKEN_KEY, v || ''); } catch(_) {}
-    // Notify the shared web_common chrome (_refreshAuthChrome in
-    // OPEN_MODE_BANNER_JS) so the nav-link visibility updates without a
-    // page reload. Idempotent — safe to fire even if the value didn't
-    // change.
-    try { window.dispatchEvent(new Event('whisper:auth-changed')); } catch(_) {}
-  }
-
-  function authHeaders() {
-    var t = getToken();
-    return t ? { Authorization: 'Bearer ' + t } : {};
+  // Exchange a pasted key for an HttpOnly session cookie. Returns true on
+  // success. Dispatches whisper:auth-changed so the shared chrome refreshes.
+  async function doLogin(key) {
+    try {
+      var r = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: key }),
+      });
+      if (!r.ok) return false;
+      try { window.dispatchEvent(new Event('whisper:auth-changed')); } catch(_) {}
+      return true;
+    } catch (_) { return false; }
   }
 
   async function api(method, path, body) {
-    var h = Object.assign({ Accept: 'application/json' }, authHeaders());
+    // The HttpOnly session cookie is sent automatically; mutations also
+    // carry the double-submit CSRF token.
+    var h = { Accept: 'application/json' };
+    if (method !== 'GET' && method !== 'HEAD') {
+      h['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
+    }
     var opts = { method: method, headers: h };
     if (body !== undefined) {
       h['Content-Type'] = 'application/json';
@@ -620,7 +622,7 @@ _API_KEYS_HTML = r"""<!doctype html>
   async function _check403(r) {
     if (!r || r.status !== 403) return false;
     try {
-      var who = await fetch('/auth/whoami', { headers: authHeaders() });
+      var who = await fetch('/auth/whoami');
       if (who.ok) {
         var j = await who.json();
         // Cache whoami so the landing can list pages the caller CAN reach.
@@ -1171,21 +1173,15 @@ _API_KEYS_HTML = r"""<!doctype html>
     if (r.status === 401) {
       var v = await showTokenModal();
       if (!v) return;
-      setToken(v);
-      r = await api('GET', '/settings/api-keys/api/users');
-      // 403 after a valid bearer = "valid key, no admin scope" — keep
-      // the bearer in storage and render the no-access landing. Don't
-      // fall through to the `setToken('') + invalid key` branch below
-      // (that branch is for cases when the typed key didn't resolve).
-      if (r.status === 403 && await _check403(r)) return;
-      // 401 here means the typed key wasn't recognised — clear it so the
-      // next reload re-prompts. (No 403 short-circuit hit means we got
-      // either 401 or a 5xx; the modal stays open via the err msg.)
-      if (r.status === 401) {
-        setToken('');
+      // The typed key wasn't recognised → the login request itself fails.
+      if (!(await doLogin(v))) {
         document.getElementById('token-err').textContent = 'invalid key';
         return;
       }
+      r = await api('GET', '/settings/api-keys/api/users');
+      // 403 after a valid session = "valid key, no admin scope" — render
+      // the no-access landing rather than re-prompting.
+      if (r.status === 403 && await _check403(r)) return;
       // Other non-2xx (5xx, network): surface the status without
       // nuking the bearer.
       if (!r.ok) {

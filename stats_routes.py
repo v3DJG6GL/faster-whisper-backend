@@ -29,7 +29,7 @@ import config as cfg
 import metrics
 import system_stats
 import web_common
-from auth import Permissions, require_page
+from auth import Permissions, require_page, user_from_session_cookie
 
 router = APIRouter()
 
@@ -50,9 +50,12 @@ def _require_stats_page_sse(request: Request) -> dict[str, Any]:
     raw = ""
     if auth_header.lower().startswith("bearer "):
         raw = auth_header.split(" ", 1)[1].strip()
-    if not raw:
-        raw = request.query_params.get("key") or ""
     rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
+    if rec is None:
+        rec = user_from_session_cookie(request)
+    if rec is None:
+        key = request.query_params.get("key") or ""
+        rec = api_keys_store.lookup_by_raw_key(key) if key else None
     if rec is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
@@ -995,7 +998,8 @@ function setStatus(text, cls) {
 
 function openStream() {
   if (es) { try { es.close(); } catch {} }
-  es = new EventSource('/stats/stream' + _statsKeyParam());
+  // EventSource sends the session cookie automatically (same-origin).
+  es = new EventSource('/stats/stream');
   es.onmessage = (e) => {
     try {
       const snap = JSON.parse(e.data);
@@ -1042,26 +1046,14 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// Read the bearer for fetch + SSE so locked-down callers with
-// scope("stats") != "none" can actually load. EventSource can't set
-// Authorization headers, so /stats/stream accepts `?key=<raw>` as a
-// fallback (server-side `_require_stats_page_sse` already handles it).
-function _statsAuthHeaders() {
-  var t;
-  try { t = sessionStorage.getItem('whisper_api_key') || ''; } catch(_) { t = ''; }
-  return t ? { Authorization: 'Bearer ' + t } : {};
-}
-function _statsKeyParam() {
-  var t;
-  try { t = sessionStorage.getItem('whisper_api_key') || ''; } catch(_) { t = ''; }
-  return t ? '?key=' + encodeURIComponent(t) : '';
-}
+// Auth rides the HttpOnly session cookie, sent automatically on both the
+// fetch and the EventSource (same-origin) — no manual header or ?key= param.
 
 // Initial fetch so the page renders before the first SSE tick arrives.
 // role-admin used to be added here unconditionally — that leaked admin
 // chrome to non-admins. OPEN_MODE_BANNER_JS is now the single source
 // of truth (it sets role-admin iff whoami.is_admin=true).
-fetch('/stats/snapshot', { headers: _statsAuthHeaders(), cache: 'no-store' })
+fetch('/stats/snapshot', { cache: 'no-store' })
   .then(r => r.ok ? r.json() : null)
   .then(snap => {
     if (!snap) return;
@@ -1094,11 +1086,6 @@ const OTHERS_COLOR = '#6e7681';
 let curLines = [];
 let curMetric = 'audio_s';
 
-function authHeaders() {
-  let t;
-  try { t = sessionStorage.getItem('whisper_api_key') || ''; } catch(_) { t = ''; }
-  return t ? { Authorization: 'Bearer ' + t } : {};
-}
 function remPx(n) {
   const base = parseFloat(getComputedStyle(document.documentElement).fontSize) || 15;
   return Math.round(n * base);
@@ -1262,7 +1249,7 @@ function loadUsage() {
           + '&metric=' + encodeURIComponent(metric)
           + '&by=' + encodeURIComponent(by);
   const mine = ++_seq;
-  fetch('/stats/usage' + q, { headers: authHeaders(), cache: 'no-store' })
+  fetch('/stats/usage' + q, { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null)
     .then(j => {
       if (!j || mine !== _seq) return;   // stale response — a newer change won

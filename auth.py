@@ -27,10 +27,12 @@ import asyncio
 import logging
 from typing import Any
 
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 import api_keys_store
+import config as cfg
+import sessions_store
 
 logger = logging.getLogger("whisper-api")
 
@@ -155,11 +157,40 @@ class Permissions:
 # Dependencies
 # ---------------------------------------------------------------------
 
+def user_from_session_cookie(request: Request) -> dict[str, Any] | None:
+    """Resolve the HttpOnly session cookie to a LIVE user record, or None.
+
+    Shared by get_current_user and the SSE auth variants. The session
+    stores only a user_id, so the record (permissions, admin status) is
+    re-derived per request via api_keys_store.get_user_record — permission
+    edits and user revocation take effect without re-login. On a hit the
+    session's CSRF token is stashed on request.state for the CSRF
+    middleware to verify against the X-CSRF-Token header."""
+    raw = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
+    if not raw:
+        return None
+    sess = sessions_store.lookup_session(raw)
+    if sess is None:
+        return None
+    rec = api_keys_store.get_user_record(sess["user_id"])
+    if rec is None:
+        return None
+    request.state.session_csrf = sess["csrf_token"]
+    return rec
+
+
 def get_current_user(
+    request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
-    """Resolve the bearer to a user record. Raises 401 on miss (locked
+    """Resolve the caller to a user record. Raises 401 on miss (locked
     down) or returns the synthetic admin (open mode).
+
+    Two credential carriers in locked-down mode, tried in order:
+      1. `Authorization: Bearer <api_key>` — API clients (Vowen, curl)
+         and any direct API use.
+      2. The HttpOnly session cookie issued by /auth/login — the WebUI.
+    Bearer wins when present so API clients stay deterministic.
 
     Returns a dict with keys: key_id, user_id, username, is_admin,
     permissions (a `Permissions` policy object).
@@ -167,9 +198,11 @@ def get_current_user(
     if not api_keys_store.is_locked_down():
         rec = dict(api_keys_store.OPEN_MODE_USER)
     else:
-        if creds is None or (creds.scheme or "").lower() != "bearer":
-            raise _UNAUTH
-        rec = api_keys_store.lookup_by_raw_key(creds.credentials or "")
+        rec = None
+        if creds is not None and (creds.scheme or "").lower() == "bearer":
+            rec = api_keys_store.lookup_by_raw_key(creds.credentials or "")
+        if rec is None:
+            rec = user_from_session_cookie(request)
         if rec is None:
             raise _UNAUTH
     # Attach the policy object so routes can ask can(page)/scope(page)

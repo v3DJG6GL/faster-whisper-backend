@@ -79,6 +79,11 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "LOG_VIEWER_DOM_MAX": "WHISPER_LOG_VIEWER_DOM_MAX",
     "ADMIN_ALLOWED_HOSTS": "WHISPER_ADMIN_ALLOWED_HOSTS",
     "STATS_ALLOWED_HOSTS": "WHISPER_STATS_ALLOWED_HOSTS",
+    # Browser session cookies (HttpOnly cookie auth for the WebUI). All hot.
+    "SESSION_COOKIE_SECURE": "WHISPER_SESSION_COOKIE_SECURE",
+    "SESSION_TTL_SECONDS": "WHISPER_SESSION_TTL_SECONDS",
+    "SESSION_COOKIE_NAME": "WHISPER_SESSION_COOKIE_NAME",
+    "SESSION_CSRF_COOKIE_NAME": "WHISPER_SESSION_CSRF_COOKIE_NAME",
     # Reports + captures fields — also surfaced in the AdminConfig schema and
     # also env-readable in config.py. Without these the WebUI silently
     # succeeds on saves whose env-set values will revert on restart.
@@ -460,6 +465,21 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "STATS_ALLOWED_HOSTS":
         "IP/CIDR allowlist for /stats endpoints. Loopback always allowed; "
         "default is loopback only.",
+    # --- Browser sessions ---
+    "SESSION_COOKIE_SECURE":
+        "Mark the WebUI session/CSRF cookies 'Secure' (sent only over HTTPS). "
+        "Leave OFF for plain-HTTP LAN/VPN access; turn ON when serving over "
+        "HTTPS (e.g. behind a TLS reverse proxy), else login silently fails.",
+    "SESSION_TTL_SECONDS":
+        "Sliding browser-session lifetime in seconds; refreshed on each "
+        "authenticated request. Idle longer than this requires re-login. "
+        "Default 2592000 (30 days).",
+    "SESSION_COOKIE_NAME":
+        "Name of the HttpOnly session cookie. Letters, digits, '_' and '-' "
+        "only.",
+    "SESSION_CSRF_COOKIE_NAME":
+        "Name of the JS-readable CSRF cookie echoed back as the X-CSRF-Token "
+        "header on cookie-authenticated mutations. Letters, digits, '_', '-'.",
     # --- Reports store ---
     "REPORTS_DB":
         "Path to the SQLite file holding transcription error reports. "
@@ -955,6 +975,17 @@ class AdminConfig(BaseModel):
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
     ] | None = _F("STATS_ALLOWED_HOSTS")
+    # --- Browser sessions ---
+    SESSION_COOKIE_SECURE: bool | None = _F("SESSION_COOKIE_SECURE")
+    SESSION_TTL_SECONDS: Annotated[
+        int, Field(ge=300, le=31_536_000)
+    ] | None = _F("SESSION_TTL_SECONDS")
+    SESSION_COOKIE_NAME: Annotated[
+        str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    ] | None = _F("SESSION_COOKIE_NAME")
+    SESSION_CSRF_COOKIE_NAME: Annotated[
+        str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    ] | None = _F("SESSION_CSRF_COOKIE_NAME")
     # --- Reports store ---
     REPORTS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("REPORTS_DB")
     REPORTS_MAX: Annotated[int, Field(ge=10, le=100_000)] | None = _F("REPORTS_MAX")

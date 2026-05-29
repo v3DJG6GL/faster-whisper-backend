@@ -3456,8 +3456,8 @@ _CAPTURES_HTML = r"""<!doctype html>
 <div id="token-modal">
   <div class="box">
     <h3>API key</h3>
-    <p>Paste your <code>wk_…</code> API key. Stored in sessionStorage until
-    tab close.</p>
+    <p>Paste your <code>wk_…</code> API key. You'll stay signed in on this
+    browser until you sign out.</p>
     <input id="token-input" type="password" autocomplete="off" placeholder="wk_…">
     <div class="actions">
       <button id="token-cancel">Cancel</button>
@@ -3476,31 +3476,36 @@ _CAPTURES_HTML = r"""<!doctype html>
   'use strict';
 
   // -------------------------------------------------------------------
-  // Token storage (mirrors /reports)
+  // Sign-in (HttpOnly session cookie; mirrors /reports)
   // -------------------------------------------------------------------
-  var TOKEN_KEY = 'whisper_api_key';
-  function getToken() {
-    try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch(_) { return ''; }
-  }
-  function setToken(v) {
-    try { sessionStorage.setItem(TOKEN_KEY, v || ''); } catch(_) {}
-    // Notify the shared web_common chrome (_refreshAuthChrome in
-    // OPEN_MODE_BANNER_JS) so the nav-link visibility updates without a
-    // page reload.
-    try { window.dispatchEvent(new Event('whisper:auth-changed')); } catch(_) {}
+  // Exchange a pasted key for the session cookie. Returns true on success.
+  async function doLogin(key) {
+    try {
+      var r = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: key }),
+      });
+      if (!r.ok) return false;
+      try { window.dispatchEvent(new Event('whisper:auth-changed')); } catch(_) {}
+      return true;
+    } catch (_) { return false; }
   }
   function showTokenModal(onSaved) {
     var m = document.getElementById('token-modal');
     var inp = document.getElementById('token-input');
-    inp.value = getToken();
+    inp.value = '';
     m.classList.add('show');
     setTimeout(function() { inp.focus(); inp.select(); }, 50);
     function close() { m.classList.remove('show'); }
     document.getElementById('token-cancel').onclick = close;
-    document.getElementById('token-save').onclick = function() {
-      setToken(inp.value.trim());
-      close();
-      if (onSaved) onSaved();
+    document.getElementById('token-save').onclick = async function() {
+      if (await doLogin(inp.value.trim())) {
+        close();
+        if (onSaved) onSaved();
+      } else {
+        toast('that key was rejected', true);
+      }
     };
     inp.onkeydown = function(e) {
       if (e.key === 'Enter') document.getElementById('token-save').click();
@@ -3527,9 +3532,11 @@ _CAPTURES_HTML = r"""<!doctype html>
   // API
   // -------------------------------------------------------------------
   async function api(method, url, body) {
+    // Session cookie sent automatically; mutations carry the CSRF token.
     var headers = { 'Content-Type': 'application/json' };
-    var tok = getToken();
-    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    if (method !== 'GET' && method !== 'HEAD') {
+      headers['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
+    }
     var resp = await fetch(url, {
       method: method, headers: headers,
       body: body === undefined ? undefined : JSON.stringify(body),
@@ -3563,9 +3570,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     // — a 403 means "valid bearer, no scope on /captures"). Render the
     // shared no-access landing slugged with the current page.
     try {
-      var tok = getToken();
-      var hdrs = tok ? { Authorization: 'Bearer ' + tok } : {};
-      var r = await fetch('/auth/whoami', { headers: hdrs });
+      var r = await fetch('/auth/whoami');
       if (r.ok) {
         var j = await r.json();
         // Cache whoami so _renderNoAccessLanding can list reachable pages.
@@ -3984,13 +3989,10 @@ _CAPTURES_HTML = r"""<!doctype html>
     body.appendChild(_attachCompactPlayer(audio));
     state.audio = audio;
 
-    // Authenticated audio fetch → blob URL. The server always serves
-    // RIFF/WAVE 16 kHz mono (every capture is transcoded on write), so
-    // browser decode is reliable across Linux/Windows/macOS.
-    var tok = getToken();
-    fetch('/captures/api/' + encodeURIComponent(r.id) + '/audio', {
-      headers: tok ? { 'Authorization': 'Bearer ' + tok } : {},
-    }).then(function(resp) {
+    // Authenticated audio fetch → blob URL (session cookie auto-sent). The
+    // server always serves RIFF/WAVE 16 kHz mono (every capture is
+    // transcoded on write), so browser decode is reliable cross-platform.
+    fetch('/captures/api/' + encodeURIComponent(r.id) + '/audio').then(function(resp) {
       if (resp.status === 401) {
         showTokenModal(function() { toast('Re-open the row to load audio.'); });
         throw new Error('unauthorized');
@@ -4844,10 +4846,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   }
 
   function onExport() {
-    var tok = getToken();
-    fetch('/captures/api/export?only_status=ready&include_audio=1', {
-      headers: tok ? { 'Authorization': 'Bearer ' + tok } : {},
-    }).then(function(resp) {
+    fetch('/captures/api/export?only_status=ready&include_audio=1').then(function(resp) {
       if (resp.status === 401) {
         showTokenModal(function() { onExport(); });
         throw new Error('unauthorized');
@@ -5607,9 +5606,10 @@ _CAPTURES_HTML = r"""<!doctype html>
       toggleBtn.disabled = true;
       toggleBtn._setIcon('…');
       try {
-        var headers = { 'Content-Type': 'application/json' };
-        var tok = getToken();
-        if (tok) headers['Authorization'] = 'Bearer ' + tok;
+        var headers = {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': window._csrfToken ? window._csrfToken() : '',
+        };
         var body = JSON.stringify({
           member_ids: ids,
           silence_ms: silenceMsFn() || 300,
@@ -5700,9 +5700,10 @@ _CAPTURES_HTML = r"""<!doctype html>
   // baselineCorrections so the next save sends the user's current
   // intent against the now-canonical server state.
   async function _saveProposalChips(state, memberIds, silenceMs) {
-    var headers = { 'Content-Type': 'application/json' };
-    var tok = getToken();
-    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    var headers = {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': window._csrfToken ? window._csrfToken() : '',
+    };
     var chips = state.corrections
       .filter(function(c) { return (c.correct || '').trim(); })
       .map(function(c) {
@@ -6571,8 +6572,7 @@ _CAPTURES_HTML = r"""<!doctype html>
             audioSlot.innerHTML = '';
             audioSlot.appendChild(audioPlayerWrap);
           }
-          fetch('/captures/api/groups/' + encodeURIComponent(g.id) + '/audio',
-                { headers: { Authorization: 'Bearer ' + getToken() } })
+          fetch('/captures/api/groups/' + encodeURIComponent(g.id) + '/audio')
             .then(function(r) {
               if (!r.ok) throw new Error('HTTP ' + r.status);
               return r.blob();

@@ -543,6 +543,30 @@ def lookup_by_raw_key(raw_key: str) -> dict[str, Any] | None:
     return dict(rec)
 
 
+def get_user_record(user_id: str) -> dict[str, Any] | None:
+    """Resolve a user_id to the same record shape the bearer path returns
+    (`{key_id, user_id, username, is_admin, permissions_raw}`), reading the
+    LIVE users row, or None if the user is missing / revoked.
+
+    Used by the cookie-session path: a session stores only a user_id, so
+    permissions and admin status are re-derived per request (changes
+    propagate without re-login) and a revoked user's sessions stop
+    authenticating immediately. `key_id` is the synthetic "(session)"
+    marker since no API key is involved."""
+    if not user_id or user_id == "(open-mode)":
+        return None
+    u = get_user(user_id)
+    if u is None or u["revoked_ts"] is not None:
+        return None
+    return {
+        "key_id": "(session)",
+        "user_id": u["id"],
+        "username": u["username"],
+        "is_admin": bool(u["is_admin"]),
+        "permissions_raw": u["permissions"] or {},
+    }
+
+
 def _touch_last_used_debounced(key_id: str) -> None:
     """Update last_used_ts at most once per _LAST_USED_DEBOUNCE_S per key.
     Read of last_used_ts goes to the index (which doesn't track it) → we

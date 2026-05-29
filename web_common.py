@@ -477,10 +477,10 @@ SCALE_PICKER_HTML = (
 
 
 # Global sign-out button — the {{LOGOUT}} fragment, rendered into every page's
-# right-hand header utility cluster. Auth is one shared bearer in sessionStorage
-# (`whisper_api_key`) across all pages, so a single logout works everywhere; the
-# click handler + visibility toggle live in OPEN_MODE_BANNER_JS. Starts `hidden`
-# (class .auth-action) and is revealed only while a bearer exists. Icon-only to
+# right-hand header utility cluster. Auth is a single HttpOnly session cookie
+# shared across all pages, so one logout works everywhere; the click handler +
+# visibility toggle live in OPEN_MODE_BANNER_JS. Starts `hidden`
+# (class .auth-action) and is revealed only while logged in. Icon-only to
 # save space, but with an authoritative title + aria-label (outward door-arrow).
 LOGOUT_BTN_HTML = (
     '<button id="logout-btn" class="icon-btn auth-action" type="button" '
@@ -537,8 +537,8 @@ SCALE_PICKER_JS = """
 # Skips the work if no pills exist on the page (e.g. tests, future pages).
 # Open-mode warning banner — JS-injected at the top of <body> on every
 # WebUI page. Fetches /auth/whoami; if open_mode=true, prepends a red
-# banner reminding the operator to bootstrap an admin key. Bearer is read
-# from sessionStorage (same key all pages use).
+# banner reminding the operator to bootstrap an admin key. Auth rides the
+# HttpOnly session cookie, sent automatically (no manual header).
 OPEN_MODE_BANNER_JS = r"""
 <script>(function(){
   // Read the page-key carrier ONCE so any helper (the no-access landing,
@@ -558,11 +558,43 @@ OPEN_MODE_BANNER_JS = r"""
     window.__current_page_path = '';
   }
 
-  var TOKEN_KEY = 'whisper_api_key';
   var BANNER_ID = 'open-mode-banner';
   var landingRenderedFor = null;   // page-load-only — once a no-access
                                    // landing is rendered, subsequent
                                    // refreshes (post-login) don't re-render.
+
+  // CSRF token for cookie-authenticated mutations (double-submit). Prefer the
+  // cached whoami payload (correct even if the cookie was renamed); fall back
+  // to the readable whisper_csrf cookie (available synchronously on load).
+  // The HttpOnly session cookie itself is sent automatically by the browser.
+  window._csrfToken = function() {
+    try {
+      if (window.__whoami && window.__whoami.csrf_token)
+        return window.__whoami.csrf_token;
+    } catch(_) {}
+    try {
+      var m = document.cookie.match(/(?:^|;\s*)whisper_csrf=([^;]+)/);
+      if (m) return decodeURIComponent(m[1]);
+    } catch(_) {}
+    return '';
+  };
+
+  // Global sign-out: revoke the server session (CSRF-protected), announce the
+  // change, then reload (re-shows the login card / no-access landing). Shared
+  // by the header logout button and the no-access landing's Sign-out button.
+  window._signOut = function() {
+    var done = function() {
+      window.dispatchEvent(new Event('whisper:auth-changed'));
+      location.reload();
+    };
+    try {
+      fetch('/auth/logout', {
+        method: 'POST',
+        headers: { 'X-CSRF-Token': window._csrfToken() },
+        cache: 'no-store',
+      }).then(done, done);
+    } catch(_) { done(); }
+  };
 
   // Single source of truth for "what does the current bearer let me see?".
   // Idempotent: clears nav chrome first, then re-applies based on a fresh
@@ -579,22 +611,26 @@ OPEN_MODE_BANNER_JS = r"""
         .forEach(function(a){ a.classList.remove('allowed'); });
     } catch(_) {}
 
-    var key = null;
-    try { key = sessionStorage.getItem(TOKEN_KEY) || ''; } catch(_) {}
-    var h = { Accept: 'application/json' };
-    if (key) h['Authorization'] = 'Bearer ' + key;
-    fetch('/auth/whoami', { headers: h, cache: 'no-store' })
+    // The HttpOnly session cookie (and any Authorization header from a
+    // non-browser caller) is sent automatically — no manual header needed.
+    fetch('/auth/whoami', {
+      headers: { Accept: 'application/json' }, cache: 'no-store',
+    })
       .then(function(r){ return r.ok ? r.json() : null; })
       .then(function(j){
         if (!j) {
-          // 401 (locked-down + no/invalid bearer). Leave chrome cleared
+          // 401 (locked-down + no/invalid session). Leave chrome cleared
           // and drop the cached whoami so stale permissions don't linger.
           try { delete window.__whoami; } catch(_) {}
+          _syncAuthActions();
           return;
         }
         // Cache the whoami payload so pages that want to consult
         // permissions later (e.g. for inline scope hints) don't re-fetch.
         try { window.__whoami = j; } catch(_) {}
+        // Logout-button visibility tracks login state; the HttpOnly cookie
+        // isn't JS-readable, so this is driven by whoami, not storage.
+        _syncAuthActions();
 
         // OPEN-mode warning banner — only when no admin key configured.
         // Idempotent: the banner gets a stable id so re-runs don't stack.
@@ -655,31 +691,27 @@ OPEN_MODE_BANNER_JS = r"""
       .catch(function(){});
   };
 
-  // Refresh on every login/logout. Each token-mutating site dispatches
-  // `whisper:auth-changed` after writing sessionStorage.
+  // Refresh on every login/logout. Each login/logout site dispatches
+  // `whisper:auth-changed` after the server sets/clears the session cookie.
   window.addEventListener('whisper:auth-changed', window._refreshAuthChrome);
 
   // ---- Global sign-out ----
   // Every page renders #logout-btn (.auth-action) in the header utility
-  // cluster. Auth is one shared bearer, so a single handler logs out from
-  // anywhere: clear the token, announce the change, reload (which re-shows
-  // the login card on /settings + /settings/api-keys, or the no-access landing
-  // elsewhere). Visibility tracks token presence so the control is hidden
-  // when logged out / in open mode.
+  // cluster. The HttpOnly session cookie isn't JS-readable, so visibility is
+  // driven by the cached whoami: shown only when locked-down AND logged in
+  // (open mode has no session to end). Clicking hits the server /auth/logout.
   function _syncAuthActions() {
-    var hasTok = false;
-    try { hasTok = !!(sessionStorage.getItem(TOKEN_KEY) || ''); } catch(_) {}
+    var loggedIn = false;
+    try {
+      loggedIn = !!(window.__whoami && window.__whoami.open_mode === false);
+    } catch(_) {}
     document.querySelectorAll('.auth-action').forEach(function(el){
-      el.hidden = !hasTok;
+      el.hidden = !loggedIn;
     });
   }
   var _logoutBtn = document.getElementById('logout-btn');
   if (_logoutBtn) {
-    _logoutBtn.addEventListener('click', function(){
-      try { sessionStorage.removeItem(TOKEN_KEY); } catch(_) {}
-      window.dispatchEvent(new Event('whisper:auth-changed'));
-      location.reload();
-    });
+    _logoutBtn.addEventListener('click', function(){ window._signOut(); });
   }
   window.addEventListener('whisper:auth-changed', _syncAuthActions);
   _syncAuthActions();
@@ -856,8 +888,7 @@ function _renderNoAccessLanding(opts) {
     + '<h2>No access' + slug + '</h2>'
     + body
     + '<p class="landing-signout">'
-    + '<button onclick="sessionStorage.removeItem(\\u0027whisper_api_key\\u0027);'
-    + 'location.reload()">Sign out</button>'
+    + '<button onclick="window._signOut()">Sign out</button>'
     + '</p></div>';
 }
 

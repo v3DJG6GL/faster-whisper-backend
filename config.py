@@ -429,6 +429,29 @@ STATS_ALLOWED_HOSTS: "list[str]" = ["127.0.0.1", "::1"]
 
 
 # =============================================================================
+# Browser sessions (HttpOnly cookie auth for the WebUI)
+# =============================================================================
+# The WebUI exchanges a pasted API key at /auth/login for an HttpOnly session
+# cookie (server-side store in SESSIONS_DB). Non-browser clients (Vowen, curl)
+# keep using `Authorization: Bearer` and never touch any of this.
+
+# Mark the session/CSRF cookies `Secure` (browser only sends them over HTTPS).
+# Default OFF so plain-HTTP LAN/VPN access works. Set True on any instance
+# served over HTTPS (e.g. behind a TLS-terminating reverse proxy), otherwise
+# the cookie is set but never sent back and login silently fails.
+SESSION_COOKIE_SECURE = False
+
+# Sliding session lifetime in seconds. Each authenticated request refreshes
+# the expiry (debounced). Idle longer than this → re-login. Default 30 days.
+SESSION_TTL_SECONDS = 2_592_000
+
+# Cookie names. Session cookie is HttpOnly (JS cannot read it); the CSRF
+# cookie is readable by JS so the client can echo it back as X-CSRF-Token.
+SESSION_COOKIE_NAME = "whisper_session"
+SESSION_CSRF_COOKIE_NAME = "whisper_csrf"
+
+
+# =============================================================================
 # Transcription error reports
 # =============================================================================
 # Users can flag a wrong transcription from /quick-config; admins triage on
@@ -536,6 +559,11 @@ USAGE_RETENTION_DAYS = 0
 # once and never persisted in plaintext; only the SHA-256 hash hits disk.
 
 API_KEYS_DB = os.path.join(_REPO_DIR, "api_keys.local.sqlite3")
+
+# Durable browser-session store (SQLite, WAL). Maps an opaque session token
+# to a user_id (+ per-session CSRF token + sliding expiry). Sits next to
+# config.local.json; .gitignore matches the *.local.sqlite3* triple.
+SESSIONS_DB = os.path.join(_REPO_DIR, "sessions.local.sqlite3")
 
 # If set, on startup we insert (or no-op) a user named `bootstrap-admin`
 # with this exact raw key. NEVER stored in config.local.json. Operator
@@ -800,6 +828,7 @@ for _secret in ("WHISPER_BOOTSTRAP_ADMIN_KEY", "WHISPER_USE_AUTH_TOKEN"):
 # --- Non-AdminConfig constants (no WebUI row → not in ENV_VAR_MAPPING) -------
 ADMIN_UI_ENABLED = _env_bool("WHISPER_ADMIN_UI", ADMIN_UI_ENABLED)
 API_KEYS_DB = _env_str("WHISPER_API_KEYS_DB", API_KEYS_DB)
+SESSIONS_DB = _env_str("WHISPER_SESSIONS_DB", SESSIONS_DB)
 BOOTSTRAP_ADMIN_KEY = _env_str("WHISPER_BOOTSTRAP_ADMIN_KEY", BOOTSTRAP_ADMIN_KEY)
 USAGE_DB = _env_str("WHISPER_USAGE_DB", USAGE_DB)
 USAGE_RETENTION_DAYS = _env_int("WHISPER_USAGE_RETENTION_DAYS", USAGE_RETENTION_DAYS)

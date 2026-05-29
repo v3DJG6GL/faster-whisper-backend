@@ -140,12 +140,13 @@ if sys.platform == "win32":
     _preload_windows_cuda_dlls()
 
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Depends
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Response, Depends
 
 # Auth dep used by /v1/audio/transcriptions and /auth/whoami. In open mode
 # (no admin key in DB) it returns the synthetic admin so the operator can
 # bootstrap; in locked-down mode it 401s on missing/invalid bearer.
 from auth import Permissions, get_current_user as _get_current_user_dep
+from auth import user_from_session_cookie as _user_from_session_cookie
 
 # faster_whisper pulls the heavy native stack (ctranslate2/onnxruntime/av). It is
 # imported lazily at first model load (see _get_or_load_model) so this module
@@ -1384,6 +1385,16 @@ async def lifespan(app: FastAPI):
     except Exception as _ae:
         logger.error("Failed to initialize API keys store: %s", _ae)
 
+    # Open the browser-session store (HttpOnly cookie auth for the WebUI).
+    # Non-fatal: if this fails, cookie login is unavailable but bearer auth
+    # (API clients) and open mode keep working.
+    try:
+        import sessions_store
+        sessions_store.init_db(cfg.SESSIONS_DB)
+        logger.info("Session store initialized at %s", cfg.SESSIONS_DB)
+    except Exception as _se:
+        logger.error("Failed to initialize session store: %s", _se)
+
     # Open the reports SQLite store (durable, plaintext PHI on disk) and
     # run an immediate retention sweep before serving traffic. Failure
     # here is non-fatal: the rest of the app must keep working even if
@@ -1488,6 +1499,44 @@ app.mount(
 # Per-request metrics middleware. Records (path, status, duration) for every
 # HTTP request — bumps in_flight tracked separately by the transcribe handler.
 import metrics
+
+
+_CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+# Paths that issue a session and therefore can't carry a CSRF token yet.
+_CSRF_EXEMPT_PATHS = frozenset({"/auth/login"})
+
+
+@app.middleware("http")
+async def _csrf_mw(request: Request, call_next):
+    """Double-submit CSRF guard for COOKIE-authenticated mutations only.
+
+    Cookies are auto-sent by the browser, so a cross-site POST would ride
+    the session cookie — hence we require an X-CSRF-Token header matching
+    the session's stored token on unsafe methods. Requests WITHOUT a
+    session cookie (Authorization: Bearer API clients — Vowen, curl) are
+    untouched: they can't be CSRF'd and must keep working without a token.
+    """
+    if (
+        request.method.upper() not in _CSRF_SAFE_METHODS
+        and request.url.path not in _CSRF_EXEMPT_PATHS
+    ):
+        cookie = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
+        if cookie:
+            import hmac
+            import sessions_store
+            from fastapi.responses import JSONResponse
+            sess = sessions_store.lookup_session(cookie)
+            header_tok = request.headers.get("x-csrf-token", "")
+            if (
+                sess is None
+                or not header_tok
+                or not hmac.compare_digest(header_tok, sess["csrf_token"])
+            ):
+                return JSONResponse(
+                    {"detail": "CSRF token missing or invalid"},
+                    status_code=403,
+                )
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -2354,11 +2403,9 @@ _LOG_VIEWER_HTML = """<!doctype html>
       const prevLabel = loadOlderBtn.textContent;
       loadOlderBtn.textContent = 'Loading…';
       try {
-        // _logsKey() returns "?key=<encoded>" or ""; convert to the
-        // "&key=…" suffix this URL needs since we already have a "?".
-        const keyq = _logsKey().replace(/^\\?/, '&');
+        // Session cookie is sent automatically with the fetch.
         const url = '/logs/older?skip=' + encodeURIComponent(_logsSkip)
-                  + '&limit={{LOG_VIEWER_INITIAL_LINES}}' + keyq;
+                  + '&limit={{LOG_VIEWER_INITIAL_LINES}}';
         const r = await fetch(url);
         if (!r.ok) {
           console.warn('load-older failed', r.status);
@@ -2391,16 +2438,10 @@ _LOG_VIEWER_HTML = """<!doctype html>
     });
   }
 
-  // EventSource can't set Authorization headers — pass the bearer via
-  // ?key=<raw> so the server-side `_require_logs_page_sse` fallback
-  // resolves the user (locked-down + non-admin viewer must authenticate
-  // for the stream to open).
-  function _logsKey() {
-    var t;
-    try { t = sessionStorage.getItem('whisper_api_key') || ''; } catch(_) { t = ''; }
-    return t ? '?key=' + encodeURIComponent(t) : '';
-  }
-  const es = new EventSource('/logs/stream' + _logsKey());
+  // EventSource sends the HttpOnly session cookie automatically (same-origin),
+  // so the server's _require_logs_page_sse dependency resolves the user
+  // without the legacy ?key= fallback.
+  const es = new EventSource('/logs/stream');
   es.onmessage = (e) => append(e.data);
   es.onerror = () => {
     statusEl.textContent = 'reconnecting…';
@@ -2466,9 +2507,12 @@ def _require_logs_page_sse(request: Request) -> dict:
     raw = ""
     if auth_header.lower().startswith("bearer "):
         raw = auth_header.split(" ", 1)[1].strip()
-    if not raw:
-        raw = request.query_params.get("key") or ""
     rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
+    if rec is None:
+        rec = _user_from_session_cookie(request)
+    if rec is None:
+        key = request.query_params.get("key") or ""
+        rec = api_keys_store.lookup_by_raw_key(key) if key else None
     if rec is None:
         raise HTTPException(
             401, "invalid or missing API key",
@@ -2528,27 +2572,95 @@ async def logs_older(skip: int = 0, limit: int = 0):
 
 @app.get("/auth/whoami")
 async def whoami(
+    request: Request,
     user: dict = Depends(_get_current_user_dep),
 ):
-    """Resolve the bearer to a user payload the WebUI uses to render the
+    """Resolve the caller to a user payload the WebUI uses to render the
     login modal + user-aware chrome.
 
-    Returns `{open_mode, user_id, username, is_admin, permissions}`. The
-    `permissions` object is `{pages: {logs: 'own'|'all'|'none', ...}}`
-    — used by each page's JS to hide nav links the user can't reach and
-    to render scope hints like "viewing only your own records". Admin
-    users always see all pages + all data; the permissions object is
-    still populated for symmetry. A 401 means the bearer is missing/
-    invalid AND the server is in locked-down mode — the WebUI re-prompts."""
+    Returns `{open_mode, user_id, username, is_admin, permissions,
+    csrf_token?}`. The `permissions` object is `{pages: {logs:
+    'own'|'all'|'none', ...}}` — used by each page's JS to hide nav links
+    the user can't reach and to render scope hints. `csrf_token` is
+    present only for cookie-authenticated callers (set by
+    user_from_session_cookie on request.state) so the client can attach
+    X-CSRF-Token without parsing the cookie. A 401 means no valid
+    credential AND the server is locked down — the WebUI re-prompts."""
     import api_keys_store as _ak
     perms = user.get("permissions")
-    return {
+    out = {
         "open_mode": not _ak.is_locked_down(),
         "user_id": user.get("user_id"),
         "username": user.get("username"),
         "is_admin": bool(user.get("is_admin")),
         "permissions": perms.to_dict() if perms is not None else {"pages": {}},
     }
+    csrf = getattr(request.state, "session_csrf", None)
+    if csrf:
+        out["csrf_token"] = csrf
+    return out
+
+
+@app.post("/auth/login")
+async def login(request: Request, response: Response):
+    """Exchange a pasted API key for an HttpOnly session cookie.
+
+    Open mode → no-op (everyone is already the synthetic admin). Locked
+    down → validate the key via api_keys_store, create a server-side
+    session, and set two cookies: the HttpOnly session token and a
+    JS-readable CSRF token (double-submit). Returns the same shape as
+    /auth/whoami so the client can populate chrome without a second
+    round-trip. CSRF-exempt (no session exists yet)."""
+    import api_keys_store as _ak
+    import sessions_store
+    if not _ak.is_locked_down():
+        return {"open_mode": True}
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed/empty body → treat as no key
+        body = {}
+    key = body.get("key") if isinstance(body, dict) else None
+    rec = _ak.lookup_by_raw_key(key or "")
+    if rec is None:
+        raise HTTPException(
+            401, "invalid API key", headers={"WWW-Authenticate": "Bearer"},
+        )
+    raw_token, csrf_token = sessions_store.create_session(
+        rec["user_id"], cfg.SESSION_TTL_SECONDS,
+    )
+    ttl = int(cfg.SESSION_TTL_SECONDS)
+    secure = bool(cfg.SESSION_COOKIE_SECURE)
+    response.set_cookie(
+        cfg.SESSION_COOKIE_NAME, raw_token, max_age=ttl,
+        httponly=True, samesite="lax", secure=secure, path="/",
+    )
+    response.set_cookie(
+        cfg.SESSION_CSRF_COOKIE_NAME, csrf_token, max_age=ttl,
+        httponly=False, samesite="lax", secure=secure, path="/",
+    )
+    perms = Permissions(rec.get("permissions_raw") or {}, bool(rec.get("is_admin")))
+    return {
+        "open_mode": False,
+        "csrf_token": csrf_token,
+        "user_id": rec.get("user_id"),
+        "username": rec.get("username"),
+        "is_admin": bool(rec.get("is_admin")),
+        "permissions": perms.to_dict(),
+    }
+
+
+@app.post("/auth/logout")
+async def logout(request: Request, response: Response):
+    """Revoke the current session and clear its cookies. CSRF-protected
+    like any other cookie-authenticated mutation (the WebUI sends the
+    X-CSRF-Token header)."""
+    import sessions_store
+    raw = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
+    if raw:
+        sessions_store.revoke_session(raw)
+    response.delete_cookie(cfg.SESSION_COOKIE_NAME, path="/")
+    response.delete_cookie(cfg.SESSION_CSRF_COOKIE_NAME, path="/")
+    return {"ok": True}
 
 
 @app.get("/sev")

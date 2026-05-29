@@ -671,7 +671,7 @@ _REPORTS_HTML = """<!doctype html>
 <div id="token-modal">
   <div class="box">
     <h3>API key</h3>
-    <p>Paste your <code>wk_…</code> admin API key. Stored in sessionStorage until tab close.</p>
+    <p>Paste your <code>wk_…</code> admin API key. You'll stay signed in on this browser until you sign out.</p>
     <input id="token-input" type="password" autocomplete="off" placeholder="wk_…">
     <div class="actions">
       <button id="token-cancel">Cancel</button>
@@ -690,32 +690,37 @@ _REPORTS_HTML = """<!doctype html>
   'use strict';
 
   // -------------------------------------------------------------------
-  // Token (sessionStorage; matches the /quick-config rhythm)
+  // Sign-in (HttpOnly session cookie; matches the /quick-config rhythm)
   // -------------------------------------------------------------------
-  var TOKEN_KEY = 'whisper_api_key';
-  function getToken() {
-    try { return sessionStorage.getItem(TOKEN_KEY) || ''; } catch(_) { return ''; }
-  }
-  function setToken(v) {
-    try { sessionStorage.setItem(TOKEN_KEY, v || ''); } catch(_) {}
-    // Notify the shared web_common chrome (_refreshAuthChrome in
-    // OPEN_MODE_BANNER_JS) so the nav-link visibility updates without a
-    // page reload.
-    try { window.dispatchEvent(new Event('whisper:auth-changed')); } catch(_) {}
+  // Exchange a pasted key for the session cookie. Returns true on success.
+  async function doLogin(key) {
+    try {
+      var r = await fetch('/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: key }),
+      });
+      if (!r.ok) return false;
+      try { window.dispatchEvent(new Event('whisper:auth-changed')); } catch(_) {}
+      return true;
+    } catch (_) { return false; }
   }
 
   function showTokenModal(onSaved) {
     var m = document.getElementById('token-modal');
     var inp = document.getElementById('token-input');
-    inp.value = getToken();
+    inp.value = '';
     m.classList.add('show');
     setTimeout(function() { inp.focus(); inp.select(); }, 50);
     function close() { m.classList.remove('show'); }
     document.getElementById('token-cancel').onclick = close;
-    document.getElementById('token-save').onclick = function() {
-      setToken(inp.value.trim());
-      close();
-      if (onSaved) onSaved();
+    document.getElementById('token-save').onclick = async function() {
+      if (await doLogin(inp.value.trim())) {
+        close();
+        if (onSaved) onSaved();
+      } else {
+        toast('that key was rejected', true);
+      }
     };
     inp.onkeydown = function(e) {
       if (e.key === 'Enter') document.getElementById('token-save').click();
@@ -742,9 +747,11 @@ _REPORTS_HTML = """<!doctype html>
   // API helper
   // -------------------------------------------------------------------
   async function api(method, url, body) {
+    // Session cookie sent automatically; mutations carry the CSRF token.
     var headers = { 'Content-Type': 'application/json' };
-    var tok = getToken();
-    if (tok) headers['Authorization'] = 'Bearer ' + tok;
+    if (method !== 'GET' && method !== 'HEAD') {
+      headers['X-CSRF-Token'] = window._csrfToken ? window._csrfToken() : '';
+    }
     var resp = await fetch(url, {
       method: method,
       headers: headers,
@@ -786,9 +793,7 @@ _REPORTS_HTML = """<!doctype html>
     // — a 403 means "valid bearer, no scope on /reports"). Render the
     // shared no-access landing slugged with the current page.
     try {
-      var tok = getToken();
-      var hdrs = tok ? { Authorization: 'Bearer ' + tok } : {};
-      var r = await fetch('/auth/whoami', { headers: hdrs });
+      var r = await fetch('/auth/whoami');
       if (r.ok) {
         var j = await r.json();
         // Cache whoami so _renderNoAccessLanding can list reachable pages.
@@ -1195,12 +1200,9 @@ _REPORTS_HTML = """<!doctype html>
   }
 
   function onExport() {
-    var tok = getToken();
-    // Fetch via JS to send Authorization header; download as blob.
-    // No token? Let the 401 branch below trigger the token modal.
-    fetch('/reports/api/export', {
-      headers: tok ? { 'Authorization': 'Bearer ' + tok } : {},
-    }).then(function(resp) {
+    // Fetch via JS (session cookie auto-sent) and download as a blob.
+    // Not signed in? The 401 branch below triggers the sign-in modal.
+    fetch('/reports/api/export').then(function(resp) {
       if (resp.status === 401) {
         showTokenModal(function() { onExport(); });
         throw new Error('unauthorized');

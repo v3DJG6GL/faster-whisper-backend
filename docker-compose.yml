@@ -18,6 +18,7 @@ services:
       # dir, so the image stays stateless. Every other WHISPER_* setting can be
       # added here too — see .env.example for the full list and defaults.
       WHISPER_API_KEYS_DB: /data/api_keys.local.sqlite3
+      WHISPER_SESSIONS_DB: /data/sessions.local.sqlite3
       WHISPER_REPORTS_DB: /data/reports.local.sqlite3
       WHISPER_RECENT_TRANSCRIPTIONS_DB: /data/recent_transcriptions.local.sqlite3
       WHISPER_USAGE_DB: /data/usage.local.sqlite3

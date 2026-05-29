@@ -77,6 +77,13 @@ def _reset_singletons():
     # api-key debounce cache (the index/lockdown are rebuilt by init_db)
     api_keys_store._LAST_USED_CACHE.clear()
 
+    # session-store caches (the index is rebuilt by init_db)
+    try:
+        import sessions_store
+        sessions_store._reset_for_tests()
+    except Exception:
+        pass
+
     # reports submission rate-limiter (module-global fixed-window counter):
     # clear so a rate-limit test in one case can't 429 a later submit test.
     try:
@@ -343,6 +350,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     the fake model. Importing main has only benign side effects (logging)."""
     # Point all stores at temp files BEFORE importing main / running lifespan.
     monkeypatch.setenv("WHISPER_API_KEYS_DB", str(tmp_path / "api_keys.sqlite3"))
+    monkeypatch.setenv("WHISPER_SESSIONS_DB", str(tmp_path / "sessions.sqlite3"))
     monkeypatch.setenv("WHISPER_REPORTS_DB", str(tmp_path / "reports.sqlite3"))
     monkeypatch.setenv("WHISPER_RECENT_TRANSCRIPTIONS_DB", str(tmp_path / "recent.sqlite3"))
     monkeypatch.setenv("WHISPER_USAGE_DB", str(tmp_path / "usage.sqlite3"))
@@ -386,8 +394,9 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # captures connection, so just drop its reference.
     import api_keys_store, reports_store, transcriptions_store
     import usage_store, captures_store, capture_groups_store
-    for _mod in (api_keys_store, reports_store, transcriptions_store,
-                 usage_store, captures_store):
+    import sessions_store
+    for _mod in (api_keys_store, sessions_store, reports_store,
+                 transcriptions_store, usage_store, captures_store):
         _c = getattr(_mod, "_conn", None)
         if _c is not None:
             try:
