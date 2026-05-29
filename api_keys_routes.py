@@ -746,11 +746,11 @@ _API_KEYS_HTML = r"""<!doctype html>
   // Tooltips describe what "own" means per page. Kept short — full
   // help lives in the page card's intro paragraph.
   var PAGE_TIPS = {
-    logs:         'server-wide log stream — no per-user view (none|all only)',
-    stats:        'system aggregates — no per-user view (none|all only)',
     quick_config: 'own = this user’s submitted chips + their own recent traces',
+    captures:     'own = only audio + transcripts dictated under this user’s key',
     reports:      'own = only reports this user submitted',
-    captures:     'own = only audio + transcripts dictated under this user’s key'
+    stats:        'system aggregates — no per-user view (none|all only)',
+    logs:         'server-wide log stream — no per-user view (none|all only)'
   };
 
   function renderMatrix(j) {

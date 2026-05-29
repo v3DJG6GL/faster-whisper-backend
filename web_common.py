@@ -791,11 +791,11 @@ NOT_ADMIN_LANDING_JS = """
 // reuses `href` directly (no "Open " verb prefix — stacked verbs read
 // like the redundant menu) so the buttons look + behave like links.
 var _PAGE_LINK_INFO = {
-  logs:         { href: '/logs' },
-  stats:        { href: '/stats' },
   quick_config: { href: '/quick-config' },
+  captures:     { href: '/captures' },
   reports:      { href: '/reports' },
-  captures:     { href: '/captures' }
+  stats:        { href: '/stats' },
+  logs:         { href: '/logs' }
 };
 
 function _renderNoAccessLanding(opts) {
@@ -1442,18 +1442,30 @@ function renderTypeEditor(rule, commitData, opts) {
 
 
 def _nav_items(current: str) -> list[tuple[str, str, bool]]:
-    """Return [(label, href, active), ...] honoring cfg.ADMIN_UI_ENABLED."""
-    items: list[tuple[str, str, bool]] = [
-        ("logs",  "/logs",  current == "logs"),
-        ("stats", "/stats", current == "stats"),
+    """Return [(label, href, active), ...] in left-to-right display order,
+    honoring cfg.ADMIN_UI_ENABLED. `_NAV_SPEC` is the single source of truth
+    for nav order — edit it to reorder the bar. The trailing flag marks links
+    that only exist when the admin UI is registered (quick-config / reports /
+    captures / settings / api-keys); logs + stats are always served and so
+    render unconditionally."""
+    admin = getattr(cfg, "ADMIN_UI_ENABLED", False)
+    return [
+        (label, href, current == key)
+        for label, href, key, admin_gated in _NAV_SPEC
+        if admin or not admin_gated
     ]
-    if getattr(cfg, "ADMIN_UI_ENABLED", False):
-        items.append(("settings", "/settings", current == "settings"))
-        items.append(("keys", "/settings/api-keys", current == "api-keys"))
-        items.append(("quick", "/quick-config", current == "quick-config"))
-        items.append(("reports", "/reports", current == "reports"))
-        items.append(("captures", "/captures", current == "captures"))
-    return items
+
+
+# (label, href, current-key, admin_gated) — left-to-right nav order.
+_NAV_SPEC: list[tuple[str, str, str, bool]] = [
+    ("quick",    "/quick-config",      "quick-config", True),
+    ("captures", "/captures",          "captures",     True),
+    ("reports",  "/reports",           "reports",      True),
+    ("stats",    "/stats",             "stats",        False),
+    ("logs",     "/logs",              "logs",         False),
+    ("settings", "/settings",          "settings",     True),
+    ("keys",     "/settings/api-keys", "api-keys",     True),
+]
 
 
 def nav_html(current: str) -> str:

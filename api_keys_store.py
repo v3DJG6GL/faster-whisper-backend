@@ -74,7 +74,7 @@ _KEY_BYTES = 32   # secrets.token_urlsafe(32) → 43-char base64url, 256-bit ent
 #   "all"  → page visible, no user_id filter (admin-equivalent visibility).
 # Admins (is_admin=1) bypass this entirely via the super-role short-circuit.
 # /settings and /settings/api-keys are admin-only by definition and never appear.
-PAGES: tuple[str, ...] = ("logs", "stats", "quick_config", "reports", "captures")
+PAGES: tuple[str, ...] = ("quick_config", "captures", "reports", "stats", "logs")
 
 # Per-user data pages — support the full none|own|all triple.
 SCOPED_PAGES: frozenset[str] = frozenset(
@@ -96,11 +96,11 @@ _ALLOWED_SCOPES: dict[str, tuple[str, ...]] = {
 #   stats / logs   → "none" (server-wide views, not user-partitionable).
 DEFAULT_NONADMIN_PERMS: dict[str, Any] = {
     "pages": {
-        "logs":         "none",
-        "stats":        "none",
         "quick_config": "own",
-        "reports":      "own",
         "captures":     "own",
+        "reports":      "own",
+        "stats":        "none",
+        "logs":         "none",
     },
 }
 
