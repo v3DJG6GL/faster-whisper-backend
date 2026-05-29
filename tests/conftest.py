@@ -380,6 +380,23 @@ def app_module(tmp_path, monkeypatch, fake_model):
 
     yield main
 
+    # The lifespan opens five store connections on a temp DB; close them so a
+    # GC'd-without-close() sqlite3.Connection doesn't emit ResourceWarning noise
+    # (one per store × every route test). capture_groups_store shares the
+    # captures connection, so just drop its reference.
+    import api_keys_store, reports_store, transcriptions_store
+    import usage_store, captures_store, capture_groups_store
+    for _mod in (api_keys_store, reports_store, transcriptions_store,
+                 usage_store, captures_store):
+        _c = getattr(_mod, "_conn", None)
+        if _c is not None:
+            try:
+                _c.close()
+            except Exception:
+                pass
+            _mod._conn = None
+    capture_groups_store._conn = None
+
 
 @pytest.fixture
 def client(app_module):
