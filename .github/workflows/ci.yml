@@ -19,7 +19,11 @@ jobs:
         os: [ubuntu-latest]
         python-version: ["3.12", "3.13", "3.14.5"]
         include:
-          - os: windows-latest
+          # Pinned to the explicit image (not windows-latest) to silence the
+          # "windows-latest is being redirected to windows-2025" runner NOTICE.
+          # Bump manually when GitHub deprecates this label — Renovate tracks
+          # actions, not runner labels.
+          - os: windows-2025
             python-version: "3.14.5"
     steps:
       - uses: actions/checkout@v6
