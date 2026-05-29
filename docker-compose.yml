@@ -6,10 +6,17 @@ services:
     build: .
     image: faster-whisper-backend
     ports:
+      # To serve on another port, set WHISPER_SERVER_PORT to match AND change
+      # both sides here, e.g. "9000:9000".
       - "8000:8000"
+    # Optional: tune any WHISPER_* setting from a local .env file (copy it from
+    # .env.example). Values in `environment:` below and real env vars win over it.
+    # env_file:
+    #   - .env
     environment:
       # Pin the runtime state under /data (volumes below) instead of the repo
-      # dir, so the image stays stateless.
+      # dir, so the image stays stateless. Every other WHISPER_* setting can be
+      # added here too — see .env.example for the full list and defaults.
       WHISPER_API_KEYS_DB: /data/api_keys.local.sqlite3
       WHISPER_REPORTS_DB: /data/reports.local.sqlite3
       WHISPER_RECENT_TRANSCRIPTIONS_DB: /data/recent_transcriptions.local.sqlite3
@@ -18,13 +25,21 @@ services:
       WHISPER_CAPTURES_DIR: /data/captures
       WHISPER_LOG_FILE: /data/logs/whisper.log
       WHISPER_DOWNLOAD_ROOT: /models
-      # Optional: paste a key to bootstrap the first admin without the UI.
-      # WHISPER_BOOTSTRAP_ADMIN_KEY: ""
+      # Optional: bootstrap the first admin without the UI. Prefer the *_FILE
+      # form so the secret stays out of `docker inspect` / the process env:
+      # WHISPER_BOOTSTRAP_ADMIN_KEY_FILE: /run/secrets/bootstrap_admin_key
     volumes:
       - whisper-data:/data
       - whisper-models:/models
     restart: unless-stopped
+    # Mount file-based secrets and reference them with the *_FILE vars above.
+    # secrets:
+    #   - bootstrap_admin_key
 
 volumes:
   whisper-data:
   whisper-models:
+
+# secrets:
+#   bootstrap_admin_key:
+#     file: ./secrets/bootstrap_admin_key.txt
