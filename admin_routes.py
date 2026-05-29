@@ -1101,6 +1101,15 @@ _CONFIG_VIEWER_HTML = r"""<!doctype html>
   /* Nullable-number editor in its disabled (null) state — greyed input,
      enable/disable button labelled accordingly. */
   .nullable-wrap input:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* Env-pinned fields: the env var wins at runtime, so the GUI editor is
+     disabled and greyed. The label/badges stay full-strength so the field is
+     still scannable; only the value controls are dimmed. */
+  .field.env-pinned .input-col { opacity: 0.55; }
+  .field.env-pinned .env-pinned-editor input:disabled,
+  .field.env-pinned .env-pinned-editor select:disabled,
+  .field.env-pinned .env-pinned-editor textarea:disabled,
+  .field.env-pinned .env-pinned-editor button:disabled { cursor: not-allowed; }
+  .help.help-env-pinned { color: var(--magenta); opacity: 1; }
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none;
     align-items: center; justify-content: center; z-index: 100; }
   .modal.show { display: flex; }
@@ -1450,7 +1459,18 @@ function currentValue(name) {
     : fieldDef(name).value;
 }
 
+// Disable every form control inside an env-pinned field's editor so the value
+// can't be edited from the GUI (the env var wins at runtime). Belt-and-braces
+// with the setDirty() guard below + the greyed .env-pinned row styling.
+function disableEnvPinnedEditor(el) {
+  el.classList.add('env-pinned-editor');
+  el.querySelectorAll('input, select, textarea, button').forEach(c => { c.disabled = true; });
+}
+
 function setDirty(name, value) {
+  // Env-pinned fields are read-only in the GUI — the env var takes precedence,
+  // so never record a pending edit for them.
+  if (isEnvPinned(name)) return;
   // Equality vs. server value — if user reverts manually we drop the entry
   const cur = JSON.stringify(fieldDef(name).value);
   const nxt = JSON.stringify(value);
@@ -1517,7 +1537,9 @@ function fieldRow(name) {
 
   if (FULLROW_FIELDS.has(name)) {
     row.classList.add('field-fullrow');
-    row.appendChild(makeEditor(name));
+    const fullEd = makeEditor(name);
+    if (isEnvPinned(name)) { row.classList.add('env-pinned'); disableEnvPinnedEditor(fullEd); }
+    row.appendChild(fullEd);
     return row;
   }
 
@@ -1532,7 +1554,12 @@ function fieldRow(name) {
 
   const inputCol = document.createElement('div');
   inputCol.className = 'input-col';
-  inputCol.appendChild(makeEditor(name));
+  const editor = makeEditor(name);
+  if (isEnvPinned(name)) {
+    row.classList.add('env-pinned');
+    disableEnvPinnedEditor(editor);
+  }
+  inputCol.appendChild(editor);
   // Env-override warning: lives in the input column (not the label column)
   // so the long line wraps inside the value-column width. If it sits in
   // .label-col, CSS subgrid sizes the column to this prose's max-content
@@ -1540,9 +1567,9 @@ function fieldRow(name) {
   // already has the right styling.
   if (isEnvPinned(name)) {
     const note = document.createElement('div');
-    note.className = 'help';
-    note.textContent = 'Currently overridden by env var; saves persist but '
-      + 'only take effect when the env var is unset.';
+    note.className = 'help help-env-pinned';
+    note.textContent = 'Set by ' + fieldDef(name).env_var
+      + ' — read-only here; unset the environment variable to edit it in the UI.';
     inputCol.appendChild(note);
   }
 
