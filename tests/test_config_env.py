@@ -8,6 +8,7 @@ once via a guarded importlib.reload (restored in a finally).
 
 import importlib
 import json
+import os
 
 import pytest
 
@@ -152,17 +153,166 @@ def test_factory_loader_missing_key_raises(monkeypatch, tmp_path):
         config._load_factory_pipeline_rules()
 
 
+def test_env_float_or_none(monkeypatch):
+    # explicit empty string -> None (disable the check)
+    monkeypatch.setenv("X_FON", "")
+    assert config._env_float_or_none("X_FON", 0.6) is None
+    monkeypatch.setenv("X_FON", "0.3")
+    assert config._env_float_or_none("X_FON", 0.6) == 0.3
+    monkeypatch.setenv("X_FON", "bad")
+    assert config._env_float_or_none("X_FON", 0.6) == 0.6   # invalid -> current
+    monkeypatch.delenv("X_FON")
+    assert config._env_float_or_none("X_FON", 0.6) == 0.6   # unset -> current
+
+
 # ---------------------------------------------------------------------------
-# Precedence / asymmetry documentation tests
+# Single-source-of-truth invariant: every AdminConfig field is env-configurable
 # ---------------------------------------------------------------------------
 
-def test_some_admin_fields_have_no_env_reader():
-    # These AdminConfig fields are editable via local.json but have NO global
-    # WHISPER_* reader in config.py (documented asymmetry). Setting the
-    # name-matching env var must not change them after reload.
+def test_every_admin_field_is_env_mapped():
+    # ENV_VAR_MAPPING is the source of truth driving config.py's schema loop,
+    # the WebUI "env-pinned" badge, and env > GUI precedence. Every editable
+    # AdminConfig field MUST be present (and vice-versa) or it silently loses
+    # env-configurability / badging. This guards against future drift.
     import config_store as cs
-    no_env = {"BEAM_SIZE", "BEST_OF", "VAD_FILTER", "DEFAULT_LANGUAGE",
-              "SERVER_PORT", "LOG_MAX_BYTES"}
-    for f in no_env:
-        assert f in cs.AdminConfig.model_fields
-        assert f not in cs.ENV_VAR_MAPPING
+    fields = set(cs.AdminConfig.model_fields)
+    mapped = set(cs.ENV_VAR_MAPPING)
+    assert fields == mapped, (
+        f"missing from ENV_VAR_MAPPING: {sorted(fields - mapped)}; "
+        f"mapping entries not in schema: {sorted(mapped - fields)}")
+
+
+def test_env_var_names_are_unique():
+    import config_store as cs
+    names = list(cs.ENV_VAR_MAPPING.values())
+    assert len(names) == len(set(names)), "duplicate WHISPER_* env var names"
+
+
+# ---------------------------------------------------------------------------
+# End-to-end schema-driven env application (importlib.reload)
+# ---------------------------------------------------------------------------
+
+def _reload_with_env(monkeypatch, **env):
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    importlib.reload(config)
+
+
+def test_scalar_env_overrides_apply(monkeypatch):
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_BEAM_SIZE="3",
+            WHISPER_SERVER_PORT="8123",
+            WHISPER_VAD_FILTER="0",
+            WHISPER_MODEL_DEVICE="cpu",
+        )
+        assert config.BEAM_SIZE == 3
+        assert config.SERVER_PORT == 8123
+        assert config.VAD_FILTER is False
+        assert config.MODEL_DEVICE == "cpu"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_optional_threshold_empty_disables(monkeypatch):
+    try:
+        _reload_with_env(monkeypatch, WHISPER_NO_SPEECH_THRESHOLD="")
+        assert config.NO_SPEECH_THRESHOLD is None
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_default_language_empty_means_autodetect(monkeypatch):
+    # DEFAULT_LANGUAGE="" is a meaningful literal (auto-detect), not None.
+    try:
+        _reload_with_env(monkeypatch, WHISPER_DEFAULT_LANGUAGE="")
+        assert config.DEFAULT_LANGUAGE == ""
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_set_typed_special_cases_stay_sets(monkeypatch):
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_ALLOWED_MODELS="a,b",
+            WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="x,y",
+        )
+        assert config.ALLOWED_MODELS == {"a", "b"}
+        assert config.CAPTURES_PIPELINE_RULES_EXCLUDE == {"x", "y"}
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_json_model_overrides_env(monkeypatch):
+    # JSON blob validates + normalises to plain dicts; per-model var merges atop.
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_MODEL_OVERRIDES='{"large-v2": {"BEAM_SIZE": 4}}',
+            WHISPER_MODEL_OVERRIDE__large__DOT__v3__BEAM_SIZE="7",
+        )
+        assert config.MODEL_OVERRIDES["large-v2"] == {"BEAM_SIZE": 4}
+        assert isinstance(config.MODEL_OVERRIDES["large-v2"], dict)
+        assert config.MODEL_OVERRIDES["large.v3"]["BEAM_SIZE"] == 7
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_json_pipeline_rules_env(monkeypatch):
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_PIPELINE_RULES='[{"name": "x", "label": "X", "type": "terminal"}]',
+        )
+        assert isinstance(config.PIPELINE_RULES, list)
+        assert config.PIPELINE_RULES[0]["name"] == "x"
+        assert isinstance(config.PIPELINE_RULES[0], dict)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_invalid_json_keeps_default_and_warns(monkeypatch):
+    try:
+        _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES="not json")
+        # factory rules remain in place
+        assert len(config.PIPELINE_RULES) >= 2
+        assert any("WHISPER_PIPELINE_RULES" in m for m in config._ENV_WARNINGS)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_bad_scalar_records_warning(monkeypatch):
+    try:
+        _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE="ten")
+        assert config.BEAM_SIZE == 10   # default kept
+        assert any("WHISPER_BEAM_SIZE" in m for m in config._ENV_WARNINGS)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_secret_file_indirection(monkeypatch, tmp_path):
+    secret = tmp_path / "key"
+    secret.write_text("  sk-from-file  \n", encoding="utf-8")
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_BOOTSTRAP_ADMIN_KEY_FILE=str(secret),
+        )
+        assert config.BOOTSTRAP_ADMIN_KEY == "sk-from-file"
+    finally:
+        monkeypatch.undo()
+        # The *_FILE prepass writes the resolved secret straight into os.environ
+        # (so both the explicit reader and the schema loop see it); monkeypatch
+        # can't undo that, so clear it before the restoring reload.
+        os.environ.pop("WHISPER_BOOTSTRAP_ADMIN_KEY", None)
+        importlib.reload(config)

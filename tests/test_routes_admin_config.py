@@ -75,3 +75,35 @@ def test_post_state_requires_admin_when_locked(client, make_user_key):
     _uid, raw = make_user_key("alice", is_admin=False)
     r = client.post("/config/state", json={"BEAM_SIZE": 5}, headers=bearer(raw))
     assert r.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Env-pinned provenance + read-only WebUI behaviour
+# ---------------------------------------------------------------------------
+# env_pinned_fields() reads os.environ live, and get_state()/post_state() use it,
+# so setting the env var is enough to exercise the precedence + badge path
+# without reloading config.
+
+def test_get_state_marks_env_pinned(client, monkeypatch):
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "3")
+    field = client.get("/config/state").json()["fields"]["BEAM_SIZE"]
+    assert field["provenance"] == "env"
+    assert field["env_var"] == "WHISPER_BEAM_SIZE"
+
+
+def test_post_state_env_pinned_is_ignored_at_runtime(client, monkeypatch):
+    # An env-pinned field saves to config.local.json but must NOT change the
+    # running cfg — the env var wins. The response flags it as ignored.
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "3")
+    body = client.post("/config/state", json={"BEAM_SIZE": 7}).json()
+    assert "BEAM_SIZE" in body["env_pinned_ignored"]
+    assert "BEAM_SIZE" not in body["hot_applied"]
+
+
+def test_config_page_greys_out_env_pinned_inputs(client):
+    # The rendered admin page ships the JS/CSS that disables + greys env-pinned
+    # editors (the runtime DOM disabling is driven by provenance=="env").
+    text = client.get("/config").text
+    assert "function disableEnvPinnedEditor" in text
+    assert "if (isEnvPinned(name)) return;" in text   # setDirty guard
+    assert ".field.env-pinned" in text                # greyed styling

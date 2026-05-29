@@ -483,11 +483,16 @@ def test_pipeline_rule_tags_union():
 
 def test_env_pinned_fields(monkeypatch):
     monkeypatch.delenv("WHISPER_DEFAULT_MODEL", raising=False)
-    monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")   # not in mapping -> ignored
+    monkeypatch.delenv("WHISPER_BEAM_SIZE", raising=False)
+    # A mapped field whose env var is set IS reported as pinned...
     monkeypatch.setenv("WHISPER_DEFAULT_MODEL", "large-v3")
+    monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")
+    # ...but a WHISPER_* var with no AdminConfig field (not in the mapping) is not.
+    monkeypatch.setenv("WHISPER_USAGE_DB", "/tmp/u.sqlite3")
     pinned = cs.env_pinned_fields()
     assert pinned.get("DEFAULT_MODEL") == "WHISPER_DEFAULT_MODEL"
-    assert "BEAM_SIZE" not in pinned  # BEAM_SIZE has no env mapping
+    assert pinned.get("BEAM_SIZE") == "WHISPER_BEAM_SIZE"
+    assert "USAGE_DB" not in pinned  # USAGE_DB is not an editable AdminConfig field
 
 
 def test_format_validation_errors_shape():
