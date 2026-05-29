@@ -235,9 +235,8 @@ async def get_my_usage(
     user's numbers are ever returned. Best-effort — any failure yields zeros
     so the page never breaks.
 
-    'today' follows the UTC day boundary (usage_store buckets by UTC
-    epoch-day); for CET that flips ~01:00–02:00 local. Acceptable at the
-    rollup's day grain."""
+    'today' is the server-LOCAL calendar day (usage_store buckets by
+    epoch_day_for(ts) in local time), so it rolls over at local midnight."""
     zero = {"requests": 0, "errors": 0, "words": 0, "audio_s": 0.0}
     uid = user.get("user_id") or ""
     today = dict(zero)

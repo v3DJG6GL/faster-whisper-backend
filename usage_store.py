@@ -13,8 +13,15 @@ Each /transcribe request bumps one row via an UPSERT, called from
 metrics.record_transcription (which already runs inside a try/except on the
 outer finally of the transcribe handler, on both success and error paths).
 
-Day bucketing is UTC epoch-day (int(ts // 86400)) so the rollup grain is
-tz-stable; the WebUI labels buckets in browser-local time.
+Day bucketing is the SERVER-LOCAL calendar day, expressed as days-since-epoch
+(`(date.fromtimestamp(ts) - 1970-01-01).days`). This makes "today" line up with
+the wall clock the operators and users actually read (single-site deployment).
+Because it's days-since-epoch, `day * 86400` is UTC midnight of that calendar
+date, so the WebUI's `new Date(day*86400*1000).toISOString().slice(0,10)` still
+renders the correct date label. (Rows written before this switch used UTC
+epoch-day; for most of the day the two coincide — only transcriptions in the
+~1 h window after UTC midnight landed in the adjacent day. No migration: the
+rollup is approximate history and old buckets stay valid.)
 
 user_id is denormalised into every row (not resolved via JOIN) so revoking
 a user or key never drops their historical usage, and aggregation needs no
@@ -28,6 +35,7 @@ carry only counts and id prefixes.
 """
 from __future__ import annotations
 
+import datetime
 import logging
 import os
 import sqlite3
@@ -36,6 +44,8 @@ import time
 from typing import Any
 
 logger = logging.getLogger("whisper-api")
+
+_EPOCH = datetime.date(1970, 1, 1)
 
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
@@ -86,8 +96,15 @@ def _require_conn() -> sqlite3.Connection:
     return _conn
 
 
+def epoch_day_for(ts: float) -> int:
+    """Days-since-epoch of the SERVER-LOCAL calendar date containing `ts`.
+    `date.fromtimestamp` resolves in local time, so this rolls over at local
+    midnight (DST-safe — it works on calendar dates, not fixed offsets)."""
+    return (datetime.date.fromtimestamp(ts) - _EPOCH).days
+
+
 def today_epoch_day() -> int:
-    return int(time.time() // 86400)
+    return (datetime.date.today() - _EPOCH).days
 
 
 def record_usage(
@@ -309,22 +326,26 @@ def backfill_from_transcriptions() -> int:
             return 0
         import transcriptions_store
         src = transcriptions_store._require_conn()
-        rows = src.execute(
-            "SELECT CAST(created_ts / 86400 AS INTEGER) AS day,"
-            " user_id,"
-            " COUNT(*) AS requests,"
-            " SUM(CASE WHEN status = 'ok' THEN 0 ELSE 1 END) AS errors,"
-            " SUM(COALESCE(words_count, 0)) AS words,"
-            " SUM(COALESCE(audio_dur_s, 0)) AS audio_s"
+        # Aggregate in Python so each row buckets into its SERVER-LOCAL day
+        # (epoch_day_for) — matching how live rows are now bucketed. The source
+        # table is capped (≤ a few hundred rows) so this is trivial.
+        agg: dict[tuple[int, str], list] = {}
+        for r in src.execute(
+            "SELECT created_ts, user_id, status, words_count, audio_dur_s"
             " FROM recent_transcriptions"
-            " GROUP BY day, user_id"
-        ).fetchall()
-        if not rows:
+        ):
+            day = epoch_day_for(float(r["created_ts"]))
+            uid = r["user_id"] or OPEN_MODE_ID
+            cell = agg.setdefault((day, uid), [0, 0, 0, 0.0])  # req, err, words, audio
+            cell[0] += 1
+            cell[1] += 0 if r["status"] == "ok" else 1
+            cell[2] += int(r["words_count"] or 0)
+            cell[3] += float(r["audio_dur_s"] or 0.0)
+        if not agg:
             return 0
         conn = _require_conn()
-        n = 0
         with _lock:
-            for r in rows:
+            for (day, uid), (req, err, words, audio) in agg.items():
                 conn.execute(
                     "INSERT INTO usage_daily"
                     " (day, key_id, user_id, requests, errors, words, audio_s)"
@@ -334,13 +355,10 @@ def backfill_from_transcriptions() -> int:
                     "  errors   = errors + excluded.errors,"
                     "  words    = words  + excluded.words,"
                     "  audio_s  = audio_s + excluded.audio_s",
-                    (int(r["day"]), BACKFILL_ID, r["user_id"] or OPEN_MODE_ID,
-                     int(r["requests"] or 0), int(r["errors"] or 0),
-                     int(r["words"] or 0), float(r["audio_s"] or 0.0)),
+                    (day, BACKFILL_ID, uid, req, err, words, audio),
                 )
-                n += 1
-        logger.info("[usage] backfilled %d day/user rows from recent_transcriptions", n)
-        return n
+        logger.info("[usage] backfilled %d day/user rows from recent_transcriptions", len(agg))
+        return len(agg)
     except Exception as e:
         logger.warning("[usage] backfill failed: %s", e)
         return 0

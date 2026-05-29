@@ -607,7 +607,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <div id="usage-plot" class="usage-plot"></div>
       <div id="usage-tip" class="usage-tip"></div>
     </div>
-    <div class="usage-note">Buckets are UTC days. Showing the top 8 by the selected metric; the rest are folded into “others”.</div>
+    <div class="usage-note">Buckets are local days. Showing the top 8 by the selected metric; the rest are folded into “others”.</div>
     <table class="tbl usage-board"><thead><tr>
       <th class="rank">#</th><th>name</th>
       <th class="num">requests</th><th class="num">words</th>
@@ -1076,7 +1076,8 @@ fetch('/stats/snapshot', { headers: _statsAuthHeaders(), cache: 'no-store' })
 // Self-contained IIFE: builds its own uPlot time-series chart + leaderboard,
 // fetched once on load and on every selector change. Does NOT use the
 // TIME_HELPERS_JS helpers (not injected on this page) — day labels are
-// formatted inline from the UTC epoch-day the server returns.
+// formatted inline from the days-since-epoch value the server returns
+// (day*86400 = UTC midnight of that local calendar date → correct date label).
 (() => {
 'use strict';
 const $ = id => document.getElementById(id);
