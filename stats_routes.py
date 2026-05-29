@@ -1184,7 +1184,16 @@ function buildChart() {
     axes: [
       { stroke: '#6e7681', grid: { stroke: '#21262d', width: 1 },
         ticks: { stroke: '#30363d', width: 1, size: 3 },
-        font: remPx(0.733) + 'px ' + MONO },
+        font: remPx(0.733) + 'px ' + MONO,
+        // Region-standard tick labels (24h in DE, am/pm in en-US, etc.) via the
+        // browser locale, instead of uPlot's hardcoded am/pm + M/D/YY defaults.
+        // Day-or-coarser increments show a locale date; finer ones a locale time.
+        values: (u, splits, axisIdx, foundSpace, foundIncr) => splits.map(s => {
+          const d = new Date(s * 1000);
+          return (foundIncr >= 86400)
+            ? d.toLocaleDateString(undefined, { year: '2-digit', month: 'numeric', day: 'numeric' })
+            : d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        }) },
       { stroke: '#6e7681', size: remPx(2.8), gap: 4,
         grid: { stroke: '#21262d', width: 1 },
         ticks: { stroke: '#30363d', width: 1, size: 3 },
