@@ -137,26 +137,33 @@ async def stats_usage(
 
     bucket = "week" if bucket == "week" else "day"
     by = "key" if by == "key" else "user"
+    if metric not in ("requests", "errors", "words", "audio_s"):
+        metric = "audio_s"
     start_day: int | None = None
     if days and days > 0:
         start_day = usage_store.today_epoch_day() - int(days) + 1
 
-    series = usage_store.series(start_day=start_day, bucket=bucket)
+    # Global series gives the shared x-axis (every bucket with any usage) and
+    # the per-bucket totals used to derive the "others" line.
+    series_global = usage_store.series(start_day=start_day, bucket=bucket)
+    day_axis = [int(p["day"]) for p in series_global]
+    axis_index = {d: i for i, d in enumerate(day_axis)}
+    n = len(day_axis)
+
     board = usage_store.leaderboard(
         start_day=start_day, by=by, metric=metric, limit=50,
     )
 
-    # Resolve display names server-side (the /stats client has no api-keys
-    # data). Revoked users/keys still resolve; sentinels stay literal.
-    if by == "user":
-        names = api_keys_store.get_usernames([r["user_id"] for r in board])
-        for r in board:
-            uid = r["user_id"]
-            r["label"] = names.get(uid) or uid
-    else:
-        names = api_keys_store.get_usernames([r["user_id"] for r in board])
-        for r in board:
+    # Resolve display names + a stable `id` server-side (the /stats client has
+    # no api-keys data). Revoked users/keys still resolve; sentinels stay literal.
+    names = api_keys_store.get_usernames([r["user_id"] for r in board])
+    for r in board:
+        if by == "user":
+            r["id"] = r["user_id"]
+            r["label"] = names.get(r["user_id"]) or r["user_id"]
+        else:
             kid = r["key_id"]
+            r["id"] = kid
             key = (api_keys_store.get_key(kid)
                    if kid and not kid.startswith("(") else None)
             lbl = (key or {}).get("label") or ""
@@ -164,12 +171,53 @@ async def stats_usage(
             r["label"] = (lbl or (disp + "…" if disp else kid))
             r["user_label"] = names.get(r["user_id"]) or r["user_id"]
 
+    # One chart line per top-K entity (by the selected metric), aligned to the
+    # shared x-axis with 0-fill for buckets where the entity had no usage.
+    K = 8
+    lines: list[dict[str, Any]] = []
+    sum_top = [0.0] * n
+    for r in board[:K]:
+        kwargs = {"user_id": r["id"]} if by == "user" else {"key_id": r["id"]}
+        s = usage_store.series(start_day=start_day, bucket=bucket, **kwargs)
+        vals: list[float] = [0] * n
+        for p in s:
+            i = axis_index.get(int(p["day"]))
+            if i is not None:
+                vals[i] = p[metric]
+        for i in range(n):
+            sum_top[i] += vals[i] or 0
+        line = {"id": r["id"], "label": r["label"], "values": vals}
+        if by == "key":
+            line["user_label"] = r.get("user_label")
+        lines.append(line)
+
+    # Fold the long tail (entities beyond top-K) into one "others" line =
+    # global total minus the top-K, per bucket. Skip if nothing remains.
+    if len(board) > K and n:
+        others = []
+        any_pos = False
+        for i, p in enumerate(series_global):
+            rem = (p[metric] or 0) - sum_top[i]
+            if rem < 0:
+                rem = 0  # float-subtraction guard
+            if rem > 0:
+                any_pos = True
+            others.append(rem)
+        if any_pos:
+            lines.append({
+                "id": "__others__",
+                "label": f"others ({len(board) - K})",
+                "values": others,
+                "others": True,
+            })
+
     return {
-        "series": series,
-        "leaderboard": board,
+        "days": day_axis,
+        "metric": metric,
         "by": by,
         "bucket": bucket,
-        "days": days,
+        "lines": lines,
+        "leaderboard": board,
     }
 
 
@@ -266,6 +314,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   table.tbl th { color: var(--dim); font-weight: 500; font-size: var(--fs-xs);
     text-transform: uppercase; }
   table.tbl td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.tbl th.num { text-align: right; }
   .badge { display: inline-block; font-size: 0.667rem; padding: 0.0625rem 0.375rem;
     border-radius: 999px; border: 1px solid var(--border); color: var(--dim); }
   .badge.warm { color: var(--green); border-color: #1f4d2a; }
@@ -308,12 +357,27 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .seg-ctrl button:hover { color: var(--fg); }
   .seg-ctrl button.active { background: var(--panel); color: var(--cyan);
     font-weight: 600; }
-  .usage-chart { width: 100%; height: 14rem; min-width: 0; }
+  .usage-chart { width: 100%; height: 14rem; min-width: 0; position: relative; }
+  .usage-plot { width: 100%; height: 100%; min-width: 0; }
   .usage-note { color: var(--dim); font-size: var(--fs-xs);
     margin: 0.15rem 0 0.5rem; }
+  /* Floating cursor tooltip over the multi-line usage chart. */
+  .usage-tip { position: absolute; z-index: 5; pointer-events: none;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 5px;
+    padding: 0.3rem 0.45rem; font: var(--fs-xs)/1.35 var(--font-mono);
+    color: var(--fg); white-space: nowrap; display: none;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4); }
+  .usage-tip .tip-date { color: var(--dim); margin-bottom: 0.15rem; }
+  .usage-tip .tip-row { display: flex; align-items: center; gap: 0.35rem; }
+  .usage-tip .tip-row.focus { color: var(--bold); font-weight: 600; }
+  .usage-tip .tip-row .tip-val { margin-left: auto;
+    font-variant-numeric: tabular-nums; }
+  .usage-swatch { display: inline-block; width: 0.6rem; height: 0.6rem;
+    border-radius: 2px; flex: 0 0 auto; vertical-align: baseline; }
   table.usage-board td.rank { color: var(--dim);
     font-variant-numeric: tabular-nums; width: 2rem; }
   table.usage-board td.name { color: var(--fg); }
+  table.usage-board td.name .usage-swatch { margin-right: 0.4rem; }
   table.usage-board td.name .sub { color: var(--dim);
     font-size: var(--fs-xs); margin-left: 0.4rem; }
   /* GridStack integration — drag-to-reorder + click-to-resize tiles. */
@@ -539,8 +603,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
         </div>
       </div>
     </div>
-    <div id="usage-chart" class="usage-chart"></div>
-    <div class="usage-note">Buckets are UTC days.</div>
+    <div class="usage-chart">
+      <div id="usage-plot" class="usage-plot"></div>
+      <div id="usage-tip" class="usage-tip"></div>
+    </div>
+    <div class="usage-note">Buckets are UTC days. Showing the top 8 by the selected metric; the rest are folded into “others”.</div>
     <table class="tbl usage-board"><thead><tr>
       <th class="rank">#</th><th>name</th>
       <th class="num">requests</th><th class="num">words</th>
@@ -1013,8 +1080,16 @@ fetch('/stats/snapshot', { headers: _statsAuthHeaders(), cache: 'no-store' })
 (() => {
 'use strict';
 const $ = id => document.getElementById(id);
-const chartEl = $('usage-chart');
+const chartEl = $('usage-plot');
+const tipEl = $('usage-tip');
 if (!chartEl || typeof uPlot === 'undefined') return;
+
+// Per-entity line palette; 'others' is a dim dashed grey. curLines/curMetric
+// are shared by buildChart, the tooltip, and the leaderboard swatches.
+const PALETTE = ['#79c0ff','#7ee787','#f2cc60','#d2a8ff','#ff7b72','#56d4dd','#e3b341','#ff9bce'];
+const OTHERS_COLOR = '#6e7681';
+let curLines = [];
+let curMetric = 'audio_s';
 
 function authHeaders() {
   let t;
@@ -1041,23 +1116,68 @@ function fmtDur(sec) {
   if (sec < 86400) return (sec / 3600).toFixed(1).replace(/\.0$/, '') + 'h';
   return (sec / 86400).toFixed(1).replace(/\.0$/, '') + 'd';
 }
-const METRIC_LABEL = { audio_s: 'audio', words: 'words', requests: 'requests', errors: 'errors' };
 function fmtMetric(metric, v) {
   return metric === 'audio_s' ? fmtDur(v) : fmtCount(v);
 }
+function fmtDate(ts) { return new Date(ts * 1000).toISOString().slice(0, 10); }
+
+// Floating cursor tooltip: bucket date + every line's value, with the line
+// nearest the cursor (by data-space y distance) bolded. Driven by uPlot's
+// setCursor hook; hidden when the cursor leaves the plot (idx == null).
+function updateTip(u) {
+  const idx = u.cursor.idx;
+  if (idx == null || !curLines.length) { tipEl.style.display = 'none'; return; }
+  const xs = u.data[0];
+  const cy = u.posToVal(u.cursor.top, 'y');
+  let focus = -1, best = Infinity;
+  for (let s = 0; s < curLines.length; s++) {
+    const v = u.data[s + 1][idx];
+    if (v == null) continue;
+    const d = Math.abs(v - cy);
+    if (d < best) { best = d; focus = s; }
+  }
+  let html = '<div class="tip-date">' + fmtDate(xs[idx]) + '</div>';
+  for (let s = 0; s < curLines.length; s++) {
+    const ln = curLines[s];
+    html += '<div class="tip-row' + (s === focus ? ' focus' : '') + '">'
+      + '<span class="usage-swatch" style="background:' + ln.color + '"></span>'
+      + '<span>' + esc(ln.label) + '</span>'
+      + '<span class="tip-val">' + fmtMetric(curMetric, u.data[s + 1][idx]) + '</span>'
+      + '</div>';
+  }
+  tipEl.innerHTML = html;
+  tipEl.style.display = 'block';
+  const ox = u.over.offsetLeft, oy = u.over.offsetTop;
+  const wrap = tipEl.offsetParent;
+  const maxL = (wrap ? wrap.clientWidth : 1e9) - tipEl.offsetWidth - 4;
+  let left = ox + u.cursor.left + 14;
+  if (left > maxL) left = ox + u.cursor.left - tipEl.offsetWidth - 14;  // flip left near right edge
+  tipEl.style.left = Math.max(0, left) + 'px';
+  tipEl.style.top = Math.max(0, oy + u.cursor.top + 14) + 'px';
+}
 
 let chart = null;
-function buildChart(metric) {
+function buildChart() {
   if (chart) { chart.destroy(); chart = null; }
-  const color = metric === 'errors' ? '#ff7b72' : '#79c0ff';
   const w = chartEl.clientWidth || 600;
   const h = chartEl.clientHeight || 220;
+  const single = curLines.length === 1;
+  const series = [{ value: (u, ts) => ts == null ? '' : fmtDate(ts) }].concat(
+    curLines.map(ln => ({
+      label: ln.label, stroke: ln.color,
+      width: ln.others ? 1.25 : 1.5,
+      dash: ln.others ? [4, 3] : undefined,
+      fill: single ? ln.color + '22' : undefined,
+      points: { show: single, size: 4 }, spanGaps: true,
+    })));
   chart = new uPlot({
     width: w, height: h,
     padding: [remPx(0.5), remPx(0.6), remPx(0.2), remPx(0.4)],
     legend: { show: false },
-    cursor: { y: false },
+    // drag:{x:false,y:false} removes uPlot's default drag-to-zoom.
+    cursor: { y: false, drag: { x: false, y: false }, points: { show: false } },
     scales: { x: { time: true }, y: { range: { min: { pad: 0.05, mode: 1 }, max: { pad: 0.1, mode: 1 } } } },
+    hooks: { setCursor: [updateTip] },
     axes: [
       { stroke: '#6e7681', grid: { stroke: '#21262d', width: 1 },
         ticks: { stroke: '#30363d', width: 1, size: 3 },
@@ -1066,14 +1186,11 @@ function buildChart(metric) {
         grid: { stroke: '#21262d', width: 1 },
         ticks: { stroke: '#30363d', width: 1, size: 3 },
         font: remPx(0.733) + 'px ' + MONO,
-        values: (u, splits) => splits.map(v => fmtMetric(metric, v)) },
+        values: (u, splits) => splits.map(v => fmtMetric(curMetric, v)) },
     ],
-    series: [
-      { value: (u, ts) => ts == null ? '' : new Date(ts * 1000).toISOString().slice(0, 10) },
-      { label: METRIC_LABEL[metric] || metric, stroke: color, width: 1.5,
-        fill: color + '22', points: { show: true, size: 4 }, spanGaps: true },
-    ],
-  }, [[], []], chartEl);
+    series,
+  }, [[]].concat(curLines.map(() => [])), chartEl);
+  chart.over.addEventListener('mouseleave', () => { tipEl.style.display = 'none'; });
 }
 
 let _raf = 0;
@@ -1086,18 +1203,23 @@ new ResizeObserver(() => {
   });
 }).observe(chartEl);
 
-function renderBoard(board, by, metric) {
+function renderBoard(board, by) {
   const tb = $('usage-board-rows');
   if (!board || !board.length) {
     tb.innerHTML = '<tr><td colspan="6" class="empty">— no usage in this window —</td></tr>';
     return;
   }
+  // Swatch the rows that are charted (top-K) so the table ties to the lines.
+  const colorById = {};
+  curLines.forEach(ln => { if (!ln.others) colorById[ln.id] = ln.color; });
   tb.innerHTML = board.map((r, i) => {
+    const sw = colorById[r.id]
+      ? '<span class="usage-swatch" style="background:' + colorById[r.id] + '"></span>' : '';
     const sub = by === 'key' && r.user_label
       ? '<span class="sub">' + esc(r.user_label) + '</span>' : '';
     return '<tr>'
       + '<td class="rank">' + (i + 1) + '</td>'
-      + '<td class="name">' + esc(r.label || '?') + sub + '</td>'
+      + '<td class="name">' + sw + esc(r.label || '?') + sub + '</td>'
       + '<td class="num">' + fmtCount(r.requests) + '</td>'
       + '<td class="num">' + fmtCount(r.words) + '</td>'
       + '<td class="num">' + fmtDur(r.audio_s) + '</td>'
@@ -1132,11 +1254,21 @@ function loadUsage() {
     .then(r => r.ok ? r.json() : null)
     .then(j => {
       if (!j || mine !== _seq) return;   // stale response — a newer change won
-      buildChart(metric);
-      const xs = j.series.map(p => p.day * 86400);
-      const ys = j.series.map(p => p[metric]);
-      chart.setData([xs, ys]);
-      renderBoard(j.leaderboard, by, metric);
+      curMetric = j.metric || metric;
+      curLines = (j.lines || []).map((ln, i) => ({
+        id: ln.id, label: ln.label, values: ln.values, others: !!ln.others,
+        color: ln.others ? OTHERS_COLOR : PALETTE[i % PALETTE.length],
+      }));
+      const xs = (j.days || []).map(d => d * 86400);
+      if (!curLines.length || !xs.length) {
+        if (chart) { chart.destroy(); chart = null; }
+        tipEl.style.display = 'none';
+        renderBoard(j.leaderboard, by);
+        return;
+      }
+      buildChart();
+      chart.setData([xs].concat(curLines.map(l => l.values)));
+      renderBoard(j.leaderboard, by);
     })
     .catch(err => {
       console.warn('[stats] usage fetch failed', err);

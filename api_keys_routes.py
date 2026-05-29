@@ -308,7 +308,8 @@ _API_KEYS_HTML = r"""<!doctype html>
   .card { background: var(--panel); border: 1px solid var(--border);
     border-radius: 4px; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
   .card h3 { margin: 0 0 0.25rem 0; font-size: var(--fs-lg);
-    color: var(--bold); display: flex; align-items: center; gap: 0.6rem; }
+    color: var(--bold); display: flex; align-items: center; gap: 0.6rem;
+    flex-wrap: wrap; }
   .pill { font-size: var(--fs-xs); padding: 0.075rem 0.5rem;
     border-radius: 999px; border: 1px solid var(--border); color: var(--dim);
     font-weight: normal; }
@@ -347,9 +348,10 @@ _API_KEYS_HTML = r"""<!doctype html>
   .usage-cell.empty { display: block; color: var(--dim); font-style: italic;
     font-size: var(--fs-xs); }
   /* Per-user summary strip under the card header: one mono line of the
-     user's lifetime totals across all their keys. */
-  .user-usage { display: flex; flex-wrap: wrap; gap: 0.15rem 1.1rem;
-    margin: 0.1rem 0 0.4rem 0; }
+     user's lifetime totals across all their keys. Sits in the card header,
+     pushed right (margin-left:auto); doesn't wrap internally. */
+  .user-usage { display: flex; flex-wrap: nowrap; gap: 0.15rem 1.1rem;
+    margin-left: auto; }
   .user-usage .stat { display: flex; align-items: baseline; gap: 0.3rem; }
   .user-usage .stat .v { color: var(--cyan); font-family: var(--font-mono);
     font-size: var(--fs-md); }
@@ -968,14 +970,16 @@ _API_KEYS_HTML = r"""<!doctype html>
     keyCount.textContent = u.active_key_count + ' active key' +
       (u.active_key_count === 1 ? '' : 's');
     h.appendChild(keyCount);
-    card.appendChild(h);
 
     // Lifetime usage strip — sums every one of this user's keys (plus any
     // pre-feature backfilled usage) from the rollup fetched in load().
+    // Lives INSIDE the header, pushed to the right (margin-left:auto) so it
+    // reuses the empty space beside the name instead of crowding a line below.
     var usageStrip = document.createElement('div');
     usageStrip.innerHTML = userUsageHtml(
       (window.__usage && window.__usage.by_user || {})[u.id]);
-    card.appendChild(usageStrip.firstChild);
+    h.appendChild(usageStrip.firstChild);
+    card.appendChild(h);
 
     var tb = document.createElement('div');
     tb.className = 'toolbar';
