@@ -18,7 +18,7 @@
 
 fastapi>=0.136.3
 uvicorn[standard]>=0.48.0
-python-multipart>=0.0.29
+python-multipart>=0.0.30
 faster-whisper>=1.2.1
 
 # Auto-loads a local .env file at startup (config.py). Optional at runtime:
