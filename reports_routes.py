@@ -885,7 +885,7 @@ _REPORTS_HTML = """<!doctype html>
     var b = tokenizeForDiff(afterStr || '');
     var ops = lcsDiff(a, b);
     var div = document.createElement('div');
-    div.className = 'rc-diff';
+    div.className = 'rc-diff ws-region';
     ops.forEach(function(op) {
       var span = document.createElement('span');
       span.className = 'diff-' + op[0];
@@ -1011,7 +1011,7 @@ _REPORTS_HTML = """<!doctype html>
       tag.textContent = label;
       row.appendChild(tag);
       var v = document.createElement('span');
-      v.className = 'val' + (value ? '' : ' dim');
+      v.className = 'val' + (value ? ' ws-region' : ' dim');
       v.textContent = value || '(empty)';
       row.appendChild(v);
       return row;
@@ -1038,8 +1038,10 @@ _REPORTS_HTML = """<!doctype html>
         st.className = 'rc-step';
         st.innerHTML =
           '<span class="step-label">' + escapeHtml(s[0]) + '</span>' +
-          '<span><span class="step-before">' + escapeHtml(s[1]) + '</span> ' +
-          '<span class="step-after">→ ' + escapeHtml(s[2]) + '</span></span>';
+          '<span><span class="step-before"><span class="ws-region">'
+          + escapeHtml(s[1]) + '</span></span> ' +
+          '<span class="step-after">→ <span class="ws-region">'
+          + escapeHtml(s[2]) + '</span></span></span>';
         det.appendChild(st);
       });
       card.appendChild(det);

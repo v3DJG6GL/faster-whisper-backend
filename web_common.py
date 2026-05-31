@@ -164,6 +164,15 @@ NAV_CSS = """
   --help: #8b949e;
 }
 html { font-size: var(--fs-base); color-scheme: dark; }
+/* Boundary marker for transcription values: dim brackets around the EXACT
+   text, with internal whitespace preserved (pre-wrap) so a leading/trailing
+   space shows as a literal gap inside the brackets and the begin/end of the
+   transcription is unambiguous. Brackets are pseudo-elements — never part of
+   the text — so they can't be mistaken for content. Ordinary spaces stay
+   visible only as the gap they occupy; no per-space glyphs. */
+.ws-region { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ws-region::before { content: "\\27E6"; color: var(--dim); }
+.ws-region::after  { content: "\\27E7"; color: var(--dim); }
 header .navrow { display: flex; align-items: center; gap: 0.25rem;
   flex-wrap: wrap; row-gap: 0.25rem; min-width: 0; }
 header .navlink { padding: 0.3rem 0.7rem; border-radius: 6px; color: var(--dim);

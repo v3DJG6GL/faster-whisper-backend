@@ -1212,7 +1212,7 @@ function renderTrace(entry) {
   const raw = document.createElement('div');
   raw.className = 'trace-text trace-raw';
   raw.innerHTML = '<span class="trace-tag">raw</span>'
-    + escapeHtml(entry.raw || '');
+    + '<span class="ws-region">' + escapeHtml(entry.raw || '') + '</span>';
   item.appendChild(raw);
 
   const steps = entry.steps || [];
@@ -1240,9 +1240,10 @@ function renderTrace(entry) {
         : '';
       stepEl.innerHTML =
         '<span class="step-label">▸ ' + lblHtml + skippedTag + '</span>'
-        + '<span class="step-before">' + escapeHtml(before || '') + '</span>'
+        + '<span class="step-before"><span class="ws-region">'
+        + escapeHtml(before || '') + '</span></span>'
         + '<span class="step-after"><span class="step-arrow">→</span>'
-        + escapeHtml(after || '') + '</span>';
+        + '<span class="ws-region">' + escapeHtml(after || '') + '</span></span>';
       det.appendChild(stepEl);
     }
     item.appendChild(det);
@@ -1251,7 +1252,7 @@ function renderTrace(entry) {
   const final = document.createElement('div');
   final.className = 'trace-text trace-final';
   final.innerHTML = '<span class="trace-tag">final</span>'
-    + escapeHtml(entry.final || '');
+    + '<span class="ws-region">' + escapeHtml(entry.final || '') + '</span>';
   item.appendChild(final);
 
   // Action row: "Report" button + (conditional) "✓ reported" badge.

@@ -4069,7 +4069,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       tag.textContent = label;
       row.appendChild(tag);
       var v = document.createElement('span');
-      v.className = 'val';
+      v.className = 'val' + (value ? ' ws-region' : '');
       v.textContent = value || '(empty)';
       row.appendChild(v);
       return row;
@@ -6337,7 +6337,7 @@ _CAPTURES_HTML = r"""<!doctype html>
           tag.textContent = label;
           row.appendChild(tag);
           var v = document.createElement('span');
-          v.className = 'val' + (value ? '' : ' dim');
+          v.className = 'val' + (value ? ' ws-region' : ' dim');
           v.textContent = value || '(empty)';
           row.appendChild(v);
           return row;
