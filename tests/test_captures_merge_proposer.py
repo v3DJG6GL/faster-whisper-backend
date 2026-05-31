@@ -2,7 +2,7 @@
 
 Already covered there: trimmed_duration_s (cache hit/miss + trim-disabled) and
 _build_proposal trimmed durations. Here we cover: _bcp47_primary,
-_normalize_text, _pick_text, _dur, _ratio, _build_group_score boundaries,
+_normalize_text, _pick_text, _dur, _ratio, _build_sample_score boundaries,
 _format_reason, _generate_candidates_for_bucket (dup-skip / <2 reject /
 over-cap), _eligible (every rejection branch + boundaries), and propose_merges
 (admin vs non-admin cache keys, per-(user,lang) partition, greedy
@@ -65,7 +65,7 @@ def test_ratio_bounds():
 
 
 # ---------------------------------------------------------------------------
-# _build_group_score
+# _build_sample_score
 # ---------------------------------------------------------------------------
 
 def _member(ts, dur, status="", trim=None):
@@ -78,45 +78,45 @@ def _member(ts, dur, status="", trim=None):
 def test_score_fill_peaks_at_target():
     # total_dur == target → fill_score 1.0.
     members = [_member(0, 13.0), _member(1, 12.7)]  # 25.7 + 0.3 gap = 26.0
-    s = P._build_group_score(members, 0.3, 26.0)
+    s = P._build_sample_score(members, 0.3, 26.0)
     assert s["fill_score"] == pytest.approx(1.0)
 
 
 def test_score_density_neutral_below_three_members():
     members = [_member(0, 5.0), _member(1, 5.0)]
-    s = P._build_group_score(members, 0.3, 26.0)
+    s = P._build_sample_score(members, 0.3, 26.0)
     assert s["density_score"] == 0.5  # n<3 neutralized
 
 
 def test_score_density_clamped_for_three_plus():
     members = [_member(0, 5.0), _member(1, 5.0), _member(2, 5.0)]
-    s = P._build_group_score(members, 0.3, 26.0)
+    s = P._build_sample_score(members, 0.3, 26.0)
     assert 0.0 <= s["density_score"] <= 1.0
 
 
 def test_score_member_peaks_at_four():
     four = [_member(i, 2.0) for i in range(4)]
-    s4 = P._build_group_score(four, 0.3, 26.0)
+    s4 = P._build_sample_score(four, 0.3, 26.0)
     assert s4["member_score"] == pytest.approx(1.0)
     two = [_member(i, 2.0) for i in range(2)]
-    s2 = P._build_group_score(two, 0.3, 26.0)
+    s2 = P._build_sample_score(two, 0.3, 26.0)
     # |2-4|/8 = 0.25 → 0.75
     assert s2["member_score"] == pytest.approx(0.75)
 
 
 def test_score_reviewed_boost():
     members = [_member(0, 5.0, "reviewed"), _member(1, 5.0, "reviewed")]
-    s = P._build_group_score(members, 0.3, 26.0)
+    s = P._build_sample_score(members, 0.3, 26.0)
     assert s["reviewed_count"] == 2
     # reviewed_boost = 0.1 * (2/2) = 0.1 baked into composite.
     none = [_member(0, 5.0), _member(1, 5.0)]
-    s0 = P._build_group_score(none, 0.3, 26.0)
+    s0 = P._build_sample_score(none, 0.3, 26.0)
     assert s["composite"] == pytest.approx(s0["composite"] + 0.1)
 
 
 def test_score_uses_trimmed_durations():
     members = [_member(0, 10.0, trim=2.0), _member(1, 10.0, trim=2.0)]
-    s = P._build_group_score(members, 0.3, 26.0)
+    s = P._build_sample_score(members, 0.3, 26.0)
     # total uses trimmed (2+2) + gap.
     assert s["total_dur"] == pytest.approx(4.3)
 
@@ -206,7 +206,7 @@ def test_bucket_over_cap_skipped_smaller_packed():
 
 def _row(**over):
     r = {
-        "id": "x", "status": "new", "group_id": None,
+        "id": "x", "status": "new", "sample_id": None,
         "duration_seconds": 5.0, "language": "de",
         "text_for_training": "hello", "final": "", "raw": "",
     }
@@ -224,7 +224,7 @@ def test_eligible_rejects_status(status):
 
 
 def test_eligible_rejects_grouped():
-    assert P._eligible(_row(group_id="g1"), 1.0) is False
+    assert P._eligible(_row(sample_id="g1"), 1.0) is False
 
 
 def test_eligible_rejects_too_short():

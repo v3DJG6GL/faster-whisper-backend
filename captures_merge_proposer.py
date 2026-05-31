@@ -3,7 +3,7 @@ Auto-merge proposer for /captures fine-tuning data curation.
 
 Given the user's ungrouped captures, ranks plausible merges into ~26 s
 "groups" that respect the 28 s hard cap already enforced by
-captures_routes.create_group_api (mirrors its raw-`duration_seconds`
+captures_routes.create_sample_api (mirrors its raw-`duration_seconds`
 arithmetic; see captures_routes.py:896-901).
 
 Heuristic rationale (see captures-finetune-findings.md + research notes):
@@ -22,7 +22,7 @@ the existing merge-modal preview before any write.
 
 In-memory cache: results are cached per (user_id) with a TTL and are
 invalidated explicitly by capture writes (see invalidate() callers in
-captures_store + capture_groups_store).
+captures_store + capture_samples_store).
 """
 from __future__ import annotations
 
@@ -37,7 +37,7 @@ import captures_store
 logger = logging.getLogger(__name__)
 
 
-# Mirrors captures_routes.create_group_api pre-flight (L896-901) and
+# Mirrors captures_routes.create_sample_api pre-flight (L896-901) and
 # audio_merge.merge_wavs gap accounting. Kept here as a constant rather
 # than imported to avoid a circular dep with captures_routes.
 _GROUP_HARD_CAP_S = 28.0
@@ -129,7 +129,7 @@ def _ratio(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
-def _build_group_score(members: list[dict[str, Any]], gap_s: float, target_s: float) -> dict[str, float]:
+def _build_sample_score(members: list[dict[str, Any]], gap_s: float, target_s: float) -> dict[str, float]:
     """Return per-component scores + composite for ranking."""
     n = len(members)
     # Packed audio uses TRIMMED durations (what the merged WAV actually is);
@@ -221,7 +221,7 @@ def _generate_candidates_for_bucket(
             used_dur = tentative
         if len(members) < 2:
             continue
-        scored = _build_group_score(members, gap_s, target_s)
+        scored = _build_sample_score(members, gap_s, target_s)
         candidates.append((scored["composite"], members))
     return candidates
 
@@ -233,7 +233,7 @@ def _build_proposal(
     language: str,
     user_id: str,
 ) -> dict[str, Any]:
-    scored = _build_group_score(members, gap_s, target_s)
+    scored = _build_sample_score(members, gap_s, target_s)
     return {
         "member_ids": [m["id"] for m in members],
         "member_previews": [
@@ -268,7 +268,7 @@ def _build_proposal(
 def _eligible(row: dict[str, Any], min_clip_s: float) -> bool:
     if (row.get("status") or "") in {"dismissed", "audio_missing"}:
         return False
-    if row.get("group_id"):
+    if row.get("sample_id"):
         return False
     dur = float(row.get("duration_seconds") or 0.0)
     if dur < min_clip_s or dur > _GROUP_HARD_CAP_S:
@@ -354,7 +354,7 @@ def propose_merges(
         sessions.append(cur)
 
     # Per session × user × language → candidates. user_id partition matters
-    # because create_group_api enforces same-user (captures_routes.py:878-882);
+    # because create_sample_api enforces same-user (captures_routes.py:878-882);
     # without it, the admin "all users" view could emit proposals that the
     # merge endpoint rejects.
     all_candidates: list[tuple[float, list[dict[str, Any]], str, str]] = []
@@ -395,7 +395,7 @@ def propose_merges(
 
 def invalidate(user_id: str | None) -> None:
     """Drop cached proposals for a user (and the all-users entry, which any
-    write may affect). Called from captures_store + capture_groups_store
+    write may affect). Called from captures_store + capture_samples_store
     write paths. Safe to call with no current cache entry."""
     if user_id:
         _CACHE.pop(user_id, None)

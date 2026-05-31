@@ -293,7 +293,7 @@ async def by_request_id_api(
 # parameterized /captures/api/{cid} route — FastAPI/Starlette match in
 # declaration order, and the `{cid}` placeholder would otherwise swallow
 # any literal-named GET like /captures/api/export with cid="export" or
-# /captures/api/groups with cid="groups" (which silently 404s the
+# /captures/api/samples with cid="samples" (which silently 404s the
 # group-list fetch and hides newly created groups from the UI).
 @router.get(
     "/captures/api/export",
@@ -320,10 +320,10 @@ async def export_captures_api(
 
 
 @router.get(
-    "/captures/api/groups",
+    "/captures/api/samples",
     dependencies=[Depends(require_page("captures"))],
 )
-async def list_groups_api(
+async def list_samples_api(
     user_filter: str | None = Query(None, alias="user_id"),
     status_filter: str | None = Query(None, alias="status"),
     user: dict[str, Any] = Depends(get_current_user),
@@ -331,21 +331,21 @@ async def list_groups_api(
     """List packed training-sample groups. `scope=own` users see only
     their own groups; `scope=all` users (incl. admins) see every group
     and may narrow via the admin-only `?user_id=...` query. Optional
-    `?status=` filter accepts the same enum as PatchGroupIn
+    `?status=` filter accepts the same enum as PatchSampleIn
     (new/reviewed/ready/dismissed); unknown values fall through to no
     filter, matching list_captures_api's tolerance.
 
-    Declared above `/captures/api/{cid}` because GET with cid="groups"
+    Declared above `/captures/api/{cid}` because GET with cid="samples"
     would otherwise resolve to the single-capture handler and 404 — the
     UI's `load()` then silently swallows the failure and renders no
     groups, making merged groups invisible after creation."""
-    import capture_groups_store
+    import capture_samples_store
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
     scope = perms.effective_user_id_for("captures", caller_uid)
     if user.get("is_admin") and user_filter:
         scope = user_filter
-    groups = capture_groups_store.list_groups(
+    groups = capture_samples_store.list_samples(
         user_id=scope, status=status_filter,
     )
     usernames = api_keys_store.get_usernames([g.get("user_id") for g in groups])
@@ -354,14 +354,14 @@ async def list_groups_api(
         # card preview reflects chip-applied final text (matches the
         # expanded card + export). Members fetched once per group; no
         # merged_words on the list path — that's expand-only.
-        members = capture_groups_store.get_members(g["id"])
+        members = capture_samples_store.get_members(g["id"])
         _hydrate_members(members)
         g["transcript"] = _build_default_transcript(
             members, g.get("transcript_join_strategy") or "space",
         )
         g["corrections"] = _project_member_corrections(members)
         g["username"] = usernames.get(g.get("user_id"))
-    return JSONResponse({"groups": groups})
+    return JSONResponse({"samples": groups})
 
 
 @router.get(
@@ -779,7 +779,7 @@ async def reprocess_all_captures_api() -> JSONResponse:
 # Capture groups (≤28 s packed training samples)
 # ---------------------------------------------------------------------
 
-class CreateGroupIn(BaseModel):
+class CreateSampleIn(BaseModel):
     model_config = {"extra": "forbid"}
     member_ids: list[str] = Field(min_length=2, max_length=30)
     join_strategy: Literal["space", "period_space"] = "space"
@@ -804,7 +804,7 @@ class PreviewSaveChipsIn(BaseModel):
     corrections: list[CorrectionIn] = Field(default_factory=list, max_length=200)
 
 
-class PatchGroupIn(BaseModel):
+class PatchSampleIn(BaseModel):
     model_config = {"extra": "forbid"}
     join_strategy: Literal["space", "period_space"] | None = None
     silence_ms: int | None = Field(default=None, ge=0, le=2000)
@@ -951,7 +951,7 @@ def _validate_merge_payload(
     *,
     enforce_cap: bool = True,
 ) -> tuple[list[dict[str, Any]], str, list[str], int]:
-    """Shared validation for create_group_api and the preview-audio endpoint.
+    """Shared validation for create_sample_api and the preview-audio endpoint.
 
     Validates: deduped member_ids, every capture exists, none is already in
     a group, all members belong to the same user (and the caller is either
@@ -980,10 +980,10 @@ def _validate_merge_payload(
             raise HTTPException(
                 status.HTTP_404_NOT_FOUND, f"capture {mid} not found",
             )
-        if cap.get("group_id"):
+        if cap.get("sample_id"):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                f"capture {mid} is already in a group",
+                f"capture {mid} is already in a sample",
             )
         abs_p = captures_store.abs_audio_path(cap["audio_relpath"])
         if not os.path.exists(abs_p):
@@ -1034,7 +1034,7 @@ def _validate_merge_payload(
 
 def _build_merged_wav(
     *,
-    gid: str,
+    sid: str,
     member_ids: list[str],
     silence_ms: int,
     member_paths: list[str] | None = None,
@@ -1050,7 +1050,7 @@ def _build_merged_wav(
     uses it to keep per-member karaoke timestamps in sync with the trimmed
     audio. Empty/identity when trimming is disabled or VAD is unavailable."""
     import audio_merge
-    import capture_groups_store
+    import capture_samples_store
     import config as cfg
 
     if member_paths is None:
@@ -1072,8 +1072,8 @@ def _build_merged_wav(
     for mid, abs_p in zip(member_ids, member_paths):
         hashes[mid] = audio_merge.hash_wav_pcm(abs_p)
 
-    dst_relpath = capture_groups_store._relpath_for(gid)
-    dst_abs = capture_groups_store.abs_path_for(dst_relpath)
+    dst_relpath = capture_samples_store._relpath_for(sid)
+    dst_abs = capture_samples_store.abs_path_for(dst_relpath)
     try:
         res = audio_merge.merge_wavs(
             member_paths, dst_abs, gap_ms=silence_ms,
@@ -1101,7 +1101,7 @@ def _merged_wav_patch(
     duration_ms: int, hashes: dict[str, str],
     member_trims: dict[str, Any],
 ) -> dict[str, Any]:
-    """Build the capture_groups patch fields from _build_merged_wav outputs.
+    """Build the capture_samples patch fields from _build_merged_wav outputs.
 
     merged_lead/trail_trim_ms are forced to 0 under per-member trimming (the
     outer-edge offsets are now folded into the per-member segment maps); they
@@ -1149,11 +1149,11 @@ def _preview_member_trims(
 
 
 @router.post(
-    "/captures/api/groups",
+    "/captures/api/samples",
     dependencies=[Depends(require_page("captures"))],
 )
-async def create_group_api(
-    payload: CreateGroupIn,
+async def create_sample_api(
+    payload: CreateSampleIn,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Pack 2+ same-user captures into a ≤28 s training sample.
@@ -1164,7 +1164,7 @@ async def create_group_api(
       - total audio + gap silence ≤ 28 s
       - members' audio files match (1 ch, 16 bit, 16 kHz)
     """
-    import capture_groups_store
+    import capture_samples_store
     import uuid as _uuid
 
     member_ids = payload.member_ids
@@ -1172,12 +1172,12 @@ async def create_group_api(
         _validate_merge_payload(member_ids, payload.silence_ms, user)
     )
 
-    # Build merged WAV — gid generated upfront so the build path is
+    # Build merged WAV — sid generated upfront so the build path is
     # known before the DB insert (mirrors captures_store).
-    gid = _uuid.uuid4().hex
+    sid = _uuid.uuid4().hex
     transcript = _build_default_transcript(captures, payload.join_strategy)
     duration_ms, hashes, member_trims = _build_merged_wav(
-        gid=gid,
+        sid=sid,
         member_paths=member_paths,
         member_ids=member_ids,
         silence_ms=payload.silence_ms,
@@ -1194,8 +1194,8 @@ async def create_group_api(
             group_language = _lang
             break
     try:
-        _insert_group_with_gid(
-            gid=gid,
+        _insert_sample_with_sid(
+            sid=sid,
             user_id=owner_user_id,
             member_ids=member_ids,
             transcript=transcript,
@@ -1210,16 +1210,16 @@ async def create_group_api(
         # Insert failed — roll back the WAV we just wrote so the
         # next merge attempt for the same captures starts clean.
         try:
-            os.unlink(capture_groups_store.abs_path_for(
-                capture_groups_store._relpath_for(gid)))
+            os.unlink(capture_samples_store.abs_path_for(
+                capture_samples_store._relpath_for(sid)))
         except OSError:
             pass
         raise
-    return JSONResponse({"group_id": gid})
+    return JSONResponse({"sample_id": sid})
 
 
 @router.post(
-    "/captures/api/groups/preview-audio",
+    "/captures/api/samples/preview-audio",
     dependencies=[Depends(require_page("captures"))],
 )
 async def preview_merge_audio_api(
@@ -1228,9 +1228,9 @@ async def preview_merge_audio_api(
     background: BackgroundTasks,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> FileResponse:
-    """Build the merged WAV exactly as create_group_api would, stream it
+    """Build the merged WAV exactly as create_sample_api would, stream it
     back to the caller as audio/wav, and delete the temp file after the
-    response completes. Does NOT persist a capture_groups row.
+    response completes. Does NOT persist a capture_samples row.
 
     Used by the /captures Auto-propose merges modal + the manual merge-
     modal to let users preview the merged audio before committing."""
@@ -1282,7 +1282,7 @@ async def preview_merge_audio_api(
 
 
 @router.post(
-    "/captures/api/groups/preview-words",
+    "/captures/api/samples/preview-words",
     dependencies=[Depends(require_page("captures"))],
 )
 async def preview_merge_words_api(
@@ -1313,7 +1313,7 @@ async def preview_merge_words_api(
 
 
 @router.post(
-    "/captures/api/groups/merge-estimate",
+    "/captures/api/samples/merge-estimate",
     dependencies=[Depends(require_page("captures"))],
 )
 async def merge_estimate_api(
@@ -1344,7 +1344,7 @@ async def merge_estimate_api(
 
 
 @router.post(
-    "/captures/api/groups/preview-save-chips",
+    "/captures/api/samples/preview-save-chips",
     dependencies=[Depends(require_page("captures"))],
 )
 async def preview_save_chips_api(
@@ -1355,7 +1355,7 @@ async def preview_save_chips_api(
     global-indexed chips out to each member capture's local indices via
     _split_corrections_to_members, then REPLACES each member's
     `corrections` field. Same fan-out semantics as the group-level chip
-    save (captures_routes.py:1643+ patch_group_api path).
+    save (captures_routes.py:1643+ patch_sample_api path).
 
     Re-fetches every touched member and returns the canonical chips so
     the client can reproject (via _project_member_corrections) to refresh
@@ -1383,9 +1383,9 @@ async def preview_save_chips_api(
     })
 
 
-def _insert_group_with_gid(
+def _insert_sample_with_sid(
     *,
-    gid: str,
+    sid: str,
     user_id: str,
     member_ids: list[str],
     transcript: str,
@@ -1396,21 +1396,21 @@ def _insert_group_with_gid(
     language: str | None = None,
     member_trims: dict[str, Any] | None = None,
 ) -> None:
-    """Direct insert that honours a pre-allocated gid (needed because the
-    audio file is written at the gid path before this call).
+    """Direct insert that honours a pre-allocated sid (needed because the
+    audio file is written at the sid path before this call).
 
     Group chip state lives on the member captures, not on the group
     row — every read re-projects from members — so no chip plumbing
     appears here."""
-    import capture_groups_store
+    import capture_samples_store
 
-    relpath = capture_groups_store._relpath_for(gid)
+    relpath = capture_samples_store._relpath_for(sid)
     now = time.time()
-    conn = capture_groups_store._require_conn()
-    with capture_groups_store._lock:
+    conn = capture_samples_store._require_conn()
+    with capture_samples_store._lock:
         with conn:
             conn.execute(
-                "INSERT INTO capture_groups"
+                "INSERT INTO capture_samples"
                 " (id, user_id, created_ts, merged_wav_relpath,"
                 "  merged_duration_ms, transcript,"
                 "  transcript_join_strategy, member_hashes_json,"
@@ -1419,7 +1419,7 @@ def _insert_group_with_gid(
                 "  member_trims_json)"
                 " VALUES (?,?,?,?,?,?,?,?,?,0,0,?,0,0,?)",
                 (
-                    gid, user_id, now, relpath, int(duration_ms),
+                    sid, user_id, now, relpath, int(duration_ms),
                     transcript, join_strategy,
                     json.dumps(member_hash_map, sort_keys=True),
                     int(silence_ms),
@@ -1429,40 +1429,40 @@ def _insert_group_with_gid(
             )
             for order, mid in enumerate(member_ids):
                 conn.execute(
-                    "UPDATE captures SET group_id = ?, group_order = ?"
-                    " WHERE id = ? AND group_id IS NULL",
-                    (gid, order, mid),
+                    "UPDATE captures SET sample_id = ?, sample_order = ?"
+                    " WHERE id = ? AND sample_id IS NULL",
+                    (sid, order, mid),
                 )
     captures_merge_proposer.invalidate(user_id)
     logger.info(
-        "[groups] created gid=%s user=%s n=%d dur=%.1fs",
-        gid[:8], (user_id or "?")[:8], len(member_ids), duration_ms / 1000.0,
+        "[samples] created sid=%s user=%s n=%d dur=%.1fs",
+        sid[:8], (user_id or "?")[:8], len(member_ids), duration_ms / 1000.0,
     )
 
 
 @router.get(
-    "/captures/api/groups/{gid}",
+    "/captures/api/samples/{sid}",
     dependencies=[Depends(require_page("captures"))],
 )
-async def get_group_api(
-    gid: str,
+async def get_sample_api(
+    sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    import capture_groups_store
-    g = capture_groups_store.get_group(gid)
+    import capture_samples_store
+    g = capture_samples_store.get_sample(sid)
     if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     # 404 (not 403) on cross-user — leaking existence violates OWASP IDOR.
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
     )
-    _audit_cross_user_read(user, g, "group", gid)
-    return JSONResponse({"group": _enrich_group(g)})
+    _audit_cross_user_read(user, g, "sample", sid)
+    return JSONResponse({"sample": _enrich_sample(g)})
 
 
 def _hydrate_members(members: list[dict[str, Any]]) -> None:
     """Populate `words` (decoded) and `model` on each member dict in
-    place by fetching the full capture row once. `capture_groups_store.
+    place by fetching the full capture row once. `capture_samples_store.
     get_members` drops words_json/model to keep the projection light;
     the chip/karaoke helpers below need both. Idempotent — skips members
     that already carry the fields."""
@@ -1565,7 +1565,7 @@ def _split_corrections_to_members(
     return out
 
 
-def _enrich_group(g: dict[str, Any]) -> dict[str, Any]:
+def _enrich_sample(g: dict[str, Any]) -> dict[str, Any]:
     """Add `members` + `merged_words` to a group dict and re-derive the
     chip-dependent fields (transcript + corrections) from current
     member state.
@@ -1575,8 +1575,8 @@ def _enrich_group(g: dict[str, Any]) -> dict[str, Any]:
     (the member's own singleton card, or another admin tab) flow through
     to the group's Corrections section automatically — no in-DB chip
     storage needed at the group level."""
-    import capture_groups_store
-    members = capture_groups_store.get_members(g["id"])
+    import capture_samples_store
+    members = capture_samples_store.get_members(g["id"])
     _hydrate_members(members)
     usernames = api_keys_store.get_usernames(
         [m.get("user_id") for m in members] + [g.get("user_id")]
@@ -2037,24 +2037,24 @@ def _build_merged_words(
 
 
 @router.patch(
-    "/captures/api/groups/{gid}",
+    "/captures/api/samples/{sid}",
     dependencies=[Depends(require_page("captures"))],
 )
-async def patch_group_api(
-    gid: str,
-    payload: PatchGroupIn,
+async def patch_sample_api(
+    sid: str,
+    payload: PatchSampleIn,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    import capture_groups_store
-    g = capture_groups_store.get_group(gid)
+    import capture_samples_store
+    g = capture_samples_store.get_sample(sid)
     if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
     )
-    _audit_cross_user_read(user, g, "group-patch", gid)
+    _audit_cross_user_read(user, g, "sample-patch", sid)
     if g["is_locked"] and not user.get("is_admin"):
-        raise HTTPException(status.HTTP_409_CONFLICT, "group is locked")
+        raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
 
     patch: dict[str, Any] = {}
     rebuild_audio = False
@@ -2064,7 +2064,7 @@ async def patch_group_api(
     def _members() -> list[dict[str, Any]]:
         nonlocal _members_cache
         if _members_cache is None:
-            _members_cache = capture_groups_store.get_members(gid)
+            _members_cache = capture_samples_store.get_members(sid)
             _hydrate_members(_members_cache)
         return _members_cache
 
@@ -2084,7 +2084,7 @@ async def patch_group_api(
     if payload.corrections is not None:
         # Fan group-level chip edits DOWN to the owning members. Group
         # corrections are derived from members on every read (see
-        # `_enrich_group`); writing to a group-level chip column would
+        # `_enrich_sample`); writing to a group-level chip column would
         # be discarded by the next GET.
         #
         # When the client also sends `baseline_corrections` (a snapshot
@@ -2114,12 +2114,12 @@ async def patch_group_api(
 
     if rebuild_audio:
         # Re-run the merge with the new silence. Member set is unchanged.
-        # Hold the per-gid lock so a double-Save (or concurrent admins on
+        # Hold the per-sid lock so a double-Save (or concurrent admins on
         # the same group) can't fire two merges writing to the same dst.
         members = _members()
-        with _get_rebuild_lock(gid):
+        with _get_rebuild_lock(sid):
             duration_ms, hashes, member_trims = _build_merged_wav(
-                gid=gid,
+                sid=sid,
                 member_ids=[m["id"] for m in members],
                 silence_ms=int(patch["inter_segment_silence_ms"]),
             )
@@ -2141,64 +2141,64 @@ async def patch_group_api(
         )
         patch["transcript"] = _build_default_transcript(_members(), join_for_derive)
 
-    updated = capture_groups_store.update_group(gid, patch)
-    return JSONResponse({"group": _enrich_group(updated)})
+    updated = capture_samples_store.update_sample(sid, patch)
+    return JSONResponse({"sample": _enrich_sample(updated)})
 
 
 @router.post(
-    "/captures/api/groups/{gid}/regenerate",
+    "/captures/api/samples/{sid}/regenerate",
     dependencies=[Depends(require_page("captures"))],
 )
-async def regenerate_group_api(
-    gid: str,
+async def regenerate_sample_api(
+    sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """Rebuild the merged WAV from current member content, refresh
     hashes, clear `is_stale`. Transcript is preserved (admin's edits stay)."""
-    import capture_groups_store
-    g = capture_groups_store.get_group(gid)
+    import capture_samples_store
+    g = capture_samples_store.get_sample(sid)
     if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
     )
-    _audit_cross_user_read(user, g, "group-regenerate", gid)
-    members = capture_groups_store.get_members(gid)
-    with _get_rebuild_lock(gid):
+    _audit_cross_user_read(user, g, "sample-regenerate", sid)
+    members = capture_samples_store.get_members(sid)
+    with _get_rebuild_lock(sid):
         duration_ms, hashes, member_trims = _build_merged_wav(
-            gid=gid,
+            sid=sid,
             member_ids=[m["id"] for m in members],
             silence_ms=g["inter_segment_silence_ms"],
         )
-        updated = capture_groups_store.update_group(
-            gid, _merged_wav_patch(duration_ms, hashes, member_trims),
+        updated = capture_samples_store.update_sample(
+            sid, _merged_wav_patch(duration_ms, hashes, member_trims),
         )
-    return JSONResponse({"group": _enrich_group(updated)})
+    return JSONResponse({"sample": _enrich_sample(updated)})
 
 
 @router.delete(
-    "/captures/api/groups/{gid}",
+    "/captures/api/samples/{sid}",
     dependencies=[Depends(require_page("captures"))],
 )
-async def dissolve_group_api(
-    gid: str,
+async def dissolve_sample_api(
+    sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    import capture_groups_store
-    g = capture_groups_store.get_group(gid)
+    import capture_samples_store
+    g = capture_samples_store.get_sample(sid)
     if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
     )
-    _audit_cross_user_read(user, g, "group-delete", gid)
+    _audit_cross_user_read(user, g, "sample-delete", sid)
     if g["is_locked"] and not user.get("is_admin"):
-        raise HTTPException(status.HTTP_409_CONFLICT, "group is locked")
-    capture_groups_store.dissolve_group(gid)
+        raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
+    capture_samples_store.dissolve_sample(sid)
     return JSONResponse({"ok": True})
 
 
-# Per-gid lock so a burst of audio requests for the same missing WAV
+# Per-sid lock so a burst of audio requests for the same missing WAV
 # at startup doesn't trigger N concurrent merges. The route runs the
 # sync merge inside Starlette's threadpool, so a plain threading.Lock
 # is the right primitive (asyncio.Lock would only help if the merge
@@ -2207,16 +2207,16 @@ _rebuild_locks: dict[str, threading.Lock] = {}
 _rebuild_locks_guard = threading.Lock()
 
 
-def _get_rebuild_lock(gid: str) -> threading.Lock:
+def _get_rebuild_lock(sid: str) -> threading.Lock:
     with _rebuild_locks_guard:
-        lock = _rebuild_locks.get(gid)
+        lock = _rebuild_locks.get(sid)
         if lock is None:
             lock = threading.Lock()
-            _rebuild_locks[gid] = lock
+            _rebuild_locks[sid] = lock
         return lock
 
 
-def _ensure_group_wav(g: dict[str, Any]) -> str:
+def _ensure_sample_wav(g: dict[str, Any]) -> str:
     """Resolve the merged-WAV abs path. If the file is missing on
     disk but every member capture still has its row + audio, rebuild
     the WAV in place and return its abs path. If unrecoverable, raise
@@ -2229,32 +2229,32 @@ def _ensure_group_wav(g: dict[str, Any]) -> str:
     as a hard 404 to the user. The "Regenerate" button still exists
     for the legitimate force-rebuild case (user edited silence/join).
     """
-    import capture_groups_store
+    import capture_samples_store
     try:
-        abs_p = capture_groups_store.abs_path_for(g["merged_wav_relpath"])
+        abs_p = capture_samples_store.abs_path_for(g["merged_wav_relpath"])
     except ValueError:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "merged audio missing")
     if os.path.exists(abs_p):
         return abs_p
 
-    members = capture_groups_store.get_members(g["id"])
+    members = capture_samples_store.get_members(g["id"])
     if not members:
         raise HTTPException(
             status.HTTP_410_GONE,
-            "members deleted — group is unrecoverable",
+            "members deleted — sample is unrecoverable",
         )
     for m in members:
         cap = captures_store.get_capture(m["id"])
         if cap is None:
             raise HTTPException(
                 status.HTTP_410_GONE,
-                f"member {m['id'][:8]} row deleted — group is unrecoverable",
+                f"member {m['id'][:8]} row deleted — sample is unrecoverable",
             )
         member_abs = captures_store.abs_audio_path(cap["audio_relpath"])
         if not os.path.exists(member_abs):
             raise HTTPException(
                 status.HTTP_410_GONE,
-                f"member {m['id'][:8]} audio is gone — group is unrecoverable",
+                f"member {m['id'][:8]} audio is gone — sample is unrecoverable",
             )
 
     member_ids = [m["id"] for m in members]
@@ -2263,41 +2263,41 @@ def _ensure_group_wav(g: dict[str, Any]) -> str:
         if os.path.exists(abs_p):
             return abs_p
         logger.warning(
-            "[groups] gid=%s auto-rebuilding missing WAV from %d members",
+            "[samples] sid=%s auto-rebuilding missing WAV from %d members",
             g["id"][:8], len(member_ids),
         )
         duration_ms, hashes, member_trims = _build_merged_wav(
-            gid=g["id"],
+            sid=g["id"],
             member_ids=member_ids,
             silence_ms=int(g["inter_segment_silence_ms"]),
         )
-        capture_groups_store.update_group(
+        capture_samples_store.update_sample(
             g["id"], _merged_wav_patch(duration_ms, hashes, member_trims),
         )
     return abs_p
 
 
 @router.get(
-    "/captures/api/groups/{gid}/audio",
+    "/captures/api/samples/{sid}/audio",
     dependencies=[Depends(require_page("captures"))],
 )
-async def get_group_audio_api(
-    gid: str,
+async def get_sample_audio_api(
+    sid: str,
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
 ):
     """Stream the merged WAV, self-healing if it's missing on disk
     but reconstructable from member captures."""
     _check_audio_rate(request.client.host if request.client else "")
-    import capture_groups_store
-    g = capture_groups_store.get_group(gid)
+    import capture_samples_store
+    g = capture_samples_store.get_sample(sid)
     if g is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "group not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
     )
-    _audit_cross_user_read(user, g, "group-audio", gid)
-    abs_p = _ensure_group_wav(g)
+    _audit_cross_user_read(user, g, "sample-audio", sid)
+    abs_p = _ensure_sample_wav(g)
     return FileResponse(
         abs_p,
         media_type="audio/wav",
@@ -2369,7 +2369,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
     `audio_missing` rows leak only when `only_status='all'`, and even
     then the hard filter above drops them.
     """
-    import capture_groups_store
+    import capture_samples_store
 
     buf = io.BytesIO()
     tar = tarfile.open(fileobj=buf, mode="w:gz", compresslevel=6)
@@ -2377,7 +2377,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
 
     # 1. Capture groups (the packed-for-fine-tune training samples).
     user_filter_scope: str | None = None  # admin-only path; no per-user scope
-    for g in capture_groups_store.list_groups(user_id=user_filter_scope):
+    for g in capture_samples_store.list_samples(user_id=user_filter_scope):
         # Status gate — groups have the same status field as captures.
         # The caller has already mapped "all" → None upstream, so a
         # truthy only_status here is a concrete status to match.
@@ -2394,8 +2394,8 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
         # if the stored snapshot is stale. Source from the training-form
         # column so reviewers see — and the trainer learns from — the
         # same text.
-        gid = g["id"]
-        members = capture_groups_store.get_members(gid)
+        sid = g["id"]
+        members = capture_samples_store.get_members(sid)
         text = _build_default_transcript(
             members, g.get("transcript_join_strategy") or "space",
         ).strip()
@@ -2404,13 +2404,13 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
         # Audio existence gate: skip the manifest entry entirely if the
         # WAV isn't on disk, to avoid manifest pointing at missing files.
         try:
-            abs_p = capture_groups_store.abs_path_for(g["merged_wav_relpath"])
+            abs_p = capture_samples_store.abs_path_for(g["merged_wav_relpath"])
         except ValueError:
             continue
         if not os.path.isfile(abs_p):
             continue
 
-        audio_name = f"audio/{gid}.wav"
+        audio_name = f"audio/{sid}.wav"
         # Group `model` and `request_id` are intentionally empty — a
         # group has multiple members each with their own model id. Per-
         # member audit is reachable via the group's GET /members endpoint.
@@ -2419,7 +2419,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             text=text,
             duration=float(g.get("merged_duration_ms") or 0) / 1000.0,
             language=g.get("language") or "",
-            source="group",
+            source="sample",
             user_id=g.get("user_id") or "",
             status_value=g.get("status") or "new",
             created_ts=float(g.get("created_ts") or 0.0),
@@ -2441,9 +2441,9 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             if chunk:
                 yield chunk
 
-    # 2. Ungrouped captures (no group_id).
+    # 2. Ungrouped captures (no sample_id).
     for row in captures_store.iter_captures_for_export(status=only_status):
-        if row.get("group_id"):
+        if row.get("sample_id"):
             continue
         # Hard filter: `audio_missing` rows have no WAV; never valid
         # training data. (Caught here even when only_status='all'.)
@@ -3448,7 +3448,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     <span class="meter" id="ab-meter">Σ 0.00 s / 28.00 s</span>
     <span class="summary" id="ab-warn"></span>
     <span class="spacer"></span>
-    <button id="ab-merge" class="primary" disabled>Merge into group</button>
+    <button id="ab-merge" class="primary" disabled>Merge into sample</button>
     <button id="ab-clear">Clear selection</button>
   </div>
 
@@ -3726,10 +3726,10 @@ _CAPTURES_HTML = r"""<!doctype html>
   // State
   // -------------------------------------------------------------------
   var _allCaptures = [];
-  var _allGroups = [];
+  var _allSamples = [];
   var _counts = {};
   var _openRows = {};   // cid -> { audio, blobUrl, wordEls, words, finalText, dirty, corrections, ... }
-  var _openGroups = {}; // gid -> { audio } — for blob-URL cleanup on render() / beforeunload
+  var _openSamples = {}; // sid -> { audio } — for blob-URL cleanup on render() / beforeunload
   var _selection = new Set();   // capture ids currently selected for merge
   var _lastSelectId = null;     // anchor for shift-range select
 
@@ -3738,7 +3738,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   // -------------------------------------------------------------------
   function _handleSelectionClick(row, shift) {
     var visibleIds = applyFilters(_allCaptures)
-      .filter(function(r) { return !r.group_id; })
+      .filter(function(r) { return !r.sample_id; })
       .map(function(r) { return r.id; });
     if (shift && _lastSelectId && _lastSelectId !== row.id) {
       var i = visibleIds.indexOf(_lastSelectId);
@@ -3795,18 +3795,18 @@ _CAPTURES_HTML = r"""<!doctype html>
     var userIds = new Set(rows.map(function(r) { return r.user_id || ''; }));
     var warn = document.getElementById('ab-warn');
     var mixedUsers = userIds.size > 1;
-    var hasGrouped = rows.some(function(r) { return r.group_id; });
+    var hasInSample = rows.some(function(r) { return r.sample_id; });
     if (mixedUsers) {
       warn.textContent = '⚠ multiple speakers — merging not allowed';
       warn.style.color = 'var(--red)';
-    } else if (hasGrouped) {
-      warn.textContent = '⚠ selection includes captures already in a group';
+    } else if (hasInSample) {
+      warn.textContent = '⚠ selection includes captures already in a sample';
       warn.style.color = 'var(--red)';
     } else {
       warn.textContent = '';
     }
 
-    var baseOk = n >= 2 && !mixedUsers && !hasGrouped;
+    var baseOk = n >= 2 && !mixedUsers && !hasInSample;
     var mergeBtn = document.getElementById('ab-merge');
     mergeBtn.disabled = !baseOk;
     if (baseOk) {
@@ -3825,7 +3825,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     if (_meterEstimateTimer) clearTimeout(_meterEstimateTimer);
     var token = ++_meterEstimateToken;
     _meterEstimateTimer = setTimeout(function() {
-      api('POST', '/captures/api/groups/merge-estimate',
+      api('POST', '/captures/api/samples/merge-estimate',
           { member_ids: ids, silence_ms: gap_ms })
         .then(function(j) {
           if (token !== _meterEstimateToken) return;  // superseded
@@ -3958,8 +3958,8 @@ _CAPTURES_HTML = r"""<!doctype html>
         : (r.user_id
             ? '<span class="pill" title="speaker (unknown user)">' + escapeHtml((r.user_id||'').slice(0,6)) + '</span>'
             : '')) +
-      (r.group_id
-        ? '<span class="pill group-pill" title="member of group ' + escapeHtml(r.group_id.slice(0,8)) + '">in group</span>'
+      (r.sample_id
+        ? '<span class="pill group-pill" title="member of sample ' + escapeHtml(r.sample_id.slice(0,8)) + '">in sample</span>'
         : '') +
       '<span class="spacer"></span>');
     card.appendChild(head);
@@ -4920,13 +4920,13 @@ _CAPTURES_HTML = r"""<!doctype html>
           if (st && st.blobUrl) URL.revokeObjectURL(st.blobUrl);
         });
         _openRows = {};
-        Object.keys(_openGroups).forEach(function(gid) {
-          var st = _openGroups[gid];
+        Object.keys(_openSamples).forEach(function(sid) {
+          var st = _openSamples[sid];
           if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
             try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
           }
         });
-        _openGroups = {};
+        _openSamples = {};
         await load();
       } catch (e) {
         if (e.message !== 'unauthorized') toast('Failed: ' + e.message, true);
@@ -4998,9 +4998,9 @@ _CAPTURES_HTML = r"""<!doctype html>
       _counts = j.counts || {};
       // Pull groups in parallel-shape; failure is non-fatal (admin sees no groups).
       try {
-        var jg = await api('GET', '/captures/api/groups');
-        _allGroups = jg.groups || [];
-      } catch (_) { _allGroups = []; }
+        var jg = await api('GET', '/captures/api/samples');
+        _allSamples = jg.samples || [];
+      } catch (_) { _allSamples = []; }
       updateCaptureBadge(!!j.enabled);
       rebuildModelFilter();
       updateCounts();
@@ -5104,7 +5104,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       var el = document.getElementById('merge-summary');
       el.textContent = n + ' segments · Σ ~' + total.toFixed(2) + ' s / 28.00 s';
       var token = ++_summaryToken;
-      api('POST', '/captures/api/groups/merge-estimate',
+      api('POST', '/captures/api/samples/merge-estimate',
           { member_ids: rows.map(function(r) { return r.id; }), silence_ms: gapMs })
         .then(function(j) {
           if (token !== _summaryToken) return;
@@ -5151,10 +5151,10 @@ _CAPTURES_HTML = r"""<!doctype html>
         join_strategy: joinSel.value,
         silence_ms: parseInt(silSel.value, 10) || 300,
       };
-      api('POST', '/captures/api/groups', payload)
+      api('POST', '/captures/api/samples', payload)
         .then(function() {
           modal.classList.remove('show');
-          toast('Group created');
+          toast('Sample created');
           return load();
         })
         .catch(function(e) {
@@ -5794,8 +5794,8 @@ _CAPTURES_HTML = r"""<!doctype html>
           silence_ms: silenceMsFn() || 300,
         });
         var [audioResp, wordsResp] = await Promise.all([
-          fetch('/captures/api/groups/preview-audio', { method:'POST', headers:headers, body:body }),
-          fetch('/captures/api/groups/preview-words', { method:'POST', headers:headers, body:body }),
+          fetch('/captures/api/samples/preview-audio', { method:'POST', headers:headers, body:body }),
+          fetch('/captures/api/samples/preview-words', { method:'POST', headers:headers, body:body }),
         ]);
         if (!audioResp.ok) {
           var amsg = 'preview failed (' + audioResp.status + ')';
@@ -5897,7 +5897,7 @@ _CAPTURES_HTML = r"""<!doctype html>
         }
         return o;
       });
-    var resp = await fetch('/captures/api/groups/preview-save-chips', {
+    var resp = await fetch('/captures/api/samples/preview-save-chips', {
       method: 'POST', headers: headers,
       body: JSON.stringify({
         member_ids: memberIds, silence_ms: silenceMs, corrections: chips,
@@ -6092,7 +6092,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     _allCaptures.forEach(function(r) { byId[r.id] = r; });
     var missing = (p.member_ids || []).filter(function(id) {
       var r = byId[id];
-      return !r || r.group_id;
+      return !r || r.sample_id;
     });
     if (missing.length) {
       toast(missing.length + ' member(s) no longer eligible — try Refresh', true);
@@ -6104,12 +6104,12 @@ _CAPTURES_HTML = r"""<!doctype html>
     var origText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = 'Merging…'; }
     try {
-      await api('POST', '/captures/api/groups', {
+      await api('POST', '/captures/api/samples', {
         member_ids: p.member_ids,
         join_strategy: join,
         silence_ms: silenceMs,
       });
-      toast('Group created (' + (p.member_count || p.member_ids.length) + ' clips)');
+      toast('Sample created (' + (p.member_count || p.member_ids.length) + ' clips)');
       // Drop the accepted proposal + any overlapping ones from the visible
       // list. Now-grouped members invalidate any other proposal that
       // contained them.
@@ -6146,7 +6146,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   var _batchTouchState = null;
   // Single-level undo for the last Dismiss/Accept (Ctrl+↓ or the ↶ button).
   // Holds a pre-mutation snapshot of _proposals plus, for accepts, the
-  // created group_id so revert can dissolve it. Null = nothing to revert.
+  // created sample_id so revert can dissolve it. Null = nothing to revert.
   var _batchUndo = null;
 
   function _enterBatchMode() {
@@ -6323,7 +6323,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       var byId = {};
       _allCaptures.forEach(function(r) { byId[r.id] = r; });
       var missing = (p.member_ids || []).filter(function(id) {
-        var r = byId[id]; return !r || r.group_id;
+        var r = byId[id]; return !r || r.sample_id;
       });
       if (missing.length) {
         toast(missing.length + ' member(s) no longer eligible — try Refresh', true);
@@ -6336,12 +6336,12 @@ _CAPTURES_HTML = r"""<!doctype html>
       // restore the accepted proposal + any overlapping ones it removed.
       var acceptSnap = _proposals.slice();
       try {
-        var resp = await api('POST', '/captures/api/groups', {
+        var resp = await api('POST', '/captures/api/samples', {
           member_ids: p.member_ids,
           join_strategy: join,
           silence_ms: silenceMs,
         });
-        toast('Group created (' + (p.member_count || p.member_ids.length) + ' clips)');
+        toast('Sample created (' + (p.member_count || p.member_ids.length) + ' clips)');
         _batchAccepted++;
         // Splice accepted + any overlapping proposals (their members are
         // now grouped, so they'd be invalid anyway).
@@ -6352,11 +6352,11 @@ _CAPTURES_HTML = r"""<!doctype html>
           return !(other.member_ids || []).some(function(id) { return consumed[id]; });
         });
         // Remember how to undo this accept: dissolve the created group +
-        // restore the pre-splice queue. group_id comes from create_group_api.
+        // restore the pre-splice queue. sample_id comes from create_sample_api.
         _batchUndo = {
           action: 'accept',
           proposals: acceptSnap,
-          gid: (resp && resp.group_id) || null,
+          sid: (resp && resp.sample_id) || null,
           clips: p.member_count || p.member_ids.length,
         };
         load();   // refresh main captures list in background
@@ -6410,8 +6410,8 @@ _CAPTURES_HTML = r"""<!doctype html>
       && _batchCurrentCard.parentNode.querySelector('.batch-actions .revert');
     if (btn) btn.disabled = true;
     try {
-      if (u.gid) {
-        await api('DELETE', '/captures/api/groups/' + encodeURIComponent(u.gid));
+      if (u.sid) {
+        await api('DELETE', '/captures/api/samples/' + encodeURIComponent(u.sid));
       }
     } catch (e) {
       // 404 = already dissolved elsewhere; treat as success. Anything else
@@ -6427,7 +6427,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     _proposals = u.proposals;
     _batchAccepted = Math.max(0, _batchAccepted - 1);
     _batchUndo = null;
-    toast('Reverted — group dissolved');
+    toast('Reverted — sample dissolved');
     load();              // refresh main captures list (members freed again)
     _renderBatchCard();
   }
@@ -6548,7 +6548,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   // -------------------------------------------------------------------
   // Group row rendering — packed-for-fine-tune training samples
   // -------------------------------------------------------------------
-  function _renderGroupCard(g) {
+  function _renderSampleCard(g) {
     var card = document.createElement('div');
     card.className = 'capture-card is-group';
     var head = document.createElement('div');
@@ -6558,7 +6558,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       '<span class="when" data-ts="' + (g.created_ts || 0) + '" title="' +
         escapeHtml(absTime(g.created_ts)) + '">' +
         escapeHtml(fmtWhen(g.created_ts)) + '</span>' +
-      '<span class="pill group-pill">group</span>' +
+      '<span class="pill group-pill">sample</span>' +
       '<span class="pill status-' + escapeHtml(g.status || 'new') + '">' +
         escapeHtml(g.status || 'new') + '</span>' +
       (g.username
@@ -6590,25 +6590,25 @@ _CAPTURES_HTML = r"""<!doctype html>
     var body = document.createElement('div');
     body.className = 'cc-body';
     card.appendChild(body);
-    head.addEventListener('click', function() { _toggleGroupExpand(card, g); });
+    head.addEventListener('click', function() { _toggleSampleExpand(card, g); });
     return card;
   }
 
-  function _toggleGroupExpand(card, g) {
+  function _toggleSampleExpand(card, g) {
     if (card.classList.contains('open')) {
       card.classList.remove('open');
       // Mirror singleton collapse(): pause + revoke the blob URL and
       // wipe the body so the next expand re-fetches and re-binds —
       // otherwise hidden audio keeps playing and the blob leaks until
       // the next render() wipe.
-      var st = _openGroups[g.id];
+      var st = _openSamples[g.id];
       if (st && st.audio) {
         try { st.audio.pause(); } catch(_) {}
         if (st.audio.src && st.audio.src.indexOf('blob:') === 0) {
           try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
         }
       }
-      delete _openGroups[g.id];
+      delete _openSamples[g.id];
       var bodyEl = card.querySelector('.cc-body');
       if (bodyEl) { bodyEl.dataset.built = '0'; bodyEl.innerHTML = ''; }
       return;
@@ -6619,17 +6619,17 @@ _CAPTURES_HTML = r"""<!doctype html>
     // Guard against concurrent expands on the same group (collapse →
     // re-expand while the first GET is still in flight) — a second build
     // would append a second <audio> element whose blob URL the existing
-    // _openGroups tracking can't reach, leaking on render() wipe.
+    // _openSamples tracking can't reach, leaking on render() wipe.
     if (body.dataset.fetching === '1') return;
     body.dataset.fetching = '1';
-    api('GET', '/captures/api/groups/' + encodeURIComponent(g.id))
+    api('GET', '/captures/api/samples/' + encodeURIComponent(g.id))
       .then(function(j) {
-        var detail = j.group || g;
+        var detail = j.sample || g;
 
         // --- Skeleton: audio slot, transcript textarea, karaoke band,
         // chip box, settings row, button row, members list. All built
         // once; their CONTENT is filled (and refilled) by
-        // applyServerGroup() below. ---
+        // applyServerSample() below. ---
         var audio = document.createElement('audio');
         audio.preload = 'metadata';
         var audioPlayerWrap = _attachCompactPlayer(audio);
@@ -6664,8 +6664,8 @@ _CAPTURES_HTML = r"""<!doctype html>
         ta.setAttribute('role', 'textbox');
         ta.setAttribute('aria-readonly', 'true');
 
-        var groupState = {
-          gid: detail.id,
+        var sampleState = {
+          sid: detail.id,
           audio: audio,
           words: [],
           finalText: '',
@@ -6695,21 +6695,21 @@ _CAPTURES_HTML = r"""<!doctype html>
         var strip = document.createElement('div');
         strip.className = 'word-strip';
         corrSec.appendChild(strip);
-        groupState.stripEl = strip;
-        if (typeof groupState.cursorIdx !== 'number') groupState.cursorIdx = -1;
-        _bindStripKeyboard(groupState);
+        sampleState.stripEl = strip;
+        if (typeof sampleState.cursorIdx !== 'number') sampleState.cursorIdx = -1;
+        _bindStripKeyboard(sampleState);
 
         // Karaoke highlight via timeupdate (attached once; reads the
-        // live groupState.words). Survives applyServerGroup re-renders.
+        // live sampleState.words). Survives applyServerSample re-renders.
         audio.addEventListener('timeupdate', function() {
           var t = audio.currentTime;
           var idx = -1;
-          for (var i = 0; i < groupState.words.length; i++) {
-            var s = groupState.words[i].start || 0;
-            var e = groupState.words[i].end || 0;
+          for (var i = 0; i < sampleState.words.length; i++) {
+            var s = sampleState.words[i].start || 0;
+            var e = sampleState.words[i].end || 0;
             if (s <= t && t < e) { idx = i; break; }
           }
-          _setActiveWord(groupState, idx);
+          _setActiveWord(sampleState, idx);
         });
 
         // Chip list nests inside the same Corrections section so the
@@ -6718,7 +6718,7 @@ _CAPTURES_HTML = r"""<!doctype html>
         chipBox.className = 'cc-corrections';
         corrSec.appendChild(chipBox);
         body.appendChild(corrSec);
-        groupState.chipBox = chipBox;
+        sampleState.chipBox = chipBox;
 
         // ---- Final result section (read-only preview). ----
         var gtSec = document.createElement('div');
@@ -6767,7 +6767,7 @@ _CAPTURES_HTML = r"""<!doctype html>
         settingsSec.appendChild(settingsHint);
         body.appendChild(settingsSec);
 
-        // Mutable baselines so applyServerGroup can update them and
+        // Mutable baselines so applyServerSample can update them and
         // settingsDirty() reads the latest "saved" state.
         var origJoin = detail.transcript_join_strategy || 'space';
         var origSil  = detail.inter_segment_silence_ms || 300;
@@ -6793,8 +6793,8 @@ _CAPTURES_HTML = r"""<!doctype html>
         notesSec.innerHTML = '<h3>Admin notes</h3>';
         var notesArea = document.createElement('textarea');
         notesArea.addEventListener('input', function() {
-          groupState.adminNotes = notesArea.value;
-          markDirty(groupState);
+          sampleState.adminNotes = notesArea.value;
+          markDirty(sampleState);
         });
         notesSec.appendChild(notesArea);
         body.appendChild(notesSec);
@@ -6810,29 +6810,29 @@ _CAPTURES_HTML = r"""<!doctype html>
            {value: 'reviewed',  label: 'Reviewed'},
            {value: 'ready',     label: 'Ready'},
            {value: 'dismissed', label: 'Dismissed'}],
-          groupState.newStatus || 'new',
+          sampleState.newStatus || 'new',
           async function(v) {
-            var prev = groupState.newStatus;
-            groupState.newStatus = v;
+            var prev = sampleState.newStatus;
+            sampleState.newStatus = v;
             try {
               // Narrow PATCH — status only. Concurrent transcript or
               // chip edits in this view stay dirty and persist only on
               // Save click; the three-way-merge path isn't engaged.
               await api('PATCH',
-                '/captures/api/groups/' + encodeURIComponent(g.id),
+                '/captures/api/samples/' + encodeURIComponent(g.id),
                 { status: v });
               // Sync the collapsed-list header so the next render() /
               // status-filter sees the new status without a full reload.
               // Status-only PATCH doesn't need (and must not run) the
-              // full applyServerGroup — it would rebuild word strip,
+              // full applyServerSample — it would rebuild word strip,
               // chips, audio, etc. for a single-pill change.
-              var idx = _allGroups.findIndex(function(x) { return x.id === g.id; });
-              if (idx >= 0) _allGroups[idx].status = v;
+              var idx = _allSamples.findIndex(function(x) { return x.id === g.id; });
+              if (idx >= 0) _allSamples[idx].status = v;
               reloadCounts();
               toast('Status: ' + v);
             } catch (e) {
               statusGrp.setValue(prev);
-              groupState.newStatus = prev;
+              sampleState.newStatus = prev;
               if (e.message !== 'unauthorized') {
                 toast('Status save failed: ' + e.message, true);
               }
@@ -6845,7 +6845,7 @@ _CAPTURES_HTML = r"""<!doctype html>
         dirtyEl.className = 'dirty hidden';
         dirtyEl.textContent = 'unsaved';
         actions.appendChild(dirtyEl);
-        groupState.dirtyEl = dirtyEl;
+        sampleState.dirtyEl = dirtyEl;
         var spc = document.createElement('span');
         spc.className = 'spacer';
         actions.appendChild(spc);
@@ -6858,19 +6858,19 @@ _CAPTURES_HTML = r"""<!doctype html>
         var lockBtn = document.createElement('button');
         actions.appendChild(lockBtn);
         var dissolveBtn = document.createElement('button');
-        dissolveBtn.textContent = 'Dissolve group';
+        dissolveBtn.textContent = 'Dissolve sample';
         dissolveBtn.className = 'danger';
         actions.appendChild(dissolveBtn);
         body.appendChild(actions);
 
-        // --- Members list (replaced on each applyServerGroup) ---
+        // --- Members list (replaced on each applyServerSample) ---
         var membersDiv = document.createElement('div');
         membersDiv.className = 'group-members';
         body.appendChild(membersDiv);
 
         // --- refreshAudio: re-fetches the blob; on failure shows the
         // missing-audio banner in place of the <audio> element. The
-        // banner's button hits applyServerGroup so success heals the
+        // banner's button hits applyServerSample so success heals the
         // open card without a load() wipe. ---
         function refreshAudio() {
           // Reclaim the <audio> element if the banner replaced it.
@@ -6883,7 +6883,7 @@ _CAPTURES_HTML = r"""<!doctype html>
             audioSlot.innerHTML = '';
             audioSlot.appendChild(audioPlayerWrap);
           }
-          fetch('/captures/api/groups/' + encodeURIComponent(g.id) + '/audio')
+          fetch('/captures/api/samples/' + encodeURIComponent(g.id) + '/audio')
             .then(function(r) {
               if (!r.ok) throw new Error('HTTP ' + r.status);
               return r.blob();
@@ -6898,7 +6898,7 @@ _CAPTURES_HTML = r"""<!doctype html>
                 + 'margin-top:0.5rem;display:flex;align-items:center;'
                 + 'gap:0.75rem;flex-wrap:wrap;';
               banner.innerHTML = '<span style="color:#ffd1d1;">'
-                + '⚠ Audio unavailable for this group ('
+                + '⚠ Audio unavailable for this sample ('
                 + escapeHtml(err && err.message || 'fetch failed') + ').'
                 + '</span>';
               var fixBtn = document.createElement('button');
@@ -6906,11 +6906,11 @@ _CAPTURES_HTML = r"""<!doctype html>
               fixBtn.className = 'primary';
               fixBtn.onclick = function() {
                 fixBtn.disabled = true;
-                api('POST', '/captures/api/groups/'
+                api('POST', '/captures/api/samples/'
                     + encodeURIComponent(g.id) + '/regenerate')
                   .then(function(j) {
                     toast('Regenerated');
-                    applyServerGroup(j.group || {});
+                    applyServerSample(j.sample || {});
                   })
                   .catch(function(e) {
                     fixBtn.disabled = false;
@@ -6922,15 +6922,15 @@ _CAPTURES_HTML = r"""<!doctype html>
             });
         }
 
-        // --- applyServerGroup: the single source of truth for "the
+        // --- applyServerSample: the single source of truth for "the
         // server told us the group looks like X, now reflect X in the
         // open card." Called once on initial expand and again after
         // every Save / Regenerate. Replaces the previous load()-wipe
         // pattern. ---
-        function applyServerGroup(d) {
-          // 1. groupState data.
-          groupState.words = d.merged_words || [];
-          groupState.corrections = (d.corrections || []).map(function(c) {
+        function applyServerSample(d) {
+          // 1. sampleState data.
+          sampleState.words = d.merged_words || [];
+          sampleState.corrections = (d.corrections || []).map(function(c) {
             return {
               wrong:   c.wrong   || '',
               correct: c.correct || '',
@@ -6943,17 +6943,17 @@ _CAPTURES_HTML = r"""<!doctype html>
           // user's deltas on top of any concurrent member-chip writes
           // (cross-tab admin saves, or a member edited from its singleton
           // /captures card).
-          groupState.baselineCorrections =
+          sampleState.baselineCorrections =
             JSON.parse(JSON.stringify(d.corrections || []));
-          groupState.finalText = d.transcript || '';
-          groupState.adminNotes = d.admin_notes || '';
-          groupState.newStatus = d.status || 'new';
-          groupState.wordEls = [];
-          groupState._activeWordIdx = -1;
+          sampleState.finalText = d.transcript || '';
+          sampleState.adminNotes = d.admin_notes || '';
+          sampleState.newStatus = d.status || 'new';
+          sampleState.wordEls = [];
+          sampleState._activeWordIdx = -1;
           // Render Final result as karaoke spans (from merged words + chips)
           // instead of plain transcript text, so it highlights in sync with
           // the Corrections strip as the merged audio plays.
-          applyCorrectionsToGround(groupState);
+          applyCorrectionsToGround(sampleState);
 
           // Per-member raw + post-processing reference rows.
           // "post-processing" line sources from the training-form text
@@ -6971,7 +6971,7 @@ _CAPTURES_HTML = r"""<!doctype html>
           // Status button-group + admin notes (sync from server snapshot).
           statusGrp.setValue(d.status || 'new');
           notesArea.value = d.admin_notes || '';
-          clearDirty(groupState);
+          clearDirty(sampleState);
 
           // 2. Dropdowns + baselines.
           silSel.value = String(d.inter_segment_silence_ms || 300);
@@ -6996,7 +6996,7 @@ _CAPTURES_HTML = r"""<!doctype html>
           // mem-odd classes; styles in the .word-strip CSS block).
           strip.innerHTML = '';
           var prevMember = -1;
-          groupState.words.forEach(function(w, i) {
+          sampleState.words.forEach(function(w, i) {
             var sp = document.createElement('span');
             sp.className = 'word ' + ((w.member_idx % 2 === 0) ? 'mem-even' : 'mem-odd');
             // Small horizontal breathing room at member boundaries (no
@@ -7015,21 +7015,21 @@ _CAPTURES_HTML = r"""<!doctype html>
               sp.classList.add('post-edited');
             }
             sp.addEventListener('click', function(e) {
-              onWordClick(groupState, i, !!e.shiftKey);
+              onWordClick(sampleState, i, !!e.shiftKey);
             });
             strip.appendChild(sp);
-            groupState.wordEls.push(sp);
+            sampleState.wordEls.push(sp);
           });
           // Word DOM was rebuilt — re-paint the keyboard cursor on the
           // new spans so a mid-edit reload doesn't lose the cursor.
-          if (typeof _redrawCursor === 'function') _redrawCursor(groupState);
+          if (typeof _redrawCursor === 'function') _redrawCursor(sampleState);
 
           // 6. Chips + pre-marked word selections from saved corrections.
-          renderChips(groupState);
-          groupState.corrections.forEach(function(c) {
+          renderChips(sampleState);
+          sampleState.corrections.forEach(function(c) {
             if (typeof c.idx !== 'number') return;
             var end = (typeof c.idx_end === 'number') ? c.idx_end : c.idx;
-            for (var j = c.idx; j <= end; j++) selectWord(groupState, j, true);
+            for (var j = c.idx; j <= end; j++) selectWord(sampleState, j, true);
           });
 
           // 7. Members list.
@@ -7044,7 +7044,7 @@ _CAPTURES_HTML = r"""<!doctype html>
             var memDur = (m.effective_duration_seconds !== undefined
               ? m.effective_duration_seconds
               : (m.duration_seconds || 0));
-            line.innerHTML = '[' + (m.group_order + 1) + '] '
+            line.innerHTML = '[' + (m.sample_order + 1) + '] '
               + memDur.toFixed(1) + 's · '
               + escapeHtml(memberText.slice(0, 120));
             membersDiv.appendChild(line);
@@ -7057,8 +7057,8 @@ _CAPTURES_HTML = r"""<!doctype html>
           // triggering a full render — this way the group's "stale"
           // pill, created_ts, etc. on the closed card header stays
           // truthful after a save.
-          var idx = _allGroups.findIndex(function(x) { return x.id === d.id; });
-          if (idx >= 0) Object.assign(_allGroups[idx], d);
+          var idx = _allSamples.findIndex(function(x) { return x.id === d.id; });
+          if (idx >= 0) Object.assign(_allSamples[idx], d);
         }
 
         // --- Save handler: PATCH everything; mutate the card in place. ---
@@ -7066,9 +7066,9 @@ _CAPTURES_HTML = r"""<!doctype html>
           var payload = {
             join_strategy: joinSel.value,
             silence_ms:    parseInt(silSel.value, 10),
-            status:        groupState.newStatus,
-            admin_notes:   groupState.adminNotes,
-            corrections:   groupState.corrections.map(function(c) {
+            status:        sampleState.newStatus,
+            admin_notes:   sampleState.adminNotes,
+            corrections:   sampleState.corrections.map(function(c) {
               return {
                 wrong:   c.wrong   || '',
                 correct: c.correct || '',
@@ -7080,13 +7080,13 @@ _CAPTURES_HTML = r"""<!doctype html>
             // `corrections` so the server can three-way-merge our
             // deltas against any concurrent member-chip writes that
             // landed in between.
-            baseline_corrections: groupState.baselineCorrections || [],
+            baseline_corrections: sampleState.baselineCorrections || [],
           };
           saveTBtn.disabled = true;
-          api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id),
+          api('PATCH', '/captures/api/samples/' + encodeURIComponent(g.id),
               payload)
             .then(function(j) {
-              applyServerGroup(j.group || {});
+              applyServerSample(j.sample || {});
               toast('Saved');
               reloadCounts();
             })
@@ -7099,18 +7099,18 @@ _CAPTURES_HTML = r"""<!doctype html>
         // --- Regenerate handler: when settings are dirty, fold them
         // into a PATCH (server rebuilds audio); otherwise hit the
         // dedicated /regenerate endpoint. Either way, in-place refresh
-        // via applyServerGroup. No "Save first" toast. ---
+        // via applyServerSample. No "Save first" toast. ---
         regenBtn.onclick = function() {
           regenBtn.disabled = true;
           var dirty = settingsDirty();
           var p = dirty
-            ? api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id), {
+            ? api('PATCH', '/captures/api/samples/' + encodeURIComponent(g.id), {
                 join_strategy: joinSel.value,
                 silence_ms:    parseInt(silSel.value, 10),
               })
-            : api('POST', '/captures/api/groups/' + encodeURIComponent(g.id) + '/regenerate');
+            : api('POST', '/captures/api/samples/' + encodeURIComponent(g.id) + '/regenerate');
           p.then(function(j) {
-              applyServerGroup(j.group || {});
+              applyServerSample(j.sample || {});
               toast(dirty ? 'Settings applied, audio regenerated.' : 'Regenerated');
               reloadCounts();
             })
@@ -7122,22 +7122,22 @@ _CAPTURES_HTML = r"""<!doctype html>
 
         // --- Lock toggle ---
         lockBtn.onclick = function() {
-          api('PATCH', '/captures/api/groups/' + encodeURIComponent(g.id),
+          api('PATCH', '/captures/api/samples/' + encodeURIComponent(g.id),
               { is_locked: !(lockBtn.textContent === 'Unlock') })
             .then(function(j) {
-              var d = j.group || {};
-              // applyServerGroup would clobber unsaved chip/notes/settings
+              var d = j.sample || {};
+              // applyServerSample would clobber unsaved chip/notes/settings
               // edits. When dirty, apply only the lock-related visuals.
-              if (!groupState.dirty) {
-                applyServerGroup(d);
+              if (!sampleState.dirty) {
+                applyServerSample(d);
               } else {
                 var isLocked = !!d.is_locked;
                 lockBtn.textContent = isLocked ? 'Unlock' : 'Lock';
                 dissolveBtn.style.display = isLocked ? 'none' : '';
                 // Sync the collapsed-list header so the lock-pill in
-                // _renderGroupCard reflects the new state on next render().
-                var idx = _allGroups.findIndex(function(x) { return x.id === g.id; });
-                if (idx >= 0) _allGroups[idx].is_locked = d.is_locked;
+                // _renderSampleCard reflects the new state on next render().
+                var idx = _allSamples.findIndex(function(x) { return x.id === g.id; });
+                if (idx >= 0) _allSamples[idx].is_locked = d.is_locked;
               }
               toast('Updated');
             })
@@ -7148,9 +7148,9 @@ _CAPTURES_HTML = r"""<!doctype html>
 
         // --- Dissolve (full reload — the group disappears from the list). ---
         dissolveBtn.onclick = function() {
-          if (!confirm('Dissolve this group? Members return to the flat list; merged WAV is unlinked.'))
+          if (!confirm('Dissolve this sample? Members return to the flat list; merged WAV is unlinked.'))
             return;
-          api('DELETE', '/captures/api/groups/' + encodeURIComponent(g.id))
+          api('DELETE', '/captures/api/samples/' + encodeURIComponent(g.id))
             .then(function() { toast('Dissolved'); return load(); })
             .catch(function(e) {
               if (e.message !== 'unauthorized') toast(e.message, true);
@@ -7158,10 +7158,10 @@ _CAPTURES_HTML = r"""<!doctype html>
         };
 
         // Initial fill.
-        applyServerGroup(detail);
+        applyServerSample(detail);
         body.dataset.built = '1';
         body.dataset.fetching = '';
-        _openGroups[g.id] = { audio: audio };
+        _openSamples[g.id] = { audio: audio };
       })
       .catch(function(e) {
         body.dataset.fetching = '';
@@ -7177,27 +7177,27 @@ _CAPTURES_HTML = r"""<!doctype html>
     var openIds = Object.keys(_openRows);
     // Group cards don't persist open state across render — innerHTML wipe
     // destroys their <audio>, so revoke any tracked blob URL first.
-    Object.keys(_openGroups).forEach(function(gid) {
-      var st = _openGroups[gid];
+    Object.keys(_openSamples).forEach(function(sid) {
+      var st = _openSamples[sid];
       if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
         try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
       }
     });
-    _openGroups = {};
+    _openSamples = {};
     list.innerHTML = '';
     // Build a merged timeline: ungrouped captures + group cards (members
     // are nested inside group cards, so we exclude them from the flat list).
-    var ungrouped = rows.filter(function(r) { return !r.group_id; });
+    var ungrouped = rows.filter(function(r) { return !r.sample_id; });
     // Apply the same status filter to groups. `audio_missing` is a
     // captures-only system status — groups don't have it, so the
     // groups section renders empty when that filter is active.
-    var filteredGroups = (_filtStatus === 'all')
-      ? _allGroups.slice()
-      : _allGroups.filter(function(g) { return g.status === _filtStatus; });
+    var filteredSamples = (_filtStatus === 'all')
+      ? _allSamples.slice()
+      : _allSamples.filter(function(g) { return g.status === _filtStatus; });
     var combined = ungrouped.map(function(r) {
       return { kind: 'capture', ts: r.created_ts || 0, data: r };
-    }).concat(filteredGroups.map(function(g) {
-      return { kind: 'group', ts: g.created_ts || 0, data: g };
+    }).concat(filteredSamples.map(function(g) {
+      return { kind: 'sample', ts: g.created_ts || 0, data: g };
     }));
     combined.sort(function(a, b) { return b.ts - a.ts; });
 
@@ -7213,7 +7213,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     combined.forEach(function(item) {
       list.appendChild(item.kind === 'capture'
         ? renderCard(item.data)
-        : _renderGroupCard(item.data));
+        : _renderSampleCard(item.data));
     });
     openIds.forEach(function(cid) {
       var card = list.querySelector('.capture-card[data-id="' + cid + '"]');
@@ -7283,8 +7283,8 @@ _CAPTURES_HTML = r"""<!doctype html>
         try { URL.revokeObjectURL(st.blobUrl); } catch(_) {}
       }
     });
-    Object.keys(_openGroups).forEach(function(gid) {
-      var st = _openGroups[gid];
+    Object.keys(_openSamples).forEach(function(sid) {
+      var st = _openSamples[sid];
       if (st && st.audio && st.audio.src && st.audio.src.indexOf('blob:') === 0) {
         try { URL.revokeObjectURL(st.audio.src); } catch(_) {}
       }

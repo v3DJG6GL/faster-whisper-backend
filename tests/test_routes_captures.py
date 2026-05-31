@@ -24,13 +24,13 @@ def test_captures_list_open_mode(client):
     assert "is_admin" in body
 
 
-def test_groups_route_not_swallowed_by_cid(client):
-    # Regression: /captures/api/groups must resolve to the group-list handler,
+def test_samples_route_not_swallowed_by_cid(client):
+    # Regression: /captures/api/samples must resolve to the sample-list handler,
     # NOT the parameterized /captures/api/{cid} handler (which would 404 with
-    # cid="groups"). A 200 with a "groups" key proves correct route ordering.
-    r = client.get("/captures/api/groups")
+    # cid="samples"). A 200 with a "samples" key proves correct route ordering.
+    r = client.get("/captures/api/samples")
     assert r.status_code == 200
-    assert "groups" in r.json()
+    assert "samples" in r.json()
 
 
 def test_export_route_not_swallowed_by_cid(client):
