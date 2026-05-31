@@ -92,17 +92,21 @@ def merge_wavs(
     max_internal_gap_ms: int = 300,
     threshold: float = 0.5,
 ) -> dict:
-    """Concatenate the given WAVs into a single PCM WAV at dst_path, with
-    `gap_ms` of silence between each adjacent pair (no leading or
-    trailing silence — the feature extractor zero-pads to 30 s anyway).
+    """Concatenate the given WAVs into a single PCM WAV at dst_path.
 
-    When `trim` is set, each member's silence is trimmed *before*
-    concatenation (audio_vad_trim.trim_pcm_for_merge): outer edges down to
-    `edge_pad_ms`, internal gaps capped at `max_internal_gap_ms`. This is
-    what removes the multi-second dead air that used to stack up at member
-    joins (member i trailing + gap + member i+1 leading silence). The old
-    behaviour only trimmed the merged WAV's outer edges, so internal joins
-    were never cleaned.
+    When `trim` is set (audio_vad_trim.trim_pcm_for_merge available), the
+    output uses a UNIFORM-silence layout: each member is trimmed to its
+    speech body (no edge padding, internal gaps capped at
+    `max_internal_gap_ms`), then concatenated as
+    `[edge_pad_ms] body0 [gap_ms] body1 [gap_ms] … bodyN [edge_pad_ms]`.
+    So every member join carries exactly `gap_ms` of silence and both outer
+    ends carry `edge_pad_ms` — replacing the old additive layout where a join
+    stacked member-i-trailing + gap + member-i+1-leading into multi-second
+    dead air. Each member dict carries `offset_ms`, its absolute start in the
+    merged WAV, so the route layer can re-place per-word karaoke timestamps.
+
+    When `trim` is False (VAD unavailable / disabled), falls back to the
+    legacy layout: full members joined by `gap_ms`, no outer margin.
 
     Returns a dict:
       {
@@ -111,8 +115,9 @@ def merge_wavs(
         "duration_ms":  int,
         "members": [                   # one entry per src_paths, in order
           {"lead_ms": int, "new_duration_ms": int,
-           "segments": [[orig_start_ms, orig_end_ms, new_start_ms], ...]},
-          ...
+           "segments": [[orig_start_ms, orig_end_ms, new_start_ms], ...],
+           "offset_ms": int},          # absolute body start in merged WAV
+          ...                          #   (trim path only; omitted when trim=False)
         ],
       }
 
@@ -143,46 +148,77 @@ def merge_wavs(
     pieces: list[bytes] = []
     total_samples = 0
     members: list[dict] = []
-    gap = silence_bytes(gap_ms)
-    gap_samples = len(gap) // BYTES_PER_SAMPLE
 
-    for i, sp in enumerate(src_paths):
-        pcm, n = read_pcm(sp)
-        if n == 0:
-            raise ValueError(f"source {sp} is empty")
-        if trimmer is not None:
+    def _over_cap(reserve: int, i: int) -> None:
+        if total_samples + reserve > _max_samples:
+            raise ValueError(
+                f"merged duration would exceed the sample cap "
+                f"({_max_samples / _REQ_RATE:.2f} s) — got "
+                f"{(total_samples + reserve) / _REQ_RATE:.2f} s after "
+                f"{i+1} of {len(src_paths)} sources"
+            )
+
+    if trimmer is not None:
+        # Uniform-silence layout. Per-member bodies carry NO edge padding (the
+        # trim returns speech-only). We add a uniform outer margin
+        # (edge_pad_ms) at both ends and `gap_ms` of silence at each join, so
+        # every join == gap_ms and both outer ends == edge_pad_ms — all silence
+        # in the merged clip is uniform and bounded. Each member records its
+        # absolute offset (ms) in the merged WAV for word-timestamp re-placement.
+        edge = silence_bytes(edge_pad_ms)
+        edge_samples = len(edge) // BYTES_PER_SAMPLE
+        join = silence_bytes(gap_ms)
+        join_samples = len(join) // BYTES_PER_SAMPLE
+        pieces.append(edge)                 # leading outer margin
+        total_samples += edge_samples
+        for i, sp in enumerate(src_paths):
+            pcm, n = read_pcm(sp)
+            if n == 0:
+                raise ValueError(f"source {sp} is empty")
             res = trimmer(
                 pcm, n,
                 edge_pad_ms=edge_pad_ms,
                 max_internal_gap_ms=max_internal_gap_ms,
                 threshold=threshold,
             )
-            pcm = res["pcm"]
-            n = res["new_n_samples"]
+            body = res["pcm"]
+            bn = res["new_n_samples"]
+            if i > 0:
+                pieces.append(join)
+                total_samples += join_samples
+            offset_ms = int(round(total_samples * 1000 / _REQ_RATE))
             members.append({
                 "lead_ms": int(res["lead_ms"]),
                 "new_duration_ms": int(res["new_duration_ms"]),
                 "segments": res["segments"],
+                "offset_ms": offset_ms,
             })
-        else:
+            pieces.append(body)
+            total_samples += bn
+            _over_cap(edge_samples, i)       # reserve the trailing margin
+        pieces.append(edge)                  # trailing outer margin
+        total_samples += edge_samples
+    else:
+        # Legacy / no-VAD path: full members joined by gap_ms, no outer margin
+        # (unchanged behaviour for groups built without per-member trimming).
+        gap = silence_bytes(gap_ms)
+        gap_samples = len(gap) // BYTES_PER_SAMPLE
+        for i, sp in enumerate(src_paths):
+            pcm, n = read_pcm(sp)
+            if n == 0:
+                raise ValueError(f"source {sp} is empty")
             dur_ms = int(round(n * 1000 / _REQ_RATE))
             members.append({
                 "lead_ms": 0,
                 "new_duration_ms": dur_ms,
                 "segments": [[0, dur_ms, 0]],
             })
-        if i > 0:
-            pieces.append(gap)
-            total_samples += gap_samples
-        pieces.append(pcm)
-        total_samples += n
-        if total_samples > _max_samples:
-            raise ValueError(
-                f"merged duration would exceed the sample cap "
-                f"({_max_samples / _REQ_RATE:.2f} s) — got "
-                f"{total_samples / _REQ_RATE:.2f} s after "
-                f"{i+1} of {len(src_paths)} sources"
-            )
+            if i > 0:
+                pieces.append(gap)
+                total_samples += gap_samples
+            pieces.append(pcm)
+            total_samples += n
+            _over_cap(0, i)
 
     out_pcm = b"".join(pieces)
 

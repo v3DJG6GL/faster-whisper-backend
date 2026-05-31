@@ -128,13 +128,14 @@ def _ratio(a: str, b: str) -> float:
     return difflib.SequenceMatcher(None, a, b).ratio()
 
 
-def _build_sample_score(members: list[dict[str, Any]], gap_s: float, target_s: float) -> dict[str, float]:
+def _build_sample_score(members: list[dict[str, Any]], gap_s: float,
+                        target_s: float, edge_s: float = 0.0) -> dict[str, float]:
     """Return per-component scores + composite for ranking."""
     n = len(members)
-    # Packed audio uses TRIMMED durations (what the merged WAV actually is);
-    # wall span uses RAW duration since the recording occupied real wall-clock
-    # time before trimming.
-    total_dur = sum(_dur(m) for m in members) + gap_s * (n - 1)
+    # Packed audio uses TRIMMED bodies (what the merged WAV actually is) +
+    # (n-1) join gaps + the two uniform outer margins; wall span uses RAW
+    # duration since the recording occupied real wall-clock time before trim.
+    total_dur = sum(_dur(m) for m in members) + gap_s * (n - 1) + 2.0 * edge_s
     first_ts = float(members[0]["created_ts"])
     last = members[-1]
     last_end = float(last["created_ts"]) + float(last["duration_seconds"])
@@ -186,6 +187,7 @@ def _generate_candidates_for_bucket(
     dup_threshold: float,
     target_s: float,
     hard_cap_s: float,
+    edge_s: float = 0.0,
 ) -> list[tuple[float, list[dict[str, Any]]]]:
     """For one (session, language) bucket of chronologically-sorted captures,
     enumerate one candidate group per starting index by walking forward and
@@ -202,7 +204,8 @@ def _generate_candidates_for_bucket(
     for i in range(n):
         members: list[dict[str, Any]] = [bucket[i]]
         member_texts: list[str] = [texts[i]]
-        used_dur = _dur(bucket[i])
+        # Outer margins (both ends) count toward the cap from the start.
+        used_dur = 2.0 * edge_s + _dur(bucket[i])
         for j in range(i + 1, n):
             cand = bucket[j]
             cand_dur = _dur(cand)
@@ -220,7 +223,7 @@ def _generate_candidates_for_bucket(
             used_dur = tentative
         if len(members) < 2:
             continue
-        scored = _build_sample_score(members, gap_s, target_s)
+        scored = _build_sample_score(members, gap_s, target_s, edge_s)
         candidates.append((scored["composite"], members))
     return candidates
 
@@ -231,8 +234,9 @@ def _build_proposal(
     target_s: float,
     language: str,
     user_id: str,
+    edge_s: float = 0.0,
 ) -> dict[str, Any]:
-    scored = _build_sample_score(members, gap_s, target_s)
+    scored = _build_sample_score(members, gap_s, target_s, edge_s)
     return {
         "member_ids": [m["id"] for m in members],
         "member_previews": [
@@ -321,6 +325,8 @@ def propose_merges(
     # Inter-member gap estimate mirrors the global silence knob (the merge
     # inserts this between members), so "packs to X s" matches the real WAV.
     gap_s = float(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300)) / 1000.0
+    # Uniform outer margin on both ends of the merged WAV (counts toward cap).
+    edge_s = float(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300)) / 1000.0
 
     # Pull a bounded window of recent captures. 500 keeps work bounded for
     # the rare admin "all users" view; per-user views typically have far
@@ -372,7 +378,7 @@ def propose_merges(
             by_keys.setdefault((uid, lang), []).append(r)
         for (uid, lang), bucket in by_keys.items():
             for score, members in _generate_candidates_for_bucket(
-                bucket, gap_s, dup_threshold, target_s, hard_cap_s
+                bucket, gap_s, dup_threshold, target_s, hard_cap_s, edge_s
             ):
                 all_candidates.append((score, members, lang, uid))
 
@@ -385,7 +391,7 @@ def propose_merges(
             continue
         for m in members:
             claimed.add(m["id"])
-        proposals.append(_build_proposal(members, gap_s, target_s, lang, uid))
+        proposals.append(_build_proposal(members, gap_s, target_s, lang, uid, edge_s))
         if len(proposals) >= max_proposals:
             break
 

@@ -1035,14 +1035,20 @@ def _validate_merge_payload(
         int(round(captures_merge_proposer.trimmed_duration_s(c) * 1000))
         for c in captures
     )
-    total_gap_ms = int(silence_ms) * max(0, len(member_ids) - 1)
+    # Real merged length under the uniform layout: 2×outer-edge +
+    # Σ trimmed bodies + (N-1)×join silence.
     import config as cfg
+    n_members = len(member_ids)
+    total_gap_ms = int(silence_ms) * max(0, n_members - 1)
+    edge_ms = int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300))
+    total_edge_ms = 2 * edge_ms if n_members >= 1 else 0
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
-    if enforce_cap and (total_trimmed_ms + total_gap_ms) > cap_ms:
+    total_ms = total_trimmed_ms + total_gap_ms + total_edge_ms
+    if enforce_cap and total_ms > cap_ms:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"merged duration would exceed {cap_ms / 1000:.1f} s "
-            f"({(total_trimmed_ms + total_gap_ms) / 1000:.2f}s)",
+            f"({total_ms / 1000:.2f}s)",
         )
     return captures, owner_user_id, member_paths, total_trimmed_ms
 
@@ -1146,7 +1152,13 @@ def _preview_member_trims(
     import audio_vad_trim
     edge = int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300))
     max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300))
+    join_ms = int(_global_silence_ms())
     trims: dict[str, Any] = {}
+    # Mirror merge_wavs' uniform layout: leading edge, then bodies joined by
+    # `join_ms`, stamping each member's absolute offset so the preview karaoke
+    # lines up with the audio /preview-audio streams.
+    cursor_ms = edge
+    first = True
     for mid, p in zip(member_ids, member_paths):
         try:
             pcm, n = audio_merge.read_pcm(p)
@@ -1155,11 +1167,16 @@ def _preview_member_trims(
             )
         except Exception:
             continue
+        if not first:
+            cursor_ms += join_ms
+        first = False
         trims[mid] = {
             "lead_ms": int(res["lead_ms"]),
             "new_duration_ms": int(res["new_duration_ms"]),
             "segments": res["segments"],
+            "offset_ms": int(cursor_ms),
         }
+        cursor_ms += int(res["new_duration_ms"])
     return trims
 
 
@@ -1349,14 +1366,18 @@ async def merge_estimate_api(
         int(round(float(c.get("duration_seconds") or 0.0) * 1000))
         for c in captures
     )
-    gap_ms = int(_global_silence_ms()) * max(0, len(payload.member_ids) - 1)
+    n = len(payload.member_ids)
+    gap_ms = int(_global_silence_ms()) * max(0, n - 1)
     import config as cfg
+    edge_ms = int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300))
+    total_edge_ms = 2 * edge_ms if n >= 1 else 0
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
+    trimmed_total = trimmed_ms + gap_ms + total_edge_ms
     return JSONResponse({
-        "raw_total_s": (raw_ms + gap_ms) / 1000.0,
-        "trimmed_total_s": (trimmed_ms + gap_ms) / 1000.0,
+        "raw_total_s": (raw_ms + gap_ms + total_edge_ms) / 1000.0,
+        "trimmed_total_s": trimmed_total / 1000.0,
         "hard_cap_s": cap_ms / 1000.0,
-        "fits": (trimmed_ms + gap_ms) <= cap_ms,
+        "fits": trimmed_total <= cap_ms,
     })
 
 
@@ -2005,32 +2026,52 @@ def _build_merged_words(
     merged: list[dict[str, Any]] = []
 
     use_per_member = bool(member_trims)
+    # New uniform-silence layout stamps each member with an absolute
+    # `offset_ms`; legacy groups don't, and fall back to the cum+i*silence
+    # formula so their karaoke renders exactly as before (until reprocessed).
+    _first = (member_trims or {}).get(members[0]["id"]) if (use_per_member and members) else None
+    new_layout = bool(_first and _first.get("offset_ms") is not None)
+
     if use_per_member and eff_dur_s is None:
-        # Preview path: no stored merged duration — derive it from the
-        # per-member trimmed durations plus the inter-segment gaps.
+        # Preview path: no stored merged duration — derive it.
         n = len(members)
-        total_new_ms = 0.0
-        for m in members:
-            info = member_trims.get(m["id"]) if member_trims else None
-            if info and info.get("new_duration_ms") is not None:
-                total_new_ms += float(info["new_duration_ms"])
-            else:
-                total_new_ms += float(m.get("duration_seconds") or 0.0) * 1000.0
-        eff_dur_s = (total_new_ms + max(0, n - 1) * float(silence_ms)) / 1000.0
+        if new_layout:
+            import config as cfg
+            edge_ms = float(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300))
+            last_end = 0.0
+            for m in members:
+                info = (member_trims or {}).get(m["id"]) or {}
+                last_end = max(last_end, float(info.get("offset_ms") or 0.0)
+                               + float(info.get("new_duration_ms") or 0.0))
+            eff_dur_s = (last_end + edge_ms) / 1000.0
+        else:
+            total_new_ms = 0.0
+            for m in members:
+                info = member_trims.get(m["id"]) if member_trims else None
+                if info and info.get("new_duration_ms") is not None:
+                    total_new_ms += float(info["new_duration_ms"])
+                else:
+                    total_new_ms += float(m.get("duration_seconds") or 0.0) * 1000.0
+            eff_dur_s = (total_new_ms + max(0, n - 1) * float(silence_ms)) / 1000.0
 
     if use_per_member:
         cum_ms = 0.0
         for i, m in enumerate(members):
             info = (member_trims or {}).get(m["id"])
+            off_ms = None
             if info and info.get("segments"):
                 segments = info["segments"]
                 new_dur_ms = float(info.get("new_duration_ms") or 0.0)
+                off_ms = info.get("offset_ms")
             else:
                 # Member not in the trim map (shouldn't happen) → identity.
                 dur_ms = float(m.get("duration_seconds") or 0.0) * 1000.0
                 segments = [[0, int(dur_ms), 0]]
                 new_dur_ms = dur_ms
-            member_offset_s = cum_ms / 1000.0 + i * silence_s
+            if off_ms is not None:
+                member_offset_s = float(off_ms) / 1000.0     # new uniform layout
+            else:
+                member_offset_s = cum_ms / 1000.0 + i * silence_s  # legacy
             ws = _align_member_words(m)
             _emit_member_words(
                 merged, ws, i=i, member_offset_s=member_offset_s,
