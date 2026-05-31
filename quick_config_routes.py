@@ -1816,8 +1816,11 @@ function pushTrace(entry) {
 function appendTraceAtBottom(entry) {
   const list = document.getElementById('recent-list');
   if (!list) return;
-  const pager = document.getElementById('recent-pager');
-  list.insertBefore(renderTrace(entry), pager);
+  // #recent-pager is a SIBLING of #recent-list (it sits below the list as a
+  // separate footer bar), not a child — so insertBefore(node, pager) throws
+  // NotFoundError. Older entries belong at the end of the list, so just
+  // append them there (they land above the pager, which follows the list).
+  list.appendChild(renderTrace(entry));
 }
 
 async function loadOlder() {
