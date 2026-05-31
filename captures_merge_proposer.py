@@ -188,6 +188,7 @@ def _generate_candidates_for_bucket(
     target_s: float,
     hard_cap_s: float,
     edge_s: float = 0.0,
+    min_sample_s: float = 0.0,
 ) -> list[tuple[float, list[dict[str, Any]]]]:
     """For one (session, language) bucket of chronologically-sorted captures,
     enumerate one candidate group per starting index by walking forward and
@@ -221,9 +222,12 @@ def _generate_candidates_for_bucket(
             members.append(cand)
             member_texts.append(ct)
             used_dur = tentative
-        if len(members) < 2:
-            continue
+        # Single-capture samples (group-of-one) are allowed; drop a candidate
+        # whose finished length is below the sample-min floor or above the cap
+        # (the latter guards a lone over-long member that has no pair).
         scored = _build_sample_score(members, gap_s, target_s, edge_s)
+        if scored["total_dur"] < min_sample_s or scored["total_dur"] > hard_cap_s:
+            continue
         candidates.append((scored["composite"], members))
     return candidates
 
@@ -273,8 +277,13 @@ def _eligible(row: dict[str, Any], min_clip_s: float, hard_cap_s: float) -> bool
         return False
     if row.get("sample_id"):
         return False
-    dur = float(row.get("duration_seconds") or 0.0)
-    if dur < min_clip_s or dur > hard_cap_s:
+    # Min on RAW duration (the ingestion floor every stored capture clears);
+    # cap on the TRIMMED body, so a raw-long / trims-short clip (e.g. 40 s raw,
+    # 27 s of speech) is now eligible instead of wrongly rejected.
+    raw = float(row.get("duration_seconds") or 0.0)
+    if raw < min_clip_s:
+        return False
+    if trimmed_duration_s(row) > hard_cap_s:
         return False
     if not (row.get("language") or "").strip():
         return False
@@ -327,6 +336,8 @@ def propose_merges(
     gap_s = float(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300)) / 1000.0
     # Uniform outer margin on both ends of the merged WAV (counts toward cap).
     edge_s = float(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300)) / 1000.0
+    # Finished-sample floor — drop proposals (incl. solos) shorter than this.
+    min_sample_s = float(getattr(cfg, "CAPTURES_SAMPLE_MIN_DURATION_S", 1.0))
 
     # Pull a bounded window of recent captures. 500 keeps work bounded for
     # the rare admin "all users" view; per-user views typically have far
@@ -378,7 +389,8 @@ def propose_merges(
             by_keys.setdefault((uid, lang), []).append(r)
         for (uid, lang), bucket in by_keys.items():
             for score, members in _generate_candidates_for_bucket(
-                bucket, gap_s, dup_threshold, target_s, hard_cap_s, edge_s
+                bucket, gap_s, dup_threshold, target_s, hard_cap_s, edge_s,
+                min_sample_s,
             ):
                 all_candidates.append((score, members, lang, uid))
 

@@ -137,7 +137,6 @@ ENV_VAR_MAPPING: dict[str, str] = {
     # Captures: pipeline exclude + VAD trim
     "CAPTURES_PIPELINE_RULES_EXCLUDE": "WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE",
     "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS": "WHISPER_CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS",
-    "CAPTURES_VAD_MARGIN_SINGLETON_MS": "WHISPER_CAPTURES_VAD_MARGIN_SINGLETON_MS",
     "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS": "WHISPER_CAPTURES_VAD_MARGIN_GROUP_EDGE_MS",
     "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS": "WHISPER_CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS",
     "CAPTURES_SAMPLE_MIN_DURATION_S": "WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S",
@@ -596,11 +595,6 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "+ gap + member i+1 leading silence). Applies to newly created / "
         "re-merged groups; mitigates the hallucination failure mode in "
         "arXiv:2505.12969 (Calm-Whisper).",
-    "CAPTURES_VAD_MARGIN_SINGLETON_MS":
-        "Silence preserved on either side of detected speech for the "
-        "singleton /captures \"Trim silence\" button (leading/trailing "
-        "only). Default 300 ms. Group per-member trimming uses "
-        "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS instead.",
     "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS":
         "Per-member group trim: silence kept on each member's outer edges "
         "(default 300 ms) so tight VAD boundaries don't clip word onsets. "
@@ -1060,7 +1054,6 @@ class AdminConfig(BaseModel):
         Field(max_length=64),
     ] | None = _F("CAPTURES_PIPELINE_RULES_EXCLUDE")
     CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS: bool | None = _F("CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS")
-    CAPTURES_VAD_MARGIN_SINGLETON_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_SINGLETON_MS")
     CAPTURES_VAD_MARGIN_GROUP_EDGE_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_GROUP_EDGE_MS")
     CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS")
     CAPTURES_SAMPLE_MIN_DURATION_S: Annotated[float, Field(ge=0, lt=30)] | None = _F("CAPTURES_SAMPLE_MIN_DURATION_S")
@@ -1345,7 +1338,14 @@ _POST_LOAD_COERCERS: dict[str, Any] = {
 # Fields removed from the schema. Stripped from raw config dicts before
 # validation so on-disk config.local.json files from older versions don't
 # break with `extra="forbid"`. Drop after one release cycle.
-_DEPRECATED_FIELDS: frozenset[str] = frozenset({"TOKEN_RULES"})
+_DEPRECATED_FIELDS: frozenset[str] = frozenset({
+    "TOKEN_RULES",
+    # Retired in the sample-silence redesign: the per-capture proposer min is
+    # now the ingestion floor; singleton manual trim is replaced by one-member
+    # samples. Old config.local.json keys are stripped (not 422'd).
+    "CAPTURES_PROPOSER_MIN_CLIP_S",
+    "CAPTURES_VAD_MARGIN_SINGLETON_MS",
+})
 _DEPRECATED_OVERRIDE_FIELDS: frozenset[str] = frozenset({
     "TOKEN_RULES_INCLUDE", "TOKEN_RULES_EXCLUDE",
 })

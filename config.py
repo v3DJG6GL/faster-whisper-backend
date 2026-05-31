@@ -681,11 +681,10 @@ CAPTURES_PIPELINE_RULES_EXCLUDE: "set[str]" = {
 # excessive leading/trailing silence (Calm-Whisper arXiv:2505.12969
 # documents silence-induced hallucination as a fine-tune failure mode).
 #
-# Groups: auto-trim after merge_wavs() produces the merged WAV.
-# Singletons: manual button on the /captures detail page (opt-in per
-#   sample; original audio is preserved at audio_relpath either way).
+# Auto-trim runs after merge_wavs() produces a sample's merged WAV. (The old
+# manual per-singleton "Trim silence" button was retired — a single capture is
+# trimmed by turning it into a one-member sample, same uniform model.)
 CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS = True
-CAPTURES_VAD_MARGIN_SINGLETON_MS = 300
 # Per-member group trim (CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS path): silence is
 # now trimmed from EVERY member before concatenation, not just the merged WAV's
 # outer edges. Without this, member i's trailing + the inter-segment gap +

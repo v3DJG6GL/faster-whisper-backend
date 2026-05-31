@@ -131,8 +131,8 @@ def merge_wavs(
       ValueError:     <2 sources, total duration > 28 s, or empty source.
       OSError:        disk write failure (atomic .tmp + os.replace).
     """
-    if len(src_paths) < 2:
-        raise ValueError("need at least 2 sources to merge")
+    if len(src_paths) < 1:
+        raise ValueError("need at least 1 source")
     if gap_ms < 0:
         raise ValueError("gap_ms must be ≥ 0")
     _max_samples = _max_merged_samples()

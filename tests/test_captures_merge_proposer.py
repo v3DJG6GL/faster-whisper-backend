@@ -156,21 +156,22 @@ def _bkt_member(i, dur, text, ts=None):
     }
 
 
-def test_bucket_single_rejected():
-    # A bucket where nothing else fits → single member candidate dropped (<2).
+def test_bucket_single_over_cap_dropped():
+    # Single-capture samples are allowed now. The 5 s member becomes a valid
+    # solo candidate; the 30 s member is over the cap (alone or paired) → dropped.
     bucket = [_bkt_member(0, 5.0, "alpha"), _bkt_member(1, 30.0, "beta")]
     cands = P._generate_candidates_for_bucket(bucket, 0.3, 0.85, 26.0, 28.0)
-    # member 1 alone can't pair (over cap with anything); member 0 + member1
-    # overflows (5+30+0.3 > 28). So no candidate of size >=2.
-    assert cands == []
+    assert len(cands) == 1
+    assert [m["id"] for m in cands[0][1]] == ["c0"]
 
 
-def test_bucket_pairs_when_fits():
+def test_bucket_pairs_and_solo_when_fits():
     bucket = [_bkt_member(0, 5.0, "alpha"), _bkt_member(1, 5.0, "beta")]
     cands = P._generate_candidates_for_bucket(bucket, 0.3, 0.85, 26.0, 28.0)
-    # i=0 yields a 2-member candidate; i=1 yields single → dropped.
-    assert len(cands) == 1
-    assert len(cands[0][1]) == 2
+    # i=0 yields the 2-member pack; i=1 yields a 1-member (solo) candidate.
+    assert len(cands) == 2
+    sizes = sorted(len(m) for _, m in cands)
+    assert sizes == [1, 2]
 
 
 def test_bucket_skips_duplicate_text():
@@ -403,10 +404,13 @@ def test_propose_no_eligible_returns_empty(captures_store_db, monkeypatch, trim_
 def test_propose_session_gap_splits(captures_store_db, monkeypatch, trim_disabled):
     cs = captures_store_db
     monkeypatch.setattr(P.cfg, "CAPTURES_PROPOSER_SESSION_GAP_S", 100, raising=False)
-    # Clip 1 and 2 are far apart in time (> gap) → different sessions → can't
-    # be grouped together (each session needs >=2 to propose).
+    # Clip 1 and 2 are far apart in time (> gap) → different sessions → can't be
+    # grouped TOGETHER. With single-capture samples allowed, each isolated clip
+    # is proposed as its own one-member sample (never a cross-session pair).
     _insert_eligible(cs, "capgap000000001", ts=1000.0, text="lonely one")
     _insert_eligible(cs, "capgap000000002", ts=9000.0, text="lonely two")
     proposals, _ = P.propose_merges(
         user_id_filter=None, is_admin=True, caller_user_id="admin")
-    assert proposals == []
+    assert len(proposals) == 2
+    for p in proposals:
+        assert p["member_count"] == 1

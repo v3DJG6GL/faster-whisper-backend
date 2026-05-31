@@ -573,125 +573,6 @@ async def clear_captures_api(payload: ClearIn, request: Request) -> JSONResponse
 
 
 # ---------------------------------------------------------------------
-# Per-capture audio trim (manual, opt-in)
-# ---------------------------------------------------------------------
-
-@router.post(
-    "/captures/api/{cid}/trim",
-    dependencies=[Depends(require_page("captures"))],
-)
-async def trim_capture_audio_api(
-    cid: str,
-    user: dict[str, Any] = Depends(get_current_user),
-) -> JSONResponse:
-    """Cut leading/trailing silence from a singleton's WAV via Silero VAD.
-
-    Writes the trimmed audio to a NEW file (`<id>.trimmed.wav`) so the
-    original `audio_relpath` is preserved. The audio GET endpoint then
-    prefers the trimmed path; export emits the trimmed file as the
-    sample's `audio_filepath`. `scope=own` users can trim only their
-    own captures.
-
-    Returns:
-      {"trimmed": True} on success.
-      {"trimmed": False, "reason": "..."} when nothing was trimmed
-      (no speech detected / already tight / VAD unavailable).
-    """
-    import audio_vad_trim
-    row = captures_store.get_capture(cid)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-    user["permissions"].assert_can_read_row(
-        row, "captures", user.get("user_id") or "",
-    )
-    _audit_cross_user_read(user, row, "capture-trim", cid)
-    src_rel = row.get("audio_relpath") or ""
-    if not src_rel:
-        raise HTTPException(status.HTTP_410_GONE, "audio file is gone")
-    try:
-        src_abs = captures_store.abs_audio_path(src_rel)
-    except ValueError:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "audio path invalid")
-    if not os.path.isfile(src_abs):
-        raise HTTPException(status.HTTP_410_GONE, "audio file is gone")
-
-    # Compute the trimmed path as a sibling of the original (same
-    # fanout). Suffix `.trimmed` keeps it discoverable without a
-    # schema migration on the relpath helper.
-    base, ext = os.path.splitext(src_rel)
-    dst_rel = f"{base}.trimmed{ext or '.wav'}"
-    dst_abs = captures_store.abs_audio_path(dst_rel)
-
-    margin = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SINGLETON_MS", 300))
-    try:
-        result = audio_vad_trim.trim_wav(src_abs, dst_abs, margin_ms=margin)
-    except Exception as e:
-        logger.warning("[trim] cid=%s VAD trim failed: %s", cid[:8], e)
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"VAD trim failed: {e}",
-        )
-    if not (result and result.get("trimmed")):
-        # Nothing to do — either no speech was detected or the file was
-        # already tight. Don't persist a half-written trimmed_relpath.
-        return JSONResponse({
-            "trimmed": False,
-            "reason": "no_speech_or_already_tight",
-        })
-    captures_store.update_capture(cid, {
-        "audio_trimmed_relpath": dst_rel,
-        "audio_trim_lead_ms": int(result.get("lead_ms") or 0),
-        "audio_trim_trail_ms": int(result.get("trail_ms") or 0),
-    })
-    return JSONResponse({
-        "trimmed": True,
-        "audio_trimmed_relpath": dst_rel,
-        "lead_ms": int(result.get("lead_ms") or 0),
-        "trail_ms": int(result.get("trail_ms") or 0),
-        "new_duration_ms": int(result.get("new_duration_ms") or 0),
-    })
-
-
-@router.post(
-    "/captures/api/{cid}/untrim",
-    dependencies=[Depends(require_page("captures"))],
-)
-async def untrim_capture_audio_api(
-    cid: str,
-    user: dict[str, Any] = Depends(get_current_user),
-) -> JSONResponse:
-    """Restore a singleton's untrimmed audio: unlink the `<id>.trimmed.wav`
-    companion file and clear the offset columns. The audio GET endpoint
-    then serves the original `audio_relpath` again, and the karaoke band
-    uses un-shifted word times (which are still in original-audio time
-    in the DB — the trim was non-destructive at the data layer).
-    `scope=own` users can untrim only their own captures.
-
-    Idempotent: returns OK even if the capture was never trimmed."""
-    row = captures_store.get_capture(cid)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-    user["permissions"].assert_can_read_row(
-        row, "captures", user.get("user_id") or "",
-    )
-    _audit_cross_user_read(user, row, "capture-untrim", cid)
-    trimmed_rel = row.get("audio_trimmed_relpath")
-    if trimmed_rel:
-        try:
-            captures_store._safe_unlink(
-                captures_store.abs_audio_path(trimmed_rel),
-            )
-        except ValueError:
-            pass
-    captures_store.update_capture(cid, {
-        "audio_trimmed_relpath": None,
-        "audio_trim_lead_ms": None,
-        "audio_trim_trail_ms": None,
-    })
-    return JSONResponse({"untrimmed": True})
-
-
-# ---------------------------------------------------------------------
 # Per-capture pipeline reprocess (re-run rules on `raw`)
 # ---------------------------------------------------------------------
 
@@ -784,13 +665,13 @@ async def reprocess_all_captures_api() -> JSONResponse:
 # not per-request — so the merge/preview/patch payloads no longer carry them.
 class CreateSampleIn(BaseModel):
     model_config = {"extra": "forbid"}
-    member_ids: list[str] = Field(min_length=2, max_length=30)
+    member_ids: list[str] = Field(min_length=1, max_length=30)
 
 
 class PreviewMergeIn(BaseModel):
     """Preview the merged audio without creating a sample."""
     model_config = {"extra": "forbid"}
-    member_ids: list[str] = Field(min_length=2, max_length=30)
+    member_ids: list[str] = Field(min_length=1, max_length=30)
 
 
 class PreviewSaveChipsIn(BaseModel):
@@ -798,7 +679,7 @@ class PreviewSaveChipsIn(BaseModel):
     GLOBAL word indices into the merged karaoke strip; server fans them
     out to per-member captures via _split_corrections_to_members."""
     model_config = {"extra": "forbid"}
-    member_ids: list[str] = Field(min_length=2, max_length=30)
+    member_ids: list[str] = Field(min_length=1, max_length=30)
     corrections: list[CorrectionIn] = Field(default_factory=list, max_length=200)
 
 
@@ -4275,31 +4156,9 @@ _CAPTURES_HTML = r"""<!doctype html>
     spc.className = 'spacer';
     actions.appendChild(spc);
 
-    // Trim silence — cuts leading/trailing silence via Silero VAD, writes
-    // a sibling `.trimmed.wav` and pivots the audio GET to serve it. The
-    // export also picks up the trimmed companion. Opt-in per singleton.
-    var trimBtn = document.createElement('button');
-    trimBtn.type = 'button';
-    trimBtn.textContent = 'Trim silence';
-    trimBtn.title = 'Cut leading/trailing silence (Silero VAD)';
-    trimBtn.addEventListener('click', function() {
-      onTrimAudio(state, r, trimBtn);
-    });
-    actions.appendChild(trimBtn);
-
-    // Untrim — only shown when a trimmed companion exists. Deletes the
-    // trimmed file + clears the offsets so the original audio is served
-    // again and the karaoke uses un-shifted word times.
-    if (r.audio_trimmed_relpath) {
-      var untrimBtn = document.createElement('button');
-      untrimBtn.type = 'button';
-      untrimBtn.textContent = '↺ Untrim';
-      untrimBtn.title = 'Restore the original (un-trimmed) audio';
-      untrimBtn.addEventListener('click', function() {
-        onUntrimAudio(state, r, untrimBtn);
-      });
-      actions.appendChild(untrimBtn);
-    }
+    // (The manual per-capture silence-trim button was retired — trimming is
+    // now applied uniformly when a capture is merged into a sample. A single
+    // long capture can be turned into a trimmed sample via "Merge into sample".)
 
     // Reprocess — re-runs PIPELINE_RULES on the stored `raw` so the
     // training-form text reflects current rule edits without waiting
@@ -4772,77 +4631,6 @@ _CAPTURES_HTML = r"""<!doctype html>
       toast('Deleted.');
     } catch (e) {
       if (e.message !== 'unauthorized') toast('Delete failed: ' + e.message, true);
-    }
-  }
-
-  // Trim leading/trailing silence on a singleton via the per-capture
-  // /trim endpoint. On success, refresh the row entirely so the karaoke
-  // band picks up the shifted word timestamps the server now returns.
-  // (Audio reload alone isn't enough — word.start/end values changed.)
-  async function onTrimAudio(state, r, btn) {
-    var origLabel = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Trimming…';
-    try {
-      var j = await api('POST',
-        '/captures/api/' + encodeURIComponent(state.cid) + '/trim', {});
-      if (j && j.trimmed) {
-        toast('Trimmed silence.');
-        _refreshRowAfterTrim(state.cid);
-      } else {
-        toast('Nothing to trim — already tight or silent.');
-      }
-    } catch (e) {
-      if (e.message !== 'unauthorized') {
-        toast('Trim failed: ' + e.message, true);
-      }
-    } finally {
-      btn.disabled = false;
-      btn.textContent = origLabel;
-    }
-  }
-
-  // Restore the untrimmed audio: delete the trimmed companion file +
-  // clear the offsets so the audio GET serves audio_relpath again and
-  // the karaoke uses un-shifted word times.
-  async function onUntrimAudio(state, r, btn) {
-    var origLabel = btn.textContent;
-    btn.disabled = true;
-    btn.textContent = 'Restoring…';
-    try {
-      await api('POST',
-        '/captures/api/' + encodeURIComponent(state.cid) + '/untrim', {});
-      toast('Restored original audio.');
-      _refreshRowAfterTrim(state.cid);
-    } catch (e) {
-      if (e.message !== 'unauthorized') {
-        toast('Untrim failed: ' + e.message, true);
-      }
-    } finally {
-      btn.disabled = false;
-      btn.textContent = origLabel;
-    }
-  }
-
-  // Force-refresh a row by collapsing it, clearing the body-built flag
-  // (so the next expand re-fetches), and re-triggering toggleExpand to
-  // rebuild from fresh server data. Cleanest way to make trim/untrim
-  // changes (audio URL + shifted word times + effective duration)
-  // visible without rolling our own re-paint.
-  function _refreshRowAfterTrim(cid) {
-    var card = document.querySelector('.capture-card[data-id="' + cid + '"]');
-    if (!card) return;
-    var wasOpen = card.classList.contains('open');
-    var body = card.querySelector('.cc-body');
-    if (wasOpen) collapse(card, cid);
-    if (body) {
-      body.dataset.built = '';
-      body.innerHTML = '';
-    }
-    var r = _allCaptures.find(function(x) { return x.id === cid; });
-    if (!r) return;
-    if (wasOpen) {
-      setTimeout(function() { toggleExpand(card, r); }, 0);
     }
   }
 
