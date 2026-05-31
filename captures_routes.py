@@ -3481,6 +3481,17 @@ _CAPTURES_HTML = r"""<!doctype html>
   </div>
 </div>
 
+<div id="dialog-modal" class="modal">
+  <div class="box">
+    <h3 id="dialog-title"></h3>
+    <p id="dialog-body" style="white-space: pre-line;"></p>
+    <div class="actions">
+      <button id="dialog-cancel">Cancel</button>
+      <button id="dialog-ok" class="primary">Confirm</button>
+    </div>
+  </div>
+</div>
+
 <div id="token-modal">
   <div class="box">
     <h3>API key</h3>
@@ -3554,6 +3565,38 @@ _CAPTURES_HTML = r"""<!doctype html>
     _toastTimer = setTimeout(function() {
       el.classList.remove('show');
     }, err ? 5000 : 2500);
+  }
+
+  // Themed yes/no confirm dialog (replaces the browser-native confirm()).
+  // Returns a Promise<bool>. opts: {title, body, confirmLabel, danger}.
+  // Enter confirms, Esc / Cancel / backdrop-click reject.
+  function _confirm(opts) {
+    opts = opts || {};
+    return new Promise(function(resolve) {
+      var m = document.getElementById('dialog-modal');
+      document.getElementById('dialog-title').textContent = opts.title || 'Confirm';
+      document.getElementById('dialog-body').textContent = opts.body || '';
+      var ok = document.getElementById('dialog-ok');
+      var cancel = document.getElementById('dialog-cancel');
+      ok.textContent = opts.confirmLabel || 'Confirm';
+      ok.className = opts.danger ? 'danger' : 'primary';
+      function close(result) {
+        m.classList.remove('show');
+        ok.onclick = null; cancel.onclick = null; m.onclick = null;
+        document.removeEventListener('keydown', onKey);
+        resolve(result);
+      }
+      function onKey(e) {
+        if (e.key === 'Escape') { e.preventDefault(); close(false); }
+        else if (e.key === 'Enter') { e.preventDefault(); close(true); }
+      }
+      ok.onclick = function() { close(true); };
+      cancel.onclick = function() { close(false); };
+      m.onclick = function(e) { if (e.target === m) close(false); };  // backdrop
+      document.addEventListener('keydown', onKey);
+      m.classList.add('show');
+      setTimeout(function() { try { ok.focus(); } catch (_) {} }, 50);
+    });
   }
 
   // -------------------------------------------------------------------
@@ -4679,7 +4722,10 @@ _CAPTURES_HTML = r"""<!doctype html>
   }
 
   async function onDelete(r) {
-    if (!confirm('Delete this capture and its audio file? This is irreversible.'))
+    if (!(await _confirm({
+        title: 'Delete capture?',
+        body: 'Delete this capture and its audio file? This is irreversible.',
+        confirmLabel: 'Delete', danger: true })))
       return;
     try {
       await api('DELETE', '/captures/api/' + encodeURIComponent(r.id));
@@ -4821,7 +4867,13 @@ _CAPTURES_HTML = r"""<!doctype html>
   // updating final + training text (and unlocked sample transcripts). Audio
   // is NOT rebuilt. Idempotent background job; progress shown in the menu.
   async function onReprocessAll() {
-    if (!confirm('Re-run PIPELINE_RULES on every capture? Updates final + training text in place (no audio rebuild).\n\nThis runs in the background.'))
+    _closeAdvMenu();
+    if (!(await _confirm({
+        title: 'Reprocess all · Pipeline rules',
+        body: 'Re-run PIPELINE_RULES on every capture? Updates final + '
+            + 'training text in place (no audio rebuild).\n\n'
+            + 'This runs in the background.',
+        confirmLabel: 'Reprocess' })))
       return;
     try {
       await api('POST', '/captures/api/reprocess-all', {});
@@ -4838,7 +4890,13 @@ _CAPTURES_HTML = r"""<!doctype html>
   // Bulk-reprocess (audio): rebuild every sample's merged WAV with the current
   // global silence settings. Skips locked samples; over-cap → flagged stale.
   async function onReprocessVad() {
-    if (!confirm('Rebuild every sample’s audio with the current global silence settings?\n\nLocked samples are skipped; any that no longer fit the cap are flagged stale (not truncated). Runs in the background.'))
+    _closeAdvMenu();
+    if (!(await _confirm({
+        title: 'Reprocess all · VAD silence',
+        body: 'Rebuild every sample’s audio with the current global silence '
+            + 'settings?\n\nLocked samples are skipped; any that no longer fit '
+            + 'the cap are flagged stale (not truncated). Runs in the background.',
+        confirmLabel: 'Rebuild audio' })))
       return;
     try {
       await api('POST', '/captures/api/reprocess-vad', {});
@@ -6982,8 +7040,12 @@ _CAPTURES_HTML = r"""<!doctype html>
         };
 
         // --- Dissolve (full reload — the group disappears from the list). ---
-        dissolveBtn.onclick = function() {
-          if (!confirm('Dissolve this sample? Members return to the flat list; merged WAV is unlinked.'))
+        dissolveBtn.onclick = async function() {
+          if (!(await _confirm({
+              title: 'Dissolve sample?',
+              body: 'Dissolve this sample? Members return to the flat list; '
+                  + 'merged WAV is unlinked.',
+              confirmLabel: 'Dissolve', danger: true })))
             return;
           api('DELETE', '/captures/api/samples/' + encodeURIComponent(g.id))
             .then(function() { toast('Dissolved'); return load(); })
