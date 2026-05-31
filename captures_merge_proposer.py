@@ -37,10 +37,9 @@ import captures_store
 logger = logging.getLogger(__name__)
 
 
-# Mirrors captures_routes.create_sample_api pre-flight (L896-901) and
-# audio_merge.merge_wavs gap accounting. Kept here as a constant rather
-# than imported to avoid a circular dep with captures_routes.
-_GROUP_HARD_CAP_S = 28.0
+# The finished-sample duration cap is the global cfg.CAPTURES_SAMPLE_MAX_DURATION_S
+# (read in _generate); the inter-member gap mirrors the global VAD-internal
+# silence. Kept out of imports to avoid a circular dep with captures_routes.
 _DEFAULT_GAP_MS = 300
 
 # Sentinel cache key for admin "all users" view.
@@ -265,13 +264,13 @@ def _build_proposal(
     }
 
 
-def _eligible(row: dict[str, Any], min_clip_s: float) -> bool:
+def _eligible(row: dict[str, Any], min_clip_s: float, hard_cap_s: float) -> bool:
     if (row.get("status") or "") in {"dismissed", "audio_missing"}:
         return False
     if row.get("sample_id"):
         return False
     dur = float(row.get("duration_seconds") or 0.0)
-    if dur < min_clip_s or dur > _GROUP_HARD_CAP_S:
+    if dur < min_clip_s or dur > hard_cap_s:
         return False
     if not (row.get("language") or "").strip():
         return False
@@ -312,11 +311,16 @@ def propose_merges(
         return list(cached[1]), True
 
     session_gap_s = max(1, int(cfg.CAPTURES_PROPOSER_SESSION_GAP_S))
-    min_clip_s = float(cfg.CAPTURES_PROPOSER_MIN_CLIP_S)
+    # Per-capture floor is the (raw) ingestion minimum; every stored capture
+    # already clears it, so this is mostly a belt-and-braces guard.
+    min_clip_s = float(cfg.CAPTURE_RECORDINGS_MIN_DURATION_SEC)
     dup_threshold = float(cfg.CAPTURES_PROPOSER_DUP_THRESHOLD)
     max_proposals = max(1, int(cfg.CAPTURES_PROPOSER_MAX_PROPOSALS))
     target_s = float(cfg.CAPTURES_PROPOSER_TARGET_S)
-    gap_s = _DEFAULT_GAP_MS / 1000.0
+    hard_cap_s = float(cfg.CAPTURES_SAMPLE_MAX_DURATION_S)
+    # Inter-member gap estimate mirrors the global silence knob (the merge
+    # inserts this between members), so "packs to X s" matches the real WAV.
+    gap_s = float(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300)) / 1000.0
 
     # Pull a bounded window of recent captures. 500 keeps work bounded for
     # the rare admin "all users" view; per-user views typically have far
@@ -326,7 +330,7 @@ def propose_merges(
         limit=500,
         user_id=effective_user_id,
     )
-    eligible = [r for r in rows if _eligible(r, min_clip_s)]
+    eligible = [r for r in rows if _eligible(r, min_clip_s, hard_cap_s)]
 
     # Annotate each survivor with its trimmed group-contribution duration once
     # (cached across runs). All downstream packing + scoring + display reads go
@@ -368,7 +372,7 @@ def propose_merges(
             by_keys.setdefault((uid, lang), []).append(r)
         for (uid, lang), bucket in by_keys.items():
             for score, members in _generate_candidates_for_bucket(
-                bucket, gap_s, dup_threshold, target_s, _GROUP_HARD_CAP_S
+                bucket, gap_s, dup_threshold, target_s, hard_cap_s
             ):
                 all_candidates.append((score, members, lang, uid))
 

@@ -215,48 +215,48 @@ def _row(**over):
 
 
 def test_eligible_happy_path():
-    assert P._eligible(_row(), 1.0) is True
+    assert P._eligible(_row(), 1.0, 28.0) is True
 
 
 @pytest.mark.parametrize("status", ["dismissed", "audio_missing"])
 def test_eligible_rejects_status(status):
-    assert P._eligible(_row(status=status), 1.0) is False
+    assert P._eligible(_row(status=status), 1.0, 28.0) is False
 
 
 def test_eligible_rejects_grouped():
-    assert P._eligible(_row(sample_id="g1"), 1.0) is False
+    assert P._eligible(_row(sample_id="g1"), 1.0, 28.0) is False
 
 
 def test_eligible_rejects_too_short():
-    assert P._eligible(_row(duration_seconds=0.5), 1.0) is False
+    assert P._eligible(_row(duration_seconds=0.5), 1.0, 28.0) is False
 
 
 def test_eligible_rejects_too_long():
-    assert P._eligible(_row(duration_seconds=P._GROUP_HARD_CAP_S + 1), 1.0) is False
+    assert P._eligible(_row(duration_seconds=28.0 + 1), 1.0, 28.0) is False
 
 
 def test_eligible_boundary_min_clip_inclusive():
     # dur == min_clip_s passes (not < min).
-    assert P._eligible(_row(duration_seconds=1.0), 1.0) is True
+    assert P._eligible(_row(duration_seconds=1.0), 1.0, 28.0) is True
 
 
 def test_eligible_boundary_hard_cap_inclusive():
-    assert P._eligible(_row(duration_seconds=P._GROUP_HARD_CAP_S), 1.0) is True
+    assert P._eligible(_row(duration_seconds=28.0), 1.0, 28.0) is True
 
 
 def test_eligible_rejects_missing_language():
-    assert P._eligible(_row(language=""), 1.0) is False
-    assert P._eligible(_row(language="   "), 1.0) is False
+    assert P._eligible(_row(language=""), 1.0, 28.0) is False
+    assert P._eligible(_row(language="   "), 1.0, 28.0) is False
 
 
 def test_eligible_rejects_no_text():
     assert P._eligible(
-        _row(text_for_training="", final="", raw=""), 1.0) is False
+        _row(text_for_training="", final="", raw=""), 1.0, 28.0) is False
 
 
 def test_eligible_accepts_raw_only_text():
     assert P._eligible(
-        _row(text_for_training="", final="", raw="r"), 1.0) is True
+        _row(text_for_training="", final="", raw="r"), 1.0, 28.0) is True
 
 
 # ---------------------------------------------------------------------------

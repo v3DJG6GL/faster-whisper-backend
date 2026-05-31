@@ -137,11 +137,11 @@ def test_merge_empty_source_rejected(tmp_path):
 
 
 def test_merge_over_cap_rejected(tmp_path):
-    # Two 15 s members + gap -> > 28 s cap (no trim).
+    # Two 15 s members + gap = 30.3 s -> over the sample cap (default 29.9 s).
     big, _ = _pcm(15000)
     p1 = _write_wav(str(tmp_path / "big1.wav"), big)
     p2 = _write_wav(str(tmp_path / "big2.wav"), big)
-    with pytest.raises(ValueError, match="exceed 28"):
+    with pytest.raises(ValueError, match="exceed the sample cap"):
         audio_merge.merge_wavs([p1, p2], str(tmp_path / "out.wav"),
                                gap_ms=300, trim=False)
 

@@ -140,6 +140,13 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "CAPTURES_VAD_MARGIN_SINGLETON_MS": "WHISPER_CAPTURES_VAD_MARGIN_SINGLETON_MS",
     "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS": "WHISPER_CAPTURES_VAD_MARGIN_GROUP_EDGE_MS",
     "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS": "WHISPER_CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS",
+    "CAPTURES_SAMPLE_MIN_DURATION_S": "WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S",
+    "CAPTURES_SAMPLE_MAX_DURATION_S": "WHISPER_CAPTURES_SAMPLE_MAX_DURATION_S",
+    "CAPTURES_SAMPLE_JOIN_STRATEGY": "WHISPER_CAPTURES_SAMPLE_JOIN_STRATEGY",
+    "CAPTURES_PROPOSER_TARGET_S": "WHISPER_CAPTURES_PROPOSER_TARGET_S",
+    "CAPTURES_PROPOSER_SESSION_GAP_S": "WHISPER_CAPTURES_PROPOSER_SESSION_GAP_S",
+    "CAPTURES_PROPOSER_DUP_THRESHOLD": "WHISPER_CAPTURES_PROPOSER_DUP_THRESHOLD",
+    "CAPTURES_PROPOSER_MAX_PROPOSALS": "WHISPER_CAPTURES_PROPOSER_MAX_PROPOSALS",
     # Structured fields — supplied as a JSON string (config.py parses+validates).
     # The per-model WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention still works
     # and merges on top of WHISPER_MODEL_OVERRIDES.
@@ -599,9 +606,39 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "(default 300 ms) so tight VAD boundaries don't clip word onsets. "
         "Lower for tighter merges; raise if you hear clipped starts/ends.",
     "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS":
-        "Per-member group trim: internal silences inside a member are "
-        "collapsed down to at most this many ms (default 300, matching the "
-        "inter-segment gap so all silence in the merged clip is uniform).",
+        "All internal silence in a merged sample, in ms (default 300): the "
+        "gap inserted BETWEEN members (normalized — added if the members' "
+        "trimmed edges are below this, trimmed if above) and the cap on "
+        "pauses WITHIN a member. The single inter-utterance silence knob.",
+    "CAPTURES_SAMPLE_MIN_DURATION_S":
+        "Minimum length of a finished training sample, in seconds "
+        "(default 1.0). A junk floor that discards near-empty samples; the "
+        "proposer packs the bulk toward the target so this mainly bounds "
+        "single-capture samples. Must be ≤ the proposer target.",
+    "CAPTURES_SAMPLE_MAX_DURATION_S":
+        "Hard maximum length of a finished sample, in seconds (default "
+        "29.9; must be < 30, Whisper's window). The single source of truth "
+        "for the merge, the pre-merge validation, the merge estimate, and "
+        "the proposer cap. Must be ≥ the proposer target.",
+    "CAPTURES_SAMPLE_JOIN_STRATEGY":
+        "How member transcripts concatenate in a sample: 'space' (single "
+        "space) or 'period_space' ('. '). Applies to every new or "
+        "regenerated sample.",
+    "CAPTURES_PROPOSER_TARGET_S":
+        "Length the auto-proposer packs samples toward, in seconds "
+        "(default 26). The fill-score peak; keep ≥1 s below the max so the "
+        "proposer doesn't camp at the rejection edge. Must sit between the "
+        "sample min and max.",
+    "CAPTURES_PROPOSER_SESSION_GAP_S":
+        "Captures more than this many seconds apart start a new session "
+        "bucket for proposal grouping (default 600).",
+    "CAPTURES_PROPOSER_DUP_THRESHOLD":
+        "Reject pairing two captures in one proposal when their transcript "
+        "similarity ratio exceeds this (0–1, default 0.85) — a near-"
+        "duplicate / echo guard.",
+    "CAPTURES_PROPOSER_MAX_PROPOSALS":
+        "Maximum number of merge proposals returned per request "
+        "(default 20).",
 }
 
 
@@ -1026,6 +1063,33 @@ class AdminConfig(BaseModel):
     CAPTURES_VAD_MARGIN_SINGLETON_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_SINGLETON_MS")
     CAPTURES_VAD_MARGIN_GROUP_EDGE_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_GROUP_EDGE_MS")
     CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS")
+    CAPTURES_SAMPLE_MIN_DURATION_S: Annotated[float, Field(ge=0, lt=30)] | None = _F("CAPTURES_SAMPLE_MIN_DURATION_S")
+    CAPTURES_SAMPLE_MAX_DURATION_S: Annotated[float, Field(gt=0, lt=30)] | None = _F("CAPTURES_SAMPLE_MAX_DURATION_S")
+    CAPTURES_SAMPLE_JOIN_STRATEGY: Literal["space", "period_space"] | None = _F("CAPTURES_SAMPLE_JOIN_STRATEGY")
+    CAPTURES_PROPOSER_TARGET_S: Annotated[float, Field(gt=0, lt=30)] | None = _F("CAPTURES_PROPOSER_TARGET_S")
+    CAPTURES_PROPOSER_SESSION_GAP_S: Annotated[int, Field(ge=1, le=86400)] | None = _F("CAPTURES_PROPOSER_SESSION_GAP_S")
+    CAPTURES_PROPOSER_DUP_THRESHOLD: Annotated[float, Field(ge=0, le=1)] | None = _F("CAPTURES_PROPOSER_DUP_THRESHOLD")
+    CAPTURES_PROPOSER_MAX_PROPOSALS: Annotated[int, Field(ge=1, le=200)] | None = _F("CAPTURES_PROPOSER_MAX_PROPOSALS")
+
+    @model_validator(mode="after")
+    def _validate_sample_sizing(self) -> "AdminConfig":
+        # Enforce MIN ≤ TARGET ≤ MAX < 30 on the EFFECTIVE values (a None
+        # override means "unchanged", so fall back to the live config default
+        # for the comparison — catches e.g. lowering MAX below the target).
+        import config as _cfg
+        mn = self.CAPTURES_SAMPLE_MIN_DURATION_S
+        tg = self.CAPTURES_PROPOSER_TARGET_S
+        mx = self.CAPTURES_SAMPLE_MAX_DURATION_S
+        mn = mn if mn is not None else float(_cfg.CAPTURES_SAMPLE_MIN_DURATION_S)
+        tg = tg if tg is not None else float(_cfg.CAPTURES_PROPOSER_TARGET_S)
+        mx = mx if mx is not None else float(_cfg.CAPTURES_SAMPLE_MAX_DURATION_S)
+        if not (mn <= tg <= mx):
+            raise ValueError(
+                "require CAPTURES_SAMPLE_MIN_DURATION_S ≤ "
+                "CAPTURES_PROPOSER_TARGET_S ≤ CAPTURES_SAMPLE_MAX_DURATION_S "
+                f"(got {mn} ≤ {tg} ≤ {mx})"
+            )
+        return self
 
     @field_validator("LOG_FILE")
     @classmethod

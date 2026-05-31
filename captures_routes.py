@@ -779,19 +779,18 @@ async def reprocess_all_captures_api() -> JSONResponse:
 # Capture groups (≤28 s packed training samples)
 # ---------------------------------------------------------------------
 
+# Join strategy + inter-member silence are GLOBAL admin settings now
+# (cfg.CAPTURES_SAMPLE_JOIN_STRATEGY / cfg.CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS),
+# not per-request — so the merge/preview/patch payloads no longer carry them.
 class CreateSampleIn(BaseModel):
     model_config = {"extra": "forbid"}
     member_ids: list[str] = Field(min_length=2, max_length=30)
-    join_strategy: Literal["space", "period_space"] = "space"
-    silence_ms: int = Field(default=300, ge=0, le=2000)
 
 
 class PreviewMergeIn(BaseModel):
-    """Preview the merged audio without creating a group. Skips
-    join_strategy (audio merge doesn't depend on it)."""
+    """Preview the merged audio without creating a sample."""
     model_config = {"extra": "forbid"}
     member_ids: list[str] = Field(min_length=2, max_length=30)
-    silence_ms: int = Field(default=300, ge=0, le=2000)
 
 
 class PreviewSaveChipsIn(BaseModel):
@@ -800,14 +799,11 @@ class PreviewSaveChipsIn(BaseModel):
     out to per-member captures via _split_corrections_to_members."""
     model_config = {"extra": "forbid"}
     member_ids: list[str] = Field(min_length=2, max_length=30)
-    silence_ms: int = Field(default=300, ge=0, le=2000)
     corrections: list[CorrectionIn] = Field(default_factory=list, max_length=200)
 
 
 class PatchSampleIn(BaseModel):
     model_config = {"extra": "forbid"}
-    join_strategy: Literal["space", "period_space"] | None = None
-    silence_ms: int | None = Field(default=None, ge=0, le=2000)
     is_locked: bool | None = None
     corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
     # Snapshot of the group-derived chips at GET time. When provided
@@ -820,6 +816,23 @@ class PatchSampleIn(BaseModel):
 
 
 _JOIN_STR = {"space": " ", "period_space": ". "}
+
+
+def _global_silence_ms() -> int:
+    """Inter-member silence, sourced from the global VAD-internal knob
+    (was a per-merge `silence_ms` payload field)."""
+    import config as cfg
+    try:
+        return int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300))
+    except (TypeError, ValueError):
+        return 300
+
+
+def _global_join_strategy() -> str:
+    """Transcript join strategy, sourced from the global setting."""
+    import config as cfg
+    j = getattr(cfg, "CAPTURES_SAMPLE_JOIN_STRATEGY", "space")
+    return j if j in ("space", "period_space") else "space"
 
 
 def _shift_word_times(
@@ -1023,10 +1036,12 @@ def _validate_merge_payload(
         for c in captures
     )
     total_gap_ms = int(silence_ms) * max(0, len(member_ids) - 1)
-    if enforce_cap and (total_trimmed_ms + total_gap_ms) > 28_000:
+    import config as cfg
+    cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
+    if enforce_cap and (total_trimmed_ms + total_gap_ms) > cap_ms:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            f"merged duration would exceed 28 s "
+            f"merged duration would exceed {cap_ms / 1000:.1f} s "
             f"({(total_trimmed_ms + total_gap_ms) / 1000:.2f}s)",
         )
     return captures, owner_user_id, member_paths, total_trimmed_ms
@@ -1169,18 +1184,18 @@ async def create_sample_api(
 
     member_ids = payload.member_ids
     captures, owner_user_id, member_paths, _total_audio_ms = (
-        _validate_merge_payload(member_ids, payload.silence_ms, user)
+        _validate_merge_payload(member_ids, _global_silence_ms(), user)
     )
 
     # Build merged WAV — sid generated upfront so the build path is
     # known before the DB insert (mirrors captures_store).
     sid = _uuid.uuid4().hex
-    transcript = _build_default_transcript(captures, payload.join_strategy)
+    transcript = _build_default_transcript(captures, _global_join_strategy())
     duration_ms, hashes, member_trims = _build_merged_wav(
         sid=sid,
         member_paths=member_paths,
         member_ids=member_ids,
-        silence_ms=payload.silence_ms,
+        silence_ms=_global_silence_ms(),
     )
     # Derive language from the first member with a populated value —
     # Whisper detects language per-clip; members of the same group should
@@ -1199,8 +1214,8 @@ async def create_sample_api(
             user_id=owner_user_id,
             member_ids=member_ids,
             transcript=transcript,
-            join_strategy=payload.join_strategy,
-            silence_ms=payload.silence_ms,
+            join_strategy=_global_join_strategy(),
+            silence_ms=_global_silence_ms(),
             member_hash_map=hashes,
             duration_ms=duration_ms,
             language=group_language,
@@ -1239,7 +1254,7 @@ async def preview_merge_audio_api(
     _check_audio_rate(request.client.host if request.client else "")
 
     _captures, _owner, member_paths, _total_audio_ms = (
-        _validate_merge_payload(payload.member_ids, payload.silence_ms, user)
+        _validate_merge_payload(payload.member_ids, _global_silence_ms(), user)
     )
 
     # tempfile.NamedTemporaryFile(delete=False) so FileResponse can stream
@@ -1249,7 +1264,7 @@ async def preview_merge_audio_api(
     os.close(fd)
     try:
         audio_merge.merge_wavs(
-            member_paths, tmp_path, gap_ms=payload.silence_ms,
+            member_paths, tmp_path, gap_ms=_global_silence_ms(),
             trim=bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False)),
             edge_pad_ms=int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300)),
             max_internal_gap_ms=int(
@@ -1299,16 +1314,16 @@ async def preview_merge_words_api(
     memoized per-word _postprocess_text). Same validation gates as the
     audio endpoint."""
     captures, _owner, member_paths, _total_audio_ms = (
-        _validate_merge_payload(payload.member_ids, payload.silence_ms, user)
+        _validate_merge_payload(payload.member_ids, _global_silence_ms(), user)
     )
     words = _build_merged_words(
-        captures, payload.silence_ms,
+        captures, _global_silence_ms(),
         member_trims=_preview_member_trims(payload.member_ids, member_paths),
     )
     return JSONResponse({
         "words": words,
         "corrections": _project_member_corrections(captures),
-        "transcript": _build_default_transcript(captures, "space"),
+        "transcript": _build_default_transcript(captures, _global_join_strategy()),
     })
 
 
@@ -1328,18 +1343,20 @@ async def merge_estimate_api(
     trim."""
     import captures_merge_proposer
     captures, _owner, _paths, trimmed_ms = _validate_merge_payload(
-        payload.member_ids, payload.silence_ms, user, enforce_cap=False,
+        payload.member_ids, _global_silence_ms(), user, enforce_cap=False,
     )
     raw_ms = sum(
         int(round(float(c.get("duration_seconds") or 0.0) * 1000))
         for c in captures
     )
-    gap_ms = int(payload.silence_ms) * max(0, len(payload.member_ids) - 1)
+    gap_ms = int(_global_silence_ms()) * max(0, len(payload.member_ids) - 1)
+    import config as cfg
+    cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
     return JSONResponse({
         "raw_total_s": (raw_ms + gap_ms) / 1000.0,
         "trimmed_total_s": (trimmed_ms + gap_ms) / 1000.0,
-        "hard_cap_s": 28.0,
-        "fits": (trimmed_ms + gap_ms) <= 28_000,
+        "hard_cap_s": cap_ms / 1000.0,
+        "fits": (trimmed_ms + gap_ms) <= cap_ms,
     })
 
 
@@ -1361,7 +1378,7 @@ async def preview_save_chips_api(
     the client can reproject (via _project_member_corrections) to refresh
     its baseline without a full /preview-words round-trip."""
     captures, owner_user_id, _member_paths, _total_audio_ms = (
-        _validate_merge_payload(payload.member_ids, payload.silence_ms, user)
+        _validate_merge_payload(payload.member_ids, _global_silence_ms(), user)
     )
     chips_in = [c.model_dump(exclude_none=True) for c in payload.corrections]
     per_member = _split_corrections_to_members(chips_in, captures)
@@ -2057,7 +2074,6 @@ async def patch_sample_api(
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
 
     patch: dict[str, Any] = {}
-    rebuild_audio = False
     # Lazily-fetched hydrated members; up to three branches below need
     # this list and used to issue independent get_members calls each.
     _members_cache: list[dict[str, Any]] | None = None
@@ -2068,13 +2084,9 @@ async def patch_sample_api(
             _hydrate_members(_members_cache)
         return _members_cache
 
-    if payload.join_strategy is not None and \
-            payload.join_strategy != g["transcript_join_strategy"]:
-        patch["transcript_join_strategy"] = payload.join_strategy
-    if payload.silence_ms is not None and \
-            payload.silence_ms != g["inter_segment_silence_ms"]:
-        patch["inter_segment_silence_ms"] = payload.silence_ms
-        rebuild_audio = True
+    # Join strategy + inter-member silence are GLOBAL settings now; they're no
+    # longer patchable per-sample. Changing them and rebuilding audio for
+    # existing samples is done via the bulk VAD reprocess action / regenerate.
     if payload.is_locked is not None:
         patch["is_locked"] = 1 if payload.is_locked else 0
     if payload.status is not None:
@@ -2112,33 +2124,13 @@ async def patch_sample_api(
                 continue
             captures_store.update_capture(member_id, {"corrections": chips})
 
-    if rebuild_audio:
-        # Re-run the merge with the new silence. Member set is unchanged.
-        # Hold the per-sid lock so a double-Save (or concurrent admins on
-        # the same group) can't fire two merges writing to the same dst.
-        members = _members()
-        with _get_rebuild_lock(sid):
-            duration_ms, hashes, member_trims = _build_merged_wav(
-                sid=sid,
-                member_ids=[m["id"] for m in members],
-                silence_ms=int(patch["inter_segment_silence_ms"]),
-            )
-        patch.update(_merged_wav_patch(duration_ms, hashes, member_trims))
-
     # Re-derive `transcript` from current members + chips ONLY when the
-    # inputs that feed the derivation actually changed (corrections,
-    # join_strategy) or when the audio was rebuilt (silence change). The
-    # common status/admin_notes/is_locked auto-save click would otherwise
-    # trigger a get_members + transcript rebuild + DB write on every click.
-    transcript_inputs_changed = (
-        payload.corrections is not None
-        or rebuild_audio
-        or "transcript_join_strategy" in patch
-    )
-    if transcript_inputs_changed:
-        join_for_derive = patch.get(
-            "transcript_join_strategy", g["transcript_join_strategy"] or "space",
-        )
+    # corrections changed. The common status/admin_notes/is_locked auto-save
+    # click would otherwise trigger a get_members + transcript rebuild + DB
+    # write on every click. Join strategy uses the sample's stored value
+    # (the global only re-applies on regenerate / bulk reprocess).
+    if payload.corrections is not None:
+        join_for_derive = g["transcript_join_strategy"] or "space"
         patch["transcript"] = _build_default_transcript(_members(), join_for_derive)
 
     updated = capture_samples_store.update_sample(sid, patch)
@@ -2153,8 +2145,10 @@ async def regenerate_sample_api(
     sid: str,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    """Rebuild the merged WAV from current member content, refresh
-    hashes, clear `is_stale`. Transcript is preserved (admin's edits stay)."""
+    """Rebuild the merged WAV from current member content using the CURRENT
+    global silence setting (so regenerate is how an existing sample adopts a
+    changed global), refresh hashes, clear `is_stale`. Transcript is preserved
+    (admin's edits stay)."""
     import capture_samples_store
     g = capture_samples_store.get_sample(sid)
     if g is None:
@@ -2164,15 +2158,16 @@ async def regenerate_sample_api(
     )
     _audit_cross_user_read(user, g, "sample-regenerate", sid)
     members = capture_samples_store.get_members(sid)
+    silence_ms = _global_silence_ms()
     with _get_rebuild_lock(sid):
         duration_ms, hashes, member_trims = _build_merged_wav(
             sid=sid,
             member_ids=[m["id"] for m in members],
-            silence_ms=g["inter_segment_silence_ms"],
+            silence_ms=silence_ms,
         )
-        updated = capture_samples_store.update_sample(
-            sid, _merged_wav_patch(duration_ms, hashes, member_trims),
-        )
+        regen_patch = _merged_wav_patch(duration_ms, hashes, member_trims)
+        regen_patch["inter_segment_silence_ms"] = silence_ms
+        updated = capture_samples_store.update_sample(sid, regen_patch)
     return JSONResponse({"sample": _enrich_sample(updated)})
 
 
@@ -3096,22 +3091,6 @@ _CAPTURES_HTML = r"""<!doctype html>
     margin-bottom: 0.25rem;
   }
   #propose-modal .propose-top h3 { flex: 1; }
-  #propose-modal .propose-settings {
-    display: flex; gap: 0.75rem; align-items: center;
-    flex-wrap: wrap;
-    padding: 0.5rem 0.7rem; margin-bottom: 0.6rem;
-    background: var(--input-bg); border: 1px solid var(--border);
-    border-radius: 4px;
-  }
-  #propose-modal .propose-settings label { font-size: var(--fs-sm); color: var(--help); }
-  #propose-modal .propose-settings select {
-    background: var(--bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 3px;
-    padding: 0.2rem 0.35rem;
-    font: inherit; font-size: var(--fs-sm);
-    margin-left: 0.3rem;
-  }
-  #propose-modal .propose-settings .small { font-size: var(--fs-xs); }
   #propose-modal .actions {
     display: flex; gap: 0.5rem; align-items: center;
     margin-top: 0.75rem;
@@ -3465,20 +3444,8 @@ _CAPTURES_HTML = r"""<!doctype html>
     </p>
     <div class="members-preview" id="merge-members"></div>
     <div class="row">
-      <label>Join style:
-        <select id="merge-join">
-          <option value="space">space</option>
-          <option value="period_space">period + space</option>
-        </select>
-      </label>
-      <label>Silence gap:
-        <select id="merge-silence">
-          <option value="200">200 ms</option>
-          <option value="300" selected>300 ms</option>
-          <option value="400">400 ms</option>
-          <option value="500">500 ms</option>
-        </select>
-      </label>
+      <span class="dim small">Join style &amp; inter-member silence use the
+        global settings (Settings → Capture &amp; fine-tuning → Sample sizing).</span>
       <span class="summary" id="merge-summary"></span>
       <span id="merge-preview-slot"></span>
     </div>
@@ -3503,25 +3470,9 @@ _CAPTURES_HTML = r"""<!doctype html>
     </div>
     <p class="dim">Ranked by total duration (~26 s target), session
        homogeneity, and member count. Near-duplicate clips are excluded
-       within each proposal. Click <em>Accept</em> to merge directly
-       using the settings below — the popup stays open for the next one.</p>
-    <div class="propose-settings">
-      <label>Join style:
-        <select id="propose-join">
-          <option value="space" selected>space</option>
-          <option value="period_space">period + space</option>
-        </select>
-      </label>
-      <label>Silence gap:
-        <select id="propose-silence">
-          <option value="200">200 ms</option>
-          <option value="300" selected>300 ms</option>
-          <option value="400">400 ms</option>
-          <option value="500">500 ms</option>
-        </select>
-      </label>
-      <span class="dim small">Applied to every Accept in this popup.</span>
-    </div>
+       within each proposal. Click <em>Accept</em> to merge directly — the
+       popup stays open for the next one. Join style &amp; inter-member
+       silence use the global settings (Settings → Sample sizing).</p>
     <div id="propose-list"></div>
     <div id="propose-batch" hidden></div>
     <div class="actions">
@@ -3826,7 +3777,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     var token = ++_meterEstimateToken;
     _meterEstimateTimer = setTimeout(function() {
       api('POST', '/captures/api/samples/merge-estimate',
-          { member_ids: ids, silence_ms: gap_ms })
+          { member_ids: ids })
         .then(function(j) {
           if (token !== _meterEstimateToken) return;  // superseded
           var t = j.trimmed_total_s || 0;
@@ -5084,14 +5035,14 @@ _CAPTURES_HTML = r"""<!doctype html>
     if (rows.length < 2) return;
     var modal = document.getElementById('merge-modal');
     _renderMergePreview(rows);
-    var joinSel = document.getElementById('merge-join');
-    var silSel = document.getElementById('merge-silence');
+    // Join style + inter-member silence are global settings now; the local
+    // estimate uses a nominal 300 ms gap (the server is authoritative for the
+    // real merge + the refined merge-estimate total).
+    var GAP_EST_MS = 300;
     var ta = document.getElementById('merge-transcript');
-    function refreshTranscript() {
-      ta.textContent = _buildDefaultTranscript(rows, joinSel.value);
-    }
-    refreshTranscript();
-    joinSel.onchange = refreshTranscript;
+    // Initial static transcript (space-joined); the karaoke preview replaces
+    // it with the server-derived (global-join) text on play.
+    ta.textContent = _buildDefaultTranscript(rows, 'space');
     // Live summary — instant raw estimate (~), refined to the trimmed total
     // (the real merged length) via the same merge-estimate endpoint the
     // action-bar meter uses.
@@ -5099,25 +5050,21 @@ _CAPTURES_HTML = r"""<!doctype html>
     function refreshSummary() {
       var n = rows.length;
       var totalAudio = rows.reduce(function(s, r) { return s + (r.duration_seconds || 0); }, 0);
-      var gapMs = parseInt(silSel.value, 10) || 0;
-      var total = totalAudio + (gapMs / 1000) * Math.max(0, n - 1);
+      var total = totalAudio + (GAP_EST_MS / 1000) * Math.max(0, n - 1);
       var el = document.getElementById('merge-summary');
-      el.textContent = n + ' segments · Σ ~' + total.toFixed(2) + ' s / 28.00 s';
+      el.textContent = n + ' segments · Σ ~' + total.toFixed(2) + ' s';
       var token = ++_summaryToken;
       api('POST', '/captures/api/samples/merge-estimate',
-          { member_ids: rows.map(function(r) { return r.id; }), silence_ms: gapMs })
+          { member_ids: rows.map(function(r) { return r.id; }) })
         .then(function(j) {
           if (token !== _summaryToken) return;
+          var cap = (j.hard_cap_s || 0).toFixed(2);
           el.textContent = n + ' segments · Σ '
-            + (j.trimmed_total_s || 0).toFixed(2) + ' s / 28.00 s';
+            + (j.trimmed_total_s || 0).toFixed(2) + ' s / ' + cap + ' s';
         })
         .catch(function() {});
     }
     refreshSummary();
-    silSel.onchange = function() {
-      refreshSummary();
-      if (previewCtl && previewCtl.toggleBtn) previewCtl.toggleBtn._refreshDur();
-    };
     // Rebuild the preview controls per open so they capture the current rows.
     var slot = document.getElementById('merge-preview-slot');
     slot.innerHTML = '';
@@ -5125,10 +5072,10 @@ _CAPTURES_HTML = r"""<!doctype html>
     if (panelHost) panelHost.innerHTML = '';
     var previewCtl = _makeMergePreviewBtn(
       function() { return rows.map(function(r) { return r.id; }); },
-      function() { return parseInt(silSel.value, 10) || 300; },
+      function() { return GAP_EST_MS; },
       function() {
         var totalAudio = rows.reduce(function(s, r) { return s + (r.duration_seconds || 0); }, 0);
-        var gap = (parseInt(silSel.value, 10) || 0) / 1000;
+        var gap = GAP_EST_MS / 1000;
         return totalAudio + gap * Math.max(0, rows.length - 1);
       },
       // Render the karaoke Final result into the modal's prominent
@@ -5148,8 +5095,6 @@ _CAPTURES_HTML = r"""<!doctype html>
       // (mirrors the locked preview).
       var payload = {
         member_ids: rows.map(function(r) { return r.id; }),
-        join_strategy: joinSel.value,
-        silence_ms: parseInt(silSel.value, 10) || 300,
       };
       api('POST', '/captures/api/samples', payload)
         .then(function() {
@@ -5789,10 +5734,7 @@ _CAPTURES_HTML = r"""<!doctype html>
           'Content-Type': 'application/json',
           'X-CSRF-Token': window._csrfToken ? window._csrfToken() : '',
         };
-        var body = JSON.stringify({
-          member_ids: ids,
-          silence_ms: silenceMsFn() || 300,
-        });
+        var body = JSON.stringify({ member_ids: ids });
         var [audioResp, wordsResp] = await Promise.all([
           fetch('/captures/api/samples/preview-audio', { method:'POST', headers:headers, body:body }),
           fetch('/captures/api/samples/preview-words', { method:'POST', headers:headers, body:body }),
@@ -5900,7 +5842,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     var resp = await fetch('/captures/api/samples/preview-save-chips', {
       method: 'POST', headers: headers,
       body: JSON.stringify({
-        member_ids: memberIds, silence_ms: silenceMs, corrections: chips,
+        member_ids: memberIds, corrections: chips,
       }),
     });
     if (!resp.ok) {
@@ -6000,10 +5942,7 @@ _CAPTURES_HTML = r"""<!doctype html>
 
     var previewCtl = _makeMergePreviewBtn(
       function() { return p.member_ids; },
-      function() {
-        var sel = document.getElementById('propose-silence');
-        return (sel && parseInt(sel.value, 10)) || 300;
-      },
+      function() { return 300; },   // nominal gap; server uses the global
       function() { return p.total_duration_s; },
       // Inline player: the ▶ lives at the left edge of the seek bar inside the
       // panel (mirrors the single-capture player), not in this meta row.
@@ -6099,15 +6038,11 @@ _CAPTURES_HTML = r"""<!doctype html>
       return;
     }
     _stopAnyPreview();
-    var join = (document.getElementById('propose-join') || {}).value || 'space';
-    var silenceMs = parseInt((document.getElementById('propose-silence') || {}).value, 10) || 300;
     var origText = btn ? btn.textContent : '';
     if (btn) { btn.disabled = true; btn.textContent = 'Merging…'; }
     try {
       await api('POST', '/captures/api/samples', {
         member_ids: p.member_ids,
-        join_strategy: join,
-        silence_ms: silenceMs,
       });
       toast('Sample created (' + (p.member_count || p.member_ids.length) + ' clips)');
       // Drop the accepted proposal + any overlapping ones from the visible
@@ -6330,16 +6265,12 @@ _CAPTURES_HTML = r"""<!doctype html>
         return;
       }
       _stopAnyPreview();
-      var join = (document.getElementById('propose-join') || {}).value || 'space';
-      var silenceMs = parseInt((document.getElementById('propose-silence') || {}).value, 10) || 300;
       // Snapshot the proposal queue BEFORE we splice it so Revert can
       // restore the accepted proposal + any overlapping ones it removed.
       var acceptSnap = _proposals.slice();
       try {
         var resp = await api('POST', '/captures/api/samples', {
           member_ids: p.member_ids,
-          join_strategy: join,
-          silence_ms: silenceMs,
         });
         toast('Sample created (' + (p.member_count || p.member_ids.length) + ' clips)');
         _batchAccepted++;
@@ -6730,62 +6661,29 @@ _CAPTURES_HTML = r"""<!doctype html>
         gtSec.appendChild(ta);
         body.appendChild(gtSec);
 
-        // --- Merge settings row (silence gap + join strategy) ---
+        // --- Merge settings (read-only). Join style + inter-member silence
+        // are GLOBAL now (Settings → Sample sizing); this row just shows what
+        // this sample was built with. Regenerate rebuilds it with the current
+        // global silence. ---
         var settingsSec = document.createElement('div');
         settingsSec.className = 'cc-section';
         settingsSec.style.cssText = 'display:flex;gap:1rem;align-items:center;'
           + 'flex-wrap:wrap;margin-top:0.5rem;';
-        var joinLabel = document.createElement('label');
-        joinLabel.style.cssText = 'display:flex;gap:0.4rem;align-items:center;';
-        joinLabel.appendChild(document.createTextNode('Join style: '));
-        var joinSel = document.createElement('select');
-        ['space','period_space'].forEach(function(v) {
-          var opt = document.createElement('option');
-          opt.value = v;
-          opt.textContent = v === 'space' ? 'space' : 'period + space';
-          joinSel.appendChild(opt);
-        });
-        joinLabel.appendChild(joinSel);
-        settingsSec.appendChild(joinLabel);
-
-        var silLabel = document.createElement('label');
-        silLabel.style.cssText = 'display:flex;gap:0.4rem;align-items:center;';
-        silLabel.appendChild(document.createTextNode('Silence gap: '));
-        var silSel = document.createElement('select');
-        [0,100,200,300,400,500,750,1000].forEach(function(v) {
-          var opt = document.createElement('option');
-          opt.value = String(v);
-          opt.textContent = v + ' ms';
-          silSel.appendChild(opt);
-        });
-        silLabel.appendChild(silSel);
-        settingsSec.appendChild(silLabel);
-
         var settingsHint = document.createElement('span');
         settingsHint.className = 'help';
-        settingsHint.style.marginLeft = '0.5rem';
         settingsSec.appendChild(settingsHint);
         body.appendChild(settingsSec);
 
-        // Mutable baselines so applyServerSample can update them and
-        // settingsDirty() reads the latest "saved" state.
-        var origJoin = detail.transcript_join_strategy || 'space';
-        var origSil  = detail.inter_segment_silence_ms || 300;
-        function settingsDirty() {
-          return joinSel.value !== origJoin
-              || parseInt(silSel.value, 10) !== origSil;
-        }
         function refreshSettingsHint() {
-          if (settingsDirty()) {
-            settingsHint.textContent =
-              'changes pending — Save or Regenerate to rebuild audio';
-            settingsHint.style.color = 'var(--cyan)';
-          } else {
-            settingsHint.textContent = '';
-          }
+          var j = detail.transcript_join_strategy || 'space';
+          var sil = detail.inter_segment_silence_ms;
+          settingsHint.textContent =
+            'Built with join "' + j + '"'
+            + (sil != null ? ' · silence ' + sil + ' ms' : '')
+            + ' · join & silence are global (Settings → Sample sizing); '
+            + 'Regenerate rebuilds with the current global silence.';
+          settingsHint.style.color = 'var(--help)';
         }
-        joinSel.addEventListener('change', refreshSettingsHint);
-        silSel.addEventListener('change', refreshSettingsHint);
 
         // --- Admin notes (matches single-capture layout). ---
         var notesSec = document.createElement('div');
@@ -6973,11 +6871,9 @@ _CAPTURES_HTML = r"""<!doctype html>
           notesArea.value = d.admin_notes || '';
           clearDirty(sampleState);
 
-          // 2. Dropdowns + baselines.
-          silSel.value = String(d.inter_segment_silence_ms || 300);
-          joinSel.value = d.transcript_join_strategy || 'space';
-          origSil  = d.inter_segment_silence_ms || 300;
-          origJoin = d.transcript_join_strategy || 'space';
+          // 2. Refresh the read-only settings line from the server snapshot.
+          detail.transcript_join_strategy = d.transcript_join_strategy || 'space';
+          detail.inter_segment_silence_ms = d.inter_segment_silence_ms;
           refreshSettingsHint();
 
           // 3. Stale hint + regen label.
@@ -7064,8 +6960,6 @@ _CAPTURES_HTML = r"""<!doctype html>
         // --- Save handler: PATCH everything; mutate the card in place. ---
         saveTBtn.onclick = function() {
           var payload = {
-            join_strategy: joinSel.value,
-            silence_ms:    parseInt(silSel.value, 10),
             status:        sampleState.newStatus,
             admin_notes:   sampleState.adminNotes,
             corrections:   sampleState.corrections.map(function(c) {
@@ -7096,22 +6990,15 @@ _CAPTURES_HTML = r"""<!doctype html>
             .then(function() { saveTBtn.disabled = false; });
         };
 
-        // --- Regenerate handler: when settings are dirty, fold them
-        // into a PATCH (server rebuilds audio); otherwise hit the
-        // dedicated /regenerate endpoint. Either way, in-place refresh
-        // via applyServerSample. No "Save first" toast. ---
+        // --- Regenerate handler: rebuild the merged WAV from current members
+        // using the CURRENT global silence (the dedicated /regenerate
+        // endpoint). In-place refresh via applyServerSample. ---
         regenBtn.onclick = function() {
           regenBtn.disabled = true;
-          var dirty = settingsDirty();
-          var p = dirty
-            ? api('PATCH', '/captures/api/samples/' + encodeURIComponent(g.id), {
-                join_strategy: joinSel.value,
-                silence_ms:    parseInt(silSel.value, 10),
-              })
-            : api('POST', '/captures/api/samples/' + encodeURIComponent(g.id) + '/regenerate');
-          p.then(function(j) {
+          api('POST', '/captures/api/samples/' + encodeURIComponent(g.id) + '/regenerate')
+            .then(function(j) {
               applyServerSample(j.sample || {});
-              toast(dirty ? 'Settings applied, audio regenerated.' : 'Regenerated');
+              toast('Regenerated');
               reloadCounts();
             })
             .catch(function(e) {

@@ -30,9 +30,22 @@ _REQ_CHANNELS = 1
 _REQ_SAMPWIDTH_BYTES = 2     # signed 16-bit
 _REQ_RATE = 16000
 
-# Hard cap on the merged WAV duration in samples. 28 s × 16 kHz = 448_000.
-# Whisper's feature extractor truncates anything >30 s; we leave a margin.
-MAX_MERGED_SAMPLES = 448_000
+# Hard cap on the merged WAV duration. The LIVE value is
+# cfg.CAPTURES_SAMPLE_MAX_DURATION_S (read per-merge by _max_merged_samples()
+# so an admin change applies immediately); MAX_MERGED_SAMPLES below is only a
+# fallback when config is unavailable. Whisper truncates >30 s; the configured
+# value keeps a margin.
+MAX_MERGED_SAMPLES = 448_000  # 28 s × 16 kHz (fallback default)
+
+
+def _max_merged_samples() -> int:
+    """Live merged-WAV sample cap from config (samples = seconds × 16 kHz)."""
+    try:
+        import config as cfg
+        cap_s = float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9))
+        return int(cap_s * _REQ_RATE)
+    except Exception:
+        return MAX_MERGED_SAMPLES
 
 # Bytes per sample of audio at our fixed format (channels * sampwidth).
 BYTES_PER_SAMPLE = _REQ_CHANNELS * _REQ_SAMPWIDTH_BYTES
@@ -117,6 +130,7 @@ def merge_wavs(
         raise ValueError("need at least 2 sources to merge")
     if gap_ms < 0:
         raise ValueError("gap_ms must be ≥ 0")
+    _max_samples = _max_merged_samples()
 
     trimmer = None
     if trim:
@@ -162,11 +176,12 @@ def merge_wavs(
             total_samples += gap_samples
         pieces.append(pcm)
         total_samples += n
-        if total_samples > MAX_MERGED_SAMPLES:
+        if total_samples > _max_samples:
             raise ValueError(
-                f"merged duration would exceed 28 s "
-                f"(got {total_samples / _REQ_RATE:.2f} s after "
-                f"{i+1} of {len(src_paths)} sources)"
+                f"merged duration would exceed the sample cap "
+                f"({_max_samples / _REQ_RATE:.2f} s) — got "
+                f"{total_samples / _REQ_RATE:.2f} s after "
+                f"{i+1} of {len(src_paths)} sources"
             )
 
     out_pcm = b"".join(pieces)
