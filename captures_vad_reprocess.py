@@ -99,12 +99,20 @@ def _run() -> None:
                     continue
                 silence_ms = _global_silence_ms()
                 try:
+                    # Hold the per-sid lock across BOTH the rebuild and the DB
+                    # update (as regenerate_sample_api does), so a concurrent
+                    # regenerate can't rewrite the merged WAV between our build
+                    # and our patch — which would persist member_trims/duration
+                    # that no longer match the WAV on disk.
                     with _get_rebuild_lock(sid):
                         duration_ms, hashes, member_trims = _build_merged_wav(
                             sid=sid,
                             member_ids=[m["id"] for m in members],
                             silence_ms=silence_ms,
                         )
+                        patch = _merged_wav_patch(duration_ms, hashes, member_trims)
+                        patch["inter_segment_silence_ms"] = silence_ms
+                        capture_samples_store.update_sample(sid, patch)
                 except Exception as e:
                     # Over-cap under the new settings (merge_wavs raises) or a
                     # build failure → flag stale (excluded from export), never
@@ -116,9 +124,6 @@ def _run() -> None:
                     with _state_lock:
                         _state["stale"] += 1
                     continue
-                patch = _merged_wav_patch(duration_ms, hashes, member_trims)
-                patch["inter_segment_silence_ms"] = silence_ms
-                capture_samples_store.update_sample(sid, patch)
                 with _state_lock:
                     _state["rebuilt"] += 1
             finally:
