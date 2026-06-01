@@ -62,11 +62,14 @@ CREATE TABLE IF NOT EXISTS reports (
   reporter_host   TEXT NOT NULL DEFAULT '',
   status          TEXT NOT NULL DEFAULT 'open',
   admin_notes     TEXT NOT NULL DEFAULT '',
-  resolved_ts     REAL
+  resolved_ts     REAL,
+  user_id         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_reports_created    ON reports(created_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_status     ON reports(status);
 CREATE INDEX IF NOT EXISTS idx_reports_request_id ON reports(request_id);
+CREATE INDEX IF NOT EXISTS idx_reports_user_request
+  ON reports(user_id, request_id) WHERE user_id IS NOT NULL;
 """
 
 _VALID_STATUS = frozenset({"open", "resolved", "dismissed"})
@@ -91,18 +94,6 @@ def init_db(path: str) -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA)
-    # Idempotent migration: older DBs lack user_id. ALTER errors with
-    # OperationalError ("duplicate column name") on a second startup —
-    # swallow that one specifically.
-    try:
-        _conn.execute("ALTER TABLE reports ADD COLUMN user_id TEXT")
-    except sqlite3.OperationalError as e:
-        if "duplicate column" not in str(e).lower():
-            raise
-    _conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_reports_user_request "
-        "ON reports(user_id, request_id) WHERE user_id IS NOT NULL"
-    )
 
 
 def _require_conn() -> sqlite3.Connection:

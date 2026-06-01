@@ -338,36 +338,3 @@ def test_reconcile_keeps_valid_fk(captures_store_db, groups_store_db):
     _, _, orphan_fks = gs.reconcile_on_startup()
     assert orphan_fks == 0
     assert cs.get_capture("capvalidfk000001")["sample_id"] == sid
-
-
-# ---------------------------------------------------------------------------
-# init() language backfill
-# ---------------------------------------------------------------------------
-
-def test_init_language_backfill(captures_store_db, groups_store_db):
-    """A group with no language, whose first member has one, gets backfilled
-    on the next init()."""
-    cs = captures_store_db
-    gs = groups_store_db
-    sid = "gbackfill000000a"
-    # Group with empty language.
-    _insert_group(gs, sid, language="")
-    _insert_capture(cs, "capbackfill00001", sample_id=sid, sample_order=0,
-                    language="fr")
-    # Re-run init (shares the same conn) → correlated UPDATE backfills.
-    import capture_samples_store
-    capture_samples_store.init(cs._require_conn(), cs._require_audio_dir())
-    assert gs.get_sample(sid)["language"] == "fr"
-
-
-def test_init_language_backfill_skips_when_member_blank(captures_store_db, groups_store_db):
-    cs = captures_store_db
-    gs = groups_store_db
-    sid = "gbackfillblank00"
-    _insert_group(gs, sid, language="")
-    # Member has no language → nothing to backfill.
-    _insert_capture(cs, "capbackfillblk01", sample_id=sid, sample_order=0,
-                    language="")
-    import capture_samples_store
-    capture_samples_store.init(cs._require_conn(), cs._require_audio_dir())
-    assert gs.get_sample(sid)["language"] == ""

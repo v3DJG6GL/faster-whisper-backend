@@ -6,8 +6,8 @@ Lives in the same SQLite DB as `captures` (re-uses the connection from
 with the same 4-char fanout as individual captures.
 
 The schema is structurally minimal: one `capture_samples` row per merged
-sample + a `sample_id`/`sample_order` FK on the existing captures table
-(added by captures_store's migration). Dissolving a group deletes the
+sample + a `sample_id`/`sample_order` FK on the existing captures table.
+Dissolving a group deletes the
 row + the merged WAV; members get their `sample_id` NULL'd out and
 return to the flat list.
 
@@ -31,30 +31,6 @@ _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 _groups_audio_dir: str | None = None    # e.g. CAPTURES_DIR/groups
 
-# Schema init runs in three phases — the same pattern documented at
-# captures_store.py:64-76:
-#
-#   1. _SCHEMA_CORE     — CREATE TABLE IF NOT EXISTS + indexes that only
-#                         reference columns present on the very first
-#                         shipped version of the table.
-#   2. _MIGRATIONS      — idempotent stmts for upgrading older DBs:
-#                         ALTER ADD COLUMN for columns added after the
-#                         first ship, ALTER DROP COLUMN for the legacy
-#                         corrections_json / corrections_migrated_at
-#                         cache, plus a one-shot UPDATE that normalises
-#                         transcript_join_strategy='newline' rows to
-#                         'space'. Each stmt runs in its own try/except
-#                         so fresh DBs swallow "duplicate column …" /
-#                         "no such column …" and keep going.
-#   3. _SCHEMA_POST_MIGRATIONS — indexes that reference columns added
-#                         by phase 2. If we put `CREATE INDEX … ON
-#                         capture_samples(status)` in phase 1 alongside
-#                         the CREATE TABLE, then on a DB upgraded from
-#                         before `status` existed the CREATE TABLE is a
-#                         no-op, the CREATE INDEX raises "no such
-#                         column: status", and `executescript` aborts —
-#                         which skips phase 2 entirely and leaves the
-#                         store unable to read its own rows.
 _SCHEMA_CORE = """
 CREATE TABLE IF NOT EXISTS capture_samples (
   id                          TEXT PRIMARY KEY,
@@ -77,42 +53,6 @@ CREATE TABLE IF NOT EXISTS capture_samples (
 );
 CREATE INDEX IF NOT EXISTS idx_capture_samples_user
   ON capture_samples(user_id, created_ts DESC);
-"""
-
-_MIGRATIONS: tuple[str, ...] = (
-    # Old DBs still carry these two columns from the one-time-projection
-    # cache design. Drop them idempotently — fresh DBs see "no such
-    # column" and swallow it; upgraded DBs succeed and reclaim the space.
-    "ALTER TABLE capture_samples DROP COLUMN corrections_json",
-    "ALTER TABLE capture_samples DROP COLUMN corrections_migrated_at",
-    # Live columns that may need adding on older DBs that pre-date them.
-    "ALTER TABLE capture_samples ADD COLUMN status TEXT NOT NULL DEFAULT 'new'",
-    "ALTER TABLE capture_samples ADD COLUMN admin_notes TEXT NOT NULL DEFAULT ''",
-    # `language` per-group (BCP-47-ish, e.g. "de"). Whisper-detected at
-    # the first member; emitted in the export manifest so fine-tune
-    # loaders force the right language token.
-    "ALTER TABLE capture_samples ADD COLUMN language TEXT",
-    # Drop the `newline` join strategy: Whisper never emits literal `\n`
-    # in continuous speech, so training samples that join members with
-    # \n confuse the model. Normalise any historical rows to 'space'.
-    "UPDATE capture_samples SET transcript_join_strategy='space' "
-    "WHERE transcript_join_strategy='newline'",
-    # VAD-trim offsets on the merged WAV. NOT NULL DEFAULT 0 so the
-    # `_build_merged_words` math can rely on a numeric value without
-    # a COALESCE — un-trimmed groups simply contribute 0.
-    "ALTER TABLE capture_samples ADD COLUMN merged_lead_trim_ms "
-    "INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE capture_samples ADD COLUMN merged_trail_trim_ms "
-    "INTEGER NOT NULL DEFAULT 0",
-    # Per-member silence-trim map: {member_id: {lead_ms, new_duration_ms,
-    # segments:[[orig_start_ms, orig_end_ms, new_start_ms], ...]}}. Populated
-    # when a group is created/re-merged under per-member trimming; empty '{}'
-    # for legacy groups, which keep using merged_lead_trim_ms instead.
-    "ALTER TABLE capture_samples ADD COLUMN member_trims_json "
-    "TEXT NOT NULL DEFAULT '{}'",
-)
-
-_SCHEMA_POST_MIGRATIONS = """
 CREATE INDEX IF NOT EXISTS idx_capture_samples_status
   ON capture_samples(status);
 """
@@ -133,56 +73,7 @@ def init(conn: sqlite3.Connection, captures_audio_root: str) -> None:
     _conn = conn
     _groups_audio_dir = os.path.join(captures_audio_root, "groups")
     os.makedirs(_groups_audio_dir, exist_ok=True)
-    # One-shot table rename capture_groups → capture_samples (group→sample
-    # terminology migration). MUST run before CREATE TABLE so an existing
-    # table is renamed in place (data preserved) rather than shadowed by a
-    # fresh empty capture_samples. Idempotent: a no-op once renamed.
-    try:
-        _tables = {
-            r[0] for r in _conn.execute(
-                "SELECT name FROM sqlite_master WHERE type='table'")
-        }
-        if "capture_groups" in _tables and "capture_samples" not in _tables:
-            _conn.execute("ALTER TABLE capture_groups RENAME TO capture_samples")
-    except sqlite3.OperationalError:
-        pass
     _conn.executescript(_SCHEMA_CORE)
-    for stmt in _MIGRATIONS:
-        try:
-            _conn.execute(stmt)
-        except sqlite3.OperationalError:
-            # Column already present (fresh DB or migrated previously).
-            pass
-    _conn.executescript(_SCHEMA_POST_MIGRATIONS)
-    # One-time backfill of group `language` from the first member with
-    # a populated language. Rows with `language` already set are left
-    # alone. Cheap on small stores; bounded SELECT-per-group on large.
-    try:
-        # One-shot correlated UPDATE: for each group missing a language,
-        # pull the first non-empty language from its member captures in
-        # sample_order. After this lands once on a deployed DB the WHERE
-        # clause matches zero rows and the statement is a fast no-op.
-        cur = _conn.execute(
-            "UPDATE capture_samples SET language = ("
-            "  SELECT language FROM captures"
-            "   WHERE sample_id = capture_samples.id"
-            "     AND language IS NOT NULL AND language != ''"
-            "   ORDER BY sample_order ASC LIMIT 1"
-            ") WHERE (language IS NULL OR language = '')"
-            "   AND EXISTS ("
-            "     SELECT 1 FROM captures"
-            "      WHERE sample_id = capture_samples.id"
-            "        AND language IS NOT NULL AND language != ''"
-            "   )"
-        )
-        if cur.rowcount:
-            logger.info(
-                "[groups] language-backfill set %d groups", cur.rowcount,
-            )
-    except sqlite3.OperationalError as e:
-        # Schema not as expected (e.g. very old DB pre-migration order);
-        # log and continue — backfill is best-effort.
-        logger.warning("[groups] language-backfill skipped: %s", e)
 
 
 def _require_conn() -> sqlite3.Connection:

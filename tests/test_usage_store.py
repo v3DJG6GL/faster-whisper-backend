@@ -1,12 +1,11 @@
 """Tests for usage_store: hourly rollup UPSERT, aggregation, time bucketing,
-leaderboard whitelist, retention prune, daily->hourly migration, and backfill.
+leaderboard whitelist, and retention prune.
 
 Day/week bucketing is server-local; those tests pin TZ via the set_tz fixture
 (POSIX-only; auto-skips on Windows). Pure UTC-hour helpers are tested without
 TZ control.
 """
 
-import datetime
 import time
 
 
@@ -176,53 +175,3 @@ def test_epoch_day_and_local_midnight_utc(set_tz):
     assert us.epoch_day_for(86400) == 1
     # local-midnight today, expressed as UTC epoch-hour, is a multiple of 24.
     assert us.local_day_start_hour(0) % 24 == 0
-
-
-# ---------------------------------------------------------------------------
-# _migrate_daily_to_hourly
-# ---------------------------------------------------------------------------
-
-def test_migrate_daily_to_hourly(usage_store_db, set_tz):
-    set_tz("UTC")
-    us = usage_store_db
-    conn = us._require_conn()
-    conn.executescript(
-        "CREATE TABLE usage_daily (day INTEGER, key_id TEXT, user_id TEXT,"
-        " requests INTEGER, errors INTEGER, words INTEGER, audio_s REAL);"
-    )
-    conn.execute(
-        "INSERT INTO usage_daily VALUES (0, 'k', 'u', 3, 1, 10, 5.0)"
-    )
-    us._migrate_daily_to_hourly()
-    # legacy table dropped
-    has_daily = conn.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_daily'"
-    ).fetchone()
-    assert has_daily is None
-    # lifetime totals preserved in the hourly table
-    r = us.totals_by_key()[0]
-    assert r["requests"] == 3 and r["words"] == 10 and r["audio_s"] == 5.0
-
-
-# ---------------------------------------------------------------------------
-# backfill_from_transcriptions
-# ---------------------------------------------------------------------------
-
-def test_backfill_from_transcriptions(usage_store_db, tx_store):
-    us = usage_store_db
-    # Seed a couple of recent-transcription rows.
-    tx_store.record_timing(
-        request_id="r1", model="m", audio_dur_s=2.0, proc_dur_s=1.0,
-        status="ok", words_count=4, user_id="u1",
-    )
-    tx_store.record_timing(
-        request_id="r2", model="m", audio_dur_s=3.0, proc_dur_s=1.0,
-        status="error", words_count=1, user_id="u1",
-    )
-    n = us.backfill_from_transcriptions()
-    assert n >= 1
-    # Backfilled rows are bucketed under the synthetic key id.
-    rows = us.totals_by_key()
-    assert any(r["key_id"] == us.BACKFILL_ID for r in rows)
-    # Second call is a no-op (table no longer empty).
-    assert us.backfill_from_transcriptions() == 0

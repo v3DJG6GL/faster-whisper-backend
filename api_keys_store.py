@@ -146,35 +146,7 @@ def init_db(db_path: str) -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA)
-    _migrate_add_permissions_locked()
     _rebuild_index_locked()
-
-
-def _migrate_add_permissions_locked() -> None:
-    """One-shot migration for DBs that predate the `permissions` column.
-    Idempotent: ALTER fails-silent if the column already exists, and the
-    backfill UPDATE only touches rows still on the empty '{}' default.
-
-    Called from init_db() so a fresh deployment (which gets `permissions`
-    via _SCHEMA) and an upgrade (which needs the ALTER) end on the same
-    final shape."""
-    conn = _require_conn()
-    try:
-        conn.execute(
-            "ALTER TABLE users ADD COLUMN permissions TEXT NOT NULL DEFAULT '{}'"
-        )
-    except sqlite3.OperationalError:
-        pass  # column already exists — fresh DB, or second-boot upgrade
-    cur = conn.execute(
-        "UPDATE users SET permissions = ?"
-        " WHERE permissions = '{}' AND is_admin = 0",
-        (json.dumps(DEFAULT_NONADMIN_PERMS),),
-    )
-    if cur.rowcount:
-        logger.info(
-            "[auth] backfilled default permissions for %d non-admin user(s)",
-            cur.rowcount,
-        )
 
 
 def _require_conn() -> sqlite3.Connection:

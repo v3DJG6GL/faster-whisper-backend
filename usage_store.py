@@ -58,11 +58,10 @@ _EPOCH = datetime.date(1970, 1, 1)
 _lock = threading.RLock()
 _conn: sqlite3.Connection | None = None
 
-# Sentinels for rows we can't attribute to a real key/user. Kept as literal
-# id strings so the NOT NULL columns stay satisfied and aggregation treats
-# them as their own bucket. The UI renders them as plain labels.
+# Sentinel for rows we can't attribute to a real key/user. Kept as a literal
+# id string so the NOT NULL columns stay satisfied and aggregation treats it
+# as its own bucket. The UI renders it as a plain label.
 OPEN_MODE_ID = "(open-mode)"
-BACKFILL_ID = "(backfill)"
 
 # ORDER BY column names are interpolated, so they MUST come from this set.
 _METRICS: frozenset[str] = frozenset(("requests", "errors", "words", "audio_s"))
@@ -86,7 +85,7 @@ CREATE INDEX IF NOT EXISTS idx_usage_hour      ON usage_hourly(hour);
 def init_db(path: str) -> None:
     """Open (or create) the DB at `path` in WAL mode. Idempotent — call
     once on service startup before any other function. Mirrors
-    transcriptions_store.init_db. Migrates a legacy daily rollup if present."""
+    transcriptions_store.init_db."""
     global _conn
     dst_dir = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(dst_dir, exist_ok=True)
@@ -96,7 +95,6 @@ def init_db(path: str) -> None:
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.execute("PRAGMA temp_store=MEMORY;")
     _conn.executescript(_SCHEMA)
-    _migrate_daily_to_hourly()
 
 
 def _require_conn() -> sqlite3.Connection:
@@ -349,101 +347,3 @@ def prune(*, retention_days: int) -> int:
     with _lock:
         cur = conn.execute("DELETE FROM usage_hourly WHERE hour < ?", (cutoff,))
         return cur.rowcount or 0
-
-
-def _migrate_daily_to_hourly() -> None:
-    """One-time migration from the legacy daily rollup (`usage_daily`, keyed by
-    server-local days-since-epoch) to the hourly table. Each daily row collapses
-    to a single hourly row at that date's server-local midnight — per-user/key
-    LIFETIME TOTALS are preserved; intraday detail for pre-migration history is
-    lost (acceptable for approximate history). Then drops usage_daily.
-    Best-effort: any failure is logged, not raised."""
-    try:
-        conn = _require_conn()
-        has_daily = conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_daily'"
-        ).fetchone()
-        if not has_daily:
-            return
-        if is_empty():
-            rows = conn.execute(
-                "SELECT day, key_id, user_id, requests, errors, words, audio_s"
-                " FROM usage_daily"
-            ).fetchall()
-            with _lock:
-                for r in rows:
-                    date = _EPOCH + datetime.timedelta(days=int(r["day"]))
-                    midnight_ts = datetime.datetime(
-                        date.year, date.month, date.day).timestamp()
-                    hour = int(midnight_ts // 3600)
-                    conn.execute(
-                        "INSERT INTO usage_hourly"
-                        " (hour, key_id, user_id, requests, errors, words, audio_s)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?)"
-                        " ON CONFLICT(hour, key_id) DO UPDATE SET"
-                        "  requests = requests + excluded.requests,"
-                        "  errors   = errors + excluded.errors,"
-                        "  words    = words  + excluded.words,"
-                        "  audio_s  = audio_s + excluded.audio_s",
-                        (hour, r["key_id"], r["user_id"], int(r["requests"] or 0),
-                         int(r["errors"] or 0), int(r["words"] or 0),
-                         float(r["audio_s"] or 0.0)),
-                    )
-            logger.info("[usage] migrated %d daily rows -> hourly", len(rows))
-        # Drop the legacy table either way (migrated, or hourly already seeded).
-        with _lock:
-            conn.execute("DROP TABLE IF EXISTS usage_daily")
-    except Exception as e:
-        logger.warning("[usage] daily->hourly migration failed: %s", e)
-
-
-def backfill_from_transcriptions() -> int:
-    """One-time seed of usage_hourly from the existing recent_transcriptions
-    rows, so the feature isn't blank on first deploy. No-op when usage_hourly
-    already has rows (idempotent across restarts).
-
-    recent_transcriptions has no key_id column, so backfilled rows are
-    per-USER only and bucketed under key_id='(backfill)'; real per-key
-    history begins at deploy. Best-effort — any failure is logged, not
-    raised."""
-    try:
-        if not is_empty():
-            return 0
-        import transcriptions_store
-        src = transcriptions_store._require_conn()
-        # Aggregate in Python, bucketing each row by its UTC epoch-hour
-        # (hour_for_ts) — matching how live rows are bucketed. The source
-        # table is capped (≤ a few hundred rows) so this is trivial.
-        agg: dict[tuple[int, str], list] = {}
-        for r in src.execute(
-            "SELECT created_ts, user_id, status, words_count, audio_dur_s"
-            " FROM recent_transcriptions"
-        ):
-            hour = hour_for_ts(float(r["created_ts"]))
-            uid = r["user_id"] or OPEN_MODE_ID
-            cell = agg.setdefault((hour, uid), [0, 0, 0, 0.0])  # req, err, words, audio
-            cell[0] += 1
-            cell[1] += 0 if r["status"] == "ok" else 1
-            cell[2] += int(r["words_count"] or 0)
-            cell[3] += float(r["audio_dur_s"] or 0.0)
-        if not agg:
-            return 0
-        conn = _require_conn()
-        with _lock:
-            for (hour, uid), (req, err, words, audio) in agg.items():
-                conn.execute(
-                    "INSERT INTO usage_hourly"
-                    " (hour, key_id, user_id, requests, errors, words, audio_s)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?)"
-                    " ON CONFLICT(hour, key_id) DO UPDATE SET"
-                    "  requests = requests + excluded.requests,"
-                    "  errors   = errors + excluded.errors,"
-                    "  words    = words  + excluded.words,"
-                    "  audio_s  = audio_s + excluded.audio_s",
-                    (hour, BACKFILL_ID, uid, req, err, words, audio),
-                )
-        logger.info("[usage] backfilled %d hour/user rows from recent_transcriptions", len(agg))
-        return len(agg)
-    except Exception as e:
-        logger.warning("[usage] backfill failed: %s", e)
-        return 0

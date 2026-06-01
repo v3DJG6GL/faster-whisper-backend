@@ -1335,46 +1335,6 @@ _POST_LOAD_COERCERS: dict[str, Any] = {
 }
 
 
-# Fields removed from the schema. Stripped from raw config dicts before
-# validation so on-disk config.local.json files from older versions don't
-# break with `extra="forbid"`. Drop after one release cycle.
-_DEPRECATED_FIELDS: frozenset[str] = frozenset({
-    "TOKEN_RULES",
-    # Retired in the sample-silence redesign: the per-capture proposer min is
-    # now the ingestion floor; singleton manual trim is replaced by one-member
-    # samples. Old config.local.json keys are stripped (not 422'd).
-    "CAPTURES_PROPOSER_MIN_CLIP_S",
-    "CAPTURES_VAD_MARGIN_SINGLETON_MS",
-})
-_DEPRECATED_OVERRIDE_FIELDS: frozenset[str] = frozenset({
-    "TOKEN_RULES_INCLUDE", "TOKEN_RULES_EXCLUDE",
-})
-
-
-def _strip_deprecated(raw: Any) -> Any:
-    """Pre-validation cleanup: drop fields that have been removed from the
-    schema. Idempotent. Logs one line per dropped field."""
-    if not isinstance(raw, dict):
-        return raw
-    cleaned = dict(raw)
-    for f in _DEPRECATED_FIELDS:
-        if f in cleaned:
-            cleaned.pop(f, None)
-            print(f"[config_store] dropped deprecated field {f!r} from local.json",
-                  file=sys.stderr)
-    mo = cleaned.get("MODEL_OVERRIDES")
-    if isinstance(mo, dict):
-        for mid, ov in mo.items():
-            if not isinstance(ov, dict):
-                continue
-            for f in _DEPRECATED_OVERRIDE_FIELDS:
-                if f in ov:
-                    ov.pop(f, None)
-                    print(f"[config_store] dropped deprecated override "
-                          f"{mid!r}.{f!r}", file=sys.stderr)
-    return cleaned
-
-
 def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     """Load and validate the overrides file. NEVER raises — returns {} on any
     error (missing file, malformed JSON, validation failure). Logs to stderr
@@ -1391,7 +1351,6 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     if not isinstance(raw, dict):
         print(f"[config_store] {path} must contain a JSON object", file=sys.stderr)
         return {}
-    raw = _strip_deprecated(raw)
     try:
         validated = AdminConfig.model_validate(raw)
     except ValidationError as e:
@@ -1549,7 +1508,6 @@ def save_overrides(payload: dict[str, Any], path: str = OVERRIDES_PATH) -> dict[
         else:
             merged[k] = v
 
-    merged = _strip_deprecated(merged)
     validated = AdminConfig.model_validate(merged)
     to_write = validated.model_dump(exclude_none=True, mode="json")
 

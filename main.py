@@ -1425,14 +1425,11 @@ async def lifespan(app: FastAPI):
     except Exception as _te:
         logger.error("Failed to initialize recent-transcriptions store: %s", _te)
 
-    # Open the durable usage-rollup store and seed it (one-time) from the
-    # recent-transcriptions store. Backs the per-key/per-user usage numbers
-    # on /api-keys and the usage-over-time section on /stats. Init AFTER
-    # transcriptions_store — the backfill reads from it. Non-fatal.
+    # Open the durable usage-rollup store. Backs the per-key/per-user usage
+    # numbers on /api-keys and the usage-over-time section on /stats. Non-fatal.
     try:
         import usage_store
         usage_store.init_db(cfg.USAGE_DB)
-        usage_store.backfill_from_transcriptions()
         logger.info("Usage rollup store initialized at %s", cfg.USAGE_DB)
     except Exception as _ue:
         logger.error("Failed to initialize usage store: %s", _ue)

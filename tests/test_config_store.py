@@ -366,13 +366,6 @@ def test_load_overrides_unknown_key_ignored_whole_file(tmp_path):
     assert cs.load_overrides(str(p)) == {}
 
 
-def test_load_overrides_strips_deprecated(tmp_path):
-    p = tmp_path / "d.json"
-    p.write_text(json.dumps({"BEAM_SIZE": 5, "TOKEN_RULES": [1, 2]}), encoding="utf-8")
-    out = cs.load_overrides(str(p))
-    assert out == {"BEAM_SIZE": 5}
-
-
 def test_load_overrides_coerces_allowed_models_to_set(tmp_path):
     p = tmp_path / "a.json"
     p.write_text(json.dumps({"ALLOWED_MODELS": ["a", "b"]}), encoding="utf-8")

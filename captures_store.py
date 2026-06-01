@@ -60,23 +60,6 @@ _VALID_STATUS = frozenset({"new", "reviewed", "ready", "dismissed", "audio_missi
 # admin needs to act on it.
 _EVICTION_ORDER = ("dismissed", "audio_missing", "reviewed", "new", "ready")
 
-# Schema is split into THREE phases on purpose, ordered around the
-# user_id / sample_id migration:
-#
-#   1. _SCHEMA_CORE  — table + indexes that reference ONLY original
-#      columns. Safe to run against a pre-flag DB.
-#   2. _MIGRATIONS   — ALTER TABLE ADD COLUMN for every column added
-#      after the first ship (currently: user_id, sample_id, sample_order,
-#      text_for_training, audio_trimmed_relpath, audio_trim_lead_ms,
-#      audio_trim_trail_ms). Idempotent — each stmt runs in its own
-#      try/except so a fresh DB whose CREATE TABLE already includes
-#      the column swallows "duplicate column …" and keeps going.
-#   3. _SCHEMA_USER_GROUP_INDEXES — indexes that reference user_id /
-#      sample_id. MUST run AFTER step 2 — if we packaged them into
-#      _SCHEMA_CORE with executescript(), the index creation on a
-#      pre-flag DB raised "no such column: user_id" and the executescript
-#      bailed before step 2 could fix it, leaving the table missing
-#      both the columns AND the indexes.
 _SCHEMA_CORE = """
 CREATE TABLE IF NOT EXISTS captures (
   id              TEXT PRIMARY KEY,
@@ -107,45 +90,6 @@ CREATE TABLE IF NOT EXISTS captures (
 CREATE INDEX IF NOT EXISTS idx_captures_created    ON captures(created_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_captures_status     ON captures(status);
 CREATE INDEX IF NOT EXISTS idx_captures_request_id ON captures(request_id);
-"""
-
-# Migrations for installs that predate later columns. SQLite ALTER ADD
-# COLUMN raises OperationalError("duplicate column …") on a fresh DB
-# whose CREATE TABLE already includes them, so we swallow that specific
-# error and keep going.
-#
-# text_for_training: post-processing text built with the captures-specific
-#   pipeline-rule exclude set applied (default-skipped: `dictation-map` +
-#   `capitalize-after-terminator`). Used by /captures UI + the export
-#   manifest so reviewers see — and Whisper trains on — the word-form
-#   transcript that matches the model's raw output at inference time
-#   under SUPPRESS_CHARS.
-# audio_trimmed_relpath: optional separate WAV with leading/trailing
-#   silence cut via Silero VAD (per-singleton manual trim). NULL means
-#   "use audio_relpath".
-_MIGRATIONS = (
-    # group→sample terminology rename. RENAME first so existing DBs keep
-    # their membership data (the later ADD COLUMN sample_id then duplicate-
-    # fails harmlessly); fresh DBs swallow "no such column" and the ADD
-    # creates them. SQLite ≥3.25 auto-updates dependent index definitions.
-    "ALTER TABLE captures RENAME COLUMN group_id TO sample_id",
-    "ALTER TABLE captures RENAME COLUMN group_order TO sample_order",
-    "ALTER TABLE captures ADD COLUMN user_id TEXT",
-    "ALTER TABLE captures ADD COLUMN sample_id TEXT",
-    "ALTER TABLE captures ADD COLUMN sample_order INTEGER",
-    "ALTER TABLE captures ADD COLUMN text_for_training TEXT",
-    "ALTER TABLE captures ADD COLUMN audio_trimmed_relpath TEXT",
-    # VAD silence-trim offset bookkeeping. NULL means "row was never
-    # trimmed"; populated values record how many ms were cut from each
-    # edge of the original WAV. Words/segments stay in original-audio
-    # time in the JSON columns — the route layer applies the offset
-    # before responding so the karaoke player aligns with the trimmed
-    # audio file served by GET /audio.
-    "ALTER TABLE captures ADD COLUMN audio_trim_lead_ms INTEGER",
-    "ALTER TABLE captures ADD COLUMN audio_trim_trail_ms INTEGER",
-)
-
-_SCHEMA_USER_GROUP_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_captures_user  ON captures(user_id, created_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_captures_group ON captures(sample_id, sample_order);
 """
@@ -168,13 +112,6 @@ def init(db_path: str, audio_dir: str) -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA_CORE)
-    for stmt in _MIGRATIONS:
-        try:
-            _conn.execute(stmt)
-        except sqlite3.OperationalError:
-            # Column already present — idempotent.
-            pass
-    _conn.executescript(_SCHEMA_USER_GROUP_INDEXES)
 
 
 def _require_conn() -> sqlite3.Connection:
