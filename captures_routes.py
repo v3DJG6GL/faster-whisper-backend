@@ -164,10 +164,10 @@ class ClearIn(BaseModel):
 async def captures_page() -> HTMLResponse:
     if not getattr(cfg, "ADMIN_UI_ENABLED", False):
         return HTMLResponse("Admin UI disabled.", status_code=404)
-    return HTMLResponse(
-        web_common.render_page(_CAPTURES_HTML, current="captures"),
-        media_type="text/html",
-    )
+    cap_s = float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9))
+    html = web_common.render_page(_CAPTURES_HTML, current="captures")
+    html = html.replace("{{SAMPLE_CAP_S}}", f"{cap_s:g}")
+    return HTMLResponse(html, media_type="text/html")
 
 
 # ---------------------------------------------------------------------
@@ -968,7 +968,11 @@ def _validate_merge_payload(
     n_members = len(member_ids)
     total_gap_ms = int(silence_ms) * max(0, n_members - 1)
     edge_ms = _global_edge_ms()
-    total_edge_ms = 2 * edge_ms if n_members >= 1 else 0
+    # The outer edge margin exists only on merge_wavs' trim path; its legacy
+    # (trim-disabled) layout adds no outer margin, so counting 2×edge here when
+    # trimming is off over-rejects in-cap merges by ~2×edge_ms.
+    trim_groups = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False))
+    total_edge_ms = 2 * edge_ms if (trim_groups and n_members >= 1) else 0
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
     total_ms = total_trimmed_ms + total_gap_ms + total_edge_ms
     if enforce_cap and total_ms > cap_ms:
@@ -1297,7 +1301,9 @@ async def merge_estimate_api(
     gap_ms = int(_global_silence_ms()) * max(0, n - 1)
     import config as cfg
     edge_ms = _global_edge_ms()
-    total_edge_ms = 2 * edge_ms if n >= 1 else 0
+    # Mirror merge_wavs: the outer edge margin only exists on the trim path.
+    trim_groups = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False))
+    total_edge_ms = 2 * edge_ms if (trim_groups and n >= 1) else 0
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
     trimmed_total = trimmed_ms + gap_ms + total_edge_ms
     return JSONResponse({
@@ -3418,7 +3424,7 @@ _CAPTURES_HTML = r"""<!doctype html>
 <main>
   <div id="action-bar">
     <span class="summary"><strong id="ab-count">0</strong> selected</span>
-    <span class="meter" id="ab-meter">Σ 0.00 s / 28.00 s</span>
+    <span class="meter" id="ab-meter">Σ 0.00 s / {{SAMPLE_CAP_S}} s</span>
     <span class="summary" id="ab-warn"></span>
     <span class="spacer"></span>
     <button id="ab-merge" class="primary" disabled>Merge into sample</button>
@@ -3523,6 +3529,11 @@ _CAPTURES_HTML = r"""<!doctype html>
 <script>
 (function() {
   'use strict';
+
+  // Merged-sample duration cap (s), injected server-side from
+  // CAPTURES_SAMPLE_MAX_DURATION_S so the selection/proposal meters show the
+  // real cap instead of a stale literal.
+  var SAMPLE_CAP_S = {{SAMPLE_CAP_S}};
 
   // -------------------------------------------------------------------
   // Sign-in (HttpOnly session cookie; mirrors /reports)
@@ -3773,10 +3784,11 @@ _CAPTURES_HTML = r"""<!doctype html>
     var gap_ms = 300;
     var totalWithGaps = totalSec + (gap_ms / 1000) * Math.max(0, n - 1);
     // Instant raw estimate (prefixed ~), refined to the trimmed total by a
-    // debounced merge-estimate fetch below. The 28 s cap is on TRIMMED audio
-    // now, so the raw sum must not hard-gate Merge — a selection that trims to
-    // ≤28 s is valid even if its raw sum is larger.
-    meter.textContent = 'Σ ~' + totalWithGaps.toFixed(2) + ' s / 28.00 s';
+    // debounced merge-estimate fetch below. The cap is on TRIMMED audio now,
+    // so the raw sum must not hard-gate Merge — a selection that trims to
+    // within the cap is valid even if its raw sum is larger.
+    meter.textContent = 'Σ ~' + totalWithGaps.toFixed(2)
+      + ' s / ' + SAMPLE_CAP_S.toFixed(2) + ' s';
     meter.classList.remove('amber', 'red');
 
     // Warn on cross-speaker mixes — server enforces, UI nudges.
@@ -3818,7 +3830,8 @@ _CAPTURES_HTML = r"""<!doctype html>
         .then(function(j) {
           if (token !== _meterEstimateToken) return;  // superseded
           var t = j.trimmed_total_s || 0;
-          meter.textContent = 'Σ ' + t.toFixed(2) + ' s / 28.00 s';
+          meter.textContent = 'Σ ' + t.toFixed(2)
+            + ' s / ' + (j.hard_cap_s || SAMPLE_CAP_S).toFixed(2) + ' s';
           meter.classList.remove('amber', 'red');
           if (!j.fits) meter.classList.add('red');
           else if (t > 24) meter.classList.add('amber');
@@ -5923,12 +5936,12 @@ _CAPTURES_HTML = r"""<!doctype html>
     row1.appendChild(score);
 
     var meterWrap = document.createElement('span');
-    meterWrap.title = 'Total packed duration vs 28 s cap';
+    meterWrap.title = 'Total packed duration vs ' + SAMPLE_CAP_S + ' s cap';
     var meterBar = document.createElement('span');
     meterBar.className = 'meter-bar';
     var fill = document.createElement('span');
     fill.className = 'fill';
-    var pct = Math.min(100, Math.round((p.total_duration_s / 28.0) * 100));
+    var pct = Math.min(100, Math.round((p.total_duration_s / SAMPLE_CAP_S) * 100));
     fill.style.width = pct + '%';
     meterBar.appendChild(fill);
     meterWrap.appendChild(meterBar);
