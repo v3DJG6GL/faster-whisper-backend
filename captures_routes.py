@@ -328,8 +328,8 @@ async def list_samples_api(
     status_filter: str | None = Query(None, alias="status"),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    """List packed training-sample groups. `scope=own` users see only
-    their own groups; `scope=all` users (incl. admins) see every group
+    """List packed training samples. `scope=own` users see only
+    their own samples; `scope=all` users (incl. admins) see every sample
     and may narrow via the admin-only `?user_id=...` query. Optional
     `?status=` filter accepts the same enum as PatchSampleIn
     (new/reviewed/ready/dismissed); unknown values fall through to no
@@ -1119,12 +1119,12 @@ async def create_sample_api(
     payload: CreateSampleIn,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
-    """Pack 2+ same-user captures into a ≤28 s training sample.
+    """Pack one or more same-user captures into a training sample within the configured duration cap.
 
     Server-enforced invariants:
-      - all members exist, are not yet in a group, are all owned by the
+      - all members exist, are not yet in a sample, are all owned by the
         same user (and either the caller is that user OR is admin)
-      - total audio + gap silence ≤ 28 s
+      - total audio + gap silence within the configured duration cap
       - members' audio files match (1 ch, 16 bit, 16 kHz)
     """
     import capture_samples_store

@@ -128,7 +128,7 @@ def merge_wavs(
 
     Raises:
       WavFormatError: any source doesn't match (1ch, 16-bit, 16 kHz).
-      ValueError:     <2 sources, total duration > 28 s, or empty source.
+      ValueError:     no sources, total duration over the configured cap, or empty source.
       OSError:        disk write failure (atomic .tmp + os.replace).
     """
     if len(src_paths) < 1:
