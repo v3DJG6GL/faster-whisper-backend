@@ -956,7 +956,7 @@ function render(snap) {
   for (const p of paths) {
     const n = snap.requests[p] || 0;
     const errs = snap.errors_total[p] || 0;
-    rows.push(`<tr><td data-label="path">${p}</td><td class="num" data-label="requests">${n}</td>` +
+    rows.push(`<tr><td data-label="path">${esc(p)}</td><td class="num" data-label="requests">${n}</td>` +
       `<td class="num" data-label="5xx" style="${errs ? 'color:var(--red)' : ''}">${errs}</td></tr>`);
   }
   $('endpoints-rows').innerHTML = rows.length
