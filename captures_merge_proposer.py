@@ -288,17 +288,20 @@ def _eligible(row: dict[str, Any], min_clip_s: float, hard_cap_s: float) -> bool
         return False
     if row.get("sample_id"):
         return False
-    # Min on RAW duration (the ingestion floor every stored capture clears);
-    # cap on the TRIMMED body, so a raw-long / trims-short clip (e.g. 40 s raw,
-    # 27 s of speech) is now eligible instead of wrongly rejected.
+    # Min on RAW duration (the ingestion floor every stored capture clears).
     raw = float(row.get("duration_seconds") or 0.0)
     if raw < min_clip_s:
         return False
-    if trimmed_duration_s(row) > hard_cap_s:
-        return False
+    # Cheap string guards first so blank-language / text-less rows are rejected
+    # WITHOUT paying the trimmed_duration_s() VAD pass below.
     if not (row.get("language") or "").strip():
         return False
     if not (row.get("text_for_training") or row.get("final") or row.get("raw")):
+        return False
+    # Cap on the TRIMMED body (one VAD pass, cached), so a raw-long / trims-short
+    # clip (e.g. 40 s raw, 27 s of speech) is eligible instead of wrongly
+    # rejected. Checked LAST — it is the only expensive condition here.
+    if trimmed_duration_s(row) > hard_cap_s:
         return False
     return True
 
