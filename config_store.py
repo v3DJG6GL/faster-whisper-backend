@@ -1067,15 +1067,29 @@ class AdminConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_sample_sizing(self) -> "AdminConfig":
         # Enforce MIN ≤ TARGET ≤ MAX ≤ 30 on the EFFECTIVE values (a None
-        # override means "unchanged", so fall back to the live config default
-        # for the comparison — catches e.g. lowering MAX below the target).
+        # override means "revert to default", so fall back to the in-repo
+        # default for the comparison — catches e.g. lowering MAX below the
+        # target). Use config._BASELINE (the pre-override snapshot), NOT the
+        # live config attribute: the live value already carries any applied
+        # override, so at save time (server running) it reflects the OLD
+        # override while at load time (config import) it is the bare default.
+        # That asymmetry let a save pass validation, then the next restart's
+        # load fail it and silently drop EVERY override on disk. _BASELINE is
+        # identical at both times, so the two validations always agree.
         import config as _cfg
+        _base = getattr(_cfg, "_BASELINE", {})
+
+        def _default(name: str) -> float:
+            # Prefer the immutable baseline; fall back to the live attribute
+            # only if the snapshot is somehow unavailable (partial import).
+            return float(_base[name] if name in _base else getattr(_cfg, name))
+
         mn = self.CAPTURES_SAMPLE_MIN_DURATION_S
         tg = self.CAPTURES_PROPOSER_TARGET_S
         mx = self.CAPTURES_SAMPLE_MAX_DURATION_S
-        mn = mn if mn is not None else float(_cfg.CAPTURES_SAMPLE_MIN_DURATION_S)
-        tg = tg if tg is not None else float(_cfg.CAPTURES_PROPOSER_TARGET_S)
-        mx = mx if mx is not None else float(_cfg.CAPTURES_SAMPLE_MAX_DURATION_S)
+        mn = mn if mn is not None else _default("CAPTURES_SAMPLE_MIN_DURATION_S")
+        tg = tg if tg is not None else _default("CAPTURES_PROPOSER_TARGET_S")
+        mx = mx if mx is not None else _default("CAPTURES_SAMPLE_MAX_DURATION_S")
         if not (mn <= tg <= mx):
             raise ValueError(
                 "require CAPTURES_SAMPLE_MIN_DURATION_S ≤ "

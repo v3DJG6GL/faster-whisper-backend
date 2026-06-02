@@ -401,6 +401,26 @@ def test_save_overrides_changed_excludes_unchanged(tmp_path):
     assert changed == {}
 
 
+def test_sample_sizing_absent_field_uses_baseline_not_live_override(monkeypatch):
+    # Regression: _validate_sample_sizing must fall back to config._BASELINE
+    # (the immutable in-repo default) for an absent field, NOT the live config
+    # attribute. The live attribute already carries any applied override, so at
+    # save time (server running) it would be the OLD override while at load
+    # time (config import) it is the bare default — that asymmetry let a save
+    # pass validation, then the next restart's load fail it and silently drop
+    # EVERY override on disk.
+    import config as _cfg
+
+    # Simulate a server running with a previously-applied TARGET override of 5.
+    monkeypatch.setattr(_cfg, "CAPTURES_PROPOSER_TARGET_S", 5.0, raising=False)
+    # _BASELINE keeps the real in-repo default (26.0), which exceeds MAX=6.
+    assert _cfg._BASELINE["CAPTURES_PROPOSER_TARGET_S"] > 6.0
+
+    # Removing TARGET reverts it to the 26.0 baseline → 1 ≤ 26 ≤ 6 is false.
+    # Must reject regardless of the stale live value of 5.0.
+    _bad(CAPTURES_SAMPLE_MIN_DURATION_S=1.0, CAPTURES_SAMPLE_MAX_DURATION_S=6.0)
+
+
 def test_save_overrides_corrupt_existing_rewrites(tmp_path):
     p = str(tmp_path / "config.local.json")
     open(p, "w", encoding="utf-8").write("{ corrupt")
