@@ -88,6 +88,8 @@ def _run() -> None:
         for s in samples:
             sid = s["id"]
             try:
+                # Fast-path skip on the job-start snapshot; the authoritative
+                # is_locked re-check happens under the rebuild lock below.
                 if s.get("is_locked"):
                     with _state_lock:
                         _state["skipped"] += 1
@@ -98,13 +100,20 @@ def _run() -> None:
                         _state["skipped"] += 1
                     continue
                 silence_ms = _global_silence_ms()
-                try:
-                    # Hold the per-sid lock across BOTH the rebuild and the DB
-                    # update (as regenerate_sample_api does), so a concurrent
-                    # regenerate can't rewrite the merged WAV between our build
-                    # and our patch — which would persist member_trims/duration
-                    # that no longer match the WAV on disk.
-                    with _get_rebuild_lock(sid):
+                # Hold the per-sid lock across the lock re-check, the rebuild,
+                # and the DB write (success OR stale), as regenerate_sample_api
+                # does. This keeps a concurrent regenerate from rewriting the
+                # merged WAV between our build and our patch, ensures a sample
+                # locked AFTER the job-start snapshot is never rebuilt (it may
+                # already be exported/frozen), and stops the stale flag from
+                # clobbering a regenerate that just cleared it.
+                with _get_rebuild_lock(sid):
+                    fresh = capture_samples_store.get_sample(sid)
+                    if fresh is None or fresh.get("is_locked"):
+                        with _state_lock:
+                            _state["skipped"] += 1
+                        continue
+                    try:
                         duration_ms, hashes, member_trims = _build_merged_wav(
                             sid=sid,
                             member_ids=[m["id"] for m in members],
@@ -113,17 +122,17 @@ def _run() -> None:
                         patch = _merged_wav_patch(duration_ms, hashes, member_trims)
                         patch["inter_segment_silence_ms"] = silence_ms
                         capture_samples_store.update_sample(sid, patch)
-                except Exception as e:
-                    # Over-cap under the new settings (merge_wavs raises) or a
-                    # build failure → flag stale (excluded from export), never
-                    # truncate. The old merged WAV stays in place.
-                    logger.info(
-                        "[reprocess-vad] sample %s → stale (%s)", sid[:8], e,
-                    )
-                    capture_samples_store.update_sample(sid, {"is_stale": 1})
-                    with _state_lock:
-                        _state["stale"] += 1
-                    continue
+                    except Exception as e:
+                        # Over-cap under the new settings (merge_wavs raises) or
+                        # a build failure → flag stale (excluded from export),
+                        # never truncate. The old merged WAV stays in place.
+                        logger.info(
+                            "[reprocess-vad] sample %s → stale (%s)", sid[:8], e,
+                        )
+                        capture_samples_store.update_sample(sid, {"is_stale": 1})
+                        with _state_lock:
+                            _state["stale"] += 1
+                        continue
                 with _state_lock:
                     _state["rebuilt"] += 1
             finally:
