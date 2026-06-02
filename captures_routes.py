@@ -1074,8 +1074,9 @@ def _preview_member_trims(
     """Compute the same per-member trim map merge_wavs would produce, without
     writing a merged WAV. Used by /preview-words so the karaoke overlay lines
     up with the audio /preview-audio streams for the same payload. Returns {}
-    when group trimming is disabled (then _build_merged_words uses the legacy
-    full-duration timeline)."""
+    when group trimming is disabled, or when any member cannot be read/trimmed
+    (then _build_merged_words uses the legacy full-duration timeline for every
+    member — a partial map would mix absolute and legacy offsets per member)."""
     import config as cfg
     if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False):
         return {}
@@ -1097,7 +1098,10 @@ def _preview_member_trims(
                 pcm, n, edge_pad_ms=edge, max_internal_gap_ms=max_gap,
             )
         except Exception:
-            continue
+            # merge_wavs raises on the same failure, so /preview-audio fails too;
+            # abandon the trim map entirely rather than emit a partial one that
+            # would desync this member's karaoke from the rest.
+            return {}
         if not first:
             cursor_ms += join_ms
         first = False
