@@ -5756,7 +5756,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       // Different card → tear down prior, fetch fresh.
       _stopAnyPreview();
       var ids = memberIdsFn() || [];
-      if (ids.length < 2) { toast('Need at least 2 members to preview', true); return; }
+      if (ids.length < 1) { toast('No members to preview', true); return; }
       toggleBtn.disabled = true;
       toggleBtn._setIcon('loading');
       try {
