@@ -3807,7 +3807,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       warn.textContent = '';
     }
 
-    var baseOk = n >= 2 && !mixedUsers && !hasInSample;
+    var baseOk = n >= 1 && !mixedUsers && !hasInSample;
     var mergeBtn = document.getElementById('ab-merge');
     mergeBtn.disabled = !baseOk;
     if (baseOk) {
@@ -5062,7 +5062,7 @@ _CAPTURES_HTML = r"""<!doctype html>
 
   function _openMergeModal() {
     var rows = _selectedRows();
-    if (rows.length < 2) return;
+    if (rows.length < 1) return;
     var modal = document.getElementById('merge-modal');
     _renderMergePreview(rows);
     // Join style + inter-member silence are global settings now; the local
