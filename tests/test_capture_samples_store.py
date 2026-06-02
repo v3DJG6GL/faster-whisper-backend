@@ -2,9 +2,8 @@
 defense, _row_to_dict decoding, get_sample, list_samples (status filter only
 when valid), get_members (corrections decode + bad-JSON fallback),
 update_sample (whitelist + status validation + admin_notes cap), dissolve_sample
-(NULLs member FKs + unlinks WAV), clear_all_samples, reconcile_on_startup
-(missing WAV count, orphan file unlink, orphan-FK sweep), and the language
-backfill in init()."""
+(NULLs member FKs + unlinks WAV), clear_all_samples, and reconcile_on_startup
+(missing WAV count, orphan file unlink, orphan-FK sweep)."""
 
 import json
 import os
