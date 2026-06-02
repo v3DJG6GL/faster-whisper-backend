@@ -1,8 +1,11 @@
 """In-process PCM-WAV concatenation utility for Whisper training-data
 packing.
 
-We pack 2+ short same-speaker captures into a single ≤28 s WAV (Whisper's
-encoder hard-caps at 30 s; 28 s leaves a safety margin). Per the
+We pack one or more short same-speaker captures into a single WAV under
+the configurable duration cap (cfg.CAPTURES_SAMPLE_MAX_DURATION_S,
+default 29.9 s; Whisper's encoder hard-caps at 30 s, so the cap leaves a
+safety margin). A single capture yields a trimmed one-member sample; 2+
+get the silence-separated layout below. Per the
 Low-Resource Whisper paper (arXiv 2412.15726) we insert a short silence
 between segments to preserve the encoder's noise-floor model at the
 joins; butt-splicing degrades transition quality.

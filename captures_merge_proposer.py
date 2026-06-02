@@ -2,9 +2,10 @@
 Auto-merge proposer for /captures fine-tuning data curation.
 
 Given the user's ungrouped captures, ranks plausible merges into ~26 s
-"groups" that respect the 28 s hard cap already enforced by
+samples that respect the configurable duration cap
+(cfg.CAPTURES_SAMPLE_MAX_DURATION_S, default 29.9 s) already enforced by
 captures_routes.create_sample_api (mirrors its raw-`duration_seconds`
-arithmetic; see captures_routes.py:896-901).
+arithmetic).
 
 Heuristic rationale (see captures-finetune-findings.md + research notes):
   - Whisper's encoder window is 30 s; ~25-30 s merged samples preserve
