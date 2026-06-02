@@ -4946,7 +4946,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       _pollJob('/captures/api/reprocess-all/status', function(s) {
         return 'Pipeline rules: ' + (s.processed || 0) + '/' + (s.total || 0)
           + ' · ' + (s.captures_updated || 0) + ' updated'
-          + (s.status !== 'running' ? ' — done' : '…');
+          + (s.status === 'running' ? '…' : (s.status === 'error' ? ' — failed' : ' — done'));
       });
     } catch (e) {
       if (e.message !== 'unauthorized') toast('Reprocess-all failed: ' + e.message, true);
@@ -4971,7 +4971,7 @@ _CAPTURES_HTML = r"""<!doctype html>
           + ' · ' + (s.rebuilt || 0) + ' rebuilt'
           + (s.stale ? ', ' + s.stale + ' stale' : '')
           + (s.skipped ? ', ' + s.skipped + ' skipped' : '')
-          + (s.status !== 'running' ? ' — done' : '…');
+          + (s.status === 'running' ? '…' : (s.status === 'error' ? ' — failed' : ' — done'));
       });
     } catch (e) {
       if (e.message !== 'unauthorized') toast('Reprocess-VAD failed: ' + e.message, true);
