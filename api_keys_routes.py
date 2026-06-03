@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 import api_keys_store
 import web_common
-from admin_routes import require_admin_host
+from web_common import require_admin_webui_host
 from auth import require_admin
 
 logger = logging.getLogger("whisper-api")
@@ -76,7 +76,7 @@ class PatchPermissionsIn(BaseModel):
 
 @router.get(
     "",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_admin_webui_host)],
     response_class=HTMLResponse,
 )
 async def api_keys_page() -> HTMLResponse:
@@ -92,7 +92,7 @@ async def api_keys_page() -> HTMLResponse:
 
 @router.get(
     "/api/users",
-    dependencies=[Depends(require_admin_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
 )
 async def list_users_api() -> JSONResponse:
     import config as cfg
@@ -145,7 +145,7 @@ async def list_users_api() -> JSONResponse:
 
 @router.post(
     "/api/users",
-    dependencies=[Depends(require_admin_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
 )
 async def create_user_api(payload: CreateUserIn) -> JSONResponse:
     try:
@@ -157,7 +157,7 @@ async def create_user_api(payload: CreateUserIn) -> JSONResponse:
 
 @router.delete(
     "/api/users/{uid}",
-    dependencies=[Depends(require_admin_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
 )
 async def revoke_user_api(uid: str) -> JSONResponse:
     user = api_keys_store.get_user(uid)
@@ -177,7 +177,7 @@ async def revoke_user_api(uid: str) -> JSONResponse:
 
 @router.get(
     "/api/users/{uid}/keys",
-    dependencies=[Depends(require_admin_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
 )
 async def list_user_keys_api(uid: str) -> JSONResponse:
     if api_keys_store.get_user(uid) is None:
@@ -187,7 +187,7 @@ async def list_user_keys_api(uid: str) -> JSONResponse:
 
 @router.get(
     "/api/usage",
-    dependencies=[Depends(require_admin_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
 )
 async def usage_api(days: int = 0) -> JSONResponse:
     """Per-user and per-key usage rollup for the cards. `days=0` (default)
@@ -212,7 +212,7 @@ async def usage_api(days: int = 0) -> JSONResponse:
 
 @router.post(
     "/api/users/{uid}/keys",
-    dependencies=[Depends(require_admin_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
 )
 async def create_user_key_api(uid: str, payload: CreateKeyIn) -> JSONResponse:
     """Show-once raw key on creation. Subsequent reads via list_user_keys
@@ -226,7 +226,7 @@ async def create_user_key_api(uid: str, payload: CreateKeyIn) -> JSONResponse:
 
 @router.delete(
     "/api/users/{uid}/keys/{kid}",
-    dependencies=[Depends(require_admin_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
 )
 async def revoke_key_api(uid: str, kid: str) -> JSONResponse:
     key = api_keys_store.get_key(kid)
@@ -246,7 +246,7 @@ async def revoke_key_api(uid: str, kid: str) -> JSONResponse:
 
 @router.patch(
     "/api/users/{uid}/permissions",
-    dependencies=[Depends(require_admin_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
 )
 async def patch_user_permissions_api(
     uid: str, payload: PatchPermissionsIn,

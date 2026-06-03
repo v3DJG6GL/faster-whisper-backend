@@ -1,15 +1,17 @@
 """
 /stats system overview dashboard.
 
-Routes (all gated by web_common.require_allowed_host(cfg.STATS_ALLOWED_HOSTS)):
+Routes (all gated by web_common.require_user_webui_host):
 
   GET /stats           HTML page (single-file inline-HTML+CSS+JS, mirrors /logs)
   GET /stats/snapshot  one-shot JSON: ts + metrics_snapshot() + system_snapshot() + severity_counts()
   GET /stats/stream    SSE: same JSON, ~1 Hz (1 s data cadence defeats idle-proxy timeouts; no separate keepalive frame)
 
-Access control: loopback always allowed; cfg.STATS_ALLOWED_HOSTS adds
-extra IPs/CIDRs. The dependency reads cfg at request time so the admin
-WebUI can broaden access without a restart.
+Access control (user tier): the shell is gated only by the host allowlist
+cfg.USER_WEBUI_ALLOWED_HOSTS (loopback always allowed); the data endpoints
+stack require_page("stats") so the API key is the inner gate. The dependency
+reads cfg at request time so the admin WebUI can broaden access without a
+restart.
 
 Live updates: SSE rather than polling so we get free auto-reconnect on
 service-restart, matching the /logs page UX.
@@ -33,7 +35,7 @@ from auth import Permissions, require_page, user_from_session_cookie
 
 router = APIRouter()
 
-_require_stats_host = web_common.require_allowed_host(lambda: cfg.STATS_ALLOWED_HOSTS)
+_require_stats_host = web_common.require_user_webui_host
 
 
 def _require_stats_page_sse(request: Request) -> dict[str, Any]:

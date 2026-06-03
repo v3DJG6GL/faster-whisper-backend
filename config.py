@@ -419,13 +419,20 @@ MODEL_OVERRIDES: "dict[str, dict[str, object]]" = {}
 # and logs.
 ADMIN_UI_ENABLED = True
 
-# Allowlist of IPs / CIDRs allowed to reach admin endpoints — kept as a
-# defense-in-depth layer alongside the API key. Loopback (127.0.0.1, ::1)
-# is ALWAYS implicitly allowed.
-ADMIN_ALLOWED_HOSTS: "list[str]" = ["127.0.0.1", "::1"]
-
-# Same for /stats. Default loopback-only.
-STATS_ALLOWED_HOSTS: "list[str]" = ["127.0.0.1", "::1"]
+# Host allowlists are bucketed by PRIVILEGE TIER, not by page. Each is a
+# defense-in-depth outer layer alongside the API key (inner layer); loopback
+# (127.0.0.1, ::1) is ALWAYS implicitly allowed so the local operator can never
+# be locked out.
+#
+#   ADMIN_WEBUI_ALLOWED_HOSTS — /settings, /settings/api-keys, /docs. Admin key
+#                               required on the data layer. Default loopback-only.
+#   USER_WEBUI_ALLOWED_HOSTS  — /quick-config, /captures, /reports, /stats,
+#                               /logs, /sev. Per-page API key required on the
+#                               data layer. Default OPEN (any IPv4/IPv6) — the
+#                               key is the real gate; narrow this to restrict
+#                               which networks may even reach the pages.
+ADMIN_WEBUI_ALLOWED_HOSTS: "list[str]" = ["127.0.0.1", "::1"]
+USER_WEBUI_ALLOWED_HOSTS: "list[str]" = ["0.0.0.0/0", "::/0"]
 
 
 # =============================================================================
@@ -883,7 +890,7 @@ CAPTURES_SAMPLE_JOIN_STRATEGY = _env_str(
 # and a handful of string fields override the default empty-string behaviour
 # (the generic default for str is "empty → keep current").
 _ENV_SPECIAL_CASES = {
-    "ALLOWED_MODELS", "ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS",
+    "ALLOWED_MODELS", "ADMIN_WEBUI_ALLOWED_HOSTS", "USER_WEBUI_ALLOWED_HOSTS",
     "CAPTURES_PIPELINE_RULES_EXCLUDE", "CONVERT_QUANTIZATION",
 }
 _ENV_JSON_FIELDS = {"PIPELINE_RULES", "MODEL_OVERRIDES"}
@@ -972,9 +979,9 @@ if _env_cap_excl is not None:
         s.strip() for s in _env_cap_excl.split(",") if s.strip()}
 
 # Allowlists: empty string is treated as "no override" (keep in-file/local.json)
-# so the loopback-only default can't be wiped by an empty env var.
-ADMIN_ALLOWED_HOSTS = _env_csv_list("WHISPER_ADMIN_ALLOWED_HOSTS", ADMIN_ALLOWED_HOSTS) or ADMIN_ALLOWED_HOSTS
-STATS_ALLOWED_HOSTS = _env_csv_list("WHISPER_STATS_ALLOWED_HOSTS", STATS_ALLOWED_HOSTS) or STATS_ALLOWED_HOSTS
+# so the defaults can't be wiped by an empty env var.
+ADMIN_WEBUI_ALLOWED_HOSTS = _env_csv_list("WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS", ADMIN_WEBUI_ALLOWED_HOSTS) or ADMIN_WEBUI_ALLOWED_HOSTS
+USER_WEBUI_ALLOWED_HOSTS = _env_csv_list("WHISPER_USER_WEBUI_ALLOWED_HOSTS", USER_WEBUI_ALLOWED_HOSTS) or USER_WEBUI_ALLOWED_HOSTS
 
 # CONVERT_QUANTIZATION: explicit "" falls back to the library default float16.
 _env_convert_quant = os.environ.get("WHISPER_CONVERT_QUANTIZATION")

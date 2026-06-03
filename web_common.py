@@ -53,7 +53,7 @@ def require_allowed_host(allowlist_ref: Callable[[], list[str]]) -> Callable[[Re
 
     `allowlist_ref` is a zero-arg callable that returns the current allowlist —
     NOT the list itself. This indirection matters: the admin WebUI can edit
-    cfg.ADMIN_ALLOWED_HOSTS at runtime, and we want the next request to pick
+    cfg.ADMIN_WEBUI_ALLOWED_HOSTS at runtime, and we want the next request to pick
     up the new value without re-creating the dependency.
 
     Loopback (`127.0.0.1`, `::1`) is ALWAYS allowed in addition to the
@@ -88,6 +88,17 @@ def host_in_allowlist(request: Request, allowlist: list[str]) -> bool:
     if ip.is_loopback:
         return True
     return any(ip in net for net in _build_networks(allowlist))
+
+
+# Concrete tier gates, bucketed by privilege (loopback always allowed). The
+# lambdas re-read cfg per request so the admin WebUI can broaden/narrow access
+# without a restart. Both are the OUTER host layer; the INNER key layer
+# (require_page(...) / require_admin) is stacked on the data endpoints.
+#   require_admin_webui_host — /settings, /settings/api-keys, /docs.
+#   require_user_webui_host  — /quick-config, /captures, /reports, /stats,
+#                              /logs, /sev (default-open allowlist).
+require_admin_webui_host = require_allowed_host(lambda: cfg.ADMIN_WEBUI_ALLOWED_HOSTS)
+require_user_webui_host = require_allowed_host(lambda: cfg.USER_WEBUI_ALLOWED_HOSTS)
 
 
 # --- Severity ring (in-memory log-level counts, since process start) ---------

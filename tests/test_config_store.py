@@ -178,10 +178,10 @@ def test_suppress_tokens():
 # ---------------------------------------------------------------------------
 
 def test_allowed_hosts_ip_cidr():
-    _ok(ADMIN_ALLOWED_HOSTS=["127.0.0.1", "::1", "192.168.1.0/24"])
-    _ok(STATS_ALLOWED_HOSTS=["10.0.0.0/8"])
-    _bad(ADMIN_ALLOWED_HOSTS=["not-an-ip"])
-    _bad(STATS_ALLOWED_HOSTS=["example.com"])  # hostname is not an IP/CIDR
+    _ok(ADMIN_WEBUI_ALLOWED_HOSTS=["127.0.0.1", "::1", "192.168.1.0/24"])
+    _ok(USER_WEBUI_ALLOWED_HOSTS=["10.0.0.0/8", "0.0.0.0/0", "::/0"])
+    _bad(ADMIN_WEBUI_ALLOWED_HOSTS=["not-an-ip"])
+    _bad(USER_WEBUI_ALLOWED_HOSTS=["example.com"])  # hostname is not an IP/CIDR
 
 
 def test_server_host_loose_charset():

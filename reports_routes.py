@@ -3,7 +3,7 @@
 Two surfaces:
 
   /quick-config/reports/api/*       — end-user routes. Gated by
-    require_admin_host + get_current_user. The form + delete control
+    require_user_webui_host + get_current_user. The form + delete control
     live inline on each .trace-item in /quick-config:
     POST   /quick-config/reports/api/submit                — receiver
     DELETE /quick-config/reports/api/by-request/{request_id} — caller
@@ -44,7 +44,7 @@ import api_keys_store
 import config as cfg
 import reports_store
 import web_common
-from admin_routes import require_admin_host
+from web_common import require_user_webui_host
 from auth import get_current_user, require_admin, require_page
 
 router = APIRouter()
@@ -84,7 +84,7 @@ class ReportSubmitIn(BaseModel):
 # Fixed-window counter, reset on roll. ~15 LOC, no third-party dep. The
 # threat model is "accidental double-click / runaway script", not a
 # motivated attacker — for that the LAN box is already locked down by
-# require_admin_host.
+# require_user_webui_host.
 
 _RATE_WINDOW_S = 600.0
 _RATE_MAX = 20
@@ -113,7 +113,7 @@ def _check_rate_limit(key: str) -> None:
 @router.post(
     "/quick-config/reports/api/submit",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("quick_config")),
     ],
 )
@@ -179,7 +179,7 @@ async def submit_report(
     # API endpoints below gate by `require_page("reports")`; if the
     # user lacks access, the first list-fetch 403s and the JS renders
     # a "no access" landing.
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_user_webui_host)],
     response_class=HTMLResponse,
 )
 async def reports_page() -> HTMLResponse:
@@ -200,7 +200,7 @@ class PatchReportIn(BaseModel):
 @router.get(
     "/reports/api/list",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("reports")),
     ],
 )
@@ -232,7 +232,7 @@ async def list_reports_api(
 @router.patch(
     "/reports/api/{rid}",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("reports")),
     ],
 )
@@ -265,7 +265,7 @@ async def patch_report_api(
 @router.delete(
     "/quick-config/reports/api/by-request/{request_id}",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("quick_config")),
     ],
 )
@@ -296,7 +296,7 @@ async def delete_my_report_api(
 @router.delete(
     "/reports/api/{rid}",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("reports")),
     ],
 )
@@ -320,7 +320,7 @@ async def delete_report_api(
 @router.post(
     "/reports/api/clear",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_admin),
     ],
 )
@@ -333,7 +333,7 @@ async def clear_reports_api(request: Request) -> JSONResponse:
 @router.get(
     "/reports/api/export",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_admin),
     ],
 )

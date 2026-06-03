@@ -146,71 +146,107 @@ def test_sse_missing_key_rejected_when_locked(client, make_user_key):
         raise AssertionError("expected 401 HTTPException")
 
 
-# --- host-OR-key gates: /docs, /redoc, /openapi.json (any key) and /sev,
-#     /logs (admin key). Loopback always passes; remote needs the right key. ---
+# --- Tiered host gates -------------------------------------------------------
+# Admin tier (ADMIN_WEBUI_ALLOWED_HOSTS, loopback default): /docs, /redoc are
+# host-only shells; /openapi.json adds an admin key; /settings* same shape.
+# User tier (USER_WEBUI_ALLOWED_HOSTS, OPEN default): /stats, /logs, … shells
+# are host-only on the open list; their data endpoints add a per-page key; /sev
+# adds "any authenticated user". Loopback always passes either list.
 
-_REMOTE = ("203.0.113.9", 1234)  # TEST-NET-3, never in the default allowlist
-_DOCS = ("/docs", "/redoc", "/openapi.json")
-_ADMIN_PUB = ("/sev", "/logs")
-
-
-def test_docs_open_mode_remote_ok(app_module):
-    # No admin key => open mode => docs reachable even from a remote host.
-    with TestClient(app_module.app, client=_REMOTE) as c:
-        for path in _DOCS:
-            assert c.get(path).status_code == 200, path
+_REMOTE = ("203.0.113.9", 1234)  # TEST-NET-3, not in the admin allowlist
+_DOCS_SHELLS = ("/docs", "/redoc")  # host-only admin shells
 
 
-def test_docs_locked_remote_no_key_401(client, make_user_key):
-    make_user_key("root", is_admin=True)  # flip to locked-down
-    with TestClient(client.app, client=_REMOTE) as c:
-        for path in _DOCS:
-            assert c.get(path).status_code == 401, path
-
-
-def test_docs_locked_remote_any_user_key_ok(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", is_admin=False)  # NON-admin is enough
-    with TestClient(client.app, client=_REMOTE) as c:
-        for path in _DOCS:
-            assert c.get(path, headers=bearer(raw)).status_code == 200, path
-
-
-def test_docs_locked_loopback_ok(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    for path in _DOCS:  # default client is loopback -> host gate admits
+def test_docs_shells_loopback_ok(client, make_user_key):
+    # Admin-host shells: loopback always admitted (host-only, no key needed).
+    make_user_key("root", is_admin=True)  # locked down
+    for path in _DOCS_SHELLS:
         assert client.get(path).status_code == 200, path
 
 
-def test_sev_logs_locked_remote_no_key_401(client, make_user_key):
-    make_user_key("root", is_admin=True)
+def test_docs_shells_remote_403_even_with_admin_key(client, make_user_key):
+    # Host-only admin gate: a remote host outside ADMIN_WEBUI_ALLOWED_HOSTS is
+    # 403 regardless of key — the key cannot open the host gate.
+    _uid, raw = make_user_key("root", is_admin=True)
     with TestClient(client.app, client=_REMOTE) as c:
-        for path in _ADMIN_PUB:
-            assert c.get(path).status_code == 401, path
-
-
-def test_sev_logs_locked_remote_non_admin_403(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", is_admin=False)
-    with TestClient(client.app, client=_REMOTE) as c:
-        for path in _ADMIN_PUB:
+        for path in _DOCS_SHELLS:
+            assert c.get(path).status_code == 403, path
             assert c.get(path, headers=bearer(raw)).status_code == 403, path
 
 
-def test_sev_logs_locked_remote_admin_ok(client, make_user_key):
-    _uid, raw = make_user_key("root", is_admin=True)
+def test_docs_shells_remote_403_open_mode(app_module):
+    # Even in OPEN mode the pure host gate rejects a non-admin-host remote
+    # (no synthetic-admin bypass on a host-only check).
+    with TestClient(app_module.app, client=_REMOTE) as c:
+        for path in _DOCS_SHELLS:
+            assert c.get(path).status_code == 403, path
+
+
+def test_openapi_loopback_open_mode_ok(client):
+    # /openapi.json = admin host AND admin key; open mode → synthetic admin.
+    assert client.get("/openapi.json").status_code == 200
+
+
+def test_openapi_loopback_locked_needs_admin(client, make_user_key):
+    _ruid, araw = make_user_key("root", is_admin=True)  # lock down + admin key
+    assert client.get("/openapi.json").status_code == 401  # no credential
+    _uid, nraw = make_user_key("alice", is_admin=False)
+    assert client.get("/openapi.json", headers=bearer(nraw)).status_code == 403
+    assert client.get("/openapi.json", headers=bearer(araw)).status_code == 200
+
+
+def test_openapi_remote_403(client, make_user_key):
+    # Host-only admin gate fires before the key — remote is 403 even for admin.
+    _uid, araw = make_user_key("root", is_admin=True)
     with TestClient(client.app, client=_REMOTE) as c:
-        for path in _ADMIN_PUB:
-            assert c.get(path, headers=bearer(raw)).status_code == 200, path
+        assert c.get("/openapi.json").status_code == 403
+        assert c.get("/openapi.json", headers=bearer(araw)).status_code == 403
 
 
-def test_sev_allows_stats_only_host(client, make_user_key, monkeypatch):
-    # /sev's host check is the ADMIN ∪ STATS union: a host allowed for /stats
-    # but not for admin, with no key, still reaches /sev (pill keeps updating).
+def test_sev_open_mode_remote_ok(app_module):
+    # User host is open by default; open mode → synthetic admin satisfies auth.
+    with TestClient(app_module.app, client=_REMOTE) as c:
+        assert c.get("/sev").status_code == 200
+
+
+def test_sev_locked_remote_no_key_401(client, make_user_key):
+    make_user_key("root", is_admin=True)
+    with TestClient(client.app, client=_REMOTE) as c:
+        assert c.get("/sev").status_code == 401
+
+
+def test_sev_locked_remote_any_key_ok(client, make_user_key):
+    # /sev needs any authenticated user (no specific page perm) — a non-admin
+    # key is enough; the user host list is open so the host gate passes.
+    make_user_key("root", is_admin=True)
+    _uid, raw = make_user_key("alice", is_admin=False)
+    with TestClient(client.app, client=_REMOTE) as c:
+        assert c.get("/sev", headers=bearer(raw)).status_code == 200
+
+
+def test_logs_shell_remote_open_host_ok(client, make_user_key):
+    # The /logs SHELL is host-only on the OPEN user allowlist → reachable from
+    # any host even locked-down with no key (the login popup runs in-page).
+    make_user_key("root", is_admin=True)
+    with TestClient(client.app, client=_REMOTE) as c:
+        assert c.get("/logs").status_code == 200
+
+
+def test_logs_data_locked_no_key_401(client, make_user_key):
+    # The data endpoint stacks require_page("logs") → no key is 401.
+    make_user_key("root", is_admin=True)
+    with TestClient(client.app, client=_REMOTE) as c:
+        assert c.get("/logs/older").status_code == 401
+
+
+def test_user_host_narrowing_blocks_shell(client, make_user_key, monkeypatch):
+    # Narrowing USER_WEBUI_ALLOWED_HOSTS to loopback blocks a remote host from
+    # even the user-page shell (the host gate fires before the in-page login).
     import config as cfg
     make_user_key("root", is_admin=True)
-    monkeypatch.setattr(cfg, "STATS_ALLOWED_HOSTS", [_REMOTE[0]], raising=False)
+    monkeypatch.setattr(
+        cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
+    )
     with TestClient(client.app, client=_REMOTE) as c:
-        assert c.get("/sev").status_code == 200
-        # /logs uses the admin list only, so it stays gated from this host.
-        assert c.get("/logs").status_code == 401
+        assert c.get("/stats").status_code == 403
+        assert c.get("/logs").status_code == 403

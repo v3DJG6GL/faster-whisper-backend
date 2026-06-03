@@ -77,8 +77,8 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "LOG_FILE": "WHISPER_LOG_FILE",
     "LOG_VIEWER_INITIAL_LINES": "WHISPER_LOG_VIEWER_INITIAL_LINES",
     "LOG_VIEWER_DOM_MAX": "WHISPER_LOG_VIEWER_DOM_MAX",
-    "ADMIN_ALLOWED_HOSTS": "WHISPER_ADMIN_ALLOWED_HOSTS",
-    "STATS_ALLOWED_HOSTS": "WHISPER_STATS_ALLOWED_HOSTS",
+    "ADMIN_WEBUI_ALLOWED_HOSTS": "WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS",
+    "USER_WEBUI_ALLOWED_HOSTS": "WHISPER_USER_WEBUI_ALLOWED_HOSTS",
     # Browser session cookies (HttpOnly cookie auth for the WebUI). All hot.
     "SESSION_COOKIE_SECURE": "WHISPER_SESSION_COOKIE_SECURE",
     "SESSION_TTL_SECONDS": "WHISPER_SESSION_TTL_SECONDS",
@@ -465,12 +465,15 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "uvicorn log verbosity: critical | error | warning | info | debug.",
 
     # --- Access (allowlists) ---
-    "ADMIN_ALLOWED_HOSTS":
-        "IP/CIDR allowlist for /settings admin endpoints. Loopback "
-        "(127.0.0.1, ::1) is always implicitly allowed.",
-    "STATS_ALLOWED_HOSTS":
-        "IP/CIDR allowlist for /stats endpoints. Loopback always allowed; "
-        "default is loopback only.",
+    "ADMIN_WEBUI_ALLOWED_HOSTS":
+        "IP/CIDR allowlist for the admin pages (/settings, /settings/api-keys, "
+        "/docs) — an admin API key is also required. Loopback (127.0.0.1, ::1) "
+        "is always implicitly allowed; default is loopback only.",
+    "USER_WEBUI_ALLOWED_HOSTS":
+        "IP/CIDR allowlist for the user pages (/quick-config, /captures, "
+        "/reports, /stats, /logs, /sev) — the per-page API key is still "
+        "required. Loopback always allowed; default is OPEN (0.0.0.0/0, ::/0), "
+        "so narrow it to restrict which networks may reach the pages.",
     # --- Browser sessions ---
     "SESSION_COOKIE_SECURE":
         "Mark the WebUI session/CSRF cookies 'Secure' (sent only over HTTPS). "
@@ -995,17 +998,17 @@ class AdminConfig(BaseModel):
     SERVER_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F("SERVER_WORKERS")
     SERVER_LOG_LEVEL: LogLevel | None = _F("SERVER_LOG_LEVEL")
 
-    # --- Admin / stats access control ---
+    # --- WebUI access control (host allowlists, bucketed by privilege tier) ---
     # Each entry must be parseable by ipaddress.ip_network(strict=False) — bare
     # IPs (v4 or v6) and CIDRs are both accepted. See _validate_hosts below.
-    ADMIN_ALLOWED_HOSTS: Annotated[
+    ADMIN_WEBUI_ALLOWED_HOSTS: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
-    ] | None = _F("ADMIN_ALLOWED_HOSTS")
-    STATS_ALLOWED_HOSTS: Annotated[
+    ] | None = _F("ADMIN_WEBUI_ALLOWED_HOSTS")
+    USER_WEBUI_ALLOWED_HOSTS: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
-    ] | None = _F("STATS_ALLOWED_HOSTS")
+    ] | None = _F("USER_WEBUI_ALLOWED_HOSTS")
     # --- Browser sessions ---
     SESSION_COOKIE_SECURE: bool | None = _F("SESSION_COOKIE_SECURE")
     SESSION_TTL_SECONDS: Annotated[
@@ -1325,7 +1328,7 @@ class AdminConfig(BaseModel):
                 )
         return v
 
-    @field_validator("ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS")
+    @field_validator("ADMIN_WEBUI_ALLOWED_HOSTS", "USER_WEBUI_ALLOWED_HOSTS")
     @classmethod
     def _validate_hosts(cls, v: list[str] | None) -> list[str] | None:
         if v is None:

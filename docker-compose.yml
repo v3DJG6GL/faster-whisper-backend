@@ -51,8 +51,8 @@ services:
       # Then allowlist your real client IP(s) below. ALSO set a bootstrap admin
       # key — without it the server runs in OPEN mode (everyone is admin).
       # FORWARDED_ALLOW_IPS: "172.16.0.0/12"          # your proxy IP/subnet
-      # WHISPER_ADMIN_ALLOWED_HOSTS: "203.0.113.7"    # your real client IP(s)
-      # WHISPER_STATS_ALLOWED_HOSTS: "203.0.113.7"
+      # WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS: "203.0.113.7"   # admin pages (/settings, /docs); default loopback-only
+      # WHISPER_USER_WEBUI_ALLOWED_HOSTS: "203.0.113.7"    # user pages (/stats, /logs, …); default OPEN — narrow to restrict
       # WHISPER_SESSION_COOKIE_SECURE: "1"            # required when served over HTTPS
       # Optional: bootstrap the first admin without the UI. Prefer the *_FILE
       # form so the secret stays out of `docker inspect` / the process env:

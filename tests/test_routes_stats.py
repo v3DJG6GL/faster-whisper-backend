@@ -23,12 +23,23 @@ def test_stats_usage_ok(client):
     assert set(body) >= {"days", "metric", "by", "bucket", "lines", "leaderboard"}
 
 
-def test_stats_snapshot_host_gate_rejects_non_loopback(app_module):
+# /stats is user-tier (USER_WEBUI_ALLOWED_HOSTS, OPEN by default). Narrow the
+# list to loopback so a non-loopback host exercises the host gate (403 before
+# the page-permission check).
+def test_stats_snapshot_host_gate_rejects_non_loopback(app_module, monkeypatch):
+    import config as cfg
+    monkeypatch.setattr(
+        cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
+    )
     with TestClient(app_module.app, client=("8.8.8.8", 1)) as c:
         r = c.get("/stats/snapshot")
         assert r.status_code == 403
 
 
-def test_stats_page_host_gate_rejects_non_loopback(app_module):
+def test_stats_page_host_gate_rejects_non_loopback(app_module, monkeypatch):
+    import config as cfg
+    monkeypatch.setattr(
+        cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
+    )
     with TestClient(app_module.app, client=("8.8.8.8", 1)) as c:
         assert c.get("/stats").status_code == 403

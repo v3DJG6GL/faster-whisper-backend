@@ -47,7 +47,7 @@ import captures_store
 import config as cfg
 import text_corrections
 import web_common
-from admin_routes import require_admin_host
+from web_common import require_user_webui_host
 from auth import get_current_user, require_admin, require_page
 
 logger = logging.getLogger("whisper-api")
@@ -61,7 +61,7 @@ logger = logging.getLogger("whisper-api")
 # bearer. Mutation routes additionally `Depends(require_admin)` for
 # system-wide writes (clear, reprocess-all, export).
 router = APIRouter(
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_user_webui_host)],
 )
 
 

@@ -165,20 +165,26 @@ A few of the most common variables:
 | `WHISPER_SERVER_PORT` | `SERVER_PORT` | Listen port (also update the Docker `ports:` mapping) |
 | `WHISPER_DEFAULT_PROMPT` | `DEFAULT_PROMPT` | Initial prompt when request omits `prompt` (empty string disables) |
 | `WHISPER_ADMIN_UI` | `ADMIN_UI_ENABLED` | `0` unregisters `/settings*` (on by default) |
-| `WHISPER_ADMIN_ALLOWED_HOSTS` | `ADMIN_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach `/settings` (loopback always implicit) |
-| `WHISPER_STATS_ALLOWED_HOSTS` | `STATS_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach `/stats` (loopback always implicit) |
+| `WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS` | `ADMIN_WEBUI_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach the **admin** pages — `/settings`, `/settings/api-keys`, `/docs` (loopback always implicit; default loopback only) |
+| `WHISPER_USER_WEBUI_ALLOWED_HOSTS` | `USER_WEBUI_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach the **user** pages — `/quick-config`, `/captures`, `/reports`, `/stats`, `/logs`, `/sev` (loopback always implicit; default open `0.0.0.0/0, ::/0`) |
 
 ### Allowed hosts
 
-`/settings` and `/stats` are gated by IP/CIDR allowlists. Defaults are `["127.0.0.1", "::1"]` — loopback only. Loopback is *always* implicitly allowed regardless of the configured list, so a typo can never lock you out from the box itself.
+WebUI access is gated by two IP/CIDR allowlists, bucketed by **privilege tier** — each is the outer (host) layer; an API key is still required on the data layer.
+
+- **`ADMIN_WEBUI_ALLOWED_HOSTS`** — admin pages (`/settings`, `/settings/api-keys`, `/docs`). Default `["127.0.0.1", "::1"]` (loopback only); data also requires an **admin** key.
+- **`USER_WEBUI_ALLOWED_HOSTS`** — user pages (`/quick-config`, `/captures`, `/reports`, `/stats`, `/logs`, `/sev`). Default `["0.0.0.0/0", "::/0"]` (**open**) — the per-page API key is the real gate; narrow this to restrict which networks may even reach the pages.
+
+Loopback is *always* implicitly allowed regardless of the configured list, so a typo can never lock you out from the box itself.
 
 ```python
-# Allow the local LAN to reach /stats but keep /settings loopback-only:
-ADMIN_ALLOWED_HOSTS = ["127.0.0.1", "::1"]
-STATS_ALLOWED_HOSTS = ["127.0.0.1", "::1", "192.168.1.0/24"]
+# Lock the admin pages to loopback, let any network reach the user pages
+# (the API key still gates the data); or narrow the user list to your LAN:
+ADMIN_WEBUI_ALLOWED_HOSTS = ["127.0.0.1", "::1"]
+USER_WEBUI_ALLOWED_HOSTS = ["127.0.0.1", "::1", "192.168.1.0/24"]
 ```
 
-CIDR is accepted (`192.168.0.0/16`) and so are bare IPs (`10.0.0.5`).
+CIDR is accepted (`192.168.0.0/16`) and so are bare IPs (`10.0.0.5`). For a dual-stack "any host" allowlist you need both `0.0.0.0/0` (IPv4) and `::/0` (IPv6).
 
 ## Endpoints
 
@@ -186,9 +192,9 @@ CIDR is accepted (`192.168.0.0/16`) and so are bare IPs (`10.0.0.5`).
 - `GET  /v1/models` — list currently-loaded models, the configured default, and the allowlist (if set).
 - `GET  /logs` — live log viewer (browser).
 - `GET  /logs/stream` — raw SSE feed.
-- `GET  /stats` — system overview dashboard. Allowlist-gated (`STATS_ALLOWED_HOSTS`; loopback always allowed).
+- `GET  /stats` — system overview dashboard. User-tier allowlist-gated (`USER_WEBUI_ALLOWED_HOSTS`; loopback always allowed) plus a `stats` API key on the data endpoints.
 - `GET  /stats/snapshot`, `GET /stats/stream` — JSON snapshot + SSE stream of the same data (~1 Hz).
-- `GET  /settings` — admin WebUI (registered by default; set `WHISPER_ADMIN_UI=0` to disable). Allowlist-gated (`ADMIN_ALLOWED_HOSTS`; loopback always allowed) plus API-key auth.
+- `GET  /settings` — admin WebUI (registered by default; set `WHISPER_ADMIN_UI=0` to disable). Admin-tier allowlist-gated (`ADMIN_WEBUI_ALLOWED_HOSTS`; loopback always allowed) plus admin API-key auth.
 - `GET  /settings/api-keys` — admin UI for per-user API key management.
 - `GET/POST /settings/state`, `POST /settings/restart` — admin JSON endpoints; require `Authorization: Bearer <api_key>` resolving to a user with `is_admin=True`.
 - `GET  /auth/whoami` — resolve the current bearer to `{open_mode, user_id, username, is_admin}`. WebUI uses this to render the login modal and the OPEN-mode banner.
@@ -292,7 +298,7 @@ JSON response notes: `text` is the post-processed joined transcript. `segments[]
 
 Sparklines are rendered with [uPlot](https://github.com/leeoniya/uPlot), vendored under `static/` so the page works **fully offline** — no CDN fetch at page-load. To update the bundled version, see `static/VENDOR.md`.
 
-The `/stats` endpoint is allowlist-gated (`STATS_ALLOWED_HOSTS`). On a host without an NVIDIA GPU or with `nvidia-ml-py` missing, the GPU panel hides and the rest of the dashboard still works.
+The `/stats` endpoint is user-tier allowlist-gated (`USER_WEBUI_ALLOWED_HOSTS`) plus a `stats` API key on the data endpoints. On a host without an NVIDIA GPU or with `nvidia-ml-py` missing, the GPU panel hides and the rest of the dashboard still works.
 
 The nav row at the top of every page (logs ↔ stats ↔ config) also surfaces three severity pills counting `WARNING` / `ERROR` / `CRITICAL` records in the last 60 s; clicking any pill jumps to `/logs` with that filter prefilled.
 
@@ -300,7 +306,7 @@ The nav row at the top of every page (logs ↔ stats ↔ config) also surfaces t
 
 A second WebUI at `/settings` lets you edit any setting from `config.py` from the browser, with hot-reload for safe knobs (transcribe params, dictation map, prompt) and an automatic service restart for cold ones (server port, log file, preload list).
 
-**On by default** (`ADMIN_UI_ENABLED = True`). Set `ADMIN_UI_ENABLED = False` in `config.py` (or `WHISPER_ADMIN_UI=0`) and restart to unregister `/settings*`. The page opens at `http://localhost:8000/settings` from the server itself or any host in `ADMIN_ALLOWED_HOSTS`. Settings pinned by a `WHISPER_*` env var appear **read-only** (greyed out, badged with the variable name) since the environment takes precedence.
+**On by default** (`ADMIN_UI_ENABLED = True`). Set `ADMIN_UI_ENABLED = False` in `config.py` (or `WHISPER_ADMIN_UI=0`) and restart to unregister `/settings*`. The page opens at `http://localhost:8000/settings` from the server itself or any host in `ADMIN_WEBUI_ALLOWED_HOSTS`. Settings pinned by a `WHISPER_*` env var appear **read-only** (greyed out, badged with the variable name) since the environment takes precedence.
 
 ### Authentication: per-user API keys
 
@@ -321,7 +327,7 @@ Once at least one active admin key exists, the OPEN-mode banner disappears and 4
 
 Other layers:
 - **Feature flag**: `ADMIN_UI_ENABLED = True` (the default; or `WHISPER_ADMIN_UI=1`) registers the routes. Set it `False` / `WHISPER_ADMIN_UI=0` and `/settings*` returns 404.
-- **Host allowlist**: `ADMIN_ALLOWED_HOSTS` keeps the admin endpoints reachable only from the configured CIDRs (loopback always implicit).
+- **Host allowlist**: `ADMIN_WEBUI_ALLOWED_HOSTS` keeps the admin endpoints reachable only from the configured CIDRs (loopback always implicit). User pages use the separate `USER_WEBUI_ALLOWED_HOSTS` (default open).
 - **Server-side validation**: every payload is validated against `config_store.AdminConfig` (Pydantic v2).
 - **Auto-restart**: when a "cold" setting changes (server port, log file, preload list, …), a confirmation modal asks whether to restart the service. WinSW relaunches the wrapper; the page polls `/v1/models` until back up.
 

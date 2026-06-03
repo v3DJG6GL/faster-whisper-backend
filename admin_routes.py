@@ -3,15 +3,15 @@ Admin WebUI for faster-whisper-backend.
 
 Mounted at /settings when WHISPER_ADMIN_UI=1. Endpoints:
 
-  GET  /settings               HTML page (loopback / ADMIN_ALLOWED_HOSTS)
+  GET  /settings               HTML page (loopback / ADMIN_WEBUI_ALLOWED_HOSTS)
   GET  /settings/state         Resolved config + provenance + hot/cold tags
   POST /settings/state         Save overrides (validation errors -> 422)
   POST /settings/test-pipeline Dry-run PIPELINE_RULES against a sample
   POST /settings/restart       Detach a self-restart helper (Windows only)
 
 Security model (layered):
-  1. Allowlist gate:   require_admin_host rejects callers not in
-                       cfg.ADMIN_ALLOWED_HOSTS (loopback always permitted)
+  1. Allowlist gate:   require_admin_webui_host rejects callers not in
+                       cfg.ADMIN_WEBUI_ALLOWED_HOSTS (loopback always permitted)
   2. API key:          Depends(require_admin) — bearer must resolve to a
                        user with is_admin=True. In OPEN mode (no admin
                        key exists yet) the dep yields a synthetic admin
@@ -102,7 +102,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ])]),
     ("Access (allowlists)", [
         (None, [
-            "ADMIN_ALLOWED_HOSTS", "STATS_ALLOWED_HOSTS",
+            "ADMIN_WEBUI_ALLOWED_HOSTS", "USER_WEBUI_ALLOWED_HOSTS",
         ]),
         ("Browser sessions (cookie auth)", [
             "SESSION_COOKIE_SECURE", "SESSION_TTL_SECONDS",
@@ -169,11 +169,12 @@ def _all_fields() -> list[str]:
 
 # --- auth deps ---------------------------------------------------------------
 #
-# /settings is gated by an IP/CIDR allowlist (cfg.ADMIN_ALLOWED_HOSTS, loopback
-# always implicit) AND by `Depends(require_admin)` — an API key resolving to
-# is_admin=True. In open mode (no admin key configured yet) require_admin
-# yields the synthetic admin so the operator can bootstrap.
-require_admin_host = web_common.require_allowed_host(lambda: cfg.ADMIN_ALLOWED_HOSTS)
+# /settings is gated by an IP/CIDR allowlist (cfg.ADMIN_WEBUI_ALLOWED_HOSTS,
+# loopback always implicit) AND by `Depends(require_admin)` — an API key
+# resolving to is_admin=True. In open mode (no admin key configured yet)
+# require_admin yields the synthetic admin so the operator can bootstrap.
+# The concrete host gate lives in web_common (shared, always-loaded home).
+require_admin_webui_host = web_common.require_admin_webui_host
 
 
 # --- router ------------------------------------------------------------------
@@ -240,7 +241,7 @@ def _provenance(field: str, env_pinned: dict[str, str], saved: dict[str, Any]) -
     return "default"
 
 
-@router.get("", response_class=HTMLResponse, dependencies=[Depends(require_admin_host)])
+@router.get("", response_class=HTMLResponse, dependencies=[Depends(require_admin_webui_host)])
 async def settings_page() -> HTMLResponse:
     """The admin HTML page. Allowlist-gated (loopback always allowed) — no
     token required to LOAD the page; the page itself collects the token and
@@ -256,7 +257,7 @@ async def settings_page() -> HTMLResponse:
     )
 
 
-@router.get("/state", dependencies=[Depends(require_admin_host), Depends(require_admin)])
+@router.get("/state", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def get_state() -> dict[str, Any]:
     """Return the resolved config (current effective values) plus provenance
     flags so the WebUI can render badges. Does NOT include the saved-only
@@ -326,7 +327,7 @@ async def get_state() -> dict[str, Any]:
     }
 
 
-@router.post("/state", dependencies=[Depends(require_admin_host), Depends(require_admin)])
+@router.post("/state", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     """Validate and persist overrides. Returns the diff (which fields were
     saved) plus a `requires_restart` flag for the WebUI to act on. Hot fields
@@ -459,7 +460,7 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
 
 
 @router.get("/factory-rules",
-            dependencies=[Depends(require_admin_host), Depends(require_admin)])
+            dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def get_factory_rules() -> dict[str, Any]:
     """Return the committed factory pipeline rules (config.json).
 
@@ -475,7 +476,7 @@ async def get_factory_rules() -> dict[str, Any]:
 
 
 @router.post("/factory-rules",
-             dependencies=[Depends(require_admin_host), Depends(require_admin)])
+             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONResponse:
     """Validate and persist the factory pipeline rules to the committed
     config.json. Whole-list replace — the WebUI's promote actions send the full
@@ -541,7 +542,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
 
 
 @router.post("/factory-rules/clear-local-override",
-             dependencies=[Depends(require_admin_host), Depends(require_admin)])
+             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     """Remove the PIPELINE_RULES override from config.local.json so the committed
     config.json becomes the live pipeline on this deployment.
@@ -578,7 +579,7 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
 
 
 @router.post("/test-pipeline",
-             dependencies=[Depends(require_admin_host), Depends(require_admin)])
+             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     """Dry-run the full pipeline-rules list against a sample. Used by the
     WebUI's per-row live-validation badge AND the inline test panel.
@@ -717,7 +718,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     return JSONResponse({"steps": steps, "final": text})
 
 
-@router.post("/restart", dependencies=[Depends(require_admin_host), Depends(require_admin)])
+@router.post("/restart", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def post_restart(request: Request) -> JSONResponse:
     """Trigger a self-restart of the backend (cross-platform).
 
@@ -1712,7 +1713,7 @@ function makeEditor(name) {
   // Empty/missing array-shaped fields fall through here; only force a list
   // editor when we know the field is a collection by name.
   if (name === 'ALLOWED_MODELS'
-      || name === 'ADMIN_ALLOWED_HOSTS' || name === 'STATS_ALLOWED_HOSTS') {
+      || name === 'ADMIN_WEBUI_ALLOWED_HOSTS' || name === 'USER_WEBUI_ALLOWED_HOSTS') {
     return linesEditor(name, []);
   }
   if (name === 'SERVER_LOG_LEVEL') return selectEditor(name, v, ['debug','info','warning','error','critical']);

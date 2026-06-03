@@ -3,7 +3,7 @@ End-user simple-config WebUI for faster-whisper-backend.
 
 Mounted at /quick-config. Endpoints:
 
-  GET  /quick-config                      HTML page (loopback / ADMIN_ALLOWED_HOSTS)
+  GET  /quick-config                      HTML page (loopback / USER_WEBUI_ALLOWED_HOSTS)
   GET  /quick-config/state                Returns ONLY the rules an admin marked exposed
   POST /quick-config/state                Patch enabled / body fields on exposed rules
   POST /quick-config/reapply-rules        Kick off bulk-reapply job over existing captures
@@ -12,7 +12,7 @@ Mounted at /quick-config. Endpoints:
   GET  /quick-config/stream               SSE stream of recent traces (live updates)
 
 Security model:
-  1. IP gate:           require_admin_host (loopback always permitted)
+  1. IP gate:           require_user_webui_host (loopback always permitted)
   2. API key:           Depends(get_current_user) — bearer must resolve to
                         an active key. Admin = is_admin=True.
   3. Rule allow-list:   POST enforces `exposed == True` AND a per-type
@@ -46,8 +46,8 @@ import web_common
 from admin_routes import (
     _apply_hot_changes,
     _canon_rules,
-    require_admin_host,
 )
+from web_common import require_user_webui_host
 from auth import Permissions, get_current_user, require_page, user_from_session_cookie
 
 logger = logging.getLogger("whisper-api")
@@ -145,7 +145,7 @@ def _rule_fingerprint(rule: dict[str, Any]) -> str:
     # The per-page permission check lives on each API route below; if
     # the user lacks /quick-config access, the page's first state fetch
     # 403s and the JS renders a "no access" landing.
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_user_webui_host)],
 )
 async def get_quick_config_page() -> HTMLResponse:
     return HTMLResponse(
@@ -157,7 +157,7 @@ async def get_quick_config_page() -> HTMLResponse:
 @router.get(
     "/state",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("quick_config")),
     ],
 )
@@ -226,7 +226,7 @@ async def get_state(
 @router.get(
     "/usage",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("quick_config")),
     ],
 )
@@ -269,7 +269,7 @@ async def get_my_usage(
 @router.post(
     "/state",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("quick_config")),
     ],
 )
@@ -457,7 +457,7 @@ async def post_state(
 @router.post(
     "/reapply-rules",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("quick_config")),
     ],
 )
@@ -475,7 +475,7 @@ async def post_reapply_rules(
 @router.get(
     "/reapply-rules/status",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("quick_config")),
     ],
 )
@@ -498,7 +498,7 @@ async def get_reapply_rules_status(
 @router.get(
     "/recent",
     dependencies=[
-        Depends(require_admin_host),
+        Depends(require_user_webui_host),
         Depends(require_page("quick_config")),
     ],
 )
@@ -557,7 +557,7 @@ async def get_recent(
 
 @router.get(
     "/stream",
-    dependencies=[Depends(require_admin_host)],
+    dependencies=[Depends(require_user_webui_host)],
 )
 async def stream_recent(
     request: Request,

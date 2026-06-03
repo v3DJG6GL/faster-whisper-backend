@@ -280,7 +280,7 @@ def require_page(name: str):
         router = APIRouter(
             prefix="/captures",
             dependencies=[
-                Depends(require_admin_host),
+                Depends(require_user_webui_host),
                 Depends(require_page("captures")),
             ],
         )
