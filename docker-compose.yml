@@ -30,6 +30,19 @@ services:
       WHISPER_CAPTURES_DIR: /data/captures
       WHISPER_LOG_FILE: /data/logs/whisper.log
       WHISPER_DOWNLOAD_ROOT: /models
+      # --- Behind a reverse proxy (remote access) ---------------------------
+      # The admin pages (/settings, /quick-config, /stats, /captures, /reports)
+      # are gated by client IP. Behind a proxy the app sees the PROXY's IP, so
+      # those pages 403 ("host not in allowlist"). To gate on the REAL client
+      # IP, trust the proxy's X-Forwarded-For: set FORWARDED_ALLOW_IPS to the
+      # proxy's IP/subnet (uvicorn then rewrites the client IP). Never "*"
+      # unless the container is unreachable except via the proxy (spoofing).
+      # Then allowlist your real client IP(s) below. ALSO set a bootstrap admin
+      # key — without it the server runs in OPEN mode (everyone is admin).
+      # FORWARDED_ALLOW_IPS: "172.16.0.0/12"          # your proxy IP/subnet
+      # WHISPER_ADMIN_ALLOWED_HOSTS: "203.0.113.7"    # your real client IP(s)
+      # WHISPER_STATS_ALLOWED_HOSTS: "203.0.113.7"
+      # WHISPER_SESSION_COOKIE_SECURE: "1"            # required when served over HTTPS
       # Optional: bootstrap the first admin without the UI. Prefer the *_FILE
       # form so the secret stays out of `docker inspect` / the process env:
       # WHISPER_BOOTSTRAP_ADMIN_KEY_FILE: /run/secrets/bootstrap_admin_key
