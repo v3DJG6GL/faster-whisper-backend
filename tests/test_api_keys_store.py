@@ -182,6 +182,56 @@ def test_revoke_nonadmin_unguarded(api_keys_db):
     assert ak.get_user(u)["revoked_ts"] is not None
 
 
+def test_concurrent_reads_are_thread_safe(api_keys_db):
+    # Regression: get_user() & friends read the single shared sqlite3
+    # connection. Without serializing every read under _lock, concurrent
+    # auth lookups from FastAPI threadpool workers raced on one connection
+    # object → `sqlite3.InterfaceError: bad parameter or other API misuse`
+    # and torn rows (e.g. created_ts read back as None). Hammer the readers
+    # from many threads, interleaved with a writer, and assert clean results.
+    ak = api_keys_db
+    uid = ak.create_user("root", is_admin=True)
+    raw, _ = ak.create_key(uid)
+    other = ak.create_user("alice", is_admin=False)
+
+    errors: list[BaseException] = []
+    barrier = threading.Barrier(16)
+
+    def reader():
+        barrier.wait()
+        try:
+            for _ in range(80):
+                rec = ak.get_user_record(uid)
+                assert rec is not None and rec["user_id"] == uid
+                u = ak.get_user(uid)
+                assert isinstance(u["created_ts"], float)   # not None (torn read)
+                ak.lookup_by_raw_key(raw)                    # bearer hot path
+                ak.list_users()
+                ak.list_keys(uid)
+                ak.active_key_counts()
+                ak.get_user_permissions(other)
+                ak.get_usernames([uid, other, None])
+        except BaseException as e:  # noqa: BLE001 — capture for the assert
+            errors.append(e)
+
+    def writer():
+        barrier.wait()
+        try:
+            for i in range(40):
+                ak.set_user_permissions(other, {"pages": {"captures": "own"}})
+        except BaseException as e:  # noqa: BLE001
+            errors.append(e)
+
+    threads = [threading.Thread(target=reader) for _ in range(15)]
+    threads.append(threading.Thread(target=writer))
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert not errors, f"concurrent access raised: {errors[:3]}"
+
+
 def test_concurrent_revoke_of_two_admin_keys_keeps_one(api_keys_db):
     ak = api_keys_db
     uid = ak.create_user("root", is_admin=True)

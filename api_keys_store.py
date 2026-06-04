@@ -293,17 +293,19 @@ def create_user(username: str, is_admin: bool) -> str:
 
 def list_users() -> list[dict[str, Any]]:
     conn = _require_conn()
-    rows = conn.execute(
-        "SELECT * FROM users WHERE revoked_ts IS NULL ORDER BY created_ts DESC"
-    ).fetchall()
+    with _lock:
+        rows = conn.execute(
+            "SELECT * FROM users WHERE revoked_ts IS NULL ORDER BY created_ts DESC"
+        ).fetchall()
     return [_row_to_user_dict(r) for r in rows]
 
 
 def get_user(user_id: str) -> dict[str, Any] | None:
     conn = _require_conn()
-    row = conn.execute(
-        "SELECT * FROM users WHERE id = ?", (user_id,),
-    ).fetchone()
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM users WHERE id = ?", (user_id,),
+        ).fetchone()
     return _row_to_user_dict(row) if row else None
 
 
@@ -338,11 +340,12 @@ def get_usernames(user_ids: "list[str | None]") -> "dict[str, str | None]":
         return out
     conn = _require_conn()
     placeholders = ",".join("?" * len(real_ids))
-    cur = conn.execute(
-        f"SELECT id, username FROM users WHERE id IN ({placeholders})",
-        list(real_ids),
-    )
-    for row in cur:
+    with _lock:
+        rows = conn.execute(
+            f"SELECT id, username FROM users WHERE id IN ({placeholders})",
+            list(real_ids),
+        ).fetchall()
+    for row in rows:
         out[row["id"]] = row["username"]
     return out
 
@@ -437,11 +440,12 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
 
 def list_keys(user_id: str) -> list[dict[str, Any]]:
     conn = _require_conn()
-    rows = conn.execute(
-        "SELECT * FROM api_keys WHERE user_id = ? AND revoked_ts IS NULL"
-        " ORDER BY created_ts DESC",
-        (user_id,),
-    ).fetchall()
+    with _lock:
+        rows = conn.execute(
+            "SELECT * FROM api_keys WHERE user_id = ? AND revoked_ts IS NULL"
+            " ORDER BY created_ts DESC",
+            (user_id,),
+        ).fetchall()
     return [_row_to_key_dict(r) for r in rows]
 
 
@@ -449,18 +453,20 @@ def active_key_counts() -> dict[str, int]:
     """Return {user_id: active_key_count} in one SQL roundtrip — the batched
     companion to len(list_keys(user_id=u)) over a /api/users response."""
     conn = _require_conn()
-    cur = conn.execute(
-        "SELECT user_id, COUNT(*) AS n FROM api_keys"
-        " WHERE revoked_ts IS NULL GROUP BY user_id"
-    )
-    return {r["user_id"]: int(r["n"]) for r in cur.fetchall()}
+    with _lock:
+        rows = conn.execute(
+            "SELECT user_id, COUNT(*) AS n FROM api_keys"
+            " WHERE revoked_ts IS NULL GROUP BY user_id"
+        ).fetchall()
+    return {r["user_id"]: int(r["n"]) for r in rows}
 
 
 def get_key(key_id: str) -> dict[str, Any] | None:
     conn = _require_conn()
-    row = conn.execute(
-        "SELECT * FROM api_keys WHERE id = ?", (key_id,),
-    ).fetchone()
+    with _lock:
+        row = conn.execute(
+            "SELECT * FROM api_keys WHERE id = ?", (key_id,),
+        ).fetchone()
     return _row_to_key_dict(row) if row else None
 
 
@@ -590,9 +596,10 @@ def get_user_permissions(user_id: str) -> dict[str, Any]:
     if not user_id or user_id == "(open-mode)":
         return {}
     conn = _require_conn()
-    row = conn.execute(
-        "SELECT permissions FROM users WHERE id = ?", (user_id,),
-    ).fetchone()
+    with _lock:
+        row = conn.execute(
+            "SELECT permissions FROM users WHERE id = ?", (user_id,),
+        ).fetchone()
     if row is None:
         return {}
     return _parse_permissions(row["permissions"])
