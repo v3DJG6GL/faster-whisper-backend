@@ -3719,6 +3719,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     d.appendChild(line2);
     return d;
   }
+  // Non-terminal editor rules that are NOT in config.json (factoryRules) —
+  // i.e. local-only. config.json has no home for them: an order-promote skips
+  // them, and clearing the local override would drop them from the live run.
+  function _localOnlyNames() {
+    return rules.filter(r => r.type !== 'terminal' && !_factoryHas(r.name))
+                .map(r => r.label || r.name);
+  }
   function _unsavedNoteEl() {
     if (!_pipelineDirty()) return null;
     const w = document.createElement('div');
@@ -3878,6 +3885,17 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       + 'Rule contents stay exactly as committed — only positions change.';
     body.appendChild(intro);
     body.appendChild(_orderChangeEl());
+    // Local-only rules can't be positioned in config.json without also writing
+    // their content, so order-promote excludes them. Say so explicitly.
+    const localOnly = _localOnlyNames();
+    if (localOnly.length) {
+      const w = document.createElement('div');
+      w.className = 'promote-unsaved-note';
+      w.textContent = '⚠ ' + localOnly.length + ' local-only rule(s) are NOT written '
+        + 'to config.json (it has no home for them): ' + localOnly.join(', ') + '. '
+        + 'Their position drops out of the global order — use "⇪ Promote all" to ship them.';
+      body.appendChild(w);
+    }
     const note = _unsavedNoteEl();
     if (note) body.appendChild(note);
     _modal({
@@ -3895,31 +3913,56 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   }
   function _afterPromoteAll(out) {
     if (!out.shadowed_by_local) {
-      _toast('Promoted all rules to config.json — commit & push to ship it.');
+      _toast('Promoted to config.json — commit & push to ship it.');
       return;
     }
+    // Local-only rules absent from the config.json we just wrote (factoryRules
+    // was refreshed from the response). Clearing the override would drop these
+    // from the running pipeline — an order-promote excludes them; "Promote all"
+    // includes them, so this is normally empty after a Promote all.
+    const orphaned = _localOnlyNames();
     const body = document.createElement('div');
     const p = document.createElement('div');
     p.className = 'help';
-    p.textContent = 'config.json now holds your rules. This deployment still has a '
-      + 'local PIPELINE_RULES override that shadows config.json. Clear it so '
-      + 'config.json runs directly here? config.json is committable either way.';
+    p.textContent = orphaned.length
+      ? 'This deployment has a local PIPELINE_RULES override that shadows '
+        + 'config.json — but config.json does NOT contain every rule running here.'
+      : 'config.json now holds your rules. This deployment still has a local '
+        + 'PIPELINE_RULES override that shadows config.json. Clear it so config.json '
+        + 'runs directly here? config.json is committable either way.';
     body.appendChild(p);
+    if (orphaned.length) {
+      const w = document.createElement('div');
+      w.className = 'promote-unsaved-note';
+      w.textContent = '⚠ Clearing the override would DROP ' + orphaned.length
+        + ' local-only rule(s) from the running pipeline: ' + orphaned.join(', ')
+        + '. They are not in config.json. Keep the override, or run "⇪ Promote all" '
+        + 'first to write them into config.json.';
+      body.appendChild(w);
+    }
+    const _doClear = async (close) => {
+      let r;
+      try {
+        r = await api('POST', '/settings/factory-rules/clear-local-override');
+      } catch (e) { alert('Could not reach the server.'); return; }
+      if (!r.ok) { alert('Clearing the local override failed.'); return; }
+      close();
+      location.reload();
+    };
+    // When clearing is destructive, make "Keep" the safe default and demote the
+    // clear button (no primary styling, explicit consequence in its label).
     _modal({
       title: 'Promoted to config.json',
       bodyEl: body,
-      buttons: [
-        { label: 'Keep local override' },
-        { label: 'Clear local override', primary: true, onClick: async (close) => {
-            let r;
-            try {
-              r = await api('POST', '/settings/factory-rules/clear-local-override');
-            } catch (e) { alert('Could not reach the server.'); return; }
-            if (!r.ok) { alert('Clearing the local override failed.'); return; }
-            close();
-            location.reload();
-          } },
-      ],
+      buttons: orphaned.length
+        ? [
+            { label: 'Keep local override', primary: true },
+            { label: 'Clear anyway (drops local-only rules)', onClick: _doClear },
+          ]
+        : [
+            { label: 'Keep local override' },
+            { label: 'Clear local override', primary: true, onClick: _doClear },
+          ],
     });
   }
 
