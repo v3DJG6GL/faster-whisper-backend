@@ -3760,7 +3760,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         if (!out.some(o => o.name === b.name)) out.push(JSON.parse(JSON.stringify(b)));
       });
     }
-    const term = terminal || factoryRules.find(b => b.type === 'terminal');
+    // The terminal is immutable in this editor (no label/note/pattern editing),
+    // so always write the COMMITTED terminal — never the effective `terminal`,
+    // which can carry a stale/empty note from a local override and would
+    // silently clobber config.json's terminal content on an order-only promote.
+    const term = factoryRules.find(b => b.type === 'terminal') || terminal;
     if (term) out.push(JSON.parse(JSON.stringify(term)));           // terminal-last invariant
     return out;
   }
@@ -3866,7 +3870,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         { label: 'Cancel' },
         { label: 'Promote all', primary: true, onClick: async (close) => {
             close();
-            const out = await _postFactory(JSON.parse(JSON.stringify(rules)));
+            // Promote every current non-terminal rule's content (keepAbsent=false
+            // still drops locally-deleted factory rules — the "removed from
+            // config.json" list above). Routing through _buildFactoryPayload means
+            // the immutable terminal is written from COMMITTED content, never a
+            // stale effective one.
+            const allNames = new Set(rules.filter(r => r.type !== 'terminal').map(r => r.name));
+            const out = await _postFactory(_buildFactoryPayload(allNames, false));
             if (out) _afterPromoteAll(out);
           } },
       ],
