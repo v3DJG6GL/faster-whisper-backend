@@ -74,14 +74,14 @@ def trimmed_duration_s(row: dict[str, Any]) -> float:
     Public so captures_routes (merge validation + the manual merge-estimate
     endpoint) can reuse the same cached per-capture trim as the proposer."""
     raw = float(row.get("duration_seconds") or 0.0)
-    if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False):
+    if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False):
         return raw
     cid = row.get("id") or ""
     relpath = row.get("audio_relpath") or ""
     if not cid or not relpath:
         return raw
-    edge = int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300))
-    max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300))
+    edge = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300))
+    max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
     try:
         import os
         import audio_merge
@@ -347,15 +347,15 @@ def propose_merges(
     hard_cap_s = float(cfg.CAPTURES_SAMPLE_MAX_DURATION_S)
     # Inter-member gap estimate mirrors the global silence knob (the merge
     # inserts this between members), so "packs to X s" matches the real WAV.
-    gap_s = float(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300)) / 1000.0
+    gap_s = float(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)) / 1000.0
     # Uniform outer margin on both ends of the merged WAV (counts toward cap),
     # but only when group trimming is on — the legacy/trim-off merge path emits
     # no outer margin (audio_merge.merge_wavs), so counting it here would
     # over-pack the cap budget by ~2×edge_s and depress fill scores, diverging
     # from captures_routes._validate_merge_payload's same trim-gated estimate.
     edge_s = (
-        float(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300)) / 1000.0
-        if getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False)
+        float(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300)) / 1000.0
+        if getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)
         else 0.0
     )
     # Finished-sample floor — drop proposals (incl. solos) shorter than this.

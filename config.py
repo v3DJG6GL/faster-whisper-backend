@@ -209,7 +209,7 @@ TRACE_ENABLED = True
 
 
 # =============================================================================
-# Server (uvicorn)
+# Server
 # =============================================================================
 
 SERVER_HOST = "0.0.0.0"
@@ -525,7 +525,7 @@ RECENT_TRANSCRIPTIONS_PRUNE_EVERY = 50
 # /stats "Recent transcriptions" widget row count. The dashboard is
 # intentionally a small ticker — bumping this past ~50 makes the widget
 # scroll badly without adding value.
-STATS_RECENT_TX_DISPLAY = 20
+STATS_RECENT_TRANSCRIPTIONS_COUNT = 20
 
 
 # =============================================================================
@@ -691,18 +691,18 @@ CAPTURES_PIPELINE_RULES_EXCLUDE: "set[str]" = {
 # Auto-trim runs after merge_wavs() produces a sample's merged WAV. (The old
 # manual per-singleton "Trim silence" button was retired — a single capture is
 # trimmed by turning it into a one-member sample, same uniform model.)
-CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS = True
-# Per-member group trim (CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS path): silence is
+CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES = True
+# Per-member sample trim (CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES path): silence is
 # now trimmed from EVERY member before concatenation, not just the merged WAV's
 # outer edges. Without this, member i's trailing + the inter-segment gap +
 # member i+1's leading silence stacked into multi-second dead air at each join —
 # bad fine-tune data (silence-induced hallucination, wasted 30 s window).
-#   GROUP_EDGE_MS     — silence kept on each member's outer edges (margin so
-#                       tight VAD boundaries don't clip word onsets).
-#   GROUP_INTERNAL_MS — internal silences inside a member are capped at this
-#                       (matches the inter-segment gap → uniform silence).
-CAPTURES_VAD_MARGIN_GROUP_EDGE_MS = 300
-CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS = 300
+#   SAMPLE_EDGE_MS     — silence kept on each member's outer edges (margin so
+#                        tight VAD boundaries don't clip word onsets).
+#   SAMPLE_INTERNAL_MS — internal silences inside a member are capped at this
+#                        (matches the inter-segment gap → uniform silence).
+CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS = 300
+CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS = 300
 
 
 # Auto-merge proposer (/captures "Auto-propose merges" panel) ---------------

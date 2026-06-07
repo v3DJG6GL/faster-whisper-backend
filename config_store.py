@@ -100,7 +100,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "RECENT_TRANSCRIPTIONS_TTL_DAYS": "WHISPER_RECENT_TRANSCRIPTIONS_TTL_DAYS",
     "RECENT_TRANSCRIPTIONS_PAGE_SIZE": "WHISPER_RECENT_TRANSCRIPTIONS_PAGE_SIZE",
     "RECENT_TRANSCRIPTIONS_PRUNE_EVERY": "WHISPER_RECENT_TRANSCRIPTIONS_PRUNE_EVERY",
-    "STATS_RECENT_TX_DISPLAY": "WHISPER_STATS_RECENT_TX_DISPLAY",
+    "STATS_RECENT_TRANSCRIPTIONS_COUNT": "WHISPER_STATS_RECENT_TRANSCRIPTIONS_COUNT",
     "CAPTURE_RECORDINGS_ENABLED": "WHISPER_CAPTURE_RECORDINGS_ENABLED",
     "CAPTURES_DB": "WHISPER_CAPTURES_DB",
     "CAPTURES_DIR": "WHISPER_CAPTURES_DIR",
@@ -140,9 +140,9 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "SERVER_LOG_LEVEL": "WHISPER_SERVER_LOG_LEVEL",
     # Captures: pipeline exclude + VAD trim
     "CAPTURES_PIPELINE_RULES_EXCLUDE": "WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE",
-    "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS": "WHISPER_CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS",
-    "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS": "WHISPER_CAPTURES_VAD_MARGIN_GROUP_EDGE_MS",
-    "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS": "WHISPER_CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS",
+    "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES": "WHISPER_CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES",
+    "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS": "WHISPER_CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS",
+    "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS": "WHISPER_CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS",
     "CAPTURES_SAMPLE_MIN_DURATION_S": "WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S",
     "CAPTURES_SAMPLE_MAX_DURATION_S": "WHISPER_CAPTURES_SAMPLE_MAX_DURATION_S",
     "CAPTURES_SAMPLE_JOIN_STRATEGY": "WHISPER_CAPTURES_SAMPLE_JOIN_STRATEGY",
@@ -456,7 +456,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "only to live-tail appends — \"Load older\" pagination is allowed "
         "to grow the DOM beyond it.",
 
-    # --- Server (uvicorn) ---
+    # --- Server ---
     "SERVER_HOST":
         "uvicorn bind address. 0.0.0.0 = listen on all interfaces "
         "(LAN-reachable); 127.0.0.1 = loopback only.",
@@ -468,7 +468,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "SERVER_LOG_LEVEL":
         "uvicorn log verbosity: critical | error | warning | info | debug.",
 
-    # --- Access (allowlists) ---
+    # --- Access & sessions ---
     "ADMIN_WEBUI_ALLOWED_HOSTS":
         "IP/CIDR allowlist for the admin pages (/settings, /settings/api-keys, "
         "/docs) — an admin API key is also required. Loopback (127.0.0.1, ::1) "
@@ -533,7 +533,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Lazy-prune cadence — every Nth insert runs a single DELETE "
         "that enforces both the row cap and the TTL. 0 disables lazy "
         "pruning entirely (rows accumulate until manual /clear).",
-    "STATS_RECENT_TX_DISPLAY":
+    "STATS_RECENT_TRANSCRIPTIONS_COUNT":
         "/stats dashboard \"Recent transcriptions\" widget row count. "
         "The widget is intentionally a small ticker — bumping this "
         "past ~50 makes it scroll awkwardly without adding signal.",
@@ -593,20 +593,20 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "internal lowercase preserved. /transcribe runtime output is "
         "unaffected (it still applies the full pipeline). Edit + run "
         "Reprocess all to apply changes to existing captures.",
-    "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS":
-        "When True, EVERY member of a group is silence-trimmed via Silero "
+    "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES":
+        "When True, EVERY member of a sample is silence-trimmed via Silero "
         "VAD before merge_wavs() concatenates them: outer edges down to "
-        "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS and internal gaps capped at "
-        "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS. Removes the multi-second "
+        "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS and internal gaps capped at "
+        "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS. Removes the multi-second "
         "dead air that used to stack up at member joins (member i trailing "
         "+ gap + member i+1 leading silence). Applies to newly created / "
-        "re-merged groups; mitigates the hallucination failure mode in "
+        "re-merged samples; mitigates the hallucination failure mode in "
         "arXiv:2505.12969 (Calm-Whisper).",
-    "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS":
-        "Per-member group trim: silence kept on each member's outer edges "
+    "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS":
+        "Per-member sample trim: silence kept on each member's outer edges "
         "(default 300 ms) so tight VAD boundaries don't clip word onsets. "
         "Lower for tighter merges; raise if you hear clipped starts/ends.",
-    "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS":
+    "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS":
         "All internal silence in a merged sample, in ms (default 300): the "
         "gap inserted BETWEEN members (normalized — added if the members' "
         "trimmed edges are below this, trimmed if above) and the cap on "
@@ -1038,7 +1038,7 @@ class AdminConfig(BaseModel):
     RECENT_TRANSCRIPTIONS_TTL_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F("RECENT_TRANSCRIPTIONS_TTL_DAYS")
     RECENT_TRANSCRIPTIONS_PAGE_SIZE: Annotated[int, Field(ge=10, le=1000)] | None = _F("RECENT_TRANSCRIPTIONS_PAGE_SIZE")
     RECENT_TRANSCRIPTIONS_PRUNE_EVERY: Annotated[int, Field(ge=0, le=10_000)] | None = _F("RECENT_TRANSCRIPTIONS_PRUNE_EVERY")
-    STATS_RECENT_TX_DISPLAY: Annotated[int, Field(ge=1, le=100)] | None = _F("STATS_RECENT_TX_DISPLAY")
+    STATS_RECENT_TRANSCRIPTIONS_COUNT: Annotated[int, Field(ge=1, le=100)] | None = _F("STATS_RECENT_TRANSCRIPTIONS_COUNT")
 
     # --- Captures (fine-tuning data store) ---
     CAPTURE_RECORDINGS_ENABLED: bool | None = _F("CAPTURE_RECORDINGS_ENABLED")
@@ -1060,9 +1060,9 @@ class AdminConfig(BaseModel):
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
     ] | None = _F("CAPTURES_PIPELINE_RULES_EXCLUDE")
-    CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS: bool | None = _F("CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS")
-    CAPTURES_VAD_MARGIN_GROUP_EDGE_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_GROUP_EDGE_MS")
-    CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS")
+    CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES: bool | None = _F("CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES")
+    CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS")
+    CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS")
     CAPTURES_SAMPLE_MIN_DURATION_S: Annotated[float, Field(ge=0, le=30)] | None = _F("CAPTURES_SAMPLE_MIN_DURATION_S")
     CAPTURES_SAMPLE_MAX_DURATION_S: Annotated[float, Field(gt=0, le=30)] | None = _F("CAPTURES_SAMPLE_MAX_DURATION_S")
     CAPTURES_SAMPLE_JOIN_STRATEGY: Literal["space", "period_space"] | None = _F("CAPTURES_SAMPLE_JOIN_STRATEGY")

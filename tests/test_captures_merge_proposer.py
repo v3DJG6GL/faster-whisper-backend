@@ -294,7 +294,7 @@ def _insert_eligible(cs, cid, *, ts, dur=10.0, text="some words here",
 @pytest.fixture
 def trim_disabled(monkeypatch):
     # Make _dur fall back to raw duration_seconds so we don't need real audio.
-    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False,
+    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False,
                         raising=False)
 
 

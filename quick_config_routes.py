@@ -1061,7 +1061,7 @@ function renderCards() {
     const enRow = document.createElement('label');
     enRow.className = 'enabled-row';
     const enCb = document.createElement('input');
-    enCb.type = 'checkbox';
+    enCb.type = 'checkbox'; enCb.className = 'switch'; enCb.setAttribute('role', 'switch');
     enCb.checked = !!rule.enabled;
     enCb.addEventListener('change', () => {
       rule.enabled = enCb.checked;

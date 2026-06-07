@@ -360,10 +360,10 @@ def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path):
     wav = tmp_path / "a.wav"
     _write_wav(str(wav), pcm)
     monkeypatch.setattr(captures_store, "abs_audio_path", lambda rel: str(wav))
-    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", True,
+    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", True,
                         raising=False)
-    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 50, raising=False)
-    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300,
+    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 50, raising=False)
+    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300,
                         raising=False)
     P._TRIM_DUR_CACHE.clear()
 
@@ -381,7 +381,7 @@ def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path):
 
 def test_proposer_trim_disabled_returns_raw(monkeypatch):
     import captures_merge_proposer as P
-    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False,
+    monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False,
                         raising=False)
     P._TRIM_DUR_CACHE.clear()
     row = {"id": "c", "audio_relpath": "x", "duration_seconds": 3.5}

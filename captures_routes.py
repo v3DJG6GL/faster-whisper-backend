@@ -696,7 +696,7 @@ async def reprocess_vad_status_api() -> JSONResponse:
 # ---------------------------------------------------------------------
 
 # Join strategy + inter-member silence are GLOBAL admin settings now
-# (cfg.CAPTURES_SAMPLE_JOIN_STRATEGY / cfg.CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS),
+# (cfg.CAPTURES_SAMPLE_JOIN_STRATEGY / cfg.CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS),
 # not per-request — so the merge/preview/patch payloads no longer carry them.
 class CreateSampleIn(BaseModel):
     model_config = {"extra": "forbid"}
@@ -739,7 +739,7 @@ def _global_silence_ms() -> int:
     (was a per-merge `silence_ms` payload field)."""
     import config as cfg
     try:
-        return int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300))
+        return int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
     except (TypeError, ValueError):
         return 300
 
@@ -750,7 +750,7 @@ def _global_edge_ms() -> int:
     lives in one place instead of being repeated at each merge/preview site."""
     import config as cfg
     try:
-        return int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS", 300))
+        return int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300))
     except (TypeError, ValueError):
         return 300
 
@@ -971,8 +971,8 @@ def _validate_merge_payload(
     # The outer edge margin exists only on merge_wavs' trim path; its legacy
     # (trim-disabled) layout adds no outer margin, so counting 2×edge here when
     # trimming is off over-rejects in-cap merges by ~2×edge_ms.
-    trim_groups = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False))
-    total_edge_ms = 2 * edge_ms if (trim_groups and n_members >= 1) else 0
+    trim_samples = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False))
+    total_edge_ms = 2 * edge_ms if (trim_samples and n_members >= 1) else 0
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
     total_ms = total_trimmed_ms + total_gap_ms + total_edge_ms
     if enforce_cap and total_ms > cap_ms:
@@ -998,7 +998,7 @@ def _build_merged_wav(
     user and the total is within the configured cap.
 
     `member_trims` maps member_id → {lead_ms, new_duration_ms, segments} when
-    CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS trims each member; _build_merged_words
+    CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES trims each member; _build_merged_words
     uses it to keep per-member karaoke timestamps in sync with the trimmed
     audio. Empty/identity when trimming is disabled or VAD is unavailable."""
     import audio_merge
@@ -1029,10 +1029,10 @@ def _build_merged_wav(
     try:
         res = audio_merge.merge_wavs(
             member_paths, dst_abs, gap_ms=silence_ms,
-            trim=bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False)),
+            trim=bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)),
             edge_pad_ms=_global_edge_ms(),
             max_internal_gap_ms=int(
-                getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300)),
+                getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)),
         )
     except audio_merge.WavFormatError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -1078,12 +1078,12 @@ def _preview_member_trims(
     (then _build_merged_words uses the legacy full-duration timeline for every
     member — a partial map would mix absolute and legacy offsets per member)."""
     import config as cfg
-    if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False):
+    if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False):
         return {}
     import audio_merge
     import audio_vad_trim
     edge = _global_edge_ms()
-    max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300))
+    max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
     join_ms = int(_global_silence_ms())
     trims: dict[str, Any] = {}
     # Mirror merge_wavs' uniform layout: leading edge, then bodies joined by
@@ -1217,10 +1217,10 @@ async def preview_merge_audio_api(
     try:
         audio_merge.merge_wavs(
             member_paths, tmp_path, gap_ms=_global_silence_ms(),
-            trim=bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False)),
+            trim=bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)),
             edge_pad_ms=_global_edge_ms(),
             max_internal_gap_ms=int(
-                getattr(cfg, "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS", 300)),
+                getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)),
         )
     except audio_merge.WavFormatError as e:
         try: os.unlink(tmp_path)
@@ -1306,8 +1306,8 @@ async def merge_estimate_api(
     import config as cfg
     edge_ms = _global_edge_ms()
     # Mirror merge_wavs: the outer edge margin only exists on the trim path.
-    trim_groups = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS", False))
-    total_edge_ms = 2 * edge_ms if (trim_groups and n >= 1) else 0
+    trim_samples = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False))
+    total_edge_ms = 2 * edge_ms if (trim_samples and n >= 1) else 0
     cap_ms = int(float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9)) * 1000)
     trimmed_total = trimmed_ms + gap_ms + total_edge_ms
     return JSONResponse({

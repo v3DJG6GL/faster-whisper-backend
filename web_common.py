@@ -679,6 +679,41 @@ header .page-link.allowed { display: inline-flex; }
 @media (prefers-reduced-motion: reduce) {
   #login-gate, #login-gate .lg-card, #login-gate .lg-bar { animation: none !important; }
 }
+
+/* Toggle switch — a restyled NATIVE <input type="checkbox">. Add class="switch"
+   (+ role="switch" for the on/off announcement) to any SINGLE on/off control;
+   it keeps the checkbox's focus ring, Space-key, label association and the
+   page's dirty-tracking for free (the switch is purely visual — it does NOT
+   imply immediate save). Multi-select / pick-a-subset checkboxes stay plain.
+   State is shown by BOTH thumb position AND track colour (never colour alone —
+   WCAG 1.4.1). Sized in em so it scales with the surrounding font / --fs-base.
+   This block is injected after each page's own <style>, so `.switch` (higher
+   specificity than the page's bare input[type=checkbox]) wins the cascade. */
+input[type="checkbox"].switch {
+  appearance: none; -webkit-appearance: none; box-sizing: border-box;
+  position: relative; display: inline-block; vertical-align: middle;
+  flex: 0 0 auto; width: 2em; height: 1.15em; margin: 0;
+  border: 1px solid var(--border, #30363d); border-radius: 999px;
+  background: var(--input-bg, #0d1117); cursor: pointer;
+  transition: background .16s ease, border-color .16s ease; }
+/* `border: 0` resets the L-shaped checkmark border a page's base
+   input[type=checkbox]:checked::after rule would otherwise leak onto the thumb;
+   physical width/left (LTR admin UI) reliably beat a page's `width:auto`. */
+input[type="checkbox"].switch::after {
+  content: ""; position: absolute; top: 50%; left: 0.15em;
+  width: 0.8em; height: 0.8em; transform: translateY(-50%) rotate(0);
+  border: 0; border-radius: 50%; background: var(--dim, #6e7681);
+  transition: transform .16s ease, background .16s ease; }
+input[type="checkbox"].switch:hover:not(:disabled) { border-color: var(--cyan, #79c0ff); }
+input[type="checkbox"].switch:checked { background: #1f6feb; border-color: #388bfd; }
+input[type="checkbox"].switch:checked::after {
+  left: 0.15em; transform: translateY(-50%) translateX(0.85em); background: #fff; }
+input[type="checkbox"].switch:disabled { opacity: 0.45; cursor: not-allowed; }
+input[type="checkbox"].switch:focus-visible {
+  outline: 2px solid var(--cyan, #79c0ff); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) {
+  input[type="checkbox"].switch,
+  input[type="checkbox"].switch::after { transition: none; } }
 """
 
 

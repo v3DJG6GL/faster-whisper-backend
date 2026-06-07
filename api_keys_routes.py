@@ -541,7 +541,7 @@ _API_KEYS_HTML = r"""<!doctype html>
       <input id="new-username" type="text" placeholder="username (e.g., Dr. Mueller)"
              style="flex: 1; max-width: 18rem;">
       <label class="row" style="margin: 0;">
-        <input id="new-is-admin" type="checkbox"> admin
+        <input id="new-is-admin" type="checkbox" class="switch" role="switch"> admin
       </label>
       <button id="add-user-btn" class="primary">+ add user</button>
     </div>

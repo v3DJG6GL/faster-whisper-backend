@@ -154,7 +154,7 @@ def metrics_snapshot() -> dict[str, Any]:
     try:
         import config as cfg
         import transcriptions_store
-        limit = int(getattr(cfg, "STATS_RECENT_TX_DISPLAY", 20))
+        limit = int(getattr(cfg, "STATS_RECENT_TRANSCRIPTIONS_COUNT", 20))
         rows = transcriptions_store.list_recent(limit=max(1, limit))
     except Exception as e:
         logger.warning("[metrics] list_recent failed: %s", e)

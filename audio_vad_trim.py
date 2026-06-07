@@ -2,7 +2,7 @@
 faster-whisper.
 
 Used by the /captures training-data path:
-  - Groups: auto-trim after merge_wavs() (cfg.CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS)
+  - Samples: auto-trim after merge_wavs() (cfg.CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES)
   - Singletons: manual button on the /captures detail page
 
 The trim is non-destructive at the API surface: callers pass a `dst_path`

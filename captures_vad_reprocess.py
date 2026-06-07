@@ -1,5 +1,5 @@
 """Background job: re-merge every capture SAMPLE's audio with the CURRENT
-global silence settings (CAPTURES_VAD_MARGIN_GROUP_* / inter-member silence
+global silence settings (CAPTURES_VAD_MARGIN_SAMPLE_* / inter-member silence
 and the sample-duration cap).
 
 Use after changing the global VAD/silence settings so existing samples adopt

@@ -97,10 +97,10 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
         "LOG_VIEWER_INITIAL_LINES", "LOG_VIEWER_DOM_MAX",
         "TRACE_ENABLED",
     ])]),
-    ("Server (uvicorn)", [(None, [
+    ("Server", [(None, [
         "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",
     ])]),
-    ("Access (allowlists)", [
+    ("Access & sessions", [
         (None, [
             "ADMIN_WEBUI_ALLOWED_HOSTS", "USER_WEBUI_ALLOWED_HOSTS",
         ]),
@@ -119,9 +119,9 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
         "RECENT_TRANSCRIPTIONS_TTL_DAYS",
         "RECENT_TRANSCRIPTIONS_PAGE_SIZE",
         "RECENT_TRANSCRIPTIONS_PRUNE_EVERY",
-        "STATS_RECENT_TX_DISPLAY",
+        "STATS_RECENT_TRANSCRIPTIONS_COUNT",
     ])]),
-    ("Capture & fine-tuning", [
+    ("Captures", [
         (None, [
             "CAPTURE_RECORDINGS_ENABLED",
             "CAPTURE_RECORDINGS_SAMPLE_RATE",
@@ -149,9 +149,9 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
             "CAPTURES_PIPELINE_RULES_EXCLUDE",
         ]),
         ("Silence trim (Silero VAD)", [
-            "CAPTURES_VAD_TRIM_ENABLED_FOR_GROUPS",
-            "CAPTURES_VAD_MARGIN_GROUP_EDGE_MS",
-            "CAPTURES_VAD_MARGIN_GROUP_INTERNAL_MS",
+            "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES",
+            "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS",
+            "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS",
         ]),
     ]),
 ]
@@ -961,8 +961,6 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
   header .sec-chip:hover { background: #21262d; color: var(--fg); }
   header .sec-chip.active { color: var(--cyan); background: #1f2630;
     border-color: var(--border); font-weight: 600; }
-  header .sec-allbtn { flex-shrink: 0; font-size: var(--fs-xs);
-    padding: 0.2rem 0.55rem; }
   /* Reset-to-default link button — small, italic, only visible when the
      current value differs from the in-repo default. Sits below the help
      text, so it doesn't crowd the editor itself. */
@@ -1111,7 +1109,9 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
     align-items: center; user-select: none; cursor: pointer;
     padding: 0 0.25rem; border-radius: 3px;
     color: var(--dim); }
-  .rule-row .toggle.on { color: var(--green); }
+  /* The switch itself now carries the on/off state; the label just brightens
+     from dim → foreground as a complementary (non-colour-only) cue. */
+  .rule-row .toggle.on { color: var(--fg); }
   .rule-row .toggle input { margin: 0; }
   .rule-row .rule-slug { color: var(--dim); font-size: var(--fs-xs); font-style: italic; }
   /* Type pill — fixed min-width so the label column starts at a
@@ -1380,6 +1380,9 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
     </div>
     <div class="subbar">
       <span class="subbar-title">Settings</span>
+      <div class="subbar-left">
+        <button id="sec-toggle-all" type="button" title="Collapse every section">collapse all</button>
+      </div>
       <div class="subbar-right">
         <button id="restart-btn" title="restart the backend service">restart</button>
         <button id="discard-btn" title="discard all unsaved changes" disabled>discard</button>
@@ -1988,7 +1991,8 @@ function modelOverridesEditor(name, v) {
     toggleWrap.className = 'mo-sidebar-toggle';
     toggleWrap.title = 'Dim per-model rows whose value equals the resolved global';
     const toggleCb = document.createElement('input');
-    toggleCb.type = 'checkbox';
+    toggleCb.type = 'checkbox'; toggleCb.className = 'switch';
+    toggleCb.setAttribute('role', 'switch');
     toggleCb.checked = diffMode;
     toggleCb.addEventListener('change', () => {
       diffMode = toggleCb.checked;
@@ -2267,7 +2271,7 @@ function modelOverridesEditor(name, v) {
   function makeInputWidget(field, meta, currentVal) {
     if (meta.kind === 'bool') {
       const cb = document.createElement('input');
-      cb.type = 'checkbox';
+      cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
       cb.checked = !!currentVal;
       cb.addEventListener('change', () => setOverrideValue(selectedId, field, cb.checked));
       return cb;
@@ -3075,7 +3079,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if (checked) wrap.classList.add('on');
       if (opts.title) wrap.title = opts.title;
       const cb = document.createElement('input');
-      cb.type = 'checkbox';
+      cb.type = 'checkbox'; cb.className = 'switch'; cb.setAttribute('role', 'switch');
       cb.checked = !!checked;
       if (opts.disabled) cb.disabled = true;
       cb.addEventListener('change', () => {
@@ -4212,7 +4216,8 @@ function numberEditor(name, v) {
 }
 function boolEditor(name, v) {
   const i = document.createElement('input');
-  i.type = 'checkbox'; i.checked = !!v;
+  i.type = 'checkbox'; i.className = 'switch'; i.setAttribute('role', 'switch');
+  i.checked = !!v;
   i.addEventListener('change', () => setDirty(name, i.checked));
   return i;
 }
@@ -4247,7 +4252,7 @@ function linesEditor(name, v) {
 // --- section nav / collapse helpers --------------------------------------
 // Slugify a section title into a stable element id / nav target. Section
 // titles are fixed, unique English strings, so lowercase + non-alnum->'-'
-// is collision-free. e.g. "Server (uvicorn)" -> "server-uvicorn".
+// is collision-free. e.g. "Access & sessions" -> "access-sessions".
 function slug(s) {
   return String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
 }
@@ -4315,12 +4320,6 @@ function buildSectionNav() {
   const navRow = $('section-nav');
   if (!navRow || !state) return;
   navRow.innerHTML = '';
-  const allBtn = document.createElement('button');
-  allBtn.type = 'button';
-  allBtn.id = 'sec-toggle-all';
-  allBtn.className = 'sec-allbtn';
-  allBtn.addEventListener('click', () => setAllSections(!_anySectionOpen()));
-  navRow.appendChild(allBtn);
   for (const g of state.groups) {
     const id = 'sec-' + slug(g.title);
     const chip = document.createElement('a');
@@ -4604,6 +4603,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // #logout-btn + #reload-btn are wired globally in OPEN_MODE_BANNER_JS;
   // expose this page's soft refresh (re-fetch config) as the reload hook.
   window._pageReload = loadState;
+  // Collapse/expand-all lives on the toolbar (not the section-nav strip); its
+  // label is kept in sync by refreshSectionToggleAllLabel() after each render.
+  $('sec-toggle-all').addEventListener('click', () => setAllSections(!_anySectionOpen()));
   $('save-btn').addEventListener('click', save);
   $('discard-btn').addEventListener('click', () => {
     if (Object.keys(dirty).length === 0) return;
