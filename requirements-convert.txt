@@ -11,11 +11,11 @@ transformers>=5.11.0
 torch>=2.12.0
 
 # Enables `low_cpu_mem_usage=True` and sharded loading; cuts peak RAM ~half.
-accelerate>=1.13.0
+accelerate>=1.14.0
 
 # huggingface_hub is already a transitive dep of faster-whisper, but listed
 # explicitly so the version pin is auditable here.
-huggingface_hub>=1.18.0
+huggingface_hub>=1.19.0
 
 # filelock is also already a transitive (via huggingface_hub); listed for
 # the same reason — we use it directly for cross-worker conversion locking.
