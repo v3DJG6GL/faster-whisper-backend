@@ -28,8 +28,13 @@ import asyncio
 import json
 import logging
 import os
+import random
+import shutil
+import tempfile
 import uuid
+import wave
 
+import numpy as np
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
@@ -44,6 +49,34 @@ from streaming_vad import SAMPLE_RATE, make_endpointer
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+async def _safe_ws_send(ws: WebSocket, message: dict) -> bool:
+    """Send a JSON message, swallowing the errors raised when the peer has already
+    disconnected (e.g. the page was reloaded mid-dictation). Without this, the
+    session-close drain's final send hits a closed socket and uvicorn raises
+    ``RuntimeError: Unexpected ASGI message 'websocket.send' after ... close``,
+    surfacing as a noisy traceback. Returns False if the send was dropped."""
+    try:
+        await ws.send_json(message)
+        return True
+    except (RuntimeError, WebSocketDisconnect):
+        return False
+
+
+def _write_pcm16_wav(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
+    """Write a float32 mono [-1,1] buffer to a temp 16-bit PCM WAV and return its
+    path. Used to hand a streamed utterance's audio to the captures pipeline
+    (which re-transcodes any source file to its canonical 16 kHz mono WAV)."""
+    pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2")
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    with wave.open(path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm16.tobytes())
+    return path
 
 # Active sessions, for the /stats gauge and the max-session cap (phase D).
 _active_sessions: set[str] = set()
@@ -219,18 +252,35 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # fallback: segment-level units (coarser LocalAgreement granularity)
             return [(seg.start, seg.end, seg.text) for seg in segs]
 
+        # Captures are eligible only when the model allows the DTW word path
+        # (per-model WORD_TIMESTAMPS_ENABLED) — same gate as the batch route.
+        cap_enabled = bool(getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False)) and gate_final_words
+        # The final decode stashes its faster-whisper info / segment diagnostics /
+        # word list here so on_final (serialized right after, under the session
+        # lock) can build the rich log block + the capture row without re-decoding.
+        last_decode: dict = {}
+
         async def decode_final(audio, prompt):
-            want_words = gate_final_words and include_words
             kwargs = _build_transcribe_kwargs(
                 main, final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language)
-            segs, _info = await _transcribe(final_model_obj, audio, kwargs)
+            segs, info = await _transcribe(final_model_obj, audio, kwargs)
             raw = "".join(seg.text for seg in segs)
             words_out: list[dict] = []
-            if want_words:
-                for seg in segs:
-                    for w in (getattr(seg, "words", None) or []):
-                        words_out.append({"word": w.word, "start": w.start, "end": w.end})
+            seg_diag: list[dict] = []
+            for i, seg in enumerate(segs):
+                seg_diag.append({
+                    "id": i, "start": seg.start, "end": seg.end,
+                    "alp": getattr(seg, "avg_logprob", 0.0),
+                    "nsp": getattr(seg, "no_speech_prob", 0.0),
+                    "cr": getattr(seg, "compression_ratio", 1.0),
+                    "temp": getattr(seg, "temperature", 0.0),
+                    "text": seg.text,
+                })
+                for w in (getattr(seg, "words", None) or []):
+                    words_out.append({"word": w.word, "start": w.start, "end": w.end})
+            last_decode.clear()
+            last_decode.update(info=info, seg_diag=seg_diag, kwargs=kwargs)
             return raw, words_out
 
         def postprocess(raw_text):
@@ -245,6 +295,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
         async def emit(message):
             if message.get("type") == "final":
+                if not include_words:
+                    message.pop("words", None)   # word timestamps only for verbose_json
                 if out_prefix:
                     if message.get("committed"):
                         message["committed"] = out_prefix + message["committed"]
@@ -252,17 +304,108 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         message["tail"] = out_prefix + message["tail"]
                 if out_suffix and message.get("last"):
                     message["committed"] = (message.get("committed") or "") + out_suffix
-            await ws.send_json(message)
+            # Peer may have vanished mid-drain (page reload during dictation): the
+            # socket is already closed, so swallow the send. Side-effects
+            # (metrics/trace/captures) still ran in on_final.
+            await _safe_ws_send(ws, message)
+
+        def _maybe_capture(rid, info, raw_text, final_text, words, fw_info):
+            """Persist a fine-tuning capture for this utterance, mirroring the batch
+            route's eligibility gate (sampling / count cap / size / duration / disk)."""
+            try:
+                import captures_store as _cap_store
+                audio = info["audio"]
+                pcm_bytes = int(getattr(audio, "size", 0)) * 2
+                cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
+                hard_lim = int(getattr(cfg, "CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT", 100_000_000))
+                sample = float(getattr(cfg, "CAPTURE_RECORDINGS_SAMPLE_RATE", 1.0))
+                if not (_cap_store.count() < cap_max and pcm_bytes < hard_lim
+                        and random.random() < sample):
+                    return None
+                dur = float(info["audio_dur"])
+                min_s = float(getattr(cfg, "CAPTURE_RECORDINGS_MIN_DURATION_SEC", 0.5))
+                max_s = float(getattr(cfg, "CAPTURE_RECORDINGS_MAX_DURATION_SEC", 600.0))
+                if not (min_s <= dur <= max_s):
+                    logger.info("[stream %s] capture skipped duration %.1fs (window %.1f-%.1f)",
+                                session_id[:8], dur, min_s, max_s)
+                    return None
+                try:
+                    free = shutil.disk_usage(cfg.CAPTURES_DIR).free
+                except OSError:
+                    free = 1 << 40
+                if free <= 1_000_000_000:
+                    logger.warning("[stream %s] capture skipped: low disk (%.0f MB free)",
+                                   session_id[:8], free / (1024 * 1024))
+                    return None
+                training_text = main._postprocess_text(
+                    raw_text, model_name=final_model, trace=None,
+                    extra_excludes=getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None))
+                wav_path = _write_pcm16_wav(audio)
+                try:
+                    return _cap_store.create_capture(
+                        audio_src_path=wav_path, request_id=rid, model=final_model,
+                        language=(getattr(fw_info, "language", None) or req_language or ""),
+                        duration_seconds=dur, raw=raw_text, final=final_text,
+                        text_for_training=training_text, words=words, segments=[],
+                        user_id=user.get("user_id"))
+                finally:
+                    try:
+                        os.unlink(wav_path)
+                    except OSError:
+                        pass
+            except Exception as _ce:  # noqa: BLE001 — never let a capture failure break dictation
+                logger.warning("[stream %s] capture failed: %s", session_id[:8], _ce)
+                return None
 
         async def on_final(info):
+            # One finalized utterance == one mini-transcription: replicate the batch
+            # route's per-request side-effects (rich log block, durable trace for
+            # /quick-config + /reports, capture, metrics) so streaming has parity.
+            rid = uuid.uuid4().hex
+            raw_text = info["raw_text"] or ""
+            words = info.get("words") or []
+            dec = last_decode
+            fw_info = dec.get("info")
+            seg_diag = dec.get("seg_diag", [])
+            kwargs = dec.get("kwargs", {})
+
+            steps: "list | None" = [] if getattr(cfg, "TRACE_ENABLED", False) else None
+            final_text = main._postprocess_text(raw_text, model_name=final_model, trace=steps)
+
+            captured_id = None
+            if cap_enabled and raw_text.strip():
+                captured_id = _maybe_capture(rid, info, raw_text, final_text, words, fw_info)
+
+            # Rich diagnostic block — same formatter the batch route uses, so the
+            # VAD-ate-audio / empty-output / pipeline-step diagnostics show up for
+            # streaming too. file_label marks it as a streamed utterance.
+            try:
+                logger.info(main._format_request_block(
+                    file_label=f"stream {session_id[:8]} utt#{info['utterance']}  "
+                               f"({info['audio_dur']:.2f}s, {response_format})",
+                    model_name=final_model, info=fw_info, kwargs=kwargs,
+                    seg_diag=seg_diag, raw=raw_text, final=final_text,
+                    steps=steps, request_id=rid, captured_id=captured_id))
+            except Exception as _le:  # noqa: BLE001
+                logger.warning("[stream %s] log block failed: %s", session_id[:8], _le)
+
+            # Durable trace → /quick-config recent-transcriptions + autocomplete + SSE.
+            try:
+                import quick_config_state
+                quick_config_state.record_trace(
+                    request_id=rid, model=final_model, raw=raw_text,
+                    steps=steps if steps is not None else [], final=final_text,
+                    language=(getattr(fw_info, "language", None) or req_language or None),
+                    user_id=user.get("user_id"))
+            except Exception as _qe:  # noqa: BLE001
+                logger.error("[stream %s] record_trace failed: %s", session_id[:8], _qe)
+
+            # Timing/usage half — UPSERTs onto the same request_id row as record_trace.
             metrics.record_transcription(
                 model=final_model, audio_dur=info["audio_dur"],
-                proc_dur=info["proc_dur"], status="ok", words=info["words"],
-                request_id=uuid.uuid4().hex, user_id=user.get("user_id"),
-                key_id=user.get("key_id"))
-            logger.info("[stream %s] utt#%d %.2fs audio / %.2fs proc: %r",
-                        session_id[:8], info["utterance"], info["audio_dur"],
-                        info["proc_dur"], (info["raw_text"] or "")[:120])
+                proc_dur=info["proc_dur"], status="ok",
+                words=len(final_text.split()),
+                request_id=rid, user_id=user.get("user_id"), key_id=user.get("key_id"))
 
         session = StreamSession(
             config=_stream_config(cfg),

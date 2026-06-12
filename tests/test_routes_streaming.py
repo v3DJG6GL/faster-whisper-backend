@@ -88,3 +88,51 @@ def test_stream_disabled_closes_connection(app_module, monkeypatch):
                     ws.receive_json()
         except WebSocketDisconnect:
             pass  # rejected during handshake — also acceptable
+
+
+def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
+    """Each finalized utterance writes a recent-transcriptions row with non-empty
+    raw/final text (drives /quick-config + /reports), not just numeric metrics."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    import transcriptions_store
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        before = transcriptions_store.count()
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            ws.send_json({"type": "config", "model": "whisper-1",
+                          "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_bytes(_pcm(8000, 2500))   # speech
+            ws.send_bytes(_pcm(0, 1500))      # silence → finalize
+            ws.send_json({"type": "stop"})
+            _drain(ws)
+        rows = transcriptions_store.list_recent(limit=10)
+        after = transcriptions_store.count()
+    assert after > before, "no recent-transcription row recorded for the utterance"
+    assert any((r.get("raw") or "").strip() and (r.get("final") or "").strip() for r in rows), \
+        "recorded trace rows have empty raw/final (the /quick-config bug)"
+
+
+def test_safe_ws_send_swallows_dead_socket():
+    """A page reload mid-dictation closes the socket; the session-close drain then
+    sends a final to a dead socket. uvicorn raises RuntimeError('Unexpected ASGI
+    message ... after ... close'); the send must be swallowed, not surface as an
+    error traceback."""
+    import asyncio
+    import streaming_routes
+
+    class DeadWS:
+        async def send_json(self, _m):
+            raise RuntimeError(
+                "Unexpected ASGI message 'websocket.send', after sending 'websocket.close'")
+
+    class LiveWS:
+        def __init__(self):
+            self.sent = []
+
+        async def send_json(self, m):
+            self.sent.append(m)
+
+    assert asyncio.run(streaming_routes._safe_ws_send(DeadWS(), {"type": "final"})) is False
+    live = LiveWS()
+    assert asyncio.run(streaming_routes._safe_ws_send(live, {"type": "final"})) is True
+    assert live.sent == [{"type": "final"}]

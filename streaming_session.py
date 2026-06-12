@@ -251,7 +251,8 @@ class StreamSession:
                 "audio_dur": audio_dur,
                 "proc_dur": proc_dur,
                 "raw_text": raw,
-                "words": len((raw or "").split()),
+                "words": words,        # word-timestamp dicts (for captures / verbose)
+                "audio": audio,        # float32 PCM of the utterance (for captures)
                 "forced": forced,
             })
         self._utterance_index += 1
