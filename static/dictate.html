@@ -56,6 +56,12 @@
 <header>
   <h1>Live Dictation</h1>
   <div class="controls">
+    <label>Mode
+      <select id="mode" title="Streaming: live partials over a WebSocket. Batch: record, then POST the whole clip to /v1/audio/transcriptions (one-shot, full pipeline).">
+        <option value="stream">streaming (live)</option>
+        <option value="batch">batch (record &amp; send)</option>
+      </select>
+    </label>
     <label>Server <input type="text" id="server" placeholder="(this page's host)" size="24"
                          title="Backend base URL or host:port, e.g. https://whisper.example.com or 192.168.1.50:8000. Empty = same host that served this page."></label>
     <label>Model <input type="text" id="model" value="whisper-1" size="13"></label>
@@ -91,11 +97,14 @@
 
   let ws = null, audioCtx = null, workletNode = null, mediaStream = null, running = false;
   let resampleCarry = 0.0, resamplePos = 0.0, pcmBuf = new Int16Array(FRAME_SAMPLES), pcmLen = 0;
+  // Batch mode: record the whole clip with MediaRecorder, POST it in one shot.
+  let recorder = null, recStream = null, recChunks = [];
 
   function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+  const mode = () => $("mode").value;
 
   // --- connection target + persisted settings ---------------------------------
-  const PREF_FIELDS = ["server", "model", "lang", "format", "key"];
+  const PREF_FIELDS = ["mode", "server", "model", "lang", "format", "key"];
 
   // Resolve the "Server" field to a ws[s]:// base URL. Accepts a full
   // ws(s)/http(s) URL or a bare host[:port]; empty falls back to this page's host.
@@ -107,6 +116,18 @@
     if (/^https:\/\//i.test(s)) return "wss://" + s.slice(8);
     if (/^http:\/\//i.test(s)) return "ws://" + s.slice(7);
     return pageScheme + "://" + s;            // bare host[:port]
+  }
+
+  // Resolve the "Server" field to an http[s]:// base URL (batch POST target).
+  // Empty → same origin that served this page (no CORS); a remote host needs
+  // CORS enabled on the backend (the WS path is not subject to CORS).
+  function httpBase() {
+    let s = ($("server").value || "").trim().replace(/\/+$/, "");
+    if (!s) return location.origin;
+    if (/^https?:\/\//i.test(s)) return s;
+    if (/^wss:\/\//i.test(s)) return "https://" + s.slice(6);
+    if (/^ws:\/\//i.test(s)) return "http://" + s.slice(5);
+    return location.protocol + "//" + s;      // bare host[:port], match page scheme
   }
 
   function loadPrefs() {
@@ -177,6 +198,83 @@
     else if (m.type === "error") { setStatus("error: " + (m.message || m.code), "error"); }
   }
 
+  function idleLabel() { return mode() === "batch" ? "Record" : "Start dictation"; }
+  function resetToggleButton() {
+    toggleBtn.disabled = false;
+    toggleBtn.textContent = idleLabel();
+    toggleBtn.classList.remove("stop");
+  }
+
+  // --- batch mode: record with MediaRecorder, POST the whole clip ---------------
+  function pickMime() {
+    const cands = ["audio/webm;codecs=opus", "audio/webm", "audio/ogg;codecs=opus", "audio/mp4"];
+    for (const c of cands) {
+      try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c; } catch {}
+    }
+    return "";
+  }
+
+  async function startBatch() {
+    finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", "");
+    recChunks = [];
+    recStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    const mime = pickMime();
+    recorder = mime ? new MediaRecorder(recStream, { mimeType: mime }) : new MediaRecorder(recStream);
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size) recChunks.push(e.data); };
+    recorder.onstop = () => { sendBatch(); };
+    recorder.start();
+    setStatus("recording… (press Stop to transcribe)", "live");
+  }
+
+  function stopBatch() {
+    // Stop the mic; recorder.onstop fires sendBatch(). Lock the button until the
+    // POST resolves so the user can't re-enter mid-transcribe.
+    toggleBtn.disabled = true;
+    setStatus("transcribing…");
+    try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch {}
+    if (recStream) recStream.getTracks().forEach((t) => t.stop());
+  }
+
+  async function sendBatch() {
+    try {
+      const type = (recorder && recorder.mimeType) || "audio/webm";
+      const blob = new Blob(recChunks, { type });
+      recorder = null;
+      if (!blob.size) { setStatus("no audio recorded", "error"); return; }
+      const ext = type.includes("ogg") ? "ogg" : (type.includes("mp4") ? "mp4" : "webm");
+      const fd = new FormData();
+      fd.append("file", blob, "dictation." + ext);
+      fd.append("model", $("model").value.trim() || "whisper-1");
+      const lang = $("lang").value.trim(); if (lang) fd.append("language", lang);
+      fd.append("response_format", $("format").value || "json");
+      const key = $("key").value.trim();
+      const headers = key ? { Authorization: "Bearer " + key } : {};
+      const resp = await fetch(httpBase() + "/v1/audio/transcriptions", { method: "POST", headers, body: fd });
+      if (!resp.ok) {
+        setStatus("batch error " + resp.status + ": " + (await resp.text()).slice(0, 200), "error");
+        return;
+      }
+      const ct = resp.headers.get("content-type") || "";
+      let text;
+      if (ct.includes("application/json")) {
+        const j = await resp.json();
+        text = (j && j.text != null) ? j.text : JSON.stringify(j, null, 2);
+      } else {
+        text = await resp.text();
+      }
+      finalEl.textContent = text || "";
+      tailEl.textContent = ""; renderPartial("", "");
+      setStatus("done", "live");
+    } catch (err) {
+      // A bare TypeError here is usually a cross-origin CORS block (remote Server).
+      setStatus("batch failed: " + err.message + " — for a remote backend, open /dictate from it (CORS)", "error");
+    } finally {
+      running = false;
+      if (recStream) { recStream.getTracks().forEach((t) => t.stop()); recStream = null; }
+      resetToggleButton();
+    }
+  }
+
   async function start() {
     finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", "");
     const base = wsBase();
@@ -218,24 +316,31 @@
     if (audioCtx) audioCtx.close();
     ws = null; audioCtx = null; workletNode = null; mediaStream = null;
     pcmLen = 0; resamplePos = 0;
-    toggleBtn.textContent = "Start dictation"; toggleBtn.classList.remove("stop");
+    resetToggleButton();
     setStatus("idle");
   }
 
   toggleBtn.addEventListener("click", async () => {
-    if (running) { stop(); return; }
+    const batch = mode() === "batch";
+    if (running) { batch ? stopBatch() : stop(); return; }
     try {
       running = true;
-      toggleBtn.textContent = "Stop"; toggleBtn.classList.add("stop");
-      await start();
+      toggleBtn.textContent = batch ? "Stop & transcribe" : "Stop";
+      toggleBtn.classList.add("stop");
+      await (batch ? startBatch() : start());
     } catch (err) {
-      running = false; setStatus("mic/socket failed: " + err.message, "error");
-      toggleBtn.textContent = "Start dictation"; toggleBtn.classList.remove("stop");
+      running = false;
+      setStatus((batch ? "mic/record failed: " : "mic/socket failed: ") + err.message, "error");
+      resetToggleButton();
     }
   });
 
+  // Switching mode while idle just relabels the button (Start dictation ⇄ Record).
+  $("mode").addEventListener("change", () => { if (!running) resetToggleButton(); });
+
   // --- init: restore saved settings, persist on change, warn on insecure context ---
   loadPrefs();
+  resetToggleButton();   // reflect the restored mode (Start dictation / Record)
   PREF_FIELDS.forEach((f) => { const el = $(f); if (el) el.addEventListener("change", savePrefs); });
   if (!window.isSecureContext) {
     const n = $("note");
@@ -243,7 +348,9 @@
       + "from localhost (or over https) and set Server to your remote backend.";
     n.style.color = "var(--err)";
   } else {
-    $("note").textContent = "Settings (incl. API key) are saved in this browser's localStorage.";
+    $("note").textContent = "Settings are saved in this browser's localStorage. "
+      + "Batch mode records the clip and POSTs it to /v1/audio/transcriptions (one-shot); "
+      + "a remote Server then needs CORS — or open /dictate from the backend itself.";
   }
 })();
 </script>

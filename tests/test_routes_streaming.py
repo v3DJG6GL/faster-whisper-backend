@@ -76,6 +76,10 @@ def test_dictate_demo_page_served(app_module):
     assert "Live Dictation" in body
     assert "/v1/audio/transcriptions/stream" in body
     assert "AudioWorkletNode" in body
+    # batch mode: a mode selector + MediaRecorder POST to the file endpoint.
+    assert 'id="mode"' in body
+    assert "MediaRecorder" in body
+    assert "startBatch" in body
 
 
 def test_stream_disabled_closes_connection(app_module, monkeypatch):
