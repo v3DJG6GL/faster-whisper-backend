@@ -161,10 +161,15 @@ class StreamSession:
             await self._finalize(forced=True)
             return
 
-        inner_boundary = self._silence_ms >= self.cfg.vad_min_silence_ms
-        if self._new_since_partial >= self._min_chunk_samples or (
-            inner_boundary and self._new_since_partial > 0
-        ):
+        # Fire a partial roughly every min_chunk of new audio — but ONLY while
+        # actively speaking (silence below the inner gate). Re-decoding during
+        # trailing silence is wasteful AND pathological: each partial decode is
+        # awaited synchronously (~1 s+), so triggering one per silent frame makes
+        # the silence timer advance ~1 frame (32 ms) per decode, inflating the
+        # commit wait from ~1.2 s to ~20 s. Once the speaker pauses we let silence
+        # accumulate in real time so _finalize() fires at commit_silence_ms.
+        if (self._silence_ms < self.cfg.vad_min_silence_ms
+                and self._new_since_partial >= self._min_chunk_samples):
             await self._run_partial()
 
     def _trim_preroll(self) -> None:

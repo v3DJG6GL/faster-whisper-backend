@@ -137,6 +137,40 @@ def test_pcm_loop_emits_partials_then_a_final_after_silence():
     assert finals[0]["append"] is True
 
 
+def test_no_partial_decode_storm_during_trailing_silence():
+    """Regression: trailing silence must NOT trigger a partial decode per frame.
+    The old inner-pause trigger fired one (synchronous) decode per 32 ms silent
+    frame, advancing the silence timer ~1 frame per decode and inflating the
+    commit wait to ~20 s. Here ~1 s of silence (≈31 frames) must cost only a
+    couple of decodes, not dozens."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=2000,
+        min_speech_ms=64, forced_commit_sec=100, rms_gate_dbfs=-60, preroll_keep_ms=100,
+    )
+    calls = {"partial": 0}
+
+    async def decode_partial(audio, prompt):
+        calls["partial"] += 1
+        return [(0.0, 0.2, " x")]
+
+    async def decode_final(audio, prompt):
+        return ("x.", [])
+
+    s, msgs = _make_session(
+        postprocess=lambda raw: raw, decode_partial=decode_partial,
+        decode_final=decode_final, cfg=cfg,
+    )
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 300))   # 0.3 s speech
+        await s.feed_pcm(_pcm(0, 1000))     # 1.0 s silence (≈31 frames) → no finalize yet
+
+    asyncio.run(run())
+    # A handful of speech-phase partials only; the silence must add ~none.
+    assert calls["partial"] <= 6, f"partial decode storm: {calls['partial']} decodes"
+    assert [m for m in msgs if m["type"] == "final"] == []  # held (silence < commit)
+
+
 def test_silence_only_input_never_finalizes_or_hallucinates():
     cfg = StreamConfig(commit_silence_ms=192, min_speech_ms=64, rms_gate_dbfs=-50)
     called = {"partial": 0, "final": 0}
