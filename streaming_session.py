@@ -5,8 +5,10 @@ partial/final decode loop, stabilizes live text with LocalAgreement-2, and emits
 
   * ``partial`` messages — raw Whisper text (committed prefix + provisional tail),
     updated ~1×/s while speaking. **No post-processing.**
-  * ``final`` messages — post-processed, **append-only** text, emitted per utterance
-    once end-of-speech silence (or a forced commit) stabilizes it.
+  * ``final`` messages — the post-processed document, split into a stable
+    ``committed`` prefix (append-only, never rewritten on screen) and a provisional
+    ``tail`` (shown immediately but still revisable). Emitted per utterance once
+    end-of-speech silence (or a forced commit) produces a fresh decode.
 
 The class is **dependency-injected**: the model decode calls, the post-processing
 function, and the emit sink are passed in, so this module imports nothing from
@@ -43,6 +45,15 @@ Postprocess = Callable[[str], str]
 Emit = Callable[[dict], Awaitable[None]]
 
 _TERMINATOR_RE = re.compile(r"[.?!\n]")
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    """Length of the longest common leading substring of ``a`` and ``b``."""
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return i
 
 
 @dataclass
@@ -101,7 +112,9 @@ class StreamSession:
         self._new_since_partial = 0
 
         self.raw_confirmed = ""            # cross-utterance verbatim accumulator
-        self._emitted_len = 0              # chars of processed text already emitted (append-only)
+        self._committed_len = 0            # chars of processed text locked as append-only committed
+        self._committed_text = ""          # the committed prefix (for the append-only invariant)
+        self._prev_processed = ""          # last whole-doc post-process (document-level LocalAgreement)
         self._utterance_index = 0
         self._prompt = base_prompt.strip()
         self._closed = False
@@ -127,14 +140,14 @@ class StreamSession:
             await self._finalize(forced=True)
 
     async def close(self) -> None:
-        """Drain: finalize any in-flight utterance and flush the held tail as final."""
+        """Drain: finalize any in-flight utterance and commit the whole document."""
         if self._closed:
             return
         self._closed = True
         if self._in_utterance:
             await self._finalize(forced=True)
         processed = self.postprocess(self.raw_confirmed)
-        await self._emit_final_delta(processed, flush_all=True, last=True)
+        await self._emit_document(processed, flush_all=True, last=True)
 
     # ---- frame pump -------------------------------------------------------
 
@@ -231,7 +244,7 @@ class StreamSession:
         self.raw_confirmed += raw
         self._prompt = self._make_prompt()
         processed = self.postprocess(self.raw_confirmed)
-        await self._emit_final_delta(processed, forced=forced, words=words)
+        await self._emit_document(processed, forced=forced, words=words)
         if self.on_final is not None:
             await self.on_final({
                 "utterance": self._utterance_index,
@@ -246,19 +259,33 @@ class StreamSession:
 
     # ---- emission ---------------------------------------------------------
 
-    async def _emit_final_delta(
+    async def _emit_document(
         self, processed: str, *, forced: bool = False, flush_all: bool = False,
         last: bool = False, words: Optional[list[dict]] = None,
     ) -> None:
-        boundary = len(processed) if flush_all else self._stable_boundary(processed)
-        delta = processed[self._emitted_len:boundary]
-        if not delta:
+        """Emit the post-processed document split into a stable ``committed`` prefix
+        and a provisional ``tail``.
+
+        ``committed`` is append-only — it only ever grows and is never rewritten on
+        screen. ``tail`` is the still-unstable remainder: shown live (so the most
+        recent sentence is visible immediately) but explicitly provisional, since
+        appending the next utterance can still reshape it. ``flush_all`` (session
+        close) commits the whole document. Both are full authoritative strings, not
+        byte deltas — the client replaces each region, so a seam rewrite in the
+        post-processing can never desync the display."""
+        commit_len = len(processed) if flush_all else self._stable_commit_len(processed)
+        committed = processed[:commit_len]
+        tail = processed[commit_len:]
+        self._committed_len = commit_len
+        self._committed_text = committed
+        self._prev_processed = processed
+        if not committed and not tail:
             return
         msg = {
             "type": "final",
             "utterance": self._utterance_index,
-            "text": delta,
-            "append": True,
+            "committed": committed,
+            "tail": tail,
         }
         if forced:
             msg["forced"] = True
@@ -267,26 +294,31 @@ class StreamSession:
         if words:
             msg["words"] = words
         await self.emit(msg)
-        self._emitted_len = boundary
 
-    def _stable_boundary(self, processed: str) -> int:
-        """Index up to which ``processed`` is safe to emit append-only: through the
-        last sentence terminator char itself, but NOT the whitespace after it.
+    def _stable_commit_len(self, processed: str) -> int:
+        """Index up to which ``processed`` is safe to commit append-only.
 
-        That trailing whitespace and the following sentence are held back because
-        appending more raw text can still rewrite them — e.g. a later 'Zeile'
-        turns '. neue ' into '.\\n' (the post-terminator space becomes part of the
-        newline). The held whitespace is emitted later as the next sentence's
-        leading edge. A safety valve flushes an over-long held tail."""
-        last = None
+        Document-level LocalAgreement: commit only through the last sentence
+        terminator (``. ? ! \\n``) that lies within the prefix the last *two*
+        whole-document post-processes agree on. Appending a later utterance can
+        still rewrite earlier text — a 'neue Zeile' split across the seam, the
+        capitalization after a terminator, a number spanning the boundary, even a
+        repeated sentence whose punctuation collapses — so requiring two passes to
+        agree before locking keeps the committed region flicker-free. The cost is
+        that the newest sentence stays provisional for one extra finalize, but it is
+        still shown (as the tail). A safety valve commits an over-long un-agreed
+        tail so the held region can't grow without bound."""
+        agree = _common_prefix_len(processed, self._prev_processed)
+        boundary = 0
         for m in _TERMINATOR_RE.finditer(processed):
-            last = m
-        boundary = 0 if last is None else last.end()
+            if m.end() <= agree:
+                boundary = m.end()
+            else:
+                break
         held = len(processed) - boundary
         if held > self.cfg.max_hold_chars:
-            safe = len(processed) - self.cfg.tail_margin_chars
-            boundary = max(boundary, safe)
-        return max(boundary, self._emitted_len)
+            boundary = max(boundary, len(processed) - self.cfg.tail_margin_chars)
+        return max(boundary, self._committed_len)
 
     # ---- utterance lifecycle ---------------------------------------------
 

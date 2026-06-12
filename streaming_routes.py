@@ -16,7 +16,9 @@ Protocol (see streaming_session for the emission contract):
     3. control TEXT frames: {"type":"flush"} | {"type":"stop"}
   server → client:
     {"type":"ready",..} / {"type":"partial",committed,pending} /
-    {"type":"final",text,append:true} / {"type":"error",code,message}
+    {"type":"final",committed,tail,last?} / {"type":"error",code,message}
+    (final: ``committed`` is append-only/locked, ``tail`` is the provisional
+     trailing sentence; both are full strings — the client replaces each region.)
 
 main.py is imported lazily inside the handler to avoid the
 main → streaming_routes → main import cycle.
@@ -234,18 +236,22 @@ async def transcribe_stream(ws: WebSocket) -> None:
         def postprocess(raw_text):
             return main._postprocess_text(raw_text, model_name=final_model)
 
-        # Output wrappers applied exactly once: prefix on first final, suffix on last.
+        # Output wrappers: the prefix sits at the very start of the document, the
+        # suffix only on the final flush. committed/tail are full authoritative
+        # strings (the client replaces each region), so re-applying the prefix on
+        # every final is correct — it never accumulates.
         out_prefix = main.cfg_for(final_model, "OUTPUT_PREFIX") or ""
         out_suffix = main.cfg_for(final_model, "OUTPUT_SUFFIX") or ""
-        wrap_state = {"prefixed": False}
 
         async def emit(message):
             if message.get("type") == "final":
-                if out_prefix and not wrap_state["prefixed"]:
-                    message["text"] = out_prefix + message["text"]
-                    wrap_state["prefixed"] = True
+                if out_prefix:
+                    if message.get("committed"):
+                        message["committed"] = out_prefix + message["committed"]
+                    elif message.get("tail"):
+                        message["tail"] = out_prefix + message["tail"]
                 if out_suffix and message.get("last"):
-                    message["text"] = message["text"] + out_suffix
+                    message["committed"] = (message.get("committed") or "") + out_suffix
             await ws.send_json(message)
 
         async def on_final(info):

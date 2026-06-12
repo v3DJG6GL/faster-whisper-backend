@@ -43,6 +43,8 @@
     white-space: pre-wrap; word-break: break-word; line-height:1.6;
     font-size:1.05rem; min-height:6rem;
   }
+  #final { color: var(--fg); }                 /* committed: locked, append-only */
+  #tail { color:#aeb6c2; }                      /* provisional: settled this utterance, may still firm up */
   #partial { color: var(--muted); }
   #partial .committed { color:#c8ccd4; }
   #partial .pending { color:#5b6270; opacity:0.6; font-style:italic; }
@@ -70,7 +72,7 @@
   <span id="status">idle</span>
 </header>
 <main>
-  <div id="doc"><span id="final"></span><span id="partial"></span></div>
+  <div id="doc"><span id="final"></span><span id="tail"></span><span id="partial"></span></div>
 </main>
 <footer>
   Speak commands: <code>Punkt</code> → . &nbsp; <code>Komma</code> → , &nbsp;
@@ -84,7 +86,8 @@
   const TARGET_SR = 16000;
   const FRAME_SAMPLES = 4096;           // ~256 ms per WS binary frame at 16 kHz
   const $ = (id) => document.getElementById(id);
-  const finalEl = $("final"), partialEl = $("partial"), statusEl = $("status"), toggleBtn = $("toggle");
+  const finalEl = $("final"), tailEl = $("tail"), partialEl = $("partial"),
+        statusEl = $("status"), toggleBtn = $("toggle");
 
   let ws = null, audioCtx = null, workletNode = null, mediaStream = null, running = false;
   let resampleCarry = 0.0, resamplePos = 0.0, pcmBuf = new Int16Array(FRAME_SAMPLES), pcmLen = 0;
@@ -163,11 +166,19 @@
     let m; try { m = JSON.parse(ev.data); } catch { return; }
     if (m.type === "ready") { setStatus("listening", "live"); }
     else if (m.type === "partial") { renderPartial(m.committed, m.pending); }
-    else if (m.type === "final") { finalEl.textContent += m.text; renderPartial("", ""); }
+    else if (m.type === "final") {
+      // committed = locked append-only prefix; tail = provisional trailing sentence.
+      // Both are full strings (server re-sends them), so we replace, not append —
+      // a post-processing seam rewrite can never desync the display.
+      finalEl.textContent = m.committed || "";
+      tailEl.textContent = m.tail || "";
+      renderPartial("", "");
+    }
     else if (m.type === "error") { setStatus("error: " + (m.message || m.code), "error"); }
   }
 
   async function start() {
+    finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", "");
     const base = wsBase();
     const key = $("key").value.trim();
     const qs = key ? ("?key=" + encodeURIComponent(key)) : "";

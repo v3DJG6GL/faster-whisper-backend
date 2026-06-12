@@ -36,32 +36,46 @@ def _make_session(*, postprocess, decode_partial=None, decode_final=None, cfg=No
     return s, msgs
 
 
-# ---- append-only emission mechanics ---------------------------------------
+# ---- committed/tail emission mechanics ------------------------------------
 
-def test_finals_are_append_only_and_concatenate_to_full_document():
-    """Across successive finalizes the emitted deltas never rewrite earlier text
-    and concatenate exactly to the post-processed whole document."""
+def test_committed_is_append_only_and_document_equals_postprocess():
+    """Across successive finalizes the committed prefix only ever grows (never
+    rewrites earlier text), and committed+tail always equals the post-processed
+    whole document."""
     s, msgs = _make_session(postprocess=lambda raw: raw)  # identity pipeline
 
     async def run():
         s.raw_confirmed = "der patient hat fieber."
-        await s._emit_final_delta(s.postprocess(s.raw_confirmed))
-        s.raw_confirmed += " blutdruck normal"          # no terminator yet → held
-        await s._emit_final_delta(s.postprocess(s.raw_confirmed))
-        s.raw_confirmed += "."                            # terminator → tail releases
-        await s._emit_final_delta(s.postprocess(s.raw_confirmed))
+        await s._emit_document(s.postprocess(s.raw_confirmed))
+        s.raw_confirmed += " blutdruck normal"          # no terminator yet → tail
+        await s._emit_document(s.postprocess(s.raw_confirmed))
+        s.raw_confirmed += "."                            # terminator (commits on close)
+        await s._emit_document(s.postprocess(s.raw_confirmed))
+        await s.close()
 
     asyncio.run(run())
-    deltas = [m["text"] for m in msgs if m["type"] == "final"]
-    assert "".join(deltas) == "der patient hat fieber. blutdruck normal."
-    # First delta committed the first sentence; "blutdruck" was held until its period.
-    assert deltas[0] == "der patient hat fieber."
-    assert "blutdruck" not in deltas[0]
+    finals = [m for m in msgs if m["type"] == "final"]
+    committeds = [m["committed"] for m in finals]
+    # append-only: each committed extends the previous, never rewrites it.
+    for a, b in zip(committeds, committeds[1:]):
+        assert b.startswith(a), f"committed rewritten: {a!r} -> {b!r}"
+    # committed+tail reconstructs the post-processed document at every step.
+    for m in finals:
+        assert m["committed"] + m["tail"] in ("der patient hat fieber.",
+                                              "der patient hat fieber. blutdruck normal",
+                                              "der patient hat fieber. blutdruck normal.")
+    # the final committed (after close) equals the whole post-processed transcript.
+    assert committeds[-1] == "der patient hat fieber. blutdruck normal."
+    # "blutdruck" is shown live (in some tail) but never committed mid-sentence
+    # until it stabilises on close.
+    assert all("blutdruck" not in c for c in committeds[:-1])
+    assert any("blutdruck" in m["tail"] for m in finals)
 
 
-def test_held_tail_prevents_premature_dictation_phrase_emission():
+def test_committed_never_holds_half_resolved_dictation_phrase():
     """A multi-word dictation phrase split across utterances ('neue' then 'zeile')
-    is never emitted half-resolved — it stays held until the phrase completes."""
+    is never committed half-resolved — the literal 'neue' stays out of committed
+    text until the phrase completes (it may appear only in the provisional tail)."""
     def pp(raw):                       # toy dictation map: phrase → newline
         return raw.replace("neue zeile", "\n")
 
@@ -69,32 +83,37 @@ def test_held_tail_prevents_premature_dictation_phrase_emission():
 
     async def run():
         s.raw_confirmed = "bla bla neue"              # incomplete phrase, no terminator
-        await s._emit_final_delta(s.postprocess(s.raw_confirmed))
+        await s._emit_document(s.postprocess(s.raw_confirmed))
         s.raw_confirmed = "bla bla neue zeile text."  # phrase completes + terminator
-        await s._emit_final_delta(s.postprocess(s.raw_confirmed))
-
-    asyncio.run(run())
-    deltas = [m["text"] for m in msgs if m["type"] == "final"]
-    assert "neue" not in "".join(deltas)              # literal "neue" never leaked
-    assert "".join(deltas) == "bla bla \n text."
-
-
-def test_close_flushes_held_unterminated_tail():
-    """An utterance with no sentence terminator is held during the session but
-    flushed on close()."""
-    s, msgs = _make_session(postprocess=lambda raw: raw)
-
-    async def run():
-        s.raw_confirmed = "hallo welt"                # no terminator
-        await s._emit_final_delta(s.postprocess(s.raw_confirmed))
-        assert [m for m in msgs if m["type"] == "final"] == []  # held
+        await s._emit_document(s.postprocess(s.raw_confirmed))
         await s.close()
 
     asyncio.run(run())
     finals = [m for m in msgs if m["type"] == "final"]
-    assert len(finals) == 1
-    assert finals[0]["text"] == "hallo welt"
-    assert finals[0].get("last") is True
+    committeds = [m["committed"] for m in finals]
+    assert all("neue" not in c for c in committeds)   # literal "neue" never committed
+    assert committeds[-1] == "bla bla \n text."
+
+
+def test_close_commits_unterminated_tail():
+    """An utterance with no sentence terminator is shown as a provisional tail
+    during the session, then committed on close()."""
+    s, msgs = _make_session(postprocess=lambda raw: raw)
+
+    async def run():
+        s.raw_confirmed = "hallo welt"                # no terminator
+        await s._emit_document(s.postprocess(s.raw_confirmed))
+        pre = [m for m in msgs if m["type"] == "final"]
+        # shown immediately, but provisional (not committed) — fixes the "text only
+        # appears after the next utterance" bug.
+        assert pre and pre[-1]["committed"] == "" and pre[-1]["tail"] == "hallo welt"
+        await s.close()
+
+    asyncio.run(run())
+    finals = [m for m in msgs if m["type"] == "final"]
+    assert finals[-1]["committed"] == "hallo welt"
+    assert finals[-1]["tail"] == ""
+    assert finals[-1].get("last") is True
 
 
 # ---- full PCM loop --------------------------------------------------------
@@ -133,8 +152,9 @@ def test_pcm_loop_emits_partials_then_a_final_after_silence():
     # LocalAgreement commits the repeated hypothesis → committed text appears.
     assert any("welt" in m["committed"] for m in partials)
     assert len(finals) == 1
-    assert finals[0]["text"] == "hallo welt."
-    assert finals[0]["append"] is True
+    # one finalize, no terminator-agreement yet → the text is shown as the
+    # provisional tail (committed + tail reconstructs the post-processed utterance).
+    assert finals[0]["committed"] + finals[0]["tail"] == "hallo welt."
 
 
 def test_no_partial_decode_storm_during_trailing_silence():

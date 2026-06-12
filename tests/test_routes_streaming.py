@@ -51,8 +51,8 @@ def test_stream_happy_path_partials_then_final(app_module, monkeypatch):
     # LocalAgreement-2 commits the repeated 'hallo welt' hypothesis.
     assert any("welt" in m["committed"] for m in partials)
     assert finals, "expected a final after stop/close"
-    assert "welt" in "".join(m["text"] for m in finals)
-    assert finals[-1].get("append") is True
+    assert "welt" in "".join(m["committed"] + m.get("tail", "") for m in finals)
+    assert finals[-1].get("last") is True
 
 
 def test_stream_rejects_unsupported_audio_format(app_module):

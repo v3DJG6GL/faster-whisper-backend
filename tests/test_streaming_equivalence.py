@@ -1,8 +1,9 @@
-"""The core correctness guarantee: the append-only streaming finals, reconstructed
-by concatenation, equal the batch route's whole-document post-processing — even
-when a multi-word dictation phrase ('neue Zeile') is split across the utterance
-seam. This is what justifies running _postprocess_text on the rolling accumulator
-instead of patching every cross-utterance pipeline hazard.
+"""The core correctness guarantee: the streaming committed document (after close)
+equals the batch route's whole-document post-processing — even when a multi-word
+dictation phrase ('neue Zeile') is split across the utterance seam — and the
+committed prefix is append-only at every step (never rewrites earlier text). This
+is what justifies running _postprocess_text on the rolling accumulator instead of
+patching every cross-utterance pipeline hazard.
 
 Uses the REAL pipeline (main._postprocess_text) via the app_module fixture.
 """
@@ -15,12 +16,12 @@ from streaming_vad import EnergyEndpointer
 
 def _run_stream(pp, utterances):
     """Drive a session through a sequence of finalized raw utterances (bypassing
-    audio/VAD) and return the concatenated emitted final text."""
-    deltas = []
+    audio/VAD) and return the per-final committed strings (last == full document)."""
+    committeds = []
 
     async def emit(m):
         if m["type"] == "final":
-            deltas.append(m["text"])
+            committeds.append(m["committed"])
 
     async def _noop_dp(a, p):
         return []
@@ -36,11 +37,11 @@ def _run_stream(pp, utterances):
     async def run():
         for u in utterances:
             s.raw_confirmed += u
-            await s._emit_final_delta(pp(s.raw_confirmed))
-        await s.close()  # flush the held tail
+            await s._emit_document(pp(s.raw_confirmed))
+        await s.close()  # commit the whole document
 
     asyncio.run(run())
-    return "".join(deltas)
+    return committeds
 
 
 def _cases():
@@ -64,7 +65,14 @@ def test_streaming_finals_reconstruct_batch_output(app_module):
 
     for utterances in _cases():
         full = pp("".join(utterances))
-        streamed = _run_stream(pp, utterances)
-        assert streamed == full, (
+        committeds = _run_stream(pp, utterances)
+        # the committed document, once the session closes, equals batch output.
+        assert committeds[-1] == full, (
             f"streaming != batch for {utterances!r}\n"
-            f" batch:    {full!r}\n stream:   {streamed!r}")
+            f" batch:    {full!r}\n stream:   {committeds[-1]!r}")
+        # append-only: each committed extends the previous — earlier committed text
+        # is never rewritten, even across a 'neue Zeile' seam split.
+        for a, b in zip(committeds, committeds[1:]):
+            assert b.startswith(a), (
+                f"committed text rewritten (not append-only) for {utterances!r}\n"
+                f" was: {a!r}\n now: {b!r}")

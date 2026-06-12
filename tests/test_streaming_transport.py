@@ -101,4 +101,4 @@ def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch):
                 pass
     finals = [m for m in msgs if m["type"] == "final"]
     assert finals, "expected a final from the decoded WebM"
-    assert "welt" in "".join(m["text"] for m in finals)
+    assert "welt" in "".join(m["committed"] + m.get("tail", "") for m in finals)
