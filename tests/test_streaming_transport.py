@@ -12,7 +12,20 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from streaming_transport import FfmpegTransport, RawPcmTransport, make_transport
+from streaming_transport import (
+    FfmpegTransport,
+    RawPcmTransport,
+    ffmpeg_exe,
+    make_transport,
+)
+
+
+def test_ffmpeg_exe_resolves_to_runnable_binary():
+    exe = ffmpeg_exe()
+    assert exe
+    r = subprocess.run([exe, "-version"], capture_output=True, timeout=15)
+    assert r.returncode == 0
+    assert b"ffmpeg version" in r.stdout
 
 
 def _gen_webm(seconds: float) -> bytes:

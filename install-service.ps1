@@ -98,15 +98,42 @@ if (-not (Test-Path $Python)) {
     # not load-bearing.
     & $Python -m pip cache purge 2>&1 | Out-Null
 
-    $reqFile = Join-Path $RepoDir "requirements.txt"
-    if (Test-Path $reqFile) {
-        Write-Host "Installing requirements (faster-whisper + CUDA wheels can take a few minutes)..." -ForegroundColor Cyan
-        & $Python -m pip install -r $reqFile
-        if ($LASTEXITCODE -ne 0) { throw "pip install failed (exit $LASTEXITCODE)" }
-    } else {
-        Write-Host "WARNING: requirements.txt not found at $reqFile" -ForegroundColor Yellow
-    }
     Write-Host "venv ready." -ForegroundColor Green
+}
+
+# --- install / refresh Python dependencies (EVERY run) ----------------------
+# Run on every invocation, not just first venv creation, so dependencies added
+# or bumped in a later commit are picked up by simply re-running this script.
+$reqFile = Join-Path $RepoDir "requirements.txt"
+if (Test-Path $reqFile) {
+    Write-Host "Installing/refreshing requirements (faster-whisper + CUDA wheels can take a few minutes)..." -ForegroundColor Cyan
+    & $Python -m pip install -r $reqFile
+    if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements.txt failed (exit $LASTEXITCODE)" }
+} else {
+    Write-Host "WARNING: requirements.txt not found at $reqFile" -ForegroundColor Yellow
+}
+
+# --- ffmpeg (live-streaming encoded transport) ------------------------------
+# Only the encoded transport (browser Opus/WebM) needs the ffmpeg executable;
+# raw-PCM dictation does not. imageio-ffmpeg (installed above) bundles a binary
+# as a guaranteed fallback, but a system ffmpeg on PATH is preferred. Best-effort
+# winget install of a system ffmpeg; non-fatal (the bundled binary always works).
+$ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
+if ($ff) {
+    Write-Host "ffmpeg present: $($ff.Source)" -ForegroundColor DarkGray
+} else {
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        Write-Host "ffmpeg not on PATH; attempting 'winget install Gyan.FFmpeg' (optional)..." -ForegroundColor Cyan
+        $oldPref = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+        & winget install --id Gyan.FFmpeg -e --silent --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+        $ErrorActionPreference = $oldPref
+    }
+    if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+        Write-Host "ffmpeg installed (a new shell may be needed for PATH)." -ForegroundColor Green
+    } else {
+        Write-Host "No system ffmpeg; the bundled imageio-ffmpeg binary will be used for the encoded streaming transport." -ForegroundColor DarkGray
+    }
 }
 
 # --- optional: install HF->CT2 conversion extras ----------------------------

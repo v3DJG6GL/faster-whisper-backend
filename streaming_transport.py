@@ -10,12 +10,32 @@ session's feed, serialized under a lock by the caller).
 """
 
 import asyncio
+import functools
 import logging
+import shutil
 from typing import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
 
 Sink = Callable[[bytes], Awaitable[None]]
+
+
+@functools.lru_cache(maxsize=1)
+def ffmpeg_exe() -> str:
+    """Resolve the ffmpeg executable. Prefers a system ffmpeg on PATH (usually
+    newer/faster), else the bundled imageio-ffmpeg binary (cross-platform, pulled
+    by requirements.txt), else the bare name ``"ffmpeg"`` as a last resort (which
+    will surface a clear FileNotFoundError if truly absent)."""
+    exe = shutil.which("ffmpeg")
+    if exe:
+        return exe
+    try:
+        import imageio_ffmpeg  # noqa: PLC0415 — optional, bundled binary fallback
+        return imageio_ffmpeg.get_ffmpeg_exe()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[ffmpeg-transport] no system ffmpeg and imageio-ffmpeg "
+                       "unavailable (%s); encoded transports will fail.", exc)
+        return "ffmpeg"
 
 # Raw-PCM format tags (fed straight through); anything else goes via ffmpeg.
 RAW_FORMATS = {"pcm_s16le", "pcm", "s16le", "raw"}
@@ -57,7 +77,7 @@ class FfmpegTransport:
 
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
             "-i", "pipe:0",
             "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(self._sr),
             "pipe:1",

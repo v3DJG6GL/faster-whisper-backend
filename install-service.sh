@@ -49,6 +49,20 @@ else
   sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements.txt"
 fi
 
+# ffmpeg: only the live-streaming *encoded* transport (browser Opus/WebM) needs
+# the ffmpeg executable; raw-PCM dictation does not. imageio-ffmpeg (installed
+# above via requirements.txt) bundles a binary as a guaranteed fallback, but a
+# system ffmpeg is preferred when present. Best-effort install on Debian/Ubuntu.
+if command -v ffmpeg >/dev/null 2>&1; then
+  echo "ffmpeg present: $(ffmpeg -version 2>/dev/null | head -1)"
+elif command -v apt-get >/dev/null 2>&1; then
+  echo "ffmpeg not found; installing via apt-get (optional) ..."
+  apt-get update -qq && apt-get install -y ffmpeg \
+    || echo "  apt install failed; falling back to the bundled imageio-ffmpeg binary."
+else
+  echo "ffmpeg not found and no apt-get; using the bundled imageio-ffmpeg binary."
+fi
+
 UNIT="/etc/systemd/system/${SERVICE_NAME}.service"
 echo "Writing $UNIT ..."
 cat > "$UNIT" <<EOF

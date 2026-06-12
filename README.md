@@ -16,7 +16,8 @@ Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) API for 
   flicker-free partial text *while you speak* (LocalAgreement-2 stabilization) and **append-only,
   post-processed** final text per utterance. Reuses the same models, VAD, and CH-DE dictation
   pipeline as the batch route (which is unchanged); accepts raw 16 kHz PCM **or** browser Opus/WebM
-  (server-side ffmpeg decode); two-tier Silero/energy endpointing. Try it in the browser at `/dictate`.
+  (decoded server-side via a bundled `ffmpeg` — `imageio-ffmpeg`, no system install needed; a
+  system `ffmpeg` on PATH is used when present); two-tier Silero/energy endpointing. Try it in the browser at `/dictate`.
   On by default (auth-gated); tune everything via `WHISPER_STREAMING_*` / `/settings`. A shared
   `INFERENCE_CONCURRENCY` limiter governs streaming **and** batch so they don't oversubscribe the GPU.
 - GPU-accelerated (CUDA) via faster-whisper + CTranslate2, with **automatic CPU fallback** when no GPU is available
