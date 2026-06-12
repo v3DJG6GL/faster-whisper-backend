@@ -150,6 +150,23 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "CAPTURES_PROPOSER_SESSION_GAP_S": "WHISPER_CAPTURES_PROPOSER_SESSION_GAP_S",
     "CAPTURES_PROPOSER_DUP_THRESHOLD": "WHISPER_CAPTURES_PROPOSER_DUP_THRESHOLD",
     "CAPTURES_PROPOSER_MAX_PROPOSALS": "WHISPER_CAPTURES_PROPOSER_MAX_PROPOSALS",
+    # Live streaming (WebSocket dictation) + shared inference concurrency
+    "STREAMING_ENABLED": "WHISPER_STREAMING_ENABLED",
+    "STREAMING_MAX_SESSIONS": "WHISPER_STREAMING_MAX_SESSIONS",
+    "INFERENCE_CONCURRENCY": "WHISPER_INFERENCE_CONCURRENCY",
+    "STREAMING_PARTIAL_MODEL": "WHISPER_STREAMING_PARTIAL_MODEL",
+    "STREAMING_PARTIAL_BEAM": "WHISPER_STREAMING_PARTIAL_BEAM",
+    "STREAMING_VAD_BACKEND": "WHISPER_STREAMING_VAD_BACKEND",
+    "STREAMING_VAD_THRESHOLD": "WHISPER_STREAMING_VAD_THRESHOLD",
+    "STREAMING_RMS_GATE_DBFS": "WHISPER_STREAMING_RMS_GATE_DBFS",
+    "STREAMING_MIN_CHUNK_MS": "WHISPER_STREAMING_MIN_CHUNK_MS",
+    "STREAMING_MIN_SPEECH_MS": "WHISPER_STREAMING_MIN_SPEECH_MS",
+    "STREAMING_VAD_MIN_SILENCE_MS": "WHISPER_STREAMING_VAD_MIN_SILENCE_MS",
+    "STREAMING_COMMIT_SILENCE_MS": "WHISPER_STREAMING_COMMIT_SILENCE_MS",
+    "STREAMING_FORCED_COMMIT_SEC": "WHISPER_STREAMING_FORCED_COMMIT_SEC",
+    "STREAMING_BUFFER_TRIM_SEC": "WHISPER_STREAMING_BUFFER_TRIM_SEC",
+    "STREAMING_BUFFER_TRIM_KEEP_SEC": "WHISPER_STREAMING_BUFFER_TRIM_KEEP_SEC",
+    "STREAMING_PROMPT_WORDS": "WHISPER_STREAMING_PROMPT_WORDS",
     # Structured fields — supplied as a JSON string (config.py parses+validates).
     # The per-model WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention still works
     # and merges on top of WHISPER_MODEL_OVERRIDES.
@@ -166,6 +183,8 @@ RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset({
     "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",
     "LOG_FILE", "LOG_MAX_BYTES", "LOG_BACKUP_COUNT",
     "PRELOAD_MODELS",
+    # The shared GPU inference semaphore is built once at startup.
+    "INFERENCE_CONCURRENCY",
 })
 
 # Load-time fields. Editing these (globally OR per-model in MODEL_OVERRIDES)
@@ -640,6 +659,54 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "CAPTURES_PROPOSER_MAX_PROPOSALS":
         "Maximum number of merge proposals returned per request "
         "(default 20).",
+    # --- Live streaming (WebSocket dictation) ---
+    "STREAMING_ENABLED":
+        "Enable the live dictation WebSocket at /v1/audio/transcriptions/stream. "
+        "Off → the endpoint refuses connections (batch /transcribe is unaffected).",
+    "STREAMING_MAX_SESSIONS":
+        "Max simultaneous streaming sessions; further connections are refused. "
+        "Bound to your GPU's real concurrent capacity.",
+    "INFERENCE_CONCURRENCY":
+        "Shared cap on concurrent GPU decodes across BOTH streaming and the batch "
+        "/transcribe route — prevents oversubscribing the GPU (restart to change).",
+    "STREAMING_PARTIAL_MODEL":
+        "Optional fast model for the live partial loop (e.g. a turbo-German CT2 "
+        "id). Empty = use the request's model for partials too (lowest VRAM).",
+    "STREAMING_PARTIAL_BEAM":
+        "Beam width for partial decodes. 5 is ~as fast as greedy (encoder-bound) "
+        "but more stable run-to-run. Finals use BEAM_SIZE.",
+    "STREAMING_VAD_BACKEND":
+        "Endpointing backend: 'auto' (Silero if installed, else energy), 'silero' "
+        "(noise-robust, needs the silero-vad package), or 'energy' (pure RMS).",
+    "STREAMING_VAD_THRESHOLD":
+        "Silero speech-probability cutoff (0–1). Speech ends at threshold−0.15 "
+        "(built-in hysteresis). Lower for quiet speakers.",
+    "STREAMING_RMS_GATE_DBFS":
+        "Skip inference when the buffer is quieter than this (dBFS) — a backstop "
+        "against silence/noise hallucinations. Typical −42.",
+    "STREAMING_MIN_CHUNK_MS":
+        "Partial cadence: new audio accumulated before re-decoding (ms). 1000 is "
+        "the validated German sweet spot (~4.4 s stabilization latency).",
+    "STREAMING_MIN_SPEECH_MS":
+        "Minimum speech in the buffer before any decode runs (ms) — sub-500 ms "
+        "buffers hallucinate.",
+    "STREAMING_VAD_MIN_SILENCE_MS":
+        "Inner silence gate (ms): a pause this long triggers a boundary partial "
+        "without finalizing. Spans German sub-clause pauses (~700).",
+    "STREAMING_COMMIT_SILENCE_MS":
+        "Outer silence gate (ms): end-of-speech silence that finalizes the "
+        "utterance and runs post-processing. Tune per dictation habit (~1200).",
+    "STREAMING_FORCED_COMMIT_SEC":
+        "Hard cap (s) on continuous speech before a forced finalize — keeps the "
+        "buffer inside Whisper's 30 s receptive field. Must be < 30.",
+    "STREAMING_BUFFER_TRIM_SEC":
+        "Trim the audio buffer once it grows past this (s), at a committed "
+        "word boundary, to bound decode cost.",
+    "STREAMING_BUFFER_TRIM_KEEP_SEC":
+        "Audio retained (s) after a trim, as left-context for the next decode.",
+    "STREAMING_PROMPT_WORDS":
+        "Confirmed words carried across utterances as initial_prompt for "
+        "cross-sentence context (drug names, terminology). ~200.",
 }
 
 
@@ -970,6 +1037,24 @@ class AdminConfig(BaseModel):
     # --- Output wrappers (NOT a faster-whisper param; backend-level) ---
     OUTPUT_PREFIX: Annotated[str, Field(max_length=512)] | None = _F("OUTPUT_PREFIX")
     OUTPUT_SUFFIX: Annotated[str, Field(max_length=512)] | None = _F("OUTPUT_SUFFIX")
+
+    # --- Live streaming (WebSocket dictation) ---
+    STREAMING_ENABLED: bool | None = _F("STREAMING_ENABLED")
+    STREAMING_MAX_SESSIONS: Annotated[int, Field(ge=1, le=256)] | None = _F("STREAMING_MAX_SESSIONS")
+    INFERENCE_CONCURRENCY: Annotated[int, Field(ge=1, le=64)] | None = _F("INFERENCE_CONCURRENCY")
+    STREAMING_PARTIAL_MODEL: Annotated[str, Field(max_length=96)] | None = _F("STREAMING_PARTIAL_MODEL")
+    STREAMING_PARTIAL_BEAM: Annotated[int, Field(ge=1, le=20)] | None = _F("STREAMING_PARTIAL_BEAM")
+    STREAMING_VAD_BACKEND: Literal["auto", "silero", "energy"] | None = _F("STREAMING_VAD_BACKEND")
+    STREAMING_VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("STREAMING_VAD_THRESHOLD")
+    STREAMING_RMS_GATE_DBFS: Annotated[float, Field(ge=-90.0, le=0.0)] | None = _F("STREAMING_RMS_GATE_DBFS")
+    STREAMING_MIN_CHUNK_MS: Annotated[int, Field(ge=200, le=5000)] | None = _F("STREAMING_MIN_CHUNK_MS")
+    STREAMING_MIN_SPEECH_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_MIN_SPEECH_MS")
+    STREAMING_VAD_MIN_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_VAD_MIN_SILENCE_MS")
+    STREAMING_COMMIT_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = _F("STREAMING_COMMIT_SILENCE_MS")
+    STREAMING_FORCED_COMMIT_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F("STREAMING_FORCED_COMMIT_SEC")
+    STREAMING_BUFFER_TRIM_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F("STREAMING_BUFFER_TRIM_SEC")
+    STREAMING_BUFFER_TRIM_KEEP_SEC: Annotated[float, Field(ge=2.0, le=29.0)] | None = _F("STREAMING_BUFFER_TRIM_KEEP_SEC")
+    STREAMING_PROMPT_WORDS: Annotated[int, Field(ge=0, le=400)] | None = _F("STREAMING_PROMPT_WORDS")
 
     # --- Load-time, hardware (advanced) ---
     DOWNLOAD_ROOT: Annotated[str, Field(max_length=512)] | None = _F("DOWNLOAD_ROOT")

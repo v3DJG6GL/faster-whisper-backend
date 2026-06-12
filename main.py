@@ -1043,6 +1043,22 @@ async def _ensure_ct2_model(name: str) -> str:
     return output_dir
 
 
+# Shared GPU inference limiter — caps concurrent model.transcribe() calls across
+# BOTH the streaming WebSocket and the batch /transcribe route so they don't
+# oversubscribe the GPU under the ~10-concurrent target. Built lazily on first
+# use (binds to the running loop); width = cfg.INFERENCE_CONCURRENCY (restart-
+# required). streaming_routes.py acquires the same object via this getter.
+_inference_semaphore: "asyncio.Semaphore | None" = None
+
+
+def get_inference_semaphore() -> "asyncio.Semaphore":
+    global _inference_semaphore
+    if _inference_semaphore is None:
+        n = max(1, int(getattr(cfg, "INFERENCE_CONCURRENCY", 2)))
+        _inference_semaphore = asyncio.Semaphore(n)
+    return _inference_semaphore
+
+
 async def _get_or_load_model(name: str) -> "WhisperModel":
     # Lazy import (see the TYPE_CHECKING note up top): only when a model is
     # actually loaded do we need the native faster_whisper stack.
@@ -1799,7 +1815,8 @@ async def transcribe(
                 _segs, _info = _model.transcribe(_path, **_kw)
                 return list(_segs), _info
             loop = asyncio.get_running_loop()
-            segments_iter, info = await loop.run_in_executor(None, _do_transcribe)
+            async with get_inference_semaphore():
+                segments_iter, info = await loop.run_in_executor(None, _do_transcribe)
 
             all_words = []
             segments_list = []
@@ -2773,6 +2790,25 @@ try:
     )
 except Exception as _e:
     logger.error("Failed to load stats router: %s", _e)
+
+
+# =============================================================================
+# /v1/audio/transcriptions/stream - live (streaming) dictation WebSocket
+# =============================================================================
+# Always registered; the handler self-gates on cfg.STREAMING_ENABLED (toggleable
+# at runtime) and resolves auth per connection (same user records as the batch
+# route). Reuses the model cache + _postprocess_text; see streaming_routes.py.
+try:
+    from streaming_routes import router as _streaming_router
+    app.include_router(_streaming_router)
+    logger.info(
+        "Streaming transcription at /v1/audio/transcriptions/stream "
+        "(enabled=%s, max_sessions=%s)",
+        getattr(cfg, "STREAMING_ENABLED", True),
+        getattr(cfg, "STREAMING_MAX_SESSIONS", 10),
+    )
+except Exception as _e:
+    logger.error("Failed to load streaming router: %s", _e)
 
 
 # =============================================================================

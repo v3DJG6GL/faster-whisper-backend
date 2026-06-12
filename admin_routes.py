@@ -90,6 +90,21 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ("Output wrappers", [(None, [
         "OUTPUT_PREFIX", "OUTPUT_SUFFIX",
     ])]),
+    ("Live streaming", [
+        (None, [
+            "STREAMING_ENABLED", "STREAMING_MAX_SESSIONS", "INFERENCE_CONCURRENCY",
+            "STREAMING_PARTIAL_MODEL", "STREAMING_PARTIAL_BEAM",
+        ]),
+        ("Endpointing (VAD)", [
+            "STREAMING_VAD_BACKEND", "STREAMING_VAD_THRESHOLD", "STREAMING_RMS_GATE_DBFS",
+            "STREAMING_MIN_CHUNK_MS", "STREAMING_MIN_SPEECH_MS",
+            "STREAMING_VAD_MIN_SILENCE_MS", "STREAMING_COMMIT_SILENCE_MS",
+        ]),
+        ("Buffer management", [
+            "STREAMING_FORCED_COMMIT_SEC", "STREAMING_BUFFER_TRIM_SEC",
+            "STREAMING_BUFFER_TRIM_KEEP_SEC", "STREAMING_PROMPT_WORDS",
+        ]),
+    ]),
     ("Per-model overrides", [(None, ["MODEL_OVERRIDES"])]),
     ("Pipeline", [(None, ["PIPELINE_RULES"])]),
     ("Logging", [(None, [

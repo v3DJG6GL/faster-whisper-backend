@@ -733,6 +733,44 @@ CAPTURES_PROPOSER_CACHE_TTL_S = 60
 # because the env-override block below mutates MODEL_OVERRIDES IN PLACE via
 # setdefault(); a shallow snapshot would keep the same dict reference and the
 # "default" handed to the WebUI would silently carry env-injected overrides.
+# =============================================================================
+# Live streaming (WebSocket dictation) + shared inference concurrency
+# =============================================================================
+# Powers /v1/audio/transcriptions/stream (streaming_routes.py / streaming_session
+# .py). Defaults are the validated German-dictation / 12-16 GB-GPU set; every
+# value is WHISPER_STREAMING_*-overridable and editable in /settings.
+
+# Master switch + capacity. INFERENCE_CONCURRENCY is a SHARED GPU limiter that
+# governs BOTH streaming and the batch /transcribe route (restart to change).
+STREAMING_ENABLED: bool = True
+STREAMING_MAX_SESSIONS: int = 10
+INFERENCE_CONCURRENCY: int = 2
+
+# Optional fast model for the live partial loop (e.g. a turbo-German CT2 id).
+# Empty = use the request's model for partials too (single-model, lowest VRAM).
+STREAMING_PARTIAL_MODEL: str = ""
+# Beam width for partial decodes. Encoder-bound, so 5 is ~as fast as greedy but
+# more stable run-to-run (helps LocalAgreement commit). Finals use BEAM_SIZE.
+STREAMING_PARTIAL_BEAM: int = 5
+
+# Endpointing. Backend: "auto" (Silero if installed, else energy) | "silero" |
+# "energy". Two-tier silence gate: inner gate triggers a boundary partial, outer
+# gate finalizes the utterance (so a mid-sentence pause isn't cut).
+STREAMING_VAD_BACKEND: str = "auto"
+STREAMING_VAD_THRESHOLD: float = 0.5
+STREAMING_RMS_GATE_DBFS: float = -42.0
+STREAMING_MIN_CHUNK_MS: int = 1000
+STREAMING_MIN_SPEECH_MS: int = 500
+STREAMING_VAD_MIN_SILENCE_MS: int = 700
+STREAMING_COMMIT_SILENCE_MS: int = 1200
+
+# Buffer management (kept well inside Whisper's 30 s receptive field).
+STREAMING_FORCED_COMMIT_SEC: float = 25.0
+STREAMING_BUFFER_TRIM_SEC: float = 15.0
+STREAMING_BUFFER_TRIM_KEEP_SEC: float = 10.0
+STREAMING_PROMPT_WORDS: int = 200
+
+
 import copy as _copy
 _BASELINE: "dict[str, object]" = _copy.deepcopy({
     k: v for k, v in globals().items()

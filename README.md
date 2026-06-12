@@ -12,6 +12,13 @@ Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) API for 
 ## Features
 
 - OpenAI-compatible API — drop-in replacement for `client.audio.transcriptions.create(...)`
+- **Live streaming dictation** — WebSocket endpoint `/v1/audio/transcriptions/stream` that emits
+  flicker-free partial text *while you speak* (LocalAgreement-2 stabilization) and **append-only,
+  post-processed** final text per utterance. Reuses the same models, VAD, and CH-DE dictation
+  pipeline as the batch route (which is unchanged); accepts raw 16 kHz PCM **or** browser Opus/WebM
+  (server-side ffmpeg decode); two-tier Silero/energy endpointing. Try it in the browser at `/dictate`.
+  On by default (auth-gated); tune everything via `WHISPER_STREAMING_*` / `/settings`. A shared
+  `INFERENCE_CONCURRENCY` limiter governs streaming **and** batch so they don't oversubscribe the GPU.
 - GPU-accelerated (CUDA) via faster-whisper + CTranslate2, with **automatic CPU fallback** when no GPU is available
 - **Per-request model selection** — clients pass `model="large-v3"` / `"large-v3-turbo"` / any HF repo id; LRU-cached in VRAM
 - **CH-DE locale**: ß → ss, Swiss medical vocabulary in default prompt (Spital, Krankenkasse, FMH, CHF)

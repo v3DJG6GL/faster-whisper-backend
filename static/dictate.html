@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<!--
+  Live dictation demo for /v1/audio/transcriptions/stream.
+  Self-contained (no CDNs): captures the mic via an AudioWorklet, downsamples to
+  16 kHz mono s16le PCM, streams it over the WebSocket, and renders LocalAgreement
+  stabilized partials (committed bold + provisional faded) plus append-only finals.
+  Served as a plain static file — deliberately NOT through render_page, so there
+  are no {{...}} placeholders to corrupt.
+-->
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Dictation — faster-whisper</title>
+<style>
+  :root { --fs: 16px; --bg:#0f1115; --fg:#e6e6e6; --muted:#8b93a1; --accent:#4f8cff; --ok:#3fb950; --err:#f85149; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; }
+  body {
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    font-size: var(--fs); background: var(--bg); color: var(--fg);
+    display: flex; flex-direction: column; min-height: 100%;
+  }
+  header { padding: 0.75rem 1rem; border-bottom: 1px solid #232733; display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }
+  header h1 { font-size: 1rem; margin:0; font-weight:600; }
+  .controls { display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; }
+  label { font-size: 0.8rem; color: var(--muted); display:flex; gap:0.3rem; align-items:center; }
+  input[type=text] {
+    font-family: Consolas, Menlo, monospace; font-size:0.85rem;
+    background:#161922; color:var(--fg); border:1px solid #2a2f3a; border-radius:0.35rem; padding:0.3rem 0.45rem;
+  }
+  button {
+    font-size:0.9rem; padding:0.45rem 1rem; border-radius:0.4rem; border:1px solid #2a2f3a;
+    background:var(--accent); color:#fff; cursor:pointer;
+  }
+  button.stop { background:var(--err); }
+  button:disabled { opacity:0.5; cursor:default; }
+  #status { font-size:0.8rem; color:var(--muted); margin-left:auto; }
+  #status.live { color: var(--ok); }
+  #status.error { color: var(--err); }
+  main { flex:1; padding:1rem; overflow:auto; }
+  #doc {
+    white-space: pre-wrap; word-break: break-word; line-height:1.6;
+    font-size:1.05rem; min-height:6rem;
+  }
+  #partial { color: var(--muted); }
+  #partial .committed { color:#c8ccd4; }
+  #partial .pending { color:#5b6270; opacity:0.6; font-style:italic; }
+  footer { padding:0.5rem 1rem; border-top:1px solid #232733; font-size:0.75rem; color:var(--muted); }
+  code { font-family: Consolas, Menlo, monospace; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Live Dictation</h1>
+  <div class="controls">
+    <label>Model <input type="text" id="model" value="whisper-1" size="18"></label>
+    <label>Lang <input type="text" id="lang" value="de" size="3"></label>
+    <label>Key <input type="text" id="key" placeholder="(open mode)" size="10"></label>
+    <button id="toggle">Start dictation</button>
+  </div>
+  <span id="status">idle</span>
+</header>
+<main>
+  <div id="doc"><span id="final"></span><span id="partial"></span></div>
+</main>
+<footer>
+  Speak commands: <code>Punkt</code> → . &nbsp; <code>Komma</code> → , &nbsp;
+  <code>neue Zeile</code> → newline &nbsp; <code>Klammer auf/zu</code> → ( )
+</footer>
+
+<script>
+(() => {
+  "use strict";
+  const TARGET_SR = 16000;
+  const FRAME_SAMPLES = 4096;           // ~256 ms per WS binary frame at 16 kHz
+  const $ = (id) => document.getElementById(id);
+  const finalEl = $("final"), partialEl = $("partial"), statusEl = $("status"), toggleBtn = $("toggle");
+
+  let ws = null, audioCtx = null, workletNode = null, mediaStream = null, running = false;
+  let resampleCarry = 0.0, resamplePos = 0.0, pcmBuf = new Int16Array(FRAME_SAMPLES), pcmLen = 0;
+
+  function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
+
+  // AudioWorklet processor: forward raw Float32 mic frames to the main thread.
+  const workletSrc = `
+    class Cap extends AudioWorkletProcessor {
+      process(inputs) {
+        const ch = inputs[0][0];
+        if (ch) this.port.postMessage(ch.slice(0));
+        return true;
+      }
+    }
+    registerProcessor('cap', Cap);
+  `;
+
+  // Linear-resample incoming Float32 (at ctxRate) down to TARGET_SR, pack to
+  // int16, and ship full frames as WS binary.
+  function pushSamples(float32, srcRate) {
+    const ratio = srcRate / TARGET_SR;
+    let pos = resamplePos;
+    while (pos < float32.length) {
+      const i = Math.floor(pos);
+      const frac = pos - i;
+      const a = float32[i];
+      const b = i + 1 < float32.length ? float32[i + 1] : resampleCarry;
+      let s = a + (b - a) * frac;
+      s = Math.max(-1, Math.min(1, s));
+      pcmBuf[pcmLen++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      if (pcmLen === FRAME_SAMPLES) {
+        if (ws && ws.readyState === 1) ws.send(pcmBuf.buffer.slice(0));
+        pcmLen = 0;
+      }
+      pos += ratio;
+    }
+    resampleCarry = float32[float32.length - 1];
+    resamplePos = pos - float32.length;
+  }
+
+  function renderPartial(committed, pending) {
+    partialEl.innerHTML = "";
+    const c = document.createElement("span"); c.className = "committed"; c.textContent = committed || "";
+    const p = document.createElement("span"); p.className = "pending"; p.textContent = pending || "";
+    partialEl.append(c, p);
+  }
+
+  function onMessage(ev) {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === "ready") { setStatus("listening", "live"); }
+    else if (m.type === "partial") { renderPartial(m.committed, m.pending); }
+    else if (m.type === "final") { finalEl.textContent += m.text; renderPartial("", ""); }
+    else if (m.type === "error") { setStatus("error: " + (m.message || m.code), "error"); }
+  }
+
+  async function start() {
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    const key = $("key").value.trim();
+    const qs = key ? ("?key=" + encodeURIComponent(key)) : "";
+    ws = new WebSocket(proto + "://" + location.host + "/v1/audio/transcriptions/stream" + qs);
+    ws.binaryType = "arraybuffer";
+    setStatus("connecting…");
+
+    ws.onopen = () => {
+      ws.send(JSON.stringify({
+        type: "config", model: $("model").value.trim() || "whisper-1",
+        language: $("lang").value.trim() || null, response_format: "json",
+        audio: { format: "pcm_s16le", sample_rate: TARGET_SR },
+      }));
+    };
+    ws.onmessage = onMessage;
+    ws.onerror = () => setStatus("socket error", "error");
+    ws.onclose = () => { if (running) stop(); setStatus("closed"); };
+
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const blobUrl = URL.createObjectURL(new Blob([workletSrc], { type: "application/javascript" }));
+    await audioCtx.audioWorklet.addModule(blobUrl);
+    const src = audioCtx.createMediaStreamSource(mediaStream);
+    workletNode = new AudioWorkletNode(audioCtx, "cap");
+    const sr = audioCtx.sampleRate;
+    workletNode.port.onmessage = (e) => { if (running) pushSamples(e.data, sr); };
+    src.connect(workletNode);
+    // Keep the node pulling without routing mic to speakers (avoids feedback).
+    const sink = audioCtx.createGain(); sink.gain.value = 0; workletNode.connect(sink); sink.connect(audioCtx.destination);
+  }
+
+  function stop() {
+    running = false;
+    try { if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "stop" })); } } catch {}
+    if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+    if (audioCtx) audioCtx.close();
+    ws = null; audioCtx = null; workletNode = null; mediaStream = null;
+    pcmLen = 0; resamplePos = 0;
+    toggleBtn.textContent = "Start dictation"; toggleBtn.classList.remove("stop");
+    setStatus("idle");
+  }
+
+  toggleBtn.addEventListener("click", async () => {
+    if (running) { stop(); return; }
+    try {
+      running = true;
+      toggleBtn.textContent = "Stop"; toggleBtn.classList.add("stop");
+      await start();
+    } catch (err) {
+      running = false; setStatus("mic/socket failed: " + err.message, "error");
+      toggleBtn.textContent = "Start dictation"; toggleBtn.classList.remove("stop");
+    }
+  });
+})();
+</script>
+</body>
+</html>
