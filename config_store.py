@@ -83,6 +83,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "LOG_VIEWER_DOM_MAX": "WHISPER_LOG_VIEWER_DOM_MAX",
     "ADMIN_WEBUI_ALLOWED_HOSTS": "WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS",
     "USER_WEBUI_ALLOWED_HOSTS": "WHISPER_USER_WEBUI_ALLOWED_HOSTS",
+    "CORS_ALLOW_ORIGINS": "WHISPER_CORS_ALLOW_ORIGINS",
     # Browser session cookies (HttpOnly cookie auth for the WebUI). All hot.
     "SESSION_COOKIE_SECURE": "WHISPER_SESSION_COOKIE_SECURE",
     "SESSION_TTL_SECONDS": "WHISPER_SESSION_TTL_SECONDS",
@@ -185,6 +186,8 @@ RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset({
     "PRELOAD_MODELS",
     # The shared GPU inference semaphore is built once at startup.
     "INFERENCE_CONCURRENCY",
+    # CORSMiddleware is added once at app construction.
+    "CORS_ALLOW_ORIGINS",
 })
 
 # Load-time fields. Editing these (globally OR per-model in MODEL_OVERRIDES)
@@ -497,6 +500,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "/reports, /stats, /logs, /sev) — the per-page API key is still "
         "required. Loopback always allowed; default is OPEN (0.0.0.0/0, ::/0), "
         "so narrow it to restrict which networks may reach the pages.",
+    "CORS_ALLOW_ORIGINS":
+        "CORS allowlist for cross-origin browser calls to the JSON API (e.g. the "
+        "/dictate demo's batch mode fetched from a different origin). Each entry "
+        "is an origin like 'https://app.example.com' or 'http://192.168.1.50:8000'; "
+        "'*' allows any origin (credentials then disabled). Empty (default) = CORS "
+        "off. Streaming (WebSocket) is not subject to CORS. Restart required.",
     # --- Browser sessions ---
     "SESSION_COOKIE_SECURE":
         "Mark the WebUI session/CSRF cookies 'Secure' (sent only over HTTPS). "
@@ -1098,6 +1107,12 @@ class AdminConfig(BaseModel):
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
     ] | None = _F("USER_WEBUI_ALLOWED_HOSTS")
+    # CORS allowlist — each entry is a browser origin (scheme://host[:port]) or
+    # "*". Validated by _validate_cors_origins below.
+    CORS_ALLOW_ORIGINS: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=256)]],
+        Field(max_length=64),
+    ] | None = _F("CORS_ALLOW_ORIGINS")
     # --- Browser sessions ---
     SESSION_COOKIE_SECURE: bool | None = _F("SESSION_COOKIE_SECURE")
     SESSION_TTL_SECONDS: Annotated[
@@ -1429,6 +1444,25 @@ class AdminConfig(BaseModel):
                 raise ValueError(
                     f"'{entry}' is not a valid IP or CIDR (e.g. '127.0.0.1' or "
                     f"'192.168.1.0/24'): {e}"
+                )
+        return v
+
+    @field_validator("CORS_ALLOW_ORIGINS")
+    @classmethod
+    def _validate_cors_origins(cls, v: list[str] | None) -> list[str] | None:
+        """Each entry must be '*' or a bare browser origin: scheme://host[:port]
+        with NO path/query (matching what the browser sends in the Origin header)."""
+        if v is None:
+            return v
+        for entry in v:
+            if entry == "*":
+                continue
+            m = re.fullmatch(r"https?://[^/?#\s]+", entry)
+            if not m:
+                raise ValueError(
+                    f"'{entry}' is not a valid CORS origin — use 'scheme://host[:port]' "
+                    f"(e.g. 'https://app.example.com' or 'http://192.168.1.50:8000') "
+                    f"or '*'; no trailing path/slash."
                 )
         return v
 

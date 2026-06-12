@@ -1516,6 +1516,26 @@ app = FastAPI(
     docs_url=None, redoc_url=None, openapi_url=None,
 )
 
+# CORS — opt-in, off by default (empty allowlist → no middleware, no
+# Access-Control-* headers, unchanged behavior). Enable by listing browser
+# origins in CORS_ALLOW_ORIGINS so cross-origin JSON-API calls work (e.g. the
+# /dictate demo's batch-mode fetch from a different origin than the backend).
+# '*' allows any origin, in which case credentials must be disabled per the CORS
+# spec. The WebSocket streaming path is not subject to CORS.
+_cors_origins = list(getattr(cfg, "CORS_ALLOW_ORIGINS", []) or [])
+if _cors_origins:
+    from fastapi.middleware.cors import CORSMiddleware
+    _cors_allow_all = "*" in _cors_origins
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"] if _cors_allow_all else _cors_origins,
+        allow_credentials=not _cors_allow_all,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    logger.info("CORS enabled for origins: %s",
+                "* (any)" if _cors_allow_all else ", ".join(_cors_origins))
+
 # Static assets for the /stats dashboard (vendored uPlot, etc). Local-only —
 # do not put anything sensitive under static/.
 from fastapi.staticfiles import StaticFiles

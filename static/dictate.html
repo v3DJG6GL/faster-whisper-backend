@@ -267,7 +267,8 @@
       setStatus("done", "live");
     } catch (err) {
       // A bare TypeError here is usually a cross-origin CORS block (remote Server).
-      setStatus("batch failed: " + err.message + " — for a remote backend, open /dictate from it (CORS)", "error");
+      setStatus("batch failed: " + err.message
+        + " — remote backend needs CORS: set WHISPER_CORS_ALLOW_ORIGINS (or open /dictate from it)", "error");
     } finally {
       running = false;
       if (recStream) { recStream.getTracks().forEach((t) => t.stop()); recStream = null; }
@@ -350,7 +351,7 @@
   } else {
     $("note").textContent = "Settings are saved in this browser's localStorage. "
       + "Batch mode records the clip and POSTs it to /v1/audio/transcriptions (one-shot); "
-      + "a remote Server then needs CORS — or open /dictate from the backend itself.";
+      + "for a remote Server, set WHISPER_CORS_ALLOW_ORIGINS on the backend (or open /dictate from it).";
   }
 })();
 </script>

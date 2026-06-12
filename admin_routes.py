@@ -118,6 +118,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ("Access & sessions", [
         (None, [
             "ADMIN_WEBUI_ALLOWED_HOSTS", "USER_WEBUI_ALLOWED_HOSTS",
+            "CORS_ALLOW_ORIGINS",
         ]),
         ("Browser sessions (cookie auth)", [
             "SESSION_COOKIE_SECURE", "SESSION_TTL_SECONDS",

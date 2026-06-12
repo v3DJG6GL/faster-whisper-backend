@@ -434,6 +434,14 @@ ADMIN_UI_ENABLED = True
 ADMIN_WEBUI_ALLOWED_HOSTS: "list[str]" = ["127.0.0.1", "::1"]
 USER_WEBUI_ALLOWED_HOSTS: "list[str]" = ["0.0.0.0/0", "::/0"]
 
+# CORS allowlist for cross-origin browser calls to the JSON API (e.g. the
+# /dictate demo's BATCH mode fetch from a different origin than the backend).
+# Empty (default) = CORS disabled, no Access-Control-* headers, same as before.
+# List explicit origins (scheme://host[:port], comma-separated in the env var)
+# to allow them; "*" allows any origin (credentials are then disabled, per the
+# CORS spec). Streaming (WebSocket) is unaffected — it is not subject to CORS.
+CORS_ALLOW_ORIGINS: "list[str]" = []
+
 
 # =============================================================================
 # Browser sessions (HttpOnly cookie auth for the WebUI)
