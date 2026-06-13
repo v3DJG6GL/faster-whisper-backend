@@ -1843,3 +1843,98 @@ def format_validation_errors(err: ValidationError) -> list[dict[str, str]]:
         msg = e.get("msg", "invalid value")
         out.append({"loc": loc, "msg": msg})
     return out
+
+
+# =============================================================================
+# Per-identity binding validation (per-user / per-API-key config blobs)
+# =============================================================================
+# A binding = {"direct": <OverrideProfile-shaped dict>, "profiles": [name, …]}.
+# The wire shape sent by the WebUI is {"overrides": {...}, "profiles": [...],
+# "locks": [...]}; validate_binding() turns it into the stored shape, applying
+# the same OverrideProfile schema (bounds + lock-field check) the profiles use.
+
+def _canonical_rule_slugs() -> set[str]:
+    """The set of rule slugs in the live PIPELINE_RULES list (post-load dicts
+    or rule objects), for cross-checking per-identity include/exclude."""
+    import config as _cfg
+    out: set[str] = set()
+    for r in (getattr(_cfg, "PIPELINE_RULES", None) or []):
+        name = r.get("name") if isinstance(r, dict) else getattr(r, "name", None)
+        if name:
+            out.add(name)
+    return out
+
+
+def validate_profile_refs(names: Any) -> list[str]:
+    """Validate an ORDERED list of profile names referenced by a user/key
+    binding. Each must match the profile-name shape AND exist in the current
+    OVERRIDE_PROFILES (save rejects dangling references). Order is preserved
+    (precedence is positional, earlier-wins); duplicates are dropped. Empty /
+    None → []. Raises ValueError on any bad / unknown name."""
+    if names is None:
+        return []
+    if not isinstance(names, list):
+        raise ValueError("profiles must be a list of strings")
+    import config as _cfg
+    available = set((getattr(_cfg, "OVERRIDE_PROFILES", None) or {}).keys())
+    out: list[str] = []
+    seen: set[str] = set()
+    for n in names:
+        if not isinstance(n, str):
+            raise ValueError(f"profile name must be a string, got {type(n).__name__}")
+        nm = n.strip()
+        if not nm:
+            continue
+        if not TAG_RE.match(nm):
+            raise ValueError(
+                f"invalid profile name {n!r} — lowercase a-z0-9- only, "
+                "max 32 chars, no leading/trailing hyphen")
+        if nm not in available:
+            raise ValueError(f"unknown profile {nm!r} — create it first")
+        if nm in seen:
+            continue
+        seen.add(nm)
+        out.append(nm)
+    return out
+
+
+def validate_binding(raw: Any) -> dict[str, Any]:
+    """Validate a per-identity config binding sent by the WebUI and return the
+    stored shape {"direct": {...}, "profiles": [...]}.
+
+    Input: {"overrides": {field: value, …, PIPELINE_RULES_*: [...]},
+            "locks": [field, …], "profiles": [name, …]}.
+    Raises ValueError on any invalid field / bound / lock target / unknown
+    profile reference / unknown pipeline slug."""
+    if not isinstance(raw, dict):
+        raise ValueError("config must be a JSON object")
+    overrides = raw.get("overrides") or {}
+    if not isinstance(overrides, dict):
+        raise ValueError("config.overrides must be a JSON object")
+    locks = raw.get("locks") or []
+    blob = dict(overrides)
+    if locks:
+        blob["locks"] = locks
+    try:
+        direct = OverrideProfile.model_validate(blob).model_dump(
+            exclude_none=True, mode="json")
+    except ValidationError as e:
+        raise ValueError("; ".join(
+            f"{x['loc']}: {x['msg']}" for x in format_validation_errors(e)
+        )) from e
+    canonical = _canonical_rule_slugs()
+    if canonical:
+        for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
+            unknown = [s for s in (direct.get(list_name) or []) if s not in canonical]
+            if unknown:
+                raise ValueError(
+                    f"{list_name} references unknown rule slugs: {unknown}")
+    return {"direct": direct, "profiles": validate_profile_refs(raw.get("profiles"))}
+
+
+def binding_is_empty(binding: Any) -> bool:
+    """True if a stored binding carries no direct override and no profiles —
+    i.e. contributes nothing and need not be persisted."""
+    if not isinstance(binding, dict):
+        return True
+    return not (binding.get("direct") or binding.get("profiles"))

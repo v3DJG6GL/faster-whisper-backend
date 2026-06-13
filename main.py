@@ -2999,6 +2999,10 @@ if cfg.ADMIN_UI_ENABLED:
         # auth shape (admin host + admin key) as /settings.
         from api_keys_routes import router as _api_keys_router
         app.include_router(_api_keys_router)
+        # /settings/overrides — admin UI for layered per-identity config
+        # profiles + the effective-config Explorer. Same auth shape as /settings.
+        from overrides_routes import router as _overrides_router
+        app.include_router(_overrides_router)
         logger.info(
             "Admin UI enabled at /settings (allowlist=%s; auth=API key)",
             cfg.ADMIN_WEBUI_ALLOWED_HOSTS,

@@ -146,7 +146,21 @@ def init_db(db_path: str) -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA)
+    _ensure_columns(_conn)
     _rebuild_index_locked()
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Idempotent additive migrations for columns added after the initial
+    release. `CREATE TABLE IF NOT EXISTS` never alters an existing table, so a
+    new column must be ALTER-ed in here. Safe to run on every init.
+
+    api_keys.config: JSON per-key override binding
+    {"direct": {...}, "profiles": [...]}; default '{}' = no per-key config."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(api_keys)").fetchall()}
+    if "config" not in cols:
+        conn.execute(
+            "ALTER TABLE api_keys ADD COLUMN config TEXT NOT NULL DEFAULT '{}'")
 
 
 def _require_conn() -> sqlite3.Connection:
@@ -218,6 +232,30 @@ def _row_to_key_dict(row: sqlite3.Row) -> dict[str, Any]:
         "created_ts": float(row["created_ts"]),
         "revoked_ts": float(row["revoked_ts"]) if row["revoked_ts"] is not None else None,
         "last_used_ts": float(row["last_used_ts"]) if row["last_used_ts"] is not None else None,
+        "config": _parse_binding(row["config"] if "config" in row.keys() else None),
+    }
+
+
+def _parse_binding(raw: "str | dict | None") -> dict[str, Any]:
+    """Decode a per-identity config binding (JSON string or already-decoded
+    dict) into the canonical {"direct": {...}, "profiles": [...]} shape. Returns
+    the empty binding on null / blank / invalid input — a malformed binding
+    must never crash a decode (the resolver simply treats it as no config)."""
+    empty = {"direct": {}, "profiles": []}
+    if not raw:
+        return empty
+    try:
+        v = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return empty
+    if not isinstance(v, dict):
+        return empty
+    direct = v.get("direct")
+    profiles = v.get("profiles")
+    return {
+        "direct": direct if isinstance(direct, dict) else {},
+        "profiles": [p for p in profiles if isinstance(p, str)]
+        if isinstance(profiles, list) else [],
     }
 
 
@@ -434,6 +472,7 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
         "created_ts": now,
         "revoked_ts": None,
         "last_used_ts": None,
+        "config": {"direct": {}, "profiles": []},
     }
     return raw_key, rec
 
@@ -605,6 +644,57 @@ def get_user_permissions(user_id: str) -> dict[str, Any]:
     return _parse_permissions(row["permissions"])
 
 
+# ---------------------------------------------------------------------
+# Per-identity config bindings (override profiles + direct override blob)
+# ---------------------------------------------------------------------
+
+def get_user_config(user_id: "str | None") -> dict[str, Any]:
+    """Return the user's config binding {"direct": {...}, "profiles": [...]},
+    or the empty binding for unknown / revoked / sentinel ids. Stored as the
+    `config` sub-key of the permissions JSON."""
+    if not user_id or user_id == "(open-mode)":
+        return {"direct": {}, "profiles": []}
+    return _parse_binding(get_user_permissions(user_id).get("config"))
+
+
+def get_key_config(key_id: "str | None") -> dict[str, Any]:
+    """Return the API key's config binding, or the empty binding for unknown /
+    revoked / sentinel ids. Stored in the api_keys.config column."""
+    if not key_id or key_id in ("(open-mode)", "(session)"):
+        return {"direct": {}, "profiles": []}
+    conn = _require_conn()
+    with _lock:
+        row = conn.execute(
+            "SELECT config FROM api_keys WHERE id = ? AND revoked_ts IS NULL",
+            (key_id,),
+        ).fetchone()
+    if row is None:
+        return {"direct": {}, "profiles": []}
+    return _parse_binding(row["config"] if "config" in row.keys() else None)
+
+
+def set_key_config(user_id: str, key_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Validate + persist a per-key config binding. `body` is the wire shape
+    {"overrides": {...}, "profiles": [...], "locks": [...]}; returns the stored
+    {"direct": {...}, "profiles": [...]}. Raises ValueError on bad input or if
+    the key doesn't belong to `user_id` / is revoked. No index rebuild — config
+    is resolved per-request, not carried in the auth index."""
+    import config_store
+    binding = config_store.validate_binding(body)  # raises ValueError
+    conn = _require_conn()
+    with _lock:
+        cur = conn.execute(
+            "UPDATE api_keys SET config = ?"
+            " WHERE id = ? AND user_id = ? AND revoked_ts IS NULL",
+            (json.dumps(binding), key_id, user_id),
+        )
+        if cur.rowcount == 0:
+            raise ValueError("key not found or revoked")
+    logger.info("[auth] key config updated kid=%s user=%s profiles=%s",
+                key_id[:8], user_id[:8], binding["profiles"])
+    return binding
+
+
 def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
     """PATCH-merge a permissions update onto the user's stored shape.
     Returns the (validated + canonical) dict that landed in the DB so
@@ -646,15 +736,21 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
                 f" (allowed: {', '.join(allowed)})"
             )
 
+    # Reuse config_store validators so rule tags / user tags / bindings share
+    # one normalisation contract.
+    import config_store
+
     # Tags: present → validate + normalise; absent → preserve stored.
     incoming_tags = perms.get("quick_config_tags")
     if incoming_tags is not None:
-        # Reuse the config_store validator so rule tags and user tags
-        # share the same regex / normalisation.
-        import config_store
         clean_tags = config_store.normalize_tags(incoming_tags)
     else:
         clean_tags = None
+
+    # Config binding: present → validate; absent → preserve; empty → clear.
+    incoming_config = perms.get("config")
+    clean_config = (config_store.validate_binding(incoming_config)
+                    if incoming_config is not None else None)
 
     # Merge: incoming wins, otherwise keep what's stored, otherwise "none".
     existing_perms = get_user_permissions(user_id)
@@ -675,6 +771,16 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
         merged_tags = list(existing_tags) if isinstance(existing_tags, list) else []
 
     clean = {"pages": merged_pages, "quick_config_tags": merged_tags}
+    # Config: incoming wins (empty → clear); absent → preserve stored. Only
+    # persisted when non-empty so the common no-config user stays clean.
+    if clean_config is not None:
+        if not config_store.binding_is_empty(clean_config):
+            clean["config"] = clean_config
+    else:
+        existing_config = existing_perms.get("config")
+        if isinstance(existing_config, dict) and not config_store.binding_is_empty(existing_config):
+            clean["config"] = existing_config
+
     conn = _require_conn()
     with _lock:
         cur = conn.execute(
@@ -685,8 +791,9 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
             raise ValueError("user not found or revoked")
         _rebuild_index_locked()
     logger.info(
-        "[auth] permissions updated user=%s pages=%s tags=%s",
+        "[auth] permissions updated user=%s pages=%s tags=%s profiles=%s",
         user_id[:8], merged_pages, merged_tags,
+        (clean.get("config") or {}).get("profiles", []),
     )
     return clean
 

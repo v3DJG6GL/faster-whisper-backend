@@ -51,6 +51,18 @@ class CreateKeyIn(BaseModel):
     label: str = Field(default="", max_length=128)
 
 
+class ConfigBindingIn(BaseModel):
+    """Wire shape for a per-identity config binding — shared by the per-user
+    `config` field on PatchPermissionsIn and the per-key /config endpoint.
+    `overrides` is a flat OverrideProfile-shaped dict (decode/streaming fields
+    + PIPELINE_RULES_EXCLUDE/INCLUDE); `profiles` is the ordered profile list
+    (earlier wins); `locks` names the fields the client may not override."""
+    model_config = {"extra": "forbid"}
+    overrides: dict[str, Any] = Field(default_factory=dict)
+    profiles: list[str] = Field(default_factory=list)
+    locks: list[str] = Field(default_factory=list)
+
+
 class PatchPermissionsIn(BaseModel):
     """Payload for PATCH /api/users/{uid}/permissions.
 
@@ -68,6 +80,11 @@ class PatchPermissionsIn(BaseModel):
     model_config = {"extra": "forbid"}
     pages: dict[str, str] = Field(default_factory=dict)
     quick_config_tags: list[str] | None = None
+    # Per-user config binding (override profiles + direct override blob + per-
+    # field locks). `None` = leave the stored value untouched; an explicit empty
+    # binding ({} overrides, [] profiles) clears it. Validated by
+    # config_store.validate_binding inside set_user_permissions.
+    config: ConfigBindingIn | None = None
 
 
 # ---------------------------------------------------------------------
@@ -268,10 +285,34 @@ async def patch_user_permissions_api(
         merge_payload: dict[str, Any] = {"pages": payload.pages}
         if payload.quick_config_tags is not None:
             merge_payload["quick_config_tags"] = payload.quick_config_tags
+        if payload.config is not None:
+            merge_payload["config"] = payload.config.model_dump()
         merged = api_keys_store.set_user_permissions(uid, merge_payload)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return JSONResponse({"ok": True, "permissions": merged})
+
+
+@router.patch(
+    "/api/users/{uid}/keys/{kid}/config",
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+)
+async def patch_key_config_api(
+    uid: str, kid: str, payload: ConfigBindingIn,
+) -> JSONResponse:
+    """Validate + persist a per-key config binding (override profiles + direct
+    overrides + locks). Returns the stored {"direct": …, "profiles": …} so the
+    drawer can echo it back. 404 if the key isn't this user's; 409 if revoked."""
+    key = api_keys_store.get_key(kid)
+    if key is None or key["user_id"] != uid:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "key not found")
+    if key["revoked_ts"] is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "key is revoked")
+    try:
+        binding = api_keys_store.set_key_config(uid, kid, payload.model_dump())
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return JSONResponse({"ok": True, "config": binding})
 
 
 # ---------------------------------------------------------------------
