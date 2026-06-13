@@ -821,6 +821,111 @@ def _resolve_suppress_chars(model_id: str,
     return out
 
 
+def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
+                               vad_filter, vad_parameters, want_word_ts,
+                               initial_prompt):
+    """Assemble the full ``model.transcribe`` kwargs from per-model config.
+
+    Single source of truth shared by the batch endpoint and the streaming FINAL
+    decode, so the two produce identical results for the same audio (there must
+    be no difference between streaming and batch). The per-request values
+    (``language``, ``temperature``, ``vad_filter``, ``vad_parameters``,
+    ``want_word_ts``, ``initial_prompt``) are passed in already resolved; every
+    other knob is read here from the per-model config.
+    """
+    transcribe_kwargs = dict(
+        language=language if language else None,
+        beam_size=cfg_for(resolved_model, "BEAM_SIZE"),
+        best_of=cfg_for(resolved_model, "BEST_OF"),
+        temperature=temperature,
+        vad_filter=vad_filter,
+        vad_parameters=vad_parameters,
+        word_timestamps=want_word_ts,
+        condition_on_previous_text=cfg_for(resolved_model, "CONDITION_ON_PREVIOUS_TEXT"),
+        initial_prompt=initial_prompt,
+        no_speech_threshold=cfg_for(resolved_model, "NO_SPEECH_THRESHOLD"),
+        log_prob_threshold=cfg_for(resolved_model, "LOG_PROB_THRESHOLD"),
+        compression_ratio_threshold=cfg_for(resolved_model, "COMPRESSION_RATIO_THRESHOLD"),
+    )
+    # Optional advanced kwargs — only forwarded when set, so the
+    # transcribe_kwargs dict stays clean for the common path.
+    _hotwords = cfg_for(resolved_model, "DEFAULT_HOTWORDS")
+    if _hotwords:
+        transcribe_kwargs["hotwords"] = _hotwords
+    _temp_str = cfg_for(resolved_model, "TEMPERATURE")
+    if _temp_str:
+        # Per-model override of the temperature ladder. Comma-separated
+        # floats; falls back to the per-request `temperature` (default
+        # 0.0) when unset.
+        try:
+            ladder = tuple(float(t.strip()) for t in _temp_str.split(",") if t.strip())
+            if ladder:
+                transcribe_kwargs["temperature"] = ladder
+        except ValueError:
+            pass
+    _patience = cfg_for(resolved_model, "PATIENCE")
+    if _patience and _patience != 1.0:
+        transcribe_kwargs["patience"] = _patience
+    _length_penalty = cfg_for(resolved_model, "LENGTH_PENALTY")
+    if _length_penalty and _length_penalty != 1.0:
+        transcribe_kwargs["length_penalty"] = _length_penalty
+    _repetition_penalty = cfg_for(resolved_model, "REPETITION_PENALTY")
+    if _repetition_penalty and _repetition_penalty != 1.0:
+        transcribe_kwargs["repetition_penalty"] = _repetition_penalty
+    _no_repeat_ngram = cfg_for(resolved_model, "NO_REPEAT_NGRAM_SIZE")
+    if _no_repeat_ngram:
+        transcribe_kwargs["no_repeat_ngram_size"] = _no_repeat_ngram
+    _prompt_reset_t = cfg_for(resolved_model, "PROMPT_RESET_ON_TEMPERATURE")
+    if _prompt_reset_t is not None and _prompt_reset_t != 0.5:
+        transcribe_kwargs["prompt_reset_on_temperature"] = _prompt_reset_t
+    if cfg_for(resolved_model, "MULTILINGUAL"):
+        transcribe_kwargs["multilingual"] = True
+    _lang_thresh = cfg_for(resolved_model, "LANGUAGE_DETECTION_THRESHOLD")
+    if _lang_thresh is not None and _lang_thresh != 0.5:
+        transcribe_kwargs["language_detection_threshold"] = _lang_thresh
+    _lang_segs = cfg_for(resolved_model, "LANGUAGE_DETECTION_SEGMENTS")
+    if _lang_segs and _lang_segs != 1:
+        transcribe_kwargs["language_detection_segments"] = _lang_segs
+    _hallu_silence = cfg_for(resolved_model, "HALLUCINATION_SILENCE_THRESHOLD")
+    if _hallu_silence is not None:
+        transcribe_kwargs["hallucination_silence_threshold"] = _hallu_silence
+    _suppress_blank = cfg_for(resolved_model, "SUPPRESS_BLANK")
+    if _suppress_blank is False:
+        transcribe_kwargs["suppress_blank"] = False
+    _suppress_tokens_str = cfg_for(resolved_model, "SUPPRESS_TOKENS")
+    if _suppress_tokens_str is not None:
+        if _suppress_tokens_str.strip():
+            try:
+                transcribe_kwargs["suppress_tokens"] = [
+                    int(t.strip()) for t in _suppress_tokens_str.split(",") if t.strip()
+                ]
+            except ValueError:
+                pass
+        else:
+            transcribe_kwargs["suppress_tokens"] = None
+    # SUPPRESS_CHARS — chars resolved to vocab IDs via the loaded
+    # model's tokenizer, then merged into the effective suppress_tokens
+    # list. Genuinely additive: existing IDs from SUPPRESS_TOKENS are
+    # preserved.
+    _suppress_chars = cfg_for(resolved_model, "SUPPRESS_CHARS")
+    if _suppress_chars:
+        extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars)
+        if extra_ids:
+            existing = transcribe_kwargs.get("suppress_tokens")
+            if existing is None:
+                merged_ids = sorted({-1, *extra_ids})
+            else:
+                merged_ids = sorted(set(existing) | set(extra_ids))
+            transcribe_kwargs["suppress_tokens"] = merged_ids
+    _prepend_p = cfg_for(resolved_model, "PREPEND_PUNCTUATIONS")
+    if _prepend_p:
+        transcribe_kwargs["prepend_punctuations"] = _prepend_p
+    _append_p = cfg_for(resolved_model, "APPEND_PUNCTUATIONS")
+    if _append_p:
+        transcribe_kwargs["append_punctuations"] = _append_p
+    return transcribe_kwargs
+
+
 def _drop_suppress_chars_cache(model_id: str) -> None:
     """Drop all cache entries for a given model. Called from unload paths."""
     for k in list(_suppress_chars_cache):
@@ -1743,96 +1848,14 @@ async def transcribe(
             # the first-30s auto-detect path, which is what an empty
             # DEFAULT_LANGUAGE is documented to mean.
             _language = language or cfg_for(resolved_model, "DEFAULT_LANGUAGE")
-            transcribe_kwargs = dict(
-                language=_language if _language else None,
-                beam_size=cfg_for(resolved_model, "BEAM_SIZE"),
-                best_of=cfg_for(resolved_model, "BEST_OF"),
-                temperature=temperature,
-                vad_filter=_vad_filter,
-                vad_parameters=vad_parameters,
-                word_timestamps=want_word_ts,
-                condition_on_previous_text=cfg_for(resolved_model, "CONDITION_ON_PREVIOUS_TEXT"),
-                initial_prompt=initial_prompt_arg,
-                no_speech_threshold=cfg_for(resolved_model, "NO_SPEECH_THRESHOLD"),
-                log_prob_threshold=cfg_for(resolved_model, "LOG_PROB_THRESHOLD"),
-                compression_ratio_threshold=cfg_for(resolved_model, "COMPRESSION_RATIO_THRESHOLD"),
+            # Single source of truth — the streaming FINAL decode builds its kwargs
+            # from this exact assembler too, so streaming and batch never diverge.
+            transcribe_kwargs = assemble_transcribe_kwargs(
+                resolved_model, model,
+                language=_language, temperature=temperature,
+                vad_filter=_vad_filter, vad_parameters=vad_parameters,
+                want_word_ts=want_word_ts, initial_prompt=initial_prompt_arg,
             )
-            # Optional advanced kwargs — only forwarded when set, so the
-            # transcribe_kwargs dict stays clean for the common path.
-            _hotwords = cfg_for(resolved_model, "DEFAULT_HOTWORDS")
-            if _hotwords:
-                transcribe_kwargs["hotwords"] = _hotwords
-            _temp_str = cfg_for(resolved_model, "TEMPERATURE")
-            if _temp_str:
-                # Per-model override of the temperature ladder. Comma-separated
-                # floats; falls back to the per-request `temperature` (default
-                # 0.0) when unset.
-                try:
-                    ladder = tuple(float(t.strip()) for t in _temp_str.split(",") if t.strip())
-                    if ladder:
-                        transcribe_kwargs["temperature"] = ladder
-                except ValueError:
-                    pass
-            _patience = cfg_for(resolved_model, "PATIENCE")
-            if _patience and _patience != 1.0:
-                transcribe_kwargs["patience"] = _patience
-            _length_penalty = cfg_for(resolved_model, "LENGTH_PENALTY")
-            if _length_penalty and _length_penalty != 1.0:
-                transcribe_kwargs["length_penalty"] = _length_penalty
-            _repetition_penalty = cfg_for(resolved_model, "REPETITION_PENALTY")
-            if _repetition_penalty and _repetition_penalty != 1.0:
-                transcribe_kwargs["repetition_penalty"] = _repetition_penalty
-            _no_repeat_ngram = cfg_for(resolved_model, "NO_REPEAT_NGRAM_SIZE")
-            if _no_repeat_ngram:
-                transcribe_kwargs["no_repeat_ngram_size"] = _no_repeat_ngram
-            _prompt_reset_t = cfg_for(resolved_model, "PROMPT_RESET_ON_TEMPERATURE")
-            if _prompt_reset_t is not None and _prompt_reset_t != 0.5:
-                transcribe_kwargs["prompt_reset_on_temperature"] = _prompt_reset_t
-            if cfg_for(resolved_model, "MULTILINGUAL"):
-                transcribe_kwargs["multilingual"] = True
-            _lang_thresh = cfg_for(resolved_model, "LANGUAGE_DETECTION_THRESHOLD")
-            if _lang_thresh is not None and _lang_thresh != 0.5:
-                transcribe_kwargs["language_detection_threshold"] = _lang_thresh
-            _lang_segs = cfg_for(resolved_model, "LANGUAGE_DETECTION_SEGMENTS")
-            if _lang_segs and _lang_segs != 1:
-                transcribe_kwargs["language_detection_segments"] = _lang_segs
-            _hallu_silence = cfg_for(resolved_model, "HALLUCINATION_SILENCE_THRESHOLD")
-            if _hallu_silence is not None:
-                transcribe_kwargs["hallucination_silence_threshold"] = _hallu_silence
-            _suppress_blank = cfg_for(resolved_model, "SUPPRESS_BLANK")
-            if _suppress_blank is False:
-                transcribe_kwargs["suppress_blank"] = False
-            _suppress_tokens_str = cfg_for(resolved_model, "SUPPRESS_TOKENS")
-            if _suppress_tokens_str is not None:
-                if _suppress_tokens_str.strip():
-                    try:
-                        transcribe_kwargs["suppress_tokens"] = [
-                            int(t.strip()) for t in _suppress_tokens_str.split(",") if t.strip()
-                        ]
-                    except ValueError:
-                        pass
-                else:
-                    transcribe_kwargs["suppress_tokens"] = None
-            # SUPPRESS_CHARS — chars resolved to vocab IDs via the loaded
-            # model's tokenizer, then merged into the effective suppress_tokens
-            # list. Genuinely additive: existing IDs from SUPPRESS_TOKENS are
-            # preserved.
-            _suppress_chars = cfg_for(resolved_model, "SUPPRESS_CHARS")
-            if _suppress_chars:
-                extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars)
-                if extra_ids:
-                    existing = transcribe_kwargs.get("suppress_tokens")
-                    if existing is None:
-                        merged_ids = sorted({-1, *extra_ids})
-                    else:
-                        merged_ids = sorted(set(existing) | set(extra_ids))
-                    transcribe_kwargs["suppress_tokens"] = merged_ids
-            _prepend_p = cfg_for(resolved_model, "PREPEND_PUNCTUATIONS")
-            if _prepend_p:
-                transcribe_kwargs["prepend_punctuations"] = _prepend_p
-            _append_p = cfg_for(resolved_model, "APPEND_PUNCTUATIONS")
-            if _append_p:
-                transcribe_kwargs["append_punctuations"] = _append_p
 
             # Run the synchronous CTranslate2 inference in a thread executor
             # so the event loop stays responsive. CT2 releases the GIL

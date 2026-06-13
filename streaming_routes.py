@@ -127,8 +127,16 @@ def _stream_config(cfg) -> StreamConfig:
 
 def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
                              prompt: str, want_words: bool,
-                             language: str = "") -> dict:
-    """Assemble model.transcribe kwargs from per-model config + streaming overrides.
+                             language: str = "", model_obj=None) -> dict:
+    """Assemble model.transcribe kwargs for a streaming decode.
+
+    Both partial and final decodes pull the SAME per-model config as the batch
+    route (via ``main.assemble_transcribe_kwargs``) — hotwords, suppress_tokens/
+    chars, prepend/append_punctuations, penalties, thresholds — so streaming
+    output matches batch. The FINAL decode (the full committed utterance) is the
+    batch decode's exact analogue and uses the assembler verbatim. The PARTIAL
+    decode keeps all those quality knobs (they're ~free) and overrides ONLY the
+    handful that must stay streaming-specific for latency/stability (see below).
 
     ``language`` is the per-connection language from the config handshake; it wins
     over the model's DEFAULT_LANGUAGE. Pinning it avoids faster-whisper auto-
@@ -137,26 +145,44 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
     cfg_for = main.cfg_for
     cfg = main.cfg
     lang = (language or cfg_for(model_name, "DEFAULT_LANGUAGE") or "").strip()
-    kwargs = dict(
-        language=lang or None,
-        temperature=0.0,
-        condition_on_previous_text=False,  # German finetunes loop when True (config.py:245)
-        word_timestamps=want_words,
-        vad_filter=False,                  # we gate with our own VAD
-        initial_prompt=(prompt or cfg_for(model_name, "DEFAULT_PROMPT")) or None,
-        no_repeat_ngram_size=3,            # greedy-safe loop guard
+    _vad_filter = cfg_for(model_name, "VAD_FILTER")
+    vad_parameters = dict(
+        min_silence_duration_ms=cfg_for(model_name, "VAD_MIN_SILENCE_MS"),
+        speech_pad_ms=cfg_for(model_name, "VAD_SPEECH_PAD_MS"),
+        threshold=cfg_for(model_name, "VAD_THRESHOLD"),
+    ) if _vad_filter else None
+    _prompt = prompt or cfg_for(model_name, "DEFAULT_PROMPT")
+    kwargs = main.assemble_transcribe_kwargs(
+        model_name, model_obj,
+        language=lang, temperature=0.0,
+        vad_filter=_vad_filter, vad_parameters=vad_parameters,
+        want_word_ts=want_words, initial_prompt=(_prompt or None),
     )
     if final:
-        kwargs["beam_size"] = cfg_for(model_name, "BEAM_SIZE")
-        kwargs["best_of"] = cfg_for(model_name, "BEST_OF")
-        kwargs["no_speech_threshold"] = cfg_for(model_name, "NO_SPEECH_THRESHOLD")
-        kwargs["log_prob_threshold"] = cfg_for(model_name, "LOG_PROB_THRESHOLD")
-        kwargs["compression_ratio_threshold"] = cfg_for(model_name, "COMPRESSION_RATIO_THRESHOLD")
-        hallu = cfg_for(model_name, "HALLUCINATION_SILENCE_THRESHOLD")
-        if hallu is not None and want_words:
-            kwargs["hallucination_silence_threshold"] = hallu
-    else:
-        kwargs["beam_size"] = int(getattr(cfg, "STREAMING_PARTIAL_BEAM", 5))
+        # Full-utterance decode — identical to the batch route. Nothing to change.
+        return kwargs
+    # PARTIAL decode: keep every quality knob the final/batch decode applies
+    # (hotwords, suppress_tokens/chars, punctuation, penalties, thresholds — all
+    # ~free: logit masks / beam shaping / post-processing). Override ONLY the few
+    # knobs that genuinely matter for a fast, stable per-partial pass on a growing
+    # buffer:
+    #   • beam_size → STREAMING_PARTIAL_BEAM: the one real speed knob — partials
+    #     re-decode the growing buffer many times per utterance, so the final's
+    #     larger beam would roughly double that work.
+    #   • temperature → STREAMING_PARTIAL_TEMPERATURE (default 0.0, no ladder): a
+    #     fallback re-decode is a mid-stream latency spike; only the final needs
+    #     the per-model TEMPERATURE ladder's robustness.
+    #   • condition_on_previous_text → STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT
+    #     (default False): documented to loop on German finetunes, worst on short/
+    #     growing buffers; the final uses the per-model CONDITION_ON_PREVIOUS_TEXT.
+    #   • vad_filter off: the stream is already gated by our own VAD.
+    kwargs["beam_size"] = int(getattr(cfg, "STREAMING_PARTIAL_BEAM", 5))
+    kwargs["temperature"] = float(getattr(cfg, "STREAMING_PARTIAL_TEMPERATURE", 0.0))
+    kwargs["condition_on_previous_text"] = bool(
+        getattr(cfg, "STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT", False))
+    kwargs["vad_filter"] = False
+    kwargs["vad_parameters"] = None
+    kwargs.setdefault("no_repeat_ngram_size", 3)  # greedy-safe loop guard
     return kwargs
 
 
@@ -249,7 +275,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
         async def decode_partial(audio, prompt):
             kwargs = _build_transcribe_kwargs(
                 main, partial_model_name, final=False, prompt=prompt,
-                want_words=gate_partial_words, language=req_language)
+                want_words=gate_partial_words, language=req_language,
+                model_obj=partial_model_obj)
             segs, _info = await _transcribe(partial_model_obj, audio, kwargs)
             if gate_partial_words:
                 words = [(w.start, w.end, w.word)
@@ -270,7 +297,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
         async def decode_final(audio, prompt):
             kwargs = _build_transcribe_kwargs(
                 main, final_model, final=True, prompt=prompt,
-                want_words=gate_final_words, language=req_language)
+                want_words=gate_final_words, language=req_language,
+                model_obj=final_model_obj)
             segs, info = await _transcribe(final_model_obj, audio, kwargs)
             raw = "".join(seg.text for seg in segs)
             words_out: list[dict] = []
