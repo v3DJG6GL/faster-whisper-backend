@@ -1,4 +1,5 @@
 import os
+import json
 import random
 import sys
 import ctypes
@@ -821,9 +822,109 @@ def _resolve_suppress_chars(model_id: str,
     return out
 
 
+# Per-request decode-param overrides (the client's "decode overrides"). Optional;
+# absent leaves behavior identical to before (config-only). Every value is clamped
+# to the SAME bounds the admin config enforces (config_store.py), so an untrusted
+# client cannot request unbounded compute on the shared server. Applied AFTER config
+# resolution, so the order is: request > per-model override > global default.
+_DECODE_INT_BOUNDS = {
+    "beam_size": (1, 20),
+    "best_of": (1, 20),
+    "no_repeat_ngram_size": (0, 10),
+}
+_DECODE_FLOAT_BOUNDS = {
+    "temperature": (0.0, 1.0),
+    "no_speech_threshold": (0.0, 1.0),
+    "log_prob_threshold": (-10.0, 0.0),
+    "compression_ratio_threshold": (0.0, 10.0),
+    "patience": (0.5, 5.0),
+    "length_penalty": (0.1, 5.0),
+    "repetition_penalty": (0.5, 5.0),
+}
+_DECODE_STR_CAPS = {
+    "hotwords": 2048,
+    "prepend_punctuations": 64,
+    "append_punctuations": 64,
+}
+
+
+def _clamp_int(v, lo, hi):
+    try:
+        return max(lo, min(hi, int(v)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _clamp_float(v, lo, hi):
+    try:
+        return max(lo, min(hi, float(v)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _apply_decode_overrides(kwargs, resolved_model, overrides):
+    """Merge clamped per-request decode overrides into transcribe_kwargs (request
+    wins). Unknown keys and unparseable values are ignored."""
+    if not isinstance(overrides, dict) or not overrides:
+        return kwargs
+    for key, (lo, hi) in _DECODE_INT_BOUNDS.items():
+        if key in overrides:
+            cv = _clamp_int(overrides[key], lo, hi)
+            if cv is not None:
+                kwargs[key] = cv
+    for key, (lo, hi) in _DECODE_FLOAT_BOUNDS.items():
+        if key in overrides:
+            cv = _clamp_float(overrides[key], lo, hi)
+            if cv is not None:
+                kwargs[key] = cv
+    if "condition_on_previous_text" in overrides:
+        kwargs["condition_on_previous_text"] = bool(overrides["condition_on_previous_text"])
+    for key, cap in _DECODE_STR_CAPS.items():
+        if key in overrides and isinstance(overrides[key], str):
+            kwargs[key] = overrides[key][:cap]
+    if "suppress_tokens" in overrides:
+        st = overrides["suppress_tokens"]
+        ids = None
+        try:
+            if isinstance(st, list):
+                ids = [int(x) for x in st]
+            elif isinstance(st, str):
+                ids = [int(t.strip()) for t in st.split(",") if t.strip()]
+        except (TypeError, ValueError):
+            ids = None
+        if ids is not None:
+            kwargs["suppress_tokens"] = ids
+    # VAD: toggle + sub-params (sub-params rebuilt from config defaults when on).
+    if "vad_filter" in overrides:
+        vf = bool(overrides["vad_filter"])
+        kwargs["vad_filter"] = vf
+        if not vf:
+            kwargs["vad_parameters"] = None
+    if kwargs.get("vad_filter"):
+        vp = dict(kwargs.get("vad_parameters") or dict(
+            min_silence_duration_ms=cfg_for(resolved_model, "VAD_MIN_SILENCE_MS"),
+            speech_pad_ms=cfg_for(resolved_model, "VAD_SPEECH_PAD_MS"),
+            threshold=cfg_for(resolved_model, "VAD_THRESHOLD"),
+        ))
+        if "vad_min_silence_duration_ms" in overrides:
+            cv = _clamp_int(overrides["vad_min_silence_duration_ms"], 0, 10000)
+            if cv is not None:
+                vp["min_silence_duration_ms"] = cv
+        if "vad_speech_pad_ms" in overrides:
+            cv = _clamp_int(overrides["vad_speech_pad_ms"], 0, 2000)
+            if cv is not None:
+                vp["speech_pad_ms"] = cv
+        if "vad_threshold" in overrides:
+            cv = _clamp_float(overrides["vad_threshold"], 0.0, 1.0)
+            if cv is not None:
+                vp["threshold"] = cv
+        kwargs["vad_parameters"] = vp
+    return kwargs
+
+
 def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
                                vad_filter, vad_parameters, want_word_ts,
-                               initial_prompt):
+                               initial_prompt, overrides=None):
     """Assemble the full ``model.transcribe`` kwargs from per-model config.
 
     Single source of truth shared by the batch endpoint and the streaming FINAL
@@ -923,6 +1024,8 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     _append_p = cfg_for(resolved_model, "APPEND_PUNCTUATIONS")
     if _append_p:
         transcribe_kwargs["append_punctuations"] = _append_p
+    # Per-request overrides win (clamped). No-op when None/empty.
+    _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides)
     return transcribe_kwargs
 
 
@@ -1755,6 +1858,7 @@ async def transcribe(
     language: str = Form(None),
     temperature: float = Form(0.0),
     prompt: str = Form(""),
+    decode_overrides: str = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     resolved_model = _resolve_model_name(model_name)
@@ -1848,6 +1952,15 @@ async def transcribe(
             # the first-30s auto-detect path, which is what an empty
             # DEFAULT_LANGUAGE is documented to mean.
             _language = language or cfg_for(resolved_model, "DEFAULT_LANGUAGE")
+            # Optional per-request decode overrides (JSON object). Malformed → ignored.
+            _overrides = {}
+            if decode_overrides:
+                try:
+                    _parsed = json.loads(decode_overrides)
+                    if isinstance(_parsed, dict):
+                        _overrides = _parsed
+                except (ValueError, TypeError):
+                    _overrides = {}
             # Single source of truth — the streaming FINAL decode builds its kwargs
             # from this exact assembler too, so streaming and batch never diverge.
             transcribe_kwargs = assemble_transcribe_kwargs(
@@ -1855,6 +1968,7 @@ async def transcribe(
                 language=_language, temperature=temperature,
                 vad_filter=_vad_filter, vad_parameters=vad_parameters,
                 want_word_ts=want_word_ts, initial_prompt=initial_prompt_arg,
+                overrides=_overrides,
             )
 
             # Run the synchronous CTranslate2 inference in a thread executor
