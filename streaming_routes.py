@@ -127,7 +127,8 @@ def _stream_config(cfg) -> StreamConfig:
 
 def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
                              prompt: str, want_words: bool,
-                             language: str = "", model_obj=None) -> dict:
+                             language: str = "", model_obj=None,
+                             overrides=None) -> dict:
     """Assemble model.transcribe kwargs for a streaming decode.
 
     Both partial and final decodes pull the SAME per-model config as the batch
@@ -157,6 +158,7 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
         language=lang, temperature=0.0,
         vad_filter=_vad_filter, vad_parameters=vad_parameters,
         want_word_ts=want_words, initial_prompt=(_prompt or None),
+        overrides=overrides,
     )
     if final:
         # Full-utterance decode — identical to the batch route. Nothing to change.
@@ -230,6 +232,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # Per-connection initial prompt (the client's "Vocabulary / prompt"). Empty
         # → fall back to the model's DEFAULT_PROMPT, then to None — same as batch.
         req_prompt = (conf.get("prompt") or "").strip()
+        # Optional per-request decode overrides (the client's "decode overrides").
+        # Applied to the FINAL decode (the batch analogue); partials keep their
+        # streaming-specific beam/temp/condition/vad knobs (see _build_transcribe_kwargs).
+        req_overrides = conf.get("decode_overrides")
+        if not isinstance(req_overrides, dict):
+            req_overrides = {}
         include_words = response_format == "verbose_json"
         audio_fmt = (conf.get("audio") or {}).get("format", "pcm_s16le")
         if audio_fmt not in RAW_FORMATS and audio_fmt not in ENCODED_FORMATS:
@@ -279,7 +287,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             kwargs = _build_transcribe_kwargs(
                 main, partial_model_name, final=False, prompt=prompt,
                 want_words=gate_partial_words, language=req_language,
-                model_obj=partial_model_obj)
+                model_obj=partial_model_obj, overrides=req_overrides)
             segs, _info = await _transcribe(partial_model_obj, audio, kwargs)
             if gate_partial_words:
                 words = [(w.start, w.end, w.word)
@@ -301,7 +309,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             kwargs = _build_transcribe_kwargs(
                 main, final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language,
-                model_obj=final_model_obj)
+                model_obj=final_model_obj, overrides=req_overrides)
             segs, info = await _transcribe(final_model_obj, audio, kwargs)
             raw = "".join(seg.text for seg in segs)
             words_out: list[dict] = []
