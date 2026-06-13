@@ -553,6 +553,41 @@ _API_KEYS_HTML = r"""<!doctype html>
     color: var(--dim); font-family: var(--font-sans);
   }
   .perm-matrix .tag-preview.muted { font-style: italic; opacity: 0.7; }
+  /* Per-identity config binding drawer (overrides) */
+  .cfg-drawer { border: 1px solid var(--border); border-radius: 4px;
+    background: var(--bg); margin: 0.5rem 0; padding: 0.6rem 0.75rem; }
+  .cfg-drawer h4 { margin: 0.6rem 0 0.3rem; font-size: var(--fs-sm);
+    color: var(--bold); } .cfg-drawer h4:first-child { margin-top: 0; }
+  .cfg-drawer .lbl { font-size: var(--fs-xs); color: var(--dim); }
+  .cfg-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; align-items: center;
+    margin: 0.2rem 0; }
+  .cfg-chip { display: inline-flex; align-items: center; gap: 0.25rem;
+    border: 1px solid var(--border); border-radius: 999px;
+    padding: 0.1rem 0.5rem; font-size: var(--fs-sm); }
+  .cfg-chip .num { font-family: var(--font-mono); color: var(--dim);
+    font-size: var(--fs-xs); }
+  .cfg-chip button { background: none; border: 0; color: var(--dim);
+    cursor: pointer; font: inherit; padding: 0; }
+  .cfg-chip button:hover { color: var(--fg); }
+  .cfg-ovr-row { display: grid;
+    grid-template-columns: minmax(10rem, 1fr) minmax(7rem, 1fr) auto auto;
+    gap: 0.4rem; align-items: center; padding: 0.12rem 0; }
+  .cfg-ovr-row .nm { font-family: var(--font-mono); font-size: var(--fs-sm); }
+  .cfg-ovr-row input[type=text], .cfg-ovr-row input[type=number],
+  .cfg-ovr-row select { background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px; font: inherit;
+    font-size: var(--fs-sm); padding: 0.1rem 0.3rem; width: 100%;
+    box-sizing: border-box; }
+  .cfg-ovr-row .lk { background: none; border: 0; cursor: pointer; color: var(--dim); }
+  .cfg-ovr-row .lk.on { color: var(--yellow); }
+  .cfg-ovr-row .rm { background: none; border: 0; cursor: pointer; color: var(--dim); }
+  .cfg-eff { font-family: var(--font-mono); font-size: var(--fs-xs);
+    border-top: 1px solid var(--border); margin-top: 0.4rem; padding-top: 0.3rem; }
+  .cfg-eff .ef { display: flex; gap: 0.5rem; }
+  .cfg-eff .ef .v { color: var(--green); } .cfg-eff .ef .src { color: var(--dim); }
+  .cfg-eff .ef .lk { color: var(--yellow); }
+  .cfg-actions { display: flex; gap: 0.4rem; align-items: center;
+    margin-top: 0.5rem; }
   {{NAV_CSS}}
 </style></head>
 <body>
@@ -1037,7 +1072,25 @@ _API_KEYS_HTML = r"""<!doctype html>
       };
       tb.appendChild(revBtn);
     }
+    // Per-user config overrides (profiles + direct overrides + locks).
+    var ovrBtn = document.createElement('button');
+    ovrBtn.textContent = '⚙ overrides';
+    var ovrWrap = document.createElement('div');
+    ovrBtn.onclick = function () {
+      if (ovrWrap.firstChild) { ovrWrap.innerHTML = ''; return; }
+      ovrWrap.appendChild(buildBindingDrawer({
+        scope: 'user', binding: bindingFromConfig((u.permissions || {}).config),
+        previewQuery: 'user_id=' + encodeURIComponent(u.id),
+        save: function (body) {
+          return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/permissions',
+                     { config: body })
+            .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); });
+        },
+      }));
+    };
+    tb.appendChild(ovrBtn);
     card.appendChild(tb);
+    card.appendChild(ovrWrap);
 
     // Fetch + render keys
     var listEl = document.createElement('div');
@@ -1104,9 +1157,26 @@ _API_KEYS_HTML = r"""<!doctype html>
                 });
             };
             actionCell.appendChild(b);
+            var kcfgBtn = document.createElement('button');
+            kcfgBtn.textContent = '⚙ config';
+            kcfgBtn.onclick = function () {
+              if (kdraw.firstChild) { kdraw.innerHTML = ''; return; }
+              kdraw.appendChild(buildBindingDrawer({
+                scope: 'key', binding: bindingFromConfig(k.config),
+                previewQuery: 'user_id=' + encodeURIComponent(u.id) + '&key_id=' + encodeURIComponent(k.id),
+                save: function (body) {
+                  return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
+                             '/keys/' + encodeURIComponent(k.id) + '/config', body)
+                    .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); });
+                },
+              }));
+            };
+            actionCell.appendChild(kcfgBtn);
           }
+          var kdraw = document.createElement('div');
           row.appendChild(actionCell);
           listEl.appendChild(row);
+          listEl.appendChild(kdraw);
         });
       });
 
@@ -1171,6 +1241,154 @@ _API_KEYS_HTML = r"""<!doctype html>
       + '</div>';
   }
 
+  // ---- per-identity config binding drawer (overrides) ----
+  function ovState() { return window.__ovstate || { profiles: {}, field_meta: {}, rules: [] }; }
+
+  function bindingFromConfig(cfg) {
+    cfg = cfg || {};
+    var direct = Object.assign({}, cfg.direct || {});
+    var locks = (direct.locks || []).slice();
+    delete direct.locks;
+    return { overrides: direct, profiles: (cfg.profiles || []).slice(), locks: locks };
+  }
+
+  function _cfgAvailFields() {
+    var fm = ovState().field_meta || {};
+    return Object.keys(fm).filter(function (k) { return fm[k].kind !== 'rulelist'; }).sort();
+  }
+  function _cfgDefault(name) {
+    var m = (ovState().field_meta || {})[name] || { kind: 'str' };
+    if (m.kind === 'bool') return true;
+    if (m.kind === 'int' || m.kind === 'float') return m.min != null ? m.min : 0;
+    if (m.kind === 'enum') return (m.opts || [''])[0];
+    return '';
+  }
+  function _cfgWidget(name, val, onchange) {
+    var meta = (ovState().field_meta || {})[name] || { kind: 'str' };
+    var el;
+    if (meta.kind === 'bool') {
+      el = document.createElement('input'); el.type = 'checkbox';
+      el.className = 'switch'; el.setAttribute('role', 'switch'); el.checked = !!val;
+      el.onchange = function () { onchange(el.checked); };
+    } else if (meta.kind === 'enum') {
+      el = document.createElement('select');
+      (meta.opts || []).forEach(function (o) {
+        var op = document.createElement('option'); op.value = o; op.textContent = o;
+        if (String(o) === String(val)) op.selected = true; el.appendChild(op);
+      });
+      el.onchange = function () { onchange(el.value); };
+    } else if (meta.kind === 'int' || meta.kind === 'float') {
+      el = document.createElement('input'); el.type = 'number';
+      if (meta.min != null) el.min = meta.min;
+      if (meta.max != null) el.max = meta.max;
+      if (meta.kind === 'float') el.step = 'any';
+      el.value = val;
+      el.onchange = function () {
+        var n = meta.kind === 'int' ? parseInt(el.value, 10) : parseFloat(el.value);
+        onchange(isNaN(n) ? null : n);
+      };
+    } else {
+      el = document.createElement('input'); el.type = 'text'; el.value = val == null ? '' : val;
+      if (meta.maxlen) el.maxLength = meta.maxlen;
+      el.onchange = function () { onchange(el.value); };
+    }
+    return el;
+  }
+
+  function buildBindingDrawer(opts) {
+    var b = opts.binding;
+    var root = document.createElement('div'); root.className = 'cfg-drawer';
+    function rerender() { root.innerHTML = ''; draw(); }
+    function draw() {
+      var ph = document.createElement('h4'); ph.textContent = 'Profiles'; root.appendChild(ph);
+      var hint = document.createElement('div'); hint.className = 'lbl';
+      hint.textContent = 'earlier wins ↓ — applied before the direct overrides below';
+      root.appendChild(hint);
+      var chips = document.createElement('div'); chips.className = 'cfg-chips';
+      b.profiles.forEach(function (name, i) {
+        var c = document.createElement('span'); c.className = 'cfg-chip';
+        c.innerHTML = '<span class="num">' + (i + 1) + '</span>' + escapeHtml(name);
+        var up = document.createElement('button'); up.textContent = '↑'; up.title = 'earlier';
+        up.onclick = function () { if (i > 0) { var t = b.profiles[i - 1]; b.profiles[i - 1] = b.profiles[i]; b.profiles[i] = t; rerender(); } };
+        var dn = document.createElement('button'); dn.textContent = '↓'; dn.title = 'later';
+        dn.onclick = function () { if (i < b.profiles.length - 1) { var t = b.profiles[i + 1]; b.profiles[i + 1] = b.profiles[i]; b.profiles[i] = t; rerender(); } };
+        var x = document.createElement('button'); x.textContent = '×';
+        x.onclick = function () { b.profiles.splice(i, 1); rerender(); };
+        c.appendChild(up); c.appendChild(dn); c.appendChild(x); chips.appendChild(c);
+      });
+      var avail = Object.keys(ovState().profiles || {}).filter(function (n) { return b.profiles.indexOf(n) < 0; }).sort();
+      if (avail.length) {
+        var sel = document.createElement('select'); sel.innerHTML = '<option value="">+ add profile…</option>';
+        avail.forEach(function (n) { var o = document.createElement('option'); o.value = n; o.textContent = n; sel.appendChild(o); });
+        sel.onchange = function () { if (sel.value) { b.profiles.push(sel.value); rerender(); } };
+        chips.appendChild(sel);
+      } else if (!b.profiles.length) {
+        var e = document.createElement('span'); e.className = 'lbl';
+        e.textContent = '(no profiles defined — create them on the Overrides page)';
+        chips.appendChild(e);
+      }
+      root.appendChild(chips);
+
+      var oh = document.createElement('h4'); oh.textContent = 'Direct overrides'; root.appendChild(oh);
+      Object.keys(b.overrides).sort().forEach(function (name) {
+        var row = document.createElement('div'); row.className = 'cfg-ovr-row';
+        var nm = document.createElement('span'); nm.className = 'nm'; nm.textContent = name; row.appendChild(nm);
+        var vc = document.createElement('span');
+        vc.appendChild(_cfgWidget(name, b.overrides[name], function (v) { if (v !== null) b.overrides[name] = v; }));
+        row.appendChild(vc);
+        var on = b.locks.indexOf(name) >= 0;
+        var lk = document.createElement('button'); lk.className = 'lk' + (on ? ' on' : '');
+        lk.innerHTML = on ? '\u{1F512}' : '\u{1F513}'; lk.title = 'lock — client cannot override this field';
+        lk.onclick = function () { var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); else b.locks.push(name); rerender(); };
+        row.appendChild(lk);
+        var rm = document.createElement('button'); rm.className = 'rm'; rm.textContent = '×';
+        rm.onclick = function () { delete b.overrides[name]; var i = b.locks.indexOf(name); if (i >= 0) b.locks.splice(i, 1); rerender(); };
+        row.appendChild(rm); root.appendChild(row);
+      });
+      var avf = _cfgAvailFields().filter(function (n) { return !(n in b.overrides); });
+      var addsel = document.createElement('select'); addsel.innerHTML = '<option value="">+ add field…</option>';
+      avf.forEach(function (n) { var o = document.createElement('option'); o.value = n; o.textContent = n; addsel.appendChild(o); });
+      addsel.onchange = function () { if (addsel.value) { b.overrides[addsel.value] = _cfgDefault(addsel.value); rerender(); } };
+      root.appendChild(addsel);
+
+      var acts = document.createElement('div'); acts.className = 'cfg-actions';
+      var prev = document.createElement('button'); prev.textContent = 'Preview effective (saved)';
+      var save = document.createElement('button'); save.className = 'primary'; save.textContent = 'Save overrides';
+      save.onclick = function () {
+        save.disabled = true;
+        opts.save({ overrides: b.overrides, profiles: b.profiles, locks: b.locks })
+          .then(function () { showToast('Overrides saved', 'ok'); load(); })
+          .catch(function (er) { showToast(String(er.message || er), 'err'); })
+          .finally(function () { save.disabled = false; });
+      };
+      acts.appendChild(prev); acts.appendChild(save); root.appendChild(acts);
+      var eff = document.createElement('div'); eff.className = 'cfg-eff'; root.appendChild(eff);
+      prev.onclick = function () {
+        eff.innerHTML = '<span class="lbl">resolving…</span>';
+        fetch('/settings/overrides/resolve?' + opts.previewQuery)
+          .then(function (r) { return r.ok ? r.json() : null; })
+          .then(function (j) {
+            if (!j) { eff.innerHTML = '<span class="lbl">preview unavailable</span>'; return; }
+            eff.innerHTML = ''; var any = false;
+            Object.keys(j.fields || {}).sort().forEach(function (f) {
+              var fr = j.fields[f];
+              if (!fr.winner_layer || fr.winner_layer === 'global' || fr.winner_layer === 'library') return;
+              any = true;
+              var row = document.createElement('div'); row.className = 'ef';
+              row.innerHTML = '<span class="nm">' + escapeHtml(f) + '</span>'
+                + '<span class="v">' + escapeHtml(JSON.stringify(fr.winner_value)) + '</span>'
+                + '<span class="src">' + escapeHtml(fr.winner_layer) + '</span>'
+                + (fr.locked ? '<span class="lk">\u{1F512}</span>' : '');
+              eff.appendChild(row);
+            });
+            if (!any) eff.innerHTML = '<span class="lbl">no identity overrides take effect (all inherit global / per-model)</span>';
+          });
+      };
+    }
+    draw();
+    return root;
+  }
+
   async function load() {
     var r = await api('GET', '/settings/api-keys/api/users');
     if (r.status === 401) {
@@ -1203,6 +1421,12 @@ _API_KEYS_HTML = r"""<!doctype html>
     try {
       var ur = await api('GET', '/settings/api-keys/api/usage');
       if (ur.ok) window.__usage = await ur.json();
+    } catch (_) {}
+    // Override profiles + field metadata for the per-identity binding drawers.
+    window.__ovstate = { profiles: {}, field_meta: {}, rules: [] };
+    try {
+      var os = await api('GET', '/settings/overrides/state');
+      if (os.ok) window.__ovstate = await os.json();
     } catch (_) {}
     renderMatrix(j);
     j.users.forEach(function(u) { ct.appendChild(renderUser(u)); });
