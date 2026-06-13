@@ -170,3 +170,20 @@ def test_settings_page_greys_out_env_pinned_inputs(client):
     assert "function disableEnvPinnedEditor" in text
     assert "if (isEnvPinned(name)) return;" in text   # setDirty guard
     assert ".field.env-pinned" in text                # greyed styling
+
+
+def test_field_groups_cover_every_setting():
+    """The WebUI layout (_FIELD_GROUPS) must list exactly the AdminConfig schema
+    fields: no setting silently missing from the form, no stale/typo'd entry.
+    Regression guard — adding a config field without wiring its WebUI group (as
+    happened with STREAMING_HARD_BREAK_*) should fail here, not ship invisible."""
+    import admin_routes
+    import config_store
+
+    displayed = admin_routes._all_fields()
+    assert len(displayed) == len(set(displayed)), "duplicate field in _FIELD_GROUPS"
+    schema = set(config_store.AdminConfig.model_fields)
+    missing = schema - set(displayed)
+    stale = set(displayed) - schema
+    assert not missing, f"settings missing from the WebUI layout: {sorted(missing)}"
+    assert not stale, f"_FIELD_GROUPS entries that are not config fields: {sorted(stale)}"
