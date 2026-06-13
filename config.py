@@ -411,6 +411,17 @@ MODEL_OVERRIDES: "dict[str, dict[str, object]]" = {}
 
 
 # =============================================================================
+# Per-identity config profiles (OVERRIDE_PROFILES)
+# =============================================================================
+# Map of profile name -> override bundle (decode + streaming fields, pipeline
+# include/exclude, and a `locks` list). Users and API keys reference profiles
+# by name; the effective config resolves per-key > per-user > profiles >
+# per-model > global. Edited via the /settings/overrides page; persisted in
+# config.local.json. JSON escape hatch: WHISPER_OVERRIDE_PROFILES.
+OVERRIDE_PROFILES: "dict[str, dict[str, object]]" = {}
+
+
+# =============================================================================
 # Admin WebUI (optional /settings browser editor)
 # =============================================================================
 # Off → /settings endpoints aren't registered at all. Auth on the endpoints
@@ -957,7 +968,7 @@ _ENV_SPECIAL_CASES = {
     "ALLOWED_MODELS", "ADMIN_WEBUI_ALLOWED_HOSTS", "USER_WEBUI_ALLOWED_HOSTS",
     "CAPTURES_PIPELINE_RULES_EXCLUDE", "CONVERT_QUANTIZATION",
 }
-_ENV_JSON_FIELDS = {"PIPELINE_RULES", "MODEL_OVERRIDES"}
+_ENV_JSON_FIELDS = {"PIPELINE_RULES", "MODEL_OVERRIDES", "OVERRIDE_PROFILES"}
 _ENV_READER_OVERRIDES = {
     # empty string CLEARS the value to None (disable the feature)
     "DEFAULT_PROMPT": "str_or_none", "DEFAULT_HOTWORDS": "str_or_none",

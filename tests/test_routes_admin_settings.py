@@ -183,7 +183,11 @@ def test_field_groups_cover_every_setting():
     displayed = admin_routes._all_fields()
     assert len(displayed) == len(set(displayed)), "duplicate field in _FIELD_GROUPS"
     schema = set(config_store.AdminConfig.model_fields)
-    missing = schema - set(displayed)
+    # Fields intentionally edited on a DEDICATED page, not the /settings form.
+    # OVERRIDE_PROFILES has its own master-detail editor on /settings/overrides
+    # (served by /settings/overrides/state), so it is not in _FIELD_GROUPS.
+    managed_elsewhere = {"OVERRIDE_PROFILES"}
+    missing = schema - set(displayed) - managed_elsewhere
     stale = set(displayed) - schema
     assert not missing, f"settings missing from the WebUI layout: {sorted(missing)}"
     assert not stale, f"_FIELD_GROUPS entries that are not config fields: {sorted(stale)}"

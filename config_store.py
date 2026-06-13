@@ -177,6 +177,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     # and merges on top of WHISPER_MODEL_OVERRIDES.
     "PIPELINE_RULES": "WHISPER_PIPELINE_RULES",
     "MODEL_OVERRIDES": "WHISPER_MODEL_OVERRIDES",
+    "OVERRIDE_PROFILES": "WHISPER_OVERRIDE_PROFILES",
 }
 
 # Cold settings — editing these requires a service restart for the new value
@@ -452,6 +453,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "override may set any of the per-model-overrideable fields; "
         "absent fields inherit the global default. Edited via the per-"
         "model pane of the admin UI.",
+    "OVERRIDE_PROFILES":
+        "Reusable per-identity config profiles. Maps profile name → override "
+        "bundle (decode + streaming fields, pipeline-rule include/exclude, and "
+        "a `locks` list). Users and API keys reference profiles by name; the "
+        "effective config resolves per-key → per-user → profiles → per-model → "
+        "global. Edited on the /settings/overrides page.",
     "REVISION":
         "(Per-model only) HuggingFace git revision (branch, tag, commit) "
         "to pin the model snapshot to. Empty = HEAD of default branch.",
@@ -752,6 +759,12 @@ def _F(name: str, **kwargs: Any) -> Any:
 _MODEL_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?$"
 ModelId = Annotated[str, Field(min_length=1, max_length=96, pattern=_MODEL_ID_PATTERN)]
 
+# Config-profile name — same shape as a tag (lowercase a-z0-9-, 1-32 chars,
+# no leading/trailing hyphen), so profile names and the existing visibility
+# tags share one normalisation contract.
+ProfileName = Annotated[str, Field(min_length=1, max_length=32,
+                                   pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
+
 LogLevel = Literal["debug", "info", "warning", "error", "critical"]
 DeviceLit = Literal["cuda", "cpu"]
 ComputeLit = Literal["float16", "int8_float16", "int8", "float32", "bfloat16"]
@@ -916,18 +929,12 @@ PipelineRule = Annotated[
 # list, edited in the global pipeline editor. The per-model pane only toggles
 # inclusion via a checklist.
 
-class ModelOverride(BaseModel):
-    """Per-model override bundle. All fields optional; absent = inherit global."""
+class _CallTimeOverrideMixin(BaseModel):
+    """Call-time (decode + post-processing) override fields, shared by
+    ModelOverride (per-model) and OverrideProfile (per-identity) so the bounds
+    are single-sourced and the two layers can never drift apart. All fields
+    optional; absent = inherit the next layer down."""
     model_config = {"extra": "forbid", "protected_namespaces": ()}
-
-    # --- Load-time (eviction-on-edit) ---
-    MODEL_DEVICE: DeviceLit | None = None
-    MODEL_COMPUTE_TYPE: ComputeLit | None = None
-    MODEL_DEVICE_FALLBACK: DeviceLit | None = None
-    MODEL_COMPUTE_TYPE_FALLBACK: ComputeLit | None = None
-    REVISION: Annotated[str, Field(min_length=1, max_length=128)] | None = None
-    NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = None
-    DEVICE_INDEX: Annotated[int, Field(ge=0, le=15)] | None = None
 
     # --- Decode params (call-time) ---
     DEFAULT_LANGUAGE: Annotated[str, Field(pattern=r"^([a-z]{2})?$")] | None = None
@@ -970,10 +977,10 @@ class ModelOverride(BaseModel):
     OUTPUT_PREFIX: Annotated[str, Field(max_length=512)] | None = None
     OUTPUT_SUFFIX: Annotated[str, Field(max_length=512)] | None = None
 
-    # --- Pipeline scoping (PM-only) ---
-    # EXCLUDE: force-DISABLE rules that are enabled globally.
-    # INCLUDE: force-ENABLE rules that are disabled globally. Inverse list.
-    # A rule slug must not appear in both — enforced by _no_overlap_… validator.
+    # --- Pipeline scoping ---
+    # EXCLUDE: force-DISABLE rules enabled at the next layer down.
+    # INCLUDE: force-ENABLE rules disabled at the next layer down. Inverse list.
+    # A slug must not appear in both — enforced by _no_overlap_… below.
     PIPELINE_RULES_EXCLUDE: Annotated[
         list[RuleSlug],
         Field(max_length=200),
@@ -984,9 +991,9 @@ class ModelOverride(BaseModel):
     ] | None = None
 
     @model_validator(mode="after")
-    def _no_overlap_include_exclude(self) -> "ModelOverride":
-        """A rule slug cannot be both force-disabled AND force-enabled for the
-        same model — admin must pick one. Catches obvious misconfiguration
+    def _no_overlap_include_exclude(self) -> "_CallTimeOverrideMixin":
+        """A rule slug cannot be both force-disabled AND force-enabled in the
+        same bundle — admin must pick one. Catches obvious misconfiguration
         (e.g. typed both lists then forgot to clean one up)."""
         ex = set(self.PIPELINE_RULES_EXCLUDE or [])
         inc = set(self.PIPELINE_RULES_INCLUDE or [])
@@ -995,10 +1002,86 @@ class ModelOverride(BaseModel):
             raise ValueError(
                 f"PIPELINE_RULES_EXCLUDE and PIPELINE_RULES_INCLUDE overlap: "
                 f"{sorted(overlap)} — a rule cannot be both force-disabled "
-                f"and force-enabled for the same model. Remove from one of "
+                f"and force-enabled in the same bundle. Remove from one of "
                 f"the lists."
             )
         return self
+
+
+class ModelOverride(_CallTimeOverrideMixin):
+    """Per-model override bundle. Inherits the call-time fields from
+    _CallTimeOverrideMixin; adds the load-time fields below (editing any of
+    these drains-then-evicts the affected loaded model). All fields optional;
+    absent = inherit global."""
+
+    # --- Load-time (eviction-on-edit) ---
+    MODEL_DEVICE: DeviceLit | None = None
+    MODEL_COMPUTE_TYPE: ComputeLit | None = None
+    MODEL_DEVICE_FALLBACK: DeviceLit | None = None
+    MODEL_COMPUTE_TYPE_FALLBACK: ComputeLit | None = None
+    REVISION: Annotated[str, Field(min_length=1, max_length=128)] | None = None
+    NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = None
+    DEVICE_INDEX: Annotated[int, Field(ge=0, le=15)] | None = None
+
+
+class _StreamingOverrideMixin(BaseModel):
+    """Live-streaming (WebSocket dictation) override fields that are meaningful
+    per-identity — partial-decode knobs, VAD / speech gates, finalize &
+    document-break, buffer trimming. Server-capacity knobs (STREAMING_ENABLED,
+    STREAMING_MAX_SESSIONS, INFERENCE_CONCURRENCY) and the partial-model
+    selector are deliberately NOT here — they are server-wide, not per-caller.
+    Bounds are lifted verbatim from the AdminConfig STREAMING_* fields so the
+    two stay in lockstep. All optional; absent = inherit the next layer down."""
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+
+    STREAMING_PARTIAL_BEAM: Annotated[int, Field(ge=1, le=20)] | None = None
+    STREAMING_PARTIAL_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = None
+    STREAMING_PARTIAL_INTERVAL_MS: Annotated[int, Field(ge=200, le=5000)] | None = None
+    STREAMING_VAD_BACKEND: Literal["auto", "silero", "energy"] | None = None
+    STREAMING_VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    STREAMING_GATE_MIN_SPEECH_MS: Annotated[int, Field(ge=0, le=5000)] | None = None
+    STREAMING_GATE_RMS_DBFS: Annotated[float, Field(ge=-90.0, le=0.0)] | None = None
+    STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = None
+    STREAMING_VAD_OUTER_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = None
+    STREAMING_FORCED_COMMIT_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = None
+    STREAMING_HARD_BREAK_SILENCE_MS: Annotated[int, Field(ge=0, le=120000)] | None = None
+    STREAMING_HARD_BREAK_SEPARATOR: Annotated[str, Field(max_length=8)] | None = None
+    STREAMING_PROMPT_WORDS: Annotated[int, Field(ge=0, le=400)] | None = None
+    STREAMING_BUFFER_TRIM_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = None
+    STREAMING_BUFFER_TRIM_KEEP_SEC: Annotated[float, Field(ge=2.0, le=29.0)] | None = None
+
+
+# Fields whose resolved value a client per-request decode_override may be
+# LOCKED against — every overridable scalar, i.e. everything except the
+# pipeline include/exclude lists (which are not client-overridable). Derived
+# from the schemas so it can never drift from the field definitions above.
+LOCKABLE_FIELDS: frozenset[str] = frozenset(
+    set(_CallTimeOverrideMixin.model_fields) | set(_StreamingOverrideMixin.model_fields)
+) - {"PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"}
+
+
+class OverrideProfile(_CallTimeOverrideMixin, _StreamingOverrideMixin):
+    """A reusable, named per-identity override bundle — the config-bearing
+    "profile" (the evolution of the visibility-only tag concept). Carries the
+    call-time + streaming override fields (absent = inherit the next layer
+    down) plus `locks`: the field names whose resolved value a client's
+    per-request decode_override may NOT replace."""
+
+    locks: Annotated[list[str], Field(max_length=200)] | None = None
+
+    @field_validator("locks")
+    @classmethod
+    def _validate_locks(cls, v: list[str] | None) -> list[str] | None:
+        if not v:
+            return v
+        bad = sorted(f for f in v if f not in LOCKABLE_FIELDS)
+        if bad:
+            raise ValueError(
+                f"locks references non-lockable field(s): {bad}. Lockable "
+                f"fields are the overridable decode/streaming scalars."
+            )
+        return sorted(set(v))
 
 
 class AdminConfig(BaseModel):
@@ -1101,6 +1184,9 @@ class AdminConfig(BaseModel):
 
     # --- Per-model overrides ---
     MODEL_OVERRIDES: dict[ModelId, ModelOverride] | None = _F("MODEL_OVERRIDES")
+
+    # --- Per-identity config profiles (reusable, name → override bundle) ---
+    OVERRIDE_PROFILES: dict[ProfileName, OverrideProfile] | None = _F("OVERRIDE_PROFILES")
 
     # --- Pipeline ---
     PIPELINE_RULES: Annotated[list[PipelineRule], Field(max_length=200)] | None = _F("PIPELINE_RULES")
@@ -1389,6 +1475,31 @@ class AdminConfig(BaseModel):
                 if unknown:
                     raise ValueError(
                         f"MODEL_OVERRIDES[{model_id!r}].{list_name} "
+                        f"references unknown rule slugs: {unknown}. "
+                        f"Valid: {sorted(canonical)}."
+                    )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_profile_pipeline_slugs(self) -> "AdminConfig":
+        """Reject any OVERRIDE_PROFILES EXCLUDE / INCLUDE that references a rule
+        slug not present in the canonical PIPELINE_RULES list — same silent-typo
+        guard as the per-model check, applied to config profiles. Only fires
+        when both PIPELINE_RULES and OVERRIDE_PROFILES are present in the same
+        payload; partial saves are re-validated against the merged file by
+        save_overrides()."""
+        if self.PIPELINE_RULES is None or self.OVERRIDE_PROFILES is None:
+            return self
+        canonical = {r.name for r in self.PIPELINE_RULES}
+        if not canonical:
+            return self
+        for pname, prof in self.OVERRIDE_PROFILES.items():
+            for list_name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
+                slugs = getattr(prof, list_name, None) or []
+                unknown = [s for s in slugs if s not in canonical]
+                if unknown:
+                    raise ValueError(
+                        f"OVERRIDE_PROFILES[{pname!r}].{list_name} "
                         f"references unknown rule slugs: {unknown}. "
                         f"Valid: {sorted(canonical)}."
                     )
