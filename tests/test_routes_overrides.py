@@ -22,6 +22,18 @@ def _make_profile(client, h, name="clinic-de", **fields):
     return r
 
 
+def test_overrides_page_renders(client):
+    import re
+    r = client.get(OV)
+    assert r.status_code == 200
+    body = r.text
+    # render_page substituted every placeholder (none leak through)
+    assert not re.findall(r"\{\{[A-Z_]+\}\}", body)
+    for marker in ("panel-profiles", "panel-explorer", "_renderWaterfall",
+                   "ov-wrap", "tab-explorer", "/settings/overrides"):
+        assert marker in body, marker
+
+
 def test_state_shape_and_field_meta(client, make_user_key):
     _, _, h = _admin(make_user_key)
     j = client.get(f"{OV}/state", headers=h).json()

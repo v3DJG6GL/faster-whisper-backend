@@ -1937,6 +1937,7 @@ _NAV_SPEC: list[tuple[str, str, str, bool]] = [
     ("logs",     "/logs",              "logs",         False),
     ("settings", "/settings",          "settings",     True),
     ("keys",     "/settings/api-keys", "api-keys",     True),
+    ("overrides", "/settings/overrides", "overrides",  True),
 ]
 
 
@@ -1962,7 +1963,7 @@ def nav_html(current: str) -> str:
         "reports":  "reports",
         "captures": "captures",
     }
-    admin_only_labels = {"settings", "keys"}
+    admin_only_labels = {"settings", "keys", "overrides"}
     # Hamburger toggle (shown only ≤40em via NAV_CSS) + the nav links. The
     # links keep their admin-only / page-link gating classes; on narrow
     # screens NAV_CSS turns the same #navrow into an off-canvas drawer and
@@ -2095,6 +2096,7 @@ _PAGE_KEY_BY_CURRENT: dict[str, str] = {
     # to a key in the permissions dict".
     "settings":     "__admin_only__",
     "api-keys":     "__admin_only__",
+    "overrides":    "__admin_only__",
 }
 
 # Display-URL for each page, used as the heading slug in the no-access
@@ -2110,6 +2112,7 @@ _PAGE_PATH_BY_CURRENT: dict[str, str] = {
     "captures":     "/captures",
     "settings":     "/settings",
     "api-keys":     "/settings/api-keys",
+    "overrides":    "/settings/overrides",
 }
 
 
@@ -2125,6 +2128,7 @@ _HEADER_SLUG_BY_CURRENT: dict[str, str] = {
     "quick-config": "quick config",
     "reports":      "reports",
     "captures":     "captures",
+    "overrides":    "overrides",
 }
 
 
