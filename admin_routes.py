@@ -93,18 +93,24 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ("Live streaming", [
         (None, [
             "STREAMING_ENABLED", "STREAMING_MAX_SESSIONS", "INFERENCE_CONCURRENCY",
+        ]),
+        ("Partial decoding (live preview)", [
             "STREAMING_PARTIAL_MODEL", "STREAMING_PARTIAL_BEAM",
             "STREAMING_PARTIAL_TEMPERATURE", "STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT",
+            "STREAMING_PARTIAL_INTERVAL_MS",
         ]),
-        ("Endpointing (VAD)", [
-            "STREAMING_VAD_BACKEND", "STREAMING_VAD_THRESHOLD", "STREAMING_RMS_GATE_DBFS",
-            "STREAMING_MIN_CHUNK_MS", "STREAMING_MIN_SPEECH_MS",
-            "STREAMING_VAD_MIN_SILENCE_MS", "STREAMING_COMMIT_SILENCE_MS",
+        ("Endpointing (VAD) & speech gates", [
+            "STREAMING_VAD_BACKEND", "STREAMING_VAD_THRESHOLD",
+            "STREAMING_GATE_MIN_SPEECH_MS", "STREAMING_GATE_RMS_DBFS",
+            "STREAMING_VAD_INNER_SILENCE_MS", "STREAMING_VAD_OUTER_SILENCE_MS",
+        ]),
+        ("Finalize & document breaks", [
+            "STREAMING_FORCED_COMMIT_SEC",
             "STREAMING_HARD_BREAK_SILENCE_MS", "STREAMING_HARD_BREAK_SEPARATOR",
+            "STREAMING_PROMPT_WORDS",
         ]),
         ("Buffer management", [
-            "STREAMING_FORCED_COMMIT_SEC", "STREAMING_BUFFER_TRIM_SEC",
-            "STREAMING_BUFFER_TRIM_KEEP_SEC", "STREAMING_PROMPT_WORDS",
+            "STREAMING_BUFFER_TRIM_SEC", "STREAMING_BUFFER_TRIM_KEEP_SEC",
         ]),
     ]),
     ("Per-model overrides", [(None, ["MODEL_OVERRIDES"])]),

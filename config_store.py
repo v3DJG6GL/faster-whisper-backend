@@ -161,11 +161,11 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT": "WHISPER_STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT",
     "STREAMING_VAD_BACKEND": "WHISPER_STREAMING_VAD_BACKEND",
     "STREAMING_VAD_THRESHOLD": "WHISPER_STREAMING_VAD_THRESHOLD",
-    "STREAMING_RMS_GATE_DBFS": "WHISPER_STREAMING_RMS_GATE_DBFS",
-    "STREAMING_MIN_CHUNK_MS": "WHISPER_STREAMING_MIN_CHUNK_MS",
-    "STREAMING_MIN_SPEECH_MS": "WHISPER_STREAMING_MIN_SPEECH_MS",
-    "STREAMING_VAD_MIN_SILENCE_MS": "WHISPER_STREAMING_VAD_MIN_SILENCE_MS",
-    "STREAMING_COMMIT_SILENCE_MS": "WHISPER_STREAMING_COMMIT_SILENCE_MS",
+    "STREAMING_GATE_RMS_DBFS": "WHISPER_STREAMING_GATE_RMS_DBFS",
+    "STREAMING_PARTIAL_INTERVAL_MS": "WHISPER_STREAMING_PARTIAL_INTERVAL_MS",
+    "STREAMING_GATE_MIN_SPEECH_MS": "WHISPER_STREAMING_GATE_MIN_SPEECH_MS",
+    "STREAMING_VAD_INNER_SILENCE_MS": "WHISPER_STREAMING_VAD_INNER_SILENCE_MS",
+    "STREAMING_VAD_OUTER_SILENCE_MS": "WHISPER_STREAMING_VAD_OUTER_SILENCE_MS",
     "STREAMING_HARD_BREAK_SILENCE_MS": "WHISPER_STREAMING_HARD_BREAK_SILENCE_MS",
     "STREAMING_HARD_BREAK_SEPARATOR": "WHISPER_STREAMING_HARD_BREAK_SEPARATOR",
     "STREAMING_FORCED_COMMIT_SEC": "WHISPER_STREAMING_FORCED_COMMIT_SEC",
@@ -702,19 +702,19 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "STREAMING_VAD_THRESHOLD":
         "Silero speech-probability cutoff (0–1). Speech ends at threshold−0.15 "
         "(built-in hysteresis). Lower for quiet speakers.",
-    "STREAMING_RMS_GATE_DBFS":
+    "STREAMING_GATE_RMS_DBFS":
         "Skip inference when the buffer is quieter than this (dBFS) — a backstop "
         "against silence/noise hallucinations. Typical −42.",
-    "STREAMING_MIN_CHUNK_MS":
+    "STREAMING_PARTIAL_INTERVAL_MS":
         "Partial cadence: new audio accumulated before re-decoding (ms). 1000 is "
         "the validated German sweet spot (~4.4 s stabilization latency).",
-    "STREAMING_MIN_SPEECH_MS":
+    "STREAMING_GATE_MIN_SPEECH_MS":
         "Minimum speech in the buffer before any decode runs (ms) — sub-500 ms "
         "buffers hallucinate.",
-    "STREAMING_VAD_MIN_SILENCE_MS":
+    "STREAMING_VAD_INNER_SILENCE_MS":
         "Inner silence gate (ms): a pause this long triggers a boundary partial "
         "without finalizing. Spans German sub-clause pauses (~700).",
-    "STREAMING_COMMIT_SILENCE_MS":
+    "STREAMING_VAD_OUTER_SILENCE_MS":
         "Outer silence gate (ms): end-of-speech silence that finalizes the "
         "utterance and runs post-processing. Tune per dictation habit (~1200).",
     "STREAMING_HARD_BREAK_SILENCE_MS":
@@ -1076,11 +1076,11 @@ class AdminConfig(BaseModel):
     STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = _F("STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT")
     STREAMING_VAD_BACKEND: Literal["auto", "silero", "energy"] | None = _F("STREAMING_VAD_BACKEND")
     STREAMING_VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("STREAMING_VAD_THRESHOLD")
-    STREAMING_RMS_GATE_DBFS: Annotated[float, Field(ge=-90.0, le=0.0)] | None = _F("STREAMING_RMS_GATE_DBFS")
-    STREAMING_MIN_CHUNK_MS: Annotated[int, Field(ge=200, le=5000)] | None = _F("STREAMING_MIN_CHUNK_MS")
-    STREAMING_MIN_SPEECH_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_MIN_SPEECH_MS")
-    STREAMING_VAD_MIN_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_VAD_MIN_SILENCE_MS")
-    STREAMING_COMMIT_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = _F("STREAMING_COMMIT_SILENCE_MS")
+    STREAMING_GATE_RMS_DBFS: Annotated[float, Field(ge=-90.0, le=0.0)] | None = _F("STREAMING_GATE_RMS_DBFS")
+    STREAMING_PARTIAL_INTERVAL_MS: Annotated[int, Field(ge=200, le=5000)] | None = _F("STREAMING_PARTIAL_INTERVAL_MS")
+    STREAMING_GATE_MIN_SPEECH_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_GATE_MIN_SPEECH_MS")
+    STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_VAD_INNER_SILENCE_MS")
+    STREAMING_VAD_OUTER_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = _F("STREAMING_VAD_OUTER_SILENCE_MS")
     STREAMING_HARD_BREAK_SILENCE_MS: Annotated[int, Field(ge=0, le=120000)] | None = _F("STREAMING_HARD_BREAK_SILENCE_MS")
     STREAMING_HARD_BREAK_SEPARATOR: Annotated[str, Field(max_length=8)] | None = _F("STREAMING_HARD_BREAK_SEPARATOR")
     STREAMING_FORCED_COMMIT_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F("STREAMING_FORCED_COMMIT_SEC")

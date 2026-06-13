@@ -748,12 +748,13 @@ CAPTURES_PROPOSER_CACHE_TTL_S = 60
 # .py). Defaults are the validated German-dictation / 12-16 GB-GPU set; every
 # value is WHISPER_STREAMING_*-overridable and editable in /settings.
 
-# Master switch + capacity. INFERENCE_CONCURRENCY is a SHARED GPU limiter that
+# (1) Session & capacity. INFERENCE_CONCURRENCY is a SHARED GPU limiter that
 # governs BOTH streaming and the batch /transcribe route (restart to change).
 STREAMING_ENABLED: bool = True
 STREAMING_MAX_SESSIONS: int = 10
 INFERENCE_CONCURRENCY: int = 2
 
+# (2) Partial decoding — the live-preview loop's model, decode params + cadence.
 # Optional fast model for the live partial loop (e.g. a turbo-German CT2 id).
 # Empty = use the request's model for partials too (single-model, lowest VRAM).
 STREAMING_PARTIAL_MODEL: str = ""
@@ -766,27 +767,34 @@ STREAMING_PARTIAL_BEAM: int = 5
 # finetunes loop on short, growing partial buffers; see CONDITION_ON_PREVIOUS_TEXT).
 STREAMING_PARTIAL_TEMPERATURE: float = 0.0
 STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT: bool = False
+# Partial cadence: new audio accumulated before re-decoding the live preview (ms).
+STREAMING_PARTIAL_INTERVAL_MS: int = 1000
 
-# Endpointing. Backend: "auto" (Silero if installed, else energy) | "silero" |
-# "energy". Two-tier silence gate: inner gate triggers a boundary partial, outer
-# gate finalizes the utterance (so a mid-sentence pause isn't cut).
+# (3) Endpointing (VAD) & speech gates. Backend: "auto" (Silero if installed,
+# else energy) | "silero" | "energy". Two-tier silence gate: the INNER gate
+# triggers a boundary partial, the OUTER gate finalizes the utterance (so a
+# mid-sentence pause isn't cut). The GATE_* knobs are pre-decode anti-
+# hallucination guards (skip inference on too-short / too-quiet buffers).
 STREAMING_VAD_BACKEND: str = "auto"
 STREAMING_VAD_THRESHOLD: float = 0.5
-STREAMING_RMS_GATE_DBFS: float = -42.0
-STREAMING_MIN_CHUNK_MS: int = 1000
-STREAMING_MIN_SPEECH_MS: int = 500
-STREAMING_VAD_MIN_SILENCE_MS: int = 700
-STREAMING_COMMIT_SILENCE_MS: int = 1200
-# Long-silence "hard break": ends the whole grouping and starts a fresh document
-# mid-connection (paragraph boundary). 0 = off (one document per connection).
+STREAMING_GATE_MIN_SPEECH_MS: int = 500
+STREAMING_GATE_RMS_DBFS: float = -42.0
+STREAMING_VAD_INNER_SILENCE_MS: int = 700
+STREAMING_VAD_OUTER_SILENCE_MS: int = 1200
+
+# (4) Finalize & document breaks. FORCED_COMMIT_SEC hard-caps continuous speech
+# before a forced finalize (keeps the buffer inside Whisper's 30 s field). The
+# long-silence "hard break" ends the whole grouping and starts a fresh document
+# mid-connection (paragraph boundary); 0 = off. PROMPT_WORDS are the confirmed
+# words carried across utterances as initial_prompt (reset on a hard break).
+STREAMING_FORCED_COMMIT_SEC: float = 25.0
 STREAMING_HARD_BREAK_SILENCE_MS: int = 5000
 STREAMING_HARD_BREAK_SEPARATOR: str = ""
+STREAMING_PROMPT_WORDS: int = 200
 
-# Buffer management (kept well inside Whisper's 30 s receptive field).
-STREAMING_FORCED_COMMIT_SEC: float = 25.0
+# (5) Buffer management (kept well inside Whisper's 30 s receptive field).
 STREAMING_BUFFER_TRIM_SEC: float = 15.0
 STREAMING_BUFFER_TRIM_KEEP_SEC: float = 10.0
-STREAMING_PROMPT_WORDS: int = 200
 
 
 import copy as _copy

@@ -111,16 +111,18 @@ def _stream_config(cfg) -> StreamConfig:
     g = lambda name, default: getattr(cfg, "STREAMING_" + name, default)  # noqa: E731
     return StreamConfig(
         sample_rate=SAMPLE_RATE,
-        min_chunk_ms=int(g("MIN_CHUNK_MS", 1000)),
-        min_speech_ms=int(g("MIN_SPEECH_MS", 500)),
-        vad_min_silence_ms=int(g("VAD_MIN_SILENCE_MS", 700)),
-        commit_silence_ms=int(g("COMMIT_SILENCE_MS", 1200)),
+        # Public config keys (the g("…") suffix, after STREAMING_) may differ from
+        # the internal StreamConfig field names — this adapter is the seam.
+        min_chunk_ms=int(g("PARTIAL_INTERVAL_MS", 1000)),
+        min_speech_ms=int(g("GATE_MIN_SPEECH_MS", 500)),
+        vad_min_silence_ms=int(g("VAD_INNER_SILENCE_MS", 700)),
+        commit_silence_ms=int(g("VAD_OUTER_SILENCE_MS", 1200)),
         hard_break_silence_ms=int(g("HARD_BREAK_SILENCE_MS", 5000)),
         hard_break_separator=str(g("HARD_BREAK_SEPARATOR", "")),
         forced_commit_sec=float(g("FORCED_COMMIT_SEC", 25.0)),
         buffer_trim_sec=float(g("BUFFER_TRIM_SEC", 15.0)),
         buffer_trim_keep_sec=float(g("BUFFER_TRIM_KEEP_SEC", 10.0)),
-        rms_gate_dbfs=float(g("RMS_GATE_DBFS", -42.0)),
+        rms_gate_dbfs=float(g("GATE_RMS_DBFS", -42.0)),
         prompt_words=int(g("PROMPT_WORDS", 200)),
     )
 
@@ -462,7 +464,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             endpointer=make_endpointer(
                 getattr(cfg, "STREAMING_VAD_BACKEND", "auto"),
                 threshold=float(getattr(cfg, "STREAMING_VAD_THRESHOLD", 0.5)),
-                energy_dbfs=float(getattr(cfg, "STREAMING_RMS_GATE_DBFS", -42.0)),
+                energy_dbfs=float(getattr(cfg, "STREAMING_GATE_RMS_DBFS", -42.0)),
             ),
             decode_partial=decode_partial,
             decode_final=decode_final,
