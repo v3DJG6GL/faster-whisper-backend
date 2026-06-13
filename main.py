@@ -342,7 +342,8 @@ rebuild_caches()
 
 def _postprocess_text(text: str, model_name: "str | None" = None,
                        trace: "list | None" = None,
-                       extra_excludes: "set[str] | None" = None) -> str:
+                       extra_excludes: "set[str] | None" = None,
+                       ident=None) -> str:
     """Run the unified pipeline rule list on `text`. If `trace` is a list,
     each rule that changes the text appends `(label_with_ordinal, before, after)`
     so the per-request log block can render a diff view.
@@ -372,7 +373,13 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     """
     exclude: "set[str]" = set()
     include: "set[str]" = set()
-    if model_name:
+    if ident is not None:
+        # The resolver already folded the per-model layer into these sets
+        # (identity rules win first-mention; per-model is the fallback layer).
+        # Don't re-read MODEL_OVERRIDES here or it would double-apply.
+        exclude = set(ident.pipeline_exclude)
+        include = set(ident.pipeline_include)
+    elif model_name:
         overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
         m_over = overrides.get(model_name) if isinstance(overrides, dict) else None
         if isinstance(m_over, dict):
@@ -862,11 +869,19 @@ def _clamp_float(v, lo, hi):
         return None
 
 
-def _apply_decode_overrides(kwargs, resolved_model, overrides):
+def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
     """Merge clamped per-request decode overrides into transcribe_kwargs (request
-    wins). Unknown keys and unparseable values are ignored."""
+    wins). Unknown keys and unparseable values are ignored. Keys LOCKED by an
+    identity layer (``ident.locked_client_keys``) are dropped before clamping —
+    the admin-set value stands and the client override is ignored."""
     if not isinstance(overrides, dict) or not overrides:
         return kwargs
+    # Lock gate: an identity layer can forbid the client from overriding a field.
+    locked_client_keys = ident.locked_client_keys if ident is not None else frozenset()
+    if locked_client_keys:
+        overrides = {k: v for k, v in overrides.items() if k not in locked_client_keys}
+        if not overrides:
+            return kwargs
     for key, (lo, hi) in _DECODE_INT_BOUNDS.items():
         if key in overrides:
             cv = _clamp_int(overrides[key], lo, hi)
@@ -902,9 +917,9 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides):
             kwargs["vad_parameters"] = None
     if kwargs.get("vad_filter"):
         vp = dict(kwargs.get("vad_parameters") or dict(
-            min_silence_duration_ms=cfg_for(resolved_model, "VAD_MIN_SILENCE_MS"),
-            speech_pad_ms=cfg_for(resolved_model, "VAD_SPEECH_PAD_MS"),
-            threshold=cfg_for(resolved_model, "VAD_THRESHOLD"),
+            min_silence_duration_ms=cfg_for(resolved_model, "VAD_MIN_SILENCE_MS", ident),
+            speech_pad_ms=cfg_for(resolved_model, "VAD_SPEECH_PAD_MS", ident),
+            threshold=cfg_for(resolved_model, "VAD_THRESHOLD", ident),
         ))
         if "vad_min_silence_duration_ms" in overrides:
             cv = _clamp_int(overrides["vad_min_silence_duration_ms"], 0, 10000)
@@ -924,7 +939,7 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides):
 
 def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
                                vad_filter, vad_parameters, want_word_ts,
-                               initial_prompt, overrides=None):
+                               initial_prompt, overrides=None, ident=None):
     """Assemble the full ``model.transcribe`` kwargs from per-model config.
 
     Single source of truth shared by the batch endpoint and the streaming FINAL
@@ -932,68 +947,72 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     be no difference between streaming and batch). The per-request values
     (``language``, ``temperature``, ``vad_filter``, ``vad_parameters``,
     ``want_word_ts``, ``initial_prompt``) are passed in already resolved; every
-    other knob is read here from the per-model config.
+    other knob is read here via ``cf`` which layers per-identity (``ident``) >
+    per-model > global. ``ident=None`` is byte-identical to the pre-feature path.
     """
+    def cf(field):
+        return cfg_for(resolved_model, field, ident)
+
     transcribe_kwargs = dict(
         language=language if language else None,
-        beam_size=cfg_for(resolved_model, "BEAM_SIZE"),
-        best_of=cfg_for(resolved_model, "BEST_OF"),
+        beam_size=cf("BEAM_SIZE"),
+        best_of=cf("BEST_OF"),
         temperature=temperature,
         vad_filter=vad_filter,
         vad_parameters=vad_parameters,
         word_timestamps=want_word_ts,
-        condition_on_previous_text=cfg_for(resolved_model, "CONDITION_ON_PREVIOUS_TEXT"),
+        condition_on_previous_text=cf("CONDITION_ON_PREVIOUS_TEXT"),
         initial_prompt=initial_prompt,
-        no_speech_threshold=cfg_for(resolved_model, "NO_SPEECH_THRESHOLD"),
-        log_prob_threshold=cfg_for(resolved_model, "LOG_PROB_THRESHOLD"),
-        compression_ratio_threshold=cfg_for(resolved_model, "COMPRESSION_RATIO_THRESHOLD"),
+        no_speech_threshold=cf("NO_SPEECH_THRESHOLD"),
+        log_prob_threshold=cf("LOG_PROB_THRESHOLD"),
+        compression_ratio_threshold=cf("COMPRESSION_RATIO_THRESHOLD"),
     )
     # Optional advanced kwargs — only forwarded when set, so the
     # transcribe_kwargs dict stays clean for the common path.
-    _hotwords = cfg_for(resolved_model, "DEFAULT_HOTWORDS")
+    _hotwords = cf("DEFAULT_HOTWORDS")
     if _hotwords:
         transcribe_kwargs["hotwords"] = _hotwords
-    _temp_str = cfg_for(resolved_model, "TEMPERATURE")
+    _temp_str = cf("TEMPERATURE")
     if _temp_str:
-        # Per-model override of the temperature ladder. Comma-separated
-        # floats; falls back to the per-request `temperature` (default
-        # 0.0) when unset.
+        # Per-model/identity override of the temperature ladder. Comma-
+        # separated floats; falls back to the per-request `temperature`
+        # (default 0.0) when unset.
         try:
             ladder = tuple(float(t.strip()) for t in _temp_str.split(",") if t.strip())
             if ladder:
                 transcribe_kwargs["temperature"] = ladder
         except ValueError:
             pass
-    _patience = cfg_for(resolved_model, "PATIENCE")
+    _patience = cf("PATIENCE")
     if _patience and _patience != 1.0:
         transcribe_kwargs["patience"] = _patience
-    _length_penalty = cfg_for(resolved_model, "LENGTH_PENALTY")
+    _length_penalty = cf("LENGTH_PENALTY")
     if _length_penalty and _length_penalty != 1.0:
         transcribe_kwargs["length_penalty"] = _length_penalty
-    _repetition_penalty = cfg_for(resolved_model, "REPETITION_PENALTY")
+    _repetition_penalty = cf("REPETITION_PENALTY")
     if _repetition_penalty and _repetition_penalty != 1.0:
         transcribe_kwargs["repetition_penalty"] = _repetition_penalty
-    _no_repeat_ngram = cfg_for(resolved_model, "NO_REPEAT_NGRAM_SIZE")
+    _no_repeat_ngram = cf("NO_REPEAT_NGRAM_SIZE")
     if _no_repeat_ngram:
         transcribe_kwargs["no_repeat_ngram_size"] = _no_repeat_ngram
-    _prompt_reset_t = cfg_for(resolved_model, "PROMPT_RESET_ON_TEMPERATURE")
+    _prompt_reset_t = cf("PROMPT_RESET_ON_TEMPERATURE")
     if _prompt_reset_t is not None and _prompt_reset_t != 0.5:
         transcribe_kwargs["prompt_reset_on_temperature"] = _prompt_reset_t
-    if cfg_for(resolved_model, "MULTILINGUAL"):
+    if cf("MULTILINGUAL"):
         transcribe_kwargs["multilingual"] = True
-    _lang_thresh = cfg_for(resolved_model, "LANGUAGE_DETECTION_THRESHOLD")
+    _lang_thresh = cf("LANGUAGE_DETECTION_THRESHOLD")
     if _lang_thresh is not None and _lang_thresh != 0.5:
         transcribe_kwargs["language_detection_threshold"] = _lang_thresh
-    _lang_segs = cfg_for(resolved_model, "LANGUAGE_DETECTION_SEGMENTS")
+    _lang_segs = cf("LANGUAGE_DETECTION_SEGMENTS")
     if _lang_segs and _lang_segs != 1:
         transcribe_kwargs["language_detection_segments"] = _lang_segs
-    _hallu_silence = cfg_for(resolved_model, "HALLUCINATION_SILENCE_THRESHOLD")
+    _hallu_silence = cf("HALLUCINATION_SILENCE_THRESHOLD")
     if _hallu_silence is not None:
         transcribe_kwargs["hallucination_silence_threshold"] = _hallu_silence
-    _suppress_blank = cfg_for(resolved_model, "SUPPRESS_BLANK")
+    _suppress_blank = cf("SUPPRESS_BLANK")
     if _suppress_blank is False:
         transcribe_kwargs["suppress_blank"] = False
-    _suppress_tokens_str = cfg_for(resolved_model, "SUPPRESS_TOKENS")
+    _suppress_tokens_str = cf("SUPPRESS_TOKENS")
     if _suppress_tokens_str is not None:
         if _suppress_tokens_str.strip():
             try:
@@ -1008,7 +1027,7 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     # model's tokenizer, then merged into the effective suppress_tokens
     # list. Genuinely additive: existing IDs from SUPPRESS_TOKENS are
     # preserved.
-    _suppress_chars = cfg_for(resolved_model, "SUPPRESS_CHARS")
+    _suppress_chars = cf("SUPPRESS_CHARS")
     if _suppress_chars:
         extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars)
         if extra_ids:
@@ -1018,14 +1037,15 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
             else:
                 merged_ids = sorted(set(existing) | set(extra_ids))
             transcribe_kwargs["suppress_tokens"] = merged_ids
-    _prepend_p = cfg_for(resolved_model, "PREPEND_PUNCTUATIONS")
+    _prepend_p = cf("PREPEND_PUNCTUATIONS")
     if _prepend_p:
         transcribe_kwargs["prepend_punctuations"] = _prepend_p
-    _append_p = cfg_for(resolved_model, "APPEND_PUNCTUATIONS")
+    _append_p = cf("APPEND_PUNCTUATIONS")
     if _append_p:
         transcribe_kwargs["append_punctuations"] = _append_p
-    # Per-request overrides win (clamped). No-op when None/empty.
-    _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides)
+    # Per-request overrides win (clamped), EXCEPT fields locked by an identity
+    # layer (skipped). No-op when None/empty.
+    _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides, ident=ident)
     return transcribe_kwargs
 
 
@@ -1067,13 +1087,18 @@ def _resolve_model_name(requested: str) -> str:
 # The first three are this function's business; the last is whatever
 # faster-whisper itself defaults to when we omit a kwarg.
 
-def cfg_for(model_id: "str | None", field: str):
-    """Resolve a G/PM config field for the given model_id.
+def cfg_for(model_id: "str | None", field: str, ident=None):
+    """Resolve a G/PM config field for the given model_id (and optional caller
+    identity).
 
-    Returns the per-model override if present and non-None, else the global
-    cfg.X. Pass model_id=None to skip the override layer (useful at startup
-    paths where no specific model is known).
+    Precedence: per-identity override (``ident``) > per-model override >
+    global cfg.X. ``ident`` is an effective_config.Resolved whose ``values``
+    already merged the key/user/profile layers; passing ``ident=None`` (the
+    default everywhere except the request paths) is byte-identical to the
+    pre-feature behaviour. Pass model_id=None to skip the per-model layer.
     """
+    if ident is not None and field in ident.values:
+        return ident.values[field]
     overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
     if model_id and isinstance(overrides, dict):
         m_over = overrides.get(model_id)
@@ -1082,6 +1107,23 @@ def cfg_for(model_id: "str | None", field: str):
             if v is not None:
                 return v
     return getattr(cfg, field)
+
+
+def build_ident(user: "dict | None", model_id: "str | None",
+                request_overrides: "dict | None" = None):
+    """Resolve the per-identity effective config ONCE for a request / streaming
+    handshake / capture row, to thread through cfg_for / assemble_transcribe_
+    kwargs / _postprocess_text. Open mode and callers with no per-identity
+    config yield a Resolved with no identity layers (per-model rules still
+    folded) — equivalent to threading ident=None."""
+    import effective_config
+    user = user or {}
+    return effective_config.resolve(
+        model_id,
+        user_id=user.get("user_id"),
+        key_id=user.get("key_id"),
+        request_overrides=request_overrides or {},
+    )
 
 
 # =============================================================================
@@ -1880,6 +1922,12 @@ async def transcribe(
     try:
         model = await _get_or_load_model(resolved_model)
 
+        # Resolve the caller's effective per-identity config ONCE for this
+        # request: layered decode params, pipeline include/exclude, output
+        # wrappers, and which fields are locked against client overrides.
+        # Open mode / no per-identity config → no identity layers (≡ today).
+        ident = build_ident(user, resolved_model)
+
         form_data = await request.form()
         timestamp_granularities = form_data.getlist("timestamp_granularities[]")
         if not timestamp_granularities:
@@ -1899,7 +1947,7 @@ async def transcribe(
             # config knob and the per-request ask. Disabled (False) bypasses
             # the DTW alignment path entirely — required for primeline-style
             # finetunes that hit faster-whisper#1212.
-            gate_word_ts = cfg_for(resolved_model, "WORD_TIMESTAMPS_ENABLED")
+            gate_word_ts = cfg_for(resolved_model, "WORD_TIMESTAMPS_ENABLED", ident)
             want_word_ts = gate_word_ts and include_words
 
             # Capture-for-fine-tuning decision. We gate via gate_word_ts
@@ -1937,21 +1985,36 @@ async def transcribe(
             # Empty string is NOT equivalent to None for tnfru / primeline
             # finetunes — passing "" to model.transcribe(initial_prompt=...)
             # triggers the failure mode their model card warns about. Coerce.
-            _prompt = prompt or cfg_for(resolved_model, "DEFAULT_PROMPT")
+            # Prompt: a LOCKED DEFAULT_PROMPT forbids the client's `prompt`
+            # param — the admin value stands. `ignored` collects what we drop
+            # so the verbose_json response can surface it (never silent).
+            ignored: "list[str]" = []
+            if "DEFAULT_PROMPT" in ident.locked:
+                _prompt = cfg_for(resolved_model, "DEFAULT_PROMPT", ident)
+                if prompt and prompt != _prompt:
+                    ignored.append("prompt")
+            else:
+                _prompt = prompt or cfg_for(resolved_model, "DEFAULT_PROMPT", ident)
             initial_prompt_arg = _prompt if _prompt else None
 
-            _vad_filter = cfg_for(resolved_model, "VAD_FILTER")
+            _vad_filter = cfg_for(resolved_model, "VAD_FILTER", ident)
             vad_parameters = dict(
-                min_silence_duration_ms=cfg_for(resolved_model, "VAD_MIN_SILENCE_MS"),
-                speech_pad_ms=cfg_for(resolved_model, "VAD_SPEECH_PAD_MS"),
-                threshold=cfg_for(resolved_model, "VAD_THRESHOLD"),
+                min_silence_duration_ms=cfg_for(resolved_model, "VAD_MIN_SILENCE_MS", ident),
+                speech_pad_ms=cfg_for(resolved_model, "VAD_SPEECH_PAD_MS", ident),
+                threshold=cfg_for(resolved_model, "VAD_THRESHOLD", ident),
             ) if _vad_filter else None
 
             # Coerce empty to None — faster-whisper validates the value against
             # its accepted-codes list, so "" raises ValueError; None triggers
             # the first-30s auto-detect path, which is what an empty
-            # DEFAULT_LANGUAGE is documented to mean.
-            _language = language or cfg_for(resolved_model, "DEFAULT_LANGUAGE")
+            # DEFAULT_LANGUAGE is documented to mean. A LOCKED DEFAULT_LANGUAGE
+            # likewise forbids the client's `language` param.
+            if "DEFAULT_LANGUAGE" in ident.locked:
+                _language = cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident)
+                if language and language != _language:
+                    ignored.append("language")
+            else:
+                _language = language or cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident)
             # Optional per-request decode overrides (JSON object). Malformed → ignored.
             _overrides = {}
             if decode_overrides:
@@ -1961,6 +2024,9 @@ async def transcribe(
                         _overrides = _parsed
                 except (ValueError, TypeError):
                     _overrides = {}
+            # Per-request decode keys dropped by a lock (assemble_transcribe_
+            # kwargs enforces the drop; we record it here for the response).
+            ignored.extend(sorted(k for k in _overrides if k in ident.locked_client_keys))
             # Single source of truth — the streaming FINAL decode builds its kwargs
             # from this exact assembler too, so streaming and batch never diverge.
             transcribe_kwargs = assemble_transcribe_kwargs(
@@ -1968,7 +2034,7 @@ async def transcribe(
                 language=_language, temperature=temperature,
                 vad_filter=_vad_filter, vad_parameters=vad_parameters,
                 want_word_ts=want_word_ts, initial_prompt=initial_prompt_arg,
-                overrides=_overrides,
+                overrides=_overrides, ident=ident,
             )
 
             # Run the synchronous CTranslate2 inference in a thread executor
@@ -2048,7 +2114,7 @@ async def transcribe(
 
             raw_full_text = "".join(raw_full_text_parts)
             trace: "list | None" = [] if cfg.TRACE_ENABLED else None
-            full_text_str = _postprocess_text(raw_full_text, model_name=resolved_model, trace=trace)
+            full_text_str = _postprocess_text(raw_full_text, model_name=resolved_model, trace=trace, ident=ident)
             # Captures-form text — same pipeline minus the captures-specific
             # exclude set (default-skips `dictation-map` + `capitalize-after-
             # terminator` so the stored text matches Whisper's raw output
@@ -2065,13 +2131,14 @@ async def transcribe(
                     model_name=resolved_model,
                     trace=None,
                     extra_excludes=cfg.CAPTURES_PIPELINE_RULES_EXCLUDE,
+                    ident=ident,
                 )
             # Output wrappers (G/PM): plain prefix/suffix concatenated to
             # the final transcript text after the pipeline runs (including
             # the in-pipeline terminal trim) and BEFORE a defensive
             # post-wrapper trim. Per-model overrides win.
-            _output_prefix = cfg_for(resolved_model, "OUTPUT_PREFIX") or ""
-            _output_suffix = cfg_for(resolved_model, "OUTPUT_SUFFIX") or ""
+            _output_prefix = cfg_for(resolved_model, "OUTPUT_PREFIX", ident) or ""
+            _output_suffix = cfg_for(resolved_model, "OUTPUT_SUFFIX", ident) or ""
             if _output_prefix or _output_suffix:
                 _wrap_before = full_text_str
                 full_text_str = _output_prefix + full_text_str + _output_suffix
@@ -2219,6 +2286,10 @@ async def transcribe(
                 }
                 if include_words:
                     response["words"] = all_words
+                # Surface (never silently drop) any client override the admin
+                # config locked out, so the caller can see why it had no effect.
+                if ignored:
+                    response["overrides_ignored"] = ignored
                 return response
 
             return {"text": full_text_str}
