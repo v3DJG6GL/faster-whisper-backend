@@ -75,7 +75,6 @@ class HypothesisBuffer:
         self.buffer: list[TSWord] = []
         self.new: list[TSWord] = []
         self.last_commited_time: float = 0.0
-        self.last_commited_word: str | None = None
 
     def insert(self, words: Iterable[tuple[float, float, str]], offset: float) -> None:
         """Stage a fresh hypothesis for the next :meth:`flush`.
@@ -122,7 +121,6 @@ class HypothesisBuffer:
                 break  # nothing to agree against (e.g. first iteration)
             if nt == self.buffer[0].text:  # TEXT equality only
                 commit.append(self.new[0])
-                self.last_commited_word = nt
                 self.last_commited_time = nb
                 self.buffer.pop(0)  # pop from BOTH lists on a match
                 self.new.pop(0)

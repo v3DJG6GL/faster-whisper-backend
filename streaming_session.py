@@ -117,7 +117,6 @@ class StreamSession:
 
         self.raw_confirmed = ""            # cross-utterance verbatim accumulator
         self._committed_len = 0            # chars of processed text locked as append-only committed
-        self._committed_text = ""          # the committed prefix (for the append-only invariant)
         self._prev_processed = ""          # last whole-doc post-process (document-level LocalAgreement)
         self._utterance_index = 0
         self._prompt = base_prompt.strip()
@@ -306,7 +305,6 @@ class StreamSession:
         })
         self.raw_confirmed = ""
         self._committed_len = 0
-        self._committed_text = ""
         self._prev_processed = ""
         self._prompt = self.base_prompt.strip()
         self._idle_silence_ms = 0
@@ -331,7 +329,6 @@ class StreamSession:
         committed = processed[:commit_len]
         tail = processed[commit_len:]
         self._committed_len = commit_len
-        self._committed_text = committed
         self._prev_processed = processed
         if not committed and not tail:
             return
