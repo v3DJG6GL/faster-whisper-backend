@@ -312,8 +312,9 @@
     } catch (err) {
       // Mic denied / worklet load failed after the socket already opened: tear
       // down the socket + audio graph so we don't leak a live server-side
-      // session (ws.onclose's `if (running)` guard is already false here).
-      try { if (ws) ws.close(); } catch {}
+      // session. Detach the socket handlers first so this close doesn't clobber
+      // the caller's "mic/socket failed: …" status with a stale "closed"/"error".
+      try { if (ws) { ws.onclose = ws.onerror = null; ws.close(); } } catch {}
       try { if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop()); } catch {}
       try { if (audioCtx) audioCtx.close(); } catch {}
       ws = null; audioCtx = null; workletNode = null; mediaStream = null;
