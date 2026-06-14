@@ -948,7 +948,10 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
                 ids = [int(x) for x in st]
             elif isinstance(st, str):
                 ids = [int(t.strip()) for t in st.split(",") if t.strip()]
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
+            # OverflowError: int(float('inf')) from a JSON Infinity / 1e999
+            # literal — drop the malformed override like the clamp paths,
+            # never let it 500 the request.
             ids = None
         if ids is not None:
             kwargs["suppress_tokens"] = ids
