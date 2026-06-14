@@ -155,6 +155,8 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "STREAMING_ENABLED": "WHISPER_STREAMING_ENABLED",
     "STREAMING_MAX_SESSIONS": "WHISPER_STREAMING_MAX_SESSIONS",
     "STREAMING_IDLE_TIMEOUT_SEC": "WHISPER_STREAMING_IDLE_TIMEOUT_SEC",
+    "STREAMING_WS_PING_INTERVAL_SEC": "WHISPER_STREAMING_WS_PING_INTERVAL_SEC",
+    "STREAMING_WS_PING_TIMEOUT_SEC": "WHISPER_STREAMING_WS_PING_TIMEOUT_SEC",
     "INFERENCE_CONCURRENCY": "WHISPER_INFERENCE_CONCURRENCY",
     "STREAMING_PARTIAL_MODEL": "WHISPER_STREAMING_PARTIAL_MODEL",
     "STREAMING_PARTIAL_BEAM": "WHISPER_STREAMING_PARTIAL_BEAM",
@@ -165,6 +167,8 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "STREAMING_GATE_RMS_DBFS": "WHISPER_STREAMING_GATE_RMS_DBFS",
     "STREAMING_PARTIAL_INTERVAL_MS": "WHISPER_STREAMING_PARTIAL_INTERVAL_MS",
     "STREAMING_GATE_MIN_SPEECH_MS": "WHISPER_STREAMING_GATE_MIN_SPEECH_MS",
+    "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB": "WHISPER_STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
+    "STREAMING_FINAL_DROP_TEMPERATURE": "WHISPER_STREAMING_FINAL_DROP_TEMPERATURE",
     "STREAMING_VAD_INNER_SILENCE_MS": "WHISPER_STREAMING_VAD_INNER_SILENCE_MS",
     "STREAMING_VAD_OUTER_SILENCE_MS": "WHISPER_STREAMING_VAD_OUTER_SILENCE_MS",
     "STREAMING_HARD_BREAK_SILENCE_MS": "WHISPER_STREAMING_HARD_BREAK_SILENCE_MS",
@@ -196,6 +200,8 @@ RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset({
     "INFERENCE_CONCURRENCY",
     # CORSMiddleware is added once at app construction.
     "CORS_ALLOW_ORIGINS",
+    # WebSocket keepalive is passed once to uvicorn.run.
+    "STREAMING_WS_PING_INTERVAL_SEC", "STREAMING_WS_PING_TIMEOUT_SEC",
 })
 
 # Load-time fields. Editing these (globally OR per-model in MODEL_OVERRIDES)
@@ -707,6 +713,14 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Close a live-dictation connection that sends no audio for this many "
         "seconds, freeing its slot (bounds idle/abandoned connections). 0 = off. "
         "Won't cut a normal session (the client streams continuously).",
+    "STREAMING_WS_PING_INTERVAL_SEC":
+        "WebSocket keepalive ping interval (s), passed to uvicorn — the server "
+        "pings clients this often so a dead connection is detected. 0 = no "
+        "keepalive pings (restart to change).",
+    "STREAMING_WS_PING_TIMEOUT_SEC":
+        "WebSocket keepalive timeout (s): drop the socket if a ping gets no pong "
+        "within this long. Generous, since the decode runs off the receive loop. "
+        "0 = disable (restart to change).",
     "INFERENCE_CONCURRENCY":
         "Shared cap on concurrent GPU decodes across BOTH streaming and the batch "
         "/transcribe route — prevents oversubscribing the GPU (restart to change).",
@@ -739,6 +753,14 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "STREAMING_GATE_MIN_SPEECH_MS":
         "Minimum speech in the buffer before any decode runs (ms) — sub-500 ms "
         "buffers hallucinate.",
+    "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB":
+        "Post-decode anti-hallucination guard: drop a FINAL segment only when its "
+        "average log-probability is below this AND it fell through the temperature "
+        "ladder. Lower (e.g. -10) to effectively disable.",
+    "STREAMING_FINAL_DROP_TEMPERATURE":
+        "Temperature at/above which a low-confidence FINAL segment is treated as a "
+        "failed decode and dropped (paired with the log-prob floor). Requiring "
+        "both signals avoids discarding genuine quiet speech.",
     "STREAMING_VAD_INNER_SILENCE_MS":
         "Inner silence gate (ms): a pause this long triggers a boundary partial "
         "without finalizing. Spans German sub-clause pauses (~700).",
@@ -1187,6 +1209,8 @@ class AdminConfig(BaseModel):
     STREAMING_ENABLED: bool | None = _F("STREAMING_ENABLED")
     STREAMING_MAX_SESSIONS: Annotated[int, Field(ge=1, le=256)] | None = _F("STREAMING_MAX_SESSIONS")
     STREAMING_IDLE_TIMEOUT_SEC: Annotated[float, Field(ge=0.0, le=3600.0)] | None = _F("STREAMING_IDLE_TIMEOUT_SEC")
+    STREAMING_WS_PING_INTERVAL_SEC: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F("STREAMING_WS_PING_INTERVAL_SEC")
+    STREAMING_WS_PING_TIMEOUT_SEC: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F("STREAMING_WS_PING_TIMEOUT_SEC")
     INFERENCE_CONCURRENCY: Annotated[int, Field(ge=1, le=64)] | None = _F("INFERENCE_CONCURRENCY")
     STREAMING_PARTIAL_MODEL: Annotated[str, Field(max_length=96)] | None = _F("STREAMING_PARTIAL_MODEL")
     STREAMING_PARTIAL_BEAM: Annotated[int, Field(ge=1, le=20)] | None = _F("STREAMING_PARTIAL_BEAM")
@@ -1197,6 +1221,8 @@ class AdminConfig(BaseModel):
     STREAMING_GATE_RMS_DBFS: Annotated[float, Field(ge=-90.0, le=0.0)] | None = _F("STREAMING_GATE_RMS_DBFS")
     STREAMING_PARTIAL_INTERVAL_MS: Annotated[int, Field(ge=200, le=5000)] | None = _F("STREAMING_PARTIAL_INTERVAL_MS")
     STREAMING_GATE_MIN_SPEECH_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_GATE_MIN_SPEECH_MS")
+    STREAMING_FINAL_DROP_MIN_AVG_LOGPROB: Annotated[float, Field(ge=-100.0, le=0.0)] | None = _F("STREAMING_FINAL_DROP_MIN_AVG_LOGPROB")
+    STREAMING_FINAL_DROP_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("STREAMING_FINAL_DROP_TEMPERATURE")
     STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_VAD_INNER_SILENCE_MS")
     STREAMING_VAD_OUTER_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = _F("STREAMING_VAD_OUTER_SILENCE_MS")
     STREAMING_HARD_BREAK_SILENCE_MS: Annotated[int, Field(ge=0, le=120000)] | None = _F("STREAMING_HARD_BREAK_SILENCE_MS")

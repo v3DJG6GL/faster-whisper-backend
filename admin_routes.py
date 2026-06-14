@@ -94,6 +94,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
         (None, [
             "STREAMING_ENABLED", "STREAMING_MAX_SESSIONS", "INFERENCE_CONCURRENCY",
             "STREAMING_IDLE_TIMEOUT_SEC",
+            "STREAMING_WS_PING_INTERVAL_SEC", "STREAMING_WS_PING_TIMEOUT_SEC",
         ]),
         ("Partial decoding (live preview)", [
             "STREAMING_PARTIAL_MODEL", "STREAMING_PARTIAL_BEAM",
@@ -104,6 +105,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
             "STREAMING_VAD_BACKEND", "STREAMING_VAD_THRESHOLD",
             "STREAMING_GATE_MIN_SPEECH_MS", "STREAMING_GATE_RMS_DBFS",
             "STREAMING_VAD_INNER_SILENCE_MS", "STREAMING_VAD_OUTER_SILENCE_MS",
+            "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", "STREAMING_FINAL_DROP_TEMPERATURE",
         ]),
         ("Finalize & document breaks", [
             "STREAMING_FORCED_COMMIT_SEC",
