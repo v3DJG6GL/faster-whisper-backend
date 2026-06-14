@@ -545,6 +545,11 @@ window._renderWaterfall = (function () {
       if (PIPE_FIELDS.indexOf(k) >= 0) { n += (p[k] || []).length; return; }
       if (p[k] !== null && p[k] !== undefined) n += 1;
     });
+    // Value-less locks (lock-to-inherited) carry no value entry but still do
+    // something, so count them — otherwise a locks-only profile looks empty.
+    ((p && p.locks) || []).forEach(function (f) {
+      if (p[f] === null || p[f] === undefined) n += 1;
+    });
     return n;
   }
 
@@ -660,10 +665,13 @@ window._renderWaterfall = (function () {
     var locked = locks.indexOf(name) >= 0;
     lockCell.innerHTML = locked ? '\u{1F512}' : '\u{1F513}';
     if (locked) lockCell.classList.add('locked');
-    lockCell.title = 'lock — client cannot override this field';
     lockCell.setAttribute('role', 'switch');
     lockCell.setAttribute('aria-checked', locked ? 'true' : 'false');
-    lockCell.disabled = !isSet(p, name);
+    // Available even when the field is unset: a value-less lock pins the
+    // inherited (per-model/global) value and still blocks client overrides.
+    lockCell.title = isSet(p, name)
+      ? 'lock — client cannot override this field'
+      : 'lock to inherited — client cannot override this field';
     lockCell.onclick = function () { toggleLock(p, name); };
 
     if (isSet(p, name)) {
@@ -732,7 +740,6 @@ window._renderWaterfall = (function () {
     render(); refreshButtons();
   }
   function toggleLock(p, name) {
-    if (!isSet(p, name)) return;
     if (!p.locks) p.locks = [];
     var i = p.locks.indexOf(name);
     if (i >= 0) p.locks.splice(i, 1); else p.locks.push(name);

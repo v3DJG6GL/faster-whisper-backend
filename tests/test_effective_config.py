@@ -106,6 +106,29 @@ def test_lock_sets_client_keys_and_dropped():
     assert r.dropped == ["temperature"]            # beam_size not locked → kept
 
 
+def test_value_less_lock_pins_inherited():
+    # A layer that LOCKS a field WITHOUT overriding it: the value stays inherited
+    # (no entry in .values → cfg_for falls through to per-model/global), but the
+    # field is locked so a client decode_override for it is dropped.
+    r = _resolve([_layer("user", locks=["TEMPERATURE"])],
+                 req={"temperature": 0.9})
+    assert "TEMPERATURE" not in r.values
+    assert "TEMPERATURE" in r.locked
+    assert "temperature" in r.locked_client_keys
+    assert r.dropped == ["temperature"]
+
+
+def test_value_setting_winner_shadows_lower_value_less_lock():
+    # first-layer-owns-lock still holds: a higher layer that SETS the value
+    # (unlocked) shadows a lower layer's value-less lock on the same field.
+    r = _resolve([_layer("key", TEMPERATURE="0.0"),
+                  _layer("user", locks=["TEMPERATURE"])],
+                 req={"temperature": 0.9})
+    assert r.values["TEMPERATURE"] == "0.0"
+    assert "TEMPERATURE" not in r.locked
+    assert "temperature" not in r.locked_client_keys
+
+
 def test_vad_lock_maps_to_client_subparam_key():
     r = _resolve([_layer("user", VAD_MIN_SILENCE_MS=500,
                          locks=["VAD_MIN_SILENCE_MS"])],

@@ -224,6 +224,16 @@ def _resolve_from_layers(model_id: str | None, layers: list[dict[str, Any]],
             values[fname] = winner["fields"][fname]
             if fname in winner["locks"]:
                 locked.add(fname)
+        else:
+            # Value-less lock: a layer may lock a field WITHOUT overriding it,
+            # meaning "pin the inherited (per-model/global) value and forbid the
+            # client from replacing it via decode_overrides". The value stays
+            # inherited (no `values` entry → cfg_for falls through); only the
+            # lock takes effect. The first (most-specific) locking layer owns it.
+            for layer in layers:
+                if fname in layer["locks"]:
+                    locked.add(fname)
+                    break
         if with_provenance:
             provenance[fname] = _scalar_provenance(fname, layers, winner, model_id)
 
@@ -292,7 +302,11 @@ def _scalar_provenance(fname: str, layers: list[dict[str, Any]],
             "value": layer["fields"].get(fname) if has else None,
             "is_set": has,
             "is_winner": layer is identity_winner,
-            "locked": has and fname in layer["locks"],
+            # A lock shows when this layer declares it AND that lock is the one
+            # that takes effect: it owns the value (winner) or no layer set a
+            # value (value-less lock-to-inherited).
+            "locked": fname in layer["locks"] and (
+                layer is identity_winner or identity_winner is None),
         })
     pm = _per_model_value(model_id, fname)
     pm_set = pm is not UNSET
