@@ -427,6 +427,8 @@ def revoke_user(user_id: str) -> None:
             (now, user_id),
         )
         _rebuild_index_locked()
+    import config_store
+    config_store.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] user revoked id=%s", user_id[:8])
 
 
@@ -538,6 +540,8 @@ def revoke_key(key_id: str) -> None:
             (now, key_id),
         )
         _rebuild_index_locked()
+    import config_store
+    config_store.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] key revoked kid=%s", key_id[:8])
 
 
