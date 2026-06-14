@@ -1599,7 +1599,7 @@ const FULLROW_FIELDS = new Set(['MODEL_OVERRIDES']);
 function fieldRow(name) {
   const row = document.createElement('div');
   row.className = 'field';
-  row.dataset.field = name;   // used by jumpToRule() + the global admin:dirty handler
+  row.dataset.field = name;   // used by jumpToGlobalRule() + the global admin:dirty handler
 
   if (FULLROW_FIELDS.has(name)) {
     row.classList.add('field-fullrow');
