@@ -314,3 +314,101 @@ def test_request_profile_is_least_specific(monkeypatch):
     assert "TEMPERATURE" in r.locked               # still locked despite the profile
     assert "temperature" in r.locked_client_keys
     assert r.values["DEFAULT_LANGUAGE"] == "fr"    # profile fills a field nobody set
+
+
+# --- per-identity request gates + allowlist (P11) -------------------------
+
+def _bindings(monkeypatch, *, key=None, user=None):
+    """Monkeypatch the per-identity binding fetch — no DB. Pass partial binding
+    dicts (e.g. {"allow_request_override_profile": False})."""
+    import api_keys_store
+    monkeypatch.setattr(api_keys_store, "get_key_config",
+                        lambda kid: key or {"direct": {}, "profiles": []}, raising=False)
+    monkeypatch.setattr(api_keys_store, "get_user_config",
+                        lambda uid: user or {"direct": {}, "profiles": []}, raising=False)
+
+
+def test_effective_flag_inherits_and_narrows():
+    # unset → inherit the global floor
+    assert ec._effective_flag({}, {}, "allow_request_override_profile", True) is True
+    assert ec._effective_flag({}, {}, "allow_request_override_profile", False) is False
+    # key beats user; either can NARROW the global on
+    assert ec._effective_flag({"allow_request_override_profile": False},
+                              {"allow_request_override_profile": True},
+                              "allow_request_override_profile", True) is False
+    # NEVER widen: global off can't be re-enabled per-identity
+    assert ec._effective_flag({"allow_request_override_profile": True}, {},
+                              "allow_request_override_profile", False) is False
+
+
+def test_effective_allowlist_key_over_user():
+    assert ec._effective_allowlist({}, {}) is None                       # inherit / all
+    assert ec._effective_allowlist({"allowed_override_profiles": ["a"]},
+                                   {"allowed_override_profiles": ["b"]}) == ["a"]
+    assert ec._effective_allowlist({}, {"allowed_override_profiles": []}) == []
+
+
+def test_request_profile_per_identity_gate(monkeypatch):
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    # key gate off → refused even though global is on
+    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
+                                "allow_request_override_profile": False})
+    r = ec.resolve("m", key_id="k", request_profile="fast")
+    assert r.request_profile_applied is None and "BEAM_SIZE" not in r.values
+    # no per-identity opinion → inherits global on
+    _bindings(monkeypatch)
+    r = ec.resolve("m", key_id="k", request_profile="fast")
+    assert r.request_profile_applied == "fast" and r.values["BEAM_SIZE"] == 3
+
+
+def test_request_profile_allowlist(monkeypatch):
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
+                                "allowed_override_profiles": ["other"]})
+    assert ec.resolve("m", key_id="k", request_profile="fast").request_profile_applied is None
+    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
+                                "allowed_override_profiles": ["fast"]})
+    assert ec.resolve("m", key_id="k", request_profile="fast").request_profile_applied == "fast"
+    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
+                                "allowed_override_profiles": ["*"]})
+    assert ec.resolve("m", key_id="k", request_profile="fast").request_profile_applied == "fast"
+    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
+                                "allowed_override_profiles": []})
+    assert ec.resolve("m", key_id="k", request_profile="fast").request_profile_applied is None
+
+
+def test_request_profile_requestable_false_refused(monkeypatch):
+    _set_profiles(monkeypatch, {"internal": {"BEAM_SIZE": 1, "requestable": False}})
+    _bindings(monkeypatch)  # gate on, no allowlist → all permitted
+    r = ec.resolve("m", key_id="k", request_profile="internal")
+    assert r.request_profile_applied is None and "BEAM_SIZE" not in r.values
+    assert ec._request_profile_layer("internal", allowed=True, allowlist=["*"]) is None
+
+
+def test_decode_master_gate_off_drops_all(monkeypatch):
+    _set_profiles(monkeypatch, {})
+    _bindings(monkeypatch, key={"direct": {}, "profiles": [],
+                                "allow_request_decode_overrides": False})
+    r = ec.resolve("m", key_id="k",
+                   request_overrides={"beam_size": 9, "temperature": 0.5})
+    assert r.allow_request_decode_overrides is False
+    assert set(r.dropped) == {"beam_size", "temperature"}
+    assert {"beam_size", "temperature"} <= set(r.locked_client_keys)
+    # gate on (default) leaves request overrides alone
+    _bindings(monkeypatch)
+    r2 = ec.resolve("m", key_id="k", request_overrides={"beam_size": 9})
+    assert r2.allow_request_decode_overrides is True and r2.dropped == []
+
+
+def test_request_profile_cant_escape_lock_via_resolve(monkeypatch):
+    # SECURITY through the full resolve() path: an allowlisted request profile
+    # still cannot move a key-locked value.
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    _bindings(monkeypatch, key={"direct": {"BEAM_SIZE": 10, "locks": ["BEAM_SIZE"]},
+                                "profiles": [], "allowed_override_profiles": ["fast"]})
+    r = ec.resolve("m", key_id="k", request_profile="fast",
+                   request_overrides={"beam_size": 7})
+    assert r.values["BEAM_SIZE"] == 10            # key value wins
+    assert "BEAM_SIZE" in r.locked                # still locked
+    assert "beam_size" in r.dropped               # client override refused
+    assert r.request_profile_applied == "fast"    # applied, just shadowed

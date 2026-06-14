@@ -79,6 +79,33 @@ def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
     assert fake_model.last_kwargs["beam_size"] == 7
 
 
+def test_stream_request_override_profile_applies(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    """P11/B0e: a per-request `override_profile` named in the WS handshake is
+    honoured — echoed as `profile_applied` in the ready frame and its decode
+    params reach the final decode (least-specific layer, no admin lock)."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    _profile(client, h, "fast", BEAM_SIZE=9)
+    _, raw_alice = make_user_key("alice")     # no binding → inherits global gate (on)
+
+    with client.websocket_connect(
+            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "override_profile": "fast",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        assert ready["profile_applied"] == "fast"
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        _drain(ws)
+
+    assert fake_model.last_kwargs["beam_size"] == 9
+
+
 def test_stream_picks_up_binding_change_without_reconnect(
         client, make_user_key, fake_model, app_module, monkeypatch):
     """Regression: a binding change made WHILE a dictation WebSocket is open is
