@@ -107,6 +107,7 @@ class StreamSession:
         self.audio = np.zeros(0, dtype=np.float32)
         self._buffer_offset = 0.0          # wall start (s) of audio[0] within this utterance
         self._frame_tail = np.zeros(0, dtype=np.float32)  # < 512 samples awaiting a full frame
+        self._byte_tail = b""              # odd trailing PCM byte awaiting its pair
 
         self._in_utterance = False
         self._speech_ms = 0
@@ -127,6 +128,20 @@ class StreamSession:
     async def feed_pcm(self, pcm_int16_le: bytes) -> None:
         """Feed a chunk of raw 16 kHz mono signed-16-bit little-endian PCM."""
         if self._closed or not pcm_int16_le:
+            return
+        # Chunk boundaries (notably ffmpeg's stdout pipe reads, but also a
+        # misframed raw-PCM client) need not fall on 2-byte sample boundaries;
+        # carry an odd trailing byte to the next feed so np.frombuffer never
+        # sees a non-even buffer (which would raise ValueError and kill the
+        # session).
+        if self._byte_tail:
+            pcm_int16_le = self._byte_tail + pcm_int16_le
+        if len(pcm_int16_le) & 1:
+            self._byte_tail = pcm_int16_le[-1:]
+            pcm_int16_le = pcm_int16_le[:-1]
+        else:
+            self._byte_tail = b""
+        if not pcm_int16_le:
             return
         samples = np.frombuffer(pcm_int16_le, dtype="<i2").astype(np.float32) / 32768.0
         if self._frame_tail.size:
