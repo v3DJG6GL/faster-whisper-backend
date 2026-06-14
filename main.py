@@ -113,7 +113,15 @@ def _preload_windows_cuda_dlls() -> None:
     logger.info("Base path: %s", base_path)
     logger.info("cuDNN path: %s", cudnn_bin)
 
-    os.environ["PATH"] = cudnn_bin + os.pathsep + cublas_bin + os.pathsep + os.environ.get("PATH", "")
+    # Idempotent prepend: this runs on every `import main` — including the
+    # importlib.reload(main) the test suite does once per app_module test — so a
+    # naive unconditional prepend grows PATH without bound until it trips
+    # Windows' 32767-char per-variable limit (and bloats the env block enough to
+    # fail subprocess spawns with WinError 8). Only add dirs not already present.
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    missing = [d for d in (cudnn_bin, cublas_bin) if d not in parts]
+    if missing:
+        os.environ["PATH"] = os.pathsep.join(missing + parts)
 
     if hasattr(os, "add_dll_directory"):
         if os.path.exists(cudnn_bin):
