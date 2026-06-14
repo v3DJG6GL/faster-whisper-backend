@@ -55,12 +55,24 @@ class ConfigBindingIn(BaseModel):
     """Wire shape for a per-identity config binding — shared by the per-user
     `config` field on PatchPermissionsIn and the per-key /config endpoint.
     `overrides` is a flat OverrideProfile-shaped dict (decode/streaming fields
-    + PIPELINE_RULES_EXCLUDE/INCLUDE); `profiles` is the ordered profile list
-    (earlier wins); `locks` names the fields the client may not override."""
+    + PIPELINE_RULES_EXCLUDE/INCLUDE); `profiles` is the ordered FORCED-applied
+    profile list (earlier wins); `locks` names the fields the client may not
+    override.
+
+    Request-gate fields (all optional; None = inherit the next scope → global,
+    and they can only NARROW the global gate, never widen it):
+    `allow_request_override_profile` — may this identity NAME a profile per
+    request; `allow_request_decode_overrides` — may it send inline decode
+    tweaks; `allowed_override_profiles` — the request allowlist (distinct from
+    `profiles`): None = all, ["*"] = all, an explicit list restricts, [] = none.
+    """
     model_config = {"extra": "forbid"}
     overrides: dict[str, Any] = Field(default_factory=dict)
     profiles: list[str] = Field(default_factory=list)
     locks: list[str] = Field(default_factory=list)
+    allow_request_override_profile: bool | None = None
+    allow_request_decode_overrides: bool | None = None
+    allowed_override_profiles: list[str] | None = None
 
 
 class PatchPermissionsIn(BaseModel):
@@ -1249,7 +1261,20 @@ _API_KEYS_HTML = r"""<!doctype html>
     var direct = Object.assign({}, cfg.direct || {});
     var locks = (direct.locks || []).slice();
     delete direct.locks;
-    return { overrides: direct, profiles: (cfg.profiles || []).slice(), locks: locks };
+    return {
+      overrides: direct,
+      profiles: (cfg.profiles || []).slice(),
+      locks: locks,
+      allow_request_override_profile:
+        typeof cfg.allow_request_override_profile === 'boolean'
+          ? cfg.allow_request_override_profile : null,
+      allow_request_decode_overrides:
+        typeof cfg.allow_request_decode_overrides === 'boolean'
+          ? cfg.allow_request_decode_overrides : null,
+      allowed_override_profiles:
+        Array.isArray(cfg.allowed_override_profiles)
+          ? cfg.allowed_override_profiles.slice() : null,
+    };
   }
 
   function _cfgAvailFields() {
@@ -1299,6 +1324,96 @@ _API_KEYS_HTML = r"""<!doctype html>
     var b = opts.binding;
     var root = document.createElement('div'); root.className = 'cfg-drawer';
     function rerender() { root.innerHTML = ''; draw(); }
+
+    // Per-identity REQUEST GATES — whether this identity may request override-
+    // profiles / decode tweaks, and which profiles it may name. These can only
+    // NARROW the global gates (set on /settings); the server enforces this.
+    function _triRow(label, hint, val, set) {
+      var row = document.createElement('div'); row.className = 'cfg-ovr-row';
+      var nm = document.createElement('span'); nm.className = 'nm';
+      nm.textContent = label; nm.title = hint; row.appendChild(nm);
+      var vc = document.createElement('span');
+      var sel = document.createElement('select');
+      [['inherit', 'Inherit (global)'], ['allow', 'Allow'], ['deny', 'Deny']]
+        .forEach(function (o) {
+          var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1];
+          sel.appendChild(op);
+        });
+      sel.value = val === true ? 'allow' : (val === false ? 'deny' : 'inherit');
+      sel.onchange = function () {
+        set(sel.value === 'allow' ? true : (sel.value === 'deny' ? false : null));
+      };
+      vc.appendChild(sel); row.appendChild(vc); return row;
+    }
+
+    function requestGatesSection(b) {
+      var sec = document.createElement('div');
+      var h = document.createElement('h4'); h.textContent = 'Request gates'; sec.appendChild(h);
+      var hint = document.createElement('div'); hint.className = 'lbl';
+      hint.textContent = 'Narrow the global gates for this identity only (can never widen them).';
+      sec.appendChild(hint);
+      sec.appendChild(_triRow('Allow requesting override-profiles',
+        'May this identity name a profile in a per-request override_profile?',
+        b.allow_request_override_profile,
+        function (v) { b.allow_request_override_profile = v; rerender(); }));
+      sec.appendChild(_triRow('Allow custom decode params',
+        'May this identity send inline per-request decode_overrides?',
+        b.allow_request_decode_overrides,
+        function (v) { b.allow_request_decode_overrides = v; }));
+
+      // Allowlist of requestable profiles: null=inherit(all), ['*']=all, []=none,
+      // [names]=restrict.
+      var al = b.allowed_override_profiles;
+      var mode = al == null ? 'inherit'
+        : (al.indexOf('*') >= 0 ? 'all' : (al.length === 0 ? 'none' : 'restrict'));
+      var arow = document.createElement('div'); arow.className = 'cfg-ovr-row';
+      var anm = document.createElement('span'); anm.className = 'nm';
+      anm.textContent = 'Requestable profiles'; arow.appendChild(anm);
+      var avc = document.createElement('span');
+      var asel = document.createElement('select');
+      [['inherit', 'Inherit (all)'], ['all', 'All (*)'],
+       ['restrict', 'Restrict to…'], ['none', 'None']].forEach(function (o) {
+        var op = document.createElement('option'); op.value = o[0]; op.textContent = o[1];
+        asel.appendChild(op);
+      });
+      asel.value = mode;
+      asel.onchange = function () {
+        if (asel.value === 'inherit') b.allowed_override_profiles = null;
+        else if (asel.value === 'all') b.allowed_override_profiles = ['*'];
+        else if (asel.value === 'none') b.allowed_override_profiles = [];
+        else b.allowed_override_profiles =
+          (Array.isArray(al) ? al.filter(function (n) { return n !== '*'; }) : []);
+        rerender();
+      };
+      avc.appendChild(asel); arow.appendChild(avc); sec.appendChild(arow);
+
+      if (mode === 'restrict') {
+        var names = Object.keys(ovState().profiles || {}).sort();
+        var box = document.createElement('div'); box.className = 'cfg-chips';
+        if (!names.length) {
+          var e = document.createElement('span'); e.className = 'lbl';
+          e.textContent = '(no profiles defined — create them on the Overrides page)';
+          box.appendChild(e);
+        }
+        names.forEach(function (n) {
+          var lab = document.createElement('label');
+          lab.style.cssText = 'display:inline-flex;align-items:center;gap:4px;margin-right:10px';
+          var cb = document.createElement('input'); cb.type = 'checkbox';
+          cb.checked = al.indexOf(n) >= 0;
+          cb.onchange = function () {
+            var i = b.allowed_override_profiles.indexOf(n);
+            if (cb.checked && i < 0) b.allowed_override_profiles.push(n);
+            else if (!cb.checked && i >= 0) b.allowed_override_profiles.splice(i, 1);
+          };
+          lab.appendChild(cb);
+          lab.appendChild(document.createTextNode(' ' + n));
+          box.appendChild(lab);
+        });
+        sec.appendChild(box);
+      }
+      return sec;
+    }
+
     function draw() {
       var ph = document.createElement('h4'); ph.textContent = 'Profiles'; root.appendChild(ph);
       var hint = document.createElement('div'); hint.className = 'lbl';
@@ -1329,6 +1444,8 @@ _API_KEYS_HTML = r"""<!doctype html>
       }
       root.appendChild(chips);
 
+      root.appendChild(requestGatesSection(b));
+
       var oh = document.createElement('h4'); oh.textContent = 'Direct overrides'; root.appendChild(oh);
       Object.keys(b.overrides).sort().forEach(function (name) {
         var row = document.createElement('div'); row.className = 'cfg-ovr-row';
@@ -1356,7 +1473,12 @@ _API_KEYS_HTML = r"""<!doctype html>
       var save = document.createElement('button'); save.className = 'primary'; save.textContent = 'Save overrides';
       save.onclick = function () {
         save.disabled = true;
-        opts.save({ overrides: b.overrides, profiles: b.profiles, locks: b.locks })
+        opts.save({
+          overrides: b.overrides, profiles: b.profiles, locks: b.locks,
+          allow_request_override_profile: b.allow_request_override_profile,
+          allow_request_decode_overrides: b.allow_request_decode_overrides,
+          allowed_override_profiles: b.allowed_override_profiles,
+        })
           .then(function () { showToast('Overrides saved', 'ok'); load(); })
           .catch(function (er) { showToast(String(er.message || er), 'err'); })
           .finally(function () { save.disabled = false; });

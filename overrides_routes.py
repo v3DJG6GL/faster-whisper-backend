@@ -48,7 +48,9 @@ def _build_field_meta() -> dict[str, dict[str, Any]]:
     schema = config_store.OverrideProfile.model_json_schema()
     out: dict[str, dict[str, Any]] = {}
     for name, spec in schema.get("properties", {}).items():
-        if name == "locks":
+        # `locks` and `requestable` are profile-level metadata, not per-field
+        # overrides — rendered by dedicated controls, never in the field grid.
+        if name in ("locks", "requestable"):
             continue
         variants = spec.get("anyOf") or [spec]
         v = next((x for x in variants if x.get("type") != "null"), variants[0])
@@ -140,6 +142,14 @@ async def get_state() -> dict[str, Any]:
         "rules": _build_rules(),
         "usage": _build_usage(),
         "models": _models(),
+        # Read-only echo of the two global request gates so the page can show
+        # whether requesting is enabled at all (they're edited on /settings).
+        "globals": {
+            "ALLOW_REQUEST_OVERRIDE_PROFILE":
+                bool(getattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True)),
+            "ALLOW_REQUEST_DECODE_OVERRIDES":
+                bool(getattr(cfg, "ALLOW_REQUEST_DECODE_OVERRIDES", True)),
+        },
     }
 
 
@@ -413,6 +423,7 @@ _OVERRIDES_HTML = r"""<!doctype html>
     <p class="hint">Reusable config profiles. Assign them (ordered, earlier
       wins) to users &amp; API keys on the <a href="/settings/api-keys">API keys</a>
       page. A &#128274; field cannot be overridden per-request by the client.</p>
+    <div id="ov-globals" class="hint"></div>
     <div class="ov-wrap">
       <div class="ov-side" id="profile-list"></div>
       <div class="ov-main" id="profile-main"></div>
@@ -539,7 +550,7 @@ window._renderWaterfall = (function () {
   function overrideCount(p) {
     var n = 0;
     Object.keys(p || {}).forEach(function (k) {
-      if (k === 'locks') return;
+      if (k === 'locks' || k === 'requestable') return;
       if (PIPE_FIELDS.indexOf(k) >= 0) { n += (p[k] || []).length; return; }
       if (p[k] !== null && p[k] !== undefined) n += 1;
     });
@@ -621,8 +632,25 @@ window._renderWaterfall = (function () {
     delete profiles[sel]; sel = null; render(); refreshButtons();
   }
 
+  // ---- global gates (read-only echo; edited on /settings) ----
+  function renderGlobals() {
+    var el = document.getElementById('ov-globals');
+    if (!el) return;
+    var g = (S && S.globals) || {};
+    function badge(on) {
+      return '<b style="color:' + (on ? 'var(--green)' : 'var(--red)') + '">'
+        + (on ? 'on' : 'off') + '</b>';
+    }
+    el.innerHTML =
+      'Request gates (edited on <a href="/settings">Settings</a>): '
+      + 'override-profile ' + badge(g.ALLOW_REQUEST_OVERRIDE_PROFILE !== false)
+      + ' · decode-overrides ' + badge(g.ALLOW_REQUEST_DECODE_OVERRIDES !== false)
+      + '. Per-user / per-key gates &amp; allowlists are set in the '
+      + '&#9881; overrides drawer on the <a href="/settings/api-keys">API keys</a> page.';
+  }
+
   // ---- main pane ----
-  function render() { renderSide(); renderMain(); }
+  function render() { renderGlobals(); renderSide(); renderMain(); }
 
   function renderMain() {
     mainEl.innerHTML = '';
@@ -631,6 +659,7 @@ window._renderWaterfall = (function () {
       return;
     }
     var p = profiles[sel];
+    mainEl.appendChild(accessSection(p));
     (S.groups || []).forEach(function (g) {
       var fields = [];
       (g.subgroups || []).forEach(function (sg) {
@@ -644,6 +673,33 @@ window._renderWaterfall = (function () {
       mainEl.appendChild(sec);
     });
     mainEl.appendChild(pipelineSection(p));
+  }
+
+  // Profile-level "Access" — whether clients may NAME this profile per request.
+  // Default = requestable; storing requestable:false opts it out globally.
+  function accessSection(p) {
+    var sec = document.createElement('div');
+    sec.className = 'ov-sec';
+    sec.innerHTML = '<h4>Access</h4>';
+    var lbl = document.createElement('label');
+    lbl.className = 'ov-requestable';
+    lbl.style.cssText = 'display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px';
+    var cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = p.requestable !== false;       // absent / true = requestable
+    cb.onchange = function () {
+      if (cb.checked) delete p.requestable; else p.requestable = false;
+      refreshButtons(); renderSide();
+    };
+    lbl.appendChild(cb);
+    var txt = document.createElement('span');
+    txt.innerHTML = 'Requestable by clients '
+      + '<span style="color:var(--help)">— clients may name this profile in a per-request '
+      + '<code>override_profile</code> (subject to per-user / per-key allowlists). '
+      + 'Unchecked = admin-applied only.</span>';
+    lbl.appendChild(txt);
+    sec.appendChild(lbl);
+    return sec;
   }
 
   function isSet(p, f) { return p[f] !== null && p[f] !== undefined; }
