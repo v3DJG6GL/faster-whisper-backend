@@ -254,11 +254,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
             pending_audio = first["bytes"]
 
         model_req = conf.get("model") or "whisper-1"
-        req_language = (conf.get("language") or "").strip()
+        _req_language = conf.get("language")
+        req_language = _req_language.strip() if isinstance(_req_language, str) else ""
         response_format = conf.get("response_format", "json")
         # Per-connection initial prompt (the client's "Vocabulary / prompt"). Empty
         # → fall back to the model's DEFAULT_PROMPT, then to None — same as batch.
-        req_prompt = (conf.get("prompt") or "").strip()
+        _req_prompt = conf.get("prompt")
+        req_prompt = _req_prompt.strip() if isinstance(_req_prompt, str) else ""
         # Optional per-request decode overrides (the client's "decode overrides").
         # Applied to the FINAL decode (the batch analogue); partials keep their
         # streaming-specific beam/temp/condition/vad knobs (see _build_transcribe_kwargs).
