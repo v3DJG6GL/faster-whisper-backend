@@ -893,14 +893,15 @@ _DECODE_STR_CAPS = {
 def _clamp_int(v, lo, hi):
     try:
         return max(lo, min(hi, int(v)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        # OverflowError: int(float('inf')) from a JSON number like 1e999.
         return None
 
 
 def _clamp_float(v, lo, hi):
     try:
         return max(lo, min(hi, float(v)))
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
 
 
