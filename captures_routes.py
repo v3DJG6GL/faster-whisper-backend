@@ -1615,7 +1615,13 @@ def _refresh_final_if_stale(row: dict[str, Any]) -> None:
     stored_final = row.get("final") or ""
     try:
         import main
-        fresh_final = main._postprocess_text(raw, model_name=row.get("model"))
+        # Resolve the capture OWNER's effective pipeline (mirrors the explicit
+        # /reprocess endpoint). Without ident the self-heal would recompute with
+        # GLOBAL rules and write the result back, silently reverting any
+        # per-identity reprocess and producing wrong text for owners with
+        # per-identity pipeline rules.
+        ident = main.build_ident({"user_id": row.get("user_id")}, row.get("model"))
+        fresh_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident)
     except Exception:
         return
     patch: dict[str, Any] = {}
@@ -1634,6 +1640,7 @@ def _refresh_final_if_stale(row: dict[str, Any]) -> None:
                 raw,
                 model_name=row.get("model"),
                 extra_excludes=captures_excludes,
+                ident=ident,
             )
         except Exception:
             fresh_training = None
@@ -1683,6 +1690,7 @@ def _align_words_to_final(
     words: list[dict[str, Any]],
     final: str,
     model_name: "str | None" = None,
+    ident=None,
 ) -> list[dict[str, Any]]:
     """Project raw STT words onto post-pipeline `final` via LCS
     alignment. Replaces the all-or-nothing fallback that came before
@@ -1728,7 +1736,7 @@ def _align_words_to_final(
         post_w = post_cache.get(raw_w)
         if post_w is None:
             try:
-                post_w = main._postprocess_text(raw_w, model_name=model_name)
+                post_w = main._postprocess_text(raw_w, model_name=model_name, ident=ident)
             except Exception:
                 post_w = raw_w
             post_cache[raw_w] = post_w
@@ -1909,9 +1917,11 @@ def _align_member_words(m: dict[str, Any]) -> list[dict[str, Any]]:
     words = m.get("words") or []
     final = m.get("final") or ""
     training = m.get("text_for_training") or final
-    ws = _align_words_to_final(words, final, model_name=m.get("model"))
+    import main  # owner identity so per-word post matches the identity-aware final
+    ident = main.build_ident({"user_id": m.get("user_id")}, m.get("model"))
+    ws = _align_words_to_final(words, final, model_name=m.get("model"), ident=ident)
     if training != final:
-        wt = _align_words_to_final(words, training, model_name=m.get("model"))
+        wt = _align_words_to_final(words, training, model_name=m.get("model"), ident=ident)
         for i, w in enumerate(ws):
             tw = wt[i] if i < len(wt) else None
             if tw is None:
