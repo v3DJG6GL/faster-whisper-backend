@@ -610,9 +610,24 @@ async def transcribe_stream(ws: WebSocket) -> None:
         try:
             await ws.send_json({"type": "closing"})
             await ws.close()
-        except RuntimeError:
+        except (RuntimeError, WebSocketDisconnect):
             pass
     except WebSocketDisconnect:
+        pass  # peer gone; teardown happens in the finally
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("[stream %s] error: %s", session_id[:8], exc)
+        try:
+            await ws.send_json({"type": "error", "code": "internal", "message": str(exc)})
+            await ws.close()
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        # Idempotent backstop so every exit path (normal, disconnect, error)
+        # converges here and the ffmpeg subprocess + stdout-reader task are
+        # always torn down. On the normal path the inner `finally` already
+        # aclose'd the transport (to flush the encoded tail into the session
+        # before session.close), so these are no-ops there; on an error mid-
+        # setup they are the only cleanup that runs.
         if transport is not None:
             try:
                 await transport.aclose()
@@ -623,14 +638,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 await session.close()
             except Exception:  # noqa: BLE001 — peer already gone
                 pass
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("[stream %s] error: %s", session_id[:8], exc)
-        try:
-            await ws.send_json({"type": "error", "code": "internal", "message": str(exc)})
-            await ws.close()
-        except Exception:  # noqa: BLE001
-            pass
-    finally:
         metrics.in_flight_transcriptions -= 1
         _active_sessions.discard(session_id)
 
