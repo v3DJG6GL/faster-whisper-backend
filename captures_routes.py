@@ -1908,17 +1908,31 @@ def _emit_member_words(
         merged.append(entry)
 
 
-def _align_member_words(m: dict[str, Any]) -> list[dict[str, Any]]:
+def _align_member_words(
+    m: dict[str, Any],
+    ident_cache: dict | None = None,
+) -> list[dict[str, Any]]:
     """Align a member's raw words to its runtime `final` (for the Corrections
     strip), and — when the training text differs (CAPTURES_PIPELINE_RULES_EXCLUDE
     drops some rules) — also align to `text_for_training` and attach the
     per-word `train_word`/`train_removed`. One entry per raw word, so both
-    alignments are index-parallel and chip word-indices stay valid."""
+    alignments are index-parallel and chip word-indices stay valid.
+
+    `ident_cache` (optional) memoises the owner-identity resolve by
+    (user_id, model) so a merge of N same-owner members does one
+    api_keys_store lookup instead of one per member."""
     words = m.get("words") or []
     final = m.get("final") or ""
     training = m.get("text_for_training") or final
     import main  # owner identity so per-word post matches the identity-aware final
-    ident = main.build_ident({"user_id": m.get("user_id")}, m.get("model"))
+    uid, mdl = m.get("user_id"), m.get("model")
+    if ident_cache is None:
+        ident = main.build_ident({"user_id": uid}, mdl)
+    else:
+        ckey = (uid, mdl)
+        if ckey not in ident_cache:
+            ident_cache[ckey] = main.build_ident({"user_id": uid}, mdl)
+        ident = ident_cache[ckey]
     ws = _align_words_to_final(words, final, model_name=m.get("model"), ident=ident)
     if training != final:
         wt = _align_words_to_final(words, training, model_name=m.get("model"), ident=ident)
@@ -1976,6 +1990,9 @@ def _build_merged_words(
     if merged_duration_ms is not None:
         eff_dur_s = max(0.0, float(merged_duration_ms) / 1000.0)
     merged: list[dict[str, Any]] = []
+    # Members of a merge share an owner+model, so memoise the per-member
+    # identity resolve to avoid one api_keys_store lookup per member.
+    ident_cache: dict = {}
 
     use_per_member = bool(member_trims)
     # New uniform-silence layout stamps each member with an absolute
@@ -2023,7 +2040,7 @@ def _build_merged_words(
                 member_offset_s = float(off_ms) / 1000.0     # new uniform layout
             else:
                 member_offset_s = cum_ms / 1000.0 + i * silence_s  # legacy
-            ws = _align_member_words(m)
+            ws = _align_member_words(m, ident_cache)
             _emit_member_words(
                 merged, ws, i=i, member_offset_s=member_offset_s,
                 eff_dur_s=eff_dur_s, segments=segments,
@@ -2036,7 +2053,7 @@ def _build_merged_words(
     cum = 0.0
     for i, m in enumerate(members):
         member_offset_s = cum + i * silence_s - lead_s
-        ws = _align_member_words(m)
+        ws = _align_member_words(m, ident_cache)
         _emit_member_words(
             merged, ws, i=i, member_offset_s=member_offset_s,
             eff_dur_s=eff_dur_s, segments=None,
