@@ -75,9 +75,8 @@ def require_allowed_host(allowlist_ref: Callable[[], list[str]]) -> Callable[[Re
 
 def host_in_allowlist(request: Request, allowlist: list[str]) -> bool:
     """True if the client IP is loopback or inside `allowlist`. Non-raising —
-    the boolean core shared by `require_allowed_host` (which turns False into a
-    403) and `auth.require_host_or_auth` (which falls back to key auth on False).
-    Loopback is always allowed, matching require_allowed_host's contract.
+    the boolean core behind `require_allowed_host` (which turns False into a
+    403). Loopback is always allowed, matching require_allowed_host's contract.
     """
     client = request.client
     if client is None:
