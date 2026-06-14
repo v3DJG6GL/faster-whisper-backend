@@ -215,25 +215,24 @@ def _resolve_from_layers(model_id: str | None, layers: list[dict[str, Any]],
     provenance: dict[str, list[dict[str, Any]]] | None = {} if with_provenance else None
 
     for fname in SCALAR_OVERRIDE_FIELDS:
+        # Most-specific-wins: the winner is the first layer with ANY opinion on
+        # the field — it either SETS a value or LOCKS it (a value-less
+        # lock-to-inherited counts as an opinion). The winner's value (if it
+        # sets one) and lock (if it declares one) take effect; every lower layer
+        # is shadowed. So a more-specific value beats a less-specific lock, AND
+        # — symmetrically — a more-specific value-less lock beats a less-specific
+        # value: it pins the inherited (per-model/global) value, drops the lower
+        # override, and forbids the client from replacing it via decode_overrides.
         winner = None
         for layer in layers:
-            if fname in layer["fields"]:
+            if fname in layer["fields"] or fname in layer["locks"]:
                 winner = layer
                 break
         if winner is not None:
-            values[fname] = winner["fields"][fname]
+            if fname in winner["fields"]:
+                values[fname] = winner["fields"][fname]
             if fname in winner["locks"]:
                 locked.add(fname)
-        else:
-            # Value-less lock: a layer may lock a field WITHOUT overriding it,
-            # meaning "pin the inherited (per-model/global) value and forbid the
-            # client from replacing it via decode_overrides". The value stays
-            # inherited (no `values` entry → cfg_for falls through); only the
-            # lock takes effect. The first (most-specific) locking layer owns it.
-            for layer in layers:
-                if fname in layer["locks"]:
-                    locked.add(fname)
-                    break
         if with_provenance:
             provenance[fname] = _scalar_provenance(fname, layers, winner, model_id)
 
@@ -291,16 +290,15 @@ def _scalar_provenance(fname: str, layers: list[dict[str, Any]],
                        identity_winner: dict[str, Any] | None,
                        model_id: str | None) -> list[dict[str, Any]]:
     """Ordered layer stack for one scalar field, for the /resolve waterfall:
-    identity layers, then per-model, then global. Exactly one row is the
-    winner (matching cfg_for precedence: identity > per-model > global)."""
-    # Exactly one layer's lock takes effect, mirroring _resolve_from_layers:
-    # the value-winning layer (if it also locks), else the first layer that
-    # declares a value-less lock-to-inherited. Other locking layers are
-    # shadowed, so only the owner shows a lock in the waterfall.
-    if identity_winner is not None:
-        lock_owner = identity_winner
-    else:
-        lock_owner = next((l for l in layers if fname in l["locks"]), None)
+    identity layers, then per-model, then global. The winner is the most-
+    specific layer with an opinion on the field; it owns the lock (if it
+    declares one) and the value (if it sets one). A value-less winner locks the
+    field but leaves the value to per-model/global, shadowing any lower layer's
+    value — so the lock badge and the value-winner row can be different rows."""
+    # A value-less lock-to-inherited winner owns the lock but supplies no value,
+    # so the value still falls through to per-model/global.
+    winner_sets = (identity_winner is not None
+                   and fname in identity_winner["fields"])
     hits: list[dict[str, Any]] = []
     for layer in layers:
         has = fname in layer["fields"]
@@ -309,12 +307,12 @@ def _scalar_provenance(fname: str, layers: list[dict[str, Any]],
             "label": layer["label"],
             "value": layer["fields"].get(fname) if has else None,
             "is_set": has,
-            "is_winner": layer is identity_winner,
-            "locked": fname in layer["locks"] and layer is lock_owner,
+            "is_winner": layer is identity_winner and winner_sets,
+            "locked": layer is identity_winner and fname in layer["locks"],
         })
     pm = _per_model_value(model_id, fname)
     pm_set = pm is not UNSET
-    pm_winner = identity_winner is None and pm_set
+    pm_winner = not winner_sets and pm_set
     hits.append({
         "layer_id": "per-model",
         "label": f"per-model · {model_id}" if model_id else "per-model",
@@ -323,7 +321,7 @@ def _scalar_provenance(fname: str, layers: list[dict[str, Any]],
     })
     gv = getattr(cfg, fname, None)
     g_set = gv is not None
-    g_winner = identity_winner is None and not pm_set and g_set
+    g_winner = not winner_sets and not pm_set and g_set
     hits.append({
         "layer_id": "global", "label": "global default",
         "value": gv, "is_set": g_set, "is_winner": g_winner, "locked": False,

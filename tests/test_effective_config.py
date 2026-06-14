@@ -129,6 +129,22 @@ def test_value_setting_winner_shadows_lower_value_less_lock():
     assert "temperature" not in r.locked_client_keys
 
 
+def test_more_specific_value_less_lock_shadows_lower_value(monkeypatch):
+    # Mirror of the above (most-specific-wins both ways): a MORE-specific
+    # value-less lock beats a LESS-specific value. The lock wins, so the value
+    # is pinned to inherited (here the per-model default), the lower layer's
+    # value is dropped, and the field is locked against client overrides.
+    monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
+                        {"m1": {"TEMPERATURE": "0.0"}}, raising=False)
+    r = _resolve([_layer("key", locks=["TEMPERATURE"]),
+                  _layer("user", TEMPERATURE="0.7")],
+                 model_id="m1", req={"temperature": 0.9})
+    assert "TEMPERATURE" not in r.values          # user's 0.7 shadowed → inherits
+    assert "TEMPERATURE" in r.locked
+    assert "temperature" in r.locked_client_keys
+    assert r.dropped == ["temperature"]
+
+
 def test_vad_lock_maps_to_client_subparam_key():
     r = _resolve([_layer("user", VAD_MIN_SILENCE_MS=500,
                          locks=["VAD_MIN_SILENCE_MS"])],
@@ -201,6 +217,23 @@ def test_provenance_value_less_lock_owned_by_first_layer():
     assert "TEMPERATURE" in r.locked
     stack = r.provenance["TEMPERATURE"]
     assert [h["layer_id"] for h in stack if h["locked"]] == ["key.direct"]
+
+
+def test_provenance_value_less_lock_winner_inherits_value(monkeypatch):
+    # When a value-less lock is the most-specific opinion it owns the lock, but
+    # the VALUE still comes from per-model/global. The waterfall marks the lock
+    # layer's row as locked (not value-winner), the per-model row as the value
+    # winner, and the shadowed lower value as set-but-not-winner.
+    monkeypatch.setattr(cfg, "MODEL_OVERRIDES",
+                        {"m1": {"TEMPERATURE": "0.0"}}, raising=False)
+    r = _resolve([_layer("key", locks=["TEMPERATURE"]),
+                  _layer("user", TEMPERATURE="0.7")],
+                 model_id="m1", prov=True)
+    stack = r.provenance["TEMPERATURE"]
+    assert [h["layer_id"] for h in stack if h["locked"]] == ["key.direct"]
+    assert [h["layer_id"] for h in stack if h["is_winner"]] == ["per-model"]
+    user = [h for h in stack if h["layer_id"] == "user.direct"][0]
+    assert user["is_set"] and not user["is_winner"]
 
 
 # --- public resolve() open-mode shortcut ----------------------------------
