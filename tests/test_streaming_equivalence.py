@@ -27,7 +27,7 @@ def _run_stream(pp, utterances):
         return []
 
     async def _noop_df(a, p):
-        return ("", [])
+        return ("", [], False)
 
     s = StreamSession(
         config=StreamConfig(), endpointer=EnergyEndpointer(),

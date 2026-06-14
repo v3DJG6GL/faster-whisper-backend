@@ -427,9 +427,15 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 for w in (getattr(seg, "words", None) or []):
                     words_out.append({"word": w.word, "start": w.start, "end": w.end})
             raw = "".join(kept)
+            # Tell the session whether this (possibly empty) result is authoritative:
+            # when the decode produced segments but dropped them ALL as hallucinations,
+            # the empty text must NOT be replaced by the partial-built transcript
+            # (partials run at fixed temperature and so never trip _is_failed_segment —
+            # they would still carry the hallucination).
+            dropped_all = bool(segs) and not kept
             last_decode.clear()
             last_decode.update(info=info, seg_diag=seg_diag, kwargs=kwargs)
-            return raw, words_out
+            return raw, words_out, dropped_all
 
         def postprocess(raw_text):
             return main._postprocess_text(raw_text, model_name=final_model, ident=ident)

@@ -23,7 +23,7 @@ def _make_session(*, postprocess, decode_partial=None, decode_final=None, cfg=No
         return []
 
     async def _df(audio, prompt):
-        return ("", [])
+        return ("", [], False)
 
     s = StreamSession(
         config=cfg or StreamConfig(),
@@ -134,7 +134,7 @@ def test_pcm_loop_emits_partials_then_a_final_after_silence():
         return [(0.0, 0.3, " hallo"), (0.3, 0.6, " welt")]
 
     async def decode_final(audio, prompt):
-        return ("hallo welt.", [])
+        return ("hallo welt.", [], False)
 
     s, msgs = _make_session(
         postprocess=lambda raw: raw, decode_partial=decode_partial,
@@ -169,7 +169,7 @@ def test_hard_break_resets_document_after_long_silence():
     )
 
     async def decode_final(audio, prompt):
-        return ("hallo welt.", [])
+        return ("hallo welt.", [], False)
 
     s, msgs = _make_session(
         postprocess=lambda raw: raw, decode_final=decode_final, cfg=cfg,
@@ -207,7 +207,7 @@ def test_no_partial_decode_storm_during_trailing_silence():
         return [(0.0, 0.2, " x")]
 
     async def decode_final(audio, prompt):
-        return ("x.", [])
+        return ("x.", [], False)
 
     s, msgs = _make_session(
         postprocess=lambda raw: raw, decode_partial=decode_partial,
@@ -234,7 +234,7 @@ def test_silence_only_input_never_finalizes_or_hallucinates():
 
     async def decode_final(audio, prompt):
         called["final"] += 1
-        return ("x", [])
+        return ("x", [], False)
 
     s, msgs = _make_session(
         postprocess=lambda raw: raw, decode_partial=decode_partial,
@@ -264,7 +264,7 @@ def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
 
     async def decode_final(audio, prompt):
         calls["final"] += 1
-        return ("x.", [])
+        return ("x.", [], False)
 
     s, msgs = _make_session(
         postprocess=lambda raw: raw, decode_partial=decode_partial,
@@ -284,3 +284,72 @@ def test_skip_partials_suppresses_partial_decode_but_keeps_finals():
     asyncio.run(run())
     assert calls["partial"] >= 1, "partials must resume once caught up"
     assert calls["final"] == 2
+
+
+# ---- anti-hallucination: all-dropped final vs empty-decode fallback --------
+
+def test_all_dropped_final_keeps_empty_and_does_not_resurrect_partials():
+    """When the FINAL decode drops every segment as a hallucination (empty raw,
+    dropped_all=True), the utterance must stay empty. The partial-built
+    LocalAgreement buffer ran at a fixed temperature and so never tripped the
+    drop — it still holds that hallucination — so the empty-decode fallback must
+    NOT resurrect it."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
+        rms_gate_dbfs=-60, preroll_keep_ms=100,
+    )
+
+    async def decode_partial(audio, prompt):
+        return [(0.0, 0.3, " thank"), (0.3, 0.6, " you")]   # the hallucination
+
+    async def decode_final(audio, prompt):
+        return ("", [], True)   # decode produced segments, dropped them ALL
+
+    s, msgs = _make_session(
+        postprocess=lambda raw: raw, decode_partial=decode_partial,
+        decode_final=decode_final, cfg=cfg,
+    )
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 500))   # speech → partials commit "thank you"
+        await s.feed_pcm(_pcm(0, 400))      # silence → finalize (all-dropped)
+        await s.close()
+
+    asyncio.run(run())
+    # the partials DID commit the hallucination into LocalAgreement...
+    assert any("thank" in m["committed"] for m in msgs if m["type"] == "partial")
+    # ...but the all-dropped final must not let it back into the document.
+    assert s.raw_confirmed == ""
+    finals = [m for m in msgs if m["type"] == "final"]
+    assert all("thank" not in (m["committed"] + m["tail"]) for m in finals)
+
+
+def test_empty_final_still_falls_back_to_localagreement():
+    """The all-dropped fix must PRESERVE the legitimate fallback: when the FINAL
+    decode produces nothing at all (no segments, dropped_all=False — e.g. its VAD
+    filter trimmed the buffer), the partial-built transcript is still used so a
+    momentary final-decode miss doesn't silently drop spoken text."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
+        rms_gate_dbfs=-60, preroll_keep_ms=100,
+    )
+
+    async def decode_partial(audio, prompt):
+        return [(0.0, 0.3, " hallo"), (0.3, 0.6, " welt")]
+
+    async def decode_final(audio, prompt):
+        return ("", [], False)   # genuinely empty decode (no segments)
+
+    s, msgs = _make_session(
+        postprocess=lambda raw: raw, decode_partial=decode_partial,
+        decode_final=decode_final, cfg=cfg,
+    )
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 500))
+        await s.feed_pcm(_pcm(0, 400))      # silence → finalize (empty → fall back)
+
+    asyncio.run(run())
+    assert "welt" in s.raw_confirmed        # recovered from the partials' transcript

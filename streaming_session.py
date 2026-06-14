@@ -36,8 +36,11 @@ logger = logging.getLogger(__name__)
 
 # A fresh decode hypothesis: buffer-relative word triples (start_s, end_s, text).
 Hypothesis = list[tuple[float, float, str]]
-# Final decode: raw verbatim text + optional word list for verbose_json.
-FinalResult = tuple[str, list[dict]]
+# Final decode: raw verbatim text, optional word list for verbose_json, and a
+# flag — True when the decode produced segments but dropped EVERY one as a
+# hallucination, so an empty ``raw`` is authoritative and must NOT be replaced by
+# the partial-built LocalAgreement transcript (see _finalize).
+FinalResult = tuple[str, list[dict], bool]
 
 DecodePartial = Callable[[np.ndarray, str], Awaitable[Hypothesis]]
 DecodeFinal = Callable[[np.ndarray, str], Awaitable[FinalResult]]
@@ -273,10 +276,15 @@ class StreamSession:
             return
         audio_dur = audio.shape[0] / self.cfg.sample_rate
         t0 = time.perf_counter()
-        raw, words = await self.decode_final(audio.copy(), self._prompt)
+        raw, words, dropped_all = await self.decode_final(audio.copy(), self._prompt)
         proc_dur = time.perf_counter() - t0
-        if not (raw and raw.strip()):
-            # fall back to the LocalAgreement transcript if the final decode is empty
+        if not (raw and raw.strip()) and not dropped_all:
+            # The final decode produced nothing at all (e.g. its VAD filter trimmed
+            # the whole buffer) — fall back to the partial-built LocalAgreement
+            # transcript. But when the decode DID produce segments and dropped them
+            # all as hallucinations (dropped_all), the empty result is authoritative:
+            # the partials run at a fixed temperature and so never trip the drop —
+            # i.e. they still hold the hallucination — so keep the empty result.
             raw = self.la.committed_text + self.la.text_of(self.la.finish())
         self.raw_confirmed += raw
         self._prompt = self._make_prompt()
