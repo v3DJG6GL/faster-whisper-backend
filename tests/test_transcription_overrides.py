@@ -96,6 +96,52 @@ def test_request_block_identity_section():
     assert "Identity" not in block2
 
 
+def test_request_block_identity_always_shows_user_even_without_layers():
+    """An authenticated caller with NO per-identity binding still gets an
+    Identity block naming them + an explicit 'inherits' note — so a missing
+    binding (the classic 'my override didn't apply') is visible in the log."""
+    from types import SimpleNamespace
+    import main
+    empty = SimpleNamespace(layers=[], locked=set(), profiles_applied=[])
+    info = SimpleNamespace(language="de", language_probability=0.99,
+                           duration=1.0, duration_after_vad=1.0)
+    seg = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
+            "cr": 1.2, "temp": 0.0, "text": "hi"}]
+    block = main._format_request_block(
+        file_label="x", model_name="whisper-1", info=info, kwargs={},
+        seg_diag=seg, raw="hi", final="hi", ident=empty,
+        user_id="abcd1234ef", key_id="ffee0011bb", username="Admin")
+    assert "Identity" in block
+    assert "Admin" in block and "abcd1234" in block      # username + short user id
+    assert "ffee0011" in block                            # short key id
+    assert "inherits" in block                            # the "(none — inherits…)" note
+
+
+def test_config_version_bumps_on_binding_and_profile_changes(client, make_user_key):
+    """Saving a profile or a per-user / per-key binding bumps config_store's
+    version counter — the signal a live streaming connection polls to know it
+    must re-resolve its ident (so edits apply without a reconnect)."""
+    import config_store
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    v0 = config_store.config_version()
+    _setup_profile(client, admin_h, "pv", BEAM_SIZE=6)
+    v1 = config_store.config_version()
+    assert v1 > v0                                         # profile save bumps
+    uid, _ = make_user_key("bob", is_admin=False)
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
+                     json={"pages": {}, "config": {"overrides": {}, "profiles": ["pv"], "locks": []}})
+    assert r.status_code == 200, r.text
+    v2 = config_store.config_version()
+    assert v2 > v1                                         # per-user binding bumps
+    kid = client.get(f"{PERMS}/{uid}/keys", headers=admin_h).json()["keys"][0]["id"]
+    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=admin_h,
+                     json={"overrides": {"BEAM_SIZE": 4}, "profiles": [], "locks": []})
+    assert r.status_code == 200, r.text
+    v3 = config_store.config_version()
+    assert v3 > v2                                         # per-key binding bumps
+
+
 def test_per_key_override_beats_user(client, make_user_key, fake_model):
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)

@@ -690,6 +690,7 @@ def set_key_config(user_id: str, key_id: str, body: dict[str, Any]) -> dict[str,
         )
         if cur.rowcount == 0:
             raise ValueError("key not found or revoked")
+    config_store.bump_config_version()   # live streaming idents re-resolve
     logger.info("[auth] key config updated kid=%s user=%s profiles=%s",
                 key_id[:8], user_id[:8], binding["profiles"])
     return binding
@@ -790,6 +791,7 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
         if cur.rowcount == 0:
             raise ValueError("user not found or revoked")
         _rebuild_index_locked()
+    config_store.bump_config_version()   # live streaming idents re-resolve
     logger.info(
         "[auth] permissions updated user=%s pages=%s tags=%s profiles=%s",
         user_id[:8], merged_pages, merged_tags,

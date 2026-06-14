@@ -1731,6 +1731,29 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
     return out_rules
 
 
+# ---------------------------------------------------------------------------
+# Config version — a monotonic counter bumped on every persisted change to
+# settings, override profiles, or per-user/per-key bindings. Long-lived
+# consumers that cache a resolved view (notably a streaming connection's
+# per-identity ``ident``, resolved ONCE at handshake) poll this to know when to
+# re-resolve, so admin edits take effect without forcing a reconnect. In-process
+# counter only; restart resets to 0, which is fine (a restart re-resolves too).
+# ---------------------------------------------------------------------------
+_CONFIG_VERSION = 0
+
+
+def bump_config_version() -> None:
+    """Increment the global config version. Call after any persisted change to
+    settings / override profiles / per-user / per-key bindings."""
+    global _CONFIG_VERSION
+    _CONFIG_VERSION += 1
+
+
+def config_version() -> int:
+    """Current config version — see :func:`bump_config_version`."""
+    return _CONFIG_VERSION
+
+
 def save_overrides(payload: dict[str, Any], path: str = OVERRIDES_PATH) -> dict[str, Any]:
     """Validate `payload` against AdminConfig and atomically write it to disk.
 
@@ -1786,6 +1809,7 @@ def save_overrides(payload: dict[str, Any], path: str = OVERRIDES_PATH) -> dict[
     to_write = validated.model_dump(exclude_none=True, mode="json")
 
     _atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")
+    bump_config_version()   # let live consumers (streaming idents) re-resolve
 
     # Return only the fields that actually changed in this call. Compare
     # against `existing` (what was on disk before) using the validated form

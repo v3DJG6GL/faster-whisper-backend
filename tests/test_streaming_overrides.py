@@ -77,3 +77,42 @@ def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
     # The final decode is the last transcribe call; it uses the assembler with
     # the profile's BEAM_SIZE (partials force STREAMING_PARTIAL_BEAM instead).
     assert fake_model.last_kwargs["beam_size"] == 7
+
+
+def test_stream_picks_up_binding_change_without_reconnect(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    """Regression: a binding change made WHILE a dictation WebSocket is open is
+    picked up on the next utterance — ident used to be frozen at handshake for
+    the whole session, so live edits silently had no effect until reconnect."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    # Both profiles in ONE save — a second POST would replace OVERRIDE_PROFILES.
+    r = client.post(f"{OV}/state", headers=h,
+                    json={"OVERRIDE_PROFILES": {"p7": {"BEAM_SIZE": 7},
+                                                "p3": {"BEAM_SIZE": 3}}})
+    assert r.status_code == 200, r.text
+    uid, raw_alice = make_user_key("alice")
+    _bind(client, h, uid, profiles=["p7"])
+
+    import api_keys_store
+    with client.websocket_connect(
+            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        # utterance 1 under profile p7
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        # admin re-binds alice p7 -> p3 mid-session (bumps the config version).
+        # Without the per-utterance re-resolve, the connection's frozen ident
+        # would keep using p7 and the final assertion below would see beam 7.
+        api_keys_store.set_user_permissions(
+            uid, {"pages": {}, "config": {"overrides": {}, "profiles": ["p3"], "locks": []}})
+        # utterance 2 must pick up p3 (beam 3) on the same connection
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        _drain(ws)
+
+    assert fake_model.last_kwargs["beam_size"] == 3

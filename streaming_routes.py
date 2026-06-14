@@ -40,6 +40,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
 import auth
+import config_store
 import metrics
 import web_common
 from streaming_session import StreamConfig, StreamSession
@@ -286,6 +287,15 @@ async def transcribe_stream(ws: WebSocket) -> None:
         gate_final_words = bool(main.cfg_for(final_model, "WORD_TIMESTAMPS_ENABLED", ident))
         gate_partial_words = bool(main.cfg_for(partial_model_name, "WORD_TIMESTAMPS_ENABLED", ident))
 
+        # ident is resolved ONCE here, then re-resolved per utterance ONLY when
+        # the config version changes (see _refresh_ident) — so admin edits to a
+        # binding/profile/setting apply mid-session without a reconnect. Snapshot
+        # the version and the client's ORIGINAL (pre-lock) handshake values so the
+        # lock re-application stays idempotent across refreshes.
+        _ident_version = config_store.config_version()
+        _client_language = req_language
+        _client_prompt = req_prompt
+
         # Locked language / prompt: the admin value stands; the client's
         # handshake value is ignored (and surfaced in the ready frame). Locked
         # decode_overrides keys are dropped in the assembler; record them here.
@@ -314,6 +324,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 return await loop.run_in_executor(None, work)
 
         async def decode_partial(audio, prompt):
+            _refresh_ident()
             kwargs = _build_transcribe_kwargs(
                 main, partial_model_name, final=False, prompt=prompt,
                 want_words=gate_partial_words, language=req_language,
@@ -336,6 +347,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         last_decode: dict = {}
 
         async def decode_final(audio, prompt):
+            _refresh_ident()
             kwargs = _build_transcribe_kwargs(
                 main, final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language,
@@ -464,7 +476,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     steps=steps, request_id=rid, captured_id=captured_id,
                     endpoint="/v1/audio/transcriptions/stream",
                     audio_source=audio_source_label,
-                    ident=ident, overrides_ignored=overrides_ignored))
+                    ident=ident, overrides_ignored=overrides_ignored,
+                    user_id=user.get("user_id"), key_id=user.get("key_id"),
+                    username=user.get("username")))
             except Exception as _le:  # noqa: BLE001
                 logger.warning("[stream %s] log block failed: %s", session_id[:8], _le)
 
@@ -502,6 +516,48 @@ async def transcribe_stream(ws: WebSocket) -> None:
             base_prompt=(req_prompt or main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""),
             on_final=on_final,
         )
+
+        def _refresh_ident():
+            """Re-resolve this connection's per-identity config when the global
+            config version changed since we last resolved — so an admin editing a
+            binding / profile / setting takes effect on the next utterance instead
+            of requiring the client to reconnect. The no-change case is a cheap
+            integer compare; a real change costs a couple of indexed SQLite reads,
+            paid at the utterance boundary (not per partial frame). Session-shaping
+            STREAMING_*/endpointer params and the word-timestamp gates stay fixed
+            for the connection. Never raises — a refresh must not break dictation."""
+            nonlocal ident, _ident_version, out_prefix, out_suffix
+            nonlocal req_language, req_prompt, overrides_ignored
+            try:
+                v = config_store.config_version()
+                if v == _ident_version:
+                    return
+                _ident_version = v
+                ident = main.build_ident(user, final_model)
+                out_prefix = main.cfg_for(final_model, "OUTPUT_PREFIX", ident) or ""
+                out_suffix = main.cfg_for(final_model, "OUTPUT_SUFFIX", ident) or ""
+                overrides_ignored = sorted(k for k in req_overrides
+                                           if k in ident.locked_client_keys)
+                req_language = _client_language
+                if "DEFAULT_LANGUAGE" in ident.locked:
+                    _ll = main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
+                    if _client_language and _client_language != _ll:
+                        overrides_ignored.append("language")
+                    req_language = _ll
+                req_prompt = _client_prompt
+                if "DEFAULT_PROMPT" in ident.locked:
+                    _lp = main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
+                    if _client_prompt and _client_prompt != _lp:
+                        overrides_ignored.append("prompt")
+                    req_prompt = _lp
+                # The rolling prompt seed lives on the session; updating it makes a
+                # changed DEFAULT_PROMPT take effect from the next utterance's
+                # _make_prompt() (one-utterance convergence).
+                session.base_prompt = (req_prompt
+                                       or main.cfg_for(final_model, "DEFAULT_PROMPT", ident)
+                                       or "")
+            except Exception as _re:  # noqa: BLE001 — never break dictation on refresh
+                logger.warning("[stream %s] ident refresh failed: %s", session_id[:8], _re)
 
         # All session mutation is serialized: the ffmpeg reader task and the
         # control-message handler both touch the session across await points.

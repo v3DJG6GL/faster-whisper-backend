@@ -664,6 +664,9 @@ def _format_request_block(
     audio_source: str | None = None,
     ident=None,
     overrides_ignored: "list | None" = None,
+    user_id: str | None = None,
+    key_id: str | None = None,
+    username: str | None = None,
 ) -> str:
     """Full per-request log block. `steps` is the per-pipeline trace; passed
     in only when cfg.TRACE_ENABLED so the block stays a single message.
@@ -730,16 +733,32 @@ def _format_request_block(
 
     lines.extend(_format_segments_section(seg_diag, info, kwargs))
 
-    # Identity section — only when a per-identity layer contributed or a client
-    # override was locked out, so the common no-config request stays terse.
-    if ident is not None and (getattr(ident, "layers", None)
-                              or getattr(ident, "locked", None) or overrides_ignored):
+    # Identity section — always shown when the caller is known, so the resolved
+    # user/key (and any applied per-identity overrides, or their ABSENCE) is
+    # visible at a glance. This was previously suppressed for no-config
+    # requests, which made per-identity mismatches invisible in the log.
+    def _short_id(v):
+        v = v or ""
+        return v if v.startswith("(") else (v[:8] if v else "—")
+
+    _ident_detail = ident is not None and (getattr(ident, "layers", None)
+                                           or getattr(ident, "locked", None)
+                                           or overrides_ignored)
+    if user_id or key_id or _ident_detail:
         lines.append(_section_rule("Identity"))
-        if ident.profiles_applied:
+        who = f"{username} ({_short_id(user_id)})" if username else _short_id(user_id)
+        lines.append(f"    {'user':<{_NAME_COL - 4}}{who}")
+        if key_id:
+            lines.append(f"    {'key':<{_NAME_COL - 4}}{_short_id(key_id)}")
+        if ident is not None and ident.profiles_applied:
             lines.append(f"    {'profiles':<{_NAME_COL - 4}}{' → '.join(ident.profiles_applied)}")
-        if ident.layers:
+        if ident is not None and ident.layers:
             lines.append(f"    {'layers':<{_NAME_COL - 4}}{', '.join(ident.layers)}")
-        if ident.locked:
+        elif user_id or key_id:
+            # No identity layer resolved — call it out explicitly so a missing
+            # binding (the classic "my override didn't apply") is obvious.
+            lines.append(f"    {'overrides':<{_NAME_COL - 4}}(none — inherits per-model / global)")
+        if ident is not None and ident.locked:
             lines.append(f"    {'locked':<{_NAME_COL - 4}}{', '.join(sorted(ident.locked))}")
         if overrides_ignored:
             lines.append(f"    {'overrides_ignored':<{_NAME_COL - 4}}{', '.join(overrides_ignored)}")
@@ -2262,6 +2281,9 @@ async def transcribe(
                 audio_source=f"{_src_fmt} → 16 kHz mono (file upload)",
                 ident=ident,
                 overrides_ignored=ignored,
+                user_id=user.get("user_id"),
+                key_id=user.get("key_id"),
+                username=user.get("username"),
             ))
 
             # Persist the trace to the durable recent-transcriptions store
