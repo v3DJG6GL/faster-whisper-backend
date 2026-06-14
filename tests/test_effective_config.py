@@ -251,3 +251,66 @@ def test_resolve_open_mode_no_identity():
 def test_blob_to_layer_empty_is_none():
     assert ec._blob_to_layer("x", "x", None, {}) is None
     assert ec._blob_to_layer("x", "x", None, {"locks": []}) is None
+
+
+# --- request-named override profile (P10) ---------------------------------
+
+def _set_profiles(monkeypatch, profiles, allow=True):
+    monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", profiles, raising=False)
+    monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", allow, raising=False)
+
+
+def test_request_profile_layer_valid(monkeypatch):
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    lyr = ec._request_profile_layer("fast")
+    assert lyr is not None and lyr["fields"]["BEAM_SIZE"] == 3
+
+
+def test_request_profile_layer_unknown_bad_or_gated(monkeypatch):
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    assert ec._request_profile_layer("nope") is None        # unknown name
+    assert ec._request_profile_layer("Bad Name") is None    # fails TAG_RE
+    assert ec._request_profile_layer("") is None            # empty
+    assert ec._request_profile_layer(None) is None
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}}, allow=False)
+    assert ec._request_profile_layer("fast") is None        # gated off
+
+
+def test_resolve_applies_request_profile(monkeypatch):
+    # No user_id/key_id → no DB hit; only the request profile contributes.
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    r = ec.resolve("m1", request_profile="fast")
+    assert r.values["BEAM_SIZE"] == 3
+    assert r.request_profile_applied == "fast"
+
+
+def test_resolve_request_profile_gated_off(monkeypatch):
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}}, allow=False)
+    r = ec.resolve("m1", request_profile="fast")
+    assert "BEAM_SIZE" not in r.values
+    assert r.request_profile_applied is None
+
+
+def test_resolve_request_profile_unknown_not_applied(monkeypatch):
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    r = ec.resolve("m1", request_profile="nope")
+    assert "BEAM_SIZE" not in r.values
+    assert r.request_profile_applied is None
+
+
+def test_request_profile_is_least_specific(monkeypatch):
+    # SECURITY: the request profile is appended last, so it fills only fields no
+    # key/user layer set, and can never override a value or escape a value-less
+    # lock. Built with the pure core (request layer last) — no DB needed.
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3, "TEMPERATURE": "0.0",
+                                         "DEFAULT_LANGUAGE": "fr"}})
+    req_layer = ec._request_profile_layer("fast")
+    layers = [_layer("key", BEAM_SIZE=10),         # key sets beam → profile can't move it
+              _layer("user", locks=["TEMPERATURE"]),  # value-less lock → profile can't unlock
+              req_layer]
+    r = _resolve(layers, req={"temperature": 0.9})
+    assert r.values["BEAM_SIZE"] == 10             # key wins over the profile
+    assert "TEMPERATURE" not in r.values           # lock pins inherited; profile value shadowed
+    assert "TEMPERATURE" in r.locked               # still locked despite the profile
+    assert "temperature" in r.locked_client_keys
+    assert r.values["DEFAULT_LANGUAGE"] == "fr"    # profile fills a field nobody set
