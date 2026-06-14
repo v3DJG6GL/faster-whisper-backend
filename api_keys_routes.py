@@ -1382,7 +1382,8 @@ _API_KEYS_HTML = r"""<!doctype html>
               eff.appendChild(row);
             });
             if (!any) eff.innerHTML = '<span class="lbl">no identity overrides take effect (all inherit global / per-model)</span>';
-          });
+          })
+          .catch(function () { eff.innerHTML = '<span class="lbl">preview unavailable</span>'; });
       };
     }
     draw();

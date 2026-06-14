@@ -673,7 +673,6 @@ window._renderWaterfall = (function () {
       rb.onclick = function () { clearVal(p, name); };
       ctrl.appendChild(rb);
     } else {
-      var lib = '';
       valCell.innerHTML = '<span class="ov-inherits">inherits</span>';
       var ab = document.createElement('button'); ab.textContent = '+ override';
       ab.onclick = function () { setVal(p, name, defaultFor(meta)); };
@@ -821,7 +820,7 @@ window._renderWaterfall = (function () {
     var r = await fetch('/settings/api-keys/api/users');
     if (!r.ok) { return; }
     var j = await r.json();
-    usersCache = (j.users || []).filter(function (u) { return !u.is_admin || true; });
+    usersCache = (j.users || []);
     usersCache.sort(function (a, b) { return coll.compare(a.username, b.username); });
     exUser.innerHTML = '<option value="">—</option>';
     usersCache.forEach(function (u) {
