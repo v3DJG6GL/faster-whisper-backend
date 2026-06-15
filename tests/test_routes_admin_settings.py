@@ -74,6 +74,29 @@ def test_post_default_value_creates_no_override(client):
     assert "BEST_OF" not in config_store.load_overrides()
 
 
+def test_reset_float_field_default_sent_as_int_clears_override(client):
+    """REPETITION_PENALTY's default is a float (1.0), but the JS client submits a
+    whole-number float without its decimal (JSON.stringify(1.0) -> '1'), so the
+    server receives int 1. Prune-on-default must treat int 1 == float 1.0 as the
+    default and drop the override — a json.dumps comparison ('1' != '1.0') would
+    miss it and leave the 'local.json' badge stuck."""
+    import config_store
+
+    default_val = client.get("/settings/state").json()["fields"]["REPETITION_PENALTY"]["default_value"]
+    assert default_val == 1.0
+
+    # Override it, then "reset" by POSTing the default as a bare int — exactly
+    # what the WebUI sends for a whole-number float.
+    client.post("/settings/state", json={"REPETITION_PENALTY": 2.0})
+    assert "REPETITION_PENALTY" in config_store.load_overrides()
+
+    client.post("/settings/state", json={"REPETITION_PENALTY": 1})   # int, not 1.0
+    field = client.get("/settings/state").json()["fields"]["REPETITION_PENALTY"]
+    assert "REPETITION_PENALTY" not in config_store.load_overrides()
+    assert field["provenance"] == "default"
+    assert field["value"] == default_val
+
+
 def test_get_factory_rules(client):
     r = client.get("/settings/factory-rules")
     assert r.status_code == 200

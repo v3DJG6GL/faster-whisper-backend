@@ -21,7 +21,6 @@ Security model (layered):
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -285,14 +284,16 @@ def _baseline_value(name: str) -> Any:
     return v
 
 
-def _json_eq(a: Any, b: Any) -> bool:
-    """Compare two values the way the WebUI does — by canonical JSON form — so
-    server-side "equals the default" matches the client's reset-link logic
-    (JSON.stringify(value) === JSON.stringify(default))."""
-    try:
-        return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
-    except (TypeError, ValueError):
-        return a == b
+def _values_equal(a: Any, b: Any) -> bool:
+    """True if `a` and `b` are the same config value. Uses Python equality so
+    numbers compare numerically — JSON int 1 == baseline float 1.0, the
+    REPETITION_PENALTY case where the JS client submits a whole-number float
+    without its decimal. That matches the client, whose JS has no int/float
+    distinction (JSON.stringify(1.0) === JSON.stringify(1) === "1"). Containers
+    compare structurally (dict order-independent, list order-sensitive, with the
+    same numeric rule applied to nested values). json.dumps string comparison
+    can NOT be used here: it renders 1 as "1" but 1.0 as "1.0"."""
+    return a == b
 
 
 def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
@@ -303,13 +304,13 @@ def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
     Without this, the WebUI's "↺ Reset to default" button — which submits the
     default *value*, not a removal — would leave the key in config.local.json
     and the "local.json" provenance badge would wrongly persist after a reset.
-    Mirrors the client's own JSON.stringify equality so the two sides agree on
-    what counts as an override. None values already mean "remove", so they pass
-    through untouched.
+    Matches the client's reset-link equality (numbers compared numerically, as
+    JS does) so the two sides agree on what counts as an override. None values
+    already mean "remove", so they pass through untouched.
     """
     cleaned: dict[str, Any] = {}
     for k, v in payload.items():
-        if v is not None and _json_eq(v, _baseline_value(k)):
+        if v is not None and _values_equal(v, _baseline_value(k)):
             cleaned[k] = None
         else:
             cleaned[k] = v
