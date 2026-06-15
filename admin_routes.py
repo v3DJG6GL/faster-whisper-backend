@@ -1910,6 +1910,9 @@ function makeEditor(name) {
   if (name === 'MODEL_COMPUTE_TYPE' || name === 'MODEL_COMPUTE_TYPE_FALLBACK') {
     return selectEditor(name, v, ['float16','int8_float16','int8','float32','bfloat16']);
   }
+  if (name === 'CONVERT_QUANTIZATION') {
+    return selectEditor(name, v, ['float32','float16','bfloat16','int16','int8','int8_float32','int8_float16','int8_bfloat16']);
+  }
   if (name === 'DEFAULT_PROMPT') return textareaEditor(name, v || '');
   // Numeric fields that can be null ("disabled"). Render as number input with
   // a "(disable)" button next to it so the user can clear → None.

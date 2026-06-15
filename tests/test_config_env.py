@@ -139,10 +139,13 @@ def _write_cfg(tmp_path, **extra):
 
 def test_load_defaults_reads_committed_config():
     d = config._load_defaults()
-    # Returns ALL defaults, not just the rules: scalars + the rules list.
+    # Returns ALL defaults, not just the rules: scalars + the rules list. Assert
+    # structure/types, not specific values (those are deployment-tunable).
     assert isinstance(d, dict)
     assert isinstance(d["PIPELINE_RULES"], list) and len(d["PIPELINE_RULES"]) >= 2
-    assert d["DEFAULT_MODEL"] == "large-v2"
+    assert isinstance(d["DEFAULT_MODEL"], str) and d["DEFAULT_MODEL"]
+    assert isinstance(d["BEST_OF"], int)
+    assert len(d) > 50                        # the full settings set, not a handful
     assert "schema_version" not in d          # stripped — it's metadata, not a setting
 
 

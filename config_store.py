@@ -811,6 +811,13 @@ ProfileName = Annotated[str, Field(min_length=1, max_length=32,
 LogLevel = Literal["debug", "info", "warning", "error", "critical"]
 DeviceLit = Literal["cuda", "cpu"]
 ComputeLit = Literal["float16", "int8_float16", "int8", "float32", "bfloat16"]
+# CONVERT_QUANTIZATION accepts CT2's full conversion set (ctranslate2.specs
+# .model_spec.ACCEPTED_MODEL_TYPES) — wider than ComputeLit (which is the runtime
+# compute_type). Verified against ctranslate2 4.7.2 + the CTranslate2 docs.
+ConvertQuantLit = Literal[
+    "float32", "float16", "bfloat16", "int16",
+    "int8", "int8_float32", "int8_float16", "int8_bfloat16",
+]
 
 
 # =============================================================================
@@ -1268,7 +1275,7 @@ class AdminConfig(BaseModel):
     LOCAL_FILES_ONLY: bool | None = _F("LOCAL_FILES_ONLY")
     USE_AUTH_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("USE_AUTH_TOKEN")
     AUTO_CONVERT_HF_MODELS: bool | None = _F("AUTO_CONVERT_HF_MODELS")
-    CONVERT_QUANTIZATION: Annotated[str, Field(max_length=32)] | None = _F("CONVERT_QUANTIZATION")
+    CONVERT_QUANTIZATION: ConvertQuantLit | None = _F("CONVERT_QUANTIZATION")
     CONVERTED_MODELS_DIR: Annotated[str, Field(max_length=512)] | None = _F("CONVERTED_MODELS_DIR")
     CPU_THREADS: Annotated[int, Field(ge=0, le=128)] | None = _F("CPU_THREADS")
     NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F("NUM_WORKERS")
@@ -1614,21 +1621,14 @@ class AdminConfig(BaseModel):
                     )
         return self
 
-    @field_validator("CONVERT_QUANTIZATION")
+    @field_validator("CONVERT_QUANTIZATION", mode="before")
     @classmethod
-    def _validate_convert_quantisation(cls, v: str | None) -> str | None:
-        """Match CT2's `ACCEPTED_MODEL_TYPES` (ctranslate2 specs/model_spec.py).
-        Empty / None = use the runtime default (float16)."""
-        if v is None or not v.strip():
-            return v
-        allowed = {
-            "float32", "float16", "bfloat16", "int16",
-            "int8", "int8_float32", "int8_float16", "int8_bfloat16",
-        }
-        if v not in allowed:
-            raise ValueError(
-                f"CONVERT_QUANTIZATION must be one of {sorted(allowed)}; got {v!r}"
-            )
+    def _empty_convert_quant_is_unset(cls, v: Any) -> Any:
+        """Treat an explicit empty string as 'unset' (-> None = use the runtime
+        default). The allowed set itself is now enforced by the ConvertQuantLit
+        type, which mirrors CT2's ACCEPTED_MODEL_TYPES."""
+        if isinstance(v, str) and not v.strip():
+            return None
         return v
 
     @field_validator("TEMPERATURE")

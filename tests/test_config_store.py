@@ -150,9 +150,14 @@ def test_server_log_level_literal():
 # ---------------------------------------------------------------------------
 
 def test_convert_quantisation():
-    for v in ["float32", "int8_float16", "bfloat16"]:
+    # The full CT2 ACCEPTED_MODEL_TYPES set is valid (ConvertQuantLit) — wider
+    # than ComputeLit (e.g. int16, int8_bfloat16, int8_float32 are NOT runtime
+    # compute types but ARE valid conversion quantizations).
+    for v in ["float32", "float16", "bfloat16", "int16",
+              "int8", "int8_float32", "int8_float16", "int8_bfloat16"]:
         _ok(CONVERT_QUANTIZATION=v)
-    assert _ok(CONVERT_QUANTIZATION="").CONVERT_QUANTIZATION == ""
+    # Empty string -> treated as unset (None = use the runtime default).
+    assert _ok(CONVERT_QUANTIZATION="").CONVERT_QUANTIZATION is None
     _bad(CONVERT_QUANTIZATION="int4")
 
 
