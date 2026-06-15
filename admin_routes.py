@@ -296,6 +296,15 @@ def _values_equal(a: Any, b: Any) -> bool:
     return a == b
 
 
+# Structured fields with bespoke override management, exempt from
+# prune-on-default. PIPELINE_RULES: a local copy equal to the factory rules
+# intentionally SHADOWS config.json (pins against future factory edits) and is
+# cleared via the pipeline page's dedicated "clear local override" action — not
+# the scalar "↺ Reset" button. (Its wire form is also _canon_rules-normalized,
+# so a submitted-value vs raw-baseline compare here would be unreliable anyway.)
+_PRUNE_EXEMPT = frozenset({"PIPELINE_RULES"})
+
+
 def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
     """Convert any field whose submitted value equals its in-repo baseline into
     the None removal sentinel, so save_overrides() DROPS the key from
@@ -306,11 +315,12 @@ def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
     and the "local.json" provenance badge would wrongly persist after a reset.
     Matches the client's reset-link equality (numbers compared numerically, as
     JS does) so the two sides agree on what counts as an override. None values
-    already mean "remove", so they pass through untouched.
+    already mean "remove", so they pass through untouched. Fields in
+    _PRUNE_EXEMPT manage their own overrides and are never auto-pruned.
     """
     cleaned: dict[str, Any] = {}
     for k, v in payload.items():
-        if v is not None and _values_equal(v, _baseline_value(k)):
+        if k not in _PRUNE_EXEMPT and v is not None and _values_equal(v, _baseline_value(k)):
             cleaned[k] = None
         else:
             cleaned[k] = v

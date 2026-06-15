@@ -97,6 +97,73 @@ def test_reset_float_field_default_sent_as_int_clears_override(client):
     assert field["value"] == default_val
 
 
+def _as_js_sends(v):
+    """Mimic how the browser serializes a value on reset: JSON.stringify has no
+    int/float distinction, so a whole-number float (1.0, 0.0) goes out without
+    its decimal and arrives server-side as an int. Applied recursively so this
+    reproduces the real wire payload for list/tuple/dict-valued fields too."""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    if isinstance(v, list):
+        return [_as_js_sends(x) for x in v]
+    if isinstance(v, dict):
+        return {k: _as_js_sends(x) for k, x in v.items()}
+    return v
+
+
+def test_every_field_reset_to_default_is_pruned(client):
+    """Sweep EVERY admin setting: posting its in-repo default (coerced the way
+    the browser sends it) must be recognized as 'not an override' and leave
+    config.local.json untouched. Guards against type-specific prune gaps like
+    the int/float REPETITION_PENALTY bug for any current or future field."""
+    import admin_routes
+    import config_store
+
+    fields = client.get("/settings/state").json()["fields"]
+    checked = 0
+    not_pruned = []
+    post_failed = []
+    for name, meta in fields.items():
+        if meta["provenance"] == "env":
+            continue                      # env-pinned saves are ignored anyway
+        if name in admin_routes._PRUNE_EXEMPT:
+            continue                      # bespoke override mgmt (see below)
+        dv = meta["default_value"]
+        if dv is None:
+            continue                      # null default -> reset sends null (handled)
+        checked += 1
+        r = client.post("/settings/state", json={name: _as_js_sends(dv)})
+        if r.status_code != 200:
+            post_failed.append((name, r.status_code, r.text[:160]))
+            continue
+        if name in r.json()["saved"]:
+            not_pruned.append((name, dv, _as_js_sends(dv)))
+
+    assert not not_pruned, (
+        "default value NOT recognized as default (override persists, badge sticks):\n"
+        + "\n".join(f"  {n}: baseline={d!r} sent={s!r}" for n, d, s in not_pruned)
+    )
+    assert not post_failed, f"posting the default value failed: {post_failed}"
+    assert config_store.load_overrides() == {}   # nothing leaked onto disk
+    assert checked >= 10                          # sanity: the sweep ran broadly
+
+
+def test_pipeline_rules_not_auto_pruned(client):
+    """PIPELINE_RULES is intentionally exempt from prune-on-default: a local copy
+    equal to the factory rules SHADOWS config.json (managed by the pipeline
+    page's dedicated 'clear local override' action), so saving rules equal to the
+    factory default must KEEP the override, not silently drop it. Locks in the
+    _PRUNE_EXEMPT carve-out so a future change can't start auto-pruning it."""
+    import config_store
+
+    rules = client.get("/settings/state").json()["fields"]["PIPELINE_RULES"]["default_value"]
+    body = client.post("/settings/state", json={"PIPELINE_RULES": rules}).json()
+    assert "PIPELINE_RULES" in body["saved"]
+    assert "PIPELINE_RULES" in config_store.load_overrides()
+
+
 def test_get_factory_rules(client):
     r = client.get("/settings/factory-rules")
     assert r.status_code == 200
