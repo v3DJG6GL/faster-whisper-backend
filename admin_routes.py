@@ -1908,7 +1908,7 @@ function makeEditor(name) {
   if (name === 'SERVER_LOG_LEVEL') return selectEditor(name, v, ['debug','info','warning','error','critical']);
   if (name === 'MODEL_DEVICE' || name === 'MODEL_DEVICE_FALLBACK') return selectEditor(name, v, ['cuda','cpu']);
   if (name === 'MODEL_COMPUTE_TYPE' || name === 'MODEL_COMPUTE_TYPE_FALLBACK') {
-    return selectEditor(name, v, ['float16','int8_float16','int8','float32','bfloat16']);
+    return selectEditor(name, v, ['auto','default','float32','float16','bfloat16','int16','int8','int8_float32','int8_float16','int8_bfloat16']);
   }
   if (name === 'CONVERT_QUANTIZATION') {
     return selectEditor(name, v, ['float32','float16','bfloat16','int16','int8','int8_float32','int8_float16','int8_bfloat16']);
@@ -1994,9 +1994,9 @@ function modelOverridesEditor(name, v) {
   // input.
   const FIELD_META = {
     MODEL_DEVICE:                { kind: 'enum', opts: ['cuda','cpu'] },
-    MODEL_COMPUTE_TYPE:          { kind: 'enum', opts: ['float16','int8_float16','int8','float32','bfloat16'] },
+    MODEL_COMPUTE_TYPE:          { kind: 'enum', opts: ['auto','default','float32','float16','bfloat16','int16','int8','int8_float32','int8_float16','int8_bfloat16'] },
     MODEL_DEVICE_FALLBACK:       { kind: 'enum', opts: ['cuda','cpu'] },
-    MODEL_COMPUTE_TYPE_FALLBACK: { kind: 'enum', opts: ['float16','int8_float16','int8','float32','bfloat16'] },
+    MODEL_COMPUTE_TYPE_FALLBACK: { kind: 'enum', opts: ['auto','default','float32','float16','bfloat16','int16','int8','int8_float32','int8_float16','int8_bfloat16'] },
     REVISION:                    { kind: 'string', placeholder: 'main | <git-sha>' },
     NUM_WORKERS:                 { kind: 'int',   min: 1, max: 8 },
     DEVICE_INDEX:                { kind: 'int',   min: 0, max: 15 },

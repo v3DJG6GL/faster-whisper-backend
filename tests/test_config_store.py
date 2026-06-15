@@ -134,9 +134,15 @@ def test_device_and_compute_literals():
     _bad(MODEL_COMPUTE_TYPE="int4")
 
 
-def test_compute_literal_excludes_int16():
-    # int16 is valid for CONVERT_QUANTIZATION but NOT a ComputeLit.
-    _bad(MODEL_COMPUTE_TYPE="int16")
+def test_compute_vs_convert_quant_literals():
+    # MODEL_COMPUTE_TYPE is the full CT2 compute_type set (10), so it now allows
+    # int16 and the "auto"/"default" selectors. CONVERT_QUANTIZATION is CT2's
+    # conversion set (8) — the concrete precisions only, NOT auto/default.
+    _ok(MODEL_COMPUTE_TYPE="auto")
+    _ok(MODEL_COMPUTE_TYPE="int16")
+    _ok(MODEL_COMPUTE_TYPE="int8_bfloat16")
+    _bad(CONVERT_QUANTIZATION="auto")          # auto/default are runtime-only
+    _bad(CONVERT_QUANTIZATION="default")
     assert _ok(CONVERT_QUANTIZATION="int16").CONVERT_QUANTIZATION == "int16"
 
 

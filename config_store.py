@@ -810,7 +810,14 @@ ProfileName = Annotated[str, Field(min_length=1, max_length=32,
 
 LogLevel = Literal["debug", "info", "warning", "error", "critical"]
 DeviceLit = Literal["cuda", "cpu"]
-ComputeLit = Literal["float16", "int8_float16", "int8", "float32", "bfloat16"]
+# Runtime compute_type — the full CTranslate2 set (verified vs ctranslate2 4.7.2
+# + the CT2 docs). "auto" lets CT2 pick the fastest type supported on the device;
+# "default" keeps the model's converted type. A choice unsupported on the
+# hardware falls back to MODEL_COMPUTE_TYPE_FALLBACK at load.
+ComputeLit = Literal[
+    "auto", "default", "float32", "float16", "bfloat16",
+    "int16", "int8", "int8_float32", "int8_float16", "int8_bfloat16",
+]
 # CONVERT_QUANTIZATION accepts CT2's full conversion set (ctranslate2.specs
 # .model_spec.ACCEPTED_MODEL_TYPES) — wider than ComputeLit (which is the runtime
 # compute_type). Verified against ctranslate2 4.7.2 + the CTranslate2 docs.
