@@ -243,8 +243,9 @@ def test_normalize_tags_rejects_bad():
 # ---------------------------------------------------------------------------
 
 def _regex(name, pattern="x", replacement="y"):
-    return {"name": name, "label": name, "type": "regex",
-            "pattern": pattern, "replacement": replacement}
+    # A one-entry regex-list == a former single `regex` rule.
+    return {"name": name, "label": name, "type": "regex-list",
+            "entries": [{"pattern": pattern, "replacement": replacement}]}
 
 
 def _terminal():
@@ -271,6 +272,44 @@ def test_pipeline_duplicate_slug():
 
 def test_pipeline_terminal_must_be_last():
     _bad(PIPELINE_RULES=[_terminal(), _regex("after")])
+
+
+def test_regex_list_validates_and_keeps_order():
+    rule = {"name": "rl", "label": "RL", "type": "regex-list",
+            "entries": [{"pattern": "a", "replacement": "b"},
+                        {"pattern": "b", "replacement": "c", "label": "x", "note": "n"}]}
+    m = _ok(PIPELINE_RULES=[rule, _terminal()])
+    assert m.PIPELINE_RULES[0].type == "regex-list"
+    assert [e.pattern for e in m.PIPELINE_RULES[0].entries] == ["a", "b"]
+
+
+def test_regex_list_requires_pattern_per_entry():
+    # `pattern` is required on every entry.
+    _bad(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
+                          "entries": [{"replacement": "b"}]}, _terminal()])
+
+
+def test_regex_list_entry_extra_forbid():
+    # Unknown per-entry key rejected (RegexListEntry has extra="forbid").
+    _bad(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
+                          "entries": [{"pattern": "a", "bogus": 1}]}, _terminal()])
+
+
+def test_regex_list_optional_fields_default_and_survive_exclude_none():
+    m = _ok(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
+                             "entries": [{"pattern": "a"}]}, _terminal()])
+    e = m.PIPELINE_RULES[0].entries[0]
+    assert (e.replacement, e.label, e.note) == ("", "", "")
+    # exclude_none must KEEP the "" defaults (they are "" not None).
+    dumped = m.model_dump(exclude_none=True, mode="json")["PIPELINE_RULES"][0]["entries"][0]
+    assert dumped == {"pattern": "a", "replacement": "", "label": "", "note": ""}
+
+
+def test_regex_list_entry_bad_regex_reports_index():
+    with pytest.raises(ValidationError) as ei:
+        _ok(PIPELINE_RULES=[{"name": "rl", "label": "RL", "type": "regex-list",
+                             "entries": [{"pattern": "("}]}, _terminal()])
+    assert "entry 0" in str(ei.value)
 
 
 def test_map_meta_pruned_to_map_keys():

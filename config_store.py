@@ -890,11 +890,26 @@ class _RuleBase(BaseModel):
         return normalize_tags(v)
 
 
-class RegexRule(_RuleBase):
-    """Static (pattern, replacement) row. Pure re.sub."""
-    type: Literal["regex"]
+class RegexListEntry(BaseModel):
+    """One find→replace pair inside a regex-list rule. `pattern` is required; an
+    empty `replacement` deletes the match. `label`/`note` are optional human
+    annotations (a blank label falls back to showing the pattern in the editor).
+    Optional fields default to "" — never None — so model_dump(exclude_none=True)
+    on the export/env round-trip keeps them."""
+    model_config = {"extra": "forbid"}
     pattern: Annotated[str, Field(max_length=512)]
     replacement: Annotated[str, Field(max_length=512)] = ""
+    label: Annotated[str, Field(max_length=80)] = ""
+    note: Annotated[str, Field(max_length=4000)] = ""
+
+
+class RegexListRule(_RuleBase):
+    """Ordered batch of (pattern, replacement) entries — the unified find→replace
+    rule. Entries apply in list order (entry N's output feeds N+1), exactly like a
+    run of standalone re.sub rules. Replaces the legacy single `regex` type (a
+    one-entry list == an old `regex` rule). An empty `entries` list is a no-op."""
+    type: Literal["regex-list"]
+    entries: list[RegexListEntry] = Field(default_factory=list, max_length=200)
 
 
 class LowercaseWordlistRule(_RuleBase):
@@ -951,7 +966,7 @@ class TerminalRule(_RuleBase):
 
 
 PipelineRule = Annotated[
-    RegexRule | LowercaseWordlistRule | MapRule | DedupRule | UpperRule | TerminalRule,
+    RegexListRule | LowercaseWordlistRule | MapRule | DedupRule | UpperRule | TerminalRule,
     Field(discriminator="type"),
 ]
 
@@ -1416,10 +1431,11 @@ class AdminConfig(BaseModel):
     @classmethod
     def _validate_pipeline_rules(cls, v: list[Any] | None) -> list[Any] | None:
         """Validate the unified pipeline rules list:
-          1. Each rule's regex pattern compiles AND survives a 2 s catastrophic-
-             backtracking guard against a 1 KB fixture. (Empty patterns are OK
-             for a regex rule — that's just a no-op.)
-          2. Each `regex` rule's replacement string survives `re.sub` with the
+          1. Every regex pattern compiles AND survives a 2 s catastrophic-
+             backtracking guard against a 1 KB fixture — for callback:* rows the
+             single `pattern`, for regex-list rows EACH entry's `pattern`. (Empty
+             patterns/entries are OK — just a no-op.)
+          2. Each regex-list entry's replacement string survives `re.sub` with its
              pattern (catches bad backrefs like `\\3` when only 2 groups exist).
           3. Slug uniqueness across the list.
           4. Exactly one terminal rule, and it must be the last entry.
@@ -1428,6 +1444,30 @@ class AdminConfig(BaseModel):
             return v
         import threading
         fixture = "Hallo. Wie geht's? 10.23 Uhr! Bitte. " * 32   # ~1 KB
+
+        def _guard(compiled: "re.Pattern[str]", repl: str, where: str) -> None:
+            """Run compiled.sub(repl, fixture) under a 2 s thread timeout. Raises
+            ValueError(<where> …) on a bad backref/replacement, or on a > 2 s run
+            (likely catastrophic backtracking). err is checked before done: a
+            raising regex leaves done=False, which would else misreport as a
+            timeout."""
+            holder: dict[str, Any] = {"done": False, "err": None}
+            def _run(_c=compiled, _r=repl) -> None:
+                try:
+                    _c.sub(_r, fixture)
+                    holder["done"] = True
+                except Exception as e:
+                    holder["err"] = e
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            t.join(timeout=2.0)
+            if holder["err"] is not None:
+                raise ValueError(f"{where}: regex test failed: {holder['err']}")
+            if not holder["done"]:
+                raise ValueError(
+                    f"{where}: regex took > 2 s on a 1 KB fixture "
+                    "(likely catastrophic backtracking). Simplify the pattern."
+                )
         seen: set[str] = set()
         terminal_idx: int | None = None
         for idx, rule in enumerate(v):
@@ -1442,11 +1482,26 @@ class AdminConfig(BaseModel):
                     raise ValueError(f"only one terminal rule allowed (already at index {terminal_idx})")
                 terminal_idx = idx
                 continue
-            # Pattern compile + 2 s timeout-guarded run. callback:map has no
-            # pattern field — pattern is auto-built from map keys at compile
-            # time; skip it here.
+            # callback:map has no pattern field (auto-built from map keys at
+            # compile time); skip it here.
             if rtype == "callback:map":
                 continue
+            # regex-list: compile + guard each entry's pattern + replacement.
+            if rtype == "regex-list":
+                for eidx, entry in enumerate(getattr(rule, "entries", None) or []):
+                    epat = getattr(entry, "pattern", None)
+                    if not epat:
+                        continue
+                    try:
+                        ecompiled = re.compile(epat)
+                    except re.error as e:
+                        raise ValueError(
+                            f"rule {idx} ({slug!r}) entry {eidx}: invalid regex: {e}")
+                    erepl = getattr(entry, "replacement", "") or ""
+                    _guard(ecompiled, erepl, f"rule {idx} ({slug!r}) entry {eidx}")
+                continue
+            # callback:* pattern-only rows (lowercase-wordlist / dedup / upper):
+            # smoke-test the pattern with an empty replacement.
             pattern = getattr(rule, "pattern", None)
             if not pattern:
                 continue
@@ -1454,32 +1509,7 @@ class AdminConfig(BaseModel):
                 compiled = re.compile(pattern)
             except re.error as e:
                 raise ValueError(f"rule {idx} ({slug!r}): invalid regex: {e}")
-            replacement = ""
-            if rtype == "regex":
-                replacement = getattr(rule, "replacement", "") or ""
-            result_holder: dict[str, Any] = {"done": False, "err": None}
-            def _run(_compiled=compiled, _repl=replacement) -> None:
-                try:
-                    _compiled.sub(_repl, fixture)
-                    result_holder["done"] = True
-                except Exception as e:
-                    result_holder["err"] = e
-            t = threading.Thread(target=_run, daemon=True)
-            t.start()
-            t.join(timeout=2.0)
-            # Check err before done: when the regex raises (e.g. invalid
-            # backref), _run sets err and leaves done=False, so the
-            # done-first check would misreport every regex error as a
-            # 2 s timeout.
-            if result_holder["err"] is not None:
-                raise ValueError(
-                    f"rule {idx} ({slug!r}): regex test failed: {result_holder['err']}"
-                )
-            if not result_holder["done"]:
-                raise ValueError(
-                    f"rule {idx} ({slug!r}): regex took > 2 s on a 1 KB fixture "
-                    "(likely catastrophic backtracking). Simplify the pattern."
-                )
+            _guard(compiled, "", f"rule {idx} ({slug!r})")
         if terminal_idx is not None and terminal_idx != len(v) - 1:
             raise ValueError(
                 f"terminal rule must be the last entry "

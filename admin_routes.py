@@ -656,6 +656,43 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         if not rule.get("enabled", True):
             return {**common, "after": text, "skipped": True}
 
+        # regex-list: apply each entry in order to a running buffer (entry N's
+        # output feeds N+1), all inside ONE 2 s guard. Same mt.expand backref
+        # idiom as the single-pattern path → parity with main.py / the streaming
+        # equivalence guard. Reports one card-level step (summed matches).
+        if rtype == "regex-list":
+            entries = rule.get("entries", []) or []
+            if not entries:
+                return {**common, "after": text, "skipped": True}
+            lout: dict[str, Any] = {"done": False, "after": text, "matches": 0}
+            def _do_list() -> None:
+                try:
+                    cur = text
+                    total = 0
+                    for entry in entries:
+                        ep = entry.get("pattern", "") or ""
+                        if not ep:
+                            continue
+                        ecre = re.compile(ep)
+                        er = entry.get("replacement", "") or ""
+                        erep = (lambda mt, _r=er: mt.expand(_r) if "\\" in _r else _r)
+                        total += sum(1 for _ in ecre.finditer(cur))
+                        cur = ecre.sub(erep, cur)
+                    lout["after"] = cur
+                    lout["matches"] = total
+                    lout["done"] = True
+                except Exception as e:  # noqa: BLE001
+                    lout["err"] = str(e)
+                    lout["done"] = True
+            tl = threading.Thread(target=_do_list, daemon=True)
+            tl.start()
+            tl.join(timeout=2.0)
+            if not lout["done"]:
+                return {**common, "after": text, "slow": True}
+            if "err" in lout:
+                return {**common, "after": text, "error": lout["err"]}
+            return {**common, "after": lout["after"], "matches": lout["matches"]}
+
         try:
             if rtype == "callback:map":
                 m = rule.get("map", {}) or {}
@@ -670,10 +707,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 if not pattern:
                     return {**common, "after": text, "skipped": True}
                 cre = re.compile(pattern)
-                if rtype == "regex":
-                    repl = rule.get("replacement", "") or ""
-                    replacer = lambda mt, _r=repl: mt.expand(_r) if "\\" in _r else _r
-                elif rtype == "callback:lowercase-wordlist":
+                if rtype == "callback:lowercase-wordlist":
                     wordlist = frozenset(w.lower() for w in (rule.get("wordlist") or []))
                     def replacer(mt, _wl=wordlist):
                         try:
@@ -3657,9 +3691,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       // Seed empty type-specific fields; the user fills them in via the
       // expanded body editor (auto-opened below). Empty patterns are
       // skipped at runtime so the new rule is harmless until edited.
-      if (t === 'regex') {
-        newRule.pattern = '';
-        newRule.replacement = '';
+      if (t === 'regex-list') {
+        newRule.entries = [];
       } else if (t === 'callback:map') {
         newRule.map = {};
       } else if (t === 'callback:lowercase-wordlist') {

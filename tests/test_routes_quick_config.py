@@ -3,14 +3,14 @@
 import copy
 
 
-def _expose_first_regex_rule(app_module):
-    """Mark the first regex rule exposed so /quick-config can see + patch it.
+def _expose_first_regex_list_rule(app_module):
+    """Mark the first regex-list rule exposed so /quick-config can see + patch it.
     Returns its slug. Mutates a deep copy assigned back onto cfg so the test's
     monkeypatched view is isolated; the per-test config reload restores it."""
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
     slug = None
     for r in rules:
-        if isinstance(r, dict) and r.get("type") == "regex":
+        if isinstance(r, dict) and r.get("type") == "regex-list":
             r["exposed"] = True
             slug = r["name"]
             break
@@ -54,7 +54,7 @@ def test_post_patch_unknown_slug_400(client):
 
 
 def test_post_patch_unknown_field_400(client, app_module):
-    slug = _expose_first_regex_rule(app_module)
+    slug = _expose_first_regex_list_rule(app_module)
     assert slug is not None
     # `label` is admin-only / not in the per-type allow-list -> 400.
     r = client.post(
@@ -74,7 +74,7 @@ def test_post_patch_unknown_top_level_field_422(client):
 
 
 def test_post_patch_valid_field_saves(client, app_module):
-    slug = _expose_first_regex_rule(app_module)
+    slug = _expose_first_regex_list_rule(app_module)
     r = client.post(
         "/quick-config/state",
         json={"rules_patch": {slug: {"enabled": False}}},

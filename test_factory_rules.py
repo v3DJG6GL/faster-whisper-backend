@@ -21,8 +21,9 @@ import config_store as cs
 
 
 def _regex_rule(name, pattern="x", replacement="y", **kw):
-    r = {"name": name, "label": name, "type": "regex",
-         "pattern": pattern, "replacement": replacement}
+    # A one-entry regex-list == a former single `regex` rule.
+    r = {"name": name, "label": name, "type": "regex-list",
+         "entries": [{"pattern": pattern, "replacement": replacement}]}
     r.update(kw)
     return r
 

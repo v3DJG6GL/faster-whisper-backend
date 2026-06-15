@@ -2,69 +2,41 @@
   "schema_version": 1,
   "PIPELINE_RULES": [
     {
-      "name": "replace-szet-lc",
-      "label": "Replace ß → ss",
-      "enabled": true,
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "Swiss Standard German drops the eszett entirely — it is always written 'ss'. This rule enforces that for the lowercase form.",
-      "type": "regex",
-      "pattern": "ß",
-      "replacement": "ss"
-    },
-    {
-      "name": "replace-szet-uc",
-      "label": "Replace ẞ → SS",
-      "enabled": true,
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "Uppercase counterpart of replace-szet-lc — the capital eszett 'ẞ' becomes 'SS'.",
-      "type": "regex",
-      "pattern": "ẞ",
-      "replacement": "SS"
-    },
-    {
-      "name": "strip-non-keep-punct",
-      "label": "Strip non-keep punctuation",
-      "enabled": true,
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "Anything in string.punctuation NOT in ./-:,?! is removed, plus the German low quote „. The remaining ./-:,?! are kept on purpose so the later strip rules' digit-protected logic can run.",
-      "type": "regex",
-      "pattern": "[\\\"#$%&'()*+;<=>@\\[\\\\\\]^_`{|}~„]",
-      "replacement": ""
-    },
-    {
-      "name": "normalize-digit-range",
-      "label": "Normalize digit-range hyphen → slash",
-      "enabled": true,
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "A spoken digit range like '10 - 12' is normalized to '10/12' — slash is the house convention for ranges.",
-      "type": "regex",
-      "pattern": "(\\d)\\s*-\\s*(\\d)",
-      "replacement": "\\1/\\2"
-    },
-    {
-      "name": "trim-trailing-period",
-      "label": "Trim Trailing Period",
+      "name": "german-symbol-cleanup",
+      "label": "German + symbol cleanup",
       "enabled": true,
       "locked": false,
       "seeded": true,
       "exposed": false,
       "tags": [],
       "note": "",
-      "type": "regex",
-      "pattern": "\\s*\\.+\\s*$",
-      "replacement": ""
+      "type": "regex-list",
+      "entries": [
+        {
+          "pattern": "ß",
+          "replacement": "ss",
+          "label": "replace-szet-lc",
+          "note": "Swiss Standard German drops the eszett entirely — it is always written 'ss'. This rule enforces that for the lowercase form."
+        },
+        {
+          "pattern": "ẞ",
+          "replacement": "SS",
+          "label": "replace-szet-uc",
+          "note": "Uppercase counterpart of replace-szet-lc — the capital eszett 'ẞ' becomes 'SS'."
+        },
+        {
+          "pattern": "[\\\"#$%&'()*+;<=>@\\[\\\\\\]^_`{|}~„]",
+          "replacement": "",
+          "label": "strip-non-keep-punct",
+          "note": "Anything in string.punctuation NOT in ./-:,?! is removed, plus the German low quote „. The remaining ./-:,?! are kept on purpose so the later strip rules' digit-protected logic can run."
+        },
+        {
+          "pattern": "(\\d)\\s*-\\s*(\\d)",
+          "replacement": "\\1/\\2",
+          "label": "normalize-digit-range",
+          "note": "A spoken digit range like '10 - 12' is normalized to '10/12' — slash is the house convention for ranges."
+        }
+      ]
     },
     {
       "name": "strip-and-lowercase-non-noun",
@@ -181,43 +153,54 @@
       ]
     },
     {
-      "name": "strip-only-terminators-and-commas",
-      "label": "Strip-only terminators + commas",
+      "name": "strip-whisper-punctuation",
+      "label": "Strip Whisper punctuation",
       "enabled": true,
       "locked": false,
       "seeded": true,
       "exposed": false,
-      "tags": [],
-      "note": "Plain strip — catches lone .?! the paired pass missed, plus soft-pause commas. Digit-protected: '1,000' survives; 'Frau, Müller' loses the comma. Replacement is empty; no side effects.",
-      "type": "regex",
-      "pattern": "(?<!\\d)[.?!]|(?<!\\d),|,(?!\\d)",
-      "replacement": ""
+      "tags": [
+        "whisper-punct"
+      ],
+      "note": "",
+      "type": "regex-list",
+      "entries": [
+        {
+          "pattern": "\\s*\\.+\\s*$",
+          "replacement": "",
+          "label": "trim-trailing-period"
+        },
+        {
+          "pattern": "(?<!\\d)[.?!]|(?<!\\d),|,(?!\\d)",
+          "replacement": "",
+          "label": "strip-only-terminators-and-commas",
+          "note": "Plain strip — catches lone .?! the paired pass missed, plus soft-pause commas. Digit-protected: '1,000' survives; 'Frau, Müller' loses the comma. Replacement is empty; no side effects."
+        }
+      ]
     },
     {
-      "name": "split-merged-komma-off-preceding-noun",
-      "label": "Split merged 'Komma' off preceding noun",
+      "name": "split-dictation-keywords",
+      "label": "Split glued dictation keywords",
       "enabled": true,
       "locked": false,
       "seeded": true,
       "exposed": false,
       "tags": [],
       "note": "",
-      "type": "regex",
-      "pattern": "\\b([A-ZÄÖÜ][a-zäöüß]{2,})komm?a\\b",
-      "replacement": "\\1 Komma"
-    },
-    {
-      "name": "1-2-split-dictation-words-from-german-compounds",
-      "label": "[1/2] Split dictation words from German compounds",
-      "enabled": true,
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "Wörter wie \"Eisenbindestrichinfusion\" auftrennen zu \"Eisen Bindestrich infusion\"",
-      "type": "regex",
-      "pattern": "(?i)\\Bbindestrich|bindestrich\\B",
-      "replacement": " Bindestrich "
+      "type": "regex-list",
+      "entries": [
+        {
+          "pattern": "\\b([A-ZÄÖÜ][a-zäöüß]{2,})komm?a\\b",
+          "replacement": "\\1 Komma",
+          "label": "split-merged-komma-off-preceding-noun"
+        },
+        {
+          "pattern": "(?i)\\Bbindestrich|bindestrich\\B",
+          "replacement": " Bindestrich ",
+          "label": "1-2-split-dictation-words-from-german-compounds",
+          "note": "Wörter wie \"Eisenbindestrichinfusion\" auftrennen zu \"Eisen Bindestrich infusion\""
+        }
+      ]
     },
     {
       "name": "dictation-map",
@@ -325,82 +308,50 @@
       "pattern": "(-)([a-zäöüß])"
     },
     {
-      "name": "tighten-digit-separators",
-      "label": "Tighten digit separators (/ - ,)",
-      "enabled": true,
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "",
-      "type": "regex",
-      "pattern": "(\\d)\\s*([/,\\-])\\s*(\\d)",
-      "replacement": "\\1\\2\\3"
-    },
-    {
-      "name": "merge-digit-pair-before",
-      "label": "Merge digit pair before / -",
-      "enabled": true,
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "",
-      "type": "regex",
-      "pattern": "(?<=\\d) +(?=\\d[/\\-])",
-      "replacement": ""
-    },
-    {
-      "name": "merge-digit-pair-after",
-      "label": "Merge digit pair after / -",
-      "enabled": true,
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "",
-      "type": "regex",
-      "pattern": "(?<=[/\\-]\\d) +(?=\\d)",
-      "replacement": ""
-    },
-    {
-      "name": "space-before-closing-punct",
-      "label": "Remove space before closing punctuation",
+      "name": "digit-and-whitespace-tidy",
+      "label": "Digit + whitespace tidy",
       "enabled": true,
       "locked": true,
       "seeded": true,
       "exposed": false,
       "tags": [],
-      "note": "Drop whitespace before closing punctuation so ' ,' / ' )' tighten up to ',' / ')'.",
-      "type": "regex",
-      "pattern": "[ \\t]+([,.:;!?\\)\\]\\}])",
-      "replacement": "\\1"
-    },
-    {
-      "name": "space-after-opening-punct",
-      "label": "Remove space after opening punctuation",
-      "enabled": true,
-      "locked": true,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "Drop whitespace after an opening bracket so '( ' tightens to '('.",
-      "type": "regex",
-      "pattern": "([\\(\\[\\{])[ \\t]+",
-      "replacement": "\\1"
-    },
-    {
-      "name": "collapse-multi-space",
-      "label": "Collapse multi-space",
-      "enabled": true,
-      "locked": true,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "Whisper segments are joined with an empty separator — if both adjacent segments end/start with whitespace the join produces an interior double-space that no other rule cleans (the punctuation-adjacent tidy rules do not match it).",
-      "type": "regex",
-      "pattern": "  +",
-      "replacement": " "
+      "note": "",
+      "type": "regex-list",
+      "entries": [
+        {
+          "pattern": "(\\d)\\s*([/,\\-])\\s*(\\d)",
+          "replacement": "\\1\\2\\3",
+          "label": "tighten-digit-separators"
+        },
+        {
+          "pattern": "(?<=\\d) +(?=\\d[/\\-])",
+          "replacement": "",
+          "label": "merge-digit-pair-before"
+        },
+        {
+          "pattern": "(?<=[/\\-]\\d) +(?=\\d)",
+          "replacement": "",
+          "label": "merge-digit-pair-after"
+        },
+        {
+          "pattern": "[ \\t]+([,.:;!?%\\)\\]\\}])",
+          "replacement": "\\1",
+          "label": "space-before-closing-punct",
+          "note": "Drop whitespace before closing punctuation so ' ,' / ' )' tighten up to ',' / ')'."
+        },
+        {
+          "pattern": "([\\(\\[\\{])[ \\t]+",
+          "replacement": "\\1",
+          "label": "space-after-opening-punct",
+          "note": "Drop whitespace after an opening bracket so '( ' tightens to '('."
+        },
+        {
+          "pattern": "  +",
+          "replacement": " ",
+          "label": "collapse-multi-space",
+          "note": "Whisper segments are joined with an empty separator — if both adjacent segments end/start with whitespace the join produces an interior double-space that no other rule cleans (the punctuation-adjacent tidy rules do not match it)."
+        }
+      ]
     },
     {
       "name": "dedup-punct",
@@ -415,17 +366,28 @@
       "pattern": "[,.:;!?]{2,}"
     },
     {
-      "name": "tidy-newlines",
-      "label": "Tidy newlines",
+      "name": "final-cleanup",
+      "label": "Final cleanup",
       "enabled": true,
       "locked": true,
       "seeded": true,
       "exposed": false,
       "tags": [],
-      "note": "Around a dictation-emitted newline there is often residue: a Whisper-emitted comma ('Müller, \\n'), a trailing space, or punctuation that leaked through ('\\n , Welt'). Collapse the neighborhood — optional whitespace + optional comma — on each side.",
-      "type": "regex",
-      "pattern": "[ \\t]*,?[ \\t]*(\\n+)[ \\t]*,?[ \\t]*",
-      "replacement": "\\1"
+      "note": "",
+      "type": "regex-list",
+      "entries": [
+        {
+          "pattern": "[ \\t]*,?[ \\t]*(\\n+)[ \\t]*,?[ \\t]*",
+          "replacement": "\\1",
+          "label": "tidy-newlines",
+          "note": "Around a dictation-emitted newline there is often residue: a Whisper-emitted comma ('Müller, \\n'), a trailing space, or punctuation that leaked through ('\\n , Welt'). Collapse the neighborhood — optional whitespace + optional comma — on each side."
+        },
+        {
+          "pattern": "(?:,|\\.)(- |-)",
+          "replacement": "",
+          "label": "replace-and"
+        }
+      ]
     },
     {
       "name": "capitalize-after-terminator",
@@ -438,19 +400,6 @@
       "note": "After dictation inserts '.', '?', '!' or a newline, the following letter starts a new sentence/paragraph. Whisper does not know about our substitution, so it leaves that letter lowercase — fix it here.",
       "type": "callback:upper",
       "pattern": "([.?!]\\s+|\\n+\\s*)([a-zäöüß])"
-    },
-    {
-      "name": "replace-and",
-      "label": "Replace ,- AND .-",
-      "enabled": true,
-      "locked": false,
-      "seeded": true,
-      "exposed": false,
-      "tags": [],
-      "note": "",
-      "type": "regex",
-      "pattern": "(?:,|\\.)(- |-)",
-      "replacement": ""
     },
     {
       "name": "trim-edges",

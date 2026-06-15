@@ -61,7 +61,7 @@ router = APIRouter(prefix="/quick-config")
 # editable from /quick-config (admin-only). Adding a new rule, deleting a
 # rule, or reordering is also admin-only.
 _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
-    "regex":                       frozenset({"enabled", "pattern", "replacement"}),
+    "regex-list":                  frozenset({"enabled", "entries"}),
     "callback:map":                frozenset({"enabled", "map"}),
     "callback:lowercase-wordlist": frozenset({"enabled", "pattern", "wordlist"}),
     "callback:dedup":              frozenset({"enabled", "pattern"}),
@@ -2062,7 +2062,7 @@ function buildPatchAndFingerprints() {
 }
 
 const _ALLOWED_BY_TYPE = {
-  'regex':                       new Set(['enabled', 'pattern', 'replacement']),
+  'regex-list':                  new Set(['enabled', 'entries']),
   'callback:map':                new Set(['enabled', 'map']),
   'callback:lowercase-wordlist': new Set(['enabled', 'pattern', 'wordlist']),
   'callback:dedup':              new Set(['enabled', 'pattern']),

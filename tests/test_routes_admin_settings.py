@@ -67,9 +67,9 @@ def _seed_factory(monkeypatch, tmp_path, rules):
 
 
 def _rules(*names):
-    """A valid rule list: one regex rule per name, terminal rule last."""
-    out = [{"name": n, "label": n.title(), "type": "regex",
-            "pattern": n[0], "replacement": n[0].upper()} for n in names]
+    """A valid rule list: one one-entry regex-list rule per name, terminal last."""
+    out = [{"name": n, "label": n.title(), "type": "regex-list",
+            "entries": [{"pattern": n[0], "replacement": n[0].upper()}]} for n in names]
     out.append({"name": "trim-edges", "label": "Trim edges", "type": "terminal"})
     return out
 
@@ -114,16 +114,16 @@ def test_test_pipeline_dry_run(client):
         json={
             "sample": "  hallo welt  ",
             "rules": [
-                {"name": "noop", "type": "regex", "pattern": "x", "replacement": "y",
-                 "enabled": True},
+                {"name": "noop", "type": "regex-list", "enabled": True,
+                 "entries": [{"pattern": "welt", "replacement": "world"}]},
             ],
         },
     )
     assert r.status_code == 200
     body = r.json()
     assert "steps" in body and "final" in body
-    # The implicit terminal trim strips the edge whitespace.
-    assert body["final"] == "hallo welt"
+    # The regex-list entry runs, then the implicit terminal trim strips edges.
+    assert body["final"] == "hallo world"
 
 
 def test_test_pipeline_rules_not_list_400(client):

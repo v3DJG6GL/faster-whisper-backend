@@ -172,7 +172,7 @@ if TYPE_CHECKING:
 # Text post-processing pipeline — unified rules list (cfg.PIPELINE_RULES)
 # =============================================================================
 # A single ordered list of rules is applied to the joined transcript. Each
-# rule is one of: "regex" (pattern + replacement), "callback:lowercase-wordlist"
+# rule is one of: "regex-list" (ordered batch of pattern→replacement entries), "callback:lowercase-wordlist"
 # (smart German non-noun lowercaser), "callback:map" (dictation word→symbol
 # map), "callback:dedup" (collapse adjacent punctuation runs), "callback:upper"
 # (capitalize after sentence terminator), or "terminal" (final lstrip+rstrip;
@@ -190,7 +190,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class _CompiledRule:
     """One row of the compiled pipeline. `payload` carries type-specific data:
-      regex                       → replacement string
+      regex-list (per entry)      → replacement string
       callback:lowercase-wordlist → frozenset[str] of lowercase words
       callback:map                → dict[str_lower, str] lookup
       callback:dedup              → None (callback hardcoded)
@@ -294,6 +294,31 @@ def rebuild_caches() -> None:
             continue
         rule_enabled = bool(rule.get("enabled", True))
 
+        # regex-list: expand each entry into its own _CompiledRule row, all
+        # sharing the card's name + enabled (so per-model EXCLUDE/INCLUDE and the
+        # global toggle flip the whole card together). Entries run in list order
+        # — NO longest-first sort. A bad entry is skipped (not the whole card);
+        # an empty-pattern entry is a no-op. Each row is a plain string-replacement
+        # sub, exactly like the retired single `regex` type.
+        if rtype == "regex-list":
+            rname = rule.get("name", "?")
+            rlabel = rule.get("label", rname)
+            for entry in rule.get("entries", []) or []:
+                epat = entry.get("pattern", "")
+                if not epat:
+                    continue
+                try:
+                    ecre = re.compile(epat)
+                except re.error as e:
+                    logger.warning("[pipeline] rule %r entry has invalid regex "
+                                   "(%s) — skipping entry", rname, e)
+                    continue
+                compiled.append(_CompiledRule(
+                    rname, f"{rlabel} · {entry.get('label') or epat}",
+                    "regex-list", ecre, entry.get("replacement", "") or "",
+                    rule_enabled))
+            continue
+
         try:
             if rtype == "callback:map":
                 # Auto-build alternation regex from map keys, longest-first,
@@ -311,12 +336,10 @@ def rebuild_caches() -> None:
             else:
                 pattern = rule.get("pattern", "")
                 if not pattern:
-                    # Empty pattern on a regex rule → skip (no-op).
+                    # Empty pattern on a callback rule → skip (no-op).
                     continue
                 cre = re.compile(pattern)
-                if rtype == "regex":
-                    payload = rule.get("replacement", "") or ""
-                elif rtype == "callback:lowercase-wordlist":
+                if rtype == "callback:lowercase-wordlist":
                     wordlist = frozenset(w.lower() for w in (rule.get("wordlist", []) or []))
                     payload = _make_lowercase_wordlist_replacer(wordlist)
                 elif rtype == "callback:dedup":

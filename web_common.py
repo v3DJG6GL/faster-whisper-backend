@@ -713,6 +713,54 @@ input[type="checkbox"].switch:focus-visible {
 @media (prefers-reduced-motion: reduce) {
   input[type="checkbox"].switch,
   input[type="checkbox"].switch::after { transition: none; } }
+
+/* ---- regex-list entry editor (shared by /settings + /quick-config). NAV_CSS
+   is injected AFTER each page's own <style>, so these scoped rules win ties
+   against `.rule-editor input` / `.card .rule-editor input`. All sizing in
+   rem/em + --fs-* tokens; --font-mono for the find/replace code inputs. */
+.rule-editor .rl-entries { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.4rem; }
+.rule-editor .rl-entry { display: grid; grid-template-columns: 1.6rem 1fr; align-items: start;
+  background: #12171f; border: 1px solid var(--border, #30363d); border-radius: 5px; }
+.rule-editor .rl-entry.rl-dragging { opacity: 0.35; outline: 2px dashed var(--cyan, #79c0ff); }
+.rule-editor .rl-rail { display: flex; flex-direction: column; align-items: center; gap: 0.25rem;
+  padding: 0.45rem 0; border-right: 1px solid var(--border, #30363d); background: #0f141b;
+  border-radius: 5px 0 0 5px; }
+.rule-editor .rl-ord { font-family: var(--font-mono); font-size: var(--fs-xs); font-weight: 700;
+  color: var(--cyan, #79c0ff); width: 1.25rem; height: 1.25rem; display: flex;
+  align-items: center; justify-content: center; background: #10202e;
+  border: 1px solid #1f4d63; border-radius: 50%; }
+.rule-editor .rl-grip { cursor: grab; font-size: 0.95rem; line-height: 1;
+  color: var(--dim, #6e7681); user-select: none; }
+.rule-editor .rl-grip:active { cursor: grabbing; }
+.rule-editor .rl-ebody { padding: 0.45rem 0.55rem; min-width: 0; }
+.rule-editor .rl-erow1 { display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0.35rem; }
+.rule-editor .rl-elabelwrap { flex: 1; min-width: 0; }
+.rule-editor .rl-elabelwrap input { width: 100%; font-family: var(--font-sans);
+  font-weight: 600; font-size: var(--fs-sm); color: var(--bold, #e6edf3);
+  background: transparent; border: 0; border-bottom: 1px dashed transparent;
+  border-radius: 0; padding: 0.05rem 0.1rem; }
+.rule-editor .rl-elabelwrap input::placeholder { color: var(--dim, #6e7681);
+  font-style: italic; font-weight: 400; }
+.rule-editor .rl-elabelwrap input:hover { border-bottom-color: var(--border, #30363d); }
+.rule-editor .rl-elabelwrap input:focus,
+.rule-editor .rl-elabelwrap input:focus-visible { outline: none;
+  border-bottom-color: var(--cyan, #79c0ff); }
+.rule-editor .rl-notebtn, .rule-editor .rl-del { flex-shrink: 0; background: transparent;
+  border: 1px solid transparent; border-radius: 4px; cursor: pointer;
+  font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--dim, #6e7681);
+  padding: 0.1rem 0.4rem; white-space: nowrap; }
+.rule-editor .rl-notebtn:hover, .rule-editor .rl-del:hover {
+  border-color: var(--border, #30363d); color: var(--fg, #c9d1d9); background: #21262d; }
+.rule-editor .rl-notebtn.has-note { color: var(--cyan, #79c0ff); }
+.rule-editor .rl-del:hover { color: var(--red, #f85149); border-color: #5a2424; }
+.rule-editor .rl-fr { display: grid; grid-template-columns: 3.4rem 1fr; align-items: center;
+  gap: 0.35rem; margin: 0.18rem 0; }
+.rule-editor .rl-gut { font-family: var(--font-mono); font-size: var(--fs-xs);
+  color: var(--dim, #6e7681); text-align: right; }
+.rule-editor .rl-fr input { width: 100%; font-family: var(--font-mono); font-size: var(--fs-sm); }
+.rule-editor .rl-enote { margin: 0.3rem 0 0.1rem; }
+.rule-editor .rl-enote textarea { width: 100%; box-sizing: border-box;
+  font-family: var(--font-sans); font-size: var(--fs-xs); color: var(--help, #8b949e); }
 """
 
 
@@ -1597,7 +1645,7 @@ function _unesc(s) {
 }
 
 const _PIPELINE_TYPES = [
-  { type: 'regex',                       pill: 'regex' },
+  { type: 'regex-list',                  pill: 'regex[]' },
   { type: 'callback:lowercase-wordlist', pill: 'cb:wordlist' },
   { type: 'callback:map',                pill: 'cb:map' },
   { type: 'callback:dedup',              pill: 'cb:dedup' },
@@ -1711,6 +1759,136 @@ function _makeMapRow(rule, key, val, commitData, datalistId, onEnter, ts, showDa
   return tr;
 }
 
+// ---- regex-list entry editor (shared by /settings + /quick-config) ----
+// An ordered batch of {pattern, replacement, label?, note?} entries. The DOM IS
+// the source of truth: _readEntries(parent) rebuilds rule.entries from the rows
+// in DOM order, so add / delete / drag-reorder all reduce to "mutate the DOM,
+// then _readEntries + commit". Empty-pattern rows are skipped on read (kept in
+// the DOM so an in-progress row isn't lost), mirroring cb:map. Helpers live at
+// script top level (not inside the branch) so they survive strict-mode block
+// scoping; _esc/_unesc handle \n etc. in the single-line pattern/replacement.
+let _rlDragSrc = null;
+
+function _readEntries(parent) {
+  const out = [];
+  parent.querySelectorAll('.rl-entry').forEach((en) => {
+    const pat = _unesc((en.querySelector('.e-pattern') || {}).value || '');
+    if (!pat) return;  // skip empty-pattern rows (no-op; stays in the DOM)
+    const o = { pattern: pat,
+                replacement: _unesc((en.querySelector('.e-repl') || {}).value || '') };
+    const lbl = _unesc((en.querySelector('.e-label') || {}).value || '');
+    const note = (en.querySelector('.e-note') || {}).value || '';  // textarea: real text
+    if (lbl) o.label = lbl;
+    if (note) o.note = note;
+    out.push(o);
+  });
+  return out;
+}
+
+function _renumberEntries(parent) {
+  let i = 0;
+  parent.querySelectorAll('.rl-entry').forEach((en) => {
+    const o = en.querySelector('.rl-ord');
+    if (o) o.textContent = String(++i);
+  });
+}
+
+function _makeEntryRow(rule, entry, commitData, onEnter) {
+  entry = entry || {};
+  const row = document.createElement('div');
+  row.className = 'rl-entry';
+  function rebuild() {
+    const parent = row.parentNode;
+    if (!parent) return;
+    rule.entries = _readEntries(parent);
+    commitData();
+  }
+  // rail: ordinal (set by _renumberEntries) + drag handle
+  const rail = document.createElement('div');
+  rail.className = 'rl-rail';
+  const ord = document.createElement('span');
+  ord.className = 'rl-ord'; ord.textContent = '0';
+  const grip = document.createElement('span');
+  grip.className = 'rl-grip'; grip.textContent = '⠿';
+  grip.title = 'drag to reorder'; grip.draggable = true;
+  grip.addEventListener('dragstart', (e) => {
+    _rlDragSrc = row;
+    e.dataTransfer.effectAllowed = 'move';
+    try { e.dataTransfer.setData('text/plain', 'x'); } catch (_) {}
+    setTimeout(() => row.classList.add('rl-dragging'), 0);
+  });
+  grip.addEventListener('dragend', () => {
+    row.classList.remove('rl-dragging'); _rlDragSrc = null;
+  });
+  rail.appendChild(ord); rail.appendChild(grip);
+  // body
+  const body = document.createElement('div');
+  body.className = 'rl-ebody';
+  // row 1: optional label + note toggle + delete
+  const r1 = document.createElement('div');
+  r1.className = 'rl-erow1';
+  const lwrap = document.createElement('div');
+  lwrap.className = 'rl-elabelwrap';
+  const li = document.createElement('input');
+  li.type = 'text'; li.className = 'e-label';
+  li.spellcheck = false; li.autocomplete = 'off';
+  li.placeholder = 'label (optional)';
+  li.value = _esc(entry.label || '');
+  li.addEventListener('input', rebuild);
+  _bindEnterCommit(li, onEnter);
+  lwrap.appendChild(li);
+  const noteWrap = document.createElement('div');
+  noteWrap.className = 'rl-enote';
+  const ni = document.createElement('textarea');
+  ni.className = 'e-note'; ni.rows = 2; ni.spellcheck = false;
+  ni.placeholder = 'note (optional)';
+  ni.value = entry.note || '';  // textarea keeps real newlines — no _esc
+  ni.addEventListener('input', () => { rebuild(); paintNote(); });
+  noteWrap.appendChild(ni);
+  const noteBtn = document.createElement('button');
+  noteBtn.type = 'button'; noteBtn.className = 'rl-notebtn';
+  let noteOpen = !!entry.note;
+  function paintNote() {
+    noteWrap.style.display = noteOpen ? 'block' : 'none';
+    const has = !!ni.value;
+    noteBtn.textContent = has ? '⌄ note ●' : '⌄ note';
+    noteBtn.classList.toggle('has-note', has);
+  }
+  noteBtn.addEventListener('click', () => { noteOpen = !noteOpen; paintNote(); });
+  const del = document.createElement('button');
+  del.type = 'button'; del.className = 'rl-del'; del.textContent = '×';
+  del.title = 'delete entry';
+  del.addEventListener('click', () => {
+    const parent = row.parentNode;
+    row.remove();
+    if (parent) { rule.entries = _readEntries(parent); _renumberEntries(parent); commitData(); }
+  });
+  r1.appendChild(lwrap); r1.appendChild(noteBtn); r1.appendChild(del);
+  // find / replace mono rows
+  function frRow(gut, cls, val, ph) {
+    const fr = document.createElement('div');
+    fr.className = 'rl-fr';
+    const g = document.createElement('span');
+    g.className = 'rl-gut'; g.textContent = gut;
+    const inp = document.createElement('input');
+    inp.type = 'text'; inp.className = cls;
+    inp.spellcheck = false; inp.autocomplete = 'off';
+    inp.value = _esc(val == null ? '' : val);
+    inp.placeholder = ph;
+    inp.addEventListener('input', rebuild);
+    _bindEnterCommit(inp, onEnter);
+    fr.appendChild(g); fr.appendChild(inp);
+    return fr;
+  }
+  body.appendChild(r1);
+  body.appendChild(frRow('find', 'e-pattern', entry.pattern, 'regex pattern (required)'));
+  body.appendChild(frRow('→ repl', 'e-repl', entry.replacement, '(empty = delete match)'));
+  body.appendChild(noteWrap);
+  paintNote();
+  row.appendChild(rail); row.appendChild(body);
+  return row;
+}
+
 function renderTypeEditor(rule, commitData, opts) {
   // opts (optional):
   //   datalistId      — passed through to _makeMapRow for cb:map autocomplete
@@ -1771,14 +1949,63 @@ function renderTypeEditor(rule, commitData, opts) {
     parent.appendChild(saveRow);
   }
 
-  if (rule.type === 'regex') {
-    box.appendChild(_makeMonoLabeledInput('pattern', rule.pattern, (v) => {
-      rule.pattern = v; commitData();
-    }, onEnter));
-    box.appendChild(_makeMonoLabeledInput('replacement', rule.replacement, (v) => {
-      rule.replacement = v; commitData();
-    }, onEnter));
-    _appendSaveRow(box);
+  if (rule.type === 'regex-list') {
+    const note = document.createElement('div');
+    note.className = 'help';
+    note.textContent = 'Ordered find→replace list — entries run top-to-bottom '
+      + '(drag ⠿ to reorder). An empty replacement deletes the match.';
+    box.appendChild(note);
+    const entriesBox = document.createElement('div');
+    entriesBox.className = 'rl-entries';
+    (rule.entries || []).forEach((en) => {
+      entriesBox.appendChild(_makeEntryRow(rule, en, commitData, onEnter));
+    });
+    // Self-contained drag-reorder (the admin DnD closure is out of scope from
+    // this shared script). Only react to a drag that started in THIS list.
+    entriesBox.addEventListener('dragover', (e) => {
+      if (!_rlDragSrc || _rlDragSrc.parentNode !== entriesBox) return;
+      e.preventDefault();
+      const after = Array.from(
+        entriesBox.querySelectorAll('.rl-entry:not(.rl-dragging)')
+      ).find((en) => {
+        const r = en.getBoundingClientRect();
+        return e.clientY < r.top + r.height / 2;
+      });
+      if (after) entriesBox.insertBefore(_rlDragSrc, after);
+      else entriesBox.appendChild(_rlDragSrc);
+      _renumberEntries(entriesBox);
+    });
+    entriesBox.addEventListener('drop', (e) => {
+      if (!_rlDragSrc || _rlDragSrc.parentNode !== entriesBox) return;
+      e.preventDefault();
+      rule.entries = _readEntries(entriesBox);
+      _renumberEntries(entriesBox);
+      commitData();
+    });
+    box.appendChild(entriesBox);
+    _renumberEntries(entriesBox);
+    const addBtn = document.createElement('button');
+    addBtn.type = 'button';
+    addBtn.textContent = '+ add entry';
+    addBtn.style.flex = '1';
+    addBtn.addEventListener('click', () => {
+      if (!rule.entries) rule.entries = [];
+      const row = _makeEntryRow(rule, {}, commitData, onEnter);
+      entriesBox.appendChild(row);
+      _renumberEntries(entriesBox);
+      const pi = row.querySelector('.e-pattern');
+      if (pi) pi.focus();
+    });
+    // Pair add + save side-by-side, like the cb:map bar.
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:0.5rem;align-items:stretch;margin-top:0.6rem;';
+    btnRow.appendChild(addBtn);
+    if (opts.makeSaveBtn) {
+      const saveBtn = opts.makeSaveBtn();
+      saveBtn.style.minWidth = '6rem';
+      btnRow.appendChild(saveBtn);
+    }
+    box.appendChild(btnRow);
     return box;
   }
 
