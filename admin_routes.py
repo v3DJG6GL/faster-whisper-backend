@@ -21,6 +21,7 @@ Security model (layered):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -269,6 +270,52 @@ def _provenance(field: str, env_pinned: dict[str, str], saved: dict[str, Any]) -
     return "default"
 
 
+def _baseline_value(name: str) -> Any:
+    """The in-repo default captured in cfg._BASELINE before local.json + env
+    overrides apply. Used by the WebUI's "↺ Reset" button and by post_state's
+    prune-on-default logic. Convert non-JSON-serializable types (set, frozenset,
+    tuple of tuples) the same way _resolved_value does so the round-trip is clean.
+    """
+    baseline = getattr(cfg, "_BASELINE", {}) or {}
+    v = baseline.get(name)
+    if isinstance(v, (set, frozenset)):
+        return sorted(v)
+    if isinstance(v, tuple):
+        return [list(p) if isinstance(p, tuple) else p for p in v]
+    return v
+
+
+def _json_eq(a: Any, b: Any) -> bool:
+    """Compare two values the way the WebUI does — by canonical JSON form — so
+    server-side "equals the default" matches the client's reset-link logic
+    (JSON.stringify(value) === JSON.stringify(default))."""
+    try:
+        return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+    except (TypeError, ValueError):
+        return a == b
+
+
+def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
+    """Convert any field whose submitted value equals its in-repo baseline into
+    the None removal sentinel, so save_overrides() DROPS the key from
+    config.local.json instead of persisting a default-valued override.
+
+    Without this, the WebUI's "↺ Reset to default" button — which submits the
+    default *value*, not a removal — would leave the key in config.local.json
+    and the "local.json" provenance badge would wrongly persist after a reset.
+    Mirrors the client's own JSON.stringify equality so the two sides agree on
+    what counts as an override. None values already mean "remove", so they pass
+    through untouched.
+    """
+    cleaned: dict[str, Any] = {}
+    for k, v in payload.items():
+        if v is not None and _json_eq(v, _baseline_value(k)):
+            cleaned[k] = None
+        else:
+            cleaned[k] = v
+    return cleaned
+
+
 @router.get("", response_class=HTMLResponse, dependencies=[Depends(require_admin_webui_host)])
 async def settings_page() -> HTMLResponse:
     """The admin HTML page. Allowlist-gated (loopback always allowed) — no
@@ -316,21 +363,8 @@ async def get_state() -> dict[str, Any]:
     user where the value is coming from."""
     saved = config_store.load_overrides()
     env_pinned = config_store.env_pinned_fields()
-    baseline = getattr(cfg, "_BASELINE", {}) or {}
     field_descs = config_store.FIELD_DESCRIPTIONS
     pyd_fields = config_store.AdminConfig.model_fields
-
-    def _baseline_value(name: str) -> Any:
-        # Used by the WebUI's "↺ Reset" button. Returns the in-repo default
-        # captured in cfg._BASELINE before local.json + env overrides apply.
-        # Convert non-JSON-serializable types (set, frozenset, tuple of
-        # tuples) the same way _resolved_value does so the round-trip is clean.
-        v = baseline.get(name)
-        if isinstance(v, (set, frozenset)):
-            return sorted(v)
-        if isinstance(v, tuple):
-            return [list(p) if isinstance(p, tuple) else p for p in v]
-        return v
 
     fields: dict[str, dict[str, Any]] = {}
     for name in _all_fields():
@@ -385,6 +419,10 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     are applied to the running cfg module immediately and any derived caches
     are rebuilt; cold fields stick around in the JSON file for the restart to
     pick up."""
+    # A field submitted at its in-repo default is NOT an override — drop it from
+    # config.local.json instead of rewriting it with the default value, so the
+    # "↺ Reset to default" button actually clears the "local.json" badge.
+    payload = _prune_defaults_to_removal(payload)
     try:
         written = config_store.save_overrides(payload)
     except ValidationError as e:
@@ -440,7 +478,16 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
             # var is unset. Don't include in `hot_changed` — nothing changed
             # in memory.
             continue
-        new_val = coerced.get(name, getattr(cfg, name, None))
+        if name in coerced:
+            new_val = coerced[name]
+        else:
+            # The override was removed (reset to default): revert the running
+            # cfg to the in-repo baseline. getattr(cfg, name) would still hold
+            # the stale override value (set when it was first saved) until we
+            # overwrite it here, so it can't be the fallback. _BASELINE holds
+            # the native-typed default (matching load_overrides' coercions).
+            baseline = getattr(cfg, "_BASELINE", {}) or {}
+            new_val = baseline.get(name, getattr(cfg, name, None))
         setattr(cfg, name, new_val)
         if name in config_store.CACHE_REBUILD_FIELDS:
             needs_cache_rebuild = True

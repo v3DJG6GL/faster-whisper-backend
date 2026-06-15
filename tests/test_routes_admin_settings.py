@@ -33,6 +33,47 @@ def test_post_state_invalid_value_422(client):
     assert "errors" in r.json()
 
 
+def test_reset_to_default_clears_local_override(client):
+    """Resetting a setting to its in-repo default must DELETE the override key
+    from config.local.json — clearing the 'local.json' badge AND reverting the
+    running value. Regression: the WebUI '↺ Reset to default' button submits the
+    default *value* (not a removal), which previously rewrote the key and left
+    the badge stuck on 'local.json' (and the running cfg on the stale value)."""
+    import config_store
+
+    default_val = client.get("/settings/state").json()["fields"]["BEST_OF"]["default_value"]
+    assert default_val is not None
+    override_val = default_val + 1   # BEST_OF is ge=1, le=20 -> still valid
+
+    # Override it: key present on disk, badge = local.json, value applied live.
+    client.post("/settings/state", json={"BEST_OF": override_val})
+    field = client.get("/settings/state").json()["fields"]["BEST_OF"]
+    assert field["provenance"] == "local.json"
+    assert field["value"] == override_val
+    assert "BEST_OF" in config_store.load_overrides()
+
+    # Reset = submit the default value back (exactly what the ↺ button sends).
+    saved = client.post("/settings/state", json={"BEST_OF": default_val}).json()["saved"]
+    assert "BEST_OF" in saved
+
+    # Key gone from disk, badge cleared, running value reverted to the baseline.
+    field = client.get("/settings/state").json()["fields"]["BEST_OF"]
+    assert "BEST_OF" not in config_store.load_overrides()
+    assert field["provenance"] == "default"
+    assert field["value"] == default_val
+
+
+def test_post_default_value_creates_no_override(client):
+    """Submitting a value equal to the baseline when nothing was overridden is a
+    no-op: prune-on-default keeps the key out of config.local.json entirely."""
+    import config_store
+
+    default_val = client.get("/settings/state").json()["fields"]["BEST_OF"]["default_value"]
+    body = client.post("/settings/state", json={"BEST_OF": default_val}).json()
+    assert body["saved"] == []
+    assert "BEST_OF" not in config_store.load_overrides()
+
+
 def test_get_factory_rules(client):
     r = client.get("/settings/factory-rules")
     assert r.status_code == 200
