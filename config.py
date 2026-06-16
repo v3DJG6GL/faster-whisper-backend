@@ -171,7 +171,7 @@ DEFAULT_PROMPT: "str | None" = _D("DEFAULT_PROMPT")
 # (precedence: ENV > config.local.json > config.json).
 #
 # Each rule's `type` is one of:
-#   - "regex"                       -- pattern + replacement (re.sub)
+#   - "regex-list"                  -- ordered [{pattern, replacement}] entries, each re.sub in turn
 #   - "callback:lowercase-wordlist" -- strip terminator, lowercase next word if in wordlist
 #   - "callback:map"                -- auto-built alternation of map keys; lookup replacement
 #   - "callback:dedup"              -- collapse adjacent punctuation (last-non-comma wins)
