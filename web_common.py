@@ -1940,10 +1940,13 @@ let _rlDragSrc = null;
 function _readEntries(parent) {
   const out = [];
   parent.querySelectorAll('.rl-entry').forEach((en) => {
-    const pat = _unesc((en.querySelector('.e-pattern') || {}).value || '');
+    // find/repl are regex SOURCE — stored verbatim. NOT _unesc'd: that would
+    // collapse \n/\t/\\ and is paired with an _esc that doubles backslashes on
+    // display. Only the literal cb:map editor escapes (it holds raw strings).
+    const pat = (en.querySelector('.e-pattern') || {}).value || '';
     if (!pat) return;  // skip empty-pattern rows (no-op; stays in the DOM)
     const o = { pattern: pat,
-                replacement: _unesc((en.querySelector('.e-repl') || {}).value || '') };
+                replacement: (en.querySelector('.e-repl') || {}).value || '' };
     const lbl = _unesc((en.querySelector('.e-label') || {}).value || '');
     const note = (en.querySelector('.e-note') || {}).value || '';  // textarea: real text
     if (lbl) o.label = lbl;
@@ -1987,6 +1990,12 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
   });
   grip.addEventListener('dragend', () => {
     row.classList.remove('rl-dragging'); _rlDragSrc = null;
+    // A drop OUTSIDE entriesBox fires no 'drop', so the live-reordered DOM
+    // (moved during dragover) would stay out of sync with rule.entries and
+    // Save would persist the OLD order. dragend always fires — sync here too
+    // (idempotent after a real in-list drop, which already committed).
+    const parent = row.parentNode;
+    if (parent) { rule.entries = _readEntries(parent); _renumberEntries(parent); commitData(); }
   });
   rail.appendChild(ord); rail.appendChild(grip);
   // body
@@ -2041,7 +2050,7 @@ function _makeEntryRow(rule, entry, commitData, onEnter) {
     const inp = document.createElement('input');
     inp.type = 'text'; inp.className = cls;
     inp.spellcheck = false; inp.autocomplete = 'off';
-    inp.value = _esc(val == null ? '' : val);
+    inp.value = val == null ? '' : val;  // regex source: verbatim, no _esc (see _readEntries)
     inp.placeholder = ph;
     inp.addEventListener('input', rebuild);
     _bindEnterCommit(inp, onEnter);
