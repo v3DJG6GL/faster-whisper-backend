@@ -120,3 +120,104 @@ def test_usage_api_ok(client):
     assert r.status_code == 200
     body = r.json()
     assert "by_user" in body and "by_key" in body
+
+
+# --- mandatory label on create ----------------------------------------
+
+def _new_user(client, username="zoe", is_admin=False):
+    r = client.post(
+        "/settings/api-keys/api/users",
+        json={"username": username, "is_admin": is_admin},
+    )
+    assert r.status_code == 200
+    return r.json()["user_id"]
+
+
+def _new_key(client, uid, label="k1"):
+    r = client.post(f"/settings/api-keys/api/users/{uid}/keys", json={"label": label})
+    assert r.status_code == 200
+    return r.json()["record"]["id"]
+
+
+def test_create_key_blank_label_400(client):
+    uid = _new_user(client, "blanky")
+    # Explicit empty, whitespace-only, and the defaulted/missing field all 400.
+    for payload in ({"label": ""}, {"label": "   "}, {}):
+        r = client.post(f"/settings/api-keys/api/users/{uid}/keys", json=payload)
+        assert r.status_code == 400, payload
+
+
+def test_rename_key_flow(client):
+    uid = _new_user(client, "renamer")
+    kid = _new_key(client, uid, label="old")
+    r = client.patch(
+        f"/settings/api-keys/api/users/{uid}/keys/{kid}/label",
+        json={"label": "  new name  "},
+    )
+    assert r.status_code == 200
+    assert r.json()["record"]["label"] == "new name"  # trimmed
+    # List reflects the new label and never leaks the raw key.
+    keys = client.get(f"/settings/api-keys/api/users/{uid}/keys").json()["keys"]
+    row = next(k for k in keys if k["id"] == kid)
+    assert row["label"] == "new name"
+
+
+def test_rename_key_blank_400(client):
+    uid = _new_user(client, "badlabel")
+    kid = _new_key(client, uid, label="ok")
+    # Blank / whitespace-only are caught by the store -> 400.
+    for label in ("", "   "):
+        r = client.patch(
+            f"/settings/api-keys/api/users/{uid}/keys/{kid}/label",
+            json={"label": label},
+        )
+        assert r.status_code == 400, label
+    # Over-length is caught by the RenameKeyIn max_length validator -> 422.
+    r = client.patch(
+        f"/settings/api-keys/api/users/{uid}/keys/{kid}/label",
+        json={"label": "x" * 129},
+    )
+    assert r.status_code == 422
+
+
+def test_rename_missing_field_422(client):
+    uid = _new_user(client, "nofield")
+    kid = _new_key(client, uid, label="ok")
+    r = client.patch(
+        f"/settings/api-keys/api/users/{uid}/keys/{kid}/label", json={}
+    )
+    assert r.status_code == 422  # label is a required field on RenameKeyIn
+
+
+def test_rename_unknown_key_404(client):
+    uid = _new_user(client, "ghost")
+    r = client.patch(
+        f"/settings/api-keys/api/users/{uid}/keys/does-not-exist/label",
+        json={"label": "x"},
+    )
+    assert r.status_code == 404
+
+
+def test_rename_key_wrong_user_404(client):
+    uid_a = _new_user(client, "owner-a")
+    kid = _new_key(client, uid_a, label="a-key")
+    uid_b = _new_user(client, "owner-b")
+    # B cannot rename A's key.
+    r = client.patch(
+        f"/settings/api-keys/api/users/{uid_b}/keys/{kid}/label",
+        json={"label": "stolen"},
+    )
+    assert r.status_code == 404
+
+
+def test_rename_revoked_key_409(client):
+    uid = _new_user(client, "revoked-rename")
+    kid = _new_key(client, uid, label="doomed")
+    assert client.delete(
+        f"/settings/api-keys/api/users/{uid}/keys/{kid}"
+    ).status_code == 200
+    r = client.patch(
+        f"/settings/api-keys/api/users/{uid}/keys/{kid}/label",
+        json={"label": "too late"},
+    )
+    assert r.status_code == 409

@@ -51,6 +51,14 @@ class CreateKeyIn(BaseModel):
     label: str = Field(default="", max_length=128)
 
 
+class RenameKeyIn(BaseModel):
+    """Wire shape for PATCH /api/users/{uid}/keys/{kid}/label. A label is
+    required (the store rejects blank) — renaming only touches the display
+    label, never the secret."""
+    model_config = {"extra": "forbid"}
+    label: str = Field(max_length=128)
+
+
 class ConfigBindingIn(BaseModel):
     """Wire shape for a per-identity config binding — shared by the per-user
     `config` field on PatchPermissionsIn and the per-key /config endpoint.
@@ -245,9 +253,13 @@ async def usage_api(days: int = 0) -> JSONResponse:
 )
 async def create_user_key_api(uid: str, payload: CreateKeyIn) -> JSONResponse:
     """Show-once raw key on creation. Subsequent reads via list_user_keys
-    never return the raw value."""
+    never return the raw value. A label is mandatory at this boundary (the
+    store stays lenient for internal/test callers); blank/whitespace -> 400."""
+    label = payload.label.strip()
+    if not label:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "label is required")
     try:
-        raw_key, rec = api_keys_store.create_key(uid, label=payload.label)
+        raw_key, rec = api_keys_store.create_key(uid, label=label)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return JSONResponse({"key": raw_key, "record": rec})
@@ -303,6 +315,30 @@ async def patch_user_permissions_api(
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return JSONResponse({"ok": True, "permissions": merged})
+
+
+@router.patch(
+    "/api/users/{uid}/keys/{kid}/label",
+    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+)
+async def rename_key_api(
+    uid: str, kid: str, payload: RenameKeyIn,
+) -> JSONResponse:
+    """Rename an existing key's display label. 404 if the key isn't this
+    user's; 409 if revoked (revoked keys are read-only); 400 on a blank or
+    over-long label. Renaming never exposes or rotates the secret."""
+    key = api_keys_store.get_key(kid)
+    if key is None or key["user_id"] != uid:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "key not found")
+    if key["revoked_ts"] is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "key is revoked")
+    try:
+        rec = api_keys_store.update_key_label(kid, payload.label)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    if rec is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "key not found")
+    return JSONResponse({"ok": True, "record": rec})
 
 
 @router.patch(
@@ -372,25 +408,61 @@ _API_KEYS_HTML = r"""<!doctype html>
   .pill.revoked { color: var(--red); border-color: #5a2424;
     background: #2d1414; }
   .pill.live { color: var(--green); border-color: #1d4f2c; }
-  .key-row { display: grid;
-    /* label / id / usage stats / activity (created+used stacked) / action.
-       The usage block carries the new per-key counters; the two timestamps
-       collapse into one stacked "activity" cell so the previously crammed
-       created/used pair reads cleanly and the freed left-side width goes to
-       the stats that admins actually scan. */
-    grid-template-columns: minmax(6rem,0.9fr) 8.5rem minmax(11rem,1.2fr) minmax(8rem,auto) auto;
-    gap: 0.6rem; align-items: center; padding: 0.4rem 0;
-    border-top: 1px solid var(--border); font-size: var(--fs-sm); }
-  .key-row:first-child { border-top: none; }
-  /* Phone: the 5-column key row can't hold its widths on a ~360px screen —
-     stack the cells into a single column so each (label / id / usage /
-     activity / action) gets the full width. */
+  /* ---- collapsible per-user section ---- */
+  .card.user { padding: 0; overflow: hidden; }
+  .card.user .user-head { margin: 0; padding: 0.7rem 1rem; cursor: pointer;
+    user-select: none; }
+  .card.user .user-head:hover { background: #10151c; }
+  .card.user .user-head .uchev { color: var(--dim); font-size: 0.85em;
+    display: inline-block; transition: transform 150ms ease; }
+  .card.user.open .user-head .uchev { transform: rotate(90deg); }
+  .card.user .user-body { display: none; padding: 0 1rem 0.85rem;
+    border-top: 1px solid var(--border); }
+  .card.user.open .user-body { display: block; }
+
+  /* ---- rule-card key row (mirrors the /settings/pipeline rule cards) ---- */
+  .kcard { display: grid; grid-template-columns: 2.4rem 1fr auto;
+    border: 1px solid var(--border); border-radius: 9px; background: var(--panel);
+    margin-top: 0.55rem; overflow: hidden;
+    transition: border-color 120ms ease, box-shadow 120ms ease; }
+  .kcard:hover { border-color: var(--border2);
+    box-shadow: 0 6px 18px -12px rgba(0, 0, 0, 0.85); }
+  .kcard.revoked { opacity: 0.6; }
+  .krail { display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 0.3rem; font-size: 1rem; color: var(--dim);
+    background: linear-gradient(180deg, #1b222c, var(--panel));
+    border-right: 1px solid var(--border); }
+  /* Status dot: green = used within the recent window, dim-grey = idle,
+     red = revoked. Decays green->grey live via _refreshApiKeyDots on a timer.
+     Colour is a secondary cue only — the active/revoked pill + tooltip carry
+     the meaning (WCAG 1.4.1). */
+  .kdot { width: 0.5rem; height: 0.5rem; border-radius: 50%;
+    background: var(--dim); }
+  .kdot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .kdot.idle { background: var(--dim); box-shadow: none; }
+  .kdot.dead { background: var(--red); box-shadow: none; }
+  .kbody { padding: 0.55rem 0.2rem 0.55rem 0; min-width: 0; }
+  .ktitle { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .ktitle .kname { color: var(--bold); font-weight: 600; word-break: break-word; }
+  .ktitle .kname.none { color: var(--dim); font-style: italic;
+    font-weight: normal; }
+  .kmeta { display: flex; gap: 0.15rem 1rem; flex-wrap: wrap; margin-top: 0.3rem;
+    align-items: baseline; font-size: var(--fs-sm); color: var(--dim); }
+  .kmeta .kid { color: var(--fg); font-family: var(--font-mono); }
+  .kmeta .renote { color: var(--yellow); }
+  .kacts { display: flex; align-items: center; gap: 0.4rem;
+    padding: 0.55rem 0.6rem; flex-wrap: wrap; justify-content: flex-end; }
+  /* inline rename editor under the key title */
+  .krename { display: flex; align-items: center; gap: 0.4rem;
+    margin-top: 0.35rem; flex-wrap: wrap; }
+  .krename input[type=text] { width: auto; flex: 1; min-width: 8rem;
+    padding: 0.3rem 0.5rem; font-size: var(--fs-sm); }
+  /* Phone: drop the action column under the body so nothing is cramped. */
   @media (max-width: 40em) {
-    .key-row { grid-template-columns: 1fr; gap: 0.3rem; align-items: start; }
-    .key-row .action { justify-self: start; }
+    .kcard { grid-template-columns: 2.4rem 1fr; }
+    .kacts { grid-column: 1 / -1; justify-content: flex-start;
+      border-top: 1px solid var(--border); }
   }
-  .key-row .label { color: var(--fg); word-break: break-word; }
-  .key-row .id { color: var(--dim); font-family: var(--font-mono); }
   /* Per-key usage: a row of compact stat chips (value over caption). Mono
      values so digits stay tabular; dim captions. Wraps gracefully on narrow
      viewports. */
@@ -419,17 +491,34 @@ _API_KEYS_HTML = r"""<!doctype html>
     font-size: var(--fs-md); }
   .user-usage .stat .k { color: var(--dim); font-size: var(--fs-xs);
     text-transform: lowercase; }
-  /* The stacked activity cell reuses the .ts two-line pattern but holds
-     both created and used, one above the other. */
-  .key-row .activity { display: flex; flex-direction: column; gap: 0.2rem; }
-  .key-row .ts { display: flex; flex-direction: row; align-items: baseline;
-    gap: 0.35rem; line-height: 1.2; }
-  .key-row .ts .ts-label { color: var(--dim); font-size: var(--fs-xs);
-    text-transform: lowercase; min-width: 3.2rem; }
-  .key-row .ts .ts-value { color: var(--fg); font-size: var(--fs-sm);
-    font-family: var(--font-mono); white-space: nowrap; }
-  .key-row .ts.empty .ts-value { color: var(--dim); font-style: italic; }
-  button.danger { color: var(--red); border-color: #5a2424; }
+  /* Buttons inside <main>: a quiet ghost baseline so nothing is ever browser-
+     default, plus filled .primary and red .danger — mirrors the /pipeline
+     button language. (Modal + header + matrix buttons carry their own,
+     higher-specificity rules and are unaffected.) */
+  main button { font: inherit; font-size: var(--fs-sm); cursor: pointer;
+    line-height: 1.3; white-space: nowrap; border-radius: 6px;
+    padding: 0.3rem 0.65rem; display: inline-flex; align-items: center;
+    gap: 0.35rem; background: #21262d; color: var(--fg);
+    border: 1px solid var(--border);
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease; }
+  main button:hover:not(:disabled) { background: #30363d; border-color: #484f58; }
+  main button:disabled { opacity: 0.45; cursor: not-allowed; }
+  main button.primary { background: #238636; border-color: #2ea043;
+    color: var(--bold); }
+  main button.primary:hover:not(:disabled) { background: #2ea043; }
+  main button.ghost { background: transparent; color: var(--dim);
+    border-color: transparent; }
+  main button.ghost:hover:not(:disabled) { background: #1f2630;
+    border-color: var(--border2); color: var(--fg); }
+  main button.ghost.on { background: #1f2630; border-color: var(--border2);
+    color: var(--bold); }
+  main button.danger { background: transparent; color: var(--red);
+    border-color: transparent; }
+  main button.danger:hover:not(:disabled) { background: #3a0d0d;
+    border-color: #5a2424; }
+  /* The override-drawer micro-buttons (lock / remove) opt out of the padded
+     baseline so they stay glyph-sized. */
+  .cfg-ovr-row .lk, .cfg-ovr-row .rm { padding: 0 0.15rem; }
   .toolbar { display: flex; gap: 0.5rem; margin: 0.5rem 0; flex-wrap: wrap; }
   input[type=text], input[type=password] { box-sizing: border-box;
     width: 100%;
@@ -451,7 +540,10 @@ _API_KEYS_HTML = r"""<!doctype html>
     width: 30rem; max-width: 92vw;
     box-shadow: 0 12px 40px rgba(0,0,0,0.5); }
   .modal h3 { margin: 0 0 0.5rem 0; color: var(--bold);
-    font-size: var(--fs-xl); }
+    font-size: var(--fs-xl); display: flex; align-items: center;
+    gap: 0.5rem; flex-wrap: wrap; }
+  .modal h3 .pill { color: var(--cyan); border-color: #1f4a6b;
+    font-size: var(--fs-sm); font-weight: normal; }
   .modal p { margin: 0 0 0.9rem 0; line-height: 1.45;
     color: var(--help); font-size: var(--fs-sm); }
   .modal p strong, .modal p code { color: var(--fg); }
@@ -461,23 +553,46 @@ _API_KEYS_HTML = r"""<!doctype html>
        cleaner next to the buttons below). */
     padding: 0.55rem 0.7rem; font-size: var(--fs-md);
   }
+  .modal .keybox { position: relative; }
   .modal .raw-key {
     font-family: var(--font-mono); font-size: var(--fs-sm);
-    word-break: break-all; padding: 0.65rem 0.75rem;
+    word-break: break-all; padding: 0.65rem 3rem 0.65rem 0.75rem;
     background: var(--input-bg); color: var(--bold);
     border: 1px solid var(--border); border-radius: 4px;
-    margin: 0.65rem 0 0.85rem; user-select: all;
+    margin: 0.65rem 0 0; user-select: all;
     line-height: 1.5;
   }
+  /* Inline copy affordance pinned to the key box — copying is always one
+     click away regardless of which footer button the operator uses. */
+  .modal .copy-icon { position: absolute; top: 0.95rem; right: 0.5rem;
+    background: #1f2630; border: 1px solid var(--border); color: var(--dim);
+    border-radius: 6px; padding: 0.2rem 0.5rem; cursor: pointer; font: inherit;
+    font-size: var(--fs-sm); line-height: 1.3; }
+  .modal .copy-icon:hover { color: var(--fg); border-color: var(--border2); }
+  /* Callouts: amber = always-on "store it now"; red guard = shown only when
+     the operator tries to close before copying. */
+  .modal .warn { display: flex; gap: 0.5rem; align-items: flex-start;
+    margin: 0.7rem 0 0; padding: 0.55rem 0.7rem; border-radius: 8px;
+    font-size: var(--fs-sm); line-height: 1.4;
+    background: rgba(242, 204, 96, 0.08); border: 1px solid #4d3e1f;
+    color: var(--yellow); }
+  .modal .warn strong { color: inherit; }
+  .modal .warn.guard { display: none; background: rgba(255, 123, 114, 0.08);
+    border-color: #5a2424; color: var(--red); }
+  .modal .warn.guard.on { display: flex; }
   /* Uniform action-button sizing: same line-height, same padding, same
      min-height — so Cancel and Save render identical regardless of which
      border colour they carry. Avoid `padding: …` redeclaration in
      button.primary etc. so heights stay in sync. */
   .modal .actions {
-    display: flex; gap: 0.6rem; justify-content: flex-end;
+    display: flex; gap: 0.6rem; align-items: center; justify-content: flex-end;
     margin-top: 1.1rem; padding-top: 0.85rem;
     border-top: 1px solid var(--border);
   }
+  /* Copy-state note sits on the left of the footer; turns green once copied. */
+  .modal .actions .copystate { margin-right: auto; color: var(--dim);
+    font-size: var(--fs-xs); }
+  .modal .actions .copystate.done { color: var(--green); }
   .modal .actions button {
     font: inherit; font-size: var(--fs-md);
     line-height: 1.4;
@@ -494,8 +609,9 @@ _API_KEYS_HTML = r"""<!doctype html>
     opacity: 0.45; cursor: not-allowed; background: var(--input-bg);
   }
   .modal .actions button.primary {
-    color: var(--green); border-color: var(--green);
+    background: #238636; border-color: #2ea043; color: var(--bold);
   }
+  .modal .actions button.primary:hover { background: #2ea043; color: var(--bold); }
   .modal .actions button.danger {
     color: var(--red); border-color: #5a2424;
   }
@@ -658,13 +774,23 @@ _API_KEYS_HTML = r"""<!doctype html>
 <!-- Show-once raw key modal -->
 <div id="key-modal" class="modal">
   <div class="box">
-    <h3>New API key</h3>
-    <p>Save this key now &mdash; it will not be shown again. Anyone with the key
-    has the same access as <strong id="key-modal-user"></strong>.</p>
-    <div class="raw-key" id="key-modal-raw"></div>
+    <h3>&#128273; New API key <span class="pill" id="key-modal-label"></span></h3>
+    <p>New key for <strong id="key-modal-user"></strong>. This is the only time
+    the full key is shown &mdash; anyone who has it gets the same access.</p>
+    <div class="keybox">
+      <div class="raw-key" id="key-modal-raw"></div>
+      <button id="key-modal-copyicon" class="copy-icon" type="button"
+              title="Copy to clipboard">&#10697; copy</button>
+    </div>
+    <div class="warn">&#9888; Store it in a password manager now. To replace it,
+    generate a new key &mdash; it can't be shown again.</div>
+    <div class="warn guard" id="key-modal-guard">You haven't copied the key yet
+    &mdash; closing now means it's gone for good. Copy it first, or press
+    <strong>Close</strong> again to dismiss anyway.</div>
     <div class="actions">
-      <button id="key-modal-copy">Copy</button>
-      <button id="key-modal-done" class="primary">I've saved it</button>
+      <span class="copystate" id="key-modal-copystate">not copied yet</span>
+      <button id="key-modal-close" type="button">Close</button>
+      <button id="key-modal-copyclose" class="primary" type="button">&#10697; Copy &amp; close</button>
     </div>
   </div>
 </div>
@@ -738,20 +864,32 @@ _API_KEYS_HTML = r"""<!doctype html>
   }
 
 
-  function showKeyModal(rawKey, username) {
-    document.getElementById('key-modal-user').textContent = username;
-    document.getElementById('key-modal-raw').textContent = rawKey;
+  function showKeyModal(rawKey, username, label) {
     var m = document.getElementById('key-modal');
-    m.classList.add('show');
-    document.getElementById('key-modal-copy').onclick = function() {
-      // navigator.clipboard requires a secure context (https / localhost).
-      // Over LAN HTTP it's undefined, so fall back to a hidden textarea +
-      // document.execCommand('copy'). If both fail, select the visible
-      // .raw-key span so the user can ctrl-c manually.
+    document.getElementById('key-modal-user').textContent = username;
+    var lp = document.getElementById('key-modal-label');
+    lp.textContent = label || '';
+    lp.style.display = label ? '' : 'none';
+    document.getElementById('key-modal-raw').textContent = rawKey;
+
+    // Two independent guards against losing the one-time secret:
+    //  • `copied` flips true on any successful copy (icon or Copy & close);
+    //  • `closeArmed` makes a bare "Close" warn once, then close on a second
+    //    press — so a stray click can't silently discard an uncopied key.
+    var copied = false, closeArmed = false;
+    var guard = document.getElementById('key-modal-guard');
+    var state = document.getElementById('key-modal-copystate');
+    guard.classList.remove('on');
+    state.textContent = 'not copied yet';
+    state.classList.remove('done');
+
+    function doCopy() {
+      // navigator.clipboard needs a secure context (https / localhost). Over
+      // LAN HTTP it's undefined, so fall back to a hidden textarea +
+      // execCommand('copy'); if both fail, select the .raw-key span for Ctrl+C.
       function copyFallback(text) {
         var ta = document.createElement('textarea');
         ta.value = text;
-        // Hide off-screen but keep selectable.
         ta.style.position = 'fixed';
         ta.style.top = '-1000px';
         ta.setAttribute('readonly', '');
@@ -759,37 +897,53 @@ _API_KEYS_HTML = r"""<!doctype html>
         ta.select();
         ta.setSelectionRange(0, ta.value.length);
         var ok = false;
-        try { ok = document.execCommand('copy'); } catch(_) {}
+        try { ok = document.execCommand('copy'); } catch (_) {}
         document.body.removeChild(ta);
         return ok;
       }
-      function selectRawSpan() {
+      function onSuccess() {
+        copied = true;
+        guard.classList.remove('on');
+        state.textContent = '✓ copied to clipboard';
+        state.classList.add('done');
+        showToast('Copied to clipboard', 'ok');
+      }
+      function onFailure() {
         var span = document.getElementById('key-modal-raw');
         var sel = window.getSelection();
         var range = document.createRange();
         range.selectNodeContents(span);
         sel.removeAllRanges();
         sel.addRange(range);
-      }
-      function onSuccess() { showToast('Copied to clipboard', 'ok'); }
-      function onFailure() {
-        selectRawSpan();
         showToast('Auto-copy blocked — press Ctrl+C', 'err');
       }
       if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(rawKey).then(onSuccess, function() {
-          if (!copyFallback(rawKey)) onFailure();
-          else onSuccess();
+        navigator.clipboard.writeText(rawKey).then(onSuccess, function () {
+          if (copyFallback(rawKey)) onSuccess(); else onFailure();
         });
       } else {
-        if (copyFallback(rawKey)) onSuccess();
-        else onFailure();
+        if (copyFallback(rawKey)) onSuccess(); else onFailure();
       }
-    };
-    document.getElementById('key-modal-done').onclick = function() {
+    }
+    function doClose() {
       m.classList.remove('show');
-      load();
+      document.removeEventListener('keydown', onKey);
+      load();  // rebuilds the user cards, so the label input also resets
+    }
+    function tryClose() {
+      if (copied || closeArmed) { doClose(); return; }
+      closeArmed = true;
+      guard.classList.add('on');
+    }
+    function onKey(e) { if (e.key === 'Escape') tryClose(); }
+
+    document.getElementById('key-modal-copyicon').onclick = doCopy;
+    document.getElementById('key-modal-copyclose').onclick = function () {
+      doCopy(); doClose();
     };
+    document.getElementById('key-modal-close').onclick = tryClose;
+    document.addEventListener('keydown', onKey);
+    m.classList.add('show');
   }
 
   // Tooltips describe what "own" means per page. Kept short — full
@@ -1007,89 +1161,134 @@ _API_KEYS_HTML = r"""<!doctype html>
       });
   }
 
-  function renderUser(u) {
+  // ---- small render helpers (status dot + relative-time + collapse state) ----
+  function metaWhen(ts) {
+    if (!ts) return '—';
+    return '<span data-ts="' + ts + '" title="' + escapeHtml(absTime(ts)) + '">'
+      + escapeHtml(fmtWhen(ts)) + '</span>';
+  }
+  var RECENT_USE_MS = 15 * 60 * 1000;  // green dot = used within this window
+  function dotClassFor(lastUsedTs) {
+    if (!lastUsedTs) return 'idle';
+    return (Date.now() - lastUsedTs * 1000) <= RECENT_USE_MS ? 'live' : 'idle';
+  }
+  // Recompute the live/idle dots in place so a key crossing the recent-use
+  // window decays green->grey without a reload. Revoked dots carry no
+  // data-used-ts and keep their static red.
+  function refreshKeyDots() {
+    var now = Date.now();
+    document.querySelectorAll('.kdot[data-used-ts]').forEach(function (d) {
+      var ts = parseFloat(d.getAttribute('data-used-ts')) || 0;
+      var live = ts && (now - ts * 1000) <= RECENT_USE_MS;
+      d.classList.toggle('live', !!live);
+      d.classList.toggle('idle', !live);
+    });
+  }
+  window._refreshApiKeyDots = refreshKeyDots;
+
+  function userCollapseKey(uid) { return 'apikeys.collapsed.' + uid; }
+  // First visit (no stored pref): expand when the list is short, collapse when
+  // it's long. Stored '0' = expanded, '1' = collapsed.
+  function isUserOpen(uid, nUsers) {
+    var v = null;
+    try { v = localStorage.getItem(userCollapseKey(uid)); } catch (_) {}
+    if (v === '0') return true;
+    if (v === '1') return false;
+    return nUsers <= 5;
+  }
+  function setUserOpen(uid, open) {
+    try { localStorage.setItem(userCollapseKey(uid), open ? '0' : '1'); } catch (_) {}
+  }
+
+  function renderUser(u, nUsers) {
     var card = document.createElement('div');
-    card.className = 'card';
-    var h = document.createElement('h3');
-    h.innerHTML = '<span>' + escapeHtml(u.username) + '</span>';
+    card.className = 'card user';
+    if (isUserOpen(u.id, nUsers)) card.classList.add('open');
+
+    // ---- clickable collapsible header ----
+    var head = document.createElement('h3');
+    head.className = 'user-head';
+    var chev = document.createElement('span');
+    chev.className = 'uchev'; chev.textContent = '▸';
+    head.appendChild(chev);
+    var nameEl = document.createElement('span');
+    nameEl.textContent = u.username;
+    head.appendChild(nameEl);
     var pill = document.createElement('span');
     pill.className = 'pill ' + (u.is_admin ? 'admin' : '');
     pill.textContent = u.is_admin ? 'admin' : 'user';
-    h.appendChild(pill);
+    head.appendChild(pill);
     var keyCount = document.createElement('span');
     keyCount.className = 'pill';
     keyCount.textContent = u.active_key_count + ' active key' +
       (u.active_key_count === 1 ? '' : 's');
-    h.appendChild(keyCount);
-
-    // Lifetime usage strip — sums every one of this user's keys (plus any
-    // pre-feature backfilled usage) from the rollup fetched in load().
-    // Lives INSIDE the header, pushed to the right (margin-left:auto) so it
-    // reuses the empty space beside the name instead of crowding a line below.
+    head.appendChild(keyCount);
+    // Lifetime usage strip, pushed right (margin-left:auto) so it fills the
+    // space beside the name instead of crowding a line below.
     var usageStrip = document.createElement('div');
     usageStrip.innerHTML = userUsageHtml(
       (window.__usage && window.__usage.by_user || {})[u.id]);
-    h.appendChild(usageStrip.firstChild);
-    card.appendChild(h);
+    head.appendChild(usageStrip.firstChild);
+    head.onclick = function () {
+      var open = !card.classList.contains('open');
+      card.classList.toggle('open', open);
+      setUserOpen(u.id, open);
+    };
+    card.appendChild(head);
 
+    var userBody = document.createElement('div');
+    userBody.className = 'user-body';
+    card.appendChild(userBody);
+
+    // ---- generate / overrides / revoke-user toolbar ----
     var tb = document.createElement('div');
     tb.className = 'toolbar';
-    {
-      var labelInp = document.createElement('input');
-      labelInp.type = 'text';
-      labelInp.placeholder = 'label (e.g., desktop)';
-      labelInp.style.maxWidth = '14rem';
-      labelInp.style.flex = '1';
-      var addBtn = document.createElement('button');
-      addBtn.className = 'primary';
-      addBtn.textContent = '+ generate key';
-      addBtn.onclick = function() {
-        var label = labelInp.value.trim();
-        api('POST', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/keys',
-            { label: label })
-          .then(function(r) {
-            if (!r.ok) return r.text().then(function(t) { throw new Error(t); });
-            return r.json();
-          })
-          .then(function(j) {
-            showKeyModal(j.key, u.username);
-          })
-          .catch(function(e) {
-            showToast(String(e.message || e), 'err');
-          });
-      };
-      tb.appendChild(labelInp);
-      tb.appendChild(addBtn);
+    var labelInp = document.createElement('input');
+    labelInp.type = 'text';
+    labelInp.placeholder = 'key label — required';
+    labelInp.maxLength = 128;
+    labelInp.style.maxWidth = '14rem';
+    labelInp.style.flex = '1';
+    var addBtn = document.createElement('button');
+    addBtn.className = 'primary';
+    addBtn.textContent = '+ generate key';
+    addBtn.disabled = true;                 // labels are mandatory
+    addBtn.title = 'Enter a label first';
+    labelInp.oninput = function () {
+      var has = !!labelInp.value.trim();
+      addBtn.disabled = !has;
+      addBtn.title = has ? '' : 'Enter a label first';
+    };
+    addBtn.onclick = function () {
+      var label = labelInp.value.trim();
+      if (!label) { showToast('Label is required', 'err'); labelInp.focus(); return; }
+      addBtn.disabled = true;
+      api('POST', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/keys',
+          { label: label })
+        .then(function (r) {
+          if (!r.ok) return r.text().then(function (t) { throw new Error(t); });
+          return r.json();
+        })
+        .then(function (j) { showKeyModal(j.key, u.username, label); })
+        .catch(function (e) {
+          showToast(String(e.message || e), 'err');
+          addBtn.disabled = !labelInp.value.trim();
+        });
+    };
+    labelInp.onkeydown = function (e) {
+      if (e.key === 'Enter' && !addBtn.disabled) addBtn.onclick();
+    };
+    tb.appendChild(labelInp);
+    tb.appendChild(addBtn);
 
-      var revBtn = document.createElement('button');
-      revBtn.className = 'danger';
-      revBtn.textContent = 'revoke user';
-      revBtn.onclick = function() {
-        if (!confirm('Revoke user "' + u.username +
-            '"? This will also revoke all of their keys.')) return;
-        api('DELETE', '/settings/api-keys/api/users/' + encodeURIComponent(u.id))
-          .then(function(r) {
-            if (r.status === 409) {
-              return r.json().then(function(j) {
-                throw new Error(j.detail || 'cannot revoke last admin');
-              });
-            }
-            if (!r.ok) throw new Error('HTTP ' + r.status);
-            showToast('User revoked', 'ok');
-            load();
-          })
-          .catch(function(e) {
-            showToast(String(e.message || e), 'err');
-          });
-      };
-      tb.appendChild(revBtn);
-    }
     // Per-user config overrides (profiles + direct overrides + locks).
     var ovrBtn = document.createElement('button');
-    ovrBtn.textContent = '⚙ overrides';
+    ovrBtn.className = 'ghost';
+    ovrBtn.textContent = '⚙ Overrides';
     var ovrWrap = document.createElement('div');
     ovrBtn.onclick = function () {
-      if (ovrWrap.firstChild) { ovrWrap.innerHTML = ''; return; }
+      if (ovrWrap.firstChild) { ovrWrap.innerHTML = ''; ovrBtn.classList.remove('on'); return; }
+      ovrBtn.classList.add('on');
       ovrWrap.appendChild(buildBindingDrawer({
         scope: 'user', binding: bindingFromConfig((u.permissions || {}).config),
         previewQuery: 'user_id=' + encodeURIComponent(u.id),
@@ -1101,98 +1300,184 @@ _API_KEYS_HTML = r"""<!doctype html>
       }));
     };
     tb.appendChild(ovrBtn);
-    card.appendChild(tb);
-    card.appendChild(ovrWrap);
 
-    // Fetch + render keys
+    var revBtn = document.createElement('button');
+    revBtn.className = 'danger';
+    revBtn.textContent = 'Revoke user';
+    revBtn.style.marginLeft = 'auto';       // separate the destructive action
+    revBtn.onclick = function () {
+      if (!confirm('Revoke user "' + u.username +
+          '"? This will also revoke all of their keys.')) return;
+      api('DELETE', '/settings/api-keys/api/users/' + encodeURIComponent(u.id))
+        .then(function (r) {
+          if (r.status === 409) {
+            return r.json().then(function (j) { throw new Error(j.detail || 'cannot revoke last admin'); });
+          }
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          showToast('User revoked', 'ok');
+          load();
+        })
+        .catch(function (e) { showToast(String(e.message || e), 'err'); });
+    };
+    tb.appendChild(revBtn);
+
+    userBody.appendChild(tb);
+    userBody.appendChild(ovrWrap);
+
+    // ---- key list (rule cards) ----
     var listEl = document.createElement('div');
-    card.appendChild(listEl);
+    userBody.appendChild(listEl);
     api('GET', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) + '/keys')
-      .then(function(r) { return r.ok ? r.json() : { keys: [] }; })
-      .then(function(j) {
+      .then(function (r) { return r.ok ? r.json() : { keys: [] }; })
+      .then(function (j) {
         if (!j.keys || j.keys.length === 0) {
           listEl.innerHTML = '<p class="hint">No keys yet — generate one above.</p>';
           return;
         }
-        j.keys.forEach(function(k) {
-          var row = document.createElement('div');
-          row.className = 'key-row';
-          function _tsCell(label, ts) {
-            // Caption + value on one line; created and used stack inside the
-            // shared .activity cell. Empty ts (never-used key) renders an
-            // em-dash so the cell keeps its height and the grid stays aligned.
-            var hasValue = !!ts;
-            var v = hasValue
-              ? '<span data-ts="' + ts + '" title="' + escapeHtml(absTime(ts)) + '">'
-                  + escapeHtml(fmtWhen(ts)) + '</span>'
-              : '—';
-            return '<div class="ts' + (hasValue ? '' : ' empty') + '">'
-                 + '<div class="ts-label">' + label + '</div>'
-                 + '<div class="ts-value">' + v + '</div>'
-                 + '</div>';
-          }
-          var keyUsage = (window.__usage && window.__usage.by_key || {})[k.id];
-          row.innerHTML =
-            '<div class="label">' + escapeHtml(k.label || '(no label)') + '</div>' +
-            '<div class="id">' + escapeHtml(k.key_prefix) + '&hellip;' + escapeHtml(k.key_last4) + '</div>' +
-            usageCellHtml(keyUsage) +
-            '<div class="activity">' +
-              _tsCell('created', k.created_ts) +
-              _tsCell('used',    k.last_used_ts) +
-            '</div>';
-          var actionCell = document.createElement('div');
-          if (k.revoked_ts) {
-            var rp = document.createElement('span');
-            rp.className = 'pill revoked';
-            rp.textContent = 'revoked';
-            actionCell.appendChild(rp);
-          } else {
-            var b = document.createElement('button');
-            b.className = 'danger';
-            b.textContent = 'revoke';
-            b.onclick = function() {
-              if (!confirm('Revoke key ' + k.key_prefix + '…' + k.key_last4 + '?')) return;
-              api('DELETE', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
-                  '/keys/' + encodeURIComponent(k.id))
-                .then(function(r) {
-                  if (r.status === 409) {
-                    return r.json().then(function(j) {
-                      throw new Error(j.detail || 'cannot revoke last admin key');
-                    });
-                  }
-                  if (!r.ok) throw new Error('HTTP ' + r.status);
-                  showToast('Key revoked', 'ok');
-                  load();
-                })
-                .catch(function(e) {
-                  showToast(String(e.message || e), 'err');
-                });
-            };
-            actionCell.appendChild(b);
-            var kcfgBtn = document.createElement('button');
-            kcfgBtn.textContent = '⚙ config';
-            kcfgBtn.onclick = function () {
-              if (kdraw.firstChild) { kdraw.innerHTML = ''; return; }
-              kdraw.appendChild(buildBindingDrawer({
-                scope: 'key', binding: bindingFromConfig(k.config),
-                previewQuery: 'user_id=' + encodeURIComponent(u.id) + '&key_id=' + encodeURIComponent(k.id),
-                save: function (body) {
-                  return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
-                             '/keys/' + encodeURIComponent(k.id) + '/config', body)
-                    .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); });
-                },
-              }));
-            };
-            actionCell.appendChild(kcfgBtn);
-          }
-          var kdraw = document.createElement('div');
-          row.appendChild(actionCell);
-          listEl.appendChild(row);
-          listEl.appendChild(kdraw);
-        });
+        j.keys.forEach(function (k) { listEl.appendChild(renderKeyCard(u, k)); });
+        refreshKeyDots();
       });
 
     return card;
+  }
+
+  // One rule-style card for a single API key (returned wrapped so the
+  // overrides drawer can sit full-width below the card grid).
+  function renderKeyCard(u, k) {
+    var revoked = !!k.revoked_ts;
+    var hasLabel = !!(k.label && k.label.trim());
+    var keyUsage = (window.__usage && window.__usage.by_key || {})[k.id];
+
+    var kc = document.createElement('div');
+    kc.className = 'kcard' + (revoked ? ' revoked' : '');
+
+    // rail with status dot
+    var dotCls = revoked ? 'dead' : dotClassFor(k.last_used_ts);
+    var dotTitle = revoked ? 'revoked'
+      : (dotCls === 'live' ? 'used in the last 15 min' : 'no recent use');
+    var rail = document.createElement('div');
+    rail.className = 'krail';
+    rail.innerHTML = '<span aria-hidden="true">🔑</span>'
+      + '<span class="kdot ' + dotCls + '"'
+      + (revoked ? '' : ' data-used-ts="' + (k.last_used_ts || 0) + '"')
+      + ' title="' + dotTitle + '"></span>';
+    kc.appendChild(rail);
+
+    // body: title + meta
+    var body = document.createElement('div');
+    body.className = 'kbody';
+    body.innerHTML =
+      '<div class="ktitle">'
+        + '<span class="kname' + (hasLabel ? '' : ' none') + '">'
+          + escapeHtml(hasLabel ? k.label : '(no label)') + '</span>'
+        + '<span class="pill ' + (revoked ? 'revoked' : 'live') + '">'
+          + (revoked ? 'revoked' : 'active') + '</span>'
+      + '</div>'
+      + '<div class="kmeta">'
+        + '<span class="kid">' + escapeHtml(k.key_prefix) + '&hellip;' + escapeHtml(k.key_last4) + '</span>'
+        + '<span>created ' + metaWhen(k.created_ts) + '</span>'
+        + (revoked ? '<span>revoked ' + metaWhen(k.revoked_ts) + '</span>'
+                   : '<span>used ' + metaWhen(k.last_used_ts) + '</span>')
+        + (hasLabel ? '' : '<span class="renote">✎ rename to label this key</span>')
+      + '</div>';
+    var usageWrap = document.createElement('div');
+    usageWrap.innerHTML = usageCellHtml(keyUsage);
+    body.querySelector('.kmeta').appendChild(usageWrap.firstChild);
+    kc.appendChild(body);
+
+    // actions
+    var acts = document.createElement('div');
+    acts.className = 'kacts';
+    var kdraw = document.createElement('div');  // overrides drawer holder
+    if (!revoked) {
+      // Rename — inline editor under the title
+      var renameBtn = document.createElement('button');
+      renameBtn.className = 'ghost';
+      renameBtn.textContent = '✎ Rename';
+      var renameRow = null;
+      renameBtn.onclick = function () {
+        if (renameRow) { renameRow.remove(); renameRow = null; return; }
+        renameRow = document.createElement('div');
+        renameRow.className = 'krename';
+        var inp = document.createElement('input');
+        inp.type = 'text'; inp.maxLength = 128;
+        inp.value = hasLabel ? k.label : '';
+        inp.placeholder = 'label (e.g., desktop)';
+        var saveB = document.createElement('button');
+        saveB.className = 'primary'; saveB.textContent = 'Save';
+        var cancelB = document.createElement('button');
+        cancelB.className = 'ghost'; cancelB.textContent = 'Cancel';
+        function closeRename() { if (renameRow) { renameRow.remove(); renameRow = null; } }
+        function doSave() {
+          var nl = inp.value.trim();
+          if (!nl) { showToast('Label is required', 'err'); inp.focus(); return; }
+          saveB.disabled = true;
+          api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
+              '/keys/' + encodeURIComponent(k.id) + '/label', { label: nl })
+            .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); })
+            .then(function () { showToast('Key renamed', 'ok'); load(); })
+            .catch(function (e) { showToast(String(e.message || e), 'err'); saveB.disabled = false; });
+        }
+        saveB.onclick = doSave;
+        cancelB.onclick = closeRename;
+        inp.onkeydown = function (e) {
+          if (e.key === 'Enter') doSave();
+          else if (e.key === 'Escape') closeRename();
+        };
+        renameRow.appendChild(inp);
+        renameRow.appendChild(saveB);
+        renameRow.appendChild(cancelB);
+        body.appendChild(renameRow);
+        inp.focus();
+      };
+      acts.appendChild(renameBtn);
+
+      // Overrides — same drawer + label as the per-user button
+      var kcfgBtn = document.createElement('button');
+      kcfgBtn.className = 'ghost';
+      kcfgBtn.textContent = '⚙ Overrides';
+      kcfgBtn.onclick = function () {
+        if (kdraw.firstChild) { kdraw.innerHTML = ''; kcfgBtn.classList.remove('on'); return; }
+        kcfgBtn.classList.add('on');
+        kdraw.appendChild(buildBindingDrawer({
+          scope: 'key', binding: bindingFromConfig(k.config),
+          previewQuery: 'user_id=' + encodeURIComponent(u.id) + '&key_id=' + encodeURIComponent(k.id),
+          save: function (body2) {
+            return api('PATCH', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
+                       '/keys/' + encodeURIComponent(k.id) + '/config', body2)
+              .then(function (r) { if (!r.ok) return r.text().then(function (t) { throw new Error(t); }); return r.json(); });
+          },
+        }));
+      };
+      acts.appendChild(kcfgBtn);
+
+      // Revoke (destructive)
+      var b = document.createElement('button');
+      b.className = 'danger';
+      b.textContent = 'Revoke';
+      b.onclick = function () {
+        if (!confirm('Revoke key "' + (hasLabel ? k.label : k.key_prefix + '…' + k.key_last4) +
+            '"? Apps using it will stop working immediately.')) return;
+        api('DELETE', '/settings/api-keys/api/users/' + encodeURIComponent(u.id) +
+            '/keys/' + encodeURIComponent(k.id))
+          .then(function (r) {
+            if (r.status === 409) {
+              return r.json().then(function (j) { throw new Error(j.detail || 'cannot revoke last admin key'); });
+            }
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            showToast('Key revoked', 'ok');
+            load();
+          })
+          .catch(function (e) { showToast(String(e.message || e), 'err'); });
+      };
+      acts.appendChild(b);
+    }
+    kc.appendChild(acts);
+
+    var wrap = document.createElement('div');
+    wrap.appendChild(kc);
+    wrap.appendChild(kdraw);
+    return wrap;
   }
 
   function escapeHtml(s) {
@@ -1227,7 +1512,7 @@ _API_KEYS_HTML = r"""<!doctype html>
          + '<span class="v">' + value + '</span>'
          + '<span class="k">' + caption + '</span></div>';
   }
-  // Compact per-key stat block for a .key-row usage cell.
+  // Compact per-key stat block for a key card's meta row.
   function usageCellHtml(stat) {
     if (!stat || !stat.requests) {
       return '<div class="usage-cell empty">no usage yet</div>';
@@ -1481,7 +1766,7 @@ _API_KEYS_HTML = r"""<!doctype html>
       root.appendChild(addsel);
 
       var acts = document.createElement('div'); acts.className = 'cfg-actions';
-      var prev = document.createElement('button'); prev.textContent = 'Preview effective (saved)';
+      var prev = document.createElement('button'); prev.className = 'ghost'; prev.textContent = 'Preview effective (saved)';
       var save = document.createElement('button'); save.className = 'primary'; save.textContent = 'Save overrides';
       save.onclick = function () {
         save.disabled = true;
@@ -1564,7 +1849,8 @@ _API_KEYS_HTML = r"""<!doctype html>
       if (os.ok) window.__ovstate = await os.json();
     } catch (_) {}
     renderMatrix(j);
-    j.users.forEach(function(u) { ct.appendChild(renderUser(u)); });
+    var nUsers = j.users.length;
+    j.users.forEach(function(u) { ct.appendChild(renderUser(u, nUsers)); });
   }
 
   document.getElementById('add-user-btn').onclick = function() {
@@ -1598,6 +1884,13 @@ _API_KEYS_HTML = r"""<!doctype html>
 // fmtWhen() text at render time, and timeTick re-queries [data-ts] each tick so
 // it also catches cells added by later list reloads.
 timeTick();
+// Decay the per-key status dots (green -> grey) as keys cross the recent-use
+// window, without a reload. _refreshApiKeyDots re-queries [data-used-ts] each
+// tick so it also catches dots added by later list reloads.
+if (window._refreshApiKeyDots) {
+  window._refreshApiKeyDots();
+  setInterval(window._refreshApiKeyDots, 30000);
+}
 </script>
 </body></html>
 """

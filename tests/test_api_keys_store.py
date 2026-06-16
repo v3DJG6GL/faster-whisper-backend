@@ -331,3 +331,31 @@ def test_get_user_permissions_sentinel(api_keys_db):
 def test_open_mode_user_is_admin():
     import api_keys_store as ak
     assert ak.OPEN_MODE_USER["is_admin"] is True
+
+
+# ---------------------------------------------------------------------------
+# update_key_label (rename)
+# ---------------------------------------------------------------------------
+
+def test_update_key_label_renames(api_keys_db):
+    ak = api_keys_db
+    uid = ak.create_user("renamer", is_admin=False)
+    _, rec = ak.create_key(uid, label="old")
+    out = ak.update_key_label(rec["id"], "  fresh  ")
+    assert out is not None and out["label"] == "fresh"  # trimmed
+    rows = ak.list_keys(uid)
+    assert any(k["id"] == rec["id"] and k["label"] == "fresh" for k in rows)
+
+
+def test_update_key_label_validates(api_keys_db):
+    ak = api_keys_db
+    uid = ak.create_user("badlabel", is_admin=False)
+    _, rec = ak.create_key(uid, label="ok")
+    for bad in ("", "   ", "x" * 129):
+        with pytest.raises(ValueError):
+            ak.update_key_label(rec["id"], bad)
+
+
+def test_update_key_label_missing_returns_none(api_keys_db):
+    ak = api_keys_db
+    assert ak.update_key_label("does-not-exist", "x") is None

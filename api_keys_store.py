@@ -490,6 +490,32 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
     return raw_key, rec
 
 
+def update_key_label(key_id: str, label: str) -> dict[str, Any] | None:
+    """Rename an existing key's display label. Returns the refreshed record
+    (same shape as `list_keys` rows), or None if no key has that id. Same
+    label rules as `create_key` — required + capped at 128 chars. Renaming
+    only touches the display label, never the secret or the key index, so no
+    `_rebuild_index_locked()` is needed."""
+    label = (label or "").strip()
+    if not label:
+        raise ValueError("label is required")
+    if len(label) > 128:
+        raise ValueError("label too long (max 128 chars)")
+    conn = _require_conn()
+    with _lock:
+        cur = conn.execute(
+            "UPDATE api_keys SET label = ? WHERE id = ?",
+            (label, key_id),
+        )
+        if cur.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM api_keys WHERE id = ?", (key_id,),
+        ).fetchone()
+    logger.info("[auth] key relabeled kid=%s label=%s", key_id[:8], label)
+    return _row_to_key_dict(row) if row else None
+
+
 def list_keys(user_id: str) -> list[dict[str, Any]]:
     conn = _require_conn()
     with _lock:
