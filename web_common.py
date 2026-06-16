@@ -1262,8 +1262,8 @@ function _pad2(n) { return (n < 10 ? '0' : '') + n; }
 function absTime(ts) {
   if (!ts) return '—';
   var d = new Date(ts * 1000);
-  return _pad2(d.getHours()) + ':' + _pad2(d.getMinutes()) + ':' + _pad2(d.getSeconds())
-    + ' | ' + d.getFullYear() + '.' + _pad2(d.getMonth() + 1) + '.' + _pad2(d.getDate());
+  return d.getFullYear() + '.' + _pad2(d.getMonth() + 1) + '.' + _pad2(d.getDate())
+    + ' | ' + _pad2(d.getHours()) + ':' + _pad2(d.getMinutes()) + ':' + _pad2(d.getSeconds());
 }
 
 function relTime(ts) {
