@@ -3791,6 +3791,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
             status.textContent = rule.enabled
               ? '∅ empty pattern — rule skipped'
               : '∅ disabled';
+          } else if (step.error && step.type === 'regex-list') {
+            // Advisory: the bad entry is skipped, the valid ones still applied.
+            status.className = 'regex-status warn';
+            const n = step.matches || 0;
+            status.textContent = '⚠ ' + n + ' match' + (n === 1 ? '' : 'es')
+              + ' · bad pattern skipped: ' + step.error;
           } else if (step.error) {
             status.className = 'regex-status err';
             status.textContent = '✗ ' + step.error;
@@ -4491,19 +4497,29 @@ function pipelineTestPanel() {
     (j.steps || []).forEach(step => {
       const tr = document.createElement('tr');
       let badge = '';
+      // regex-list reports a bad entry as an ADVISORY: the engine skips that
+      // entry and still applies the rest, so the step carries a real after/
+      // matches alongside `error`. Show the output, not just the warning.
+      const advisory = step.error && step.type === 'regex-list';
       if (step.skipped) badge = ' <span class="tag empty">skipped</span>';
+      else if (advisory) badge = ' <span class="tag warn">⚠ ' + (step.matches || 0) + ' matches · bad pattern skipped</span>';
       else if (step.error) badge = ' <span class="tag err">✗</span>';
       else if (step.slow) badge = ' <span class="tag warn">⚠ slow</span>';
       else if (step.matches) badge = ' <span class="tag ok">' + step.matches + ' matches</span>';
       const changed = step.before !== step.after;
       const outCell = document.createElement('td');
       outCell.className = 'out';
-      if (step.error) {
+      if (step.error && !advisory) {
         outCell.innerHTML = '<span class="err">' + step.error + '</span>';
-      } else if (!changed) {
-        outCell.innerHTML = '<span class="nochange">(no change)</span>';
       } else {
-        outCell.textContent = step.after;
+        if (!changed) outCell.innerHTML = '<span class="nochange">(no change)</span>';
+        else outCell.textContent = step.after;
+        if (advisory) {
+          const warn = document.createElement('span');
+          warn.className = 'err';
+          warn.textContent = ' ⚠ ' + step.error;
+          outCell.appendChild(warn);
+        }
       }
       tr.innerHTML = '<td>' + step.ordinal + '</td>'
         + '<td>' + (step.label || '?') + badge + '</td>'
