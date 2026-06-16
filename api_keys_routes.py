@@ -1324,6 +1324,11 @@ _API_KEYS_HTML = r"""<!doctype html>
     var b = opts.binding;
     var root = document.createElement('div'); root.className = 'cfg-drawer';
     function rerender() { root.innerHTML = ''; draw(); }
+    // UI intent: a freshly-chosen but still-empty "Restrict to…" allowlist has
+    // the same data ([]) as "None". Without this sticky flag the dropdown would
+    // snap back to "None" on rerender and the checkbox grid (the only way to add
+    // names) would never show — making restrict mode unreachable from the UI.
+    var restrictOpen = false;
 
     // Per-identity REQUEST GATES — whether this identity may request override-
     // profiles / decode tweaks, and which profiles it may name. These can only
@@ -1364,8 +1369,12 @@ _API_KEYS_HTML = r"""<!doctype html>
       // Allowlist of requestable profiles: null=inherit(all), ['*']=all, []=none,
       // [names]=restrict.
       var al = b.allowed_override_profiles;
-      var mode = al == null ? 'inherit'
+      var dataMode = al == null ? 'inherit'
         : (al.indexOf('*') >= 0 ? 'all' : (al.length === 0 ? 'none' : 'restrict'));
+      if (dataMode === 'inherit' || dataMode === 'all') restrictOpen = false;
+      else if (dataMode === 'restrict') restrictOpen = true;
+      // Keep the grid open when restrict was chosen but the list is still empty.
+      var mode = (restrictOpen && dataMode === 'none') ? 'restrict' : dataMode;
       var arow = document.createElement('div'); arow.className = 'cfg-ovr-row';
       var anm = document.createElement('span'); anm.className = 'nm';
       anm.textContent = 'Requestable profiles'; arow.appendChild(anm);
@@ -1378,11 +1387,14 @@ _API_KEYS_HTML = r"""<!doctype html>
       });
       asel.value = mode;
       asel.onchange = function () {
-        if (asel.value === 'inherit') b.allowed_override_profiles = null;
-        else if (asel.value === 'all') b.allowed_override_profiles = ['*'];
-        else if (asel.value === 'none') b.allowed_override_profiles = [];
-        else b.allowed_override_profiles =
-          (Array.isArray(al) ? al.filter(function (n) { return n !== '*'; }) : []);
+        if (asel.value === 'inherit') { b.allowed_override_profiles = null; restrictOpen = false; }
+        else if (asel.value === 'all') { b.allowed_override_profiles = ['*']; restrictOpen = false; }
+        else if (asel.value === 'none') { b.allowed_override_profiles = []; restrictOpen = false; }
+        else {
+          b.allowed_override_profiles =
+            (Array.isArray(al) ? al.filter(function (n) { return n !== '*'; }) : []);
+          restrictOpen = true;
+        }
         rerender();
       };
       avc.appendChild(asel); arow.appendChild(avc); sec.appendChild(arow);
