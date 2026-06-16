@@ -1722,6 +1722,7 @@ class AdminConfig(BaseModel):
 # were defined inline in config.py.
 _POST_LOAD_COERCERS: dict[str, Any] = {
     "ALLOWED_MODELS": set,
+    "CAPTURES_PIPELINE_RULES_EXCLUDE": set,
 }
 
 

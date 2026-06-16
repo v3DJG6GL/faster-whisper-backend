@@ -424,6 +424,20 @@ def test_load_overrides_coerces_allowed_models_to_set(tmp_path):
     assert out["ALLOWED_MODELS"] == {"a", "b"}
 
 
+def test_load_overrides_coerces_captures_excludes_to_set(tmp_path):
+    # config.json default + ENV paths already yield a set (config._SET_FIELDS);
+    # the config.local.json override path must match, or main._postprocess_text
+    # does `set | list` and raises TypeError on every captures consumer.
+    p = tmp_path / "a.json"
+    p.write_text(
+        json.dumps({"CAPTURES_PIPELINE_RULES_EXCLUDE": ["r1", "r2"]}),
+        encoding="utf-8",
+    )
+    out = cs.load_overrides(str(p))
+    assert isinstance(out["CAPTURES_PIPELINE_RULES_EXCLUDE"], set)
+    assert out["CAPTURES_PIPELINE_RULES_EXCLUDE"] == {"r1", "r2"}
+
+
 def test_save_overrides_roundtrip_and_merge(tmp_path):
     p = str(tmp_path / "config.local.json")
     changed = cs.save_overrides({"BEAM_SIZE": 5}, p)
