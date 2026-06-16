@@ -441,15 +441,22 @@ _API_KEYS_HTML = r"""<!doctype html>
   .kdot.live { background: var(--green); box-shadow: 0 0 6px var(--green); }
   .kdot.idle { background: var(--dim); box-shadow: none; }
   .kdot.dead { background: var(--red); box-shadow: none; }
-  .kbody { padding: 0.55rem 0.2rem 0.55rem 0; min-width: 0; }
+  .kbody { padding: 0.55rem 0.2rem 0.55rem 0.7rem; min-width: 0; }
   .ktitle { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .ktitle .kname { color: var(--bold); font-weight: 600; word-break: break-word; }
   .ktitle .kname.none { color: var(--dim); font-style: italic;
     font-weight: normal; }
-  .kmeta { display: flex; gap: 0.15rem 1rem; flex-wrap: wrap; margin-top: 0.3rem;
-    align-items: baseline; font-size: var(--fs-sm); color: var(--dim); }
+  /* Meta stacks vertically: key id, then a created/used (or created/revoked)
+     timestamp grid so the two dates line up column-for-column and are easy to
+     compare. Mono values keep the digits tabular. */
+  .kmeta { display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.3rem;
+    font-size: var(--fs-sm); color: var(--dim); }
   .kmeta .kid { color: var(--fg); font-family: var(--font-mono); }
   .kmeta .renote { color: var(--yellow); }
+  .ktimes { display: grid; grid-template-columns: auto auto;
+    justify-content: start; gap: 0.15rem 0.6rem; align-items: baseline; }
+  .ktimes .kt-lbl { color: var(--dim); }
+  .ktimes .kt-val { color: var(--fg); font-family: var(--font-mono); }
   .kacts { display: flex; align-items: center; gap: 0.4rem;
     padding: 0.55rem 0.6rem; flex-wrap: wrap; justify-content: flex-end; }
   /* inline rename editor under the key title */
@@ -1418,9 +1425,12 @@ _API_KEYS_HTML = r"""<!doctype html>
       + '</div>'
       + '<div class="kmeta">'
         + '<span class="kid">' + escapeHtml(k.key_prefix) + '&hellip;' + escapeHtml(k.key_last4) + '</span>'
-        + '<span>created ' + metaWhen(k.created_ts) + '</span>'
-        + (revoked ? '<span>revoked ' + metaWhen(k.revoked_ts) + '</span>'
-                   : '<span>used ' + metaWhen(k.last_used_ts) + '</span>')
+        + '<div class="ktimes">'
+          + '<span class="kt-lbl">created</span><span class="kt-val">' + metaWhen(k.created_ts) + '</span>'
+          + (revoked
+              ? '<span class="kt-lbl">revoked</span><span class="kt-val">' + metaWhen(k.revoked_ts) + '</span>'
+              : '<span class="kt-lbl">used</span><span class="kt-val">' + metaWhen(k.last_used_ts) + '</span>')
+        + '</div>'
         + (hasLabel ? '' : '<span class="renote">✎ rename to label this key</span>')
       + '</div>';
     var usageWrap = document.createElement('div');
