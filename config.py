@@ -33,10 +33,11 @@ except ImportError:
     pass
 
 
-# Directory holding this config file — used to anchor default paths for the
-# log file and the per-feature SQLite stores. Hoisted because the literal
-# `os.path.dirname(os.path.abspath(__file__))` recurred at 5 sites below.
-# Underscore-prefixed so it's excluded from _BASELINE / the admin UI.
+# Directory holding this config file — used by _load_defaults() to locate
+# config.json and to resolve the {REPO_DIR} placeholder that config.json stores
+# in path defaults (LOG_FILE, the per-feature SQLite stores, CAPTURES_DIR, …)
+# into absolute paths. Underscore-prefixed so it's excluded from _BASELINE /
+# the admin UI.
 _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
