@@ -338,13 +338,16 @@ async def apply_rules_patch(
 # key (bearer) plus the quick_config page permission. Mounted always-on in
 # main.py alongside /v1/me, so the desktop client can manage rules regardless
 # of the ADMIN_UI_ENABLED WebUI switch.
-v1_router = APIRouter(prefix="/v1")
-
-
-@v1_router.get(
-    "/pipeline-rules",
+# Gate on the router constructor so every present + future sub-route inherits
+# the quick_config page check (the auth.require_page convention — "closes the
+# 'forgot to gate this endpoint' hole"). Both routes below are user-tier.
+v1_router = APIRouter(
+    prefix="/v1",
     dependencies=[Depends(require_page("quick_config"))],
 )
+
+
+@v1_router.get("/pipeline-rules")
 async def v1_get_pipeline_rules(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -357,10 +360,7 @@ async def v1_get_pipeline_rules(
     return {"rules": rules, "role": role, "editable_fields": editable_fields_map()}
 
 
-@v1_router.patch(
-    "/pipeline-rules",
-    dependencies=[Depends(require_page("quick_config"))],
-)
+@v1_router.patch("/pipeline-rules")
 async def v1_patch_pipeline_rules(
     payload: QuickPatchPayload,
     request: Request,
