@@ -101,6 +101,28 @@ def test_bind_user_and_resolve(client, make_user_key):
     assert "clinic-de" in rj["profiles_applied"]
 
 
+def test_resolve_decode_master_gate_off_reports_ignored(client, make_user_key):
+    # When an identity's decode-override master gate is OFF, the live path drops
+    # EVERY client decode override (resolve sets locked_client_keys = all client
+    # keys). The /resolve diagnostic must agree and report a sim'd override as
+    # ignored — even though the field itself carries no field-level lock.
+    _, _, h = _admin(make_user_key)
+    bob_uid, _ = make_user_key("bob", is_admin=False)
+    kid = client.get(f"{PERMS}/{bob_uid}/keys", headers=h).json()["keys"][0]["id"]
+    r = client.patch(f"{PERMS}/{bob_uid}/keys/{kid}/config", headers=h, json={
+        "overrides": {}, "profiles": [], "locks": [],
+        "allow_request_decode_overrides": False})
+    assert r.status_code == 200, r.text
+
+    rj = client.get(f"{OV}/resolve", headers=h, params={
+        "user_id": bob_uid, "key_id": kid, "model": "whisper-1",
+        "sim": json.dumps({"beam_size": 12})}).json()
+    bs = rj["fields"]["BEAM_SIZE"]
+    assert bs["locked"] is False                       # no field-level lock
+    assert bs["client_sim"]["value"] == 12
+    assert bs["client_sim"]["outcome"] == "ignored_locked"  # gate, not field-lock
+
+
 def test_per_key_config_overrides_user(client, make_user_key):
     _, _, h = _admin(make_user_key)
     uid, _ = make_user_key("alice", is_admin=False)

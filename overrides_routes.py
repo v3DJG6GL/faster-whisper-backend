@@ -236,9 +236,17 @@ async def resolve(user_id: str = "", key_id: str = "", model: str = "",
         client_sim = None
         ck = effective_config._CONFIG_TO_CLIENT_KEY.get(fname)
         if ck and ck in sim_dict:
+            # Reflect the SAME gate the live decode path applies (main._apply_
+            # decode_overrides / batch+streaming overrides_ignored key off
+            # locked_client_keys): a field-level lock OR the per-identity decode
+            # master gate being off (which locks every client key) → ignored.
+            # Checking only r.locked would report "applied" for a key the server
+            # actually drops whenever the master gate is off.
             client_sim = {
                 "value": sim_dict[ck],
-                "outcome": "ignored_locked" if fname in r.locked else "applied",
+                "outcome": ("ignored_locked"
+                            if (fname in r.locked or ck in r.locked_client_keys)
+                            else "applied"),
             }
         fields[fname] = {
             "winner_value": winner["value"] if winner else None,
