@@ -92,16 +92,19 @@ def _build_groups() -> list[dict[str, Any]]:
 
 
 def _build_rules() -> list[dict[str, Any]]:
-    """Non-terminal pipeline rules (name/label/enabled) for the per-profile
-    force-on/off checklist."""
+    """Non-terminal pipeline rules (name/label/enabled/card_no) for the
+    per-profile force-on/off checklist. `card_no` is the rule's 1-based position
+    in cfg.PIPELINE_RULES (the /settings/pipeline card ordinal) so the row can
+    show `#N`, matching the pipeline page + the /logs trace."""
     out = []
-    for r in (getattr(cfg, "PIPELINE_RULES", None) or []):
+    for i, r in enumerate(getattr(cfg, "PIPELINE_RULES", None) or [], start=1):
         if not isinstance(r, dict) or r.get("type") == "terminal":
             continue
         out.append({
             "name": r.get("name"),
             "label": r.get("label") or r.get("name"),
             "enabled": bool(r.get("enabled", True)),
+            "card_no": i,
         })
     return out
 
@@ -475,9 +478,11 @@ _OVERRIDES_HTML = r"""<!doctype html>
   .ov-ctrl .reset { color: var(--dim); }
   /* pipeline tri-state — label left, shared segmented control (inherit/on/off)
      right; .status-btn-group styling comes from web_common.NAV_CSS. */
-  .ov-rule { display: grid; grid-template-columns: 1fr auto; align-items: center;
+  .ov-rule { display: grid; grid-template-columns: auto 1fr auto; align-items: center;
     gap: 0.4rem; padding: 0.32rem 0; border-bottom: 1px solid rgba(255,255,255,0.055); }
   .ov-rule:hover { background: rgba(255,255,255,0.025); }
+  .ov-rule .ord { font-family: var(--font-mono); color: var(--dim);
+    font-size: var(--fs-xs); text-align: right; }
   .ov-rule .rl { font-size: var(--fs-sm); }
   .ov-rule .rl .slug { font-family: var(--font-mono); color: var(--dim);
     font-size: var(--fs-xs); }
@@ -1133,7 +1138,8 @@ window._renderWaterfall = (function () {
     (S.rules || []).forEach(function (r) {
       var row = document.createElement('div'); row.className = 'ov-rule';
       var state = exc.indexOf(r.name) >= 0 ? 'off' : (inc.indexOf(r.name) >= 0 ? 'on' : 'inherit');
-      row.innerHTML = '<span class="rl">' + esc(r.label)
+      row.innerHTML = '<span class="ord">' + (r.card_no ? '#' + r.card_no : '') + '</span>'
+        + '<span class="rl">' + esc(r.label)
         + ' <span class="slug">' + esc(r.name) + (r.enabled ? '' : ' (off)') + '</span></span>';
       var grp = document.createElement('span'); grp.className = 'status-btn-group';
       grp.setAttribute('role', 'radiogroup');

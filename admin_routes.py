@@ -1539,6 +1539,10 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
   .pipeline-rules-wrap.checklist-mode .rule-row .row-header {
     display: flex; flex-direction: row; align-items: center; gap: 0.55rem; padding: 0; }
   .pipeline-rules-wrap.checklist-mode .rule-row .switch { flex: 0 0 auto; }
+  .pipeline-rules-wrap.checklist-mode .rule-row .card-no {
+    flex: 0 0 auto; min-width: 1.9rem; text-align: right;
+    font-family: var(--font-mono); color: var(--dim); font-size: var(--fs-xs); }
+  .pipeline-rules-wrap.checklist-mode .rule-row.excluded .card-no { color: var(--dim); }
   .pipeline-rules-wrap.checklist-mode .rule-row .rule-label { font-family: var(--font-sans); }
   .pipeline-rules-wrap.checklist-mode .rule-row.excluded .rule-label {
     color: var(--dim); text-decoration: line-through; }
@@ -3236,6 +3240,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         });
       }
       head.appendChild(cb);
+
+      // Card position (#N) — matches the /settings/pipeline card ordinal and
+      // the /logs trace. idx is the 1-based-minus-1 index into the full
+      // PIPELINE_RULES list (terminal included), so idx+1 IS the card number.
+      const ord = document.createElement('span');
+      ord.className = 'card-no';
+      ord.textContent = '#' + (idx + 1);
+      head.appendChild(ord);
 
       const lbl = document.createElement('span');
       lbl.className = 'rule-label';
