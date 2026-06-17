@@ -474,11 +474,16 @@ _OVERRIDES_HTML = r"""<!doctype html>
     color: var(--fg); border: 1px solid var(--border); border-radius: 6px;
     padding: 0.2rem 0.4rem; font-family: var(--font-mono);
     font-size: var(--fs-sm); }
-  .ov-inherits { color: var(--dim); font-size: var(--fs-xs);
-    font-family: var(--font-mono); font-style: italic;
-    display: inline-block; max-width: 100%;
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    vertical-align: bottom; }
+  .ov-inherits { display: inline-flex; align-items: baseline; gap: 0.5rem;
+    max-width: 100%; }
+  /* "inherits" is a subordinate tag — dim, italic, sans — so it reads as a
+     label, not as part of the value. */
+  .ov-inherits .lbl { flex: 0 0 auto; color: var(--dim); font-style: italic;
+    font-family: var(--font-sans); font-size: var(--fs-xs); }
+  /* the inherited value is the signal — brighter, upright, mono. */
+  .ov-inherits .val { min-width: 0; color: var(--fg);
+    font-family: var(--font-mono); font-size: var(--fs-sm);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ov-lock { background: none; border: 1px solid transparent; border-radius: 6px;
     cursor: pointer; color: var(--dim); padding: 0.15rem; font-size: 1rem;
     display: inline-flex; align-items: center; justify-content: center; }
@@ -1092,8 +1097,14 @@ window._renderWaterfall = (function () {
       var dv = (S.defaults || {})[name];
       var inh = document.createElement('span');
       inh.className = 'ov-inherits';
-      inh.textContent = 'inherits ' + fmtVal(dv);
-      inh.title = 'Inherited global default — ' + fmtVal(dv);
+      // Split label from value so "inherits" reads as a subordinate tag, not
+      // part of the value: dim italic sans label + brighter upright mono value.
+      var inhLbl = document.createElement('span');
+      inhLbl.className = 'lbl'; inhLbl.textContent = 'inherits';
+      var inhVal = document.createElement('span');
+      inhVal.className = 'val'; inhVal.textContent = fmtVal(dv);
+      inhVal.title = 'Inherited global default — ' + fmtVal(dv);
+      inh.appendChild(inhLbl); inh.appendChild(inhVal);
       valCell.appendChild(inh);
       var ab = document.createElement('button'); ab.textContent = '+ override';
       // Seed from the inherited value (not a zero/empty default) so starting an
