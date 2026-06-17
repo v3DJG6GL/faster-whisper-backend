@@ -72,6 +72,16 @@ def _build_field_meta() -> dict[str, dict[str, Any]]:
     return out
 
 
+def _build_defaults() -> dict[str, Any]:
+    """Live effective global value (getattr(cfg, name), after config.local.json +
+    env) for every overridable field — what a profile inherits when it doesn't set
+    the field. Reuses the per-model page's serializer (admin_routes._resolved_value),
+    so the overrides page's `inherits <value>` hint matches /settings byte-for-byte.
+    Rulelist fields resolve to None and are never read by the scalar field rows."""
+    import admin_routes
+    return {name: admin_routes._resolved_value(name) for name in _build_field_meta()}
+
+
 def _build_groups() -> list[dict[str, Any]]:
     """Section layout for the profile editor: the global /settings field groups
     filtered to the per-identity overridable scalars, so section names + order
@@ -141,6 +151,7 @@ async def get_state() -> dict[str, Any]:
     return {
         "profiles": dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {}),
         "field_meta": _build_field_meta(),
+        "defaults": _build_defaults(),
         "groups": _build_groups(),
         "rules": _build_rules(),
         "usage": _build_usage(),
@@ -464,7 +475,10 @@ _OVERRIDES_HTML = r"""<!doctype html>
     padding: 0.2rem 0.4rem; font-family: var(--font-mono);
     font-size: var(--fs-sm); }
   .ov-inherits { color: var(--dim); font-size: var(--fs-xs);
-    font-family: var(--font-mono); font-style: italic; }
+    font-family: var(--font-mono); font-style: italic;
+    display: inline-block; max-width: 100%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    vertical-align: bottom; }
   .ov-lock { background: none; border: 1px solid transparent; border-radius: 6px;
     cursor: pointer; color: var(--dim); padding: 0.15rem; font-size: 1rem;
     display: inline-flex; align-items: center; justify-content: center; }
@@ -1016,6 +1030,16 @@ window._renderWaterfall = (function () {
 
   function isSet(p, f) { return p[f] !== null && p[f] !== undefined; }
 
+  // Format an inherited value for the dim "inherits <value>" hint — identical to
+  // the /settings per-model page's fmtValue so the two pages read the same.
+  function fmtVal(v) {
+    if (v === null || v === undefined) return '∅';
+    if (typeof v === 'boolean') return v ? '☑ on' : '☐ off';
+    if (Array.isArray(v)) return '[' + v.length + ' item' + (v.length === 1 ? '' : 's') + ']';
+    if (typeof v === 'string') return v === '' ? '""' : v;
+    return String(v);
+  }
+
   // Line-art padlock at currentColor (matches the key icon on /api-keys).
   // Locked = solid body + closed shackle; unlocked = outline body + open shackle
   // — distinct on shape AND fill AND colour, not colour alone (WCAG 1.4.1).
@@ -1065,9 +1089,18 @@ window._renderWaterfall = (function () {
       rb.onclick = function () { clearVal(p, name); };
       ctrl.appendChild(rb);
     } else {
-      valCell.innerHTML = '<span class="ov-inherits">inherits</span>';
+      var dv = (S.defaults || {})[name];
+      var inh = document.createElement('span');
+      inh.className = 'ov-inherits';
+      inh.textContent = 'inherits ' + fmtVal(dv);
+      inh.title = 'Inherited global default — ' + fmtVal(dv);
+      valCell.appendChild(inh);
       var ab = document.createElement('button'); ab.textContent = '+ override';
-      ab.onclick = function () { setVal(p, name, defaultFor(meta)); };
+      // Seed from the inherited value (not a zero/empty default) so starting an
+      // override doesn't silently change behaviour — matches the per-model page.
+      ab.onclick = function () {
+        setVal(p, name, (dv === null || dv === undefined) ? defaultFor(meta) : dv);
+      };
       ctrl.appendChild(ab);
     }
     row.appendChild(valCell); row.appendChild(lockCell); row.appendChild(ctrl);

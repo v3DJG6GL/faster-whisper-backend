@@ -37,12 +37,33 @@ def test_overrides_page_renders(client):
 def test_state_shape_and_field_meta(client, make_user_key):
     _, _, h = _admin(make_user_key)
     j = client.get(f"{OV}/state", headers=h).json()
-    assert set(j) >= {"profiles", "field_meta", "groups", "rules", "usage"}
+    assert set(j) >= {"profiles", "field_meta", "defaults", "groups", "rules", "usage"}
     assert j["field_meta"]["BEAM_SIZE"] == {"kind": "int", "min": 1, "max": 20}
     assert j["field_meta"]["STREAMING_VAD_BACKEND"]["kind"] == "enum"
     assert "auto" in j["field_meta"]["STREAMING_VAD_BACKEND"]["opts"]
     # load-time model fields are NOT overridable per-identity → absent
     assert "MODEL_DEVICE" not in j["field_meta"]
+
+
+def test_state_includes_inherited_defaults(client, make_user_key, app_module):
+    """The /state payload ships the live global value for every overridable field
+    so the editor can render `inherits <value>` (and seed `+ override` from it).
+    The source must match the /settings per-model page byte-for-byte."""
+    import admin_routes
+    _, _, h = _admin(make_user_key)
+    j = client.get(f"{OV}/state", headers=h).json()
+
+    defaults = j["defaults"]
+    # Built by iterating field_meta → identical key set.
+    assert set(defaults) == set(j["field_meta"])
+    # Values come from the same serializer the per-model page uses.
+    for name in ("BEAM_SIZE", "DEFAULT_LANGUAGE", "VAD_FILTER"):
+        assert defaults[name] == admin_routes._resolved_value(name)
+    # Every scalar field shown in the editor grid has a default, so no real row
+    # can fall back to the ∅ "missing" glyph.
+    grouped = {f for g in j["groups"] for sg in g["subgroups"] for f in sg["fields"]}
+    assert grouped, "expected at least one editor field group"
+    assert grouped <= set(defaults)
 
 
 def test_state_requires_admin(client, make_user_key):
