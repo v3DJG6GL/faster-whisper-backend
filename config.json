@@ -191,7 +191,7 @@
           "pattern": "[\\\"#$%&'()*+;<=>@\\[\\\\\\]^_`{|}~„]",
           "replacement": "",
           "label": "strip-stray-symbols",
-          "note": "Removes every character in Python's string.punctuation EXCEPT the keep-set ./-:,?! , plus the German low quote „. The keep-set is preserved on purpose so the later digit-protected strip rules (strip-whisper-punctuation, normalize-digit-range, digit tidy) can still run."
+          "note": "Removes every character in Python's string.punctuation EXCEPT the keep-set ./-:,?! , plus the German low quote „. The keep-set is preserved on purpose so the later digit-protected strip rules (strip-auto-punctuation, normalize-digit-range, digit tidy) can still run."
         }
       ]
     },
@@ -329,8 +329,26 @@
       ]
     },
     {
-      "name": "strip-whisper-punctuation",
-      "label": "Strip Whisper punctuation",
+      "name": "strip-trailing-period",
+      "label": "Strip trailing period",
+      "enabled": true,
+      "locked": false,
+      "seeded": true,
+      "exposed": false,
+      "tags": [],
+      "note": "Promoted out of the former 'Strip Whisper punctuation' card so the trailing-period trim toggles on its own, independently of the terminator/comma strip that followed it. Runs just before 'Strip auto-punctuation' (same order as when both shared one card).",
+      "type": "regex-list",
+      "entries": [
+        {
+          "pattern": "\\s*\\.+\\s*$",
+          "replacement": "",
+          "label": "trim-trailing-period"
+        }
+      ]
+    },
+    {
+      "name": "strip-auto-punctuation",
+      "label": "Strip auto-punctuation",
       "enabled": true,
       "locked": false,
       "seeded": true,
@@ -338,25 +356,20 @@
       "tags": [
         "whisper-punct"
       ],
-      "note": "",
+      "note": "Strips the sentence punctuation Whisper auto-adds. Formerly 'strip-whisper-punctuation'; the trailing-period trim was split out into the separate 'strip-trailing-period' card that runs just before this one.",
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "\\s*\\.+\\s*$",
-          "replacement": "",
-          "label": "trim-trailing-period"
-        },
-        {
           "pattern": "(?<!\\d)[.?!]|(?<!\\d),|,(?!\\d)",
           "replacement": "",
-          "label": "strip-only-terminators-and-commas",
+          "label": "Strip terminators & commas",
           "note": "Plain strip — catches lone .?! the paired pass missed, plus soft-pause commas. Digit-protected: '1,000' survives; 'Frau, Müller' loses the comma. Replacement is empty; no side effects."
         }
       ]
     },
     {
-      "name": "split-dictation-keywords",
-      "label": "Split glued dictation keywords",
+      "name": "de-split-punctuation-keywords",
+      "label": "DE: Split merged punctuation keywords",
       "enabled": true,
       "locked": false,
       "seeded": true,
