@@ -160,14 +160,14 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Language-agnostic. Removes stray non-linguistic symbols (quotes, brackets, math/programming glyphs) Whisper emits.",
+      "note": "Removes stray symbols (quotes, brackets, math/programming glyphs); keeps only . , - / : ? !",
       "type": "regex-list",
       "entries": [
         {
           "pattern": "[\\\"#$%&'()*+;<=>@\\[\\\\\\]^_`{|}~„]",
           "replacement": "",
           "label": "strip-stray-symbols",
-          "note": "Removes all string.punctuation except the keep-set .,-/:?! (and „); keep-set kept so the later digit-aware strips still run."
+          "note": ""
         }
       ]
     },
@@ -180,14 +180,14 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Trims trailing periods; runs just before strip-auto-punctuation.",
+      "note": "Removes trailing periods and surrounding spaces: '5.' → '5'.",
       "type": "regex-list",
       "entries": [
         {
           "pattern": "\\s*\\.+\\s*$",
           "replacement": "",
           "label": "trim-trailing-period",
-          "note": "Strips trailing dots, even after a digit (which strip-auto-punctuation's digit guard would keep)."
+          "note": ""
         }
       ]
     },
@@ -200,14 +200,14 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Language-agnostic.",
+      "note": "Turns a hyphen between two digits into a slash: 10 - 12 → 10/12 (house-number range).",
       "type": "regex-list",
       "entries": [
         {
           "pattern": "(\\d)\\s*-\\s*(\\d)",
           "replacement": "\\1/\\2",
           "label": "normalize-digit-range",
-          "note": "'10 - 12' → '10/12' (slash = house range convention)."
+          "note": ""
         }
       ]
     },
@@ -222,7 +222,7 @@
       "tags": [
         "german"
       ],
-      "note": "Drops a terminator (.?!, not after a digit) before a capitalized word; also lowercases that word iff it's in the wordlist of German non-nouns (nouns stay capitalized). Case-insensitive.",
+      "note": "Drops a terminator (. ? !, not after a digit) before a capitalized word, and lowercases that word if it's a German function word in the list (nouns stay capitalized): 'Ende. Und' → 'Ende und'.",
       "type": "callback:lowercase-wordlist",
       "pattern": "(?<!\\d)[.?!](\\s*)([A-ZÄÖÜ])(\\w*)",
       "wordlist": [
@@ -339,20 +339,20 @@
       "tags": [
         "german"
       ],
-      "note": "German dictation: splits spoken punctuation keywords (Komma, Bindestrich) glued onto words, so dictation-map can turn them into symbols.",
+      "note": "",
       "type": "regex-list",
       "entries": [
         {
           "pattern": "\\b([A-ZÄÖÜ][a-zäöüß]{2,})komm?a\\b",
           "replacement": "\\1 Komma",
           "label": "split-merged-komma-off-preceding-noun",
-          "note": "Splits a dictated 'Komma' (also the 'koma' mishearing) glued onto a capitalized word — 'Müllerkomma'→'Müller Komma' — so dictation-map can turn 'Komma'→','. Needs leading capital + 2+ lowercase."
+          "note": "Müllerkomma → Müller Komma (also the misheard 'koma'); needs a leading capital + 2+ lowercase letters."
         },
         {
           "pattern": "(?i)\\Bbindestrich|bindestrich\\B",
           "replacement": " Bindestrich ",
           "label": "1-2-split-dictation-words-from-german-compounds",
-          "note": "Splits an embedded 'bindestrich' into ' Bindestrich ' — 'Eisenbindestrichinfusion'→'Eisen Bindestrich infusion'; dictation-map then makes it '-' and capitalize-letter-after-hyphen fixes the casing."
+          "note": "Eisenbindestrichinfusion → Eisen Bindestrich infusion (splits an embedded 'bindestrich'); a standalone 'bindestrich' is left alone."
         }
       ]
     },
@@ -367,20 +367,20 @@
       "tags": [
         "german"
       ],
-      "note": "Swiss German: drops the eszett — ß→ss, ẞ→SS.",
+      "note": "Swiss German has no eszett: ß → ss, ẞ → SS.",
       "type": "regex-list",
       "entries": [
         {
           "pattern": "ß",
           "replacement": "ss",
           "label": "replace-szet-lc",
-          "note": "ß → ss (Swiss German has no eszett)."
+          "note": ""
         },
         {
           "pattern": "ẞ",
           "replacement": "SS",
           "label": "replace-szet-uc",
-          "note": "ẞ → SS (uppercase form)."
+          "note": ""
         }
       ]
     },
@@ -395,14 +395,14 @@
       "tags": [
         "manual-punctation"
       ],
-      "note": "Strips Whisper's auto-added .?! and commas (digit-protected). Runs right after strip-trailing-period.",
+      "note": "Removes . ? ! and commas, except a . ? ! after a digit or a comma between two digits (so 3.14 and 1,000 survive).",
       "type": "regex-list",
       "entries": [
         {
           "pattern": "(?<!\\d)[.?!]|(?<!\\d),|,(?!\\d)",
           "replacement": "",
           "label": "Strip terminators & commas",
-          "note": "Strips .?! and soft-pause commas not shielded by a digit — '1,000' survives, 'Frau, Müller' loses its comma."
+          "note": ""
         }
       ]
     },
@@ -415,7 +415,7 @@
       "exposed": false,
       "color": "green",
       "tags": [],
-      "note": "Maps spoken dictation keywords → symbols/punctuation (Komma→',', Bindestrich→'-', Prozent→'%', …); case-insensitive.",
+      "note": "Maps spoken dictation keywords to symbols/punctuation (Komma → ',', Bindestrich → '-', Prozent → '%', …); whole words, any case.",
       "type": "callback:map",
       "map": {
         " Binde Strich ": "-",
@@ -509,7 +509,7 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Uppercases a lowercase letter right after a hyphen (letters only). Back half of the compound split: de-split-punctuation-keywords + dictation-map insert the '-', this fixes the casing — 'Eisen-infusion'→'Eisen-Infusion'.",
+      "note": "Capitalizes a lowercase letter right after a hyphen: Eisen-infusion → Eisen-Infusion.",
       "type": "callback:upper",
       "pattern": "(-)([a-zäöüß])"
     },
@@ -522,44 +522,44 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Reassembles spaced digit groups around / , - (entries 1-3), then strips space around punctuation/brackets and collapses double-spaces (4-6).",
+      "note": "",
       "type": "regex-list",
       "entries": [
         {
           "pattern": "(\\d)\\s*([/,\\-])\\s*(\\d)",
           "replacement": "\\1\\2\\3",
           "label": "tighten-digit-separators",
-          "note": "Strips spaces around a / , or - between two digits: '12 / 5'→'12/5'."
+          "note": "Removes spaces around a / , or - between two digits: 12 / 5 → 12/5."
         },
         {
           "pattern": "(?<=\\d) +(?=\\d[/\\-])",
           "replacement": "",
           "label": "merge-digit-pair-before",
-          "note": "Strips a space between digits when the second starts a /- group: '1 2/3'→'12/3'."
+          "note": "Joins digits split before a / or - group: 1 2/3 → 12/3."
         },
         {
           "pattern": "(?<=[/\\-]\\d) +(?=\\d)",
           "replacement": "",
           "label": "merge-digit-pair-after",
-          "note": "Strips a space between digits right after a /- + digit: '2/3 4'→'2/34'."
+          "note": "Joins digits split after a / or - group: 2/3 4 → 2/34."
         },
         {
           "pattern": "[ \\t]+([,.:;!?%\\)\\]\\}])",
           "replacement": "\\1",
           "label": "space-before-closing-punct",
-          "note": "Drops space/tab before closing punctuation: , . : ; ! ? % ) ] }."
+          "note": "Removes space before closing punctuation: , . : ; ! ? % ) ] }."
         },
         {
           "pattern": "([\\(\\[\\{])[ \\t]+",
           "replacement": "\\1",
           "label": "space-after-opening-punct",
-          "note": "Drops space/tab after an opening bracket: ( [ {."
+          "note": "Removes space after an opening bracket: ( [ {."
         },
         {
           "pattern": "  +",
           "replacement": " ",
           "label": "collapse-multi-space",
-          "note": "Collapses 2+ spaces to one."
+          "note": ""
         }
       ]
     },
@@ -572,7 +572,7 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Collapses a run of 2+ of ,.:;!? to one: the last non-comma in the run, else a single comma.",
+      "note": "Collapses a run of 2+ of , . : ; ! ? to one: the last non-comma, else a comma.",
       "type": "callback:dedup",
       "pattern": "[,.:;!?]{2,}"
     },
@@ -585,20 +585,20 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Tidies whitespace/commas around newlines (entry 1) + deletes a comma/period glued before a hyphen (entry 2).",
+      "note": "",
       "type": "regex-list",
       "entries": [
         {
           "pattern": "[ \\t]*,?[ \\t]*(\\n+)[ \\t]*,?[ \\t]*",
           "replacement": "\\1",
           "label": "tidy-newlines",
-          "note": "Around a dictated newline, collapses optional whitespace + optional comma each side, keeping the newline."
+          "note": "Collapses surrounding whitespace and a stray comma on each side of a newline, keeping the newline."
         },
         {
           "pattern": "(?:,|\\.)(- |-)",
           "replacement": "",
           "label": "delete-punct-before-hyphen",
-          "note": "Deletes a comma/period glued before a hyphen, including the hyphen: 'a,-b'→'ab'."
+          "note": "Removes a comma or period stuck before a hyphen, along with the hyphen: a,-b → ab."
         }
       ]
     },
@@ -611,7 +611,7 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Uppercases the first letter after '.?!'+whitespace or after a newline (whitespace required, so 'x.y' is untouched).",
+      "note": "Capitalizes the first letter after a . ? ! plus whitespace, or after a newline (whitespace required, so 'x.y' is untouched).",
       "type": "callback:upper",
       "pattern": "([.?!]\\s+|\\n+\\s*)([a-zäöüß])"
     },
@@ -624,7 +624,7 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Terminal step: lstrip/rstrip space, tab, CR — but NOT newline, so a dictated leading/trailing 'neue Zeile' survives.",
+      "note": "Trims leading/trailing spaces, tabs, and carriage returns, but keeps newlines (so a leading/trailing blank line survives).",
       "type": "terminal"
     }
   ]
