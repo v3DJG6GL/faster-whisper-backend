@@ -1516,8 +1516,15 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
     box-shadow: 0 0 4px rgba(121, 192, 255, 0.5); }
   .mo-dot.inherit { background: transparent; border: 1px solid var(--dim);
     box-sizing: border-box; }
-  .mo-inherits { color: var(--dim); font-style: italic;
-    font-size: var(--fs-sm); }
+  /* "inherits" label + value split so the value reads as data, not as part of
+     the word — matches .ov-inherits on /settings/overrides. */
+  .mo-inherits { display: inline-flex; align-items: baseline; gap: 0.5rem;
+    max-width: 100%; }
+  .mo-inherits .lbl { flex: 0 0 auto; color: var(--dim); font-style: italic;
+    font-family: var(--font-sans); font-size: var(--fs-xs); }
+  .mo-inherits .val { min-width: 0; color: var(--fg);
+    font-family: var(--font-mono); font-size: var(--fs-sm);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   /* Diff-to-global mode: dim rows whose value matches the resolved global. */
   .mo-mainpane.diff-mode .mo-row[data-matches-global="true"] {
     opacity: 0.45; filter: grayscale(0.6); }
@@ -2145,6 +2152,18 @@ function modelOverridesEditor(name, v) {
     return String(v);
   }
 
+  // Fill a .mo-inherits span with a dim "inherits" label + the brighter
+  // inherited value, split so the value reads as data (used by the initial
+  // render AND the live refreshMarkers patch, which rewrites this in place).
+  function fillInherits(el, v) {
+    el.textContent = '';
+    const lbl = document.createElement('span');
+    lbl.className = 'lbl'; lbl.textContent = 'inherits';
+    const val = document.createElement('span');
+    val.className = 'val'; val.textContent = fmtValue(v);
+    el.appendChild(lbl); el.appendChild(val);
+  }
+
   // -------- live marker refresh ------------------------------------------
   // Recompute the per-row dot / data-matches-global / "inherits {global}"
   // text and the sidebar override count + dot, WITHOUT rebuilding any input
@@ -2186,7 +2205,7 @@ function modelOverridesEditor(name, v) {
       // IS overridden, the input widget shows the override value — already
       // live via the input element itself; no DOM patch needed.)
       const inh = row.querySelector('.mo-inherits');
-      if (inh) inh.textContent = 'inherits ' + fmtValue(globalVal);
+      if (inh) fillInherits(inh, globalVal);
     }
   }
 
@@ -2458,7 +2477,7 @@ function modelOverridesEditor(name, v) {
     } else {
       const inh = document.createElement('span');
       inh.className = 'mo-inherits';
-      inh.textContent = 'inherits ' + fmtValue(globalVal);
+      fillInherits(inh, globalVal);
       valueCell.appendChild(inh);
     }
     row.appendChild(valueCell);
