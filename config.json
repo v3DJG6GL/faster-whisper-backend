@@ -354,7 +354,7 @@
       "seeded": true,
       "exposed": false,
       "tags": [
-        "whisper-punct"
+        "manual-punctation"
       ],
       "note": "Strips the sentence punctuation Whisper auto-adds. Formerly 'strip-whisper-punctuation'; the trailing-period trim was split out into the separate 'strip-trailing-period' card that runs just before this one.",
       "type": "regex-list",
