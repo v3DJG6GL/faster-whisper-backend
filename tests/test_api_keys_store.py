@@ -145,6 +145,43 @@ def test_last_used_by_user_batched_max(api_keys_db):
     assert m[c] == 300.0         # 500.0 belonged to a now-revoked key
 
 
+def test_rename_profile_refs_cascades_lists_allowlist_and_wildcard(api_keys_db):
+    import json
+    ak = api_keys_db
+    conn = ak._require_conn()
+    # User binding: 'old' appears in BOTH the ordered profiles list and the
+    # allowlist; an unrelated profile and the '*' wildcard must survive untouched.
+    u = ak.create_user("u", is_admin=False)
+    conn.execute("UPDATE users SET permissions=? WHERE id=?", (json.dumps({
+        "pages": {}, "config": {"direct": {}, "profiles": ["old", "keep"],
+                                "allowed_override_profiles": ["old", "*"]}}), u))
+    # Two key bindings — one active, one revoked (migrated all the same so no
+    # dangling references survive anywhere).
+    _, k = ak.create_key(u)
+    conn.execute("UPDATE api_keys SET config=? WHERE id=?",
+                 (json.dumps({"direct": {}, "profiles": ["old"]}), k["id"]))
+    _, kr = ak.create_key(u)
+    conn.execute("UPDATE api_keys SET config=? WHERE id=?",
+                 (json.dumps({"direct": {}, "profiles": ["old"]}), kr["id"]))
+    ak.revoke_key(kr["id"])
+
+    assert ak.rename_profile_refs("old", "new") == 3   # user row + 2 key rows
+
+    uc = ak.get_user_config(u)
+    assert uc["profiles"] == ["new", "keep"]
+    assert uc["allowed_override_profiles"] == ["new", "*"]   # wildcard preserved
+    assert ak.get_key_config(k["id"])["profiles"] == ["new"]
+    # The revoked key is filtered by get_key_config, so read it raw to confirm
+    # its stored binding migrated too.
+    raw = conn.execute("SELECT config FROM api_keys WHERE id=?",
+                        (kr["id"],)).fetchone()["config"]
+    assert json.loads(raw)["profiles"] == ["new"]
+
+    # No-op rename (same name) and an absent source name touch nothing.
+    assert ak.rename_profile_refs("new", "new") == 0
+    assert ak.rename_profile_refs("ghost", "x") == 0
+
+
 # ---------------------------------------------------------------------------
 # create_key validation
 # ---------------------------------------------------------------------------

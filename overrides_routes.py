@@ -20,7 +20,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 import api_keys_store
 import config as cfg
@@ -194,6 +194,72 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
                 client_host, sorted(written.keys()))
     return JSONResponse({
         "saved": sorted(written.keys()),
+        **applied,
+        "requires_restart": bool(applied["cold_pending"]),
+    })
+
+
+class _RenameProfileIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    old: str = Field(min_length=1)
+    new: str = Field(min_length=1)
+
+
+@router.post("/profiles/rename",
+             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONResponse:
+    """Rename an override profile (its dict key in OVERRIDE_PROFILES) and cascade
+    the new name through every per-user / per-key binding that references it —
+    the binding `profiles` list and `allowed_override_profiles` allowlist. The
+    profile's overrides are preserved untouched.
+
+    Unlike delete (which refuses an in-use profile and asks the admin to unbind
+    first), rename FOLLOWS the references so in-use bindings keep resolving — the
+    whole point of renaming is usually to retitle a profile that is already in
+    use. The library's dict order is irrelevant (the page sorts for display), so
+    the rename keeps the surviving overrides exactly and only swaps the key."""
+    profiles = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
+    old = payload.old.strip()
+    new = payload.new.strip().lower()
+    if old not in profiles:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown profile {old!r}")
+    if new == old:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "new name is the same as the current name")
+    if not config_store.TAG_RE.match(new):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "invalid profile name (a-z 0-9 -, max 32, must start "
+                            "with a letter or digit)")
+    if new in profiles:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            f"a profile named {new!r} already exists")
+
+    # 1) Rename the key in OVERRIDE_PROFILES (preserve insertion order), then
+    #    persist + hot-apply through the same path /state uses.
+    renamed = {(new if k == old else k): v for k, v in profiles.items()}
+    try:
+        written = config_store.save_overrides({"OVERRIDE_PROFILES": renamed})
+    except ValidationError as e:
+        return JSONResponse(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            content={"errors": config_store.format_validation_errors(e)},
+        )
+    except OSError as e:
+        logger.error("[overrides] rename save failed: %s", e)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            f"could not write config.local.json: {e}")
+
+    # 2) Cascade the new name through all bindings (now that OVERRIDE_PROFILES
+    #    holds the new key, the binding set stays referentially consistent).
+    affected = api_keys_store.rename_profile_refs(old, new)
+
+    import admin_routes
+    applied = await admin_routes._apply_hot_changes(written)
+    client_host = request.client.host if request.client else "?"
+    logger.info("[overrides] profile renamed %r->%r from=%s bindings=%d",
+                old, new, client_host, affected)
+    return JSONResponse({
+        "ok": True, "old": old, "new": new, "bindings_updated": affected,
         **applied,
         "requires_restart": bool(applied["cold_pending"]),
     })
@@ -604,6 +670,8 @@ window._renderWaterfall = (function () {
     nb.onclick = newProfile;
     acts.appendChild(nb);
     if (sel) {
+      var rb = document.createElement('button'); rb.textContent = '✎ rename';
+      rb.onclick = renameProfile; acts.appendChild(rb);
       var db = document.createElement('button'); db.textContent = '⧉ duplicate';
       db.onclick = duplicateProfile; acts.appendChild(db);
       var xb = document.createElement('button'); xb.textContent = '× delete';
@@ -625,6 +693,49 @@ window._renderWaterfall = (function () {
     while (profiles[name]) { name = base + i; i++; }
     profiles[name] = JSON.parse(JSON.stringify(profiles[sel]));
     sel = name; render(); refreshButtons();
+  }
+  function renameProfile() {
+    if (!sel) return;
+    var cur = sel;
+    var nn = (prompt('Rename profile "' + cur + '" to (a-z0-9-, max 32):', cur)
+              || '').trim().toLowerCase();
+    if (!nn || nn === cur) return;
+    if (!/^[a-z0-9][a-z0-9-]{0,31}$/.test(nn)) { alert('invalid profile name'); return; }
+    if (profiles[nn]) { alert('a profile named "' + nn + '" already exists'); return; }
+    // Never-saved profile (created since the last load) → no binding can
+    // reference it yet, so just move the key in the working copy; the rename
+    // rides along on the next Save like any other edit.
+    if (!(S.profiles && S.profiles[cur])) {
+      profiles[nn] = profiles[cur]; delete profiles[cur];
+      sel = nn; render(); refreshButtons();
+      return;
+    }
+    // Saved profile → rename on the server, which also cascades the new name
+    // through every binding that references it. That operates on PERSISTED
+    // state and reloads, so require a clean working copy first (else unsaved
+    // edits would be silently dropped by the reload).
+    if (dirty()) {
+      alert('Save or discard your unsaved changes before renaming "' + cur + '".');
+      return;
+    }
+    doRename(cur, nn);
+  }
+  async function doRename(oldName, newName) {
+    setStatus('renaming…');
+    var r = await api('POST', '/settings/overrides/profiles/rename',
+                      { old: oldName, new: newName });
+    if (await guard403(r)) return;
+    if (r.status === 409) {
+      setStatus('a profile named "' + newName + '" already exists', 'err'); return;
+    }
+    if (!r.ok) { setStatus('rename failed (' + r.status + ')', 'err'); return; }
+    var j = await r.json();
+    await loadState(true);                  // canonical reload (profiles + usage)
+    sel = profiles[newName] ? newName : (profileNames()[0] || null);
+    render(); refreshButtons();
+    var n = (j && j.bindings_updated) || 0;
+    setStatus('renamed' + (n ? ' · ' + n + ' binding' + (n === 1 ? '' : 's')
+                                  + ' updated' : ''), 'ok');
   }
   function deleteProfile() {
     if (!sel) return;

@@ -149,3 +149,70 @@ def test_per_key_config_unknown_profile_400(client, make_user_key):
     r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h,
                      json={"overrides": {}, "profiles": ["ghost"], "locks": []})
     assert r.status_code == 400
+
+
+# --- profile rename (key migration + reference cascade) --------------------
+
+def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
+    import api_keys_store
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8)
+    uid, _ = make_user_key("alice", is_admin=False)
+    # alice references the profile in BOTH her ordered list and her allowlist
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
+                                "locks": [],
+                                "allowed_override_profiles": ["clinic-de"]}})
+    assert r.status_code == 200, r.text
+    kid = client.get(f"{PERMS}/{uid}/keys", headers=h).json()["keys"][0]["id"]
+    r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=h,
+                     json={"overrides": {}, "profiles": ["clinic-de"], "locks": []})
+    assert r.status_code == 200, r.text
+
+    r = client.post(f"{OV}/profiles/rename", headers=h,
+                    json={"old": "clinic-de", "new": "clinic-deutsch"})
+    assert r.status_code == 200, r.text
+    assert r.json()["bindings_updated"] == 2          # user row + key row
+
+    j = client.get(f"{OV}/state", headers=h).json()
+    assert "clinic-de" not in j["profiles"]
+    assert j["profiles"]["clinic-deutsch"]["BEAM_SIZE"] == 8   # overrides preserved
+
+    uc = api_keys_store.get_user_config(uid)
+    assert uc["profiles"] == ["clinic-deutsch"]
+    assert uc["allowed_override_profiles"] == ["clinic-deutsch"]
+    assert api_keys_store.get_key_config(kid)["profiles"] == ["clinic-deutsch"]
+
+    # The renamed profile still resolves end-to-end under its new name.
+    rj = client.get(f"{OV}/resolve", headers=h,
+                    params={"user_id": uid, "model": "whisper-1"}).json()
+    assert rj["fields"]["DEFAULT_LANGUAGE"]["winner_layer"] \
+        == "user.profile:clinic-deutsch"
+
+
+def test_rename_profile_unknown_404(client, make_user_key):
+    _, _, h = _admin(make_user_key)
+    r = client.post(f"{OV}/profiles/rename", headers=h,
+                    json={"old": "ghost", "new": "phantom"})
+    assert r.status_code == 404
+
+
+def test_rename_profile_collision_409(client, make_user_key):
+    _, _, h = _admin(make_user_key)
+    # Both profiles must coexist — the page always saves the full dict.
+    client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": {
+        "a-prof": {"BEAM_SIZE": 5}, "b-prof": {"BEAM_SIZE": 6}}})
+    r = client.post(f"{OV}/profiles/rename", headers=h,
+                    json={"old": "a-prof", "new": "b-prof"})
+    assert r.status_code == 409
+
+
+def test_rename_profile_bad_name_and_noop_400(client, make_user_key):
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "good", BEAM_SIZE=5)
+    # invalid characters / shape
+    assert client.post(f"{OV}/profiles/rename", headers=h,
+                       json={"old": "good", "new": "Bad Name!"}).status_code == 400
+    # renaming to the current name is a no-op error
+    assert client.post(f"{OV}/profiles/rename", headers=h,
+                       json={"old": "good", "new": "good"}).status_code == 400

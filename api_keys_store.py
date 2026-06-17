@@ -858,6 +858,69 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
     return clean
 
 
+def _rewrite_profile_in_binding(binding: Any, old: str, new: str) -> bool:
+    """In-place rename old→new inside a stored binding's profile references —
+    the ordered `profiles` list and the `allowed_override_profiles` allowlist.
+    Returns True iff anything changed. A `"*"` wildcard in the allowlist is left
+    untouched (only exact-name entries are migrated)."""
+    if not isinstance(binding, dict):
+        return False
+    changed = False
+    for field in ("profiles", "allowed_override_profiles"):
+        arr = binding.get(field)
+        if isinstance(arr, list) and old in arr:
+            binding[field] = [new if p == old else p for p in arr]
+            changed = True
+    return changed
+
+
+def rename_profile_refs(old: str, new: str) -> int:
+    """Migrate every stored reference to override-profile `old` → `new` across
+    all user and key config bindings, in one transaction. Returns the number of
+    bindings touched.
+
+    The overrides page renames a profile by its dict key in OVERRIDE_PROFILES;
+    that key is also referenced by per-user and per-key bindings (their
+    `profiles` list + `allowed_override_profiles` allowlist). Without this
+    cascade a rename would orphan in-use bindings — so unlike delete (which is
+    guarded against in-use profiles), rename follows the references. Revoked
+    rows are migrated too: it is a pure key-string substitution kept consistent
+    everywhere, never widening access."""
+    if old == new:
+        return 0
+    import config_store
+    conn = _require_conn()
+    touched = 0
+    with _lock:
+        # Per-user bindings live under the permissions JSON's "config" sub-key.
+        for r in conn.execute("SELECT id, permissions FROM users").fetchall():
+            perms = _parse_permissions(r["permissions"])
+            if _rewrite_profile_in_binding(perms.get("config"), old, new):
+                conn.execute("UPDATE users SET permissions = ? WHERE id = ?",
+                             (json.dumps(perms), r["id"]))
+                touched += 1
+        # Per-key bindings are the api_keys.config column (the binding itself).
+        for r in conn.execute("SELECT id, config FROM api_keys").fetchall():
+            raw = r["config"]
+            if not raw:
+                continue
+            try:
+                binding = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if _rewrite_profile_in_binding(binding, old, new):
+                conn.execute("UPDATE api_keys SET config = ? WHERE id = ?",
+                             (json.dumps(binding), r["id"]))
+                touched += 1
+        if touched:
+            _rebuild_index_locked()
+    if touched:
+        config_store.bump_config_version()   # live idents re-resolve
+    logger.info("[auth] profile rename %r->%r cascaded to %d binding(s)",
+                old, new, touched)
+    return touched
+
+
 def is_locked_down() -> bool:
     """Server is locked down iff at least one active admin key exists.
     Open mode (return False) lets every request through as the synthetic
