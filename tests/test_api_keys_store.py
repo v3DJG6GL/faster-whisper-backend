@@ -98,10 +98,11 @@ def test_lockdown_transitions(api_keys_db):
 def test_lookup_hit_miss_and_falsy(api_keys_db):
     ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
-    raw, rec = ak.create_key(uid)
+    raw, rec = ak.create_key(uid, label="my-laptop")
     got = ak.lookup_by_raw_key(raw)
     assert got["user_id"] == uid and got["key_id"] == rec["id"]
     assert got["is_admin"] is False
+    assert got["key_label"] == "my-laptop"   # cached for the per-request log block
     assert ak.lookup_by_raw_key("wk_nope") is None
     assert ak.lookup_by_raw_key("") is None
 
@@ -404,11 +405,14 @@ def test_open_mode_user_is_admin():
 def test_update_key_label_renames(api_keys_db):
     ak = api_keys_db
     uid = ak.create_user("renamer", is_admin=False)
-    _, rec = ak.create_key(uid, label="old")
+    raw, rec = ak.create_key(uid, label="old")
     out = ak.update_key_label(rec["id"], "  fresh  ")
     assert out is not None and out["label"] == "fresh"  # trimmed
     rows = ak.list_keys(uid)
     assert any(k["id"] == rec["id"] and k["label"] == "fresh" for k in rows)
+    # The relabel must refresh the cached auth-index label too (the log block
+    # reads it from there), not just the DB row.
+    assert ak.lookup_by_raw_key(raw)["key_label"] == "fresh"
 
 
 def test_update_key_label_validates(api_keys_db):

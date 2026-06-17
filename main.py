@@ -725,6 +725,7 @@ def _format_request_block(
     user_id: str | None = None,
     key_id: str | None = None,
     username: str | None = None,
+    key_label: str | None = None,
 ) -> str:
     """Full per-request log block. `steps` is the per-pipeline trace; passed
     in only when cfg.TRACE_ENABLED so the block stays a single message.
@@ -807,7 +808,9 @@ def _format_request_block(
         who = f"{username} ({_short_id(user_id)})" if username else _short_id(user_id)
         lines.append(f"    {'user':<{_NAME_COL - 4}}{who}")
         if key_id:
-            lines.append(f"    {'key':<{_NAME_COL - 4}}{_short_id(key_id)}")
+            which = (f"{key_label} ({_short_id(key_id)})"
+                     if key_label else _short_id(key_id))
+            lines.append(f"    {'key':<{_NAME_COL - 4}}{which}")
         if ident is not None and ident.profiles_applied:
             lines.append(f"    {'profiles':<{_NAME_COL - 4}}{' → '.join(ident.profiles_applied)}")
         if ident is not None and ident.layers:
@@ -2379,6 +2382,7 @@ async def transcribe(
                 user_id=user.get("user_id"),
                 key_id=user.get("key_id"),
                 username=user.get("username"),
+                key_label=user.get("key_label"),
             ))
 
             # Persist the trace to the durable recent-transcriptions store

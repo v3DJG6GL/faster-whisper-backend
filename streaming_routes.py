@@ -554,7 +554,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     audio_source=audio_source_label,
                     ident=ident, overrides_ignored=overrides_ignored,
                     user_id=user.get("user_id"), key_id=user.get("key_id"),
-                    username=user.get("username")))
+                    username=user.get("username"), key_label=user.get("key_label")))
             except Exception as _le:  # noqa: BLE001
                 logger.warning("[stream %s] log block failed: %s", session_id[:8], _le)
 

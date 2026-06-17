@@ -283,7 +283,7 @@ def _rebuild_index_locked() -> None:
     global _KEY_INDEX, _IS_LOCKED_DOWN
     conn = _require_conn()
     rows = conn.execute(
-        "SELECT k.key_hash, k.id AS key_id, u.id AS user_id, u.username,"
+        "SELECT k.key_hash, k.id AS key_id, k.label, u.id AS user_id, u.username,"
         " u.is_admin, u.permissions"
         " FROM api_keys k JOIN users u ON u.id = k.user_id"
         " WHERE k.revoked_ts IS NULL AND u.revoked_ts IS NULL"
@@ -292,6 +292,7 @@ def _rebuild_index_locked() -> None:
     for r in rows:
         idx[r["key_hash"]] = {
             "key_id": r["key_id"],
+            "key_label": r["label"] or "",
             "user_id": r["user_id"],
             "username": r["username"],
             "is_admin": bool(r["is_admin"]),
@@ -493,9 +494,9 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
 def update_key_label(key_id: str, label: str) -> dict[str, Any] | None:
     """Rename an existing key's display label. Returns the refreshed record
     (same shape as `list_keys` rows), or None if no key has that id. Same
-    label rules as `create_key` — required + capped at 128 chars. Renaming
-    only touches the display label, never the secret or the key index, so no
-    `_rebuild_index_locked()` is needed."""
+    label rules as `create_key` — required + capped at 128 chars. The label is
+    cached in the auth index (so the per-request log block can show it without a
+    DB hit), so a relabel rebuilds the index — rare admin action, cheap enough."""
     label = (label or "").strip()
     if not label:
         raise ValueError("label is required")
@@ -512,6 +513,7 @@ def update_key_label(key_id: str, label: str) -> dict[str, Any] | None:
         row = conn.execute(
             "SELECT * FROM api_keys WHERE id = ?", (key_id,),
         ).fetchone()
+        _rebuild_index_locked()   # refresh the cached key_label for the log block
     logger.info("[auth] key relabeled kid=%s label=%s", key_id[:8], label)
     return _row_to_key_dict(row) if row else None
 
@@ -605,7 +607,7 @@ def revoke_key(key_id: str) -> None:
 
 def lookup_by_raw_key(raw_key: str) -> dict[str, Any] | None:
     """Resolve a raw bearer key to its active user record. Returns
-    `{key_id, user_id, username, is_admin}` or None on miss.
+    `{key_id, key_label, user_id, username, is_admin}` or None on miss.
 
     O(1) via in-memory hash index. Touches last_used_ts (debounced)."""
     if not raw_key:
