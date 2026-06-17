@@ -828,8 +828,18 @@ def _format_request_block(
     lines.append(f"  RAW WHISPER  {raw!r}")
     lines.append(rule)
     if steps:
-        plural = "s" if len(steps) != 1 else ""
-        lines.append(f"  PIPELINE  ({len(steps)} step{plural} changed text)")
+        # Count only steps that actually rewrote the text (before != after) as
+        # "changed"; the rest (EXCLUDED for this model, globally disabled, no-op)
+        # are "unchanged". This matches the /quick-config and /reports viewers,
+        # which render the same trace and split it the same way — the header used
+        # to print len(steps) and label them all "changed", overcounting skips.
+        changed = sum(1 for _, before, after in steps if before != after)
+        unchanged = len(steps) - changed
+        plural = "s" if changed != 1 else ""
+        header = f"  PIPELINE  ({changed} step{plural} changed text"
+        if unchanged:
+            header += f", {unchanged} unchanged"
+        lines.append(header + ")")
         for name, before, after in steps:
             lines.append(f"    ▸ {name}")
             lines.append(f"        {before!r}")

@@ -130,6 +130,44 @@ def test_request_block_identity_section():
     assert "Identity" not in block2
 
 
+def test_request_block_pipeline_header_counts_only_changed_steps():
+    """The PIPELINE header must count only steps that rewrote the text
+    (before != after) as "changed" — skipped/EXCLUDED no-op rows are
+    "unchanged". Mirrors the /quick-config + /reports viewers, which split the
+    same trace the same way; the header used to print the total and label every
+    row "changed", overcounting skips (the user-reported /logs vs /quick-config
+    discrepancy)."""
+    from types import SimpleNamespace
+    import main
+    info = SimpleNamespace(language="en", language_probability=1.0,
+                           duration=1.0, duration_after_vad=1.0)
+    seg = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
+            "cr": 1.2, "temp": 0.0, "text": "hi"}]
+    # 7 no-op (EXCLUDED) rows + 1 that actually trimmed → 1 changed, 7 unchanged.
+    steps = [(f"#{i} excluded [EXCLUDED for m]", " hi", " hi") for i in range(7)]
+    steps.append(("#18 Trim edges", " hi", "hi"))
+    block = main._format_request_block(
+        file_label="x", model_name="m", info=info, kwargs={},
+        seg_diag=seg, raw=" hi", final="hi", steps=steps)
+    assert "PIPELINE  (1 step changed text, 7 unchanged)" in block
+    assert "8 step" not in block                            # no more total-as-changed
+
+    # All-changed → no "unchanged" tail, plural "steps".
+    block2 = main._format_request_block(
+        file_label="x", model_name="m", info=info, kwargs={},
+        seg_diag=seg, raw="a", final="c",
+        steps=[("#1 x", "a", "b"), ("#2 y", "b", "c")])
+    assert "PIPELINE  (2 steps changed text)" in block2
+    assert "unchanged" not in block2
+
+    # Nothing changed (every rule excluded) → "0 steps changed text, N unchanged".
+    block3 = main._format_request_block(
+        file_label="x", model_name="m", info=info, kwargs={},
+        seg_diag=seg, raw="hi", final="hi",
+        steps=[("#1 x", "hi", "hi"), ("#2 y", "hi", "hi")])
+    assert "PIPELINE  (0 steps changed text, 2 unchanged)" in block3
+
+
 def test_request_block_identity_always_shows_user_even_without_layers():
     """An authenticated caller with NO per-identity binding still gets an
     Identity block naming them + an explicit 'inherits' note — so a missing
