@@ -203,3 +203,37 @@ def test_stream_prompt_sentinel_inherit_clear_value(
     assert _run({}) == "SERVER PROMPT"            # absent → inherit
     assert _run({"prompt": ""}) is None           # explicit empty → clear
     assert _run({"prompt": "my terms"}) == "my terms"   # value → verbatim
+
+
+def test_setup_window_error_delivers_internal_error_and_closes(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    """A failure in the handshake→loop setup window (after the audio consumer task
+    has started, before the receive loop's own cleanup is armed) must still deliver
+    an `internal` error frame and close without hanging. The error reply is sent
+    under the same send-lock as every other send — hoisted above the try so it is
+    bound even on an early failure — and the consumer is cancelled in the finally
+    (no orphaned task). Guards the previously-untested outer error path."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    _, raw_alice = make_user_key("alice")
+
+    real_cfg_for = app_module.cfg_for
+
+    def boom(model_id, field, ident=None):
+        # The per-identity idle-timeout read happens AFTER the consumer task is
+        # created — i.e. squarely inside the setup window this path guards.
+        if field == "STREAMING_IDLE_TIMEOUT_SEC":
+            raise RuntimeError("kaboom in setup window")
+        return real_cfg_for(model_id, field, ident)
+
+    monkeypatch.setattr(app_module, "cfg_for", boom)
+
+    with client.websocket_connect(
+            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        msgs = _drain(ws)
+
+    errors = [m for m in msgs if m.get("type") == "error"]
+    assert errors, f"expected an internal error frame, got {msgs!r}"
+    assert errors[0]["code"] == "internal"
+    assert "kaboom" in errors[0]["message"]

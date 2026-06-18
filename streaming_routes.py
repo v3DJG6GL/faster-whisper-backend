@@ -236,6 +236,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
     session: "StreamSession | None" = None
     transport = None
     consumer_task: "asyncio.Task | None" = None
+    # Serializes EVERY ws send across the concurrent producer (receive loop) and
+    # consumer (decode) tasks: two concurrent sends could interleave. Created here
+    # (before the try) so the error handler below can guard its send even when
+    # setup fails before the main body runs.
+    send_lock = asyncio.Lock()
     try:
         # ---- handshake: first message is the JSON config (binary → defaults) ----
         # An idle/abandoned/dead connection must not hold a session slot, so bound
@@ -448,12 +453,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # every final is correct — it never accumulates.
         out_prefix = main.cfg_for(final_model, "OUTPUT_PREFIX", ident) or ""
         out_suffix = main.cfg_for(final_model, "OUTPUT_SUFFIX", ident) or ""
-
-        # Serializes EVERY ws send across the producer (receive loop) and the
-        # consumer/decode task, which now run concurrently (see the audio queue
-        # below). Starlette allows receive-in-one-task + send-in-another, but two
-        # concurrent sends could interleave — this lock prevents that.
-        send_lock = asyncio.Lock()
 
         async def emit(message):
             if message.get("type") == "final":
@@ -771,8 +770,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
     except Exception as exc:  # noqa: BLE001
         logger.exception("[stream %s] error: %s", session_id[:8], exc)
         try:
-            await ws.send_json({"type": "error", "code": "internal", "message": str(exc)})
-            await ws.close()
+            # Lock like every other send: on a setup-window failure the consumer
+            # task may still be mid-emit (it is cancelled later, in the finally),
+            # so an unguarded send here could interleave with it.
+            async with send_lock:
+                await ws.send_json({"type": "error", "code": "internal", "message": str(exc)})
+                await ws.close()
         except Exception:  # noqa: BLE001
             pass
     finally:
