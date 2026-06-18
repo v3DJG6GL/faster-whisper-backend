@@ -313,8 +313,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[stream %s] model load failed: %s", session_id[:8], exc)
+            # Generic client message — the raw exception text can carry model
+            # dir/filesystem paths; the detail is already in the server log above.
             await ws.send_json({"type": "error", "code": "model_load_failed",
-                                "message": str(exc)})
+                                "message": "model could not be loaded"})
             await ws.close()
             return
 
@@ -774,7 +776,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # task may still be mid-emit (it is cancelled later, in the finally),
             # so an unguarded send here could interleave with it.
             async with send_lock:
-                await ws.send_json({"type": "error", "code": "internal", "message": str(exc)})
+                # Generic client message — never forward the raw exception text
+                # (paths/internals); the full traceback is logged just above.
+                await ws.send_json({"type": "error", "code": "internal", "message": "internal error"})
                 await ws.close()
         except Exception:  # noqa: BLE001
             pass

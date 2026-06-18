@@ -236,4 +236,7 @@ def test_setup_window_error_delivers_internal_error_and_closes(
     errors = [m for m in msgs if m.get("type") == "error"]
     assert errors, f"expected an internal error frame, got {msgs!r}"
     assert errors[0]["code"] == "internal"
-    assert "kaboom" in errors[0]["message"]
+    # Security: the client frame must NOT leak the raw exception text (it can
+    # carry filesystem/internal detail) — it is logged server-side instead.
+    assert "kaboom" not in errors[0]["message"]
+    assert errors[0]["message"] == "internal error"
