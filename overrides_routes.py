@@ -233,7 +233,7 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     use. The library's dict order is irrelevant (the page sorts for display), so
     the rename keeps the surviving overrides exactly and only swaps the key."""
     profiles = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
-    old = payload.old.strip()
+    old = payload.old.strip().lower()
     new = payload.new.strip().lower()
     if old not in profiles:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"unknown profile {old!r}")
