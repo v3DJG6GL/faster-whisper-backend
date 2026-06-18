@@ -2008,7 +2008,7 @@ let _rlDragSrc = null;
 // dragend/drop. One native drag at a time per tab, so a single shared instance
 // (DRAG_AUTOSCROLL) serves every reorder list on the page.
 function makeDragAutoScroll() {
-  let raf = null, lastY = 0, scroller = null;   // scroller === null → window
+  let raf = null, lastY = 0, scroller = null, tracking = null, topInset = 0;  // scroller === null → window
   function resolve(listEl) {
     let el = listEl && listEl.parentElement;
     while (el) {
@@ -2020,10 +2020,25 @@ function makeDragAutoScroll() {
     }
     scroller = null;
   }
+  // A sticky/fixed header pinned to the top of the viewport overlaps the top
+  // hot-zone, so the zone must START at the header's BOTTOM, not at y=0. Without
+  // this a tall sticky header swallows the whole top zone and you have to shove
+  // the cursor to the very window edge to scroll up (the bottom has no such
+  // overlap — which is exactly why only the top felt broken). Pinned at top:0,
+  // the header's bottom edge is constant during a drag, so resolve it once.
+  function computeTopInset() {
+    const hdr = document.querySelector('header');
+    if (!hdr) return 0;
+    const pos = getComputedStyle(hdr).position;
+    if (pos !== 'sticky' && pos !== 'fixed') return 0;
+    const r = hdr.getBoundingClientRect();
+    return (r.top <= 1 && r.bottom > 0) ? r.bottom : 0;
+  }
   function tick() {
     let top, bottom;
     if (scroller) { const r = scroller.getBoundingClientRect(); top = r.top; bottom = r.bottom; }
     else { top = 0; bottom = window.innerHeight; }
+    top = Math.max(top, topInset);                // clear a sticky header
     const zone = Math.max(48, Math.min((bottom - top) * 0.18, 140));   // hot-zone px
     let m = 0;                                    // -1..1, sign = scroll direction
     if (lastY < top + zone) m = -Math.min(1, (top + zone - lastY) / zone);
@@ -2036,9 +2051,22 @@ function makeDragAutoScroll() {
     raf = requestAnimationFrame(tick);
   }
   return {
-    begin(listEl) { resolve(listEl); },
+    begin(listEl) {
+      resolve(listEl);
+      topInset = computeTopInset();
+      // Track the pointer at the document level for the whole drag, so the loop
+      // keeps a LIVE y even when the cursor is over the sticky header (where the
+      // list's own dragover never fires) — that's what lets the top edge scroll
+      // without having to reach the very window edge.
+      tracking = (e) => { lastY = e.clientY; if (raf === null) raf = requestAnimationFrame(tick); };
+      document.addEventListener('dragover', tracking, true);
+    },
     move(y) { lastY = y; if (raf === null) raf = requestAnimationFrame(tick); },
-    stop() { if (raf !== null) cancelAnimationFrame(raf); raf = null; scroller = null; },
+    stop() {
+      if (raf !== null) cancelAnimationFrame(raf);
+      raf = null; scroller = null; topInset = 0;
+      if (tracking) { document.removeEventListener('dragover', tracking, true); tracking = null; }
+    },
   };
 }
 const DRAG_AUTOSCROLL = makeDragAutoScroll();
