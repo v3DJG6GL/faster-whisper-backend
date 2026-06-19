@@ -25,7 +25,10 @@ import time
 from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel, Field, ValidationError, ValidationInfo, field_validator,
+    model_validator,
+)
 
 
 _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -1480,45 +1483,35 @@ class AdminConfig(BaseModel):
 
     @field_validator("PIPELINE_RULES")
     @classmethod
-    def _validate_pipeline_rules(cls, v: list[Any] | None) -> list[Any] | None:
+    def _validate_pipeline_rules(
+            cls, v: list[Any] | None, info: ValidationInfo) -> list[Any] | None:
         """Validate the unified pipeline rules list:
-          1. Every regex pattern compiles AND survives a 2 s catastrophic-
+          1. Every regex pattern compiles (always). On an explicit SAVE of
+             user/admin-submitted rules (the `guard_regex` validation context)
+             each pattern ALSO survives an OUT-OF-PROCESS catastrophic-
              backtracking guard against a 1 KB fixture — for callback:* rows the
-             single `pattern`, for regex-list rows EACH entry's `pattern`. (Empty
+             single `pattern`, for regex-list rows EACH entry's `pattern`. The
+             probe runs in a killable subprocess (see regex_guard) because
+             CPython's re engine can't be interrupted in-process. (Empty
              patterns/entries are OK — just a no-op.)
-          2. Each regex-list entry's replacement string survives `re.sub` with its
-             pattern (catches bad backrefs like `\\3` when only 2 groups exist).
+          2. On save, each regex-list entry's replacement string survives
+             `re.sub` with its pattern (catches bad backrefs like `\\3` when only
+             2 groups exist).
           3. Slug uniqueness across the list.
           4. Exactly one terminal rule, and it must be the last entry.
+
+        The load/startup/diff paths validate WITHOUT the `guard_regex` context,
+        so a normal config load only compiles patterns (fast) and never spawns
+        the helper subprocess.
         """
         if v is None:
             return v
-        import threading
-        fixture = "Hallo. Wie geht's? 10.23 Uhr! Bitte. " * 32   # ~1 KB
-
-        def _guard(compiled: "re.Pattern[str]", repl: str, where: str) -> None:
-            """Run compiled.sub(repl, fixture) under a 2 s thread timeout. Raises
-            ValueError(<where> …) on a bad backref/replacement, or on a > 2 s run
-            (likely catastrophic backtracking). err is checked before done: a
-            raising regex leaves done=False, which would else misreport as a
-            timeout."""
-            holder: dict[str, Any] = {"done": False, "err": None}
-            def _run(_c=compiled, _r=repl) -> None:
-                try:
-                    _c.sub(_r, fixture)
-                    holder["done"] = True
-                except Exception as e:
-                    holder["err"] = e
-            t = threading.Thread(target=_run, daemon=True)
-            t.start()
-            t.join(timeout=2.0)
-            if holder["err"] is not None:
-                raise ValueError(f"{where}: regex test failed: {holder['err']}")
-            if not holder["done"]:
-                raise ValueError(
-                    f"{where}: regex took > 2 s on a 1 KB fixture "
-                    "(likely catastrophic backtracking). Simplify the pattern."
-                )
+        # Collect every (where, pattern, replacement) that needs a regex
+        # smoke-test. The actual re.sub probe runs OUT OF PROCESS at the end
+        # (only on save, via the guard_regex context) so a catastrophic-
+        # backtracking pattern can be killed — CPython's re can't be interrupted
+        # in-process.
+        checks: list[tuple[str, str, str]] = []
         seen: set[str] = set()
         terminal_idx: int | None = None
         for idx, rule in enumerate(v):
@@ -1544,12 +1537,13 @@ class AdminConfig(BaseModel):
                     if not epat:
                         continue
                     try:
-                        ecompiled = re.compile(epat)
+                        re.compile(epat)
                     except re.error as e:
                         raise ValueError(
                             f"rule {idx} ({slug!r}) entry {eidx}: invalid regex: {e}")
                     erepl = getattr(entry, "replacement", "") or ""
-                    _guard(ecompiled, erepl, f"rule {idx} ({slug!r}) entry {eidx}")
+                    checks.append(
+                        (f"rule {idx} ({slug!r}) entry {eidx}", epat, erepl))
                 continue
             # callback:* pattern-only rows (lowercase-wordlist / dedup / upper):
             # smoke-test the pattern with an empty replacement.
@@ -1557,15 +1551,21 @@ class AdminConfig(BaseModel):
             if not pattern:
                 continue
             try:
-                compiled = re.compile(pattern)
+                re.compile(pattern)
             except re.error as e:
                 raise ValueError(f"rule {idx} ({slug!r}): invalid regex: {e}")
-            _guard(compiled, "", f"rule {idx} ({slug!r})")
+            checks.append((f"rule {idx} ({slug!r})", pattern, ""))
         if terminal_idx is not None and terminal_idx != len(v) - 1:
             raise ValueError(
                 f"terminal rule must be the last entry "
                 f"(found at index {terminal_idx}, list has {len(v)} rules)"
             )
+        # Out-of-process backtracking + replacement-backref guard. Runs ONLY on
+        # an explicit save of user/admin-submitted rules (guard_regex context),
+        # so load/startup/diff validations never spawn the helper subprocess.
+        if checks and (info.context or {}).get("guard_regex"):
+            import regex_guard
+            regex_guard.validate(checks)
         return v
 
     @model_validator(mode="after")
@@ -1862,7 +1862,8 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
     input — the route handler converts that to a 422 response.
     """
     rules = [{**r, "seeded": True} for r in rules]
-    validated = AdminConfig.model_validate({"PIPELINE_RULES": rules})
+    validated = AdminConfig.model_validate(
+        {"PIPELINE_RULES": rules}, context={"guard_regex": True})
     out_rules = validated.model_dump(exclude_none=True, mode="json")["PIPELINE_RULES"]
     # config.json now holds ALL factory defaults, not just PIPELINE_RULES, so
     # read-modify-write to preserve the sibling scalar keys. A blind whole-file
@@ -1956,7 +1957,9 @@ def save_overrides(payload: dict[str, Any], path: str = OVERRIDES_PATH) -> dict[
         else:
             merged[k] = v
 
-    validated = AdminConfig.model_validate(merged)
+    # guard_regex: run the out-of-process catastrophic-backtracking check —
+    # this is a SAVE of (possibly non-admin) submitted rules.
+    validated = AdminConfig.model_validate(merged, context={"guard_regex": True})
     to_write = validated.model_dump(exclude_none=True, mode="json")
 
     _atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")

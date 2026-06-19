@@ -270,11 +270,45 @@ def test_pipeline_callback_map_skips_pattern_validation():
     assert m.PIPELINE_RULES[0].type == "callback:map"
 
 
+def _ok_on_save(**fields):
+    """Validate as a SAVE would (guard_regex context) — runs the out-of-process
+    regex probe (backref + catastrophic-backtracking guard)."""
+    return cs.AdminConfig.model_validate(fields, context={"guard_regex": True})
+
+
 def test_pipeline_bad_backref_reported():
     # Replacement \3 with one group -> re.sub raises -> "regex test failed".
+    # The .sub probe runs out-of-process on SAVE (guard_regex context).
     with pytest.raises(ValidationError) as ei:
-        _ok(PIPELINE_RULES=[_regex("b", pattern="(a)", replacement=r"\3"), _terminal()])
+        _ok_on_save(PIPELINE_RULES=[_regex("b", pattern="(a)", replacement=r"\3"),
+                                    _terminal()])
     assert "regex test failed" in str(ei.value)
+
+
+def test_pipeline_catastrophic_regex_rejected_on_save(monkeypatch):
+    # A catastrophic-backtracking pattern is rejected on save WITHOUT hanging:
+    # the out-of-process guard is killed on timeout (shortened here).
+    import regex_guard
+    monkeypatch.setattr(regex_guard, "_GUARD_TIMEOUT", 0.5)
+    with pytest.raises(ValidationError) as ei:
+        _ok_on_save(PIPELINE_RULES=[
+            _regex("boom", pattern="(.*a)+$", replacement=""), _terminal()])
+    assert "catastrophic backtracking" in str(ei.value)
+
+
+def test_pipeline_regex_guard_skipped_without_save_context(monkeypatch):
+    # Load / diff validations (no guard_regex context) must NOT run the probe —
+    # so a normal config load never spawns the helper and never hangs on a
+    # stored pattern. A pattern that WOULD be flagged on save validates cleanly.
+    import regex_guard
+    calls = {"n": 0}
+
+    def _spy(*a, **k):
+        calls["n"] += 1
+
+    monkeypatch.setattr(regex_guard, "validate", _spy)
+    _ok(PIPELINE_RULES=[_regex("b", pattern="(a)", replacement=r"\3"), _terminal()])
+    assert calls["n"] == 0
 
 
 def test_pipeline_duplicate_slug():

@@ -231,3 +231,20 @@ def test_v1_not_host_gated_unlike_quick_config(app_module):
     with TestClient(app_module.app, client=("203.0.113.9", 9999)) as c:
         assert c.get("/quick-config/state").status_code == 403
         assert c.get("/v1/pipeline-rules").status_code == 200
+
+
+def test_v1_nonadmin_can_edit_exposed_regex_entries(client, app_module, make_user_key):
+    """A tagged non-admin CAN edit the regex `entries` of an exposed rule — that
+    is the whole point of exposing it. The save-time catastrophic-backtracking
+    guard runs out-of-process (regex_guard) and does not block a valid pattern."""
+    slug = _expose_first_regex_list_rule(app_module)
+    make_user_key("root", is_admin=True)  # flips lockdown
+    _uid, alice = make_user_key("alice", pages={"quick_config": "own"})
+    r = client.patch(
+        "/v1/pipeline-rules",
+        json={"rules_patch": {slug: {"entries": [
+            {"pattern": "behaviour", "replacement": "behavior"}]}}},
+        headers=bearer(alice),
+    )
+    assert r.status_code == 200
+    assert slug in r.json()["saved"]
