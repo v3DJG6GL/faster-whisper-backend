@@ -177,7 +177,7 @@ def merge_wavs(
         for i, sp in enumerate(src_paths):
             pcm, n = read_pcm(sp)
             if n == 0:
-                raise ValueError(f"source {sp} is empty")
+                raise ValueError(f"source {os.path.basename(sp)} is empty")
             res = trimmer(
                 pcm, n,
                 edge_pad_ms=edge_pad_ms,
@@ -209,7 +209,7 @@ def merge_wavs(
         for i, sp in enumerate(src_paths):
             pcm, n = read_pcm(sp)
             if n == 0:
-                raise ValueError(f"source {sp} is empty")
+                raise ValueError(f"source {os.path.basename(sp)} is empty")
             dur_ms = int(round(n * 1000 / _REQ_RATE))
             members.append({
                 "lead_ms": 0,

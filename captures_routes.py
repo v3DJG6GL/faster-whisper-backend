@@ -612,9 +612,10 @@ async def reprocess_capture_api(
     try:
         new_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident)
     except Exception as e:
+        logger.error("[captures] reprocess pipeline failed on `final`: %s", e)
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"pipeline failed on `final`: {e}",
+            "pipeline reprocessing failed",
         )
     # When no captures-specific excludes are configured, the training-text
     # pass would produce byte-identical output to `final` — skip the
@@ -628,9 +629,11 @@ async def reprocess_capture_api(
                 ident=ident,
             )
         except Exception as e:
+            logger.error(
+                "[captures] reprocess pipeline failed on `text_for_training`: %s", e)
             raise HTTPException(
                 status.HTTP_500_INTERNAL_SERVER_ERROR,
-                f"pipeline failed on `text_for_training`: {e}",
+                "pipeline reprocessing failed",
             )
     else:
         new_training = new_final
