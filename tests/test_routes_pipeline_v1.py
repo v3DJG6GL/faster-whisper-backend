@@ -231,3 +231,40 @@ def test_v1_not_host_gated_unlike_quick_config(app_module):
     with TestClient(app_module.app, client=("203.0.113.9", 9999)) as c:
         assert c.get("/quick-config/state").status_code == 403
         assert c.get("/v1/pipeline-rules").status_code == 200
+
+
+def test_v1_patch_regex_field_is_admin_only(client, app_module, make_user_key):
+    """A non-admin may toggle an exposed rule but must NOT set its raw regex
+    fields (`entries` / `pattern`): a crafted pattern can pin a CPU core during
+    the save-time backtracking guard (Python `re` can't be interrupted
+    mid-match), so editing regex is admin-only. Admins keep full access."""
+    slug = _expose_first_regex_list_rule(app_module)
+    _ruid, root = make_user_key("root", is_admin=True)  # flips lockdown
+    _uid, alice = make_user_key("alice", pages={"quick_config": "own"})
+
+    # Non-admin editing the raw regex `entries` is rejected (403) before it can
+    # reach the backtracking guard.
+    r = client.patch(
+        "/v1/pipeline-rules",
+        json={"rules_patch": {slug: {"entries": [
+            {"pattern": "(.*a)+$", "replacement": ""}]}}},
+        headers=bearer(alice),
+    )
+    assert r.status_code == 403
+
+    # Non-admin toggling `enabled` on the same exposed rule still works.
+    r = client.patch(
+        "/v1/pipeline-rules",
+        json={"rules_patch": {slug: {"enabled": False}}},
+        headers=bearer(alice),
+    )
+    assert r.status_code == 200
+
+    # Admin retains full access to the regex field (a benign pattern saves).
+    r = client.patch(
+        "/v1/pipeline-rules",
+        json={"rules_patch": {slug: {"entries": [
+            {"pattern": "abc", "replacement": "x"}]}}},
+        headers=bearer(root),
+    )
+    assert r.status_code == 200

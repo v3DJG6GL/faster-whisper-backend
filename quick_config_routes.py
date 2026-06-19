@@ -68,6 +68,14 @@ _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     "callback:upper":              frozenset({"enabled", "pattern"}),
 }
 
+# Fields whose value is a user-authored regex that reaches the catastrophic-
+# backtracking guard in config_store._validate_pipeline_rules (the single
+# `pattern` on callback:* rows, and each regex-list entry's `pattern`). Editing
+# these is admin-only: a crafted pattern can pin a CPU core during validation
+# even though the save itself is rejected (Python `re` can't be interrupted
+# mid-match). `map` / `wordlist` never reach that guard, so they stay user-editable.
+_REGEX_PATCH_FIELDS: frozenset[str] = frozenset({"pattern", "entries"})
+
 
 # SSE endpoint compatibility: EventSource has no way to attach an
 # Authorization header, so the /stream endpoint accepts ?key=<raw_key>
@@ -276,8 +284,22 @@ async def apply_rules_patch(
                 "the terminal rule cannot be edited",
             )
         allowed = _PATCH_ALLOWED_FIELDS.get(rtype, frozenset())
+        # A user-authored regex can catastrophically backtrack. The save-time
+        # guard rejects the SAVE, but Python's `re` cannot be interrupted
+        # mid-match (the match holds the GIL), so a crafted pattern still pins a
+        # core during validation and repeated requests can wedge the server.
+        # Only admins (who already control the host) may set the raw regex
+        # fields; non-admins keep `enabled` / `wordlist` edits on exposed rules.
+        if not user.get("is_admin"):
+            allowed = allowed - _REGEX_PATCH_FIELDS
         for field in patch.keys():
             if field not in allowed:
+                if field in _REGEX_PATCH_FIELDS:
+                    raise HTTPException(
+                        status.HTTP_403_FORBIDDEN,
+                        f"field '{field}' on rule '{slug}' may only be edited "
+                        "by an admin",
+                    )
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
                     f"field '{field}' is not editable on rule '{slug}' "
