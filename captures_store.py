@@ -210,13 +210,22 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
 # Create
 # ---------------------------------------------------------------------
 
-def count() -> int:
+def count(user_id: str | None = None) -> int:
     """Total row count (any status). Cheap; used by the transcribe handler
     to short-circuit the capture decision when the store is at its cap,
     and by /quick-config to decide whether to surface the reapply-rules
-    modal."""
+    modal.
+
+    `user_id=None` means "do not filter" (admin / scope=all); a string
+    narrows to a single owner so a scope=own toolbar total matches the
+    rows that caller can actually see."""
     conn = _require_conn()
-    row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+    if user_id is None:
+        row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+    else:
+        row = conn.execute(
+            "SELECT COUNT(*) FROM captures WHERE user_id = ?", (user_id,),
+        ).fetchone()
     return int(row[0]) if row else 0
 
 
@@ -627,13 +636,23 @@ def find_by_request_id(request_id: str) -> list[dict[str, Any]]:
     return [_row_to_dict(r, include_words=False) for r in cur.fetchall()]
 
 
-def counts_by_status() -> dict[str, int]:
-    """Status breakdown for the page toolbar."""
+def counts_by_status(user_id: str | None = None) -> dict[str, int]:
+    """Status breakdown for the page toolbar. `user_id=None` → all users
+    (admin / scope=all); a string narrows to a single owner so a scope=own
+    caller's toolbar counts match the rows they can see (and don't leak the
+    global cross-user breakdown)."""
     conn = _require_conn()
     out = {s: 0 for s in _VALID_STATUS}
-    for row in conn.execute(
-        "SELECT status, COUNT(*) AS n FROM captures GROUP BY status"
-    ):
+    if user_id is None:
+        cur = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM captures GROUP BY status"
+        )
+    else:
+        cur = conn.execute(
+            "SELECT status, COUNT(*) AS n FROM captures WHERE user_id = ?"
+            " GROUP BY status", (user_id,),
+        )
+    for row in cur:
         if row["status"] in out:
             out[row["status"]] = int(row["n"])
     return out

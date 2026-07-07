@@ -208,10 +208,10 @@ async def list_captures_api(
         r["username"] = usernames.get(r.get("user_id"))
     return JSONResponse({
         "captures": rows,
-        "counts": captures_store.counts_by_status(),
+        "counts": captures_store.counts_by_status(user_id=effective_user),
         "enabled": bool(getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False)),
         "retention_days": int(getattr(cfg, "CAPTURES_RETENTION_DAYS", 0)),
-        "total_count": captures_store.count(),
+        "total_count": captures_store.count(user_id=effective_user),
         "is_admin": bool(user.get("is_admin")),
         "user_id": user.get("user_id"),
     })
