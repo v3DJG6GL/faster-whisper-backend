@@ -2006,7 +2006,8 @@ async def _metrics_mw(request: Request, call_next):
         route = request.scope.get("route") if response is not None else None
         path = route.path if route is not None else request.url.path
         metrics.record_request(path, status,
-                               (time.perf_counter() - start) * 1000.0)
+                               (time.perf_counter() - start) * 1000.0,
+                               unmatched=route is None)
 
 
 @app.post("/v1/audio/transcriptions")

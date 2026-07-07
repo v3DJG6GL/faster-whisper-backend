@@ -29,6 +29,15 @@ _MODEL_LOAD_KEEP = 50       # bounded per-model history
 # Long-lived stream paths whose duration would dominate latency stats.
 SSE_PATHS = frozenset({"/logs/stream", "/stats/stream"})
 
+# Cap on distinct UNMATCHED-route keys (404 / pre-routing) in req_count.
+# Matched routes carry a templated path (a small finite set) and are always
+# counted under their own key; unmatched requests carry the raw client URL, so
+# a flood of distinct nonexistent paths would otherwise grow these counters
+# without bound — and inflate every /stats snapshot plus the 1 Hz SSE frame.
+# Past the cap, further NEW unmatched paths fold into one sentinel key.
+_MAX_UNMATCHED_KEYS = 512
+_UNMATCHED_OVERFLOW = "(other)"
+
 req_count: Counter[str] = Counter()         # path -> total
 err_count: Counter[str] = Counter()         # path -> 5xx total
 
@@ -45,8 +54,16 @@ _errors_ts: deque[float] = deque()
 model_loads: dict[str, list[float]] = {}
 
 
-def record_request(path: str, status: int, duration_ms: float) -> None:
-    """Called by the FastAPI middleware on every HTTP request."""
+def record_request(path: str, status: int, duration_ms: float,
+                   *, unmatched: bool = False) -> None:
+    """Called by the FastAPI middleware on every HTTP request.
+
+    `unmatched=True` marks a request that matched no route (404 / pre-routing
+    failure): its `path` is the raw client URL, so it is capped to bound the
+    counters against a distinct-path flood (see _MAX_UNMATCHED_KEYS)."""
+    if (unmatched and path not in req_count
+            and len(req_count) >= _MAX_UNMATCHED_KEYS):
+        path = _UNMATCHED_OVERFLOW
     req_count[path] += 1
     if status >= 500:
         err_count[path] += 1
