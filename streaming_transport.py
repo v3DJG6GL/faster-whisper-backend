@@ -78,6 +78,12 @@ class FfmpegTransport:
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
             ffmpeg_exe(), "-hide_banner", "-loglevel", "error",
+            # Restrict the input demuxer to the stdin pipe only. The client's
+            # container bytes are self-contained (WebM/Opus/Ogg/mp4/…), so a
+            # crafted playlist/concat/ffconcat input must not be able to coax
+            # libavformat into following file:// or http:// external references
+            # (the classic ffmpeg local-file-read / SSRF surface).
+            "-protocol_whitelist", "pipe",
             "-i", "pipe:0",
             "-f", "s16le", "-acodec", "pcm_s16le", "-ac", "1", "-ar", str(self._sr),
             "pipe:1",
