@@ -1,5 +1,6 @@
-"""Durable store for capture groups — packed ≤28 s training samples
-built from 2+ consecutive same-speaker captures.
+"""Durable store for capture groups — packed, duration-capped training
+samples (cfg.CAPTURES_SAMPLE_MAX_DURATION_S, default 29.9 s) built from
+2+ consecutive same-speaker captures.
 
 Lives in the same SQLite DB as `captures` (re-uses the connection from
 `captures_store`). The merged WAV files sit under `CAPTURES_DIR/groups/`

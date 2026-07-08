@@ -438,9 +438,9 @@ streaming_vad.py           Streaming endpointing (two-tier Silero/energy VAD)
 streaming_localagreement.py LocalAgreement-2 hypothesis stabilization
 audio_transcode.py         In-process audio transcoder (PyAV — no ffmpeg-on-PATH needed)
 audio_vad_trim.py          Silence-trim WAVs with the bundled Silero VAD
-audio_merge.py             stdlib-wave PCM splicer for ≤28 s training-sample packing
+audio_merge.py             stdlib-wave PCM splicer for duration-capped training-sample packing (default ≤29.9 s)
 captures_store.py          Capture rows + audio fanout, retention, eviction
-capture_samples_store.py   Packed ≤28 s training samples built from consecutive same-speaker captures
+capture_samples_store.py   Duration-capped training samples (default ≤29.9 s) built from consecutive same-speaker captures
 captures_routes.py         /captures page + samples/merge/reprocess API
 captures_merge_proposer.py Auto-merge proposer for /captures curation
 captures_reapply.py        Background job: re-run current pipeline rules over existing captures
