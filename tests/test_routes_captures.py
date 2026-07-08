@@ -228,3 +228,82 @@ def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
         cs.get_capture("open000cid"), _user(False))
     captures_routes._assert_member_sample_not_locked(
         cs.get_capture("free0000cid"), _user(False))
+
+
+def _fake_wav_transcode(monkeypatch):
+    """Route audio_transcode to a stub that writes a tiny valid WAV."""
+    import wave
+
+    import audio_transcode
+
+    def _fake(src_path, dst_path):
+        with wave.open(dst_path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * 100)
+        return 1234
+
+    monkeypatch.setattr(
+        audio_transcode, "transcode_to_wav_16k_mono", _fake)
+
+
+def test_merge_member_404_body_uniform_missing_vs_foreign(
+        captures_store_db, monkeypatch, tmp_path):
+    """Missing id and another-user's id must yield the SAME 404 template on
+    the merge surface. The guard's uniform 404 STATUS is pointless if the
+    body still says "capture X not found" for missing ids but "not found"
+    for foreign ones — the body becomes the existence oracle."""
+    import auth
+    import captures_routes
+    from fastapi import HTTPException
+
+    cs = captures_store_db
+    _fake_wav_transcode(monkeypatch)
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"junk")
+    cid = cs.create_capture(
+        audio_src_path=str(src), request_id="r1", model="small",
+        language="de", duration_seconds=1.0, raw="r", final="f",
+        words=[], segments=[], user_id="alice",
+    )
+
+    bob = {
+        "user_id": "bob",
+        "permissions": auth.Permissions(
+            {"pages": {"captures": "own"}}, is_admin=False),
+    }
+    with pytest.raises(HTTPException) as e_missing:
+        captures_routes._validate_merge_payload(["nosuchcid000"], 0, bob)
+    with pytest.raises(HTTPException) as e_foreign:
+        captures_routes._validate_merge_payload([cid], 0, bob)
+    assert e_missing.value.status_code == e_foreign.value.status_code == 404
+    # Same template once the probed id (which the caller sent) is masked out.
+    assert (e_missing.value.detail.replace("nosuchcid000", "{id}")
+            == e_foreign.value.detail.replace(cid, "{id}"))
+
+
+def test_capture_404_body_uniform_missing_vs_foreign(
+        client, make_user_key, monkeypatch, tmp_path):
+    """GET /captures/api/{cid}: a scope=own caller gets byte-identical 404
+    bodies for a nonexistent id and for another user's id."""
+    import captures_store as cs
+
+    make_user_key("root", is_admin=True)
+    owner_uid, _raw_owner = make_user_key("alice", pages={"captures": "own"})
+    _uid, raw_bob = make_user_key("bob", pages={"captures": "own"})
+
+    _fake_wav_transcode(monkeypatch)
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"junk")
+    cid = cs.create_capture(
+        audio_src_path=str(src), request_id="r1", model="small",
+        language="de", duration_seconds=1.0, raw="r", final="f",
+        words=[], segments=[], user_id=owner_uid,
+    )
+
+    r_missing = client.get(
+        "/captures/api/does-not-exist", headers=bearer(raw_bob))
+    r_foreign = client.get(f"/captures/api/{cid}", headers=bearer(raw_bob))
+    assert r_missing.status_code == r_foreign.status_code == 404
+    assert r_missing.json() == r_foreign.json()

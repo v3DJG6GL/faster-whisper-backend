@@ -247,6 +247,7 @@ async def patch_report_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
     user["permissions"].assert_can_read_row(
         existing, "reports", user.get("user_id") or "",
+        detail="report not found",
     )
     patch: dict[str, Any] = {}
     if payload.status is not None:
@@ -312,6 +313,7 @@ async def delete_report_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
     user["permissions"].assert_can_read_row(
         report, "reports", user.get("user_id") or "",
+        detail="report not found",
     )
     reports_store.delete_report(rid)
     return JSONResponse({"ok": True})

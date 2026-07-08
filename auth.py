@@ -106,14 +106,20 @@ class Permissions:
 
     def assert_can_read_row(
         self, row: dict[str, Any] | None, page: str, caller_uid: str,
+        detail: str = "not found",
     ) -> None:
         """Detail-endpoint guard. 404 (not 403) on cross-user reads —
-        a 403 would confirm the row exists, which is itself a leak."""
+        a 403 would confirm the row exists, which is itself a leak.
+
+        `detail` must be BYTE-IDENTICAL to the sibling row-is-missing
+        404 at the call site: a different message re-opens the existence
+        oracle the 404 status exists to close (missing vs foreign rows
+        become distinguishable by body)."""
         if self.scope(page) == "all":
             return
         if (row or {}).get("user_id") != caller_uid:
             raise HTTPException(
-                status.HTTP_404_NOT_FOUND, "not found",
+                status.HTTP_404_NOT_FOUND, detail,
             )
 
     def quick_config_tags(self) -> list[str]:

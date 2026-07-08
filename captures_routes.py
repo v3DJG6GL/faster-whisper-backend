@@ -398,6 +398,7 @@ async def get_capture_api(
     # confirm the row exists (OWASP IDOR cheatsheet).
     user["permissions"].assert_can_read_row(
         row, "captures", user.get("user_id") or "",
+        detail="capture not found",
     )
     _audit_cross_user_read(user, row, "capture", cid)
     _refresh_final_if_stale(row)
@@ -471,6 +472,7 @@ async def get_audio_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     user["permissions"].assert_can_read_row(
         row, "captures", user.get("user_id") or "",
+        detail="capture not found",
     )
     _audit_cross_user_read(user, row, "audio", cid)
     # Prefer the trimmed WAV when one exists — that's what the export
@@ -519,6 +521,7 @@ async def patch_capture_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     user["permissions"].assert_can_read_row(
         row, "captures", user.get("user_id") or "",
+        detail="capture not found",
     )
     _audit_cross_user_read(user, row, "capture-patch", cid)
     _assert_member_sample_not_locked(row, user)
@@ -567,6 +570,7 @@ async def delete_capture_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     user["permissions"].assert_can_read_row(
         row, "captures", user.get("user_id") or "",
+        detail="capture not found",
     )
     _audit_cross_user_read(user, row, "capture-delete", cid)
     _assert_member_sample_not_locked(row, user)
@@ -621,6 +625,7 @@ async def reprocess_capture_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     user["permissions"].assert_can_read_row(
         row, "captures", user.get("user_id") or "",
+        detail="capture not found",
     )
     _audit_cross_user_read(user, row, "capture-reprocess", cid)
     _assert_member_sample_not_locked(row, user)
@@ -955,9 +960,11 @@ def _validate_merge_payload(
         # could probe another user's capture id for existence + state. scope=all
         # (incl. admin) bypasses; scope=own requires the caller to BE the owner.
         # 404 (not 403) matches the captures detail endpoints — don't leak
-        # existence.
+        # existence. detail matches the missing branch above byte-for-byte so
+        # the body doesn't become the existence oracle the status closes.
         user["permissions"].assert_can_read_row(
             cap, "captures", user.get("user_id") or "",
+            detail=f"capture {mid} not found",
         )
         if cap.get("sample_id"):
             raise HTTPException(
@@ -1469,6 +1476,7 @@ async def get_sample_api(
     # 404 (not 403) on cross-user — leaking existence violates OWASP IDOR.
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
+        detail="sample not found",
     )
     _audit_cross_user_read(user, g, "sample", sid)
     return JSONResponse({"sample": _enrich_sample(g)})
@@ -2111,6 +2119,7 @@ async def patch_sample_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
+        detail="sample not found",
     )
     _audit_cross_user_read(user, g, "sample-patch", sid)
     if g["is_locked"] and not user.get("is_admin"):
@@ -2198,6 +2207,7 @@ async def regenerate_sample_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
+        detail="sample not found",
     )
     _audit_cross_user_read(user, g, "sample-regenerate", sid)
     if g["is_locked"] and not user.get("is_admin"):
@@ -2230,6 +2240,7 @@ async def dissolve_sample_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
+        detail="sample not found",
     )
     _audit_cross_user_read(user, g, "sample-delete", sid)
     if g["is_locked"] and not user.get("is_admin"):
@@ -2335,6 +2346,7 @@ async def get_sample_audio_api(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     user["permissions"].assert_can_read_row(
         g, "captures", user.get("user_id") or "",
+        detail="sample not found",
     )
     _audit_cross_user_read(user, g, "sample-audio", sid)
     abs_p = _ensure_sample_wav(g)
