@@ -374,3 +374,27 @@ def test_locked_member_view_does_not_rewrite_text(
     # Contrast: an unlocked member self-heals to the current pipeline output.
     assert client.get("/captures/api/open0002cid", headers=h).status_code == 200
     assert cs.get_capture("open0002cid")["final"] == "REWRITTEN"
+
+
+def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
+    """GET /captures/api/list: a scope=own caller's counts/total_count cover
+    only their OWN rows (the global cross-user breakdown must not leak);
+    an admin keeps the global numbers. Pins the user_id= plumbing from the
+    route into captures_store.count/counts_by_status."""
+    import captures_store as cs
+
+    _uid_root, raw_root = make_user_key("root", is_admin=True)
+    uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
+    uid_b, _raw_b = make_user_key("bob", pages={"captures": "own"})
+    conn = cs._require_conn()
+    _insert_member(conn, "alicecap0001", None, user_id=uid_a)
+    _insert_member(conn, "bobcap000001", None, user_id=uid_b)
+    _insert_member(conn, "bobcap000002", None, user_id=uid_b)
+
+    body = client.get("/captures/api/list", headers=bearer(raw_a)).json()
+    assert body["total_count"] == 1
+    assert body["counts"]["new"] == 1
+
+    admin_body = client.get("/captures/api/list", headers=bearer(raw_root)).json()
+    assert admin_body["total_count"] == 3
+    assert admin_body["counts"]["new"] == 3

@@ -321,6 +321,30 @@ def test_counts_by_status(captures_store_db, monkeypatch, tmp_path):
     assert set(counts) == set(cs._VALID_STATUS)
 
 
+def test_counts_and_total_scoped_to_user(captures_store_db, monkeypatch,
+                                         tmp_path):
+    """count(user_id=…) / counts_by_status(user_id=…) narrow to one owner —
+    a scope=own caller's toolbar numbers must not include (or leak) other
+    users' rows. None keeps the unfiltered admin/global behaviour."""
+    cs = captures_store_db
+    _make(cs, monkeypatch, tmp_path, user_id="alice")
+    c2 = _make(cs, monkeypatch, tmp_path, user_id="alice")
+    _make(cs, monkeypatch, tmp_path, user_id="bob")
+    cs.update_capture(c2, {"status": "ready"})
+
+    assert cs.count() == 3
+    assert cs.count(user_id="alice") == 2
+    assert cs.count(user_id="bob") == 1
+    assert cs.count(user_id="nobody") == 0
+
+    all_counts = cs.counts_by_status()
+    assert all_counts["new"] == 2 and all_counts["ready"] == 1
+    alice = cs.counts_by_status(user_id="alice")
+    assert alice["new"] == 1 and alice["ready"] == 1
+    bob = cs.counts_by_status(user_id="bob")
+    assert bob["new"] == 1 and bob["ready"] == 0
+
+
 # ---------------------------------------------------------------------------
 # update_capture
 # ---------------------------------------------------------------------------
