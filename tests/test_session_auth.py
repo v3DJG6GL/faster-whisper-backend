@@ -124,6 +124,58 @@ def test_revoked_user_session_dies(client, make_user_key):
     assert client.get("/quick-config/state").status_code == 401
 
 
+def test_revoked_key_session_dies(client, make_user_key):
+    """Revoking the LOGIN KEY must cut its sessions, not widen them: a revoked
+    key_id resolves to the empty key binding (default-allow gates), so a
+    surviving session would shed the key's per-key restrictions."""
+    import api_keys_store
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    client.post("/auth/login", json={"key": raw})
+    assert client.get("/quick-config/state").status_code == 200
+    kid = api_keys_store.list_keys(uid)[0]["id"]
+    api_keys_store.revoke_key(kid)
+    # Bearer and cookie now agree: both are rejected immediately.
+    assert client.get("/quick-config/state").status_code == 401
+    assert client.get(
+        "/quick-config/state", headers=bearer(raw),
+    ).status_code == 401
+
+
+def test_pre_migration_session_without_key_still_works(client, make_user_key):
+    """A session created before login stamped key_id (key_id NULL in the DB)
+    keeps authenticating with the old no-key-layer behaviour."""
+    import config
+    import sessions_store
+    make_user_key("root", is_admin=True)
+    uid, _raw = make_user_key("alice", pages={"quick_config": "own"})
+    raw_token, _csrf = sessions_store.create_session(uid, 3600.0)  # no key_id
+    client.cookies.set(config.SESSION_COOKIE_NAME, raw_token)
+    assert client.get("/quick-config/state").status_code == 200
+
+
+def test_session_use_touches_key_last_used(client, make_user_key):
+    """Cookie-authenticated requests count as key activity: usage rollups
+    already attribute to the stamped key, so last_used_ts must move too —
+    otherwise the key looks dormant on /settings/api-keys while its usage
+    numbers grow."""
+    import api_keys_store
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    kid = api_keys_store.list_keys(uid)[0]["id"]
+    client.post("/auth/login", json={"key": raw})
+    # The login itself touches (bearer-style lookup) — reset AFTER it so the
+    # touch under test can only come from the cookie-authenticated request.
+    api_keys_store._LAST_USED_CACHE.clear()
+    with api_keys_store._lock:
+        api_keys_store._require_conn().execute(
+            "UPDATE api_keys SET last_used_ts = NULL WHERE id = ?", (kid,),
+        )
+    assert api_keys_store.get_key(kid)["last_used_ts"] is None
+    assert client.get("/quick-config/state").status_code == 200
+    assert api_keys_store.get_key(kid)["last_used_ts"] is not None
+
+
 # --- Secure flag ------------------------------------------------------------
 
 def test_secure_flag_marks_cookies(client, make_user_key, monkeypatch):

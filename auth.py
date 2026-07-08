@@ -183,6 +183,14 @@ def user_from_session_cookie(request: Request) -> dict[str, Any] | None:
     # from the LIVE user row above, never from the key (no privilege change).
     stamped_key = sess.get("key_id")
     if stamped_key:
+        # The stamped key must still be LIVE: the bearer path 401s the moment
+        # a key is revoked, and a revoked key_id resolves to the empty key
+        # binding whose gates default-allow — so an unchecked stale session
+        # would outlive the revocation with the key's restrictions LIFTED.
+        # Cut the session instead (forces re-login). Touches last_used_ts so
+        # per-key activity on /settings/api-keys reflects session use too.
+        if not api_keys_store.touch_key_if_active(stamped_key):
+            return None
         rec["key_id"] = stamped_key
     request.state.session_csrf = sess["csrf_token"]
     return rec

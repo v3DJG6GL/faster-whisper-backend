@@ -624,6 +624,28 @@ def lookup_by_raw_key(raw_key: str) -> dict[str, Any] | None:
     return dict(rec)
 
 
+def touch_key_if_active(key_id: str) -> bool:
+    """True iff the key exists and is not revoked; touches last_used_ts
+    (debounced) on a hit. The cookie-session analog of lookup_by_raw_key:
+    a session-authenticated request "uses" its stamped login key, and a
+    revoked login key must stop authenticating the session — a revoked
+    key_id resolves to the EMPTY key binding (get_key_config finds no
+    row), whose gates default-allow, so keeping the session alive would
+    silently LIFT the key's restrictions instead of ending them."""
+    if not key_id:
+        return False
+    conn = _require_conn()
+    with _lock:
+        row = conn.execute(
+            "SELECT 1 FROM api_keys WHERE id = ? AND revoked_ts IS NULL",
+            (key_id,),
+        ).fetchone()
+    if row is None:
+        return False
+    _touch_last_used_debounced(key_id)
+    return True
+
+
 def get_user_record(user_id: str) -> dict[str, Any] | None:
     """Resolve a user_id to the same record shape the bearer path returns
     (`{key_id, user_id, username, is_admin, permissions_raw}`), reading the
