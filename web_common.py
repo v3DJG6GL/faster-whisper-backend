@@ -95,7 +95,7 @@ def host_in_allowlist(request: Request, allowlist: list[str]) -> bool:
 # (require_page(...) / require_admin) is stacked on the data endpoints.
 #   require_admin_webui_host — /settings, /settings/api-keys, /docs.
 #   require_user_webui_host  — /quick-config, /captures, /reports, /stats,
-#                              /logs, /sev (default-open allowlist).
+#                              /logs, /dictate, /sev (default-open allowlist).
 require_admin_webui_host = require_allowed_host(lambda: cfg.ADMIN_WEBUI_ALLOWED_HOSTS)
 require_user_webui_host = require_allowed_host(lambda: cfg.USER_WEBUI_ALLOWED_HOSTS)
 
