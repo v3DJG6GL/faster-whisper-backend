@@ -34,7 +34,10 @@ SSE_PATHS = frozenset({"/logs/stream", "/stats/stream"})
 # counted under their own key; unmatched requests carry the raw client URL, so
 # a flood of distinct nonexistent paths would otherwise grow these counters
 # without bound — and inflate every /stats snapshot plus the 1 Hz SSE frame.
-# Past the cap, further NEW unmatched paths fold into one sentinel key.
+# The check compares len(req_count) — the TOTAL key count, matched keys
+# included — so the effective unmatched budget is the cap minus however many
+# matched routes have been hit (and the dict tops out at cap + #routes).
+# Past it, further NEW unmatched paths fold into one sentinel key.
 _MAX_UNMATCHED_KEYS = 512
 _UNMATCHED_OVERFLOW = "(other)"
 

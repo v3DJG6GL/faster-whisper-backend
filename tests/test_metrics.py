@@ -153,3 +153,28 @@ def test_snapshot_shape_without_stores():
 def test_snapshot_in_flight_reflected():
     metrics.in_flight_transcriptions = 3
     assert metrics.metrics_snapshot()["in_flight_transcriptions"] == 3
+
+
+def test_unmatched_route_keys_capped():
+    """The unmatched-key cap (DoS guard): once req_count holds the cap's
+    worth of keys, NEW unmatched paths fold into the overflow sentinel,
+    while (a) an already-known unmatched path keeps its own counter and
+    (b) a matched route always gets its own key, even past the cap."""
+    for i in range(metrics._MAX_UNMATCHED_KEYS):
+        metrics.record_request(f"/junk/{i}", 404, 1.0, unmatched=True)
+    assert len(metrics.req_count) == metrics._MAX_UNMATCHED_KEYS
+    assert metrics._UNMATCHED_OVERFLOW not in metrics.req_count
+
+    # Past the cap: new unmatched paths share the sentinel...
+    metrics.record_request("/junk/overflow-a", 404, 1.0, unmatched=True)
+    metrics.record_request("/junk/overflow-b", 404, 1.0, unmatched=True)
+    assert metrics.req_count[metrics._UNMATCHED_OVERFLOW] == 2
+    assert "/junk/overflow-a" not in metrics.req_count
+
+    # ...an existing unmatched key still increments under its own name...
+    metrics.record_request("/junk/0", 404, 1.0, unmatched=True)
+    assert metrics.req_count["/junk/0"] == 2
+
+    # ...and a matched route is never folded.
+    metrics.record_request("/v1/models", 200, 1.0)
+    assert metrics.req_count["/v1/models"] == 1
