@@ -10,8 +10,13 @@ This module runs the ``re.sub`` probes in a SEPARATE process that the parent
 KILLS on timeout (``subprocess`` ``timeout=`` -> ``proc.kill()``), which truly
 frees the CPU. That lets any user the admin has granted a tag keep editing and
 adding regex rules (web ``/quick-config`` and the ``faster-whisper-frontend``
-``/v1/pipeline-rules`` editor) without a crafted pattern being able to hang the
-server.
+``/v1/pipeline-rules`` editor) without the SAVE-time probe pinning a CPU core.
+
+The probe runs against ONE fixed ~1 KB fixture, so it catches naive
+catastrophic patterns, not a pattern crafted to blow up only on inputs the
+fixture doesn't contain — such a pattern passes validation and can still hang
+the MAIN process at match time (rule application is in-process re.sub).
+Accepted residual risk for a rule surface that is user-editable by design.
 
 Two roles, one file:
   * parent  ->  ``import regex_guard; regex_guard.validate(checks)``
@@ -88,9 +93,16 @@ def validate(checks: list, timeout: float | None = None) -> None:
         raise ValueError(f"{where}: regex test failed: {result.get('error')}")
 
 
-def _last_index(stderr_text: str | None) -> int | None:
+def _last_index(stderr_text: "str | bytes | None") -> int | None:
     """The last integer line the child emitted = the pattern it was testing
-    when we killed it (catastrophic backtracking)."""
+    when we killed it (catastrophic backtracking).
+
+    On POSIX, ``TimeoutExpired.stderr`` is raw BYTES even under
+    ``text=True`` (only the Windows branch of CPython re-decodes after a
+    timeout) — normalize first so str-only handling can't TypeError inside
+    the timeout path this function exists for."""
+    if isinstance(stderr_text, bytes):
+        stderr_text = stderr_text.decode("utf-8", "replace")
     if not stderr_text:
         return None
     last = None
