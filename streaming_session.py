@@ -121,6 +121,7 @@ class StreamSession:
         self.raw_confirmed = ""            # cross-utterance verbatim accumulator
         self._committed_len = 0            # chars of processed text locked as append-only committed
         self._prev_processed = ""          # last whole-doc post-process (document-level LocalAgreement)
+        self._trimmed_text = ""            # committed text whose audio _maybe_trim cut away
         self._utterance_index = 0
         self._prompt = base_prompt.strip()
         self._closed = False
@@ -265,6 +266,21 @@ class StreamSession:
         if cut is not None and cut > self._buffer_offset:
             cut_samples = int((cut - self._buffer_offset) * self.cfg.sample_rate)
             self.audio = self.audio[cut_samples:]
+            # The cut words' AUDIO is gone — later decodes can't re-hear it, so
+            # their committed TEXT is the only remaining record. Bank it for
+            # _finalize (prepended to the final decode's result) and fold it
+            # into the rolling prompt so the partial/final decodes of the
+            # now-mid-sentence buffer get the preceding words as context (an
+            # uncontexted seam mishears its opening, e.g. "on"→"and").
+            # la.committed spans the whole utterance, so bound below by the
+            # previous cut (== the current _buffer_offset) or a second trim
+            # would re-bank the first trim's words.
+            cut_text = self.la.text_of(
+                w for w in self.la.committed
+                if self._buffer_offset < w.end <= cut)
+            self._trimmed_text += cut_text
+            self._prompt = " ".join(
+                (self._prompt + " " + cut_text).split()[-self.cfg.prompt_words:])
             self._buffer_offset = cut
             self.la.pop_committed(cut)
 
@@ -285,7 +301,20 @@ class StreamSession:
             # all as hallucinations (dropped_all), the empty result is authoritative:
             # the partials run at a fixed temperature and so never trip the drop —
             # i.e. they still hold the hallucination — so keep the empty result.
+            # la.committed spans the WHOLE utterance (pop_committed only prunes the
+            # agreement buffer), so this path already includes any trim-banked words.
             raw = self.la.committed_text + self.la.text_of(self.la.finish())
+            audio_text = (raw[len(self._trimmed_text):]
+                          if raw.startswith(self._trimmed_text) else raw)
+        else:
+            # The decode only heard the (possibly trim-shortened) buffer: text whose
+            # audio _maybe_trim cut away exists ONLY in the banked committed words —
+            # without this prefix an over-15s continuous utterance loses its opening
+            # (the decode result would replace the already-committed-and-shown text).
+            # Applies to the dropped_all case too: the drop verdict judged the
+            # remaining buffer, not the banked (multi-partial-agreed) prefix.
+            audio_text = raw
+            raw = self._trimmed_text + raw
         self.raw_confirmed += raw
         self._prompt = self._make_prompt()
         processed = self.postprocess(self.raw_confirmed)
@@ -295,7 +324,10 @@ class StreamSession:
                 "utterance": self._utterance_index,
                 "audio_dur": audio_dur,
                 "proc_dur": proc_dur,
-                "raw_text": raw,
+                "raw_text": raw,       # full utterance text (incl. trim-banked prefix)
+                # Text aligned with `audio` — the buffer no longer holds the
+                # trim-banked words' audio, so captures must pair THIS with it.
+                "audio_text": audio_text,
                 "words": words,        # word-timestamp dicts (for captures / verbose)
                 "audio": audio,        # float32 PCM of the utterance (for captures)
                 "forced": forced,
@@ -395,6 +427,7 @@ class StreamSession:
         self.la.reset()
         self.audio = np.zeros(0, dtype=np.float32)
         self._buffer_offset = 0.0
+        self._trimmed_text = ""
         self._in_utterance = False
         self._speech_ms = 0
         self._silence_ms = 0

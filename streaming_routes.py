@@ -528,6 +528,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # /quick-config + /reports, capture, metrics) so streaming has parity.
             rid = uuid.uuid4().hex
             raw_text = info["raw_text"] or ""
+            # Capture pair: `audio` no longer holds the audio of trim-banked words
+            # (a >BUFFER_TRIM_SEC continuous utterance), so the capture must store
+            # the buffer-aligned text, not the full document-contributing raw.
+            audio_text = info.get("audio_text")
+            audio_text = raw_text if audio_text is None else (audio_text or "")
             words = info.get("words") or []
             dec = last_decode
             fw_info = dec.get("info")
@@ -536,10 +541,19 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
             steps: "list | None" = [] if getattr(cfg, "TRACE_ENABLED", False) else None
             final_text = main._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident)
+            if audio_text != raw_text:
+                logger.info(
+                    "[stream %s] utt#%s: buffer was trimmed mid-utterance — prepended "
+                    "%d banked committed word(s) to the final decode's text",
+                    session_id[:8], info["utterance"],
+                    len(raw_text[:len(raw_text) - len(audio_text)].split()))
 
             captured_id = None
-            if cap_enabled and raw_text.strip():
-                captured_id = _maybe_capture(rid, info, raw_text, final_text, words, fw_info)
+            if cap_enabled and audio_text.strip():
+                cap_final = (final_text if audio_text == raw_text
+                             else main._postprocess_text(audio_text, model_name=final_model,
+                                                         trace=None, ident=ident))
+                captured_id = _maybe_capture(rid, info, audio_text, cap_final, words, fw_info)
 
             # Rich diagnostic block — same formatter the batch route uses, so the
             # VAD-ate-audio / empty-output / pipeline-step diagnostics show up for
