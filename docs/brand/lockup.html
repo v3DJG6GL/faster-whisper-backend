@@ -9,9 +9,14 @@
      read /tmp, keep paths in $HOME):
 
        chromium --headless=new --screenshot=docs/brand/lockup-dark.png  --window-size=900,240 \
+         --force-device-scale-factor=2 \
          --default-background-color=00000000 --hide-scrollbars "file://$PWD/docs/brand/lockup.html"
        chromium --headless=new --screenshot=docs/brand/lockup-light.png --window-size=900,240 \
+         --force-device-scale-factor=2 \
          --default-background-color=00000000 --hide-scrollbars "file://$PWD/docs/brand/lockup.html?light"
+
+     (scale factor 2 → ~1060px-wide PNGs, crisp at the README's width=380 on
+     retina displays.)
 
      then autocrop both (PIL: crop to alpha bbox). -->
 <html>

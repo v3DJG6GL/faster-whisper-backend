@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/brand/lockup-dark.png">
-    <img src="docs/brand/lockup-light.png" alt="fasterwhisper — backend" width="264">
+    <img src="docs/brand/lockup-light.png" alt="fasterwhisper — backend" width="380">
   </picture>
 </p>
 
