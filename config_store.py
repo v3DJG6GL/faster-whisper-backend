@@ -130,6 +130,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "VAD_MIN_SILENCE_MS": "WHISPER_VAD_MIN_SILENCE_MS",
     "VAD_SPEECH_PAD_MS": "WHISPER_VAD_SPEECH_PAD_MS",
     "VAD_THRESHOLD": "WHISPER_VAD_THRESHOLD",
+    "LEADING_SILENCE_PAD_MS": "WHISPER_LEADING_SILENCE_PAD_MS",
     "CONDITION_ON_PREVIOUS_TEXT": "WHISPER_CONDITION_ON_PREVIOUS_TEXT",
     "WORD_TIMESTAMPS_ENABLED": "WHISPER_WORD_TIMESTAMPS_ENABLED",
     "NO_SPEECH_THRESHOLD": "WHISPER_NO_SPEECH_THRESHOLD",
@@ -306,6 +307,14 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Speech threshold. Silero VAD outputs speech probabilities for "
         "each audio chunk; probabilities ABOVE this value are considered "
         "as SPEECH. Default 0.5; tune per dataset if needed.",
+    "LEADING_SILENCE_PAD_MS":
+        "Silence prepended to each uploaded file before decoding (file "
+        "uploads only; timestamps are shifted back so the response matches "
+        "the original audio). Prevents Whisper from dropping the opening "
+        "words of a recording that starts mid-speech at t=0 — with "
+        "DEFAULT_HOTWORDS set, the decoder can mistake a leading clause for "
+        "text already covered by the hotword prompt and skip to the next "
+        "sentence boundary. 0 disables. Default 500 ms.",
     "CONDITION_ON_PREVIOUS_TEXT":
         "If true, the previous output of the model is provided as a "
         "prompt for the next window. Disabling may make the text "
@@ -1070,6 +1079,7 @@ class _CallTimeOverrideMixin(BaseModel):
     VAD_MIN_SILENCE_MS: Annotated[int, Field(ge=0, le=10000)] | None = None
     VAD_SPEECH_PAD_MS: Annotated[int, Field(ge=0, le=2000)] | None = None
     VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    LEADING_SILENCE_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = None
 
     # --- Language detection ---
     MULTILINGUAL: bool | None = None
@@ -1241,6 +1251,7 @@ class AdminConfig(BaseModel):
     VAD_MIN_SILENCE_MS: Annotated[int, Field(ge=0, le=10000)] | None = _F("VAD_MIN_SILENCE_MS")
     VAD_SPEECH_PAD_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("VAD_SPEECH_PAD_MS")
     VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("VAD_THRESHOLD")
+    LEADING_SILENCE_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("LEADING_SILENCE_PAD_MS")
     CONDITION_ON_PREVIOUS_TEXT: bool | None = _F("CONDITION_ON_PREVIOUS_TEXT")
     WORD_TIMESTAMPS_ENABLED: bool | None = _F("WORD_TIMESTAMPS_ENABLED")
     NO_SPEECH_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("NO_SPEECH_THRESHOLD")

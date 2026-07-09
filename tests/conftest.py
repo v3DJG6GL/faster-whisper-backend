@@ -320,15 +320,18 @@ class FakeInfo:
 
 class FakeModel:
     """Stand-in for faster_whisper.WhisperModel. Records the last transcribe
-    kwargs so tests can assert cfg_for forwarding."""
+    kwargs (cfg_for forwarding asserts) and audio input (a tmp-file path, or
+    the padded ndarray when LEADING_SILENCE_PAD_MS pre-decodes)."""
 
     def __init__(self, segments=None, info=None):
         self._segments = segments
         self._info = info or FakeInfo()
         self.last_kwargs: dict[str, Any] = {}
+        self.last_audio: Any = None
 
     def transcribe(self, path, **kwargs):
         self.last_kwargs = kwargs
+        self.last_audio = path
         segs = self._segments
         if segs is None:
             include_words = bool(kwargs.get("word_timestamps"))

@@ -252,6 +252,17 @@ VAD_MIN_SILENCE_MS: int = _D("VAD_MIN_SILENCE_MS")
 VAD_SPEECH_PAD_MS: int = _D("VAD_SPEECH_PAD_MS")
 VAD_THRESHOLD: float = _D("VAD_THRESHOLD")
 
+# Silence prepended to each uploaded file before decoding (batch endpoint
+# only; segment/word timestamps are shifted back so responses and captures
+# stay on the original audio's timeline). Guards against Whisper dropping the
+# opening words of a recording that starts mid-speech at t=0: DEFAULT_HOTWORDS
+# is injected as fake previous-transcript context (<|startofprev|>), and the
+# decoder then treats a leading clause fragment as text "already covered" and
+# skips to the next sentence boundary. 0 disables (audio passed through
+# untouched). The streaming path needs no equivalent — its session buffer
+# already retains preroll_keep_ms of leading silence.
+LEADING_SILENCE_PAD_MS: int = _D("LEADING_SILENCE_PAD_MS")
+
 # Pass each segment's text into the prompt context for the next segment.
 # Improves consistency on long-form audio; adds a tiny amount of latency.
 # WARNING: many German finetunes (primeline-derived: tnfru, GalaktischeGurke,
@@ -1146,6 +1157,7 @@ _OVERRIDE_BOOL_FIELDS = frozenset({
 })
 _OVERRIDE_INT_FIELDS = frozenset({
     "BEAM_SIZE", "BEST_OF", "VAD_MIN_SILENCE_MS", "VAD_SPEECH_PAD_MS",
+    "LEADING_SILENCE_PAD_MS",
     "NO_REPEAT_NGRAM_SIZE", "LANGUAGE_DETECTION_SEGMENTS",
     "NUM_WORKERS", "DEVICE_INDEX",
 })

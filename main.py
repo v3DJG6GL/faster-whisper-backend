@@ -2014,6 +2014,31 @@ async def _metrics_mw(request: Request, call_next):
                                unmatched=route is None)
 
 
+def _shift_to_original_timeline(segments, info, pad_s: float):
+    """Map decode results from the LEADING_SILENCE_PAD_MS-padded timeline back
+    to the uploaded audio's timeline: segment/word times shift by -pad_s
+    (clamped at 0 — VAD speech-padding can place an onset inside the injected
+    silence) and ``duration`` drops the pad. Times must keep fitting the
+    UN-padded audio: the API response, /captures rows, and the sample-merge
+    tooling all interpret them against the original WAV. duration_after_vad is
+    clamped to the original duration — how much of the injected pad the VAD
+    swallowed is unknowable, so the pad/real-silence split is approximate
+    there (diagnostic-only field). In-place mutation is safe: the objects come
+    fresh from the decoder with this request as their only consumer."""
+    for seg in segments:
+        seg.start = max(0.0, seg.start - pad_s)
+        seg.end = max(0.0, seg.end - pad_s)
+        for w in (getattr(seg, "words", None) or []):
+            w.start = max(0.0, w.start - pad_s)
+            w.end = max(0.0, w.end - pad_s)
+    orig_dur = max(0.0, float(getattr(info, "duration", 0.0) or 0.0) - pad_s)
+    info.duration = orig_dur
+    dav = getattr(info, "duration_after_vad", None)
+    if dav is not None:
+        info.duration_after_vad = min(orig_dur, float(dav))
+    return segments, info
+
+
 @app.post("/v1/audio/transcriptions")
 async def transcribe(
     request: Request,
@@ -2148,6 +2173,8 @@ async def transcribe(
                 threshold=cfg_for(resolved_model, "VAD_THRESHOLD", ident),
             ) if _vad_filter else None
 
+            _lead_pad_ms = int(cfg_for(resolved_model, "LEADING_SILENCE_PAD_MS", ident) or 0)
+
             # Coerce empty to None — faster-whisper validates the value against
             # its accepted-codes list, so "" raises ValueError; None triggers
             # the first-30s auto-detect path, which is what an empty
@@ -2187,13 +2214,43 @@ async def transcribe(
             # decode in parallel (subject to GPU compute scheduling). The
             # generator returned by transcribe() does its work lazily on
             # iteration, so we materialize it inside the executor too.
+            #
+            # LEADING_SILENCE_PAD_MS: decode to 16 kHz mono ourselves (the
+            # exact call transcribe() makes internally for a path input),
+            # prepend silence, and shift the results back to the original
+            # timeline. A recording that starts mid-speech at t=0 combined
+            # with a hotwords prompt (injected as fake previous-transcript
+            # context) makes the decoder drop the opening clause as "already
+            # transcribed"; leading silence defuses that. If the pre-decode
+            # fails (undecodable bytes, native stack absent), fall back to
+            # passing the path so the request fails — or a stubbed model
+            # succeeds — exactly as without the feature.
             def _do_transcribe(_model=model, _path=tmp_path,
-                               _kw=transcribe_kwargs):
+                               _kw=transcribe_kwargs, _pad_ms=_lead_pad_ms):
+                _audio = None
+                if _pad_ms > 0:
+                    try:
+                        import numpy as _np
+                        from faster_whisper.audio import decode_audio as _fw_decode
+                        _audio = _np.concatenate([
+                            _np.zeros(_pad_ms * 16, dtype="float32"),  # 16 samples/ms @ 16 kHz
+                            _fw_decode(_path, sampling_rate=16000),
+                        ])
+                    except Exception as _pad_err:
+                        logger.warning(
+                            "[lead-pad] pre-decode failed, transcribing unpadded: %s",
+                            _pad_err)
+                        _audio = None
+                if _audio is not None:
+                    _segs, _info = _model.transcribe(_audio, **_kw)
+                    return (*_shift_to_original_timeline(
+                        list(_segs), _info, _pad_ms / 1000.0), True)
                 _segs, _info = _model.transcribe(_path, **_kw)
-                return list(_segs), _info
+                return list(_segs), _info, False
             loop = asyncio.get_running_loop()
             async with get_inference_semaphore():
-                segments_iter, info = await loop.run_in_executor(None, _do_transcribe)
+                segments_iter, info, _pad_applied = await loop.run_in_executor(
+                    None, _do_transcribe)
 
             all_words = []
             segments_list = []
@@ -2391,7 +2448,9 @@ async def transcribe(
                 request_id=request_id,
                 captured_id=captured_id,
                 endpoint="/v1/audio/transcriptions",
-                audio_source=f"{_src_fmt} → 16 kHz mono (file upload)",
+                audio_source=(f"{_src_fmt} → 16 kHz mono (file upload"
+                              + (f"; +{_lead_pad_ms} ms lead pad)"
+                                 if _pad_applied else ")")),
                 ident=ident,
                 overrides_ignored=ignored,
                 user_id=user.get("user_id"),
