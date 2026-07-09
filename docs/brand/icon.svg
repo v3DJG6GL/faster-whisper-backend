@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="faster-whisper">
+  <defs>
+    <linearGradient id="fw-wave" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#79c0ff"/>
+      <stop offset="1" stop-color="#7ee787"/>
+    </linearGradient>
+  </defs>
+  <!-- terminal-dark app tile -->
+  <rect x="6" y="6" width="108" height="108" rx="26" fill="#161b22" stroke="#30363d" stroke-width="2"/>
+  <!-- forward-leaning waveform: audio (whisper) skewed right (faster) -->
+  <g transform="translate(13 2) skewX(-9)" fill="url(#fw-wave)">
+    <rect x="16" y="74" width="11" height="20" rx="5.5"/>
+    <rect x="35" y="52" width="11" height="42" rx="5.5"/>
+    <rect x="54" y="22" width="11" height="72" rx="5.5"/>
+    <rect x="73" y="44" width="11" height="50" rx="5.5"/>
+    <rect x="92" y="66" width="11" height="28" rx="5.5"/>
+  </g>
+</svg>

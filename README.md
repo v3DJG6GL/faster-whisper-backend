@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/lockup-dark.png">
-    <img src="docs/brand/lockup-light.png" alt="fasterwhisper — backend" width="380">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/brand/logo-dark.png">
+    <img src="docs/brand/logo-light.png" alt="fasterwhisper — backend" width="380">
   </picture>
 </p>
 
@@ -396,27 +396,29 @@ The wordmark follows the **brand-family grammar shared with
 before the tracked-caps role label in Geist Mono (`> BACKEND` here, `> FRONTEND` there). Each
 product keeps its own accent — terminal green for the backend, amber for the frontend — so the
 family reads through structure, the product through colour. Fonts are vendored in `static/`
-(see `static/VENDOR.md`); the lockup source + regen commands live in `docs/brand/lockup.html`.
+(see `static/VENDOR.md`); brand assets + regen tooling live in `docs/brand/`.
 
-**Lockups & variants** — each designed to work on dark *and* light backgrounds:
+**Logo variants** — each designed to work on dark *and* light backgrounds:
 
-- **Primary lockup** — mark + stacked wordmark (`fasterwhisper` over `> BACKEND`); the hero above (`docs/brand/lockup-{dark,light}.png`).
-- **Compact** — single line, `[mark] fasterwhisper > backend`, for headers and tight spaces. The admin WebUI's sticky header uses this form.
+- **Full logo** — icon + stacked wordmark (`fasterwhisper` over `> BACKEND`); the hero above.
+- **Compact** — single line, `[icon] fasterwhisper > backend`, for headers and tight spaces. The admin WebUI's sticky header uses this form.
 - **Icon only** — the waveform tile alone (favicon, app tile, anything ≤ ~80 px).
 - **Monochrome** — single-colour, tile-less bars for one-colour or print contexts.
 
 **Type spec:** name in Hubot Sans (430/730 weight pair, −0.025em); label in Geist Mono, 500,
 tracked caps at 0.14em, ⅔ of the name size; the green `>` and `whisper` are the wordmark's only
-accents. The same mark is the favicon and sits in the sticky header of every admin page.
+accents. The same icon is the favicon and sits in the sticky header of every admin page.
 
-Assets (`static/`):
+Assets:
 
 | File | Use |
 | --- | --- |
-| `logo-lockup-dark.svg` / `logo-lockup-light.svg` | primary lockup, theme-adaptive (used in this README) |
-| `logo.svg` | full icon mark (scalable) |
-| `favicon.svg` | simplified 3-bar mark for small sizes |
-| `favicon.ico`, `favicon-16.png`, `favicon-32.png`, `apple-touch-icon.png` | raster fallbacks (Safari / legacy) |
+| `docs/brand/logo-{dark,light}.svg` | full logo, vector — wordmark converted to paths, renders everywhere without fonts (`gen-logo-svg.py` regenerates) |
+| `docs/brand/logo-{dark,light}.png` | full logo, raster @2× (used in this README); rendered from `docs/brand/logo.html` |
+| `docs/brand/icon.svg` / `icon.png` | icon only (copy of `static/logo.svg` / 512 px raster) |
+| `static/logo.svg` | the canonical icon the WebUI serves |
+| `static/favicon.svg` | simplified 3-bar icon for small sizes |
+| `static/favicon.ico`, `favicon-16.png`, `favicon-32.png`, `apple-touch-icon.png` | raster fallbacks (Safari / legacy) |
 
 ## Files
 
