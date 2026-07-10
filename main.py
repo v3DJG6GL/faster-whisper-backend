@@ -3361,6 +3361,24 @@ except Exception as _e:
 
 
 # =============================================================================
+# / - landing hub (always on, user-tier allowlist-gated)
+# =============================================================================
+# The WebUI's front door: signed-out visitors get the shared login gate,
+# signed-in ones a launcher filtered to the pages their key can reach (plus
+# the admin section for admins). Same host tier as the other user page
+# shells; nothing sensitive is rendered server-side. See home_routes.py.
+try:
+    from home_routes import router as _home_router
+    app.include_router(_home_router)
+    logger.info(
+        "Landing hub at / (allowlist=%s; loopback always permitted)",
+        cfg.USER_WEBUI_ALLOWED_HOSTS,
+    )
+except Exception as _e:
+    logger.error("Failed to load home router: %s", _e)
+
+
+# =============================================================================
 # /v1/audio/transcriptions/stream - live (streaming) dictation WebSocket
 # =============================================================================
 # Always registered; the handler self-gates on cfg.STREAMING_ENABLED (toggleable

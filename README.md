@@ -177,14 +177,14 @@ A few of the most common variables:
 | `WHISPER_DEFAULT_PROMPT` | `DEFAULT_PROMPT` | Initial prompt when request omits `prompt` (empty string disables) |
 | `WHISPER_ADMIN_UI` | `ADMIN_UI_ENABLED` | `0` unregisters `/settings*` + `/quick-config`, `/captures`, `/reports` (on by default) |
 | `WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS` | `ADMIN_WEBUI_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach the **admin** pages — `/settings`, `/settings/api-keys`, `/docs` (loopback always implicit; default loopback only) |
-| `WHISPER_USER_WEBUI_ALLOWED_HOSTS` | `USER_WEBUI_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach the **user** pages — `/quick-config`, `/captures`, `/reports`, `/stats`, `/logs`, `/dictate`, `/sev` (loopback always implicit; default open `0.0.0.0/0, ::/0`) |
+| `WHISPER_USER_WEBUI_ALLOWED_HOSTS` | `USER_WEBUI_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach the **user** pages — `/`, `/quick-config`, `/captures`, `/reports`, `/stats`, `/logs`, `/dictate`, `/sev` (loopback always implicit; default open `0.0.0.0/0, ::/0`) |
 
 ### Allowed hosts
 
 WebUI access is gated by two IP/CIDR allowlists, bucketed by **privilege tier** — each is the outer (host) layer; an API key is still required on the data layer.
 
 - **`ADMIN_WEBUI_ALLOWED_HOSTS`** — admin pages (`/settings`, `/settings/api-keys`, `/docs`). Default `["127.0.0.1", "::1"]` (loopback only); data also requires an **admin** key.
-- **`USER_WEBUI_ALLOWED_HOSTS`** — user pages (`/quick-config`, `/captures`, `/reports`, `/stats`, `/logs`, `/dictate`, `/sev`). Default `["0.0.0.0/0", "::/0"]` (**open**) — the per-page API key is the real gate; narrow this to restrict which networks may even reach the pages.
+- **`USER_WEBUI_ALLOWED_HOSTS`** — user pages (`/`, `/quick-config`, `/captures`, `/reports`, `/stats`, `/logs`, `/dictate`, `/sev`). Default `["0.0.0.0/0", "::/0"]` (**open**) — the per-page API key is the real gate; narrow this to restrict which networks may even reach the pages.
 
 Loopback is *always* implicitly allowed regardless of the configured list, so a typo can never lock you out from the box itself.
 
@@ -213,6 +213,7 @@ CIDR is accepted (`192.168.0.0/16`) and so are bare IPs (`10.0.0.5`). For a dual
 
 **User pages** (host-gated by `USER_WEBUI_ALLOWED_HOSTS`, loopback always allowed; data endpoints additionally need an API key with the page permission):
 
+- `GET  /` — landing hub: the sign-in screen when signed out, a launcher listing the pages the caller's key can reach when signed in.
 - `GET  /logs` — live log viewer; `GET /logs/stream` (SSE feed), `GET /logs/older` (pagination).
 - `GET  /stats` — system overview dashboard; `GET /stats/snapshot` + `GET /stats/stream` (JSON one-shot + ~1 Hz SSE), `GET /stats/usage` (per-user/key usage chart data).
 - `GET  /quick-config` — end-user rule editor (state/recent/stream/usage/reapply-rules sub-endpoints, incl. error-report submission).

@@ -288,6 +288,13 @@ header .title { display: inline-flex; align-items: center; gap: 0.5rem;
   font-weight: 600; color: var(--bold); white-space: nowrap;
   flex-shrink: 1; min-width: 0; max-width: 22rem; overflow: hidden; }
 header .brand-mark { width: 2.2rem; height: 2.2rem; flex-shrink: 0; display: block; }
+/* The lockup is an <a> to the / landing hub — same flex layout as its .title
+   parent so wrapping it changed nothing visually; color:inherit keeps the
+   wordmark spans' own colors. */
+header .brand-link { display: inline-flex; align-items: center; gap: 0.5rem;
+  color: inherit; text-decoration: none; min-width: 0; }
+header .brand-link:focus-visible { outline: 2px solid var(--cyan);
+  outline-offset: 2px; border-radius: 6px; }
 /* Brand-family wordmark grammar (shared with faster-whisper-frontend): light
    "faster" in ink + bold "whisper" in the product accent (green here), then the
    accent ">" prompt and the tracked-caps role label. The mark stays untouched. */
@@ -2773,14 +2780,16 @@ def _header_brand_for(current: str) -> str:
     the plain-text {{HEADER_TITLE}} used inside <title>). Renders the
     waveform mark + compact wordmark `fasterwhisper › backend`. The current
     page is conveyed by the active nav link (aria-current), so the brand no
-    longer repeats it as a slug. `current` is unused but kept for a uniform
-    {{...}}-builder signature."""
+    longer repeats it as a slug. The whole lockup links to the / landing hub
+    so every page has a one-click way back to the launcher. `current` is
+    unused but kept for a uniform {{...}}-builder signature."""
     return (
+        '<a class="brand-link" href="/" title="Home">'
         f"{_BRAND_MARK_SVG}"
         '<span class="brand-word">'
         '<span class="bw-a">faster</span><span class="bw-b">whisper</span>'
         '<span class="bw-sep">&gt;</span><span class="bw-c">backend</span>'
-        "</span>"
+        "</span></a>"
     )
 
 
