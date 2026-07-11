@@ -41,6 +41,21 @@ services:
       # set WHISPER_DATA_DIR / WHISPER_DB_DIR (move the roots wholesale) or
       # any individual WHISPER_* path env — see .env.example for the full
       # list and defaults.
+      # The values shown ARE the defaults — uncomment and edit to relocate:
+      # WHISPER_DATA_DIR: /data
+      # WHISPER_DB_DIR: /data/db
+      # WHISPER_CONFIG_LOCAL: /data/config.local.json
+      # WHISPER_LOG_FILE: /data/logs/whisper.log
+      # WHISPER_CAPTURES_DIR: /data/captures
+      # WHISPER_API_KEYS_DB: /data/db/api_keys.local.sqlite3
+      # WHISPER_SESSIONS_DB: /data/db/sessions.local.sqlite3
+      # WHISPER_REPORTS_DB: /data/db/reports.local.sqlite3
+      # WHISPER_RECENT_TRANSCRIPTIONS_DB: /data/db/recent_transcriptions.local.sqlite3
+      # WHISPER_USAGE_DB: /data/db/usage.local.sqlite3
+      # WHISPER_CAPTURES_DB: /data/db/captures.local.sqlite3
+      # WHISPER_CLIENT_SETTINGS_DB: /data/db/client_settings.local.sqlite3
+      # WHISPER_DOWNLOAD_ROOT: /models
+      # WHISPER_CONVERTED_MODELS_DIR: /models/converted
       #
       # HF download backend (hf_xet) writes its cache + logs under HF_HOME;
       # unset it defaults to ~/.cache, which fails ("Permission denied") when
