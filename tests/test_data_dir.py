@@ -39,31 +39,36 @@ def _resolve(extra_env):
     return json.loads(out.stdout.strip().splitlines()[-1])
 
 
+# The resolver normpaths, so on Windows the same logic yields \-separated
+# paths — compare against the platform's own normalization, not raw POSIX.
+_n = os.path.normpath
+
+
 def test_defaults_are_container_first():
     got = _resolve({})
-    assert got["api"] == "/data/db/api_keys.local.sqlite3"
-    assert got["cs"] == "/data/db/client_settings.local.sqlite3"
-    assert got["log"] == "/data/logs/whisper.log"
-    assert got["captures_dir"] == "/data/captures"
-    assert got["overrides"] == "/data/config.local.json"
+    assert got["api"] == _n("/data/db/api_keys.local.sqlite3")
+    assert got["cs"] == _n("/data/db/client_settings.local.sqlite3")
+    assert got["log"] == _n("/data/logs/whisper.log")
+    assert got["captures_dir"] == _n("/data/captures")
+    assert got["overrides"] == _n("/data/config.local.json")
 
 
 def test_data_dir_moves_everything():
     got = _resolve({"WHISPER_DATA_DIR": "/srv/whisper"})
-    assert got["api"] == "/srv/whisper/db/api_keys.local.sqlite3"
-    assert got["cs"] == "/srv/whisper/db/client_settings.local.sqlite3"
-    assert got["log"] == "/srv/whisper/logs/whisper.log"
-    assert got["captures_dir"] == "/srv/whisper/captures"
-    assert got["overrides"] == "/srv/whisper/config.local.json"
+    assert got["api"] == _n("/srv/whisper/db/api_keys.local.sqlite3")
+    assert got["cs"] == _n("/srv/whisper/db/client_settings.local.sqlite3")
+    assert got["log"] == _n("/srv/whisper/logs/whisper.log")
+    assert got["captures_dir"] == _n("/srv/whisper/captures")
+    assert got["overrides"] == _n("/srv/whisper/config.local.json")
 
 
 def test_db_dir_moves_only_the_stores():
     got = _resolve({"WHISPER_DATA_DIR": "/srv/whisper", "WHISPER_DB_DIR": "/ssd/db"})
-    assert got["api"] == "/ssd/db/api_keys.local.sqlite3"
-    assert got["cs"] == "/ssd/db/client_settings.local.sqlite3"
+    assert got["api"] == _n("/ssd/db/api_keys.local.sqlite3")
+    assert got["cs"] == _n("/ssd/db/client_settings.local.sqlite3")
     # Non-DB paths stay under the data dir.
-    assert got["log"] == "/srv/whisper/logs/whisper.log"
-    assert got["overrides"] == "/srv/whisper/config.local.json"
+    assert got["log"] == _n("/srv/whisper/logs/whisper.log")
+    assert got["overrides"] == _n("/srv/whisper/config.local.json")
 
 
 def test_individual_env_beats_the_dir_knobs():
@@ -73,6 +78,8 @@ def test_individual_env_beats_the_dir_knobs():
         "WHISPER_API_KEYS_DB": "/elsewhere/keys.sqlite3",
         "WHISPER_CONFIG_LOCAL": "/etc/whisper/config.local.json",
     })
+    # Explicit per-path envs pass through VERBATIM (no normpath) — the
+    # operator wrote them; the sibling still resolves via the dir knobs.
     assert got["api"] == "/elsewhere/keys.sqlite3"
-    assert got["cs"] == "/ssd/db/client_settings.local.sqlite3"  # untouched sibling
+    assert got["cs"] == _n("/ssd/db/client_settings.local.sqlite3")
     assert got["overrides"] == "/etc/whisper/config.local.json"
