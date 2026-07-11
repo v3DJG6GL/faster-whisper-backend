@@ -113,3 +113,61 @@ def test_profile_column_ready(client_settings_store_db):
     store.delete("u1", "work")
     assert store.get("u1", "work") is None
     assert store.get("u1")["blob"] == {"set": "default"}
+
+
+def test_list_meta_empty(client_settings_store_db):
+    assert client_settings_store_db.list_meta() == []
+
+
+def test_list_meta_rows_without_blob(client_settings_store_db):
+    """The admin listing must carry metadata only — never blob contents —
+    and `bytes` must be the stored UTF-8 size, not a character count."""
+    store = client_settings_store_db
+    store.put("u1", {"a": "ä"}, 0, device="laptop")   # 'ä' = 2 UTF-8 bytes
+    store.put("u2", {"b": 2}, 0, profile="work")
+    rows = store.list_meta()
+    assert len(rows) == 2
+    by_key = {(r["user_id"], r["profile"]): r for r in rows}
+    r1 = by_key[("u1", "")]
+    assert r1["version"] == 1
+    assert r1["device"] == "laptop"
+    assert r1["updated_at"] is not None
+    assert r1["bytes"] == len('{"a":"ä"}'.encode("utf-8"))
+    assert "blob" not in r1
+    assert by_key[("u2", "work")]["profile"] == "work"
+
+
+def test_force_put_creates_then_bumps(client_settings_store_db):
+    """The WebUI import path: no base_version, always lands, always bumps —
+    so a device holding the old version conflicts on its next CAS push."""
+    store = client_settings_store_db
+    state = store.force_put("u1", {"n": 1}, device="WebUI import")
+    assert state["version"] == 1
+    assert state["blob"] == {"n": 1}
+    assert state["device"] == "WebUI import"
+
+    store.put("u1", {"n": 2}, 1)                      # device write → v2
+    state = store.force_put("u1", {"n": 99})          # admin import → v3
+    assert state["version"] == 3
+    assert state["blob"] == {"n": 99}
+
+    # The device's stale CAS push now conflicts, surfacing the import.
+    ok, current = store.put("u1", {"n": 3}, 2)
+    assert ok is False
+    assert current["version"] == 3
+    assert current["blob"] == {"n": 99}
+
+
+def test_force_put_oversize_rejected(client_settings_store_db):
+    store = client_settings_store_db
+    store.put("u1", {"n": 1}, 0)
+    big = {"x": "a" * (store._CAP_BLOB + 100)}
+    with pytest.raises(ValueError):
+        store.force_put("u1", big)
+    assert store.get("u1")["blob"] == {"n": 1}        # nothing clobbered
+
+
+def test_force_put_truncates_device(client_settings_store_db):
+    store = client_settings_store_db
+    state = store.force_put("u1", {}, device="d" * 500)
+    assert state["device"] == "d" * store._CAP_DEVICE

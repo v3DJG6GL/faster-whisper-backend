@@ -117,6 +117,21 @@ def get(user_id: str, profile: str = "") -> dict[str, Any] | None:
     return _row_to_dict(row)
 
 
+def list_meta() -> list[dict[str, Any]]:
+    """Every row's METADATA — {user_id, profile, version, updated_at,
+    device, bytes} — deliberately WITHOUT the blob, so admin surfaces
+    (the keys page's per-account chip/drawer) can list what's stored
+    without the sensitive contents ever leaving this module in bulk.
+    `bytes` is the stored UTF-8 size (CAST to BLOB: TEXT length() would
+    count characters)."""
+    conn = _require_conn()
+    rows = conn.execute(
+        "SELECT user_id, profile, version, updated_at, device,"
+        " length(CAST(blob AS BLOB)) AS bytes FROM client_settings"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def put(
     user_id: str,
     blob: Any,
@@ -180,6 +195,49 @@ def put(
             new_row["version"] if new_row else "?", len(blob_json), dev,
         )
         return True, new_row
+
+
+def force_put(
+    user_id: str,
+    blob: Any,
+    *,
+    device: str | None = None,
+    profile: str = "",
+) -> dict[str, Any]:
+    """Unconditional admin write (the WebUI's import/restore path) — no
+    base_version. An atomic upsert bumps `version` past whatever is
+    stored, so every device's next CAS push conflicts and its next pull
+    sees a newer server copy: the imported settings propagate through
+    the devices' normal merge path with no device-side changes.
+
+    Raises ValueError if the serialized blob exceeds _CAP_BLOB (the
+    route maps it to 413, same as put())."""
+    blob_json = json.dumps(blob, ensure_ascii=False, separators=(",", ":"))
+    if len(blob_json.encode("utf-8")) > _CAP_BLOB:
+        raise ValueError("blob too large")
+    dev = str(device)[:_CAP_DEVICE] if device else None
+    now = time.time()
+    conn = _require_conn()
+    with _lock:
+        conn.execute(
+            "INSERT INTO client_settings"
+            " (user_id, profile, blob, version, updated_at, device)"
+            " VALUES (?,?,?,1,?,?)"
+            " ON CONFLICT(user_id, profile) DO UPDATE SET"
+            " blob = excluded.blob,"
+            " version = client_settings.version + 1,"
+            " updated_at = excluded.updated_at,"
+            " device = excluded.device",
+            (user_id, profile, blob_json, now, dev),
+        )
+        row = get(user_id, profile)
+    logger.info(
+        "[client-settings] imported user=%s profile=%r v=%s bytes=%d device=%r",
+        _uid_tag(user_id), profile,
+        row["version"] if row else "?", len(blob_json), dev,
+    )
+    assert row is not None  # the upsert we just did can't vanish under _lock
+    return row
 
 
 def delete(user_id: str, profile: str = "") -> bool:
