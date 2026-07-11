@@ -649,6 +649,14 @@ SESSIONS_DB = _D("SESSIONS_DB")
 # the env var (the key is independently stored in the DB).
 BOOTSTRAP_ADMIN_KEY: "str | None" = _D("BOOTSTRAP_ADMIN_KEY")
 
+# Desktop-client settings-sync store: one opaque settings blob per account
+# (user_id), PUT/GET by the desktop client at /v1/client-settings so every
+# machine authenticating as the same account shares one configuration. The
+# blob may contain the client's own backend API keys — sensitive; never
+# logged. SQLite (WAL) next to config.local.json; three runtime files
+# (.sqlite3, -wal, -shm), all gitignored. See client_settings_store.py.
+CLIENT_SETTINGS_DB = _D("CLIENT_SETTINGS_DB")
+
 
 # =============================================================================
 # Whisper fine-tuning capture store
@@ -1008,6 +1016,7 @@ API_KEYS_DB = _env_str("WHISPER_API_KEYS_DB", API_KEYS_DB)
 SESSIONS_DB = _env_str("WHISPER_SESSIONS_DB", SESSIONS_DB)
 BOOTSTRAP_ADMIN_KEY = _env_str("WHISPER_BOOTSTRAP_ADMIN_KEY", BOOTSTRAP_ADMIN_KEY)
 USAGE_DB = _env_str("WHISPER_USAGE_DB", USAGE_DB)
+CLIENT_SETTINGS_DB = _env_str("WHISPER_CLIENT_SETTINGS_DB", CLIENT_SETTINGS_DB)
 USAGE_RETENTION_DAYS = _env_int("WHISPER_USAGE_RETENTION_DAYS", USAGE_RETENTION_DAYS)
 CAPTURES_PROPOSER_SESSION_GAP_S = _env_int(
     "WHISPER_CAPTURES_PROPOSER_SESSION_GAP_S", CAPTURES_PROPOSER_SESSION_GAP_S)

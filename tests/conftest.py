@@ -169,6 +169,18 @@ def reports_store_db(tmp_path):
 
 
 @pytest.fixture
+def client_settings_store_db(tmp_path):
+    import client_settings_store
+    client_settings_store.init_db(str(tmp_path / "client_settings.sqlite3"))
+    yield client_settings_store
+    try:
+        client_settings_store._require_conn().close()
+    except Exception:
+        pass
+    client_settings_store._conn = None
+
+
+@pytest.fixture
 def api_keys_db(tmp_path):
     import api_keys_store
     api_keys_store.init_db(str(tmp_path / "api_keys.sqlite3"))
@@ -359,6 +371,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     monkeypatch.setenv("WHISPER_USAGE_DB", str(tmp_path / "usage.sqlite3"))
     monkeypatch.setenv("WHISPER_CAPTURES_DB", str(tmp_path / "captures.sqlite3"))
     monkeypatch.setenv("WHISPER_CAPTURES_DIR", str(tmp_path / "captures_audio"))
+    monkeypatch.setenv("WHISPER_CLIENT_SETTINGS_DB", str(tmp_path / "client_settings.sqlite3"))
     monkeypatch.setenv("WHISPER_LOG_FILE", str(tmp_path / "whisper.log"))
 
     import config as cfg
@@ -397,9 +410,10 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # captures connection, so just drop its reference.
     import api_keys_store, reports_store, transcriptions_store
     import usage_store, captures_store, capture_samples_store
-    import sessions_store
+    import sessions_store, client_settings_store
     for _mod in (api_keys_store, sessions_store, reports_store,
-                 transcriptions_store, usage_store, captures_store):
+                 transcriptions_store, usage_store, captures_store,
+                 client_settings_store):
         _c = getattr(_mod, "_conn", None)
         if _c is not None:
             try:

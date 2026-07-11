@@ -210,6 +210,7 @@ CIDR is accepted (`192.168.0.0/16`) and so are bare IPs (`10.0.0.5`). For a dual
 - `GET/PATCH /v1/pipeline-rules` — the exposed post-processing rules this caller may view/edit (same gating + semantics as `/quick-config`, for API clients).
 - `GET  /v1/recent-words` — recently-transcribed word/phrase suggestions (for rule-editor autocomplete).
 - `GET  /v1/usage` — the caller's own transcription usage rollup.
+- `GET/PUT/DELETE /v1/client-settings` — per-account opaque settings blob for desktop-client sync (all machines authenticating as the same account share one configuration). Optimistic concurrency: PUT echoes `base_version`; a mismatch returns `409` carrying the current `{version, blob, updated_at, device}` so the client can merge and re-PUT without another GET; oversized blobs get `413`, malformed bodies `422`. GET on an empty store returns `200 {version: 0, blob: null}` — a route-level `404` means the backend build predates the endpoint. The blob is stored verbatim and never logged (it may contain the client's own backend API keys). Open-mode caveat: with no admin key configured, all callers share the single `(open-mode)` row. Cookie-authenticated (non-bearer) PUT/DELETE additionally needs `X-CSRF-Token`; the desktop client uses bearer and is exempt.
 
 **User pages** (host-gated by `USER_WEBUI_ALLOWED_HOSTS`, loopback always allowed; data endpoints additionally need an API key with the page permission):
 
@@ -441,6 +442,8 @@ stats_routes.py            /stats dashboard endpoints + HTML page (always on, al
 metrics.py                 In-process request metrics (counters, latency ring, recent transcriptions)
 system_stats.py            GPU + host snapshot (pynvml + psutil; degrades gracefully if NVML missing)
 usage_store.py             Durable per-key / per-user usage rollup (/v1/usage, /stats/usage)
+client_settings_store.py / client_settings_routes.py
+                           Per-account desktop-client settings blob + /v1/client-settings sync API
 transcriptions_store.py    Durable store for recent transcription traces (/quick-config recent)
 web_common.py              Shared helpers: allowlist gate, nav HTML + severity pills, login gate / OPEN-mode banner
 restart_service.py         Detached self-restart helper (os.execv re-exec on Linux/macOS, WinSW on Windows)

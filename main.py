@@ -1840,6 +1840,19 @@ async def lifespan(app: FastAPI):
     except Exception as _ue:
         logger.error("Failed to initialize usage store: %s", _ue)
 
+    # Open the desktop-client settings-sync store (one opaque blob per
+    # account, served at /v1/client-settings). Non-fatal: sync degrades to
+    # 500s but transcription keeps working. No retention loop — bounded at
+    # one row per account.
+    try:
+        import client_settings_store
+        client_settings_store.init_db(cfg.CLIENT_SETTINGS_DB)
+        logger.info(
+            "Client-settings store initialized at %s", cfg.CLIENT_SETTINGS_DB
+        )
+    except Exception as _cse:
+        logger.error("Failed to initialize client-settings store: %s", _cse)
+
     # Open the captures store. Audio + word-timestamps for Whisper
     # fine-tuning, gated by CAPTURE_RECORDINGS_ENABLED. Reconcile drift
     # before serving (row says audio exists / disk says it doesn't, or
@@ -3412,6 +3425,24 @@ try:
     logger.info("Pipeline-rules client API at GET/PATCH /v1/pipeline-rules")
 except Exception as _e:
     logger.error("Failed to load pipeline-rules v1 router: %s", _e)
+
+
+# =============================================================================
+# /v1/client-settings - desktop-client settings sync
+# =============================================================================
+# Always registered (a route-level 404 must keep meaning "backend build too
+# old for sync"). User-tier bearer auth only — deliberately NO page gate and
+# NO host allowlist: settings sync is account infrastructure for remote
+# desktop clients (same rationale as /v1/usage). One opaque blob per account
+# with optimistic versioning; see client_settings_routes.py.
+try:
+    from client_settings_routes import router as _client_settings_router
+    app.include_router(_client_settings_router)
+    logger.info(
+        "Client-settings sync at GET/PUT/DELETE /v1/client-settings"
+    )
+except Exception as _e:
+    logger.error("Failed to load client-settings router: %s", _e)
 
 
 # =============================================================================

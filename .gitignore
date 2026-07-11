@@ -47,6 +47,12 @@ usage.local.sqlite3
 usage.local.sqlite3-shm
 usage.local.sqlite3-wal
 
+# Desktop-client settings-sync store (SQLite + WAL/SHM) — blob may hold the
+# client's own backend API keys
+client_settings.local.sqlite3
+client_settings.local.sqlite3-shm
+client_settings.local.sqlite3-wal
+
 # Editor / IDE
 .vscode/
 .idea/
