@@ -22,22 +22,20 @@ services:
     # env_file:
     #   - .env
     environment:
-      # Pin the runtime state under /data (volumes below) instead of the repo
-      # dir, so the image stays stateless. Every other WHISPER_* setting can be
-      # added here too — see .env.example for the full list and defaults.
-      WHISPER_CONFIG_LOCAL: /data/config.local.json
-      WHISPER_API_KEYS_DB: /data/api_keys.local.sqlite3
-      WHISPER_SESSIONS_DB: /data/sessions.local.sqlite3
-      WHISPER_REPORTS_DB: /data/reports.local.sqlite3
-      WHISPER_RECENT_TRANSCRIPTIONS_DB: /data/recent_transcriptions.local.sqlite3
-      WHISPER_USAGE_DB: /data/usage.local.sqlite3
-      WHISPER_CAPTURES_DB: /data/captures.local.sqlite3
-      WHISPER_CAPTURES_DIR: /data/captures
-      WHISPER_LOG_FILE: /data/logs/whisper.log
-      WHISPER_DOWNLOAD_ROOT: /models
-      # Auto-converted CT2 models (if AUTO_CONVERT_HF_MODELS is enabled) land
-      # on the persistent models volume instead of the ephemeral ~/.cache.
-      WHISPER_CONVERTED_MODELS_DIR: /models/converted
+      # Paths need NO configuration: the app's defaults are container-first —
+      # all runtime state under /data (SQLite stores under /data/db, plus
+      # config.local.json, logs/, captures/) and models under /models; the two
+      # volumes below cover everything. Move the roots with WHISPER_DATA_DIR /
+      # WHISPER_DB_DIR, or any individual WHISPER_* path env — see
+      # .env.example for the full list.
+      #
+      # MIGRATION (deployments created before the /data/db default): your
+      # SQLite files live flat in /data. Either move them once —
+      #   docker compose stop && docker compose run --rm --entrypoint sh \
+      #     faster-whisper-backend -c 'mkdir -p /data/db && mv /data/*.sqlite3* /data/db/'
+      #   && docker compose up -d
+      # — or keep your old explicit WHISPER_*_DB env lines instead.
+      #
       # HF download backend (hf_xet) writes its cache + logs under HF_HOME;
       # unset it defaults to ~/.cache, which fails ("Permission denied") when
       # the platform runs the container as a non-root UID with HOME=/. Point it

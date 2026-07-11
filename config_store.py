@@ -32,11 +32,13 @@ from pydantic import (
 
 
 _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
-# Admin-edited overrides file. Defaults next to the code, but in a container the
-# image dir (/app) is read-only — point WHISPER_CONFIG_LOCAL at the writable
-# data volume (e.g. /data/config.local.json), same pattern as the *_DB paths.
+# Admin-edited overrides file. Defaults into the data dir like every other
+# runtime-state path (mirrors config._DATA_DIR — computed locally, the rule is
+# two lines): WHISPER_CONFIG_LOCAL > WHISPER_DATA_DIR/config.local.json >
+# /data/config.local.json.
 OVERRIDES_PATH = os.environ.get("WHISPER_CONFIG_LOCAL") or os.path.join(
-    _REPO_DIR, "config.local.json")
+    (os.environ.get("WHISPER_DATA_DIR") or "").strip() or "/data",
+    "config.local.json")
 # Committed factory-default pipeline rules. Unlike config.local.json this file
 # IS version-controlled — the admin WebUI's "Defaults" mode edits it so rule
 # fixes can be git-pushed to every deployment. See load_factory_rules().

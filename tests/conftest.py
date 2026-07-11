@@ -30,6 +30,17 @@ from typing import Any, Callable
 import numpy as np
 import pytest
 
+# The path defaults are container-first (/data, /data/db — see config.py
+# _DATA_DIR). A dev box usually has no writable /data, and a few test modules
+# import `main` at COLLECTION time (before any fixture monkeypatch runs), so
+# root every default into a throwaway dir for the whole test session. The
+# app_module fixture still pins each store to its own tmp_path per test.
+import tempfile
+
+os.environ.setdefault(
+    "WHISPER_DATA_DIR", tempfile.mkdtemp(prefix="whisper-test-data-")
+)
+
 RATE = 16000
 
 

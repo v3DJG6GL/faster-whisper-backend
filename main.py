@@ -30,7 +30,20 @@ import system_stats
 # Log path and rotation policy come from config.py / WHISPER_LOG_FILE.
 # The file copy strips ANSI escape codes so it stays grep-friendly and the
 # /logs web viewer can re-color via CSS based on content.
-os.makedirs(os.path.dirname(cfg.LOG_FILE), exist_ok=True)
+# An uncreatable log dir (e.g. the container-first /data default on a
+# bare-metal box without WHISPER_DATA_DIR) must not kill the import — the
+# server degrades to stderr-only logging, the standard container posture.
+_log_dir_ok = True
+try:
+    os.makedirs(os.path.dirname(cfg.LOG_FILE), exist_ok=True)
+except OSError as _log_exc:
+    _log_dir_ok = False
+    print(
+        f"WARNING: cannot create log directory for {cfg.LOG_FILE!r} ({_log_exc}) "
+        "— file logging disabled, logging to stderr only. Set WHISPER_LOG_FILE "
+        "or WHISPER_DATA_DIR to a writable location.",
+        file=sys.stderr,
+    )
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 
@@ -57,14 +70,16 @@ _console_handler = logging.StreamHandler(sys.stderr)
 _console_handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
 _root.addHandler(_console_handler)
 
-_file_handler = logging.handlers.RotatingFileHandler(
-    cfg.LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT, encoding="utf-8",
-)
-_file_handler.setFormatter(_StripAnsiFormatter(
-    "%(asctime)s %(levelname)s %(name)s %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%SZ",   # UTC (converter=gmtime); viewer localizes
-))
-_root.addHandler(_file_handler)
+if _log_dir_ok:
+    _file_handler = logging.handlers.RotatingFileHandler(
+        cfg.LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT,
+        encoding="utf-8",
+    )
+    _file_handler.setFormatter(_StripAnsiFormatter(
+        "%(asctime)s %(levelname)s %(name)s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%SZ",   # UTC (converter=gmtime); viewer localizes
+    ))
+    _root.addHandler(_file_handler)
 
 # Tail WARNING+ records into an in-memory ring used by the nav-row severity
 # pills and the /stats page. Does no I/O — append to a deque and return.
@@ -1844,37 +1859,18 @@ async def lifespan(app: FastAPI):
     # account, served at /v1/client-settings). Non-fatal: sync degrades to
     # 503s but transcription keeps working. No retention loop — bounded at
     # one row per account.
-    # Fallback: the factory default lives in the repo dir, which containerized
-    # deployments often mount read-only (their OTHER sqlite paths are set via
-    # env; a freshly added default like this one isn't) — so a failed primary
-    # retries next to the api-keys DB, whose directory any authed deployment
-    # can already write. Deterministic: the primary either always works or
-    # always fails for a given deployment, so the chosen path is stable. Set
-    # WHISPER_CLIENT_SETTINGS_DB explicitly to skip the guesswork.
     try:
         import client_settings_store
-        try:
-            client_settings_store.init_db(cfg.CLIENT_SETTINGS_DB)
-            logger.info(
-                "Client-settings store initialized at %s", cfg.CLIENT_SETTINGS_DB
-            )
-        except Exception as _cse_primary:
-            _cs_fallback = os.path.join(
-                os.path.dirname(os.path.abspath(cfg.API_KEYS_DB)),
-                "client_settings.local.sqlite3",
-            )
-            logger.error(
-                "Failed to initialize client-settings store at %s (%s) — "
-                "falling back to %s (set WHISPER_CLIENT_SETTINGS_DB to pick "
-                "the path explicitly)",
-                cfg.CLIENT_SETTINGS_DB, _cse_primary, _cs_fallback,
-            )
-            client_settings_store.init_db(_cs_fallback)
-            logger.info("Client-settings store initialized at %s", _cs_fallback)
+        client_settings_store.init_db(cfg.CLIENT_SETTINGS_DB)
+        logger.info(
+            "Client-settings store initialized at %s", cfg.CLIENT_SETTINGS_DB
+        )
     except Exception as _cse:
         logger.error(
-            "Failed to initialize client-settings store: %s — "
-            "/v1/client-settings will answer 503 until this is fixed", _cse
+            "Failed to initialize client-settings store at %s: %s — "
+            "/v1/client-settings will answer 503 until this is fixed "
+            "(WHISPER_CLIENT_SETTINGS_DB / WHISPER_DB_DIR / WHISPER_DATA_DIR)",
+            cfg.CLIENT_SETTINGS_DB, _cse,
         )
 
     # Open the captures store. Audio + word-timestamps for Whisper

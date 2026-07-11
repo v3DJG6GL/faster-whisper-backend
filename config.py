@@ -33,12 +33,28 @@ except ImportError:
     pass
 
 
-# Directory holding this config file — used by _load_defaults() to locate
-# config.json and to resolve the {REPO_DIR} placeholder that config.json stores
-# in path defaults (LOG_FILE, the per-feature SQLite stores, CAPTURES_DIR, …)
-# into absolute paths. Underscore-prefixed so it's excluded from _BASELINE /
-# the admin UI.
+# Directory holding this config file — used by _load_defaults() to locate the
+# committed config.json. Underscore-prefixed so it's excluded from _BASELINE /
+# the admin UI. (Path DEFAULTS no longer live here — see _DATA_DIR/_DB_DIR.)
 _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Container-first data layout. Two layered knobs re-root every runtime-state
+# DEFAULT (the {DATA_DIR}/{DB_DIR}-templated paths in config.json plus
+# config.local.json in config_store):
+#
+#   WHISPER_DATA_DIR  root for ALL app data          (default /data)
+#   WHISPER_DB_DIR    just the SQLite stores          (default {DATA_DIR}/db)
+#
+# Per-path precedence: WHISPER_<X>_DB > WHISPER_DB_DIR > WHISPER_DATA_DIR/db
+# > /data/db (analogous for the non-DB paths, minus the DB_DIR level). This
+# exists because a stateless deployment had to override ~10 path envs one by
+# one, and forgetting one (as happened with a freshly added store) silently
+# pointed that store at the read-only image dir. Bare-metal/dev runs that
+# want everything in the checkout: WHISPER_DATA_DIR=$PWD (the repo dir is no
+# longer the default).
+_DATA_DIR = (os.environ.get("WHISPER_DATA_DIR") or "").strip() or "/data"
+_DB_DIR = (os.environ.get("WHISPER_DB_DIR") or "").strip() or os.path.join(
+    _DATA_DIR, "db")
 
 
 # -----------------------------------------------------------------------------
@@ -46,7 +62,8 @@ _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 # for ALL default values). config.py no longer hardcodes them -- each setting
 # below is `NAME = _D("NAME")`. config.local.json + ENV overrides still layer on
 # top (precedence unchanged: ENV > config.local.json > config.json). Paths are
-# stored with a {REPO_DIR} placeholder so they stay portable across machines.
+# stored with {DATA_DIR}/{DB_DIR} placeholders so they stay portable across
+# machines (resolved against the container-first layout above).
 # -----------------------------------------------------------------------------
 # Fields stored as JSON arrays but used as sets in code -- mirror of
 # config_store._POST_LOAD_COERCERS (kept here too: config_store imports THIS
@@ -76,8 +93,13 @@ def _load_defaults() -> "dict[str, object]":
     _raw.pop("schema_version", None)
     _resolved: "dict[str, object]" = {}
     for _k, _val in _raw.items():
-        if isinstance(_val, str) and "{REPO_DIR}" in _val:
-            _val = os.path.normpath(_val.replace("{REPO_DIR}", _REPO_DIR))
+        if isinstance(_val, str) and ("{DATA_DIR}" in _val or "{DB_DIR}" in _val):
+            # Path defaults are runtime STATE: they resolve against the
+            # container-first data layout (see _DATA_DIR/_DB_DIR above), NOT
+            # the repo dir.
+            _val = os.path.normpath(
+                _val.replace("{DATA_DIR}", _DATA_DIR).replace("{DB_DIR}", _DB_DIR)
+            )
         elif _k in _SET_FIELDS and isinstance(_val, list):
             _val = set(_val)
         _resolved[_k] = _val
