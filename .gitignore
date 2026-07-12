@@ -21,6 +21,11 @@ htmlcov/
 # Admin-WebUI runtime overrides (the .example.json variant IS committed)
 config.local.json
 
+# In-checkout data/model roots — the Windows bare-metal defaults (<repo>\data,
+# <repo>\models); also cover Linux runs with WHISPER_DATA_DIR=./data
+/data/
+/models/
+
 # Transcription error reports — durable PHI store (SQLite + WAL/SHM sidecars)
 reports.local.sqlite3
 reports.local.sqlite3-shm

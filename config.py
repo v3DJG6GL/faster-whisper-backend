@@ -42,9 +42,9 @@ _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 # {DATA_DIR}/{DB_DIR}/{MODELS_DIR}-templated paths in config.json plus
 # config.local.json in config_store):
 #
-#   WHISPER_DATA_DIR    root for ALL app data    (default /data; Windows: repo dir)
-#   WHISPER_DB_DIR      just the SQLite stores   (default {DATA_DIR}/db; Windows: {DATA_DIR})
-#   WHISPER_MODELS_DIR  downloads + conversions  (default /models; Windows: {DATA_DIR}/models)
+#   WHISPER_DATA_DIR    root for ALL app data    (default /data; Windows: <repo>\data)
+#   WHISPER_DB_DIR      just the SQLite stores   (default {DATA_DIR}/db)
+#   WHISPER_MODELS_DIR  downloads + conversions  (default /models; Windows: <repo>\models)
 #
 # Per-path precedence: WHISPER_<X>_DB > WHISPER_DB_DIR > WHISPER_DATA_DIR/db
 # > platform default (analogous for the non-DB paths, minus the DB_DIR level).
@@ -55,17 +55,17 @@ _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 # The container-first absolutes are Linux-only ON PURPOSE: the published images
 # are Linux, so a Windows process is bare metal by definition — and "/data" on
 # Windows is DRIVE-RELATIVE (it resolves against the launcher's CWD drive).
-# Windows therefore keeps the historical in-checkout layout: state beside
-# main.py, SQLite stores flat in the repo root (no db/ level) so deployments
-# from before the container-first switch keep finding their files. Linux
-# bare-metal/dev runs that want the same: WHISPER_DATA_DIR=$PWD.
+# Windows therefore mirrors the container layout under the checkout: the two
+# roots become <repo>\data and <repo>\models, everything below them (db/,
+# captures/, logs/, config.local.json) is IDENTICAL to Linux. Linux
+# bare-metal/dev runs that want the same: WHISPER_DATA_DIR=$PWD/data.
 _IS_WINDOWS = os.name == "nt"
 _DATA_DIR = (os.environ.get("WHISPER_DATA_DIR") or "").strip() or (
-    _REPO_DIR if _IS_WINDOWS else "/data")
-_DB_DIR = (os.environ.get("WHISPER_DB_DIR") or "").strip() or (
-    _DATA_DIR if _IS_WINDOWS else os.path.join(_DATA_DIR, "db"))
+    os.path.join(_REPO_DIR, "data") if _IS_WINDOWS else "/data")
+_DB_DIR = (os.environ.get("WHISPER_DB_DIR") or "").strip() or os.path.join(
+    _DATA_DIR, "db")
 _MODELS_DIR = (os.environ.get("WHISPER_MODELS_DIR") or "").strip() or (
-    os.path.join(_DATA_DIR, "models") if _IS_WINDOWS else "/models")
+    os.path.join(_REPO_DIR, "models") if _IS_WINDOWS else "/models")
 
 
 # -----------------------------------------------------------------------------
