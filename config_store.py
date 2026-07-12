@@ -35,10 +35,12 @@ _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 # Admin-edited overrides file. Defaults into the data dir like every other
 # runtime-state path (mirrors config._DATA_DIR — computed locally, the rule is
 # two lines): WHISPER_CONFIG_LOCAL > WHISPER_DATA_DIR/config.local.json >
-# /data/config.local.json.
+# /data/config.local.json (Windows: repo dir — bare metal by definition, and
+# "/data" would be drive-relative there; keep in sync with config._DATA_DIR).
 OVERRIDES_PATH = os.environ.get("WHISPER_CONFIG_LOCAL") or os.path.normpath(
     os.path.join(
-        (os.environ.get("WHISPER_DATA_DIR") or "").strip() or "/data",
+        (os.environ.get("WHISPER_DATA_DIR") or "").strip()
+        or (_REPO_DIR if os.name == "nt" else "/data"),
         "config.local.json"))
 # Committed factory-default pipeline rules. Unlike config.local.json this file
 # IS version-controlled — the admin WebUI's "Defaults" mode edits it so rule

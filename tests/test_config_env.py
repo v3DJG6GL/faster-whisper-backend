@@ -181,21 +181,26 @@ def test_load_defaults_is_the_source(monkeypatch, tmp_path):
 
 
 def test_load_defaults_resolves_data_dir_placeholders(monkeypatch, tmp_path):
-    # {DATA_DIR}/{DB_DIR} placeholders resolve against the container-first
-    # layout knobs (WHISPER_DATA_DIR/WHISPER_DB_DIR — captured at import into
-    # _DATA_DIR/_DB_DIR), NOT the repo dir. See also tests/test_data_dir.py
-    # for the end-to-end env → path matrix.
+    # {DATA_DIR}/{DB_DIR}/{MODELS_DIR} placeholders resolve against the data
+    # layout knobs (WHISPER_DATA_DIR/WHISPER_DB_DIR/WHISPER_MODELS_DIR —
+    # captured at import into _DATA_DIR/_DB_DIR/_MODELS_DIR), NOT the repo
+    # dir. See also tests/test_data_dir.py for the end-to-end env → path
+    # matrix.
     _write_cfg(tmp_path,
                LOG_FILE="{DATA_DIR}/logs/whisper.log",
-               API_KEYS_DB="{DB_DIR}/api_keys.local.sqlite3")
+               API_KEYS_DB="{DB_DIR}/api_keys.local.sqlite3",
+               DOWNLOAD_ROOT="{MODELS_DIR}")
     monkeypatch.setattr(config, "_REPO_DIR", str(tmp_path))
     monkeypatch.setattr(config, "_DATA_DIR", str(tmp_path / "state"))
     monkeypatch.setattr(config, "_DB_DIR", str(tmp_path / "state" / "db"))
+    monkeypatch.setattr(config, "_MODELS_DIR", str(tmp_path / "models"))
     d = config._load_defaults()
     assert d["LOG_FILE"] == os.path.normpath(
         os.path.join(str(tmp_path), "state", "logs/whisper.log"))
     assert d["API_KEYS_DB"] == os.path.normpath(
         os.path.join(str(tmp_path), "state", "db", "api_keys.local.sqlite3"))
+    assert d["DOWNLOAD_ROOT"] == os.path.normpath(
+        os.path.join(str(tmp_path), "models"))
     assert "{DATA_DIR}" not in d["LOG_FILE"] and "{DB_DIR}" not in d["API_KEYS_DB"]
 
 

@@ -38,12 +38,14 @@ services:
       # Path defaults are container-first: runtime state under /data (SQLite
       # stores in /data/db; config.local.json, logs/, captures/) and models
       # under /models — matching the two volumes below. To relocate anything,
-      # set WHISPER_DATA_DIR / WHISPER_DB_DIR (move the roots wholesale) or
+      # set WHISPER_DATA_DIR / WHISPER_DB_DIR / WHISPER_MODELS_DIR (move the
+      # roots wholesale) or
       # any individual WHISPER_* path env — see .env.example for the full
       # list and defaults.
       # The values shown ARE the defaults — uncomment and edit to relocate:
       # WHISPER_DATA_DIR: /data
       # WHISPER_DB_DIR: /data/db
+      # WHISPER_MODELS_DIR: /models
       # WHISPER_CONFIG_LOCAL: /data/config.local.json
       # WHISPER_LOG_FILE: /data/logs/whisper.log
       # WHISPER_CAPTURES_DIR: /data/captures

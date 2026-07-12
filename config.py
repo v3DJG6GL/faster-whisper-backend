@@ -38,23 +38,34 @@ except ImportError:
 # the admin UI. (Path DEFAULTS no longer live here — see _DATA_DIR/_DB_DIR.)
 _REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Container-first data layout. Two layered knobs re-root every runtime-state
-# DEFAULT (the {DATA_DIR}/{DB_DIR}-templated paths in config.json plus
+# Data layout. Three layered knobs re-root every runtime-state DEFAULT (the
+# {DATA_DIR}/{DB_DIR}/{MODELS_DIR}-templated paths in config.json plus
 # config.local.json in config_store):
 #
-#   WHISPER_DATA_DIR  root for ALL app data          (default /data)
-#   WHISPER_DB_DIR    just the SQLite stores          (default {DATA_DIR}/db)
+#   WHISPER_DATA_DIR    root for ALL app data    (default /data; Windows: repo dir)
+#   WHISPER_DB_DIR      just the SQLite stores   (default {DATA_DIR}/db; Windows: {DATA_DIR})
+#   WHISPER_MODELS_DIR  downloads + conversions  (default /models; Windows: {DATA_DIR}/models)
 #
 # Per-path precedence: WHISPER_<X>_DB > WHISPER_DB_DIR > WHISPER_DATA_DIR/db
-# > /data/db (analogous for the non-DB paths, minus the DB_DIR level). This
-# exists because a stateless deployment had to override ~10 path envs one by
-# one, and forgetting one (as happened with a freshly added store) silently
-# pointed that store at the read-only image dir. Bare-metal/dev runs that
-# want everything in the checkout: WHISPER_DATA_DIR=$PWD (the repo dir is no
-# longer the default).
-_DATA_DIR = (os.environ.get("WHISPER_DATA_DIR") or "").strip() or "/data"
-_DB_DIR = (os.environ.get("WHISPER_DB_DIR") or "").strip() or os.path.join(
-    _DATA_DIR, "db")
+# > platform default (analogous for the non-DB paths, minus the DB_DIR level).
+# This exists because a stateless deployment had to override ~10 path envs one
+# by one, and forgetting one (as happened with a freshly added store) silently
+# pointed that store at the read-only image dir.
+#
+# The container-first absolutes are Linux-only ON PURPOSE: the published images
+# are Linux, so a Windows process is bare metal by definition — and "/data" on
+# Windows is DRIVE-RELATIVE (it resolves against the launcher's CWD drive).
+# Windows therefore keeps the historical in-checkout layout: state beside
+# main.py, SQLite stores flat in the repo root (no db/ level) so deployments
+# from before the container-first switch keep finding their files. Linux
+# bare-metal/dev runs that want the same: WHISPER_DATA_DIR=$PWD.
+_IS_WINDOWS = os.name == "nt"
+_DATA_DIR = (os.environ.get("WHISPER_DATA_DIR") or "").strip() or (
+    _REPO_DIR if _IS_WINDOWS else "/data")
+_DB_DIR = (os.environ.get("WHISPER_DB_DIR") or "").strip() or (
+    _DATA_DIR if _IS_WINDOWS else os.path.join(_DATA_DIR, "db"))
+_MODELS_DIR = (os.environ.get("WHISPER_MODELS_DIR") or "").strip() or (
+    os.path.join(_DATA_DIR, "models") if _IS_WINDOWS else "/models")
 
 
 # -----------------------------------------------------------------------------
@@ -62,8 +73,8 @@ _DB_DIR = (os.environ.get("WHISPER_DB_DIR") or "").strip() or os.path.join(
 # for ALL default values). config.py no longer hardcodes them -- each setting
 # below is `NAME = _D("NAME")`. config.local.json + ENV overrides still layer on
 # top (precedence unchanged: ENV > config.local.json > config.json). Paths are
-# stored with {DATA_DIR}/{DB_DIR} placeholders so they stay portable across
-# machines (resolved against the container-first layout above).
+# stored with {DATA_DIR}/{DB_DIR}/{MODELS_DIR} placeholders so they stay
+# portable across machines (resolved against the data layout above).
 # -----------------------------------------------------------------------------
 # Fields stored as JSON arrays but used as sets in code -- mirror of
 # config_store._POST_LOAD_COERCERS (kept here too: config_store imports THIS
@@ -93,12 +104,16 @@ def _load_defaults() -> "dict[str, object]":
     _raw.pop("schema_version", None)
     _resolved: "dict[str, object]" = {}
     for _k, _val in _raw.items():
-        if isinstance(_val, str) and ("{DATA_DIR}" in _val or "{DB_DIR}" in _val):
-            # Path defaults are runtime STATE: they resolve against the
-            # container-first data layout (see _DATA_DIR/_DB_DIR above), NOT
-            # the repo dir.
+        if isinstance(_val, str) and (
+            "{DATA_DIR}" in _val or "{DB_DIR}" in _val or "{MODELS_DIR}" in _val
+        ):
+            # Path defaults are runtime STATE: they resolve against the data
+            # layout knobs above (container-first on Linux, in-checkout on
+            # Windows), never against the repo dir directly.
             _val = os.path.normpath(
-                _val.replace("{DATA_DIR}", _DATA_DIR).replace("{DB_DIR}", _DB_DIR)
+                _val.replace("{DATA_DIR}", _DATA_DIR)
+                .replace("{DB_DIR}", _DB_DIR)
+                .replace("{MODELS_DIR}", _MODELS_DIR)
             )
         elif _k in _SET_FIELDS and isinstance(_val, list):
             _val = set(_val)
