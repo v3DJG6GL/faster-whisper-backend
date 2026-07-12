@@ -13,12 +13,10 @@ import time
 import uuid
 from contextlib import asynccontextmanager
 
-# Per-process token, regenerated on every interpreter start. Surfaced via
-# /v1/models so the WebUI's restart flow can detect the new process even
-# if its 1 s polling missed the brief "service down" window.
-BOOT_ID = uuid.uuid4().hex
-
-from build_info import APP_VERSION, SERVER_NAME
+# BOOT_ID (the per-process restart marker surfaced via /v1/models) lives in
+# build_info with the rest of the server identity; imported this early —
+# before config — so it exists exactly as soon as it used to.
+from build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 
 import config as cfg
 # system_stats imports psutil + pynvml at module load and primes psutil's
@@ -2916,7 +2914,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
 <body>
 <header>
   <div class="header-inner">
-    <span class="title">{{HEADER_BRAND}}</span>
+    <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
     <span class="brand-sep" aria-hidden="true"></span>
     {{NAV}}
     <span class="spacer"></span>

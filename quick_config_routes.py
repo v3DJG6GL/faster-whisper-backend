@@ -1130,7 +1130,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
 
 <header>
   <div class="header-inner">
-    <span class="title">{{HEADER_BRAND}}</span>
+    <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
     <span class="brand-sep" aria-hidden="true"></span>
     {{NAV}}
     <span class="spacer"></span>

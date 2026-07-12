@@ -10,6 +10,7 @@ Shared helpers used by the /logs, /settings, /stats, and /quick-config pages.
 
 from __future__ import annotations
 
+import html
 import ipaddress
 import logging
 from collections import deque
@@ -17,6 +18,7 @@ from typing import Callable
 
 from fastapi import HTTPException, Request, status
 
+import build_info
 import config as cfg
 
 
@@ -307,6 +309,25 @@ header .brand-word .bw-sep { color: var(--green); font-weight: 700; margin: 0 0.
 header .brand-word .bw-c { color: var(--dim); font-weight: 500; font-size: 0.72em;
   font-family: "Geist Mono", var(--font-mono);
   letter-spacing: 0.14em; text-transform: uppercase; }
+/* Build-version tag beside the brand (every page): quiet Geist Mono chip;
+   hover/focus raises a CSS tooltip (data-tip, real newlines via white-space:
+   pre) with the full describe + boot + start; click copies (see
+   _header_vtag_html). Sits OUTSIDE .title so the tooltip escapes its
+   overflow:hidden clipping. */
+header .vtag { position: relative; flex-shrink: 0; margin-left: -0.35rem;
+  font-family: "Geist Mono", var(--font-mono); font-size: var(--fs-xs);
+  color: var(--help); background: transparent; border: 1px solid var(--border);
+  border-radius: 4px; padding: 0.08rem 0.42rem; line-height: 1.5;
+  cursor: copy; white-space: nowrap; }
+header .vtag:hover, header .vtag:focus-visible { color: var(--fg); }
+header .vtag.copied { color: var(--green); border-color: var(--green); }
+header .vtag::after { content: attr(data-tip); position: absolute; left: 0;
+  top: calc(100% + 0.5rem); z-index: 40; display: none;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 12px 32px -12px rgba(0,0,0,0.8); padding: 0.5rem 0.75rem;
+  color: var(--fg); font-size: var(--fs-xs); line-height: 1.8;
+  white-space: pre; text-align: left; }
+header .vtag:hover::after, header .vtag:focus-visible::after { display: block; }
 /* the requested clear separation between logo and nav */
 header .brand-sep { flex-shrink: 0; width: 1px; align-self: stretch;
   margin: 0.15rem 0.35rem; background: var(--border); }
@@ -2653,6 +2674,9 @@ def render_page(template: str, current: str) -> str:
                                    plain text, used inside <title>
       - {{HEADER_BRAND}}         → branded header lockup (waveform mark +
                                    wordmark + slug) for <span class="title">
+      - {{HEADER_VTAG}}          → build-version chip (hover = full build
+                                   tooltip, click = copy) placed right after
+                                   the .title span in the global bar
 
     Pages that don't include a given placeholder are returned unchanged."""
     # Resolve the /logs DOM cap: 0 in config means "auto = initial × 4".
@@ -2687,6 +2711,7 @@ def render_page(template: str, current: str) -> str:
         .replace("{{TAG_PICKER_JS}}", TAG_PICKER_JS)
         .replace("{{HEADER_TITLE}}", _header_title_for(current))
         .replace("{{HEADER_BRAND}}", _header_brand_for(current))
+        .replace("{{HEADER_VTAG}}", _HEADER_VTAG_HTML)
     )
 
 
@@ -2791,6 +2816,58 @@ def _header_brand_for(current: str) -> str:
         '<span class="bw-sep">&gt;</span><span class="bw-c">backend</span>'
         "</span></a>"
     )
+
+
+# ── header build-version tag ({{HEADER_VTAG}}) ──────────────────────────────
+# All values are per-process constants, so the fragment is built once at
+# import. The chip shows the release part (VERSION_SHORT); the tooltip and the
+# copied report carry the full describe + boot + start time. _fwCopyBuild is
+# defined here (once per page) and reused by any other copy-report button
+# (e.g. the /settings server-identity card).
+def _header_vtag_html() -> str:
+    full = html.escape(build_info.APP_VERSION)
+    tip = (
+        f"{build_info.SERVER_NAME} {full}&#10;"
+        f"boot {build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}&#10;"
+        "click to copy"
+    )
+    report = html.escape(
+        f"{build_info.SERVER_NAME} {build_info.APP_VERSION} "
+        f"(boot {build_info.BOOT_ID[:8]}, started {build_info.STARTED_UTC})"
+    )
+    return (
+        f'<button id="hdr-vtag" class="vtag" type="button" data-tip="{tip}" '
+        f'data-build="{report}" aria-label="Copy server build info" '
+        f'onclick="_fwCopyBuild(this)">{html.escape(build_info.VERSION_SHORT)}</button>'
+        # navigator.clipboard needs a secure context (https / localhost); over
+        # plain-http LAN fall back to textarea + execCommand (same approach as
+        # the api-keys page's copy button).
+        "<script>\n"
+        "function _fwCopyBuild (btn) {\n"
+        "  var txt = btn.getAttribute('data-build') || '';\n"
+        "  var done = function (ok) { if (!ok) return;\n"
+        "    var old = btn.getAttribute('data-lbl') || btn.textContent;\n"
+        "    btn.setAttribute('data-lbl', old);\n"
+        "    btn.classList.add('copied'); btn.textContent = 'copied';\n"
+        "    setTimeout(function () { btn.textContent = old;\n"
+        "      btn.classList.remove('copied'); }, 900);\n"
+        "  };\n"
+        "  if (navigator.clipboard && window.isSecureContext) {\n"
+        "    navigator.clipboard.writeText(txt)\n"
+        "      .then(function () { done(true); }, function () { done(false); });\n"
+        "  } else {\n"
+        "    var ta = document.createElement('textarea'); ta.value = txt;\n"
+        "    ta.style.position = 'fixed'; ta.style.opacity = '0';\n"
+        "    document.body.appendChild(ta); ta.select();\n"
+        "    var ok = false; try { ok = document.execCommand('copy'); } catch (_) {}\n"
+        "    document.body.removeChild(ta); done(ok);\n"
+        "  }\n"
+        "}\n"
+        "</script>"
+    )
+
+
+_HEADER_VTAG_HTML = _header_vtag_html()
 
 
 def _page_meta_tag(current: str) -> str:

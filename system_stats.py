@@ -79,6 +79,15 @@ def gpu_mem_used_bytes() -> int | None:
         return None
 
 
+def gpu_name() -> str | None:
+    """The GPU's marketing name ("NVIDIA GeForce RTX 3080"), or None when NVML
+    found no device. Older pynvml returns bytes — normalized to str."""
+    raw = _safe(lambda: pynvml.nvmlDeviceGetName(_nvml_handle))
+    if raw is None:
+        return None
+    return raw.decode("utf-8", "replace") if isinstance(raw, bytes) else str(raw)
+
+
 def register_loaded_model(name: str, vram_bytes: int | None,
                           device: str, compute_type: str) -> None:
     """Called from main._get_or_load_model after a successful load. The VRAM

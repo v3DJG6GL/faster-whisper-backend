@@ -579,7 +579,7 @@ _REPORTS_HTML = """<!doctype html>
 <body>
 <header>
   <div class="header-inner">
-    <span class="title">{{HEADER_BRAND}}</span>
+    <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
     <span class="brand-sep" aria-hidden="true"></span>
     {{NAV}}
     <span class="spacer"></span>

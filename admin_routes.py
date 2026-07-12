@@ -30,10 +30,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import TypeAdapter, ValidationError
 
+import build_info
 import config as cfg
 import config_store
+import system_stats
 import web_common
 from auth import require_admin
+from html import escape as _esc
 
 logger = logging.getLogger("whisper-api")
 
@@ -345,6 +348,46 @@ def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+def _server_ident_html() -> str:
+    """The "This server" identity card (build + runtime facts), rendered
+    per request so the uptime is fresh. Values never include secrets — just
+    version/engine/boot/paths, and the whole card is role-admin-gated in CSS.
+    The copy button reuses _fwCopyBuild from the header vtag fragment.
+    cfg._DATA_DIR/_DB_DIR keep their underscore on purpose: uppercase config
+    globals get swept into the admin-editable _BASELINE, and these resolved
+    layout facts must stay out of it (see config.py)."""
+    gpu = system_stats.gpu_name()
+    runs = f"{build_info.runs_as()} · {('gpu — ' + gpu) if gpu else 'cpu'}"
+    engines = build_info.engine_versions()
+    boot = (
+        f"{build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}"
+        f" · up {build_info.uptime_str()}"
+    )
+    report = "\n".join([
+        f"{build_info.SERVER_NAME} {build_info.APP_VERSION}",
+        f"runs-as: {runs} · {engines}",
+        f"boot {build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}",
+        f"data {cfg._DATA_DIR} · db {cfg._DB_DIR} · models {cfg.DOWNLOAD_ROOT}",
+    ])
+    return (
+        '<div id="srv-ident"><section aria-label="Server identity">'
+        '<div class="si-head">'
+        '<span class="si-title">This server</span>'
+        '<span class="si-sub">build &amp; runtime identity</span>'
+        f'<button type="button" class="si-copy" data-build="{_esc(report)}" '
+        'onclick="_fwCopyBuild(this)">copy report</button>'
+        "</div><dl>"
+        f'<dt>Version</dt><dd class="green">{_esc(build_info.APP_VERSION)}</dd>'
+        f"<dt>Runs as</dt><dd>{_esc(runs)}</dd>"
+        f"<dt>Engine</dt><dd>{_esc(engines)}</dd>"
+        f"<dt>Boot</dt><dd>{_esc(boot)}</dd>"
+        f"<dt>Data / models</dt><dd>{_esc(cfg._DATA_DIR)} "
+        f'<span class="faint">(db {_esc(cfg._DB_DIR)})</span>'
+        f" · models {_esc(cfg.DOWNLOAD_ROOT)}</dd>"
+        "</dl></section></div>"
+    )
+
+
 @router.get("", response_class=HTMLResponse, dependencies=[Depends(require_admin_webui_host)])
 async def settings_page() -> HTMLResponse:
     """The admin HTML page. Allowlist-gated (loopback always allowed) — no
@@ -353,7 +396,8 @@ async def settings_page() -> HTMLResponse:
     build after a service restart."""
     return HTMLResponse(
         web_common.render_page(
-            _SETTINGS_VIEWER_HTML.replace("{{SETTINGS_VIEW}}", "settings"),
+            _SETTINGS_VIEWER_HTML.replace("{{SETTINGS_VIEW}}", "settings")
+            .replace("{{SERVER_IDENT}}", _server_ident_html()),
             current="settings"),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -374,7 +418,9 @@ async def pipeline_page() -> HTMLResponse:
     contracts — no separate backend. Allowlist-gated exactly like /settings."""
     return HTMLResponse(
         web_common.render_page(
-            _SETTINGS_VIEWER_HTML.replace("{{SETTINGS_VIEW}}", "pipeline"),
+            # No identity card on the focused pipeline editor — settings only.
+            _SETTINGS_VIEWER_HTML.replace("{{SETTINGS_VIEW}}", "pipeline")
+            .replace("{{SERVER_IDENT}}", ""),
             current="pipeline"),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -969,6 +1015,32 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
      pills, the red-tinted #discard-btn) are all centralized in NAV_CSS. */
   main { padding: 0.875rem; max-width: 68.75rem; margin: 0 auto;
     container-type: inline-size; container-name: form; }
+  /* Server-identity card — server-rendered above the JS-built #main; hidden
+     until the shared whoami pass confirms admin (body.role-admin, the same
+     mechanism as the admin-only nav links) so pre-auth visitors of the
+     host-gated shell don't see paths/versions. Bottom padding 0: main's own
+     top padding provides the normal 0.875rem section gap. */
+  #srv-ident { display: none; max-width: 68.75rem; margin: 0 auto;
+    padding: 0.875rem 0.875rem 0; box-sizing: border-box; }
+  body.role-admin #srv-ident { display: block; }
+  #srv-ident section { margin-bottom: 0; }
+  #srv-ident .si-head { display: flex; align-items: baseline; gap: 0.6rem;
+    margin-bottom: 0.6rem; }
+  #srv-ident .si-title { font-weight: 600; color: var(--bold); font-size: 0.933rem; }
+  #srv-ident .si-sub { color: var(--dim); font-size: var(--fs-xs); }
+  #srv-ident .si-copy { margin-left: auto; background: #21262d; color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.8rem;
+    font: inherit; font-size: var(--fs-xs); cursor: pointer; white-space: nowrap; }
+  #srv-ident .si-copy:hover { border-color: #3d444d; }
+  #srv-ident .si-copy.copied { color: var(--green); border-color: var(--green); }
+  #srv-ident dl { display: grid; grid-template-columns: 10.5rem 1fr;
+    gap: 0.42rem 1rem; margin: 0; font-size: var(--fs-sm); }
+  #srv-ident dt { color: var(--dim); }
+  #srv-ident dd { margin: 0; font-family: "Geist Mono", var(--font-mono);
+    font-size: var(--fs-xs); color: var(--fg); overflow-wrap: anywhere; }
+  #srv-ident dd.green { color: var(--green); font-weight: 700; }
+  #srv-ident dd .faint { color: var(--dim); }
+  @media (max-width: 40em) { #srv-ident dl { grid-template-columns: 7.5rem 1fr; } }
   section { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
     padding: 0.625rem 0.875rem 0.75rem; margin-bottom: 0.875rem; }
   h2 { color: var(--bold); font-size: 0.933rem; margin: 0 0 0.5rem; padding-bottom: 0.375rem;
@@ -1619,7 +1691,7 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
 <div id="app-wrap">
   <header>
     <div class="header-inner">
-      <span class="title">{{HEADER_BRAND}}</span>
+      <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
       <span class="brand-sep" aria-hidden="true"></span>
       {{NAV}}
       <span class="spacer"></span>
@@ -1639,6 +1711,7 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
     </div>
     <div class="subbar section-nav" id="section-nav"></div>
   </header>
+  {{SERVER_IDENT}}
   <main id="main"></main>
 </div>
 
