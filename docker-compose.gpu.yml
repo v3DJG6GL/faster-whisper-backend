@@ -3,12 +3,12 @@
 #   GPU:  docker compose -f docker-compose.gpu.yml up -d
 # Requires the NVIDIA driver + NVIDIA Container Toolkit on the host (see
 # Dockerfile.gpu). Runtime state is kept in named volumes so it survives
-# down/up and image bumps. If the GHCR package is private, `docker login
-# ghcr.io` first.
+# down/up and image bumps. The package inherits the repo's visibility
+# (private), so `docker login forgejo.informethic.ch` first.
 services:
   faster-whisper-backend:
     # GPU: CUDA image variant published by CI from Dockerfile.gpu (vs :latest).
-    image: ghcr.io/v3djg6gl/faster-whisper-backend:latest-gpu
+    image: forgejo.informethic.ch/martin-zeller/faster-whisper-backend:latest-gpu
     container_name: faster-whisper-backend
     # Runs as a non-root user. Set PUID/PGID (e.g. in .env next to this file)
     # to pick the user/group — no rebuild needed; the image ships /data and
@@ -22,7 +22,7 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
-    # To build the GPU image locally instead of pulling from GHCR, uncomment:
+    # To build the GPU image locally instead of pulling from the registry, uncomment:
     # build:
     #   context: .
     #   dockerfile: Dockerfile.gpu

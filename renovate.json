@@ -13,11 +13,12 @@
   "automerge": true,
   "automergeStrategy": "squash",
   "platformAutomerge": true,
+  "osvVulnerabilityAlerts": true,
   "minimumReleaseAge": "3 days",
   "internalChecksFilter": "strict",
   "packageRules": [
     {
-      "description": "Group all GitHub Actions bumps into one PR.",
+      "description": "Group all Actions bumps (the github-actions manager also covers .forgejo/workflows) into one PR.",
       "matchManagers": ["github-actions"],
       "groupName": "github-actions"
     },
@@ -34,7 +35,14 @@
       "enabled": false
     },
     {
-      "description": "Major bumps require manual review — surface as checkboxes on the Dependency Dashboard, do not open the PR automatically, do not auto-merge. Minor/patch still flow through automerge gated by all-ci.",
+      "description": "Keep workflow actions on floating major tags (@vN). Suppress pin/patch/minor so they are never pinned to an exact patch (upstream moves the @vN tag, so patch fixes land at runtime without a PR — and the local action mirrors only sync tags every 8h, so an exact-patch pin can race the mirror). A new MAJOR still surfaces via the rule below.",
+      "matchFileNames": [".forgejo/workflows/**", ".github/workflows/**"],
+      "matchDatasources": ["github-tags"],
+      "matchUpdateTypes": ["pin", "patch", "minor"],
+      "enabled": false
+    },
+    {
+      "description": "Major bumps require manual review — surface as checkboxes on the Dependency Dashboard, do not open the PR automatically, do not auto-merge. Minor/patch still flow through automerge gated by all-ci (which must be a required status check in the Forgejo branch protection for platformAutomerge to wait on it).",
       "matchUpdateTypes": ["major"],
       "automerge": false,
       "dependencyDashboardApproval": true

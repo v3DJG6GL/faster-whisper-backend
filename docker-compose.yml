@@ -1,17 +1,19 @@
-# Deploy by pulling the published image from GHCR (default), or build locally.
+# Deploy by pulling the published image from the Forgejo registry (default),
+# or build locally.
 #   CPU:  docker compose up -d
 #   GPU:  docker compose -f docker-compose.gpu.yml up -d   (standalone, see that file)
 # Runtime state is kept in named volumes so it survives down/up and image bumps.
-# If the GHCR package is private, `docker login ghcr.io` first.
+# The package inherits the repo's visibility (private), so
+# `docker login forgejo.informethic.ch` first.
 services:
   faster-whisper-backend:
-    image: ghcr.io/v3djg6gl/faster-whisper-backend:latest
+    image: forgejo.informethic.ch/martin-zeller/faster-whisper-backend:latest
     container_name: faster-whisper-backend
     # Runs as a non-root user. Set PUID/PGID (e.g. in .env next to this file)
     # to pick the user/group — no rebuild needed; the image ships /data and
     # /models writable by any UID.
     user: "${PUID:-1000}:${PGID:-1000}"
-    # To build the image locally instead of pulling from GHCR, uncomment:
+    # To build the image locally instead of pulling from the registry, uncomment:
     # build: .
     ports:
       # To serve on another port, set WHISPER_SERVER_PORT to match AND change

@@ -68,12 +68,13 @@ python main.py                             # serves on http://0.0.0.0:8000
 
 ### Docker (any OS)
 
-CI publishes two images to GHCR on every push to `main` (and on `v*` tags):
-`:latest` (CPU) and `:latest-gpu` (adds the CUDA 12 / cuDNN 9 wheels). Both are
-also tagged `:v<version>` / `:v<version>-gpu` and `:sha-<short>` / `:sha-<short>-gpu`.
+CI publishes two images to the Forgejo container registry on every push to
+`main` (and on `v*` tags): `:latest` (CPU) and `:latest-gpu` (adds the CUDA 12 /
+cuDNN 9 wheels). Both are also tagged `:v<version>` / `:v<version>-gpu` and
+`:sha-<short>` / `:sha-<short>-gpu`.
 
 ```bash
-# CPU — pulls ghcr.io/<owner>/faster-whisper-backend:latest
+# CPU — pulls forgejo.informethic.ch/martin-zeller/faster-whisper-backend:latest
 docker compose up -d
 
 # GPU — standalone file: pulls :latest-gpu and passes through the host NVIDIA GPU(s)
@@ -85,8 +86,9 @@ same ports/env/volumes, differing only in the GPU bits (`:latest-gpu` image +
 the NVIDIA device reservation). The GPU path needs an NVIDIA driver (CUDA 12.x)
 **and** the NVIDIA Container Toolkit on the host. With no GPU visible, model load
 auto-falls back to CPU/int8. To build locally instead of pulling, uncomment
-`build:` in the compose file (the GPU build uses `Dockerfile.gpu`). If the GHCR
-package is private, `docker login ghcr.io` first.
+`build:` in the compose file (the GPU build uses `Dockerfile.gpu`). The package
+inherits the repo's visibility (private), so `docker login
+forgejo.informethic.ch` first.
 
 The container runs as a **non-root user** (default `1000:1000`); set `PUID` /
 `PGID` in `.env` (or the environment) to run as a different user/group — no
@@ -115,7 +117,7 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-CI runs the suite on Linux and Windows for every push (`.github/workflows/ci.yml`).
+CI runs the suite on Linux and Windows for every push (`.forgejo/workflows/ci.yml`).
 
 ## Usage
 
@@ -481,7 +483,7 @@ requirements-gpu.txt       NVIDIA CUDA wheels (opt-in, additive)
 requirements-dev.txt       Test deps (pytest)
 requirements-convert.txt   Deps for converting HF models to CTranslate2 (opt-in)
 pytest.ini                 Test discovery config (pytest -q from repo root)
-.github/workflows/ci.yml   CI: test suite on Linux + Windows, then publishes the GHCR images
+.forgejo/workflows/ci.yml  CI: test suite on Linux + Windows, then publishes the registry images
 static/                    Brand assets (logo.svg, favicon.*) + vendored uPlot/GridStack (offline /stats)
 .gitignore / .gitattributes
 logs/                      Created at first run; rotates at 10 MB × 10 files

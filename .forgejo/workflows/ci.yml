@@ -1,0 +1,255 @@
+# Forgejo Actions port of the GitHub workflow (.github/workflows/ci.yml,
+# removed in the same commit). Structural changes vs. the GitHub original —
+# same conventions as faster-whisper-frontend/ci.yml and
+# nextcloud-fpm-nginx/build.yml:
+#
+#   * Actions are referenced unqualified (owner/repo@ref): the instance sets
+#     DEFAULT_ACTIONS_URL to itself, so refs resolve against local pull
+#     mirrors (orgs: actions, docker). REQUIRES app.ini [actions]
+#     DEFAULT_ACTIONS_URL = https://forgejo.informethic.ch — without it,
+#     unqualified refs fall back to code.forgejo.org. Before bumping any
+#     @version, confirm the mirror has synced that tag (8h interval, or
+#     "Synchronize now" in the mirror repo's settings).
+#   * actions/setup-python is NOT mirrored on the instance, and it would
+#     download interpreter builds from GitHub at runtime anyway. The Linux
+#     test legs instead run in official python:<ver> containers (job-level
+#     `container:`), which pins the interpreter without any GitHub
+#     dependency. The full (non-slim) image ships git + build toolchain.
+#   * python containers have no node, so JS actions (actions/checkout) can't
+#     run there — the test legs check out manually with plain git, using the
+#     run-scoped actions token (same manual-checkout pattern as the
+#     frontend's host-mode Windows legs, which exists there because
+#     actions/checkout's credential persistence breaks in host mode).
+#   * windows-latest runs on the self-hosted Windows VM runner (host mode,
+#     label windows-latest:host — see forgejo-runner-windows/
+#     windows-runner-setup.md). It uses the SYSTEM python, like the frontend
+#     uses the system node. VM prerequisite (one-time, admin PowerShell):
+#         choco install -y python
+#     then add C:\Python314;C:\Python314\Scripts to the nssm
+#     AppEnvironmentExtra PATH (setup guide §5) and `nssm restart
+#     forgejo-runner`. Until then this leg fails at "python not found".
+#   * Registry: ghcr.io -> the Forgejo container registry (REGISTRY env).
+#     Auth via a PAT (secrets.REGISTRY_USER / REGISTRY_TOKEN, scope
+#     package:write — same secret pair as nextcloud-fpm-nginx) instead of
+#     the ephemeral GITHUB_TOKEN; the GHCR login retry-loop is gone (local
+#     registry, no flaky token proxy).
+#   * Buildx cache: type=gha -> type=registry on the Forgejo registry
+#     (buildcache-cpu / buildcache-gpu tags), per-variant so cpu/gpu don't
+#     evict each other. ignore-error on export: a transient cache-push
+#     failure must not fail a publish.
+#   * buildkitd docker.io mirror (mirror.gcr.io): both variants resolve the
+#     python:3.x-slim base from Docker Hub; the mirror keeps repeated
+#     matrix/PR builds away from Hub's anonymous rate limit.
+#   * provenance/sbom disabled — buildx attestation manifests
+#     (unknown/unknown entries) have a spotty history with Forgejo
+#     registries.
+#   * permissions: blocks dropped — GitHub token-permission model.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded PR runs; push runs are kept (they publish images).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  REGISTRY: forgejo.informethic.ch
+  IMAGE: faster-whisper-backend
+
+jobs:
+  test:
+    name: tests (ubuntu-latest py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    # Exact interpreter via the official image — replaces setup-python (see
+    # header). The matrix value is interpolated into the tag, so Renovate's
+    # github-actions manager skips it; bump the list by hand when a new
+    # Python minor lands (the Docker tag floats on patch releases by itself).
+    container:
+      image: python:${{ matrix.python-version }}-trixie
+    strategy:
+      fail-fast: false
+      matrix:
+        # ubuntu is the primary target and is exercised across the supported
+        # Python range; windows (below) is a portability parity guard.
+        python-version: ["3.12", "3.13", "3.14"]
+    steps:
+      # Manual checkout — no node in the python image, so actions/checkout
+      # (a JS action) cannot run. The run-scoped actions token authenticates
+      # the fetch (repo is private).
+      - name: Checkout
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@forgejo.informethic.ch/${{ github.repository }}.git"
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin ${{ github.ref }}
+          git checkout -q --force FETCH_HEAD
+
+      # No pip cache: the job container is ephemeral and actions/cache is a
+      # JS action (no node here). The deps are modest CPU wheels; PyPI is
+      # not rate-limited the way Docker Hub is.
+      - name: Install dependencies (CPU base + test tools)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      # Coverage is gated: the suite must exercise at least this percent of
+      # the application modules, so coverage can only ratchet upward. A
+      # shortfall fails this leg, which fails the `all-ci` gate below, which
+      # blocks auto-merge / release publishing. Baseline measured at 66% on
+      # Linux; set a few points lower so the Windows leg (which skips the
+      # POSIX-only timezone tests) and minor per-version variance don't
+      # false-fail. Raise this number as coverage grows — never lower it.
+      - name: Run tests (with coverage gate)
+        run: pytest -q --cov-fail-under=63
+
+  # Windows portability parity guard — a single leg on the self-hosted VM
+  # runner (host mode), using the system python (VM prerequisite in the
+  # header). Steps mirror the frontend's windows legs: manual checkout,
+  # `python -m` invocations (Scripts\ shims may lag the service PATH).
+  test-windows:
+    name: tests (windows-latest)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        run: |
+          git init -q .
+          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@forgejo.informethic.ch/${{ github.repository }}.git"
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin ${{ github.ref }}
+          git checkout -q --force FETCH_HEAD
+
+      # Host mode: this installs into the VM's system python and doubles as
+      # a warm cache across runs (same trade-off as the frontend's persistent
+      # cargo cache). Renovate PRs keep the pins current, so drift converges.
+      - name: Install dependencies (CPU base + test tools)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run tests (with coverage gate)
+        run: python -m pytest -q --cov-fail-under=63
+
+  # Single, stable status check to require in the branch protection. Matrix
+  # legs expand/rename over time; this gate aggregates them so the required
+  # check name never changes. It fails unless EVERY leg succeeded — so
+  # Renovate automerge only proceeds when the whole suite is green on all
+  # platforms. (No job in this chain is ever *skipped*, so the Forgejo v15
+  # skipped-needs hang documented in nextcloud-fpm-nginx/build.yml can't
+  # bite here.)
+  all-ci:
+    name: all-ci
+    if: always()
+    needs: [test, test-windows]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all test legs to succeed
+        run: |
+          echo "test=${{ needs.test.result }} test-windows=${{ needs.test-windows.result }}"
+          test "${{ needs.test.result }}" = "success"
+          test "${{ needs.test-windows.result }}" = "success"
+
+  # Build (and, off PRs, publish) the container images — only AFTER the test
+  # gate is green. `needs: [all-ci]` means this job is skipped whenever the
+  # suite fails, so a broken build never reaches the registry. PRs build the
+  # images to validate the Dockerfiles but do not push; push to main / a v*
+  # tag publishes.
+  #
+  # Two variants build in parallel from the same context:
+  #   cpu — Dockerfile      → :latest, :v*, :sha-<short>          (CPU-only base)
+  #   gpu — Dockerfile.gpu  → :latest-gpu, :v*-gpu, :sha-<short>-gpu
+  #         (adds the CUDA 12 / cuDNN 9 wheels from requirements-gpu.txt)
+  # The gpu suffix is applied to every tag via metadata-action's flavor.suffix.
+  build:
+    name: build image (${{ matrix.variant }})
+    needs: [all-ci]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: cpu
+            dockerfile: Dockerfile
+            suffix: ''
+          - variant: gpu
+            dockerfile: Dockerfile.gpu
+            suffix: '-gpu'
+    steps:
+      # actions/checkout works here (unlike the test legs): the catthehacker
+      # job image has node, and the host-mode credential bug doesn't apply
+      # in container mode.
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # Full history + tags so `git describe` below can anchor the build
+          # version to the newest v* tag (shallow default sees no tags).
+          fetch-depth: 0
+
+      # The version baked into the image (build_info.py reads it from the
+      # WHISPER_BUILD_VERSION env). Tag-anchored and bumps with every commit:
+      # "v0.1.0" on a tagged build, "v0.1.0-3-g1a2b3c4" three commits later.
+      - name: Compute build version (git describe)
+        id: ver
+        run: echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          # Resolve docker.io refs (the python base image) via Google's
+          # pull-through mirror — repeated PR/matrix builds otherwise eat
+          # into Docker Hub's anonymous rate limit. buildkit falls back to
+          # docker.io on a mirror miss, so this can only help.
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.gcr.io"]
+
+      # Needed on PRs too: the buildx cache lives on the Forgejo registry.
+      - name: Log in to the Forgejo registry
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ secrets.REGISTRY_USER }}
+          password: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE }}
+          # latest=false: we control the `latest` tag via the type=raw rule
+          # below (main only — spelled out explicitly rather than
+          # {{is_default_branch}}, which needs event-payload fields Forgejo
+          # doesn't reliably fill). suffix appends "-gpu" to every tag for
+          # the gpu leg; onlatest=true ensures it reaches the raw `latest`
+          # tag too.
+          flavor: |
+            latest=false
+            suffix=${{ matrix.suffix }},onlatest=true
+          tags: |
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=ref,event=tag
+            type=sha,format=short
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            BUILD_VERSION=${{ steps.ver.outputs.version }}
+          # Attestation manifests have a spotty history with Forgejo
+          # registries — off until verified on this instance.
+          provenance: false
+          sbom: false
+          # Per-variant registry cache so the cpu and gpu builds don't evict
+          # each other. PR builds import AND export (same-repo branches only
+          # on this instance, so the cache is trusted); ignore-error keeps a
+          # transient cache-push failure from failing the publish.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE }}:buildcache-${{ matrix.variant }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE }}:buildcache-${{ matrix.variant }},mode=max,ignore-error=true
