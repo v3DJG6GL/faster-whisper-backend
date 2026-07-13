@@ -87,7 +87,7 @@ the NVIDIA device reservation). The GPU path needs an NVIDIA driver (CUDA 12.x)
 **and** the NVIDIA Container Toolkit on the host. With no GPU visible, model load
 auto-falls back to CPU/int8. To build locally instead of pulling, uncomment
 `build:` in the compose file (the GPU build uses `Dockerfile.gpu`). The package
-inherits the repo's visibility (private), so `docker login
+inherits the repo's visibility; if the repo is private, `docker login
 forgejo.informethic.ch` first.
 
 The container runs as a **non-root user** (default `1000:1000`); set `PUID` /

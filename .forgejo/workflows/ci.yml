@@ -81,7 +81,7 @@ jobs:
     steps:
       # Manual checkout — no node in the python image, so actions/checkout
       # (a JS action) cannot run. The run-scoped actions token authenticates
-      # the fetch (repo is private).
+      # the fetch, so this works regardless of repo visibility.
       - name: Checkout
         run: |
           git init -q .

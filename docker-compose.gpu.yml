@@ -3,8 +3,8 @@
 #   GPU:  docker compose -f docker-compose.gpu.yml up -d
 # Requires the NVIDIA driver + NVIDIA Container Toolkit on the host (see
 # Dockerfile.gpu). Runtime state is kept in named volumes so it survives
-# down/up and image bumps. The package inherits the repo's visibility
-# (private), so `docker login forgejo.informethic.ch` first.
+# down/up and image bumps. The package inherits the repo's visibility; if the
+# repo is private, `docker login forgejo.informethic.ch` first.
 services:
   faster-whisper-backend:
     # GPU: CUDA image variant published by CI from Dockerfile.gpu (vs :latest).

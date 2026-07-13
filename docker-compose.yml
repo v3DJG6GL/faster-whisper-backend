@@ -3,7 +3,7 @@
 #   CPU:  docker compose up -d
 #   GPU:  docker compose -f docker-compose.gpu.yml up -d   (standalone, see that file)
 # Runtime state is kept in named volumes so it survives down/up and image bumps.
-# The package inherits the repo's visibility (private), so
+# The package inherits the repo's visibility; if the repo is private,
 # `docker login forgejo.informethic.ch` first.
 services:
   faster-whisper-backend:
