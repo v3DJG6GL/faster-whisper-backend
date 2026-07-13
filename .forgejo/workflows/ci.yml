@@ -181,7 +181,7 @@ jobs:
       # job image has node, and the host-mode credential bug doesn't apply
       # in container mode.
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           # Full history + tags so `git describe` below can anchor the build
           # version to the newest v* tag (shallow default sees no tags).
