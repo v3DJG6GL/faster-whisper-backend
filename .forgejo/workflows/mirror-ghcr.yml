@@ -1,0 +1,126 @@
+# .forgejo/workflows/mirror-ghcr.yml
+#
+# Reconciling one-way sync of published container images from this
+# instance's registry to ghcr.io (companion to the git mirror at
+# github.com/v3DJG6GL/faster-whisper-backend). `crane cp` copies
+# manifests + layers bit-identical — same digests as the Forgejo registry,
+# no rebuild — so the Forgejo registry stays the single source of truth.
+# Same pattern as nextcloud-fpm-nginx/mirror-ghcr.yml.
+#
+# Deliberately a SEPARATE workflow, not a job in ci.yml: a mirror job
+# appended after `build` would have to be skipped on PR runs, and
+# skipped-`needs` jobs hang the whole run on Forgejo v15 (forgejo#12937).
+# A digest-compare reconcile is idempotent, so a timer is just as good —
+# anything published between slots lands next slot.
+#
+# Unlike nextcloud-fpm-nginx (which builds on cron), ci.yml here publishes
+# on push to main / v* tags, at arbitrary times. The crons below are
+# therefore pure reconcile slots (worst-case sync lag ~8h); for an
+# immediate sync after tagging a release, hit "Run workflow"
+# (workflow_dispatch) once ci.yml's build job is green.
+#
+# Setup (job no-ops with a notice until this is done):
+#   * Add repo secrets GHCR_USER (GitHub username) + GHCR_TOKEN (a GitHub
+#     PAT (classic) with `write:packages` — the same pair configured on
+#     nextcloud-fpm-nginx works verbatim).
+#   * No visibility flip needed: the destination is the LEGACY GHCR
+#     package left by the GitHub-era CI, which is already public — the
+#     mirror re-points its latest/latest-gpu (and future v*) tags at the
+#     Forgejo-built digests, where existing consumers already pull.
+#
+# buildcache-* tags are excluded on purpose (buildx cache blobs, not
+# runnable images, and they churn every run). sha-* tags ARE mirrored:
+# the GitHub-era CI always published them to this package, and they alias
+# the digests of latest/v* builds, so each one costs only a manifest copy.
+
+name: mirror-ghcr
+
+on:
+  schedule:
+    # Forgejo evaluates cron in UTC. Offset 30 min from nextcloud-fpm-
+    # nginx's mirror slots (07:00/15:00 UTC) so the two mirrors don't
+    # contend for the shared runner at the same minute.
+    - cron: '30 7 * * *'
+    - cron: '30 15 * * *'
+  workflow_dispatch:
+
+env:
+  # Source is derived at runtime from GITHUB_SERVER_URL + GITHUB_REPOSITORY
+  # (lowercased — registry paths are), so instance/user/repo renames need no
+  # edit here. Only the ghcr.io destination is fixed: it lives on a
+  # different platform and can't be derived from this run's context. It
+  # targets the legacy public package (GitHub-era CI history) so the tags
+  # keep flowing where existing consumers already pull from.
+  DST_IMAGE: ghcr.io/v3djg6gl/faster-whisper-backend
+
+jobs:
+  mirror:
+    name: Sync image tags to ghcr.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install crane
+        env:
+          # renovate: datasource=github-releases depName=google/go-containerregistry
+          # Fetched from this instance's `tools` generic package registry —
+          # upload the new release tarball there BEFORE bumping this version.
+          CRANE_VERSION: v0.21.7
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 --retry-delay 5 --retry-connrefused --retry-all-errors \
+            "${GITHUB_SERVER_URL}/api/packages/tools/generic/go-containerregistry/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin crane
+          crane version
+
+      - name: Sync tags (digest-compare, copy only what drifted)
+        env:
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+          # Source registry read: anonymous works while the package is
+          # public; log in with the existing CI credentials anyway so the
+          # sync survives the package ever being flipped private.
+          SRC_USER: ${{ secrets.REGISTRY_USER }}
+          SRC_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          SRC_IMAGE="${GITHUB_SERVER_URL#*://}/$(printf '%s' "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          echo "Syncing $SRC_IMAGE -> $DST_IMAGE"
+
+          if [ -z "$GHCR_TOKEN" ] || [ -z "$GHCR_USER" ]; then
+            echo "::notice::GHCR_USER/GHCR_TOKEN secrets not configured — skipping mirror (add a GitHub PAT with write:packages to enable)"
+            exit 0
+          fi
+
+          echo "$GHCR_TOKEN" | crane auth login ghcr.io \
+            --username "$GHCR_USER" --password-stdin
+          if [ -n "$SRC_TOKEN" ]; then
+            echo "$SRC_TOKEN" | crane auth login "${SRC_IMAGE%%/*}" \
+              --username "$SRC_USER" --password-stdin
+          fi
+
+          # List first, fail loudly: `for tag in $(...)` swallows the
+          # substitution's exit code — a stale token would otherwise turn an
+          # UNAUTHORIZED listing into a green "0 copied" run (seen on
+          # nextcloud-fpm-nginx run 47).
+          all_tags=$(crane ls "$SRC_IMAGE")
+          # Runnable tags only, each with an optional -gpu variant:
+          # vN[.N[.N]], latest, sha-<short> — not buildcache-*.
+          tags=$(printf '%s\n' "$all_tags" | grep -E '^(v[0-9]+(\.[0-9]+){0,2}|latest|sha-[0-9a-f]+)(-gpu)?$' | sort -V || true)
+          if [ -z "$tags" ]; then
+            echo "::error::no runnable tags found on $SRC_IMAGE"
+            exit 1
+          fi
+
+          copied=0 fresh=0
+          for tag in $tags; do
+            src_digest=$(crane digest "$SRC_IMAGE:$tag")
+            dst_digest=$(crane digest "$DST_IMAGE:$tag" 2>/dev/null || true)
+            if [ "$src_digest" = "$dst_digest" ]; then
+              fresh=$((fresh + 1))
+              continue
+            fi
+            echo "[$tag] ${dst_digest:-<absent>} -> $src_digest"
+            crane cp "$SRC_IMAGE:$tag" "$DST_IMAGE:$tag"
+            copied=$((copied + 1))
+          done
+          echo "::notice::mirror-ghcr: $copied tag(s) copied, $fresh already in sync"
