@@ -60,7 +60,6 @@ concurrency:
 
 env:
   REGISTRY: forgejo.informethic.ch
-  IMAGE: faster-whisper-backend
 
 jobs:
   test:
@@ -188,6 +187,17 @@ jobs:
           # version to the newest v* tag (shallow default sees no tags).
           fetch-depth: 0
 
+      # Registry repository paths must be lowercase, but the owner
+      # (v3DJG6GL) is not. metadata-action lowercases its own refs, yet the
+      # buildx cache-from/cache-to refs below pass through verbatim — an
+      # upper-case ref fails the build ("repository name must be
+      # lowercase"). Derive the full lowercase owner/repo path once, from
+      # github.repository, so an owner or repo rename never needs an edit
+      # here.
+      - name: Compute image name (registry requires lowercase)
+        id: img
+        run: echo "name=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       # The version baked into the image (build_info.py reads it from the
       # WHISPER_BUILD_VERSION env). Tag-anchored and bumps with every commit:
       # "v0.1.0" on a tagged build, "v0.1.0-3-g1a2b3c4" three commits later.
@@ -218,7 +228,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE }}
+          images: ${{ env.REGISTRY }}/${{ steps.img.outputs.name }}
           # latest=false: we control the `latest` tag via the type=raw rule
           # below (main only — spelled out explicitly rather than
           # {{is_default_branch}}, which needs event-payload fields Forgejo
@@ -251,5 +261,5 @@ jobs:
           # each other. PR builds import AND export (same-repo branches only
           # on this instance, so the cache is trusted); ignore-error keeps a
           # transient cache-push failure from failing the publish.
-          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE }}:buildcache-${{ matrix.variant }}
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.IMAGE }}:buildcache-${{ matrix.variant }},mode=max,ignore-error=true
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }},mode=max,ignore-error=true

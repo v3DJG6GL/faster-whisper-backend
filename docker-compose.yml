@@ -7,7 +7,7 @@
 # `docker login forgejo.informethic.ch` first.
 services:
   faster-whisper-backend:
-    image: forgejo.informethic.ch/martin-zeller/faster-whisper-backend:latest
+    image: forgejo.informethic.ch/v3djg6gl/faster-whisper-backend:latest
     container_name: faster-whisper-backend
     # Runs as a non-root user. Set PUID/PGID (e.g. in .env next to this file)
     # to pick the user/group — no rebuild needed; the image ships /data and

@@ -8,7 +8,7 @@
 services:
   faster-whisper-backend:
     # GPU: CUDA image variant published by CI from Dockerfile.gpu (vs :latest).
-    image: forgejo.informethic.ch/martin-zeller/faster-whisper-backend:latest-gpu
+    image: forgejo.informethic.ch/v3djg6gl/faster-whisper-backend:latest-gpu
     container_name: faster-whisper-backend
     # Runs as a non-root user. Set PUID/PGID (e.g. in .env next to this file)
     # to pick the user/group — no rebuild needed; the image ships /data and

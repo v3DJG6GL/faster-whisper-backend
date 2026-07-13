@@ -74,7 +74,7 @@ cuDNN 9 wheels). Both are also tagged `:v<version>` / `:v<version>-gpu` and
 `:sha-<short>` / `:sha-<short>-gpu`.
 
 ```bash
-# CPU — pulls forgejo.informethic.ch/martin-zeller/faster-whisper-backend:latest
+# CPU — pulls forgejo.informethic.ch/v3djg6gl/faster-whisper-backend:latest
 docker compose up -d
 
 # GPU — standalone file: pulls :latest-gpu and passes through the host NVIDIA GPU(s)
