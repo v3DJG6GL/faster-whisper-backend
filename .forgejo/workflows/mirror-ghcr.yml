@@ -13,11 +13,12 @@
 # A digest-compare reconcile is idempotent, so a timer is just as good —
 # anything published between slots lands next slot.
 #
-# Unlike nextcloud-fpm-nginx (which builds on cron), ci.yml here publishes
-# on push to main / v* tags, at arbitrary times. The crons below are
-# therefore pure reconcile slots (worst-case sync lag ~8h); for an
-# immediate sync after tagging a release, hit "Run workflow"
-# (workflow_dispatch) once ci.yml's build job is green.
+# Primary trigger is registry_package: Forgejo fires it once per package
+# VERSION published — i.e. once per tag ci.yml pushes, so one image
+# publish arrives as a burst of events (latest, sha-*, buildcache-*,
+# × cpu/gpu). The concurrency group collapses the burst: one sync runs,
+# the newest surplus event waits as pending, the rest dedupe away. The
+# crons stay as a reconcile backstop for anything an event run missed.
 #
 # Setup (job no-ops with a notice until this is done):
 #   * Add repo secrets GHCR_USER (GitHub username) + GHCR_TOKEN (a GitHub
@@ -36,13 +37,20 @@
 name: mirror-ghcr
 
 on:
+  registry_package:
+    types: [published]
   schedule:
-    # Forgejo evaluates cron in UTC. Offset 30 min from nextcloud-fpm-
-    # nginx's mirror slots (07:00/15:00 UTC) so the two mirrors don't
-    # contend for the shared runner at the same minute.
+    # Reconcile backstop. Forgejo evaluates cron in UTC. Offset 30 min
+    # from nextcloud-fpm-nginx's mirror slots (07:00/15:00 UTC) so the
+    # two mirrors don't contend for the shared runner at the same minute.
     - cron: '30 7 * * *'
     - cron: '30 15 * * *'
   workflow_dispatch:
+
+# Collapse the per-tag event burst of a publish — see header.
+concurrency:
+  group: mirror-ghcr
+  cancel-in-progress: false
 
 env:
   # Source is derived at runtime from GITHUB_SERVER_URL + GITHUB_REPOSITORY
