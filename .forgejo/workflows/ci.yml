@@ -212,6 +212,15 @@ jobs:
           # pull-through mirror — repeated PR/matrix builds otherwise eat
           # into Docker Hub's anonymous rate limit. buildkit falls back to
           # docker.io on a mirror miss, so this can only help.
+          #
+          # network=host puts the builder in the dind daemon's netns (same
+          # as the job containers, per runner-config container.network).
+          # Without it the builder sits on a dind bridge whose DNS falls
+          # back to 8.8.8.8, resolves the instance's public WAN IP, and
+          # hairpins all registry traffic (cache-from/push) through the LAN
+          # firewall. In the dind netns it resolves via the outer embedded
+          # DNS, which answers with the reverse proxy's container alias.
+          driver-opts: network=host
           buildkitd-config-inline: |
             [registry."docker.io"]
               mirrors = ["mirror.gcr.io"]
