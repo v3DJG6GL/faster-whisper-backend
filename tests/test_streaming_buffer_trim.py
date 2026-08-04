@@ -16,7 +16,7 @@ import asyncio
 import numpy as np
 
 from streaming_session import StreamConfig, StreamSession
-from streaming_vad import EnergyEndpointer
+from streaming_vad import FRAME_MS, EnergyEndpointer
 
 SR = 16000
 WORD_SEC = 0.2  # deterministic word grid: word i spans [i*0.2, (i+1)*0.2)
@@ -174,3 +174,119 @@ def test_short_utterance_unchanged_no_trim():
     assert info["trimmed_sec"] == 0.0
     assert abs(info["audio"].shape[0] / SR - info["audio_dur"]) < 1e-6
     assert s._trimmed_text == ""
+
+
+# ---- hard ceiling ---------------------------------------------------------
+#
+# _maybe_trim runs from _run_partial only, behind the skip-partials / speech /
+# RMS gates, and needs a committed word to anchor its cut — so it is not a bound
+# on the buffer, just an optimisation of the usual case. max_buffer_sec is the
+# bound: checked on every frame, before every gate.
+
+
+class _AlwaysSpeech:
+    """VAD stuck on: background noise (room mic, HVAC, music) whose flicker keeps
+    resetting commit_silence_ms, so the utterance never ends on its own."""
+
+    def is_speech(self, frame):
+        return True
+
+    def reset(self) -> None:
+        pass
+
+
+def _drive_past_ceiling(cfg, level: int, feed_ms: int, *, skip_partials: bool = False):
+    """Feed one frame at a time so the buffer can be sampled after EVERY frame,
+    with the VAD stuck on so nothing else can finalize the utterance.
+
+    Returns (session, msgs, info) where info holds the peak buffer duration seen,
+    the ``forced`` flag of every _finalize entered, and the duration of each
+    buffer that reached the final decode."""
+    msgs: list[dict] = []
+    decoded: list[float] = []
+
+    async def emit(m):
+        msgs.append(m)
+
+    async def decode_partial(audio, prompt):
+        return []
+
+    async def decode_final(audio, prompt):
+        decoded.append(audio.shape[0] / SR)
+        return (" chunk.", [], False)
+
+    s = StreamSession(
+        config=cfg, endpointer=_AlwaysSpeech(),
+        decode_partial=decode_partial, decode_final=decode_final,
+        postprocess=lambda raw: raw, emit=emit,
+    )
+    s._skip_partials = skip_partials
+    seen: list[bool] = []
+    _finalize = s._finalize
+
+    async def _spy(forced: bool = False):
+        seen.append(forced)
+        await _finalize(forced=forced)
+
+    s._finalize = _spy
+    peak = 0.0
+
+    async def run():
+        nonlocal peak
+        for _ in range(feed_ms // FRAME_MS):
+            await s.feed_pcm(_pcm(level, FRAME_MS))
+            peak = max(peak, s.audio.shape[0] / SR)
+        await s.close()
+
+    asyncio.run(run())
+    return s, msgs, {"peak_sec": peak, "forced": seen, "decoded": decoded}
+
+
+def test_ceiling_bounds_the_buffer_when_the_rms_gate_blocks_the_trim():
+    """Near-silence keeps rms_dbfs(self.audio) under the gate, so _run_partial —
+    and with it _maybe_trim — never runs; the more silence accumulates the
+    further the whole-buffer RMS sinks, so the trim can never recover. The
+    ceiling still bounds the buffer, at the cost of a forced finalize."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100,
+        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
+        rms_gate_dbfs=-42.0, preroll_keep_ms=100, max_buffer_sec=2.0,
+    )
+    s, msgs, info = _drive_past_ceiling(cfg, level=1, feed_ms=8000)
+    # Sanity: we fed far more than the ceiling, and nothing else could have
+    # ended the utterance (VAD stuck on, forced_commit_sec 100 s away).
+    assert info["forced"], "no finalize fired — the buffer grew unbounded"
+    assert all(info["forced"]), "ceiling finalize must be flagged forced"
+    assert info["peak_sec"] <= cfg.max_buffer_sec + FRAME_MS / 1000 + 1e-9, (
+        f"buffer exceeded the ceiling: {info['peak_sec']:.3f} s")
+    assert s.audio.shape[0] / SR <= cfg.max_buffer_sec
+    # A buffer this quiet is dropped by the existing anti-hallucination gate
+    # inside _finalize, so it never reaches the decoder — the ceiling reuses
+    # that path rather than adding a second discard rule.
+    assert info["decoded"] == []
+
+
+def test_ceiling_force_finalizes_through_the_decoder_when_partials_are_skipped():
+    """Consumer behind realtime (_skip_partials) is the other way _maybe_trim
+    stops running. Here the audio is loud, so the forced finalize goes through
+    the real decode: the buffer is bounded AND every fed sample is transcribed."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100,
+        buffer_trim_sec=100, buffer_trim_keep_sec=10,
+        rms_gate_dbfs=-60, preroll_keep_ms=100, max_buffer_sec=2.0,
+    )
+    feed_ms = 7000
+    s, msgs, info = _drive_past_ceiling(cfg, level=8000, feed_ms=feed_ms,
+                                        skip_partials=True)
+    assert info["peak_sec"] <= cfg.max_buffer_sec + FRAME_MS / 1000 + 1e-9, (
+        f"buffer exceeded the ceiling: {info['peak_sec']:.3f} s")
+    assert len(info["decoded"]) >= 3, "ceiling never force-finalized"
+    # Nothing the user said is dropped: the successive forced finalizes decode
+    # the whole fed stream (minus the sub-frame remainder feed_pcm still holds).
+    fed_sec = (feed_ms // FRAME_MS) * FRAME_MS / 1000
+    assert abs(sum(info["decoded"]) - fed_sec) < 1e-6
+    finals = [m for m in msgs if m["type"] == "final"]
+    assert finals and any(m.get("forced") for m in finals)
+    assert s.raw_confirmed.count("chunk") == len(info["decoded"])

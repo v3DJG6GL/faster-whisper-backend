@@ -74,6 +74,7 @@ class StreamConfig:
     forced_commit_sec: float = 25.0   # hard cap on speech before a forced finalize (< 30 s mel field)
     buffer_trim_sec: float = 15.0     # trim the audio buffer when it grows past this
     buffer_trim_keep_sec: float = 10.0  # audio kept (anchored at a committed word) after a trim
+    max_buffer_sec: float = 600.0     # decode-independent buffer ceiling → forced finalize
     rms_gate_dbfs: float = -42.0      # skip inference if the buffer is quieter than this
     preroll_keep_ms: int = 500        # leading silence retained before speech starts
     prompt_words: int = 200           # cross-utterance context carried as initial_prompt
@@ -93,8 +94,10 @@ class StreamSession:
         emit: Emit,
         base_prompt: str = "",
         on_final: Optional[Callable[[dict], Awaitable[None]]] = None,
+        session_id: str = "",
     ) -> None:
         self.cfg = config
+        self.session_id = session_id      # for log lines only (route's connection id)
         self.endpointer = endpointer
         self.decode_partial = decode_partial
         self.decode_final = decode_final
@@ -186,6 +189,23 @@ class StreamSession:
         speech = self.endpointer.is_speech(frame)
         self.audio = np.concatenate([self.audio, frame])
         self._new_since_partial += FRAME_SAMPLES
+
+        # Decode-independent ceiling on the utterance buffer. _maybe_trim is the
+        # normal bound, but it only runs from _run_partial — behind the skip-
+        # partials/speech/RMS gates, and it needs a committed word to anchor its
+        # cut. None of those hold while VAD flicker (a room mic, HVAC, music)
+        # keeps an utterance open and silence piles up here frame by frame, and
+        # forced_commit_sec can't help: it counts speech, not buffered audio.
+        # Checked unconditionally so no gate can shadow it. Finalizing (not
+        # discarding) keeps whatever was actually said — the session just
+        # continues in a fresh utterance.
+        if self.audio.shape[0] >= self.cfg.max_buffer_sec * self.cfg.sample_rate:
+            logger.warning("[stream %s] audio buffer hit the %.0f s ceiling (%.1f s) "
+                           "— forcing a finalize", self.session_id[:8],
+                           self.cfg.max_buffer_sec,
+                           self.audio.shape[0] / self.cfg.sample_rate)
+            await self._finalize(forced=True)
+            return
 
         if speech:
             self._in_utterance = True

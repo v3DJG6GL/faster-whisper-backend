@@ -1,5 +1,16 @@
 """Misc app-level routes: /v1/models, /logs, /sev, /auth/whoami."""
 
+from conftest import bearer
+
+
+def test_v1_models_requires_a_user(client, make_user_key):
+    # User-tier auth like its /v1 siblings: the payload carries the build
+    # version, the per-process boot_id and the whole ALLOWED_MODELS list.
+    make_user_key("root", is_admin=True)   # locks the server down
+    assert client.get("/v1/models").status_code == 401
+    _uid, raw = make_user_key("alice")
+    assert client.get("/v1/models", headers=bearer(raw)).status_code == 200
+
 
 def test_v1_models_shape(client):
     r = client.get("/v1/models")

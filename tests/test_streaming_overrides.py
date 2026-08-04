@@ -45,7 +45,7 @@ def test_ready_frame_reports_locked_handshake_override(client, make_user_key):
     _bind(client, h, uid, profiles=["p"])
 
     with client.websocket_connect(
-            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         ws.send_json({"type": "config", "model": "whisper-1", "language": "fr",
                       "decode_overrides": {"temperature": 0.7},
                       "audio": {"format": "pcm_s16le"}})
@@ -65,7 +65,7 @@ def test_final_decode_uses_profile_beam(client, make_user_key, fake_model,
     _bind(client, h, uid, profiles=["p"])
 
     with client.websocket_connect(
-            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
@@ -91,7 +91,7 @@ def test_stream_request_override_profile_applies(
     _, raw_alice = make_user_key("alice")     # no binding → inherits global gate (on)
 
     with client.websocket_connect(
-            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         ws.send_json({"type": "config", "model": "whisper-1",
                       "override_profile": "fast",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
@@ -124,7 +124,7 @@ def test_stream_picks_up_binding_change_without_reconnect(
 
     import api_keys_store
     with client.websocket_connect(
-            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
@@ -162,7 +162,7 @@ def test_final_drops_low_confidence_hallucination_segment(
     fake_model._segments = [bad, good]
 
     with client.websocket_connect(
-            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         assert ws.receive_json()["type"] == "ready"
@@ -189,7 +189,7 @@ def test_stream_prompt_sentinel_inherit_clear_value(
 
     def _run(conf_extra):
         with client.websocket_connect(
-                f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+                "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
             ws.send_json({"type": "config", "model": "whisper-1",
                           "audio": {"format": "pcm_s16le", "sample_rate": 16000},
                           **conf_extra})
@@ -228,7 +228,7 @@ def test_setup_window_error_delivers_internal_error_and_closes(
     monkeypatch.setattr(app_module, "cfg_for", boom)
 
     with client.websocket_connect(
-            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         msgs = _drain(ws)
@@ -257,7 +257,7 @@ def test_model_load_failure_delivers_generic_error_and_closes(
     monkeypatch.setattr(app_module, "_get_or_load_model", _boom)
 
     with client.websocket_connect(
-            f"/v1/audio/transcriptions/stream?key={raw_alice}") as ws:
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         ws.send_json({"type": "config", "model": "whisper-1",
                       "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
         msgs = _drain(ws)

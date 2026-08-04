@@ -37,7 +37,6 @@ import config_store
 import system_stats
 import web_common
 from auth import require_admin
-from html import escape as _esc
 
 logger = logging.getLogger("whisper-api")
 
@@ -119,6 +118,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
         ]),
         ("Buffer management", [
             "STREAMING_BUFFER_TRIM_SEC", "STREAMING_BUFFER_TRIM_KEEP_SEC",
+            "STREAMING_MAX_BUFFER_SEC",
         ]),
     ]),
     ("Per-model overrides", [(None, ["MODEL_OVERRIDES"])]),
@@ -130,7 +130,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ])]),
     ("Server", [(None, [
         "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",
-        "MAX_UPLOAD_BYTES",
+        "MAX_UPLOAD_BYTES", "MAX_REQUEST_BYTES",
     ])]),
     ("Access & sessions", [
         (None, [
@@ -350,11 +350,12 @@ def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _server_ident_html() -> str:
-    """The "This server" identity card (build + runtime facts), rendered
-    per request so the uptime is fresh. Values never include secrets — just
-    version/engine/boot/paths, and the whole card is role-admin-gated in CSS.
-    The copy button reuses _fwCopyBuild from the header vtag fragment.
+def _server_ident_fields() -> dict[str, str]:
+    """The "This server" identity card's values (build + runtime facts), built
+    per request so the uptime is fresh. They ride the admin-gated
+    GET /settings/state and are written into the card client-side: the page
+    shell itself is only host-gated (no key), so versions/engines/paths must
+    never be baked into it. Values never include secrets.
     cfg._DATA_DIR/_DB_DIR keep their underscore on purpose: uppercase config
     globals get swept into the admin-editable _BASELINE, and these resolved
     layout facts must stay out of it (see config.py)."""
@@ -365,29 +366,38 @@ def _server_ident_html() -> str:
         f"{build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}"
         f" · up {build_info.uptime_str()}"
     )
-    report = "\n".join([
-        f"{build_info.SERVER_NAME} {build_info.APP_VERSION}",
-        f"runs-as: {runs} · {engines}",
-        f"boot {build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}",
-        f"data {cfg._DATA_DIR} · db {cfg._DB_DIR} · models {cfg.DOWNLOAD_ROOT}",
-    ])
-    return (
-        '<div id="srv-ident"><section aria-label="Server identity">'
-        '<div class="si-head">'
-        '<span class="si-title">This server</span>'
-        '<span class="si-sub">build &amp; runtime identity</span>'
-        f'<button type="button" class="si-copy" data-build="{_esc(report)}" '
-        'onclick="_fwCopyBuild(this)">copy report</button>'
-        "</div><dl>"
-        f'<dt>Version</dt><dd class="green">{_esc(build_info.APP_VERSION)}</dd>'
-        f"<dt>Runs as</dt><dd>{_esc(runs)}</dd>"
-        f"<dt>Engine</dt><dd>{_esc(engines)}</dd>"
-        f"<dt>Boot</dt><dd>{_esc(boot)}</dd>"
-        f"<dt>Data / models</dt><dd>{_esc(cfg._DATA_DIR)} "
-        f'<span class="faint">(db {_esc(cfg._DB_DIR)})</span>'
-        f" · models {_esc(cfg.DOWNLOAD_ROOT)}</dd>"
-        "</dl></section></div>"
-    )
+    return {
+        "version": build_info.APP_VERSION,
+        "runs_as": runs,
+        "engine": engines,
+        "boot": boot,
+        "data_dir": cfg._DATA_DIR,
+        "db_dir": cfg._DB_DIR,
+        "models_dir": cfg.DOWNLOAD_ROOT,
+        # Pre-joined copy-report payload — the page hands it straight to the
+        # card's copy button (_fwCopyBuild reads it from data-build).
+        "report": "\n".join([
+            f"{build_info.SERVER_NAME} {build_info.APP_VERSION}",
+            f"runs-as: {runs} · {engines}",
+            f"boot {build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}",
+            f"data {cfg._DATA_DIR} · db {cfg._DB_DIR} · models {cfg.DOWNLOAD_ROOT}",
+        ]),
+    }
+
+
+# Static chrome for the identity card — no runtime facts, so it is safe in the
+# keyless shell. The <dl> is filled (and .ready set, which the CSS requires to
+# reveal it) by renderServerIdent() once /settings/state resolves. The copy
+# button reuses _fwCopyBuild from the header vtag fragment.
+_SERVER_IDENT_SHELL = (
+    '<div id="srv-ident"><section aria-label="Server identity">'
+    '<div class="si-head">'
+    '<span class="si-title">This server</span>'
+    '<span class="si-sub">build &amp; runtime identity</span>'
+    '<button type="button" class="si-copy" data-build="" '
+    'onclick="_fwCopyBuild(this)">copy report</button>'
+    '</div><dl id="si-facts"></dl></section></div>'
+)
 
 
 @router.get("", response_class=HTMLResponse, dependencies=[Depends(require_admin_webui_host)])
@@ -399,7 +409,7 @@ async def settings_page() -> HTMLResponse:
     return HTMLResponse(
         web_common.render_page(
             _SETTINGS_VIEWER_HTML.replace("{{SETTINGS_VIEW}}", "settings")
-            .replace("{{SERVER_IDENT}}", _server_ident_html()),
+            .replace("{{SERVER_IDENT}}", _SERVER_IDENT_SHELL),
             current="settings"),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -487,6 +497,9 @@ async def get_state() -> dict[str, Any]:
         "fields": fields,
         "groups": groups_payload,
         "service_name": "WhisperAPI",
+        # Build/runtime facts for the "This server" card. Served here (not in
+        # the keyless page shell) because this route requires admin.
+        "server_ident": _server_ident_fields(),
     }
 
 
@@ -1041,14 +1054,16 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
      pills, the red-tinted #discard-btn) are all centralized in NAV_CSS. */
   main { padding: 0.875rem; max-width: 68.75rem; margin: 0 auto;
     container-type: inline-size; container-name: form; }
-  /* Server-identity card — server-rendered above the JS-built #main; hidden
-     until the shared whoami pass confirms admin (body.role-admin, the same
-     mechanism as the admin-only nav links) so pre-auth visitors of the
-     host-gated shell don't see paths/versions. Bottom padding 0: main's own
-     top padding provides the normal 0.875rem section gap. */
+  /* Server-identity card — an empty shell above the JS-built #main; its
+     facts arrive with the admin-only /settings/state. Shown only once the
+     shared whoami pass confirms admin (body.role-admin, the same mechanism as
+     the admin-only nav links) AND renderServerIdent() has filled it (.ready),
+     so neither pre-auth visitors of the host-gated shell nor a first paint see
+     an empty card. Bottom padding 0: main's own top padding provides the
+     normal 0.875rem section gap. */
   #srv-ident { display: none; max-width: 68.75rem; margin: 0 auto;
     padding: 0.875rem 0.875rem 0; box-sizing: border-box; }
-  body.role-admin #srv-ident { display: block; }
+  body.role-admin #srv-ident.ready { display: block; }
   #srv-ident section { margin-bottom: 0; }
   #srv-ident .si-head { display: flex; align-items: baseline; gap: 0.6rem;
     margin-bottom: 0.6rem; }
@@ -1810,6 +1825,46 @@ async function api(method, path, body) {
   return r;
 }
 
+// Fill the "This server" card from the admin-only /settings/state payload.
+// The shell is served in a keyless page, so every fact lands here instead of
+// being server-rendered — built with textContent only, never innerHTML. The
+// Pipeline view ships no card, hence the null check.
+function renderServerIdent(ident) {
+  const box = $('srv-ident');
+  if (!box || !ident) return;
+  const dl = $('si-facts');
+  dl.textContent = '';
+  const rows = [
+    ['Version', ident.version, 'green'],
+    ['Runs as', ident.runs_as, ''],
+    ['Engine', ident.engine, ''],
+    ['Boot', ident.boot, ''],
+  ];
+  for (const [label, value, cls] of rows) {
+    const dt = document.createElement('dt');
+    dt.textContent = label;
+    dl.appendChild(dt);
+    const dd = document.createElement('dd');
+    if (cls) dd.className = cls;
+    dd.textContent = value || '';
+    dl.appendChild(dd);
+  }
+  const pathsDt = document.createElement('dt');
+  pathsDt.textContent = 'Data / models';
+  dl.appendChild(pathsDt);
+  const pathsDd = document.createElement('dd');
+  pathsDd.textContent = (ident.data_dir || '') + ' ';
+  const faint = document.createElement('span');
+  faint.className = 'faint';
+  faint.textContent = '(db ' + (ident.db_dir || '') + ')';
+  pathsDd.appendChild(faint);
+  pathsDd.appendChild(document.createTextNode(' · models ' + (ident.models_dir || '')));
+  dl.appendChild(pathsDd);
+  const copy = box.querySelector('.si-copy');
+  if (copy) copy.setAttribute('data-build', ident.report || '');
+  box.classList.add('ready');
+}
+
 async function loadState() {
   const r = await api('GET', '/settings/state');
   if (r.status === 401) return;  // the shared login gate is already showing
@@ -1834,6 +1889,7 @@ async function loadState() {
   // when whoami.is_admin=true. /settings/state requires admin so callers
   // who reach this point ARE admin, but the central handler already
   // covered the body-class add — keep this comment as a breadcrumb.
+  renderServerIdent(state.server_ident);
   dirty = {};
   $('save-btn').disabled = true;
   $('discard-btn').disabled = true;
@@ -4681,6 +4737,15 @@ function pipelineTestPanel() {
   out.className = 'regex-test-out';
   wrap.appendChild(out);
 
+  // Status tag next to a step's label. Built as an element (not an HTML
+  // string) because it sits in the same cell as the free-form rule label.
+  function testBadge(kind, text) {
+    const el = document.createElement('span');
+    el.className = 'tag ' + kind;
+    el.textContent = text;
+    return el;
+  }
+
   async function run() {
     out.innerHTML = '<em>running…</em>';
     const r = await api('POST', '/settings/test-pipeline', {
@@ -4696,21 +4761,24 @@ function pipelineTestPanel() {
     tbl.appendChild(thead);
     (j.steps || []).forEach(step => {
       const tr = document.createElement('tr');
-      let badge = '';
+      let badge = null;
       // regex-list reports a bad entry as an ADVISORY: the engine skips that
       // entry and still applies the rest, so the step carries a real after/
       // matches alongside `error`. Show the output, not just the warning.
       const advisory = step.error && step.type === 'regex-list';
-      if (step.skipped) badge = ' <span class="tag empty">skipped</span>';
-      else if (advisory) badge = ' <span class="tag warn">⚠ ' + (step.matches || 0) + ' matches · bad pattern skipped</span>';
-      else if (step.error) badge = ' <span class="tag err">✗</span>';
-      else if (step.slow) badge = ' <span class="tag warn">⚠ slow</span>';
-      else if (step.matches) badge = ' <span class="tag ok">' + step.matches + ' matches</span>';
+      if (step.skipped) badge = testBadge('empty', 'skipped');
+      else if (advisory) badge = testBadge('warn', '⚠ ' + (step.matches || 0) + ' matches · bad pattern skipped');
+      else if (step.error) badge = testBadge('err', '✗');
+      else if (step.slow) badge = testBadge('warn', '⚠ slow');
+      else if (step.matches) badge = testBadge('ok', step.matches + ' matches');
       const changed = step.before !== step.after;
       const outCell = document.createElement('td');
       outCell.className = 'out';
       if (step.error && !advisory) {
-        outCell.innerHTML = '<span class="err">' + step.error + '</span>';
+        const err = document.createElement('span');
+        err.className = 'err';
+        err.textContent = step.error;
+        outCell.appendChild(err);
       } else {
         if (!changed) outCell.innerHTML = '<span class="nochange">(no change)</span>';
         else outCell.textContent = step.after;
@@ -4721,9 +4789,24 @@ function pipelineTestPanel() {
           outCell.appendChild(warn);
         }
       }
-      tr.innerHTML = '<td>' + step.ordinal + '</td>'
-        + '<td>' + (step.label || '?') + badge + '</td>'
-        + '<td><span class="type-pill">' + _typePill(step.type) + '</span></td>';
+      const ordCell = document.createElement('td');
+      ordCell.textContent = step.ordinal;
+      tr.appendChild(ordCell);
+      // Rule labels are free-form (only the slug is pattern-restricted), so
+      // the cell is assembled from nodes rather than an HTML string.
+      const labelCell = document.createElement('td');
+      labelCell.textContent = step.label || '?';
+      if (badge) {
+        labelCell.appendChild(document.createTextNode(' '));
+        labelCell.appendChild(badge);
+      }
+      tr.appendChild(labelCell);
+      const typeCell = document.createElement('td');
+      const typePill = document.createElement('span');
+      typePill.className = 'type-pill';
+      typePill.textContent = _typePill(step.type);
+      typeCell.appendChild(typePill);
+      tr.appendChild(typeCell);
       tr.appendChild(outCell);
       tbl.appendChild(tr);
     });

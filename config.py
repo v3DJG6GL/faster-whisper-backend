@@ -145,9 +145,13 @@ def _D(_name: str):
 DEFAULT_MODEL = _D("DEFAULT_MODEL")
 
 # Restrict which models clients are allowed to load. An empty set means "any
-# model name passes through" — convenient on a private LAN, but lets a client
-# trigger a multi-GB download by sending an unknown name. Add entries to
-# enforce a known list. Curated starter set; uncomment to enable.
+# well-formed model NAME passes through" — a faster-whisper short name or an
+# org/name HF repo id, plus DEFAULT_MODEL itself (which may legitimately be a
+# local directory). Filesystem paths, "..", and URLs sent by a client are
+# refused: convenient on a private LAN still lets a client trigger a multi-GB
+# download by sending an unknown name, but not point the loader at an
+# arbitrary disk location. Add entries to enforce a known list — those are
+# matched verbatim, whatever their shape. Curated starter set.
 ALLOWED_MODELS: "set[str]" = _D("ALLOWED_MODELS")
 
 # Number of models to keep hot in VRAM. LRU eviction beyond this. Each
@@ -271,6 +275,13 @@ SERVER_LOG_LEVEL = _D("SERVER_LOG_LEVEL")
 # hold an arbitrary blob. 200 MB is ~3 h of 128 kbps audio — far above any
 # dictation clip, and well above CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT.
 MAX_UPLOAD_BYTES = _D("MAX_UPLOAD_BYTES")
+
+# Service-wide ceiling on any request body, checked against Content-Length
+# before the body is read. Deliberately ABOVE MAX_UPLOAD_BYTES so the more
+# specific upload cap is what an oversized audio POST hits; this one is the
+# backstop for the JSON routes (a body Starlette buffers and json.loads
+# expands several-fold in memory). 256 MB.
+MAX_REQUEST_BYTES = _D("MAX_REQUEST_BYTES")
 
 
 # =============================================================================
@@ -930,8 +941,13 @@ STREAMING_HARD_BREAK_SEPARATOR: str = _D("STREAMING_HARD_BREAK_SEPARATOR")
 STREAMING_PROMPT_WORDS: int = _D("STREAMING_PROMPT_WORDS")
 
 # (5) Buffer management (kept well inside Whisper's 30 s receptive field).
+# MAX_BUFFER_SEC is the decode-independent backstop: the trim above runs only
+# from a partial decode, so a buffer being filled by silence (VAD flicker, no
+# committed word to anchor a cut) has nothing else bounding it. Generous by
+# design — it must never fire during real dictation.
 STREAMING_BUFFER_TRIM_SEC: float = _D("STREAMING_BUFFER_TRIM_SEC")
 STREAMING_BUFFER_TRIM_KEEP_SEC: float = _D("STREAMING_BUFFER_TRIM_KEEP_SEC")
+STREAMING_MAX_BUFFER_SEC: float = _D("STREAMING_MAX_BUFFER_SEC")
 
 
 import copy as _copy
@@ -1169,7 +1185,8 @@ except ImportError:
 
 
 # --- Special-case readers (preserve exact legacy semantics) -----------------
-# ALLOWED_MODELS: CSV → set; explicit "" means an empty set ("any model passes").
+# ALLOWED_MODELS: CSV → set; explicit "" means an empty set ("any well-formed
+# model name passes" — see the field's comment above).
 _env_allowed = os.environ.get("WHISPER_ALLOWED_MODELS")
 if _env_allowed is not None:
     ALLOWED_MODELS = {s.strip() for s in _env_allowed.split(",") if s.strip()}

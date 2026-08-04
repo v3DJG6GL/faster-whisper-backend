@@ -2,13 +2,17 @@
 
 Runs against the real FastAPI app with the conftest fake model (so no
 faster-whisper / GPU needed), exercising the config handshake, the partial/final
-message contract, and the stop/close drain. Open mode (no API key) → the synthetic
-admin passes auth.
+message contract, the stop/close drain, and the handshake's credential carriers.
+Open mode (no API key) → the synthetic admin passes auth, from the admin host
+allowlist only (loopback here).
 """
 
 import numpy as np
+import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
+
+from conftest import bearer
 
 
 def _pcm(level, ms, sr=16000):
@@ -80,6 +84,59 @@ def test_dictate_demo_page_served(app_module):
     assert 'id="mode"' in body
     assert "MediaRecorder" in body
     assert "startBatch" in body
+
+
+# --- handshake credential carriers -------------------------------------------
+# Three: the Authorization header (native clients), the `bearer.<key>`
+# subprotocol (the one request header a browser can set on a WebSocket), and
+# the session cookie. A ?key= query param is NOT one — it would land in every
+# access log that records the request line.
+
+def _handshake(ws):
+    ws.send_json({"type": "config", "model": "whisper-1",
+                  "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+    return ws.receive_json()
+
+
+def test_ws_authorization_header_admits(client, make_user_key):
+    make_user_key("root", is_admin=True)   # locks the server down
+    _uid, raw = make_user_key("alice")
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw)) as ws:
+        assert _handshake(ws)["type"] == "ready"
+
+
+def test_ws_bearer_subprotocol_admits(client, make_user_key):
+    from streaming_routes import _WS_BEARER_SUBPROTOCOL
+    make_user_key("root", is_admin=True)
+    _uid, raw = make_user_key("alice")
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream",
+            subprotocols=[_WS_BEARER_SUBPROTOCOL + raw]) as ws:
+        assert _handshake(ws)["type"] == "ready"
+
+
+def test_ws_key_query_param_rejected(client, make_user_key):
+    from streaming_routes import _WS_UNAUTH
+    make_user_key("root", is_admin=True)
+    _uid, raw = make_user_key("alice")
+    with pytest.raises(WebSocketDisconnect) as ei:
+        with client.websocket_connect(
+                f"/v1/audio/transcriptions/stream?key={raw}") as ws:
+            ws.receive_json()
+    assert ei.value.code == _WS_UNAUTH
+
+
+def test_ws_open_mode_remote_rejected(app_module):
+    # /v1 has no host allowlist, but the open-mode synthetic admin is confined
+    # to ADMIN_WEBUI_ALLOWED_HOSTS — so a remote peer on an unbootstrapped
+    # server gets the unauth close, not a free session.
+    from streaming_routes import _WS_UNAUTH
+    with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
+        with pytest.raises(WebSocketDisconnect) as ei:
+            with c.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+                ws.receive_json()
+    assert ei.value.code == _WS_UNAUTH
 
 
 def test_stream_disabled_closes_connection(app_module, monkeypatch):

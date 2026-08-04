@@ -152,6 +152,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "SERVER_LOG_LEVEL": "WHISPER_SERVER_LOG_LEVEL",
     # Request limits
     "MAX_UPLOAD_BYTES": "WHISPER_MAX_UPLOAD_BYTES",
+    "MAX_REQUEST_BYTES": "WHISPER_MAX_REQUEST_BYTES",
     # Captures: pipeline exclude + VAD trim
     "CAPTURES_PIPELINE_RULES_EXCLUDE": "WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE",
     "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES": "WHISPER_CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES",
@@ -189,6 +190,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "STREAMING_FORCED_COMMIT_SEC": "WHISPER_STREAMING_FORCED_COMMIT_SEC",
     "STREAMING_BUFFER_TRIM_SEC": "WHISPER_STREAMING_BUFFER_TRIM_SEC",
     "STREAMING_BUFFER_TRIM_KEEP_SEC": "WHISPER_STREAMING_BUFFER_TRIM_KEEP_SEC",
+    "STREAMING_MAX_BUFFER_SEC": "WHISPER_STREAMING_MAX_BUFFER_SEC",
     "STREAMING_PROMPT_WORDS": "WHISPER_STREAMING_PROMPT_WORDS",
     # Structured fields — supplied as a JSON string (config.py parses+validates).
     # The per-model WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention still works
@@ -252,8 +254,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Model loaded when a request sends 'whisper-1' or omits 'model'. "
         "Accepts any faster-whisper short name or HF repo id.",
     "ALLOWED_MODELS":
-        "Allowlist of model names clients may request. Empty set lets any name "
-        "pass — risks unknown multi-GB downloads.",
+        "Allowlist of model names clients may request. Empty set lets any "
+        "well-formed name (short name or org/name repo id) pass — risks "
+        "unknown multi-GB downloads.",
     "MAX_LOADED_MODELS":
         "Max models kept hot in VRAM (LRU evicts beyond this). large-v3 "
         "~1.5 GB fp16, turbo/distill ~600 MB.",
@@ -548,6 +551,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Hard ceiling on a single /v1/audio/transcriptions upload, in "
         "bytes. Larger requests are rejected with 413 instead of being "
         "buffered. Default 200 MB (~3 h of 128 kbps audio).",
+    "MAX_REQUEST_BYTES":
+        "Ceiling on ANY request body, in bytes, applied from Content-Length "
+        "before the body is read. Keep it above MAX_UPLOAD_BYTES so audio "
+        "uploads hit their own cap first. Default 256 MB.",
 
     # --- Access & sessions ---
     "ADMIN_WEBUI_ALLOWED_HOSTS":
@@ -817,6 +824,11 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "word boundary, to bound decode cost.",
     "STREAMING_BUFFER_TRIM_KEEP_SEC":
         "Audio retained (s) after a trim, as left-context for the next decode.",
+    "STREAMING_MAX_BUFFER_SEC":
+        "Last-resort ceiling (s) on one utterance's audio buffer: past it the "
+        "utterance is force-finalized. Deliberately generous (24x the forced "
+        "commit) so real dictation never reaches it — it only catches a buffer "
+        "filled by silence when the trim can't run (VAD flicker on a noisy mic).",
     "STREAMING_PROMPT_WORDS":
         "Confirmed words carried across utterances as initial_prompt for "
         "cross-sentence context (drug names, terminology). ~200.",
@@ -1320,6 +1332,9 @@ class AdminConfig(BaseModel):
     STREAMING_FORCED_COMMIT_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F("STREAMING_FORCED_COMMIT_SEC")
     STREAMING_BUFFER_TRIM_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F("STREAMING_BUFFER_TRIM_SEC")
     STREAMING_BUFFER_TRIM_KEEP_SEC: Annotated[float, Field(ge=2.0, le=29.0)] | None = _F("STREAMING_BUFFER_TRIM_KEEP_SEC")
+    # Lower bound sits above the FORCED_COMMIT_SEC ceiling (29) so this can never
+    # be tuned down into the range where it would fire during real dictation.
+    STREAMING_MAX_BUFFER_SEC: Annotated[float, Field(ge=60.0, le=3600.0)] | None = _F("STREAMING_MAX_BUFFER_SEC")
     STREAMING_PROMPT_WORDS: Annotated[int, Field(ge=0, le=400)] | None = _F("STREAMING_PROMPT_WORDS")
 
     # --- Load-time, hardware (advanced) ---
@@ -1358,6 +1373,7 @@ class AdminConfig(BaseModel):
     SERVER_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F("SERVER_WORKERS")
     SERVER_LOG_LEVEL: LogLevel | None = _F("SERVER_LOG_LEVEL")
     MAX_UPLOAD_BYTES: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F("MAX_UPLOAD_BYTES")
+    MAX_REQUEST_BYTES: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F("MAX_REQUEST_BYTES")
 
     # --- WebUI access control (host allowlists, bucketed by privilege tier) ---
     # Each entry must be parseable by ipaddress.ip_network(strict=False) — bare

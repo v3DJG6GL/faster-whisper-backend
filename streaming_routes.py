@@ -7,6 +7,12 @@ batch `POST /v1/audio/transcriptions`. It reuses the same model cache
 :class:`streaming_session.StreamSession` (LocalAgreement-2 stabilized partials,
 append-only post-processed finals).
 
+Handshake credentials, tried in order: `Authorization: Bearer <key>` (native
+clients), a `bearer.<key>` entry in Sec-WebSocket-Protocol (browser clients —
+the only request header they may set on a WebSocket; echoed back on accept),
+then the WebUI session cookie. Never a query parameter: the access log records
+the full request line.
+
 Protocol (see streaming_session for the emission contract):
   client → server:
     1. first TEXT frame: JSON config
@@ -98,23 +104,46 @@ async def _receive_idle(ws: WebSocket, timeout_sec: float):
     return await ws.receive()
 
 
+# Sec-WebSocket-Protocol is the ONE request header the browser WebSocket API
+# lets a page set, so it is how a cross-origin browser client (where the session
+# cookie is not sent) carries its key. Unlike a query parameter it never reaches
+# an access log. RFC 6455 requires the server to echo the accepted value — see
+# the ws.accept() in transcribe_stream.
+# `bearer.<key>` stays a single RFC 7230 token because generate_raw_key() is
+# `wk_` + secrets.token_urlsafe (base64URL: alphanumerics, `-`, `_`), and `.`
+# is itself a tchar — so no escaping is needed and none is done.
+_WS_BEARER_SUBPROTOCOL = "bearer."
+
+
+def _ws_bearer_subprotocol(ws: WebSocket) -> str:
+    """The `bearer.<raw_key>` entry from the handshake's requested subprotocol
+    list, verbatim (so it can be echoed back on accept), or ""."""
+    for entry in (ws.headers.get("sec-websocket-protocol") or "").split(","):
+        entry = entry.strip()
+        if entry.startswith(_WS_BEARER_SUBPROTOCOL) and entry != _WS_BEARER_SUBPROTOCOL:
+            return entry
+    return ""
+
+
 def _ws_credentials(ws: WebSocket) -> "HTTPAuthorizationCredentials | None":
-    """Build bearer credentials from the WS handshake: Authorization header, or a
-    ?key= query param (for clients that cannot set WS headers)."""
+    """Build bearer credentials from the WS handshake: the Authorization header
+    (native clients), else a `bearer.<key>` subprotocol (browser clients)."""
     header = ws.headers.get("authorization")
     if header:
         scheme, _, token = header.partition(" ")
         return HTTPAuthorizationCredentials(scheme=scheme or "Bearer", credentials=token)
-    key = ws.query_params.get("key")
-    if key:
-        return HTTPAuthorizationCredentials(scheme="Bearer", credentials=key)
+    sub = _ws_bearer_subprotocol(ws)
+    if sub:
+        return HTTPAuthorizationCredentials(
+            scheme="Bearer", credentials=sub[len(_WS_BEARER_SUBPROTOCOL):])
     return None
 
 
 def authenticate_ws(ws: WebSocket) -> "dict | None":
     """Resolve the WS caller to a user record (or None). Reuses the canonical
     non-raising auth core — Starlette's WebSocket exposes .cookies/.headers/.state,
-    so the cookie + bearer paths work unchanged. Open mode → synthetic admin."""
+    so the cookie + bearer paths work unchanged. Open mode → synthetic admin, and
+    only from the admin host allowlist (auth.open_mode_host_ok)."""
     return auth._resolve_user(ws, _ws_credentials(ws))
 
 
@@ -139,6 +168,7 @@ def _stream_config(cfg, ident=None) -> StreamConfig:
         forced_commit_sec=float(g("FORCED_COMMIT_SEC", 25.0)),
         buffer_trim_sec=float(g("BUFFER_TRIM_SEC", 15.0)),
         buffer_trim_keep_sec=float(g("BUFFER_TRIM_KEEP_SEC", 10.0)),
+        max_buffer_sec=float(g("MAX_BUFFER_SEC", 600.0)),
         rms_gate_dbfs=float(g("GATE_RMS_DBFS", -42.0)),
         prompt_words=int(g("PROMPT_WORDS", 200)),
     )
@@ -229,7 +259,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
         await ws.close(code=_WS_TOO_MANY)
         return
 
-    await ws.accept()
+    # A browser fails the handshake unless the server echoes one of the
+    # subprotocols it offered, so hand back the bearer entry when the key
+    # arrived that way; None otherwise (header / cookie clients offered none).
+    await ws.accept(subprotocol=_ws_bearer_subprotocol(ws) or None)
     session_id = uuid.uuid4().hex
     _active_sessions.add(session_id)
     metrics.in_flight_transcriptions += 1
@@ -603,6 +636,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             base_prompt=(req_prompt if prompt_provided
                          else (main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or "")),
             on_final=on_final,
+            session_id=session_id,
         )
 
         def _refresh_ident():

@@ -168,9 +168,11 @@ if sys.platform == "win32":
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Response, Depends
 
 # Auth dep used by /v1/audio/transcriptions and /auth/whoami. In open mode
-# (no admin key in DB) it returns the synthetic admin so the operator can
-# bootstrap; in locked-down mode it 401s on missing/invalid bearer.
+# (no admin key in DB) it returns the synthetic admin — but only to callers on
+# ADMIN_WEBUI_ALLOWED_HOSTS — so the operator can bootstrap; otherwise it 401s
+# on missing/invalid bearer.
 from auth import Permissions, get_current_user as _get_current_user_dep
+from auth import open_mode_host_ok as _open_mode_host_ok
 from auth import user_from_session_cookie as _user_from_session_cookie
 
 # faster_whisper pulls the heavy native stack (ctranslate2/onnxruntime/av). It is
@@ -907,7 +909,8 @@ def _format_request_block(
 #   "primeline/whisper-large-v3-turbo-german"          German-finetuned
 #
 # Set WHISPER_ALLOWED_MODELS to restrict which model names are accepted (a
-# comma-separated allowlist; empty = anything goes, useful on a private LAN).
+# comma-separated allowlist; empty = any well-formed model id goes, useful on
+# a private LAN).
 import asyncio
 from collections import OrderedDict
 
@@ -1500,6 +1503,12 @@ def get_inference_semaphore() -> "asyncio.Semaphore":
     return _inference_semaphore
 
 
+# faster-whisper short name OR HuggingFace repo id (org/name) — the same shape
+# config_store._MODEL_ID_PATTERN validates configured model ids against. Used
+# below to bound what an EMPTY ALLOWED_MODELS accepts from a request.
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?$")
+
+
 async def _get_or_load_model(name: str) -> "WhisperModel":
     # Lazy import (see the TYPE_CHECKING note up top): only when a model is
     # actually loaded do we need the native faster_whisper stack.
@@ -1522,6 +1531,22 @@ async def _get_or_load_model(name: str) -> "WhisperModel":
             status_code=400,
             detail=f"Model '{name}' is not in the allowed list. "
                    f"Allowed: {sorted(cfg.ALLOWED_MODELS)}",
+        )
+
+    # No allowlist configured: the name arrives verbatim from the request, and
+    # below it reaches os.path.isdir() / the HF hub / the CT2 converter. Accept
+    # DEFAULT_MODEL (which may legitimately be a local directory) and otherwise
+    # only well-formed model ids — no filesystem paths, no "..", no URLs.
+    if (
+        not cfg.ALLOWED_MODELS
+        and name != cfg.DEFAULT_MODEL
+        and (".." in name or not _MODEL_ID_RE.match(name))
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{name}' is not a valid model id. Use a "
+                   f"faster-whisper name or a HuggingFace repo id, or add it "
+                   f"to ALLOWED_MODELS.",
         )
 
     # Auto-convert HF transformers Whisper repos to CT2 format if enabled.
@@ -1974,9 +1999,11 @@ app = FastAPI(
 # '*' allows any origin, in which case credentials must be disabled per the CORS
 # spec. The WebSocket streaming path is not subject to CORS.
 _cors_origins = list(getattr(cfg, "CORS_ALLOW_ORIGINS", []) or [])
+# Decided outside the `if` because the origin guard below reads it too (an
+# empty allowlist is never "allow all").
+_cors_allow_all = "*" in _cors_origins
 if _cors_origins:
     from fastapi.middleware.cors import CORSMiddleware
-    _cors_allow_all = "*" in _cors_origins
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"] if _cors_allow_all else _cors_origins,
@@ -2034,39 +2061,90 @@ import metrics
 
 _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 # Paths that issue a session and therefore can't carry a CSRF token yet.
+# Exempt from the TOKEN check only — the origin check still applies (these
+# paths hand out a cookie, so a cross-site caller must not reach them).
 _CSRF_EXEMPT_PATHS = frozenset({"/auth/login"})
+
+
+def _origin_is_allowed(request: Request) -> bool:
+    """True when an unsafe-method request may proceed based on its Origin.
+
+    Browsers attach Origin to every cross-site unsafe-method request (a plain
+    auto-submitting <form> included), so this catches the case the token check
+    cannot: OPEN mode, where a request carries no cookie and no bearer yet
+    still resolves to the synthetic admin. Non-browser clients (curl, SDKs)
+    send no Origin at all — absent means allow.
+
+    Only host:port is compared against Host: a TLS-terminating proxy rewrites
+    neither header, but the scheme in front of it is unknowable from here.
+    """
+    origin = request.headers.get("origin")
+    if not origin or _cors_allow_all:
+        return True
+    if origin in _cors_origins:
+        return True
+    host = request.headers.get("host", "")
+    from urllib.parse import urlsplit
+    return bool(host) and urlsplit(origin).netloc == host
 
 
 @app.middleware("http")
 async def _csrf_mw(request: Request, call_next):
-    """Double-submit CSRF guard for COOKIE-authenticated mutations only.
+    """Double-submit CSRF guard for COOKIE-authenticated mutations, plus a
+    same-origin check on every unsafe method.
 
     Cookies are auto-sent by the browser, so a cross-site POST would ride
     the session cookie — hence we require an X-CSRF-Token header matching
     the session's stored token on unsafe methods. Requests WITHOUT a
     session cookie (Authorization: Bearer API clients — curl, SDKs) are
-    untouched: they can't be CSRF'd and must keep working without a token.
+    untouched by the token half: they can't be CSRF'd and must keep working
+    without a token. The origin half runs regardless of which credential the
+    request carries (or none, in open mode).
     """
-    if (
-        request.method.upper() not in _CSRF_SAFE_METHODS
-        and request.url.path not in _CSRF_EXEMPT_PATHS
-    ):
-        cookie = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
-        if cookie:
-            import hmac
-            import sessions_store
-            from fastapi.responses import JSONResponse
-            sess = sessions_store.lookup_session(cookie)
-            header_tok = request.headers.get("x-csrf-token", "")
-            if (
-                sess is None
-                or not header_tok
-                or not hmac.compare_digest(header_tok, sess["csrf_token"])
-            ):
-                return JSONResponse(
-                    {"detail": "CSRF token missing or invalid"},
-                    status_code=403,
-                )
+    if request.method.upper() not in _CSRF_SAFE_METHODS:
+        from fastapi.responses import JSONResponse
+        if not _origin_is_allowed(request):
+            return JSONResponse(
+                {"detail": "CSRF token missing or invalid"},
+                status_code=403,
+            )
+        if request.url.path not in _CSRF_EXEMPT_PATHS:
+            cookie = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
+            if cookie:
+                import hmac
+                import sessions_store
+                sess = sessions_store.lookup_session(cookie)
+                header_tok = request.headers.get("x-csrf-token", "")
+                if (
+                    sess is None
+                    or not header_tok
+                    or not hmac.compare_digest(header_tok, sess["csrf_token"])
+                ):
+                    return JSONResponse(
+                        {"detail": "CSRF token missing or invalid"},
+                        status_code=403,
+                    )
+    return await call_next(request)
+
+
+@app.middleware("http")
+async def _max_body_mw(request: Request, call_next):
+    """Service-wide ceiling on a declared request body, rejected before the
+    body is read. Route-level caps stay authoritative for their own endpoint
+    (MAX_REQUEST_BYTES sits well above MAX_UPLOAD_BYTES, so the transcription
+    413 still fires first); this one exists for the JSON routes, where
+    Starlette buffers the whole body and json.loads expands it several-fold
+    before any handler-side size check can run. Content-Length is advisory
+    (absent on chunked bodies), so it only buys an early exit.
+
+    Registered between _csrf_mw and _metrics_mw: outside the CSRF guard and
+    the router, inside _metrics_mw so these rejections still get recorded.
+    """
+    max_body = int(getattr(cfg, "MAX_REQUEST_BYTES", 268_435_456))
+    _clen = request.headers.get("content-length")
+    if _clen and _clen.isdigit() and int(_clen) > max_body:
+        from fastapi.responses import JSONResponse
+        return JSONResponse({"detail": "request body too large"}, status_code=413)
     return await call_next(request)
 
 
@@ -2657,10 +2735,14 @@ async def transcribe(
         )
 
 
-@app.get("/v1/models")
+@app.get("/v1/models", dependencies=[Depends(_get_current_user_dep)])
 async def list_models():
     """OpenAI-style model listing — currently-loaded models plus the configured
-    default. Useful for clients to discover what's available without trial."""
+    default. Useful for clients to discover what's available without trial.
+
+    User-tier auth like its /v1 siblings: the payload carries the build version,
+    the per-process boot_id and the whole ALLOWED_MODELS list, so it is a
+    fingerprint, not public metadata."""
     now = int(time.time())
     names: list[str] = list(_loaded_models.keys())
     if cfg.DEFAULT_MODEL not in names:
@@ -3261,16 +3343,19 @@ _LOG_VIEWER_HTML = """<!doctype html>
 
 
 def _require_logs_page_sse(request: Request) -> dict:
-    """SSE-aware variant of require_page("logs"). EventSource can't set
-    Authorization, so accept `?key=<raw_key>` as a fallback. In OPEN
-    mode (no admin key yet) the synthetic admin sails through; in
-    locked-down mode the bearer must resolve to a user with scope(
-    "logs") == "all" — the log file isn't user-partitionable (a single
-    request block carries every user's transcripts, filenames, and
-    final text via _format_request_block), so "own" can't be enforced
-    line-by-line and is rejected as access-only at the schema layer."""
+    """SSE-aware variant of require_page("logs"). Two credential carriers:
+    the `Authorization: Bearer` header and the HttpOnly session cookie,
+    which EventSource sends automatically on a same-origin stream —
+    EventSource cannot set a header. In OPEN mode (no admin key yet) the
+    synthetic admin sails through from the admin host allowlist only
+    (auth.open_mode_host_ok); in locked-down mode the credential must
+    resolve to a user with scope("logs") == "all" — the log file isn't
+    user-partitionable (a single request block carries every user's
+    transcripts, filenames, and final text via _format_request_block), so
+    "own" can't be enforced line-by-line and is rejected as access-only at
+    the schema layer."""
     import api_keys_store
-    if not api_keys_store.is_locked_down():
+    if not api_keys_store.is_locked_down() and _open_mode_host_ok(request):
         return dict(api_keys_store.OPEN_MODE_USER)
     auth_header = request.headers.get("authorization") or ""
     raw = ""
@@ -3279,9 +3364,6 @@ def _require_logs_page_sse(request: Request) -> dict:
     rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
     if rec is None:
         rec = _user_from_session_cookie(request)
-    if rec is None:
-        key = request.query_params.get("key") or ""
-        rec = api_keys_store.lookup_by_raw_key(key) if key else None
     if rec is None:
         raise HTTPException(
             401, "invalid or missing API key",
@@ -3302,8 +3384,8 @@ async def logs_viewer():
     # User-tier page. Shell gated by USER_WEBUI_ALLOWED_HOSTS (loopback always);
     # a keyless browser navigation loads the shell + login popup. The SSE
     # /logs/stream + /logs/older endpoints stack the host gate with their own
-    # require_page("logs") check (with a ?key= fallback for EventSource), so the
-    # data layer requires a "logs" API key.
+    # require_page("logs") check (bearer header or session cookie — EventSource
+    # sends the cookie), so the data layer requires a "logs" API key.
     import web_common
     return HTMLResponse(
         web_common.render_page(_LOG_VIEWER_HTML, current="logs"),

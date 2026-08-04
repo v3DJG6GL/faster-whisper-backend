@@ -243,6 +243,40 @@ def test_csrf_covers_router_mounted_mutation(client, make_user_key):
     assert r.status_code != 403
 
 
+# --- Origin: checked on every unsafe method, whatever the credential --------
+
+def test_cross_site_origin_blocked_in_open_mode(client):
+    # Open mode resolves every request to the synthetic admin, so a cookie-less
+    # cross-site POST would otherwise run the handler. The Origin header the
+    # browser attaches is the only signal available here.
+    r = client.post("/auth/logout", headers={"Origin": "http://evil.example"})
+    assert r.status_code == 403
+
+
+def test_cross_site_origin_blocked_for_bearer_client(client, make_user_key):
+    _uid, raw = make_user_key("root", is_admin=True)
+    r = client.post("/auth/logout",
+                    headers={**bearer(raw), "Origin": "http://evil.example"})
+    assert r.status_code == 403
+
+
+def test_cross_site_origin_blocked_on_login(client, make_user_key):
+    # /auth/login is exempt from the TOKEN check (no session exists yet) but
+    # NOT from the origin check: it hands out a session cookie.
+    _uid, raw = make_user_key("root", is_admin=True)
+    r = client.post("/auth/login", json={"key": raw},
+                    headers={"Origin": "http://evil.example"})
+    assert r.status_code == 403
+
+
+def test_same_origin_mutation_allowed(client, make_user_key):
+    # TestClient's base_url is http://testserver, so Origin matches Host.
+    _uid, raw = make_user_key("root", is_admin=True)
+    r = client.post("/auth/logout",
+                    headers={**bearer(raw), "Origin": "http://testserver"})
+    assert r.status_code == 200
+
+
 def test_bearer_still_works_when_cookie_login_available(client, make_user_key):
     # Regression guard: adding cookie auth must not break header-bearer auth
     # on the transcription/admin surface (Vowen / curl path).
