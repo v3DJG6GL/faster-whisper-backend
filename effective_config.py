@@ -23,11 +23,14 @@ pre-feature behaviour.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 import config as cfg
 import config_store
+
+logger = logging.getLogger("whisper-api")
 
 # Sentinel: "this layer does not set this field" (distinct from a legitimate
 # None override such as SUPPRESS_TOKENS=None meaning "clear the suppression").
@@ -147,7 +150,13 @@ def _safe_binding(getter: Any, ident_id: str | None) -> dict[str, Any]:
         return {}
     try:
         return getter(ident_id) or {}
-    except Exception:
+    except Exception as e:
+        # An unreadable binding is indistinguishable from "this identity has no
+        # restrictions", so the empty result is the ONLY trace of a window where
+        # this identity's gates / allowlist / locks did not apply — log it.
+        logger.warning("[effective-config] identity binding lookup failed for"
+                       " %s: %s — resolving with no per-identity restrictions",
+                       ident_id, e)
         return {}
 
 
