@@ -35,6 +35,8 @@ import time
 from hashlib import sha256
 from typing import Any
 
+import store_common
+
 logger = logging.getLogger("whisper-api")
 
 _lock = threading.Lock()
@@ -42,6 +44,12 @@ _conn: sqlite3.Connection | None = None
 
 # In-memory token_hash → session row index. Rebuilt on mutation.
 _SESSION_INDEX: dict[str, dict[str, Any]] = {}
+
+# Last `PRAGMA data_version` observed on _conn — same role as in
+# api_keys_store: SQLite only moves it for commits made by ANOTHER
+# connection, so it is how one uvicorn worker notices a sibling worker's
+# logout / session revoke instead of honouring a dead cookie indefinitely.
+_DATA_VERSION: int = -1
 
 # Debounce window for sliding-expiry writes (seconds): an active session
 # refreshes its expiry at most once per this interval.
@@ -80,6 +88,7 @@ def init_db(db_path: str) -> None:
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA)
     _migrate_add_key_id(_conn)
+    store_common.secure_db_file(db_path)
     with _lock:
         _purge_expired_locked()
         _rebuild_index_locked()
@@ -116,9 +125,12 @@ def hash_token(raw_token: str) -> str:
 def _rebuild_index_locked() -> None:
     """Rebuild _SESSION_INDEX from the DB. Caller holds _lock (or is in
     init). Only non-revoked, non-expired rows are indexed."""
-    global _SESSION_INDEX
+    global _SESSION_INDEX, _DATA_VERSION
     conn = _require_conn()
     now = time.time()
+    # Snapshot the version BEFORE the SELECT: a sibling commit landing between
+    # the two would otherwise be marked as already seen without being read.
+    _DATA_VERSION = _data_version_locked()
     rows = conn.execute(
         "SELECT token_hash, user_id, key_id, csrf_token, created_ts, expires_ts"
         " FROM sessions WHERE revoked_ts IS NULL AND expires_ts > ?",
@@ -134,6 +146,28 @@ def _rebuild_index_locked() -> None:
         }
         for r in rows
     }
+
+
+def _data_version_locked() -> int:
+    """Read `PRAGMA data_version` off the shared connection. Falls back to the
+    cached value on error so a transient sqlite failure can't be mistaken for
+    a sibling commit. Caller holds _lock (or is in init)."""
+    try:
+        return int(_require_conn().execute("PRAGMA data_version").fetchone()[0])
+    except (sqlite3.Error, RuntimeError):
+        return _DATA_VERSION
+
+
+def _refresh_if_sibling_committed() -> None:
+    """Rebuild _SESSION_INDEX when another PROCESS committed since the last
+    check — one header read on the connection we already hold. Mirrors
+    api_keys_store._refresh_if_sibling_committed(); without it a logout in one
+    uvicorn worker would leave the cookie valid in every other worker."""
+    if _conn is None:
+        return
+    with _lock:
+        if _data_version_locked() != _DATA_VERSION:
+            _rebuild_index_locked()
 
 
 def _purge_expired_locked() -> None:
@@ -192,6 +226,7 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
     """
     if not raw_token:
         return None
+    _refresh_if_sibling_committed()
     th = hash_token(raw_token)
     rec = _SESSION_INDEX.get(th)
     if rec is None:
@@ -255,6 +290,7 @@ def purge_expired() -> None:
 
 def _reset_for_tests() -> None:
     """Drop the in-memory caches so the autouse test fixture starts clean."""
-    global _SESSION_INDEX
+    global _SESSION_INDEX, _DATA_VERSION
     _SESSION_INDEX = {}
+    _DATA_VERSION = -1
     _SLIDE_CACHE.clear()

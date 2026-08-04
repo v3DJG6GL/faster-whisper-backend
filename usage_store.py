@@ -51,6 +51,8 @@ import threading
 import time
 from typing import Any
 
+import store_common
+
 logger = logging.getLogger("whisper-api")
 
 _EPOCH = datetime.date(1970, 1, 1)
@@ -95,6 +97,7 @@ def init_db(path: str) -> None:
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.execute("PRAGMA temp_store=MEMORY;")
     _conn.executescript(_SCHEMA)
+    store_common.secure_db_file(path)
 
 
 def _require_conn() -> sqlite3.Connection:

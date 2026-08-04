@@ -36,6 +36,8 @@ import uuid
 from hashlib import sha256
 from typing import Any
 
+import store_common
+
 logger = logging.getLogger("whisper-api")
 
 
@@ -53,9 +55,21 @@ _conn: sqlite3.Connection | None = None
 _KEY_INDEX: dict[str, dict[str, Any]] = {}
 
 # Cached "an active admin key exists" — refreshed by _rebuild_index_locked()
-# on every user/key mutation. Default False = open mode (matches the original
-# pre-init behaviour where the SQL fallback raised and was caught).
+# on every user/key mutation. Only meaningful once _DB_READY is True.
 _IS_LOCKED_DOWN: bool = False
+
+# True only after init_db() has fully succeeded. The lifespan in main.py logs
+# and keeps serving when init_db() raises (bad permissions on a mounted
+# volume, corrupt file, read-only mount), so an unopened store must read as
+# LOCKED — otherwise the empty _KEY_INDEX below would look like "no admin key
+# exists" and every caller would get the synthetic open-mode admin.
+_DB_READY: bool = False
+
+# Last `PRAGMA data_version` observed on _conn. SQLite bumps this value on a
+# connection whenever ANOTHER connection commits to the same file (own commits
+# never move it), so it is how one uvicorn worker notices a sibling worker's
+# revoke / permission change. With SERVER_WORKERS=1 it never changes.
+_DATA_VERSION: int = -1
 
 # Debounce window for last_used_ts writes (seconds).
 _LAST_USED_DEBOUNCE_S = 60.0
@@ -138,7 +152,7 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_user   ON api_keys(user_id);
 def init_db(db_path: str) -> None:
     """Open the SQLite DB (WAL) and ensure the schema exists. Idempotent.
     Builds the in-memory key index from active rows."""
-    global _conn
+    global _conn, _DB_READY
     db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
     os.makedirs(db_dir, exist_ok=True)
     _conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
@@ -147,7 +161,9 @@ def init_db(db_path: str) -> None:
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
+    store_common.secure_db_file(db_path)
     _rebuild_index_locked()
+    _DB_READY = True   # last: every earlier statement can still raise
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -284,8 +300,11 @@ def _rebuild_index_locked() -> None:
     key/user is created or revoked, all of which already pass through
     this function, so the hot is_locked_down() check on every
     authenticated request avoids a JOIN COUNT(*) SQL roundtrip."""
-    global _KEY_INDEX, _IS_LOCKED_DOWN
+    global _KEY_INDEX, _IS_LOCKED_DOWN, _DATA_VERSION
     conn = _require_conn()
+    # Snapshot the version BEFORE the SELECT: a sibling commit landing between
+    # the two would otherwise be marked as already seen without being read.
+    _DATA_VERSION = _data_version_locked()
     rows = conn.execute(
         "SELECT k.key_hash, k.id AS key_id, k.label, u.id AS user_id, u.username,"
         " u.is_admin, u.permissions"
@@ -304,6 +323,32 @@ def _rebuild_index_locked() -> None:
         }
     _KEY_INDEX = idx
     _IS_LOCKED_DOWN = any(v["is_admin"] for v in idx.values())
+
+
+def _data_version_locked() -> int:
+    """Read `PRAGMA data_version` off the shared connection. Falls back to the
+    cached value on error so a transient sqlite failure can't be mistaken for
+    a sibling commit. Caller holds _lock (or is in init)."""
+    try:
+        return int(_require_conn().execute("PRAGMA data_version").fetchone()[0])
+    except (sqlite3.Error, RuntimeError):
+        return _DATA_VERSION
+
+
+def _refresh_if_sibling_committed() -> None:
+    """Rebuild the caches when another PROCESS committed since the last check.
+
+    main.py can run uvicorn with SERVER_WORKERS > 1; each worker holds its own
+    connection and its own _KEY_INDEX / _IS_LOCKED_DOWN, so a revoke in worker
+    A would otherwise never reach worker B. `PRAGMA data_version` is a header
+    read on the connection we already hold — one cheap statement on the auth
+    hot path — and it only moves for commits made by a different connection,
+    so a single-worker server never rebuilds here."""
+    if not _DB_READY:
+        return
+    with _lock:
+        if _data_version_locked() != _DATA_VERSION:
+            _rebuild_index_locked()
 
 
 # ---------------------------------------------------------------------
@@ -616,6 +661,7 @@ def lookup_by_raw_key(raw_key: str) -> dict[str, Any] | None:
     O(1) via in-memory hash index. Touches last_used_ts (debounced)."""
     if not raw_key:
         return None
+    _refresh_if_sibling_committed()
     h = hash_key(raw_key)
     rec = _KEY_INDEX.get(h)
     if rec is None:
@@ -954,5 +1000,12 @@ def is_locked_down() -> bool:
     Open mode (return False) lets every request through as the synthetic
     admin so the operator can bootstrap. A periodic WARNING is logged
     by the auth module while open. Reads the cache populated by
-    _rebuild_index_locked() — no SQL on the per-request hot path."""
+    _rebuild_index_locked() — no table read on the per-request hot path.
+
+    A store that never initialised reports LOCKED: init_db() failing is
+    non-fatal in the lifespan, and answering False there would hand the
+    synthetic admin to every caller for the life of the process."""
+    if not _DB_READY:
+        return True
+    _refresh_if_sibling_committed()
     return _IS_LOCKED_DOWN

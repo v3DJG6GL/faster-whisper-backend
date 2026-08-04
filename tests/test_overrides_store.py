@@ -122,3 +122,5 @@ def test_config_column_migration_on_legacy_db(tmp_path):
         ak._conn = None
         ak._KEY_INDEX = {}
         ak._IS_LOCKED_DOWN = False
+        ak._DB_READY = False
+        ak._DATA_VERSION = -1

@@ -32,6 +32,8 @@ import threading
 import time
 from typing import Any
 
+import store_common
+
 logger = logging.getLogger("whisper-api")
 
 _lock = threading.Lock()
@@ -77,6 +79,7 @@ def init_db(path: str) -> None:
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
+    store_common.secure_db_file(path)
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:

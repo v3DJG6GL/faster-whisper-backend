@@ -27,6 +27,7 @@ import time
 import uuid
 from typing import Any
 
+import store_common
 import text_corrections
 
 logger = logging.getLogger("whisper-api")
@@ -97,6 +98,7 @@ def init_db(path: str) -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA)
+    store_common.secure_db_file(path)
 
 
 def _require_conn() -> sqlite3.Connection:

@@ -40,6 +40,8 @@ import threading
 import time
 from typing import Any
 
+import store_common
+
 logger = logging.getLogger("whisper-api")
 
 _lock = threading.RLock()  # reentrant: record_trace/record_timing hold the lock and may call prune() which re-acquires it
@@ -95,6 +97,7 @@ def init_db(path: str) -> None:
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.execute("PRAGMA temp_store=MEMORY;")
     _conn.executescript(_SCHEMA)
+    store_common.secure_db_file(path)
     # Migrate pre-existing DBs (created before the `source` column): add it with
     # the 'file' default so old rows read as batch/file-upload transcriptions.
     cols = {r["name"] for r in _conn.execute("PRAGMA table_info(recent_transcriptions)")}

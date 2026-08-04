@@ -37,6 +37,7 @@ import time
 import uuid
 from typing import Any
 
+import store_common
 import text_corrections
 
 logger = logging.getLogger("whisper-api")
@@ -113,6 +114,8 @@ def init(db_path: str, audio_dir: str) -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA_CORE)
+    store_common.secure_db_file(db_path)
+    store_common.secure_dir(audio_dir)   # raw dictation WAVs live under here
 
 
 def _require_conn() -> sqlite3.Connection:

@@ -204,6 +204,10 @@ def api_keys_db(tmp_path):
     api_keys_store._conn = None
     api_keys_store._KEY_INDEX = {}
     api_keys_store._IS_LOCKED_DOWN = False
+    # Closing the connection un-readies the store; leaving _DB_READY set would
+    # let a later test read this test's stale lockdown cache.
+    api_keys_store._DB_READY = False
+    api_keys_store._DATA_VERSION = -1
 
 
 # ---------------------------------------------------------------------------
