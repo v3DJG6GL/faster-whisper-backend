@@ -80,12 +80,18 @@ jobs:
     steps:
       # Manual checkout — no node in the python image, so actions/checkout
       # (a JS action) cannot run. The run-scoped actions token authenticates
-      # the fetch, so this works regardless of repo visibility.
+      # the fetch, so this works regardless of repo visibility. Ref and token
+      # reach git through the step env instead of being expanded into the
+      # script text: `git check-ref-format` permits $ ( ) ` ; & | in a tag
+      # name, and this workflow triggers on v* tags.
       - name: Checkout
+        env:
+          GIT_REF: ${{ github.ref }}
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git init -q .
-          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@forgejo.informethic.ch/${{ github.repository }}.git"
-          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin ${{ github.ref }}
+          git remote add origin "https://x-access-token:${GIT_TOKEN}@forgejo.informethic.ch/${{ github.repository }}.git"
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin "$GIT_REF"
           git checkout -q --force FETCH_HEAD
 
       # No pip cache: the job container is ephemeral and actions/cache is a
@@ -114,11 +120,17 @@ jobs:
     name: tests (windows-latest)
     runs-on: windows-latest
     steps:
+      # Same env indirection as the Linux legs above, in PowerShell spelling:
+      # host-mode `run:` steps default to pwsh (no `shell: bash` here), so the
+      # step env is read as $env:NAME.
       - name: Checkout
+        env:
+          GIT_REF: ${{ github.ref }}
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git init -q .
-          git remote add origin "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@forgejo.informethic.ch/${{ github.repository }}.git"
-          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin ${{ github.ref }}
+          git remote add origin "https://x-access-token:${env:GIT_TOKEN}@forgejo.informethic.ch/${{ github.repository }}.git"
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin "$env:GIT_REF"
           git checkout -q --force FETCH_HEAD
 
       # Host mode: this installs into the VM's system python and doubles as
