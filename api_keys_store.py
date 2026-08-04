@@ -351,6 +351,18 @@ def _refresh_if_sibling_committed() -> None:
             _rebuild_index_locked()
 
 
+def data_version() -> int:
+    """`PRAGMA data_version` off the shared connection, or -1 before init_db().
+
+    Exposed for config_store.config_version(): every binding writer here bumps
+    the config version in ITS OWN process only, so a sibling worker polls this
+    to learn that its live idents must re-resolve."""
+    if not _DB_READY:
+        return -1
+    with _lock:
+        return _data_version_locked()
+
+
 # ---------------------------------------------------------------------
 # User CRUD
 # ---------------------------------------------------------------------
