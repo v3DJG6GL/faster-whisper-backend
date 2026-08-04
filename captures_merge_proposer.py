@@ -306,6 +306,13 @@ def _eligible(row: dict[str, Any], min_clip_s: float, hard_cap_s: float) -> bool
     return True
 
 
+def _user_cache_key(user_id: str) -> str:
+    """Cache key for a single-user view. Namespaced so a caller-supplied
+    ?user_id= can never collide with the _ALL_USERS sentinel (which would
+    let one request serve its own result to every admin for a whole TTL)."""
+    return f"u:{user_id}"
+
+
 def propose_merges(
     *,
     user_id_filter: str | None,
@@ -323,10 +330,10 @@ def propose_merges(
     # Resolve effective filter + cache key.
     if not is_admin:
         effective_user_id = caller_user_id
-        cache_key = caller_user_id or _ALL_USERS
+        cache_key = _user_cache_key(caller_user_id) if caller_user_id else _ALL_USERS
     elif user_id_filter:
         effective_user_id = user_id_filter
-        cache_key = user_id_filter
+        cache_key = _user_cache_key(user_id_filter)
     else:
         effective_user_id = None
         cache_key = _ALL_USERS
@@ -442,5 +449,5 @@ def invalidate(user_id: str | None) -> None:
     write may affect). Called from captures_store + capture_samples_store
     write paths. Safe to call with no current cache entry."""
     if user_id:
-        _CACHE.pop(user_id, None)
+        _CACHE.pop(_user_cache_key(user_id), None)
     _CACHE.pop(_ALL_USERS, None)

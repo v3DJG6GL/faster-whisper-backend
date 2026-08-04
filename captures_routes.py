@@ -153,16 +153,19 @@ class CorrectionIn(BaseModel):
 class PatchCaptureIn(BaseModel):
     model_config = {"extra": "forbid"}
     status: Literal["new", "reviewed", "ready", "dismissed"] | None = None
-    corrected_text: str | None = None
-    corrections: list[CorrectionIn] | None = None
+    # Bounds mirror what captures_store.update_capture truncates to
+    # (_CAP_CORRECTED / _CAP_ADMIN_NOTES), so nothing a client may
+    # legitimately save is rejected here.
+    corrected_text: str | None = Field(default=None, max_length=100_000)
+    corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
     # Snapshot of `corrections` the client loaded with this capture.
     # When provided alongside `corrections`, the server applies a
     # three-way merge against the current DB state so a concurrent
     # write (another admin in another tab, or a group save touching this
     # member) doesn't get clobbered by the user's save. Omitted → legacy
     # replace.
-    baseline_corrections: list[CorrectionIn] | None = None
-    admin_notes: str | None = None
+    baseline_corrections: list[CorrectionIn] | None = Field(default=None, max_length=200)
+    admin_notes: str | None = Field(default=None, max_length=8000)
 
 
 class ClearIn(BaseModel):

@@ -340,7 +340,7 @@ def test_propose_admin_specific_user_cache_key(captures_store_db, monkeypatch, t
     _insert_eligible(cs, "cap0000000000e1", ts=1000.0, user_id="u1")
     _insert_eligible(cs, "cap0000000000e2", ts=1001.0, user_id="u1")
     P.propose_merges(user_id_filter="u1", is_admin=True, caller_user_id="admin")
-    assert "u1" in P._CACHE
+    assert P._user_cache_key("u1") in P._CACHE
     assert P._ALL_USERS not in P._CACHE
 
 
@@ -353,7 +353,7 @@ def test_propose_non_admin_ignores_filter(captures_store_db, monkeypatch, trim_d
     # alice asks but passes bob's filter; non-admin → forced to her own id.
     proposals, _ = P.propose_merges(
         user_id_filter="bob", is_admin=False, caller_user_id="alice")
-    assert "alice" in P._CACHE
+    assert P._user_cache_key("alice") in P._CACHE
     for p in proposals:
         assert p["user_id"] == "alice"
 
