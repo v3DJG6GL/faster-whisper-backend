@@ -200,6 +200,19 @@ WHISPER_USER_WEBUI_ALLOWED_HOSTS=127.0.0.1,::1,192.168.1.0/24
 
 CIDR is accepted (`192.168.0.0/16`) and so are bare IPs (`10.0.0.5`). For a dual-stack "any host" allowlist you need both `0.0.0.0/0` (IPv4) and `::/0` (IPv6).
 
+### Behind a reverse proxy
+
+Two things change once the app is reached through a proxy:
+
+- **Client IP.** Without `FORWARDED_ALLOW_IPS` the app sees the *proxy's* IP, so the allowlists above gate on that (admin pages 403 for everyone). Set it to the proxy's IP/subnet — it is read by **uvicorn directly**, so it carries no `WHISPER_` prefix — and uvicorn then rewrites the client IP from `X-Forwarded-For`. Never `*` unless the app is unreachable except through the proxy (the header is spoofable).
+- **Origin.** Unsafe methods (`POST`/`PUT`/`DELETE`) must come from the same origin as the request's `Host` header. Nginx Proxy Manager, NPMplus, Caddy and Traefik pass `Host` through by default, so the check already succeeds and nothing is needed. A proxy configured to **rewrite `Host` to the upstream** (e.g. `proxy_set_header Host backend:8000`) makes every WebUI mutation fail with `403 Origin not allowed for this host` — list the public origin in `TRUSTED_ORIGINS`. This only widens that check; cross-origin API access is still governed solely by `CORS_ALLOW_ORIGINS`.
+
+```bash
+FORWARDED_ALLOW_IPS=172.16.0.0/12                    # proxy IP/subnet (uvicorn, no WHISPER_ prefix)
+WHISPER_SESSION_COOKIE_SECURE=1                      # required when the proxy serves HTTPS
+WHISPER_TRUSTED_ORIGINS=https://whisper.example.com  # only if the proxy rewrites Host
+```
+
 ## Endpoints
 
 **Core API** (`/v1`, bearer API-key auth, no host allowlist — always registered):

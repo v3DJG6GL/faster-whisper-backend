@@ -1850,6 +1850,14 @@ async def lifespan(app: FastAPI):
     # is the operator's prompt to bootstrap an admin via /settings/api-keys.
     # Optional WHISPER_BOOTSTRAP_ADMIN_KEY env var creates the very first
     # admin in one shot without any UI.
+    #
+    # FATAL, unlike every other store below: without it auth can resolve
+    # nobody, so the service answers 401 to everything while still looking
+    # healthy. Raising here aborts startup — uvicorn logs the failure and
+    # exits non-zero, so the container/unit restarts instead of running as a
+    # black hole. A failed bootstrap-admin ingest is fatal for the mirror
+    # image of that reason: it would leave the server in OPEN mode with the
+    # operator believing the env key locked it down.
     open_mode_task = None
     try:
         import api_keys_store
@@ -1867,7 +1875,15 @@ async def lifespan(app: FastAPI):
             _auth.open_mode_warning_loop()
         )
     except Exception as _ae:
-        logger.error("Failed to initialize API keys store: %s", _ae)
+        logger.critical(
+            "Failed to initialize the API keys store at %s: %s — refusing to "
+            "start (check WHISPER_API_KEYS_DB / WHISPER_DB_DIR / "
+            "WHISPER_DATA_DIR and the directory's permissions)",
+            cfg.API_KEYS_DB, _ae,
+        )
+        raise RuntimeError(
+            f"API keys store unavailable at {cfg.API_KEYS_DB}: {_ae}"
+        ) from _ae
 
     # Open the browser-session store (HttpOnly cookie auth for the WebUI).
     # Non-fatal: if this fails, cookie login is unavailable but bearer auth
@@ -2014,6 +2030,14 @@ if _cors_origins:
     logger.info("CORS enabled for origins: %s",
                 "* (any)" if _cors_allow_all else ", ".join(_cors_origins))
 
+# Extra origins the unsafe-method origin guard accepts besides the request's
+# own Host — for a reverse proxy that rewrites Host to the upstream. Read ONLY
+# by _origin_is_allowed: it adds no CORS headers and no cross-origin access.
+_trusted_origins = list(getattr(cfg, "TRUSTED_ORIGINS", []) or [])
+if _trusted_origins:
+    logger.info("Trusted origins (same-origin check): %s",
+                ", ".join(_trusted_origins))
+
 # Static assets for the /stats dashboard (vendored uPlot, etc). Local-only —
 # do not put anything sensitive under static/.
 from fastapi.staticfiles import StaticFiles
@@ -2066,6 +2090,13 @@ _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 _CSRF_EXEMPT_PATHS = frozenset({"/auth/login"})
 
 
+# A rejected Origin is logged at most this often: the check runs before any
+# credential, so an unauthenticated caller could otherwise drive the log at
+# request rate (same reasoning as auth.py's open-mode nag interval).
+_ORIGIN_REJECT_LOG_INTERVAL_S = 60.0
+_origin_reject_logged_at = 0.0
+
+
 def _origin_is_allowed(request: Request) -> bool:
     """True when an unsafe-method request may proceed based on its Origin.
 
@@ -2076,16 +2107,40 @@ def _origin_is_allowed(request: Request) -> bool:
     send no Origin at all — absent means allow.
 
     Only host:port is compared against Host: a TLS-terminating proxy rewrites
-    neither header, but the scheme in front of it is unknowable from here.
+    neither header, but the scheme in front of it is unknowable from here. A
+    proxy that DOES rewrite Host to the upstream never matches, which is what
+    TRUSTED_ORIGINS is for (CORS_ALLOW_ORIGINS also counts, for compatibility
+    — but it additionally switches CORS on, so it is the wrong knob here).
     """
     origin = request.headers.get("origin")
     if not origin or _cors_allow_all:
         return True
-    if origin in _cors_origins:
+    if origin in _cors_origins or origin in _trusted_origins:
         return True
     host = request.headers.get("host", "")
     from urllib.parse import urlsplit
     return bool(host) and urlsplit(origin).netloc == host
+
+
+def _log_origin_rejected(request: Request) -> None:
+    """Throttled WARNING naming the two headers that decided it — the only way
+    an operator can tell a genuine cross-site POST from a reverse proxy that
+    rewrote Host. Both values are attacker-controlled, hence _log_safe."""
+    global _origin_reject_logged_at
+    now = time.monotonic()
+    if now - _origin_reject_logged_at < _ORIGIN_REJECT_LOG_INTERVAL_S:
+        return
+    _origin_reject_logged_at = now
+    logger.warning(
+        "Rejected %s %s: Origin %r does not match Host %r. If this is your own "
+        "reverse proxy rewriting Host, add the public origin to "
+        "TRUSTED_ORIGINS (WHISPER_TRUSTED_ORIGINS); otherwise it was a "
+        "cross-site request. Further rejections are logged at most every %.0f s.",
+        request.method, _log_safe(request.url.path),
+        _log_safe(request.headers.get("origin")),
+        _log_safe(request.headers.get("host")),
+        _ORIGIN_REJECT_LOG_INTERVAL_S,
+    )
 
 
 @app.middleware("http")
@@ -2104,8 +2159,9 @@ async def _csrf_mw(request: Request, call_next):
     if request.method.upper() not in _CSRF_SAFE_METHODS:
         from fastapi.responses import JSONResponse
         if not _origin_is_allowed(request):
+            _log_origin_rejected(request)
             return JSONResponse(
-                {"detail": "CSRF token missing or invalid"},
+                {"detail": "Origin not allowed for this host"},
                 status_code=403,
             )
         if request.url.path not in _CSRF_EXEMPT_PATHS:
@@ -3436,8 +3492,11 @@ async def whoami(
     """Resolve the caller to a user payload the WebUI uses to render the
     login modal + user-aware chrome.
 
-    Returns `{open_mode, user_id, username, is_admin, permissions,
-    csrf_token?}`. The `permissions` object is `{pages: {logs:
+    Returns `{open_mode, user_id, username, is_admin, permissions, build,
+    csrf_token?}`. `build` carries the header chip's facts (version, boot,
+    start) — the shared header ships as an empty shell because its pages are
+    only host-gated, so the facts ride this authenticated route instead. The
+    `permissions` object is `{pages: {logs:
     'own'|'all'|'none', ...}}` — used by each page's JS to hide nav links
     the user can't reach and to render scope hints. `csrf_token` is
     present only for cookie-authenticated callers (set by
@@ -3445,6 +3504,7 @@ async def whoami(
     X-CSRF-Token without parsing the cookie. A 401 means no valid
     credential AND the server is locked down — the WebUI re-prompts."""
     import api_keys_store as _ak
+    import build_info
     perms = user.get("permissions")
     out = {
         "open_mode": not _ak.is_locked_down(),
@@ -3452,6 +3512,13 @@ async def whoami(
         "username": user.get("username"),
         "is_admin": bool(user.get("is_admin")),
         "permissions": perms.to_dict() if perms is not None else {"pages": {}},
+        "build": {
+            "server": build_info.SERVER_NAME,
+            "version": build_info.APP_VERSION,
+            "version_short": build_info.VERSION_SHORT,
+            "boot": build_info.BOOT_ID[:8],
+            "started": build_info.STARTED_UTC,
+        },
     }
     csrf = getattr(request.state, "session_csrf", None)
     if csrf:

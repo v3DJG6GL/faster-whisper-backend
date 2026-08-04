@@ -547,6 +547,15 @@ USER_WEBUI_ALLOWED_HOSTS: "list[str]" = _D("USER_WEBUI_ALLOWED_HOSTS")
 # CORS spec). Streaming (WebSocket) is unaffected — it is not subject to CORS.
 CORS_ALLOW_ORIGINS: "list[str]" = _D("CORS_ALLOW_ORIGINS")
 
+# Extra origins the same-origin (CSRF) check on unsafe methods accepts, on top
+# of the request's own Host. Only needed behind a reverse proxy that REWRITES
+# Host to the upstream (most — Nginx Proxy Manager, NPMplus, Caddy, Traefik —
+# pass it through, so the check already succeeds); list the PUBLIC origin the
+# browser uses, e.g. https://whisper.example.com. Same syntax as
+# CORS_ALLOW_ORIGINS minus "*", and it enables no cross-origin access: CORS
+# stays exactly as CORS_ALLOW_ORIGINS leaves it.
+TRUSTED_ORIGINS: "list[str]" = _D("TRUSTED_ORIGINS")
+
 
 # =============================================================================
 # Browser sessions (HttpOnly cookie auth for the WebUI)

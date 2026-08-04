@@ -92,6 +92,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "ADMIN_WEBUI_ALLOWED_HOSTS": "WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS",
     "USER_WEBUI_ALLOWED_HOSTS": "WHISPER_USER_WEBUI_ALLOWED_HOSTS",
     "CORS_ALLOW_ORIGINS": "WHISPER_CORS_ALLOW_ORIGINS",
+    "TRUSTED_ORIGINS": "WHISPER_TRUSTED_ORIGINS",
     # Browser session cookies (HttpOnly cookie auth for the WebUI). All hot.
     "SESSION_COOKIE_SECURE": "WHISPER_SESSION_COOKIE_SECURE",
     "SESSION_TTL_SECONDS": "WHISPER_SESSION_TTL_SECONDS",
@@ -215,6 +216,8 @@ RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset({
     "INFERENCE_CONCURRENCY",
     # CORSMiddleware is added once at app construction.
     "CORS_ALLOW_ORIGINS",
+    # Read once at app construction by the unsafe-method origin guard.
+    "TRUSTED_ORIGINS",
     # WebSocket keepalive is passed once to uvicorn.run.
     "STREAMING_WS_PING_INTERVAL_SEC", "STREAMING_WS_PING_TIMEOUT_SEC",
 })
@@ -572,6 +575,14 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "is an origin like 'https://app.example.com' or 'http://192.168.1.50:8000'; "
         "'*' allows any origin (credentials then disabled). Empty (default) = CORS "
         "off. Streaming (WebSocket) is not subject to CORS. Restart required.",
+    "TRUSTED_ORIGINS":
+        "Extra origins accepted by the same-origin check on POST/PUT/DELETE, on "
+        "top of the request's own Host. Only needed behind a reverse proxy that "
+        "rewrites Host to the upstream (Nginx Proxy Manager, NPMplus, Caddy and "
+        "Traefik pass it through, so nothing is needed there) — list the public "
+        "origin, e.g. 'https://whisper.example.com'. Grants no cross-origin "
+        "access: CORS is configured solely by CORS_ALLOW_ORIGINS. No '*'. "
+        "Restart required.",
     # --- Browser sessions ---
     "SESSION_COOKIE_SECURE":
         "Mark the WebUI session/CSRF cookies 'Secure' (sent only over HTTPS). "
@@ -1392,6 +1403,13 @@ class AdminConfig(BaseModel):
         list[Annotated[str, Field(min_length=1, max_length=256)]],
         Field(max_length=64),
     ] | None = _F("CORS_ALLOW_ORIGINS")
+    # Extra origins the unsafe-method same-origin check accepts. Same entry
+    # shape as CORS_ALLOW_ORIGINS but "*" is rejected — see
+    # _validate_trusted_origins below.
+    TRUSTED_ORIGINS: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=256)]],
+        Field(max_length=64),
+    ] | None = _F("TRUSTED_ORIGINS")
     # --- Browser sessions ---
     SESSION_COOKIE_SECURE: bool | None = _F("SESSION_COOKIE_SECURE")
     SESSION_TTL_SECONDS: Annotated[
@@ -1793,6 +1811,23 @@ class AdminConfig(BaseModel):
                 )
         return v
 
+    @field_validator("TRUSTED_ORIGINS")
+    @classmethod
+    def _validate_trusted_origins(cls, v: list[str] | None) -> list[str] | None:
+        """Same entry shape as CORS_ALLOW_ORIGINS, minus '*': a wildcard here
+        would accept every cross-site Origin and disable the guard outright."""
+        if v is None:
+            return v
+        for entry in v:
+            if not re.fullmatch(r"https?://[^/?#\s]+", entry):
+                raise ValueError(
+                    f"'{entry}' is not a valid trusted origin — use "
+                    f"'scheme://host[:port]' (e.g. 'https://whisper.example.com' "
+                    f"or 'http://192.168.1.50:8000'); no trailing path/slash, "
+                    f"and no '*'."
+                )
+        return v
+
 
 # Types that don't survive JSON round-trip natively. Convert after model_dump
 # so consumers (config.py, main.py) get the same Python types as if the values
@@ -1944,10 +1979,27 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
 # settings, override profiles, or per-user/per-key bindings. Long-lived
 # consumers that cache a resolved view (notably a streaming connection's
 # per-identity ``ident``, resolved ONCE at handshake) poll this to know when to
-# re-resolve, so admin edits take effect without forcing a reconnect. In-process
-# counter only; restart resets to 0, which is fine (a restart re-resolves too).
+# re-resolve, so admin edits take effect without forcing a reconnect. The
+# counter itself is per-process; restart resets to 0, which is fine (a restart
+# re-resolves too).
 # ---------------------------------------------------------------------------
 _CONFIG_VERSION = 0
+
+# Last `PRAGMA data_version` observed on api_keys_store's connection. main.py
+# can run uvicorn with SERVER_WORKERS > 1 and each worker holds its own
+# _CONFIG_VERSION, so a binding write (revoke_user / revoke_key /
+# set_key_config / set_user_permissions / rename_profile_refs) bumps the
+# counter in the worker that served the request and leaves a sibling worker's
+# live idents resolving the pre-edit binding for the life of the connection.
+# Bindings live in the SHARED api_keys.db, so the sibling re-resolves them
+# correctly once it knows to; the pragma is what tells it. -1 = not sampled
+# yet (init_db() runs long after this module imports).
+#
+# This is the DB-backed half only. config.local.json edits are applied to the
+# running `config` module by the worker that served the save and a sibling has
+# no reload path for them, so signalling those here would only make it
+# re-resolve values that are themselves stale.
+_KEYS_DATA_VERSION: int = -1
 
 
 def bump_config_version() -> None:
@@ -1957,8 +2009,28 @@ def bump_config_version() -> None:
     _CONFIG_VERSION += 1
 
 
+def _bump_if_sibling_committed() -> None:
+    """Bump the counter when another PROCESS committed to api_keys.db since the
+    last check — the cross-worker stand-in for the bump_config_version() call
+    every binding writer already makes in its own process. Mirrors
+    api_keys_store._refresh_if_sibling_committed(): `PRAGMA data_version` only
+    moves for commits made by a different connection, so a single-worker server
+    never bumps here. The first sample is adopted silently — the store opening
+    is not a sibling write."""
+    global _KEYS_DATA_VERSION
+    import api_keys_store   # local import keeps module import order flexible
+    v = api_keys_store.data_version()
+    if v == _KEYS_DATA_VERSION:
+        return
+    first = _KEYS_DATA_VERSION < 0
+    _KEYS_DATA_VERSION = v
+    if not first:
+        bump_config_version()
+
+
 def config_version() -> int:
     """Current config version — see :func:`bump_config_version`."""
+    _bump_if_sibling_committed()
     return _CONFIG_VERSION
 
 
