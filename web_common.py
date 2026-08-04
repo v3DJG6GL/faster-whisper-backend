@@ -10,7 +10,6 @@ Shared helpers used by the /logs, /settings, /stats, and /quick-config pages.
 
 from __future__ import annotations
 
-import html
 import ipaddress
 import logging
 from collections import deque
@@ -19,7 +18,6 @@ from typing import Callable
 from fastapi import HTTPException, Request, status
 from starlette.requests import HTTPConnection
 
-import build_info
 import config as cfg
 
 
@@ -317,7 +315,10 @@ header .brand-word .bw-c { color: var(--dim); font-weight: 500; font-size: 0.72e
    hover/focus raises a CSS tooltip (data-tip, real newlines via white-space:
    pre) with the full describe + boot + start; click copies (see
    _header_vtag_html). Sits OUTSIDE .title so the tooltip escapes its
-   overflow:hidden clipping. */
+   overflow:hidden clipping. Empty until _fillBuildChip() writes the facts in
+   (never before whoami resolves), and an empty chip must not paint a bare
+   border. */
+header .vtag:empty { display: none; }
 header .vtag { position: relative; flex-shrink: 0; margin-left: -0.35rem;
   font-family: "Geist Mono", var(--font-mono); font-size: var(--fs-xs);
   color: var(--help); background: transparent; border: 1px solid var(--border);
@@ -1205,6 +1206,23 @@ OPEN_MODE_BANNER_JS = r"""
     if (g) g.hidden = true;
   };
 
+  // Header build chip — the page ships it empty (see _header_vtag_html); the
+  // facts come from the authenticated whoami payload. Text and attributes only
+  // (never innerHTML): the values are server-side strings, not markup.
+  function _fillBuildChip(build) {
+    var chip = document.getElementById('hdr-vtag');
+    if (!chip || !build) return;
+    chip.textContent = build.version_short || build.version || '';
+    chip.setAttribute('data-tip',
+      (build.server || '') + ' ' + (build.version || '') + '\n'
+      + 'boot ' + (build.boot || '') + ' · started ' + (build.started || '')
+      + '\n' + 'click to copy');
+    chip.setAttribute('data-build',
+      (build.server || '') + ' ' + (build.version || '')
+      + ' (boot ' + (build.boot || '')
+      + ', started ' + (build.started || '') + ')');
+  }
+
   // Single source of truth for "what does the current bearer let me see?".
   // Idempotent: clears nav chrome first, then re-applies based on a fresh
   // /auth/whoami. Called once on page load AND on every `whisper:auth-changed`
@@ -1215,6 +1233,14 @@ OPEN_MODE_BANNER_JS = r"""
     // the chrome hidden by default. The old IIFE only ADDed classes — it
     // had no way to recover from a transition admin → non-admin.
     try { document.body.classList.remove('role-admin'); } catch(_) {}
+    try {
+      var _chip = document.getElementById('hdr-vtag');
+      if (_chip) {
+        _chip.textContent = '';
+        _chip.setAttribute('data-tip', '');
+        _chip.setAttribute('data-build', '');
+      }
+    } catch(_) {}
     try {
       document.querySelectorAll('header a.page-link[data-page].allowed')
         .forEach(function(a){ a.classList.remove('allowed'); });
@@ -1244,6 +1270,7 @@ OPEN_MODE_BANNER_JS = r"""
         // Logout-button visibility tracks login state; the HttpOnly cookie
         // isn't JS-readable, so this is driven by whoami, not storage.
         _syncAuthActions();
+        try { _fillBuildChip(j.build); } catch(_) {}
 
         // OPEN-mode warning banner — only when no admin key configured.
         // Idempotent: the banner gets a stable id so re-runs don't stack.
@@ -2823,26 +2850,17 @@ def _header_brand_for(current: str) -> str:
 
 
 # ── header build-version tag ({{HEADER_VTAG}}) ──────────────────────────────
-# All values are per-process constants, so the fragment is built once at
-# import. The chip shows the release part (VERSION_SHORT); the tooltip and the
-# copied report carry the full describe + boot + start time. _fwCopyBuild is
+# Empty shell only — the shared header rides on host-gated (keyless) pages, so
+# the version/boot/start facts must never be baked into it. _fillBuildChip()
+# in OPEN_MODE_BANNER_JS writes them in from the authenticated /auth/whoami
+# payload; until then the chip is :empty and the CSS hides it. _fwCopyBuild is
 # defined here (once per page) and reused by any other copy-report button
 # (e.g. the /settings server-identity card).
 def _header_vtag_html() -> str:
-    full = html.escape(build_info.APP_VERSION)
-    tip = (
-        f"{build_info.SERVER_NAME} {full}&#10;"
-        f"boot {build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}&#10;"
-        "click to copy"
-    )
-    report = html.escape(
-        f"{build_info.SERVER_NAME} {build_info.APP_VERSION} "
-        f"(boot {build_info.BOOT_ID[:8]}, started {build_info.STARTED_UTC})"
-    )
     return (
-        f'<button id="hdr-vtag" class="vtag" type="button" data-tip="{tip}" '
-        f'data-build="{report}" aria-label="Copy server build info" '
-        f'onclick="_fwCopyBuild(this)">{html.escape(build_info.VERSION_SHORT)}</button>'
+        '<button id="hdr-vtag" class="vtag" type="button" data-tip="" '
+        'data-build="" aria-label="Copy server build info" '
+        'onclick="_fwCopyBuild(this)"></button>'
         # navigator.clipboard needs a secure context (https / localhost); over
         # plain-http LAN fall back to textarea + execCommand (same approach as
         # the api-keys page's copy button).

@@ -18,10 +18,7 @@ public knowledge as the shared nav links every page already embeds.
 from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
-import build_info
 import config as cfg
-import system_stats
-from html import escape as _esc
 from web_common import render_page, require_user_webui_host
 
 router = APIRouter()
@@ -160,7 +157,7 @@ _HUB_HTML = """<!doctype html>
     font-family: "Geist Mono", var(--font-mono);
     letter-spacing: 0.16em; text-transform: uppercase; }
   /* build line — quiet mono caption between the wordmark and the status
-     strip: full version · docker/bare-metal (cpu|gpu) · uptime */
+     strip: full version · boot id · start time. Empty until whoami answers */
   .buildline { margin: -0.45rem 0 0; font-family: "Geist Mono", var(--font-mono);
     font-size: var(--fs-sm); color: var(--dim); }
   .buildline .v { color: var(--help); }
@@ -286,7 +283,7 @@ _HUB_HTML = """<!doctype html>
       </g>
     </svg>
     <h1 class="word"><span class="w-a">faster</span><span class="w-b">whisper</span><span class="w-sep">&rsaquo;</span><span class="w-c">backend</span></h1>
-    <p class="buildline">{{BUILD_LINE}}</p>
+    <p class="buildline"></p>
   </section>
   <div id="hub-body" hidden>
     <div class="strip">
@@ -343,6 +340,28 @@ _HUB_HTML = """<!doctype html>
       .catch(function () {});
   }
 
+  // Hero build caption — the page ships it empty (the hub is host-gated but
+  // keyless, so the build must not be server-rendered); the facts come from
+  // the authenticated whoami payload, same contract as the header chip.
+  // Nodes are built and filled with textContent, never innerHTML.
+  function fillBuildLine(build) {
+    var el = document.querySelector('.buildline');
+    if (!el || !build) return;
+    while (el.firstChild) el.removeChild(el.firstChild);
+    var v = document.createElement('span');
+    v.className = 'v';
+    v.textContent = build.version || '';
+    el.appendChild(v);
+    [['boot ', build.boot], ['started ', build.started]].forEach(function (p) {
+      if (!p[1]) return;
+      var sep = document.createElement('span');
+      sep.className = 'bl-sep';
+      sep.textContent = '·';
+      el.appendChild(sep);
+      el.appendChild(document.createTextNode(p[0] + p[1]));
+    });
+  }
+
   // The shared chrome's _refreshAuthChrome only applies `.allowed` inside
   // <header>, so the hub runs its own whoami pass for the tiles. On a 401
   // this leaves #hub-body hidden — the shared login gate is already covering
@@ -377,6 +396,7 @@ _HUB_HTML = """<!doctype html>
       if (k) k.textContent = i < 9 ? String(i + 1) : '';
     });
     if (hubBody) hubBody.hidden = false;
+    fillBuildLine(j.build);
     loadModels();
   }
 
@@ -422,18 +442,6 @@ _HUB_HTML = """<!doctype html>
 </body></html>"""
 
 
-def _build_line_html() -> str:
-    """The hero's build caption: full version · docker/bare-metal (cpu|gpu) ·
-    uptime. Uptime is rendered per page load (the hub reloads often enough
-    that a static value stays honest)."""
-    variant = f"{build_info.runs_as()} · {'gpu' if system_stats.NVML_OK else 'cpu'}"
-    sep = '<span class="bl-sep">·</span>'
-    return (
-        f'<span class="v">{_esc(build_info.APP_VERSION)}</span>'
-        f"{sep}{variant}{sep}up {build_info.uptime_str()}"
-    )
-
-
 @router.get(
     "/",
     response_class=HTMLResponse,
@@ -448,7 +456,6 @@ async def home_page():
         _HUB_HTML
         .replace("{{HUB_TILES}}", tiles)
         .replace("{{HUB_ADMIN_ZONE}}", admin_zone)
-        .replace("{{BUILD_LINE}}", _build_line_html())
     )
     return HTMLResponse(
         render_page(html, current="home"),
