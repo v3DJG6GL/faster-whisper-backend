@@ -36,6 +36,12 @@ logger = logging.getLogger("whisper-api")
 # None override such as SUPPRESS_TOKENS=None meaning "clear the suppression").
 UNSET = object()
 
+# Sentinel: the per-identity binding could NOT be read (store fault), which is
+# NOT the same as "this identity has no restrictions" — every gate that consumes
+# a binding resolves it to the restrictive side. Deliberately not a dict, so the
+# `isinstance(b, dict)` guards below can never iterate it as a binding.
+_FETCH_FAILED = object()
+
 # Overridable scalar fields = every call-time + streaming field EXCEPT the
 # pipeline include/exclude lists (those resolve via the rule path, not here).
 # Single-sourced from the schema so it cannot drift.
@@ -143,21 +149,29 @@ def _blob_to_layer(layer_id: str, label: str, profile_name: str | None,
     }
 
 
-def _safe_binding(getter: Any, ident_id: str | None) -> dict[str, Any]:
+def _safe_binding(getter: Any, ident_id: str | None) -> Any:
     """Fetch a per-identity binding, tolerating sentinel ids and any store
-    error — a bad binding must never crash a decode."""
+    error — a bad binding must never crash a decode. Returns the binding dict,
+    ``{}`` when the identity genuinely has none, or ``_FETCH_FAILED`` when the
+    store could not be read."""
     if not ident_id or ident_id in _SENTINEL_IDS:
         return {}
     try:
         return getter(ident_id) or {}
     except Exception as e:
-        # An unreadable binding is indistinguishable from "this identity has no
-        # restrictions", so the empty result is the ONLY trace of a window where
-        # this identity's gates / allowlist / locks did not apply — log it.
+        # Returning {} here would be indistinguishable from "this identity has
+        # no restrictions" and would silently drop its gates / allowlist / locks
+        # for the duration of the fault, so signal the failure instead.
         logger.warning("[effective-config] identity binding lookup failed for"
-                       " %s: %s — resolving with no per-identity restrictions",
+                       " %s: %s — refusing client-supplied overrides",
                        ident_id, e)
-        return {}
+        return _FETCH_FAILED
+
+
+def _fetch_failed(*bindings: Any) -> bool:
+    """True if ANY binding could not be read. One unreadable binding is enough:
+    the restrictions it would have carried are unknown."""
+    return any(b is _FETCH_FAILED for b in bindings)
 
 
 def _binding_flag(key_binding: dict[str, Any], user_binding: dict[str, Any],
@@ -171,22 +185,29 @@ def _binding_flag(key_binding: dict[str, Any], user_binding: dict[str, Any],
     return None
 
 
-def _effective_flag(key_binding: dict[str, Any], user_binding: dict[str, Any],
+def _effective_flag(key_binding: Any, user_binding: Any,
                     field_name: str, global_value: Any) -> bool:
     """Effective gate = the global floor AND the most-specific identity opinion
     (default allow when no identity sets it). A per-identity binding can only
     NARROW the global gate, never widen it: if global is off, no binding can
-    re-enable the feature."""
+    re-enable the feature. An unreadable binding closes the gate — we cannot
+    know that the identity did not narrow it."""
+    if _fetch_failed(key_binding, user_binding):
+        return False
     identity = _binding_flag(key_binding, user_binding, field_name)
     if identity is None:
         return bool(global_value)
     return bool(global_value) and identity
 
 
-def _effective_allowlist(key_binding: dict[str, Any],
-                         user_binding: dict[str, Any]) -> list[str] | None:
+def _effective_allowlist(key_binding: Any,
+                         user_binding: Any) -> list[str] | None:
     """The most-specific override-profile allowlist (key over user), or None when
-    neither sets one (= no restriction, all requestable profiles allowed)."""
+    neither sets one (= no restriction, all requestable profiles allowed). An
+    unreadable binding yields the EMPTY allowlist (no name may be requested)
+    rather than None, which would read as "unrestricted"."""
+    if _fetch_failed(key_binding, user_binding):
+        return []
     for b in (key_binding, user_binding):
         v = b.get("allowed_override_profiles") if isinstance(b, dict) else None
         if v is not None:
@@ -204,8 +225,8 @@ def _allowlist_permits(allowlist: list[str] | None, name: str) -> bool:
     return name in allowlist
 
 
-def _gather_identity_layers(key_binding: dict[str, Any],
-                            user_binding: dict[str, Any],
+def _gather_identity_layers(key_binding: Any,
+                            user_binding: Any,
                             request_profile: str | None = None,
                             *,
                             request_allowed: bool = True,
@@ -239,7 +260,7 @@ def _gather_identity_layers(key_binding: dict[str, Any],
 
     def _append_binding(scope: str, binding: Any) -> None:
         if not isinstance(binding, dict):
-            return
+            return  # absent or _FETCH_FAILED → this scope contributes no layer
         direct = _blob_to_layer(f"{scope}.direct", f"{scope} · direct",
                                 None, binding.get("direct"))
         if direct is not None:
@@ -487,6 +508,11 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
     actually took effect. The per-identity ALLOW_REQUEST_DECODE_OVERRIDES gate is
     resolved the same way; when off, every client decode override is treated as
     locked (``locked_client_keys`` covers all client keys) and reported ignored.
+
+    If a binding fetch faults (``_FETCH_FAILED``) the identity's restrictions are
+    unknown, so both gates resolve off and the allowlist resolves empty: the
+    decode still runs on the per-model / global defaults, only client-supplied
+    customisation is refused.
     """
     import api_keys_store  # local import keeps module import order flexible
     key_binding = _safe_binding(api_keys_store.get_key_config, key_id)

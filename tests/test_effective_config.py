@@ -414,6 +414,76 @@ def test_request_profile_cant_escape_lock_via_resolve(monkeypatch):
     assert r.request_profile_applied == "fast"    # applied, just shadowed
 
 
+# --- binding fetch failure fails closed -----------------------------------
+
+def _broken_bindings(monkeypatch, *, key=True, user=True):
+    """Make the per-identity binding fetch raise, as a live store fault would.
+    Whichever scope is not broken returns an unrestricted binding."""
+    import api_keys_store
+
+    def _boom(_ident_id):
+        raise RuntimeError("database is locked")
+
+    def _ok(_ident_id):
+        return {"direct": {}, "profiles": []}
+
+    monkeypatch.setattr(api_keys_store, "get_key_config",
+                        _boom if key else _ok, raising=False)
+    monkeypatch.setattr(api_keys_store, "get_user_config",
+                        _boom if user else _ok, raising=False)
+
+
+def test_fetch_failed_sentinel_is_restrictive():
+    # SECURITY: an unreadable binding must never read as "no opinion" — both
+    # gates close and the allowlist becomes empty (NOT None, = unrestricted).
+    f = ec._FETCH_FAILED
+    assert ec._effective_flag(f, {}, "allow_request_override_profile", True) is False
+    assert ec._effective_flag({}, f, "allow_request_decode_overrides", True) is False
+    assert ec._effective_allowlist(f, {}) == []
+    assert ec._allowlist_permits(ec._effective_allowlist(f, {}), "fast") is False
+    # …and the sentinel is never iterated as a binding dict
+    assert ec._gather_identity_layers(f, f, "fast", request_allowed=False,
+                                      allowlist=[]) == []
+
+
+def test_binding_fetch_failure_refuses_client_customisation(monkeypatch):
+    # A store fault leaves this identity's gates / allowlist / locks unknown, so
+    # client-supplied overrides and profiles are refused, not silently allowed.
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    _broken_bindings(monkeypatch)
+    r = ec.resolve("m", key_id="k", user_id="u", request_profile="fast",
+                   request_overrides={"beam_size": 9})
+    assert r.request_profile_applied is None and "BEAM_SIZE" not in r.values
+    assert r.allow_request_decode_overrides is False
+    assert r.dropped == ["beam_size"]
+    # the capabilities view the client UI reads agrees
+    assert ec.resolve_capabilities(user_id="u", key_id="k") == {
+        "can_request_override_profile": False,
+        "can_request_decode_overrides": False,
+        "allowed_override_profiles": [],
+    }
+    assert ec.allowed_profile_names(user_id="u", key_id="k") == []
+
+
+def test_binding_fetch_failure_still_decodes(monkeypatch):
+    # Only CUSTOMISATION is refused: a request with no overrides resolves to the
+    # plain per-model / global defaults, exactly as an identity-less one does.
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    _broken_bindings(monkeypatch)
+    r = ec.resolve("m", key_id="k", user_id="u")
+    assert r.values == {} and r.locked == set() and r.dropped == []
+    assert r.layers == [] and r.profiles_applied == []
+
+
+def test_one_unreadable_scope_is_enough(monkeypatch):
+    # A readable key binding does not rescue an unreadable user binding.
+    _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
+    _broken_bindings(monkeypatch, key=False)
+    r = ec.resolve("m", key_id="k", user_id="u", request_profile="fast")
+    assert r.request_profile_applied is None
+    assert r.allow_request_decode_overrides is False
+
+
 # --- "no profile" suppression sentinel (P27) ------------------------------
 
 def test_none_sentinel_suppresses_bound_profile(monkeypatch):
