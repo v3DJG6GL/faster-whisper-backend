@@ -287,6 +287,15 @@ if ($WithConvert) {
 # .NET461 is the right pick for our supported targets. Fall back to the
 # bundled-runtime build only if 4.6.1 isn't available.
 $WinSWVersion = "v2.12.0"
+# SHA-256 of each release asset AT $WinSWVersion. The wrapper is executed from
+# this already-elevated session and then runs as LocalSystem, so its bytes are
+# verified before they are ever run. These hashes MUST be updated together with
+# $WinSWVersion -- bumping the version alone makes every fresh install fail the
+# check (existing installs keep their already-downloaded WhisperAPI.exe).
+$WinSWHashes = @{
+    "WinSW.NET461.exe" = "B5066B7BBDFBA1293E5D15CDA3CAAEA88FBEAB35BD5B38C41C913D492AADFC4F"
+    "WinSW-x64.exe"    = "05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA"
+}
 $net4Release  = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" `
                  -Name Release -ErrorAction SilentlyContinue).Release
 if ($net4Release -ge 394254) {
@@ -308,7 +317,13 @@ if (-not (Test-Path $WinSWExe)) {
         Remove-Item -Force $WinSWExe
         throw "WinSW download produced a $sz-byte file (expected >100 KB) - download failed"
     }
-    Write-Host "WinSW.exe placed at: $WinSWExe ($([math]::Round($sz/1KB)) KB)" -ForegroundColor Green
+    $expected = $WinSWHashes[$WinSWAsset]
+    $hash     = (Get-FileHash -Path $WinSWExe -Algorithm SHA256).Hash
+    if ($hash -ne $expected) {
+        Remove-Item -Force $WinSWExe
+        throw "WinSW hash mismatch for $WinSWAsset $WinSWVersion - got $hash, expected $expected. Refusing to install the downloaded file."
+    }
+    Write-Host "WinSW.exe placed at: $WinSWExe ($([math]::Round($sz/1KB)) KB, SHA-256 verified)" -ForegroundColor Green
 }
 
 # --- write WhisperAPI.xml --------------------------------------------------
