@@ -35,6 +35,13 @@ FIXTURE = "Hallo. Wie geht's? 10.23 Uhr! Bitte. " * 32
 # this. Module-level so tests can lower it.
 _GUARD_TIMEOUT = 2.0
 
+# Max output/input length ratio for ONE substitution against the fixture. A
+# legit correction rule shrinks the text or barely grows it; an expanding
+# replacement (`(.*)` -> `\1` repeated) costs microseconds but multiplies its
+# input on EVERY chained rule, so a handful of entries turn a short transcript
+# into gigabytes at match time. Anything above 1x compounds; 10x is generous.
+_MAX_GROWTH = 10
+
 _SELF = os.path.abspath(__file__)
 
 
@@ -45,8 +52,9 @@ def validate(checks: list, timeout: float | None = None) -> None:
     pattern's ``re.sub`` is run against a fixed ~1 KB fixture inside a child
     process that is killed if it exceeds ``timeout`` seconds. Raises
     ``ValueError(f"{where}: ...")`` on a bad regex/replacement (e.g. a backref
-    to a non-existent group) or a catastrophic-backtracking timeout. No-op for
-    an empty list.
+    to a non-existent group), a replacement that expands the fixture beyond
+    ``_MAX_GROWTH``, or a catastrophic-backtracking timeout. No-op for an empty
+    list.
 
     Fails OPEN: if the helper can't be launched / crashes, the save proceeds
     WITHOUT the backtracking check rather than blocking a legitimate edit — the
@@ -123,9 +131,15 @@ def _probe(checks: list):
         sys.stderr.write("%d\n" % i)
         sys.stderr.flush()
         try:
-            re.compile(item[0]).sub(item[1], FIXTURE)
+            out = re.compile(item[0]).sub(item[1], FIXTURE)
         except Exception as exc:  # noqa: BLE001 - any compile/sub failure
             return i, str(exc)
+        if len(out) > _MAX_GROWTH * len(FIXTURE):
+            return i, (
+                f"replacement grew the 1 KB fixture "
+                f"{len(out) / len(FIXTURE):.0f}x (limit {_MAX_GROWTH}x). "
+                "Simplify the replacement."
+            )
     return None
 
 
