@@ -892,6 +892,16 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .card .type-pill { display: inline-block; padding: 0 0.375rem;
     border-radius: 3px; font-size: var(--fs-xs); background: #21262d;
     color: var(--cyan); font-weight: normal; }
+  /* Admin-locked rule (non-admin view): a yellow lock chip in the heading —
+     same pill geometry as the type pill, same yellow the admin pipeline page
+     uses for its padlock — plus not-allowed cursors on the frozen controls.
+     Contrast is left untouched: locked means protected, not deactivated. */
+  .card .type-pill.lock-pill { background: rgba(242, 204, 96, 0.14);
+    color: var(--yellow); }
+  .card.locked .enabled-row input:disabled,
+  .card.locked .rule-editor input:disabled,
+  .card.locked .rule-editor textarea:disabled { cursor: not-allowed; }
+  .card.locked .rule-editor .rl-grip { cursor: not-allowed; opacity: 0.4; }
   .card .enabled-row { display: flex; align-items: center; gap: 0.4rem;
     margin: 0.4rem 0; font-size: var(--fs-sm); color: var(--dim); }
   .card .enabled-row input { margin: 0; }
@@ -1253,6 +1263,30 @@ function commitData(slug) {
 // Per-card Save buttons, keyed by rule slug. Rebuilt on every renderCards()
 // so an entry only ever refers to a button currently in the DOM.
 let _perCardSaveBtns = new Map();
+// Slugs rendered read-only because the admin locked them (non-admin view).
+// Rebuilt alongside _perCardSaveBtns on every renderCards().
+let _lockedSlugs = new Set();
+// role: "admin" (set on <body> by load()) short-circuits the server-side
+// lock guard, so an admin keeps fully editable controls on a locked rule.
+function _isAdmin() { return document.body.classList.contains('role-admin'); }
+// Enforced read-only for a locked rule: disable every control that could
+// mutate it (the enabled switch, the per-type editor's inputs, its
+// "+ add entry" / delete buttons and the per-card Save) and kill the
+// regex-list drag grips. View-only affordances stay live — the cb:map
+// "show N older" toggle and the regex-entry note toggle reveal content,
+// they don't edit it, so the rule stays fully readable.
+function _applyLockState(card) {
+  card.classList.add('locked');
+  card.querySelectorAll('input, select, textarea, button').forEach((el) => {
+    if (el.classList.contains('map-toggle')) return;
+    if (el.classList.contains('rl-notebtn')) return;
+    el.disabled = true;
+  });
+  card.querySelectorAll('.rl-grip').forEach((grip) => {
+    grip.draggable = false;
+    grip.title = 'locked by an administrator';
+  });
+}
 function _buildPerCardSaveBtn(slug) {
   const btn = document.createElement('button');
   btn.type = 'button';
@@ -1270,7 +1304,7 @@ function updateButtons() {
   setStatus(has ? (dirty.size + ' rule' + (dirty.size === 1 ? '' : 's') + ' modified')
                 : (initialRules.length + ' rule' + (initialRules.length === 1 ? '' : 's') + ' loaded'));
   for (const [slug, btn] of _perCardSaveBtns) {
-    btn.disabled = !dirty.has(slug);
+    btn.disabled = _lockedSlugs.has(slug) || !dirty.has(slug);
   }
 }
 
@@ -1278,6 +1312,7 @@ function renderCards() {
   const root = document.getElementById('cards');
   root.innerHTML = '';
   _perCardSaveBtns = new Map();  // detach stale refs; GC takes the old DOM
+  _lockedSlugs = new Set();
   if (!liveRules.length) {
     const empty = document.createElement('div');
     empty.className = 'empty-state';
@@ -1298,6 +1333,17 @@ function renderCards() {
     pill.className = 'type-pill';
     pill.textContent = _typePill(rule.type);
     h3.appendChild(pill);
+    // A rule the admin froze is read-only for everyone but an admin — the
+    // server refuses the patch (403), so say so up front rather than let the
+    // edit be composed and rejected on Save.
+    const isLocked = !!rule.locked && !_isAdmin();
+    if (isLocked) {
+      const lockPill = document.createElement('span');
+      lockPill.className = 'type-pill lock-pill';
+      lockPill.textContent = '\u{1F512} locked';
+      lockPill.title = 'locked by an administrator — read-only';
+      h3.appendChild(lockPill);
+    }
     card.appendChild(h3);
 
     const enRow = document.createElement('label');
@@ -1322,6 +1368,14 @@ function renderCards() {
       collapseMapAfter: (window.__mca ?? 15),
     });
     card.appendChild(editor);
+
+    // After the whole card exists, so every per-type widget (regex-list
+    // entries, cb:map rows, the cb:wordlist textarea, the bare pattern
+    // inputs) is covered by one sweep.
+    if (isLocked) {
+      _lockedSlugs.add(slug);
+      _applyLockState(card);
+    }
 
     root.appendChild(card);
   }

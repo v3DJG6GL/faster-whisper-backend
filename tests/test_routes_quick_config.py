@@ -126,3 +126,33 @@ def test_reapply_rules_start_captures_disabled(client, app_module):
     r = client.post("/quick-config/reapply-rules")
     assert r.status_code == 200
     assert r.json().get("status") == "idle"
+
+
+def test_state_carries_locked_and_role_for_nonadmin(client, app_module,
+                                                    make_user_key):
+    """The /quick-config page renders a locked rule read-only for a non-admin,
+    so the state payload must carry both signals it gates on: `locked` on each
+    rule and the caller's `role`."""
+    from tests.conftest import bearer
+
+    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
+    slug = None
+    for r in rules:
+        if isinstance(r, dict) and r.get("type") == "regex-list":
+            r["exposed"] = True
+            r["locked"] = True
+            slug = r["name"]
+            break
+    app_module.cfg.PIPELINE_RULES = rules
+    assert slug is not None
+
+    make_user_key("root", is_admin=True)  # flips lockdown
+    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+
+    body = client.get("/quick-config/state", headers=bearer(raw)).json()
+    assert body["role"] == "user"
+    by_name = {r["name"]: r for r in body["rules"]}
+    assert by_name[slug]["locked"] is True
+    # Every visible rule carries the flag (never dropped by exclude_none),
+    # so the page can decide per card without a second lookup.
+    assert all("locked" in r for r in body["rules"])
