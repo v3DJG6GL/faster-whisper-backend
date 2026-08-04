@@ -53,6 +53,8 @@ _insert_counter = 0
 _CAP_RAW = 50_000
 _CAP_FINAL = 50_000
 _CAP_STEPS_JSON = 200_000
+# Hard row bound on the steps list, applied before the JSON byte cap.
+_CAP_STEPS_ROWS = 500
 _CAP_TOKEN_FIELD = 64
 
 _SCHEMA = """
@@ -121,11 +123,24 @@ def _truncate_steps(steps: list) -> list:
         out.append([str(s[0])[:512],
                     str(s[1])[:_CAP_RAW],
                     str(s[2])[:_CAP_RAW]])
-    blob = json.dumps(out, ensure_ascii=False)
-    while len(blob) > _CAP_STEPS_JSON and out:
-        out.pop(0)
-        blob = json.dumps(out, ensure_ascii=False)
-    return out
+    # Row bound first: the pipeline emits a few dozen stages, so 500 is
+    # far above any legitimate trace, and it bounds the byte walk below
+    # regardless of how many entries the incoming list carries.
+    out = out[-_CAP_STEPS_ROWS:]
+    # Walk newest-first accumulating each entry's own serialized length
+    # instead of re-serializing the whole remaining list per drop (that
+    # was quadratic). Budget the two enclosing brackets plus json.dumps'
+    # ", " separator per entry, so the caller's single serialization is
+    # guaranteed under the cap. Kept in lockstep with reports_store.
+    budget = _CAP_STEPS_JSON - 2
+    keep = 0
+    for entry in reversed(out):
+        need = len(json.dumps(entry, ensure_ascii=False)) + (2 if keep else 0)
+        if need > budget:
+            break
+        budget -= need
+        keep += 1
+    return out[len(out) - keep:]
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

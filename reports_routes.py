@@ -222,7 +222,7 @@ async def list_reports_api(
         r["username"] = usernames.get(r.get("user_id"))
     return JSONResponse({
         "reports": rows,
-        "counts": reports_store.counts_by_status(),
+        "counts": reports_store.counts_by_status(user_id=effective_user),
         "retention_days": int(getattr(cfg, "REPORTS_RETENTION_DAYS", 0)),
         "is_admin": bool(user.get("is_admin")),
         "scope": perms.scope("reports"),
@@ -790,9 +790,33 @@ _REPORTS_HTML = """<!doctype html>
     return ops;
   }
 
+  // lcsDiff is O(n*m) in both time and Int32Array memory. `final` is
+  // stored up to 50k chars and punctuation tokenizes one-char-per-token,
+  // so an adversarial pair would allocate hundreds of MB and hang the
+  // tab — every open report renders eagerly on load. Past this budget,
+  // show the two texts plainly instead so the card still triages.
+  var DIFF_CELL_BUDGET = 2e6;
+
   function renderDiff(beforeStr, afterStr) {
     var a = tokenizeForDiff(beforeStr || '');
     var b = tokenizeForDiff(afterStr || '');
+    if (a.length * b.length > DIFF_CELL_BUDGET) {
+      var plain = document.createElement('div');
+      plain.className = 'rc-diff ws-region';
+      var del = document.createElement('span');
+      del.className = 'diff-del';
+      del.textContent = beforeStr || '';
+      var sep = document.createElement('span');
+      sep.className = 'diff-eq';
+      sep.textContent = '\\n';
+      var ins = document.createElement('span');
+      ins.className = 'diff-ins';
+      ins.textContent = afterStr || '';
+      plain.appendChild(del);
+      plain.appendChild(sep);
+      plain.appendChild(ins);
+      return plain;
+    }
     var ops = lcsDiff(a, b);
     var div = document.createElement('div');
     div.className = 'rc-diff ws-region';
