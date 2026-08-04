@@ -664,9 +664,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _behind_bytes = int(_bytes_per_sec * max(0.25, session.cfg.min_chunk_ms / 1000.0))
         _hard_cap_bytes = _bytes_per_sec * 60     # absolute backlog cap (drop oldest, logged)
         _qbytes = 0                                # PCM bytes currently queued
+        # Control items carry no PCM, so the cap below cannot bound them: while the
+        # pump is blocked in a decode, a client spamming {"type":"flush"} would grow
+        # the queue without bound. Coalesce instead — two flushes with no audio
+        # between them mean the same as one, so at most one is ever queued.
+        _flush_pending = False                     # a flush is queued or in flight
 
         async def sink(pcm: bytes):
-            nonlocal _qbytes
+            nonlocal _qbytes, _flush_pending
             if not pcm:
                 return
             # Absolute backlog cap: if the consumer has fallen catastrophically
@@ -678,6 +683,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 except asyncio.QueueEmpty:
                     break
                 dropped = len(old) if (kind == "pcm" and old) else 0
+                if kind == "flush":
+                    # Dropping the queued flush re-arms coalescing, so the client
+                    # can ask for another one instead of being stuck.
+                    _flush_pending = False
                 _qbytes -= dropped
                 logger.warning("[stream %s] audio backlog over cap — dropped %d bytes",
                                session_id[:8], dropped)
@@ -689,7 +698,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             session mutator while the connection is live, so session access here
             needs no lock; session.close() runs only after this task has finished
             or been cancelled (see teardown)."""
-            nonlocal _qbytes
+            nonlocal _qbytes, _flush_pending
             while True:
                 kind, data = await audio_q.get()
                 if kind == "stop":
@@ -700,7 +709,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         session._skip_partials = _qbytes > _behind_bytes
                         await session.feed_pcm(data)
                     elif kind == "flush":
-                        await session.flush_utterance()
+                        try:
+                            await session.flush_utterance()
+                        finally:
+                            # Re-arm on every exit (done, failed, cancelled) so a
+                            # client is never left unable to flush again.
+                            _flush_pending = False
                 except Exception as exc:  # noqa: BLE001 — a decode error must not kill the pump
                     logger.warning("[stream %s] pump error: %s", session_id[:8], exc)
 
@@ -757,7 +771,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         continue
                     kind = ctrl.get("type")
                     if kind == "flush":
-                        audio_q.put_nowait(("flush", None))
+                        if not _flush_pending:
+                            _flush_pending = True
+                            audio_q.put_nowait(("flush", None))
                     elif kind == "stop":
                         break
         finally:
