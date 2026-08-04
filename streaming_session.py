@@ -110,7 +110,14 @@ class StreamSession:
         self._preroll_keep_samples = int(config.preroll_keep_ms * config.sample_rate / 1000)
 
         self.la = LocalAgreementProcessor()
-        self.audio = np.zeros(0, dtype=np.float32)
+        # Utterance audio, held as pending chunks and joined lazily — see the
+        # ``audio`` property. Never touch these three directly: _append_audio /
+        # _set_audio are the only writers, so the sample counter and the cache
+        # can never drift apart.
+        self._audio_chunks: "list[np.ndarray]" = []
+        self._audio_samples = 0            # len(self.audio) WITHOUT materializing it
+        self._audio_cache: "np.ndarray | None" = None
+        self._set_audio(np.zeros(0, dtype=np.float32))
         self._buffer_offset = 0.0          # wall start (s) of audio[0] within this utterance
         self._frame_tail = np.zeros(0, dtype=np.float32)  # < 512 samples awaiting a full frame
         self._byte_tail = b""              # odd trailing PCM byte awaiting its pair
@@ -138,6 +145,45 @@ class StreamSession:
         # skip the (expensive) partial decode so we can catch up. Audio is still fed
         # (VAD/endpointing stays intact) and finals still run.
         self._skip_partials = False
+
+    # ---- audio buffer -----------------------------------------------------
+    #
+    # Frames arrive every 32 ms but the buffer is only *read* per partial decode
+    # (min_chunk_ms, ~1 s) — so appending must not copy. Frames are queued as
+    # chunks and joined on the first read, which caches the result and collapses
+    # the list back to one chunk; further reads with no append in between hand
+    # back the cache. A decode still needs one contiguous array, so a join must
+    # happen — it just happens ~30× less often, and with it the transient in
+    # which both the old and the joined array are resident.
+    #
+    # The corollary: anything that only wants a LENGTH must read
+    # ``_audio_samples``, never ``len(self.audio)``. The max_buffer_sec ceiling
+    # runs after every single frame; going through the property there would join
+    # on every frame and defeat the whole arrangement.
+
+    @property
+    def audio(self) -> np.ndarray:
+        """The utterance buffer as one contiguous float32 array."""
+        if self._audio_cache is None:
+            # _append_audio is the only writer that clears the cache, and it
+            # always leaves at least one chunk behind.
+            self._audio_cache = (self._audio_chunks[0] if len(self._audio_chunks) == 1
+                                 else np.concatenate(self._audio_chunks))
+            self._audio_chunks = [self._audio_cache]
+        return self._audio_cache
+
+    def _append_audio(self, chunk: np.ndarray) -> None:
+        """Queue a chunk — O(1), no copy. Invalidates the joined cache."""
+        self._audio_chunks.append(chunk)
+        self._audio_samples += chunk.shape[0]
+        self._audio_cache = None
+
+    def _set_audio(self, buf: np.ndarray) -> None:
+        """Replace the whole buffer (reset / trim). ``buf`` may be a slice of the
+        current buffer — kept as-is, so a view stays a view."""
+        self._audio_chunks = [buf]
+        self._audio_samples = buf.shape[0]
+        self._audio_cache = buf
 
     # ---- public API -------------------------------------------------------
 
@@ -187,7 +233,7 @@ class StreamSession:
 
     async def _consume_frame(self, frame: np.ndarray) -> None:
         speech = self.endpointer.is_speech(frame)
-        self.audio = np.concatenate([self.audio, frame])
+        self._append_audio(frame)
         self._new_since_partial += FRAME_SAMPLES
 
         # Decode-independent ceiling on the utterance buffer. _maybe_trim is the
@@ -199,11 +245,13 @@ class StreamSession:
         # Checked unconditionally so no gate can shadow it. Finalizing (not
         # discarding) keeps whatever was actually said — the session just
         # continues in a fresh utterance.
-        if self.audio.shape[0] >= self.cfg.max_buffer_sec * self.cfg.sample_rate:
+        # Counter, not the property: this runs on every frame (see the buffer
+        # note above).
+        if self._audio_samples >= self.cfg.max_buffer_sec * self.cfg.sample_rate:
             logger.warning("[stream %s] audio buffer hit the %.0f s ceiling (%.1f s) "
                            "— forcing a finalize", self.session_id[:8],
                            self.cfg.max_buffer_sec,
-                           self.audio.shape[0] / self.cfg.sample_rate)
+                           self._audio_samples / self.cfg.sample_rate)
             await self._finalize(forced=True)
             return
 
@@ -253,8 +301,8 @@ class StreamSession:
     def _trim_preroll(self) -> None:
         """Keep only a short lead-in of pre-speech silence so the buffer doesn't
         grow without bound during quiet periods."""
-        if self.audio.shape[0] > self._preroll_keep_samples:
-            self.audio = self.audio[-self._preroll_keep_samples:]
+        if self._audio_samples > self._preroll_keep_samples:
+            self._set_audio(self.audio[-self._preroll_keep_samples:])
             self._buffer_offset = 0.0
 
     # ---- decode steps -----------------------------------------------------
@@ -279,7 +327,7 @@ class StreamSession:
         self._maybe_trim()
 
     def _maybe_trim(self) -> None:
-        dur = self.audio.shape[0] / self.cfg.sample_rate
+        dur = self._audio_samples / self.cfg.sample_rate
         if dur <= self.cfg.buffer_trim_sec:
             return
         target = self._buffer_offset + (dur - self.cfg.buffer_trim_keep_sec)
@@ -308,11 +356,12 @@ class StreamSession:
             cut_text = self.la.text_of(cut_words)
             self._trimmed_text += cut_text
             self._trimmed_sec += cut - self._buffer_offset
-            self._trimmed_audio.append(self.audio[:cut_samples].copy())
+            buf = self.audio
+            self._trimmed_audio.append(buf[:cut_samples].copy())
             self._trimmed_words.extend(
                 {"word": w.text, "start": w.start, "end": w.end}
                 for w in cut_words)
-            self.audio = self.audio[cut_samples:]
+            self._set_audio(buf[cut_samples:])
             self._prompt = " ".join(
                 (self._prompt + " " + cut_text).split()[-self.cfg.prompt_words:])
             self._buffer_offset = cut
@@ -465,7 +514,7 @@ class StreamSession:
 
     def _reset_utterance(self) -> None:
         self.la.reset()
-        self.audio = np.zeros(0, dtype=np.float32)
+        self._set_audio(np.zeros(0, dtype=np.float32))
         self._buffer_offset = 0.0
         self._trimmed_text = ""
         self._trimmed_sec = 0.0

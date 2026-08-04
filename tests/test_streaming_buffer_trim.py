@@ -16,7 +16,7 @@ import asyncio
 import numpy as np
 
 from streaming_session import StreamConfig, StreamSession
-from streaming_vad import FRAME_MS, EnergyEndpointer
+from streaming_vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
 
 SR = 16000
 WORD_SEC = 0.2  # deterministic word grid: word i spans [i*0.2, (i+1)*0.2)
@@ -290,3 +290,102 @@ def test_ceiling_force_finalizes_through_the_decoder_when_partials_are_skipped()
     finals = [m for m in msgs if m["type"] == "final"]
     assert finals and any(m.get("forced") for m in finals)
     assert s.raw_confirmed.count("chunk") == len(info["decoded"])
+
+
+# ---- buffer accounting ----------------------------------------------------
+#
+# The buffer takes a chunk per 32 ms frame but is joined lazily, on read. The
+# sample counter — what the ceiling above and both trims consult, so that asking
+# for a length never forces a join — must therefore stay exactly in step with
+# the array the property hands out.
+
+
+def _quiet_session(**over):
+    """A session with inert decoders: for exercising the buffer directly."""
+    async def decode_partial(audio, prompt):
+        return []
+
+    async def decode_final(audio, prompt):
+        return ("", [], False)
+
+    async def emit(m):
+        pass
+
+    return StreamSession(
+        config=StreamConfig(**over), endpointer=EnergyEndpointer(),
+        decode_partial=decode_partial, decode_final=decode_final,
+        postprocess=lambda raw: raw, emit=emit,
+    )
+
+
+def test_lazy_buffer_reads_back_exactly_what_was_appended():
+    s = _quiet_session()
+    rng = np.random.default_rng(0)
+    chunks = [rng.standard_normal(FRAME_SAMPLES).astype(np.float32)
+              for _ in range(500)]
+    for i, c in enumerate(chunks, 1):
+        s._append_audio(c)
+        assert s._audio_samples == i * FRAME_SAMPLES  # length, no join
+        if i % 31 == 0:  # ~the partial cadence: the join folds in the pending chunks
+            assert np.array_equal(s.audio, np.concatenate(chunks[:i]))
+    assert np.array_equal(s.audio, np.concatenate(chunks))
+    assert s.audio.shape[0] == s._audio_samples
+    # Re-reading with no append in between returns the cache, not a rebuild.
+    assert s.audio is s.audio
+
+
+def test_buffer_counter_survives_preroll_trim_and_reset():
+    s = _quiet_session(preroll_keep_ms=100)
+    for _ in range(20):
+        s._append_audio(np.ones(FRAME_SAMPLES, dtype=np.float32))
+    s._trim_preroll()
+    assert s._audio_samples == s._preroll_keep_samples == s.audio.shape[0]
+    s._reset_utterance()
+    assert s._audio_samples == 0
+    assert s.audio.shape[0] == 0
+    s._append_audio(np.full(FRAME_SAMPLES, 0.5, dtype=np.float32))
+    assert s._audio_samples == FRAME_SAMPLES
+    assert np.array_equal(s.audio, np.full(FRAME_SAMPLES, 0.5, dtype=np.float32))
+
+
+def test_buffer_counter_matches_the_array_after_every_frame():
+    """Drive the real pump through speech, a mid-utterance trim, a finalize and
+    trailing silence — every writer must leave counter and array agreeing."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100,
+        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
+        rms_gate_dbfs=-60, preroll_keep_ms=100,
+    )
+    session_box: list[StreamSession] = []
+
+    async def decode_partial(audio, prompt):
+        off = session_box[0]._buffer_offset
+        dur = audio.shape[0] / SR
+        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+
+    async def decode_final(audio, prompt):
+        return (" tail.", [], False)
+
+    async def emit(m):
+        pass
+
+    s = StreamSession(
+        config=cfg, endpointer=EnergyEndpointer(),
+        decode_partial=decode_partial, decode_final=decode_final,
+        postprocess=lambda raw: raw, emit=emit,
+    )
+    session_box.append(s)
+
+    trimmed = []  # _trimmed_text is cleared by the finalize, so watch it live
+
+    async def run():
+        for level, ms in ((8000, 3500), (0, 400), (8000, 500), (0, 400)):
+            for _ in range(ms // FRAME_MS):
+                await s.feed_pcm(_pcm(level, FRAME_MS))
+                assert s._audio_samples == s.audio.shape[0]
+                if s._trimmed_text:
+                    trimmed.append(s._trimmed_text)
+
+    asyncio.run(run())
+    assert trimmed, "trim never fired — the trim writer went untested"
