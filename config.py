@@ -266,6 +266,12 @@ SERVER_PORT = _D("SERVER_PORT")
 SERVER_WORKERS = _D("SERVER_WORKERS")
 SERVER_LOG_LEVEL = _D("SERVER_LOG_LEVEL")
 
+# Hard ceiling on one /v1/audio/transcriptions upload. Oversized requests are
+# rejected with 413 before the part is read, so a client can't make the handler
+# hold an arbitrary blob. 200 MB is ~3 h of 128 kbps audio — far above any
+# dictation clip, and well above CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT.
+MAX_UPLOAD_BYTES = _D("MAX_UPLOAD_BYTES")
+
 
 # =============================================================================
 # Whisper transcribe defaults (passed to WhisperModel.transcribe)

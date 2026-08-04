@@ -21,6 +21,7 @@ Security model (layered):
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
@@ -129,6 +130,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ])]),
     ("Server", [(None, [
         "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",
+        "MAX_UPLOAD_BYTES",
     ])]),
     ("Access & sessions", [
         (None, [
@@ -752,6 +754,15 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     return JSONResponse({"ok": True, "rules": len(factory)})
 
 
+# Dry-run input bounds. Every rule can burn a full 2 s of a worker thread, so
+# both the list length and the sample have to be bounded before the loop runs.
+# The rule cap mirrors AdminConfig.PIPELINE_RULES' max_length (config_store) so
+# anything the editor is allowed to SAVE is still testable here; the sample cap
+# is far above any realistic transcript the test panel sends.
+_TEST_PIPELINE_MAX_RULES = 200
+_TEST_PIPELINE_MAX_SAMPLE = 8192
+
+
 @router.post("/test-pipeline",
              dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
@@ -771,12 +782,15 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         "final": str,
       }
 
+    Over-long lists (> _TEST_PIPELINE_MAX_RULES) and samples
+    (> _TEST_PIPELINE_MAX_SAMPLE chars) are rejected with 400.
+
     Each rule is compiled and run under a 2 s threading-timer guard against
-    the sample. Disabled rules render as `skipped: true` (not run). Rules
-    with empty patterns also `skipped: true`. Compile errors → `error: "<msg>"`
-    and the pipeline continues with the un-modified text. The terminal trim
-    is appended at the end; if no terminal row is present, the trim is
-    still applied (matching main.py behaviour).
+    the sample, off the event loop. Disabled rules render as `skipped: true`
+    (not run). Rules with empty patterns also `skipped: true`. Compile errors
+    → `error: "<msg>"` and the pipeline continues with the un-modified text.
+    The terminal trim is appended at the end; if no terminal row is present,
+    the trim is still applied (matching main.py behaviour).
     """
     import threading
 
@@ -786,6 +800,16 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": "rules must be a list of rule dicts"},
+        )
+    if len(rules) > _TEST_PIPELINE_MAX_RULES:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": f"too many rules (max {_TEST_PIPELINE_MAX_RULES})"},
+        )
+    if len(sample) > _TEST_PIPELINE_MAX_SAMPLE:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": f"sample too long (max {_TEST_PIPELINE_MAX_SAMPLE} chars)"},
         )
 
     def _run_rule(text: str, rule: dict) -> dict[str, Any]:
@@ -916,7 +940,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     for idx, rule in enumerate(rules):
         if not isinstance(rule, dict):
             continue
-        step = _run_rule(text, rule)
+        # _run_rule blocks for up to 2 s on its guard thread's join — run it on
+        # a worker so one pathological pattern cannot stall unrelated requests.
+        step = await asyncio.to_thread(_run_rule, text, rule)
         step["ordinal"] = idx + 1
         steps.append(step)
         text = step["after"]

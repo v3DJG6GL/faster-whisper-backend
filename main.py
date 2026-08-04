@@ -241,6 +241,10 @@ _TERMINAL_LABEL: str = "Trim edges (always-last)"
 # trace step number matches the /settings/pipeline card ordinal. Falls back to
 # len(PIPELINE_RULES)+1 when the user deleted the terminal row.
 _TERMINAL_CARD_NO: int = 0
+# Ceiling on the pipeline's output, checked after every rule. A 30-minute
+# transcript is a few hundred KB, so 4 M chars only ever trips on a rule set
+# that expands its own input (the pipeline runs on admin-editable regexes).
+_POSTPROCESS_MAX_CHARS = 4_000_000
 
 
 def _rule_ordinal(card_no: int, sub_no: "int | None" = None) -> str:
@@ -494,6 +498,15 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
                 )
             elif before != text:
                 trace.append((f"{ordinal} {rule.label}", before, text))
+        # Absolute output bound. Rules whose replacement template expands what
+        # it matches compose: each one feeds the next, so a handful of them can
+        # multiply a short transcript into gigabytes. Stop the pipeline instead
+        # and keep what we have — no real transcript comes near this size.
+        if len(text) > _POSTPROCESS_MAX_CHARS:
+            logger.warning(
+                "[pipeline] output exceeded %d chars at rule %r — remaining "
+                "rules skipped", _POSTPROCESS_MAX_CHARS, rule.name)
+            break
     term_ordinal = _rule_ordinal(_TERMINAL_CARD_NO)
     if _TERMINAL_NAME in exclude:
         if trace is not None:
@@ -523,6 +536,18 @@ _LOG_WIDTH = 78
 _NAME_COL = 32        # value column starts at this character
 _SEG_TEXT_MAX = 80    # truncate per-segment text in the table (full text in FINAL)
 _SEG_ROWS_MAX = 30    # truncate the segment table itself
+_LOG_FIELD_MAX = 120  # cap on a client-supplied label (filename, content type)
+
+_LOG_UNSAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
+
+
+def _log_safe(s) -> str:
+    """Collapse control characters in a CLIENT-supplied label (upload filename,
+    content type) and cap its length. A bare CR/LF would otherwise split the
+    block into what the /logs viewer renders as extra, attacker-written
+    records — these fields are labels, not payloads."""
+    return _LOG_UNSAFE_RE.sub("?", s or "")[:_LOG_FIELD_MAX]
+
 
 # Maps decode-kwarg name → cfg-default key in cfg._BASELINE. Used by the
 # `*` non-default marker. Only scalar fields are listed; lists/dicts skipped.
@@ -974,6 +999,12 @@ _DECODE_STR_CAPS = {
     "prepend_punctuations": 64,
     "append_punctuations": 64,
 }
+# suppress_tokens is a list, so it gets a length cap plus a per-id range instead
+# of a scalar clamp. 256 ids is far more than any real suppression set; the range
+# is "any token id the tokenizer could hold", with -1 kept as faster-whisper's
+# "also suppress the non-speech set" sentinel.
+_SUPPRESS_TOKENS_MAX = 256
+_SUPPRESS_TOKEN_ID_MAX = 2 ** 31
 
 
 def _clamp_int(v, lo, hi):
@@ -1047,7 +1078,12 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
             # never let it 500 the request.
             ids = None
         if ids is not None:
-            kwargs["suppress_tokens"] = ids
+            ids = [i for i in ids[:_SUPPRESS_TOKENS_MAX]
+                   if -1 <= i < _SUPPRESS_TOKEN_ID_MAX]
+            # Nothing left after bounding → leave the config value in place
+            # rather than forward an override the caller didn't really make.
+            if ids:
+                kwargs["suppress_tokens"] = ids
     # VAD: toggle + sub-params (sub-params rebuilt from config defaults when on).
     if "vad_filter" in overrides:
         vf = bool(overrides["vad_filter"])
@@ -2082,6 +2118,11 @@ def _shift_to_original_timeline(segments, info, pad_s: float):
     return segments, info
 
 
+# Read granularity for the uploaded part. 1 MiB matches Starlette's own
+# spool threshold, so a typical clip is copied in a handful of steps.
+_UPLOAD_CHUNK_BYTES = 1024 * 1024
+
+
 @app.post("/v1/audio/transcriptions")
 async def transcribe(
     request: Request,
@@ -2116,6 +2157,14 @@ async def transcribe(
     _user_id = user.get("user_id")
     _key_id = user.get("key_id")
     try:
+        # Upload ceiling. Content-Length is advisory (absent on chunked
+        # bodies), so it only buys us an early exit before the model load —
+        # the chunked read below is what actually enforces the bound.
+        max_upload = int(getattr(cfg, "MAX_UPLOAD_BYTES", 200_000_000))
+        _clen = request.headers.get("content-length")
+        if _clen and _clen.isdigit() and int(_clen) > max_upload:
+            raise HTTPException(status_code=413, detail="upload too large")
+
         model = await _get_or_load_model(resolved_model)
 
         # Resolve the caller's effective per-identity config ONCE for this
@@ -2143,10 +2192,21 @@ async def transcribe(
         )
 
         try:
-            audio_content = await file.read()
+            # Stream the part to the temp file in chunks, counting bytes as we
+            # go: the upload is never fully resident, and an oversized body is
+            # cut off mid-read instead of after it has been materialised. Only
+            # the SIZE is needed downstream (capture size guard + log block).
+            audio_bytes = 0
             with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp_file:
                 tmp_path = tmp_file.name
-                tmp_file.write(audio_content)
+                while True:
+                    chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    audio_bytes += len(chunk)
+                    if audio_bytes > max_upload:
+                        raise HTTPException(status_code=413, detail="upload too large")
+                    tmp_file.write(chunk)
 
             # word_timestamps: AND of the (per-model-overrideable) global
             # config knob and the per-request ask. Disabled (False) bypasses
@@ -2180,7 +2240,7 @@ async def transcribe(
                         cfg, "CAPTURE_RECORDINGS_SAMPLE_RATE", 1.0,
                     ))
                     if (_cap_store.count() < cap_max
-                            and len(audio_content) < hard_lim
+                            and audio_bytes < hard_lim
                             and random.random() < sample_rate):
                         will_capture = True
                         want_word_ts = True  # force DTW for capture
@@ -2476,11 +2536,11 @@ async def transcribe(
             # Always emit the rich diagnostic block — it's how empty-output
             # failures are debugged. The per-pipeline transformation trace
             # is only included when cfg.TRACE_ENABLED is on.
-            _src_fmt = (file.content_type
-                        or os.path.splitext(file.filename or "")[1].lstrip(".")
-                        or "audio")
+            _src_fmt = _log_safe(file.content_type
+                                 or os.path.splitext(file.filename or "")[1].lstrip(".")
+                                 or "audio")
             logger.info(_format_request_block(
-                file_label=f"{file.filename}  ({len(audio_content)/1024:.1f} KB, {response_format})",
+                file_label=f"{_log_safe(file.filename)}  ({audio_bytes/1024:.1f} KB, {_log_safe(response_format)})",
                 model_name=resolved_model,
                 info=info,
                 kwargs=transcribe_kwargs,
@@ -2733,6 +2793,12 @@ def _rotated_chain(active_path: str) -> list[str]:
     return out
 
 
+# How deep the "Load older" cursor may go, in pages of LOG_VIEWER_INITIAL_LINES.
+# Past this the reader walks the whole chain for a window no browser is still
+# holding, so the cursor is clamped rather than served.
+_LOG_OLDER_MAX_PAGES = 500
+
+
 def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[str], int | None]":
     """Read up to `want` lines from the rotation chain (newest→oldest),
     starting `skip` lines back from the chain head. Returns
@@ -2767,13 +2833,21 @@ def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[st
                 f.seek(0, io.SEEK_END)
                 size = f.tell()
                 block = 8192
-                data = b""
+                # Blocks are appended newest-last and joined once at the end:
+                # prepending to a bytes object re-copies (and re-counts) the
+                # whole buffer on every 8 KB step, which is quadratic in the
+                # file size once `need` is large.
+                blocks: list[bytes] = []
+                newlines = 0
                 need = target - len(collected)
-                while size > 0 and data.count(b"\n") <= need:
+                while size > 0 and newlines <= need:
                     read = min(block, size)
                     size -= read
                     f.seek(size)
-                    data = f.read(read) + data
+                    buf = f.read(read)
+                    newlines += buf.count(b"\n")
+                    blocks.append(buf)
+                data = b"".join(reversed(blocks))
         except OSError:
             continue
         collected = data.decode("utf-8", errors="replace").splitlines() + collected
@@ -3255,6 +3329,7 @@ async def logs_older(skip: int = 0, limit: int = 0):
     number of lines from the chain head that have already been loaded
     into the browser DOM; `limit` defaults to LOG_VIEWER_INITIAL_LINES
     and is server-clamped to the same value (per-click max page size).
+    `skip` is clamped to _LOG_OLDER_MAX_PAGES pages of that size.
 
     Response: `{lines: [...], next_skip: <int|null>}`. lines are
     oldest-first so the client can prepend them to the top of the
@@ -3262,8 +3337,12 @@ async def logs_older(skip: int = 0, limit: int = 0):
     the rotation chain is exhausted — the client hides the button."""
     initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     want = max(1, min(limit or initial, initial))
-    skip = max(0, int(skip))
-    lines, next_skip = _read_chain_window(cfg.LOG_FILE, skip=skip, want=want)
+    skip = max(0, min(int(skip), initial * _LOG_OLDER_MAX_PAGES))
+    # _read_chain_window does blocking disk I/O over the whole rotation
+    # chain — run it off the event loop so one deep page can't stall the
+    # live /logs/stream tail or any concurrent request.
+    lines, next_skip = await asyncio.to_thread(
+        _read_chain_window, cfg.LOG_FILE, skip=skip, want=want)
     return {"lines": lines, "next_skip": next_skip}
 
 

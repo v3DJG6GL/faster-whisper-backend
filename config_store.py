@@ -150,6 +150,8 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "SERVER_PORT": "WHISPER_SERVER_PORT",
     "SERVER_WORKERS": "WHISPER_SERVER_WORKERS",
     "SERVER_LOG_LEVEL": "WHISPER_SERVER_LOG_LEVEL",
+    # Request limits
+    "MAX_UPLOAD_BYTES": "WHISPER_MAX_UPLOAD_BYTES",
     # Captures: pipeline exclude + VAD trim
     "CAPTURES_PIPELINE_RULES_EXCLUDE": "WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE",
     "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES": "WHISPER_CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES",
@@ -542,6 +544,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "into VRAM and multiplies GPU memory.",
     "SERVER_LOG_LEVEL":
         "uvicorn log verbosity: critical | error | warning | info | debug.",
+    "MAX_UPLOAD_BYTES":
+        "Hard ceiling on a single /v1/audio/transcriptions upload, in "
+        "bytes. Larger requests are rejected with 413 instead of being "
+        "buffered. Default 200 MB (~3 h of 128 kbps audio).",
 
     # --- Access & sessions ---
     "ADMIN_WEBUI_ALLOWED_HOSTS":
@@ -1351,6 +1357,7 @@ class AdminConfig(BaseModel):
     SERVER_PORT: Annotated[int, Field(ge=1, le=65535)] | None = _F("SERVER_PORT")
     SERVER_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F("SERVER_WORKERS")
     SERVER_LOG_LEVEL: LogLevel | None = _F("SERVER_LOG_LEVEL")
+    MAX_UPLOAD_BYTES: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F("MAX_UPLOAD_BYTES")
 
     # --- WebUI access control (host allowlists, bucketed by privilege tier) ---
     # Each entry must be parseable by ipaddress.ip_network(strict=False) — bare
