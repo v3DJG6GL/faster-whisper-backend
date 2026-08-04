@@ -12,11 +12,15 @@ frees the CPU. That lets any user the admin has granted a tag keep editing and
 adding regex rules (web ``/quick-config`` and the ``faster-whisper-frontend``
 ``/v1/pipeline-rules`` editor) without the SAVE-time probe pinning a CPU core.
 
-The probe runs against ONE fixed ~1 KB fixture, so it catches naive
-catastrophic patterns, not a pattern crafted to blow up only on inputs the
-fixture doesn't contain — such a pattern passes validation and can still hang
-the MAIN process at match time (rule application is in-process re.sub).
-Accepted residual risk for a rule surface that is user-editable by design.
+Two things run before a pattern is accepted: a structural screen that refuses
+a repeat nested inside a repeated group (``_nested_repetition`` — the shape
+whose match time is exponential, which no timed probe can reliably outrun),
+and the timed probes themselves, run against the German fixture AND a few
+short repetitive worst-case inputs (``_ADVERSARIAL``) so a pattern that is
+fast on prose but slow on a long unpunctuated run is caught too. A pattern
+crafted to blow up only on some other input shape can still pass and hang the
+MAIN process at match time (rule application is in-process re.sub) — accepted
+residual risk for a rule surface that is user-editable by design.
 
 Two roles, one file:
   * parent  ->  ``import regex_guard; regex_guard.validate(checks)``
@@ -42,17 +46,171 @@ _GUARD_TIMEOUT = 2.0
 # into gigabytes at match time. Anything above 1x compounds; 10x is generous.
 _MAX_GROWTH = 10
 
+# Extra probe inputs, run after FIXTURE. The German fixture is full of
+# punctuation and short sentences, so a pattern that only blows up on a long
+# unpunctuated run (`(\w+ ?)+` on a dictated sentence) finishes on it in
+# microseconds and slips through. These are the shapes that make a nested
+# repetition go exponential: one long word run, one long letter run, one long
+# digit run, one long alphanumeric run — all with no punctuation to anchor on.
+# Each is ~240 chars (a quarter of FIXTURE), so all four together cost about
+# the same as ONE extra fixture pass per entry and can't push a legitimate
+# rule set anywhere near _GUARD_TIMEOUT; an exponential pattern, by contrast,
+# already needs longer than the age of the universe at this length.
+# Each ends in a `!` the run itself can't produce: blowup only shows up on a
+# match that must FAIL, and a plain run often just matches and returns fast.
+_ADVERSARIAL = (
+    "wort " * 48 + "!",
+    "a" * 240 + "!",
+    "1234567890" * 24 + "!",
+    "Wort123abc" * 24 + "!",
+)
+
 _SELF = os.path.abspath(__file__)
+
+
+def _read_quantifier(pat: str, i: int) -> "tuple[bool, bool, int]":
+    """Read a quantifier at ``pat[i]``. Returns (repeats, atomic, next_index).
+
+    ``repeats`` is True only for a quantifier that can match an atom MORE THAN
+    ONCE (`*`, `+`, `{2,}`, `{0,3}`) — `?` and `{0,1}` are optional, not
+    repetition, and are far too common in ordinary rules to treat as risky.
+    ``atomic`` is True for a possessive quantifier (`*+`, `++`, `{n,m}+`),
+    which cannot give back characters and therefore cannot backtrack.
+    """
+    if i >= len(pat):
+        return False, False, i
+    c = pat[i]
+    if c in "*+?":
+        repeats = c != "?"
+        i += 1
+    elif c == "{":
+        j = pat.find("}", i)
+        if j == -1:
+            return False, False, i  # a literal `{`, not a quantifier
+        lo, comma, hi = pat[i + 1:j].partition(",")
+        if comma:
+            if not (lo.isdigit() or not lo) or not (hi.isdigit() or not hi):
+                return False, False, i
+            repeats = not hi or int(hi) > 1  # {n,} is unbounded
+        else:
+            if not lo.isdigit():
+                return False, False, i
+            repeats = int(lo) > 1
+        i = j + 1
+    else:
+        return False, False, i
+    atomic = i < len(pat) and pat[i] == "+"
+    if i < len(pat) and pat[i] in "?+":
+        i += 1  # lazy or possessive suffix
+    return repeats, atomic, i
+
+
+def _nested_repetition(pat: str) -> bool:
+    """True if ``pat`` contains a repeated group that itself repeats.
+
+    `(x+)+`, `(x*)*`, `(x{2,})+` and the alternation-overlap `(a|a)*` are the
+    shapes whose match time is EXPONENTIAL in the input length: every way of
+    splitting the input between the inner and outer repetition is a distinct
+    path the engine must try before it can fail. `(\\w+ ?)+#` needs 2**n steps
+    on an n-word sentence — a fixture probe can't outrun that, so the shape
+    itself has to be refused.
+
+    Scans the pattern string once; there is no way to match this with a regex
+    and no stdlib API that exposes the parse tree. `(`, `)`, `*`, `+` and `{`
+    are LITERAL inside a character class and after a backslash, so both are
+    skipped — a scanner that miscounts them rejects perfectly good rules.
+    """
+    n = len(pat)
+    # One frame per open group plus a root frame. "rep": this level contains a
+    # repetition; "start"/"alts": body slice + top-level `|` offsets, for the
+    # (a|a)* overlap check; "atomic": (?>...) can't backtrack into itself.
+    stack = [{"rep": False, "start": 0, "alts": [], "atomic": False}]
+    i = 0
+    while i < n:
+        c = pat[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "[":
+            i += 1
+            if i < n and pat[i] == "^":
+                i += 1
+            if i < n and pat[i] == "]":
+                i += 1  # a `]` first in the class is a literal
+            while i < n and pat[i] != "]":
+                i += 2 if pat[i] == "\\" else 1
+            i += 1
+            continue
+        if c == "(":
+            atomic = False
+            j = i + 1
+            if j < n and pat[j] == "?":
+                k = j + 1
+                if k < n and pat[k] == "#":  # (?#comment) — skip wholesale
+                    end = pat.find(")", k)
+                    i = n if end == -1 else end + 1
+                    continue
+                if k < n and pat[k] == ">":
+                    atomic, j = True, k + 1
+                elif k < n and pat[k] == ":":
+                    j = k + 1
+                elif k < n and pat[k] in "=!":
+                    j = k + 1
+                elif k < n and pat[k] == "<" and k + 1 < n and pat[k + 1] in "=!":
+                    j = k + 2
+                else:
+                    # (?P<name>, (?P=name), (?<name>, inline flags (?i) / (?i:
+                    end = pat.find(">", k)
+                    close = pat.find(")", k)
+                    colon = pat.find(":", k)
+                    cand = [x for x in (end, colon) if x != -1 and (close == -1 or x < close)]
+                    j = (min(cand) + 1) if cand else (close + 1 if close != -1 else n)
+            stack.append({"rep": False, "start": j, "alts": [], "atomic": atomic})
+            i = j
+            continue
+        if c == ")" and len(stack) > 1:
+            frame = stack.pop()
+            body = pat[frame["start"]:i]
+            i += 1
+            repeats, possessive, i = _read_quantifier(pat, i)
+            if repeats and not frame["atomic"] and not possessive:
+                if frame["rep"]:
+                    return True
+                # (a|a)* — identical alternatives overlap, so the engine
+                # re-tries the same split every way round.
+                if frame["alts"]:
+                    cuts = [frame["start"]] + [x + 1 for x in frame["alts"]]
+                    ends = frame["alts"] + [frame["start"] + len(body)]
+                    branches = [pat[a:b] for a, b in zip(cuts, ends)]
+                    if len(set(branches)) < len(branches):
+                        return True
+            if frame["rep"] or repeats:
+                stack[-1]["rep"] = True
+            continue
+        if c == "|":
+            stack[-1]["alts"].append(i)
+            i += 1
+            continue
+        repeats, _, j = _read_quantifier(pat, i)
+        if j > i:
+            if repeats:
+                stack[-1]["rep"] = True
+            i = j
+            continue
+        i += 1
+    return False
 
 
 def validate(checks: list, timeout: float | None = None) -> None:
     """Validate every regex in ``checks`` out-of-process.
 
     ``checks`` is a list of ``(where, pattern, replacement)`` tuples. Each
-    pattern's ``re.sub`` is run against a fixed ~1 KB fixture inside a child
-    process that is killed if it exceeds ``timeout`` seconds. Raises
-    ``ValueError(f"{where}: ...")`` on a bad regex/replacement (e.g. a backref
-    to a non-existent group), a replacement that expands the fixture beyond
+    pattern's ``re.sub`` is run against a fixed ~1 KB fixture (plus a few short
+    repetitive worst-case inputs) inside a child process that is killed if it
+    exceeds ``timeout`` seconds. Raises ``ValueError(f"{where}: ...")`` on a
+    pattern that repeats an already-repeating group (`(x+)+`, `(a|a)*` — see
+    ``_nested_repetition``), a bad regex/replacement (e.g. a backref to a
+    non-existent group), a replacement that expands the fixture beyond
     ``_MAX_GROWTH``, or a catastrophic-backtracking timeout. No-op for an empty
     list.
 
@@ -62,6 +220,17 @@ def validate(checks: list, timeout: float | None = None) -> None:
     """
     if not checks:
         return
+    # Structural screen first, in-process: exponential shapes can be slower
+    # than any wall-clock probe on inputs the fixtures don't happen to contain,
+    # so they are refused on shape rather than on measured time.
+    for where, pattern, _repl in ((c[0], c[1], c[2]) for c in checks):
+        if pattern and _nested_repetition(pattern):
+            raise ValueError(
+                f"{where}: regex test failed: nested repetition "
+                "(a repeat inside a repeated group, e.g. `(\\w+ ?)+`) causes "
+                "catastrophic backtracking and can hang the server on ordinary "
+                "input — rewrite without a repeat inside a repeat."
+            )
     import json
     import logging
     import subprocess
@@ -122,16 +291,18 @@ def _last_index(stderr_text: "str | bytes | None") -> int | None:
 
 
 def _probe(checks: list):
-    """Child side: run each [pattern, replacement] against FIXTURE. Return
-    (index, message) on the first failure, else None. Emit the index to stderr
-    before each test so the parent can name the culprit if it kills us."""
+    """Child side: run each [pattern, replacement] against FIXTURE and then
+    against the _ADVERSARIAL inputs. Return (index, message) on the first
+    failure, else None. Emit the index to stderr before each test so the parent
+    can name the culprit if it kills us."""
     import re
     import sys
     for i, item in enumerate(checks):
         sys.stderr.write("%d\n" % i)
         sys.stderr.flush()
         try:
-            out = re.compile(item[0]).sub(item[1], FIXTURE)
+            rx = re.compile(item[0])
+            out = rx.sub(item[1], FIXTURE)
         except Exception as exc:  # noqa: BLE001 - any compile/sub failure
             return i, str(exc)
         if len(out) > _MAX_GROWTH * len(FIXTURE):
@@ -140,6 +311,15 @@ def _probe(checks: list):
                 f"{len(out) / len(FIXTURE):.0f}x (limit {_MAX_GROWTH}x). "
                 "Simplify the replacement."
             )
+        # Timing probe only: a pattern that is fast on German prose but slow on
+        # repetitive input hangs here and the parent's timeout kills us. The
+        # growth check stays on FIXTURE alone, so these can't invent a new
+        # rejection reason for an otherwise fine replacement.
+        for fixture in _ADVERSARIAL:
+            try:
+                rx.sub(item[1], fixture)
+            except Exception as exc:  # noqa: BLE001 - any sub failure
+                return i, str(exc)
     return None
 
 
