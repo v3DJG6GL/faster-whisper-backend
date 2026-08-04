@@ -272,7 +272,30 @@ jobs:
           sbom: false
           # Per-variant registry cache so the cpu and gpu builds don't evict
           # each other. PR builds import AND export (same-repo branches only
-          # on this instance, so the cache is trusted); ignore-error keeps a
-          # transient cache-push failure from failing the publish.
+          # on this instance, so the cache is trusted).
+          # cache-to deliberately lives in the separate step below — see there.
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}
+
+      # Cache export runs as its own buildx invocation, AFTER the push above.
+      # Sharing one invocation makes buildkit push the image layers and export
+      # the cache concurrently, so a layer new to the registry gets uploaded
+      # twice at once. Forgejo's GetOrInsertBlob does a SELECT-then-INSERT with
+      # no upsert: the losing writer trips the UQE_package_blob_blake2b unique
+      # index and the error path nil-derefs (2026-08-04, run 80 — the 1.66 GB
+      # CUDA layer panicked the server, the retry 400'd, and buildx reported
+      # only "failed to push …:latest-gpu: unknown"). Serializing the two
+      # writers removes the overlap. Everything is cached locally by now, so
+      # this step costs seconds; ignore-error keeps a transient cache-push
+      # failure from failing an already-published image.
+      - name: Export build cache
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: false
+          build-args: |
+            BUILD_VERSION=${{ steps.ver.outputs.version }}
+          provenance: false
+          sbom: false
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }},mode=max,ignore-error=true
