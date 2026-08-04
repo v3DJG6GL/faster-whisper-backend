@@ -144,6 +144,10 @@ async def stats_usage(
     by = "key" if by == "key" else "user"
     if metric not in ("requests", "errors", "words", "audio_s"):
         metric = "audio_s"
+    # 10 years is past any real retention window, and date arithmetic on an
+    # unbounded value overflows inside local_day_start_hour(). 0 stays 0 so
+    # the lifetime branch below is preserved.
+    days = max(0, min(int(days), 3650))
     # Window in UTC epoch-hours; days reckoned in the SERVER-local timezone
     # (the operator's perspective). days<=0 = lifetime (no lower bound).
     start_hour: int | None = None

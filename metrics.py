@@ -41,6 +41,14 @@ SSE_PATHS = frozenset({"/logs/stream", "/stats/stream"})
 _MAX_UNMATCHED_KEYS = 512
 _UNMATCHED_OVERFLOW = "(other)"
 
+# Cap on the LENGTH of one such key. The key count alone doesn't bound the
+# memory an unmatched flood can pin: the raw client URL is attacker-chosen and
+# can be kilobytes long, and every retained key is re-serialised into each
+# /stats snapshot and 1 Hz SSE frame. Applied before the cardinality check so
+# what lands in req_count is always the truncated form. Comfortably longer
+# than any real route.
+_MAX_UNMATCHED_KEY_LEN = 120
+
 req_count: Counter[str] = Counter()         # path -> total
 err_count: Counter[str] = Counter()         # path -> 5xx total
 
@@ -62,8 +70,11 @@ def record_request(path: str, status: int, duration_ms: float,
     """Called by the FastAPI middleware on every HTTP request.
 
     `unmatched=True` marks a request that matched no route (404 / pre-routing
-    failure): its `path` is the raw client URL, so it is capped to bound the
-    counters against a distinct-path flood (see _MAX_UNMATCHED_KEYS)."""
+    failure): its `path` is the raw client URL, so it is capped in both length
+    and count to bound the counters against a distinct-path flood (see
+    _MAX_UNMATCHED_KEY_LEN / _MAX_UNMATCHED_KEYS)."""
+    if unmatched:
+        path = path[:_MAX_UNMATCHED_KEY_LEN]
     if (unmatched and path not in req_count
             and len(req_count) >= _MAX_UNMATCHED_KEYS):
         path = _UNMATCHED_OVERFLOW
