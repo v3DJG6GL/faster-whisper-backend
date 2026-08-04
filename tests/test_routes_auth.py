@@ -1,5 +1,5 @@
 """Auth-model integration tests: open mode vs locked-down, admin vs
-non-admin keys, host gate, cross-user 404, and the SSE ?key= fallback."""
+non-admin keys, host gate, cross-user 404, and the SSE credential carriers."""
 
 from starlette.testclient import TestClient
 
@@ -98,8 +98,8 @@ def test_cross_user_report_read_is_404(client, make_user_key):
 
 
 # The /quick-config/stream SSE body is an infinite generator (keepalive loop),
-# so driving it over HTTP with TestClient hangs on close. The auth/?key=
-# fallback logic lives entirely in require_user_or_admin_sse and runs BEFORE
+# so driving it over HTTP with TestClient hangs on close. The credential-
+# carrier logic lives entirely in require_user_or_admin_sse and runs BEFORE
 # any streaming — so we exercise that dependency directly with a constructed
 # ASGI scope. This is the documented "assert without consuming the stream"
 # approach.
@@ -121,15 +121,33 @@ def _fake_request(headers=None, query=b""):
     return Request(scope)
 
 
-def test_sse_key_query_fallback_admits(client, make_user_key):
-    # SSE endpoints accept ?key=<raw> since EventSource cannot set headers.
+def test_sse_bearer_header_admits(client, make_user_key):
+    # The bearer header is the carrier for non-browser SSE clients; browsers
+    # ride the session cookie EventSource sends same-origin.
     import quick_config_routes
 
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
-    req = _fake_request(query=f"key={raw}".encode())
+    req = _fake_request(headers={"Authorization": f"Bearer {raw}"})
     rec = quick_config_routes.require_user_or_admin_sse(req)
     assert rec["username"] == "alice"
+
+
+def test_sse_key_query_param_rejected(client, make_user_key):
+    # ?key= is no longer a credential carrier: the raw key would land in every
+    # access log that records the request line.
+    import quick_config_routes
+    from fastapi import HTTPException
+
+    make_user_key("root", is_admin=True)
+    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    req = _fake_request(query=f"key={raw}".encode())
+    try:
+        quick_config_routes.require_user_or_admin_sse(req)
+    except HTTPException as e:
+        assert e.status_code == 401
+    else:
+        raise AssertionError("expected 401 HTTPException")
 
 
 def test_sse_missing_key_rejected_when_locked(client, make_user_key):
@@ -137,7 +155,7 @@ def test_sse_missing_key_rejected_when_locked(client, make_user_key):
     from fastapi import HTTPException
 
     make_user_key("root", is_admin=True)
-    req = _fake_request()  # no bearer, no ?key=
+    req = _fake_request()  # no bearer, no cookie
     try:
         quick_config_routes.require_user_or_admin_sse(req)
     except HTTPException as e:
@@ -203,10 +221,35 @@ def test_openapi_remote_403(client, make_user_key):
         assert c.get("/openapi.json", headers=bearer(araw)).status_code == 403
 
 
-def test_sev_open_mode_remote_ok(app_module):
-    # User host is open by default; open mode → synthetic admin satisfies auth.
+def test_sev_open_mode_remote_401(app_module):
+    # The user host list is open, so the host gate admits _REMOTE — but the
+    # open-mode synthetic admin is confined to ADMIN_WEBUI_ALLOWED_HOSTS, so a
+    # remote caller still needs a credential it cannot have yet. Bootstrap
+    # happens from the admin hosts, which is where the first key is created.
+    with TestClient(app_module.app, client=_REMOTE) as c:
+        assert c.get("/sev").status_code == 401
+
+
+def test_sev_open_mode_loopback_ok(app_module):
+    # Loopback is always inside the admin allowlist, so the bootstrap operator
+    # keeps the keyless access the red banner + 60 s WARNING prompt them about.
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as c:
+        assert c.get("/sev").status_code == 200
+
+
+def test_open_mode_remote_admits_from_widened_admin_allowlist(
+        app_module, monkeypatch):
+    # Widening ADMIN_WEBUI_ALLOWED_HOSTS (what an operator administering a
+    # container from the LAN must already do to reach /settings/api-keys) also
+    # extends the open-mode synthetic admin to that host — and no further.
+    import config as cfg
+    monkeypatch.setattr(
+        cfg, "ADMIN_WEBUI_ALLOWED_HOSTS", ["203.0.113.0/24"], raising=False,
+    )
     with TestClient(app_module.app, client=_REMOTE) as c:
         assert c.get("/sev").status_code == 200
+    with TestClient(app_module.app, client=("198.51.100.7", 1234)) as c:
+        assert c.get("/sev").status_code == 401
 
 
 def test_sev_locked_remote_no_key_401(client, make_user_key):

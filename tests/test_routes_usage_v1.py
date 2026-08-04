@@ -160,9 +160,10 @@ def test_v1_usage_requires_auth_when_locked_down(client, make_user_key):
 # The whole point: /v1/usage is NOT host-gated (unlike /quick-config/usage)
 # --------------------------------------------------------------------------
 
-def test_v1_usage_not_host_gated(app_module):
+def test_v1_usage_not_host_gated(app_module, make_user_key):
     from starlette.testclient import TestClient
     app_module.cfg.USER_WEBUI_ALLOWED_HOSTS = ["127.0.0.1/32"]
     with TestClient(app_module.app, client=("203.0.113.9", 9999)) as c:
-        assert c.get("/quick-config/usage").status_code == 403
-        assert c.get("/v1/usage").status_code == 200
+        _uid, raw = make_user_key("root", is_admin=True)
+        assert c.get("/quick-config/usage", headers=bearer(raw)).status_code == 403
+        assert c.get("/v1/usage", headers=bearer(raw)).status_code == 200

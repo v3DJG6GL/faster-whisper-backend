@@ -222,15 +222,17 @@ def test_v1_requires_auth_when_locked_down(client, make_user_key):
 # The whole point: /v1/pipeline-rules is NOT host-gated (unlike /quick-config)
 # --------------------------------------------------------------------------
 
-def test_v1_not_host_gated_unlike_quick_config(app_module):
+def test_v1_not_host_gated_unlike_quick_config(app_module, make_user_key):
     from starlette.testclient import TestClient
     # Narrow the user-WebUI allowlist to loopback only, then call from a
-    # non-loopback client: the browser /quick-config page is host-gated (403),
-    # but the /v1 client API is reachable (200).
+    # non-loopback client WITH a key: the browser /quick-config page is
+    # host-gated (403 before the key is even looked at), but the /v1 client
+    # API is reachable (200).
     app_module.cfg.USER_WEBUI_ALLOWED_HOSTS = ["127.0.0.1/32"]
     with TestClient(app_module.app, client=("203.0.113.9", 9999)) as c:
-        assert c.get("/quick-config/state").status_code == 403
-        assert c.get("/v1/pipeline-rules").status_code == 200
+        _uid, raw = make_user_key("root", is_admin=True)
+        assert c.get("/quick-config/state", headers=bearer(raw)).status_code == 403
+        assert c.get("/v1/pipeline-rules", headers=bearer(raw)).status_code == 200
 
 
 def test_v1_nonadmin_can_edit_exposed_regex_entries(client, app_module, make_user_key):

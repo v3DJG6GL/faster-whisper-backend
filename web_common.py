@@ -17,6 +17,7 @@ from collections import deque
 from typing import Callable
 
 from fastapi import HTTPException, Request, status
+from starlette.requests import HTTPConnection
 
 import build_info
 import config as cfg
@@ -75,10 +76,13 @@ def require_allowed_host(allowlist_ref: Callable[[], list[str]]) -> Callable[[Re
     return _dep
 
 
-def host_in_allowlist(request: Request, allowlist: list[str]) -> bool:
+def host_in_allowlist(request: HTTPConnection, allowlist: list[str]) -> bool:
     """True if the client IP is loopback or inside `allowlist`. Non-raising —
     the boolean core behind `require_allowed_host` (which turns False into a
     403). Loopback is always allowed, matching require_allowed_host's contract.
+
+    Typed on HTTPConnection, not Request: auth.open_mode_host_ok also passes
+    the streaming WebSocket, and `.client` is all this reads.
     """
     client = request.client
     if client is None:

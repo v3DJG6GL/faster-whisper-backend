@@ -316,10 +316,10 @@ _HUB_HTML = """<!doctype html>
     return Array.prototype.slice.call(document.querySelectorAll('.tile.on'));
   }
 
-  // Fetch the model listing AFTER a successful whoami (the endpoint itself
-  // is public, but the strip is auth-only chrome) and fill in the strip's
-  // model segment: loaded models when any are warm, else the configured
-  // default with an "idle" dot.
+  // Fetch the model listing AFTER a successful whoami — /v1/models is
+  // user-tier authenticated, and the session cookie the whoami just proved
+  // rides this fetch too. Fills in the strip's model segment: loaded models
+  // when any are warm, else the configured default with an "idle" dot.
   function loadModels() {
     fetch('/v1/models', { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.json() : null; })

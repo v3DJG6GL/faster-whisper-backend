@@ -48,7 +48,10 @@ from admin_routes import (
     _canon_rules,
 )
 from web_common import require_user_webui_host
-from auth import Permissions, get_current_user, require_page, user_from_session_cookie
+from auth import (
+    Permissions, get_current_user, open_mode_host_ok, require_page,
+    user_from_session_cookie,
+)
 
 logger = logging.getLogger("whisper-api")
 
@@ -70,18 +73,19 @@ _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
 
 
 # SSE endpoint compatibility: EventSource has no way to attach an
-# Authorization header, so the /stream endpoint accepts ?key=<raw_key>
-# as a fallback.
+# Authorization header, so the /stream endpoint rides the session cookie
+# the browser sends automatically on a same-origin stream.
 
 def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
     """SSE-aware variant of get_current_user + require_page("quick_config").
-    Resolves auth from (in order) the bearer header, the HttpOnly session
-    cookie (EventSource sends it automatically), then `?key=` — the last is
-    the legacy fallback for non-browser SSE clients that can set neither a
-    header nor a cookie. Attaches the Permissions policy object and rejects
-    callers whose quick_config scope is "none"."""
+    Resolves auth from (in order) the bearer header and the HttpOnly session
+    cookie (EventSource sends it automatically). Attaches the Permissions
+    policy object and rejects callers whose quick_config scope is "none".
+
+    In OPEN mode the synthetic admin is confined to the admin host
+    allowlist (auth.open_mode_host_ok), like every other gate."""
     import api_keys_store
-    if not api_keys_store.is_locked_down():
+    if not api_keys_store.is_locked_down() and open_mode_host_ok(request):
         rec = dict(api_keys_store.OPEN_MODE_USER)
     else:
         auth_header = request.headers.get("authorization") or ""
@@ -91,9 +95,6 @@ def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
         rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
         if rec is None:
             rec = user_from_session_cookie(request)
-        if rec is None:
-            key = request.query_params.get("key") or ""
-            rec = api_keys_store.lookup_by_raw_key(key) if key else None
         if rec is None:
             raise HTTPException(
                 status.HTTP_401_UNAUTHORIZED,
@@ -213,7 +214,7 @@ async def apply_rules_patch(
     """Validate + apply a per-rule patch to PIPELINE_RULES. Shared by
     POST /quick-config/state and PATCH /v1/pipeline-rules so the edit policy
     lives in one home: per-type field allow-list, the same can_see_rule
-    re-check the GET uses, terminal guard, optimistic-concurrency by
+    re-check the GET uses, terminal + locked guards, optimistic-concurrency by
     fingerprint, server-owned map_meta stamping, then the full Pydantic
     re-validation (incl. the 2 s ReDoS guard) via save_overrides.
 
@@ -221,7 +222,8 @@ async def apply_rules_patch(
     {"errors": [...]} when save validation fails (an error may name a rule the
     user didn't touch — the admin's pipeline is invalid). Raises HTTPException
     for 400 (malformed patch / unknown slug / disallowed field), 403 (rule not
-    visible to this user / terminal rule) or 500 (config write failure)."""
+    visible to this user / terminal rule / rule locked by an admin) or 500
+    (config write failure)."""
     fingerprints = fingerprints or {}
     if not rules_patch:
         return 200, {
@@ -274,6 +276,14 @@ async def apply_rules_patch(
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 "the terminal rule cannot be edited",
+            )
+        # `locked` is the admin's freeze switch on /settings — enforced here,
+        # not just greyed out in the editor. Admins can still patch (they own
+        # the flag and can lift it on /settings).
+        if target.get("locked") and not user.get("is_admin"):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"rule '{slug}' is locked and cannot be edited",
             )
         allowed = _PATCH_ALLOWED_FIELDS.get(rtype, frozenset())
         for field in patch.keys():
@@ -641,6 +651,7 @@ async def post_state(
     """Apply a per-rule patch. Rejects:
        - patches against rules that aren't currently exposed
        - patches against terminal rules
+       - non-admin patches against rules the admin marked `locked`
        - any field outside the per-type allow-list (including admin-only
          fields like `locked`, `name`, `label`, `exposed`, `seeded`)
 

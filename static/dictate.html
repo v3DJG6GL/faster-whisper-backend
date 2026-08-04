@@ -104,7 +104,9 @@
   const mode = () => $("mode").value;
 
   // --- connection target + persisted settings ---------------------------------
-  const PREF_FIELDS = ["mode", "server", "model", "lang", "format", "key"];
+  // The API key is deliberately NOT in this list: localStorage is origin-scoped
+  // and never expires, and this origin also serves the admin WebUI.
+  const PREF_FIELDS = ["mode", "server", "model", "lang", "format"];
 
   // Resolve the "Server" field to a ws[s]:// base URL. Accepts a full
   // ws(s)/http(s) URL or a bare host[:port]; empty falls back to this page's host.
@@ -134,6 +136,9 @@
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem("dictatePrefs") || "{}"); } catch {}
     for (const f of PREF_FIELDS) if (saved[f] != null && $(f)) $(f).value = saved[f];
+    // An older build of this page persisted the key too — rewrite the blob
+    // without it rather than leaving the credential behind on this origin.
+    if (saved.key != null) savePrefs();
   }
   function savePrefs() {
     const o = {};
@@ -276,12 +281,30 @@
     }
   }
 
+  // Hand the typed key to the WebSocket without ever putting it in the URL —
+  // uvicorn's access log records the full request line, query string included.
+  // Same origin: exchange it for the HttpOnly session cookie the rest of the
+  // WebUI uses (POST /auth/login), which the browser then attaches to the
+  // handshake. Cross origin: that cookie is not sent, so pass the key in the
+  // one request header a browser may set on a WebSocket — the subprotocol.
+  // Returns the subprotocol list to open the socket with ([] = none).
+  async function wsAuth(key) {
+    if (!key) return [];
+    if (httpBase() !== location.origin) return ["bearer." + key];
+    const r = await fetch("/auth/login", {
+      method: "POST", cache: "no-store",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: key }),
+    });
+    if (!r.ok) throw new Error("API key rejected (" + r.status + ")");
+    return [];
+  }
+
   async function start() {
     finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", "");
     const base = wsBase();
-    const key = $("key").value.trim();
-    const qs = key ? ("?key=" + encodeURIComponent(key)) : "";
-    ws = new WebSocket(base + "/v1/audio/transcriptions/stream" + qs);
+    const protocols = await wsAuth($("key").value.trim());
+    ws = new WebSocket(base + "/v1/audio/transcriptions/stream", protocols);
     ws.binaryType = "arraybuffer";
     setStatus("connecting to " + base + " …");
 
@@ -362,7 +385,7 @@
       + "from localhost (or over https) and set Server to your remote backend.";
     n.style.color = "var(--err)";
   } else {
-    $("note").textContent = "Settings are saved in this browser's localStorage. "
+    $("note").textContent = "Settings (never the API key) are saved in this browser's localStorage. "
       + "Batch mode records the clip and POSTs it to /v1/audio/transcriptions (one-shot); "
       + "for a remote Server, set WHISPER_CORS_ALLOW_ORIGINS on the backend (or open /dictate from it).";
   }

@@ -7,8 +7,9 @@ Three-level dependency layering (FastAPI idiomatic):
     raises 401 on miss. Attaches a `Permissions` policy object so
     callers can ask "can this user reach page X?" / "what data scope?".
     In OPEN mode (no admin key configured yet) returns the synthetic
-    `OPEN_MODE_USER` so existing checks keep working while the operator
-    bootstraps.
+    `OPEN_MODE_USER` to callers on the ADMIN host allowlist, so existing
+    checks keep working while the operator bootstraps — see
+    `open_mode_host_ok`.
   - `require_admin`: depends on `get_current_user` and raises 403 if
     `is_admin=False`. Used for system-mutation endpoints (/settings,
     /settings/api-keys, delete/clear/reapply-rules).
@@ -29,10 +30,12 @@ from typing import Any
 
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from starlette.requests import HTTPConnection
 
 import api_keys_store
 import config as cfg
 import sessions_store
+import web_common
 
 logger = logging.getLogger("whisper-api")
 
@@ -163,6 +166,24 @@ class Permissions:
 # Dependencies
 # ---------------------------------------------------------------------
 
+def open_mode_host_ok(conn: HTTPConnection) -> bool:
+    """True when an OPEN-mode caller may be handed the synthetic admin.
+
+    Open mode has no credential to check, so the synthetic admin is confined
+    to cfg.ADMIN_WEBUI_ALLOWED_HOSTS — the same allowlist that already gates
+    /settings/api-keys, i.e. the page an operator MUST reach to create the
+    first admin key. An operator administering a container from the LAN has
+    therefore already had to widen that list; the bootstrap admin follows
+    their existing configuration and never reaches further than it. Callers
+    outside it fall through to the ordinary credential check (401 without a
+    valid key) instead of inheriting admin.
+
+    Takes any HTTPConnection: the streaming WebSocket resolves auth through
+    the same core, and `.client` is all the allowlist reads.
+    """
+    return web_common.host_in_allowlist(conn, cfg.ADMIN_WEBUI_ALLOWED_HOSTS)
+
+
 def user_from_session_cookie(request: Request) -> dict[str, Any] | None:
     """Resolve the HttpOnly session cookie to a LIVE user record, or None.
 
@@ -206,8 +227,8 @@ def get_current_user(
     request: Request,
     creds: HTTPAuthorizationCredentials | None = Depends(_bearer),
 ) -> dict[str, Any]:
-    """Resolve the caller to a user record. Raises 401 on miss (locked
-    down) or returns the synthetic admin (open mode).
+    """Resolve the caller to a user record. Raises 401 on miss, or returns
+    the synthetic admin (open mode, admin-allowlisted host only).
 
     Two credential carriers in locked-down mode, tried in order:
       1. `Authorization: Bearer <api_key>` — API clients (curl, SDKs)
@@ -229,10 +250,11 @@ def _resolve_user(
     creds: HTTPAuthorizationCredentials | None,
 ) -> dict[str, Any] | None:
     """Non-raising core of `get_current_user`: returns the resolved record or
-    None (locked down + no/invalid credential). In OPEN mode returns the
-    synthetic admin.
+    None (no/invalid credential). In OPEN mode returns the synthetic admin to
+    callers on the admin host allowlist (see `open_mode_host_ok`); everyone
+    else takes the ordinary bearer/cookie path.
     """
-    if not api_keys_store.is_locked_down():
+    if not api_keys_store.is_locked_down() and open_mode_host_ok(request):
         rec = dict(api_keys_store.OPEN_MODE_USER)
     else:
         rec = None

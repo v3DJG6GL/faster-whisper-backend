@@ -172,7 +172,7 @@ A few of the most common variables:
 | Env var | Maps to setting | Effect |
 |---|---|---|
 | `WHISPER_DEFAULT_MODEL` | `DEFAULT_MODEL` | Model used when request sends `whisper-1` or omits `model` |
-| `WHISPER_ALLOWED_MODELS` | `ALLOWED_MODELS` | Comma-separated allowlist (default: the two official Systran large-v2/large-v3 builds); empty = any model passes |
+| `WHISPER_ALLOWED_MODELS` | `ALLOWED_MODELS` | Comma-separated allowlist (default: the two official Systran large-v2/large-v3 builds); empty = any well-formed model id passes |
 | `WHISPER_MODEL_DEVICE` | `MODEL_DEVICE` | `cuda` (default) or `cpu` |
 | `WHISPER_PRELOAD_MODELS` | `PRELOAD_MODELS` | Comma-separated list to load eagerly at startup (no first-request warm-up) |
 | `WHISPER_SERVER_PORT` | `SERVER_PORT` | Listen port (also update the Docker `ports:` mapping) |
@@ -257,7 +257,9 @@ client.audio.transcriptions.create(model="primeline/whisper-large-v3-turbo-germa
 > (`Systran/faster-whisper-large-v2`, `Systran/faster-whisper-large-v3`),
 > so requests for other ids (e.g. `large-v3-turbo`, `primeline/whisper-large-v3-turbo-german`)
 > are rejected until you add them to the allowlist (`WHISPER_ALLOWED_MODELS=...`)
-> or clear it (`WHISPER_ALLOWED_MODELS=` → any model passes).
+> or clear it (`WHISPER_ALLOWED_MODELS=` → any well-formed model id passes: a
+> short name or an `org/name` repo id, plus whatever `DEFAULT_MODEL` is set to;
+> filesystem paths sent by a client are refused).
 
 First-use of any new model triggers a one-time download (~600 MB to ~1.5 GB depending on the model) into `%USERPROFILE%\.cache\huggingface\hub\`. Subsequent loads come from cache (~5–10 s into VRAM).
 
@@ -355,14 +357,14 @@ A second WebUI at `/settings` lets you edit every setting from the browser, with
 
 The transcription endpoint and every WebUI page are gated by **per-user API keys**, not a shared token. Each key looks like `wk_<43-char base64>` (256-bit entropy); raw keys are SHA-256-hashed at rest and shown **once** on creation.
 
-**Bootstrap.** On a fresh install with no admin key in the DB, the server starts in **OPEN mode**: every request is accepted as a synthetic admin, a red banner appears on every WebUI page, and a `WARNING` log line fires every 60 s. This is the operator's prompt to generate the first admin key. Two ways:
+**Bootstrap.** On a fresh install with no admin key in the DB, the server starts in **OPEN mode**: a red banner appears on every WebUI page and a `WARNING` log line fires every 60 s. This is the operator's prompt to generate the first admin key. Two ways:
 
 1. **In the UI** — open `/settings/api-keys`, click "+ add user" with admin=true, then "+ generate key", and copy the raw key from the show-once modal.
-2. **Via env var** — set `WHISPER_BOOTSTRAP_ADMIN_KEY=wk_…` on first start. A `bootstrap-admin` user is created (or skipped if the same key hash is already present) with that exact raw key. Subsequent starts no-op.
+2. **Via env var** — set `WHISPER_BOOTSTRAP_ADMIN_KEY=wk_…` on first start. A `bootstrap-admin` user is created (or skipped if the same key hash is already present) with that exact raw key. Subsequent starts no-op. **Recommended for containers** — the server comes up already locked down, so OPEN mode never happens.
 
-Once at least one active admin key exists, the OPEN-mode banner disappears and 401 is returned to unauthenticated callers.
+OPEN mode is a bootstrap state, not a deployment mode: the synthetic admin is handed out **only to callers in `ADMIN_WEBUI_ALLOWED_HOSTS`** (loopback by default) — the very allowlist that gates `/settings/api-keys`, so it never reaches past the surface you already had to open to create the first key. Everyone else gets the usual 401. Once at least one active admin key exists, the OPEN-mode banner disappears and 401 is returned to every unauthenticated caller.
 
-**Using a key.** API clients and curl send `Authorization: Bearer wk_…` on every request. The WebUI instead exchanges the key **once** for an HttpOnly session cookie via `POST /auth/login` (server-side session rows, 30-day TTL by default — `SESSION_TTL_SECONDS`; CSRF double-submit cookie on mutating requests). On any 401 the full-page login gate re-prompts; `POST /auth/logout` ends the session.
+**Using a key.** API clients and curl send `Authorization: Bearer wk_…` on every request — including the streaming WebSocket handshake. The WebUI instead exchanges the key **once** for an HttpOnly session cookie via `POST /auth/login` (server-side session rows, 30-day TTL by default — `SESSION_TTL_SECONDS`; CSRF double-submit cookie on mutating requests). On any 401 the full-page login gate re-prompts; `POST /auth/logout` ends the session. A browser page opening the WebSocket **cross-origin** (where that cookie is not sent) can offer the subprotocol `bearer.wk_…` instead — the only request header the browser WebSocket API lets a page set. The key is **never** accepted as a query parameter: the access log records the full request line.
 
 **Lockout protection.** Revoking the last active admin key (or the last admin user) returns 409. Generate a second admin key first.
 

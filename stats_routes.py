@@ -31,7 +31,9 @@ import config as cfg
 import metrics
 import system_stats
 import web_common
-from auth import Permissions, require_page, user_from_session_cookie
+from auth import (
+    Permissions, open_mode_host_ok, require_page, user_from_session_cookie,
+)
 
 router = APIRouter()
 
@@ -39,14 +41,17 @@ _require_stats_host = web_common.require_user_webui_host
 
 
 def _require_stats_page_sse(request: Request) -> dict[str, Any]:
-    """SSE-aware variant of `require_page("stats")`. EventSource cannot
-    set Authorization, so we accept ?key=<raw_key> as a fallback.
+    """SSE-aware variant of `require_page("stats")`. Two credential
+    carriers: the `Authorization: Bearer` header (API clients) and the
+    HttpOnly session cookie, which EventSource sends automatically on a
+    same-origin stream — EventSource cannot set a header.
 
-    In OPEN mode (no admin key yet) the synthetic admin sails through;
-    in locked-down mode the bearer must resolve to a user with
+    In OPEN mode (no admin key yet) the synthetic admin sails through
+    from the admin host allowlist only (auth.open_mode_host_ok); in
+    locked-down mode the credential must resolve to a user with
     scope("stats") != "none"."""
     import api_keys_store
-    if not api_keys_store.is_locked_down():
+    if not api_keys_store.is_locked_down() and open_mode_host_ok(request):
         return dict(api_keys_store.OPEN_MODE_USER)
     auth_header = request.headers.get("authorization") or ""
     raw = ""
@@ -55,9 +60,6 @@ def _require_stats_page_sse(request: Request) -> dict[str, Any]:
     rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
     if rec is None:
         rec = user_from_session_cookie(request)
-    if rec is None:
-        key = request.query_params.get("key") or ""
-        rec = api_keys_store.lookup_by_raw_key(key) if key else None
     if rec is None:
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
