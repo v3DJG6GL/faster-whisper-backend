@@ -2393,6 +2393,63 @@ async def _metrics_mw(request: Request, call_next):
                                unmatched=route is None)
 
 
+# Responses that legitimately want to be cached: the vendored bundles, the
+# fonts and the icons under /static are versioned assets with no per-identity
+# content, and making the browser re-fetch ~2.5 MB of swagger/redoc on every
+# page load would be a real regression.
+_CACHEABLE_PREFIXES = ("/static/",)
+
+# Deliberately NO default-src / script-src / style-src / img-src / media-src /
+# worker-src. Every page in this product is a single document with inline
+# <script> and <style> blocks, the shared header emits an inline onclick=, the
+# dictate page builds its AudioWorklet from a blob: URL, and several pages set
+# CSS backgrounds from data: SVGs and play audio through createObjectURL. A
+# nonce-less script-src 'self' would break all of it, starting with microphone
+# capture. These four directives are the ones that cost nothing here: no HTML
+# in the tree contains an <iframe>, there is no <base> tag, both <form>s post
+# to self, and there is no <object>/<embed>.
+_CSP = (
+    "frame-ancestors 'none'; base-uri 'none'; "
+    "form-action 'self'; object-src 'none'"
+)
+
+
+@app.middleware("http")
+async def _security_headers_mw(request: Request, call_next):
+    """Outermost layer: response headers every route should carry.
+
+    Registered last so it wraps _metrics_mw/_max_body_mw/_csrf_mw and therefore
+    also stamps their early 403/413 returns.
+
+    Cache-Control is set as a DEFAULT, not an override — a handler that already
+    chose its own value keeps it. Before this, the tree set no-store on seven
+    responses by hand and left the rest bare, including /reports/api/list, whose
+    body is scope-filtered per caller: a shared cache keyed on URL alone could
+    hand an admin's full-corpus response to a scope="own" user. A 200 GET with
+    no Cache-Control, no Expires and no Vary is heuristically cacheable under
+    RFC 9111, and this deployment expects a reverse proxy in front
+    (TRUSTED_ORIGINS exists for exactly that). Defaulting to no-store everywhere
+    outside /static is the version of that rule nobody can forget to apply to a
+    new endpoint.
+
+    Framing: session cookies are SameSite=lax, so a cross-site frame of an admin
+    page loads without the cookie and shows the login gate. That is not true in
+    OPEN mode, where an allowlisted-host victim resolves to the synthetic admin
+    with no cookie at all and a framed /settings is fully privileged — and the
+    CSRF guard does not help, because the victim clicks the real page, so the
+    page's own JS attaches a valid token and a same-origin Origin.
+    """
+    response = await call_next(request)
+    path = request.url.path
+    if not path.startswith(_CACHEABLE_PREFIXES):
+        response.headers.setdefault("Cache-Control", "no-store")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Content-Security-Policy", _CSP)
+    return response
+
+
 def _shift_to_original_timeline(segments, info, pad_s: float):
     """Map decode results from the LEADING_SILENCE_PAD_MS-padded timeline back
     to the uploaded audio's timeline: segment/word times shift by -pad_s

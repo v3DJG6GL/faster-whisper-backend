@@ -63,3 +63,38 @@ def test_logs_older_open(client):
     assert r.status_code == 200
     body = r.json()
     assert "lines" in body and "next_skip" in body
+
+
+# ---------------------------------------------------------------------------
+# _security_headers_mw — the outermost response-header layer
+# ---------------------------------------------------------------------------
+
+def test_security_headers_on_every_response(client):
+    r = client.get("/")
+    assert r.headers["X-Frame-Options"] == "DENY"
+    assert r.headers["X-Content-Type-Options"] == "nosniff"
+    assert r.headers["Referrer-Policy"] == "no-referrer"
+    assert "frame-ancestors 'none'" in r.headers["Content-Security-Policy"]
+    # No script-src / default-src: every page relies on inline <script>, an
+    # inline onclick= in the shared header, blob: AudioWorklets and data: SVGs.
+    csp = r.headers["Content-Security-Policy"]
+    assert "script-src" not in csp and "default-src" not in csp
+
+
+def test_data_responses_default_to_no_store(client):
+    assert client.get("/").headers["Cache-Control"] == "no-store"
+    # ...including the early returns from the inner middlewares.
+    assert client.get("/logs/older?skip=0&limit=5").headers["Cache-Control"]
+
+
+def test_static_assets_stay_cacheable(client):
+    r = client.get("/static/favicon.svg")
+    assert r.status_code == 200
+    assert r.headers.get("Cache-Control") is None
+
+
+def test_an_explicit_cache_control_is_not_overridden(client):
+    # /settings sends a stronger value of its own; the middleware defaults,
+    # it does not stamp over a handler's deliberate choice.
+    cc = client.get("/settings").headers["Cache-Control"]
+    assert "must-revalidate" in cc
