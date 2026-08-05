@@ -5,14 +5,30 @@ __pycache__/
 *.pyc
 .git/
 .github/
+# Runtime state roots. The bare-metal layout puts every store under ./data
+# (Windows default, and Linux with WHISPER_DATA_DIR=./data — the same layout
+# .gitignore covers), so the top-level patterns below never see them: Docker
+# matches these with filepath.Match, where * does not cross a /. Without the
+# anchored + ** forms a local `docker build` bakes dictation audio, transcript
+# text, API-key hashes and session-token hashes into an image layer.
+data/
+models/
 logs/
 captures/
+**/logs/
+**/captures/
 *.local.*
 *.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+**/*.local.*
+**/*.sqlite3
+**/*.sqlite3-wal
+**/*.sqlite3-shm
 .env
 .env.*
+**/.env
+**/.env.*
 # Windows service artifacts (generated on the Windows host).
 WhisperAPI.exe
 WhisperAPI.xml
