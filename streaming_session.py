@@ -21,9 +21,11 @@ hazard in the 17-rule pipeline (split ``"neue Zeile"``, capitalize-after-termina
 punctuation dedup, …) instead of patching each one.
 """
 
+import asyncio
 import logging
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Optional
 
@@ -105,6 +107,20 @@ class StreamSession:
         self.emit = emit
         self.base_prompt = base_prompt
         self.on_final = on_final
+
+        # Silero VAD is a synchronous ONNX call and it runs once per 32 ms
+        # frame, so doing it inline pinned the event loop for as long as a
+        # client kept uploading — the decodes were already offloaded, this was
+        # the one hot path left on the loop.
+        #
+        # ONE worker, and one pool per session, for two reasons: the endpointer
+        # keeps a rolling buffer that must see frames in order (a single worker
+        # serialises them), and a dedicated pool keeps these ~31 calls/second
+        # out of the default executor the Whisper decode shares — offloading
+        # onto that pool would just move the contention.
+        self._vad_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix=f"vad-{session_id[:8] or 'stream'}",
+        )
 
         self._min_chunk_samples = int(config.min_chunk_ms * config.sample_rate / 1000)
         self._preroll_keep_samples = int(config.preroll_keep_ms * config.sample_rate / 1000)
@@ -224,15 +240,28 @@ class StreamSession:
         if self._closed:
             return
         self._closed = True
-        if self._in_utterance:
-            await self._finalize(forced=True)
-        processed = self.postprocess(self.raw_confirmed)
-        await self._emit_document(processed, flush_all=True, last=True)
+        try:
+            if self._in_utterance:
+                await self._finalize(forced=True)
+            processed = self.postprocess(self.raw_confirmed)
+            await self._emit_document(processed, flush_all=True, last=True)
+        finally:
+            # One thread per session; releasing it here (rather than leaving it
+            # to GC) keeps the count tied to live sessions. wait=False so a
+            # teardown never blocks the loop on an in-flight VAD frame.
+            self._vad_pool.shutdown(wait=False)
 
     # ---- frame pump -------------------------------------------------------
 
     async def _consume_frame(self, frame: np.ndarray) -> None:
-        speech = self.endpointer.is_speech(frame)
+        # Off the loop (see _vad_pool). Per frame rather than per chunk: a
+        # finalize inside this loop calls endpointer.reset(), so pre-computing
+        # a whole chunk's decisions would answer with a buffer that no longer
+        # exists. _pump is the sole caller and the sole session mutator, so the
+        # extra await introduces no new interleaving on session state.
+        speech = await asyncio.get_running_loop().run_in_executor(
+            self._vad_pool, self.endpointer.is_speech, frame,
+        )
         self._append_audio(frame)
         self._new_since_partial += FRAME_SAMPLES
 
