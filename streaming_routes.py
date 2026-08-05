@@ -918,19 +918,36 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _active_sessions.discard(session_id)
 
 
-# --- Demo page ---------------------------------------------------------------
+# --- Dictation page -----------------------------------------------------------
 _DICTATE_HTML_PATH = os.path.join(os.path.dirname(__file__), "static", "dictate.html")
 
 
 @router.get("/dictate", response_class=HTMLResponse,
             dependencies=[Depends(web_common.require_user_webui_host)])
 async def dictate_page() -> HTMLResponse:
-    """Minimal browser demo for the streaming endpoint: mic → 16 kHz PCM → WS,
-    rendering stabilized partials + append-only finals. Gated by the user-WebUI
-    host allowlist (loopback always allowed); the WebSocket enforces API auth."""
+    """Live dictation page: mic → 16 kHz PCM → WebSocket, rendering stabilized
+    partials + append-only finals, plus a batch mode that POSTs the whole clip.
+
+    Rendered through `render_page`, so it carries the same header, nav, scale
+    picker, severity pills, sign-out and login gate as every other WebUI page —
+    including the shared gate a signed-out visitor sees. Auth is the ordinary
+    session cookie: the page has no API-key field and talks only to its own
+    origin, so the browser attaches the cookie to both the WebSocket handshake
+    and the batch POST. Shell auth matches the other user-tier pages (host
+    allowlist only, nothing sensitive rendered server-side); the WebSocket and
+    the transcription endpoint each enforce their own credential.
+
+    The template lives in static/ rather than inline here because it is large
+    and mostly client JS; it is read per request so an edit shows up on reload,
+    matching how the other page shells behave under --reload.
+    """
     try:
         with open(_DICTATE_HTML_PATH, "r", encoding="utf-8") as fh:
-            return HTMLResponse(fh.read())
+            template = fh.read()
     except OSError as exc:
-        logger.error("[dictate] cannot read demo page: %s", exc)
-        return HTMLResponse("<h1>dictate demo unavailable</h1>", status_code=500)
+        logger.error("[dictate] cannot read page template: %s", exc)
+        return HTMLResponse("<h1>dictate unavailable</h1>", status_code=500)
+    return HTMLResponse(
+        web_common.render_page(template, current="dictate"),
+        headers={"Cache-Control": "no-store"},
+    )

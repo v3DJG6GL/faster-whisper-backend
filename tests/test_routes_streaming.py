@@ -71,19 +71,44 @@ def test_stream_rejects_unsupported_audio_format(app_module):
             assert msg["code"] == "unsupported_format"
 
 
-def test_dictate_demo_page_served(app_module):
+def test_dictate_page_served(app_module):
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         r = client.get("/dictate")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
     body = r.text
-    assert "Live Dictation" in body
     assert "/v1/audio/transcriptions/stream" in body
     assert "AudioWorkletNode" in body
     # batch mode: a mode selector + MediaRecorder POST to the file endpoint.
     assert 'id="mode"' in body
     assert "MediaRecorder" in body
     assert "startBatch" in body
+
+
+def test_dictate_page_uses_the_shared_shell(app_module):
+    """It renders through render_page like every other WebUI page: no
+    unsubstituted placeholders, and the shared chrome is present."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    assert "{{" not in body                       # every placeholder resolved
+    assert "faster-whisper-backend · dictate" in body   # {{HEADER_TITLE}}
+    assert 'class="navrow"' in body                     # {{NAV}}
+    assert 'href="/dictate"' in body                    # own nav entry
+    assert "login-gate" in body                         # shared auth screen
+
+
+def test_dictate_page_carries_no_credential_field(app_module):
+    """The page authenticates with the session cookie the rest of the WebUI
+    uses. It must not reintroduce an API-key input, a key-bearing subprotocol,
+    or the /auth/login exchange that used to mint a 30-day origin-wide session
+    from a chrome-less page with no way to sign out."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    # NB: the shared login gate legitimately carries its own key input, so only
+    # the page's OWN field and credential plumbing are asserted absent.
+    assert 'id="key"' not in body
+    assert "bearer." not in body
+    assert "wsAuth" not in body
 
 
 # --- handshake credential carriers -------------------------------------------

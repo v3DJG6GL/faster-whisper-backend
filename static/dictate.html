@@ -1,91 +1,141 @@
-<!DOCTYPE html>
+<!doctype html>
 <!--
-  Live dictation demo for /v1/audio/transcriptions/stream.
-  Self-contained (no CDNs): captures the mic via an AudioWorklet, downsamples to
-  16 kHz mono s16le PCM, streams it over the WebSocket, and renders LocalAgreement
-  stabilized partials (committed bold + provisional faded) plus append-only finals.
-  Served as a plain static file — deliberately NOT through render_page, so there
-  are no {{...}} placeholders to corrupt.
+  Live dictation page for /v1/audio/transcriptions/stream.
+
+  Rendered through web_common.render_page (NOT served as a plain static file),
+  so it carries the same header, nav, scale picker, severity pills and sign-out
+  as every other WebUI page and the double-brace placeholders below are
+  substituted server-side.
+
+  Auth: the session cookie the rest of the WebUI already uses. There is no API
+  key field and no server field — the page talks to the origin that served it,
+  the browser attaches the cookie to both the WebSocket handshake and the batch
+  POST, and a signed-out visitor gets the shared login gate like anywhere else.
+
+  Audio: captures the mic via an AudioWorklet, downsamples to 16 kHz mono s16le
+  PCM, streams it over the WebSocket, and renders LocalAgreement stabilized
+  partials (committed bold + provisional faded) plus append-only finals.
+  Self-contained — no CDNs.
 -->
-<html lang="de">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Live Dictation — faster-whisper</title>
+<title>{{HEADER_TITLE}}</title>
+{{PAGE_META}}
+{{SCALE_BOOTSTRAP_HEAD}}
 <style>
-  :root { --fs: 16px; --bg:#0f1115; --fg:#e6e6e6; --muted:#8b93a1; --accent:#4f8cff; --ok:#3fb950; --err:#f85149; }
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --fg: #c9d1d9;
+    --dim: #6e7681;
+    --help: #8b949e;
+    --bold: #f0f6fc;
+    --cyan: #79c0ff;
+    --green: #7ee787;
+    --yellow: #f2cc60;
+    --red: #ff7b72;
+    --border: #30363d;
+    --input-bg: #0d1117;
+  }
   * { box-sizing: border-box; }
-  html, body { margin:0; height:100%; }
+  html, body { margin: 0; height: 100%; }
   body {
-    font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
-    font-size: var(--fs); background: var(--bg); color: var(--fg);
+    background: var(--bg); color: var(--fg);
+    font: 1rem/1.5 var(--font-mono);
     display: flex; flex-direction: column; min-height: 100%;
   }
-  header { padding: 0.75rem 1rem; border-bottom: 1px solid #232733; display:flex; gap:1rem; align-items:center; flex-wrap:wrap; }
-  header h1 { font-size: 1rem; margin:0; font-weight:600; }
-  .controls { display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; }
-  label { font-size: 0.8rem; color: var(--muted); display:flex; gap:0.3rem; align-items:center; }
-  input[type=text], input[type=password], select {
-    font-family: Consolas, Menlo, monospace; font-size:0.85rem;
-    background:#161922; color:var(--fg); border:1px solid #2a2f3a; border-radius:0.35rem; padding:0.3rem 0.45rem;
+
+  /* sub-bar controls — same shape as the other pages' .subbar */
+  .subbar label { display: inline-flex; align-items: center; gap: 0.35rem;
+    color: var(--help); font-size: var(--fs-sm); }
+  .subbar input[type=text], .subbar select {
+    background: var(--input-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.2rem 0.4rem; font-family: var(--font-mono);
+    font-size: var(--fs-sm);
   }
-  button {
-    font-size:0.9rem; padding:0.45rem 1rem; border-radius:0.4rem; border:1px solid #2a2f3a;
-    background:var(--accent); color:#fff; cursor:pointer;
+  .subbar button {
+    background: var(--panel); color: var(--bold);
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.3rem 0.9rem; font-family: var(--font-mono);
+    font-size: var(--fs-sm); cursor: pointer;
   }
-  button.stop { background:var(--err); }
-  button:disabled { opacity:0.5; cursor:default; }
-  #status { font-size:0.8rem; color:var(--muted); margin-left:auto; }
-  #status.live { color: var(--ok); }
-  #status.error { color: var(--err); }
-  main { flex:1; padding:1rem; overflow:auto; }
+  .subbar button:hover { border-color: var(--cyan); color: var(--cyan); }
+  .subbar button.stop { border-color: var(--red); color: var(--red); }
+  .subbar button:disabled { opacity: 0.5; cursor: default; }
+  #status { color: var(--dim); font-size: var(--fs-sm); }
+  #status.live { color: var(--green); }
+  #status.error { color: var(--red); }
+
+  main { flex: 1; padding: 1.25rem; overflow: auto; }
   #doc {
-    white-space: pre-wrap; word-break: break-word; line-height:1.6;
-    font-size:1.05rem; min-height:6rem;
+    white-space: pre-wrap; word-break: break-word; line-height: 1.65;
+    font-size: var(--fs-lg); min-height: 6rem; max-width: 60rem;
   }
-  #final { color: var(--fg); }                 /* committed: locked, append-only */
-  #tail { color:#aeb6c2; }                      /* provisional: settled this utterance, may still firm up */
-  #partial { color: var(--muted); }
-  #partial .committed { color:#c8ccd4; }
-  #partial .pending { color:#5b6270; opacity:0.6; font-style:italic; }
-  footer { padding:0.5rem 1rem; border-top:1px solid #232733; font-size:0.75rem; color:var(--muted); }
-  code { font-family: Consolas, Menlo, monospace; }
+  #final { color: var(--fg); }        /* committed: locked, append-only */
+  #tail { color: var(--help); }       /* provisional: may still firm up */
+  #partial { color: var(--dim); }
+  #partial .committed { color: var(--fg); }
+  #partial .pending { color: var(--dim); opacity: 0.6; font-style: italic; }
+
+  footer {
+    padding: 0.6rem 1.25rem; border-top: 1px solid var(--border);
+    font-size: var(--fs-sm); color: var(--help);
+  }
+  footer code {
+    font-family: var(--font-mono); color: var(--cyan);
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 3px; padding: 0 0.3em;
+  }
+  #note { margin-top: 0.4rem; color: var(--dim); }
+
+  {{NAV_CSS}}
 </style>
 </head>
 <body>
 <header>
-  <h1>Live Dictation</h1>
-  <div class="controls">
-    <label>Mode
-      <select id="mode" title="Streaming: live partials over a WebSocket. Batch: record, then POST the whole clip to /v1/audio/transcriptions (one-shot, full pipeline).">
-        <option value="stream">streaming (live)</option>
-        <option value="batch">batch (record &amp; send)</option>
-      </select>
-    </label>
-    <label>Server <input type="text" id="server" placeholder="(this page's host)" size="24"
-                         title="Backend base URL or host:port, e.g. https://whisper.example.com or 192.168.1.50:8000. Empty = same host that served this page."></label>
-    <label>Model <input type="text" id="model" value="whisper-1" size="13"></label>
-    <label>Lang <input type="text" id="lang" value="de" size="3"></label>
-    <label>Format
-      <select id="format">
-        <option value="json">json</option>
-        <option value="verbose_json">verbose_json</option>
-      </select>
-    </label>
-    <label>API&nbsp;key <input type="password" id="key" placeholder="(open mode)" size="12"></label>
-    <button id="toggle">Start dictation</button>
+  <div class="header-inner">
+    <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
+    <span class="brand-sep" aria-hidden="true"></span>
+    {{NAV}}
+    <span class="spacer"></span>
+    <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
   </div>
-  <span id="status">idle</span>
+  <div class="subbar">
+    <span class="subbar-title">Dictate</span>
+    <div class="subbar-left">
+      <label>mode
+        <select id="mode" title="Streaming: live partials over a WebSocket. Batch: record, then POST the whole clip to /v1/audio/transcriptions (one-shot, full pipeline).">
+          <option value="stream">streaming (live)</option>
+          <option value="batch">batch (record &amp; send)</option>
+        </select>
+      </label>
+      <label>model <input type="text" id="model" value="whisper-1" size="13"></label>
+      <label>lang <input type="text" id="lang" value="de" size="3"></label>
+      <label>format
+        <select id="format">
+          <option value="json">json</option>
+          <option value="verbose_json">verbose_json</option>
+        </select>
+      </label>
+      <button id="toggle">Start dictation</button>
+      <span id="status">idle</span>
+    </div>
+  </div>
 </header>
 <main>
   <div id="doc"><span id="final"></span><span id="tail"></span><span id="partial"></span></div>
 </main>
 <footer>
-  Speak commands: <code>Punkt</code> → . &nbsp; <code>Komma</code> → , &nbsp;
-  <code>neue Zeile</code> → newline &nbsp; <code>Klammer auf/zu</code> → ( )
+  Speak commands: <code>Punkt</code> &rarr; . &nbsp; <code>Komma</code> &rarr; , &nbsp;
+  <code>neue Zeile</code> &rarr; newline &nbsp; <code>Klammer auf/zu</code> &rarr; ( )
   <div id="note"></div>
 </footer>
 
+{{SCALE_PICKER_JS}}
+{{SEV_POLLER_JS}}
 <script>
 (() => {
   "use strict";
@@ -103,42 +153,23 @@
   function setStatus(text, cls) { statusEl.textContent = text; statusEl.className = cls || ""; }
   const mode = () => $("mode").value;
 
-  // --- connection target + persisted settings ---------------------------------
-  // The API key is deliberately NOT in this list: localStorage is origin-scoped
-  // and never expires, and this origin also serves the admin WebUI.
-  const PREF_FIELDS = ["mode", "server", "model", "lang", "format"];
+  // This page is served by the backend it talks to, so both transports target
+  // the page's own origin and the session cookie rides along automatically —
+  // no key field, no server field, no CORS. A remote backend is reached by
+  // opening ITS /dictate, which is also where its credentials live.
+  const wsBase = () =>
+    (location.protocol === "https:" ? "wss" : "ws") + "://" + location.host;
 
-  // Resolve the "Server" field to a ws[s]:// base URL. Accepts a full
-  // ws(s)/http(s) URL or a bare host[:port]; empty falls back to this page's host.
-  function wsBase() {
-    let s = ($("server").value || "").trim().replace(/\/+$/, "");
-    const pageScheme = location.protocol === "https:" ? "wss" : "ws";
-    if (!s) return pageScheme + "://" + location.host;
-    if (/^wss?:\/\//i.test(s)) return s;
-    if (/^https:\/\//i.test(s)) return "wss://" + s.slice(8);
-    if (/^http:\/\//i.test(s)) return "ws://" + s.slice(7);
-    return pageScheme + "://" + s;            // bare host[:port]
-  }
-
-  // Resolve the "Server" field to an http[s]:// base URL (batch POST target).
-  // Empty → same origin that served this page (no CORS); a remote host needs
-  // CORS enabled on the backend (the WS path is not subject to CORS).
-  function httpBase() {
-    let s = ($("server").value || "").trim().replace(/\/+$/, "");
-    if (!s) return location.origin;
-    if (/^https?:\/\//i.test(s)) return s;
-    if (/^wss:\/\//i.test(s)) return "https://" + s.slice(6);
-    if (/^ws:\/\//i.test(s)) return "http://" + s.slice(5);
-    return location.protocol + "//" + s;      // bare host[:port], match page scheme
-  }
+  // Settings persisted per browser. The credential is the session cookie, so
+  // there has never been anything secret to keep out of this blob — but an
+  // older build of this page did store an API key here, hence the cleanup.
+  const PREF_FIELDS = ["mode", "model", "lang", "format"];
 
   function loadPrefs() {
     let saved = {};
     try { saved = JSON.parse(localStorage.getItem("dictatePrefs") || "{}"); } catch {}
     for (const f of PREF_FIELDS) if (saved[f] != null && $(f)) $(f).value = saved[f];
-    // An older build of this page persisted the key too — rewrite the blob
-    // without it rather than leaving the credential behind on this origin.
-    if (saved.key != null) savePrefs();
+    if (saved.key != null || saved.server != null) savePrefs();
   }
   function savePrefs() {
     const o = {};
@@ -182,7 +213,7 @@
   }
 
   function renderPartial(committed, pending) {
-    partialEl.innerHTML = "";
+    partialEl.textContent = "";
     const c = document.createElement("span"); c.className = "committed"; c.textContent = committed || "";
     const p = document.createElement("span"); p.className = "pending"; p.textContent = pending || "";
     partialEl.append(c, p);
@@ -252,9 +283,15 @@
       fd.append("model", $("model").value.trim() || "whisper-1");
       const lang = $("lang").value.trim(); if (lang) fd.append("language", lang);
       fd.append("response_format", $("format").value || "json");
-      const key = $("key").value.trim();
-      const headers = key ? { Authorization: "Bearer " + key } : {};
-      const resp = await fetch(httpBase() + "/v1/audio/transcriptions", { method: "POST", headers, body: fd });
+      // Same origin, so the session cookie authenticates this POST. The CSRF
+      // middleware wants the double-submit header on a cookie-authenticated
+      // unsafe method; the shared chrome keeps window._csrfToken current.
+      const headers = {};
+      const csrf = typeof window._csrfToken === "function" ? window._csrfToken() : "";
+      if (csrf) headers["X-CSRF-Token"] = csrf;
+      const resp = await fetch("/v1/audio/transcriptions", {
+        method: "POST", headers, body: fd, credentials: "same-origin",
+      });
       if (!resp.ok) {
         setStatus("batch error " + resp.status + ": " + (await resp.text()).slice(0, 200), "error");
         return;
@@ -271,9 +308,7 @@
       tailEl.textContent = ""; renderPartial("", "");
       setStatus("done", "live");
     } catch (err) {
-      // A bare TypeError here is usually a cross-origin CORS block (remote Server).
-      setStatus("batch failed: " + err.message
-        + " — remote backend needs CORS: set WHISPER_CORS_ALLOW_ORIGINS (or open /dictate from it)", "error");
+      setStatus("batch failed: " + err.message, "error");
     } finally {
       running = false;
       if (recStream) { recStream.getTracks().forEach((t) => t.stop()); recStream = null; }
@@ -281,32 +316,15 @@
     }
   }
 
-  // Hand the typed key to the WebSocket without ever putting it in the URL —
-  // uvicorn's access log records the full request line, query string included.
-  // Same origin: exchange it for the HttpOnly session cookie the rest of the
-  // WebUI uses (POST /auth/login), which the browser then attaches to the
-  // handshake. Cross origin: that cookie is not sent, so pass the key in the
-  // one request header a browser may set on a WebSocket — the subprotocol.
-  // Returns the subprotocol list to open the socket with ([] = none).
-  async function wsAuth(key) {
-    if (!key) return [];
-    if (httpBase() !== location.origin) return ["bearer." + key];
-    const r = await fetch("/auth/login", {
-      method: "POST", cache: "no-store",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: key }),
-    });
-    if (!r.ok) throw new Error("API key rejected (" + r.status + ")");
-    return [];
-  }
-
   async function start() {
     finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", "");
     const base = wsBase();
-    const protocols = await wsAuth($("key").value.trim());
-    ws = new WebSocket(base + "/v1/audio/transcriptions/stream", protocols);
+    // No subprotocol and no key: same origin, so the browser attaches the
+    // HttpOnly session cookie to the handshake, and auth._resolve_user reads it
+    // exactly as it does for every other page request.
+    ws = new WebSocket(base + "/v1/audio/transcriptions/stream");
     ws.binaryType = "arraybuffer";
-    setStatus("connecting to " + base + " …");
+    setStatus("connecting…");
 
     ws.onopen = () => {
       ws.send(JSON.stringify({
@@ -318,7 +336,15 @@
     };
     ws.onmessage = onMessage;
     ws.onerror = () => setStatus("socket error", "error");
-    ws.onclose = () => { if (running) stop(); setStatus("closed"); };
+    ws.onclose = (ev) => {
+      if (running) stop();
+      // 4401 is the server's "no valid credential" close code — on this page
+      // that means the session expired, so point at the fix instead of a bare
+      // "closed". 4403 is the handshake origin check.
+      if (ev && ev.code === 4401) setStatus("signed out — reload to sign in again", "error");
+      else if (ev && ev.code === 4403) setStatus("handshake rejected (origin)", "error");
+      else setStatus("closed");
+    };
 
     try {
       mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
@@ -381,13 +407,13 @@
   PREF_FIELDS.forEach((f) => { const el = $(f); if (el) el.addEventListener("change", savePrefs); });
   if (!window.isSecureContext) {
     const n = $("note");
-    n.textContent = "⚠ Microphone needs a secure context (https or localhost). Open this page "
-      + "from localhost (or over https) and set Server to your remote backend.";
-    n.style.color = "var(--err)";
+    n.textContent = "⚠ Microphone needs a secure context (https or localhost). "
+      + "Open this page over https, or from localhost.";
+    n.style.color = "var(--red)";
   } else {
-    $("note").textContent = "Settings (never the API key) are saved in this browser's localStorage. "
-      + "Batch mode records the clip and POSTs it to /v1/audio/transcriptions (one-shot); "
-      + "for a remote Server, set WHISPER_CORS_ALLOW_ORIGINS on the backend (or open /dictate from it).";
+    $("note").textContent = "Settings are saved in this browser. Batch mode records the "
+      + "clip and POSTs it to /v1/audio/transcriptions in one shot (full pipeline); "
+      + "streaming mode shows live partials over a WebSocket.";
   }
 })();
 </script>

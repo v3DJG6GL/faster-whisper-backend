@@ -2595,6 +2595,12 @@ _NAV_SPEC: list[tuple[str, str, str, bool]] = [
     ("reports",  "/reports",           "reports",      True),
     ("stats",    "/stats",             "stats",        False),
     ("logs",     "/logs",              "logs",         False),
+    # No per-page permission key and no admin gate: /dictate is the streaming
+    # endpoint's own front end, reachable by every signed-in identity (the
+    # WebSocket enforces the same auth as the API). It therefore renders as a
+    # plain navlink — neither `admin-only` nor `page-link` — which is exactly
+    # what nav_html does for a label absent from both maps.
+    ("dictate",  "/dictate",           "dictate",      False),
     ("settings", "/settings",          "settings",     True),
     ("pipeline", "/settings/pipeline", "pipeline",     True),
     ("keys",     "/settings/api-keys", "api-keys",     True),
@@ -2797,6 +2803,7 @@ _HEADER_SLUG_BY_CURRENT: dict[str, str] = {
     "captures":     "captures",
     "overrides":    "overrides",
     "pipeline":     "pipeline",
+    "dictate":      "dictate",
 }
 
 

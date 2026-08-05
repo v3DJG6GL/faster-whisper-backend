@@ -45,7 +45,7 @@ _TILE_SPEC: list[tuple[str, str, str, str, str, list[int], bool]] = [
     ("user", "logs", "logs", "/logs",
      "live log stream", [6, 7, 12, 7, 6], False),
     ("any", "dictate", "dictate", "/dictate",
-     "live dictation demo", [8, 11, 13, 11, 8], False),
+     "live dictation", [8, 11, 13, 11, 8], False),
     ("admin", "settings", "settings", "/settings",
      "full configuration", [8, 9, 10, 9, 8], True),
     ("admin", "pipeline", "pipeline", "/settings/pipeline",
