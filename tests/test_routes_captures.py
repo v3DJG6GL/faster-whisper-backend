@@ -342,6 +342,45 @@ def test_locked_member_mutations_blocked_at_endpoints(client, make_user_key):
     assert row is not None and row["status"] == "new"
 
 
+def test_nonadmin_can_unlock_but_not_edit_a_locked_sample(client, make_user_key):
+    """`is_locked` is writable by any captures-scoped caller, so it must also
+    be RELEASABLE by them — otherwise it is a one-way switch only an admin can
+    undo. A non-admin may send the unlock and nothing else while locked."""
+    import capture_samples_store as gs
+    import captures_store as cs
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    conn = cs._require_conn()
+    _insert_sample(conn, gs, "unlock01sid", locked=True, user_id=uid)
+    h = bearer(raw)
+
+    # Any other edit stays frozen...
+    assert client.patch(
+        "/captures/api/samples/unlock01sid",
+        json={"status": "reviewed"}, headers=h,
+    ).status_code == 409
+    # ...including an unlock smuggled alongside one.
+    assert client.patch(
+        "/captures/api/samples/unlock01sid",
+        json={"is_locked": False, "status": "reviewed"}, headers=h,
+    ).status_code == 409
+    assert gs.get_sample("unlock01sid")["is_locked"] == 1
+
+    # The bare unlock goes through.
+    assert client.patch(
+        "/captures/api/samples/unlock01sid",
+        json={"is_locked": False}, headers=h,
+    ).status_code == 200
+    assert gs.get_sample("unlock01sid")["is_locked"] == 0
+
+    # And once unlocked, ordinary edits work again.
+    assert client.patch(
+        "/captures/api/samples/unlock01sid",
+        json={"status": "reviewed"}, headers=h,
+    ).status_code == 200
+
+
 def test_locked_member_view_does_not_rewrite_text(
         client, make_user_key, app_module, monkeypatch):
     """Viewing a locked sample's member — or the sample itself — must not

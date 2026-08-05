@@ -2159,7 +2159,18 @@ async def patch_sample_api(
     )
     _audit_cross_user_read(user, g, "sample-patch", sid)
     if g["is_locked"] and not user.get("is_admin"):
-        raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
+        # `is_locked` is writable by any captures-scoped caller (below), so the
+        # lock must also be RELEASABLE by them — otherwise setting it is a
+        # one-way switch: the guard here would block the very patch that clears
+        # it, and only an admin could undo it. A non-admin may therefore send
+        # exactly one thing while the sample is locked, the unlock itself.
+        # Every other edit stays frozen, which is what the lock is for.
+        _unlock_only = (
+            payload.is_locked is False
+            and payload.model_dump(exclude_none=True).keys() == {"is_locked"}
+        )
+        if not _unlock_only:
+            raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
 
     patch: dict[str, Any] = {}
     # Lazily-fetched hydrated members; up to three branches below need
