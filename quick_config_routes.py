@@ -28,6 +28,7 @@ buffer contents and don't persist them.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import logging
@@ -545,7 +546,9 @@ async def v1_get_recent_words(
             max_words = max(0, min(cap, int(limit)))
         except (TypeError, ValueError):
             max_words = cap
-    return {"words": build_word_suggestions(user, max_words=max_words), "max": cap}
+    words = await asyncio.to_thread(
+        functools.partial(build_word_suggestions, user, max_words=max_words))
+    return {"words": words, "max": cap}
 
 
 @v1_router.get("/usage")
@@ -864,13 +867,13 @@ async def get_recent(
         q_limit = page_size
     q_limit = max(1, min(q_limit, page_size))
 
-    return _recent_page(
+    return await _recent_page(
         before_ts=q_before, limit=q_limit,
         query=None, sees_all=sees_all, caller_uid=caller_uid,
     )
 
 
-def _recent_page(
+async def _recent_page(
     *,
     before_ts: float,
     limit: int,
@@ -879,12 +882,20 @@ def _recent_page(
     caller_uid: str,
 ) -> dict[str, Any]:
     """Shared body of GET /recent and POST /recent/search — identical scoping
-    and pagination, the two differ only in where the search term travels."""
-    traces = transcriptions_store.list_recent(
-        before_ts=before_ts if before_ts > 0 else None,
-        limit=limit,
-        user_id_filter=None if sees_all else caller_uid,
-        query=query or None,
+    and pagination, the two differ only in where the search term travels.
+
+    Off the loop: a search is an unindexable LIKE '%needle%' over two TEXT
+    columns capped at 50 000 chars each, so SQLite scans every retained row.
+    Measured ~30 ms per search at the shipped RECENT_TRANSCRIPTIONS_MAX of 500,
+    unthrottled, and .env.example documents 0 = unbounded."""
+    traces = await asyncio.to_thread(
+        functools.partial(
+            transcriptions_store.list_recent,
+            before_ts=before_ts if before_ts > 0 else None,
+            limit=limit,
+            user_id_filter=None if sees_all else caller_uid,
+            query=query or None,
+        )
     )
     next_before = traces[-1]["created_ts"] if len(traces) >= limit else None
     return {"recent": traces, "next_before_ts": next_before}
@@ -915,7 +926,7 @@ async def post_recent_search(
     perms = user["permissions"]
     page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
     limit = max(1, min(payload.limit or page_size, page_size))
-    return _recent_page(
+    return await _recent_page(
         before_ts=payload.before_ts,
         limit=limit,
         query=(payload.q or "").strip() or None,
@@ -963,9 +974,13 @@ async def stream_recent(
             # first so the client receives them in chronological order,
             # matching the prior in-memory deque iteration semantics).
             page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
-            replay = transcriptions_store.list_recent(
-                limit=page_size,
-                user_id_filter=None if sees_all else caller_uid,
+            # Off the loop with its siblings — this runs once per SSE connect.
+            replay = await asyncio.to_thread(
+                functools.partial(
+                    transcriptions_store.list_recent,
+                    limit=page_size,
+                    user_id_filter=None if sees_all else caller_uid,
+                )
             )
             for entry in reversed(replay):
                 if _visible(entry):

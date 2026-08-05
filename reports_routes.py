@@ -31,6 +31,7 @@ request.client.host when no user_id is present.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from datetime import datetime, timezone
@@ -81,8 +82,16 @@ class ReportSubmitIn(BaseModel):
     final: str = Field(default="", max_length=50_000)
     steps: list[Any] = Field(default=[], max_length=500)
     corrections: list[CorrectionIn] = Field(default=[], max_length=500)
-    intended_text: str = ""
-    user_comment: str = ""
+    # 64 KB, deliberately NOT the store's own 2 000 / 4 000 caps. The store
+    # slices these AFTER pydantic has parsed the whole body, and the only other
+    # ceiling is MAX_REQUEST_BYTES (256 MB) — a submit carrying two 100 MB
+    # strings parsed fine and peaked at 627 MB of RSS to store 6 KB. A ceiling
+    # 16x above the store's functional cap kills that while staying far above
+    # anything a human types: the report textarea carries no maxlength, so
+    # bounding at 4 000 would turn a long comment that succeeds today (silently
+    # truncated) into a 422 with the text lost.
+    intended_text: str = Field(default="", max_length=65_536)
+    user_comment: str = Field(default="", max_length=65_536)
 
 
 # ---------------------------------------------------------------------
@@ -221,19 +230,29 @@ async def list_reports_api(
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
     effective_user = perms.effective_user_id_for("reports", caller_uid)
-    rows = reports_store.list_reports(user_id=effective_user)
-    usernames = api_keys_store.get_usernames(
-        [r.get("user_id") for r in rows],
-    )
-    for r in rows:
-        r["username"] = usernames.get(r.get("user_id"))
-    return JSONResponse({
-        "reports": rows,
-        "counts": reports_store.counts_by_status(user_id=effective_user),
-        "retention_days": int(getattr(cfg, "REPORTS_RETENTION_DAYS", 0)),
-        "is_admin": bool(user.get("is_admin")),
-        "scope": perms.scope("reports"),
-    })
+    def _render() -> str:
+        rows = reports_store.list_reports(user_id=effective_user)
+        usernames = api_keys_store.get_usernames(
+            [r.get("user_id") for r in rows],
+        )
+        for r in rows:
+            r["username"] = usernames.get(r.get("user_id"))
+        return json.dumps({
+            "reports": rows,
+            "counts": reports_store.counts_by_status(user_id=effective_user),
+            "retention_days": int(getattr(cfg, "REPORTS_RETENTION_DAYS", 0)),
+            "is_admin": bool(user.get("is_admin")),
+            "scope": perms.scope("reports"),
+        }, ensure_ascii=False)
+
+    # The SERIALIZATION has to happen in the thread too, not just the query:
+    # at the store's 1000-row LIMIT with max-size rows this measured 2.17 s of
+    # frozen event loop, of which the DB read plus per-row json.loads was only
+    # 0.36 s — the remaining 1.8 s was JSONResponse rendering the body. Rows
+    # are plain types out of _row_to_dict, so a bare json.dumps produces the
+    # same bytes FastAPI would.
+    body = await asyncio.to_thread(_render)
+    return Response(content=body, media_type="application/json")
 
 
 @router.patch(
@@ -347,12 +366,17 @@ async def clear_reports_api(request: Request) -> JSONResponse:
     ],
 )
 async def export_reports_api() -> Response:
-    payload = {
-        "exported_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "app": "faster-whisper-backend",
-        "reports": reports_store.list_reports(),
-    }
-    blob = json.dumps(payload, ensure_ascii=False, indent=2)
+    def _render() -> str:
+        payload = {
+            "exported_at": datetime.now(timezone.utc).isoformat(
+                timespec="seconds"),
+            "app": "faster-whisper-backend",
+            "reports": reports_store.list_reports(),
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
+
+    # Same shape as list_reports_api: query AND serialize off the loop.
+    blob = await asyncio.to_thread(_render)
     fname = f"whisper-reports-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
     return Response(
         content=blob,

@@ -521,7 +521,11 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     # "↺ Reset to default" button actually clears the "local.json" badge.
     payload = _prune_defaults_to_removal(payload)
     try:
-        written = config_store.save_overrides(payload)
+        # Off the loop: save_overrides validates PIPELINE_RULES through
+        # regex_guard, which spawns a child interpreter and waits up to
+        # _GUARD_TIMEOUT (2.0 s). test_pipeline next door already uses this
+        # idiom for the same reason; the save path was left behind.
+        written = await asyncio.to_thread(config_store.save_overrides, payload)
     except ValidationError as e:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -694,7 +698,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
             "payload must contain a 'PIPELINE_RULES' array",
         )
     try:
-        saved = config_store.save_factory_rules(rules)
+        saved = await asyncio.to_thread(config_store.save_factory_rules, rules)
     except ValidationError as e:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -752,7 +756,8 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     until restart. Here we explicitly reload config.json into cfg.
     """
     try:
-        config_store.save_overrides({"PIPELINE_RULES": None})
+        await asyncio.to_thread(
+            config_store.save_overrides, {"PIPELINE_RULES": None})
         factory = config_store.load_factory_rules()
     except (ValidationError, RuntimeError, OSError) as e:
         logger.error("[config] clear-local-override failed: %s", e)

@@ -27,6 +27,9 @@ only sizes/versions, and this module logs nothing about the payload.
 
 from __future__ import annotations
 
+import asyncio
+import functools
+
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
@@ -88,7 +91,8 @@ async def get_client_settings(
     # The admin export of the same blob already sends this.
     response.headers["Cache-Control"] = "no-store"
     try:
-        return _state_body(client_settings_store.get(user["user_id"]))
+        return _state_body(
+            await asyncio.to_thread(client_settings_store.get, user["user_id"]))
     except client_settings_store.StoreUnavailable:
         raise _store_unavailable() from None
 
@@ -104,11 +108,18 @@ async def put_client_settings(
     413 = blob over the server cap. Force-push is just a PUT echoing the
     version fetched a moment ago; there is no bypass flag."""
     try:
-        ok, row = client_settings_store.put(
-            user["user_id"],
-            payload.blob,
-            payload.base_version,
-            device=payload.device,
+        # Off the loop: put() re-serialises the caller's already-parsed dict
+        # with json.dumps + encode BEFORE the 512 KB cap can reject it, so the
+        # cost is attacker-sized up to MAX_REQUEST_BYTES. Measured ~1 s of
+        # frozen loop for a ~190 MB blob that is then rejected with a 413.
+        ok, row = await asyncio.to_thread(
+            functools.partial(
+                client_settings_store.put,
+                user["user_id"],
+                payload.blob,
+                payload.base_version,
+                device=payload.device,
+            )
         )
     except client_settings_store.StoreUnavailable:
         raise _store_unavailable() from None
@@ -133,7 +144,8 @@ async def delete_client_settings(
     and a device still holding version N gets a 409 on its next PUT — the
     deletion surfaces instead of being silently overwritten."""
     try:
-        removed = client_settings_store.delete(user["user_id"])
+        removed = await asyncio.to_thread(
+            client_settings_store.delete, user["user_id"])
     except client_settings_store.StoreUnavailable:
         raise _store_unavailable() from None
     return {"ok": True, "deleted": removed}
