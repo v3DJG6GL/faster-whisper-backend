@@ -308,6 +308,42 @@ def test_pipeline_replacement_growth_rejected_when_fixture_never_matches():
     assert "regex test failed" in str(ei.value)
 
 
+def test_pipeline_backref_only_replacement_rejected():
+    # The analytic growth bound used to DELETE group references from the
+    # replacement before measuring it, so a replacement made only of
+    # backreferences measured as zero growth and was always accepted —
+    # ("(n+)", r"\1" * 256) amplifies exactly as hard as ("n", "n" * 256),
+    # which the sibling test above proves is rejected. Each reference is now
+    # charged the shortest string the pattern can match.
+    with pytest.raises(ValidationError) as ei:
+        _ok_on_save(PIPELINE_RULES=[
+            _regex("blow", pattern="(n+)", replacement="\\1" * 256), _terminal()])
+    assert "regex test failed" in str(ei.value)
+
+
+def test_pipeline_prefix_ambiguous_alternation_rejected():
+    # The overlap screen only caught byte-IDENTICAL branches, so the
+    # prefix-ambiguous forms — one run of input that splits many ways — walked
+    # through and then backtracked exponentially on real transcripts. None of
+    # these repeats a branch verbatim.
+    import regex_guard
+    for pat in ("(a|ab)+", "(x|xx)+y", "(ab|a|b)+c", "(n|d|nd)+#", "(|a)+"):
+        assert regex_guard._nested_repetition(pat), pat
+    with pytest.raises(ValidationError) as ei:
+        _ok_on_save(PIPELINE_RULES=[
+            _regex("boom", pattern="(n|d|nd)+#", replacement="X"), _terminal()])
+    assert "catastrophic backtracking" in str(ei.value)
+
+
+def test_pipeline_backrefs_and_alternation_still_accepted():
+    # Guard against over-correction: ordinary backreference replacements and
+    # UNrepeated alternations are the bread and butter of these rules.
+    _ok_on_save(PIPELINE_RULES=[
+        _regex("decimal", pattern=r"(\d+),(\d+)", replacement=r"\1.\2"),
+        _regex("anrede", pattern="(Herr|Frau) ", replacement=r"\1 "),
+        _terminal()])
+
+
 def test_pipeline_ordinary_expansion_still_accepted():
     # The counterpart to the test above: a rule whose replacement is longer
     # than its match is completely normal and must keep validating.

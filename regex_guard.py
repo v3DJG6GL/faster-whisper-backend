@@ -127,6 +127,14 @@ def _nested_repetition(pat: str) -> bool:
     on an n-word sentence — a fixture probe can't outrun that, so the shape
     itself has to be refused.
 
+    The overlap test covers PREFIX-ambiguous alternatives too, not only
+    byte-identical ones: `(a|ab)+`, `(x|xx)+y` and `(n|d|nd)+#` are all
+    exponential for the same reason — one run of input splits many ways — and
+    none of them repeats a branch verbatim. That test is a deliberate
+    over-approximation: it also refuses a repeated `(km|km/h)+`, which is not
+    actually explosive. Rejecting a writable rule is recoverable; hanging every
+    transcription on an uninterruptible `re.sub` is not.
+
     Scans the pattern string once; there is no way to match this with a regex
     and no stdlib API that exposes the parse tree. `(`, `)`, `*`, `+` and `{`
     are LITERAL inside a character class and after a backslash, so both are
@@ -189,12 +197,21 @@ def _nested_repetition(pat: str) -> bool:
                 if frame["rep"]:
                     return True
                 # (a|a)* — identical alternatives overlap, so the engine
-                # re-tries the same split every way round.
+                # re-tries the same split every way round. Prefix-ambiguous
+                # branches are the same trap without being byte-identical:
+                # (a|ab)+, (x|xx)+y, (n|d|nd)+# all let one run of input be
+                # split many ways, which backtracks exponentially. An empty
+                # branch — (|a)+ — is the degenerate case of the same thing.
                 if frame["alts"]:
                     cuts = [frame["start"]] + [x + 1 for x in frame["alts"]]
                     ends = frame["alts"] + [frame["start"] + len(body)]
                     branches = [pat[a:b] for a, b in zip(cuts, ends)]
                     if len(set(branches)) < len(branches):
+                        return True
+                    if any(not b for b in branches):
+                        return True
+                    if any(b != a and b.startswith(a)
+                           for a in branches for b in branches):
                         return True
             if frame["rep"] or repeats:
                 stack[-1]["rep"] = True
@@ -239,9 +256,12 @@ def validate(checks: list, timeout: float | None = None) -> None:
         if pattern and _nested_repetition(pattern):
             raise ValueError(
                 f"{where}: regex test failed: nested repetition "
-                "(a repeat inside a repeated group, e.g. `(\\w+ ?)+`) causes "
-                "catastrophic backtracking and can hang the server on ordinary "
-                "input — rewrite without a repeat inside a repeat."
+                "(a repeat inside a repeated group, e.g. `(\\w+ ?)+`) or a "
+                "repeated group whose alternatives overlap (e.g. `(a|ab)+`) "
+                "causes catastrophic backtracking and can hang the server on "
+                "ordinary input — rewrite without a repeat inside a repeat, "
+                "and make the alternatives of a repeated group mutually "
+                "exclusive."
             )
     import json
     import logging
@@ -344,12 +364,18 @@ def _probe(checks: list):
                 _min_match = _reparser.parse(item[0]).getwidth()[0]
             except Exception:  # noqa: BLE001 - width analysis is best effort
                 _min_match = 0
-            # Drop group references: their length comes from the match, not
-            # from the replacement text, so they can't be counted as growth.
+            # A group reference is NOT free: it contributes whatever the group
+            # captured, so ("(n+)", "\1"*256) amplifies exactly as hard as
+            # ("n", "n"*256) — but deleting the references outright measures it
+            # as an empty replacement and waves it through. Charge each one the
+            # shortest string the pattern can match, which is the least it can
+            # ever expand to, and count it alongside the literal characters.
+            _refs = len(re.findall(r"\\(?:\d+|g<[^>]*>)", item[1]))
             _literal = re.sub(r"\\(?:\d+|g<[^>]*>)", "", item[1])
-            if len(_literal) > _MAX_GROWTH * max(_min_match, 1):
+            _grown = len(_literal) + _refs * max(_min_match, 1)
+            if _grown > _MAX_GROWTH * max(_min_match, 1):
                 return i, (
-                    f"replacement is {len(_literal)} characters for a pattern "
+                    f"replacement is {_grown} characters for a pattern "
                     f"that can match as few as {_min_match} "
                     f"(limit {_MAX_GROWTH}x). The test fixture never matches "
                     "this pattern, so the growth it would cause on a real "
