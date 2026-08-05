@@ -98,19 +98,37 @@ def test_recent_query_filters_raw_and_final(client):
     transcriptions_store.record_trace(
         request_id="q2", model="m", raw="andere notiz",
         final="Aspirin verordnet", created_ts=2.0)
-    # ?q= matches the substring across raw OR final, case-insensitively.
-    r = client.get("/quick-config/recent", params={"q": "fieber"})
+    # The term matches the substring across raw OR final, case-insensitively.
+    # It travels in the POST body, never the query string: it is dictation
+    # text, and a query string is copied into every access log and into
+    # browser history, neither of which is the 0600 log file.
+    r = client.post("/quick-config/recent/search", json={"q": "fieber"})
     assert r.status_code == 200
     ids = [t["request_id"] for t in r.json()["recent"]]
     assert ids == ["q1"]
-    r = client.get("/quick-config/recent", params={"q": "ASPIRIN"})
+    r = client.post("/quick-config/recent/search", json={"q": "ASPIRIN"})
     assert [t["request_id"] for t in r.json()["recent"]] == ["q2"]
-    # No query → both rows (newest-first).
+    # No query → both rows (newest-first). The unfiltered slice stays a GET.
     r = client.get("/quick-config/recent")
     assert [t["request_id"] for t in r.json()["recent"]] == ["q2", "q1"]
     # No match → empty.
-    r = client.get("/quick-config/recent", params={"q": "zzznope"})
+    r = client.post("/quick-config/recent/search", json={"q": "zzznope"})
     assert r.json()["recent"] == []
+
+
+def test_recent_get_no_longer_filters_by_query_string(client):
+    """A dictation term must not be accepted in the URL — that is the whole
+    point of the POST endpoint. A stray ?q= is ignored, not honoured."""
+    import transcriptions_store
+    transcriptions_store.record_trace(
+        request_id="q1", model="m", raw="patient hat Fieber",
+        final="Patient hat Fieber", created_ts=1.0)
+    transcriptions_store.record_trace(
+        request_id="q2", model="m", raw="andere notiz",
+        final="Aspirin verordnet", created_ts=2.0)
+    r = client.get("/quick-config/recent", params={"q": "fieber"})
+    assert r.status_code == 200
+    assert [t["request_id"] for t in r.json()["recent"]] == ["q2", "q1"]
 
 
 def test_reapply_rules_status(client):
