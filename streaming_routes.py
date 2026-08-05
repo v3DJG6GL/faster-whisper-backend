@@ -92,6 +92,7 @@ _active_sessions: set[str] = set()
 _WS_UNAUTH = 4401
 _WS_DISABLED = 4503
 _WS_TOO_MANY = 4429
+_WS_BAD_ORIGIN = 4403
 _WS_IDLE_TIMEOUT = 4408  # client sent nothing for STREAMING_IDLE_TIMEOUT_SEC
 
 
@@ -250,6 +251,20 @@ async def transcribe_stream(ws: WebSocket) -> None:
     if not getattr(cfg, "STREAMING_ENABLED", True):
         await ws.close(code=_WS_DISABLED)
         return
+    # Same-origin check, matching every unsafe-method HTTP route. main._csrf_mw
+    # is registered with @app.middleware("http"), and BaseHTTPMiddleware passes
+    # websocket scopes through untouched — so without this the handshake is the
+    # one unsafe-side entry point in the tree with no Origin check. That matters
+    # most in OPEN mode, where authenticate_ws resolves the synthetic admin from
+    # the peer address alone: any page the operator visits could otherwise open
+    # a streaming session against their own server. Absent Origin still means
+    # allow, so non-browser clients (curl, SDKs, the desktop client) are
+    # unaffected; a proxy that rewrites Host is handled by TRUSTED_ORIGINS
+    # exactly as on the HTTP side.
+    if not main._origin_is_allowed(ws):
+        main._log_origin_rejected(ws)
+        await ws.close(code=_WS_BAD_ORIGIN)
+        return
     user = authenticate_ws(ws)
     if user is None:
         await ws.close(code=_WS_UNAUTH)
@@ -306,7 +321,15 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # use verbatim, where "" CLEARS the inherited prompt (no initial_prompt).
         _req_prompt = conf.get("prompt")
         prompt_provided = isinstance(_req_prompt, str)
-        req_prompt = _req_prompt.strip() if prompt_provided else ""
+        # Bounded to the same 2048 the admin-set DEFAULT_PROMPT it replaces
+        # carries (config_store: Field(max_length=2048)) and the sibling
+        # `hotwords` client override gets from main._DECODE_STR_CAPS. Without a
+        # cap the handshake frame — up to the websocket library's 16 MiB default
+        # message size — is re-tokenised on every partial for the life of the
+        # connection. Clamp rather than reject: an over-long prompt is a client
+        # bug, not an attack, and the tail was never going to survive
+        # faster-whisper's ~224-token prompt window anyway.
+        req_prompt = _req_prompt.strip()[:2048] if prompt_provided else ""
         # Optional per-request decode overrides (the client's "decode overrides").
         # Applied to the FINAL decode (the batch analogue); partials keep their
         # streaming-specific beam/temp/condition/vad knobs (see _build_transcribe_kwargs).
@@ -708,6 +731,21 @@ async def transcribe_stream(ws: WebSocket) -> None:
             nonlocal _qbytes, _flush_pending
             if not pcm:
                 return
+            # A single frame larger than the whole backlog cap would sail past
+            # the loop below (which can only drop what is ALREADY queued) and
+            # land in one put. Real clients send ~32 KB frames; the websocket
+            # library's default message ceiling is 16 MiB, so one crafted binary
+            # frame would otherwise expand to ~8 minutes of audio, float32'd and
+            # swept through VAD frame-by-frame in a single uninterrupted pass.
+            # Feed it in cap-sized pieces so the backlog logic still governs.
+            if len(pcm) > _hard_cap_bytes:
+                logger.warning(
+                    "[stream %s] oversized audio frame (%d bytes) — feeding in "
+                    "%d-byte pieces", session_id[:8], len(pcm), _hard_cap_bytes,
+                )
+                for off in range(0, len(pcm), _hard_cap_bytes):
+                    await sink(pcm[off:off + _hard_cap_bytes])
+                return
             # Absolute backlog cap: if the consumer has fallen catastrophically
             # behind, drop the oldest queued PCM (never silently) so memory can't
             # grow without bound. Skip-if-behind normally prevents reaching this.
@@ -715,6 +753,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 try:
                     kind, old = audio_q.get_nowait()
                 except asyncio.QueueEmpty:
+                    break
+                if kind == "stop":
+                    # _pump's ONLY exit is this sentinel, and teardown awaits the
+                    # pump task with no timeout — discarding it would wedge the
+                    # consumer forever, so the outer finally never runs and the
+                    # session slot leaks for the process lifetime. Put it back
+                    # and stop draining, exactly as the flush case re-arms.
+                    audio_q.put_nowait((kind, old))
                     break
                 dropped = len(old) if (kind == "pcm" and old) else 0
                 if kind == "flush":
