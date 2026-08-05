@@ -26,6 +26,8 @@ import sqlite3
 import threading
 from typing import Any
 
+import store_common
+
 logger = logging.getLogger("whisper-api")
 
 _lock = threading.Lock()
@@ -74,6 +76,11 @@ def init(conn: sqlite3.Connection, captures_audio_root: str) -> None:
     _conn = conn
     _groups_audio_dir = os.path.join(captures_audio_root, "groups")
     os.makedirs(_groups_audio_dir, exist_ok=True)
+    # The merged training WAVs under here are the same plaintext dictation the
+    # raw capture root holds, and captures_store.init() already 0700s that root.
+    # Without this the subtree lands at the process umask, so the hardening
+    # depends entirely on the parent staying tight.
+    store_common.secure_dir(_groups_audio_dir)
     _conn.executescript(_SCHEMA_CORE)
 
 

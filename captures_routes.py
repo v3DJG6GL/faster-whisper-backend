@@ -23,6 +23,7 @@ future "promote a capture into a report" flow needs no translation.
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -258,7 +259,12 @@ async def propose_merges_api(
     perms = user["permissions"]
     caller_uid = str(user.get("user_id") or "")
     sees_all = perms.scope("captures") == "all"
-    proposals, cached = captures_merge_proposer.propose_merges(
+    # Off the event loop: on a cold _TRIM_DUR_CACHE (every restart) this walks
+    # up to CAPTURES_PROPOSER_WINDOW rows doing a PCM read plus a full VAD pass
+    # each, and the candidate walk itself is O(N^2). Inline, that stalls every
+    # other request on the worker for the whole sweep.
+    proposals, cached = await asyncio.to_thread(
+        captures_merge_proposer.propose_merges,
         # Only scope=all callers can narrow via ?user_id=; the proposer
         # ignores user_id_filter when is_admin=False (caller scoped to
         # caller_user_id partition).

@@ -63,6 +63,16 @@ _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # runs — the first run after a miss pays one VAD pass per eligible capture.
 # {capture_id: (mtime, edge_pad_ms, max_gap_ms, trimmed_seconds)}
 _TRIM_DUR_CACHE: dict[str, tuple[float, int, int, float]] = {}
+# Nothing prunes this dict: invalidate() clears only _CACHE, and no capture
+# deletion path notifies the proposer. Capture ids churn (a fresh uuid4 per
+# transcription) while the row count stays pinned at CAPTURES_MAX, so without a
+# ceiling it grows for the process lifetime. The value is pure memoization of a
+# recomputable number, so dropping the oldest entries costs one VAD pass.
+_TRIM_DUR_CACHE_MAX = 5000
+
+# Ceiling on the text handed to the duplicate-similarity comparison. See
+# _generate_candidates_for_bucket.
+_DUP_COMPARE_MAX_CHARS = 2000
 
 
 def trimmed_duration_s(row: dict[str, Any]) -> float:
@@ -96,6 +106,9 @@ def trimmed_duration_s(row: dict[str, Any]) -> float:
             pcm, n, edge_pad_ms=edge, max_internal_gap_ms=max_gap,
         )
         dur_s = float(res.get("new_duration_ms") or 0) / 1000.0 or raw
+        # dicts keep insertion order, so this evicts the least recently added.
+        while len(_TRIM_DUR_CACHE) >= _TRIM_DUR_CACHE_MAX:
+            _TRIM_DUR_CACHE.pop(next(iter(_TRIM_DUR_CACHE)), None)
         _TRIM_DUR_CACHE[cid] = (mtime, edge, max_gap, dur_s)
         return dur_s
     except Exception as e:  # read/VAD failure → raw fallback
@@ -209,7 +222,13 @@ def _generate_candidates_for_bucket(
     """
     n = len(bucket)
     candidates: list[tuple[float, list[dict[str, Any]]]] = []
-    texts = [_normalize_text(_pick_text(m)) for m in bucket]
+    # SequenceMatcher.ratio() is quadratic in string length and runs on every
+    # pair in this O(N^2) walk. An eligible capture is at most
+    # CAPTURES_SAMPLE_MAX_DURATION_S of speech (a few hundred characters), while
+    # the store's own cap on the underlying columns is 50 000 — so this slice
+    # discards nothing a real member carries and bounds the pathological tail.
+    texts = [_normalize_text(_pick_text(m))[:_DUP_COMPARE_MAX_CHARS]
+             for m in bucket]
     for i in range(n):
         members: list[dict[str, Any]] = [bucket[i]]
         member_texts: list[str] = [texts[i]]
