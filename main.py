@@ -2196,6 +2196,15 @@ async def _swagger_ui():
         swagger_js_url="/static/swagger-ui-bundle.js",
         swagger_css_url="/static/swagger-ui.css",
         swagger_favicon_url="/static/favicon-32.png",
+        # Suppresses swagger-ui's OnlineValidatorBadge, which otherwise
+        # defaults to https://validator.swagger.io/validator and emits an
+        # <img>/<a> pointing at it. Its only guard is a "localhost"/"127.0.0.1"
+        # substring test on the definition URL, so the moment an operator adds
+        # their subnet to ADMIN_WEBUI_ALLOWED_HOSTS this page starts telling a
+        # third party the backend's internal host and port — and asks that
+        # third party to fetch it. Vendoring the bundle did not stop this;
+        # it is a runtime config default, not a script URL.
+        swagger_ui_parameters={"validatorUrl": None},
     )
 
 

@@ -2668,13 +2668,20 @@ def sev_pills_html() -> str:
     nav links.
 
     Stable IDs let SEV_POLLER_JS update just the `.n` inner span on each /sev
-    tick without rebuilding the link (preserves focus/click state). The counts
-    rendered here are best-effort at page load; the client takes over
-    immediately, so they're correct for the first render and live thereafter."""
-    counts = severity_counts()
+    tick without rebuilding the link (preserves focus/click state).
+
+    Rendered as ZEROES, deliberately. Every page shell that carries this
+    fragment is gated by a host allowlist ONLY — USER_WEBUI_ALLOWED_HOSTS
+    defaults to 0.0.0.0/0 — while GET /sev, which serves these same three
+    integers, requires authentication and calls itself user-tier. Baking the
+    live counts into the shell handed an unauthenticated caller a running
+    error-rate oracle for the server, one HTTP hop inside the gate the product
+    puts on exactly that data. SEV_POLLER_JS already rewrites these `.n` spans
+    from /sev, so for an authenticated user the only change is that the numbers
+    arrive on the first poll instead of in the initial HTML."""
     parts: list[str] = ['<span class="sevpills">']
     for level, key in (("warn", "WARNING"), ("err", "ERROR"), ("crit", "CRITICAL")):
-        n = counts[level]
+        n = 0
         cls = f"sevpill admin-only {level} {'hot' if n else 'zero'}"
         title = f"{key}+ since process start — click to filter logs"
         parts.append(

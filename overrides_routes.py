@@ -202,6 +202,34 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     if unknown:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             f"unexpected fields for this page: {sorted(unknown)}")
+    # The "profile is in use — unbind it first" rule existed ONLY in the page
+    # JS (startDelete), and _build_usage's own docstring already calls itself
+    # "the usage-aware delete guard". save_overrides performs no such check —
+    # validate_profile_refs enforces existence on the BINDING save path, the
+    # opposite direction — so a POST from curl, or from a tab whose usage map
+    # went stale against a concurrent binding change, deleted a referenced
+    # profile outright. That fails OPEN rather than merely dangling:
+    # effective_config resolves a missing name to None and silently DROPS the
+    # layer, so every `locks` entry it contributed disappears and fields the
+    # admin had pinned against per-request decode_override become
+    # client-overridable again, with no error anywhere.
+    incoming = payload.get("OVERRIDE_PROFILES")
+    if isinstance(incoming, dict):
+        current = getattr(cfg, "OVERRIDE_PROFILES", None) or {}
+        removed = set(current) - set(incoming)
+        if removed:
+            usage = await asyncio.to_thread(_build_usage)
+            in_use = sorted(
+                name for name in removed
+                if (usage.get(name, {}).get("users")
+                    or usage.get(name, {}).get("keys"))
+            )
+            if in_use:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT,
+                    "still bound to a user or key — unbind on the API keys "
+                    f"page first: {in_use}",
+                )
     try:
         # Off the loop: save_overrides re-validates the merged config, which
         # re-runs regex_guard (a child process with a 2 s budget) and then

@@ -89,9 +89,14 @@ jobs:
           GIT_REF: ${{ github.ref }}
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Fetch from the credentialed URL directly instead of `git remote
+          # add`: that persists the token verbatim into .git/config, where any
+          # later `git remote -v` or remote-echoing error puts it in the job
+          # log. Matters most on the host-mode Windows leg below, whose
+          # workspace is a real directory on a long-lived VM with no cleanup —
+          # but keep both legs identical so the pattern does not drift back.
           git init -q .
-          git remote add origin "https://x-access-token:${GIT_TOKEN}@forgejo.informethic.ch/${{ github.repository }}.git"
-          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin "$GIT_REF"
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 "https://x-access-token:${GIT_TOKEN}@forgejo.informethic.ch/${{ github.repository }}.git" "$GIT_REF"
           git checkout -q --force FETCH_HEAD
 
       # No pip cache: the job container is ephemeral and actions/cache is a
@@ -128,9 +133,10 @@ jobs:
           GIT_REF: ${{ github.ref }}
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # No `git remote add`: see the Linux leg. This runner is host mode,
+          # so .git/config survives the job on a persistent machine.
           git init -q .
-          git remote add origin "https://x-access-token:${env:GIT_TOKEN}@forgejo.informethic.ch/${{ github.repository }}.git"
-          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 origin "$env:GIT_REF"
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 "https://x-access-token:${env:GIT_TOKEN}@forgejo.informethic.ch/${{ github.repository }}.git" "$env:GIT_REF"
           git checkout -q --force FETCH_HEAD
 
       # Host mode: this installs into the VM's system python and doubles as

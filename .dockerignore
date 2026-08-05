@@ -29,6 +29,13 @@ captures/
 .env.*
 **/.env
 **/.env.*
+# The docker-compose files document ./secrets/bootstrap_admin_key.txt (and
+# .env.example documents an hf_token beside it) as the *_FILE secret source.
+# It is a bind-mount source, never needed inside the image, and none of the
+# patterns above match it — a local `docker build` baked a full-admin
+# bootstrap key into a layer. Verified by building a context and listing it.
+secrets/
+**/secrets/
 # Windows service artifacts (generated on the Windows host).
 WhisperAPI.exe
 WhisperAPI.xml
