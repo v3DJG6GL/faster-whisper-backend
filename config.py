@@ -1032,11 +1032,31 @@ def _env_float_or_none(name: str, current: "float | None") -> "float | None":
         _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid number; keeping {current!r}")
         return current
 
+_FALSY = ("0", "false", "no", "off")
+
+
 def _env_bool(name: str, current: bool) -> bool:
+    """Same contract as _env_int/_env_float: an unparseable value KEEPS the
+    current setting and is reported, rather than being silently coerced.
+
+    This used to return _truthy(raw), so every value outside 1/true/yes/on —
+    including the plausible typos "enabled", "y", "t", "True # comment" —
+    became False with no warning anywhere. For SESSION_COOKIE_SECURE that
+    means an operator who deliberately turned the flag ON for an HTTPS
+    deployment silently got a non-Secure session cookie, and the /settings page
+    still showed the field as env-pinned. The schema revalidation pass cannot
+    catch it either, because False is a perfectly valid bool."""
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return current
-    return _truthy(raw)
+    val = raw.strip().lower()
+    if val in _FALSY:
+        return False
+    if _truthy(raw):
+        return True
+    _ENV_WARNINGS.append(
+        f"{name}={raw!r} is not a valid boolean; keeping {current!r}")
+    return current
 
 def _env_str(name: str, current: str) -> str:
     """Stripped-string env passthrough — empty / unset → keep current."""
@@ -1086,22 +1106,23 @@ BOOTSTRAP_ADMIN_KEY = _env_str("WHISPER_BOOTSTRAP_ADMIN_KEY", BOOTSTRAP_ADMIN_KE
 USAGE_DB = _env_str("WHISPER_USAGE_DB", USAGE_DB)
 CLIENT_SETTINGS_DB = _env_str("WHISPER_CLIENT_SETTINGS_DB", CLIENT_SETTINGS_DB)
 USAGE_RETENTION_DAYS = _env_int("WHISPER_USAGE_RETENTION_DAYS", USAGE_RETENTION_DAYS)
-CAPTURES_PROPOSER_SESSION_GAP_S = _env_int(
-    "WHISPER_CAPTURES_PROPOSER_SESSION_GAP_S", CAPTURES_PROPOSER_SESSION_GAP_S)
-CAPTURES_PROPOSER_DUP_THRESHOLD = _env_float(
-    "WHISPER_CAPTURES_PROPOSER_DUP_THRESHOLD", CAPTURES_PROPOSER_DUP_THRESHOLD)
-CAPTURES_PROPOSER_MAX_PROPOSALS = _env_int(
-    "WHISPER_CAPTURES_PROPOSER_MAX_PROPOSALS", CAPTURES_PROPOSER_MAX_PROPOSALS)
-CAPTURES_PROPOSER_TARGET_S = _env_float(
-    "WHISPER_CAPTURES_PROPOSER_TARGET_S", CAPTURES_PROPOSER_TARGET_S)
+# CAPTURES_PROPOSER_CACHE_TTL_S only: it is genuinely absent from
+# ENV_VAR_MAPPING, so the generic loop below never reaches it.
+#
+# The seven siblings that used to sit here (PROPOSER_SESSION_GAP_S,
+# PROPOSER_DUP_THRESHOLD, PROPOSER_MAX_PROPOSALS, PROPOSER_TARGET_S,
+# SAMPLE_MIN_DURATION_S, SAMPLE_MAX_DURATION_S, SAMPLE_JOIN_STRATEGY) ARE in
+# ENV_VAR_MAPPING, and applying them here — BEFORE the _ENV_PRE snapshot — made
+# the snapshot record the already-env-modified value. The revalidation pass
+# then saw `_new == _old`, skipped them, and silently exempted exactly these
+# seven from the schema bounds every other env-mapped field is held to:
+# SAMPLE_MAX_DURATION_S=999 (schema le=30), MAX_PROPOSALS=100000 (le=200) and
+# JOIN_STRATEGY=bogus all applied with an empty _ENV_WARNINGS. The generic loop
+# infers the identical reader from each value's type, so dropping them here
+# changes nothing except that they now get validated and reverted like the
+# other ~150 fields.
 CAPTURES_PROPOSER_CACHE_TTL_S = _env_int(
     "WHISPER_CAPTURES_PROPOSER_CACHE_TTL_S", CAPTURES_PROPOSER_CACHE_TTL_S)
-CAPTURES_SAMPLE_MIN_DURATION_S = _env_float(
-    "WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S", CAPTURES_SAMPLE_MIN_DURATION_S)
-CAPTURES_SAMPLE_MAX_DURATION_S = _env_float(
-    "WHISPER_CAPTURES_SAMPLE_MAX_DURATION_S", CAPTURES_SAMPLE_MAX_DURATION_S)
-CAPTURES_SAMPLE_JOIN_STRATEGY = _env_str(
-    "WHISPER_CAPTURES_SAMPLE_JOIN_STRATEGY", CAPTURES_SAMPLE_JOIN_STRATEGY)
 
 
 # --- Schema-driven env application for every AdminConfig field ---------------

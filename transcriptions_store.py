@@ -63,6 +63,12 @@ _CAP_TOKEN_FIELD = 64
 # still records the attempt, so the rejected string reaches this table anyway.
 # 96 matches config_store.ModelId's max_length — no legitimate id is affected.
 _CAP_MODEL = 96
+# The one client-originated column that had no cap. A streaming handshake's
+# {"type":"config","language":...} is only length-bounded by the 1 MiB frame
+# size, and on the fallback path (no fw_info) it lands here verbatim and is
+# then served back through /quick-config/recent and the SSE replay. 32 is far
+# above any BCP-47 tag.
+_CAP_LANGUAGE = 32
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recent_transcriptions (
@@ -231,6 +237,7 @@ def record_trace(
     raw_s = (raw or "")[:_CAP_RAW]
     final_s = (final or "")[:_CAP_FINAL]
     model = (model or "")[:_CAP_MODEL]
+    language = (language or "")[:_CAP_LANGUAGE] or None
     steps_blob = json.dumps(_truncate_steps(steps or []), ensure_ascii=False)
     tokens_blob = json.dumps([str(t)[:_CAP_TOKEN_FIELD] for t in (tokens or [])],
                              ensure_ascii=False)

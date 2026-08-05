@@ -155,6 +155,14 @@ def _rebuild_index_locked() -> None:
         }
         for r in rows
     }
+    # Drop debounce state for tokens that can no longer authenticate. Nothing
+    # else prunes this dict: it was popped only on an explicit /auth/logout, so
+    # every session token ever looked up left a permanent ~150-byte entry keyed
+    # by a 64-char hash — the half of the login-loop growth the hourly purge
+    # loop did not reclaim. Worst case for a resurrected token is one extra
+    # expiry UPDATE.
+    for _stale in [k for k in _SLIDE_CACHE if k not in _SESSION_INDEX]:
+        _SLIDE_CACHE.pop(_stale, None)
 
 
 def _data_version_locked() -> int:
@@ -261,6 +269,7 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
         # Lazily evict an index entry that lapsed since the last rebuild.
         with _lock:
             _SESSION_INDEX.pop(th, None)
+            _SLIDE_CACHE.pop(th, None)
         return None
     _slide_expiry_debounced(th, rec)
     return dict(rec)
@@ -291,6 +300,7 @@ def _slide_expiry_debounced(token_hash: str, rec: dict[str, Any]) -> None:
 
 def revoke_session(raw_token: str) -> None:
     """Soft-revoke a session (used by /auth/logout). No-op if unknown."""
+    global _DATA_VERSION
     if not raw_token:
         return
     th = hash_token(raw_token)
@@ -303,7 +313,15 @@ def revoke_session(raw_token: str) -> None:
             (now, th),
         )
         _SLIDE_CACHE.pop(th, None)
-        _rebuild_index_locked()
+        # Drop the one key rather than re-reading every live session, mirroring
+        # the incremental insert create_session already does. The full rebuild
+        # here was O(live sessions) on the event loop — measured ~37 ms at
+        # 20 000 rows, and /auth/login has no rate limit or per-user cap, so N
+        # is caller-growable. Re-stamp the version: our own commit does not
+        # move PRAGMA data_version on this connection, so without this the
+        # sibling-worker refresh would re-read on the next request.
+        _SESSION_INDEX.pop(th, None)
+        _DATA_VERSION = _data_version_locked()
 
 
 def purge_expired() -> None:
