@@ -239,3 +239,40 @@ def test_row_to_dict_decodes_json(reports_store_db):
     rid, _ = _submit(rs, corrections=[{"wrong": "a", "correct": "b"}])
     row = rs.get_report(rid)
     assert isinstance(row["corrections"], list) and isinstance(row["steps"], list)
+
+
+# ---------------------------------------------------------------------------
+# input bounds that keep the list route renderable (security review)
+# ---------------------------------------------------------------------------
+
+def test_non_finite_trace_ts_never_reaches_the_row(reports_store_db):
+    """inf/NaN survive json.loads, pydantic's bare float and a REAL column,
+    but Starlette renders JSON with allow_nan=False — one such row made every
+    later /reports/api/list raise. The store must not be able to store one."""
+    import math
+    rs = reports_store_db
+    for bad in (float("inf"), float("-inf"), float("nan")):
+        rid, _ = _submit(rs, request_id=f"r-{bad}", trace_ts=bad)
+        assert math.isfinite(rs.get_report(rid)["trace_ts"])
+
+
+def test_request_id_is_truncated(reports_store_db):
+    """Every other submitted field is bounded; request_id was not, and it is
+    indexed twice."""
+    rs = reports_store_db
+    rid, _ = _submit(rs, request_id="x" * 5000)
+    assert len(rs.get_report(rid)["request_id"]) == rs._CAP_REQUEST_ID
+
+
+def test_merged_corrections_are_re_capped(reports_store_db):
+    """three_way_merge_corrections returns an uncapped union, so resubmitting
+    the same request_id with fresh keys grew one row without bound."""
+    import text_corrections
+    rs = reports_store_db
+    for batch in range(4):
+        _submit(rs, request_id="grow", corrections=[
+            {"wrong": f"w{batch}-{i}", "correct": f"c{batch}-{i}"}
+            for i in range(text_corrections.CAP_CORRECTIONS)
+        ])
+    row = rs.get_report(rs.find_by_request_user("grow", "u1")["id"])
+    assert len(row["corrections"]) <= text_corrections.CAP_CORRECTIONS

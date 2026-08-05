@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -45,6 +46,12 @@ _CAP_STEPS_JSON = 200_000
 _CAP_STEPS_ROWS = 500
 _CAP_INTENDED = 2_000
 _CAP_COMMENT = 4_000
+_CAP_REQUEST_ID = 128
+# Anything past this is not a plausible trace timestamp (year 2100). The point
+# is not the upper bound but rejecting inf/NaN: sqlite stores them in a REAL
+# column intact, and Starlette renders JSON with allow_nan=False, so one such
+# row makes /reports/api/list raise on EVERY subsequent load.
+_MAX_TRACE_TS = 4_102_444_800.0
 _CAP_ADMIN_NOTES = 8_000
 # Read ceiling for list_reports(). Matches the REPORTS_MAX eviction cap's
 # default, so a store inside its own cap is unaffected; it bounds the response
@@ -111,6 +118,25 @@ def _require_conn() -> sqlite3.Connection:
             "reports_store.init_db() was not called before use."
         )
     return _conn
+
+
+def _clean_trace_ts(value: Any, now: float) -> float:
+    """Coerce a caller-supplied trace timestamp to a finite, in-range float.
+
+    inf/NaN are the load-bearing case: json.loads accepts the Infinity
+    literal (and 1e400 overflows to inf under any parser), pydantic's bare
+    float passes it through, and sqlite stores it in a REAL column intact.
+    Starlette renders JSONResponse with allow_nan=False, so a single such row
+    makes every later /reports/api/list raise — a stored, self-perpetuating
+    500 on the admin triage page. Bound it before it reaches the column.
+    """
+    try:
+        ts = float(value or 0.0)
+    except (TypeError, ValueError):
+        return now
+    if not math.isfinite(ts):
+        return now
+    return max(0.0, min(ts, _MAX_TRACE_TS)) or now
 
 
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -222,6 +248,7 @@ def upsert_report(
     (latest submission supersedes), and created_ts bumps to "now" so
     the row re-floats to the top of /reports.
     """
+    request_id = (request_id or None) and str(request_id)[:_CAP_REQUEST_ID]
     existing = find_by_request_user(request_id, user_id)
     raw_t = (raw or "")[:_CAP_RAW]
     final_t = (final or "")[:_CAP_FINAL]
@@ -231,12 +258,17 @@ def upsert_report(
     comment_t = (user_comment or "")[:_CAP_COMMENT]
     role_t = "admin" if reporter_role == "admin" else "user"
     now = time.time()
+    trace_t = _clean_trace_ts(trace_ts, now)
 
     conn = _require_conn()
     if existing is not None:
-        merged = text_corrections.three_way_merge_corrections(
+        # Re-clean the union: three_way_merge_corrections returns current +
+        # edited with no cap, so without this a caller resubmitting the same
+        # request_id with fresh keys grows one row without bound. The captures
+        # path already re-cleans via captures_store.update_capture.
+        merged = _clean_corrections(text_corrections.three_way_merge_corrections(
             baseline=[], edited=corr_in, current=existing.get("corrections") or [],
-        )
+        ))
         rid = existing["id"]
         with _lock:
             conn.execute(
@@ -248,7 +280,7 @@ def upsert_report(
                 "  status = 'open', resolved_ts = NULL"
                 " WHERE id = ?",
                 (
-                    now, float(trace_ts or now), model, raw_t, final_t,
+                    now, trace_t, model, raw_t, final_t,
                     json.dumps(steps_t, ensure_ascii=False),
                     json.dumps(merged, ensure_ascii=False),
                     intended_t, comment_t, role_t, reporter_host or "",
@@ -269,7 +301,7 @@ def upsert_report(
             " user_id"
             ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
-                rid, now, float(trace_ts or now), request_id, model,
+                rid, now, trace_t, request_id, model,
                 raw_t, final_t,
                 json.dumps(steps_t, ensure_ascii=False),
                 json.dumps(corr_in, ensure_ascii=False),

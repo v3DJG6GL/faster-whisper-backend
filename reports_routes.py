@@ -66,9 +66,12 @@ class CorrectionIn(BaseModel):
 
 
 class ReportSubmitIn(BaseModel):
-    model_config = {"extra": "forbid"}
-    trace_ts: float = 0.0
-    request_id: str | None = None
+    # allow_inf_nan=False: a bare float otherwise accepts Infinity/NaN, which
+    # sqlite stores intact and Starlette's allow_nan=False renderer then chokes
+    # on for every subsequent list read. reports_store re-bounds it as well.
+    model_config = {"extra": "forbid", "allow_inf_nan": False}
+    trace_ts: float = Field(default=0.0, ge=0, le=4_102_444_800)
+    request_id: str | None = Field(default=None, max_length=128)
     model: str = Field(default="", max_length=256)
     # Bounded at the edge instead of silently truncated in the store. The values
     # mirror reports_store's own caps (_CAP_RAW / _CAP_FINAL / _CAP_STEPS_ROWS),
