@@ -65,6 +65,18 @@ _ADVERSARIAL = (
     "Wort123abc" * 24 + "!",
 )
 
+# Scaling probe (see _probe). The longer fixture repeats FIXTURE so the input
+# SHAPE is identical and only the length changes — the comparison then measures
+# how the pattern scales, not how it reacts to different text.
+_SCALE_FACTOR = 4
+_SCALE_FIXTURE = FIXTURE * _SCALE_FACTOR
+# Reject when the longer run costs more than this multiple of the short one.
+# Linear work costs _SCALE_FACTOR x; double that is generous headroom.
+_SCALE_ALLOWANCE = 2 * _SCALE_FACTOR
+# Ordinary rules finish in microseconds, where the timer's own resolution
+# dominates the ratio. Compare against at least this to keep noise out.
+_TIMER_FLOOR = 1e-4
+
 _SELF = os.path.abspath(__file__)
 
 
@@ -297,12 +309,15 @@ def _probe(checks: list):
     can name the culprit if it kills us."""
     import re
     import sys
+    import time
     for i, item in enumerate(checks):
         sys.stderr.write("%d\n" % i)
         sys.stderr.flush()
         try:
             rx = re.compile(item[0])
+            _t0 = time.perf_counter()
             out = rx.sub(item[1], FIXTURE)
+            _t_base = time.perf_counter() - _t0
         except Exception as exc:  # noqa: BLE001 - any compile/sub failure
             return i, str(exc)
         if len(out) > _MAX_GROWTH * len(FIXTURE):
@@ -320,6 +335,29 @@ def _probe(checks: list):
                 rx.sub(item[1], fixture)
             except Exception as exc:  # noqa: BLE001 - any sub failure
                 return i, str(exc)
+        # Scaling probe. The structural screen catches EXPONENTIAL shapes and
+        # the fixed-size probes above catch anything already slow at ~1 KB, but
+        # a merely POLYNOMIAL pattern is fast at 1 KB by construction and only
+        # bites at transcript length — `.*.*#` costs 0.2 s on FIXTURE and ~40 s
+        # at 6 KB. Re-run on a longer fixture of the SAME shape and compare:
+        # linear work grows with the length multiplier, so anything growing far
+        # faster is superlinear in the input it will actually be applied to.
+        try:
+            _t0 = time.perf_counter()
+            rx.sub(item[1], _SCALE_FIXTURE)
+            _t_scaled = time.perf_counter() - _t0
+        except Exception as exc:  # noqa: BLE001 - any sub failure
+            return i, str(exc)
+        # _TIMER_FLOOR keeps timer noise on a microsecond-scale legit rule from
+        # tripping the ratio; the allowance is double the length multiplier, so
+        # ordinary rules have ample headroom while `.*.*#` (~130x) is caught.
+        if _t_scaled > _SCALE_ALLOWANCE * max(_t_base, _TIMER_FLOOR):
+            return i, (
+                f"match time grows faster than the input ({_t_scaled / max(_t_base, _TIMER_FLOOR):.0f}x "
+                f"slower on a {_SCALE_FACTOR}x longer text). This pattern is fast "
+                "on a short sample but stalls on a full transcript — simplify it "
+                "(a leading or trailing `.*` is rarely needed; anchor instead)."
+            )
     return None
 
 

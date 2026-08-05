@@ -332,8 +332,16 @@ async def apply_rules_patch(
     # Hand the merged list to the same save path the admin uses: full Pydantic
     # re-validation incl. the 2 s ReDoS guard. An error may name a rule the user
     # didn't touch — the client surfaces this gracefully.
+    # Off the event loop. The guard runs the candidate patterns in a child
+    # process and waits up to _GUARD_TIMEOUT for it, so calling save_overrides
+    # inline freezes the whole worker — every HTTP request, SSE stream and
+    # WebSocket on it — for the duration, and this endpoint is reachable by a
+    # non-admin with no rate limit. admin_routes' rule dry-run already offloads
+    # the same hazard the same way.
     try:
-        written = config_store.save_overrides({"PIPELINE_RULES": current_rules})
+        written = await asyncio.to_thread(
+            config_store.save_overrides, {"PIPELINE_RULES": current_rules},
+        )
     except ValidationError as e:
         return status.HTTP_422_UNPROCESSABLE_ENTITY, {
             "errors": config_store.format_validation_errors(e),
