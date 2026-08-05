@@ -46,6 +46,10 @@ _CAP_STEPS_ROWS = 500
 _CAP_INTENDED = 2_000
 _CAP_COMMENT = 4_000
 _CAP_ADMIN_NOTES = 8_000
+# Read ceiling for list_reports(). Matches the REPORTS_MAX eviction cap's
+# default, so a store inside its own cap is unaffected; it bounds the response
+# when eviction has not yet caught up or the cap was raised at runtime.
+_LIST_LIMIT = 1000
 _CAP_CORRECTIONS = text_corrections.CAP_CORRECTIONS
 _CAP_CORRECTION_FIELD = text_corrections.CAP_CORRECTION_FIELD
 
@@ -341,14 +345,21 @@ def list_reports(user_id: str | None = None) -> list[dict[str, Any]]:
     `Permissions.effective_user_id_for("reports", caller_uid)` so the
     "own vs all" decision lives in one place."""
     conn = _require_conn()
+    # The soft cap the docstring relies on is an EVICTION cap, not a read cap:
+    # nothing here bounded the row count, and each row decodes up to ~300 KB of
+    # text plus a JSON parse of steps_json, inline in an async handler. A LIMIT
+    # makes the documented ceiling real. _LIST_LIMIT is the eviction cap, so a
+    # store at or under its own cap returns exactly what it returns today.
     if user_id is None:
         cur = conn.execute(
-            "SELECT * FROM reports ORDER BY created_ts DESC"
+            "SELECT * FROM reports ORDER BY created_ts DESC LIMIT ?",
+            (_LIST_LIMIT,),
         )
     else:
         cur = conn.execute(
-            "SELECT * FROM reports WHERE user_id = ? ORDER BY created_ts DESC",
-            (user_id,),
+            "SELECT * FROM reports WHERE user_id = ?"
+            " ORDER BY created_ts DESC LIMIT ?",
+            (user_id, _LIST_LIMIT),
         )
     return [_row_to_dict(r) for r in cur.fetchall()]
 

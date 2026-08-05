@@ -70,10 +70,14 @@ class ReportSubmitIn(BaseModel):
     trace_ts: float = 0.0
     request_id: str | None = None
     model: str = Field(default="", max_length=256)
-    raw: str = ""
-    final: str = ""
-    steps: list[Any] = []
-    corrections: list[CorrectionIn] = []
+    # Bounded at the edge instead of silently truncated in the store. The values
+    # mirror reports_store's own caps (_CAP_RAW / _CAP_FINAL / _CAP_STEPS_ROWS),
+    # so nothing that is stored intact today starts failing — but a submission
+    # far past them no longer gets parsed and re-serialised on the way in.
+    raw: str = Field(default="", max_length=50_000)
+    final: str = Field(default="", max_length=50_000)
+    steps: list[Any] = Field(default=[], max_length=500)
+    corrections: list[CorrectionIn] = Field(default=[], max_length=500)
     intended_text: str = ""
     user_comment: str = ""
 

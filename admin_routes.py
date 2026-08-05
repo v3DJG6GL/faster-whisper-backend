@@ -927,7 +927,13 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 else:
                     return {**common, "after": text, "skipped": True,
                             "error": f"unknown rule type: {rtype}"}
-        except re.error as e:
+        # TypeError/ValueError as well as re.error: the rule dicts arrive from
+        # the editor without going through _PIPELINE_RULE_ADAPTER, so a non-string
+        # `pattern` (a half-typed row, or a hand-rolled request body) reaches
+        # re.compile as e.g. an int and raises TypeError — which re.error does not
+        # cover, turning a dry run into an unhandled 500 instead of a per-step
+        # error the panel already knows how to render.
+        except (re.error, TypeError, ValueError) as e:
             return {**common, "after": text, "error": str(e)}
 
         out: dict[str, Any] = {"done": False, "after": text, "matches": 0}
