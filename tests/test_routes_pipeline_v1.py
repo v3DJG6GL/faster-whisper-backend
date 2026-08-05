@@ -188,7 +188,12 @@ def test_v1_tag_filtering_for_nonadmin(client, app_module, make_user_key):
     assert beta not in names        # caller lacks the 'beta' tag
 
 
-def test_v1_patch_rule_not_visible_403(client, app_module, make_user_key):
+def test_v1_patch_rule_not_visible_is_indistinguishable_from_unknown(
+    client, app_module, make_user_key,
+):
+    """A rule alice can't see must answer exactly like a rule that does not
+    exist. Answering 403 for one and 400 for the other let her enumerate the
+    slugs the admin curated out of her view, one guess per request."""
     import api_keys_store
     _alpha, beta, _untagged = _expose_tagged(app_module)
     make_user_key("root", is_admin=True)
@@ -196,15 +201,41 @@ def test_v1_patch_rule_not_visible_403(client, app_module, make_user_key):
     api_keys_store.set_user_permissions(
         uid, {"pages": {"quick_config": "own"}, "quick_config_tags": ["alpha"]})
     raw, _rec = api_keys_store.create_key(uid)
-    # alice can't see the 'beta' rule, so she can't patch it either.
+
+    def _patch(slug):
+        return client.patch(
+            "/v1/pipeline-rules",
+            json={"rules_patch": {slug: {"enabled": False}}},
+            headers=bearer(raw),
+        )
+
+    hidden = _patch(beta)              # exists, but not visible to alice
+    missing = _patch("no-such-rule")   # does not exist at all
+    assert hidden.status_code == 400
+    assert hidden.status_code == missing.status_code
+    # Same wording too, not just the same code — the body echoes only the slug
+    # the caller themselves submitted, which tells them nothing new.
+    assert hidden.json()["detail"].replace(beta, "X") == \
+        missing.json()["detail"].replace("no-such-rule", "X")
+
+
+def test_v1_patch_visible_rule_still_works(client, app_module, make_user_key):
+    """The counterpart: a rule that IS exposed to the caller keeps resolving
+    normally — the collapse above must not hide their own rules from them."""
+    import api_keys_store
+    alpha, _beta, _untagged = _expose_tagged(app_module)
+    make_user_key("root", is_admin=True)
+    uid = api_keys_store.create_user("alice", is_admin=False)
+    api_keys_store.set_user_permissions(
+        uid, {"pages": {"quick_config": "own"}, "quick_config_tags": ["alpha"]})
+    raw, _rec = api_keys_store.create_key(uid)
     r = client.patch(
         "/v1/pipeline-rules",
-        json={"rules_patch": {beta: {"enabled": False}}},
+        json={"rules_patch": {alpha: {"enabled": False}}},
         headers=bearer(raw),
     )
-    assert r.status_code == 403
-
-
+    assert r.status_code == 200
+    assert alpha in r.json()["saved"]
 def test_v1_requires_quick_config_page(client, make_user_key):
     make_user_key("root", is_admin=True)  # lockdown
     _uid, raw = make_user_key("bob", pages={"quick_config": "none"})

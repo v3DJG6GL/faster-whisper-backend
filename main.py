@@ -1800,12 +1800,51 @@ async def _sessions_purge_loop() -> None:
             logger.error("[sessions] purge loop error: %s", _se)
 
 
+# Strength floor for the operator-supplied bootstrap admin key. Well below
+# generate_raw_key()'s output (wk_ + 43 chars) so nothing machine-generated
+# trips it; the distinct-character test rejects "aaaaaaaa..."-shaped values
+# that clear the length bar without carrying the entropy it implies.
+_BOOTSTRAP_KEY_MIN_LEN = 20
+_BOOTSTRAP_KEY_MIN_DISTINCT = 8
+
+
+def _bootstrap_key_is_strong(raw_key: str) -> bool:
+    key = (raw_key or "").strip()
+    return (
+        len(key) >= _BOOTSTRAP_KEY_MIN_LEN
+        and len(set(key)) >= _BOOTSTRAP_KEY_MIN_DISTINCT
+    )
+
+
 def _bootstrap_admin_from_env(raw_key: str) -> None:
     """If WHISPER_BOOTSTRAP_ADMIN_KEY is set, ensure a `bootstrap-admin`
     user holds that exact key. Idempotent — if the key hash is already in
     the DB we no-op. The raw key never gets persisted in plaintext;
-    only the SHA-256 hash hits disk."""
+    only the SHA-256 hash hits disk.
+
+    A minimum strength is enforced before the key is ever created. Keys are
+    stored as an unsalted single-round SHA-256, which api_keys_store justifies
+    with "high-entropy random keys (256-bit) make slow password hashes
+    pointless" — true for generate_raw_key()'s output, but this value is
+    human-chosen, and /auth/login has no rate limit or lockout, so a short one
+    is brute-forceable online straight to full admin.
+
+    Rejection is safe for an existing install: the hash check below no-ops when
+    the key is already in the DB, so a key created before this floor existed
+    keeps working. Only first-time creation of a weak value is refused, and the
+    server then stays in its usual no-admin-key state rather than failing to
+    boot.
+    """
     import api_keys_store
+    if not _bootstrap_key_is_strong(raw_key):
+        logger.error(
+            "[auth] WHISPER_BOOTSTRAP_ADMIN_KEY is too weak — refusing to "
+            "create an admin key from it. It must be at least %d characters "
+            "with at least %d distinct ones. Generate one with: "
+            "python -c \"import secrets; print('wk_' + secrets.token_urlsafe(32))\"",
+            _BOOTSTRAP_KEY_MIN_LEN, _BOOTSTRAP_KEY_MIN_DISTINCT,
+        )
+        return
     h = api_keys_store.hash_key(raw_key)
     # If this hash already maps to an active key, nothing to do.
     if api_keys_store._KEY_INDEX.get(h) is not None:
@@ -2109,12 +2148,28 @@ async def _openapi_json():
 
 @app.get("/docs", include_in_schema=False, dependencies=[Depends(require_admin_webui_host)])
 async def _swagger_ui():
-    return get_swagger_ui_html(openapi_url="/openapi.json", title=app.title + " — docs")
+    # Vendored, not FastAPI's cdn.jsdelivr.net defaults. These pages run in the
+    # app's own origin with the admin's session cookie, so anyone able to alter
+    # the CDN response would be executing code with admin rights here — the
+    # same reasoning that had uPlot and GridStack vendored (static/VENDOR.md).
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title=app.title + " — docs",
+        swagger_js_url="/static/swagger-ui-bundle.js",
+        swagger_css_url="/static/swagger-ui.css",
+        swagger_favicon_url="/static/favicon-32.png",
+    )
 
 
 @app.get("/redoc", include_in_schema=False, dependencies=[Depends(require_admin_webui_host)])
 async def _redoc_ui():
-    return get_redoc_html(openapi_url="/openapi.json", title=app.title + " — redoc")
+    # Vendored — see the note on /docs above.
+    return get_redoc_html(
+        openapi_url="/openapi.json",
+        title=app.title + " — redoc",
+        redoc_js_url="/static/redoc.standalone.js",
+        redoc_favicon_url="/static/favicon-32.png",
+    )
 
 # Per-request metrics middleware. Records (path, status, duration) for every
 # HTTP request — bumps in_flight tracked separately by the transcribe handler.
@@ -2154,9 +2209,17 @@ def _origin_is_allowed(request) -> bool:
     proxy that DOES rewrite Host to the upstream never matches, which is what
     TRUSTED_ORIGINS is for (CORS_ALLOW_ORIGINS also counts, for compatibility
     — but it additionally switches CORS on, so it is the wrong knob here).
+
+    CORS_ALLOW_ORIGINS="*" does NOT satisfy this check. The two answer
+    different questions: CORS decides whether a cross-origin page may READ a
+    response, this decides whether it may PERFORM a state change — and the
+    wildcard used to short-circuit here, silently disabling the guard for every
+    unsafe method app-wide (and for the WebSocket handshake, which calls this
+    directly). A deployment that genuinely needs cross-origin writes lists its
+    real origins in TRUSTED_ORIGINS, which exists for exactly that.
     """
     origin = request.headers.get("origin")
-    if not origin or _cors_allow_all:
+    if not origin:
         return True
     if origin in _cors_origins or origin in _trusted_origins:
         return True

@@ -36,7 +36,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 import config as cfg
 import config_store
@@ -307,25 +307,37 @@ async def apply_rules_patch(
                 status.HTTP_400_BAD_REQUEST,
                 f"rules_patch['{slug}'] must be an object",
             )
+        # Must pass the same can_see_rule check the GET uses, so a user can't
+        # PATCH a rule their tag set forbids them from seeing. The exposed +
+        # terminal + admin checks all live inside can_see_rule.
+        #
+        # `by_slug` is built from the FULL rule list, so answering "no such
+        # rule" and "a rule you may not see" differently was an existence
+        # oracle: a non-admin could enumerate the slugs the admin curated out
+        # of their view, one guess per request, with no rate limit. For a
+        # non-admin the two collapse into the same 400 — the doctrine
+        # auth.Permissions.assert_can_read_row states in its own comment
+        # ("404, not 403 — a 403 would confirm the row exists").
+        #
+        # Rules that ARE exposed to the caller are unaffected: they resolve
+        # normally here and keep their precise errors. Admins keep both.
         idx = by_slug.get(slug)
+        visible = (
+            idx is not None
+            and user["permissions"].can_see_rule(current_rules[idx])
+        )
+        if not visible and not user.get("is_admin"):
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"unknown rule slug: '{slug}' (adding rules is not allowed)",
+            )
         if idx is None:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"unknown rule slug: '{slug}' (adding rules is not allowed)",
             )
         target = current_rules[idx]
-        # Defense-in-depth: must pass the same can_see_rule check the GET uses,
-        # so a user can't PATCH a rule their tag set forbids them from seeing.
-        # The exposed + terminal + admin checks all live inside can_see_rule.
-        #
-        # NOTE: the 400-vs-403 split above is an existence oracle — by_slug is
-        # built from the FULL rule list, so a non-admin can distinguish "no such
-        # rule" from "a rule you may not see" and enumerate the slugs the admin
-        # curated out of their view, one guess per request. Collapsing both to
-        # 400 for non-admins would close it, but that changes the documented
-        # error contract (test_v1_patch_rule_not_visible_403 pins the 403), so
-        # it is an owner decision rather than a silent hardening.
-        if not user["permissions"].can_see_rule(target):
+        if not visible:
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
                 f"rule '{slug}' is not visible to your user",
@@ -832,9 +844,11 @@ async def get_recent(
     users (admins) see every row. The username column is materialized
     at write so the read path doesn't hit api_keys_store.
 
-    q (str, optional) — free-text filter: only rows whose raw/final text
-    contain the substring (case-insensitive). Pagination via before_ts
-    stays within the matching set."""
+    Free-text search lives on POST /quick-config/recent/search, NOT here:
+    the term is by construction words out of a dictation, and a query string
+    is copied verbatim into uvicorn's access log, the reverse proxy's access
+    log and the browser's history — none of which are the 0600 log file the
+    transcript text is otherwise confined to."""
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
     sees_all = perms.scope("quick_config") == "all"
@@ -849,17 +863,65 @@ async def get_recent(
     except (TypeError, ValueError):
         q_limit = page_size
     q_limit = max(1, min(q_limit, page_size))
-    q_search = (request.query_params.get("q") or "").strip()
 
-    user_filter = None if sees_all else caller_uid
-    traces = transcriptions_store.list_recent(
-        before_ts=q_before if q_before > 0 else None,
-        limit=q_limit,
-        user_id_filter=user_filter,
-        query=q_search or None,
+    return _recent_page(
+        before_ts=q_before, limit=q_limit,
+        query=None, sees_all=sees_all, caller_uid=caller_uid,
     )
-    next_before = traces[-1]["created_ts"] if len(traces) >= q_limit else None
+
+
+def _recent_page(
+    *,
+    before_ts: float,
+    limit: int,
+    query: str | None,
+    sees_all: bool,
+    caller_uid: str,
+) -> dict[str, Any]:
+    """Shared body of GET /recent and POST /recent/search — identical scoping
+    and pagination, the two differ only in where the search term travels."""
+    traces = transcriptions_store.list_recent(
+        before_ts=before_ts if before_ts > 0 else None,
+        limit=limit,
+        user_id_filter=None if sees_all else caller_uid,
+        query=query or None,
+    )
+    next_before = traces[-1]["created_ts"] if len(traces) >= limit else None
     return {"recent": traces, "next_before_ts": next_before}
+
+
+class RecentSearchIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    q: str = Field(default="", max_length=512)
+    before_ts: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    limit: int | None = Field(default=None, ge=1, le=1000)
+
+
+@router.post(
+    "/recent/search",
+    dependencies=[
+        Depends(require_user_webui_host),
+        Depends(require_page("quick_config")),
+    ],
+)
+async def post_recent_search(
+    payload: RecentSearchIn,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Same slice as GET /recent, with the free-text filter supplied in the
+    BODY. A POST purely to keep dictation words out of every access log and
+    out of browser history — the scoping, bounds and response shape are the
+    GET's, unchanged."""
+    perms = user["permissions"]
+    page_size = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
+    limit = max(1, min(payload.limit or page_size, page_size))
+    return _recent_page(
+        before_ts=payload.before_ts,
+        limit=limit,
+        query=(payload.q or "").strip() or None,
+        sees_all=perms.scope("quick_config") == "all",
+        caller_uid=user.get("user_id") or "",
+    )
 
 
 @router.get(
@@ -2190,10 +2252,14 @@ async function reloadRecent() {
   _seenReqIds = new Set();
   _oldestLoadedTs = null;
   const q = _searchQuery;
-  const url = '/quick-config/recent' + (q ? ('?q=' + encodeURIComponent(q)) : '');
   let j = null;
   try {
-    const r = await api('GET', url);
+    // A search term is dictation text, so it goes in a POST body — a query
+    // string lands in every access log and in browser history. No term =
+    // plain GET, which stays cacheable/bookmarkable as before.
+    const r = q
+      ? await api('POST', '/quick-config/recent/search', { q: q })
+      : await api('GET', '/quick-config/recent');
     if (r.ok) j = await r.json();
     else showToast('Recent load failed (' + r.status + ')', 'err');
   } catch (e) {
@@ -2237,9 +2303,12 @@ async function loadOlder() {
   const prevLabel = btn.textContent;
   btn.textContent = 'Loading…';
   try {
-    const r = await api('GET',
-      '/quick-config/recent?before_ts=' + encodeURIComponent(_oldestLoadedTs)
-      + (_searchQuery ? '&q=' + encodeURIComponent(_searchQuery) : ''));
+    // Same split as reloadRecent: the term rides in the body when there is one.
+    const r = _searchQuery
+      ? await api('POST', '/quick-config/recent/search',
+                  { q: _searchQuery, before_ts: _oldestLoadedTs })
+      : await api('GET', '/quick-config/recent?before_ts='
+                  + encodeURIComponent(_oldestLoadedTs));
     if (!r.ok) { showToast('Load older failed (' + r.status + ')', 'err'); return; }
     const j = await r.json();
     const rows = (j && j.recent) || [];
