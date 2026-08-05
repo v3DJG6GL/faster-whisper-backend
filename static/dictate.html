@@ -41,38 +41,25 @@
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
+  /* Chrome is sans like every other page — the shared header inherits the
+     body font, and mono at 1rem is wide enough to wrap the nav row. The
+     transcript (#doc) and code snippets opt back into mono below. Subbar
+     controls come entirely from NAV_CSS; no local overrides. */
   body {
     background: var(--bg); color: var(--fg);
-    font: 1rem/1.5 var(--font-mono);
+    font: 1rem/1.5 var(--font-sans);
     display: flex; flex-direction: column; min-height: 100%;
   }
+  input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
 
-  /* sub-bar controls — same shape as the other pages' .subbar */
-  .subbar label { display: inline-flex; align-items: center; gap: 0.35rem;
-    color: var(--help); font-size: var(--fs-sm); }
-  .subbar input[type=text], .subbar select {
-    background: var(--input-bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 4px;
-    padding: 0.2rem 0.4rem; font-family: var(--font-mono);
-    font-size: var(--fs-sm);
-  }
-  .subbar button {
-    background: var(--panel); color: var(--bold);
-    border: 1px solid var(--border); border-radius: 4px;
-    padding: 0.3rem 0.9rem; font-family: var(--font-mono);
-    font-size: var(--fs-sm); cursor: pointer;
-  }
-  .subbar button:hover { border-color: var(--cyan); color: var(--cyan); }
-  .subbar button.stop { border-color: var(--red); color: var(--red); }
-  .subbar button:disabled { opacity: 0.5; cursor: default; }
-  #status { color: var(--dim); font-size: var(--fs-sm); }
-  #status.live { color: var(--green); }
-  #status.error { color: var(--red); }
+  /* status states on top of the shared dim #status rule */
+  header .subbar #status.live { color: var(--green); }
+  header .subbar #status.error { color: var(--red); }
 
   main { flex: 1; padding: 1.25rem; overflow: auto; }
   #doc {
     white-space: pre-wrap; word-break: break-word; line-height: 1.65;
-    font-size: var(--fs-lg); min-height: 6rem; max-width: 60rem;
+    font: var(--fs-lg)/1.65 var(--font-mono); min-height: 6rem; max-width: 60rem;
   }
   #final { color: var(--fg); }        /* committed: locked, append-only */
   #tail { color: var(--help); }       /* provisional: may still firm up */
@@ -238,7 +225,7 @@
   function resetToggleButton() {
     toggleBtn.disabled = false;
     toggleBtn.textContent = idleLabel();
-    toggleBtn.classList.remove("stop");
+    toggleBtn.classList.remove("danger");
   }
 
   // --- batch mode: record with MediaRecorder, POST the whole clip ---------------
@@ -389,7 +376,7 @@
     try {
       running = true;
       toggleBtn.textContent = batch ? "Stop & transcribe" : "Stop";
-      toggleBtn.classList.add("stop");
+      toggleBtn.classList.add("danger");
       await (batch ? startBatch() : start());
     } catch (err) {
       running = false;
