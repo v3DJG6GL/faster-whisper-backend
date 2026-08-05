@@ -386,12 +386,16 @@ $xml = @"
 
   <env name="WHISPER_LOG_FILE" value="%BASE%\logs\whisper.log"/>
   <!-- To enable the admin WebUI via env (alternative: set ADMIN_UI_ENABLED in config.py),
-       uncomment and edit the lines below, then re-run this install script.
-       Generate a strong token with:
-         [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+       uncomment the line below, then re-run this install script.
   <env name="WHISPER_ADMIN_UI" value="1"/>
-  <env name="WHISPER_ADMIN_TOKEN" value="paste-32-byte-base64-here"/>
   -->
+  <!-- The admin WebUI is NOT token-authenticated. Access is gated by
+       WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS (loopback by default) plus an admin
+       API key. Until an admin key exists the server runs in OPEN mode and
+       hands admin rights to every caller on that allowlist, so create one:
+         WHISPER_BOOTSTRAP_ADMIN_KEY=<high-entropy value>
+       Earlier revisions of this file suggested a WHISPER_ADMIN_TOKEN env var.
+       Nothing has ever read it — setting it protected nothing. -->
 </service>
 "@
 Set-Content -Path $WinSWXml -Value $xml -Encoding UTF8

@@ -27,7 +27,7 @@ import os
 import re
 from typing import Any, Literal, get_args, get_origin
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import TypeAdapter, ValidationError
 
@@ -444,11 +444,16 @@ async def pipeline_page() -> HTMLResponse:
 
 
 @router.get("/state", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
-async def get_state() -> dict[str, Any]:
+async def get_state(response: Response) -> dict[str, Any]:
     """Return the resolved config (current effective values) plus provenance
     flags so the WebUI can render badges. Does NOT include the saved-only
     overrides — the form fills from effective values; the badge tells the
     user where the value is coming from."""
+    # The field map carries resolved secret values (USE_AUTH_TOKEN is the
+    # HuggingFace credential) and the absolute data/db/models paths. The page
+    # shell and every sibling data endpoint already send this; without it the
+    # payload is heuristically cacheable by the browser and any intermediary.
+    response.headers["Cache-Control"] = "no-store"
     saved = config_store.load_overrides()
     env_pinned = config_store.env_pinned_fields()
     field_descs = config_store.FIELD_DESCRIPTIONS
@@ -2450,15 +2455,27 @@ function modelOverridesEditor(name, v) {
       item.dataset.modelId = id;
       if (id === selectedId) item.classList.add('active');
       const n = countOverrides(id);
-      const dot = '<span class="mo-dot ' + (n > 0 ? 'override' : 'inherit') + '"></span>';
+      // Built with DOM APIs, not innerHTML: renderSidebar also renders ids
+      // typed into the UNSAVED ALLOWED_MODELS editor, which never passes the
+      // server's ModelId pattern, so `id` is not a validated token here. Same
+      // rule the /settings/pipeline test rows follow.
+      const dot = document.createElement('span');
+      dot.className = 'mo-dot ' + (n > 0 ? 'override' : 'inherit');
       // Long HF-style ids would blow the sidebar width — let CSS truncate.
-      const lbl = '<span class="mo-list-label" title="' + id + '">' + id + '</span>';
-      const cnt = '<span class="mo-count">' + (n ? '(' + n + ')' : '') + '</span>';
+      const lbl = document.createElement('span');
+      lbl.className = 'mo-list-label';
+      lbl.title = id;
+      lbl.textContent = id;
+      const cnt = document.createElement('span');
+      cnt.className = 'mo-count';
+      cnt.textContent = (n ? '(' + n + ')' : '');
       // Collapse indicator: ▾ when expanded, ▸ when collapsed. Only the
       // active row reveals it via .active CSS opacity.
       const collapsed = (localStorage.getItem('mo.detail.' + id) === '0');
-      const ind = '<span class="mo-collapse-ind">' + (collapsed ? '▸' : '▾') + '</span>';
-      item.innerHTML = dot + lbl + cnt + ind;
+      const ind = document.createElement('span');
+      ind.className = 'mo-collapse-ind';
+      ind.textContent = (collapsed ? '▸' : '▾');
+      item.replaceChildren(dot, lbl, cnt, ind);
       item.addEventListener('click', () => {
         if (selectedId === id) {
           // Active row → toggle collapse for this model.

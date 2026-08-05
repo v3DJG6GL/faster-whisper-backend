@@ -40,6 +40,7 @@ from pydantic import BaseModel, ValidationError
 
 import config as cfg
 import config_store
+import store_common
 import quick_config_state
 import transcriptions_store
 import web_common
@@ -205,10 +206,10 @@ def build_word_suggestions(user: dict[str, Any], *, max_words: int) -> list[str]
 
 
 def _redact_invisible_slugs(
-    errors: list[str],
+    errors: list[dict[str, str]],
     user: dict[str, Any],
     rules: list[dict[str, Any]],
-) -> list[str]:
+) -> list[dict[str, str]]:
     """Blank out rule slugs the caller is not allowed to see.
 
     save_overrides re-validates the ENTIRE merged rule list, and config_store
@@ -230,18 +231,27 @@ def _redact_invisible_slugs(
     perms = user.get("permissions")
     if perms is None:
         return errors
+    # The slug lives under "name" on a rule dict (see by_slug below); _RuleBase
+    # forbids extras, so no rule ever carries a "slug" key and keying on one
+    # made this a silent no-op.
     hidden = [
-        str(r.get("slug") or "") for r in rules
-        if r.get("slug") and not perms.can_see_rule(r)
+        str(r.get("name") or "") for r in rules
+        if r.get("name") and not perms.can_see_rule(r)
     ]
     if not hidden:
         return errors
-    out = []
-    for msg in errors:
-        for slug in hidden:
-            # config_store formats the slug with !r, hence the quotes.
-            msg = msg.replace(f"'{slug}'", "'<hidden rule>'")
-        out.append(msg)
+    # format_validation_errors returns {"loc": ..., "msg": ...} dicts, not
+    # bare strings — redact each field rather than the mapping.
+    out: list[dict[str, str]] = []
+    for entry in errors:
+        red = dict(entry)
+        for key in ("loc", "msg"):
+            val = str(red.get(key) or "")
+            for slug in hidden:
+                # config_store formats the slug with !r, hence the quotes.
+                val = val.replace(f"'{slug}'", "'<hidden rule>'")
+            red[key] = val
+        out.append(red)
     return out
 
 
@@ -307,6 +317,14 @@ async def apply_rules_patch(
         # Defense-in-depth: must pass the same can_see_rule check the GET uses,
         # so a user can't PATCH a rule their tag set forbids them from seeing.
         # The exposed + terminal + admin checks all live inside can_see_rule.
+        #
+        # NOTE: the 400-vs-403 split above is an existence oracle — by_slug is
+        # built from the FULL rule list, so a non-admin can distinguish "no such
+        # rule" from "a rule you may not see" and enumerate the slugs the admin
+        # curated out of their view, one guess per request. Collapsing both to
+        # 400 for non-admins would close it, but that changes the documented
+        # error contract (test_v1_patch_rule_not_visible_403 pins the 403), so
+        # it is an owner decision rather than a silent hardening.
         if not user["permissions"].can_see_rule(target):
             raise HTTPException(
                 status.HTTP_403_FORBIDDEN,
@@ -351,6 +369,17 @@ async def apply_rules_patch(
         if rtype == "callback:map" and "map" in patch:
             old_map = target.get("map") or {}
             new_map = patch["map"] or {}
+            # rules_patch is typed dict[str, dict[str, Any]], so the per-FIELD
+            # value is unconstrained and Pydantic only sees it later, inside
+            # save_overrides. A non-dict here reached .items() below as an
+            # unhandled AttributeError -> bare 500.
+            if not isinstance(new_map, dict):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"rules_patch['{slug}']['map'] must be an object",
+                )
+            if not isinstance(old_map, dict):
+                old_map = {}
             meta = dict(target.get("map_meta") or {})
             now = int(time.time())
             for k, v in new_map.items():
@@ -403,7 +432,10 @@ async def apply_rules_patch(
 
     logger.info(
         "[pipeline-rules] patch from=%s user=%s admin=%s saved=%s conflicts=%s",
-        client_host, user.get("username"), user.get("is_admin"),
+        # Usernames are length-capped but never character-screened, so a bare
+        # CR/LF here would forge extra records in the /logs viewer.
+        client_host, store_common.log_safe(user.get("username") or "?"),
+        user.get("is_admin"),
         saved, [c["slug"] for c in conflicts],
     )
 
@@ -1481,7 +1513,9 @@ function _matchesSearch(entry) {
 function escapeHtml(s) {
   const div = document.createElement('div');
   div.textContent = s == null ? '' : String(s);
-  return div.innerHTML;
+  // textContent->innerHTML escapes & < > but NOT quotes; escape those too so
+  // the result stays safe if it is ever interpolated into an attribute.
+  return div.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 // absTime is injected via TIME_HELPERS_JS.
 

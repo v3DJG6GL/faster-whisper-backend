@@ -37,6 +37,7 @@ import os
 import random
 import shutil
 import tempfile
+import time
 import uuid
 import wave
 
@@ -48,12 +49,18 @@ from fastapi.security import HTTPAuthorizationCredentials
 import auth
 import config_store
 import metrics
+import store_common
 import web_common
 from streaming_session import StreamConfig, StreamSession
 from streaming_transport import ENCODED_FORMATS, RAW_FORMATS, make_transport
 from streaming_vad import SAMPLE_RATE, make_endpointer
 
 logger = logging.getLogger(__name__)
+
+# Floor between two backlog/oversize WARNINGs on one session. Both branches are
+# entered at a rate the client controls, and the log is a fixed-size rotating
+# chain — unthrottled they are a way to erase the audit trail.
+_SHED_LOG_INTERVAL_S = 10.0
 
 router = APIRouter()
 
@@ -368,7 +375,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 else await main._get_or_load_model(partial_model_name)
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[stream %s] model load failed: %s", session_id[:8], exc)
+            # The handshake `model` field lands verbatim in the not-in-allowed-
+            # list HTTPException detail, so this text is client-controlled: a
+            # bare CR/LF would forge extra records in the /logs viewer.
+            logger.warning("[stream %s] model load failed: %s",
+                           session_id[:8], store_common.log_safe(str(exc)))
             # Generic client message — the raw exception text can carry model
             # dir/filesystem paths; the detail is already in the server log above.
             await ws.send_json({"type": "error", "code": "model_load_failed",
@@ -726,9 +737,17 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # the queue without bound. Coalesce instead — two flushes with no audio
         # between them mean the same as one, so at most one is ever queued.
         _flush_pending = False                     # a flush is queued or in flight
+        # Backlog-shedding is client-paced, so its WARNING is rate-limited and
+        # aggregated (see below). Counters carry the suppressed totals.
+        _shed_logged_at = 0.0
+        _pending_shed_items = 0
+        _pending_shed_bytes = 0
+        _oversize_logged_at = 0.0
 
         async def sink(pcm: bytes):
             nonlocal _qbytes, _flush_pending
+            nonlocal _shed_logged_at, _pending_shed_items, _pending_shed_bytes
+            nonlocal _oversize_logged_at
             if not pcm:
                 return
             # A single frame larger than the whole backlog cap would sail past
@@ -739,16 +758,25 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # swept through VAD frame-by-frame in a single uninterrupted pass.
             # Feed it in cap-sized pieces so the backlog logic still governs.
             if len(pcm) > _hard_cap_bytes:
-                logger.warning(
-                    "[stream %s] oversized audio frame (%d bytes) — feeding in "
-                    "%d-byte pieces", session_id[:8], len(pcm), _hard_cap_bytes,
-                )
+                # Throttled for the same reason as the shed summary below: the
+                # client chooses how often this fires.
+                _now_o = time.monotonic()
+                if _now_o - _oversize_logged_at >= _SHED_LOG_INTERVAL_S:
+                    _oversize_logged_at = _now_o
+                    logger.warning(
+                        "[stream %s] oversized audio frame (%d bytes) — feeding "
+                        "in %d-byte pieces (at most one line every %.0f s)",
+                        session_id[:8], len(pcm), _hard_cap_bytes,
+                        _SHED_LOG_INTERVAL_S,
+                    )
                 for off in range(0, len(pcm), _hard_cap_bytes):
                     await sink(pcm[off:off + _hard_cap_bytes])
                 return
             # Absolute backlog cap: if the consumer has fallen catastrophically
             # behind, drop the oldest queued PCM (never silently) so memory can't
             # grow without bound. Skip-if-behind normally prevents reaching this.
+            _shed_items = 0
+            _shed_bytes = 0
             while _qbytes + len(pcm) > _hard_cap_bytes:
                 try:
                     kind, old = audio_q.get_nowait()
@@ -768,8 +796,28 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     # can ask for another one instead of being stuck.
                     _flush_pending = False
                 _qbytes -= dropped
-                logger.warning("[stream %s] audio backlog over cap — dropped %d bytes",
-                               session_id[:8], dropped)
+                _shed_items += 1
+                _shed_bytes += dropped
+            # One throttled summary rather than a line per popped item. A client
+            # uploading faster than the pump consumes keeps this branch hot, and
+            # an unthrottled line per item let it roll the whole retained log
+            # history (LOG_MAX_BYTES x LOG_BACKUP_COUNT) off disk — taking the
+            # origin-rejection and auth records with it. Same reasoning as
+            # main._ORIGIN_REJECT_LOG_INTERVAL_S.
+            if _shed_items:
+                _now_m = time.monotonic()
+                _pending_shed_items += _shed_items
+                _pending_shed_bytes += _shed_bytes
+                if _now_m - _shed_logged_at >= _SHED_LOG_INTERVAL_S:
+                    _shed_logged_at = _now_m
+                    logger.warning(
+                        "[stream %s] audio backlog over cap — shed %d queued "
+                        "items / %d bytes (at most one line every %.0f s)",
+                        session_id[:8], _pending_shed_items, _pending_shed_bytes,
+                        _SHED_LOG_INTERVAL_S,
+                    )
+                    _pending_shed_items = 0
+                    _pending_shed_bytes = 0
             audio_q.put_nowait(("pcm", pcm))
             _qbytes += len(pcm)
 
@@ -796,7 +844,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                             # client is never left unable to flush again.
                             _flush_pending = False
                 except Exception as exc:  # noqa: BLE001 — a decode error must not kill the pump
-                    logger.warning("[stream %s] pump error: %s", session_id[:8], exc)
+                    # An invalid handshake `language` makes the tokenizer raise
+                    # a ValueError naming the client's own string — screen it
+                    # before it reaches the line-oriented log.
+                    logger.warning("[stream %s] pump error: %s",
+                                   session_id[:8], store_common.log_safe(str(exc)))
 
         transport = make_transport(audio_fmt, sink, sample_rate=SAMPLE_RATE)
         await transport.start()

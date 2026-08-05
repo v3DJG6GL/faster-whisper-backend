@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -76,12 +76,17 @@ def _state_body(row: dict[str, Any] | None) -> dict[str, Any]:
 
 @router.get("/client-settings")
 async def get_client_settings(
+    response: Response,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """The caller's stored settings blob. Empty store is 200 with
     `{version: 0, blob: null}` — NOT 404/204, because the desktop client
     reads a route-level 404 as "backend too old for sync" and a 204 would
     force a bodyless special case."""
+    # The blob is this module's own "opaque, sensitive client JSON (may contain
+    # the client's own backend API keys)" — it must not sit in a shared cache.
+    # The admin export of the same blob already sends this.
+    response.headers["Cache-Control"] = "no-store"
     try:
         return _state_body(client_settings_store.get(user["user_id"]))
     except client_settings_store.StoreUnavailable:

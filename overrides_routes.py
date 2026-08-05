@@ -14,6 +14,7 @@ endpoints are admin-only (host allowlist + admin key).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any
@@ -202,7 +203,11 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             f"unexpected fields for this page: {sorted(unknown)}")
     try:
-        written = config_store.save_overrides(payload)
+        # Off the loop: save_overrides re-validates the merged config, which
+        # re-runs regex_guard (a child process with a 2 s budget) and then
+        # rewrites config.local.json. Inline that froze every request, SSE
+        # stream and streaming WebSocket on the worker for its duration.
+        written = await asyncio.to_thread(config_store.save_overrides, payload)
     except ValidationError as e:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -264,7 +269,10 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     #    persist + hot-apply through the same path /state uses.
     renamed = {(new if k == old else k): v for k, v in profiles.items()}
     try:
-        written = config_store.save_overrides({"OVERRIDE_PROFILES": renamed})
+        # Off the loop, same reasoning as the /state save above.
+        written = await asyncio.to_thread(
+            config_store.save_overrides, {"OVERRIDE_PROFILES": renamed},
+        )
     except ValidationError as e:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
