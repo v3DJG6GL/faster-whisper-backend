@@ -397,7 +397,7 @@ def create_user(username: str, is_admin: bool) -> str:
         raise
     logger.info(
         "[auth] user created id=%s username=%s admin=%s",
-        uid[:8], username, is_admin,
+        uid[:8], store_common.log_safe(username), is_admin,
     )
     return uid
 
@@ -536,7 +536,7 @@ def create_key(user_id: str, *, label: str = "") -> tuple[str, dict[str, Any]]:
         _rebuild_index_locked()
     logger.info(
         "[auth] key created kid=%s user=%s prefix=%s label=%s",
-        kid[:8], user_id[:8], kp, label or "(no label)",
+        kid[:8], user_id[:8], kp, store_common.log_safe(label) or "(no label)",
     )
     rec = {
         "id": kid,
@@ -575,7 +575,8 @@ def update_key_label(key_id: str, label: str) -> dict[str, Any] | None:
             "SELECT * FROM api_keys WHERE id = ?", (key_id,),
         ).fetchone()
         _rebuild_index_locked()   # refresh the cached key_label for the log block
-    logger.info("[auth] key relabeled kid=%s label=%s", key_id[:8], label)
+    logger.info("[auth] key relabeled kid=%s label=%s",
+                key_id[:8], store_common.log_safe(label))
     return _row_to_key_dict(row) if row else None
 
 

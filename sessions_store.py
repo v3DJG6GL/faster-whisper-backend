@@ -196,6 +196,7 @@ def create_session(user_id: str, ttl_s: float,
     overrides/locks bind on the resulting cookie-authenticated requests too
     (without it the session resolves to the `(session)` sentinel = no key
     layer, so per-key restrictions would silently stop applying)."""
+    global _DATA_VERSION
     raw_token = secrets.token_urlsafe(_TOKEN_BYTES)
     csrf_token = secrets.token_urlsafe(_TOKEN_BYTES)
     th = hash_token(raw_token)
@@ -210,7 +211,22 @@ def create_session(user_id: str, ttl_s: float,
             " VALUES (?,?,?,?,?,?,NULL)",
             (th, user_id, key_id, csrf_token, now, expires),
         )
-        _rebuild_index_locked()
+        # Insert the one new row rather than re-reading the whole table.
+        # /auth/login takes any valid key, has no rate limit and no per-user
+        # session cap, and nothing reaps rows at runtime (purge_expired() has no
+        # production caller) — so a full rebuild here makes N logins cost O(N²)
+        # and, because `login` is async and calls this inline, every one of those
+        # rebuilds runs on the event loop. Our own commit does not move
+        # PRAGMA data_version on this connection, so re-stamping _DATA_VERSION
+        # keeps the sibling-detection contract in _refresh_if_sibling_committed.
+        _SESSION_INDEX[th] = {
+            "user_id": user_id,
+            "key_id": key_id,
+            "csrf_token": csrf_token,
+            "created_ts": now,
+            "expires_ts": expires,
+        }
+        _DATA_VERSION = _data_version_locked()
     logger.info("[auth] session created user=%s ttl=%.0fs", user_id[:8], ttl_s)
     return raw_token, csrf_token
 
