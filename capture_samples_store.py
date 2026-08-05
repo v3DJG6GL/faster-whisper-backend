@@ -284,6 +284,34 @@ def dissolve_sample(sid: str) -> None:
     logger.info("[groups] dissolved sid=%s", sid[:8])
 
 
+def expire_samples_older_than(cutoff_ts: float) -> list[str]:
+    """Dissolve every sample created before `cutoff_ts`. Returns the ids.
+
+    Retention has to treat a sample as ONE object: its members back a merged
+    WAV, so deleting members individually would leave a group referencing audio
+    it can no longer reconstruct. Dissolving first unlinks the merged WAV and
+    releases the members, after which captures_store.sweep_retention picks them
+    up as ordinary rows and applies the same age rule to them.
+
+    Deliberately NOT called with captures_store's lock held — dissolve_sample
+    takes this module's lock, and the two are separate objects.
+    """
+    conn = _require_conn()
+    with _lock:
+        rows = conn.execute(
+            "SELECT id FROM capture_samples WHERE created_ts < ?",
+            (cutoff_ts,),
+        ).fetchall()
+    ids = [r["id"] for r in rows]
+    for sid in ids:
+        dissolve_sample(sid)
+    if ids:
+        logger.warning(
+            "[groups] retention dissolved %d sample(s) past the cutoff", len(ids),
+        )
+    return ids
+
+
 def clear_all_samples() -> int:
     """Drop every row from capture_samples. Caller is responsible for
     removing the merged WAV files (captures_store.clear_all handles

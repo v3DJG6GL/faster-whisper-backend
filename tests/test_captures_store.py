@@ -503,8 +503,11 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
     # member is the oldest, but it's in a group → must be protected.
     conn.execute("UPDATE captures SET sample_id=?, sample_order=0, created_ts=1 WHERE id=?", (sid, member))
     conn.execute("UPDATE captures SET created_ts=2 WHERE id=?", (other,))
-    monkeypatch.setattr(config, "CAPTURES_MAX", 2, raising=False)
-    _make(cs, monkeypatch, tmp_path)  # total now 3 > cap 2
+    # The cap governs the EVICTABLE population only: grouped rows are neither
+    # counted nor dropped, because eviction could never reduce them anyway.
+    # Two ungrouped rows against a cap of 1 leaves exactly one to drop.
+    monkeypatch.setattr(config, "CAPTURES_MAX", 1, raising=False)
+    _make(cs, monkeypatch, tmp_path)  # 2 ungrouped now > cap 1
     assert cs.get_capture(member) is not None  # group member never evicted
     assert cs.get_capture(other) is None       # the only evictable old row went
 
@@ -589,25 +592,53 @@ def test_sweep_retention_deletes_old(captures_store_db, monkeypatch, tmp_path):
     assert cs.get_capture(old) is None
 
 
-def test_sweep_retention_excludes_group_members(captures_store_db, groups_store_db, monkeypatch, tmp_path):
+def _group_one(cs, gs, sid, member, sample_ts, member_ts):
+    conn = cs._require_conn()
+    conn.execute(
+        "INSERT INTO capture_samples (id, user_id, created_ts,"
+        " merged_wav_relpath, merged_duration_ms, transcript,"
+        " member_hashes_json) VALUES (?,?,?,?,?,?,?)",
+        (sid, "u1", sample_ts, gs._relpath_for(sid), 1000, "t", "{}"),
+    )
+    conn.execute(
+        "UPDATE captures SET sample_id=?, sample_order=0, created_ts=? WHERE id=?",
+        (sid, member_ts, member),
+    )
+
+
+def test_sweep_retention_protects_members_of_a_current_sample(
+    captures_store_db, groups_store_db, monkeypatch, tmp_path,
+):
+    """A member cannot be aged out on its own — it backs the sample's merged
+    WAV, so retention only ever acts on the sample as a whole."""
     import time
     cs = captures_store_db
     gs = groups_store_db
     import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     member = _make(cs, monkeypatch, tmp_path)
-    sid = "gretention000000"
-    conn = cs._require_conn()
-    conn.execute(
-        "INSERT INTO capture_samples (id, user_id, created_ts,"
-        " merged_wav_relpath, merged_duration_ms, transcript,"
-        " member_hashes_json) VALUES (?,?,?,?,?,?,?)",
-        (sid, "u1", 1.0, gs._relpath_for(sid), 1000, "t", "{}"),
-    )
-    conn.execute(
-        "UPDATE captures SET sample_id=?, sample_order=0, created_ts=? WHERE id=?",
-        (sid, time.time() - 99 * 86400, member),
-    )
-    # Member is ancient but grouped → never swept.
+    _group_one(cs, gs, "gretention000000", member,
+               sample_ts=time.time(), member_ts=time.time() - 99 * 86400)
     assert cs.sweep_retention() == 0
     assert cs.get_capture(member) is not None
+
+
+def test_sweep_retention_expires_an_over_age_sample_and_its_members(
+    captures_store_db, groups_store_db, monkeypatch, tmp_path,
+):
+    """Grouping must not be a way to opt out of the retention policy: once the
+    SAMPLE itself is past the cutoff it is dissolved and its members are swept
+    like any other row."""
+    import time
+    cs = captures_store_db
+    gs = groups_store_db
+    import config
+    monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
+    member = _make(cs, monkeypatch, tmp_path)
+    sid = "gretentionold000"
+    _group_one(cs, gs, sid, member,
+               sample_ts=time.time() - 99 * 86400,
+               member_ts=time.time() - 99 * 86400)
+    assert cs.sweep_retention() == 1
+    assert cs.get_capture(member) is None
+    assert gs.get_sample(sid) is None

@@ -379,7 +379,17 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
     if row_cap < 1 and mb_cap < 1:
         return
 
-    row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
+    # Count only what this function can actually evict. Every eviction query
+    # below filters `sample_id IS NULL` (a grouped row backs a merged WAV and
+    # must survive), and _total_audio_bytes already scopes itself the same way.
+    # Counting grouped rows here inflated `excess`, so once grouped rows
+    # approached the cap every insert computed a large overflow and deleted
+    # OTHER identities' ungrouped captures to satisfy a total it could never
+    # reduce. Grouped audio is bounded by retention instead (sweep_retention
+    # expires whole samples), not by this cap.
+    row = conn.execute(
+        "SELECT COUNT(*) FROM captures WHERE sample_id IS NULL",
+    ).fetchone()
     total = int(row[0]) if row else 0
 
     # Row-count overflow first (cheap). Audio-byte overflow is more
@@ -909,8 +919,15 @@ def reconcile_on_startup() -> tuple[int, int]:
 
 def sweep_retention() -> int:
     """Delete rows + audio files older than cfg.CAPTURES_RETENTION_DAYS.
-    Returns count deleted. Group members are excluded — see
-    _drop_oldest_with_status for the rationale."""
+    Returns count deleted.
+
+    Samples are expired as whole objects FIRST: a group's members back a merged
+    WAV, so they cannot be aged out individually, and skipping them entirely (as
+    this used to) meant any user could exempt their recordings from the
+    retention policy indefinitely by merging them — the audio simply never
+    expired. Dissolving an over-age sample unlinks its merged WAV and releases
+    the members, which the ordinary sweep below then applies the same age rule
+    to. The size and count caps still spare grouped rows; retention does not."""
     try:
         import config as cfg
         days = int(getattr(cfg, "CAPTURES_RETENTION_DAYS", 0))
@@ -919,6 +936,14 @@ def sweep_retention() -> int:
     if days <= 0:
         return 0
     cutoff = time.time() - days * 86400
+    # Before taking _lock: dissolve_sample takes capture_samples_store's own
+    # lock, and holding both in a fixed order here would invert the order used
+    # on the write paths.
+    try:
+        import capture_samples_store
+        capture_samples_store.expire_samples_older_than(cutoff)
+    except Exception as e:  # noqa: BLE001 - retention must not die on this
+        logger.warning("[captures] sample retention pass failed: %s", e)
     conn = _require_conn()
     with _lock:
         rows = conn.execute(
