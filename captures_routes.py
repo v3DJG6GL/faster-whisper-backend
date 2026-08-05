@@ -385,6 +385,9 @@ async def export_captures_api(
 async def list_samples_api(
     user_filter: str | None = Query(None, alias="user_id"),
     status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(200, ge=1, le=1000),
+    before_ts: float | None = Query(None),
+    before_id: str | None = Query(None, max_length=64),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> JSONResponse:
     """List packed training samples. `scope=own` users see only
@@ -393,6 +396,11 @@ async def list_samples_api(
     `?status=` filter accepts the same enum as PatchSampleIn
     (new/reviewed/ready/dismissed); unknown values fall through to no
     filter, matching list_captures_api's tolerance.
+
+    Paged newest-first: pass the `next` object from the previous response
+    back as `?before_ts=&before_id=` to fetch the next page. `next` is null on
+    the last page. Hydrating one group costs a full capture read per member,
+    so returning the whole table on first paint was both slow and unbounded.
 
     Declared above `/captures/api/{cid}` because GET with cid="samples"
     would otherwise resolve to the single-capture handler and 404 — the
@@ -405,10 +413,17 @@ async def list_samples_api(
     if user.get("is_admin") and user_filter:
         scope = user_filter
 
-    def _gather() -> list[dict[str, Any]]:
+    def _gather() -> tuple[list[dict[str, Any]], bool]:
+        # limit + 1: one row past the page tells us whether another page
+        # exists without a second COUNT query. Read `has_more` BEFORE
+        # truncating — a page that happens to be exactly `limit` long with
+        # nothing after it must not advertise a next cursor.
         groups = capture_samples_store.list_samples(
             user_id=scope, status=status_filter,
+            limit=limit + 1, before_ts=before_ts, before_id=before_id,
         )
+        has_more = len(groups) > limit
+        del groups[limit:]
         usernames = api_keys_store.get_usernames(
             [g.get("user_id") for g in groups])
         for g in groups:
@@ -423,15 +438,23 @@ async def list_samples_api(
             )
             g["corrections"] = _project_member_corrections(members)
             g["username"] = usernames.get(g.get("user_id"))
-        return groups
+        return groups, has_more
 
     # OFF the loop, like propose_merges_api / get_sample_audio_api /
-    # regenerate_sample_api above. list_samples takes no LIMIT (unlike its
-    # list_captures_api sibling) and each group then costs one full
-    # get_capture per member, words_json decode included. Measured 3.0 s of
-    # frozen event loop for 300 groups x 4 members at 234 KB of words each.
-    groups = await asyncio.to_thread(_gather)
-    return JSONResponse({"samples": groups})
+    # regenerate_sample_api above. Each group costs one full get_capture per
+    # member, words_json decode included — measured 3.0 s of frozen event loop
+    # for 300 groups x 4 members at 234 KB of words each before this was both
+    # paged and offloaded.
+    groups, has_more = await asyncio.to_thread(_gather)
+    # Cursor for the next page, or null when this was the last one. The page
+    # loads more on demand rather than rendering the whole table at once —
+    # hydrating a group costs one full capture read per member, so an
+    # unbounded first paint was both slow and unbounded in memory.
+    nxt = None
+    if has_more and groups:
+        last = groups[-1]
+        nxt = {"before_ts": last.get("created_ts"), "before_id": last.get("id")}
+    return JSONResponse({"samples": groups, "next": nxt})
 
 
 @router.get(
@@ -2830,6 +2853,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   header .subbar #counts { flex-basis: 100%; }
 
   /* Advanced ▾ dropdown (bulk reprocess + destructive actions). */
+  .load-more-wrap { display: flex; justify-content: center; padding: 14px 0 4px; }
   .adv-wrap { position: relative; display: inline-block; }
   /* The shared header's `body.role-admin header .admin-only` rule sets
      inline-flex and outranks the line above; restate inline-block so adding
@@ -3865,6 +3889,9 @@ _CAPTURES_HTML = r"""<!doctype html>
   // -------------------------------------------------------------------
   var _allCaptures = [];
   var _allSamples = [];
+  // Cursor for the next page of groups, or null when they are all loaded.
+  var _samplesNext = null;
+  var _samplesLoading = false;
   var _counts = {};
   var _openRows = {};   // cid -> { audio, blobUrl, wordEls, words, finalText, dirty, corrections, ... }
   var _openSamples = {}; // sid -> { audio } — for blob-URL cleanup on render() / beforeunload
@@ -5152,9 +5179,10 @@ _CAPTURES_HTML = r"""<!doctype html>
       _counts = j.counts || {};
       // Pull groups in parallel-shape; failure is non-fatal (admin sees no groups).
       try {
-        var jg = await api('GET', '/captures/api/samples');
+        var jg = await api('GET', '/captures/api/samples?limit=200');
         _allSamples = jg.samples || [];
-      } catch (_) { _allSamples = []; }
+        _samplesNext = jg.next || null;
+      } catch (_) { _allSamples = []; _samplesNext = null; }
       updateCaptureBadge(!!j.enabled);
       rebuildModelFilter();
       updateCounts();
@@ -5164,6 +5192,31 @@ _CAPTURES_HTML = r"""<!doctype html>
     } catch (e) {
       if (e.message === 'unauthorized' || e.message === 'not-admin') return;
       toast('Failed to load captures: ' + e.message, true);
+    }
+  }
+
+  async function loadMoreSamples() {
+    // Groups are paged newest-first; hydrating one costs a capture read per
+    // member, so they arrive a page at a time instead of all at once.
+    if (!_samplesNext || _samplesLoading) return;
+    _samplesLoading = true;
+    render();
+    try {
+      var q = '/captures/api/samples?limit=200'
+        + '&before_ts=' + encodeURIComponent(_samplesNext.before_ts)
+        + '&before_id=' + encodeURIComponent(_samplesNext.before_id);
+      var jg = await api('GET', q);
+      var seen = {};
+      _allSamples.forEach(function(g) { seen[g.id] = 1; });
+      (jg.samples || []).forEach(function(g) {
+        if (!seen[g.id]) _allSamples.push(g);
+      });
+      _samplesNext = jg.next || null;
+    } catch (e) {
+      toast('Failed to load more groups: ' + e.message, true);
+    } finally {
+      _samplesLoading = false;
+      render();
     }
   }
 
@@ -7314,6 +7367,31 @@ _CAPTURES_HTML = r"""<!doctype html>
         ? renderCard(item.data)
         : _renderSampleCard(item.data));
     });
+    if (_samplesNext) {
+      // Footer for the remaining group pages. Built with DOM APIs (no
+      // innerHTML) and auto-triggered when it scrolls into view, with the
+      // button as the fallback for browsers without IntersectionObserver
+      // and for when the list is short enough that it never scrolls.
+      var more = document.createElement('div');
+      more.className = 'load-more-wrap';
+      var btn = document.createElement('button');
+      btn.id = 'btn-load-more-samples';
+      btn.textContent = _samplesLoading
+        ? 'Loading more groups...' : 'Load more groups';
+      btn.disabled = !!_samplesLoading;
+      btn.addEventListener('click', loadMoreSamples);
+      more.appendChild(btn);
+      list.appendChild(more);
+      if (!_samplesLoading && window.IntersectionObserver) {
+        var io = new IntersectionObserver(function(entries) {
+          if (entries.some(function(e) { return e.isIntersecting; })) {
+            io.disconnect();
+            loadMoreSamples();
+          }
+        }, { rootMargin: '200px' });
+        io.observe(more);
+      }
+    }
     openIds.forEach(function(cid) {
       var card = list.querySelector('.capture-card[data-id="' + cid + '"]');
       if (card) {

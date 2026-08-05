@@ -166,7 +166,20 @@ def get_sample(sid: str) -> dict[str, Any] | None:
 
 def list_samples(
     *, user_id: str | None = None, status: str | None = None,
+    limit: int | None = None,
+    before_ts: float | None = None, before_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    """Newest-first page of samples.
+
+    `limit` bounds the read (None = every row, kept for the retention and
+    export paths that genuinely want the whole table). The route passes a
+    limit and pages with the (before_ts, before_id) cursor.
+
+    The cursor is a PAIR, not just the timestamp: samples merged in the same
+    call share a created_ts to the microsecond, so a plain `created_ts < ?`
+    would silently drop every tie sitting on a page boundary. Ordering and
+    comparison both use (created_ts, id) so the sequence is total.
+    """
     clauses: list[str] = []
     params: list[Any] = []
     if user_id is not None:
@@ -175,11 +188,19 @@ def list_samples(
     if status is not None and status in _VALID_STATUS:
         clauses.append("status = ?")
         params.append(status)
+    if before_ts is not None:
+        if before_id:
+            clauses.append("(created_ts < ? OR (created_ts = ? AND id < ?))")
+            params.extend([before_ts, before_ts, before_id])
+        else:
+            clauses.append("created_ts < ?")
+            params.append(before_ts)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-    rows = _require_conn().execute(
-        f"SELECT * FROM capture_samples{where} ORDER BY created_ts DESC",
-        params,
-    ).fetchall()
+    sql = f"SELECT * FROM capture_samples{where} ORDER BY created_ts DESC, id DESC"
+    if limit is not None:
+        sql += " LIMIT ?"
+        params.append(int(limit))
+    rows = _require_conn().execute(sql, params).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 

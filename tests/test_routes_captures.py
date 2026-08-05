@@ -437,3 +437,73 @@ def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
     admin_body = client.get("/captures/api/list", headers=bearer(raw_root)).json()
     assert admin_body["total_count"] == 3
     assert admin_body["counts"]["new"] == 3
+
+
+# ---------------------------------------------------------------------------
+# /captures/api/samples pagination
+# ---------------------------------------------------------------------------
+
+def _insert_sample_at(conn, gs, sid, *, ts, user_id="alice"):
+    conn.execute(
+        "INSERT INTO capture_samples (id, user_id, created_ts,"
+        " merged_wav_relpath, merged_duration_ms, transcript,"
+        " transcript_join_strategy, member_hashes_json,"
+        " inter_segment_silence_ms, is_stale, is_locked, status,"
+        " admin_notes, language, member_trims_json)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (sid, user_id, ts, gs._relpath_for(sid), 5000, "t", "space",
+         "{}", 300, 0, 0, "new", "", "de", "{}"),
+    )
+
+
+def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key):
+    import capture_samples_store as gs
+    import captures_store as cs
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    conn = cs._require_conn()
+    # Deliberately give two of them an IDENTICAL created_ts: samples merged in
+    # one call share a timestamp, and a timestamp-only cursor drops whichever
+    # ties land on a page boundary.
+    stamps = [5.0, 4.0, 3.0, 3.0, 2.0]
+    for i, ts in enumerate(stamps):
+        _insert_sample_at(conn, gs, f"page{i}sid00000", ts=ts, user_id=uid)
+
+    h = bearer(raw)
+    seen, cursor, pages = [], None, 0
+    while True:
+        q = "/captures/api/samples?limit=2"
+        if cursor:
+            q += f"&before_ts={cursor['before_ts']}&before_id={cursor['before_id']}"
+        body = client.get(q, headers=h).json()
+        assert len(body["samples"]) <= 2
+        seen.extend(s["id"] for s in body["samples"])
+        cursor = body["next"]
+        pages += 1
+        if not cursor:
+            break
+        assert pages < 10, "cursor is not advancing"
+
+    assert len(seen) == len(stamps)
+    assert len(set(seen)) == len(stamps)      # no row served twice
+    # Newest-first across page boundaries.
+    order = [stamps[int(s[4])] for s in seen]
+    assert order == sorted(order, reverse=True)
+
+
+def test_last_page_reports_no_cursor(client, make_user_key):
+    import capture_samples_store as gs
+    import captures_store as cs
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    conn = cs._require_conn()
+    for i in range(2):
+        _insert_sample_at(conn, gs, f"exact{i}sid0000", ts=float(i), user_id=uid)
+
+    # A page that is exactly `limit` long with nothing after it must NOT
+    # advertise a next cursor.
+    body = client.get("/captures/api/samples?limit=2", headers=bearer(raw)).json()
+    assert len(body["samples"]) == 2
+    assert body["next"] is None
