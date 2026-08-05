@@ -1168,6 +1168,18 @@ try:
     from config_store import AdminConfig as _AdminConfig
     from config_store import ENV_VAR_MAPPING as _ENV_VAR_MAPPING
 
+    # Snapshot every env-mapped field BEFORE the env layer touches it, so the
+    # validation pass at the bottom of this module can put a rejected value
+    # back. Values here are plain scalars/containers straight out of the
+    # in-file defaults + config.local.json, hence the shallow copy.
+    _ENV_PRE: "dict[str, object]" = {}
+    for _f in _ENV_VAR_MAPPING:
+        if _f in globals():
+            _v0 = globals()[_f]
+            _ENV_PRE[_f] = (
+                type(_v0)(_v0) if isinstance(_v0, (list, set, dict)) else _v0
+            )
+
     for _field, _env in _ENV_VAR_MAPPING.items():
         if _field in _ENV_SPECIAL_CASES or _field in _ENV_JSON_FIELDS:
             continue
@@ -1304,3 +1316,83 @@ for _k, _v in os.environ.items():
     _model_id = _decode_model_id(_enc_id)
     _entry = MODEL_OVERRIDES.setdefault(_model_id, {})
     _entry[_field] = _coerce_override_value(_field, _v)
+
+
+# =============================================================================
+# Validate the env layer (last, after every reader + special case has run)
+# =============================================================================
+
+
+def _env_validation_reason(exc: BaseException) -> str:
+    """The human-readable half of a pydantic ValidationError, without the
+    docs URL line that str(exc) ends on."""
+    errs = getattr(exc, "errors", None)
+    if callable(errs):
+        try:
+            first = errs()[0]
+            loc = ".".join(str(p) for p in first.get("loc", ()))
+            msg = first.get("msg", "invalid value")
+            return f"{loc}: {msg}" if loc else msg
+        except Exception:  # noqa: BLE001 - fall through to the string form
+            pass
+    return str(exc).splitlines()[0].strip()
+
+
+# Every value arriving through config.local.json is checked by AdminConfig:
+# _safe_log_path rejects UNC / ".." in LOG_FILE, _validate_hosts requires the
+# two allowlists to parse as IP/CIDR, _validate_trusted_origins explicitly
+# rejects "*" ("a wildcard here would accept every cross-site Origin and
+# disable the guard outright"), the cookie names carry a character pattern
+# because they are interpolated into Set-Cookie, and every numeric field
+# carries ge/le bounds. The env layer applied the SAME fields with none of it,
+# so a value rejected with a 422 through /settings loaded silently from an
+# env var — and these reach real sinks (the log handler path, the origin
+# guard, the session cookie, the 413 ceiling).
+#
+# Rejected values are reverted to what they were before the env layer ran and
+# reported through _ENV_WARNINGS (main logs them once logging is up). Import
+# never fails over this: refusing to boot would turn a bad env var into an
+# outage, and a reverted field is the same fail-safe the readers above already
+# apply when a value will not coerce.
+try:
+    _ENV_VALIDATE_SKIP = _ENV_JSON_FIELDS | {"MODEL_OVERRIDES"}
+    for _field in sorted(_ENV_PRE):
+        if _field in _ENV_VALIDATE_SKIP:
+            continue
+        _new = globals().get(_field)
+        _old = _ENV_PRE[_field]
+        if _new == _old:
+            continue  # env did not change it — nothing new to validate
+        try:
+            _AdminConfig.model_validate({_field: _new})
+        except Exception as _verr:  # noqa: BLE001 — any validation failure
+            globals()[_field] = _old
+            _ENV_WARNINGS.append(
+                f"{_ENV_VAR_MAPPING.get(_field, _field)} is not a valid "
+                f"{_field}: {_env_validation_reason(_verr)}; "
+                f"keeping {_old!r}"
+            )
+
+    # MODEL_OVERRIDES is assembled key-by-key from the
+    # WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention, which bypasses
+    # ModelOverride's `extra: forbid` and its per-field bounds entirely — so an
+    # unknown field name or an out-of-range value both landed in the live dict.
+    # Beyond defeating the bound (BEAM_SIZE=9999 would sail past Field(le=20)),
+    # a bad entry also makes every later /settings save 422 forever, because
+    # the page round-trips the whole dict back through AdminConfig.
+    if MODEL_OVERRIDES:
+        _clean_overrides = {}
+        for _mid, _entry in MODEL_OVERRIDES.items():
+            try:
+                _AdminConfig.model_validate({"MODEL_OVERRIDES": {_mid: _entry}})
+                _clean_overrides[_mid] = _entry
+            except Exception as _verr:  # noqa: BLE001
+                _ENV_WARNINGS.append(
+                    f"MODEL_OVERRIDES[{_mid!r}] is invalid and was dropped: "
+                    f"{_env_validation_reason(_verr)}"
+                )
+        MODEL_OVERRIDES = _clean_overrides
+except NameError:
+    # config_store was unavailable above (the ImportError fallback) — there is
+    # no schema to validate against, so the bare in-file defaults stand.
+    pass
