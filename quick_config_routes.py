@@ -204,6 +204,47 @@ def build_word_suggestions(user: dict[str, Any], *, max_words: int) -> list[str]
     return list(seen.values())
 
 
+def _redact_invisible_slugs(
+    errors: list[str],
+    user: dict[str, Any],
+    rules: list[dict[str, Any]],
+) -> list[str]:
+    """Blank out rule slugs the caller is not allowed to see.
+
+    save_overrides re-validates the ENTIRE merged rule list, and config_store
+    builds its messages as `rule {idx} ({slug!r}) ...` regardless of who asked.
+    Rule visibility is a real authorization boundary — the GET path filters on
+    `can_see_rule` and the PATCH path 403s an invisible slug — so returning
+    those messages verbatim to a non-admin leaks the names (and list positions)
+    of rules they cannot otherwise learn exist. Two ways that fires: a rule that
+    compiles but fails the guard (the load path validates without `guard_regex`,
+    so it can sit on disk), or the shared guard budget expiring while the child
+    is on a later hidden rule.
+
+    The caller's OWN rules are always visible to them — the PATCH path rejected
+    anything else before we got here — so their real errors stay legible.
+    Admins see everything unchanged.
+    """
+    if user.get("is_admin"):
+        return errors
+    perms = user.get("permissions")
+    if perms is None:
+        return errors
+    hidden = [
+        str(r.get("slug") or "") for r in rules
+        if r.get("slug") and not perms.can_see_rule(r)
+    ]
+    if not hidden:
+        return errors
+    out = []
+    for msg in errors:
+        for slug in hidden:
+            # config_store formats the slug with !r, hence the quotes.
+            msg = msg.replace(f"'{slug}'", "'<hidden rule>'")
+        out.append(msg)
+    return out
+
+
 async def apply_rules_patch(
     user: dict[str, Any],
     rules_patch: dict[str, dict[str, Any]],
@@ -344,7 +385,9 @@ async def apply_rules_patch(
         )
     except ValidationError as e:
         return status.HTTP_422_UNPROCESSABLE_ENTITY, {
-            "errors": config_store.format_validation_errors(e),
+            "errors": _redact_invisible_slugs(
+                config_store.format_validation_errors(e), user, current_rules,
+            ),
         }
     except OSError as e:
         logger.error("[pipeline-rules] save failed: %s", e)

@@ -14,6 +14,18 @@ services:
     # to pick the user/group — no rebuild needed; the image ships /data and
     # /models writable by any UID.
     user: "${PUID:-1000}:${PGID:-1000}"
+    # Nothing here needs a Linux capability: the process is already a non-root
+    # UID, binds 8000 (above 1024), never chowns, and the volumes ship writable.
+    # Dropping them removes the post-exploitation regain path a bug in the audio
+    # decoder (native ffmpeg/ctranslate2 code parsing uploaded bytes) would
+    # otherwise have. The NVIDIA runtime injects the GPU device nodes and
+    # libraries itself and needs no capability from this list.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    # NOTE: `read_only: true` is deliberately NOT set — the image points
+    # HOME at /tmp, so it would need a `tmpfs: [/tmp]` mount alongside it.
     # GPU: expose all NVIDIA GPUs (Compose v2 reservation, == `docker run --gpus all`).
     deploy:
       resources:
