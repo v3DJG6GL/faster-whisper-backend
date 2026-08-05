@@ -37,6 +37,14 @@ captures.local.sqlite3-shm
 captures.local.sqlite3-wal
 captures/
 
+# Capture-export manifest — carries transcript text out of the capture store
+manifest.jsonl
+
+# Session store (SQLite + WAL/SHM) — holds session-token hashes
+sessions.local.sqlite3
+sessions.local.sqlite3-shm
+sessions.local.sqlite3-wal
+
 # Persistent recent-transcriptions store (SQLite + WAL/SHM)
 recent_transcriptions.local.sqlite3
 recent_transcriptions.local.sqlite3-shm

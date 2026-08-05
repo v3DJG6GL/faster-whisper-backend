@@ -40,6 +40,25 @@ $LogsDir     = Join-Path $RepoDir "logs"
 $WinSWExe    = Join-Path $RepoDir "$ServiceName.exe"
 $WinSWXml    = Join-Path $RepoDir "$ServiceName.xml"
 $LegacyNssm  = Join-Path $RepoDir "nssm.exe"
+# Same pinned SHA-256 set as install-service.ps1 (WinSW v2.12.0). This script
+# runs elevated and would otherwise invoke whatever WhisperAPI.exe happens to be
+# sitting in the repo directory -- which an ordinary local account can write on a
+# per-user checkout. On a mismatch we fall through to sc.exe, which removes the
+# service without executing the wrapper at all, so an unrecognised binary costs
+# nothing but a warning. Update together with install-service.ps1.
+$WinSWHashes = @{
+    "WinSW.NET461.exe" = "B5066B7BBDFBA1293E5D15CDA3CAAEA88FBEAB35BD5B38C41C913D492AADFC4F"
+    "WinSW-x64.exe"    = "05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA"
+}
+
+function Test-WinSWTrusted {
+    if (-not (Test-Path $WinSWExe)) { return $false }
+    $hash = (Get-FileHash -Path $WinSWExe -Algorithm SHA256).Hash
+    if ($WinSWHashes.Values -contains $hash) { return $true }
+    Write-Host "WhisperAPI.exe does not match a pinned WinSW build (SHA-256 $hash)." -ForegroundColor Yellow
+    Write-Host "  Not running it. Falling back to sc.exe to remove the service." -ForegroundColor Yellow
+    return $false
+}
 
 # --- check service exists ---------------------------------------------------
 $svc = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
@@ -70,7 +89,7 @@ if (-not $svc) {
     # SCM-handoff). Fall back to sc.exe so the script works even if the
     # user already deleted WhisperAPI.exe.
     Write-Host "Removing $ServiceName from the SCM..."
-    if (Test-Path $WinSWExe) {
+    if (Test-WinSWTrusted) {
         & $WinSWExe uninstall 2>&1 | Out-Null
     } elseif (Test-Path $LegacyNssm) {
         & $LegacyNssm remove $ServiceName confirm 2>&1 | Out-Null

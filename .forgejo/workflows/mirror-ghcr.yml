@@ -72,11 +72,23 @@ jobs:
           # Fetched from this instance's `tools` generic package registry —
           # upload the new release tarball there BEFORE bumping this version.
           CRANE_VERSION: v0.21.7
+          # SHA-256 of go-containerregistry_Linux_x86_64.tar.gz at
+          # $CRANE_VERSION, taken from the upstream release checksums.txt. A
+          # generic-package coordinate is mutable (delete + re-upload), and the
+          # very next step hands this binary both registry tokens plus push
+          # rights on the public ghcr.io mirror — so the bytes are verified
+          # before they run, the same way install-service.ps1 pins WinSW.
+          # MUST be updated together with CRANE_VERSION.
+          CRANE_SHA256: 1a57bc98207fa1c0d04bf760699099e26f8383499bfd55b99c1b919a928a7230
         run: |
           set -euo pipefail
+          # To disk first: piping straight into tar leaves nothing to check.
           curl -fsSL --retry 3 --retry-delay 5 --retry-connrefused --retry-all-errors \
-            "${GITHUB_SERVER_URL}/api/packages/tools/generic/go-containerregistry/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz" \
-            | sudo tar -xz -C /usr/local/bin crane
+            -o crane.tar.gz \
+            "${GITHUB_SERVER_URL}/api/packages/tools/generic/go-containerregistry/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
+          echo "${CRANE_SHA256}  crane.tar.gz" | sha256sum -c -
+          sudo tar -xzf crane.tar.gz -C /usr/local/bin crane
+          rm -f crane.tar.gz
           crane version
 
       - name: Sync tags (digest-compare, copy only what drifted)

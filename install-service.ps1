@@ -307,7 +307,7 @@ if ($net4Release -ge 394254) {
 }
 
 # --- download WinSW.exe if missing -----------------------------------------
-if (-not (Test-Path $WinSWExe)) {
+function Get-WinSW {
     $url = "https://github.com/winsw/winsw/releases/download/$WinSWVersion/$WinSWAsset"
     Write-Host "Downloading WinSW $WinSWVersion ($WinSWAsset)..." -ForegroundColor Cyan
     Write-Host "  $url" -ForegroundColor DarkGray
@@ -317,14 +317,31 @@ if (-not (Test-Path $WinSWExe)) {
         Remove-Item -Force $WinSWExe
         throw "WinSW download produced a $sz-byte file (expected >100 KB) - download failed"
     }
-    $expected = $WinSWHashes[$WinSWAsset]
-    $hash     = (Get-FileHash -Path $WinSWExe -Algorithm SHA256).Hash
+}
+
+if (-not (Test-Path $WinSWExe)) {
+    Get-WinSW
+}
+
+# Verify on EVERY path, not just after a download. The file sits in the repo
+# directory -- writable by an ordinary user on a per-user checkout -- and is then
+# run from this elevated session and registered as a LocalSystem service, so a
+# planted or pre-pin binary would otherwise be executed unchecked. A mismatch
+# re-downloads once (the usual cause is a wrapper from before this pin existed)
+# and only fails hard if the fresh copy is wrong too.
+$expected = $WinSWHashes[$WinSWAsset]
+$hash     = (Get-FileHash -Path $WinSWExe -Algorithm SHA256).Hash
+if ($hash -ne $expected) {
+    Write-Host "WinSW.exe at $WinSWExe does not match the pinned SHA-256 - replacing it." -ForegroundColor Yellow
+    Remove-Item -Force $WinSWExe
+    Get-WinSW
+    $hash = (Get-FileHash -Path $WinSWExe -Algorithm SHA256).Hash
     if ($hash -ne $expected) {
         Remove-Item -Force $WinSWExe
         throw "WinSW hash mismatch for $WinSWAsset $WinSWVersion - got $hash, expected $expected. Refusing to install the downloaded file."
     }
-    Write-Host "WinSW.exe placed at: $WinSWExe ($([math]::Round($sz/1KB)) KB, SHA-256 verified)" -ForegroundColor Green
 }
+Write-Host "WinSW.exe verified at: $WinSWExe ($([math]::Round((Get-Item $WinSWExe).Length/1KB)) KB, SHA-256 matches $WinSWVersion)" -ForegroundColor Green
 
 # --- write WhisperAPI.xml --------------------------------------------------
 # Always overwritten so edits to this here-string actually take effect on
