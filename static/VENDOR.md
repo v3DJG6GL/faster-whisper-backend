@@ -34,6 +34,35 @@ fully offline — no CDN fetch at page-load.
   grammar shared with faster-whisper-frontend), and `docs/brand/logo.html`
   for rendering the README logo PNGs.
 
+## Swagger UI / ReDoc (API docs pages)
+
+- **Versions**: `swagger-ui-dist` 5.30.2, `redoc` 2.5.0
+- **Source**: https://github.com/swagger-api/swagger-ui,
+  https://github.com/Redocly/redoc
+- **License**: Apache-2.0 (both)
+- **Files**:
+  - `swagger-ui-bundle.js`  (~1.5 MB) — exposes the global `SwaggerUIBundle`.
+  - `swagger-ui.css`        (~152 KB) — self-contained (all images are data: URIs).
+  - `redoc.standalone.js`   (~890 KB) — exposes the global `Redoc`.
+- **Used by**: `/docs` and `/redoc` in `main.py`.
+- **Why vendored**: FastAPI's `get_swagger_ui_html` / `get_redoc_html` default
+  to `cdn.jsdelivr.net` (and `fastapi.tiangolo.com` for the favicon). Both
+  pages render in the app's own origin and are opened by an admin carrying a
+  session cookie, so whoever controls that CDN response executes code with
+  admin rights against this backend. Same reasoning as uPlot/GridStack above.
+  `main.py` passes explicit `/static/...` URLs for the JS, the CSS and the
+  favicon — if you ever drop those arguments, the CDN defaults come back.
+- **Known residue**: `redoc.standalone.js` renders a Redocly logo from
+  `https://cdn.redoc.ly/redoc/logo-mini.svg` behind an `onError` fallback. It
+  is an image, not executable code, and the page degrades cleanly without it —
+  but it does mean opening `/redoc` makes one outbound image request.
+  `swagger-ui-bundle.js` and `swagger-ui.css` make no load-time external
+  requests at all.
+- **SHA-256** (as vendored, verify after any re-download):
+  - `swagger-ui-bundle.js` `002503ad9e92c33a9c9e2f7d4910a6fba4dd9dd8c57cfdb53b090629df0f5787`
+  - `swagger-ui.css`       `bc5e8d5c013477cf1f35e2fb8ba1dff66be0f72f24e669a509635657145e1acb`
+  - `redoc.standalone.js`  `0ec05be285ac885a330289b02f470e1bdbd2b6b3223a9fa213f24bf805a851d1`
+
 ## How to update
 
 ```bash
@@ -45,7 +74,19 @@ curl -sL -o gridstack.min.js \
   "https://cdn.jsdelivr.net/npm/gridstack@<NEW_VERSION>/dist/gridstack-all.js"
 curl -sL -o gridstack.min.css \
   "https://cdn.jsdelivr.net/npm/gridstack@<NEW_VERSION>/dist/gridstack.min.css"
+curl -sL -o swagger-ui-bundle.js \
+  "https://cdn.jsdelivr.net/npm/swagger-ui-dist@<NEW_VERSION>/swagger-ui-bundle.js"
+curl -sL -o swagger-ui.css \
+  "https://cdn.jsdelivr.net/npm/swagger-ui-dist@<NEW_VERSION>/swagger-ui.css"
+curl -sL -o redoc.standalone.js \
+  "https://cdn.jsdelivr.net/npm/redoc@<NEW_VERSION>/bundles/redoc.standalone.js"
+
+# Record the new digests in this file:
+sha256sum swagger-ui-bundle.js swagger-ui.css redoc.standalone.js
 ```
+
+Pin an EXACT version for every URL above (never a floating `@5` major) so a
+re-download is reproducible and the recorded digests stay meaningful.
 
 Then bump the version in this file. Do not hand-edit the JS or CSS — keep
 them byte-identical to the upstream release so `git blame` stays meaningful.
