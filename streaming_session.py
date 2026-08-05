@@ -150,9 +150,16 @@ class StreamSession:
         self._trimmed_text = ""            # committed text whose audio _maybe_trim cut away
         self._trimmed_sec = 0.0            # seconds of utterance audio _maybe_trim cut away
         # Audio + word dicts banked by _maybe_trim so on_final can hand captures
-        # the WHOLE utterance. Bounded: forced_commit_sec (25 s) caps an
-        # utterance, so this holds ~2 MB of float32 at worst, freed on reset.
+        # the WHOLE utterance, freed on reset. The old claim here — that
+        # forced_commit_sec (25 s) caps this at ~2 MB — was wrong twice over:
+        # forced_commit_sec counts SPEECH (_speech_ms), not buffered wall
+        # clock, and max_buffer_sec tested only the LIVE buffer, which
+        # _maybe_trim keeps pinned near buffer_trim_keep_sec. A caller emitting
+        # one speech frame per ~1.1 s of silence banked 860 s / 56 MB against a
+        # documented 600 s / 38 MB ceiling that never fired. _trimmed_samples
+        # tracks the bank so the ceiling can measure the whole utterance.
         self._trimmed_audio: "list[np.ndarray]" = []
+        self._trimmed_samples = 0
         self._trimmed_words: "list[dict]" = []
         self._utterance_index = 0
         self._prompt = base_prompt.strip()
@@ -276,11 +283,16 @@ class StreamSession:
         # continues in a fresh utterance.
         # Counter, not the property: this runs on every frame (see the buffer
         # note above).
-        if self._audio_samples >= self.cfg.max_buffer_sec * self.cfg.sample_rate:
-            logger.warning("[stream %s] audio buffer hit the %.0f s ceiling (%.1f s) "
-                           "— forcing a finalize", self.session_id[:8],
-                           self.cfg.max_buffer_sec,
-                           self._audio_samples / self.cfg.sample_rate)
+        # Live buffer PLUS what _maybe_trim banked: the bank is still held for
+        # the finalize, so it is the utterance's real memory cost.
+        _held = self._audio_samples + self._trimmed_samples
+        if _held >= self.cfg.max_buffer_sec * self.cfg.sample_rate:
+            logger.warning("[stream %s] audio buffer hit the %.0f s ceiling (%.1f s "
+                           "held: %.1f s live + %.1f s trimmed) — forcing a finalize",
+                           self.session_id[:8], self.cfg.max_buffer_sec,
+                           _held / self.cfg.sample_rate,
+                           self._audio_samples / self.cfg.sample_rate,
+                           self._trimmed_samples / self.cfg.sample_rate)
             await self._finalize(forced=True)
             return
 
@@ -387,6 +399,7 @@ class StreamSession:
             self._trimmed_sec += cut - self._buffer_offset
             buf = self.audio
             self._trimmed_audio.append(buf[:cut_samples].copy())
+            self._trimmed_samples += cut_samples
             self._trimmed_words.extend(
                 {"word": w.text, "start": w.start, "end": w.end}
                 for w in cut_words)
@@ -548,6 +561,7 @@ class StreamSession:
         self._trimmed_text = ""
         self._trimmed_sec = 0.0
         self._trimmed_audio = []
+        self._trimmed_samples = 0
         self._trimmed_words = []
         self._in_utterance = False
         self._speech_ms = 0

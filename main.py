@@ -921,6 +921,7 @@ def _format_request_block(
 # comma-separated allowlist; empty = any well-formed model id goes, useful on
 # a private LAN).
 import asyncio
+import functools
 from collections import OrderedDict
 
 # Source: cfg.DEFAULT_MODEL / cfg.ALLOWED_MODELS / cfg.MAX_LOADED_MODELS.
@@ -1457,8 +1458,11 @@ async def _ensure_ct2_model(name: str) -> str:
     if os.path.isfile(os.path.join(output_dir, "model.bin")):
         return output_dir
     # Skip the file-list probe + conversion for already-CT2 repos and
-    # local paths.
-    if not _model_needs_conversion(name):
+    # local paths. OFF the loop: the probe makes a synchronous
+    # huggingface_hub.list_repo_files() HTTPS call (its own docstring says
+    # "~1 s"), and this is an async def. Pure predicate, evaluated before the
+    # per-model lock below, so nothing can reorder against it.
+    if not await asyncio.to_thread(_model_needs_conversion, name):
         return name
 
     # Per-model asyncio lock (lazy create). Ensures only one conversion of
@@ -1793,7 +1797,9 @@ async def _sessions_purge_loop() -> None:
     while True:
         try:
             await asyncio.sleep(3600)
-            sessions_store.purge_expired()
+            # Off the loop: purge_expired rebuilds the whole session index,
+            # which is O(live sessions) and measured ~33 ms at 20 000 rows.
+            await asyncio.to_thread(sessions_store.purge_expired)
         except asyncio.CancelledError:
             raise
         except Exception as _se:
@@ -2875,23 +2881,36 @@ async def transcribe(
                         # treated as "OK to try" and the create_capture
                         # path itself surfaces the real error.
                         try:
-                            _free = shutil.disk_usage(cfg.CAPTURES_DIR).free
+                            _free = (await asyncio.to_thread(
+                                shutil.disk_usage, cfg.CAPTURES_DIR)).free
                         except OSError:
                             _free = 1 << 40  # large enough to proceed
                         if _free > 1_000_000_000:
-                            captured_id = _cap_store.create_capture(
-                                audio_src_path=tmp_path,
-                                request_id=request_id,
-                                model=resolved_model,
-                                language=info.language,
-                                duration_seconds=audio_dur_s,
-                                raw=raw_full_text,
-                                final=full_text_str,
-                                text_for_training=training_text_str,
-                                words=all_words,
-                                segments=seg_diag,
-                                user_id=user.get("user_id"),
-                            )
+                            # OFF the loop: create_capture runs a full PyAV
+                            # demux/decode/resample/encode of the uploaded
+                            # clip, a multi-MB write and an os.replace retry
+                            # loop that time.sleep()s. Measured 1.2-1.4 s of
+                            # frozen event loop for a 10-minute upload — the
+                            # decode above is already offloaded, this was the
+                            # last blocking step left inline. captures_store
+                            # opens with check_same_thread=False and guards
+                            # writes with its own lock; the outer finally still
+                            # unlinks tmp_path after this returns.
+                            captured_id = await asyncio.to_thread(
+                                functools.partial(
+                                    _cap_store.create_capture,
+                                    audio_src_path=tmp_path,
+                                    request_id=request_id,
+                                    model=resolved_model,
+                                    language=info.language,
+                                    duration_seconds=audio_dur_s,
+                                    raw=raw_full_text,
+                                    final=full_text_str,
+                                    text_for_training=training_text_str,
+                                    words=all_words,
+                                    segments=seg_diag,
+                                    user_id=user.get("user_id"),
+                                ))
                         else:
                             logger.warning(
                                 "[capture] skipped due to low disk free "

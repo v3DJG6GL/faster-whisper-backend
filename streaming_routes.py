@@ -314,7 +314,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
         if first.get("text") is not None:
             try:
                 conf = json.loads(first["text"])
-            except (ValueError, TypeError):
+            except (ValueError, TypeError, RecursionError):
+                # RecursionError is what json actually raises on a deeply
+                # nested document, and it is a RuntimeError, not a ValueError.
+                # A ~400 KB "[[[[..." frame (well inside ws_max_size) used to
+                # escape to the handler's blanket except Exception, which logs
+                # a full traceback carrying absolute paths, unthrottled, at a
+                # rate the client picks.
                 conf = {}
         elif first.get("bytes") is not None:
             pending_audio = first["bytes"]
@@ -616,7 +622,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
             captured_id = None
             if cap_enabled and raw_text.strip():
-                captured_id = _maybe_capture(rid, info, raw_text, final_text, words, fw_info)
+                # OFF the loop: _maybe_capture writes a WAV and then runs
+                # captures_store.create_capture, which re-transcodes it through
+                # PyAV — the same blocking work the batch route offloads. This
+                # fires per finalized utterance on every live session.
+                captured_id = await asyncio.to_thread(
+                    _maybe_capture, rid, info, raw_text, final_text, words,
+                    fw_info)
 
             # Rich diagnostic block — same formatter the batch route uses, so the
             # VAD-ate-audio / empty-output / pipeline-step diagnostics show up for
@@ -624,7 +636,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             try:
                 logger.info(main._format_request_block(
                     file_label=f"stream {session_id[:8]} utt#{info['utterance']}  "
-                               f"({info['audio_dur']:.2f}s, {response_format})",
+                               f"({info['audio_dur']:.2f}s, "
+                               f"{store_common.log_safe(str(response_format))})",
                     model_name=final_model, info=fw_info, kwargs=kwargs,
                     seg_diag=seg_diag, raw=raw_text, final=final_text,
                     steps=steps, request_id=rid, captured_id=captured_id,
@@ -899,7 +912,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 elif msg.get("text") is not None:
                     try:
                         ctrl = json.loads(msg["text"])
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, RecursionError):
+                        # See the handshake guard above — deep nesting raises
+                        # RecursionError, which slipped past and tore down the
+                        # whole dictation session instead of being ignored.
                         continue
                     kind = ctrl.get("type")
                     if kind == "flush":
@@ -941,6 +957,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
         except Exception:  # noqa: BLE001
             pass
     finally:
+        # Release the slot and the gauge FIRST. They used to sit after three
+        # awaits guarded by `except Exception`, and CancelledError is a
+        # BaseException — a cancellation delivered anywhere in the teardown
+        # (lifespan shutdown is the reachable one) skipped both, permanently
+        # burning one of STREAMING_MAX_SESSIONS. Both are idempotent and touch
+        # nothing the teardown below needs.
+        metrics.in_flight_transcriptions -= 1
+        _active_sessions.discard(session_id)
         # Idempotent backstop so every exit path (normal, disconnect, error)
         # converges here and the ffmpeg subprocess + stdout-reader task are
         # always torn down. On the normal path the inner `finally` already
@@ -966,8 +990,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 await session.close()
             except Exception:  # noqa: BLE001 — peer already gone
                 pass
-        metrics.in_flight_transcriptions -= 1
-        _active_sessions.discard(session_id)
 
 
 # --- Dictation page -----------------------------------------------------------
