@@ -57,6 +57,13 @@ _ALL_USERS = "__all__"
 
 # {cache_key: (generated_ts, [ProposedGroup, ...])}
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+# Insertion-order ceiling, matching _TRIM_DUR_CACHE_MAX below. A scope=all
+# caller picks the ?user_id= that becomes the key, and invalidate() only ever
+# pops a REAL user's key plus the sentinel — so an unknown id minted an entry
+# that nothing could evict, for the life of the process. The key is rejected
+# up front now (see propose_merges); this is the belt-and-braces half, so the
+# dict is bounded however the key is derived.
+_CACHE_MAX = 512
 # Serializes the sweep itself (see propose_merges). Also makes the _CACHE and
 # _TRIM_DUR_CACHE mutations single-threaded again now that the route dispatches
 # this through asyncio.to_thread.
@@ -381,6 +388,19 @@ def _propose_merges_locked(
         effective_user_id = caller_user_id
         cache_key = _user_cache_key(caller_user_id) if caller_user_id else _ALL_USERS
     elif user_id_filter:
+        # Reject an unknown id before it can mint a cache key: the sweep for a
+        # nonexistent user returns nothing anyway, so this costs a caller
+        # nothing real and keeps _CACHE to one entry per actual user. Best
+        # effort on purpose — this module must not start failing because the
+        # key store is uninitialised (it is not a dependency of a sweep), and
+        # _CACHE_MAX bounds the dict either way.
+        import api_keys_store
+        try:
+            _known = api_keys_store.get_user(user_id_filter) is not None
+        except Exception:  # noqa: BLE001 - store not ready / unavailable
+            _known = True
+        if not _known:
+            return [], False
         effective_user_id = user_id_filter
         cache_key = _user_cache_key(user_id_filter)
     else:
@@ -485,6 +505,8 @@ def _propose_merges_locked(
         if len(proposals) >= max_proposals:
             break
 
+    while len(_CACHE) >= _CACHE_MAX:
+        _CACHE.pop(next(iter(_CACHE)), None)
     _CACHE[cache_key] = (now, proposals)
     logger.info(
         "[proposer] user=%s n_eligible=%d sessions=%d candidates=%d proposals=%d",

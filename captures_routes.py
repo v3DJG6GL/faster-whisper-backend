@@ -24,6 +24,8 @@ future "promote a capture into a report" flow needs no translation.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
+import functools
 import io
 import json
 import logging
@@ -62,6 +64,23 @@ logger = logging.getLogger("whisper-api")
 # therefore live per-API-route, where fetch() already attaches the
 # bearer. Mutation routes additionally `Depends(require_admin)` for
 # system-wide writes (clear, reprocess-all, export).
+# One dedicated worker for the merge proposer. NOT the default executor:
+# that is the pool main.transcribe runs CT2 inference in, and a proposer sweep
+# is seconds of pure CPU that any captures-page holder can trigger without a
+# rate limit. Built lazily so importing this module costs nothing, and
+# single-worker so the sweeps serialise against each other exactly as
+# _SWEEP_LOCK already makes them.
+_PROPOSER_POOL: "concurrent.futures.ThreadPoolExecutor | None" = None
+
+
+def _proposer_pool() -> "concurrent.futures.ThreadPoolExecutor":
+    global _PROPOSER_POOL
+    if _PROPOSER_POOL is None:
+        _PROPOSER_POOL = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="captures-proposer")
+    return _PROPOSER_POOL
+
+
 router = APIRouter(
     dependencies=[Depends(require_user_webui_host)],
 )
@@ -263,18 +282,26 @@ async def propose_merges_api(
     perms = user["permissions"]
     caller_uid = str(user.get("user_id") or "")
     sees_all = perms.scope("captures") == "all"
-    # Off the event loop: on a cold _TRIM_DUR_CACHE (every restart) this walks
-    # up to CAPTURES_PROPOSER_WINDOW rows doing a PCM read plus a full VAD pass
-    # each, and the candidate walk itself is O(N^2). Inline, that stalls every
-    # other request on the worker for the whole sweep.
-    proposals, cached = await asyncio.to_thread(
-        captures_merge_proposer.propose_merges,
-        # Only scope=all callers can narrow via ?user_id=; the proposer
-        # ignores user_id_filter when is_admin=False (caller scoped to
-        # caller_user_id partition).
-        user_id_filter=user_filter if sees_all else None,
-        is_admin=sees_all,
-        caller_user_id=caller_uid,
+    # Off the event loop AND off the default executor. On a cold
+    # _TRIM_DUR_CACHE (every restart) this walks up to
+    # CAPTURES_PROPOSER_WINDOW rows doing a PCM read plus a full VAD pass each,
+    # and the candidate walk itself is O(N*M^2) — measured 25-144 s on a
+    # 500-row bucket. asyncio.to_thread would put that on the DEFAULT executor,
+    # which is the pool main.transcribe runs CT2 inference in, so concurrent
+    # sweeps could starve transcription outright. The proposer gets one
+    # dedicated worker instead: same proposals, same caller latency, but it can
+    # never hold more than one thread no matter how many callers ask.
+    proposals, cached = await asyncio.get_running_loop().run_in_executor(
+        _proposer_pool(),
+        functools.partial(
+            captures_merge_proposer.propose_merges,
+            # Only scope=all callers can narrow via ?user_id=; the proposer
+            # ignores user_id_filter when is_admin=False (caller scoped to
+            # caller_user_id partition).
+            user_id_filter=user_filter if sees_all else None,
+            is_admin=sees_all,
+            caller_user_id=caller_uid,
+        ),
     )
     if proposals:
         all_uids: set[str] = set()
@@ -377,22 +404,33 @@ async def list_samples_api(
     scope = perms.effective_user_id_for("captures", caller_uid)
     if user.get("is_admin") and user_filter:
         scope = user_filter
-    groups = capture_samples_store.list_samples(
-        user_id=scope, status=status_filter,
-    )
-    usernames = api_keys_store.get_usernames([g.get("user_id") for g in groups])
-    for g in groups:
-        # Re-derive transcript + corrections per group so the collapsed
-        # card preview reflects chip-applied final text (matches the
-        # expanded card + export). Members fetched once per group; no
-        # merged_words on the list path — that's expand-only.
-        members = capture_samples_store.get_members(g["id"])
-        _hydrate_members(members)
-        g["transcript"] = _build_default_transcript(
-            members, g.get("transcript_join_strategy") or "space",
+
+    def _gather() -> list[dict[str, Any]]:
+        groups = capture_samples_store.list_samples(
+            user_id=scope, status=status_filter,
         )
-        g["corrections"] = _project_member_corrections(members)
-        g["username"] = usernames.get(g.get("user_id"))
+        usernames = api_keys_store.get_usernames(
+            [g.get("user_id") for g in groups])
+        for g in groups:
+            # Re-derive transcript + corrections per group so the collapsed
+            # card preview reflects chip-applied final text (matches the
+            # expanded card + export). Members fetched once per group; no
+            # merged_words on the list path — that's expand-only.
+            members = capture_samples_store.get_members(g["id"])
+            _hydrate_members(members)
+            g["transcript"] = _build_default_transcript(
+                members, g.get("transcript_join_strategy") or "space",
+            )
+            g["corrections"] = _project_member_corrections(members)
+            g["username"] = usernames.get(g.get("user_id"))
+        return groups
+
+    # OFF the loop, like propose_merges_api / get_sample_audio_api /
+    # regenerate_sample_api above. list_samples takes no LIMIT (unlike its
+    # list_captures_api sibling) and each group then costs one full
+    # get_capture per member, words_json decode included. Measured 3.0 s of
+    # frozen event loop for 300 groups x 4 members at 234 KB of words each.
+    groups = await asyncio.to_thread(_gather)
     return JSONResponse({"samples": groups})
 
 
@@ -612,7 +650,10 @@ async def clear_captures_api(payload: ClearIn, request: Request) -> JSONResponse
             "Confirm by sending {\"confirm\": \"CAPTURES\"}.",
         )
     host = request.client.host if request.client else ""
-    n = captures_store.clear_all(reporter_host=host)
+    # Off the loop: clear_all runs a DELETE plus a full VACUUM on a database
+    # that can reach ~1 GB, then rmtree's up to CAPTURES_MAX_MB of audio. The
+    # store takes its own lock and the route holds none.
+    n = await asyncio.to_thread(captures_store.clear_all, host)
     return JSONResponse({"ok": True, "deleted": n})
 
 
@@ -1200,19 +1241,28 @@ async def create_sample_api(
     import uuid as _uuid
 
     member_ids = payload.member_ids
+    # OFF the loop: _validate_merge_payload runs a Silero VAD pass per member
+    # and _build_merged_wav runs another plus a WAV write with fsync — up to 30
+    # members per call, with no rate limit. The sibling routes that touch the
+    # same helpers (get_sample_audio_api, regenerate_sample_api) were already
+    # offloaded for exactly this reason; this one was missed.
     captures, owner_user_id, member_paths, _total_audio_ms = (
-        _validate_merge_payload(member_ids, _global_silence_ms(), user)
+        await asyncio.to_thread(
+            _validate_merge_payload, member_ids, _global_silence_ms(), user)
     )
 
     # Build merged WAV — sid generated upfront so the build path is
     # known before the DB insert (mirrors captures_store).
     sid = _uuid.uuid4().hex
     transcript = _build_default_transcript(captures, _global_join_strategy())
-    duration_ms, hashes, member_trims = _build_merged_wav(
-        sid=sid,
-        member_paths=member_paths,
-        member_ids=member_ids,
-        silence_ms=_global_silence_ms(),
+    duration_ms, hashes, member_trims = await asyncio.to_thread(
+        functools.partial(
+            _build_merged_wav,
+            sid=sid,
+            member_paths=member_paths,
+            member_ids=member_ids,
+            silence_ms=_global_silence_ms(),
+        )
     )
     # Derive language from the first member with a populated value —
     # Whisper detects language per-clip; members of the same group should
@@ -1271,7 +1321,9 @@ async def preview_merge_audio_api(
     _check_audio_rate(request.client.host if request.client else "")
 
     _captures, _owner, member_paths, _total_audio_ms = (
-        _validate_merge_payload(payload.member_ids, _global_silence_ms(), user)
+        await asyncio.to_thread(
+            _validate_merge_payload, payload.member_ids,
+            _global_silence_ms(), user)
     )
 
     # tempfile.NamedTemporaryFile(delete=False) so FileResponse can stream
@@ -1280,12 +1332,17 @@ async def preview_merge_audio_api(
     fd, tmp_path = tempfile.mkstemp(prefix="preview_merge_", suffix=".wav")
     os.close(fd)
     try:
-        audio_merge.merge_wavs(
-            member_paths, tmp_path, gap_ms=_global_silence_ms(),
-            trim=bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)),
-            edge_pad_ms=_global_edge_ms(),
-            max_internal_gap_ms=int(
-                getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)),
+        # Off the loop: a VAD pass per member plus the WAV write with fsync.
+        await asyncio.to_thread(
+            functools.partial(
+                audio_merge.merge_wavs,
+                member_paths, tmp_path, gap_ms=_global_silence_ms(),
+                trim=bool(getattr(
+                    cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False)),
+                edge_pad_ms=_global_edge_ms(),
+                max_internal_gap_ms=int(
+                    getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300)),
+            )
         )
     except audio_merge.WavFormatError as e:
         try: os.unlink(tmp_path)
@@ -1331,11 +1388,17 @@ async def preview_merge_words_api(
     memoized per-word _postprocess_text). Same validation gates as the
     audio endpoint."""
     captures, _owner, member_paths, _total_audio_ms = (
-        _validate_merge_payload(payload.member_ids, _global_silence_ms(), user)
+        await asyncio.to_thread(
+            _validate_merge_payload, payload.member_ids,
+            _global_silence_ms(), user)
     )
-    words = _build_merged_words(
-        captures, _global_silence_ms(),
-        member_trims=_preview_member_trims(payload.member_ids, member_paths),
+    words = await asyncio.to_thread(
+        functools.partial(
+            _build_merged_words,
+            captures, _global_silence_ms(),
+            member_trims=_preview_member_trims(
+                payload.member_ids, member_paths),
+        )
     )
     return JSONResponse({
         "words": words,
@@ -1359,8 +1422,12 @@ async def merge_estimate_api(
     as the other merge endpoints; reuses the proposer's cached per-capture
     trim."""
     import captures_merge_proposer
-    captures, _owner, _paths, trimmed_ms = _validate_merge_payload(
-        payload.member_ids, _global_silence_ms(), user, enforce_cap=False,
+    # Off the loop with its siblings: a VAD pass per member, no rate limit.
+    captures, _owner, _paths, trimmed_ms = await asyncio.to_thread(
+        functools.partial(
+            _validate_merge_payload,
+            payload.member_ids, _global_silence_ms(), user, enforce_cap=False,
+        )
     )
     raw_ms = sum(
         int(round(float(c.get("duration_seconds") or 0.0) * 1000))
@@ -1401,7 +1468,9 @@ async def preview_save_chips_api(
     the client can reproject (via _project_member_corrections) to refresh
     its baseline without a full /preview-words round-trip."""
     captures, owner_user_id, _member_paths, _total_audio_ms = (
-        _validate_merge_payload(payload.member_ids, _global_silence_ms(), user)
+        await asyncio.to_thread(
+            _validate_merge_payload, payload.member_ids,
+            _global_silence_ms(), user)
     )
     chips_in = [c.model_dump(exclude_none=True) for c in payload.corrections]
     per_member = _split_corrections_to_members(chips_in, captures)
@@ -2501,145 +2570,156 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
 
     buf = io.BytesIO()
     tar = tarfile.open(fileobj=buf, mode="w:gz", compresslevel=6)
-    manifest_lines: list[bytes] = []
+    # Spooled, not a list: the manifest holds one JSON line per row carrying
+    # the full transcript, admin notes and correction chips, and every line was
+    # kept resident until the b"".join at the end materialised a second copy.
+    # Measured ~104 MB peak at the shipped 5000-row cap, and grouped rows are
+    # exempt from that cap. Rolls to disk past 8 MB; the tarball is unchanged.
+    manifest_lines = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
+    # Closed even if the client disconnects mid-stream and the
+    # generator is abandoned — otherwise every aborted export leaks
+    # a spooled temp file.
+    try:
 
-    # 1. Capture groups (the packed-for-fine-tune training samples).
-    user_filter_scope: str | None = None  # admin-only path; no per-user scope
-    for g in capture_samples_store.list_samples(user_id=user_filter_scope):
-        # Status gate — groups have the same status field as captures.
-        # The caller has already mapped "all" → None upstream, so a
-        # truthy only_status here is a concrete status to match.
-        if only_status:
-            if (g.get("status") or "new") != only_status:
+        # 1. Capture groups (the packed-for-fine-tune training samples).
+        user_filter_scope: str | None = None  # admin-only path; no per-user scope
+        for g in capture_samples_store.list_samples(user_id=user_filter_scope):
+            # Status gate — groups have the same status field as captures.
+            # The caller has already mapped "all" → None upstream, so a
+            # truthy only_status here is a concrete status to match.
+            if only_status:
+                if (g.get("status") or "new") != only_status:
+                    continue
+            # Hard filters (apply even on `only_status=all`). Stale = audio/
+            # text drift; locked = admin lock (same skip as captures_reapply,
+            # so this stays consistent with what the trainer last saw).
+            if g.get("is_stale") or g.get("is_locked"):
                 continue
-        # Hard filters (apply even on `only_status=all`). Stale = audio/
-        # text drift; locked = admin lock (same skip as captures_reapply,
-        # so this stays consistent with what the trainer last saw).
-        if g.get("is_stale") or g.get("is_locked"):
-            continue
-        # Always rebuild the transcript at export time from members +
-        # chips, so the exported text reflects current corrections even
-        # if the stored snapshot is stale. Source from the training-form
-        # column so reviewers see — and the trainer learns from — the
-        # same text.
-        sid = g["id"]
-        members = capture_samples_store.get_members(sid)
-        text = _build_default_transcript(
-            members, g.get("transcript_join_strategy") or "space",
-        ).strip()
-        if not text:
-            continue
-        # Audio existence gate: skip the manifest entry entirely if the
-        # WAV isn't on disk, to avoid manifest pointing at missing files.
-        try:
-            abs_p = capture_samples_store.abs_path_for(g["merged_wav_relpath"])
-        except ValueError:
-            continue
-        if not os.path.isfile(abs_p):
-            continue
+            # Always rebuild the transcript at export time from members +
+            # chips, so the exported text reflects current corrections even
+            # if the stored snapshot is stale. Source from the training-form
+            # column so reviewers see — and the trainer learns from — the
+            # same text.
+            sid = g["id"]
+            members = capture_samples_store.get_members(sid)
+            text = _build_default_transcript(
+                members, g.get("transcript_join_strategy") or "space",
+            ).strip()
+            if not text:
+                continue
+            # Audio existence gate: skip the manifest entry entirely if the
+            # WAV isn't on disk, to avoid manifest pointing at missing files.
+            try:
+                abs_p = capture_samples_store.abs_path_for(g["merged_wav_relpath"])
+            except ValueError:
+                continue
+            if not os.path.isfile(abs_p):
+                continue
 
-        audio_name = f"audio/{sid}.wav"
-        # Group `model` and `request_id` are intentionally empty — a
-        # group has multiple members each with their own model id. Per-
-        # member audit is reachable via the group's GET /members endpoint.
-        manifest_lines.append(json.dumps(_build_manifest_row(
-            audio_filepath=audio_name,
-            text=text,
-            duration=float(g.get("merged_duration_ms") or 0) / 1000.0,
-            language=g.get("language") or "",
-            source="sample",
-            user_id=g.get("user_id") or "",
-            status_value=g.get("status") or "new",
-            created_ts=float(g.get("created_ts") or 0.0),
-            model="",
-            request_id="",
-            member_count=len(members),
-            admin_notes=g.get("admin_notes") or "",
-            corrections=[],
-        ), ensure_ascii=False).encode("utf-8") + b"\n")
+            audio_name = f"audio/{sid}.wav"
+            # Group `model` and `request_id` are intentionally empty — a
+            # group has multiple members each with their own model id. Per-
+            # member audit is reachable via the group's GET /members endpoint.
+            manifest_lines.write(json.dumps(_build_manifest_row(
+                audio_filepath=audio_name,
+                text=text,
+                duration=float(g.get("merged_duration_ms") or 0) / 1000.0,
+                language=g.get("language") or "",
+                source="sample",
+                user_id=g.get("user_id") or "",
+                status_value=g.get("status") or "new",
+                created_ts=float(g.get("created_ts") or 0.0),
+                model="",
+                request_id="",
+                member_count=len(members),
+                admin_notes=g.get("admin_notes") or "",
+                corrections=[],
+            ), ensure_ascii=False).encode("utf-8") + b"\n")
 
-        if include_audio:
-            info = tarfile.TarInfo(audio_name)
-            info.size = os.path.getsize(abs_p)
-            info.mtime = int(g.get("created_ts") or time.time())
-            with open(abs_p, "rb") as af:
-                tar.addfile(info, af)
-            chunk = buf.getvalue()
-            buf.seek(0); buf.truncate()
-            if chunk:
-                yield chunk
+            if include_audio:
+                info = tarfile.TarInfo(audio_name)
+                info.size = os.path.getsize(abs_p)
+                info.mtime = int(g.get("created_ts") or time.time())
+                with open(abs_p, "rb") as af:
+                    tar.addfile(info, af)
+                chunk = buf.getvalue()
+                buf.seek(0); buf.truncate()
+                if chunk:
+                    yield chunk
 
-    # 2. Ungrouped captures (no sample_id).
-    for row in captures_store.iter_captures_for_export(status=only_status):
-        if row.get("sample_id"):
-            continue
-        # Hard filter: `audio_missing` rows have no WAV; never valid
-        # training data. (Caught here even when only_status='all'.)
-        if (row.get("status") or "") == "audio_missing":
-            continue
-        cid = row["id"]
-        # Source training-form text first so the export matches what
-        # reviewers see on /captures. Chip-applied on top. `final` and
-        # `raw` fall-backs cover captures from before the
-        # text_for_training column existed.
-        base = (row.get("text_for_training")
-                or row.get("final")
-                or row.get("raw") or "")
-        text = _apply_chips_to_text(base, row.get("corrections") or [])
-        if not text.strip():
-            continue
-        # Audio path: prefer the trimmed companion if one was produced.
-        # Either way, the manifest line is skipped if the file isn't on
-        # disk (defense against the audio_missing leak path).
-        rel = row.get("audio_trimmed_relpath") or row.get("audio_relpath")
-        if not rel:
-            continue
-        try:
-            abs_p = captures_store.abs_audio_path(rel)
-        except ValueError:
-            continue
-        if not os.path.isfile(abs_p):
-            continue
-        ext = os.path.splitext(rel)[1].lstrip(".").lower() or "wav"
-        audio_name = f"audio/{cid}.{ext}"
-        manifest_lines.append(json.dumps(_build_manifest_row(
-            audio_filepath=audio_name,
-            text=text,
-            duration=float(row.get("duration_seconds") or 0.0),
-            language=row.get("language") or "",
-            source="singleton",
-            user_id=row.get("user_id") or "",
-            status_value=row.get("status") or "",
-            created_ts=float(row.get("created_ts") or 0.0),
-            model=row.get("model") or "",
-            request_id=row.get("request_id") or "",
-            member_count=1,
-            admin_notes=row.get("admin_notes") or "",
-            corrections=row.get("corrections") or [],
-        ), ensure_ascii=False).encode("utf-8") + b"\n")
+        # 2. Ungrouped captures (no sample_id).
+        for row in captures_store.iter_captures_for_export(status=only_status):
+            if row.get("sample_id"):
+                continue
+            # Hard filter: `audio_missing` rows have no WAV; never valid
+            # training data. (Caught here even when only_status='all'.)
+            if (row.get("status") or "") == "audio_missing":
+                continue
+            cid = row["id"]
+            # Source training-form text first so the export matches what
+            # reviewers see on /captures. Chip-applied on top. `final` and
+            # `raw` fall-backs cover captures from before the
+            # text_for_training column existed.
+            base = (row.get("text_for_training")
+                    or row.get("final")
+                    or row.get("raw") or "")
+            text = _apply_chips_to_text(base, row.get("corrections") or [])
+            if not text.strip():
+                continue
+            # Audio path: prefer the trimmed companion if one was produced.
+            # Either way, the manifest line is skipped if the file isn't on
+            # disk (defense against the audio_missing leak path).
+            rel = row.get("audio_trimmed_relpath") or row.get("audio_relpath")
+            if not rel:
+                continue
+            try:
+                abs_p = captures_store.abs_audio_path(rel)
+            except ValueError:
+                continue
+            if not os.path.isfile(abs_p):
+                continue
+            ext = os.path.splitext(rel)[1].lstrip(".").lower() or "wav"
+            audio_name = f"audio/{cid}.{ext}"
+            manifest_lines.write(json.dumps(_build_manifest_row(
+                audio_filepath=audio_name,
+                text=text,
+                duration=float(row.get("duration_seconds") or 0.0),
+                language=row.get("language") or "",
+                source="singleton",
+                user_id=row.get("user_id") or "",
+                status_value=row.get("status") or "",
+                created_ts=float(row.get("created_ts") or 0.0),
+                model=row.get("model") or "",
+                request_id=row.get("request_id") or "",
+                member_count=1,
+                admin_notes=row.get("admin_notes") or "",
+                corrections=row.get("corrections") or [],
+            ), ensure_ascii=False).encode("utf-8") + b"\n")
 
-        if include_audio:
-            info = tarfile.TarInfo(audio_name)
-            info.size = os.path.getsize(abs_p)
-            info.mtime = int(row.get("created_ts") or time.time())
-            with open(abs_p, "rb") as af:
-                tar.addfile(info, af)
-            chunk = buf.getvalue()
-            buf.seek(0); buf.truncate()
-            if chunk:
-                yield chunk
+            if include_audio:
+                info = tarfile.TarInfo(audio_name)
+                info.size = os.path.getsize(abs_p)
+                info.mtime = int(row.get("created_ts") or time.time())
+                with open(abs_p, "rb") as af:
+                    tar.addfile(info, af)
+                chunk = buf.getvalue()
+                buf.seek(0); buf.truncate()
+                if chunk:
+                    yield chunk
 
-    # Manifest last so it's written in row order matching the audio.
-    manifest_blob = b"".join(manifest_lines)
-    info = tarfile.TarInfo("manifest.jsonl")
-    info.size = len(manifest_blob)
-    info.mtime = int(time.time())
-    tar.addfile(info, io.BytesIO(manifest_blob))
+        # Manifest last so it's written in row order matching the audio.
+        info = tarfile.TarInfo("manifest.jsonl")
+        info.size = manifest_lines.tell()
+        info.mtime = int(time.time())
+        manifest_lines.seek(0)
+        tar.addfile(info, manifest_lines)
 
-    tar.close()
-    final_chunk = buf.getvalue()
-    if final_chunk:
-        yield final_chunk
+        tar.close()
+        final_chunk = buf.getvalue()
+        if final_chunk:
+            yield final_chunk
+    finally:
+        manifest_lines.close()
 
 
 # ---------------------------------------------------------------------
@@ -2751,6 +2831,10 @@ _CAPTURES_HTML = r"""<!doctype html>
 
   /* Advanced ▾ dropdown (bulk reprocess + destructive actions). */
   .adv-wrap { position: relative; display: inline-block; }
+  /* The shared header's `body.role-admin header .admin-only` rule sets
+     inline-flex and outranks the line above; restate inline-block so adding
+     that class is a pure visibility change for admins, not a layout change. */
+  body.role-admin header .adv-wrap.admin-only { display: inline-block; }
   .adv-menu {
     position: absolute; right: 0; top: calc(100% + 0.25rem); z-index: 50;
     min-width: 16rem; padding: 0.35rem;
@@ -3499,8 +3583,8 @@ _CAPTURES_HTML = r"""<!doctype html>
     </label>
     <div class="subbar-right">
       <button id="btn-refresh">Refresh</button>
-      <button id="btn-export" title="Download ready captures as a tar.gz (manifest.jsonl + audio/)">Export ready</button>
-      <div class="adv-wrap">
+      <button id="btn-export" class="admin-only" title="Download ready captures as a tar.gz (manifest.jsonl + audio/)">Export ready</button>
+      <div class="adv-wrap admin-only">
         <button id="btn-advanced" aria-haspopup="true" aria-expanded="false"
           title="Bulk reprocessing &amp; destructive actions">Advanced ▾</button>
         <div id="adv-menu" class="adv-menu" hidden role="menu">
@@ -3704,17 +3788,25 @@ _CAPTURES_HTML = r"""<!doctype html>
   {{NOT_ADMIN_LANDING_JS}}
 
   async function _renderAdminOnlyIfNonAdmin() {
-    // Renamed-but-kept-for-compat: every 403 on this page means the
-    // caller is a non-admin (the API gate is require_page("captures")
-    // — a 403 means "valid bearer, no scope on /captures"). Render the
-    // shared no-access landing slugged with the current page.
+    // A 403 here does NOT prove the caller lacks the captures page: six
+    // endpoints (export, clear, reprocess-all, reprocess-vad and the two
+    // status routes) carry a second require_admin. Keying the landing on
+    // is_admin===false therefore wiped <main> for a legitimate non-admin
+    // captures user who clicked "Reprocess all", telling them their key
+    // grants no access to a page they do have — recoverable only by
+    // reloading. Render it only when whoami actually shows no captures
+    // scope; fall back to the old test only if permissions are absent.
     try {
       var r = await fetch('/auth/whoami');
       if (r.ok) {
         var j = await r.json();
         // Cache whoami so _renderNoAccessLanding can list reachable pages.
         try { window.__whoami = j; } catch(_) {}
-        if (j && j.is_admin === false) {
+        var pages = (j && j.permissions && j.permissions.pages) || null;
+        var noScope = pages
+          ? (!pages.captures || pages.captures === 'none')
+          : (j && j.is_admin === false);
+        if (noScope) {
           _renderNoAccessLanding({ page: 'captures' });
           return true;
         }
