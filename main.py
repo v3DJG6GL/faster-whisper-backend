@@ -1849,6 +1849,25 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
     # If this hash already maps to an active key, nothing to do.
     if api_keys_store._KEY_INDEX.get(h) is not None:
         return
+    # _KEY_INDEX is built from live rows only (revoked_ts IS NULL), so a hash
+    # belonging to a REVOKED key is invisible above and used to fall through to
+    # the INSERT, hit the UNIQUE on key_hash, and get swallowed silently — the
+    # server then booted into OPEN mode with the operator believing the env key
+    # had locked it down, which is exactly the failure the lifespan below calls
+    # fatal. Fail loudly instead. Un-revoking here would resurrect a key the
+    # operator deliberately killed, so that is not the answer either.
+    _revoked = api_keys_store._require_conn().execute(
+        "SELECT id FROM api_keys WHERE key_hash = ? AND revoked_ts IS NOT NULL",
+        (h,),
+    ).fetchone()
+    if _revoked is not None:
+        raise RuntimeError(
+            "WHISPER_BOOTSTRAP_ADMIN_KEY matches an API key that has been "
+            "REVOKED. Refusing to start: silently ignoring it would leave the "
+            "server with no admin key while you believe it is locked down. "
+            "Set the variable to a different key, or clear it and use the "
+            "existing admin credentials."
+        )
     # Reuse or create the bootstrap-admin user.
     existing = [
         u for u in api_keys_store.list_users()
@@ -1880,12 +1899,25 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
                 ),
             )
             api_keys_store._rebuild_index_locked()
+        # Deliberately NOT logging kp here: unlike a generated key, this value
+        # is human-chosen and only has to clear _BOOTSTRAP_KEY_MIN_LEN, so the
+        # 8-char display prefix is a real fraction of the secret — and the
+        # server log is readable by every non-admin, who get the /logs page by
+        # default. The hash prefix identifies the key without revealing it.
         logger.info(
-            "[auth] bootstrap admin key registered (prefix=%s)", kp,
+            "[auth] bootstrap admin key registered from "
+            "WHISPER_BOOTSTRAP_ADMIN_KEY (user=bootstrap-admin, sha256=%s)",
+            h[:8],
         )
     except _sql.IntegrityError:
-        # UNIQUE on key_hash — already present in a different user. No-op.
-        pass
+        # The live-hash check and the revoked-hash check above both passed, so
+        # a UNIQUE violation here means the row appeared underneath us. Never
+        # silent: the same open-mode-without-noticing outcome applies.
+        raise RuntimeError(
+            "WHISPER_BOOTSTRAP_ADMIN_KEY could not be registered (the key hash "
+            "already exists). Refusing to start rather than leaving the server "
+            "without the admin key you configured."
+        )
 
 
 @asynccontextmanager

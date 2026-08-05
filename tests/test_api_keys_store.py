@@ -427,3 +427,38 @@ def test_update_key_label_validates(api_keys_db):
 def test_update_key_label_missing_returns_none(api_keys_db):
     ak = api_keys_db
     assert ak.update_key_label("does-not-exist", "x") is None
+
+
+# ---------------------------------------------------------------------------
+# WHISPER_BOOTSTRAP_ADMIN_KEY ingest (main._bootstrap_admin_from_env)
+# ---------------------------------------------------------------------------
+
+_BOOTSTRAP_KEY = "bootstrap-key-with-enough-entropy-1234"
+
+
+def test_bootstrap_admin_from_env_is_idempotent(api_keys_db):
+    import main
+    main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+    assert api_keys_db.is_locked_down() is True
+    # Re-running with the same live key is a no-op, not a duplicate insert.
+    main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+    h = api_keys_db.hash_key(_BOOTSTRAP_KEY)
+    rows = api_keys_db._require_conn().execute(
+        "SELECT COUNT(*) FROM api_keys WHERE key_hash = ?", (h,)).fetchone()[0]
+    assert rows == 1
+
+
+def test_bootstrap_admin_from_env_refuses_a_revoked_key(api_keys_db):
+    # _KEY_INDEX holds live rows only, so a REVOKED hash used to be invisible
+    # to the idempotence check: the insert then hit the UNIQUE on key_hash and
+    # the IntegrityError was swallowed, booting the server without the admin
+    # key the operator had configured — silently.
+    import main
+    main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+    h = api_keys_db.hash_key(_BOOTSTRAP_KEY)
+    uid2 = api_keys_db.create_user("second-admin", is_admin=True)
+    api_keys_db.create_key(uid2)
+    api_keys_db.revoke_key(api_keys_db._KEY_INDEX[h]["key_id"])
+
+    with pytest.raises(RuntimeError, match="REVOKED"):
+        main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
