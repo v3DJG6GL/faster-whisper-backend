@@ -58,6 +58,11 @@ _CAP_STEPS_JSON = 200_000
 # Hard row bound on the steps list, applied before the JSON byte cap.
 _CAP_STEPS_ROWS = 500
 _CAP_TOKEN_FIELD = 64
+# The model id arrives verbatim from the request form field. A name outside the
+# allowlist is rejected with a 400, but the outer `finally` in main.transcribe
+# still records the attempt, so the rejected string reaches this table anyway.
+# 96 matches config_store.ModelId's max_length — no legitimate id is affected.
+_CAP_MODEL = 96
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recent_transcriptions (
@@ -225,6 +230,7 @@ def record_trace(
         return
     raw_s = (raw or "")[:_CAP_RAW]
     final_s = (final or "")[:_CAP_FINAL]
+    model = (model or "")[:_CAP_MODEL]
     steps_blob = json.dumps(_truncate_steps(steps or []), ensure_ascii=False)
     tokens_blob = json.dumps([str(t)[:_CAP_TOKEN_FIELD] for t in (tokens or [])],
                              ensure_ascii=False)
@@ -277,6 +283,7 @@ def record_timing(
     no raw/final/steps."""
     if not request_id:
         return
+    model = (model or "")[:_CAP_MODEL]
     ts = float(created_ts) if created_ts else time.time()
     conn = _require_conn()
     with _lock:

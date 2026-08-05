@@ -23,6 +23,8 @@ import config as cfg
 # non-blocking counters. Imported here (early) so the priming happens before
 # any request handler runs.
 import system_stats
+# Imported for the log-file mode hardening below; module-level cost is nil (os).
+import store_common
 
 # =============================================================================
 # Logging setup: stderr (with colors when TTY) + rotating file (no colors)
@@ -70,8 +72,21 @@ _console_handler = logging.StreamHandler(sys.stderr)
 _console_handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
 _root.addHandler(_console_handler)
 
+class _SecureRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    # Every request block written here carries RAW WHISPER / FINAL transcript
+    # text, the upload filename, the username and the key label — the same
+    # plaintext dictation store_common.secure_db_file() keeps at 0600 in the
+    # SQLite stores. The handler would otherwise create the file at the process
+    # umask (0644 typical), so tighten it on open and after every rollover.
+    def _open(self):  # type: ignore[override]
+        stream = super()._open()
+        store_common.secure_file(self.baseFilename)
+        return stream
+
+
 if _log_dir_ok:
-    _file_handler = logging.handlers.RotatingFileHandler(
+    store_common.secure_dir(os.path.dirname(cfg.LOG_FILE))
+    _file_handler = _SecureRotatingFileHandler(
         cfg.LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT,
         encoding="utf-8",
     )
@@ -538,17 +553,11 @@ _LOG_WIDTH = 78
 _NAME_COL = 32        # value column starts at this character
 _SEG_TEXT_MAX = 80    # truncate per-segment text in the table (full text in FINAL)
 _SEG_ROWS_MAX = 30    # truncate the segment table itself
-_LOG_FIELD_MAX = 120  # cap on a client-supplied label (filename, content type)
+_LOG_FIELD_MAX = store_common.LOG_FIELD_MAX  # cap on a client-supplied label
 
-_LOG_UNSAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
-
-
-def _log_safe(s) -> str:
-    """Collapse control characters in a CLIENT-supplied label (upload filename,
-    content type) and cap its length. A bare CR/LF would otherwise split the
-    block into what the /logs viewer renders as extra, attacker-written
-    records — these fields are labels, not payloads."""
-    return _LOG_UNSAFE_RE.sub("?", s or "")[:_LOG_FIELD_MAX]
+# Single implementation lives in store_common so the stores can sanitise their
+# own audit lines without importing main (which imports them).
+_log_safe = store_common.log_safe
 
 
 # Maps decode-kwarg name → cfg-default key in cfg._BASELINE. Used by the
@@ -1513,6 +1522,20 @@ async def _get_or_load_model(name: str) -> "WhisperModel":
     # Lazy import (see the TYPE_CHECKING note up top): only when a model is
     # actually loaded do we need the native faster_whisper stack.
     from faster_whisper import WhisperModel  # noqa: F401  (used in executor lambdas below)
+
+    # The allowlist is read live per request and is in neither
+    # config_store.RESTART_REQUIRED_FIELDS nor LOAD_TIME_FIELDS, so narrowing it
+    # is reported to the admin as hot-applied and evicts nothing. Gate BEFORE the
+    # cache fast path, or a model that is still resident keeps being served to
+    # clients after the admin withdrew it (MODEL_IDLE_TIMEOUT_S defaults to 0,
+    # so the entry only leaves on LRU pressure or restart).
+    if cfg.ALLOWED_MODELS and name not in cfg.ALLOWED_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{name}' is not in the allowed list. "
+                   f"Allowed: {sorted(cfg.ALLOWED_MODELS)}",
+        )
+
     cached = _loaded_models.get(name)
     if cached is not None:
         # Tolerate the race against _drop_loaded_model from _idle_evictor
@@ -1525,13 +1548,6 @@ async def _get_or_load_model(name: str) -> "WhisperModel":
             pass
         system_stats.touch_loaded_model(name)
         return cached
-
-    if cfg.ALLOWED_MODELS and name not in cfg.ALLOWED_MODELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{name}' is not in the allowed list. "
-                   f"Allowed: {sorted(cfg.ALLOWED_MODELS)}",
-        )
 
     # No allowlist configured: the name arrives verbatim from the request, and
     # below it reaches os.path.isdir() / the HF hub / the CT2 converter. Accept
@@ -2097,8 +2113,13 @@ _ORIGIN_REJECT_LOG_INTERVAL_S = 60.0
 _origin_reject_logged_at = 0.0
 
 
-def _origin_is_allowed(request: Request) -> bool:
+def _origin_is_allowed(request) -> bool:
     """True when an unsafe-method request may proceed based on its Origin.
+
+    Takes any Starlette HTTPConnection — only `.headers` is read — so the
+    WebSocket handshake can reuse it. `@app.middleware("http")` wraps in
+    BaseHTTPMiddleware, which passes non-http scopes straight through, so a
+    websocket scope never reaches _csrf_mw and has to call this itself.
 
     Browsers attach Origin to every cross-site unsafe-method request (a plain
     auto-submitting <form> included), so this catches the case the token check
@@ -2122,7 +2143,7 @@ def _origin_is_allowed(request: Request) -> bool:
     return bool(host) and urlsplit(origin).netloc == host
 
 
-def _log_origin_rejected(request: Request) -> None:
+def _log_origin_rejected(request) -> None:
     """Throttled WARNING naming the two headers that decided it — the only way
     an operator can tell a genuine cross-site POST from a reverse proxy that
     rewrote Host. Both values are attacker-controlled, hence _log_safe."""
@@ -2136,7 +2157,7 @@ def _log_origin_rejected(request: Request) -> None:
         "reverse proxy rewriting Host, add the public origin to "
         "TRUSTED_ORIGINS (WHISPER_TRUSTED_ORIGINS); otherwise it was a "
         "cross-site request. Further rejections are logged at most every %.0f s.",
-        request.method, _log_safe(request.url.path),
+        getattr(request, "method", "WEBSOCKET"), _log_safe(request.url.path),
         _log_safe(request.headers.get("origin")),
         _log_safe(request.headers.get("host")),
         _ORIGIN_REJECT_LOG_INTERVAL_S,
@@ -2271,6 +2292,18 @@ async def transcribe(
     user: dict = Depends(_get_current_user_dep),
 ):
     resolved_model = _resolve_model_name(model_name)
+    # Bound the two OpenAI-compatible knobs that carry no schema of their own.
+    # Both are already bounded on every sibling path — DEFAULT_PROMPT is
+    # Field(max_length=2048) and the `hotwords` client override is capped by
+    # _DECODE_STR_CAPS, while `temperature` inside decode_overrides is clamped
+    # by _DECODE_FLOAT_BOUNDS. Clamp rather than 422 so a caller that is merely
+    # sloppy keeps working; NaN fails every comparison, hence the self-test.
+    if prompt is not None:
+        prompt = prompt[:_DECODE_STR_CAPS.get("prompt", 2048)]
+    _t_lo, _t_hi = _DECODE_FLOAT_BOUNDS.get("temperature", (0.0, 1.0))
+    temperature = (
+        min(_t_hi, max(_t_lo, temperature)) if temperature == temperature else _t_lo
+    )
     # Normalise the optional override-profile name the same way the streaming
     # handshake does (trim; blank → None) so both endpoints honor an identical
     # set of names instead of batch silently rejecting whitespace-padded ones.
@@ -3523,7 +3556,14 @@ async def whoami(
     csrf = getattr(request.state, "session_csrf", None)
     if csrf:
         out["csrf_token"] = csrf
-    return out
+    # Per-identity, and it carries the session's CSRF token. A 200 GET with no
+    # Cache-Control and no Vary is heuristically cacheable under RFC 9111, and
+    # this deployment expects a reverse proxy in front (TRUSTED_ORIGINS exists
+    # for exactly that) — a shared cache could otherwise hand one user's
+    # identity payload, admin flag and CSRF token to the next caller. The page
+    # JS already sends cache:'no-store', but that binds only the browser's own
+    # cache, not an intermediary's.
+    return _JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
 @app.post("/auth/login")
@@ -3766,4 +3806,10 @@ if __name__ == "__main__":
                 # pings stay answered; a generous timeout tolerates a momentary
                 # stall. `or None` lets an admin disable either knob with 0.
                 ws_ping_interval=getattr(cfg, "STREAMING_WS_PING_INTERVAL_SEC", 20.0) or None,
-                ws_ping_timeout=getattr(cfg, "STREAMING_WS_PING_TIMEOUT_SEC", 60.0) or None)
+                ws_ping_timeout=getattr(cfg, "STREAMING_WS_PING_TIMEOUT_SEC", 60.0) or None,
+                # Per-message ceiling on the streaming socket. MAX_REQUEST_BYTES
+                # covers HTTP only — its middleware is registered http-only and
+                # never sees a websocket scope — so without this the effective
+                # limit is the websocket library's 16 MiB default. Real clients
+                # send ~32 KB audio frames and a JSON handshake far under 1 MiB.
+                ws_max_size=1024 * 1024)

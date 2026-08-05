@@ -29,7 +29,16 @@ def transcode_to_wav_16k_mono(src_path: str, dst_path: str) -> int:
     in_container = None
     out_container = None
     try:
-        in_container = av.open(src_path)
+        # The source is an uploaded clip whose bytes AND filename extension the
+        # caller chose, and libavformat scores demuxers partly on the extension
+        # (AVPROBE_SCORE_EXTENSION). Without this, a crafted concat/ffconcat,
+        # HLS playlist or SDP input can coax the demuxer into following external
+        # file:// or http:// references — the classic ffmpeg local-file-read /
+        # SSRF surface. streaming_transport already pins "-protocol_whitelist
+        # pipe" on the realtime path for exactly this reason; a real clip is
+        # self-contained, so restricting the batch path to the file protocol
+        # rejects nothing legitimate.
+        in_container = av.open(src_path, options={"protocol_whitelist": "file"})
         in_stream = next(
             (s for s in in_container.streams if s.type == "audio"), None,
         )
