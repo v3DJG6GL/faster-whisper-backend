@@ -326,6 +326,35 @@ def _probe(checks: list):
                 f"{len(out) / len(FIXTURE):.0f}x (limit {_MAX_GROWTH}x). "
                 "Simplify the replacement."
             )
+        # The growth check above measures NOTHING when the pattern matches the
+        # fixture zero times — and the fixtures are fixed German prose, so the
+        # letters they happen to lack (n, d, m, ...) are a free pass. A rule
+        # like ("n", "n"*512) scores a growth ratio of 1.0 here and then
+        # amplifies a real transcript 512x per match on every transcription.
+        # For that case only, bound the replacement analytically instead:
+        # compare the characters it always contributes against the shortest
+        # string the pattern can possibly match. Patterns the fixture DOES
+        # exercise keep the measured check and are unaffected.
+        if not rx.search(FIXTURE):
+            try:
+                try:
+                    import re._parser as _reparser
+                except ImportError:  # pragma: no cover - Python < 3.11
+                    import sre_parse as _reparser
+                _min_match = _reparser.parse(item[0]).getwidth()[0]
+            except Exception:  # noqa: BLE001 - width analysis is best effort
+                _min_match = 0
+            # Drop group references: their length comes from the match, not
+            # from the replacement text, so they can't be counted as growth.
+            _literal = re.sub(r"\\(?:\d+|g<[^>]*>)", "", item[1])
+            if len(_literal) > _MAX_GROWTH * max(_min_match, 1):
+                return i, (
+                    f"replacement is {len(_literal)} characters for a pattern "
+                    f"that can match as few as {_min_match} "
+                    f"(limit {_MAX_GROWTH}x). The test fixture never matches "
+                    "this pattern, so the growth it would cause on a real "
+                    "transcript cannot be measured. Simplify the replacement."
+                )
         # Timing probe only: a pattern that is fast on German prose but slow on
         # repetitive input hangs here and the parent's timeout kills us. The
         # growth check stays on FIXTURE alone, so these can't invent a new

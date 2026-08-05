@@ -296,6 +296,26 @@ def test_pipeline_catastrophic_regex_rejected_on_save(monkeypatch):
     assert "catastrophic backtracking" in str(ei.value)
 
 
+def test_pipeline_replacement_growth_rejected_when_fixture_never_matches():
+    # The growth probe measures rx.sub() against a FIXED German-prose fixture,
+    # so a pattern the fixture never matches scored a growth ratio of 1.0 no
+    # matter how large its replacement. ("n", "n"*512) passed the guard and
+    # then amplified a real transcript 512x per match on EVERY transcription
+    # — two such entries allocate ~1 GB inside a single re.sub.
+    with pytest.raises(ValidationError) as ei:
+        _ok_on_save(PIPELINE_RULES=[
+            _regex("blow", pattern="n", replacement="n" * 512), _terminal()])
+    assert "regex test failed" in str(ei.value)
+
+
+def test_pipeline_ordinary_expansion_still_accepted():
+    # The counterpart to the test above: a rule whose replacement is longer
+    # than its match is completely normal and must keep validating.
+    _ok_on_save(PIPELINE_RULES=[
+        _regex("expand", pattern=r"z\.B\.", replacement="zum Beispiel"),
+        _terminal()])
+
+
 def test_pipeline_regex_guard_skipped_without_save_context(monkeypatch):
     # Load / diff validations (no guard_regex context) must NOT run the probe —
     # so a normal config load never spawns the helper and never hangs on a
