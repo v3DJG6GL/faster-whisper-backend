@@ -41,6 +41,13 @@ logger = logging.getLogger("whisper-api")
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
+# Set as the LAST statement of init_db: every earlier statement (the PRAGMAs,
+# the schema script, the migration) can still raise, and main treats an
+# init_db failure as non-fatal. Gating on `_conn is not None` alone left a
+# partial-init window where the connection exists but the table does not, so
+# every cookie-bearing request 500'd instead of degrading to bearer-only auth.
+# Mirrors api_keys_store._DB_READY.
+_DB_READY: bool = False
 
 # In-memory token_hash → session row index. Rebuilt on mutation.
 _SESSION_INDEX: dict[str, dict[str, Any]] = {}
@@ -79,7 +86,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_ts);
 def init_db(db_path: str) -> None:
     """Open the SQLite DB (WAL) and ensure the schema exists. Idempotent.
     Purges expired rows and builds the in-memory index from active ones."""
-    global _conn
+    global _conn, _DB_READY
+    _DB_READY = False
     db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
     os.makedirs(db_dir, exist_ok=True)
     _conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
@@ -92,6 +100,7 @@ def init_db(db_path: str) -> None:
     with _lock:
         _purge_expired_locked()
         _rebuild_index_locked()
+    _DB_READY = True
 
 
 def _migrate_add_key_id(conn: sqlite3.Connection) -> None:
@@ -163,7 +172,7 @@ def _refresh_if_sibling_committed() -> None:
     check — one header read on the connection we already hold. Mirrors
     api_keys_store._refresh_if_sibling_committed(); without it a logout in one
     uvicorn worker would leave the cookie valid in every other worker."""
-    if _conn is None:
+    if _conn is None or not _DB_READY:
         return
     with _lock:
         if _data_version_locked() != _DATA_VERSION:
@@ -306,7 +315,8 @@ def purge_expired() -> None:
 
 def _reset_for_tests() -> None:
     """Drop the in-memory caches so the autouse test fixture starts clean."""
-    global _SESSION_INDEX, _DATA_VERSION
+    global _SESSION_INDEX, _DATA_VERSION, _DB_READY
     _SESSION_INDEX = {}
     _DATA_VERSION = -1
+    _DB_READY = _conn is not None
     _SLIDE_CACHE.clear()

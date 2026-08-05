@@ -128,8 +128,13 @@ def local_day_start_hour(days_ago: int = 0) -> int:
     """UTC epoch-hour of SERVER-LOCAL midnight `days_ago` days back (0 =
     today). `datetime(date)` has no tzinfo → its .timestamp() interprets the
     naive value in local time, so this is the correct local-midnight instant
-    even across DST. Used by the admin /stats + /api-keys windows."""
-    d = datetime.date.today() - datetime.timedelta(days=int(days_ago))
+    even across DST. Used by the admin /stats + /api-keys windows.
+
+    Clamped here rather than at each call site: stats_routes bounds `days` to
+    3650 before calling, the /settings/api-keys usage window does not, and an
+    unbounded value overflows the date arithmetic into an unhandled 500."""
+    days_ago = max(0, min(int(days_ago), 3650))
+    d = datetime.date.today() - datetime.timedelta(days=days_ago)
     midnight_ts = datetime.datetime(d.year, d.month, d.day).timestamp()
     return int(midnight_ts // 3600)
 

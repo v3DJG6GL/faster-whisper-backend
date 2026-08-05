@@ -1781,6 +1781,25 @@ async def _captures_retention_loop() -> None:
             logger.error("[captures] retention loop error: %s", _ce)
 
 
+async def _sessions_purge_loop() -> None:
+    """Hourly reap of revoked/expired session rows.
+
+    Nothing else purges them at runtime: the lazy eviction in lookup_session
+    only fires for a token that is presented again, so with the 30-day sliding
+    TTL a login loop grew both the sessions table and the in-memory index
+    without bound. /auth/login takes any valid key and has no rate limit.
+    Same shape as the retention loops above."""
+    import sessions_store
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            sessions_store.purge_expired()
+        except asyncio.CancelledError:
+            raise
+        except Exception as _se:
+            logger.error("[sessions] purge loop error: %s", _se)
+
+
 def _bootstrap_admin_from_env(raw_key: str) -> None:
     """If WHISPER_BOOTSTRAP_ADMIN_KEY is set, ensure a `bootstrap-admin`
     user holds that exact key. Idempotent — if the key hash is already in
@@ -1904,10 +1923,12 @@ async def lifespan(app: FastAPI):
     # Open the browser-session store (HttpOnly cookie auth for the WebUI).
     # Non-fatal: if this fails, cookie login is unavailable but bearer auth
     # (API clients) and open mode keep working.
+    sessions_purge_task = None
     try:
         import sessions_store
         sessions_store.init_db(cfg.SESSIONS_DB)
         logger.info("Session store initialized at %s", cfg.SESSIONS_DB)
+        sessions_purge_task = asyncio.create_task(_sessions_purge_loop())
     except Exception as _se:
         logger.error("Failed to initialize session store: %s", _se)
 
@@ -2008,6 +2029,7 @@ async def lifespan(app: FastAPI):
     await _cancel(evictor_task)
     await _cancel(reports_sweep_task)
     await _cancel(captures_sweep_task)
+    await _cancel(sessions_purge_task)
     await _cancel(open_mode_task)
 
     _loaded_models.clear()
@@ -2212,7 +2234,11 @@ async def _max_body_mw(request: Request, call_next):
     413 still fires first); this one exists for the JSON routes, where
     Starlette buffers the whole body and json.loads expands it several-fold
     before any handler-side size check can run. Content-Length is advisory
-    (absent on chunked bodies), so it only buys an early exit.
+    (absent on chunked bodies), so the header check only buys an early exit —
+    the receive-side counter below is what actually enforces the cap: a
+    `Transfer-Encoding: chunked` body declares no length, so without it an
+    unauthenticated POST /auth/login could buffer unbounded bytes before any
+    credential was checked.
 
     Registered between _csrf_mw and _metrics_mw: outside the CSRF guard and
     the router, inside _metrics_mw so these rejections still get recorded.
@@ -2222,6 +2248,30 @@ async def _max_body_mw(request: Request, call_next):
     if _clen and _clen.isdigit() and int(_clen) > max_body:
         from fastapi.responses import JSONResponse
         return JSONResponse({"detail": "request body too large"}, status_code=413)
+
+    # Count bytes as they stream in. Past the cap the receive channel reports
+    # the client as disconnected, which unwinds whatever is consuming the body
+    # (Starlette raises ClientDisconnect out of Request.body()/form()) instead
+    # of letting it accumulate. Legitimate requests are unaffected: the cap is
+    # MAX_REQUEST_BYTES, well above every route-level limit.
+    _received = 0
+    _orig_receive = request.receive
+
+    async def _counting_receive():
+        nonlocal _received
+        message = await _orig_receive()
+        if message.get("type") == "http.request":
+            _received += len(message.get("body", b"") or b"")
+            if _received > max_body:
+                logger.warning(
+                    "Aborting %s %s: request body exceeded MAX_REQUEST_BYTES "
+                    "(%d) with no declared Content-Length",
+                    request.method, _log_safe(request.url.path), max_body,
+                )
+                return {"type": "http.disconnect"}
+        return message
+
+    request._receive = _counting_receive  # type: ignore[attr-defined]
     return await call_next(request)
 
 
@@ -2353,6 +2403,11 @@ async def transcribe(
         # accidental file part) is treated as absent.
         _prompt_field = form_data.get("prompt")
         prompt = _prompt_field if isinstance(_prompt_field, str) else None
+        # Re-apply the clamp from above: this re-read overwrote the bounded
+        # Form value with the raw one, so the cap was dead code and the field
+        # reached the tokenizer at whatever size the multipart parser allowed.
+        if prompt is not None:
+            prompt = prompt[:_DECODE_STR_CAPS.get("prompt", 2048)]
 
         include_words = "word" in timestamp_granularities or (
             response_format == "verbose_json" and not timestamp_granularities
@@ -3037,7 +3092,13 @@ def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[st
 async def _stream_log_lines():
     """Yield SSE events: one for each existing tail line, then live tail."""
     initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
-    backlog, _ = _read_chain_window(cfg.LOG_FILE, skip=0, want=initial)
+    # Off the loop, same as /logs/older: this walks the rotation chain
+    # backwards in 8 KB blocks and an async generator inside a
+    # StreamingResponse runs on the event loop, so doing it inline let one
+    # subscriber stall every other request while it read.
+    backlog, _ = await asyncio.to_thread(
+        _read_chain_window, cfg.LOG_FILE, 0, initial,
+    )
     for line in backlog:
         yield f"data: {line}\n\n"
 
@@ -3061,10 +3122,14 @@ async def _stream_log_lines():
         if size == pos:
             yield ": keepalive\n\n"
             continue
-        with open(cfg.LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
-            f.seek(pos)
-            chunk = f.read()
-            pos = f.tell()
+        # Also off the loop — this runs every 0.5 s for the lifetime of every
+        # subscriber, and the delta after a burst can be megabytes.
+        def _read_delta(start: int) -> "tuple[str, int]":
+            with open(cfg.LOG_FILE, "r", encoding="utf-8", errors="replace") as f:
+                f.seek(start)
+                return f.read(), f.tell()
+
+        chunk, pos = await asyncio.to_thread(_read_delta, pos)
         for line in chunk.splitlines():
             yield f"data: {line}\n\n"
 
