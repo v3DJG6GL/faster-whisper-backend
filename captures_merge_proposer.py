@@ -29,11 +29,13 @@ from __future__ import annotations
 
 import difflib
 import logging
+import threading
 import time
 from typing import Any
 
 import config as cfg
 import captures_store
+import store_common
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,10 @@ _ALL_USERS = "__all__"
 
 # {cache_key: (generated_ts, [ProposedGroup, ...])}
 _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
+# Serializes the sweep itself (see propose_merges). Also makes the _CACHE and
+# _TRIM_DUR_CACHE mutations single-threaded again now that the route dispatches
+# this through asyncio.to_thread.
+_SWEEP_LOCK = threading.Lock()
 
 # Per-capture trimmed-duration cache. Capture audio is immutable once written,
 # so a capture id maps to a stable trimmed duration; the file mtime + the two
@@ -338,6 +344,30 @@ def propose_merges(
     is_admin: bool,
     caller_user_id: str,
 ) -> tuple[list[dict[str, Any]], bool]:
+    """Serialize sweeps, then delegate.
+
+    The cache is only written AFTER a sweep completes, so concurrent requests
+    all miss and all run the full sweep. That was harmless while the route
+    called this inline on the single-threaded event loop, but it now runs via
+    asyncio.to_thread — and on a cold trim cache each sweep costs up to
+    CAPTURES_PROPOSER_WINDOW VAD passes in the SAME default executor the
+    Whisper decode uses, so N cheap GETs starved transcription of threads.
+    One global lock: the waiters find the fresh cache entry and return at once.
+    """
+    with _SWEEP_LOCK:
+        return _propose_merges_locked(
+            user_id_filter=user_id_filter,
+            is_admin=is_admin,
+            caller_user_id=caller_user_id,
+        )
+
+
+def _propose_merges_locked(
+    *,
+    user_id_filter: str | None,
+    is_admin: bool,
+    caller_user_id: str,
+) -> tuple[list[dict[str, Any]], bool]:
     """Return (proposals, was_cached). `proposals` is a list of dicts ready
     for JSON serialization, sorted by composite score desc and capped at
     cfg.CAPTURES_PROPOSER_MAX_PROPOSALS.
@@ -458,7 +488,10 @@ def propose_merges(
     _CACHE[cache_key] = (now, proposals)
     logger.info(
         "[proposer] user=%s n_eligible=%d sessions=%d candidates=%d proposals=%d",
-        cache_key, len(eligible), len(sessions), len(all_candidates), len(proposals),
+        # cache_key embeds the caller-supplied ?user_id= for an admin, which is
+        # never validated against a real user — screen it out of the log.
+        store_common.log_safe(cache_key),
+        len(eligible), len(sessions), len(all_candidates), len(proposals),
     )
     return list(proposals), False
 

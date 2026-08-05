@@ -46,6 +46,7 @@ import api_keys_store
 import captures_merge_proposer
 import captures_store
 import config as cfg
+import store_common
 import text_corrections
 import web_common
 from web_common import require_user_webui_host
@@ -112,7 +113,10 @@ def _audit_cross_user_read(
         return
     logger.info(
         "[audit] cross-user-read user=%s(uid=%s) read %s id=%s owner=%s",
-        user.get("username") or "?",
+        # Usernames are length-capped but not character-screened, so a bare
+        # CR/LF would split this audit record into extra attacker-written
+        # lines in the /logs viewer. Same treatment as api_keys_store's calls.
+        store_common.log_safe(user.get("username") or "?"),
         caller_uid[:8] if caller_uid else "?",
         kind,
         (row_id or "?")[:8],
@@ -510,6 +514,12 @@ async def get_audio_api(
         path=abs_path,
         media_type=mime,
         filename=f"{cid}.{row.get('audio_format','bin')}",
+        # Raw dictation audio behind a per-row owner check. FileResponse sends
+        # ETag/Last-Modified and no Cache-Control, which makes it heuristically
+        # cacheable — a shared cache in front of the app would answer the next,
+        # differently-authenticated caller before the app's check ever runs.
+        # The grouped-sample audio route already sends this.
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -2240,15 +2250,22 @@ async def regenerate_sample_api(
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
     members = capture_samples_store.get_members(sid)
     silence_ms = _global_silence_ms()
-    with _get_rebuild_lock(sid):
-        duration_ms, hashes, member_trims = _build_merged_wav(
-            sid=sid,
-            member_ids=[m["id"] for m in members],
-            silence_ms=silence_ms,
-        )
-        regen_patch = _merged_wav_patch(duration_ms, hashes, member_trims)
-        regen_patch["inter_segment_silence_ms"] = silence_ms
-        updated = capture_samples_store.update_sample(sid, regen_patch)
+
+    def _regenerate() -> dict[str, Any]:
+        with _get_rebuild_lock(sid):
+            duration_ms, hashes, member_trims = _build_merged_wav(
+                sid=sid,
+                member_ids=[m["id"] for m in members],
+                silence_ms=silence_ms,
+            )
+            regen_patch = _merged_wav_patch(duration_ms, hashes, member_trims)
+            regen_patch["inter_segment_silence_ms"] = silence_ms
+            return capture_samples_store.update_sample(sid, regen_patch)
+
+    # Off the loop for the same reason as the sample-audio route: the lock is
+    # shared with the VAD reprocess worker thread, and acquiring it inline
+    # blocks the whole server for the length of that rebuild.
+    updated = await asyncio.to_thread(_regenerate)
     return JSONResponse({"sample": _enrich_sample(updated)})
 
 
@@ -2272,15 +2289,17 @@ async def dissolve_sample_api(
     if g["is_locked"] and not user.get("is_admin"):
         raise HTTPException(status.HTTP_409_CONFLICT, "sample is locked")
     capture_samples_store.dissolve_sample(sid)
+    _release_rebuild_lock(sid)
     return JSONResponse({"ok": True})
 
 
 # Per-sid lock so a burst of audio requests for the same missing WAV
-# at startup doesn't trigger N concurrent merges. The route runs the
-# sync merge inside Starlette's threadpool, so a plain threading.Lock
-# is the right primitive (asyncio.Lock would only help if the merge
-# itself awaited).
+# at startup doesn't trigger N concurrent merges. The merge is dispatched
+# with asyncio.to_thread and the VAD reprocess worker is a real thread, so
+# a plain threading.Lock is the right primitive — but callers must never
+# acquire it from the event loop itself (see the routes above).
 _rebuild_locks: dict[str, threading.Lock] = {}
+_REBUILD_LOCKS_MAX = 512
 _rebuild_locks_guard = threading.Lock()
 
 
@@ -2288,9 +2307,24 @@ def _get_rebuild_lock(sid: str) -> threading.Lock:
     with _rebuild_locks_guard:
         lock = _rebuild_locks.get(sid)
         if lock is None:
+            # Opportunistic prune before growing. Sample ids are random and a
+            # dissolved sample's id never returns, so without this the dict is
+            # an unbounded create/regenerate/dissolve leak. Only idle locks are
+            # dropped, so a rebuild in flight is never orphaned.
+            if len(_rebuild_locks) >= _REBUILD_LOCKS_MAX:
+                for k in [k for k, v in _rebuild_locks.items() if not v.locked()]:
+                    del _rebuild_locks[k]
             lock = threading.Lock()
             _rebuild_locks[sid] = lock
         return lock
+
+
+def _release_rebuild_lock(sid: str) -> None:
+    """Drop a sample's lock entry once the sample itself is gone."""
+    with _rebuild_locks_guard:
+        lock = _rebuild_locks.get(sid)
+        if lock is not None and not lock.locked():
+            del _rebuild_locks[sid]
 
 
 def _ensure_sample_wav(g: dict[str, Any]) -> str:
@@ -2375,7 +2409,12 @@ async def get_sample_audio_api(
         detail="sample not found",
     )
     _audit_cross_user_read(user, g, "sample-audio", sid)
-    abs_p = _ensure_sample_wav(g)
+    # Off the loop: this takes a cross-thread threading.Lock that the VAD
+    # reprocess worker holds for a whole rebuild, and then runs the merge
+    # (a Silero-VAD pass per member plus a WAV write) synchronously. Inline
+    # in an `async def` that parked the single event-loop thread inside
+    # lock.acquire(), stalling every other request and WebSocket.
+    abs_p = await asyncio.to_thread(_ensure_sample_wav, g)
     return FileResponse(
         abs_p,
         media_type="audio/wav",
@@ -3858,7 +3897,11 @@ _CAPTURES_HTML = r"""<!doctype html>
   function escapeHtml(s) {
     var d = document.createElement('div');
     d.textContent = s == null ? '' : String(s);
-    return d.innerHTML;
+    // textContent->innerHTML escapes & < > but NOT quotes; escape those too so
+    // the result is safe in a double-/single-quoted attribute (the model
+    // filter renders model ids into option value="..."). Mirrors the reports
+    // page, which was hardened for this same sink.
+    return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
   }
 
   // Filter state — replaces the previous <select id="filt-status">.

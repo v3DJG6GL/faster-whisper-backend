@@ -303,13 +303,32 @@ def expire_samples_older_than(cutoff_ts: float) -> list[str]:
             (cutoff_ts,),
         ).fetchall()
     ids = [r["id"] for r in rows]
+    # Per-item isolation: retention is a data-EXPIRY control, and the caller
+    # wraps this whole call in one try/except. Without it a single failing
+    # dissolve (a locked DB, a disk error) aborted the pass, so every remaining
+    # over-age sample kept its merged WAV and its members stayed sample_id
+    # NOT NULL — which the ungrouped sweep then skips too. The operator saw a
+    # partial sweep reported as a normal one.
+    done: list[str] = []
+    failed = 0
     for sid in ids:
-        dissolve_sample(sid)
-    if ids:
+        try:
+            dissolve_sample(sid)
+            done.append(sid)
+        except Exception as exc:  # noqa: BLE001 - one bad row must not stop retention
+            failed += 1
+            logger.warning(
+                "[groups] retention could not dissolve sid=%s: %s", sid[:8], exc,
+            )
+    if done:
         logger.warning(
-            "[groups] retention dissolved %d sample(s) past the cutoff", len(ids),
+            "[groups] retention dissolved %d sample(s) past the cutoff", len(done),
         )
-    return ids
+    if failed:
+        logger.error(
+            "[groups] retention left %d sample(s) past the cutoff undeleted", failed,
+        )
+    return done
 
 
 def clear_all_samples() -> int:
