@@ -703,3 +703,114 @@ def test_format_validation_errors_shape():
         assert isinstance(out, list) and out
         assert set(out[0]) == {"loc", "msg"}
         assert "BEAM_SIZE" in out[0]["loc"]
+
+
+# ---------------------------------------------------------------------------
+# save_overrides concurrency — the lost update
+# ---------------------------------------------------------------------------
+
+def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
+    """Two saves touching DIFFERENT keys must both survive.
+
+    save_overrides() is a read-modify-write that rewrites the WHOLE merged
+    document, and validation (the out-of-process regex guard) runs between the
+    read and the write — measured at 2.3-2.6 s for a max-size PIPELINE_RULES
+    payload. Unlocked, a save landing inside that window was silently reverted:
+    the slow saver wrote back its stale snapshot. Both callers reach this via
+    asyncio.to_thread, and PATCH /v1/pipeline-rules is non-admin-reachable, so
+    a non-admin save could revert an admin's ADMIN_WEBUI_ALLOWED_HOSTS edit.
+
+    A real barrier (not a sleep) proves the serialisation: the slow save is
+    parked inside its window and only released once the fast save has run to
+    completion, which is the exact interleaving that lost the update.
+    """
+    import threading
+
+    p = str(tmp_path / "config.local.json")
+    cs.save_overrides({"BEAM_SIZE": 5}, p)
+
+    slow_inside = threading.Event()
+    fast_done = threading.Event()
+    real_validate = cs.AdminConfig.model_validate
+
+    def slow_validate(payload, **kw):
+        # Stand in for the guard_regex subprocess: a long window between the
+        # read and the write, but only for the slow saver's payload.
+        if isinstance(payload, dict) and payload.get("BEST_OF") == 3:
+            slow_inside.set()
+            fast_done.wait(10)
+        return real_validate(payload, **kw)
+
+    monkeypatch.setattr(cs.AdminConfig, "model_validate", slow_validate)
+
+    errors = []
+
+    def slow():
+        try:
+            cs.save_overrides({"BEST_OF": 3}, p)
+        except Exception as e:               # noqa: BLE001
+            errors.append(e)
+
+    def fast():
+        try:
+            # Only starts once the slow saver is parked mid-window. With the
+            # lock it blocks here; unlocked it read the pre-BEST_OF file and
+            # was overwritten by the slow saver's stale document.
+            slow_inside.wait(10)
+            cs.save_overrides({"ADMIN_WEBUI_ALLOWED_HOSTS": ["10.0.0.1"]}, p)
+        except Exception as e:               # noqa: BLE001
+            errors.append(e)
+        finally:
+            fast_done.set()
+
+    ts = [threading.Thread(target=slow), threading.Thread(target=fast)]
+    for t in ts:
+        t.start()
+    # The fast saver must not be able to finish while the slow one holds the
+    # lock, so release the slow saver on a timer if the lock did its job.
+    threading.Timer(1.0, fast_done.set).start()
+    for t in ts:
+        t.join(30)
+    assert errors == []
+
+    on_disk = json.loads(open(p, encoding="utf-8").read())
+    assert on_disk["BEST_OF"] == 3
+    assert on_disk["ADMIN_WEBUI_ALLOWED_HOSTS"] == ["10.0.0.1"]
+    assert on_disk["BEAM_SIZE"] == 5          # the pre-existing key survived too
+
+
+def test_save_lock_timeout_surfaces_as_oserror(tmp_path, monkeypatch):
+    """Callers wrap save_overrides in `except OSError`; a lock timeout must
+    land there rather than escaping as filelock.Timeout."""
+    import threading
+
+    p = str(tmp_path / "config.local.json")
+    monkeypatch.setattr(cs, "_SAVE_LOCK_TIMEOUT_S", 0.05)
+    holder_in = threading.Event()
+    release = threading.Event()
+
+    def hold():
+        with cs._save_lock(p):
+            holder_in.set()
+            release.wait(10)
+
+    t = threading.Thread(target=hold)
+    t.start()
+    try:
+        holder_in.wait(10)
+        with pytest.raises(OSError):
+            cs.save_overrides({"BEAM_SIZE": 5}, p)
+    finally:
+        release.set()
+        t.join(10)
+
+
+def test_save_lock_file_does_not_disturb_the_config_dir(tmp_path):
+    """The lock file must not look like _atomic_write_json's tempfiles (or the
+    config itself) to anything scanning the data dir."""
+    p = str(tmp_path / "config.local.json")
+    cs.save_overrides({"BEAM_SIZE": 5}, p)
+    names = sorted(os.listdir(tmp_path))
+    assert "config.local.json" in names
+    assert not [n for n in names if n.endswith(".tmp")]
+    assert [n for n in names if n != "config.local.json"] == ["config.local.json.lock"]

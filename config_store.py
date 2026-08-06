@@ -15,12 +15,14 @@ covers Windows sharing-violations from AV scanners briefly holding the file.
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import json
 import os
 import re
 import sys
 import tempfile
+import threading
 import time
 from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
@@ -1867,6 +1869,66 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     return out
 
 
+# Per-path in-process guard, held around the cross-process FileLock below.
+# The common case is two threadpool threads in ONE worker
+# (`asyncio.to_thread(save_overrides, ...)` from two requests) — that is the
+# reproduced lost update, and this lock settles it without depending on
+# filelock's per-fd/per-process semantics or on filelock being installed at
+# all. Keyed by absolute path so config.json and config.local.json don't block
+# each other.
+_SAVE_LOCKS: dict[str, threading.Lock] = {}
+_SAVE_LOCKS_GUARD = threading.Lock()
+
+# Generous relative to the measured worst case: the guard_regex ReDoS probe
+# runs OUT OF PROCESS between the read and the write and was measured at
+# 2.3-2.6 s with both schema maxima (200 rules x 200 entries), so a holder can
+# legitimately occupy the lock for ~3 s. 15 s leaves room for a few queued
+# savers plus a slow disk before we give up; longer would let a wedged peer
+# stall an admin save indefinitely.
+_SAVE_LOCK_TIMEOUT_S = 15.0
+
+
+@contextlib.contextmanager
+def _save_lock(path: str):
+    """Serialise the read-modify-write of a config file across threads AND
+    across uvicorn workers (SERVER_WORKERS > 1 — the file is the shared medium).
+
+    Without this, save_overrides() is an unlocked read-modify-write whose
+    window spans the out-of-process regex guard: a concurrent save that lands
+    inside that window is silently reverted when the slower saver writes back
+    its whole stale merged document (measured: an admin's
+    ADMIN_WEBUI_ALLOWED_HOSTS edit reverted 2.2 s later by a non-admin
+    PATCH /v1/pipeline-rules).
+
+    The lock file is `<path>.lock`; it never collides with
+    _atomic_write_json()'s `.config*.tmp` tempfiles and nothing in this module
+    scans the directory. Raises OSError on timeout so the callers' existing
+    `except OSError` handling covers it. A missing `filelock` (a transitive of
+    faster-whisper via huggingface_hub, and already used directly in main.py)
+    degrades to the in-process lock only, rather than failing the save."""
+    key = os.path.abspath(path)
+    with _SAVE_LOCKS_GUARD:
+        lk = _SAVE_LOCKS.setdefault(key, threading.Lock())
+    if not lk.acquire(timeout=_SAVE_LOCK_TIMEOUT_S):
+        raise OSError(f"timed out waiting to write {path} (peer save in progress)")
+    try:
+        try:
+            from filelock import FileLock, Timeout as FileLockTimeout
+        except ImportError:      # pragma: no cover - filelock is a hard transitive
+            yield
+            return
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        try:
+            with FileLock(key + ".lock", timeout=_SAVE_LOCK_TIMEOUT_S):
+                yield
+        except FileLockTimeout as e:
+            raise OSError(
+                f"timed out waiting to write {path} (peer worker save in progress)"
+            ) from e
+    finally:
+        lk.release()
+
+
 def _atomic_write_json(obj: Any, path: str, *, sort_keys: bool, tmp_prefix: str) -> None:
     """Atomically write `obj` as pretty JSON to `path`.
 
@@ -1959,18 +2021,21 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
     # config.json now holds ALL factory defaults, not just PIPELINE_RULES, so
     # read-modify-write to preserve the sibling scalar keys. A blind whole-file
     # replace (as before) would wipe every other default on a rules promote.
-    merged: dict[str, Any] = {}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if isinstance(raw, dict):
-                merged = raw
-        except (OSError, json.JSONDecodeError):
-            merged = {}
-    merged.setdefault("schema_version", 1)
-    merged["PIPELINE_RULES"] = out_rules
-    _atomic_write_json(merged, path, sort_keys=False, tmp_prefix=".config.")
+    # The read-through-write runs under _save_lock: an unlocked RMW here loses
+    # a concurrent save's scalar edits the same way save_overrides() did.
+    with _save_lock(path):
+        merged: dict[str, Any] = {}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    merged = raw
+            except (OSError, json.JSONDecodeError):
+                merged = {}
+        merged.setdefault("schema_version", 1)
+        merged["PIPELINE_RULES"] = out_rules
+        _atomic_write_json(merged, path, sort_keys=False, tmp_prefix=".config.")
     return out_rules
 
 
@@ -2065,32 +2130,38 @@ def save_overrides(payload: dict[str, Any], path: str = OVERRIDES_PATH) -> dict[
     # didn't include in `payload`. load_overrides() applies coercions that
     # don't round-trip through model_validate cleanly (set, frozenset, tuple),
     # so we read raw JSON here.
-    existing: dict[str, Any] = {}
-    if os.path.exists(path):
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                raw = json.load(f)
-            if isinstance(raw, dict):
-                existing = raw
-        except (OSError, json.JSONDecodeError):
-            # Corrupted file — fall through to a clean rewrite. The new payload
-            # will be validated below, so we never write garbage.
-            existing = {}
+    # The read → validate → write sequence is a read-modify-write that rewrites
+    # the WHOLE merged document, and the guard_regex probe below runs out of
+    # process for seconds in the middle of it. _save_lock() serialises it across
+    # threads and workers; unlocked, a save that lands inside another save's
+    # window is silently reverted (see _save_lock's docstring).
+    with _save_lock(path):
+        existing: dict[str, Any] = {}
+        if os.path.exists(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                if isinstance(raw, dict):
+                    existing = raw
+            except (OSError, json.JSONDecodeError):
+                # Corrupted file — fall through to a clean rewrite. The new
+                # payload will be validated below, so we never write garbage.
+                existing = {}
 
-    # Merge: payload wins over existing. None means "remove this override."
-    merged = dict(existing)
-    for k, v in payload.items():
-        if v is None:
-            merged.pop(k, None)
-        else:
-            merged[k] = v
+        # Merge: payload wins over existing. None means "remove this override."
+        merged = dict(existing)
+        for k, v in payload.items():
+            if v is None:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
 
-    # guard_regex: run the out-of-process catastrophic-backtracking check —
-    # this is a SAVE of (possibly non-admin) submitted rules.
-    validated = AdminConfig.model_validate(merged, context={"guard_regex": True})
-    to_write = validated.model_dump(exclude_none=True, mode="json")
+        # guard_regex: run the out-of-process catastrophic-backtracking check —
+        # this is a SAVE of (possibly non-admin) submitted rules.
+        validated = AdminConfig.model_validate(merged, context={"guard_regex": True})
+        to_write = validated.model_dump(exclude_none=True, mode="json")
 
-    _atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")
+        _atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")
     bump_config_version()   # let live consumers (streaming idents) re-resolve
 
     # Return only the fields that actually changed in this call. Compare
