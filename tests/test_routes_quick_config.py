@@ -146,6 +146,94 @@ def test_reapply_rules_start_captures_disabled(client, app_module):
     assert r.json().get("status") == "idle"
 
 
+def _expose_first_map_rule(app_module):
+    """Mark a callback:map rule exposed and return its slug (None if none)."""
+    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
+    slug = None
+    for r in rules:
+        if isinstance(r, dict) and r.get("type") == "callback:map":
+            r["exposed"] = True
+            slug = r["name"]
+            break
+    app_module.cfg.PIPELINE_RULES = rules
+    return slug
+
+
+def test_post_patch_oversized_map_400(client, app_module):
+    """A map patch bigger than the schema cap is rejected at ingress, before
+    the stamping loop walks the caller's dict twice on the event loop. It was
+    already doomed (Pydantic 422s it inside save_overrides) — this only moves
+    the rejection earlier and makes it a 400 like the sibling map guards."""
+    import quick_config_routes
+
+    slug = _expose_first_map_rule(app_module)
+    assert slug is not None, "fixture config has no callback:map rule"
+    cap = quick_config_routes._MAP_MAX_ENTRIES
+    assert cap == 500
+    big = {f"wort{i}": str(i) for i in range(cap + 1)}
+    r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": big}}})
+    assert r.status_code == 400, r.text
+    assert "500" in r.json()["detail"]
+
+
+def test_post_patch_map_at_cap_is_not_rejected_by_the_guard(client, app_module):
+    """Exactly at the cap must still pass the ingress guard (off-by-one)."""
+    slug = _expose_first_map_rule(app_module)
+    assert slug is not None
+    at_cap = {f"wort{i}": str(i) for i in range(500)}
+    r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": at_cap}}})
+    assert r.status_code != 400, r.text
+
+
+def test_patch_response_hides_global_capture_count_from_nonadmin(
+    client, app_module, make_user_key,
+):
+    """captures_store.count() with no args is the unfiltered admin-scope total,
+    and a quick_config-only identity has captures scope "none" — so a non-admin
+    save must report 0. It also keeps the page's silent re-apply kick (fired on
+    captures_count > 0) shut, since POST /reapply-rules is admin-only and would
+    leave a permanent "Re-apply failed: HTTP 403" strip."""
+    from tests.conftest import bearer
+
+    slug = _expose_first_regex_list_rule(app_module)
+    app_module.cfg.CAPTURE_RECORDINGS_ENABLED = True
+
+    calls = []
+
+    import captures_store
+    orig = captures_store.count
+
+    def _counting(*a, **kw):
+        calls.append((a, kw))
+        return 7
+
+    captures_store.count = _counting
+    try:
+        _uid, admin_raw = make_user_key("root", is_admin=True)
+        _uid2, user_raw = make_user_key("alice", pages={"quick_config": "own"})
+
+        r = client.post(
+            "/quick-config/state",
+            json={"rules_patch": {slug: {"enabled": False}}},
+            headers=bearer(user_raw),
+        )
+        assert r.status_code == 200, r.text
+        assert slug in r.json()["saved"]          # the save itself still works
+        assert r.json()["captures_count"] == 0
+        assert calls == []                        # and the query never ran
+
+        r = client.post(
+            "/quick-config/state",
+            json={"rules_patch": {slug: {"enabled": True}}},
+            headers=bearer(admin_raw),
+        )
+        assert r.status_code == 200, r.text
+        assert r.json()["captures_count"] == 7    # admin behaviour unchanged
+        assert len(calls) == 1
+    finally:
+        captures_store.count = orig
+
+
 def test_state_carries_locked_and_role_for_nonadmin(client, app_module,
                                                     make_user_key):
     """The /quick-config page renders a locked rule read-only for a non-admin,

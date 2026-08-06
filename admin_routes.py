@@ -567,7 +567,11 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
     # Apply hot edits to the running cfg module so the next request sees them.
     # We re-load from disk so the in-memory values get the same coercions
     # (set/frozenset/tuple) load_overrides applies.
-    coerced = config_store.load_overrides()
+    # Off the event loop: this helper is NOT admin-only in practice — POST
+    # /quick-config/state carries only require_user_webui_host +
+    # require_page("quick_config") and awaits apply_rules_patch, which awaits
+    # us. load_overrides is a blocking disk read + full Pydantic pass.
+    coerced = await asyncio.to_thread(config_store.load_overrides)
     hot_changed: list[str] = []
     cold_changed: list[str] = []
     needs_cache_rebuild = False
@@ -600,7 +604,22 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
     if needs_cache_rebuild:
         try:
             import main as _main
-            _main.rebuild_caches()
+            # Off the loop as well. rebuild_caches recompiles every rule; a
+            # callback:map builds a \b(alt|alt|...)\b alternation and
+            # re.compile()s it — measured at 68 ms for 500 random 13-char keys,
+            # 116 ms at 1000, 250 ms at 2000, and a *changed* map (exactly what
+            # this path produces on every save) always misses re._cache.
+            #
+            # rebuild_caches mutates module globals, so this is only safe under
+            # a single-writer assumption. That assumption already had to hold:
+            # save_overrides — the far heavier writer one frame up the same
+            # call chain — has been offloaded to a worker thread for a while,
+            # so the write side of this path was already running off the loop.
+            # Moving the rebuild alongside it does not widen the window; both
+            # are awaited in sequence, so no two rebuilds from a single
+            # request's chain can overlap, and concurrent requests were already
+            # able to interleave at the save_overrides await.
+            await asyncio.to_thread(_main.rebuild_caches)
             logger.info("[config] rebuilt pipeline caches after admin update")
         except Exception as e:
             logger.error("[config] cache rebuild failed: %s", e)
@@ -692,7 +711,12 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
     rules so the editor can refresh its in-memory `factoryRules` snapshot.
     """
     rules = payload.get("PIPELINE_RULES")
-    if not isinstance(rules, list):
+    # Element type matters, not just the container: save_factory_rules does
+    # `[{**r, "seeded": True} for r in rules]` BEFORE model_validate, so a
+    # non-mapping element raises TypeError, which neither `except
+    # ValidationError` nor `except OSError` below catches — an unhandled 500
+    # with a stack trace instead of this 400.
+    if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "payload must contain a 'PIPELINE_RULES' array",

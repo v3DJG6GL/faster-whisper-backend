@@ -33,6 +33,7 @@ import hashlib
 import json
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -65,6 +66,34 @@ router = APIRouter(prefix="/quick-config")
 # 400. `name`, `label`, `type`, `exposed`, `locked`, `seeded` are NEVER
 # editable from /quick-config (admin-only). Adding a new rule, deleting a
 # rule, or reordering is also admin-only.
+
+# Dedicated, deliberately tiny pool for the one blocking call that can hold a
+# thread for seconds: config_store.save_overrides runs the ReDoS guard, which
+# forks a `sys.executable` child and waits up to _GUARD_TIMEOUT (2 s) per
+# catastrophic pattern. Running that on asyncio's DEFAULT executor (which
+# to_thread uses) lets a caller with only the `quick_config` page scope — no
+# admin, no host gate, no rate limit — occupy every one of its
+# min(32, cpu_count+4) threads and add seconds of scheduling latency to every
+# unrelated to_thread call in the app. Bounding it at 2 confines the damage to
+# this endpoint. Legitimate saves take ~25 ms, so queueing at 2 is not
+# observable. Created once at import; never per-request (a per-request executor
+# would leak threads and defeat the bound).
+_GUARDED_SAVE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="regex-guard",
+)
+
+# Ingress cap for a callback:map patch, read off the schema so the two can
+# never drift. The same bound is enforced by Pydantic inside save_overrides,
+# but only AFTER the stamping loop below has already walked the caller's dict
+# twice on the event loop.
+_MAP_MAX_ENTRIES: int = next(
+    (m.max_length
+     for m in config_store.MapRule.model_fields["map"].metadata
+     if getattr(m, "max_length", None) is not None),
+    500,
+)
+
+
 _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
     "regex-list":                  frozenset({"enabled", "entries"}),
     "callback:map":                frozenset({"enabled", "map"}),
@@ -391,6 +420,18 @@ async def apply_rules_patch(
                     status.HTTP_400_BAD_REQUEST,
                     f"rules_patch['{slug}']['map'] must be an object",
                 )
+            # Bound the dict BEFORE walking it: the stamping loop and the
+            # comprehension below both iterate a caller-supplied dict on the
+            # event loop, and the only other cap (MapRule.map's max_length) is
+            # not reached until save_overrides, which runs after. Anything over
+            # the cap was already destined for a 422 there, so only the shape
+            # of the rejection changes.
+            if len(new_map) > _MAP_MAX_ENTRIES:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"rules_patch['{slug}']['map'] may hold at most "
+                    f"{_MAP_MAX_ENTRIES} entries",
+                )
             if not isinstance(old_map, dict):
                 old_map = {}
             meta = dict(target.get("map_meta") or {})
@@ -421,9 +462,15 @@ async def apply_rules_patch(
     # WebSocket on it — for the duration, and this endpoint is reachable by a
     # non-admin with no rate limit. admin_routes' rule dry-run already offloads
     # the same hazard the same way.
+    # It rides a dedicated 2-thread pool rather than asyncio's default executor
+    # so a flood of guard-tripping saves here cannot starve every other
+    # to_thread call in the app — see _GUARDED_SAVE_EXECUTOR.
     try:
-        written = await asyncio.to_thread(
-            config_store.save_overrides, {"PIPELINE_RULES": current_rules},
+        written = await asyncio.get_running_loop().run_in_executor(
+            _GUARDED_SAVE_EXECUTOR,
+            functools.partial(
+                config_store.save_overrides, {"PIPELINE_RULES": current_rules},
+            ),
         )
     except ValidationError as e:
         return status.HTTP_422_UNPROCESSABLE_ENTITY, {
@@ -452,8 +499,16 @@ async def apply_rules_patch(
         saved, [c["slug"] for c in conflicts],
     )
 
+    # Admin-only: captures_store.count() with no argument is the unfiltered
+    # "admin / scope=all" query, and a caller holding only the quick_config
+    # page has captures scope "none" — the global total is not theirs to see.
+    # It is also useless to them: the page fires the silent re-apply job on
+    # captures_count > 0, and POST /quick-config/reapply-rules is admin-only,
+    # so a non-admin save on a server with any capture ended in a permanent
+    # red "Re-apply failed: HTTP 403" strip. Reporting 0 keeps that branch shut
+    # and takes the blocking SQLite COUNT(*) off the non-admin path entirely.
     captures_count = 0
-    if getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False):
+    if user.get("is_admin") and getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False):
         try:
             import captures_store
             captures_count = captures_store.count()
@@ -666,7 +721,14 @@ async def get_state(
         import reports_store
         uid = user.get("user_id") or ""
         if uid:
-            my_reports = reports_store.recent_reports_for_user(uid, limit=100)
+            # Off the loop like every sibling read in this file (_recent_page,
+            # the SSE replay, /v1/recent-words): this is a SELECT * returning
+            # full transcript rows plus a json.loads per row, and /state is the
+            # page's auth probe — re-issued on every save and every
+            # optimistic-concurrency conflict.
+            my_reports = await asyncio.to_thread(
+                reports_store.recent_reports_for_user, uid, limit=100,
+            )
             for rep in my_reports:
                 rid = rep.get("request_id")
                 if not rid:
