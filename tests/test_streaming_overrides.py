@@ -303,3 +303,122 @@ def test_handshake_drops_unknown_decode_override_keys(
     # ...and the unknown keys reached neither the kwargs nor the retained dict.
     assert "not_a_real_key" not in fake_model.last_kwargs
     assert "__proto__" not in fake_model.last_kwargs
+
+
+# --- mid-connection credential revalidation ----------------------------------
+# A WebSocket has no request boundary, so the handshake's authenticate_ws used to
+# be the only credential check for the whole connection: revoking a key left the
+# revoked identity decoding and writing captures/trace/usage rows indefinitely.
+
+def _drain_with_code(ws, limit=200):
+    """_drain, but also returns the close code the server used."""
+    msgs = []
+    try:
+        for _ in range(limit):
+            msgs.append(ws.receive_json())
+    except WebSocketDisconnect as exc:
+        return msgs, exc.code
+    return msgs, None
+
+
+def test_stream_closes_when_key_is_revoked_mid_session(
+        client, make_user_key, app_module, monkeypatch):
+    """Revoking the user mid-stream cuts the session: no further transcripts,
+    an `unauthorized` notice, and a 4401 close. revoke_user bumps the config
+    version, which is the signal _refresh_ident already consumes."""
+    import time
+
+    import api_keys_store
+    from streaming_routes import _WS_UNAUTH
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
+    uid, raw_alice = make_user_key("alice")
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
+        time.sleep(0.5)
+        api_keys_store.revoke_user(uid)        # bumps the config version
+        ws.send_bytes(_pcm(8000, 1500))        # next decode re-auths → revoked
+        time.sleep(0.5)
+        ws.send_bytes(_pcm(8000, 200))         # producer notices → closes
+        try:
+            # Safety net only: with the fix the socket is already gone, so this
+            # send is a no-op. WITHOUT it the session would still be live and the
+            # drain below would block forever instead of failing the assertions.
+            ws.send_json({"type": "stop"})
+        except Exception:  # noqa: BLE001 — already closed, as expected
+            pass
+        msgs, code = _drain_with_code(ws)
+
+    assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
+    assert any(m.get("code") == "unauthorized" for m in msgs), msgs
+    # The in-flight utterance is deliberately dropped: revocation takes effect
+    # immediately, so no closing document is handed to the revoked identity.
+    assert not any(m.get("type") == "final" and m.get("last") for m in msgs), msgs
+
+
+def test_stream_survives_an_unrelated_config_bump(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    """The other direction: a settings save bumps the same config version, and
+    the still-valid credential must NOT be treated as revoked."""
+    import time
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    _profile(client, h, "p", BEAM_SIZE=3)
+    uid, raw_alice = make_user_key("alice")
+    _bind(client, h, uid, profiles=["p"])
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))
+        time.sleep(0.3)
+        _profile(client, h, "p", BEAM_SIZE=7)   # unrelated bump, alice untouched
+        ws.send_bytes(_pcm(8000, 1500))
+        ws.send_bytes(_pcm(0, 1500))            # silence → finalize
+        ws.send_json({"type": "stop"})
+        msgs, code = _drain_with_code(ws)
+
+    assert not any(m.get("code") == "unauthorized" for m in msgs), msgs
+    assert any(m.get("type") == "final" for m in msgs), msgs
+    # The refresh still did its real job: the new profile reached the decode.
+    assert fake_model.last_kwargs["beam_size"] == 7
+
+
+def test_stream_does_not_reauthenticate_without_a_version_bump(
+        client, make_user_key, app_module, monkeypatch):
+    """The re-auth hangs off the SAME version-bump branch as the ident refresh,
+    so the steady state costs exactly nothing: one authenticate_ws call, at the
+    handshake, no matter how many partial/final decodes run."""
+    import streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    make_user_key("admin", is_admin=True)
+    _, raw_alice = make_user_key("alice")
+
+    calls = []
+    real = streaming_routes.authenticate_ws
+    monkeypatch.setattr(streaming_routes, "authenticate_ws",
+                        lambda ws: (calls.append(1), real(ws))[1])
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))    # several partials
+        ws.send_bytes(_pcm(0, 1500))       # silence → final
+        ws.send_json({"type": "stop"})
+        msgs, _code = _drain_with_code(ws)
+
+    assert any(m.get("type") == "final" for m in msgs), msgs
+    assert len(calls) == 1, f"re-authenticated {len(calls)}x with no version bump"

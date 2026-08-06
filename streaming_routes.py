@@ -137,6 +137,13 @@ async def _receive_idle(ws: WebSocket, timeout_sec: float):
 _WS_BEARER_SUBPROTOCOL = "bearer."
 
 
+class _CredentialRevoked(Exception):
+    """Raised out of a streaming decode when the connection's credential no
+    longer resolves to the identity that opened it (key/user revoked, key
+    rotated, session signed out). Aborts the decode BEFORE the model, the
+    captures row, the trace row and the usage row — see _refresh_ident."""
+
+
 def _ws_bearer_subprotocol(ws: WebSocket) -> str:
     """The `bearer.<raw_key>` entry from the handshake's requested subprotocol
     list, verbatim (so it can be echoed back on accept), or ""."""
@@ -435,6 +442,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _client_language = req_language
         _client_prompt = req_prompt
         _client_prompt_provided = prompt_provided
+        # Set by _refresh_ident when the handshake credential stops resolving to
+        # the identity that opened the connection. Latching (never cleared): a
+        # revoked session is closed, not resumed.
+        _auth_revoked = False
 
         # Locked language / prompt: the admin value stands; the client's
         # handshake value is ignored (and surfaced in the ready frame). Locked
@@ -466,6 +477,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
         async def decode_partial(audio, prompt):
             _refresh_ident()
+            if _auth_revoked:
+                raise _CredentialRevoked("credential revoked mid-session")
             kwargs = _build_transcribe_kwargs(
                 main, partial_model_name, final=False, prompt=prompt,
                 want_words=gate_partial_words, language=req_language,
@@ -504,6 +517,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
         async def decode_final(audio, prompt):
             _refresh_ident()
+            if _auth_revoked:
+                # Raised BEFORE the model call, so on_final never runs: no
+                # captures row, no quick_config trace, no usage row, no GPU work
+                # attributed to an identity that no longer exists.
+                raise _CredentialRevoked("credential revoked mid-session")
             kwargs = _build_transcribe_kwargs(
                 main, final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language,
@@ -718,14 +736,52 @@ async def transcribe_stream(ws: WebSocket) -> None:
             integer compare; a real change costs a couple of indexed SQLite reads,
             paid at the utterance boundary (not per partial frame). Session-shaping
             STREAMING_*/endpointer params and the word-timestamp gates stay fixed
-            for the connection. Never raises — a refresh must not break dictation."""
+            for the connection. Never raises — a refresh must not break dictation.
+
+            The same bump ALSO revalidates the credential. A WebSocket has no
+            request boundary, so `authenticate_ws` used to run exactly once, at
+            the handshake, and the connection then carried that captured `user`
+            dict for its whole life: revoking the key (or signing out) left the
+            revoked identity decoding under the shared GPU semaphore and writing
+            captures / trace / usage rows indefinitely, since an actively
+            speaking client re-arms the audio-anchored idle deadline forever.
+            api_keys_store.revoke_user / revoke_key already bump the config
+            version for exactly this ("revoked identity's live idents
+            re-resolve"), and this is that bump's only consumer on this path.
+            `_ws_credentials` reads only ws.headers/ws.cookies, both of which
+            outlive the handshake, so re-invoking it here is enough."""
             nonlocal ident, _ident_version, out_prefix, out_suffix
             nonlocal req_language, req_prompt, overrides_ignored
+            nonlocal user, _auth_revoked
             try:
                 v = config_store.config_version()
                 if v == _ident_version:
                     return
                 _ident_version = v
+                # authenticate_ws is sync and non-raising BY DESIGN (auth._resolve_user
+                # returns None on an unresolvable credential) — but it reaches SQLite,
+                # so treat an unexpected raise as "cannot prove still-valid" rather
+                # than letting the blanket handler below log it and carry on decoding.
+                try:
+                    fresh = authenticate_ws(ws)
+                except Exception as _ae:  # noqa: BLE001
+                    logger.warning("[stream %s] re-auth failed: %s",
+                                   session_id[:8], store_common.log_safe(str(_ae)))
+                    fresh = None
+                if fresh is None or fresh.get("user_id") != user.get("user_id"):
+                    # Revoked, rotated, signed out, or now resolving to somebody
+                    # else. Latch and stop: the decode guards abort every sink on
+                    # the spot and the producer closes the socket with 4401. The
+                    # in-flight utterance is deliberately lost — revocation takes
+                    # effect immediately, it does not wait for the sentence to end.
+                    _auth_revoked = True
+                    logger.warning("[stream %s] credential no longer valid — closing",
+                                   session_id[:8])
+                    return
+                # Adopt the fresh record so a permissions DOWNGRADE (not just a
+                # revocation) takes effect too, instead of the connection running
+                # on the permissions it captured at the handshake.
+                user = fresh
                 ident = main.build_ident(user, final_model, request_profile=req_override_profile)
                 out_prefix = main.cfg_for(final_model, "OUTPUT_PREFIX", ident) or ""
                 out_suffix = main.cfg_for(final_model, "OUTPUT_SUFFIX", ident) or ""
@@ -880,6 +936,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                             # Re-arm on every exit (done, failed, cancelled) so a
                             # client is never left unable to flush again.
                             _flush_pending = False
+                except _CredentialRevoked:
+                    # NOT a decode error: stop consuming entirely. The producer
+                    # sees the latched flag and closes with 4401; its finally
+                    # already awaits this task, which is now finished.
+                    break
                 except Exception as exc:  # noqa: BLE001 — a decode error must not kill the pump
                     # An invalid handshake `language` makes the tokenizer raise
                     # a ValueError naming the client's own string — screen it
@@ -948,6 +1009,17 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     break
                 if msg.get("type") == "websocket.disconnect":
                     break
+                if _auth_revoked:
+                    # Latched by _refresh_ident on the consumer side. Every sink
+                    # is already cut (the decode guards); this closes the socket
+                    # too, at the first frame after the revocation.
+                    async with send_lock:
+                        try:
+                            await ws.send_json({"type": "error", "code": "unauthorized",
+                                                "message": "credential no longer valid; closing"})
+                        except Exception:  # noqa: BLE001 — peer may be gone
+                            pass
+                    break
                 if msg.get("bytes") is not None:
                     # Only a NON-EMPTY audio payload re-arms the idle deadline.
                     if msg["bytes"]:
@@ -978,13 +1050,26 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 await consumer_task
             except Exception:  # noqa: BLE001
                 pass
-        await session.close()
-        async with send_lock:
-            try:
-                await ws.send_json({"type": "closing"})
-                await ws.close()
-            except (RuntimeError, WebSocketDisconnect):
-                pass
+        if _auth_revoked:
+            # No session.close() here: its drain finalizes the in-flight
+            # utterance and emits the closing document, i.e. it would hand a
+            # last transcript to an identity that no longer exists. The outer
+            # finally still calls it (guarded) so the per-session VAD executor
+            # and the slot are released; the decode guard makes that drain a
+            # no-op raise it swallows.
+            async with send_lock:
+                try:
+                    await ws.close(code=_WS_UNAUTH)
+                except (RuntimeError, WebSocketDisconnect):
+                    pass
+        else:
+            await session.close()
+            async with send_lock:
+                try:
+                    await ws.send_json({"type": "closing"})
+                    await ws.close()
+                except (RuntimeError, WebSocketDisconnect):
+                    pass
     except WebSocketDisconnect:
         pass  # peer gone; teardown happens in the finally
     except Exception as exc:  # noqa: BLE001
