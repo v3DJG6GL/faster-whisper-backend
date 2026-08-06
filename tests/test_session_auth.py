@@ -282,3 +282,77 @@ def test_bearer_still_works_when_cookie_login_available(client, make_user_key):
     # on the transcription/admin surface (Vowen / curl path).
     _uid, raw = make_user_key("root", is_admin=True)
     assert client.get("/settings/state", headers=bearer(raw)).status_code == 200
+
+
+# --- multi-worker (SERVER_WORKERS > 1) index coherence ----------------------
+
+def _worker(name, db_path):
+    """Load a second, independent copy of sessions_store bound to the same DB
+    file — faithful to two uvicorn workers, each with its own connection and
+    its own in-memory _SESSION_INDEX."""
+    import importlib.util
+    import os
+    spec = importlib.util.spec_from_file_location(
+        name, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "sessions_store.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    mod.init_db(db_path)
+    return mod
+
+
+def test_revoke_in_sibling_worker_is_seen_after_local_write(tmp_path):
+    """A revocation committed by worker B must not survive worker A's own
+    next write. create_session/revoke_session used to re-stamp _DATA_VERSION
+    AFTER their own commit; since a connection's own commit does not move its
+    own PRAGMA data_version, that re-stamp absorbed B's commit and marked it
+    seen — leaving the revoked cookie authenticating in A forever (the sliding
+    TTL renews it on every lookup)."""
+    db = str(tmp_path / "sessions.db")
+    a = _worker("sessions_store_a", db)
+    b = _worker("sessions_store_b", db)
+
+    raw, _csrf = a.create_session("victim", 3600.0)
+    assert a.lookup_session(raw) is not None
+    assert b.lookup_session(raw) is not None      # B picks it up from disk
+
+    b.revoke_session(raw)                          # sibling worker logs out
+    assert b.lookup_session(raw) is None
+
+    # A now does an unrelated local write. The old code re-stamped the version
+    # here and never noticed B's revocation.
+    a.create_session("someone-else", 3600.0)
+    assert a.lookup_session(raw) is None
+
+    # And the same holds when A's own write is a revoke.
+    raw2, _ = a.create_session("victim2", 3600.0)
+    raw3, _ = b.create_session("victim3", 3600.0)
+    a.revoke_session(raw2)
+    assert a.lookup_session(raw3) is not None      # B's new session is visible
+
+
+def test_slide_expiry_touches_slide_cache_only_under_the_lock(tmp_path):
+    """_slide_expiry_debounced read and wrote _SLIDE_CACHE OUTSIDE _lock while
+    _rebuild_index_locked() iterates that same dict under the lock — a
+    threadpool auth lookup racing the hourly purge_expired() task raised
+    'dictionary changed size during iteration'. Assert the invariant directly
+    (a timing race makes a flaky test): every access happens with _lock held."""
+    db = str(tmp_path / "sessions.db")
+    w = _worker("sessions_store_slide", db)
+    unlocked = []
+
+    class Probe(dict):
+        def get(self, key, *a):
+            if not w._lock.locked():
+                unlocked.append(("get", key))
+            return super().get(key, *a)
+
+        def __setitem__(self, key, value):
+            if not w._lock.locked():
+                unlocked.append(("set", key))
+            super().__setitem__(key, value)
+
+    w._SLIDE_CACHE = Probe()
+    raw, _csrf = w.create_session("u", 3600.0)
+    assert w.lookup_session(raw) is not None      # drives the slide path
+    assert unlocked == []

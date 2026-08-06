@@ -213,7 +213,6 @@ def create_session(user_id: str, ttl_s: float,
     overrides/locks bind on the resulting cookie-authenticated requests too
     (without it the session resolves to the `(session)` sentinel = no key
     layer, so per-key restrictions would silently stop applying)."""
-    global _DATA_VERSION
     raw_token = secrets.token_urlsafe(_TOKEN_BYTES)
     csrf_token = secrets.token_urlsafe(_TOKEN_BYTES)
     th = hash_token(raw_token)
@@ -221,6 +220,12 @@ def create_session(user_id: str, ttl_s: float,
     expires = now + float(ttl_s)
     conn = _require_conn()
     with _lock:
+        # Absorb any sibling worker's commit BEFORE we write. Re-stamping
+        # _DATA_VERSION after our own commit (as this used to) reads a counter
+        # that has already moved for the sibling's commit, marking it as seen
+        # and stranding e.g. a revocation that landed in another worker.
+        if _data_version_locked() != _DATA_VERSION:
+            _rebuild_index_locked()
         conn.execute(
             "INSERT INTO sessions"
             " (token_hash, user_id, key_id, csrf_token, created_ts,"
@@ -234,8 +239,9 @@ def create_session(user_id: str, ttl_s: float,
         # production caller) — so a full rebuild here makes N logins cost O(N²)
         # and, because `login` is async and calls this inline, every one of those
         # rebuilds runs on the event loop. Our own commit does not move
-        # PRAGMA data_version on this connection, so re-stamping _DATA_VERSION
-        # keeps the sibling-detection contract in _refresh_if_sibling_committed.
+        # PRAGMA data_version on this connection, so _DATA_VERSION stays valid
+        # without a re-stamp — the pre-write check above is what keeps the
+        # sibling-detection contract in _refresh_if_sibling_committed.
         _SESSION_INDEX[th] = {
             "user_id": user_id,
             "key_id": key_id,
@@ -243,7 +249,6 @@ def create_session(user_id: str, ttl_s: float,
             "created_ts": now,
             "expires_ts": expires,
         }
-        _DATA_VERSION = _data_version_locked()
     logger.info("[auth] session created user=%s ttl=%.0fs", user_id[:8], ttl_s)
     return raw_token, csrf_token
 
@@ -277,36 +282,45 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
 
 def _slide_expiry_debounced(token_hash: str, rec: dict[str, Any]) -> None:
     """Refresh expires_ts at most once per _SLIDE_DEBOUNCE_S per session.
-    Preserves the original lifetime (expires - created) as the window."""
+    Preserves the original lifetime (expires - created) as the window.
+
+    The whole read-check-write runs under _lock: _rebuild_index_locked()
+    iterates _SLIDE_CACHE under the lock, so mutating it from an unlocked
+    threadpool auth call raced with the purge loop and raised
+    "dictionary changed size during iteration". _lock is non-reentrant, but
+    the sole caller (lookup_session) does not hold it here."""
     now = time.time()
-    last = _SLIDE_CACHE.get(token_hash, 0.0)
-    if now - last < _SLIDE_DEBOUNCE_S:
-        return
-    _SLIDE_CACHE[token_hash] = now
-    lifetime = rec["expires_ts"] - rec["created_ts"]
-    new_expires = now + lifetime
-    rec["expires_ts"] = new_expires  # keep the in-memory index current
     conn = _require_conn()
-    try:
-        with _lock:
+    with _lock:
+        last = _SLIDE_CACHE.get(token_hash, 0.0)
+        if now - last < _SLIDE_DEBOUNCE_S:
+            return
+        _SLIDE_CACHE[token_hash] = now
+        lifetime = rec["expires_ts"] - rec["created_ts"]
+        new_expires = now + lifetime
+        rec["expires_ts"] = new_expires  # keep the in-memory index current
+        try:
             conn.execute(
                 "UPDATE sessions SET expires_ts = ?"
                 " WHERE token_hash = ? AND revoked_ts IS NULL",
                 (new_expires, token_hash),
             )
-    except sqlite3.Error:
-        pass  # non-fatal: the in-memory expiry was already bumped
+        except sqlite3.Error:
+            pass  # non-fatal: the in-memory expiry was already bumped
 
 
 def revoke_session(raw_token: str) -> None:
     """Soft-revoke a session (used by /auth/logout). No-op if unknown."""
-    global _DATA_VERSION
     if not raw_token:
         return
     th = hash_token(raw_token)
     now = time.time()
     conn = _require_conn()
     with _lock:
+        # See create_session: pick up a sibling worker's commit BEFORE writing,
+        # never by re-stamping the counter after our own commit.
+        if _data_version_locked() != _DATA_VERSION:
+            _rebuild_index_locked()
         conn.execute(
             "UPDATE sessions SET revoked_ts = ?"
             " WHERE token_hash = ? AND revoked_ts IS NULL",
@@ -317,11 +331,10 @@ def revoke_session(raw_token: str) -> None:
         # the incremental insert create_session already does. The full rebuild
         # here was O(live sessions) on the event loop — measured ~37 ms at
         # 20 000 rows, and /auth/login has no rate limit or per-user cap, so N
-        # is caller-growable. Re-stamp the version: our own commit does not
-        # move PRAGMA data_version on this connection, so without this the
-        # sibling-worker refresh would re-read on the next request.
+        # is caller-growable. No post-commit re-stamp: our own commit does not
+        # move PRAGMA data_version on this connection, and re-stamping would
+        # swallow a sibling's commit that landed since the last check.
         _SESSION_INDEX.pop(th, None)
-        _DATA_VERSION = _data_version_locked()
 
 
 def purge_expired() -> None:
