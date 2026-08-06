@@ -106,3 +106,26 @@ def test_submit_disabled_for_nonadmin_403(client, app_module, make_user_key):
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     r = client.post(_SUBMIT, json=_payload(request_id="nope"), headers=bearer(raw))
     assert r.status_code == 403
+
+
+def test_correction_field_over_cap_422(client):
+    """`wrong`/`correct` are bounded at the edge (4096) purely as storage
+    hygiene — the store truncates both to text_corrections.CAP_CORRECTION_FIELD
+    (200) anyway. This is NOT a memory guard: the body is json.loads'd before
+    pydantic sees it."""
+    r = client.post(_SUBMIT, json={
+        "request_id": "req-cap",
+        "corrections": [{"wrong": "x" * 5000, "correct": "y", "idx": 0}],
+    })
+    assert r.status_code == 422
+
+
+def test_correction_field_under_cap_still_accepted(client):
+    """The bound is ~20x the store's functional cap, so nothing that succeeds
+    today starts failing — including text far longer than the 200 chars the
+    store keeps."""
+    r = client.post(_SUBMIT, json={
+        "request_id": "req-cap-ok",
+        "corrections": [{"wrong": "x" * 4000, "correct": "y", "idx": 0}],
+    })
+    assert r.status_code == 200

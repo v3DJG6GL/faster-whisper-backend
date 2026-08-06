@@ -156,82 +156,92 @@ async def stats_usage(
     if days and days > 0:
         start_hour = usage_store.local_day_start_hour(days_ago=int(days) - 1)
 
-    # Global series gives the shared x-axis (every bucket with any usage) and
-    # the per-bucket totals used to derive the "others" line.
-    series_global = usage_store.series(start_hour=start_hour, bucket=bucket)
-    day_axis = [int(p["day"]) for p in series_global]
-    axis_index = {d: i for i, d in enumerate(day_axis)}
-    n = len(day_axis)
+    # Everything below is store work: one global series() aggregate, a
+    # leaderboard(limit=50), a get_usernames, up to 50 get_key() point reads in
+    # the by=key branch, and up to K=8 further series() aggregates — ~10
+    # aggregate scans over `usage_hourly`, which is an append-only rollup that
+    # is never pruned, so the cost grows with deployment age x key count. Run
+    # the whole gather off the event loop, like the reports/quick-config
+    # siblings do with their equivalents.
+    def _gather() -> dict[str, Any]:
+        # Global series gives the shared x-axis (every bucket with any usage)
+        # and the per-bucket totals used to derive the "others" line.
+        series_global = usage_store.series(start_hour=start_hour, bucket=bucket)
+        day_axis = [int(p["day"]) for p in series_global]
+        axis_index = {d: i for i, d in enumerate(day_axis)}
+        n = len(day_axis)
 
-    board = usage_store.leaderboard(
-        start_hour=start_hour, by=by, metric=metric, limit=50,
-    )
+        board = usage_store.leaderboard(
+            start_hour=start_hour, by=by, metric=metric, limit=50,
+        )
 
-    # Resolve display names + a stable `id` server-side (the /stats client has
-    # no api-keys data). Revoked users/keys still resolve; sentinels stay literal.
-    names = api_keys_store.get_usernames([r["user_id"] for r in board])
-    for r in board:
-        if by == "user":
-            r["id"] = r["user_id"]
-            r["label"] = names.get(r["user_id"]) or r["user_id"]
-        else:
-            kid = r["key_id"]
-            r["id"] = kid
-            key = (api_keys_store.get_key(kid)
-                   if kid and not kid.startswith("(") else None)
-            lbl = (key or {}).get("label") or ""
-            disp = (key or {}).get("key_prefix")
-            r["label"] = (lbl or (disp + "…" if disp else kid))
-            r["user_label"] = names.get(r["user_id"]) or r["user_id"]
+        # Resolve display names + a stable `id` server-side (the /stats client has
+        # no api-keys data). Revoked users/keys still resolve; sentinels stay literal.
+        names = api_keys_store.get_usernames([r["user_id"] for r in board])
+        for r in board:
+            if by == "user":
+                r["id"] = r["user_id"]
+                r["label"] = names.get(r["user_id"]) or r["user_id"]
+            else:
+                kid = r["key_id"]
+                r["id"] = kid
+                key = (api_keys_store.get_key(kid)
+                       if kid and not kid.startswith("(") else None)
+                lbl = (key or {}).get("label") or ""
+                disp = (key or {}).get("key_prefix")
+                r["label"] = (lbl or (disp + "…" if disp else kid))
+                r["user_label"] = names.get(r["user_id"]) or r["user_id"]
 
-    # One chart line per top-K entity (by the selected metric), aligned to the
-    # shared x-axis with 0-fill for buckets where the entity had no usage.
-    K = 8
-    lines: list[dict[str, Any]] = []
-    sum_top = [0.0] * n
-    for r in board[:K]:
-        kwargs = {"user_id": r["id"]} if by == "user" else {"key_id": r["id"]}
-        s = usage_store.series(start_hour=start_hour, bucket=bucket, **kwargs)
-        vals: list[float] = [0] * n
-        for p in s:
-            i = axis_index.get(int(p["day"]))
-            if i is not None:
-                vals[i] = p[metric]
-        for i in range(n):
-            sum_top[i] += vals[i] or 0
-        line = {"id": r["id"], "label": r["label"], "values": vals}
-        if by == "key":
-            line["user_label"] = r.get("user_label")
-        lines.append(line)
+        # One chart line per top-K entity (by the selected metric), aligned to the
+        # shared x-axis with 0-fill for buckets where the entity had no usage.
+        K = 8
+        lines: list[dict[str, Any]] = []
+        sum_top = [0.0] * n
+        for r in board[:K]:
+            kwargs = {"user_id": r["id"]} if by == "user" else {"key_id": r["id"]}
+            s = usage_store.series(start_hour=start_hour, bucket=bucket, **kwargs)
+            vals: list[float] = [0] * n
+            for p in s:
+                i = axis_index.get(int(p["day"]))
+                if i is not None:
+                    vals[i] = p[metric]
+            for i in range(n):
+                sum_top[i] += vals[i] or 0
+            line = {"id": r["id"], "label": r["label"], "values": vals}
+            if by == "key":
+                line["user_label"] = r.get("user_label")
+            lines.append(line)
 
-    # Fold the long tail (entities beyond top-K) into one "others" line =
-    # global total minus the top-K, per bucket. Skip if nothing remains.
-    if len(board) > K and n:
-        others = []
-        any_pos = False
-        for i, p in enumerate(series_global):
-            rem = (p[metric] or 0) - sum_top[i]
-            if rem < 0:
-                rem = 0  # float-subtraction guard
-            if rem > 0:
-                any_pos = True
-            others.append(rem)
-        if any_pos:
-            lines.append({
-                "id": "__others__",
-                "label": f"others ({len(board) - K})",
-                "values": others,
-                "others": True,
-            })
+        # Fold the long tail (entities beyond top-K) into one "others" line =
+        # global total minus the top-K, per bucket. Skip if nothing remains.
+        if len(board) > K and n:
+            others = []
+            any_pos = False
+            for i, p in enumerate(series_global):
+                rem = (p[metric] or 0) - sum_top[i]
+                if rem < 0:
+                    rem = 0  # float-subtraction guard
+                if rem > 0:
+                    any_pos = True
+                others.append(rem)
+            if any_pos:
+                lines.append({
+                    "id": "__others__",
+                    "label": f"others ({len(board) - K})",
+                    "values": others,
+                    "others": True,
+                })
 
-    return {
-        "days": day_axis,
-        "metric": metric,
-        "by": by,
-        "bucket": bucket,
-        "lines": lines,
-        "leaderboard": board,
-    }
+        return {
+            "days": day_axis,
+            "metric": metric,
+            "by": by,
+            "bucket": bucket,
+            "lines": lines,
+            "leaderboard": board,
+        }
+
+    return await asyncio.to_thread(_gather)
 
 
 @router.get(

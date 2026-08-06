@@ -23,6 +23,7 @@ the raw key is copied to the clipboard, then never retrievable.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -267,11 +268,20 @@ async def usage_api(days: int = 0) -> JSONResponse:
     start_hour = None
     if days and days > 0:
         start_hour = usage_store.local_day_start_hour(days_ago=int(days) - 1)
-    by_user = usage_store.totals_by_user(start_hour=start_hour)
-    by_key = {
-        r["key_id"]: r
-        for r in usage_store.totals_by_key(start_hour=start_hour)
-    }
+    # Off the loop: with days=0 (what every admin keys-page load sends) there is
+    # no WHERE clause, so these are two full-table GROUP BY scans over the
+    # never-pruned `usage_hourly` — a stall that grows monotonically with
+    # deployment age and freezes in-flight transcriptions and WebSockets.
+    def _gather() -> tuple[Any, dict[str, Any]]:
+        return (
+            usage_store.totals_by_user(start_hour=start_hour),
+            {
+                r["key_id"]: r
+                for r in usage_store.totals_by_key(start_hour=start_hour)
+            },
+        )
+
+    by_user, by_key = await asyncio.to_thread(_gather)
     return JSONResponse({"by_user": by_user, "by_key": by_key, "days": days})
 
 

@@ -57,8 +57,14 @@ router = APIRouter()
 
 class CorrectionIn(BaseModel):
     model_config = {"extra": "forbid"}
-    wrong: str = ""
-    correct: str = ""
+    # Hygiene only: bounds what can be STORED per correction. The store
+    # truncates both to text_corrections.CAP_CORRECTION_FIELD (200) anyway,
+    # so 4096 (~20x that) is a generous edge bound that cannot reject any
+    # submission which succeeds today. It is NOT a memory guard — the whole
+    # body is json.loads'd before pydantic sees it; that ceiling lives in
+    # main.py's request-size handling.
+    wrong: str = Field(default="", max_length=4096)
+    correct: str = Field(default="", max_length=4096)
     idx: int | None = None
     # Inclusive end-of-range for multi-word selections. Omitted (or equal
     # to idx) for single-word corrections. Validation happens server-side
@@ -163,7 +169,12 @@ async def submit_report(
         )
 
     host = request.client.host if request.client else ""
-    rid, was_updated = reports_store.upsert_report(
+    # Off the loop: upsert_report runs _evict_to_cap (COUNT(*) + DELETE) on
+    # every call, which measured a median 71.5 ms with the table at REPORTS_MAX
+    # versus 7.5 ms on a partly-filled one. reports_store is thread-safe
+    # (threading.Lock + check_same_thread=False), same as the list/export paths.
+    rid, was_updated = await asyncio.to_thread(
+        reports_store.upsert_report,
         user_id=user.get("user_id"),
         request_id=payload.request_id,
         trace_ts=float(payload.trace_ts or 0.0),
@@ -354,7 +365,10 @@ async def delete_report_api(
 )
 async def clear_reports_api(request: Request) -> JSONResponse:
     host = request.client.host if request.client else ""
-    n = reports_store.clear_all(reporter_host=host)
+    # clear_all does DELETE FROM reports + a full VACUUM — 0.416 s of frozen
+    # loop at the default REPORTS_MAX=1000 worst case, and REPORTS_MAX is
+    # settable to 100_000. Offloaded like the captures twin.
+    n = await asyncio.to_thread(reports_store.clear_all, reporter_host=host)
     return JSONResponse({"ok": True, "deleted": n})
 
 
