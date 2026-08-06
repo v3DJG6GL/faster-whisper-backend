@@ -184,6 +184,72 @@ def test_merge_clean_two_file_shape(tmp_path):
         assert w.getnframes() == res["n_samples"]
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_merge_output_is_owner_only(tmp_path):
+    """The merged WAV must land 0600 regardless of the process umask.
+
+    merge_wavs writes a tmp file with wave.open (plain open -> umask applies,
+    typically 0644) and os.replace()s it over dst_path, which hands the tmp
+    inode's mode to the destination. The preview route creates dst_path with
+    tempfile.mkstemp (0600) in the SHARED system temp dir, so without an
+    explicit chmod the merged dictation audio became world-readable there.
+    """
+    old = os.umask(0o022)
+    try:
+        p1 = _write_wav(str(tmp_path / "a.wav"), _pcm(100)[0])
+        out = str(tmp_path / "merged.wav")
+        # Pre-create the destination at 0600 the way tempfile.mkstemp does.
+        os.close(os.open(out, os.O_CREAT | os.O_WRONLY, 0o600))
+        audio_merge.merge_wavs([p1], out, gap_ms=0, trim=False)
+        assert os.stat(out).st_mode & 0o777 == 0o600
+    finally:
+        os.umask(old)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_trim_wav_output_is_owner_only(tmp_path, monkeypatch):
+    """audio_vad_trim.trim_wav has the byte-identical tmp+replace block."""
+    import sys
+    import types
+    import audio_vad_trim
+
+    # Fake Silero: every contiguous non-zero run is speech. Same shape as
+    # test_group_trim.py's stub, kept local so this file stays standalone.
+    def get_speech_timestamps(audio, opts, sampling_rate=RATE):
+        nz = np.abs(audio) > 1e-6
+        if not nz.any():
+            return []
+        idx = np.where(nz)[0]
+        return [{"start": int(idx[0]), "end": int(idx[-1]) + 1}]
+
+    vad = types.ModuleType("faster_whisper.vad")
+    vad.VadOptions = type("VadOptions", (), {"__init__": lambda s, **kw: None})
+    vad.get_speech_timestamps = get_speech_timestamps
+    pkg = types.ModuleType("faster_whisper")
+    pkg.vad = vad
+    monkeypatch.setitem(sys.modules, "faster_whisper", pkg)
+    monkeypatch.setitem(sys.modules, "faster_whisper.vad", vad)
+
+    old = os.umask(0o022)
+    try:
+        # 200 ms of silence, 200 ms of signal, 200 ms of silence -> a real trim.
+        body = np.concatenate([
+            np.zeros(int(0.2 * RATE), dtype=np.int16),
+            np.full(int(0.2 * RATE), 4000, dtype=np.int16),
+            np.zeros(int(0.2 * RATE), dtype=np.int16),
+        ]).tobytes()
+        src = _write_wav(str(tmp_path / "src.wav"), body)
+        dst = str(tmp_path / "trimmed.wav")
+        os.close(os.open(dst, os.O_CREAT | os.O_WRONLY, 0o600))
+        audio_vad_trim.trim_wav(src, dst)
+        # Guard against a vacuous pass: dst was pre-created at 0600, so the
+        # mode assertion only means anything if trim_wav actually wrote.
+        assert os.path.getsize(dst) > 44
+        assert os.stat(dst).st_mode & 0o777 == 0o600
+    finally:
+        os.umask(old)
+
+
 def test_merge_creates_missing_parent_dir(tmp_path):
     p1 = _write_wav(str(tmp_path / "a.wav"), _pcm(100)[0])
     p2 = _write_wav(str(tmp_path / "b.wav"), _pcm(100)[0])

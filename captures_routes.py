@@ -230,7 +230,7 @@ async def list_captures_api(
     before_ts: float | None = Query(None),
     user_filter: str | None = Query(None, alias="user_id"),
     user: dict[str, Any] = Depends(get_current_user),
-) -> JSONResponse:
+) -> Response:
     """Scope-aware list. `scope=own` users see only their own captures;
     `scope=all` users (incl. admins) see every capture and may narrow
     via the admin-only `?user_id=...` query for the per-user dropdown."""
@@ -241,26 +241,39 @@ async def list_captures_api(
     # are already scoped to their own data by effective_user_id_for).
     if user.get("is_admin") and user_filter:
         effective_user = user_filter
-    rows = captures_store.list_captures(
-        status=status_filter, limit=limit, before_ts=before_ts,
-        user_id=effective_user,
-    )
-    # Per-row pipeline self-heal happens in get_capture_api (expand) only.
-    # Running it here would be 2 _postprocess_text calls × `limit` rows per
-    # list render, which dominates response time on /captures with limit=500.
-    usernames = api_keys_store.get_usernames([r.get("user_id") for r in rows])
-    for r in rows:
-        _apply_trim_to_capture_row(r)
-        r["username"] = usernames.get(r.get("user_id"))
-    return JSONResponse({
-        "captures": rows,
-        "counts": captures_store.counts_by_status(user_id=effective_user),
-        "enabled": bool(getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False)),
-        "retention_days": int(getattr(cfg, "CAPTURES_RETENTION_DAYS", 0)),
-        "total_count": captures_store.count(user_id=effective_user),
-        "is_admin": bool(user.get("is_admin")),
-        "user_id": user.get("user_id"),
-    })
+
+    def _render() -> str:
+        rows = captures_store.list_captures(
+            status=status_filter, limit=limit, before_ts=before_ts,
+            user_id=effective_user,
+        )
+        # Per-row pipeline self-heal happens in get_capture_api (expand) only.
+        # Running it here would be 2 _postprocess_text calls × `limit` rows per
+        # list render, which dominates response time on /captures with
+        # limit=500.
+        usernames = api_keys_store.get_usernames(
+            [r.get("user_id") for r in rows])
+        for r in rows:
+            _apply_trim_to_capture_row(r)
+            r["username"] = usernames.get(r.get("user_id"))
+        return json.dumps({
+            "captures": rows,
+            "counts": captures_store.counts_by_status(user_id=effective_user),
+            "enabled": bool(getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False)),
+            "retention_days": int(getattr(cfg, "CAPTURES_RETENTION_DAYS", 0)),
+            "total_count": captures_store.count(user_id=effective_user),
+            "is_admin": bool(user.get("is_admin")),
+            "user_id": user.get("user_id"),
+        }, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+
+    # Query AND serialization off the loop, exactly like
+    # reports_routes.list_reports_api: up to 1000 rows each carrying four
+    # 50k-char text columns plus a per-row json.loads, then two full-table
+    # aggregates, then JSONResponse's own json.dumps of the whole body — of
+    # which the serialization was the larger half there (1.8 s of 2.17 s).
+    # Rows are plain types, so these are the same bytes JSONResponse emits.
+    body = await asyncio.to_thread(_render)
+    return Response(content=body, media_type="application/json")
 
 
 @router.get(
@@ -313,6 +326,14 @@ async def propose_merges_api(
                     all_uids.add(m["user_id"])
         usernames = api_keys_store.get_usernames(list(all_uids)) if all_uids else {}
         for p in proposals:
+            # A scope=all non-admin gets other users' capture previews + the
+            # owner's resolved username here, same as the read-by-id siblings
+            # that audit. One line per proposal, keyed on its first member so
+            # a DSAR can trace which rows left the owner's pool.
+            _audit_cross_user_read(
+                user, p, "merge-proposal",
+                (p.get("member_ids") or [""])[0],
+            )
             p["username"] = usernames.get(p.get("user_id"))
             for m in p.get("member_previews", []):
                 m["username"] = usernames.get(m.get("user_id"))
@@ -343,6 +364,11 @@ async def by_request_id_api(
         rows = [r for r in rows if r.get("user_id") == caller_uid]
     usernames = api_keys_store.get_usernames([r.get("user_id") for r in rows])
     for r in rows:
+        # This route hands a scope=all non-admin the FULL capture row —
+        # raw/final text and the owner's resolved username — for someone
+        # else's capture, exactly the case the eleven read-by-id siblings
+        # audit. It was the only cross-user read-by-key path with no log line.
+        _audit_cross_user_read(user, r, "capture-by-request", r.get("id") or "")
         _apply_trim_to_capture_row(r)
         r["username"] = usernames.get(r.get("user_id"))
     return JSONResponse({"captures": rows})
@@ -475,22 +501,32 @@ async def get_capture_api(
         detail="capture not found",
     )
     _audit_cross_user_read(user, row, "capture", cid)
-    _refresh_final_if_stale(row)
-    # Attach BOTH the runtime-`final` token (`word`) and the EXCLUDE-aware
-    # training token (`train_word`/`train_removed`) per raw word — the same
-    # shape the merge/proposal path produces. The Corrections strip + chips
-    # display the training token so they match what the Final result and the
-    # export actually emit (CAPTURES_PIPELINE_RULES_EXCLUDE respected); the
-    # runtime form stays visible on the "runtime (dictation-map applied)" line.
-    row["words"] = _align_member_words(row)
-    # Shift word/segment timestamps onto the trimmed-audio timeline
-    # when the capture has been VAD-trimmed; the karaoke band plays the
-    # trimmed WAV so time math has to match. Stored words stay in
-    # original-audio time in the DB — this is read-time projection
-    # only.
-    _apply_trim_to_capture_row(row)
-    row["username"] = api_keys_store.get_username(row.get("user_id"))
-    return JSONResponse({"capture": row})
+
+    # OFF the loop, like list_samples_api. `_align_member_words` runs
+    # `_align_words_to_final` twice, and that is a real O(n*m) DP — at the
+    # column caps (_CAP_WORDS_JSON ~10k words, _CAP_FINAL 50k chars) it
+    # measures 129 ms at 1000x1000 and 1.87 s at 4000x4000. Plus
+    # `_refresh_final_if_stale`, which re-runs the text pipeline.
+    def _detail() -> dict[str, Any]:
+        _refresh_final_if_stale(row)
+        # Attach BOTH the runtime-`final` token (`word`) and the EXCLUDE-aware
+        # training token (`train_word`/`train_removed`) per raw word — the same
+        # shape the merge/proposal path produces. The Corrections strip + chips
+        # display the training token so they match what the Final result and the
+        # export actually emit (CAPTURES_PIPELINE_RULES_EXCLUDE respected); the
+        # runtime form stays visible on the "runtime (dictation-map applied)"
+        # line.
+        row["words"] = _align_member_words(row)
+        # Shift word/segment timestamps onto the trimmed-audio timeline
+        # when the capture has been VAD-trimmed; the karaoke band plays the
+        # trimmed WAV so time math has to match. Stored words stay in
+        # original-audio time in the DB — this is read-time projection
+        # only.
+        _apply_trim_to_capture_row(row)
+        row["username"] = api_keys_store.get_username(row.get("user_id"))
+        return row
+
+    return JSONResponse({"capture": await asyncio.to_thread(_detail)})
 
 
 # Audio sniff signatures — first few bytes -> MIME. Used by the audio
@@ -1390,6 +1426,11 @@ async def preview_merge_audio_api(
         path=tmp_path,
         media_type="audio/wav",
         filename="preview.wav",
+        # Merged dictation audio. FileResponse otherwise emits only
+        # ETag/Last-Modified, which makes the body heuristically cacheable by
+        # any shared cache in front of the app — the same reason get_audio_api
+        # and get_sample_audio_api send this.
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -1415,14 +1456,21 @@ async def preview_merge_words_api(
             _validate_merge_payload, payload.member_ids,
             _global_silence_ms(), user)
     )
-    words = await asyncio.to_thread(
-        functools.partial(
-            _build_merged_words,
+    # `_preview_member_trims` must be called INSIDE the thread. As a
+    # functools.partial argument it was evaluated eagerly on the event loop,
+    # which is where its blocking PCM read + uncached Silero-VAD pass per
+    # member (up to 30) then ran — ~2 ms of loop block per second of member
+    # audio, and _validate_merge_payload's cap is on the TRIMMED total so
+    # silence-heavy members are not bounded by it. The sibling
+    # preview_merge_audio_api already does its VAD inside merge_wavs.
+    def _build() -> list[dict[str, Any]]:
+        return _build_merged_words(
             captures, _global_silence_ms(),
             member_trims=_preview_member_trims(
                 payload.member_ids, member_paths),
         )
-    )
+
+    words = await asyncio.to_thread(_build)
     return JSONResponse({
         "words": words,
         "corrections": _project_member_corrections(captures),
@@ -1590,7 +1638,11 @@ async def get_sample_api(
         detail="sample not found",
     )
     _audit_cross_user_read(user, g, "sample", sid)
-    return JSONResponse({"sample": _enrich_sample(g)})
+    # OFF the loop, like list_samples_api: `_enrich_sample` runs
+    # `_align_member_words` per member, and each of those runs the O(n*m)
+    # `_align_words_to_final` DP twice — measured 129 ms at 1000x1000 words
+    # and 1.87 s at 4000x4000, doubled per member.
+    return JSONResponse({"sample": await asyncio.to_thread(_enrich_sample, g)})
 
 
 def _hydrate_members(members: list[dict[str, Any]]) -> None:
@@ -2325,7 +2377,10 @@ async def patch_sample_api(
         patch["transcript"] = _build_default_transcript(_members(), join_for_derive)
 
     updated = capture_samples_store.update_sample(sid, patch)
-    return JSONResponse({"sample": _enrich_sample(updated)})
+    # Off the loop — see get_sample_api: the enrich pass is a quadratic LCS
+    # per member.
+    return JSONResponse(
+        {"sample": await asyncio.to_thread(_enrich_sample, updated)})
 
 
 @router.post(
@@ -2369,7 +2424,10 @@ async def regenerate_sample_api(
     # shared with the VAD reprocess worker thread, and acquiring it inline
     # blocks the whole server for the length of that rebuild.
     updated = await asyncio.to_thread(_regenerate)
-    return JSONResponse({"sample": _enrich_sample(updated)})
+    # The enrich pass belongs off the loop too — see get_sample_api. It was
+    # left inline while the rebuild beside it was already offloaded.
+    return JSONResponse(
+        {"sample": await asyncio.to_thread(_enrich_sample, updated)})
 
 
 @router.delete(

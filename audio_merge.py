@@ -237,6 +237,17 @@ def merge_wavs(
             w.setsampwidth(_REQ_SAMPWIDTH_BYTES)
             w.setframerate(_REQ_RATE)
             w.writeframes(out_pcm)
+        # `wave.open` uses a plain builtin open(), so the process umask
+        # (typically 022 -> 0644) decides the mode and os.replace below
+        # carries THAT inode's mode onto dst_path — silently widening a
+        # 0600 destination such as tempfile.mkstemp's preview file in the
+        # world-writable system temp dir. Merged dictation audio is PHI;
+        # pin owner-only before the swap. No-op semantically for the
+        # captures store (its directory is already 0700).
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
         try:
             with open(tmp_path, "rb") as fp:
                 os.fsync(fp.fileno())

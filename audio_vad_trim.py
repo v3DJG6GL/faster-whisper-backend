@@ -146,6 +146,14 @@ def trim_wav(
             w.setsampwidth(audio_merge._REQ_SAMPWIDTH_BYTES)
             w.setframerate(_REQ_RATE)
             w.writeframes(out_bytes)
+        # Same reason as audio_merge.merge_wavs: `wave.open` writes with the
+        # process umask (0644 typically), and os.replace hands that mode to
+        # dst_path — which would widen an 0600 temp file. Trimmed dictation
+        # audio is PHI; keep it owner-only across the swap.
+        try:
+            os.chmod(tmp_path, 0o600)
+        except OSError:
+            pass
         try:
             with open(tmp_path, "rb") as fp:
                 os.fsync(fp.fileno())

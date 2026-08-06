@@ -507,3 +507,117 @@ def test_last_page_reports_no_cursor(client, make_user_key):
     body = client.get("/captures/api/samples?limit=2", headers=bearer(raw)).json()
     assert len(body["samples"]) == 2
     assert body["next"] is None
+
+
+# ---------------------------------------------------------------------------
+# Cross-user read audit trail + preview-audio cache policy
+# ---------------------------------------------------------------------------
+
+def _insert_capture_with_request(conn, cid, request_id, user_id):
+    rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
+    conn.execute(
+        "INSERT INTO captures (id, created_ts, request_id, model, language,"
+        " duration_seconds, audio_relpath, audio_format, raw, final,"
+        " words_json, segments_json, corrections_json, status, user_id,"
+        " sample_id, sample_order)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (cid, 1.0, request_id, "m", "de", 2.0, rel, "wav", "r", "f", "[]",
+         "[]", "[]", "new", user_id, None, 0),
+    )
+
+
+def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
+    """The by-request lookup hands a scope=all NON-admin the full capture row
+    (raw/final text + the owner's username) for someone else's capture. That
+    is exactly what the eleven read-by-id siblings audit, and it was the one
+    cross-user read-by-key path with no log line — DSARs are answered from
+    this log stream."""
+    import logging
+    import captures_store as cs
+
+    make_user_key("root", is_admin=True)
+    uid_owner, _raw_owner = make_user_key("alice", pages={"captures": "own"})
+    _uid_v, raw_viewer = make_user_key("viewer", pages={"captures": "all"})
+    conn = cs._require_conn()
+    _insert_capture_with_request(conn, "byreqcap0001", "req-xyz", uid_owner)
+
+    with caplog.at_level(logging.INFO, logger="captures_routes"):
+        r = client.get(
+            "/captures/api/by-request/req-xyz", headers=bearer(raw_viewer))
+    assert r.status_code == 200
+    assert len(r.json()["captures"]) == 1
+    audit = [m for m in caplog.messages if "cross-user-read" in m]
+    assert audit and "capture-by-request" in audit[0]
+
+    # Self-reads must stay silent (same rule the siblings follow).
+    caplog.clear()
+    uid_self, raw_self = make_user_key("solo", pages={"captures": "all"})
+    _insert_capture_with_request(conn, "byreqcap0002", "req-own", uid_self)
+    with caplog.at_level(logging.INFO, logger="captures_routes"):
+        client.get("/captures/api/by-request/req-own", headers=bearer(raw_self))
+    assert not [m for m in caplog.messages if "cross-user-read" in m]
+
+
+def test_propose_merges_audits_cross_user_read(client, make_user_key,
+                                               monkeypatch, caplog):
+    """Proposals carry other users' capture previews + resolved usernames to a
+    scope=all non-admin; that read is audited like the read-by-id siblings."""
+    import logging
+    import captures_routes
+
+    make_user_key("root", is_admin=True)
+    uid_owner, _raw_owner = make_user_key("alice", pages={"captures": "own"})
+    _uid_v, raw_viewer = make_user_key("viewer", pages={"captures": "all"})
+
+    def _fake_propose(**kw):
+        return ([{
+            "member_ids": ["propcap00001"],
+            "member_previews": [{"id": "propcap00001", "user_id": uid_owner}],
+            "user_id": uid_owner,
+        }], False)
+
+    monkeypatch.setattr(
+        captures_routes.captures_merge_proposer, "propose_merges",
+        _fake_propose)
+
+    with caplog.at_level(logging.INFO, logger="captures_routes"):
+        r = client.get(
+            "/captures/api/propose-merges", headers=bearer(raw_viewer))
+    assert r.status_code == 200
+    audit = [m for m in caplog.messages if "cross-user-read" in m]
+    assert audit and "merge-proposal" in audit[0]
+
+
+def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
+                                              monkeypatch, tmp_path):
+    """The merged preview WAV is PHI behind a per-row owner check. FileResponse
+    alone sends only ETag/Last-Modified, which makes the body heuristically
+    cacheable by any shared cache in front of the app — the two sibling audio
+    routes both send Cache-Control: no-store."""
+    import wave
+    import audio_merge
+    import captures_routes
+
+    _uid, raw = make_user_key("root", is_admin=True)
+
+    monkeypatch.setattr(
+        captures_routes, "_validate_merge_payload",
+        lambda ids, silence_ms, user: ([], "root", ["/nonexistent.wav"], 0))
+
+    def _fake_merge(paths, dst, **kw):
+        with wave.open(dst, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"\x00\x00" * 16)
+        return {"duration_ms": 1}
+
+    monkeypatch.setattr(audio_merge, "merge_wavs", _fake_merge)
+
+    r = client.post(
+        "/captures/api/samples/preview-audio",
+        json={"member_ids": ["prevcap00001"]},
+        headers=bearer(raw),
+    )
+    assert r.status_code == 200
+    assert r.headers["cache-control"] == "no-store"
