@@ -391,3 +391,38 @@ def test_secret_file_indirection(monkeypatch, tmp_path):
         # can't undo that, so clear it before the restoring reload.
         os.environ.pop("WHISPER_BOOTSTRAP_ADMIN_KEY", None)
         importlib.reload(config)
+
+
+def test_rejected_secret_warning_is_redacted(monkeypatch):
+    """An over-long USE_AUTH_TOKEN fails AdminConfig's max_length=256 and the
+    field reverts — but the warning must NOT carry the repr of the value that
+    stays in force. _ENV_WARNINGS is drained into the logger and that log is
+    served by the /logs viewer and /logs/stream."""
+    try:
+        _reload_with_env(monkeypatch, WHISPER_USE_AUTH_TOKEN="hf_" + "z" * 300)
+        warn = [m for m in config._ENV_WARNINGS
+                if "WHISPER_USE_AUTH_TOKEN" in m and "not a valid" in m]
+        assert warn, config._ENV_WARNINGS
+        msg = warn[0]
+        # The operator still learns which var was rejected and why...
+        assert "USE_AUTH_TOKEN" in msg
+        # ...but the retained value is not echoed.
+        assert "keeping <redacted>" in msg
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_rejected_nonsecret_warning_still_shows_value(monkeypatch):
+    """The redaction is limited to the credential fields — an ordinary field
+    still reports the value left in force, which is what makes the warning
+    actionable."""
+    try:
+        _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE="9999")
+        warn = [m for m in config._ENV_WARNINGS if "WHISPER_BEAM_SIZE" in m]
+        assert warn, config._ENV_WARNINGS
+        assert "keeping 10" in warn[0]
+        assert "<redacted>" not in warn[0]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)

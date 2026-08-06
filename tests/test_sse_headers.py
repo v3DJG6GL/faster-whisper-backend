@@ -26,6 +26,11 @@ def test_sse_response_sets_proxy_safe_headers():
     assert resp.headers.get("x-accel-buffering") == "no"
     cache = resp.headers.get("cache-control", "")
     assert "no-cache" in cache and "no-transform" in cache, cache
+    # `no-store` too: SSE bodies here carry transcript text, and an explicit
+    # Cache-Control on the response suppresses the middleware's no-store
+    # default (it uses setdefault). Bare `no-cache` still permits a shared
+    # cache to STORE the body.
+    assert "no-store" in cache, cache
 
 
 # (source file, snippet proving the stream endpoint is wired to the helper)

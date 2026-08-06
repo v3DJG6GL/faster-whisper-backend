@@ -10,6 +10,7 @@ Shared helpers used by the /logs, /settings, /stats, and /quick-config pages.
 
 from __future__ import annotations
 
+import functools
 import ipaddress
 import logging
 from collections import deque
@@ -157,12 +158,19 @@ def severity_counts() -> dict[str, int]:
 # NS_ERROR_NET_PARTIAL_TRANSFER and the page reconnects every few seconds.
 #   X-Accel-Buffering: no  — nginx disables buffering for THIS response even when
 #                            proxy_buffering is on globally (the decisive header).
-#   Cache-Control: no-cache, no-transform — no proxy cache; no gzip rewrite (gzip
-#                            buffers to compress, which also breaks SSE).
+#   Cache-Control: no-store, no-cache, no-transform — no proxy cache; no gzip
+#                            rewrite (gzip buffers to compress, which also
+#                            breaks SSE).
+# `no-store` is load-bearing and must stay: the middleware only *defaults*
+# Cache-Control to no-store (setdefault), so an explicit value here wins, and
+# bare `no-cache` still lets a shared cache STORE the body — these streams carry
+# transcript text (/logs/stream, /quick-config/recent/stream). It changes no
+# proxy behaviour: X-Accel-Buffering and no-transform are what protect
+# streaming, and stats_page already ships the same combination.
 # Connection is intentionally omitted: it's hop-by-hop, managed by uvicorn/nginx;
 # setting it from ASGI is ignored.
 SSE_HEADERS = {
-    "Cache-Control": "no-cache, no-transform",
+    "Cache-Control": "no-store, no-cache, no-transform",
     "X-Accel-Buffering": "no",
 }
 
@@ -2694,6 +2702,67 @@ def sev_pills_html() -> str:
     return "".join(parts)
 
 
+@functools.lru_cache(maxsize=64)
+def _render_page_cached(
+    template: str,
+    current: str,
+    admin_ui: bool,
+    log_initial: int,
+    log_dom: int,
+) -> str:
+    """The actual placeholder substitution, memoized on everything it can
+    vary on.
+
+    Rebuilding the shell per request measured 2.55 ms of event-loop CPU for a
+    269,666-byte body on the real /captures template — and these pages render
+    BEFORE any credential is examined (the router dependency is
+    require_user_webui_host only, USER_WEBUI_ALLOWED_HOSTS defaults to
+    0.0.0.0/0, and the login gate is a client-side overlay shipped inside this
+    very response), so an unauthenticated caller can drive both the CPU and the
+    ~270 KB of egress at will.
+
+    The key is exhaustive by construction. All 19 placeholders were traced:
+    14 substitute module-level constants; {{SEV_PILLS}} hardcodes n = 0 by
+    design (see sev_pills_html); {{HEADER_VTAG}} is computed once at import;
+    {{NAV}} varies only on `current` plus cfg.ADMIN_UI_ENABLED; the rest vary
+    on `current` or the two LOG_VIEWER_* values. No nonce, CSRF token,
+    username or per-request version is substituted server-side — if one is
+    ever added it MUST enter this key, or the cache becomes a cross-user
+    poisoning bug. The three cfg reads are hot-mutable via the settings save
+    path, hence their presence in the key rather than a read at import.
+
+    Returns an immutable str, so sharing one object across callers is safe.
+    """
+    return (
+        template
+        .replace("{{NAV}}", nav_html(current))
+        .replace("{{SEV_PILLS}}", sev_pills_html())
+        .replace("{{NAV_CSS}}", NAV_CSS)
+        .replace("{{LOG_VIEWER_INITIAL_LINES}}", str(log_initial))
+        .replace("{{LOG_VIEWER_DOM_MAX}}", str(log_dom))
+        .replace("{{SCALE_PICKER}}", SCALE_PICKER_HTML)
+        .replace("{{RELOAD}}", RELOAD_BTN_HTML)
+        .replace("{{LOGOUT}}", LOGOUT_BTN_HTML)
+        .replace("{{SCALE_PICKER_JS}}", SCALE_PICKER_JS + NAV_DRAWER_JS)
+        .replace(
+            "{{SEV_POLLER_JS}}",
+            # Order matters: the global landing helpers must be defined
+            # BEFORE OPEN_MODE_BANNER_JS runs, because the central script
+            # calls `_renderNoAccessLanding` once whoami resolves.
+            SEV_POLLER_JS + NOT_ADMIN_LANDING_GLOBAL_JS + OPEN_MODE_BANNER_JS,
+        )
+        .replace("{{SCALE_BOOTSTRAP_HEAD}}", SCALE_BOOTSTRAP_HEAD)
+        .replace("{{RULE_EDITOR_JS}}", RULE_EDITOR_JS)
+        .replace("{{TIME_HELPERS_JS}}", TIME_HELPERS_JS)
+        .replace("{{NOT_ADMIN_LANDING_JS}}", NOT_ADMIN_LANDING_JS)
+        .replace("{{PAGE_META}}", _page_meta_tag(current))
+        .replace("{{TAG_PICKER_JS}}", TAG_PICKER_JS)
+        .replace("{{HEADER_TITLE}}", _header_title_for(current))
+        .replace("{{HEADER_BRAND}}", _header_brand_for(current))
+        .replace("{{HEADER_VTAG}}", _HEADER_VTAG_HTML)
+    )
+
+
 def render_page(template: str, current: str) -> str:
     """Substitute placeholders in a page template:
       - {{NAV}}                  → primary nav links (left of global bar)
@@ -2725,37 +2794,14 @@ def render_page(template: str, current: str) -> str:
     Pages that don't include a given placeholder are returned unchanged."""
     # Resolve the /logs DOM cap: 0 in config means "auto = initial × 4".
     # Computed here so the JS gets a final integer and doesn't need its
-    # own resolver. Per-render lookup is fine — render_page runs once
-    # per page load and the cost is two attribute reads.
+    # own resolver. These reads stay per-call (they're two attribute reads)
+    # and are passed into the memo key, because the settings save path
+    # mutates them at runtime.
     _log_initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     _log_dom = int(getattr(cfg, "LOG_VIEWER_DOM_MAX", 0)) or (_log_initial * 4)
-    return (
-        template
-        .replace("{{NAV}}", nav_html(current))
-        .replace("{{SEV_PILLS}}", sev_pills_html())
-        .replace("{{NAV_CSS}}", NAV_CSS)
-        .replace("{{LOG_VIEWER_INITIAL_LINES}}", str(_log_initial))
-        .replace("{{LOG_VIEWER_DOM_MAX}}", str(_log_dom))
-        .replace("{{SCALE_PICKER}}", SCALE_PICKER_HTML)
-        .replace("{{RELOAD}}", RELOAD_BTN_HTML)
-        .replace("{{LOGOUT}}", LOGOUT_BTN_HTML)
-        .replace("{{SCALE_PICKER_JS}}", SCALE_PICKER_JS + NAV_DRAWER_JS)
-        .replace(
-            "{{SEV_POLLER_JS}}",
-            # Order matters: the global landing helpers must be defined
-            # BEFORE OPEN_MODE_BANNER_JS runs, because the central script
-            # calls `_renderNoAccessLanding` once whoami resolves.
-            SEV_POLLER_JS + NOT_ADMIN_LANDING_GLOBAL_JS + OPEN_MODE_BANNER_JS,
-        )
-        .replace("{{SCALE_BOOTSTRAP_HEAD}}", SCALE_BOOTSTRAP_HEAD)
-        .replace("{{RULE_EDITOR_JS}}", RULE_EDITOR_JS)
-        .replace("{{TIME_HELPERS_JS}}", TIME_HELPERS_JS)
-        .replace("{{NOT_ADMIN_LANDING_JS}}", NOT_ADMIN_LANDING_JS)
-        .replace("{{PAGE_META}}", _page_meta_tag(current))
-        .replace("{{TAG_PICKER_JS}}", TAG_PICKER_JS)
-        .replace("{{HEADER_TITLE}}", _header_title_for(current))
-        .replace("{{HEADER_BRAND}}", _header_brand_for(current))
-        .replace("{{HEADER_VTAG}}", _HEADER_VTAG_HTML)
+    _admin_ui = bool(getattr(cfg, "ADMIN_UI_ENABLED", False))
+    return _render_page_cached(
+        template, current, _admin_ui, _log_initial, _log_dom,
     )
 
 

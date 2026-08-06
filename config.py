@@ -1088,7 +1088,13 @@ def _env_csv_list(name: str, current: list[str]) -> list[str]:
 # kept out of `docker inspect` / /proc/<pid>/environ). If the *_FILE form is set
 # and the plain var is not, read+strip the file into os.environ so the normal
 # readers below (and the per-model loop) pick it up uniformly.
-for _secret in ("WHISPER_BOOTSTRAP_ADMIN_KEY", "WHISPER_USE_AUTH_TOKEN"):
+#
+# Single source of truth for "this config field holds a credential" — also
+# consulted by the env-revalidation loop below, which must not echo a stored
+# secret into _ENV_WARNINGS (those are drained into the logger, and the log is
+# served by the /logs viewer and /logs/stream).
+_SECRET_FIELDS = ("BOOTSTRAP_ADMIN_KEY", "USE_AUTH_TOKEN")
+for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
     _path = os.environ.get(_secret + "_FILE")
     if _path and not os.environ.get(_secret):
         try:
@@ -1388,10 +1394,19 @@ try:
             _AdminConfig.model_validate({_field: _new})
         except Exception as _verr:  # noqa: BLE001 — any validation failure
             globals()[_field] = _old
+            # The field name and the validation reason stay — an operator has
+            # to know their env value was rejected and that the previous one is
+            # in force. But the reverted value itself is a STORED SECRET for
+            # the credential fields (USE_AUTH_TOKEN is a HuggingFace token and
+            # goes through this loop like any other AdminConfig field: paste an
+            # over-long one and the warning would carry the repr of the token
+            # already configured). _ENV_WARNINGS is drained into the logger and
+            # that log is served by /logs and /logs/stream.
+            _kept = "<redacted>" if _field in _SECRET_FIELDS else repr(_old)
             _ENV_WARNINGS.append(
                 f"{_ENV_VAR_MAPPING.get(_field, _field)} is not a valid "
                 f"{_field}: {_env_validation_reason(_verr)}; "
-                f"keeping {_old!r}"
+                f"keeping {_kept}"
             )
 
     # MODEL_OVERRIDES is assembled key-by-key from the

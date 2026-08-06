@@ -63,3 +63,57 @@ def test_root_host_gate(app_module, monkeypatch):
 def test_header_brand_lockup_links_home(client):
     r = client.get("/logs")
     assert '<a class="brand-link" href="/"' in r.text
+
+
+# ---------------------------------------------------------------------------
+# render_page memoization (web_common)
+# ---------------------------------------------------------------------------
+# The substitution chain rebuilds a ~270 KB shell per request and these pages
+# render before any credential is examined, so it is memoized. The contract
+# worth pinning is the CACHE KEY: nothing per-user may be substituted, and the
+# three hot-mutable cfg reads must invalidate.
+
+_TPL = (
+    "<title>{{HEADER_TITLE}}</title>{{NAV}}{{PAGE_META}}"
+    "{{LOG_VIEWER_INITIAL_LINES}}/{{LOG_VIEWER_DOM_MAX}}"
+)
+
+
+def test_render_page_is_memoized_per_key():
+    import web_common
+    a = web_common.render_page(_TPL, "logs")
+    b = web_common.render_page(_TPL, "logs")
+    # Same key -> the identical (immutable) str object, i.e. no rebuild.
+    assert a is b
+    # A different `current` is a different key and must not be served the
+    # cached body.
+    assert web_common.render_page(_TPL, "stats") != a
+
+
+def test_render_page_key_tracks_hot_mutable_cfg(monkeypatch):
+    """ADMIN_UI_ENABLED and the two LOG_VIEWER_* values are mutated at runtime
+    by the settings save path, so they are part of the key rather than read at
+    import."""
+    import config as cfg
+    import web_common
+
+    monkeypatch.setattr(cfg, "ADMIN_UI_ENABLED", True, raising=False)
+    monkeypatch.setattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000, raising=False)
+    monkeypatch.setattr(cfg, "LOG_VIEWER_DOM_MAX", 0, raising=False)
+    on = web_common.render_page(_TPL, "logs")
+    assert "2000/8000" in on  # DOM_MAX=0 resolves to initial x 4
+
+    monkeypatch.setattr(cfg, "ADMIN_UI_ENABLED", False, raising=False)
+    off = web_common.render_page(_TPL, "logs")
+    assert off != on, "ADMIN_UI_ENABLED must invalidate the memo"
+
+    monkeypatch.setattr(cfg, "LOG_VIEWER_INITIAL_LINES", 55, raising=False)
+    assert "55/220" in web_common.render_page(_TPL, "logs")
+
+
+def test_render_page_substitutes_no_per_user_value():
+    """Guard against a future per-user substitution silently entering a shared
+    cache. Every placeholder must be resolved, and none from a request."""
+    import web_common
+    out = web_common.render_page(_TPL, "logs")
+    assert "{{" not in out

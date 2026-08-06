@@ -18,11 +18,21 @@ htmlcov/
 # hf_token) — a commit away from the public GitHub mirror without this.
 secrets/
 .env
-.env.local
+# Every .env variant, matching .dockerignore: .env.example documents
+# WHISPER_BOOTSTRAP_ADMIN_KEY (creates the first full admin) and
+# WHISPER_USE_AUTH_TOKEN as the values that belong in such a file, and `main`
+# is mirrored to a public GitHub repo — so .env.prod / .env.docker / .env.gpu
+# must not be committable. The tracked example file is negated back in.
+.env.*
+!.env.example
 *.local
 
 # Admin-WebUI runtime overrides (the .example.json variant IS committed)
 config.local.json
+
+# filelock sidecars from config_store's save serialisation (config.json.lock,
+# config.local.json.lock) — runtime artefacts, never committed
+*.lock
 
 # In-checkout data/model roots — the Windows bare-metal defaults (<repo>\data,
 # <repo>\models); also cover Linux runs with WHISPER_DATA_DIR=./data
