@@ -269,3 +269,37 @@ def test_model_load_failure_delivers_generic_error_and_closes(
     # reach the client; it is logged server-side instead.
     assert "secret-path" not in errors[0]["message"]
     assert errors[0]["message"] == "model could not be loaded"
+
+
+def test_handshake_drops_unknown_decode_override_keys(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    """Unknown `decode_overrides` keys are discarded at the handshake instead of
+    being retained (and re-walked per partial) for the life of the connection.
+
+    They were already ignored by main._apply_decode_overrides, so this pins the
+    behaviour-preservation half too: the honoured key still reaches the final
+    decode, and the junk key never appears in the transcribe kwargs.
+    """
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    _, raw_alice = make_user_key("alice")
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "decode_overrides": {"beam_size": 5,
+                                           "not_a_real_key": "x" * 1024,
+                                           "__proto__": 1},
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ready = ws.receive_json()
+        assert ready["type"] == "ready"
+        assert "overrides_ignored" not in ready   # nothing LOCKED, so nothing surfaced
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        _drain(ws)
+
+    # The accepted override still applies...
+    assert fake_model.last_kwargs["beam_size"] == 5
+    # ...and the unknown keys reached neither the kwargs nor the retained dict.
+    assert "not_a_real_key" not in fake_model.last_kwargs
+    assert "__proto__" not in fake_model.last_kwargs

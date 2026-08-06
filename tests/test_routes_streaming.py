@@ -7,6 +7,8 @@ Open mode (no API key) → the synthetic admin passes auth, from the admin host
 allowlist only (loopback here).
 """
 
+import time
+
 import numpy as np
 import pytest
 from starlette.testclient import TestClient
@@ -269,6 +271,63 @@ def test_stream_idle_timeout_zero_disables(app_module, monkeypatch):
                 "audio": {"format": "pcm_s16le", "sample_rate": 16000},
             })
             assert ws.receive_json()["type"] == "ready"
+            ws.send_json({"type": "stop"})
+            msgs = _drain(ws)
+    assert not any(m.get("code") == "idle_timeout" for m in msgs)
+
+
+def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkeypatch):
+    """The idle deadline is anchored to the last AUDIO byte, not the last frame.
+
+    Regression: `_receive_idle` used to be re-armed with the FULL timeout on every
+    inbound frame, so a client alternating an unrecognised control JSON with an
+    empty binary frame (a no-op sink write) held its session slot open forever
+    while decoding nothing — enough sockets to pin STREAMING_MAX_SESSIONS.
+
+    The assertion is on the DRAIN duration, not on the notice alone: the old code
+    also emits an idle_timeout notice, just one full timeout AFTER the last frame.
+    Here the socket must already be closed by the time we stop sending.
+    """
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 0.5, raising=False)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            ws.send_json({
+                "type": "config", "model": "whisper-1", "response_format": "json",
+                "audio": {"format": "pcm_s16le", "sample_rate": 16000},
+            })
+            assert ws.receive_json()["type"] == "ready"
+            for _ in range(3):            # 0.9 s of keepalive-ish traffic, no audio
+                time.sleep(0.3)
+                try:
+                    ws.send_json({"type": "noop"})   # parses, matches no branch
+                    ws.send_bytes(b"")               # empty audio payload
+                except Exception:                    # noqa: BLE001 — already closed
+                    break
+            t0 = time.monotonic()
+            msgs = _drain(ws)
+            drained_in = time.monotonic() - t0
+    assert any(m.get("code") == "idle_timeout" for m in msgs)
+    # Closed at ~0.5 s (during the send loop), not 0.5 s after the last frame.
+    assert drained_in < 0.25, f"socket was still armed when we stopped sending ({drained_in:.2f}s)"
+
+
+def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypatch):
+    """The other side of the same fix: real audio DOES re-arm the deadline, so a
+    live mic (which streams PCM continuously, even through silence) is never cut
+    short even though the session runs far longer than one idle timeout."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 0.5, raising=False)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            ws.send_json({
+                "type": "config", "model": "whisper-1", "response_format": "json",
+                "audio": {"format": "pcm_s16le", "sample_rate": 16000},
+            })
+            assert ws.receive_json()["type"] == "ready"
+            for _ in range(5):            # 1.25 s of audio: 2.5x the idle timeout
+                time.sleep(0.25)
+                ws.send_bytes(_pcm(0, 100))   # silent PCM is still AUDIO
             ws.send_json({"type": "stop"})
             msgs = _drain(ws)
     assert not any(m.get("code") == "idle_timeout" for m in msgs)

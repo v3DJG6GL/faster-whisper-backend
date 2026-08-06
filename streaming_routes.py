@@ -48,6 +48,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 import auth
 import config_store
+import effective_config
 import metrics
 import store_common
 import web_common
@@ -100,13 +101,26 @@ _WS_UNAUTH = 4401
 _WS_DISABLED = 4503
 _WS_TOO_MANY = 4429
 _WS_BAD_ORIGIN = 4403
-_WS_IDLE_TIMEOUT = 4408  # client sent nothing for STREAMING_IDLE_TIMEOUT_SEC
+_WS_IDLE_TIMEOUT = 4408  # client sent no audio for STREAMING_IDLE_TIMEOUT_SEC
+
+# The client decode_override keys the server actually honors (main._apply_decode_
+# overrides consumes exactly this set; every other key is discarded there). Bound
+# once at import so the handshake can narrow the client's dict without reaching
+# into effective_config's private mapping — and without retaining an unbounded,
+# connection-lifetime dict of attacker-chosen keys.
+_CLIENT_OVERRIDE_KEYS: frozenset[str] = frozenset(
+    effective_config._CONFIG_TO_CLIENT_KEY.values())
 
 
 async def _receive_idle(ws: WebSocket, timeout_sec: float):
-    """`ws.receive()`, but abandoned after `timeout_sec` of silence so an idle /
-    abandoned / dead connection can't hold its session slot forever. A value
-    <= 0 disables the timeout (plain receive). On expiry raises TimeoutError."""
+    """`ws.receive()`, but abandoned after `timeout_sec` so an idle / abandoned /
+    dead connection can't hold its session slot forever. A value <= 0 disables
+    the timeout (plain receive). On expiry raises TimeoutError.
+
+    Callers pass the REMAINING budget, not the full timeout: the deadline the
+    route enforces is "no AUDIO for N seconds", so a client that keeps sending
+    non-audio frames (empty binary frames, unrecognised control JSON) no longer
+    re-arms it. See the producer loop in transcribe_stream."""
     if timeout_sec and timeout_sec > 0:
         return await asyncio.wait_for(ws.receive(), timeout_sec)
     return await ws.receive()
@@ -349,6 +363,16 @@ async def transcribe_stream(ws: WebSocket) -> None:
         req_overrides = conf.get("decode_overrides")
         if not isinstance(req_overrides, dict):
             req_overrides = {}
+        # Narrow to the keys the assembler actually honors. Every other key is
+        # already discarded by main._apply_decode_overrides, so no accepted
+        # request changes behaviour — but without this the whole dict (up to the
+        # 1 MiB ws_max_size frame) is captured by the decode closures and
+        # retained for the life of the connection, and is re-walked on every
+        # partial by the lock filter (which walks precisely when overrides are
+        # NOT allowed, i.e. the hardened configuration).
+        elif req_overrides:
+            req_overrides = {k: v for k, v in req_overrides.items()
+                             if k in _CLIENT_OVERRIDE_KEYS}
         # Optional per-request server override-profile name (the client's "Server
         # override profile"). Applied as the least-specific identity layer; honored
         # only when ALLOW_REQUEST_OVERRIDE_PROFILE is on, ignored if unknown. A
@@ -892,10 +916,27 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # Per-identity idle timeout (a trusted profile may allow a longer silence
         # grace); resolved now that the model + identity are known.
         idle_timeout = float(main.cfg_for(final_model, "STREAMING_IDLE_TIMEOUT_SEC", ident) or 0.0)
+        # The deadline is anchored to the last AUDIO byte, not the last frame.
+        # Wrapping each receive() in the FULL timeout made the control defeatable
+        # by any inbound frame — an empty binary frame (a no-op sink write) or an
+        # unrecognised control JSON re-armed it forever, so a handful of sockets
+        # could pin every STREAMING_MAX_SESSIONS slot (plus their ffmpeg
+        # subprocesses) while decoding nothing. Both docstrings already describe
+        # this as bounding a connection that "sends no audio". The dictation page
+        # sends no keepalive of any kind, and a live mic streams PCM continuously
+        # even through silence, so a genuine session is never cut short.
+        _loop = asyncio.get_running_loop()
+        _last_audio = _loop.time()
         try:
             while True:
                 try:
-                    msg = await _receive_idle(ws, idle_timeout)
+                    if idle_timeout > 0:
+                        budget = idle_timeout - (_loop.time() - _last_audio)
+                        if budget <= 0:
+                            raise asyncio.TimeoutError
+                    else:
+                        budget = 0.0  # <= 0 keeps the "disabled" semantics
+                    msg = await _receive_idle(ws, budget)
                 except asyncio.TimeoutError:
                     logger.info("[stream %s] idle %.0fs — closing", session_id[:8], idle_timeout)
                     async with send_lock:
@@ -908,6 +949,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 if msg.get("type") == "websocket.disconnect":
                     break
                 if msg.get("bytes") is not None:
+                    # Only a NON-EMPTY audio payload re-arms the idle deadline.
+                    if msg["bytes"]:
+                        _last_audio = _loop.time()
                     await transport.feed(msg["bytes"])
                 elif msg.get("text") is not None:
                     try:
@@ -944,7 +988,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         pass  # peer gone; teardown happens in the finally
     except Exception as exc:  # noqa: BLE001
-        logger.exception("[stream %s] error: %s", session_id[:8], exc)
+        # Client-chosen handshake strings (model / language / response_format)
+        # land verbatim in exception messages, and any exception raised outside
+        # the two inner blocks that already screen theirs reaches this line — so
+        # screen it too before it hits the line-oriented rotating log.
+        logger.exception("[stream %s] error: %s",
+                         session_id[:8], store_common.log_safe(str(exc)))
         try:
             # Lock like every other send: on a setup-window failure the consumer
             # task may still be mid-emit (it is cancelled later, in the finally),
