@@ -1519,7 +1519,12 @@ def get_inference_semaphore() -> "asyncio.Semaphore":
 # faster-whisper short name OR HuggingFace repo id (org/name) — the same shape
 # config_store._MODEL_ID_PATTERN validates configured model ids against. Used
 # below to bound what an EMPTY ALLOWED_MODELS accepts from a request.
-_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?$")
+# \Z, not $: `$` also matches just BEFORE a trailing newline, so "some-repo\n"
+# passed the gate. \Z anchors at the true end of the string and is a pure
+# tightening here (no legitimate model id ends in a newline); fixing it in the
+# pattern also covers every other caller of this regex, which stripping inside
+# _resolve_model_name would not.
+_MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?\Z")
 
 
 async def _get_or_load_model(name: str) -> "WhisperModel":
@@ -2354,6 +2359,20 @@ async def _max_body_mw(request: Request, call_next):
     the router, inside _metrics_mw so these rejections still get recorded.
     """
     max_body = int(getattr(cfg, "MAX_REQUEST_BYTES", 268_435_456))
+    # A JSON body gets a much tighter ceiling than the service-wide one. FastAPI
+    # calls `await request.json()` BEFORE solve_dependencies (fastapi/routing.py
+    # 0.141.x), so the payload is buffered AND json.loads-expanded ahead of the
+    # host gate, get_current_user and every in-handler rate limiter — measured
+    # ~24x RSS amplification on nested empty lists, i.e. ~6 GB from one
+    # unauthenticated request at the 256 MB ceiling. Route-level or pydantic
+    # max_length cannot help: pydantic never sees the payload until the parse
+    # has already built it. 4 MiB is ~8x the largest legitimate JSON body (the
+    # 512 KB client_settings cap; the largest declared string field is 100 KB).
+    # getattr default, so no config-schema change is required. multipart audio
+    # uploads keep the full MAX_REQUEST_BYTES — the prefix test only matches
+    # application/json.
+    if request.headers.get("content-type", "").startswith("application/json"):
+        max_body = min(max_body, int(getattr(cfg, "MAX_JSON_BODY_BYTES", 4_194_304)))
     _clen = request.headers.get("content-length")
     if _clen and _clen.isdigit() and int(_clen) > max_body:
         from fastapi.responses import JSONResponse
@@ -2374,8 +2393,8 @@ async def _max_body_mw(request: Request, call_next):
             _received += len(message.get("body", b"") or b"")
             if _received > max_body:
                 logger.warning(
-                    "Aborting %s %s: request body exceeded MAX_REQUEST_BYTES "
-                    "(%d) with no declared Content-Length",
+                    "Aborting %s %s: request body exceeded the effective cap "
+                    "(%d bytes) with no declared Content-Length",
                     request.method, _log_safe(request.url.path), max_body,
                 )
                 return {"type": "http.disconnect"}
@@ -2494,6 +2513,22 @@ def _shift_to_original_timeline(segments, info, pad_s: float):
 # spool threshold, so a typical clip is copied in a handful of steps.
 _UPLOAD_CHUNK_BYTES = 1024 * 1024
 
+# The temp-file suffix is only a convenience for ffmpeg/av format sniffing, but
+# it comes straight off the client-supplied filename and is handed to
+# tempfile.NamedTemporaryFile, which builds a real path out of it: a 250-char
+# extension raised OSError(36, 'File name too long') and an embedded NUL raised
+# ValueError, both surfacing as a 500 plus an err_count bump. Traversal is NOT
+# the concern (splitext splits after the last separator, so the extension can
+# never contain one) — length and exotic bytes are. Screen it, and fall back to
+# no suffix rather than rejecting the upload.
+_TMP_SUFFIX_RE = re.compile(r"\A\.[A-Za-z0-9_-]{1,15}\Z")
+
+
+def _safe_tmp_suffix(filename: "str | None") -> str:
+    """Extension of `filename` if it is short and plainly safe, else ""."""
+    ext = os.path.splitext(filename or "")[1]
+    return ext if _TMP_SUFFIX_RE.match(ext) else ""
+
 
 @app.post("/v1/audio/transcriptions")
 async def transcribe(
@@ -2586,7 +2621,7 @@ async def transcribe(
             # cut off mid-read instead of after it has been materialised. Only
             # the SIZE is needed downstream (capture size guard + log block).
             audio_bytes = 0
-            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as tmp_file:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=_safe_tmp_suffix(file.filename)) as tmp_file:
                 tmp_path = tmp_file.name
                 while True:
                     chunk = await file.read(_UPLOAD_CHUNK_BYTES)
@@ -2685,16 +2720,38 @@ async def transcribe(
                     _parsed = json.loads(decode_overrides)
                     if isinstance(_parsed, dict):
                         _overrides = _parsed
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, RecursionError):
+                    # RecursionError (a RuntimeError, NOT a ValueError) is what
+                    # json.loads raises on a deeply nested array/object, so
+                    # without it here a malformed value escapes to the handler's
+                    # generic `except Exception` and becomes a logged 500 plus a
+                    # permanent err_count bump — breaking the documented
+                    # "malformed → ignored" contract. Matches the streaming twin.
                     _overrides = {}
             # Per-request decode keys dropped by a lock (assemble_transcribe_
             # kwargs enforces the drop; we record it here for the response).
             ignored.extend(sorted(k for k in _overrides if k in ident.locked_client_keys))
+            # A locked TEMPERATURE has to bind the OpenAI-compat `temperature`
+            # Form field too, the way a locked DEFAULT_PROMPT/DEFAULT_LANGUAGE
+            # binds `prompt`/`language` above. assemble_transcribe_kwargs only
+            # drops the LOCKED CLIENT KEY, i.e. `temperature` inside
+            # decode_overrides; the Form field is threaded straight through and
+            # is normally masked only because a non-empty resolved ladder
+            # overwrites it. Blank the ladder at the winning layer (a supported
+            # shape — effective_config documents value-less locks) and the Form
+            # field became the one way past the lock.
+            _temperature = temperature
+            if "TEMPERATURE" in ident.locked:
+                _locked_ladder = cfg_for(resolved_model, "TEMPERATURE", ident)
+                if not (_locked_ladder or "").strip():
+                    if temperature != _t_lo and "temperature" not in ignored:
+                        ignored.append("temperature")
+                    _temperature = _t_lo
             # Single source of truth — the streaming FINAL decode builds its kwargs
             # from this exact assembler too, so streaming and batch never diverge.
             transcribe_kwargs = assemble_transcribe_kwargs(
                 resolved_model, model,
-                language=_language, temperature=temperature,
+                language=_language, temperature=_temperature,
                 vad_filter=_vad_filter, vad_parameters=vad_parameters,
                 want_word_ts=want_word_ts, initial_prompt=initial_prompt_arg,
                 overrides=_overrides, ident=ident,
@@ -3028,7 +3085,12 @@ async def transcribe(
             # the client: str(e) here can carry model-dir / filesystem (temp)
             # paths (av/ffmpeg decode + model-load errors). Mirrors the
             # streaming WS hardening — never forward raw str(exc) to a caller.
-            logger.error("Transcription error: %s", e)
+            # _log_safe: str(e) can echo caller-supplied text verbatim (the
+            # `language` Form field is an unvalidated str and faster-whisper's
+            # tokenizer quotes an unknown code back into its ValueError), and
+            # multipart values are binary-safe, so raw CR/LF would otherwise
+            # forge extra lines in the /logs viewer.
+            logger.error("Transcription error: %s", _log_safe(str(e)))
             raise HTTPException(status_code=500, detail="transcription failed")
 
         finally:

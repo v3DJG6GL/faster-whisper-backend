@@ -19,7 +19,16 @@ import re
 # log line. Lives here rather than in main so the stores can reach it without an
 # import cycle (main imports the stores, not the other way round).
 LOG_FIELD_MAX = 120
-_LOG_UNSAFE_RE = re.compile(r"[\r\n\x00-\x1f]")
+# \x00-\x1f already covers ESC, so the classic ANSI-escape angle is closed.
+# What it did NOT cover: U+2028/U+2029, which the /logs viewer renders as a
+# forced line break under `white-space: pre-wrap` (the same forged-record
+# problem as a bare LF), and the BiDi overrides U+202A-U+202E / U+2066-U+2069,
+# which reorder text WITHIN a line in both a terminal and a browser. C1/DEL
+# (\x7f-\x9f) is largely theoretical on a UTF-8 terminal but is inert in every
+# legitimate value, so it goes in too. Deliberately NOT all of \p{Cf}: that
+# would eat ZWNJ/ZWJ (U+200C/D), which occur in real Persian and Indic
+# filenames. Transcripts never pass through log_safe.
+_LOG_UNSAFE_RE = re.compile("[\r\n\x00-\x1f\x7f-\x9f  ‪-‮⁦-⁩]")
 
 
 def log_safe(s) -> str:

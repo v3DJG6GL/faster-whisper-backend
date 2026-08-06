@@ -152,3 +152,68 @@ def test_prompt_sentinel_inherit_clear_value(client, fake_model, app_module):
                     headers={"Content-Type": f"multipart/form-data; boundary={b}"})
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["initial_prompt"] is None
+
+
+def test_deeply_nested_decode_overrides_is_ignored_not_500(client, fake_model):
+    """json.loads raises RecursionError (a RuntimeError, NOT a ValueError) on a
+    deeply nested value. Without it in the guard's tuple the malformed value
+    escaped to the handler's generic `except Exception` and became a 500 plus a
+    permanent err_count bump, breaking the "malformed → ignored" contract."""
+    import metrics
+
+    before = metrics.err_count["/v1/audio/transcriptions"]
+    r = _post(client, response_format="json", decode_overrides="[" * 200_000)
+    assert r.status_code == 200, r.text
+    assert r.json() == {"text": "hallo welt"}
+    # Ignored, so nothing from it reached the model, and no error was recorded.
+    assert metrics.err_count["/v1/audio/transcriptions"] == before
+
+
+def test_absurdly_long_filename_extension_does_not_crash(client):
+    # The client filename feeds tempfile.NamedTemporaryFile's suffix; a 250-char
+    # extension used to raise OSError(36, 'File name too long') → 500.
+    r = client.post(
+        "/v1/audio/transcriptions",
+        files={"file": ("a." + "x" * 250, b"RIFFxxxxWAVE", "audio/wav")},
+        data={"model": "whisper-1", "response_format": "json"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"text": "hallo welt"}
+
+
+def test_null_byte_in_filename_does_not_crash(client):
+    # httpx will not emit a NUL in a filename parameter, so hand-build the body.
+    # It used to reach tempfile as a suffix → ValueError: embedded null character.
+    b = "----nulboundary"
+    body = (
+        f'--{b}\r\nContent-Disposition: form-data; name="file"; filename="a.w\x00av"\r\n'
+        f'Content-Type: audio/wav\r\n\r\nRIFFxxxxWAVE\r\n'
+        f'--{b}\r\nContent-Disposition: form-data; name="model"\r\n\r\nwhisper-1\r\n'
+        f'--{b}\r\nContent-Disposition: form-data; name="response_format"\r\n\r\njson\r\n'
+        f'--{b}--\r\n'
+    ).encode()
+    r = client.post("/v1/audio/transcriptions", content=body,
+                    headers={"Content-Type": f"multipart/form-data; boundary={b}"})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"text": "hallo welt"}
+
+
+def test_safe_tmp_suffix_keeps_ordinary_extensions(app_module):
+    f = app_module._safe_tmp_suffix
+    # A well-formed upload keeps exactly the suffix it always had.
+    for name in ("a.wav", "clip.MP3", "x.m4a", "recording.ogg", "a.b.flac"):
+        assert f(name) == "." + name.rsplit(".", 1)[1]
+    # Screened out → no suffix, never an exception.
+    assert f("a." + "x" * 250) == ""
+    assert f("a.w\x00av") == ""
+    assert f("a.wav\n") == ""
+    assert f(None) == ""
+    assert f("noext") == ""
+
+
+def test_model_id_regex_rejects_a_trailing_newline(app_module):
+    # `$` also matched just BEFORE a final newline; \Z does not.
+    assert app_module._MODEL_ID_RE.match("some-repo")
+    assert app_module._MODEL_ID_RE.match("org/some-repo")
+    assert not app_module._MODEL_ID_RE.match("some-repo\n")
+    assert not app_module._MODEL_ID_RE.match("org/some-repo\n")

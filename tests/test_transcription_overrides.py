@@ -231,3 +231,42 @@ def test_per_key_override_beats_user(client, make_user_key, fake_model):
     )
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["beam_size"] == 4       # key.direct wins over user.direct
+
+
+def test_locked_blank_temperature_ignores_client_form_field(client, make_user_key,
+                                                            fake_model):
+    """A LOCKED TEMPERATURE has to bind the OpenAI-compat `temperature` Form
+    field the way a locked DEFAULT_LANGUAGE binds `language`. A non-empty
+    resolved ladder masks the field anyway; blank the ladder at the winning
+    layer (a supported shape — value-less locks are documented) and the Form
+    field was the one way past the lock."""
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    _setup_profile(client, admin_h, "t0", TEMPERATURE="", locks=["TEMPERATURE"])
+    uid, raw_alice = make_user_key("alice", is_admin=False)
+    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
+                 json={"pages": {}, "config": {"overrides": {}, "profiles": ["t0"], "locks": []}})
+
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "temperature": "0.97"},
+    )
+    assert r.status_code == 200, r.text
+    assert fake_model.last_kwargs["temperature"] == 0.0     # client 0.97 dropped
+    assert "temperature" in r.json()["overrides_ignored"]
+
+
+def test_unlocked_blank_temperature_still_takes_the_client_form_field(
+        client, make_user_key, fake_model, app_module):
+    # Same blank-ladder shape, no lock: the client's Form value must still win.
+    # (With the shipped non-empty ladder the field is masked either way.)
+    app_module.cfg.TEMPERATURE = ""
+    _, raw_alice = make_user_key("alice", is_admin=False)
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "temperature": "0.5"},
+    )
+    assert r.status_code == 200, r.text
+    assert fake_model.last_kwargs["temperature"] == 0.5
