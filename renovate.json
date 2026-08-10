@@ -50,7 +50,7 @@
   ],
   "vulnerabilityAlerts": {
     "labels": ["security"],
-    "automerge": false,
-    "minimumReleaseAge": null
+    "automerge": true,
+    "minimumReleaseAge": "3 days"
   }
 }
