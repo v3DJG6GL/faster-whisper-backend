@@ -850,4 +850,8 @@ def test_save_lock_file_does_not_disturb_the_config_dir(tmp_path):
     names = sorted(os.listdir(tmp_path))
     assert "config.local.json" in names
     assert not [n for n in names if n.endswith(".tmp")]
-    assert [n for n in names if n != "config.local.json"] == ["config.local.json.lock"]
+    # POSIX filelock leaves the released .lock file behind; the Windows
+    # implementation deletes it on release. Either way nothing but the lock
+    # may sit next to the config.
+    assert [n for n in names if n != "config.local.json"] in (
+        [], ["config.local.json.lock"])
