@@ -17,14 +17,14 @@
 #   # Running the tests:               pip install -r requirements-dev.txt
 
 fastapi>=0.141.1
-uvicorn[standard]>=0.52.1
+uvicorn[standard]>=0.52.3
 python-multipart>=0.0.32
 faster-whisper>=1.2.1
 
 # Auto-loads a local .env file at startup (config.py). Optional at runtime:
 # config.py guards the import, so a missing python-dotenv just disables .env
 # loading — real environment variables still work.
-python-dotenv>=1.2.2
+python-dotenv>=1.2.3
 
 # Admin /settings + /stats observability. nvidia-ml-py is the canonical 2025+
 # NVML binding (the legacy `pynvml` PyPI package is now a deprecated shim that
