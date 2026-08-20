@@ -83,6 +83,45 @@ def test_post_patch_valid_field_saves(client, app_module):
     assert slug in r.json()["saved"]
 
 
+def test_post_patch_succeeds_despite_guard_failing_untouched_rule(
+        client, app_module):
+    """A rule the CURRENT guard refuses can sit in the live pipeline (the load
+    path never runs the probe — e.g. it was saved before a guard tightening).
+    The save-time guard is scoped to the rules the patch changed, so patching a
+    DIFFERENT rule must succeed instead of 422ing with an error naming a rule
+    the user never touched (the toast then read "admin pipeline has a
+    validation error" on every save of any word)."""
+    slug = _expose_first_regex_list_rule(app_module)
+    assert slug is not None
+    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
+    # Compiles fine, so load-path validation accepts it; only the guard's
+    # structural screen (nested/ambiguous repetition) refuses it.
+    rules.insert(0, {"name": "legacy-boom", "label": "legacy",
+                     "type": "regex-list",
+                     "entries": [{"pattern": "(n|d|nd)+#", "replacement": "X"}]})
+    app_module.cfg.PIPELINE_RULES = rules
+    r = client.post(
+        "/quick-config/state",
+        json={"rules_patch": {slug: {"enabled": False}}},
+    )
+    assert r.status_code == 200, r.text
+    assert slug in r.json()["saved"]
+
+
+def test_post_patch_own_guard_failing_pattern_still_422(client, app_module):
+    """The scoping must not wave through the caller's OWN bad pattern — a
+    patched rule is always in the guard set."""
+    slug = _expose_first_regex_list_rule(app_module)
+    assert slug is not None
+    r = client.post(
+        "/quick-config/state",
+        json={"rules_patch": {slug: {
+            "entries": [{"pattern": "(n|d|nd)+#", "replacement": "X"}]}}},
+    )
+    assert r.status_code == 422, r.text
+    assert "catastrophic backtracking" in r.text
+
+
 def test_recent_open_mode(client):
     r = client.get("/quick-config/recent")
     assert r.status_code == 200
@@ -169,18 +208,21 @@ def test_post_patch_oversized_map_400(client, app_module):
     slug = _expose_first_map_rule(app_module)
     assert slug is not None, "fixture config has no callback:map rule"
     cap = quick_config_routes._MAP_MAX_ENTRIES
-    assert cap == 500
+    assert cap == 10_000
     big = {f"wort{i}": str(i) for i in range(cap + 1)}
     r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": big}}})
     assert r.status_code == 400, r.text
-    assert "500" in r.json()["detail"]
+    assert str(cap) in r.json()["detail"]
 
 
 def test_post_patch_map_at_cap_is_not_rejected_by_the_guard(client, app_module):
     """Exactly at the cap must still pass the ingress guard (off-by-one)."""
+    import quick_config_routes
+
     slug = _expose_first_map_rule(app_module)
     assert slug is not None
-    at_cap = {f"wort{i}": str(i) for i in range(500)}
+    at_cap = {f"wort{i}": str(i)
+              for i in range(quick_config_routes._MAP_MAX_ENTRIES)}
     r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": at_cap}}})
     assert r.status_code != 400, r.text
 

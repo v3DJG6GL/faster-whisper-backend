@@ -56,7 +56,8 @@ def test_v1_get_open_mode_shape(client):
     r = client.get("/v1/pipeline-rules")
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == {"rules", "role", "editable_fields", "map_collapse_after"}
+    assert set(body) == {"rules", "role", "editable_fields",
+                         "map_collapse_after", "map_max_entries"}
     assert isinstance(body["rules"], list)
     assert body["role"] == "admin"  # open mode = synthetic admin
     # editable_fields advertises the per-type allow-list so the client need not
@@ -66,6 +67,9 @@ def test_v1_get_open_mode_shape(client):
     # The backend-configured "show newest N cb:map entries" threshold (default 15),
     # served so the desktop client + web page agree.
     assert body["map_collapse_after"] == 15
+    # The schema cap on callback:map entries, served so clients can render a
+    # "n / cap" readout instead of discovering the cap via a failed save.
+    assert body["map_max_entries"] == 10_000
 
 
 def test_v1_get_empty_when_nothing_exposed(client):

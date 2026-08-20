@@ -454,8 +454,13 @@ async def apply_rules_patch(
         }
 
     # Hand the merged list to the same save path the admin uses: full Pydantic
-    # re-validation incl. the 2 s ReDoS guard. An error may name a rule the user
-    # didn't touch — the client surfaces this gracefully.
+    # re-validation, with the 2 s ReDoS guard scoped (guard_slugs) to the rules
+    # THIS patch changed. Unscoped, every user save re-probed every admin rule:
+    # one pre-existing rule the current guard refuses — saved before a guard
+    # tightening, loading fine ever since — 422'd every save of any rule, and a
+    # large rule set could burn the shared guard budget on its own. An error
+    # may still name an untouched rule (non-guard validation covers the whole
+    # merged list) — the client surfaces this gracefully.
     # Off the event loop. The guard runs the candidate patterns in a child
     # process and waits up to _GUARD_TIMEOUT for it, so calling save_overrides
     # inline freezes the whole worker — every HTTP request, SSE stream and
@@ -470,13 +475,24 @@ async def apply_rules_patch(
             _GUARDED_SAVE_EXECUTOR,
             functools.partial(
                 config_store.save_overrides, {"PIPELINE_RULES": current_rules},
+                guard_slugs=frozenset(saved),
             ),
         )
     except ValidationError as e:
+        errs = config_store.format_validation_errors(e)
+        # Unlike the success line below, this branch used to return with NO
+        # log at all — a save could fail for every user while the log showed
+        # only interleaved successes. Full (unredacted) detail is fine here:
+        # the log is admin-eyes-only. log_safe for the same CR/LF-forgery
+        # reason as the success line.
+        logger.warning(
+            "[pipeline-rules] save validation failed from=%s user=%s admin=%s "
+            "patched=%s errors=%s",
+            client_host, store_common.log_safe(user.get("username") or "?"),
+            user.get("is_admin"), saved, store_common.log_safe(str(errs)),
+        )
         return status.HTTP_422_UNPROCESSABLE_ENTITY, {
-            "errors": _redact_invisible_slugs(
-                config_store.format_validation_errors(e), user, current_rules,
-            ),
+            "errors": _redact_invisible_slugs(errs, user, current_rules),
         }
     except OSError as e:
         logger.error("[pipeline-rules] save failed: %s", e)
@@ -557,6 +573,7 @@ async def v1_get_pipeline_rules(
         "role": role,
         "editable_fields": editable_fields_map(),
         "map_collapse_after": int(getattr(cfg, "QUICK_CONFIG_MAP_COLLAPSE_AFTER", 15)),
+        "map_max_entries": _MAP_MAX_ENTRIES,
     }
 
 
@@ -750,6 +767,10 @@ async def get_state(
         "reported_chips": reported_chips,
         "map_collapse_after": int(getattr(cfg, "QUICK_CONFIG_MAP_COLLAPSE_AFTER", 15)),
         "word_suggestions_max": int(getattr(cfg, "QUICK_CONFIG_WORD_SUGGESTIONS_MAX", 200)),
+        # Schema cap on a callback:map's entry count — the page shows a
+        # "n / cap" readout so a full dictionary is visible BEFORE a save
+        # bounces off the Pydantic max_length.
+        "map_max_entries": _MAP_MAX_ENTRIES,
     }
 
 
@@ -2611,6 +2632,9 @@ async function load() {
   // Recent-word autocomplete cap, sourced from the backend config
   // (QUICK_CONFIG_WORD_SUGGESTIONS_MAX) so the page + desktop client agree.
   window.__wsm = (typeof j.word_suggestions_max === 'number') ? j.word_suggestions_max : 200;
+  // Schema cap on map entries — feeds the "n / cap" readout in the map
+  // editor (web_common) so a full dictionary is visible before Save bounces.
+  window.__mme = (typeof j.map_max_entries === 'number') ? j.map_max_entries : 0;
   liveRules = JSON.parse(JSON.stringify(initialRules));
   dirty = new Set();
   // role: "admin" reveals .admin-only nav links + sev pills. Non-admin keys
@@ -2685,10 +2709,25 @@ async function doSave() {
   const r = await api('POST', '/quick-config/state',
                       { rules_patch: patch, fingerprints });
   if (r.status === 422) {
-    // Validation error — likely involves a rule the user can't see (admin
-    // pipeline has bad regex etc.). Surface a generic message rather than
-    // confusing field-bound errors pointing at hidden rules.
-    showToast('admin pipeline has a validation error — please contact admin', 'err');
+    // Validation error. Errors naming rules this user can't see arrive
+    // redacted ('<hidden rule>') and stay behind the generic "contact admin"
+    // message. But an error on one of the USER'S OWN rules — their dictionary
+    // hitting the server's entry cap, a key the schema refuses — is legible
+    // and actionable, so surface it instead of blaming the admin pipeline.
+    let errs = [];
+    try { const j = await r.json(); errs = (j && j.errors) || []; } catch (_) {}
+    let msg = '';
+    for (const e of errs) {
+      const loc = String((e && e.loc) || ''), m = String((e && e.msg) || '');
+      if (m.indexOf('<hidden rule>') !== -1) continue;
+      const cap = /at most (\d+) items/.exec(m);
+      msg = (cap && loc.indexOf('callback:map') !== -1)
+        ? 'this dictionary is full (server cap: ' + cap[1]
+          + ' entries) — delete some entries before adding new ones'
+        : (loc ? loc + ': ' : '') + m.slice(0, 200);
+      break;
+    }
+    showToast(msg || 'admin pipeline has a validation error — please contact admin', 'err');
     setStatus('save failed');
     return;
   }

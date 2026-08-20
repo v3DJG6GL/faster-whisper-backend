@@ -1028,13 +1028,13 @@ class MapRule(_RuleBase):
         Annotated[str, Field(min_length=1, max_length=64,
                              pattern=r"^[\w \-.,!?ßẞÄÖÜäöü]{1,64}$")],
         Annotated[str, Field(max_length=64)],
-    ] = Field(default_factory=dict, max_length=500)
+    ] = Field(default_factory=dict, max_length=10_000)
     # Server-owned: epoch seconds per `map` key, set when an entry is added or
     # its value last changed (see quick_config_routes.post_state). Never written
     # by the client — drives newest-first ordering + the inline date column on
     # /quick-config. Keys not present in `map` are dropped by the validator so
     # the two stay consistent even when an admin edits the map via /settings.
-    map_meta: dict[str, int] = Field(default_factory=dict, max_length=500)
+    map_meta: dict[str, int] = Field(default_factory=dict, max_length=10_000)
 
     @field_validator("map_meta", mode="after")
     @classmethod
@@ -1554,6 +1554,14 @@ class AdminConfig(BaseModel):
              probe runs in a killable subprocess (see regex_guard) because
              CPython's re engine can't be interrupted in-process. (Empty
              patterns/entries are OK — just a no-op.)
+             When the context also carries `guard_slugs` (a set of rule names),
+             the guard probes ONLY those rules. The quick-config patch path
+             passes the slugs it actually changed: a save merges the patch into
+             the FULL rule list, and re-probing every untouched (admin) rule on
+             each user save both burned the shared guard budget and meant one
+             pre-existing rule the CURRENT guard refuses — saved before a guard
+             tightening, loaded fine ever since — bricked every user's save of
+             any rule. Compile + template checks still cover the whole list.
           2. Every regex-list entry's replacement TEMPLATE parses against its
              pattern (always, in-process — catches bad backrefs like `\\3` when
              only 2 groups exist; CPython parses templates eagerly, so this is
@@ -1567,12 +1575,14 @@ class AdminConfig(BaseModel):
         """
         if v is None:
             return v
-        # Collect every (where, pattern, replacement) that needs a regex
+        # Collect every (where, pattern, replacement, slug) that needs a regex
         # smoke-test. The actual re.sub probe runs OUT OF PROCESS at the end
         # (only on save, via the guard_regex context) so a catastrophic-
         # backtracking pattern can be killed — CPython's re can't be interrupted
-        # in-process.
-        checks: list[tuple[str, str, str]] = []
+        # in-process. The slug rides along so `guard_slugs` can scope the probe
+        # to the rules a patch actually changed; it is stripped before the
+        # 3-tuple regex_guard.validate call.
+        checks: list[tuple[str, str, str, str]] = []
         seen: set[str] = set()
         terminal_idx: int | None = None
         for idx, rule in enumerate(v):
@@ -1604,7 +1614,8 @@ class AdminConfig(BaseModel):
                             f"rule {idx} ({slug!r}) entry {eidx}: invalid regex: {e}")
                     erepl = getattr(entry, "replacement", "") or ""
                     checks.append(
-                        (f"rule {idx} ({slug!r}) entry {eidx}", epat, erepl))
+                        (f"rule {idx} ({slug!r}) entry {eidx}", epat, erepl,
+                         str(slug or "")))
                 continue
             # callback:* pattern-only rows (lowercase-wordlist / dedup / upper):
             # smoke-test the pattern with an empty replacement.
@@ -1615,7 +1626,7 @@ class AdminConfig(BaseModel):
                 re.compile(pattern)
             except re.error as e:
                 raise ValueError(f"rule {idx} ({slug!r}): invalid regex: {e}")
-            checks.append((f"rule {idx} ({slug!r})", pattern, ""))
+            checks.append((f"rule {idx} ({slug!r})", pattern, "", str(slug or "")))
         if terminal_idx is not None and terminal_idx != len(v) - 1:
             raise ValueError(
                 f"terminal rule must be the last entry "
@@ -1628,7 +1639,7 @@ class AdminConfig(BaseModel):
         # config.local.json has to keep failing validation at LOAD (the
         # documented fail-safe whole-file drop) instead of loading cleanly
         # and raising re.error on every request at match time.
-        for where, pat, repl in checks:
+        for where, pat, repl, _slug in checks:
             if not repl:
                 continue
             try:
@@ -1638,10 +1649,18 @@ class AdminConfig(BaseModel):
         # Out-of-process catastrophic-backtracking guard (a real .sub run
         # against the 1 KB fixture). Runs ONLY on an explicit save of
         # user/admin-submitted rules (guard_regex context), so load/startup/
-        # diff validations never spawn the helper subprocess.
+        # diff validations never spawn the helper subprocess. `guard_slugs`
+        # (when present) narrows the probe to the rules the save changed —
+        # see the docstring; the chained probe then only threads across the
+        # probed rules' own entries, an accepted trade for not letting an
+        # untouched rule fail (or time-budget-starve) someone else's save.
         if checks and (info.context or {}).get("guard_regex"):
-            import regex_guard
-            regex_guard.validate(checks)
+            guard_slugs = (info.context or {}).get("guard_slugs")
+            to_guard = (checks if guard_slugs is None
+                        else [c for c in checks if c[3] in guard_slugs])
+            if to_guard:
+                import regex_guard
+                regex_guard.validate([c[:3] for c in to_guard])
         return v
 
     @model_validator(mode="after")
@@ -2099,8 +2118,19 @@ def config_version() -> int:
     return _CONFIG_VERSION
 
 
-def save_overrides(payload: dict[str, Any], path: str = OVERRIDES_PATH) -> dict[str, Any]:
+def save_overrides(
+    payload: dict[str, Any],
+    path: str = OVERRIDES_PATH,
+    *,
+    guard_slugs: "frozenset[str] | set[str] | None" = None,
+) -> dict[str, Any]:
     """Validate `payload` against AdminConfig and atomically write it to disk.
+
+    `guard_slugs` scopes the out-of-process regex guard to the named pipeline
+    rules (see _validate_pipeline_rules). The quick-config patch path passes
+    the slugs the patch actually changed; admin full saves omit it and keep
+    guarding the whole list. Compile + template validation always covers
+    everything regardless.
 
     `payload` may contain ONLY the fields the user just edited — the WebUI
     sends a "dirty" diff, not the full state. We MERGE on top of whatever is
@@ -2158,7 +2188,10 @@ def save_overrides(payload: dict[str, Any], path: str = OVERRIDES_PATH) -> dict[
 
         # guard_regex: run the out-of-process catastrophic-backtracking check —
         # this is a SAVE of (possibly non-admin) submitted rules.
-        validated = AdminConfig.model_validate(merged, context={"guard_regex": True})
+        context: dict[str, Any] = {"guard_regex": True}
+        if guard_slugs is not None:
+            context["guard_slugs"] = frozenset(guard_slugs)
+        validated = AdminConfig.model_validate(merged, context=context)
         to_write = validated.model_dump(exclude_none=True, mode="json")
 
         _atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")

@@ -89,6 +89,17 @@ _SCALE_ALLOWANCE = 2 * _SCALE_FACTOR
 # Ordinary rules finish in microseconds, where the timer's own resolution
 # dominates the ratio. Compare against at least this to keep noise out.
 _TIMER_FLOOR = 1e-4
+# A ratio alone is not a verdict: legit rules run in tens of microseconds,
+# where one cache miss can fake a large multiple, so a first-sample trip is
+# re-measured this many times total and the BEST (min) of each side decides.
+_SCALE_SAMPLES = 3
+# ...and even a confirmed ratio only rejects when the scaled run costs at
+# least this much CPU. A pattern that finishes the 4 KB fixture in under 5 ms
+# cannot meaningfully stall a transcript whatever its growth curve; a real
+# polynomial pattern (`.*.*#` ~ hundreds of ms at 4 KB) clears this floor by
+# orders of magnitude. This is the deterministic backstop that keeps a busy
+# host (the guard shares the box with transcription) from failing valid saves.
+_SCALE_MIN_REJECT = 5e-3
 
 # Chained-probe cap (see _probe). Entry N is probed against the fixture as
 # entries 0..N-1 have already REWRITTEN it, because that is exactly what
@@ -618,16 +629,21 @@ def _probe(checks: list):
         sys.stderr.flush()
         try:
             rx = re.compile(item[0])
-            _t0 = time.perf_counter()
+            # process_time, not perf_counter: this child shares the box with
+            # live transcription, and a wall clock charges the pattern for
+            # every de-schedule the OS lands mid-probe — measured 20-36x fake
+            # ratios on µs-scale factory rules under CPU load, which 422'd
+            # perfectly valid saves. CPU time only counts what the regex burns.
+            _t0 = time.process_time()
             out = rx.sub(item[1], FIXTURE)
-            _t_base = time.perf_counter() - _t0
+            _t_base = time.process_time() - _t0
             # Scaling probe, measured back-to-back with the baseline so the
             # ratio reflects the pattern and not whatever the machine did in
             # between. The VERDICT stays below, after the growth checks, so
             # rejection priority is unchanged. See the comment there.
-            _t0 = time.perf_counter()
+            _t0 = time.process_time()
             rx.sub(item[1], _SCALE_FIXTURE)
-            _t_scaled = time.perf_counter() - _t0
+            _t_scaled = time.process_time() - _t0
         except Exception as exc:  # noqa: BLE001 - any compile/sub failure
             return i, str(exc)
         if len(out) > _MAX_GROWTH * len(FIXTURE):
@@ -704,7 +720,25 @@ def _probe(checks: list):
         # _TIMER_FLOOR keeps timer noise on a microsecond-scale legit rule from
         # tripping the ratio; the allowance is double the length multiplier, so
         # ordinary rules have ample headroom while `.*.*#` (~130x) is caught.
+        # A first-sample trip is confirmed before it rejects: re-measure both
+        # sides and keep the best (min) of each — noise only ever inflates a
+        # CPU-time reading, so the minima are the pattern's true cost. Legit
+        # rules pay nothing for this (no trip, no resample); a genuinely
+        # polynomial pattern trips every sample. The absolute _SCALE_MIN_REJECT
+        # floor then keeps a sub-5 ms scaled run from rejecting on ratio alone.
         if _t_scaled > _SCALE_ALLOWANCE * max(_t_base, _TIMER_FLOOR):
+            try:
+                for _ in range(_SCALE_SAMPLES - 1):
+                    _t0 = time.process_time()
+                    rx.sub(item[1], FIXTURE)
+                    _t_base = min(_t_base, time.process_time() - _t0)
+                    _t0 = time.process_time()
+                    rx.sub(item[1], _SCALE_FIXTURE)
+                    _t_scaled = min(_t_scaled, time.process_time() - _t0)
+            except Exception as exc:  # noqa: BLE001 - any sub failure
+                return i, str(exc)
+        if (_t_scaled > _SCALE_ALLOWANCE * max(_t_base, _TIMER_FLOOR)
+                and _t_scaled > _SCALE_MIN_REJECT):
             return i, (
                 f"match time grows faster than the input ({_t_scaled / max(_t_base, _TIMER_FLOOR):.0f}x "
                 f"slower on a {_SCALE_FACTOR}x longer text). This pattern is fast "

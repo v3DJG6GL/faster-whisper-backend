@@ -2479,6 +2479,17 @@ function renderTypeEditor(rule, commitData, opts) {
     note.textContent = 'Pattern auto-built from map keys (longest-first, '
       + 'word-bounded, case-insensitive). Edit entries below.';
     box.appendChild(note);
+    // "n / cap" readout so a full dictionary is visible BEFORE a save
+    // bounces off the server's entry cap. __mme is set by the quick-config
+    // page load(); pages that don't set it just show the plain count.
+    const mapCap = (typeof window.__mme === 'number') ? window.__mme : 0;
+    const nEntries = Object.keys(rule.map || {}).length;
+    const cnt = document.createElement('div');
+    cnt.className = 'help';
+    cnt.textContent = nEntries + (mapCap ? ' / ' + mapCap : '') + ' entries'
+      + ((mapCap && nEntries >= mapCap)
+         ? ' — full: delete entries before adding new ones' : '');
+    box.appendChild(cnt);
     const showDate = !!opts.showMapDates;
     const meta = rule.map_meta || {};
     const tbl = document.createElement('table');

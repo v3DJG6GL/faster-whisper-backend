@@ -2366,8 +2366,9 @@ async def _max_body_mw(request: Request, call_next):
     # ~24x RSS amplification on nested empty lists, i.e. ~6 GB from one
     # unauthenticated request at the 256 MB ceiling. Route-level or pydantic
     # max_length cannot help: pydantic never sees the payload until the parse
-    # has already built it. 4 MiB is ~8x the largest legitimate JSON body (the
-    # 512 KB client_settings cap; the largest declared string field is 100 KB).
+    # has already built it. 4 MiB is ~2.5x the largest legitimate JSON body (a
+    # full 10 000-entry callback:map patch at ~1.5 MiB worst case — 64-char
+    # keys + values; next largest is the 512 KB client_settings cap).
     # getattr default, so no config-schema change is required. multipart audio
     # uploads keep the full MAX_REQUEST_BYTES — the prefix test only matches
     # application/json.

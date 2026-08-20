@@ -144,3 +144,16 @@ def test_shipped_factory_rules_validate_through_the_save_path():
     cs.AdminConfig.model_validate(
         {"PIPELINE_RULES": cs.load_factory_rules()},
         context={"guard_regex": True})
+
+
+def test_scaling_ratio_alone_cannot_reject_a_fast_pattern(monkeypatch):
+    """The scaling verdict needs BOTH a confirmed ratio and _SCALE_MIN_REJECT
+    of real CPU on the scaled fixture. Under CPU contention (the guard shares
+    the box with live transcription) a de-schedule mid-probe faked 20-36x
+    ratios on microsecond-scale factory rules and 422'd valid saves. With the
+    allowance forced to zero, every pattern trips the ratio — the absolute
+    floor must still wave a fast pattern through."""
+    monkeypatch.setattr(g, "_SCALE_ALLOWANCE", 0)
+    assert g._probe([["Komma", ","]]) is None
+    # A representative slice of shipped-style rules, all microsecond-scale.
+    assert g._probe([[r"(\d+),(\d+)", r"\1.\2"], [r"z\.B\.", "zum Beispiel"]]) is None

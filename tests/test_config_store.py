@@ -368,6 +368,43 @@ def test_pipeline_regex_guard_skipped_without_save_context(monkeypatch):
     assert calls["n"] == 0
 
 
+def test_pipeline_guard_scoped_to_guard_slugs():
+    # guard_slugs narrows the probe to the rules a patch actually changed. A
+    # rule the CURRENT guard refuses can sit on disk (saved before a guard
+    # tightening — the load path never probes), and unscoped it 422'd every
+    # user's save of ANY rule. Scoped to the untouched sibling, the save
+    # passes; scoped to (or including) the bad rule itself, it still fails.
+    bad = _regex("legacy-boom", pattern="(n|d|nd)+#", replacement="X")
+    good = _regex("harmless", pattern="Komma", replacement=",")
+
+    def _save(slugs):
+        return cs.AdminConfig.model_validate(
+            {"PIPELINE_RULES": [bad, good, _terminal()]},
+            context={"guard_regex": True, "guard_slugs": frozenset(slugs)},
+        )
+
+    _save({"harmless"})  # bad rule not probed -> save succeeds
+    with pytest.raises(ValidationError) as ei:
+        _save({"harmless", "legacy-boom"})
+    assert "catastrophic backtracking" in str(ei.value)
+    # No guard_slugs in the context -> unchanged full-list behaviour.
+    with pytest.raises(ValidationError):
+        _ok_on_save(PIPELINE_RULES=[bad, good, _terminal()])
+
+
+def test_pipeline_guard_scoping_never_skips_compile_and_template_checks():
+    # Scoping narrows only the out-of-process probe. A rule that fails the
+    # ALWAYS-on in-process checks (bad backref template) must keep failing
+    # even when guard_slugs points at a different rule.
+    with pytest.raises(ValidationError) as ei:
+        cs.AdminConfig.model_validate(
+            {"PIPELINE_RULES": [_regex("b", pattern="(a)", replacement=r"\3"),
+                                _regex("harmless"), _terminal()]},
+            context={"guard_regex": True, "guard_slugs": frozenset({"harmless"})},
+        )
+    assert "regex test failed" in str(ei.value)
+
+
 def test_pipeline_bad_backref_rejected_on_load_without_subprocess(monkeypatch):
     # A bad replacement backref must keep failing on EVERY path (the eager
     # in-process template parse) — a hand-edited config.local.json with \3
