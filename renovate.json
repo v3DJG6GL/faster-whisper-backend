@@ -12,7 +12,7 @@
   "rangeStrategy": "bump",
   "automerge": true,
   "automergeStrategy": "squash",
-  "platformAutomerge": true,
+  "platformAutomerge": false,
   "osvVulnerabilityAlerts": true,
   "minimumReleaseAge": "3 days",
   "internalChecksFilter": "strict",
@@ -42,7 +42,7 @@
       "enabled": false
     },
     {
-      "description": "Major bumps require manual review — surface as checkboxes on the Dependency Dashboard, do not open the PR automatically, do not auto-merge. Minor/patch still flow through automerge gated by all-ci (which must be a required status check in the Forgejo branch protection for platformAutomerge to wait on it).",
+      "description": "Major bumps require manual review — surface as checkboxes on the Dependency Dashboard, do not open the PR automatically, do not auto-merge. Minor/patch still flow through Renovate-side automerge, which waits for both all-ci and its own minimumReleaseAge check (platformAutomerge is off: Forgejo only honours required checks, so it would merge before the release age is met).",
       "matchUpdateTypes": ["major"],
       "automerge": false,
       "dependencyDashboardApproval": true
