@@ -563,6 +563,12 @@
           "note": "Removes space after an opening bracket: ( [ {."
         },
         {
+          "pattern": "\"[ \\t]*([^\"\\n]+?)[ \\t]*\"",
+          "replacement": "\"\\1\"",
+          "label": "tighten-quote-spacing",
+          "note": "Removes spaces just inside a quote pair: \" text \" → \"text\"."
+        },
+        {
           "pattern": "  +",
           "replacement": " ",
           "label": "collapse-multi-space",
