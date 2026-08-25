@@ -573,9 +573,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # captures row, no quick_config trace, no usage row, no GPU work
                 # attributed to an identity that no longer exists.
                 raise _CredentialRevoked("credential revoked mid-session")
+            tail_pad_ms = int(main.cfg_for(final_model, "STREAMING_TAIL_TRIM_PAD_MS", ident))
             audio = _trim_trailing_nonspeech(
                 audio,
-                pad_ms=int(main.cfg_for(final_model, "STREAMING_TAIL_TRIM_PAD_MS", ident)),
+                pad_ms=tail_pad_ms,
                 threshold=float(main.cfg_for(final_model, "VAD_THRESHOLD", ident)),
                 log_tag=session_id[:8])
             kwargs = _build_transcribe_kwargs(
@@ -626,7 +627,17 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # they would still carry the hallucination).
             dropped_all = bool(segs) and not kept
             last_decode.clear()
-            last_decode.update(info=info, seg_diag=seg_diag, kwargs=kwargs)
+            last_decode.update(info=info, seg_diag=seg_diag, kwargs=kwargs, guards={
+                # Post-decode guard settings as applied to THIS decode — rendered
+                # in the log block's guards section (they are not transcribe
+                # kwargs, so the Decode params section can't show them).
+                "segment_max_words_per_sec": max_wps,
+                "tail_trim_pad_ms": tail_pad_ms,
+                "final_drop_min_avg_logprob": float(main.cfg_for(
+                    final_model, "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", ident)),
+                "final_drop_temperature": float(main.cfg_for(
+                    final_model, "STREAMING_FINAL_DROP_TEMPERATURE", ident)),
+            })
             return raw, words_out, dropped_all
 
         def postprocess(raw_text):
@@ -755,7 +766,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     audio_source=audio_source_label,
                     ident=ident, overrides_ignored=overrides_ignored,
                     user_id=user.get("user_id"), key_id=user.get("key_id"),
-                    username=user.get("username"), key_label=user.get("key_label")))
+                    username=user.get("username"), key_label=user.get("key_label"),
+                    guards=dec.get("guards")))
             except Exception as _le:  # noqa: BLE001
                 logger.warning("[stream %s] log block failed: %s", session_id[:8], _le)
 

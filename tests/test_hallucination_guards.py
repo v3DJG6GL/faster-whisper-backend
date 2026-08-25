@@ -223,3 +223,85 @@ def test_defaults_present_in_config(app_module):
     assert app_module.cfg.SEGMENT_MAX_WORDS_PER_SEC == 10.0
     assert app_module.cfg.STREAMING_TAIL_TRIM_PAD_MS == 300
     assert app_module.cfg.STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT is False
+
+
+# ---------------------------------------------------------------------------
+# Log block: guards section + dropped-segment marker
+# ---------------------------------------------------------------------------
+
+def test_log_block_shows_guards_and_drop_marker(app_module):
+    from conftest import FakeInfo
+    seg_diag = [
+        {"id": 0, "start": 0.31, "end": 13.42, "alp": -0.11, "nsp": 0.0,
+         "cr": 1.13, "temp": 0.0, "text": "real speech", "dropped": False},
+        {"id": 1, "start": 13.42, "end": 13.96, "alp": -0.23, "nsp": 0.53,
+         "cr": 1.91, "temp": 0.0, "text": "echo echo echo", "dropped": True},
+    ]
+    block = app_module._format_request_block(
+        file_label="x.wav", model_name="m", info=FakeInfo(duration=15.8),
+        kwargs={"beam_size": 10}, seg_diag=seg_diag, raw="", final="",
+        guards={"segment_max_words_per_sec": 10.0, "tail_trim_pad_ms": 300,
+                "final_drop_min_avg_logprob": -1.0,
+                "final_drop_temperature": 0.8})
+    assert "Post-decode guards" in block
+    for row in ("segment_max_words_per_sec", "tail_trim_pad_ms",
+                "final_drop_min_avg_logprob", "final_drop_temperature"):
+        assert row in block
+    lines = block.splitlines()
+    assert "✗" in next(l for l in lines if "echo echo echo" in l)
+    assert "✗" not in next(l for l in lines if "real speech" in l)
+    assert "1 dropped" in block
+
+
+def test_log_block_no_guards_section_when_absent(app_module):
+    from conftest import FakeInfo
+    block = app_module._format_request_block(
+        file_label="x.wav", model_name="m", info=FakeInfo(),
+        kwargs={"beam_size": 10},
+        seg_diag=[{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.0,
+                   "cr": 1.0, "temp": 0.0, "text": "hi ho"}],
+        raw="", final="")
+    assert "Post-decode guards" not in block
+    assert "✗" not in block
+
+
+def test_batch_request_logs_guard_setting(client, caplog):
+    import logging
+    with caplog.at_level(logging.INFO):
+        r = client.post("/v1/audio/transcriptions", files=_FILE,
+                        data={"model": "whisper-1"})
+    assert r.status_code == 200
+    assert "segment_max_words_per_sec" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# /overrides: new settings are per-identity overridable + lockable
+# ---------------------------------------------------------------------------
+
+_NEW_FIELDS = ("SEGMENT_MAX_WORDS_PER_SEC", "STREAMING_TAIL_TRIM_PAD_MS",
+               "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT")
+
+
+def test_new_fields_in_override_profile_and_lockable(app_module):
+    import config_store
+    p = config_store.OverrideProfile(
+        SEGMENT_MAX_WORDS_PER_SEC=8.0,
+        STREAMING_TAIL_TRIM_PAD_MS=500,
+        STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT=True,
+    )
+    assert p.SEGMENT_MAX_WORDS_PER_SEC == 8.0
+    for f in _NEW_FIELDS:
+        assert f in config_store.LOCKABLE_FIELDS
+
+
+def test_new_fields_on_overrides_page(app_module):
+    import overrides_routes
+    meta = overrides_routes._build_field_meta()
+    for f in _NEW_FIELDS:
+        assert f in meta
+    assert meta["SEGMENT_MAX_WORDS_PER_SEC"] == {
+        "kind": "float", "min": 0.0, "max": 100.0}
+    groups = overrides_routes._build_groups()
+    listed = [f for g in groups for sg in g["subgroups"] for f in sg["fields"]]
+    for f in _NEW_FIELDS:
+        assert f in listed

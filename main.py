@@ -598,6 +598,12 @@ _KWARG_TO_CFG = {
     "suppress_blank": "SUPPRESS_BLANK",
     "prepend_punctuations": "PREPEND_PUNCTUATIONS",
     "append_punctuations": "APPEND_PUNCTUATIONS",
+    # Post-decode guards (pseudo-kwargs: rendered in the log block's guards
+    # section, never passed to model.transcribe)
+    "segment_max_words_per_sec": "SEGMENT_MAX_WORDS_PER_SEC",
+    "tail_trim_pad_ms": "STREAMING_TAIL_TRIM_PAD_MS",
+    "final_drop_min_avg_logprob": "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
+    "final_drop_temperature": "STREAMING_FINAL_DROP_TEMPERATURE",
 }
 
 
@@ -726,10 +732,14 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict) -> list[s
                        "COMPRESSION_RATIO thresholds in /settings")
         return out
 
-    out = [_section_rule(f"Segments  (n={n})")]
+    dropped_n = sum(1 for s in seg_diag if s.get("dropped"))
+    label = f"Segments  (n={n})"
+    if dropped_n:
+        label += f"  [✗ = {dropped_n} dropped by post-decode guard]"
+    out = [_section_rule(label)]
     out.append(
         f"    {'#':>3}  {'start':>7}  {'end':>7}  "
-        f"{'alp':>6}  {'nsp':>5}  {'cr':>5}  {'T':>4}   text"
+        f"{'alp':>6}  {'nsp':>5}  {'cr':>5}  {'T':>4}    text"
     )
     rows = min(n, _SEG_ROWS_MAX)
     for i in range(rows):
@@ -737,11 +747,12 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict) -> list[s
         text = s["text"]
         if len(text) > _SEG_TEXT_MAX:
             text = text[:_SEG_TEXT_MAX - 3] + "..."
+        mark = "✗" if s.get("dropped") else " "
         out.append(
             f"    {s['id']:>3d}  "
             f"{s['start']:>6.2f}s  {s['end']:>6.2f}s  "
             f"{s['alp']:>+6.2f}  {s['nsp']:>5.2f}  {s['cr']:>5.2f}  "
-            f"{s['temp']:>4.1f}   {text}"
+            f"{s['temp']:>4.1f}  {mark} {text}"
         )
     if n > rows:
         out.append(f"    … (+{n - rows} more)")
@@ -777,6 +788,7 @@ def _format_request_block(
     key_id: str | None = None,
     username: str | None = None,
     key_label: str | None = None,
+    guards: "dict | None" = None,
 ) -> str:
     """Full per-request log block. `steps` is the per-pipeline trace; passed
     in only when cfg.TRACE_ENABLED so the block stays a single message.
@@ -840,6 +852,15 @@ def _format_request_block(
 
     lines.append(_section_rule("Decode params  (* = non-default)"))
     lines.extend(_format_decode_params(kwargs))
+
+    # Post-decode guards — applied AFTER model.transcribe (word-rate drop,
+    # tail trim, streaming final-drop thresholds), so they are not kwargs and
+    # would otherwise be invisible in the block. Rows marked ✗ in the segments
+    # table were removed by one of these.
+    if guards:
+        lines.append(_section_rule("Post-decode guards  (* = non-default)"))
+        for gk, gv in guards.items():
+            lines.append(_param_row("    ", gk, gv))
 
     lines.extend(_format_segments_section(seg_diag, info, kwargs))
 
@@ -3066,6 +3087,7 @@ async def transcribe(
                 key_id=user.get("key_id"),
                 username=user.get("username"),
                 key_label=user.get("key_label"),
+                guards={"segment_max_words_per_sec": _max_wps},
             ))
 
             # Persist the trace to the durable recent-transcriptions store
