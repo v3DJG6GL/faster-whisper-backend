@@ -404,6 +404,17 @@ LANGUAGE_DETECTION_SEGMENTS: int = _D("LANGUAGE_DETECTION_SEGMENTS")
 # seconds when a possible hallucination is suspected. None = disabled.
 HALLUCINATION_SILENCE_THRESHOLD: "float | None" = _D("HALLUCINATION_SILENCE_THRESHOLD")
 
+# Post-decode word-rate sanity check (backend-level, batch AND streaming-final).
+# Drop a segment whose words-per-second exceeds this — no human speaks 28-48 w/s,
+# but hallucinated echo segments do: when trailing non-speech audio survives the
+# VAD into the decode, Whisper re-decodes the sub-second leftover after the last
+# word as its own zero-padded window and confidently replays its text context
+# (initial_prompt / earlier output). Those segments pass every confidence gate
+# (high avg_logprob, T=0.0, nsp can sit below NO_SPEECH_THRESHOLD) — the
+# physically impossible word density is their only reliable signature. Segments
+# with fewer than 3 words are never dropped. 0 = disabled.
+SEGMENT_MAX_WORDS_PER_SEC: float = _D("SEGMENT_MAX_WORDS_PER_SEC")
+
 # Suppress blank token at start of decoder sampling. Default True. Almost
 # never disable; only useful when debugging tokenizer behavior.
 SUPPRESS_BLANK: bool = _D("SUPPRESS_BLANK")
@@ -938,6 +949,24 @@ STREAMING_VAD_OUTER_SILENCE_MS: int = _D("STREAMING_VAD_OUTER_SILENCE_MS")
 # (e.g. -10) to effectively disable.
 STREAMING_FINAL_DROP_MIN_AVG_LOGPROB: float = _D("STREAMING_FINAL_DROP_MIN_AVG_LOGPROB")
 STREAMING_FINAL_DROP_TEMPERATURE: float = _D("STREAMING_FINAL_DROP_TEMPERATURE")
+# condition_on_previous_text for the streaming FINAL decode (the batch route and
+# multi-window files keep the per-model CONDITION_ON_PREVIOUS_TEXT). Off by
+# default: when trailing non-speech survives the VAD into the buffer, Whisper
+# decodes the sub-second leftover after the last word as its own window, and
+# with conditioning ON that window sees the rolling prompt + the utterance's own
+# text — which it then confidently echoes into the transcript (observed as
+# verbatim replays of previous utterances / chimeras of the current one). With
+# conditioning OFF the leftover window gets an empty text context and has
+# nothing to echo. Cross-utterance context is unaffected (initial_prompt still
+# reaches the first window).
+STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT: bool = _D("STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT")
+# Trailing non-speech cut from the FINAL decode buffer before inference: the
+# buffer always ends with >= STREAMING_VAD_OUTER_SILENCE_MS of endpointer
+# silence (that silence is what triggered the finalize), plus whatever noise
+# (phone ring, breath) the endpointer latched onto — all hallucination fuel.
+# A Silero pass locates the last speech and keeps only this much audio (ms)
+# beyond it, absorbing VAD-vs-word-timestamp jitter. 0 = no tail trim.
+STREAMING_TAIL_TRIM_PAD_MS: int = _D("STREAMING_TAIL_TRIM_PAD_MS")
 
 # (4) Finalize & document breaks. FORCED_COMMIT_SEC hard-caps continuous speech
 # before a forced finalize (keeps the buffer inside Whisper's 30 s field). The

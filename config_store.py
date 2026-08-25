@@ -144,6 +144,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "NO_SPEECH_THRESHOLD": "WHISPER_NO_SPEECH_THRESHOLD",
     "LOG_PROB_THRESHOLD": "WHISPER_LOG_PROB_THRESHOLD",
     "COMPRESSION_RATIO_THRESHOLD": "WHISPER_COMPRESSION_RATIO_THRESHOLD",
+    "SEGMENT_MAX_WORDS_PER_SEC": "WHISPER_SEGMENT_MAX_WORDS_PER_SEC",
     # Log rotation (restart-required)
     "LOG_MAX_BYTES": "WHISPER_LOG_MAX_BYTES",
     "LOG_BACKUP_COUNT": "WHISPER_LOG_BACKUP_COUNT",
@@ -186,6 +187,8 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "STREAMING_GATE_MIN_SPEECH_MS": "WHISPER_STREAMING_GATE_MIN_SPEECH_MS",
     "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB": "WHISPER_STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
     "STREAMING_FINAL_DROP_TEMPERATURE": "WHISPER_STREAMING_FINAL_DROP_TEMPERATURE",
+    "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT": "WHISPER_STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT",
+    "STREAMING_TAIL_TRIM_PAD_MS": "WHISPER_STREAMING_TAIL_TRIM_PAD_MS",
     "STREAMING_VAD_INNER_SILENCE_MS": "WHISPER_STREAMING_VAD_INNER_SILENCE_MS",
     "STREAMING_VAD_OUTER_SILENCE_MS": "WHISPER_STREAMING_VAD_OUTER_SILENCE_MS",
     "STREAMING_HARD_BREAK_SILENCE_MS": "WHISPER_STREAMING_HARD_BREAK_SILENCE_MS",
@@ -401,6 +404,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "than this many seconds when a possible hallucination is detected. "
         "Default disabled. Try 2.0 if Whisper invents 'thanks for watching' "
         "filler in long silences.",
+    "SEGMENT_MAX_WORDS_PER_SEC":
+        "Drop a decoded segment (batch + streaming final) whose word rate "
+        "exceeds this many words per second — hallucinated echo segments "
+        "cram 20+ words into sub-second windows while real speech stays "
+        "under ~6. Segments with fewer than 3 words are never dropped. "
+        "0 = disabled. Default 10.",
     "SUPPRESS_BLANK":
         "Suppress blank token at start of decoder sampling. Default true. "
         "Almost never disable; only useful when debugging tokenizer behavior.",
@@ -816,6 +825,17 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Temperature at/above which a low-confidence FINAL segment is treated as a "
         "failed decode and dropped (paired with the log-prob floor). Requiring "
         "both signals avoids discarding genuine quiet speech.",
+    "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT":
+        "Condition the FINAL decode's later windows on its earlier output. Off "
+        "by default: a leftover sub-second window after the last word would "
+        "otherwise see the rolling prompt + the utterance's own text and echo "
+        "it verbatim into the transcript. Cross-utterance context via "
+        "initial_prompt is unaffected. Batch keeps CONDITION_ON_PREVIOUS_TEXT.",
+    "STREAMING_TAIL_TRIM_PAD_MS":
+        "Audio kept (ms) after the last detected speech when trimming the "
+        "trailing endpointer silence/noise off the FINAL decode buffer — "
+        "removes the non-speech tail Whisper hallucinates into. 0 = no trim. "
+        "Default 300.",
     "STREAMING_VAD_INNER_SILENCE_MS":
         "Inner silence gate (ms): a pause this long triggers a boundary partial "
         "without finalizing. Spans German sub-clause pauses (~700).",
@@ -1103,6 +1123,7 @@ class _CallTimeOverrideMixin(BaseModel):
     NO_SPEECH_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
     LOG_PROB_THRESHOLD: Annotated[float, Field(ge=-10.0, le=0.0)] | None = None
     COMPRESSION_RATIO_THRESHOLD: Annotated[float, Field(ge=0.0, le=10.0)] | None = None
+    SEGMENT_MAX_WORDS_PER_SEC: Annotated[float, Field(ge=0.0, le=100.0)] | None = None
     TEMPERATURE: Annotated[str, Field(max_length=64)] | None = None
     PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
     LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = None
@@ -1205,6 +1226,8 @@ class _StreamingOverrideMixin(BaseModel):
     STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = None
     STREAMING_VAD_OUTER_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = None
     STREAMING_FORCED_COMMIT_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = None
+    STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = None
+    STREAMING_TAIL_TRIM_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = None
     STREAMING_HARD_BREAK_SILENCE_MS: Annotated[int, Field(ge=0, le=120000)] | None = None
     STREAMING_HARD_BREAK_SEPARATOR: Annotated[str, Field(max_length=8)] | None = None
     STREAMING_PROMPT_WORDS: Annotated[int, Field(ge=0, le=400)] | None = None
@@ -1310,6 +1333,7 @@ class AdminConfig(BaseModel):
 
     # --- Anti-hallucination & token control ---
     HALLUCINATION_SILENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=60.0)] | None = _F("HALLUCINATION_SILENCE_THRESHOLD")
+    SEGMENT_MAX_WORDS_PER_SEC: Annotated[float, Field(ge=0.0, le=100.0)] | None = _F("SEGMENT_MAX_WORDS_PER_SEC")
     SUPPRESS_BLANK: bool | None = _F("SUPPRESS_BLANK")
     SUPPRESS_TOKENS: Annotated[str, Field(max_length=256)] | None = _F("SUPPRESS_TOKENS")
     SUPPRESS_CHARS: Annotated[str, Field(max_length=64)] | None = _F("SUPPRESS_CHARS")
@@ -1338,6 +1362,8 @@ class AdminConfig(BaseModel):
     STREAMING_GATE_MIN_SPEECH_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_GATE_MIN_SPEECH_MS")
     STREAMING_FINAL_DROP_MIN_AVG_LOGPROB: Annotated[float, Field(ge=-100.0, le=0.0)] | None = _F("STREAMING_FINAL_DROP_MIN_AVG_LOGPROB")
     STREAMING_FINAL_DROP_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("STREAMING_FINAL_DROP_TEMPERATURE")
+    STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = _F("STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT")
+    STREAMING_TAIL_TRIM_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_TAIL_TRIM_PAD_MS")
     STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_VAD_INNER_SILENCE_MS")
     STREAMING_VAD_OUTER_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = _F("STREAMING_VAD_OUTER_SILENCE_MS")
     STREAMING_HARD_BREAK_SILENCE_MS: Annotated[int, Field(ge=0, le=120000)] | None = _F("STREAMING_HARD_BREAK_SILENCE_MS")

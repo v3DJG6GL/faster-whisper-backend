@@ -244,7 +244,17 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
         overrides=overrides, ident=ident,
     )
     if final:
-        # Full-utterance decode — identical to the batch route. Nothing to change.
+        # Full-utterance decode — identical to the batch route, EXCEPT
+        # condition_on_previous_text (STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT,
+        # default off): when trailing non-speech survives into the buffer,
+        # Whisper decodes the sub-second leftover after the last word as its
+        # own window, and with conditioning ON that window sees the rolling
+        # prompt + this utterance's own text — which it then confidently echoes
+        # into the transcript. OFF gives the leftover window an empty text
+        # context (nothing to echo); the first window still gets initial_prompt,
+        # so cross-utterance context is unaffected.
+        kwargs["condition_on_previous_text"] = bool(
+            cfg_for(model_name, "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT", ident))
         return kwargs
     # PARTIAL decode: keep every quality knob the final/batch decode applies
     # (hotwords, suppress_tokens/chars, punctuation, penalties, thresholds — all
@@ -269,6 +279,47 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
     kwargs["vad_parameters"] = None
     kwargs.setdefault("no_repeat_ngram_size", 3)  # greedy-safe loop guard
     return kwargs
+
+
+def _trim_trailing_nonspeech(audio: "np.ndarray", pad_ms: int,
+                             threshold: float, log_tag: str = "") -> "np.ndarray":
+    """Cut trailing non-speech off a FINAL decode buffer (STREAMING_TAIL_TRIM_PAD_MS).
+
+    The buffer always ends with >= commit_silence_ms of endpointer silence (that
+    silence is what triggered the finalize), plus any noise the endpointer
+    latched onto (phone ring, breath). Whisper hallucinates into such tails: the
+    leftover audio after the last aligned word is re-decoded as its own
+    zero-padded window and echoes the decode's text context. A Silero pass
+    (the same VAD the decode-side vad_filter uses) finds the last speech and
+    keeps only ``pad_ms`` beyond it — the pad absorbs VAD-vs-word-timestamp
+    jitter so a genuine trailing word is never clipped. Only the tail is cut,
+    so segment/word timestamps stay on the buffer timeline (captures included;
+    the capture row still stores the full untrimmed utterance audio).
+
+    Returns ``audio`` unchanged when trimming is disabled (pad_ms <= 0), Silero
+    is unavailable, no speech is found (the pre-decode gates own that case), or
+    nothing lies beyond the pad."""
+    if pad_ms <= 0 or getattr(audio, "size", 0) == 0:
+        return audio
+    try:
+        from faster_whisper.vad import VadOptions, get_speech_timestamps
+    except ImportError:
+        return audio
+    opts = VadOptions(threshold=float(threshold), min_silence_duration_ms=200,
+                      speech_pad_ms=0, min_speech_duration_ms=0)
+    speeches = get_speech_timestamps(audio, opts, sampling_rate=SAMPLE_RATE)
+    if not speeches:
+        return audio
+    end = int(speeches[-1]["end"]) + (int(pad_ms) * SAMPLE_RATE) // 1000
+    if end >= audio.shape[0]:
+        return audio
+    cut_sec = (audio.shape[0] - end) / SAMPLE_RATE
+    # Every normal finalize trims ~a second of outer-gate silence (debug); a
+    # multi-second cut means noise held the gate open (phone ring) — worth INFO.
+    log = logger.info if cut_sec > 2.0 else logger.debug
+    log("[stream %s] tail-trimmed %.2fs of trailing non-speech before final decode",
+        log_tag, cut_sec)
+    return audio[:end]
 
 
 @router.websocket("/v1/audio/transcriptions/stream")
@@ -522,16 +573,24 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # captures row, no quick_config trace, no usage row, no GPU work
                 # attributed to an identity that no longer exists.
                 raise _CredentialRevoked("credential revoked mid-session")
+            audio = _trim_trailing_nonspeech(
+                audio,
+                pad_ms=int(main.cfg_for(final_model, "STREAMING_TAIL_TRIM_PAD_MS", ident)),
+                threshold=float(main.cfg_for(final_model, "VAD_THRESHOLD", ident)),
+                log_tag=session_id[:8])
             kwargs = _build_transcribe_kwargs(
                 main, final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language,
                 model_obj=final_model_obj, overrides=req_overrides, ident=ident)
             segs, info = await _transcribe(final_model_obj, audio, kwargs)
+            max_wps = float(main.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_SEC", ident) or 0)
             words_out: list[dict] = []
             seg_diag: list[dict] = []
             kept: list[str] = []
             for i, seg in enumerate(segs):
-                dropped = _is_failed_segment(seg)
+                dropped_conf = _is_failed_segment(seg)
+                dropped_rate = main.segment_exceeds_word_rate(seg, max_wps)
+                dropped = dropped_conf or dropped_rate
                 seg_diag.append({
                     "id": i, "start": seg.start, "end": seg.end,
                     "alp": getattr(seg, "avg_logprob", 0.0),
@@ -541,11 +600,20 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     "text": seg.text,
                     "dropped": dropped,
                 })
-                if dropped:
+                if dropped_conf:
                     logger.info("[stream %s] dropped low-confidence final segment "
                                 "(alp=%.2f temp=%.2f): %r", session_id[:8],
                                 getattr(seg, "avg_logprob", 0.0),
                                 getattr(seg, "temperature", 0.0), seg.text)
+                    continue
+                if dropped_rate:
+                    _dur = float(seg.end) - float(seg.start)
+                    _n = (len(getattr(seg, "words", None) or [])
+                          or len((seg.text or "").split()))
+                    logger.info("[stream %s] dropped word-rate-anomalous final "
+                                "segment (%.2f-%.2fs, %.1f w/s > %.1f): %r",
+                                session_id[:8], seg.start, seg.end,
+                                _n / max(_dur, 1e-6), max_wps, seg.text)
                     continue
                 kept.append(seg.text)
                 for w in (getattr(seg, "words", None) or []):

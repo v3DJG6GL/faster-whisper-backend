@@ -86,7 +86,8 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
             "LANGUAGE_DETECTION_SEGMENTS",
         ]),
         ("Advanced — anti-hallucination & token control", [
-            "HALLUCINATION_SILENCE_THRESHOLD", "SUPPRESS_BLANK", "SUPPRESS_TOKENS",
+            "HALLUCINATION_SILENCE_THRESHOLD", "SEGMENT_MAX_WORDS_PER_SEC",
+            "SUPPRESS_BLANK", "SUPPRESS_TOKENS",
             "SUPPRESS_CHARS",
             "PREPEND_PUNCTUATIONS", "APPEND_PUNCTUATIONS",
         ]),
@@ -110,6 +111,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
             "STREAMING_GATE_MIN_SPEECH_MS", "STREAMING_GATE_RMS_DBFS",
             "STREAMING_VAD_INNER_SILENCE_MS", "STREAMING_VAD_OUTER_SILENCE_MS",
             "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", "STREAMING_FINAL_DROP_TEMPERATURE",
+            "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT", "STREAMING_TAIL_TRIM_PAD_MS",
         ]),
         ("Finalize & document breaks", [
             "STREAMING_FORCED_COMMIT_SEC",

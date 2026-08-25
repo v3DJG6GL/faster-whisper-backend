@@ -1237,6 +1237,35 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     return transcribe_kwargs
 
 
+# Below this many words a segment's rate is statistically meaningless (a single
+# short interjection in a tight VAD chunk can legitimately look "fast").
+_WORD_RATE_MIN_WORDS = 3
+
+
+def segment_exceeds_word_rate(seg, max_wps: float) -> bool:
+    """Post-decode anti-hallucination guard (SEGMENT_MAX_WORDS_PER_SEC), shared
+    by the batch route and the streaming FINAL decode.
+
+    When trailing non-speech audio survives the VAD into a decode, Whisper
+    re-decodes the sub-second leftover after the last aligned word as its own
+    zero-padded window and confidently replays its text context — segments of
+    20+ words crammed into half a second. Those pass every confidence gate
+    (high avg_logprob, temperature 0.0, no_speech_prob possibly below the
+    threshold); the impossible word density is their one reliable signature.
+    Real speech peaks around ~6 words/s, so the default limit of 10 has wide
+    margin on both sides."""
+    if not max_wps or max_wps <= 0:
+        return False
+    words = getattr(seg, "words", None)
+    n = len(words) if words else len((getattr(seg, "text", "") or "").split())
+    if n < _WORD_RATE_MIN_WORDS:
+        return False
+    duration = float(getattr(seg, "end", 0.0) or 0.0) - float(getattr(seg, "start", 0.0) or 0.0)
+    if duration <= 0:
+        return True
+    return (n / duration) > float(max_wps)
+
+
 def _drop_suppress_chars_cache(model_id: str) -> None:
     """Drop all cache entries for a given model. Called from unload paths."""
     for k in list(_suppress_chars_cache):
@@ -2815,9 +2844,11 @@ async def transcribe(
             # together.
             raw_full_text_parts = []
 
-            for i, segment in enumerate(segments_iter):
-                raw_full_text_parts.append(segment.text)
+            # Post-decode word-rate guard (SEGMENT_MAX_WORDS_PER_SEC): drops
+            # hallucinated echo segments — see segment_exceeds_word_rate.
+            _max_wps = float(cfg_for(resolved_model, "SEGMENT_MAX_WORDS_PER_SEC", ident) or 0)
 
+            for i, segment in enumerate(segments_iter):
                 # segment.temperature reflects CT2's actual after-fallback
                 # value (may differ from the request `temperature` if fallback
                 # kicked in). segment.compression_ratio is the real gzip ratio
@@ -2825,25 +2856,7 @@ async def transcribe(
                 seg_temp = getattr(segment, "temperature", temperature)
                 seg_cr = getattr(segment, "compression_ratio", 1.0)
 
-                # NOTE: segments[].text and words[].word carry RAW Whisper
-                # output. Only the joined `text` field below is post-processed.
-                # Multi-word dictation phrases ("neue Zeile") frequently get
-                # split across VAD segment boundaries, so per-segment post-
-                # processing would produce inconsistent results — the joined
-                # pass is the authoritative one. Clients that need cleaned
-                # per-segment text should read `text` (joined) and split it.
-                segments_list.append({
-                    "id": i,
-                    "seek": 0,
-                    "start": segment.start,
-                    "end": segment.end,
-                    "text": segment.text,
-                    "tokens": [],
-                    "temperature": seg_temp,
-                    "avg_logprob": segment.avg_logprob,
-                    "compression_ratio": seg_cr,
-                    "no_speech_prob": segment.no_speech_prob,
-                })
+                dropped = segment_exceeds_word_rate(segment, _max_wps)
                 seg_diag.append({
                     "id": i,
                     "start": segment.start,
@@ -2853,6 +2866,39 @@ async def transcribe(
                     "cr": seg_cr,
                     "temp": seg_temp,
                     "text": segment.text,
+                    "dropped": dropped,
+                })
+                if dropped:
+                    _dur = float(segment.end) - float(segment.start)
+                    logger.info(
+                        "[transcribe] dropped word-rate-anomalous segment "
+                        "(%.2f-%.2fs, %.1f w/s > %.1f): %r",
+                        segment.start, segment.end,
+                        (len(getattr(segment, "words", None) or [])
+                         or len((segment.text or "").split())) / max(_dur, 1e-6),
+                        _max_wps, segment.text)
+                    continue
+
+                raw_full_text_parts.append(segment.text)
+
+                # NOTE: segments[].text and words[].word carry RAW Whisper
+                # output. Only the joined `text` field below is post-processed.
+                # Multi-word dictation phrases ("neue Zeile") frequently get
+                # split across VAD segment boundaries, so per-segment post-
+                # processing would produce inconsistent results — the joined
+                # pass is the authoritative one. Clients that need cleaned
+                # per-segment text should read `text` (joined) and split it.
+                segments_list.append({
+                    "id": len(segments_list),
+                    "seek": 0,
+                    "start": segment.start,
+                    "end": segment.end,
+                    "text": segment.text,
+                    "tokens": [],
+                    "temperature": seg_temp,
+                    "avg_logprob": segment.avg_logprob,
+                    "compression_ratio": seg_cr,
+                    "no_speech_prob": segment.no_speech_prob,
                 })
 
                 if getattr(segment, "words", None):
