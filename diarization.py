@@ -176,36 +176,60 @@ async def _get_pipeline():
         return pipe
 
 
-# Progress weighting for the pyannote hook: the pipeline reports per-step
-# completed/total, and these two chunked steps dominate the wall clock. Steps
-# outside the map (clustering, counting, …) park the bar at the tail. Matched
-# by prefix so 3.x "embedding" and 4.x "embeddings" both land.
-_HOOK_STEP_SPANS = (
-    ("segmentation", 0.00, 0.45),
-    ("embedding", 0.45, 0.90),
+# Progress windows for the pyannote hook. Step NAMES vary across pyannote
+# versions and pipelines (3.x "embedding", 4.x "embeddings", community-1 has
+# its own set), so named matching is only a hint: any chunked step (one that
+# reports completed/total) gets the next free window in encounter order —
+# the first two chunked steps dominate the wall clock in every pyannote
+# speaker pipeline. Steps without a total are logged but never move the bar
+# (the old behavior parked it at 90% the moment an unmapped step fired).
+_HOOK_NAMED_SPANS = (
+    ("segmentation", (0.00, 0.45)),
+    ("embedding", (0.45, 0.90)),
 )
-_HOOK_TAIL = 0.90
+_HOOK_ORDER_SPANS = ((0.00, 0.45), (0.45, 0.90), (0.90, 1.00))
 
 
 def _make_hook(progress_cb):
     """pyannote hook(step_name, artifact, file=…, total=…, completed=…) →
-    a monotone 0..1 fraction for ``progress_cb``. Never raises."""
+    a monotone 0..1 fraction for ``progress_cb``. Logs each step name once
+    (so an unexpected pipeline is diagnosable from the server log) and
+    quartile progress per step. Never raises."""
     best = {"frac": 0.0}
+    spans: dict = {}     # step name → (lo, hi)
+    quartile: dict = {}  # step name → last logged quartile
 
     def _hook(step_name, *_args, total=None, completed=None, **_kw):
         try:
             name = str(step_name or "").lower()
-            lo, hi = _HOOK_TAIL, 1.0
-            for prefix, p_lo, p_hi in _HOOK_STEP_SPANS:
-                if name.startswith(prefix):
-                    lo, hi = p_lo, p_hi
-                    break
-            frac = lo
-            if total and completed is not None:
-                frac = lo + (hi - lo) * min(1.0, float(completed) / float(total))
+            chunked = bool(total) and completed is not None
+            if name not in spans:
+                span = None
+                for key, named in _HOOK_NAMED_SPANS:
+                    if key in name and named not in spans.values():
+                        span = named
+                        break
+                if span is None and chunked:
+                    used = set(spans.values())
+                    span = next(
+                        (s for s in _HOOK_ORDER_SPANS if s not in used),
+                        _HOOK_ORDER_SPANS[-1])
+                spans[name] = span
+                quartile[name] = 0
+                logger.info("[diarize] step: %s%s", name,
+                            "" if span else " (untracked)")
+            span = spans[name]
+            if span is None or not chunked:
+                return
+            lo, hi = span
+            frac = lo + (hi - lo) * min(1.0, float(completed) / float(total))
             if frac > best["frac"]:
                 best["frac"] = frac
                 progress_cb(frac)
+            q = int(min(1.0, float(completed) / float(total)) * 4)
+            if q > quartile[name]:
+                quartile[name] = q
+                logger.info("[diarize] %s %d%%", name, q * 25)
         except Exception:  # noqa: BLE001 — progress must never break inference
             pass
 

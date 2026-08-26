@@ -141,3 +141,9 @@ def test_pass_fraction_weights_model_pass_heavier():
     assert bgm_separation._pass_fraction(2, 1.0) == 1.0
     # Clamped against tqdm over-reporting past the total.
     assert bgm_separation._pass_fraction(1, 1.7) == bgm_separation._PASS1_WEIGHT
+
+
+def test_pass_fraction_single_pass_owns_full_span(monkeypatch):
+    monkeypatch.setattr(bgm_separation, "_single_pass", True)
+    assert bgm_separation._pass_fraction(1, 0.5) == 0.5
+    assert bgm_separation._pass_fraction(1, 1.0) == 1.0

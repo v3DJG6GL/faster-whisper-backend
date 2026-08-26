@@ -57,13 +57,19 @@ _progress_tls = threading.local()
 # heavier — it carries the ONNX inference.
 _PASS1_WEIGHT = 0.85
 
+# True once the loaded model's match-mix pass is skipped (see _load_blocking:
+# with invert_using_spec off its result is never read) — the model pass then
+# IS the whole separation and owns the full 0..1 span.
+_single_pass = False
+
 
 def _pass_fraction(pass_no: int, frac: float) -> float:
     """Map a within-pass fraction to the overall 0..1 separation progress."""
     frac = min(1.0, max(0.0, frac))
+    w = 1.0 if _single_pass else _PASS1_WEIGHT
     if pass_no <= 1:
-        return _PASS1_WEIGHT * frac
-    return _PASS1_WEIGHT + (1.0 - _PASS1_WEIGHT) * frac
+        return w * frac
+    return w + (1.0 - w) * frac
 
 
 _shims_installed = False
@@ -98,9 +104,16 @@ def _install_shims() -> None:
                 total = getattr(self, "total", None)
                 if cb is not None and total:
                     try:
-                        cb(_pass_fraction(
+                        overall = _pass_fraction(
                             getattr(_progress_tls, "pass_no", 1),
-                            float(self.n) / float(total)))
+                            float(self.n) / float(total))
+                        cb(overall)
+                        # Quartile INFO trail so the server log shows the
+                        # stage moving too, without tqdm's \r noise.
+                        q = int(overall * 4)
+                        if q > getattr(_progress_tls, "quartile", 0):
+                            _progress_tls.quartile = q
+                            logger.info("[bgm] separating %d%%", q * 25)
                     except Exception:  # noqa: BLE001 — never break the loop
                         pass
                 return out
@@ -184,6 +197,15 @@ def _load_blocking(model_filename: str, device: str):
         ) from e
     _install_shims()
     try:
+        # Decisive GPU evidence for the log: a session can be CREATED with the
+        # CUDA provider yet the installed onnxruntime build (CPU-only wheel
+        # shadowing onnxruntime-gpu) or missing libs make it a dead letter.
+        import onnxruntime as _ort
+        logger.info("[bgm] onnxruntime build=%s available_providers=%s",
+                    _ort.get_device(), _ort.get_available_providers())
+    except Exception:  # noqa: BLE001 — diagnostics only
+        pass
+    try:
         # torch's CPU intra-op pool also defaults to every core (ctranslate2 /
         # whisper has its own pool and is unaffected by this knob).
         import torch
@@ -216,6 +238,33 @@ def _load_blocking(model_filename: str, device: str):
             f"could not load separation model {model_filename} — check the "
             "model name and that the server can download it"
         ) from e
+    # MDX's separate() always runs a SECOND full demix pass ("match mix") to
+    # build the secondary stem — but with invert_using_spec off (the default,
+    # and ours) its result is never read: the secondary comes from
+    # `mix - primary` instead. Skip the dead pass; on an hour of audio that
+    # is minutes of work for nothing. Version-pinned internals (>=0.44.5),
+    # so every step is defensive; the timing wrapper doubles as per-pass
+    # evidence in the log.
+    global _single_pass
+    _single_pass = False
+    inst = getattr(sep, "model_instance", None)
+    if (inst is not None and hasattr(inst, "demix")
+            and getattr(inst, "invert_using_spec", None) is False):
+        _orig_demix = inst.demix
+
+        def _demix(mix, is_match_mix=False):
+            if is_match_mix:
+                # Only ever read under invert_using_spec — see above.
+                return mix
+            t0 = time.perf_counter()
+            out = _orig_demix(mix, is_match_mix=is_match_mix)
+            logger.info("[bgm] model pass done in %.1fs",
+                        time.perf_counter() - t0)
+            return out
+
+        inst.demix = _demix
+        _single_pass = True
+        logger.info("[bgm] match-mix pass skipped (invert_using_spec off)")
     # "Loaded on cuda" only means cuda was REQUESTED — onnxruntime's CUDA
     # provider silently falls back to CPU when its runtime libraries don't
     # resolve (the classic symptom: separation maxes the CPU). Surface the
@@ -304,6 +353,7 @@ async def separate(path: str, *, progress_cb=None) -> str:
     def _run() -> str:
         _progress_tls.cb = progress_cb
         _progress_tls.pass_no = 0
+        _progress_tls.quartile = 0
         try:
             outputs = sep.separate(
                 path, custom_output_names={"Vocals": out_name})

@@ -188,10 +188,8 @@ def test_hook_maps_steps_and_stays_monotone():
     # A regression (pyannote re-reports an earlier step) must not move the bar
     # backwards — it is simply dropped.
     hook("segmentation", None, total=10, completed=1)
-    hook("clustering", None)          # unmapped step → parks at the tail
+    hook("clustering", None)          # no total → logged but never moves the bar
     hook("embeddings", None, total=4, completed=4)
-    # 0.9 arrives from the clustering park; the later embeddings-done report
-    # lands on the same value and is dropped (not strictly greater).
     assert seen == [0.225, 0.45, 0.675, 0.9]
 
 
