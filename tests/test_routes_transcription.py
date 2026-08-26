@@ -265,3 +265,67 @@ def test_task_config_default_applies_when_field_absent(client, app_module, fake_
         assert "task" not in fake_model.last_kwargs
     finally:
         app_module.cfg.TASK = "transcribe"
+
+
+# --- progress reporting ------------------------------------------------------
+
+def test_progress_endpoint_unknown_id(client):
+    r = client.get("/v1/audio/transcriptions/progress/" + "a" * 32)
+    assert r.status_code == 200
+    assert r.json() == {"stage": "unknown"}
+
+
+def test_progress_endpoint_malformed_id_422(client):
+    r = client.get("/v1/audio/transcriptions/progress/NOT-HEX!")
+    assert r.status_code == 422
+
+
+def test_progress_live_entry_and_cleanup(client, app_module):
+    pid = "b" * 32
+    app_module._progress_set(pid, stage="transcribing", progress=0.5, duration=60.0)
+    r = client.get(f"/v1/audio/transcriptions/progress/{pid}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["stage"] == "transcribing"
+    assert body["progress"] == 0.5
+    assert body["duration"] == 60.0
+    # A request that carries the same progress_id pops the entry when done.
+    r = _post(client, response_format="verbose_json", progress_id=pid)
+    assert r.status_code == 200
+    assert client.get(f"/v1/audio/transcriptions/progress/{pid}").json() == {
+        "stage": "unknown"}
+
+
+def test_progress_updates_during_decode(client, app_module, fake_model):
+    # The FakeModel yields segments through the handler's _collect wrapper —
+    # snapshot the entry from inside transcribe() to see the live stage.
+    pid = "c" * 32
+    seen = {}
+    orig = fake_model.transcribe
+
+    def spy(path, **kwargs):
+        segs, info = orig(path, **kwargs)
+        entry = app_module._BATCH_PROGRESS.get(pid)
+        seen.update(entry or {})
+        return segs, info
+
+    fake_model.transcribe = spy
+    r = _post(client, response_format="verbose_json", progress_id=pid)
+    assert r.status_code == 200
+    # transcribe() ran after the "waiting" stage was registered.
+    assert seen.get("stage") == "waiting"
+    # ...and the entry is gone once the response is built.
+    assert pid not in app_module._BATCH_PROGRESS
+
+
+def test_progress_malformed_id_is_ignored_on_post(client, app_module):
+    r = _post(client, response_format="verbose_json", progress_id="Nope!")
+    assert r.status_code == 200
+    assert "Nope!" not in app_module._BATCH_PROGRESS
+
+
+def test_progress_registry_is_bounded(app_module):
+    for i in range(app_module._BATCH_PROGRESS_MAX + 20):
+        app_module._progress_set(f"{i:032x}", stage="waiting")
+    assert len(app_module._BATCH_PROGRESS) <= app_module._BATCH_PROGRESS_MAX
+    app_module._BATCH_PROGRESS.clear()

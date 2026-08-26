@@ -2601,6 +2601,38 @@ def _safe_tmp_suffix(filename: "str | None") -> str:
     return ext if _TMP_SUFFIX_RE.match(ext) else ""
 
 
+# ── Batch progress registry ──────────────────────────────────────────────────
+# Optional per-request progress for the file-upload path: a client that sends a
+# `progress_id` form field can poll GET /v1/audio/transcriptions/progress/<id>
+# while its POST is in flight. Entries live only for the request (popped in the
+# handler's finally); the cap + stale sweep below bound a client that invents
+# ids and never posts. Plain dict + GIL: every writer does a single dict-entry
+# update, and the poller only reads.
+_BATCH_PROGRESS: "dict[str, dict]" = {}
+_BATCH_PROGRESS_MAX = 200
+_BATCH_PROGRESS_STALE_S = 2 * 3600
+_PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
+
+
+def _progress_set(pid: "str | None", **fields) -> None:
+    """Merge `fields` into the progress entry for `pid` (no-op without one)."""
+    if not pid:
+        return
+    entry = _BATCH_PROGRESS.get(pid)
+    if entry is None:
+        now = time.monotonic()
+        for k in [k for k, v in _BATCH_PROGRESS.items()
+                  if now - v.get("updated", 0) > _BATCH_PROGRESS_STALE_S]:
+            _BATCH_PROGRESS.pop(k, None)
+        if len(_BATCH_PROGRESS) >= _BATCH_PROGRESS_MAX:
+            oldest = min(_BATCH_PROGRESS,
+                         key=lambda k: _BATCH_PROGRESS[k].get("updated", 0))
+            _BATCH_PROGRESS.pop(oldest, None)
+        entry = _BATCH_PROGRESS[pid] = {}
+    entry.update(fields)
+    entry["updated"] = time.monotonic()
+
+
 def _form_bool(value: "str | None") -> "bool | None":
     """Tri-state multipart boolean: multipart values arrive as strings, and
     FastAPI's bool coercion can't keep "absent" (inherit the config default)
@@ -2633,9 +2665,13 @@ async def transcribe(
     min_speakers: int | None = Form(None),
     max_speakers: int | None = Form(None),
     separate_bgm: str | None = Form(None),
+    progress_id: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     resolved_model = _resolve_model_name(model_name)
+    # Opt-in progress reporting (see _BATCH_PROGRESS). A malformed id is
+    # treated as absent — progress is a convenience, never a 422.
+    _pid = progress_id if (progress_id and _PROGRESS_ID_RE.match(progress_id)) else None
     # Whisper's only two tasks; anything else is a caller error, not something
     # to silently coerce (unlike the clamped numeric knobs below, a wrong task
     # would return output in the wrong language with no other signal).
@@ -2928,6 +2964,7 @@ async def transcribe(
                     import bgm_separation as _bgm
                     try:
                         _sep_t0 = time.perf_counter()
+                        _progress_set(_pid, stage="separating")
                         async with get_inference_semaphore():
                             _vocals_path = await _bgm.separate(tmp_path)
                         try:
@@ -2966,6 +3003,22 @@ async def transcribe(
             # succeeds — exactly as without the feature.
             def _do_transcribe(_model=model, _path=tmp_path,
                                _kw=transcribe_kwargs, _pad_ms=_lead_pad_ms):
+                # Materialize the lazy segment generator WITH live progress:
+                # each yielded segment carries its end time, and info.duration
+                # is known up front — that ratio is genuine decode progress
+                # (the executor thread's dict writes are GIL-atomic).
+                def _collect(_gen, _info):
+                    _dur = float(getattr(_info, "duration", 0.0) or 0.0)
+                    _progress_set(_pid, stage="transcribing", progress=0.0,
+                                  duration=_dur or None)
+                    _out = []
+                    for _s in _gen:
+                        _out.append(_s)
+                        if _dur > 0:
+                            _progress_set(
+                                _pid,
+                                progress=min(1.0, float(_s.end) / _dur))
+                    return _out
                 _audio = None
                 if _pad_ms > 0:
                     try:
@@ -2983,10 +3036,11 @@ async def transcribe(
                 if _audio is not None:
                     _segs, _info = _model.transcribe(_audio, **_kw)
                     return (*_shift_to_original_timeline(
-                        list(_segs), _info, _pad_ms / 1000.0), True)
+                        _collect(_segs, _info), _info, _pad_ms / 1000.0), True)
                 _segs, _info = _model.transcribe(_path, **_kw)
-                return list(_segs), _info, False
+                return _collect(_segs, _info), _info, False
             loop = asyncio.get_running_loop()
+            _progress_set(_pid, stage="waiting")
             async with get_inference_semaphore():
                 segments_iter, info, _pad_applied = await loop.run_in_executor(
                     None, _do_transcribe)
@@ -3087,6 +3141,7 @@ async def transcribe(
                     import diarization as _diar
                     try:
                         _diar_t0 = time.perf_counter()
+                        _progress_set(_pid, stage="diarizing", progress=None)
                         async with get_inference_semaphore():
                             _turns = await _diar.diarize(
                                 tmp_path,
@@ -3351,6 +3406,8 @@ async def transcribe(
             raise HTTPException(status_code=500, detail="transcription failed")
 
         finally:
+            if _pid:
+                _BATCH_PROGRESS.pop(_pid, None)
             if tmp_path:
                 try:
                     os.unlink(tmp_path)
@@ -3394,6 +3451,7 @@ async def translate_audio(
     min_speakers: int | None = Form(None),
     max_speakers: int | None = Form(None),
     separate_bgm: str | None = Form(None),
+    progress_id: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     """OpenAI-compatible translation endpoint: the transcription handler with
@@ -3417,8 +3475,29 @@ async def translate_audio(
         min_speakers=min_speakers,
         max_speakers=max_speakers,
         separate_bgm=separate_bgm,
+        progress_id=progress_id,
         user=user,
     )
+
+
+@app.get("/v1/audio/transcriptions/progress/{progress_id}",
+         dependencies=[Depends(_get_current_user_dep)])
+async def transcription_progress(progress_id: str):
+    """Live progress of an in-flight file transcription that was posted with a
+    matching `progress_id` form field. Stages: waiting (semaphore queue) →
+    separating → transcribing (with `progress` 0..1 and the audio `duration`)
+    → diarizing. An unknown/finished id answers stage "unknown" — the POST's
+    own response is the completion signal, so the poller just stops."""
+    if not _PROGRESS_ID_RE.match(progress_id):
+        raise HTTPException(status_code=422, detail="malformed progress_id")
+    entry = _BATCH_PROGRESS.get(progress_id)
+    if entry is None:
+        return {"stage": "unknown"}
+    return {
+        "stage": entry.get("stage"),
+        "progress": entry.get("progress"),
+        "duration": entry.get("duration"),
+    }
 
 
 @app.get("/v1/models", dependencies=[Depends(_get_current_user_dep)])
