@@ -27,6 +27,13 @@ import system_stats
 logger = logging.getLogger("whisper-server")
 
 
+class DiarizeCancelled(Exception):
+    """The caller cancelled mid-diarization (cooperative: raised from the
+    pyannote progress hook when ``cancel_check`` answers True). Deliberately
+    NOT a DiarizationError — the handler must abort the whole request, not
+    soft-fail into a transcript without speakers."""
+
+
 class DiarizationError(RuntimeError):
     """Diarization could not run; str(exc) is CLIENT-SAFE (our own wording)."""
 
@@ -197,16 +204,21 @@ _HOOK_NAMED_SPANS = (
 _HOOK_ORDER_SPANS = ((0.00, 0.45), (0.45, 0.90), (0.90, 1.00))
 
 
-def _make_hook(progress_cb):
+def _make_hook(progress_cb, cancel_check=None):
     """pyannote hook(step_name, artifact, file=…, total=…, completed=…) →
     a monotone 0..1 fraction for ``progress_cb``. Logs each step name once
     (so an unexpected pipeline is diagnosable from the server log) and
-    quartile progress per step. Never raises."""
+    quartile progress per step. Never raises — except DiarizeCancelled when
+    ``cancel_check`` answers True, which must unwind the inference."""
     best = {"frac": 0.0}
     spans: dict = {}     # step name → (lo, hi)
     quartile: dict = {}  # step name → last logged quartile
 
     def _hook(step_name, *_args, total=None, completed=None, **_kw):
+        # OUTSIDE the swallow-everything progress guard below, so it
+        # propagates through pipe() to the request handler.
+        if cancel_check is not None and cancel_check():
+            raise DiarizeCancelled()
         try:
             name = str(step_name or "").lower()
             chunked = bool(total) and completed is not None
@@ -233,10 +245,10 @@ def _make_hook(progress_cb):
             if frac > best["frac"]:
                 best["frac"] = frac
                 progress_cb(frac, name)
-            q = int(min(1.0, float(completed) / float(total)) * 4)
-            if q > quartile[name]:
-                quartile[name] = q
-                logger.info("[diarize] %s %d%%", name, q * 25)
+            b = int(min(1.0, float(completed) / float(total)) * 20)
+            if b > quartile[name]:
+                quartile[name] = b
+                logger.info("[diarize] %s %d%%", name, b * 5)
         except Exception:  # noqa: BLE001 — progress must never break inference
             pass
 
@@ -246,7 +258,7 @@ def _make_hook(progress_cb):
 async def diarize(path: str, *, num_speakers: "int | None" = None,
                   min_speakers: "int | None" = None,
                   max_speakers: "int | None" = None,
-                  progress_cb=None,
+                  progress_cb=None, cancel_check=None,
                   ) -> "list[tuple[float, float, str]]":
     """Diarize the audio file → [(start_s, end_s, label), ...] sorted by start.
 
@@ -254,7 +266,9 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
     already; this just doesn't forward the bounds alongside it — pyannote
     treats the combination as an error). ``progress_cb`` (called from the
     executor thread with a 0..1 float) reports pipeline step progress via
-    pyannote's hook kwarg — best-effort.
+    pyannote's hook kwarg — best-effort. ``cancel_check`` (no-arg, truthy =
+    abort) is polled from the same hook; a positive answer raises
+    :class:`DiarizeCancelled` out of this coroutine.
     """
     global _last_used_monotonic
     pipe = await _get_pipeline()
@@ -268,10 +282,14 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
             kwargs["max_speakers"] = max_speakers
 
     def _run():
+        if cancel_check is not None and cancel_check():
+            raise DiarizeCancelled()
         with _infer_mutex:
             if progress_cb is not None:
                 try:
-                    result = pipe(path, hook=_make_hook(progress_cb), **kwargs)
+                    result = pipe(path,
+                                  hook=_make_hook(progress_cb, cancel_check),
+                                  **kwargs)
                 except TypeError:
                     # A pipeline without the hook kwarg (or a test stub) —
                     # run without progress rather than failing the stage.
@@ -297,6 +315,9 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
     loop = asyncio.get_running_loop()
     try:
         turns = await loop.run_in_executor(None, _run)
+    except DiarizeCancelled:
+        logger.info("[diarize] cancelled by client")
+        raise
     except Exception as e:
         logger.error("[diarize] inference failed: %s", e)
         raise DiarizationError(

@@ -2633,6 +2633,30 @@ def _progress_set(pid: "str | None", **fields) -> None:
     entry["updated"] = time.monotonic()
 
 
+# Cooperative cancellation for in-flight batch requests: POST
+# /v1/audio/transcriptions/cancel/<id> flags the id here, and the handler's
+# stage callbacks (which already fire every demix chunk / decoded segment /
+# pyannote step) poll the flag and abort. Closing the HTTP connection alone
+# does NOT stop the work — the stages run in executor threads that outlive a
+# cancelled handler task. Only ids with a live _BATCH_PROGRESS entry can be
+# flagged, and the handler's finally discards, so the set stays bounded by
+# the number of in-flight requests.
+_BATCH_CANCELLED: "set[str]" = set()
+
+
+class _ClientCancelled(Exception):
+    """The client cancelled this request via the cancel endpoint."""
+
+
+def _cancel_requested(pid: "str | None") -> bool:
+    return bool(pid) and pid in _BATCH_CANCELLED
+
+
+def _check_cancelled(pid: "str | None") -> None:
+    if _cancel_requested(pid):
+        raise _ClientCancelled()
+
+
 def _form_bool(value: "str | None") -> "bool | None":
     """Tri-state multipart boolean: multipart values arrive as strings, and
     FastAPI's bool coercion can't keep "absent" (inherit the config default)
@@ -2672,6 +2696,11 @@ async def transcribe(
     # Opt-in progress reporting (see _BATCH_PROGRESS). A malformed id is
     # treated as absent — progress is a convenience, never a 422.
     _pid = progress_id if (progress_id and _PROGRESS_ID_RE.match(progress_id)) else None
+    # Seed the registry entry NOW so the cancel endpoint (which only accepts
+    # ids it can see in-flight) has a target from the first moment — the
+    # first stage-driven _progress_set can otherwise be seconds away (model
+    # load, semaphore queue).
+    _progress_set(_pid, stage="waiting", progress=None)
     # Whisper's only two tasks; anything else is a caller error, not something
     # to silently coerce (unlike the clamped numeric knobs below, a wrong task
     # would return output in the wrong language with no other signal).
@@ -2975,11 +3004,14 @@ async def transcribe(
                             # device only before the first load.
                             device=(_bgm.actual_device()
                                     or _bgm._resolve_device()))
+                        _check_cancelled(_pid)
                         async with get_inference_semaphore():
+                            _check_cancelled(_pid)
                             _vocals_path = await _bgm.separate(
                                 tmp_path,
                                 progress_cb=lambda f: _progress_set(
-                                    _pid, progress=f))
+                                    _pid, progress=f),
+                                cancel_check=lambda: _cancel_requested(_pid))
                         try:
                             os.unlink(tmp_path)
                         except OSError:
@@ -2987,6 +3019,8 @@ async def transcribe(
                         tmp_path = _vocals_path
                         logger.info("[bgm] separated in %.1fs",
                                     time.perf_counter() - _sep_t0)
+                    except _bgm.BgmCancelled:
+                        raise _ClientCancelled() from None
                     except _bgm.BgmSeparationError as _se:
                         # str(_se) is client-safe by the module's contract.
                         _warnings.append(str(_se))
@@ -3028,15 +3062,28 @@ async def transcribe(
                                   last_text=None, model=resolved_model,
                                   device=_dev, compute=_compute)
                     _out = []
+                    _log_bucket = 0  # 5%-step INFO trail, like the other stages
                     for _s in _gen:
+                        # Cooperative cancel between decoded segments — this
+                        # executor thread is the only thing that can stop a
+                        # cancelled request's decode.
+                        if _cancel_requested(_pid):
+                            raise _ClientCancelled()
                         _out.append(_s)
                         if _dur > 0:
+                            _frac = min(1.0, float(_s.end) / _dur)
                             _progress_set(
                                 _pid,
-                                progress=min(1.0, float(_s.end) / _dur),
+                                progress=_frac,
                                 position=float(_s.end),
                                 # Live tail for the client's run panel.
                                 last_text=(_s.text or "").strip()[:300] or None)
+                            _b = int(_frac * 20)
+                            if _b > _log_bucket:
+                                _log_bucket = _b
+                                logger.info(
+                                    "[transcribe] %d%% (%.1fs / %.1fs)",
+                                    _b * 5, float(_s.end), _dur)
                     return _out
                 _audio = None
                 if _pad_ms > 0:
@@ -3062,7 +3109,9 @@ async def transcribe(
             _progress_set(_pid, stage="waiting", progress=None,
                           position=None, last_text=None, step=None,
                           model=None, device=None, compute=None)
+            _check_cancelled(_pid)
             async with get_inference_semaphore():
+                _check_cancelled(_pid)
                 segments_iter, info, _pad_applied = await loop.run_in_executor(
                     None, _do_transcribe)
 
@@ -3168,7 +3217,9 @@ async def transcribe(
                             model=(getattr(cfg, "DIARIZATION_MODEL", "")
                                    or None),
                             device=_diar._resolve_device())
+                        _check_cancelled(_pid)
                         async with get_inference_semaphore():
+                            _check_cancelled(_pid)
                             _turns = await _diar.diarize(
                                 tmp_path,
                                 num_speakers=_spk.get("num_speakers"),
@@ -3176,6 +3227,7 @@ async def transcribe(
                                 max_speakers=_spk.get("max_speakers"),
                                 progress_cb=lambda f, step=None: _progress_set(
                                     _pid, progress=f, step=step),
+                                cancel_check=lambda: _cancel_requested(_pid),
                             )
                         speakers_list = _diar.assign_speakers(segments_list, _turns)
                         logger.info(
@@ -3183,6 +3235,8 @@ async def transcribe(
                             "segments in %.1fs",
                             len(_turns), len(speakers_list), len(segments_list),
                             time.perf_counter() - _diar_t0)
+                    except _diar.DiarizeCancelled:
+                        raise _ClientCancelled() from None
                     except _diar.DiarizationError as _de:
                         # str(_de) is client-safe by the module's contract.
                         _warnings.append(str(_de))
@@ -3413,6 +3467,14 @@ async def transcribe(
 
             return {"text": full_text_str}
 
+        except _ClientCancelled:
+            # The client asked (via the cancel endpoint) to abort. Not an
+            # error — the stages stopped cooperatively; the response status
+            # is moot (the caller usually dropped the connection already).
+            _status = "cancelled"
+            logger.info("[batch] transcription cancelled by client")
+            raise HTTPException(status_code=499,
+                                detail="cancelled by the client")
         except HTTPException:
             # Preserve curated HTTP errors (e.g. an allowed-models 400) with
             # their status + message intact — only unexpected errors below are
@@ -3436,6 +3498,7 @@ async def transcribe(
         finally:
             if _pid:
                 _BATCH_PROGRESS.pop(_pid, None)
+                _BATCH_CANCELLED.discard(_pid)
             if tmp_path:
                 try:
                     os.unlink(tmp_path)
@@ -3535,6 +3598,26 @@ async def transcription_progress(progress_id: str):
         "device": entry.get("device"),
         "compute": entry.get("compute"),
     }
+
+
+@app.post("/v1/audio/transcriptions/cancel/{progress_id}",
+          dependencies=[Depends(_get_current_user_dep)])
+async def transcription_cancel(progress_id: str):
+    """Abort the in-flight transcription posted with this `progress_id`.
+
+    Closing the upload connection does NOT stop the server-side work (the
+    stages run in executor threads that outlive the handler task), so a
+    client's Cancel button calls this too. The flag is checked cooperatively
+    between demix chunks / decoded segments / pyannote steps, so the abort
+    lands within a chunk, not instantly. Only ids currently in flight are
+    accepted; an unknown/finished id answers cancelled=false."""
+    if not _PROGRESS_ID_RE.match(progress_id):
+        raise HTTPException(status_code=422, detail="malformed progress_id")
+    if progress_id not in _BATCH_PROGRESS:
+        return {"cancelled": False}
+    _BATCH_CANCELLED.add(progress_id)
+    logger.info("[batch] cancel requested for an in-flight transcription")
+    return {"cancelled": True}
 
 
 @app.get("/v1/models", dependencies=[Depends(_get_current_user_dep)])

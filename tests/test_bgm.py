@@ -21,7 +21,7 @@ def _stub_separate(monkeypatch, calls=None):
     tmp_path and the request-level finally must unlink it."""
     made = []
 
-    async def _fake(path, *, progress_cb=None):
+    async def _fake(path, *, progress_cb=None, cancel_check=None):
         if calls is not None:
             calls.append(path)
         fd, out = tempfile.mkstemp(prefix="vocals-test-", suffix=".wav")
@@ -65,7 +65,7 @@ def test_separate_disabled_server_soft_fails(client, app_module, monkeypatch):
 def test_separate_error_becomes_warning(client, app_module, monkeypatch, fake_model):
     app_module.cfg.BGM_SEPARATION_ENABLED = True
     try:
-        async def _boom(path, *, progress_cb=None):
+        async def _boom(path, *, progress_cb=None, cancel_check=None):
             raise bgm_separation.BgmSeparationError(
                 "music-separation dependencies are not installed on this "
                 "server (pip install -r requirements-bgm.txt)")

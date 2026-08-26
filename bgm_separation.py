@@ -45,6 +45,13 @@ class BgmSeparationError(RuntimeError):
     """Separation could not run; str(exc) is CLIENT-SAFE (our own wording)."""
 
 
+class BgmCancelled(Exception):
+    """The caller cancelled mid-separation (cooperative: raised from the tqdm
+    shim between demix chunks when ``cancel_check`` answers True).
+    Deliberately NOT a BgmSeparationError — the handler must abort the whole
+    request, not soft-fail into transcribing the original audio."""
+
+
 # Per-thread progress plumbing for the tqdm shim below. audio-separator has
 # no progress API; its MDX demix loop iterates chunks under a module-level
 # `tqdm`. separate() runs the whole separation inside one executor thread, so
@@ -110,6 +117,12 @@ def _install_shims() -> None:
                 super().__init__(*args, **kwargs)
 
             def update(self, n=1):
+                # Cooperative cancel between demix chunks: raised OUTSIDE the
+                # swallow-everything progress guard below, so it unwinds
+                # through separate() to the request handler.
+                cancel = getattr(_progress_tls, "cancel", None)
+                if cancel is not None and cancel():
+                    raise BgmCancelled()
                 out = super().update(n)
                 cb = getattr(_progress_tls, "cb", None)
                 total = getattr(self, "total", None)
@@ -119,12 +132,12 @@ def _install_shims() -> None:
                             getattr(_progress_tls, "pass_no", 1),
                             float(self.n) / float(total))
                         cb(overall)
-                        # Quartile INFO trail so the server log shows the
+                        # 5%-step INFO trail so the server log shows the
                         # stage moving too, without tqdm's \r noise.
-                        q = int(overall * 4)
-                        if q > getattr(_progress_tls, "quartile", 0):
-                            _progress_tls.quartile = q
-                            logger.info("[bgm] separating %d%%", q * 25)
+                        b = int(overall * 20)
+                        if b > getattr(_progress_tls, "log_bucket", 0):
+                            _progress_tls.log_bucket = b
+                            logger.info("[bgm] separating %d%%", b * 5)
                     except Exception:  # noqa: BLE001 — never break the loop
                         pass
                 return out
@@ -364,28 +377,34 @@ async def _get_separator():
         return sep
 
 
-async def separate(path: str, *, progress_cb=None) -> str:
+async def separate(path: str, *, progress_cb=None, cancel_check=None) -> str:
     """Separate the file → absolute path of the vocals-only WAV.
 
     The output lands in the system temp dir under a unique name; the caller
     owns unlinking it (and the original it replaces). ``progress_cb`` (called
     from the executor thread with a 0..1 float) reports demix chunk progress
     via the tqdm shim — best-effort, and monotone across the two passes.
+    ``cancel_check`` (no-arg, truthy = abort) is polled at the same cadence;
+    a positive answer raises :class:`BgmCancelled` out of this coroutine.
     """
     global _last_used_monotonic
     sep = await _get_separator()
     out_name = f"vocals-{uuid.uuid4().hex}"
 
     def _run() -> str:
+        if cancel_check is not None and cancel_check():
+            raise BgmCancelled()
         _progress_tls.cb = progress_cb
+        _progress_tls.cancel = cancel_check
         _progress_tls.pass_no = 0
-        _progress_tls.quartile = 0
+        _progress_tls.log_bucket = 0
         try:
             with _separate_mutex:
                 outputs = sep.separate(
                     path, custom_output_names={"Vocals": out_name})
         finally:
             _progress_tls.cb = None
+            _progress_tls.cancel = None
         if not outputs:
             raise RuntimeError("separator returned no output files")
         out = outputs[0]
@@ -398,6 +417,9 @@ async def separate(path: str, *, progress_cb=None) -> str:
     loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(None, _run)
+    except BgmCancelled:
+        logger.info("[bgm] separation cancelled by client")
+        raise
     except Exception as e:
         logger.error("[bgm] separation failed: %s", e)
         raise BgmSeparationError(
