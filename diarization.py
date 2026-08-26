@@ -232,7 +232,7 @@ def _make_hook(progress_cb):
             frac = lo + (hi - lo) * min(1.0, float(completed) / float(total))
             if frac > best["frac"]:
                 best["frac"] = frac
-                progress_cb(frac)
+                progress_cb(frac, name)
             q = int(min(1.0, float(completed) / float(total)) * 4)
             if q > quartile[name]:
                 quartile[name] = q

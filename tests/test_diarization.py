@@ -181,7 +181,7 @@ def test_assign_speakers_no_turns_is_noop():
 
 def test_hook_maps_steps_and_stays_monotone():
     seen = []
-    hook = diarization._make_hook(seen.append)
+    hook = diarization._make_hook(lambda f, step=None: seen.append(f))
     hook("segmentation", None, total=10, completed=5)
     hook("segmentation", None, total=10, completed=10)
     hook("embeddings", None, total=4, completed=2)
@@ -194,7 +194,7 @@ def test_hook_maps_steps_and_stays_monotone():
 
 
 def test_hook_swallows_bad_callback():
-    def _boom(_f):
+    def _boom(_f, _step=None):
         raise RuntimeError("cb exploded")
     hook = diarization._make_hook(_boom)
     hook("segmentation", None, total=10, completed=5)  # must not raise

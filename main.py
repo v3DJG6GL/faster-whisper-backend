@@ -2964,7 +2964,13 @@ async def transcribe(
                     import bgm_separation as _bgm
                     try:
                         _sep_t0 = time.perf_counter()
-                        _progress_set(_pid, stage="separating", progress=None)
+                        _progress_set(
+                            _pid, stage="separating", progress=None,
+                            position=None, last_text=None,
+                            model=(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "")
+                                   or None),
+                            # Same-repo module; the resolver is the loader's.
+                            device=_bgm._resolve_device())
                         async with get_inference_semaphore():
                             _vocals_path = await _bgm.separate(
                                 tmp_path,
@@ -3012,15 +3018,21 @@ async def transcribe(
                 # (the executor thread's dict writes are GIL-atomic).
                 def _collect(_gen, _info):
                     _dur = float(getattr(_info, "duration", 0.0) or 0.0)
+                    _compute, _dev = _model_compute_device(resolved_model)
                     _progress_set(_pid, stage="transcribing", progress=0.0,
-                                  duration=_dur or None)
+                                  duration=_dur or None, position=None,
+                                  last_text=None, model=resolved_model,
+                                  device=_dev, compute=_compute)
                     _out = []
                     for _s in _gen:
                         _out.append(_s)
                         if _dur > 0:
                             _progress_set(
                                 _pid,
-                                progress=min(1.0, float(_s.end) / _dur))
+                                progress=min(1.0, float(_s.end) / _dur),
+                                position=float(_s.end),
+                                # Live tail for the client's run panel.
+                                last_text=(_s.text or "").strip()[:300] or None)
                     return _out
                 _audio = None
                 if _pad_ms > 0:
@@ -3043,7 +3055,9 @@ async def transcribe(
                 _segs, _info = _model.transcribe(_path, **_kw)
                 return _collect(_segs, _info), _info, False
             loop = asyncio.get_running_loop()
-            _progress_set(_pid, stage="waiting", progress=None)
+            _progress_set(_pid, stage="waiting", progress=None,
+                          position=None, last_text=None, step=None,
+                          model=None, device=None, compute=None)
             async with get_inference_semaphore():
                 segments_iter, info, _pad_applied = await loop.run_in_executor(
                     None, _do_transcribe)
@@ -3144,15 +3158,20 @@ async def transcribe(
                     import diarization as _diar
                     try:
                         _diar_t0 = time.perf_counter()
-                        _progress_set(_pid, stage="diarizing", progress=None)
+                        _progress_set(
+                            _pid, stage="diarizing", progress=None,
+                            position=None, last_text=None, step=None,
+                            model=(getattr(cfg, "DIARIZATION_MODEL", "")
+                                   or None),
+                            device=_diar._resolve_device())
                         async with get_inference_semaphore():
                             _turns = await _diar.diarize(
                                 tmp_path,
                                 num_speakers=_spk.get("num_speakers"),
                                 min_speakers=_spk.get("min_speakers"),
                                 max_speakers=_spk.get("max_speakers"),
-                                progress_cb=lambda f: _progress_set(
-                                    _pid, progress=f),
+                                progress_cb=lambda f, step=None: _progress_set(
+                                    _pid, progress=f, step=step),
                             )
                         speakers_list = _diar.assign_speakers(segments_list, _turns)
                         logger.info(
@@ -3502,6 +3521,15 @@ async def transcription_progress(progress_id: str):
         "stage": entry.get("stage"),
         "progress": entry.get("progress"),
         "duration": entry.get("duration"),
+        # Rich run-panel fields (all optional, stage-scoped): seconds of
+        # audio decoded, the diarization pipeline's current step, the last
+        # decoded segment's text, and the active stage's model/device.
+        "position": entry.get("position"),
+        "step": entry.get("step"),
+        "last_text": entry.get("last_text"),
+        "model": entry.get("model"),
+        "device": entry.get("device"),
+        "compute": entry.get("compute"),
     }
 
 
