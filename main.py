@@ -2969,8 +2969,12 @@ async def transcribe(
                             position=None, last_text=None,
                             model=(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "")
                                    or None),
-                            # Same-repo module; the resolver is the loader's.
-                            device=_bgm._resolve_device())
+                            # The ONNX session's real placement once a model
+                            # is loaded (a CUDA provider that fails to load
+                            # falls back to CPU silently); the config-resolved
+                            # device only before the first load.
+                            device=(_bgm.actual_device()
+                                    or _bgm._resolve_device()))
                         async with get_inference_semaphore():
                             _vocals_path = await _bgm.separate(
                                 tmp_path,

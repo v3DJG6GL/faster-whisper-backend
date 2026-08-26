@@ -9,6 +9,10 @@
 #
 # Model weights are NOT pip packages: they download on first use into
 # <DOWNLOAD_ROOT>/audio-separator.
+# GPU installs: audio-separator's [gpu] extra pulls PyPI onnxruntime-gpu,
+# which is a CUDA 13 build since 1.27 — on a CUDA 12 stack its provider
+# fails to load and separation silently runs on the CPU. Dockerfile.gpu
+# force-reinstalls onnxruntime-gpu==1.26.* (the last CUDA 12.8 build) last.
 audio-separator[cpu]>=0.44.5
 # audio-separator imports audioread (spec_utils.py/vr_separator.py) but does
 # not declare it — it historically rode in as a librosa dependency. librosa

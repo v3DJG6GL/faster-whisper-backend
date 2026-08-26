@@ -74,6 +74,17 @@ def _pass_fraction(pass_no: int, frac: float) -> float:
 
 _shims_installed = False
 
+# Ground truth from the ORT session the shim created: "cuda"/"cpu" once a
+# model is loaded, None before. The requested provider list means nothing —
+# a CUDA provider that fails to dlopen (e.g. a CUDA 13 wheel on a CUDA 12
+# stack) makes ORT fall back to CPU silently at session creation.
+_session_device: "str | None" = None
+
+
+def actual_device() -> "str | None":
+    """The device the loaded ONNX session ACTUALLY runs on (None = unknown)."""
+    return _session_device
+
 
 def _install_shims() -> None:
     """Wrap audio-separator's MDX internals (once): a tqdm subclass that
@@ -149,7 +160,28 @@ def _install_shims() -> None:
                         "session.inter_op.allow_spinning", "0")
                 except Exception:  # noqa: BLE001 — tuning only
                     logger.debug("[bgm] could not tune ORT session options")
-                return self._real.InferenceSession(*args, **kwargs)
+                session = self._real.InferenceSession(*args, **kwargs)
+                # mdx_separator keeps the session only inside a closure, so
+                # THIS is the one place the real placement is visible.
+                global _session_device
+                try:
+                    active = list(session.get_providers())
+                    _session_device = (
+                        "cuda" if "CUDAExecutionProvider" in active else "cpu")
+                    logger.info(
+                        "[bgm] onnx session providers (actual): %s", active)
+                    wanted = kwargs.get("providers") or []
+                    if ("CUDAExecutionProvider" in wanted
+                            and "CUDAExecutionProvider" not in active):
+                        logger.warning(
+                            "[bgm] the CUDA provider failed to initialize — "
+                            "separation runs on the CPU (onnxruntime printed "
+                            "the dlopen error to stderr; usual cause: an "
+                            "onnxruntime-gpu build for a different CUDA "
+                            "major than this image ships)")
+                except Exception:  # noqa: BLE001 — diagnostics only
+                    _session_device = None
+                return session
 
         if not isinstance(mdx_separator.ort, _OrtShim):
             mdx_separator.ort = _OrtShim(mdx_separator.ort)
@@ -275,29 +307,13 @@ def _load_blocking(model_filename: str, device: str):
         inst.demix = _demix
         _single_pass = True
         logger.info("[bgm] match-mix pass skipped (invert_using_spec off)")
-    # "Loaded on cuda" only means cuda was REQUESTED — onnxruntime's CUDA
-    # provider silently falls back to CPU when its runtime libraries don't
-    # resolve (the classic symptom: separation maxes the CPU). Surface the
-    # provider the CREATED session actually runs on; every getattr is
-    # defensive because these are audio-separator internals.
-    providers = None
-    session = getattr(getattr(sep, "model_instance", None), "model_run", None)
-    get_providers = getattr(session, "get_providers", None)
-    if callable(get_providers):
-        try:
-            providers = list(get_providers())
-        except Exception:  # noqa: BLE001 — diagnostics only
-            providers = None
-    if providers is None:
-        providers = getattr(sep, "onnx_execution_provider", None)
-    logger.info("[bgm] onnx execution providers: %s", providers)
-    if (device == "cuda" and isinstance(providers, list)
-            and "CUDAExecutionProvider" not in providers):
+    # Placement truth comes from the _OrtShim above (the session lives only
+    # in a closure inside mdx_separator; sep.onnx_execution_provider is the
+    # REQUESTED list and proves nothing).
+    if device == "cuda" and _session_device == "cpu":
         logger.warning(
-            "[bgm] cuda was requested but the ONNX session runs on %s — the "
-            "CUDA provider could not initialize (usually cudart/cufft/curand "
-            "missing from LD_LIBRARY_PATH); separation will hammer the CPU",
-            providers)
+            "[bgm] cuda was requested but the session runs on the CPU — "
+            "separation will be slow; see the shim warning above")
     return sep
 
 

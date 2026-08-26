@@ -49,6 +49,14 @@ RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       && pip install -r requirements-diarize.txt "audio-separator[gpu]>=0.44" \
            "audioread>=2.1.9" "librosa<1.0" \
            --extra-index-url https://download.pytorch.org/whl/cu126 \
+      # onnxruntime-gpu >=1.27 on PyPI is a CUDA 13 build — on this image's
+      # cu12 userspace its CUDA provider fails to dlopen at session creation
+      # and ORT silently runs the separation on the CPU (observed 2026-08-26:
+      # GPU 0%, ~0.4x realtime). 1.26.x is the last CUDA 12.8 + cuDNN 9
+      # build (cp314 wheels exist). Forced LAST so its files also win over
+      # the CPU-only `onnxruntime` that faster-whisper pulls in (both
+      # distributions unpack into the same onnxruntime/ package dir).
+      && pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*" \
       && apt-get purge -y gcc g++ \
       && apt-get autoremove -y \
       && rm -rf /var/lib/apt/lists/* ; \
