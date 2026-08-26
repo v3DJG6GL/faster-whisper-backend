@@ -59,6 +59,10 @@ def _load_blocking(model_filename: str, device: str):
     try:
         from audio_separator.separator import Separator
     except ImportError as e:
+        # The client-safe message says "not installed", but a BROKEN install
+        # (a transitive import blowing up) raises ImportError too — log the
+        # real cause so the operator can tell the two apart.
+        logger.error("[bgm] audio_separator import failed: %s", e)
         raise BgmSeparationError(
             "music-separation dependencies are not installed on this server "
             "(pip install -r requirements-bgm.txt)"

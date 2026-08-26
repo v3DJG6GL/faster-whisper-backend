@@ -74,6 +74,9 @@ def _load_blocking(model_id: str, device: str, batch_size: int):
         import torch
         from pyannote.audio import Pipeline
     except ImportError as e:
+        # Same diagnosability note as bgm_separation: a broken install raises
+        # ImportError too — the log carries the real cause.
+        logger.error("[diarize] pyannote import failed: %s", e)
         raise DiarizationError(
             "diarization dependencies are not installed on this server "
             "(pip install -r requirements-diarize.txt)"
