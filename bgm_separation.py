@@ -93,6 +93,29 @@ def _load_blocking(model_filename: str, device: str):
             f"could not load separation model {model_filename} — check the "
             "model name and that the server can download it"
         ) from e
+    # "Loaded on cuda" only means cuda was REQUESTED — onnxruntime's CUDA
+    # provider silently falls back to CPU when its runtime libraries don't
+    # resolve (the classic symptom: separation maxes the CPU). Surface the
+    # provider the CREATED session actually runs on; every getattr is
+    # defensive because these are audio-separator internals.
+    providers = None
+    session = getattr(getattr(sep, "model_instance", None), "model_run", None)
+    get_providers = getattr(session, "get_providers", None)
+    if callable(get_providers):
+        try:
+            providers = list(get_providers())
+        except Exception:  # noqa: BLE001 — diagnostics only
+            providers = None
+    if providers is None:
+        providers = getattr(sep, "onnx_execution_provider", None)
+    logger.info("[bgm] onnx execution providers: %s", providers)
+    if (device == "cuda" and isinstance(providers, list)
+            and "CUDAExecutionProvider" not in providers):
+        logger.warning(
+            "[bgm] cuda was requested but the ONNX session runs on %s — the "
+            "CUDA provider could not initialize (usually cudart/cufft/curand "
+            "missing from LD_LIBRARY_PATH); separation will hammer the CPU",
+            providers)
     return sep
 
 

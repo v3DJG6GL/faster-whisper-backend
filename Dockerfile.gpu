@@ -58,7 +58,14 @@ RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
 # site-packages, and main.py's CUDA-lib preloader is Windows-only — so put the
 # pip-installed NVIDIA .so dirs on the loader path here. The path is fixed by the
 # python:3.14-slim base; update the "python3.14" segment if you bump the base.
-ENV LD_LIBRARY_PATH=/usr/local/lib/python3.14/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.14/site-packages/nvidia/cudnn/lib
+#
+# The list goes beyond ctranslate2's cublas+cudnn: in the -full image,
+# onnxruntime-gpu's CUDAExecutionProvider additionally dlopens cudart, cufft
+# and curand (and cusolver/cusparse/nvjitlink transitively) — all shipped as
+# torch's pip deps but invisible to the loader, so the provider silently fell
+# back to CPU and MDX separation maxed the CPU while logging "loaded on cuda".
+# Entries that don't exist in the lean image are skipped by the loader.
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.14/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.14/site-packages/nvidia/cudnn/lib:/usr/local/lib/python3.14/site-packages/nvidia/cuda_runtime/lib:/usr/local/lib/python3.14/site-packages/nvidia/cuda_nvrtc/lib:/usr/local/lib/python3.14/site-packages/nvidia/cufft/lib:/usr/local/lib/python3.14/site-packages/nvidia/curand/lib:/usr/local/lib/python3.14/site-packages/nvidia/cusolver/lib:/usr/local/lib/python3.14/site-packages/nvidia/cusparse/lib:/usr/local/lib/python3.14/site-packages/nvidia/nvjitlink/lib
 
 # Non-root runtime user — mirrors Dockerfile (see the comments there). The
 # compose `user:` line (PUID/PGID) overrides the runtime UID/GID at run time.
