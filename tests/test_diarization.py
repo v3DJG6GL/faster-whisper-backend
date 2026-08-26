@@ -15,7 +15,7 @@ def _post(client, **data):
 
 def _stub_turns(monkeypatch, turns, calls=None):
     async def _fake_diarize(path, *, num_speakers=None, min_speakers=None,
-                            max_speakers=None):
+                            max_speakers=None, progress_cb=None):
         if calls is not None:
             calls.append({"path": path, "num_speakers": num_speakers,
                           "min_speakers": min_speakers,
@@ -175,3 +175,28 @@ def test_assign_speakers_no_turns_is_noop():
     segs = [_seg(0.0, 1.0)]
     assert diarization.assign_speakers(segs, []) == []
     assert "speaker" not in segs[0]
+
+
+# --- progress hook -----------------------------------------------------------
+
+def test_hook_maps_steps_and_stays_monotone():
+    seen = []
+    hook = diarization._make_hook(seen.append)
+    hook("segmentation", None, total=10, completed=5)
+    hook("segmentation", None, total=10, completed=10)
+    hook("embeddings", None, total=4, completed=2)
+    # A regression (pyannote re-reports an earlier step) must not move the bar
+    # backwards — it is simply dropped.
+    hook("segmentation", None, total=10, completed=1)
+    hook("clustering", None)          # unmapped step → parks at the tail
+    hook("embeddings", None, total=4, completed=4)
+    # 0.9 arrives from the clustering park; the later embeddings-done report
+    # lands on the same value and is dropped (not strictly greater).
+    assert seen == [0.225, 0.45, 0.675, 0.9]
+
+
+def test_hook_swallows_bad_callback():
+    def _boom(_f):
+        raise RuntimeError("cb exploded")
+    hook = diarization._make_hook(_boom)
+    hook("segmentation", None, total=10, completed=5)  # must not raise

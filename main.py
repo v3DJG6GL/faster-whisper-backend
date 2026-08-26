@@ -2964,9 +2964,12 @@ async def transcribe(
                     import bgm_separation as _bgm
                     try:
                         _sep_t0 = time.perf_counter()
-                        _progress_set(_pid, stage="separating")
+                        _progress_set(_pid, stage="separating", progress=None)
                         async with get_inference_semaphore():
-                            _vocals_path = await _bgm.separate(tmp_path)
+                            _vocals_path = await _bgm.separate(
+                                tmp_path,
+                                progress_cb=lambda f: _progress_set(
+                                    _pid, progress=f))
                         try:
                             os.unlink(tmp_path)
                         except OSError:
@@ -3040,7 +3043,7 @@ async def transcribe(
                 _segs, _info = _model.transcribe(_path, **_kw)
                 return _collect(_segs, _info), _info, False
             loop = asyncio.get_running_loop()
-            _progress_set(_pid, stage="waiting")
+            _progress_set(_pid, stage="waiting", progress=None)
             async with get_inference_semaphore():
                 segments_iter, info, _pad_applied = await loop.run_in_executor(
                     None, _do_transcribe)
@@ -3148,6 +3151,8 @@ async def transcribe(
                                 num_speakers=_spk.get("num_speakers"),
                                 min_speakers=_spk.get("min_speakers"),
                                 max_speakers=_spk.get("max_speakers"),
+                                progress_cb=lambda f: _progress_set(
+                                    _pid, progress=f),
                             )
                         speakers_list = _diar.assign_speakers(segments_list, _turns)
                         logger.info(

@@ -21,7 +21,7 @@ def _stub_separate(monkeypatch, calls=None):
     tmp_path and the request-level finally must unlink it."""
     made = []
 
-    async def _fake(path):
+    async def _fake(path, *, progress_cb=None):
         if calls is not None:
             calls.append(path)
         fd, out = tempfile.mkstemp(prefix="vocals-test-", suffix=".wav")
@@ -65,7 +65,7 @@ def test_separate_disabled_server_soft_fails(client, app_module, monkeypatch):
 def test_separate_error_becomes_warning(client, app_module, monkeypatch, fake_model):
     app_module.cfg.BGM_SEPARATION_ENABLED = True
     try:
-        async def _boom(path):
+        async def _boom(path, *, progress_cb=None):
             raise bgm_separation.BgmSeparationError(
                 "music-separation dependencies are not installed on this "
                 "server (pip install -r requirements-bgm.txt)")
@@ -130,3 +130,14 @@ def test_model_filename_appends_onnx(app_module):
     app_module.cfg.BGM_SEPARATION_UVR_MODEL = "model_bs_roformer.ckpt"
     assert bgm_separation._model_filename() == "model_bs_roformer.ckpt"
     app_module.cfg.BGM_SEPARATION_UVR_MODEL = "UVR-MDX-NET-Inst_HQ_4"
+
+
+# --- progress weighting ------------------------------------------------------
+
+def test_pass_fraction_weights_model_pass_heavier():
+    assert bgm_separation._pass_fraction(1, 0.0) == 0.0
+    assert bgm_separation._pass_fraction(1, 1.0) == bgm_separation._PASS1_WEIGHT
+    assert bgm_separation._pass_fraction(2, 0.0) == bgm_separation._PASS1_WEIGHT
+    assert bgm_separation._pass_fraction(2, 1.0) == 1.0
+    # Clamped against tqdm over-reporting past the total.
+    assert bgm_separation._pass_fraction(1, 1.7) == bgm_separation._PASS1_WEIGHT

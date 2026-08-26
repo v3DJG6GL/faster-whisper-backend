@@ -73,6 +73,15 @@ def _load_blocking(model_id: str, device: str, batch_size: int):
     try:
         import torch
         from pyannote.audio import Pipeline
+        # torch's CPU intra-op pool defaults to every logical core and its
+        # workers busy-wait — on a many-core host the CPU-side steps (audio
+        # decode, clustering glue) read as "diarization maxes the CPU" even
+        # with the models on cuda. Eight threads is plenty for that side
+        # work; ctranslate2/whisper has its own pool and is unaffected.
+        try:
+            torch.set_num_threads(max(1, min(8, os.cpu_count() or 8)))
+        except Exception:  # noqa: BLE001 — tuning only
+            pass
     except ImportError as e:
         # Same diagnosability note as bgm_separation: a broken install raises
         # ImportError too — the log carries the real cause.
@@ -167,15 +176,54 @@ async def _get_pipeline():
         return pipe
 
 
+# Progress weighting for the pyannote hook: the pipeline reports per-step
+# completed/total, and these two chunked steps dominate the wall clock. Steps
+# outside the map (clustering, counting, …) park the bar at the tail. Matched
+# by prefix so 3.x "embedding" and 4.x "embeddings" both land.
+_HOOK_STEP_SPANS = (
+    ("segmentation", 0.00, 0.45),
+    ("embedding", 0.45, 0.90),
+)
+_HOOK_TAIL = 0.90
+
+
+def _make_hook(progress_cb):
+    """pyannote hook(step_name, artifact, file=…, total=…, completed=…) →
+    a monotone 0..1 fraction for ``progress_cb``. Never raises."""
+    best = {"frac": 0.0}
+
+    def _hook(step_name, *_args, total=None, completed=None, **_kw):
+        try:
+            name = str(step_name or "").lower()
+            lo, hi = _HOOK_TAIL, 1.0
+            for prefix, p_lo, p_hi in _HOOK_STEP_SPANS:
+                if name.startswith(prefix):
+                    lo, hi = p_lo, p_hi
+                    break
+            frac = lo
+            if total and completed is not None:
+                frac = lo + (hi - lo) * min(1.0, float(completed) / float(total))
+            if frac > best["frac"]:
+                best["frac"] = frac
+                progress_cb(frac)
+        except Exception:  # noqa: BLE001 — progress must never break inference
+            pass
+
+    return _hook
+
+
 async def diarize(path: str, *, num_speakers: "int | None" = None,
                   min_speakers: "int | None" = None,
                   max_speakers: "int | None" = None,
+                  progress_cb=None,
                   ) -> "list[tuple[float, float, str]]":
     """Diarize the audio file → [(start_s, end_s, label), ...] sorted by start.
 
     ``num_speakers`` wins over the min/max bounds (the caller enforces that
     already; this just doesn't forward the bounds alongside it — pyannote
-    treats the combination as an error).
+    treats the combination as an error). ``progress_cb`` (called from the
+    executor thread with a 0..1 float) reports pipeline step progress via
+    pyannote's hook kwarg — best-effort.
     """
     global _last_used_monotonic
     pipe = await _get_pipeline()
@@ -189,7 +237,15 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
             kwargs["max_speakers"] = max_speakers
 
     def _run():
-        result = pipe(path, **kwargs)
+        if progress_cb is not None:
+            try:
+                result = pipe(path, hook=_make_hook(progress_cb), **kwargs)
+            except TypeError:
+                # A pipeline without the hook kwarg (or a test stub) — run
+                # without progress rather than failing the stage.
+                result = pipe(path, **kwargs)
+        else:
+            result = pipe(path, **kwargs)
         # pyannote 4.x returns a result object; the exclusive (non-overlapping)
         # view is purpose-built for aligning with STT segments. 3.x returns the
         # Annotation itself.
