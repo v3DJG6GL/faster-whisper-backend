@@ -10,3 +10,13 @@
 # Model weights are NOT pip packages: they download on first use into
 # <DOWNLOAD_ROOT>/audio-separator.
 audio-separator[cpu]>=0.44
+# audio-separator imports audioread (spec_utils.py/vr_separator.py) but does
+# not declare it — it historically rode in as a librosa dependency. librosa
+# 1.0.0 dropped audioread, which broke the 0.44.5 import chain in the -full
+# image (2026-08-26: "[bgm] audio_separator import failed: No module named
+# 'audioread'"). Declare the real import explicitly and keep librosa on the
+# 0.x line audio-separator is actually tested against. Mirror any change here
+# in Dockerfile.gpu's inline extras install. Drop both pins once
+# audio-separator declares audioread / supports librosa 1.x.
+audioread>=2.1.9
+librosa<1.0

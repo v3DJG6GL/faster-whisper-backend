@@ -41,6 +41,7 @@ RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends ffmpeg gcc g++ \
       && pip install -r requirements-diarize.txt "audio-separator[gpu]>=0.44" \
+           "audioread>=2.1.9" "librosa<1.0" \
            --extra-index-url https://download.pytorch.org/whl/cu126 \
       && apt-get purge -y gcc g++ \
       && apt-get autoremove -y \
