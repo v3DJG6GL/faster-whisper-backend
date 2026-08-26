@@ -474,7 +474,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "HF_TOKEN":
         "HuggingFace auth token for gated/private repos. Account-scoped. "
         "One token for everything Hugging Face: gated whisper repos and the "
-        "pyannote diarization pipeline.",
+        "pyannote diarization pipeline. Create one (read scope) at "
+        "https://huggingface.co/settings/tokens — a fine-grained token also "
+        "needs the public-gated-repos read permission.",
     "AUTO_CONVERT_HF_MODELS":
         "Auto-convert HuggingFace transformers Whisper models to CTranslate2 "
         "format on first load when no `model.bin` is present in the repo. "
@@ -511,8 +513,11 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "models, accepted Hugging Face terms plus HF_TOKEN.",
     "DIARIZATION_MODEL":
         "pyannote pipeline id. community-1 (CC-BY-4.0) is the default; "
-        "speaker-diarization-3.1 (MIT) is the alternative. Both are gated "
-        "on huggingface.co — accept the model terms, then set HF_TOKEN.",
+        "speaker-diarization-3.1 (MIT) is the alternative. Both are gated: "
+        "accept the model terms with the account behind HF_TOKEN at "
+        "https://huggingface.co/pyannote/speaker-diarization-community-1 "
+        "(or https://huggingface.co/pyannote/speaker-diarization-3.1), "
+        "else loads fail with 403.",
     "DIARIZATION_DEVICE":
         "auto follows MODEL_DEVICE (with the same fallback); cuda / cpu pin "
         "it. The pipeline holds roughly 1 GB VRAM while loaded.",

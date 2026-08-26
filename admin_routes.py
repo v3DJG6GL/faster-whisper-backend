@@ -2050,6 +2050,29 @@ function makeBadges(name) {
   return wrap;
 }
 
+// Linkify https URLs in a help description (gated-model terms, token
+// settings pages live on huggingface.co — make them clickable). Built from
+// text nodes + <a> elements, never innerHTML, so the description text stays
+// exactly as inert as textContent. Trailing sentence punctuation is kept out
+// of the href.
+function setHelpText(el, text) {
+  const re = /https:\/\/[^\s]+/g;
+  let last = 0, m;
+  while ((m = re.exec(text)) !== null) {
+    let url = m[0];
+    while (/[.,;:)]$/.test(url)) url = url.slice(0, -1);
+    if (m.index > last) el.appendChild(document.createTextNode(text.slice(last, m.index)));
+    const a = document.createElement('a');
+    a.href = url;
+    a.textContent = url;
+    a.target = '_blank';
+    a.rel = 'noopener noreferrer';
+    el.appendChild(a);
+    last = m.index + url.length;
+  }
+  el.appendChild(document.createTextNode(text.slice(last)));
+}
+
 // Field rows like MODEL_OVERRIDES are master-detail widgets that have their
 // own visual structure (sidebar + detail pane) and do not benefit from the
 // shared label-col / +reset / help-text chrome — the section header above
@@ -2107,7 +2130,7 @@ function fieldRow(name) {
   if (desc) {
     const help = document.createElement('div');
     help.className = 'help';
-    help.textContent = desc;
+    setHelpText(help, desc);
     inputCol.appendChild(help);
   }
 
