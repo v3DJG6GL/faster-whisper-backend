@@ -60,6 +60,10 @@ concurrency:
 
 env:
   REGISTRY: forgejo.informethic.ch
+  # The Linux test legs run as root inside python:* job containers — that's
+  # the whole environment, not a system Python worth protecting, so silence
+  # pip's per-invocation "Running pip as the 'root' user" warning.
+  PIP_ROOT_USER_ACTION: ignore
 
 jobs:
   test:
@@ -332,7 +336,14 @@ jobs:
           provenance: false
           sbom: false
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }},mode=max,ignore-error=true
+          # zstd instead of the default gzip: "preparing build cache for
+          # export" gzip-compresses every layer, and on the gpu-full leg
+          # (~7 GB of CUDA/torch wheels) that alone took 327s of the 402s
+          # cache-export step (run 390). zstd compresses those layers several
+          # times faster; force-compression recompresses layers imported from
+          # the old gzip cache so the blobs converge on zstd instead of
+          # mixing.
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }},mode=max,ignore-error=true,compression=zstd,force-compression=true
 
   # Kick mirror-ghcr.yml exactly once per publishing run, after every
   # variant has pushed. Replaces that workflow's registry_package trigger,

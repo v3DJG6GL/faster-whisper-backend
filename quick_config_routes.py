@@ -491,7 +491,7 @@ async def apply_rules_patch(
             client_host, store_common.log_safe(user.get("username") or "?"),
             user.get("is_admin"), saved, store_common.log_safe(str(errs)),
         )
-        return status.HTTP_422_UNPROCESSABLE_ENTITY, {
+        return status.HTTP_422_UNPROCESSABLE_CONTENT, {
             "errors": _redact_invisible_slugs(errs, user, current_rules),
         }
     except OSError as e:

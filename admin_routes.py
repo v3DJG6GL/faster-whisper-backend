@@ -545,7 +545,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         written = await asyncio.to_thread(config_store.save_overrides, payload)
     except ValidationError as e:
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={"errors": config_store.format_validation_errors(e)},
         )
     except OSError as e:
@@ -760,7 +760,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
         saved = await asyncio.to_thread(config_store.save_factory_rules, rules)
     except ValidationError as e:
         return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             content={"errors": config_store.format_validation_errors(e)},
         )
     except OSError as e:

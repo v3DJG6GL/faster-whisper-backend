@@ -26,11 +26,17 @@ RUN pip install --upgrade pip \
  && pip install -r requirements.txt -r requirements-gpu.txt
 
 # Optional heavy extras (INCLUDE_EXTRAS=1 → the "-full" tag): speaker
-# diarization + music separation. torch comes from the cu126 index so it
-# shares the nvidia-cublas-cu12 / nvidia-cudnn-cu12 pip libraries ctranslate2
-# already uses (PyPI-default torch 2.12+ would pull the cu13 stack alongside —
-# two CUDA userspaces in one process is asking for trouble). audio-separator's
-# [gpu] extra swaps onnxruntime for onnxruntime-gpu. ffmpeg from apt for
+# diarization + music separation. torch comes from the cu126 index so the
+# image keeps ONE cu12 userspace (PyPI-default torch 2.12+ would pull the
+# cu13 stack alongside — two CUDA userspaces in one process is asking for
+# trouble). Caveat observed in run 390: torch cu126 hard-pins OLDER
+# nvidia-cublas-cu12 / nvidia-cudnn-cu12 than requirements-gpu.txt's floors,
+# so pip uninstalls the 12.9/9.24 libs from the previous layer and installs
+# torch's 12.6/9.5 pins (~2 min churn + the old copies linger as whiteouts).
+# Still cublas 12.x / cudnn 9.x, which is all ctranslate2 (and main.py's
+# Windows DLL preloader majors) require — accepted until the -full build
+# is restructured into a single pip resolution. audio-separator's [gpu]
+# extra swaps onnxruntime for onnxruntime-gpu. ffmpeg from apt for
 # torchcodec / audio-separator decoding.
 # gcc/g++ are BUILD-time only: audio-separator's diffq dependency ships no
 # cp314 wheel and compiles from source (run 372 failed on "No such file or
