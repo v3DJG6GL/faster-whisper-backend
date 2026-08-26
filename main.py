@@ -3057,10 +3057,19 @@ async def transcribe(
                 def _collect(_gen, _info):
                     _dur = float(getattr(_info, "duration", 0.0) or 0.0)
                     _compute, _dev = _model_compute_device(resolved_model)
+                    # VAD receipt: transcribe() ran Silero eagerly before
+                    # returning, so duration_after_vad is already known here.
+                    # Only meaningful when the filter actually ran.
+                    _dav = getattr(_info, "duration_after_vad", None)
+                    _retained = (
+                        max(0.0, min(1.0, float(_dav) / _dur))
+                        if _kw.get("vad_filter") and _dur > 0 and _dav is not None
+                        else None)
                     _progress_set(_pid, stage="transcribing", progress=0.0,
                                   duration=_dur or None, position=None,
                                   last_text=None, model=resolved_model,
-                                  device=_dev, compute=_compute)
+                                  device=_dev, compute=_compute,
+                                  vad_retained=_retained)
                     _out = []
                     _log_bucket = 0  # 5%-step INFO trail, like the other stages
                     for _s in _gen:
@@ -3085,6 +3094,13 @@ async def transcribe(
                                     "[transcribe] %d%% (%.1fs / %.1fs)",
                                     _b * 5, float(_s.end), _dur)
                     return _out
+                # This executor thread has the semaphore slot now: everything
+                # until _collect's first entry (lead-pad decode, transcribe()'s
+                # eager audio decode + Silero VAD pass) used to be misreported
+                # as "waiting". Own stage so the client can label it honestly.
+                _progress_set(_pid, stage="analyzing", progress=None,
+                              position=None, last_text=None, step=None,
+                              model=None, device=None, compute=None)
                 _audio = None
                 if _pad_ms > 0:
                     try:
@@ -3447,6 +3463,12 @@ async def transcribe(
                     "text": full_text_str,
                     "segments": segments_list,
                 }
+                # VAD receipt (additive): how much audio survived the silence
+                # filter — lets the client warn when the filter ate the file.
+                # Only when the filter actually ran (absent ⇒ off/unknown).
+                _dav = getattr(info, "duration_after_vad", None)
+                if transcribe_kwargs.get("vad_filter") and _dav is not None:
+                    response["duration_after_vad"] = float(_dav)
                 if include_words:
                     response["words"] = all_words
                 if speakers_list:
@@ -3576,7 +3598,8 @@ async def translate_audio(
 async def transcription_progress(progress_id: str):
     """Live progress of an in-flight file transcription that was posted with a
     matching `progress_id` form field. Stages: waiting (semaphore queue) →
-    separating → transcribing (with `progress` 0..1 and the audio `duration`)
+    separating → analyzing (audio decode + VAD, inside transcribe()) →
+    transcribing (with `progress` 0..1 and the audio `duration`)
     → diarizing. An unknown/finished id answers stage "unknown" — the POST's
     own response is the completion signal, so the poller just stops."""
     if not _PROGRESS_ID_RE.match(progress_id):
@@ -3597,6 +3620,9 @@ async def transcription_progress(progress_id: str):
         "model": entry.get("model"),
         "device": entry.get("device"),
         "compute": entry.get("compute"),
+        # Fraction of the audio the VAD kept (0..1), set once decoding starts;
+        # null when the filter was off. Persists for the rest of the run.
+        "vad_retained": entry.get("vad_retained"),
     }
 
 
@@ -3665,10 +3691,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     without one when the server is locked down.
 
     Returns: {can_request_override_profile, can_request_decode_overrides,
-    allowed_override_profiles: ["*"] | [names…] | []}."""
+    allowed_override_profiles: ["*"] | [names…] | [], vad_filter_default}."""
     import effective_config
-    return effective_config.resolve_capabilities(
+    caps = effective_config.resolve_capabilities(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
+    # Additive: the server-wide VAD default, so the client's "Default" segment
+    # on its Skip-silence control can say which way inherit points. Server-wide
+    # (not per-model/identity) — it labels a ghost, it doesn't gate anything.
+    caps["vad_filter_default"] = bool(getattr(cfg, "VAD_FILTER", True))
+    return caps
 
 
 @app.get("/v1/override-profiles")

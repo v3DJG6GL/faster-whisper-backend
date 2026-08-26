@@ -40,6 +40,13 @@ def test_me_open_mode_all_allowed(client):
     assert j["allowed_override_profiles"] == ["*"]
 
 
+def test_me_reports_vad_filter_default(client, app_module):
+    # Additive convenience for the client's Skip-silence "Default" label.
+    assert client.get("/v1/me").json()["vad_filter_default"] is True
+    app_module.cfg.VAD_FILTER = False
+    assert client.get("/v1/me").json()["vad_filter_default"] is False
+
+
 def test_me_reflects_per_key_gate(client, make_user_key):
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)

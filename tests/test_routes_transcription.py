@@ -312,10 +312,27 @@ def test_progress_updates_during_decode(client, app_module, fake_model):
     fake_model.transcribe = spy
     r = _post(client, response_format="verbose_json", progress_id=pid)
     assert r.status_code == 200
-    # transcribe() ran after the "waiting" stage was registered.
-    assert seen.get("stage") == "waiting"
+    # transcribe() runs inside the executor slot, after "waiting" gave way
+    # to the "analyzing" stage (audio decode + VAD window).
+    assert seen.get("stage") == "analyzing"
     # ...and the entry is gone once the response is built.
     assert pid not in app_module._BATCH_PROGRESS
+
+
+def test_verbose_json_reports_duration_after_vad(client):
+    # VAD_FILTER defaults on → the response carries the VAD receipt
+    # (FakeInfo reports duration_after_vad == duration).
+    r = _post(client, response_format="verbose_json")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["duration_after_vad"] == body["duration"]
+
+
+def test_verbose_json_omits_vad_receipt_when_filter_off(client):
+    r = _post(client, response_format="verbose_json",
+              decode_overrides='{"vad_filter": false}')
+    assert r.status_code == 200
+    assert "duration_after_vad" not in r.json()
 
 
 def test_progress_malformed_id_is_ignored_on_post(client, app_module):
