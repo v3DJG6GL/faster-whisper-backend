@@ -2144,18 +2144,19 @@ async def lifespan(app: FastAPI):
     try:
         import captures_store
         captures_store.init(cfg.CAPTURES_DB, cfg.CAPTURES_DIR)
+        # capture_samples_store reuses the captures DB connection — single
+        # SQLite file holds both tables. Init it before the first
+        # sweep_retention(): the sweep's sample-expiry pass needs it.
+        import capture_samples_store
+        capture_samples_store.init(captures_store._require_conn(), cfg.CAPTURES_DIR)
         captures_store.reconcile_on_startup()
+        capture_samples_store.reconcile_on_startup()
         captures_store.sweep_retention()
         logger.info(
             "Captures store initialized at %s (audio dir: %s, enabled=%s)",
             cfg.CAPTURES_DB, cfg.CAPTURES_DIR,
             getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False),
         )
-        # capture_samples_store reuses the captures DB connection — single
-        # SQLite file holds both tables.
-        import capture_samples_store
-        capture_samples_store.init(captures_store._require_conn(), cfg.CAPTURES_DIR)
-        capture_samples_store.reconcile_on_startup()
         captures_sweep_task = asyncio.create_task(
             _captures_retention_loop()
         )
