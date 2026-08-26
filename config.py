@@ -461,7 +461,10 @@ DOWNLOAD_ROOT: "str | None" = _D("DOWNLOAD_ROOT")
 LOCAL_FILES_ONLY: bool = _D("LOCAL_FILES_ONLY")
 
 # HuggingFace auth token for gated/private repos. None = no token.
-USE_AUTH_TOKEN: "str | None" = _D("USE_AUTH_TOKEN")
+# (Renamed from USE_AUTH_TOKEN — the WHISPER_USE_AUTH_TOKEN[_FILE] env
+# spellings remain accepted as silent aliases; see the shim next to
+# _SECRET_FIELDS below.)
+HF_TOKEN: "str | None" = _D("HF_TOKEN")
 
 # Auto-convert HuggingFace transformers Whisper models to CTranslate2 format
 # on first load (when no model.bin is present). Requires
@@ -1122,7 +1125,17 @@ def _env_csv_list(name: str, current: list[str]) -> list[str]:
 # consulted by the env-revalidation loop below, which must not echo a stored
 # secret into _ENV_WARNINGS (those are drained into the logger, and the log is
 # served by the /logs viewer and /logs/stream).
-_SECRET_FIELDS = ("BOOTSTRAP_ADMIN_KEY", "USE_AUTH_TOKEN")
+_SECRET_FIELDS = ("BOOTSTRAP_ADMIN_KEY", "HF_TOKEN")
+# HF_TOKEN was named USE_AUTH_TOKEN before the config field matched the env
+# var huggingface_hub itself reads. Alias the old env spellings (plain and
+# _FILE) onto the new names BEFORE the _FILE indirection and the generic env
+# loop run, so existing deployments keep working unchanged. A set new-name
+# value always wins over the alias.
+for _sfx in ("", "_FILE"):
+    if os.environ.get("WHISPER_USE_AUTH_TOKEN" + _sfx) and not os.environ.get(
+        "WHISPER_HF_TOKEN" + _sfx
+    ):
+        os.environ["WHISPER_HF_TOKEN" + _sfx] = os.environ["WHISPER_USE_AUTH_TOKEN" + _sfx]
 for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
     _path = os.environ.get(_secret + "_FILE")
     if _path and not os.environ.get(_secret):
@@ -1182,7 +1195,7 @@ _ENV_READER_OVERRIDES = {
     "DEFAULT_PROMPT": "str_or_none", "DEFAULT_HOTWORDS": "str_or_none",
     "TEMPERATURE": "str_or_none", "SUPPRESS_TOKENS": "str_or_none",
     "SUPPRESS_CHARS": "str_or_none", "DOWNLOAD_ROOT": "str_or_none",
-    "USE_AUTH_TOKEN": "str_or_none", "CONVERTED_MODELS_DIR": "str_or_none",
+    "HF_TOKEN": "str_or_none", "CONVERTED_MODELS_DIR": "str_or_none",
     # empty string is PRESERVED as a literal value (e.g. "" prefix/suffix, or
     # DEFAULT_LANGUAGE="" meaning auto-detect)
     "DEFAULT_MODEL": "passthrough", "LOG_FILE": "passthrough",
@@ -1426,7 +1439,7 @@ try:
             # The field name and the validation reason stay — an operator has
             # to know their env value was rejected and that the previous one is
             # in force. But the reverted value itself is a STORED SECRET for
-            # the credential fields (USE_AUTH_TOKEN is a HuggingFace token and
+            # the credential fields (HF_TOKEN is a HuggingFace token and
             # goes through this loop like any other AdminConfig field: paste an
             # over-long one and the warning would carry the repr of the token
             # already configured). _ENV_WARNINGS is drained into the logger and

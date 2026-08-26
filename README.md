@@ -158,9 +158,10 @@ Notes:
   `env: WHISPER_…`). Unset the variable to make it editable in the UI again.
 - Booleans accept `1/true/yes/on`; lists are comma-separated; an empty value
   clears/disables nullable settings (e.g. `WHISPER_NO_SPEECH_THRESHOLD=`).
-- **Secrets** (`WHISPER_BOOTSTRAP_ADMIN_KEY`, `WHISPER_USE_AUTH_TOKEN`) also
+- **Secrets** (`WHISPER_BOOTSTRAP_ADMIN_KEY`, `WHISPER_HF_TOKEN`) also
   accept a `*_FILE` form pointing at a mounted secret file, so the value stays
-  out of `docker inspect` / the process environment.
+  out of `docker inspect` / the process environment. (`WHISPER_USE_AUTH_TOKEN`,
+  the pre-rename spelling of the HF token, is still accepted as an alias.)
 - **Server port**: `WHISPER_SERVER_PORT` is honored, but in Docker you must also
   update the compose `ports:` mapping to match.
 - **Structured settings** (`PIPELINE_RULES`, `MODEL_OVERRIDES`) accept a JSON

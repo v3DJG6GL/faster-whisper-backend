@@ -80,7 +80,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "APPEND_PUNCTUATIONS": "WHISPER_APPEND_PUNCTUATIONS",
     "DOWNLOAD_ROOT": "WHISPER_DOWNLOAD_ROOT",
     "LOCAL_FILES_ONLY": "WHISPER_LOCAL_FILES_ONLY",
-    "USE_AUTH_TOKEN": "WHISPER_USE_AUTH_TOKEN",
+    "HF_TOKEN": "WHISPER_HF_TOKEN",
     "AUTO_CONVERT_HF_MODELS": "WHISPER_AUTO_CONVERT_HF_MODELS",
     "CONVERT_QUANTIZATION": "WHISPER_CONVERT_QUANTIZATION",
     "CONVERTED_MODELS_DIR": "WHISPER_CONVERTED_MODELS_DIR",
@@ -235,7 +235,7 @@ LOAD_TIME_FIELDS: frozenset[str] = frozenset({
     "MODEL_DEVICE", "MODEL_COMPUTE_TYPE",
     "MODEL_DEVICE_FALLBACK", "MODEL_COMPUTE_TYPE_FALLBACK",
     "REVISION", "NUM_WORKERS", "DEVICE_INDEX",
-    "DOWNLOAD_ROOT", "LOCAL_FILES_ONLY", "USE_AUTH_TOKEN", "CPU_THREADS",
+    "DOWNLOAD_ROOT", "LOCAL_FILES_ONLY", "HF_TOKEN", "CPU_THREADS",
     "AUTO_CONVERT_HF_MODELS", "CONVERT_QUANTIZATION", "CONVERTED_MODELS_DIR",
 })
 
@@ -449,8 +449,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "LOCAL_FILES_ONLY":
         "If true, never hit the network — only resolve from local cache. "
         "Default false. Use for air-gapped deploys.",
-    "USE_AUTH_TOKEN":
-        "HuggingFace auth token for gated/private repos. Account-scoped.",
+    "HF_TOKEN":
+        "HuggingFace auth token for gated/private repos. Account-scoped. "
+        "One token for everything Hugging Face: gated whisper repos and the "
+        "pyannote diarization pipeline.",
     "AUTO_CONVERT_HF_MODELS":
         "Auto-convert HuggingFace transformers Whisper models to CTranslate2 "
         "format on first load when no `model.bin` is present in the repo. "
@@ -1379,7 +1381,7 @@ class AdminConfig(BaseModel):
     # --- Load-time, hardware (advanced) ---
     DOWNLOAD_ROOT: Annotated[str, Field(max_length=512)] | None = _F("DOWNLOAD_ROOT")
     LOCAL_FILES_ONLY: bool | None = _F("LOCAL_FILES_ONLY")
-    USE_AUTH_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("USE_AUTH_TOKEN")
+    HF_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("HF_TOKEN")
     AUTO_CONVERT_HF_MODELS: bool | None = _F("AUTO_CONVERT_HF_MODELS")
     CONVERT_QUANTIZATION: ConvertQuantLit | None = _F("CONVERT_QUANTIZATION")
     CONVERTED_MODELS_DIR: Annotated[str, Field(max_length=512)] | None = _F("CONVERTED_MODELS_DIR")
@@ -1901,6 +1903,12 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     if not isinstance(raw, dict):
         print(f"[config_store] {path} must contain a JSON object", file=sys.stderr)
         return {}
+    # One-time key migration: USE_AUTH_TOKEN → HF_TOKEN. AdminConfig forbids
+    # unknown keys and a validation failure drops ALL overrides, so a stored
+    # file from before the rename would otherwise silently lose every setting.
+    if "USE_AUTH_TOKEN" in raw:
+        raw.setdefault("HF_TOKEN", raw["USE_AUTH_TOKEN"])
+        del raw["USE_AUTH_TOKEN"]
     try:
         validated = AdminConfig.model_validate(raw)
     except ValidationError as e:

@@ -394,23 +394,58 @@ def test_secret_file_indirection(monkeypatch, tmp_path):
 
 
 def test_rejected_secret_warning_is_redacted(monkeypatch):
-    """An over-long USE_AUTH_TOKEN fails AdminConfig's max_length=256 and the
+    """An over-long HF_TOKEN fails AdminConfig's max_length=256 and the
     field reverts — but the warning must NOT carry the repr of the value that
     stays in force. _ENV_WARNINGS is drained into the logger and that log is
     served by the /logs viewer and /logs/stream."""
     try:
-        _reload_with_env(monkeypatch, WHISPER_USE_AUTH_TOKEN="hf_" + "z" * 300)
+        _reload_with_env(monkeypatch, WHISPER_HF_TOKEN="hf_" + "z" * 300)
         warn = [m for m in config._ENV_WARNINGS
-                if "WHISPER_USE_AUTH_TOKEN" in m and "not a valid" in m]
+                if "WHISPER_HF_TOKEN" in m and "not a valid" in m]
         assert warn, config._ENV_WARNINGS
         msg = warn[0]
         # The operator still learns which var was rejected and why...
-        assert "USE_AUTH_TOKEN" in msg
+        assert "HF_TOKEN" in msg
         # ...but the retained value is not echoed.
         assert "keeping <redacted>" in msg
     finally:
         monkeypatch.undo()
         importlib.reload(config)
+
+
+def test_use_auth_token_env_alias(monkeypatch):
+    """The pre-rename env spelling still works: WHISPER_USE_AUTH_TOKEN is
+    aliased onto WHISPER_HF_TOKEN at config import, and a set new-name value
+    wins over the alias."""
+    try:
+        _reload_with_env(monkeypatch, WHISPER_USE_AUTH_TOKEN="hf_old")
+        assert config.HF_TOKEN == "hf_old"
+        # The alias writes the NEW var straight into os.environ (so the _FILE
+        # loop and env_pinned_fields see it); monkeypatch can't undo that —
+        # clear it before the next reload (same caveat as the bootstrap-key
+        # test above).
+        os.environ.pop("WHISPER_HF_TOKEN", None)
+        _reload_with_env(monkeypatch, WHISPER_USE_AUTH_TOKEN="hf_old",
+                         WHISPER_HF_TOKEN="hf_new")
+        assert config.HF_TOKEN == "hf_new"
+    finally:
+        monkeypatch.undo()
+        os.environ.pop("WHISPER_HF_TOKEN", None)
+        importlib.reload(config)
+
+
+def test_local_overrides_migrate_use_auth_token(tmp_path):
+    """A config.local.json from before the rename still carries USE_AUTH_TOKEN;
+    load_overrides must migrate the key instead of failing validation (which
+    would silently drop EVERY stored override)."""
+    import config_store
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7}),
+                 encoding="utf-8")
+    out = config_store.load_overrides(str(p))
+    assert out.get("HF_TOKEN") == "hf_stored"
+    assert "USE_AUTH_TOKEN" not in out
+    assert out.get("BEAM_SIZE") == 7
 
 
 def test_rejected_nonsecret_warning_still_shows_value(monkeypatch):

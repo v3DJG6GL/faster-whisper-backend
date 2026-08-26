@@ -20,7 +20,7 @@ secrets/
 .env
 # Every .env variant, matching .dockerignore: .env.example documents
 # WHISPER_BOOTSTRAP_ADMIN_KEY (creates the first full admin) and
-# WHISPER_USE_AUTH_TOKEN as the values that belong in such a file, and `main`
+# WHISPER_HF_TOKEN as the values that belong in such a file, and `main`
 # is mirrored to a public GitHub repo — so .env.prod / .env.docker / .env.gpu
 # must not be committable. The tracked example file is negated back in.
 .env.*

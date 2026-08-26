@@ -62,7 +62,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
             "MODEL_DEVICE_FALLBACK", "MODEL_COMPUTE_TYPE_FALLBACK",
         ]),
         ("Advanced — load-time hardware", [
-            "DOWNLOAD_ROOT", "LOCAL_FILES_ONLY", "USE_AUTH_TOKEN",
+            "DOWNLOAD_ROOT", "LOCAL_FILES_ONLY", "HF_TOKEN",
             "AUTO_CONVERT_HF_MODELS", "CONVERT_QUANTIZATION", "CONVERTED_MODELS_DIR",
             "CPU_THREADS", "NUM_WORKERS", "DEVICE_INDEX",
         ]),
@@ -451,7 +451,7 @@ async def get_state(response: Response) -> dict[str, Any]:
     flags so the WebUI can render badges. Does NOT include the saved-only
     overrides — the form fills from effective values; the badge tells the
     user where the value is coming from."""
-    # The field map carries resolved secret values (USE_AUTH_TOKEN is the
+    # The field map carries resolved secret values (HF_TOKEN is the
     # HuggingFace credential) and the absolute data/db/models paths. The page
     # shell and every sibling data endpoint already send this; without it the
     # payload is heuristically cacheable by the browser and any intermediary.
@@ -657,19 +657,19 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
         # change still persisted; worst case they restart manually.
         logger.error("[config] eviction-on-edit failed: %s", e)
 
-    # Re-sync os.environ["HF_TOKEN"] whenever USE_AUTH_TOKEN changed. The
+    # Re-sync os.environ["HF_TOKEN"] whenever cfg.HF_TOKEN changed. The
     # token is set process-wide at startup (main.py) so non-WhisperModel HF
     # calls (Silero VAD, tokenizer fetches) inherit it; live edits via the
     # admin UI need to re-set the env var or those callers stay on the old
     # value until next service restart.
-    if "USE_AUTH_TOKEN" in written:
-        new_token = getattr(cfg, "USE_AUTH_TOKEN", None) or ""
+    if "HF_TOKEN" in written:
+        new_token = getattr(cfg, "HF_TOKEN", None) or ""
         if new_token:
             os.environ["HF_TOKEN"] = new_token
-            logger.info("[config] HF_TOKEN updated from USE_AUTH_TOKEN edit")
+            logger.info("[config] HF_TOKEN env updated from admin edit")
         else:
             os.environ.pop("HF_TOKEN", None)
-            logger.info("[config] HF_TOKEN cleared (USE_AUTH_TOKEN unset)")
+            logger.info("[config] HF_TOKEN env cleared (config field unset)")
 
     return {
         "hot_applied": hot_changed,

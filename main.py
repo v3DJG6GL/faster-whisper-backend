@@ -117,17 +117,17 @@ for _msg in getattr(cfg, "_ENV_WARNINGS", ()):
 # weights download. But OTHER HF calls in the process — Silero VAD model
 # load, tokenizer fetches, metadata pings — don't see that kwarg and would
 # log "unauthenticated requests" warnings + hit the lower anonymous rate
-# limit. Promoting cfg.USE_AUTH_TOKEN to os.environ["HF_TOKEN"] silences
-# those calls AND lifts the ceiling. Per-model USE_AUTH_TOKEN overrides
+# limit. Promoting cfg.HF_TOKEN to os.environ["HF_TOKEN"] silences
+# those calls AND lifts the ceiling. Per-model HF_TOKEN overrides
 # still win at the per-WhisperModel-call kwarg level, so a model that
 # needs a different token (rare) still works.
 #
-# Live edits: admin_routes.post_state re-syncs HF_TOKEN whenever
-# USE_AUTH_TOKEN changes via the admin UI, so a save takes effect without
-# a service restart. Clearing USE_AUTH_TOKEN unsets HF_TOKEN.
-if cfg.USE_AUTH_TOKEN:
-    os.environ["HF_TOKEN"] = cfg.USE_AUTH_TOKEN
-    logger.info("HF_TOKEN set from cfg.USE_AUTH_TOKEN (silences HF rate-limit "
+# Live edits: admin_routes.post_state re-syncs the env var whenever
+# cfg.HF_TOKEN changes via the admin UI, so a save takes effect without
+# a service restart. Clearing the config field unsets the env var.
+if cfg.HF_TOKEN:
+    os.environ["HF_TOKEN"] = cfg.HF_TOKEN
+    logger.info("HF_TOKEN set from cfg.HF_TOKEN (silences HF rate-limit "
                 "warnings for non-WhisperModel calls)")
 
 
@@ -1676,7 +1676,7 @@ async def _get_or_load_model(name: str) -> "WhisperModel":
             load_kwargs["download_root"] = _download_root
         if cfg_for(name, "LOCAL_FILES_ONLY"):
             load_kwargs["local_files_only"] = True
-        _auth_token = cfg_for(name, "USE_AUTH_TOKEN")
+        _auth_token = cfg_for(name, "HF_TOKEN")
         if _auth_token:
             load_kwargs["use_auth_token"] = _auth_token
         # PM-only field (no global counterpart): read directly from override.
