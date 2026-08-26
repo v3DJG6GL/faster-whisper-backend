@@ -356,10 +356,16 @@ jobs:
   #
   # if: always() so this job is never *skipped* — a skipped needs-job
   # hangs the whole run on Forgejo v15 (forgejo#12937; same reason all-ci
-  # is shaped the way it is). The publish-only gate sits on the step: it
-  # no-ops on PR runs (build doesn't push there) and on failed builds.
+  # is shaped the way it is). The publish-only gates sit on the steps: they
+  # no-op on PR runs (build doesn't push there) and on failed builds.
+  #
+  # The job also hosts the continuous-release dispatch (second step): every
+  # green, fully-published push to main kicks release.yml with bump=patch,
+  # which mints the next v* tag → which fires this workflow's own tag run
+  # (the one that bakes the clean vX.Y.Z into the images). Gated to main
+  # pushes, so the tag run cannot re-dispatch — no cycle.
   mirror:
-    name: dispatch ghcr mirror
+    name: dispatch ghcr mirror + auto-release
     if: always()
     needs: [build]
     runs-on: ubuntu-latest
@@ -380,3 +386,24 @@ jobs:
             -H "Content-Type: application/json" \
             --data '{"ref":"main"}' \
             "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/mirror-ghcr.yml/dispatches"
+
+      # Continuous versioning: every commit that reached main and published
+      # its images becomes a patch release. release.yml owns all the tag
+      # logic (bump compute, [skip release] opt-out, monotonicity,
+      # idempotence) — this step only tells it WHICH commit passed. Main
+      # pushes only: tag runs of this workflow must not re-dispatch (cycle),
+      # and manual minor/major bumps go through release.yml's own
+      # workflow_dispatch button. The dispatch API accepts the run-scoped
+      # token (same as the mirror dispatch above); the PAT that release.yml
+      # needs for the tag push itself lives there as RELEASE_TOKEN.
+      - name: Dispatch release.yml (auto patch bump; green main pushes only)
+        if: needs.build.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          DISPATCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -fsS --retry 3 --retry-delay 5 --retry-connrefused --retry-all-errors \
+            -X POST \
+            -H "Authorization: token ${DISPATCH_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data "{\"ref\":\"main\",\"inputs\":{\"bump\":\"patch\",\"sha\":\"${GITHUB_SHA}\"}}" \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/release.yml/dispatches"

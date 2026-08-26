@@ -1,0 +1,175 @@
+# .forgejo/workflows/release.yml
+#
+# Version tagging — the single place that mints v* tags. Sibling of
+# faster-whisper-frontend/release.yml, but structurally inverted: this repo
+# has NO version files (the tag IS the version — build_info.py and ci.yml
+# both resolve it via `git describe --tags`), so there is no bump-commit,
+# only a tag. And unlike the frontend — which pushes its tag with the
+# actions token precisely so the push event is swallowed (its own run
+# already builds the release) — this repo NEEDS the tag-push event to fire:
+# ci.yml's `tags: ['v*']` run is what bakes the clean vX.Y.Z into the
+# images and publishes the :vX.Y.Z tags. Forgejo swallows push events whose
+# actor is the actions token (IsActions doer, cycle prevention — see
+# ci.yml's mirror job), so the tag here is pushed with RELEASE_TOKEN, a PAT
+# with write:repository on this repo. The job fails loudly until that
+# secret exists.
+#
+# Two ways in, one implementation:
+#   - continuous (automatic): ci.yml's `mirror` job dispatches this
+#     workflow with bump=patch + the tested commit's sha after every green,
+#     fully-published push to main. Every main commit thus becomes a patch
+#     release. Opt out per commit by putting "[skip release]" anywhere in
+#     the commit message (checked on auto runs only).
+#   - manual ("Run workflow" button): pick patch/minor/major; tags the
+#     current HEAD of the chosen branch. Use minor for a feature release,
+#     major for a breaking one — the automatic path never does either.
+#
+# The tag itself triggers everything downstream, all pre-existing: the v*
+# ci.yml run (tests → 4 image variants with BUILD_VERSION=vX.Y.Z → ghcr
+# mirror dispatch); mirror-ghcr.yml's v* regex already expects the tags.
+# This workflow additionally creates a Forgejo Release carrying the commit
+# log since the previous tag, so /releases doubles as the changelog.
+#
+# Safety properties:
+#   * concurrency group serializes overlapping dispatches; version compute
+#     happens inside the job, so the second run sees the first run's tag.
+#   * idempotent: re-dispatch for an already-tagged commit no-ops.
+#   * out-of-order CI completions (an older commit's all-ci finishing after
+#     a newer commit was already tagged) are detected via an ancestor check
+#     and skipped — tags stay monotonic along main.
+#   * no loop: the v* ci.yml run's dispatch step is gated to main pushes.
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump for this release"
+        type: choice
+        default: patch
+        options: [patch, minor, major]
+      sha:
+        description: "Commit to tag — set by ci.yml's auto-release dispatch; leave empty on manual runs (tags HEAD)"
+        type: string
+        default: ""
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: compute + push version tag
+    runs-on: ubuntu-latest
+    steps:
+      # Full history + tags: the version is computed from the newest v* tag,
+      # and the ancestor/changelog steps walk history. persist-credentials
+      # off — both pushes below carry their credential explicitly (same
+      # reasoning as the frontend's version job).
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Compute and push the next version tag
+        id: bump
+        env:
+          # PAT with write:repository (repo Settings → Actions → Secrets).
+          # NOT the actions token: Forgejo swallows its push events, and the
+          # whole point of this tag is to fire ci.yml's v* build run.
+          PUSH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          BUMP: ${{ inputs.bump }}
+          TARGET_SHA: ${{ inputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PUSH_TOKEN" ]; then
+            echo "::error::RELEASE_TOKEN secret is missing — create a PAT with write:repository and add it, or the tag push cannot fire the v* build run (actions-token pushes are event-swallowed)"
+            exit 1
+          fi
+
+          # Auto runs (ci.yml dispatch) pin the exact commit that passed CI;
+          # manual runs tag the checked-out HEAD of the dispatched branch.
+          target="${TARGET_SHA:-$(git rev-parse HEAD)}"
+          if ! git cat-file -e "$target^{commit}" 2>/dev/null; then
+            echo "::error::target commit $target not found in history"
+            exit 1
+          fi
+
+          # Only commits reachable from main get version tags — a manual
+          # dispatch from a side branch would otherwise version untested code.
+          if ! git merge-base --is-ancestor "$target" origin/main; then
+            echo "::error::$target is not on main — refusing to tag"
+            exit 1
+          fi
+
+          # Per-commit opt-out, auto runs only (a human clicking the button
+          # has decided; the marker exists so chore/docs pushes can decline
+          # the patch release the continuous path would otherwise mint).
+          if [ -n "$TARGET_SHA" ] && git log -1 --format=%B "$target" | grep -qF '[skip release]'; then
+            echo "::notice::[skip release] marker on $target — no tag"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          latest=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1 || true)
+          latest="${latest:-v0.0.0}"
+          latest_commit=$(git rev-parse "$latest^{commit}" 2>/dev/null || true)
+
+          # Idempotence: re-dispatch / retry for an already-tagged commit.
+          if [ "$latest_commit" = "$target" ]; then
+            echo "::notice::$target is already tagged $latest — nothing to do"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # Monotonicity: an older commit whose CI run finished late must not
+          # get a tag above a newer, already-tagged commit.
+          if [ -n "$latest_commit" ] && git merge-base --is-ancestor "$target" "$latest_commit"; then
+            echo "::notice::$target is an ancestor of $latest ($latest_commit) — superseded, no tag"
+            echo "tag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          IFS=. read -r MA MI PA <<< "${latest#v}"
+          case "$BUMP" in
+            major) new="$((MA+1)).0.0" ;;
+            minor) new="$MA.$((MI+1)).0" ;;
+            patch) new="$MA.$MI.$((PA+1))" ;;
+            *) echo "::error::unknown bump '$BUMP'"; exit 1 ;;
+          esac
+          echo "bumping $latest -> v$new (at ${target})"
+
+          git tag "v$new" "$target"
+          # Owner PAT in the URL, never in .git/config (see ci.yml's manual
+          # checkouts for why the credential stays out of the config).
+          repo_path="${GITHUB_SERVER_URL#https://}/${GITHUB_REPOSITORY}.git"
+          git push "https://${PUSH_TOKEN}@${repo_path}" "v$new"
+          echo "tag=v$new" >> "$GITHUB_OUTPUT"
+          echo "prev=$latest" >> "$GITHUB_OUTPUT"
+
+      # /releases as changelog: the commit log since the previous tag, via
+      # the Forgejo API (run-scoped token is fine here — API calls, not push
+      # events). Not a draft: there are no assets to wait for; the images
+      # publish independently from the v* ci.yml run this tag just fired.
+      - name: Create the Forgejo release
+        if: steps.bump.outputs.tag != ''
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ steps.bump.outputs.tag }}
+          PREV: ${{ steps.bump.outputs.prev }}
+        run: |
+          set -euo pipefail
+          if [ "$PREV" = "v0.0.0" ] || ! git rev-parse -q --verify "$PREV^{commit}" > /dev/null; then
+            range="$TAG"
+          else
+            range="$PREV..$TAG"
+          fi
+          body=$(git log --no-merges --format='- %s (%h)' "$range")
+          jq -n --arg tag "$TAG" --arg body "$body" \
+            '{tag_name: $tag, name: $tag, body: $body, draft: false, prerelease: false}' \
+          | curl -fsS -X POST \
+              -H "Authorization: token $TOKEN" \
+              -H 'Content-Type: application/json' \
+              --data @- \
+              "$GITHUB_API_URL/repos/$REPO/releases" > /dev/null
+          echo "::notice::release $TAG created ($(git rev-list --no-merges --count "$range") commits since ${PREV})"
