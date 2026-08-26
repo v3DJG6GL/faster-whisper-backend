@@ -529,6 +529,27 @@ DIARIZATION_MAX_SPEAKERS: "int | None" = _D("DIARIZATION_MAX_SPEAKERS")
 
 
 # =============================================================================
+# Background-music separation (UVR — optional install, requirements-bgm.txt)
+# =============================================================================
+# Master capacity switch: whether this server accepts `separate_bgm` requests.
+BGM_SEPARATION_ENABLED: bool = _D("BGM_SEPARATION_ENABLED")
+
+# UVR model name (MDX-Net .onnx implied when no extension). Auto-downloaded
+# to <DOWNLOAD_ROOT>/audio-separator on first use.
+BGM_SEPARATION_UVR_MODEL: str = _D("BGM_SEPARATION_UVR_MODEL")
+
+# "auto" follows MODEL_DEVICE; cpu pins the separator to CPU.
+BGM_SEPARATION_DEVICE: str = _D("BGM_SEPARATION_DEVICE")
+
+# Unload the separator after this many idle seconds (0 = keep loaded).
+BGM_SEPARATION_IDLE_TIMEOUT_S: int = _D("BGM_SEPARATION_IDLE_TIMEOUT_S")
+
+# Call-time default (per-identity > per-model > global; lockable): whether a
+# request separates music when it doesn't say.
+SEPARATE_BGM: bool = _D("SEPARATE_BGM")
+
+
+# =============================================================================
 # Per-model overrides (MODEL_OVERRIDES)
 # =============================================================================
 # Map of model_id -> dict of override fields. Each override may set any

@@ -98,6 +98,12 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "DIARIZATION_NUM_SPEAKERS": "WHISPER_DIARIZATION_NUM_SPEAKERS",
     "DIARIZATION_MIN_SPEAKERS": "WHISPER_DIARIZATION_MIN_SPEAKERS",
     "DIARIZATION_MAX_SPEAKERS": "WHISPER_DIARIZATION_MAX_SPEAKERS",
+    # Background-music separation (UVR — optional install)
+    "BGM_SEPARATION_ENABLED": "WHISPER_BGM_SEPARATION_ENABLED",
+    "BGM_SEPARATION_UVR_MODEL": "WHISPER_BGM_SEPARATION_UVR_MODEL",
+    "BGM_SEPARATION_DEVICE": "WHISPER_BGM_SEPARATION_DEVICE",
+    "BGM_SEPARATION_IDLE_TIMEOUT_S": "WHISPER_BGM_SEPARATION_IDLE_TIMEOUT_S",
+    "SEPARATE_BGM": "WHISPER_SEPARATE_BGM",
     "TRACE_ENABLED": "WHISPER_TRACE",
     "LOG_FILE": "WHISPER_LOG_FILE",
     "LOG_VIEWER_INITIAL_LINES": "WHISPER_LOG_VIEWER_INITIAL_LINES",
@@ -530,6 +536,25 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Lower bound on the speaker count. Ignored when NUM_SPEAKERS is set.",
     "DIARIZATION_MAX_SPEAKERS":
         "Upper bound on the speaker count. Ignored when NUM_SPEAKERS is set.",
+
+    # --- Background-music separation ---
+    "BGM_SEPARATION_ENABLED":
+        "Allow clients to request background-music separation (UVR / "
+        "MDX-Net) before transcription. Needs the optional `pip install -r "
+        "requirements-bgm.txt`; the model downloads on first use.",
+    "BGM_SEPARATION_UVR_MODEL":
+        "UVR separation model name (.onnx implied when no extension). "
+        "Downloaded to <DOWNLOAD_ROOT>/audio-separator on first use.",
+    "BGM_SEPARATION_DEVICE":
+        "MDX-Net runs on CPU or GPU (much faster on GPU). auto follows "
+        "MODEL_DEVICE; cpu pins the separator to CPU.",
+    "BGM_SEPARATION_IDLE_TIMEOUT_S":
+        "Unload the separation model after this many idle seconds, like "
+        "DIARIZATION_IDLE_TIMEOUT_S. 0 = keep it loaded once used.",
+    "SEPARATE_BGM":
+        "Whether a request separates music when it does not say (the "
+        "`separate_bgm` form field overrides; lockable). Only effective "
+        "while BGM_SEPARATION_ENABLED is on.",
 
     # --- Pipeline ---
     "PIPELINE_RULES":
@@ -1195,6 +1220,9 @@ class _CallTimeOverrideMixin(BaseModel):
     DIARIZATION_NUM_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = None
     DIARIZATION_MIN_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = None
     DIARIZATION_MAX_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = None
+    # Music-separation call-time knob (capacity switch BGM_SEPARATION_ENABLED
+    # stays server-wide, like DIARIZATION_ENABLED above).
+    SEPARATE_BGM: bool | None = None
     PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
     LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = None
     REPETITION_PENALTY: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
@@ -1468,6 +1496,13 @@ class AdminConfig(BaseModel):
     DIARIZATION_NUM_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F("DIARIZATION_NUM_SPEAKERS")
     DIARIZATION_MIN_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F("DIARIZATION_MIN_SPEAKERS")
     DIARIZATION_MAX_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F("DIARIZATION_MAX_SPEAKERS")
+
+    # --- Background-music separation ---
+    BGM_SEPARATION_ENABLED: bool | None = _F("BGM_SEPARATION_ENABLED")
+    BGM_SEPARATION_UVR_MODEL: Annotated[str, Field(min_length=1, max_length=128)] | None = _F("BGM_SEPARATION_UVR_MODEL")
+    BGM_SEPARATION_DEVICE: DiarizationDeviceLit | None = _F("BGM_SEPARATION_DEVICE")
+    BGM_SEPARATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F("BGM_SEPARATION_IDLE_TIMEOUT_S")
+    SEPARATE_BGM: bool | None = _F("SEPARATE_BGM")
 
     # --- Per-model overrides ---
     MODEL_OVERRIDES: dict[ModelId, ModelOverride] | None = _F("MODEL_OVERRIDES")

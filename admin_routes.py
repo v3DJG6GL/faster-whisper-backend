@@ -133,6 +133,11 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
             "DIARIZATION_MAX_SPEAKERS", "DIARIZATION_EMBEDDING_BATCH_SIZE",
         ]),
     ]),
+    ("Music separation", [(None, [
+        "BGM_SEPARATION_ENABLED", "BGM_SEPARATION_UVR_MODEL",
+        "BGM_SEPARATION_DEVICE", "BGM_SEPARATION_IDLE_TIMEOUT_S",
+        "SEPARATE_BGM",
+    ])]),
     ("Per-model overrides", [(None, ["MODEL_OVERRIDES"])]),
     ("Pipeline", [(None, ["PIPELINE_RULES"])]),
     ("Logging", [(None, [
@@ -678,6 +683,12 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
             await _diarization.drop_pipeline()
         except Exception as e:
             logger.error("[config] diarization eviction-on-edit failed: %s", e)
+    if set(written.keys()) & {"BGM_SEPARATION_UVR_MODEL", "BGM_SEPARATION_DEVICE"}:
+        try:
+            import bgm_separation as _bgm
+            await _bgm.drop_separator()
+        except Exception as e:
+            logger.error("[config] bgm eviction-on-edit failed: %s", e)
 
     # Re-sync os.environ["HF_TOKEN"] whenever cfg.HF_TOKEN changed. The
     # token is set process-wide at startup (main.py) so non-WhisperModel HF

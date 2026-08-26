@@ -1,0 +1,12 @@
+# Optional: background-music separation (UVR / MDX-Net via audio-separator).
+# Install on top of the base file, picking the onnxruntime flavor:
+#   CPU: pip install -r requirements.txt "audio-separator[cpu]>=0.44"
+#   GPU: pip install -r requirements.txt "audio-separator[gpu]>=0.44"
+# This file pins the CPU extra; the GPU Docker build overrides the extra (see
+# Dockerfile.gpu). torch is a hard dependency of audio-separator — on the GPU
+# image install alongside requirements-diarize.txt with the cu126 index so a
+# single torch/cu12 stack is shared. Also needs system ffmpeg.
+#
+# Model weights are NOT pip packages: they download on first use into
+# <DOWNLOAD_ROOT>/audio-separator.
+audio-separator[cpu]>=0.44

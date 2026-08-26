@@ -2023,6 +2023,9 @@ async def lifespan(app: FastAPI):
     import diarization as _diarization
     diarization_evictor_task = asyncio.create_task(
         _diarization.idle_evictor_loop())
+    import bgm_separation as _bgm_separation
+    bgm_evictor_task = asyncio.create_task(
+        _bgm_separation.idle_evictor_loop())
 
     # Open the API-keys SQLite store and start the open-mode warning loop.
     # In OPEN mode (no admin key exists yet) the loop nags every 60 s; this
@@ -2173,6 +2176,8 @@ async def lifespan(app: FastAPI):
     await _cancel(evictor_task)
     await _cancel(diarization_evictor_task)
     await _diarization.drop_pipeline()
+    await _cancel(bgm_evictor_task)
+    await _bgm_separation.drop_separator()
     await _cancel(reports_sweep_task)
     await _cancel(captures_sweep_task)
     await _cancel(sessions_purge_task)
@@ -2626,6 +2631,7 @@ async def transcribe(
     num_speakers: int | None = Form(None),
     min_speakers: int | None = Form(None),
     max_speakers: int | None = Form(None),
+    separate_bgm: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     resolved_model = _resolve_model_name(model_name)
@@ -2849,6 +2855,18 @@ async def transcribe(
             # pyannote treats num alongside min/max as an error — num wins.
             if _spk.get("num_speakers"):
                 _spk["min_speakers"] = _spk["max_speakers"] = None
+            # Music separation: same shape again. Soft-failed optional stages
+            # (this and diarization) collect their explanations in _warnings.
+            _warnings: "list[str]" = []
+            _sep_req = _form_bool(separate_bgm)
+            if "SEPARATE_BGM" in ident.locked:
+                _separate = bool(cfg_for(resolved_model, "SEPARATE_BGM", ident))
+                if _sep_req is not None and _sep_req != _separate:
+                    ignored.append("separate_bgm")
+            elif _sep_req is not None:
+                _separate = _sep_req
+            else:
+                _separate = bool(cfg_for(resolved_model, "SEPARATE_BGM", ident))
             # Optional per-request decode overrides (JSON object). Malformed → ignored.
             _overrides = {}
             if decode_overrides:
@@ -2892,6 +2910,41 @@ async def transcribe(
                 want_word_ts=want_word_ts, initial_prompt=initial_prompt_arg,
                 overrides=_overrides, ident=ident, task=_task,
             )
+
+            # Pre-decode music-separation stage (soft-fail): replaces the
+            # uploaded tmp file with a vocals-only WAV, so the decode AND the
+            # capture path below both see the separated audio (deliberate —
+            # captures should match what was transcribed). The original upload
+            # is unlinked here; the vocals file takes over tmp_path and the
+            # finally unlinks it. Serialized on the shared semaphore like
+            # every GPU stage.
+            if _separate:
+                if not getattr(cfg, "BGM_SEPARATION_ENABLED", False):
+                    _warnings.append(
+                        "music separation requested but not enabled on this "
+                        "server (BGM_SEPARATION_ENABLED is off)")
+                else:
+                    import bgm_separation as _bgm
+                    try:
+                        _sep_t0 = time.perf_counter()
+                        async with get_inference_semaphore():
+                            _vocals_path = await _bgm.separate(tmp_path)
+                        try:
+                            os.unlink(tmp_path)
+                        except OSError:
+                            pass
+                        tmp_path = _vocals_path
+                        logger.info("[bgm] separated in %.1fs",
+                                    time.perf_counter() - _sep_t0)
+                    except _bgm.BgmSeparationError as _se:
+                        # str(_se) is client-safe by the module's contract.
+                        _warnings.append(str(_se))
+                    except Exception as _se:  # noqa: BLE001 — soft-fail
+                        logger.error("[bgm] unexpected failure: %s",
+                                     _log_safe(str(_se)))
+                        _warnings.append(
+                            "music separation failed; transcribing the "
+                            "original audio")
 
             # Run the synchronous CTranslate2 inference in a thread executor
             # so the event loop stays responsive. CT2 releases the GIL
@@ -3021,7 +3074,6 @@ async def transcribe(
             # file is still on disk here (the capture path below reads it too;
             # the finally unlinks it after the response is built). Runs under
             # the shared inference semaphore so GPU stages serialize.
-            _warnings: "list[str]" = []
             speakers_list: "list[str]" = []
             if _diarize and segments_list:
                 if not getattr(cfg, "DIARIZATION_ENABLED", False):
@@ -3340,6 +3392,7 @@ async def translate_audio(
     num_speakers: int | None = Form(None),
     min_speakers: int | None = Form(None),
     max_speakers: int | None = Form(None),
+    separate_bgm: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     """OpenAI-compatible translation endpoint: the transcription handler with
@@ -3362,6 +3415,7 @@ async def translate_audio(
         num_speakers=num_speakers,
         min_speakers=min_speakers,
         max_speakers=max_speakers,
+        separate_bgm=separate_bgm,
         user=user,
     )
 
