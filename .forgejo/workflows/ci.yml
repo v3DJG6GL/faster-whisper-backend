@@ -279,16 +279,22 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ steps.img.outputs.name }}
           # latest=false: we control the `latest` tag via the type=raw rule
-          # below (main only — spelled out explicitly rather than
-          # {{is_default_branch}}, which needs event-payload fields Forgejo
-          # doesn't reliably fill). suffix appends "-gpu" to every tag for
-          # the gpu leg; onlatest=true ensures it reaches the raw `latest`
-          # tag too.
+          # below (spelled out explicitly rather than {{is_default_branch}},
+          # which needs event-payload fields Forgejo doesn't reliably fill).
+          # latest is pushed by main runs AND v* tag runs: the main-push
+          # build happens before release.yml mints the commit's tag, so its
+          # baked version is describe-suffixed ("v0.1.1-1-gabc1234"); the
+          # tag run that follows minutes later rebuilds warm-cache with the
+          # clean "vX.Y.Z" and overwrites latest, so deployments pulling
+          # :latest report the clean version too. A [skip release] commit
+          # simply keeps the main run's suffixed latest — by choice.
+          # suffix appends "-gpu" to every tag for the gpu leg;
+          # onlatest=true ensures it reaches the raw `latest` tag too.
           flavor: |
             latest=false
             suffix=${{ matrix.suffix }},onlatest=true
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
             type=ref,event=tag
             type=sha,format=short
 
