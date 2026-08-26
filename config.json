@@ -145,6 +145,7 @@
   "SUPPRESS_BLANK": true,
   "SUPPRESS_CHARS": null,
   "SUPPRESS_TOKENS": "-1",
+  "TASK": "transcribe",
   "TEMPERATURE": "0.0,0.2,0.4,0.6,0.8,1.0",
   "TRACE_ENABLED": true,
   "TRUSTED_ORIGINS": [],

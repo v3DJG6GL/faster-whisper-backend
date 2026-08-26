@@ -63,6 +63,7 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "DEFAULT_HOTWORDS": "WHISPER_DEFAULT_HOTWORDS",
     "OUTPUT_PREFIX": "WHISPER_OUTPUT_PREFIX",
     "OUTPUT_SUFFIX": "WHISPER_OUTPUT_SUFFIX",
+    "TASK": "WHISPER_TASK",
     "TEMPERATURE": "WHISPER_TEMPERATURE",
     "PATIENCE": "WHISPER_PATIENCE",
     "LENGTH_PENALTY": "WHISPER_LENGTH_PENALTY",
@@ -364,6 +365,11 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "is set per-call. (faster-whisper)",
 
     # --- Decode params (advanced) ---
+    "TASK":
+        "Whisper task when a request does not name one: 'transcribe' (source "
+        "language) or 'translate' (into English — Whisper's only translation "
+        "target). Clients override per request via the `task` form field or "
+        "the /v1/audio/translations endpoint.",
     "TEMPERATURE":
         "Fallback ladder for decoding when compression / log-prob checks "
         "fail. Comma-separated floats (e.g. '0.0,0.2,0.4,0.6,0.8,1.0'). "
@@ -892,6 +898,8 @@ ProfileName = Annotated[str, Field(min_length=1, max_length=32,
 
 LogLevel = Literal["debug", "info", "warning", "error", "critical"]
 DeviceLit = Literal["cuda", "cpu"]
+# Whisper task. "translate" targets English only — Whisper has no other target.
+TaskLit = Literal["transcribe", "translate"]
 # Runtime compute_type — the full CTranslate2 set (verified vs ctranslate2 4.7.2
 # + the CT2 docs). "auto" lets CT2 pick the fastest type supported on the device;
 # "default" keeps the model's converted type. A choice unsupported on the
@@ -1126,6 +1134,7 @@ class _CallTimeOverrideMixin(BaseModel):
     LOG_PROB_THRESHOLD: Annotated[float, Field(ge=-10.0, le=0.0)] | None = None
     COMPRESSION_RATIO_THRESHOLD: Annotated[float, Field(ge=0.0, le=10.0)] | None = None
     SEGMENT_MAX_WORDS_PER_SEC: Annotated[float, Field(ge=0.0, le=100.0)] | None = None
+    TASK: TaskLit | None = None
     TEMPERATURE: Annotated[str, Field(max_length=64)] | None = None
     PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
     LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = None
@@ -1321,6 +1330,7 @@ class AdminConfig(BaseModel):
 
     # --- Decode params (advanced) ---
     DEFAULT_HOTWORDS: Annotated[str, Field(max_length=2048)] | None = _F("DEFAULT_HOTWORDS")
+    TASK: TaskLit | None = _F("TASK")
     TEMPERATURE: Annotated[str, Field(max_length=64)] | None = _F("TEMPERATURE")
     PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = _F("PATIENCE")
     LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = _F("LENGTH_PENALTY")

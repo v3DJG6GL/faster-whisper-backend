@@ -364,6 +364,11 @@ DEFAULT_HOTWORDS: "str | None" = _D("DEFAULT_HOTWORDS")
 # default (currently identical, but explicit is safer for surprises).
 TEMPERATURE: "str | None" = _D("TEMPERATURE")
 
+# Whisper task: "transcribe" (source language) or "translate" (into English —
+# Whisper has no other translation target). Per-request `task` Form field
+# overrides; this is the default when the field is absent.
+TASK: str = _D("TASK")
+
 # Beam search patience; >1 keeps the beam alive longer. Default 1.0.
 PATIENCE: float = _D("PATIENCE")
 

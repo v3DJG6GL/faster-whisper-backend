@@ -217,3 +217,51 @@ def test_model_id_regex_rejects_a_trailing_newline(app_module):
     assert app_module._MODEL_ID_RE.match("org/some-repo")
     assert not app_module._MODEL_ID_RE.match("some-repo\n")
     assert not app_module._MODEL_ID_RE.match("org/some-repo\n")
+
+
+# --- task (translate) --------------------------------------------------------
+
+def test_task_translate_reaches_model_and_response(client, fake_model):
+    r = _post(client, response_format="verbose_json", task="translate")
+    assert r.status_code == 200
+    assert fake_model.last_kwargs["task"] == "translate"
+    assert r.json()["task"] == "translate"
+
+
+def test_task_default_is_not_forwarded(client, fake_model):
+    # The common path must stay byte-identical to pre-feature kwargs: no
+    # `task` key at all, and the response echoes "transcribe".
+    r = _post(client, response_format="verbose_json")
+    assert r.status_code == 200
+    assert "task" not in fake_model.last_kwargs
+    assert r.json()["task"] == "transcribe"
+
+
+def test_task_invalid_is_422(client):
+    r = _post(client, task="summarize")
+    assert r.status_code == 422
+
+
+def test_translations_endpoint_pins_task(client, fake_model):
+    r = client.post(
+        "/v1/audio/translations", files=_FILE,
+        data={"model": "whisper-1", "response_format": "verbose_json"},
+    )
+    assert r.status_code == 200, r.text
+    assert fake_model.last_kwargs["task"] == "translate"
+    assert r.json()["task"] == "translate"
+
+
+def test_task_config_default_applies_when_field_absent(client, app_module, fake_model):
+    # TASK config (global layer) is the default when the request has no task
+    # field; an explicit field still wins.
+    app_module.cfg.TASK = "translate"
+    try:
+        r = _post(client, response_format="verbose_json")
+        assert r.status_code == 200
+        assert fake_model.last_kwargs["task"] == "translate"
+        r = _post(client, response_format="verbose_json", task="transcribe")
+        assert r.status_code == 200
+        assert "task" not in fake_model.last_kwargs
+    finally:
+        app_module.cfg.TASK = "transcribe"

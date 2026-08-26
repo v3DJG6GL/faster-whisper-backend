@@ -1148,7 +1148,8 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
 
 def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
                                vad_filter, vad_parameters, want_word_ts,
-                               initial_prompt, overrides=None, ident=None):
+                               initial_prompt, overrides=None, ident=None,
+                               task="transcribe"):
     """Assemble the full ``model.transcribe`` kwargs from per-model config.
 
     Single source of truth shared by the batch endpoint and the streaming FINAL
@@ -1176,6 +1177,11 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         log_prob_threshold=cf("LOG_PROB_THRESHOLD"),
         compression_ratio_threshold=cf("COMPRESSION_RATIO_THRESHOLD"),
     )
+    # Whisper task — only forwarded off-default, so the kwargs dict (and the
+    # streaming FINAL decode, which never passes `task`) stay byte-identical
+    # to the pre-feature path for plain transcription.
+    if task and task != "transcribe":
+        transcribe_kwargs["task"] = task
     # Optional advanced kwargs — only forwarded when set, so the
     # transcribe_kwargs dict stays clean for the common path.
     _hotwords = cf("DEFAULT_HOTWORDS")
@@ -2129,18 +2135,19 @@ async def lifespan(app: FastAPI):
     try:
         import captures_store
         captures_store.init(cfg.CAPTURES_DB, cfg.CAPTURES_DIR)
+        # capture_samples_store reuses the captures DB connection — single
+        # SQLite file holds both tables. Init it before the first
+        # sweep_retention(): the sweep's sample-expiry pass needs it.
+        import capture_samples_store
+        capture_samples_store.init(captures_store._require_conn(), cfg.CAPTURES_DIR)
         captures_store.reconcile_on_startup()
+        capture_samples_store.reconcile_on_startup()
         captures_store.sweep_retention()
         logger.info(
             "Captures store initialized at %s (audio dir: %s, enabled=%s)",
             cfg.CAPTURES_DB, cfg.CAPTURES_DIR,
             getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False),
         )
-        # capture_samples_store reuses the captures DB connection — single
-        # SQLite file holds both tables.
-        import capture_samples_store
-        capture_samples_store.init(captures_store._require_conn(), cfg.CAPTURES_DIR)
-        capture_samples_store.reconcile_on_startup()
         captures_sweep_task = asyncio.create_task(
             _captures_retention_loop()
         )
@@ -2592,9 +2599,17 @@ async def transcribe(
     prompt: str | None = Form(None),
     decode_overrides: str = Form(None),
     override_profile: str = Form(None),
+    task: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     resolved_model = _resolve_model_name(model_name)
+    # Whisper's only two tasks; anything else is a caller error, not something
+    # to silently coerce (unlike the clamped numeric knobs below, a wrong task
+    # would return output in the wrong language with no other signal).
+    task = (task or "").strip() or None
+    if task is not None and task not in ("transcribe", "translate"):
+        raise HTTPException(status_code=422,
+                            detail="task must be 'transcribe' or 'translate'")
     # Bound the two OpenAI-compatible knobs that carry no schema of their own.
     # Both are already bounded on every sibling path — DEFAULT_PROMPT is
     # Field(max_length=2048) and the `hotwords` client override is capped by
@@ -2764,6 +2779,16 @@ async def transcribe(
                     ignored.append("language")
             else:
                 _language = language or cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident)
+            # Task: absent field inherits the resolved TASK config (per-identity
+            # > per-model > global, default "transcribe"); a LOCKED TASK forbids
+            # the client's `task` param the way a locked DEFAULT_LANGUAGE binds
+            # `language` above.
+            if "TASK" in ident.locked:
+                _task = cfg_for(resolved_model, "TASK", ident) or "transcribe"
+                if task is not None and task != _task:
+                    ignored.append("task")
+            else:
+                _task = task or cfg_for(resolved_model, "TASK", ident) or "transcribe"
             # Optional per-request decode overrides (JSON object). Malformed → ignored.
             _overrides = {}
             if decode_overrides:
@@ -2805,7 +2830,7 @@ async def transcribe(
                 language=_language, temperature=_temperature,
                 vad_filter=_vad_filter, vad_parameters=vad_parameters,
                 want_word_ts=want_word_ts, initial_prompt=initial_prompt_arg,
-                overrides=_overrides, ident=ident,
+                overrides=_overrides, ident=ident, task=_task,
             )
 
             # Run the synchronous CTranslate2 inference in a thread executor
@@ -3122,7 +3147,7 @@ async def transcribe(
 
             if response_format == "verbose_json":
                 response = {
-                    "task": "transcribe",
+                    "task": _task,
                     "language": info.language,
                     "duration": info.duration,
                     "text": full_text_str,
@@ -3188,6 +3213,39 @@ async def transcribe(
             user_id=_user_id,
             key_id=_key_id,
         )
+
+
+@app.post("/v1/audio/translations")
+async def translate_audio(
+    request: Request,
+    file: UploadFile = File(...),
+    model_name: str = Form("whisper-1", alias="model"),
+    response_format: str = Form("json"),
+    language: str = Form(None),
+    temperature: float = Form(0.0),
+    prompt: str | None = Form(None),
+    decode_overrides: str = Form(None),
+    override_profile: str = Form(None),
+    user: dict = Depends(_get_current_user_dep),
+):
+    """OpenAI-compatible translation endpoint: the transcription handler with
+    `task` pinned to "translate" (into English — Whisper's only target).
+    `language` still means the SOURCE language, exactly as on the sibling
+    endpoint. A locked TASK still wins inside the handler and reports
+    `overrides_ignored: ["task"]`."""
+    return await transcribe(
+        request=request,
+        file=file,
+        model_name=model_name,
+        response_format=response_format,
+        language=language,
+        temperature=temperature,
+        prompt=prompt,
+        decode_overrides=decode_overrides,
+        override_profile=override_profile,
+        task="translate",
+        user=user,
+    )
 
 
 @app.get("/v1/models", dependencies=[Depends(_get_current_user_dep)])

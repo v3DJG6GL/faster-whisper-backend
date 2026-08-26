@@ -270,3 +270,25 @@ def test_unlocked_blank_temperature_still_takes_the_client_form_field(
     )
     assert r.status_code == 200, r.text
     assert fake_model.last_kwargs["temperature"] == 0.5
+
+
+def test_locked_task_ignores_client_param(client, make_user_key, fake_model):
+    # A profile that locks TASK (value-less lock pins the inherited value,
+    # global default "transcribe") forbids the client's `task` form field —
+    # the same shape as the DEFAULT_LANGUAGE lock above.
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    _setup_profile(client, admin_h, "notask", locks=["TASK"])
+    uid, raw_alice = make_user_key("alice", is_admin=False)
+    client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
+                 json={"pages": {}, "config": {"overrides": {}, "profiles": ["notask"], "locks": []}})
+
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "task": "translate"},
+    )
+    assert r.status_code == 200, r.text
+    assert "task" not in fake_model.last_kwargs      # pinned to transcribe
+    assert "task" in r.json()["overrides_ignored"]
+    assert r.json()["task"] == "transcribe"

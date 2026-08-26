@@ -70,7 +70,7 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
     ("Decode params", [
         (None, [
             "DEFAULT_LANGUAGE", "DEFAULT_PROMPT", "DEFAULT_HOTWORDS",
-            "BEAM_SIZE", "BEST_OF",
+            "TASK", "BEAM_SIZE", "BEST_OF",
             "VAD_FILTER", "VAD_MIN_SILENCE_MS", "VAD_SPEECH_PAD_MS", "VAD_THRESHOLD",
             "LEADING_SILENCE_PAD_MS",
             "CONDITION_ON_PREVIOUS_TEXT", "WORD_TIMESTAMPS_ENABLED",
