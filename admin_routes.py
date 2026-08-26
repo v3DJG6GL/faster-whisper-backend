@@ -123,6 +123,16 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
             "STREAMING_MAX_BUFFER_SEC",
         ]),
     ]),
+    ("Diarization", [
+        (None, [
+            "DIARIZATION_ENABLED", "DIARIZATION_MODEL", "DIARIZATION_DEVICE",
+            "DIARIZATION_IDLE_TIMEOUT_S", "DIARIZE",
+        ]),
+        ("Advanced — speaker bounds & VRAM", [
+            "DIARIZATION_NUM_SPEAKERS", "DIARIZATION_MIN_SPEAKERS",
+            "DIARIZATION_MAX_SPEAKERS", "DIARIZATION_EMBEDDING_BATCH_SIZE",
+        ]),
+    ]),
     ("Per-model overrides", [(None, ["MODEL_OVERRIDES"])]),
     ("Pipeline", [(None, ["PIPELINE_RULES"])]),
     ("Logging", [(None, [
@@ -656,6 +666,18 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
         # Never let eviction failure break the save response. The user's
         # change still persisted; worst case they restart manually.
         logger.error("[config] eviction-on-edit failed: %s", e)
+
+    # Drop the cached pyannote pipeline when its load parameters changed, so
+    # the VRAM frees now instead of at the idle timeout. (Correctness doesn't
+    # depend on this — the diarization module re-keys on model/device/batch
+    # per request.)
+    if set(written.keys()) & {"DIARIZATION_MODEL", "DIARIZATION_DEVICE",
+                              "DIARIZATION_EMBEDDING_BATCH_SIZE"}:
+        try:
+            import diarization as _diarization
+            await _diarization.drop_pipeline()
+        except Exception as e:
+            logger.error("[config] diarization eviction-on-edit failed: %s", e)
 
     # Re-sync os.environ["HF_TOKEN"] whenever cfg.HF_TOKEN changed. The
     # token is set process-wide at startup (main.py) so non-WhisperModel HF

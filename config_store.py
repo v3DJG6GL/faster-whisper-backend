@@ -88,6 +88,16 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "CPU_THREADS": "WHISPER_CPU_THREADS",
     "NUM_WORKERS": "WHISPER_NUM_WORKERS",
     "DEVICE_INDEX": "WHISPER_DEVICE_INDEX",
+    # Speaker diarization (pyannote — optional install)
+    "DIARIZATION_ENABLED": "WHISPER_DIARIZATION_ENABLED",
+    "DIARIZATION_MODEL": "WHISPER_DIARIZATION_MODEL",
+    "DIARIZATION_DEVICE": "WHISPER_DIARIZATION_DEVICE",
+    "DIARIZATION_IDLE_TIMEOUT_S": "WHISPER_DIARIZATION_IDLE_TIMEOUT_S",
+    "DIARIZATION_EMBEDDING_BATCH_SIZE": "WHISPER_DIARIZATION_EMBEDDING_BATCH_SIZE",
+    "DIARIZE": "WHISPER_DIARIZE",
+    "DIARIZATION_NUM_SPEAKERS": "WHISPER_DIARIZATION_NUM_SPEAKERS",
+    "DIARIZATION_MIN_SPEAKERS": "WHISPER_DIARIZATION_MIN_SPEAKERS",
+    "DIARIZATION_MAX_SPEAKERS": "WHISPER_DIARIZATION_MAX_SPEAKERS",
     "TRACE_ENABLED": "WHISPER_TRACE",
     "LOG_FILE": "WHISPER_LOG_FILE",
     "LOG_VIEWER_INITIAL_LINES": "WHISPER_LOG_VIEWER_INITIAL_LINES",
@@ -486,6 +496,40 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "DEVICE_INDEX":
         "GPU index to bind to. Default 0. Set per-model on multi-GPU boxes "
         "to pin a model to a specific card.",
+
+    # --- Speaker diarization ---
+    "DIARIZATION_ENABLED":
+        "Allow clients to request speaker diarization (pyannote). The "
+        "pipeline loads on first use, not at startup. Needs the optional "
+        "`pip install -r requirements-diarize.txt` and, for the gated "
+        "models, accepted Hugging Face terms plus HF_TOKEN.",
+    "DIARIZATION_MODEL":
+        "pyannote pipeline id. community-1 (CC-BY-4.0) is the default; "
+        "speaker-diarization-3.1 (MIT) is the alternative. Both are gated "
+        "on huggingface.co — accept the model terms, then set HF_TOKEN.",
+    "DIARIZATION_DEVICE":
+        "auto follows MODEL_DEVICE (with the same fallback); cuda / cpu pin "
+        "it. The pipeline holds roughly 1 GB VRAM while loaded.",
+    "DIARIZATION_IDLE_TIMEOUT_S":
+        "Unload the diarization pipeline after this many idle seconds, like "
+        "MODEL_IDLE_TIMEOUT_S for whisper models. 0 = keep it loaded once "
+        "used.",
+    "DIARIZATION_EMBEDDING_BATCH_SIZE":
+        "Speaker-embedding batch size. pyannote's default can spike several "
+        "GB of VRAM on hour-long audio (pyannote-audio#1963); 4 keeps the "
+        "peak under ~1 GB at a small wall-time cost.",
+    "DIARIZE":
+        "Whether a request diarizes when it does not say (the `diarize` form "
+        "field overrides; lockable). Only effective while "
+        "DIARIZATION_ENABLED is on.",
+    "DIARIZATION_NUM_SPEAKERS":
+        "Exact speaker count hint for the pipeline. Wins over MIN/MAX when "
+        "set. Empty = let the pipeline decide. Clients override per request "
+        "via `num_speakers`.",
+    "DIARIZATION_MIN_SPEAKERS":
+        "Lower bound on the speaker count. Ignored when NUM_SPEAKERS is set.",
+    "DIARIZATION_MAX_SPEAKERS":
+        "Upper bound on the speaker count. Ignored when NUM_SPEAKERS is set.",
 
     # --- Pipeline ---
     "PIPELINE_RULES":
@@ -900,6 +944,14 @@ LogLevel = Literal["debug", "info", "warning", "error", "critical"]
 DeviceLit = Literal["cuda", "cpu"]
 # Whisper task. "translate" targets English only — Whisper has no other target.
 TaskLit = Literal["transcribe", "translate"]
+# Diarization: "auto" follows MODEL_DEVICE (incl. its fallback semantics).
+DiarizationDeviceLit = Literal["auto", "cuda", "cpu"]
+# The two supported pyannote pipelines (both HF-gated; community-1 needs
+# pyannote.audio 4.x).
+DiarizationModelLit = Literal[
+    "pyannote/speaker-diarization-community-1",
+    "pyannote/speaker-diarization-3.1",
+]
 # Runtime compute_type — the full CTranslate2 set (verified vs ctranslate2 4.7.2
 # + the CT2 docs). "auto" lets CT2 pick the fastest type supported on the device;
 # "default" keeps the model's converted type. A choice unsupported on the
@@ -1136,6 +1188,13 @@ class _CallTimeOverrideMixin(BaseModel):
     SEGMENT_MAX_WORDS_PER_SEC: Annotated[float, Field(ge=0.0, le=100.0)] | None = None
     TASK: TaskLit | None = None
     TEMPERATURE: Annotated[str, Field(max_length=64)] | None = None
+    # Diarization call-time knobs. The capacity switch DIARIZATION_ENABLED is
+    # deliberately NOT here (server-wide, like STREAMING_MAX_SESSIONS); these
+    # four are per-caller policy and therefore lockable.
+    DIARIZE: bool | None = None
+    DIARIZATION_NUM_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = None
+    DIARIZATION_MIN_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = None
+    DIARIZATION_MAX_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = None
     PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
     LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = None
     REPETITION_PENALTY: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
@@ -1398,6 +1457,17 @@ class AdminConfig(BaseModel):
     CPU_THREADS: Annotated[int, Field(ge=0, le=128)] | None = _F("CPU_THREADS")
     NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F("NUM_WORKERS")
     DEVICE_INDEX: Annotated[int, Field(ge=0, le=15)] | None = _F("DEVICE_INDEX")
+
+    # --- Speaker diarization ---
+    DIARIZATION_ENABLED: bool | None = _F("DIARIZATION_ENABLED")
+    DIARIZATION_MODEL: DiarizationModelLit | None = _F("DIARIZATION_MODEL")
+    DIARIZATION_DEVICE: DiarizationDeviceLit | None = _F("DIARIZATION_DEVICE")
+    DIARIZATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F("DIARIZATION_IDLE_TIMEOUT_S")
+    DIARIZATION_EMBEDDING_BATCH_SIZE: Annotated[int, Field(ge=1, le=64)] | None = _F("DIARIZATION_EMBEDDING_BATCH_SIZE")
+    DIARIZE: bool | None = _F("DIARIZE")
+    DIARIZATION_NUM_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F("DIARIZATION_NUM_SPEAKERS")
+    DIARIZATION_MIN_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F("DIARIZATION_MIN_SPEAKERS")
+    DIARIZATION_MAX_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F("DIARIZATION_MAX_SPEAKERS")
 
     # --- Per-model overrides ---
     MODEL_OVERRIDES: dict[ModelId, ModelOverride] | None = _F("MODEL_OVERRIDES")

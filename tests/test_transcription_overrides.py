@@ -292,3 +292,36 @@ def test_locked_task_ignores_client_param(client, make_user_key, fake_model):
     assert "task" not in fake_model.last_kwargs      # pinned to transcribe
     assert "task" in r.json()["overrides_ignored"]
     assert r.json()["task"] == "transcribe"
+
+
+def test_locked_diarize_ignores_client_param(client, app_module, make_user_key,
+                                             fake_model, monkeypatch):
+    # A profile locking DIARIZE (value-less lock pins the inherited global,
+    # default false) forbids the client's `diarize` form field.
+    import diarization
+    called = []
+
+    async def _fake_diarize(path, **kw):
+        called.append(path)
+        return [(0.0, 1.0, "SPEAKER_00")]
+    monkeypatch.setattr(diarization, "diarize", _fake_diarize)
+    app_module.cfg.DIARIZATION_ENABLED = True
+    try:
+        _, raw_admin = make_user_key("admin", is_admin=True)
+        admin_h = bearer(raw_admin)
+        _setup_profile(client, admin_h, "nodiar", locks=["DIARIZE"])
+        uid, raw_alice = make_user_key("alice", is_admin=False)
+        client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
+                     json={"pages": {}, "config": {"overrides": {},
+                           "profiles": ["nodiar"], "locks": []}})
+
+        r = client.post(
+            "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+            data={"model": "whisper-1", "response_format": "verbose_json",
+                  "diarize": "true"},
+        )
+        assert r.status_code == 200, r.text
+        assert called == []                          # pinned off
+        assert "diarize" in r.json()["overrides_ignored"]
+    finally:
+        app_module.cfg.DIARIZATION_ENABLED = False

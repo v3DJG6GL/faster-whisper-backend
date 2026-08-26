@@ -2017,6 +2017,12 @@ async def lifespan(app: FastAPI):
             logger.error("Failed to preload model '%s': %s", name, e)
 
     evictor_task = asyncio.create_task(_idle_evictor())
+    # The diarization pipeline gets its own idle unloader (module-local
+    # singleton, DIARIZATION_IDLE_TIMEOUT_S read live). Import is cheap and
+    # dependency-free — pyannote itself loads lazily on first use.
+    import diarization as _diarization
+    diarization_evictor_task = asyncio.create_task(
+        _diarization.idle_evictor_loop())
 
     # Open the API-keys SQLite store and start the open-mode warning loop.
     # In OPEN mode (no admin key exists yet) the loop nags every 60 s; this
@@ -2135,19 +2141,18 @@ async def lifespan(app: FastAPI):
     try:
         import captures_store
         captures_store.init(cfg.CAPTURES_DB, cfg.CAPTURES_DIR)
-        # capture_samples_store reuses the captures DB connection — single
-        # SQLite file holds both tables. Init it before the first
-        # sweep_retention(): the sweep's sample-expiry pass needs it.
-        import capture_samples_store
-        capture_samples_store.init(captures_store._require_conn(), cfg.CAPTURES_DIR)
         captures_store.reconcile_on_startup()
-        capture_samples_store.reconcile_on_startup()
         captures_store.sweep_retention()
         logger.info(
             "Captures store initialized at %s (audio dir: %s, enabled=%s)",
             cfg.CAPTURES_DB, cfg.CAPTURES_DIR,
             getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False),
         )
+        # capture_samples_store reuses the captures DB connection — single
+        # SQLite file holds both tables.
+        import capture_samples_store
+        capture_samples_store.init(captures_store._require_conn(), cfg.CAPTURES_DIR)
+        capture_samples_store.reconcile_on_startup()
         captures_sweep_task = asyncio.create_task(
             _captures_retention_loop()
         )
@@ -2166,6 +2171,8 @@ async def lifespan(app: FastAPI):
             pass
 
     await _cancel(evictor_task)
+    await _cancel(diarization_evictor_task)
+    await _diarization.drop_pipeline()
     await _cancel(reports_sweep_task)
     await _cancel(captures_sweep_task)
     await _cancel(sessions_purge_task)
@@ -2588,6 +2595,21 @@ def _safe_tmp_suffix(filename: "str | None") -> str:
     return ext if _TMP_SUFFIX_RE.match(ext) else ""
 
 
+def _form_bool(value: "str | None") -> "bool | None":
+    """Tri-state multipart boolean: multipart values arrive as strings, and
+    FastAPI's bool coercion can't keep "absent" (inherit the config default)
+    distinct from "false" (explicitly off). Unrecognised spellings read as
+    absent — the sloppy-caller-keeps-working stance of the clamped knobs."""
+    if value is None:
+        return None
+    s = value.strip().lower()
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    return None
+
+
 @app.post("/v1/audio/transcriptions")
 async def transcribe(
     request: Request,
@@ -2600,6 +2622,10 @@ async def transcribe(
     decode_overrides: str = Form(None),
     override_profile: str = Form(None),
     task: str | None = Form(None),
+    diarize: str | None = Form(None),
+    num_speakers: int | None = Form(None),
+    min_speakers: int | None = Form(None),
+    max_speakers: int | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     resolved_model = _resolve_model_name(model_name)
@@ -2610,6 +2636,11 @@ async def transcribe(
     if task is not None and task not in ("transcribe", "translate"):
         raise HTTPException(status_code=422,
                             detail="task must be 'transcribe' or 'translate'")
+    # Speaker-count hints: clamp like the other schemaless numeric knobs.
+    _spk_clamp = lambda v: min(32, max(1, v)) if v is not None else None  # noqa: E731
+    num_speakers = _spk_clamp(num_speakers)
+    min_speakers = _spk_clamp(min_speakers)
+    max_speakers = _spk_clamp(max_speakers)
     # Bound the two OpenAI-compatible knobs that carry no schema of their own.
     # Both are already bounded on every sibling path — DEFAULT_PROMPT is
     # Field(max_length=2048) and the `hotwords` client override is capped by
@@ -2789,6 +2820,35 @@ async def transcribe(
                     ignored.append("task")
             else:
                 _task = task or cfg_for(resolved_model, "TASK", ident) or "transcribe"
+            # Diarization request knobs: same absent-inherits / locked-wins
+            # shape as task above. The capacity gate (DIARIZATION_ENABLED)
+            # is checked at the stage itself and soft-fails into `warnings`.
+            _diarize_req = _form_bool(diarize)
+            if "DIARIZE" in ident.locked:
+                _diarize = bool(cfg_for(resolved_model, "DIARIZE", ident))
+                if _diarize_req is not None and _diarize_req != _diarize:
+                    ignored.append("diarize")
+            elif _diarize_req is not None:
+                _diarize = _diarize_req
+            else:
+                _diarize = bool(cfg_for(resolved_model, "DIARIZE", ident))
+            _spk = {}
+            for _cfg_name, _client_name, _client_val in (
+                ("DIARIZATION_NUM_SPEAKERS", "num_speakers", num_speakers),
+                ("DIARIZATION_MIN_SPEAKERS", "min_speakers", min_speakers),
+                ("DIARIZATION_MAX_SPEAKERS", "max_speakers", max_speakers),
+            ):
+                if _cfg_name in ident.locked:
+                    _spk[_client_name] = cfg_for(resolved_model, _cfg_name, ident)
+                    if _client_val is not None and _client_val != _spk[_client_name]:
+                        ignored.append(_client_name)
+                elif _client_val is not None:
+                    _spk[_client_name] = _client_val
+                else:
+                    _spk[_client_name] = cfg_for(resolved_model, _cfg_name, ident)
+            # pyannote treats num alongside min/max as an error — num wins.
+            if _spk.get("num_speakers"):
+                _spk["min_speakers"] = _spk["max_speakers"] = None
             # Optional per-request decode overrides (JSON object). Malformed → ignored.
             _overrides = {}
             if decode_overrides:
@@ -2954,6 +3014,50 @@ async def transcribe(
                             "start": word.start,
                             "end": word.end,
                         })
+
+            # Post-decode diarization stage (soft-fail): a failure or a
+            # disabled server never costs the caller the transcript — it
+            # arrives without speaker labels plus a `warnings` entry. The tmp
+            # file is still on disk here (the capture path below reads it too;
+            # the finally unlinks it after the response is built). Runs under
+            # the shared inference semaphore so GPU stages serialize.
+            _warnings: "list[str]" = []
+            speakers_list: "list[str]" = []
+            if _diarize and segments_list:
+                if not getattr(cfg, "DIARIZATION_ENABLED", False):
+                    _warnings.append(
+                        "diarization requested but not enabled on this "
+                        "server (DIARIZATION_ENABLED is off)")
+                else:
+                    # The module itself is import-safe without the optional
+                    # deps (pyannote is imported inside the load path).
+                    import diarization as _diar
+                    try:
+                        _diar_t0 = time.perf_counter()
+                        async with get_inference_semaphore():
+                            _turns = await _diar.diarize(
+                                tmp_path,
+                                num_speakers=_spk.get("num_speakers"),
+                                min_speakers=_spk.get("min_speakers"),
+                                max_speakers=_spk.get("max_speakers"),
+                            )
+                        speakers_list = _diar.assign_speakers(segments_list, _turns)
+                        logger.info(
+                            "[diarize] %d turns → %d speakers across %d "
+                            "segments in %.1fs",
+                            len(_turns), len(speakers_list), len(segments_list),
+                            time.perf_counter() - _diar_t0)
+                    except _diar.DiarizationError as _de:
+                        # str(_de) is client-safe by the module's contract.
+                        _warnings.append(str(_de))
+                    except Exception as _de:  # noqa: BLE001 — soft-fail
+                        logger.error("[diarize] unexpected failure: %s",
+                                     _log_safe(str(_de)))
+                        _warnings.append(
+                            "diarization failed; the transcript has no "
+                            "speaker labels")
+            elif _diarize:
+                _warnings.append("diarization skipped: no speech segments")
 
             raw_full_text = "".join(raw_full_text_parts)
             trace: "list | None" = [] if cfg.TRACE_ENABLED else None
@@ -3155,6 +3259,12 @@ async def transcribe(
                 }
                 if include_words:
                     response["words"] = all_words
+                if speakers_list:
+                    response["speakers"] = speakers_list
+                # Soft-failed optional stages (diarization) explain themselves
+                # here instead of failing the request.
+                if _warnings:
+                    response["warnings"] = _warnings
                 # Surface (never silently drop) any client override the admin
                 # config locked out, so the caller can see why it had no effect.
                 if ignored:
@@ -3226,6 +3336,10 @@ async def translate_audio(
     prompt: str | None = Form(None),
     decode_overrides: str = Form(None),
     override_profile: str = Form(None),
+    diarize: str | None = Form(None),
+    num_speakers: int | None = Form(None),
+    min_speakers: int | None = Form(None),
+    max_speakers: int | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     """OpenAI-compatible translation endpoint: the transcription handler with
@@ -3244,6 +3358,10 @@ async def translate_audio(
         decode_overrides=decode_overrides,
         override_profile=override_profile,
         task="translate",
+        diarize=diarize,
+        num_speakers=num_speakers,
+        min_speakers=min_speakers,
+        max_speakers=max_speakers,
         user=user,
     )
 

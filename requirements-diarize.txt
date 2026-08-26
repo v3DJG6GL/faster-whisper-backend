@@ -1,0 +1,14 @@
+# Optional: speaker diarization (pyannote). Install on top of the base file:
+#   pip install -r requirements.txt -r requirements-diarize.txt
+#
+# Pulls torch + torchaudio + torchcodec transitively (~0.6-0.8 GB installed on
+# CPU). For the GPU image, install with the cu126 index so torch shares the
+# nvidia-cublas-cu12 / nvidia-cudnn-cu12 pip libraries ctranslate2 already
+# uses (PyPI-default torch 2.12+ pulls the cu13 userspace stack instead —
+# avoid mixing cu12 and cu13 in one process):
+#   pip install -r requirements-diarize.txt \
+#       --extra-index-url https://download.pytorch.org/whl/cu126
+#
+# Runtime also needs system ffmpeg (torchcodec decodes through it) and, for
+# the gated pipelines, accepted model terms on huggingface.co + HF_TOKEN.
+pyannote.audio>=4.0.7

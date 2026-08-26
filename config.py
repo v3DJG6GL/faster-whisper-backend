@@ -495,6 +495,40 @@ DEVICE_INDEX: int = _D("DEVICE_INDEX")
 
 
 # =============================================================================
+# Speaker diarization (pyannote — optional install, requirements-diarize.txt)
+# =============================================================================
+# Master capacity switch: whether this server accepts `diarize` requests at
+# all. Off = requested diarization is skipped with a response warning.
+DIARIZATION_ENABLED: bool = _D("DIARIZATION_ENABLED")
+
+# Pipeline id. community-1 (CC-BY-4.0) is the default; 3.1 (MIT) is the
+# proven-VRAM alternative. Both are HF-gated: the operator must accept the
+# model terms on huggingface.co and set HF_TOKEN before first use.
+DIARIZATION_MODEL: str = _D("DIARIZATION_MODEL")
+
+# "auto" follows MODEL_DEVICE (with its fallback semantics); cuda/cpu pin it.
+DIARIZATION_DEVICE: str = _D("DIARIZATION_DEVICE")
+
+# Unload the pyannote pipeline after this many idle seconds (0 = keep loaded
+# once used). Read live by the extras idle-eviction loop, like
+# MODEL_IDLE_TIMEOUT_S for whisper models.
+DIARIZATION_IDLE_TIMEOUT_S: int = _D("DIARIZATION_IDLE_TIMEOUT_S")
+
+# Speaker-embedding batch size. pyannote's default batches large enough to
+# spike >9 GB VRAM on hour-long audio (pyannote-audio#1963); 4 keeps the
+# peak under ~1 GB at a small wall-time cost.
+DIARIZATION_EMBEDDING_BATCH_SIZE: int = _D("DIARIZATION_EMBEDDING_BATCH_SIZE")
+
+# Call-time defaults (per-identity > per-model > global; lockable): whether
+# a request diarizes when it doesn't say, and the speaker-count hints.
+# NUM wins over MIN/MAX when both are set; None = let the pipeline decide.
+DIARIZE: bool = _D("DIARIZE")
+DIARIZATION_NUM_SPEAKERS: "int | None" = _D("DIARIZATION_NUM_SPEAKERS")
+DIARIZATION_MIN_SPEAKERS: "int | None" = _D("DIARIZATION_MIN_SPEAKERS")
+DIARIZATION_MAX_SPEAKERS: "int | None" = _D("DIARIZATION_MAX_SPEAKERS")
+
+
+# =============================================================================
 # Per-model overrides (MODEL_OVERRIDES)
 # =============================================================================
 # Map of model_id -> dict of override fields. Each override may set any
@@ -1069,6 +1103,20 @@ def _env_float_or_none(name: str, current: "float | None") -> "float | None":
         _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid number; keeping {current!r}")
         return current
 
+def _env_int_or_none(name: str, current: "int | None") -> "int | None":
+    """Like _env_int but an explicit empty string means None (disable)."""
+    raw = os.environ.get(name)
+    if raw is None:
+        return current
+    if not raw.strip():
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid integer; keeping {current!r}")
+        return current
+
+
 _FALSY = ("0", "false", "no", "off")
 
 
@@ -1211,9 +1259,16 @@ _ENV_READER_OVERRIDES = {
     "NO_SPEECH_THRESHOLD": "float_or_none", "LOG_PROB_THRESHOLD": "float_or_none",
     "COMPRESSION_RATIO_THRESHOLD": "float_or_none",
     "HALLUCINATION_SILENCE_THRESHOLD": "float_or_none",
+    # Optional integer hints where an empty string clears (→ None). The
+    # inferred reader for a None default is str_or_none, which would leak a
+    # STRING into these int-typed fields.
+    "DIARIZATION_NUM_SPEAKERS": "int_or_none",
+    "DIARIZATION_MIN_SPEAKERS": "int_or_none",
+    "DIARIZATION_MAX_SPEAKERS": "int_or_none",
 }
 _ENV_READER_FUNCS = {
     "int": _env_int, "float": _env_float, "float_or_none": _env_float_or_none,
+    "int_or_none": _env_int_or_none,
     "bool": _env_bool, "str": _env_str, "str_or_none": _env_str_or_none,
     "passthrough": _env_str_passthrough, "csv_list": _env_csv_list,
 }
