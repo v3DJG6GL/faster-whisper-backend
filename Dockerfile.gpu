@@ -32,13 +32,19 @@ RUN pip install --upgrade pip \
 # two CUDA userspaces in one process is asking for trouble). audio-separator's
 # [gpu] extra swaps onnxruntime for onnxruntime-gpu. ffmpeg from apt for
 # torchcodec / audio-separator decoding.
+# gcc/g++ are BUILD-time only: audio-separator's diffq dependency ships no
+# cp314 wheel and compiles from source (run 372 failed on "No such file or
+# directory: 'gcc'"). Purged in the same RUN so the compiler never reaches
+# the final layer.
 ARG INCLUDE_EXTRAS=0
 RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       apt-get update \
-      && apt-get install -y --no-install-recommends ffmpeg \
-      && rm -rf /var/lib/apt/lists/* \
+      && apt-get install -y --no-install-recommends ffmpeg gcc g++ \
       && pip install -r requirements-diarize.txt "audio-separator[gpu]>=0.44" \
-           --extra-index-url https://download.pytorch.org/whl/cu126 ; \
+           --extra-index-url https://download.pytorch.org/whl/cu126 \
+      && apt-get purge -y gcc g++ \
+      && apt-get autoremove -y \
+      && rm -rf /var/lib/apt/lists/* ; \
     fi
 
 # ctranslate2 dlopens libcublas / libcudnn at runtime but does not search

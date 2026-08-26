@@ -25,13 +25,19 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # CPU wheel index here. ffmpeg from apt — torchcodec and audio-separator
 # decode through the system libraries. The lean image skips all of it; the
 # code lazy-imports and soft-fails with a message naming the requirements file.
+# gcc/g++ are BUILD-time only: audio-separator's diffq dependency ships no
+# cp314 wheel and compiles from source (run 372 failed on "No such file or
+# directory: 'gcc'"). Purged in the same RUN so the compiler never reaches
+# the final layer.
 ARG INCLUDE_EXTRAS=0
 RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       apt-get update \
-      && apt-get install -y --no-install-recommends ffmpeg \
-      && rm -rf /var/lib/apt/lists/* \
+      && apt-get install -y --no-install-recommends ffmpeg gcc g++ \
       && pip install -r requirements-diarize.txt -r requirements-bgm.txt \
-           --extra-index-url https://download.pytorch.org/whl/cpu ; \
+           --extra-index-url https://download.pytorch.org/whl/cpu \
+      && apt-get purge -y gcc g++ \
+      && apt-get autoremove -y \
+      && rm -rf /var/lib/apt/lists/* ; \
     fi
 
 # Non-root runtime user (a compromised app process can't rewrite /app code or
