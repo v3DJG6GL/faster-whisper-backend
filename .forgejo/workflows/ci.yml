@@ -333,3 +333,39 @@ jobs:
           sbom: false
           cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}
           cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }},mode=max,ignore-error=true
+
+  # Kick mirror-ghcr.yml exactly once per publishing run, after every
+  # variant has pushed. Replaces that workflow's registry_package trigger,
+  # which fired once per pushed tag — ~12 runs per commit across the four
+  # variants, because Forgejo's concurrency groups serialize an event
+  # burst instead of deduping it. Dispatch is also the only trigger shape
+  # that works from CI at all: Forgejo suppresses workflow events whose
+  # actor is the actions token (cycle prevention), but the dispatch API
+  # bypasses the event pipeline and accepts the run-scoped token.
+  #
+  # if: always() so this job is never *skipped* — a skipped needs-job
+  # hangs the whole run on Forgejo v15 (forgejo#12937; same reason all-ci
+  # is shaped the way it is). The publish-only gate sits on the step: it
+  # no-ops on PR runs (build doesn't push there) and on failed builds.
+  mirror:
+    name: dispatch ghcr mirror
+    if: always()
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch mirror-ghcr.yml (publish runs only)
+        if: needs.build.result == 'success' && github.event_name != 'pull_request'
+        env:
+          DISPATCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # ref=main: picks which revision of mirror-ghcr.yml runs, nothing
+        # else — the sync derives its tag list from the registry at
+        # runtime, so tag-push runs dispatch main's copy too. A retried
+        # POST can at worst double-dispatch; the sync is an idempotent
+        # digest-compare and its concurrency group serializes the pair.
+        run: |
+          curl -fsS --retry 3 --retry-delay 5 --retry-connrefused --retry-all-errors \
+            -X POST \
+            -H "Authorization: token ${DISPATCH_TOKEN}" \
+            -H "Content-Type: application/json" \
+            --data '{"ref":"main"}' \
+            "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/mirror-ghcr.yml/dispatches"

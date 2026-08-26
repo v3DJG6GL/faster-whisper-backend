@@ -8,17 +8,21 @@
 # Same pattern as nextcloud-fpm-nginx/mirror-ghcr.yml.
 #
 # Deliberately a SEPARATE workflow, not a job in ci.yml: a mirror job
-# appended after `build` would have to be skipped on PR runs, and
-# skipped-`needs` jobs hang the whole run on Forgejo v15 (forgejo#12937).
-# A digest-compare reconcile is idempotent, so a timer is just as good —
-# anything published between slots lands next slot.
+# doing the sync inline after `build` would have to be skipped on PR
+# runs, and skipped-`needs` jobs hang the whole run on Forgejo v15
+# (forgejo#12937). Instead ci.yml ends with an always()-run `mirror` job
+# that POSTs to this workflow's dispatch endpoint once per publishing
+# run — dispatch bypasses the event pipeline, so the run-scoped actions
+# token is accepted there.
 #
-# Primary trigger is registry_package: Forgejo fires it once per package
-# VERSION published — i.e. once per tag ci.yml pushes, so one image
-# publish arrives as a burst of events (latest, sha-*, buildcache-*,
-# × cpu/gpu). The concurrency group collapses the burst: one sync runs,
-# the newest surplus event waits as pending, the rest dedupe away. The
-# crons stay as a reconcile backstop for anything an event run missed.
+# No registry_package trigger (removed 2026-08-26): Forgejo fires that
+# event once per package VERSION published — one publish = one event per
+# tag (latest, sha-*, buildcache-*, × cpu/gpu/-full variants), and on
+# this instance the concurrency group merely SERIALIZES the burst
+# instead of deduping it (runs 353–371 were one such pile-up), so every
+# commit spawned ~12 back-to-back runs. The single ci.yml dispatch
+# replaces the whole burst. The crons stay as a reconcile backstop for
+# anything a dispatch run missed.
 #
 # Setup (job no-ops with a notice until this is done):
 #   * Add repo secrets GHCR_USER (GitHub username) + GHCR_TOKEN (a GitHub
@@ -37,8 +41,6 @@
 name: mirror-ghcr
 
 on:
-  registry_package:
-    types: [published]
   schedule:
     # Reconcile backstop. Forgejo evaluates cron in UTC. Offset 30 min
     # from nextcloud-fpm-nginx's mirror slots (07:00/15:00 UTC) so the
@@ -47,7 +49,7 @@ on:
     - cron: '30 15 * * *'
   workflow_dispatch:
 
-# Collapse the per-tag event burst of a publish — see header.
+# Serialize a ci.yml dispatch overlapping a cron slot.
 concurrency:
   group: mirror-ghcr
   cancel-in-progress: false
