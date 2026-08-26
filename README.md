@@ -68,10 +68,18 @@ python main.py                             # serves on http://0.0.0.0:8000
 
 ### Docker (any OS)
 
-CI publishes two images to the Forgejo container registry on every push to
+CI publishes four images to the Forgejo container registry on every push to
 `main` (and on `v*` tags): `:latest` (CPU) and `:latest-gpu` (adds the CUDA 12 /
-cuDNN 9 wheels). Both are also tagged `:v<version>` / `:v<version>-gpu` and
-`:sha-<short>` / `:sha-<short>-gpu`.
+cuDNN 9 wheels), plus `:latest-full` / `:latest-gpu-full` — the same images
+with the optional heavy extras baked in (speaker diarization: pyannote +
+torch + system ffmpeg; the GPU flavor installs torch from the cu126 index so
+it shares ctranslate2's pip CUDA libraries). Every flavor is also tagged
+`:v<version>` and `:sha-<short>` with the matching suffix. The lean images
+stay fully functional — a diarization request on them soft-fails with a
+response warning naming `requirements-diarize.txt`. Model weights are never
+baked into any image: pyannote pipelines download on first use into the
+models volume (gated on huggingface.co — accept the model terms and set
+`WHISPER_HF_TOKEN` first).
 
 ```bash
 # CPU — pulls forgejo.informethic.ch/v3djg6gl/faster-whisper-backend:latest

@@ -17,8 +17,21 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Install deps first for layer caching.
-COPY requirements.txt ./
+COPY requirements.txt requirements-diarize.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Optional heavy extras (INCLUDE_EXTRAS=1 → the "-full" tag): speaker
+# diarization (pyannote + torch, CPU wheels here). ffmpeg from apt — torchcodec
+# decodes through the system libraries. The lean image skips all of it; the
+# code lazy-imports and soft-fails with a message naming the requirements file.
+ARG INCLUDE_EXTRAS=0
+RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends ffmpeg \
+      && rm -rf /var/lib/apt/lists/* \
+      && pip install -r requirements-diarize.txt \
+           --extra-index-url https://download.pytorch.org/whl/cpu ; \
+    fi
 
 # Non-root runtime user (a compromised app process can't rewrite /app code or
 # install packages). The build args only seed the /etc/passwd entry — the

@@ -123,9 +123,10 @@ jobs:
           # UNAUTHORIZED listing into a green "0 copied" run (seen on
           # nextcloud-fpm-nginx run 47).
           all_tags=$(crane ls "$SRC_IMAGE")
-          # Runnable tags only, each with an optional -gpu variant:
-          # vN[.N[.N]], latest, sha-<short> — not buildcache-*.
-          tags=$(printf '%s\n' "$all_tags" | grep -E '^(v[0-9]+(\.[0-9]+){0,2}|latest|sha-[0-9a-f]+)(-gpu)?$' | sort -V || true)
+          # Runnable tags only, each with optional -gpu / -full /
+          # -gpu-full variants: vN[.N[.N]], latest, sha-<short> — not
+          # buildcache-*.
+          tags=$(printf '%s\n' "$all_tags" | grep -E '^(v[0-9]+(\.[0-9]+){0,2}|latest|sha-[0-9a-f]+)(-gpu)?(-full)?$' | sort -V || true)
           if [ -z "$tags" ]; then
             echo "::error::no runnable tags found on $SRC_IMAGE"
             exit 1

@@ -21,9 +21,24 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Base + GPU deps first, for layer caching. The GPU wheels are large (~1 GB).
-COPY requirements.txt requirements-gpu.txt ./
+COPY requirements.txt requirements-gpu.txt requirements-diarize.txt ./
 RUN pip install --upgrade pip \
  && pip install -r requirements.txt -r requirements-gpu.txt
+
+# Optional heavy extras (INCLUDE_EXTRAS=1 → the "-full" tag): speaker
+# diarization. torch comes from the cu126 index so it shares the
+# nvidia-cublas-cu12 / nvidia-cudnn-cu12 pip libraries ctranslate2 already
+# uses (PyPI-default torch 2.12+ would pull the cu13 stack alongside — two
+# CUDA userspaces in one process is asking for trouble). ffmpeg from apt for
+# torchcodec decoding.
+ARG INCLUDE_EXTRAS=0
+RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
+      apt-get update \
+      && apt-get install -y --no-install-recommends ffmpeg \
+      && rm -rf /var/lib/apt/lists/* \
+      && pip install -r requirements-diarize.txt \
+           --extra-index-url https://download.pytorch.org/whl/cu126 ; \
+    fi
 
 # ctranslate2 dlopens libcublas / libcudnn at runtime but does not search
 # site-packages, and main.py's CUDA-lib preloader is Windows-only — so put the
