@@ -68,6 +68,14 @@ env:
 jobs:
   test:
     name: tests (ubuntu-latest py${{ matrix.python-version }})
+    # Skipped on v* tag runs — tag-first flow (2026-08-27): a tag is only
+    # ever minted for a commit that already tested green (release.yml
+    # enforces it on both its paths), so the tag run goes straight to the
+    # image build instead of re-running the suites. Skipping a needed job
+    # is safe since Forgejo v16 (16.0.3 here): the server evaluates job
+    # `if` itself (PR #13030); on v15 this would have hung the run
+    # (forgejo#12937).
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     # Exact interpreter via the official image — replaces setup-python (see
     # header). The matrix value is interpolated into the tag, so Renovate's
@@ -127,6 +135,8 @@ jobs:
   # `python -m` invocations (Scripts\ shims may lag the service PATH).
   test-windows:
     name: tests (windows-latest)
+    # Skipped on tag runs — see the `test` job.
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
     runs-on: windows-latest
     steps:
       # Same env indirection as the Linux legs above, in PowerShell spelling:
@@ -158,9 +168,9 @@ jobs:
   # legs expand/rename over time; this gate aggregates them so the required
   # check name never changes. It fails unless EVERY leg succeeded — so
   # Renovate automerge only proceeds when the whole suite is green on all
-  # platforms. (No job in this chain is ever *skipped*, so the Forgejo v15
-  # skipped-needs hang documented in nextcloud-fpm-nginx/build.yml can't
-  # bite here.)
+  # platforms. (Skipped needs-jobs no longer hang the run since Forgejo
+  # v16 — server-side `if` evaluation, PR #13030 — which is what allows
+  # the tag-run skips asserted below.)
   all-ci:
     name: all-ci
     if: always()
@@ -170,14 +180,28 @@ jobs:
       - name: Require all test legs to succeed
         run: |
           echo "test=${{ needs.test.result }} test-windows=${{ needs.test-windows.result }}"
-          test "${{ needs.test.result }}" = "success"
-          test "${{ needs.test-windows.result }}" = "success"
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # Tag runs skip the suites (the tagged commit already tested
+            # green — see the test job); "skipped" is the expected verdict
+            # here, and anything else means the skip condition regressed.
+            test "${{ needs.test.result }}" = "skipped"
+            test "${{ needs.test-windows.result }}" = "skipped"
+          else
+            test "${{ needs.test.result }}" = "success"
+            test "${{ needs.test-windows.result }}" = "success"
+          fi
 
-  # Build (and, off PRs, publish) the container images — only AFTER the test
-  # gate is green. `needs: [all-ci]` means this job is skipped whenever the
-  # suite fails, so a broken build never reaches the registry. PRs build the
-  # images to validate the Dockerfiles but do not push; push to main / a v*
-  # tag publishes.
+  # Build (and, off PRs, publish) the container images — tag-first flow
+  # (2026-08-27): a main push runs ONLY the test legs; its green verdict
+  # dispatches release.yml (see the mirror job below), which mints the next
+  # v* tag, and THAT tag's run — this job — is the single image build per
+  # release, baking the clean vX.Y.Z. Main-push runs skip this job
+  # entirely: no double builds, and no interim :latest carrying a
+  # describe-suffixed version. PRs still build to validate the Dockerfiles
+  # without pushing; a workflow_dispatch run builds and publishes sha tags
+  # (manual rebuild escape hatch). The all-ci gate still fronts every
+  # publish: on tag runs it verifies the suites were skipped deliberately
+  # (the tagged commit tested green on its main-push run).
   #
   # Four variants build in parallel from the same context:
   #   cpu      — Dockerfile      → :latest, :v*, :sha-<short>     (CPU-only base)
@@ -191,6 +215,7 @@ jobs:
   build:
     name: build image (${{ matrix.variant }})
     needs: [all-ci]
+    if: ${{ needs.all-ci.result == 'success' && (github.event_name != 'push' || startsWith(github.ref, 'refs/tags/')) }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -279,22 +304,19 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ steps.img.outputs.name }}
           # latest=false: we control the `latest` tag via the type=raw rule
-          # below (spelled out explicitly rather than {{is_default_branch}},
-          # which needs event-payload fields Forgejo doesn't reliably fill).
-          # latest is pushed by main runs AND v* tag runs: the main-push
-          # build happens before release.yml mints the commit's tag, so its
-          # baked version is describe-suffixed ("v0.1.1-1-gabc1234"); the
-          # tag run that follows minutes later rebuilds warm-cache with the
-          # clean "vX.Y.Z" and overwrites latest, so deployments pulling
-          # :latest report the clean version too. A [skip release] commit
-          # simply keeps the main run's suffixed latest — by choice.
+          # below. Tag-first flow: only v* tag runs build-and-push, so
+          # latest is owned by tag runs and always carries the clean
+          # vX.Y.Z baked version — never a describe-suffixed interim.
+          # Every green main push gets a tag (release.yml), so latest
+          # still tracks main; the exception is commits marked
+          # [skip release], which now publish no images at all.
           # suffix appends "-gpu" to every tag for the gpu leg;
           # onlatest=true ensures it reaches the raw `latest` tag too.
           flavor: |
             latest=false
             suffix=${{ matrix.suffix }},onlatest=true
           tags: |
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
             type=ref,event=tag
             type=sha,format=short
 
@@ -360,20 +382,21 @@ jobs:
   # actor is the actions token (cycle prevention), but the dispatch API
   # bypasses the event pipeline and accepts the run-scoped token.
   #
-  # if: always() so this job is never *skipped* — a skipped needs-job
-  # hangs the whole run on Forgejo v15 (forgejo#12937; same reason all-ci
-  # is shaped the way it is). The publish-only gates sit on the steps: they
-  # no-op on PR runs (build doesn't push there) and on failed builds.
+  # if: always() so this job runs whatever happened upstream — build is
+  # deliberately *skipped* on main pushes (tag-first flow), and the
+  # dispatch decisions live on the steps: the ghcr mirror fires only after
+  # a successful publish (tag runs / manual dispatch), the auto-release
+  # only after a green main-push test run.
   #
-  # The job also hosts the continuous-release dispatch (second step): every
-  # green, fully-published push to main kicks release.yml with bump=patch,
-  # which mints the next v* tag → which fires this workflow's own tag run
-  # (the one that bakes the clean vX.Y.Z into the images). Gated to main
-  # pushes, so the tag run cannot re-dispatch — no cycle.
+  # The continuous-release dispatch (second step): every green push to
+  # main kicks release.yml with bump=patch, which mints the next v* tag →
+  # which fires this workflow's tag run — the single image build per
+  # release, baking the clean vX.Y.Z. Gated to main pushes, so the tag
+  # run cannot re-dispatch — no cycle.
   mirror:
     name: dispatch ghcr mirror + auto-release
     if: always()
-    needs: [build]
+    needs: [all-ci, build]
     runs-on: ubuntu-latest
     steps:
       - name: Dispatch mirror-ghcr.yml (publish runs only)
@@ -393,9 +416,10 @@ jobs:
             --data '{"ref":"main"}' \
             "${GITHUB_SERVER_URL}/api/v1/repos/${GITHUB_REPOSITORY}/actions/workflows/mirror-ghcr.yml/dispatches"
 
-      # Continuous versioning: every commit that reached main and published
-      # its images becomes a patch release. release.yml owns all the tag
-      # logic (bump compute, [skip release] opt-out, monotonicity,
+      # Continuous versioning: every commit that reached main and tested
+      # green becomes a patch release (the tag run then does the actual
+      # image build — build is skipped on this run). release.yml owns all
+      # the tag logic (bump compute, [skip release] opt-out, monotonicity,
       # idempotence) — this step only tells it WHICH commit passed. Main
       # pushes only: tag runs of this workflow must not re-dispatch (cycle),
       # and manual minor/major bumps go through release.yml's own
@@ -403,7 +427,7 @@ jobs:
       # token (same as the mirror dispatch above); the PAT that release.yml
       # needs for the tag push itself lives there as RELEASE_TOKEN.
       - name: Dispatch release.yml (auto patch bump; green main pushes only)
-        if: needs.build.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: needs.all-ci.result == 'success' && github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           DISPATCH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |

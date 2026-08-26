@@ -16,17 +16,23 @@
 #
 # Two ways in, one implementation:
 #   - continuous (automatic): ci.yml's `mirror` job dispatches this
-#     workflow with bump=patch + the tested commit's sha after every green,
-#     fully-published push to main. Every main commit thus becomes a patch
-#     release. Opt out per commit by putting "[skip release]" anywhere in
-#     the commit message (checked on auto runs only).
+#     workflow with bump=patch + the tested commit's sha after every green
+#     test run on a main push (tag-first flow: main runs test only — the
+#     tag run this workflow triggers does the single image build). Every
+#     main commit thus becomes a patch release. Opt out per commit by
+#     putting "[skip release]" anywhere in the commit message (checked on
+#     auto runs only — but note such a commit then publishes no images).
 #   - manual ("Run workflow" button): pick patch/minor/major; tags the
 #     current HEAD of the chosen branch. Use minor for a feature release,
 #     major for a breaking one — the automatic path never does either.
+#     Because tag runs skip the test suites, the manual path first checks
+#     the target commit's existing all-ci commit status and refuses to tag
+#     anything that isn't green.
 #
 # The tag itself triggers everything downstream, all pre-existing: the v*
-# ci.yml run (tests → 4 image variants with BUILD_VERSION=vX.Y.Z → ghcr
-# mirror dispatch); mirror-ghcr.yml's v* regex already expects the tags.
+# ci.yml run (4 image variants with BUILD_VERSION=vX.Y.Z, tests skipped →
+# ghcr mirror dispatch); mirror-ghcr.yml's v* regex already expects the
+# tags.
 # This workflow additionally creates a Forgejo Release carrying the commit
 # log since the previous tag, so /releases doubles as the changelog.
 #
@@ -78,6 +84,7 @@ jobs:
           # NOT the actions token: Forgejo swallows its push events, and the
           # whole point of this tag is to fire ci.yml's v* build run.
           PUSH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          API_TOKEN: ${{ github.token }}
           BUMP: ${{ inputs.bump }}
           TARGET_SHA: ${{ inputs.sha }}
         run: |
@@ -100,6 +107,22 @@ jobs:
           if ! git merge-base --is-ancestor "$target" origin/main; then
             echo "::error::$target is not on main — refusing to tag"
             exit 1
+          fi
+
+          # Manual runs only: the tag run skips the test suites (tag-first
+          # flow), so the target must already carry a green all-ci commit
+          # status. Auto runs need no lookup — they are dispatched by that
+          # green run itself, and racing its own still-pending contexts
+          # here is exactly what this per-context (not combined) check
+          # avoids.
+          if [ -z "$TARGET_SHA" ]; then
+            verdict=$(curl -fsS -H "Authorization: token $API_TOKEN" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/commits/$target/statuses?limit=50" \
+              | jq -r '[.[] | select(.context | test("all-ci"))][0] | (.status // .state) // "none"')
+            if [ "$verdict" != "success" ]; then
+              echo "::error::no green all-ci status on $target (found: $verdict) — wait for its CI run to pass before releasing"
+              exit 1
+            fi
           fi
 
           # Per-commit opt-out, auto runs only (a human clicking the button
