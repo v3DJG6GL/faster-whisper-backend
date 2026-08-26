@@ -18,6 +18,7 @@ filesystem paths) stays in the server log only.
 import asyncio
 import logging
 import os
+import threading
 import time
 
 import config as cfg
@@ -29,6 +30,12 @@ logger = logging.getLogger("whisper-server")
 class DiarizationError(RuntimeError):
     """Diarization could not run; str(exc) is CLIENT-SAFE (our own wording)."""
 
+
+# Serializes actual pipeline inference across threads — same zombie hazard
+# as bgm_separation._separate_mutex: a cancelled request's diarization keeps
+# running in its executor thread, and pyannote pipelines are not documented
+# thread-safe.
+_infer_mutex = threading.Lock()
 
 _lock = asyncio.Lock()
 _pipeline = None
@@ -261,15 +268,16 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
             kwargs["max_speakers"] = max_speakers
 
     def _run():
-        if progress_cb is not None:
-            try:
-                result = pipe(path, hook=_make_hook(progress_cb), **kwargs)
-            except TypeError:
-                # A pipeline without the hook kwarg (or a test stub) — run
-                # without progress rather than failing the stage.
+        with _infer_mutex:
+            if progress_cb is not None:
+                try:
+                    result = pipe(path, hook=_make_hook(progress_cb), **kwargs)
+                except TypeError:
+                    # A pipeline without the hook kwarg (or a test stub) —
+                    # run without progress rather than failing the stage.
+                    result = pipe(path, **kwargs)
+            else:
                 result = pipe(path, **kwargs)
-        else:
-            result = pipe(path, **kwargs)
         # pyannote 4.x returns a result object; the exclusive (non-overlapping)
         # view is purpose-built for aligning with STT segments. 3.x returns the
         # Annotation itself.

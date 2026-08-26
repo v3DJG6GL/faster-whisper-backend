@@ -159,6 +159,16 @@ def _install_shims() -> None:
     _shims_installed = True
 
 
+# Serializes ACTUAL separator use across threads. The request path already
+# holds the shared inference semaphore, but a CANCELLED request's separation
+# keeps running in its executor thread (threads can't be aborted) — and
+# Separator is a singleton whose per-file state (audio_file_path, sources)
+# is cleared at the end of each run. A zombie finishing mid-way through a
+# live run wiped that state under it (observed 2026-08-26: write_audio saw
+# audio_file_path=None → "separator returned no output files"). A plain
+# threading.Lock in the executor thread covers zombies too.
+_separate_mutex = threading.Lock()
+
 _lock = asyncio.Lock()
 _separator = None
 _separator_key: "tuple[str, str] | None" = None  # (model_filename, device)
@@ -355,8 +365,9 @@ async def separate(path: str, *, progress_cb=None) -> str:
         _progress_tls.pass_no = 0
         _progress_tls.quartile = 0
         try:
-            outputs = sep.separate(
-                path, custom_output_names={"Vocals": out_name})
+            with _separate_mutex:
+                outputs = sep.separate(
+                    path, custom_output_names={"Vocals": out_name})
         finally:
             _progress_tls.cb = None
         if not outputs:
