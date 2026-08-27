@@ -12,3 +12,9 @@
 # Runtime also needs system ffmpeg (torchcodec decodes through it) and, for
 # the gated pipelines, accepted model terms on huggingface.co + HF_TOKEN.
 pyannote.audio>=4.0.7
+
+# pyannote itself only floors torchcodec>=0.7; require the first release with
+# FFmpeg 9 support because install-service.ps1's -Full fallback provisions a
+# pinned FFmpeg 9 shared build on Windows. (torchcodec 0.16 supports majors
+# 4-9, so distro ffmpeg on Linux/Docker — 7.1 on Debian 13 — stays fine.)
+torchcodec>=0.16.0

@@ -345,13 +345,15 @@ if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
     if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
         Write-Host "ffmpeg installed (a new shell may be needed for PATH)." -ForegroundColor Green
     } elseif ($Full) {
-        # Pinned BtbN shared build, ffmpeg 7.1 — the same major the -full
-        # Docker image gets from Debian 13 apt (torchcodec is picky about
-        # ffmpeg majors; 7.x = avutil-59 is the validated one). BtbN's newer
-        # autobuilds dropped the 7.1 branch, hence the older tag. These two
-        # MUST be updated together, like the WinSW pin above.
-        $FfmpegZipUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-16-13-00/ffmpeg-n7.1.5-16-g9a4bb2c579-win64-gpl-shared-7.1.zip"
-        $FfmpegZipSha = "AF514FAE0AF8565EB9125848FF61F7D7E9E878A6CF6AF512434C4741FC6BE488"
+        # Pinned BtbN shared build, ffmpeg 9.0. torchcodec supports ffmpeg
+        # majors 4-9, but 9 only since torchcodec 0.16.0 —
+        # requirements-diarize.txt pins that floor to match. (Docker/Linux
+        # stay on distro apt ffmpeg — 7.1 on Debian 13 — which is inside the
+        # supported range; the majors don't need to agree across deployment
+        # types.) URL and hash MUST be updated together, like the WinSW pin
+        # above; Renovate does not manage either (it can't recompute hashes).
+        $FfmpegZipUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-26-13-06/ffmpeg-n9.0.1-8-g16dfae5c88-win64-gpl-shared-9.0.zip"
+        $FfmpegZipSha = "C7A8C2B7B4F857703D5F1A71C436172E9B772AC2DF34B8AF9D02EF952640D0EC"
         Write-Host "Downloading pinned shared ffmpeg into $RepoDir\ffmpeg ..." -ForegroundColor Cyan
         $zipPath = Join-Path $env:TEMP "ffmpeg-shared.zip"
         Invoke-WebRequest -Uri $FfmpegZipUrl -OutFile $zipPath -UseBasicParsing
