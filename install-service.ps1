@@ -322,13 +322,28 @@ function Test-FfmpegShared($cmd) {
     # Shared builds ship avutil-*.dll next to ffmpeg.exe; static builds don't.
     return [bool]($cmd -and (Get-ChildItem -Path (Split-Path $cmd.Source) -Filter "avutil-*.dll" -ErrorAction SilentlyContinue))
 }
+# Pinned BtbN shared build, ffmpeg 9.0. torchcodec supports ffmpeg majors
+# 4-9, but 9 only since torchcodec 0.16.0 — requirements-diarize.txt pins
+# that floor to match. (Docker/Linux stay on distro apt ffmpeg — 7.1 on
+# Debian 13 — which is inside the supported range; the majors don't need to
+# agree across deployment types.) URL and hash MUST be updated together,
+# like the WinSW pin above; Renovate does not manage either (it can't
+# recompute hashes). The extracted copy is stamped with the zip's SHA-256
+# (.pin) so a pin bump auto-reprovisions on the next -Full run.
+$FfmpegZipUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-26-13-06/ffmpeg-n9.0.1-8-g16dfae5c88-win64-gpl-shared-9.0.zip"
+$FfmpegZipSha = "C7A8C2B7B4F857703D5F1A71C436172E9B772AC2DF34B8AF9D02EF952640D0EC"
+
 $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
-$RepoFfmpegExe = Join-Path $RepoDir "ffmpeg\bin\ffmpeg.exe"
+$RepoFfmpegDir = Join-Path $RepoDir "ffmpeg"
+$RepoFfmpegExe = Join-Path $RepoFfmpegDir "bin\ffmpeg.exe"
+$RepoFfmpegPin = Join-Path $RepoFfmpegDir ".pin"
+$repoFfmpegCurrent = (Test-Path $RepoFfmpegExe) -and (Test-Path $RepoFfmpegPin) -and
+    ((Get-Content $RepoFfmpegPin -ErrorAction SilentlyContinue) -eq $FfmpegZipSha)
 
 if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
     Write-Host "ffmpeg present: $($ff.Source)" -ForegroundColor DarkGray
-} elseif ($Full -and (Test-Path $RepoFfmpegExe)) {
-    Write-Host "repo-local shared ffmpeg present: $RepoFfmpegExe" -ForegroundColor DarkGray
+} elseif ($Full -and $repoFfmpegCurrent) {
+    Write-Host "repo-local shared ffmpeg present and matches the pin: $RepoFfmpegExe" -ForegroundColor DarkGray
 } else {
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if ($winget) {
@@ -345,16 +360,10 @@ if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
     if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
         Write-Host "ffmpeg installed (a new shell may be needed for PATH)." -ForegroundColor Green
     } elseif ($Full) {
-        # Pinned BtbN shared build, ffmpeg 9.0. torchcodec supports ffmpeg
-        # majors 4-9, but 9 only since torchcodec 0.16.0 —
-        # requirements-diarize.txt pins that floor to match. (Docker/Linux
-        # stay on distro apt ffmpeg — 7.1 on Debian 13 — which is inside the
-        # supported range; the majors don't need to agree across deployment
-        # types.) URL and hash MUST be updated together, like the WinSW pin
-        # above; Renovate does not manage either (it can't recompute hashes).
-        $FfmpegZipUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-26-13-06/ffmpeg-n9.0.1-8-g16dfae5c88-win64-gpl-shared-9.0.zip"
-        $FfmpegZipSha = "C7A8C2B7B4F857703D5F1A71C436172E9B772AC2DF34B8AF9D02EF952640D0EC"
-        Write-Host "Downloading pinned shared ffmpeg into $RepoDir\ffmpeg ..." -ForegroundColor Cyan
+        if (Test-Path $RepoFfmpegExe) {
+            Write-Host "Repo-local ffmpeg is outdated (pin changed) - reprovisioning..." -ForegroundColor Cyan
+        }
+        Write-Host "Downloading pinned shared ffmpeg into $RepoFfmpegDir ..." -ForegroundColor Cyan
         $zipPath = Join-Path $env:TEMP "ffmpeg-shared.zip"
         Invoke-WebRequest -Uri $FfmpegZipUrl -OutFile $zipPath -UseBasicParsing
         $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash
@@ -366,12 +375,14 @@ if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
         if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
         Expand-Archive -Path $zipPath -DestinationPath $extractDir
         $inner = Get-ChildItem -Directory $extractDir | Select-Object -First 1
-        $ffTarget = Join-Path $RepoDir "ffmpeg"
-        if (Test-Path $ffTarget) { Remove-Item -Recurse -Force $ffTarget }
-        Move-Item $inner.FullName $ffTarget
+        if (Test-Path $RepoFfmpegDir) { Remove-Item -Recurse -Force $RepoFfmpegDir }
+        Move-Item $inner.FullName $RepoFfmpegDir
+        # Stamp which zip this copy came from; compared against the pin above
+        # on re-runs so a pin bump replaces the copy automatically.
+        Set-Content -Path $RepoFfmpegPin -Value $FfmpegZipSha -Encoding ASCII
         Remove-Item -Force $zipPath
         Remove-Item -Recurse -Force $extractDir
-        Write-Host "Shared ffmpeg installed at $ffTarget (main.py puts ffmpeg\bin on the service PATH)." -ForegroundColor Green
+        Write-Host "Shared ffmpeg installed at $RepoFfmpegDir (main.py puts ffmpeg\bin on the service PATH)." -ForegroundColor Green
     } else {
         Write-Host "No system ffmpeg; the bundled imageio-ffmpeg binary will be used for the encoded streaming transport." -ForegroundColor DarkGray
     }
