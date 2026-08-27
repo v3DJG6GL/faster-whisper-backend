@@ -1856,7 +1856,13 @@ function renderTrace(entry) {
       size.className = 'pill';
       size.style.fontFamily = 'var(--font-mono)';
       const words = t.trim() ? t.trim().split(/\s+/).length : 0;
-      size.textContent = fmtCount(words) + ' words';
+      const secs = Number(entry.audio_dur);
+      const dur = Number.isFinite(secs) && secs > 0
+        ? (secs >= 3600
+            ? Math.floor(secs / 3600) + ' h ' + Math.round((secs % 3600) / 60) + ' min'
+            : secs >= 60 ? Math.round(secs / 60) + ' min' : Math.round(secs) + ' s')
+        : '';
+      size.textContent = (dur ? dur + ' \u00b7 ' : '') + fmtCount(words) + ' words';
       meta.appendChild(size);
     }
   }
@@ -1881,6 +1887,11 @@ function renderTrace(entry) {
           ? ', ' + (steps.length - changed.length) + ' unchanged'
           : '')
       + ')';
+    // Folded-by-default file traces advertise what the click reveals.
+    if (changed.length && !(entry.source === 'stream'
+        || (entry.final || '').length <= TRACE_CLAMP_CHARS)) {
+      sum.textContent += ' — open for word-diffs';
+    }
     det.appendChild(sum);
     for (const s of steps) {
       if (!Array.isArray(s) || s.length < 3) continue;
