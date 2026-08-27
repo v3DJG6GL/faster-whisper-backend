@@ -60,8 +60,13 @@ python main.py                             # serves on http://0.0.0.0:8000
 ### Linux (production, systemd)
 
 ```bash
-./install-service.sh        # CPU   (auto-elevates via sudo, creates venv,
-./install-service.sh --gpu  # GPU    installs deps, writes + starts the unit)
+./install-service.sh              # CPU   (auto-elevates via sudo, creates venv,
+./install-service.sh --gpu        # GPU    installs deps, writes + starts the unit)
+./install-service.sh --gpu --full # GPU + heavy extras — the bare-metal
+                                  # equivalent of the :latest-gpu-full image
+                                  # (diarization + music separation; --full
+                                  # works without --gpu too). Re-run with the
+                                  # SAME flags to refresh.
 # manage: systemctl status|restart whisper-api ; journalctl -u whisper-api -f
 # remove: ./uninstall-service.sh
 ```
@@ -108,7 +113,11 @@ rebuild needed, volumes work with any UID out of the box.
 # Auto-elevates via UAC, bootstraps the venv, installs requirements, downloads
 # WinSW, and registers the Windows Service in one go.
 .\install-service.ps1
-# On a GPU box, also: venv\Scripts\python -m pip install -r requirements-gpu.txt
+.\install-service.ps1 -Gpu        # also install the NVIDIA CUDA wheels
+.\install-service.ps1 -Gpu -Full  # + heavy extras — the bare-metal equivalent
+                                  # of :latest-gpu-full (diarization + music
+                                  # separation; -Full works without -Gpu too).
+                                  # Re-run with the SAME flags to refresh.
 ```
 
 First server start eagerly preloads the models in `PRELOAD_MODELS` (by default

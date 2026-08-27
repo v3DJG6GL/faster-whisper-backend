@@ -3,7 +3,16 @@
 # PowerShell prompt:
 #   .\install-service.ps1
 #   .\install-service.ps1 -WithConvert     # also install ~2 GB of HF->CT2 deps
+#   .\install-service.ps1 -Gpu             # also install the NVIDIA CUDA wheels
+#   .\install-service.ps1 -Gpu -Full       # + heavy extras (= :latest-gpu-full)
 # (Self-elevates to admin via UAC if not already running elevated.)
+#
+# -Full mirrors the Docker "-full" image tags (Dockerfile / Dockerfile.gpu
+# with INCLUDE_EXTRAS=1): speaker diarization (pyannote) + background-music
+# separation (audio-separator). Several GB of downloads. Pass the SAME flags
+# on every re-run: a re-run without -Full leaves installed extras alone but
+# does not refresh them, and re-running a GPU box's -Full without -Gpu would
+# downgrade torch to the CPU build.
 #
 # WinSW.exe is auto-downloaded into this folder if missing. No package
 # manager (choco/scoop/winget) required.
@@ -26,7 +35,9 @@
 
 [CmdletBinding()]
 param(
-    [switch]$WithConvert
+    [switch]$WithConvert,
+    [switch]$Gpu,
+    [switch]$Full
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,9 +56,11 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
         "-ExecutionPolicy", "Bypass",
         "-File", "`"$PSCommandPath`""
     )
-    # Forward switches across the UAC re-launch so $WithConvert isn't lost
-    # when the script restarts under elevation.
+    # Forward switches across the UAC re-launch so they aren't lost when the
+    # script restarts under elevation.
     if ($WithConvert) { $relaunchArgs += "-WithConvert" }
+    if ($Gpu)         { $relaunchArgs += "-Gpu" }
+    if ($Full)        { $relaunchArgs += "-Full" }
     Start-Process powershell -Verb RunAs -ArgumentList $relaunchArgs
     exit
 }
@@ -194,6 +207,41 @@ if (Test-Path $reqFile) {
     Write-Host "WARNING: requirements.txt not found at $reqFile" -ForegroundColor Yellow
 }
 
+# -Gpu: the NVIDIA CUDA 12 / cuDNN 9 runtime wheels ctranslate2 loads for GPU
+# inference. main.py's Windows DLL preloader finds them in the venv at startup.
+if ($Gpu) {
+    $gpuReq = Join-Path $RepoDir "requirements-gpu.txt"
+    Write-Host "Installing/refreshing GPU wheels (CUDA 12 / cuDNN 9, ~1 GB)..." -ForegroundColor Cyan
+    & $Python -m pip install -r $gpuReq
+    if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-gpu.txt failed (exit $LASTEXITCODE)" }
+}
+
+# -Full: the heavy extras of the Docker "-full" tags. Keep the GPU branch in
+# sync with Dockerfile.gpu's INCLUDE_EXTRAS=1 block — same packages, same pins,
+# same reasons:
+#   * torch from the cu126 index so it shares the ONE CUDA 12 userspace the
+#     GPU wheels above use (PyPI-default torch pulls the cu13 stack instead).
+#   * onnxruntime-gpu >=1.27 on PyPI is a CUDA 13 build — on a cu12 stack its
+#     CUDA provider fails to load and separation silently runs on the CPU.
+#     1.26.x is the last CUDA 12.8 build; forced LAST (--no-deps) so its files
+#     also win over the CPU-only onnxruntime faster-whisper pulls in.
+if ($Full) {
+    Write-Host "Installing full extras (diarization + music separation, several GB)..." -ForegroundColor Cyan
+    $diarizeReq = Join-Path $RepoDir "requirements-diarize.txt"
+    if ($Gpu) {
+        & $Python -m pip install -r $diarizeReq "audio-separator[gpu]>=0.44" "audioread>=2.1.9" "librosa<1.0" --extra-index-url https://download.pytorch.org/whl/cu126
+        if ($LASTEXITCODE -ne 0) { throw "pip install of the full extras failed (exit $LASTEXITCODE)" }
+        & $Python -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
+        if ($LASTEXITCODE -ne 0) { throw "pip install onnxruntime-gpu==1.26.* failed (exit $LASTEXITCODE)" }
+    } else {
+        $bgmReq = Join-Path $RepoDir "requirements-bgm.txt"
+        & $Python -m pip install -r $diarizeReq -r $bgmReq
+        if ($LASTEXITCODE -ne 0) { throw "pip install of the full extras failed (exit $LASTEXITCODE)" }
+    }
+    Write-Host "Full extras installed. Gated pyannote pipelines additionally need accepted" -ForegroundColor Green
+    Write-Host "model terms on huggingface.co plus WHISPER_HF_TOKEN in the service env." -ForegroundColor Green
+}
+
 # --- ffmpeg (live-streaming encoded transport) ------------------------------
 # Only the encoded transport (browser Opus/WebM) needs the ffmpeg executable;
 # raw-PCM dictation does not. imageio-ffmpeg (installed above) bundles a binary
@@ -205,13 +253,21 @@ if ($ff) {
 } else {
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if ($winget) {
-        Write-Host "ffmpeg not on PATH; attempting 'winget install Gyan.FFmpeg' (optional)..." -ForegroundColor Cyan
+        # -Full needs the SHARED build: torchcodec (pyannote's decoder) and
+        # audio-separator load the ffmpeg DLLs, which Gyan's default static
+        # build doesn't ship. The shared package includes the exe too.
+        $ffId = if ($Full) { "Gyan.FFmpeg.Shared" } else { "Gyan.FFmpeg" }
+        Write-Host "ffmpeg not on PATH; attempting 'winget install $ffId' (optional)..." -ForegroundColor Cyan
         $oldPref = $ErrorActionPreference; $ErrorActionPreference = "Continue"
-        & winget install --id Gyan.FFmpeg -e --silent --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
+        & winget install --id $ffId -e --silent --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
         $ErrorActionPreference = $oldPref
     }
     if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
         Write-Host "ffmpeg installed (a new shell may be needed for PATH)." -ForegroundColor Green
+    } elseif ($Full) {
+        Write-Host "WARNING: -Full needs a system ffmpeg (shared build) on PATH for" -ForegroundColor Yellow
+        Write-Host "  diarization / music separation. Install one manually, then" -ForegroundColor Yellow
+        Write-Host "  Restart-Service WhisperAPI." -ForegroundColor Yellow
     } else {
         Write-Host "No system ffmpeg; the bundled imageio-ffmpeg binary will be used for the encoded streaming transport." -ForegroundColor DarkGray
     }
