@@ -47,6 +47,20 @@ def test_me_reports_vad_filter_default(client, app_module):
     assert client.get("/v1/me").json()["vad_filter_default"] is False
 
 
+def test_me_reports_stage_availability(client, app_module):
+    # Additive pre-flight flags for the client's Separate-music / diarization
+    # toggles — a disabled feature otherwise only soft-fails into a warning
+    # after the run.
+    j = client.get("/v1/me").json()
+    assert j["bgm_separation_enabled"] is False
+    assert j["diarization_enabled"] is False
+    app_module.cfg.BGM_SEPARATION_ENABLED = True
+    app_module.cfg.DIARIZATION_ENABLED = True
+    j = client.get("/v1/me").json()
+    assert j["bgm_separation_enabled"] is True
+    assert j["diarization_enabled"] is True
+
+
 def test_me_reflects_per_key_gate(client, make_user_key):
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)

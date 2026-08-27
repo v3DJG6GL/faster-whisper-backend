@@ -335,6 +335,32 @@ def test_verbose_json_omits_vad_receipt_when_filter_off(client):
     assert "duration_after_vad" not in r.json()
 
 
+def test_progress_reports_skipped_separation(client, app_module):
+    # A requested-but-disabled optional stage is named in the progress entry
+    # the moment it is declined, so a polling client marks the rail row
+    # "skipped" live instead of inferring it; the final response still
+    # carries the warning text.
+    pid = "d" * 32
+    seen = {}
+    orig = app_module._progress_set
+
+    def spy(p, **fields):
+        orig(p, **fields)
+        if p == pid:
+            seen.update(app_module._BATCH_PROGRESS.get(pid) or {})
+
+    app_module._progress_set = spy
+    try:
+        r = _post(client, response_format="verbose_json",
+                  separate_bgm="true", progress_id=pid)
+    finally:
+        app_module._progress_set = orig
+    assert r.status_code == 200
+    assert seen.get("skipped") == ["separating"]
+    assert any("music separation requested" in w
+               for w in (r.json().get("warnings") or []))
+
+
 def test_progress_malformed_id_is_ignored_on_post(client, app_module):
     r = _post(client, response_format="verbose_json", progress_id="Nope!")
     assert r.status_code == 200

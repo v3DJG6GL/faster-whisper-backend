@@ -2958,6 +2958,12 @@ async def transcribe(
             # Music separation: same shape again. Soft-failed optional stages
             # (this and diarization) collect their explanations in _warnings.
             _warnings: "list[str]" = []
+            # Requested stages this server declines to run (feature disabled).
+            # Mirrored into the progress entry the moment each skip is known,
+            # so a polling client can mark the stage "skipped" live instead of
+            # inferring it — the warning text alone arrives only with the
+            # final response.
+            _skipped: "list[str]" = []
             _sep_req = _form_bool(separate_bgm)
             if "SEPARATE_BGM" in ident.locked:
                 _separate = bool(cfg_for(resolved_model, "SEPARATE_BGM", ident))
@@ -3023,6 +3029,8 @@ async def transcribe(
                     _warnings.append(
                         "music separation requested but not enabled on this "
                         "server (BGM_SEPARATION_ENABLED is off)")
+                    _skipped.append("separating")
+                    _progress_set(_pid, skipped=list(_skipped))
                 else:
                     import bgm_separation as _bgm
                     try:
@@ -3255,6 +3263,8 @@ async def transcribe(
                     _warnings.append(
                         "diarization requested but not enabled on this "
                         "server (DIARIZATION_ENABLED is off)")
+                    _skipped.append("diarizing")
+                    _progress_set(_pid, skipped=list(_skipped))
                 else:
                     # The module itself is import-safe without the optional
                     # deps (pyannote is imported inside the load path).
@@ -3657,6 +3667,10 @@ async def transcription_progress(progress_id: str):
         # Fraction of the audio the VAD kept (0..1), set once decoding starts;
         # null when the filter was off. Persists for the rest of the run.
         "vad_retained": entry.get("vad_retained"),
+        # Requested stages this server declined to run (feature disabled) —
+        # ["separating"] / ["diarizing"]. Set the moment the skip is known, so
+        # the client's rail can say "skipped" instead of guessing.
+        "skipped": entry.get("skipped"),
     }
 
 
@@ -3733,6 +3747,14 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # on its Skip-silence control can say which way inherit points. Server-wide
     # (not per-model/identity) — it labels a ghost, it doesn't gate anything.
     caps["vad_filter_default"] = bool(getattr(cfg, "VAD_FILTER", True))
+    # Additive: whether the optional pipeline stages exist on this server at
+    # all, so the client can disable its "Separate music" / "Speaker
+    # diarization" toggles pre-flight instead of letting a request soft-fail
+    # into a warning. Server-wide feature switches, not per-identity grants.
+    caps["bgm_separation_enabled"] = bool(
+        getattr(cfg, "BGM_SEPARATION_ENABLED", False))
+    caps["diarization_enabled"] = bool(
+        getattr(cfg, "DIARIZATION_ENABLED", False))
     return caps
 
 
