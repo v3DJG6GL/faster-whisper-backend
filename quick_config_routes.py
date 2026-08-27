@@ -1269,8 +1269,29 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .trace-final { color: var(--bold); }
   .trace-final .trace-tag { color: var(--green); }
   details.trace-steps { margin-top: 0.375rem; }
-  details.trace-steps > summary { cursor: pointer; font-size: var(--fs-xs);
-    color: var(--cyan); list-style: revert; user-select: none; }
+  /* The disclosure is a REAL button: border, hover, rotating chevron chip,
+     verb-first label. Still a native <details>/<summary> underneath. */
+  details.trace-steps > summary { list-style: none; display: flex;
+    align-items: center; gap: 0.5rem; background: var(--input-bg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.3rem 0.6rem; font-size: var(--fs-sm); color: var(--fg);
+    cursor: pointer; }
+  details.trace-steps > summary:hover { background: #21262d;
+    border-color: #8b949e; }
+  details.trace-steps > summary::-webkit-details-marker { display: none; }
+  details.trace-steps > summary::marker { content: ''; }
+  .steps-chev { display: inline-grid; place-items: center; width: 18px;
+    height: 18px; border-radius: 4px; background: rgba(126,231,135,0.12);
+    color: var(--green); font-size: 11px; flex-shrink: 0;
+    transition: transform 0.12s; }
+  details[open].trace-steps > summary .steps-chev { transform: rotate(90deg); }
+  .steps-cnt { background: rgba(242,204,96,0.12); color: var(--yellow);
+    border-radius: 999px; padding: 0 0.5rem; font-size: var(--fs-xs); }
+  .steps-cnt.dim { background: rgba(255,255,255,0.04); color: var(--dim); }
+  .steps-lbl-hide { display: none; }
+  details[open].trace-steps > summary .steps-lbl-show { display: none; }
+  details[open].trace-steps > summary .steps-lbl-hide { display: inline; }
+  .step-excerpt.steps-teaser { padding-left: 0; margin-top: 0.35rem; }
   .trace-step { padding: 0.25rem 0 0.25rem 0.75rem; font-size: var(--fs-xs);
     border-left: 2px solid var(--border); margin-top: 0.25rem; }
   .trace-step.skipped { opacity: 0.55; }
@@ -1874,23 +1895,52 @@ function renderTrace(entry) {
   const changed = steps.filter(s =>
     Array.isArray(s) && s.length >= 3 && s[1] !== s[2]);
   if (steps.length) {
-    const det = document.createElement('details');
-    det.className = 'trace-steps';
     // Open by default only when the content is glanceable: live dictation
     // snippets, or a file trace whose final text is short. Long file traces
-    // arrive folded.
-    if (changed.length && (entry.source === 'stream'
-        || (entry.final || '').length <= TRACE_CLAMP_CHARS)) det.open = true;
+    // arrive folded — behind the teaser + button below.
+    const startOpen = !!changed.length && (entry.source === 'stream'
+        || (entry.final || '').length <= TRACE_CLAMP_CHARS);
+    // Teaser: the first diff excerpt renders ABOVE the button even while
+    // collapsed, so the feature advertises itself with content, not copy.
+    if (!startOpen && changed.length) {
+      const first = changed.find(c =>
+        (c[1] || '').length > TRACE_DIFF_CHARS
+        || (c[2] || '').length > TRACE_DIFF_CHARS) || changed[0];
+      const A = (first[1] || '').split(/\s+/), B = (first[2] || '').split(/\s+/);
+      const regions = wordDiffRegions(A, B);
+      if (regions.length) {
+        const teaser = diffExcerpt(A, B, regions[0]);
+        teaser.classList.add('steps-teaser');
+        item.appendChild(teaser);
+      }
+    }
+    const det = document.createElement('details');
+    det.className = 'trace-steps';
+    if (startOpen) det.open = true;
     const sum = document.createElement('summary');
-    sum.textContent = 'Pipeline steps (' + changed.length + ' changed text'
-      + (steps.length > changed.length
-          ? ', ' + (steps.length - changed.length) + ' unchanged'
-          : '')
-      + ')';
-    // Folded-by-default file traces advertise what the click reveals.
-    if (changed.length && !(entry.source === 'stream'
-        || (entry.final || '').length <= TRACE_CLAMP_CHARS)) {
-      sum.textContent += ' — open for word-diffs';
+    const chev = document.createElement('span');
+    chev.className = 'steps-chev';
+    chev.textContent = '\u25b8';
+    sum.appendChild(chev);
+    const show = document.createElement('span');
+    show.className = 'steps-lbl-show';
+    show.textContent = changed.length ? 'Show all pipeline diffs' : 'Show pipeline steps';
+    sum.appendChild(show);
+    const hide = document.createElement('span');
+    hide.className = 'steps-lbl-hide';
+    hide.textContent = changed.length ? 'Hide pipeline diffs' : 'Hide pipeline steps';
+    sum.appendChild(hide);
+    if (changed.length) {
+      const c1 = document.createElement('span');
+      c1.className = 'steps-cnt';
+      c1.textContent = changed.length + ' changed';
+      sum.appendChild(c1);
+    }
+    if (steps.length > changed.length) {
+      const c2 = document.createElement('span');
+      c2.className = 'steps-cnt dim';
+      c2.textContent = (steps.length - changed.length) + ' unchanged';
+      sum.appendChild(c2);
     }
     det.appendChild(sum);
     for (const s of steps) {
