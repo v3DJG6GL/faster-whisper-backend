@@ -1285,6 +1285,32 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .trace-step .step-after { color: var(--fg); }
   .trace-step .step-arrow { color: var(--green); margin-right: 0.25rem; }
 
+  /* Long-text folding: file transcriptions clamp raw/final at 3 lines with a
+     size-honest "Show all" button; steps on long texts render word-diff
+     excerpts instead of two full copies. */
+  .ws-region.trace-clip { display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3; overflow: hidden; }
+  .trace-text.has-clip { display: flex; align-items: flex-start; }
+  .trace-text.has-clip .trace-tag { flex-shrink: 0; }
+  .trace-text.has-clip .ws-region { min-width: 0; }
+  .trace-more { display: inline-flex; align-items: center; gap: 0.3rem;
+    margin: 0.2rem 0 0 3rem; background: var(--input-bg);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 0.1rem 0.5rem; font-size: var(--fs-xs); color: var(--fg);
+    cursor: pointer; font-family: inherit; }
+  .trace-more:hover { background: #21262d; color: var(--bold); }
+  .step-excerpt { font-family: var(--font-mono); font-size: var(--fs-xs);
+    padding: 0.15rem 0 0.15rem 1.5rem; color: var(--dim);
+    overflow-wrap: anywhere; }
+  .step-excerpt .dx-del { background: rgba(255,123,114,0.15);
+    color: var(--red); border-radius: 3px; padding: 0 3px;
+    text-decoration: line-through; }
+  .step-excerpt .dx-ins { background: rgba(126,231,135,0.15);
+    color: var(--green); border-radius: 3px; padding: 0 3px; }
+  .step-excerpt .dx-count { color: var(--yellow); }
+  .step-excerpt .dx-full { color: var(--dim); text-decoration: underline;
+    cursor: pointer; }
+
   /* Per-trace report row + inline form */
   .trace-actions { display: flex; align-items: center; gap: 0.5rem;
     margin-top: 0.5rem; flex-wrap: wrap; }
@@ -1679,6 +1705,106 @@ function escapeHtml(s) {
 }
 // absTime is injected via TIME_HELPERS_JS.
 
+// ── Long-text folding + step diffs (file transcriptions) ────────────────────
+// A file transcript used to render in FULL three-plus times per trace (raw,
+// final, and once per changed step's before AND after). Fold it instead:
+// clamp raw/final with a size-honest "Show all", and render changed steps as
+// word-diff excerpts. Live dictation snippets are short and stay as-is.
+var TRACE_CLAMP_CHARS = 400;   // raw/final fold threshold
+var TRACE_DIFF_CHARS = 300;    // steps switch to excerpt diffs past this
+var TRACE_DIFF_SAMPLE = 3;     // excerpts shown per step
+var TRACE_DIFF_CONTEXT = 8;    // context words around each change
+var TRACE_DIFF_RESYNC = 30;    // resync lookahead (words)
+
+function fmtCount(n) {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '\u202f');
+}
+
+// One raw/final text block; clamps + "Show all · N chars" when long.
+function traceTextBlock(tagLabel, text, extraClass) {
+  const wrap = document.createElement('div');
+  const div = document.createElement('div');
+  div.className = 'trace-text ' + extraClass;
+  const tag = document.createElement('span');
+  tag.className = 'trace-tag';
+  tag.textContent = tagLabel;
+  div.appendChild(tag);
+  const span = document.createElement('span');
+  span.className = 'ws-region';
+  span.textContent = text;
+  div.appendChild(span);
+  wrap.appendChild(div);
+  if (text.length > TRACE_CLAMP_CHARS) {
+    div.classList.add('has-clip');
+    span.classList.add('trace-clip');
+    const label = 'Show all \u00b7 ' + fmtCount(text.length) + ' chars \u25be';
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'trace-more';
+    btn.textContent = label;
+    btn.addEventListener('click', () => {
+      const clipped = span.classList.toggle('trace-clip');
+      btn.textContent = clipped ? label : 'Show less \u25b4';
+    });
+    wrap.appendChild(btn);
+  }
+  return wrap;
+}
+
+// Linear resync word diff — regions are [aStart, aEnd, bStart, bEnd). Good
+// for pipeline edits (local changes) and cheap on hour-long transcripts
+// (no LCS). A failed resync collapses the rest into one tail region.
+function wordDiffRegions(A, B) {
+  const regions = [];
+  let i = 0, j = 0;
+  while (i < A.length && j < B.length) {
+    if (A[i] === B[j]) { i++; j++; continue; }
+    let found = null;
+    for (let d = 1; d <= TRACE_DIFF_RESYNC && !found; d++) {
+      for (let di = 0; di <= d && !found; di++) {
+        const dj = d - di, ai = i + di, bj = j + dj;
+        if (ai < A.length && bj < B.length && A[ai] === B[bj]
+            && (ai + 1 >= A.length || bj + 1 >= B.length || A[ai + 1] === B[bj + 1])) {
+          found = [di, dj];
+        }
+      }
+    }
+    if (!found || regions.length >= 500) {
+      regions.push([i, A.length, j, B.length]);
+      return regions;
+    }
+    regions.push([i, i + found[0], j, j + found[1]]);
+    i += found[0]; j += found[1];
+  }
+  if (i < A.length || j < B.length) regions.push([i, A.length, j, B.length]);
+  return regions;
+}
+
+// "…context DELETED INSERTED context…" for one change region. Built with
+// textContent throughout — trace text is untrusted.
+function diffExcerpt(A, B, region) {
+  const as = region[0], ae = region[1], bs = region[2], be = region[3];
+  const el = document.createElement('div');
+  el.className = 'step-excerpt';
+  const push = (cls, text) => {
+    if (!text) return;
+    const sp = document.createElement('span');
+    if (cls) sp.className = cls;
+    sp.textContent = text;
+    el.appendChild(sp);
+  };
+  const pre = A.slice(Math.max(0, as - TRACE_DIFF_CONTEXT), as).join(' ');
+  const post = A.slice(ae, ae + TRACE_DIFF_CONTEXT).join(' ');
+  push('', (as > TRACE_DIFF_CONTEXT ? '\u2026' : '') + pre + (pre ? ' ' : ''));
+  const del = A.slice(as, Math.min(ae, as + 24)).join(' ');
+  push('dx-del', del + (ae - as > 24 ? ' \u2026' : ''));
+  if (del) push('', ' ');
+  const ins = B.slice(bs, Math.min(be, bs + 24)).join(' ');
+  push('dx-ins', ins + (be - bs > 24 ? ' \u2026' : ''));
+  push('', (post ? ' ' : '') + post + (ae + TRACE_DIFF_CONTEXT < A.length ? '\u2026' : ''));
+  return el;
+}
+
 function renderTrace(entry) {
   const item = document.createElement('div');
   item.className = 'trace-item';
@@ -1722,13 +1848,21 @@ function renderTrace(entry) {
     spk.textContent = String(entry.user_id).slice(0, 6);
     meta.appendChild(spk);
   }
+  // Size readout for long texts — the fold never hides how much is folded.
+  {
+    const t = entry.final || entry.raw || '';
+    if (t.length > TRACE_CLAMP_CHARS) {
+      const size = document.createElement('span');
+      size.className = 'pill';
+      size.style.fontFamily = 'var(--font-mono)';
+      const words = t.trim() ? t.trim().split(/\s+/).length : 0;
+      size.textContent = fmtCount(words) + ' words';
+      meta.appendChild(size);
+    }
+  }
   item.appendChild(meta);
 
-  const raw = document.createElement('div');
-  raw.className = 'trace-text trace-raw';
-  raw.innerHTML = '<span class="trace-tag">raw</span>'
-    + '<span class="ws-region">' + escapeHtml(entry.raw || '') + '</span>';
-  item.appendChild(raw);
+  item.appendChild(traceTextBlock('raw', entry.raw || '', 'trace-raw'));
 
   const steps = entry.steps || [];
   const changed = steps.filter(s =>
@@ -1736,7 +1870,11 @@ function renderTrace(entry) {
   if (steps.length) {
     const det = document.createElement('details');
     det.className = 'trace-steps';
-    if (changed.length) det.open = true;  // open by default if anything changed
+    // Open by default only when the content is glanceable: live dictation
+    // snippets, or a file trace whose final text is short. Long file traces
+    // arrive folded.
+    if (changed.length && (entry.source === 'stream'
+        || (entry.final || '').length <= TRACE_CLAMP_CHARS)) det.open = true;
     const sum = document.createElement('summary');
     sum.textContent = 'Pipeline steps (' + changed.length + ' changed text'
       + (steps.length > changed.length
@@ -1747,28 +1885,71 @@ function renderTrace(entry) {
     for (const s of steps) {
       if (!Array.isArray(s) || s.length < 3) continue;
       const [label, before, after] = s;
-      const stepEl = document.createElement('div');
-      stepEl.className = 'trace-step' + (before === after ? ' skipped' : '');
       const lblHtml = escapeHtml(label || '?');
-      const skippedTag = before === after
-        ? ' <span class="skipped-tag">[unchanged]</span>'
-        : '';
-      stepEl.innerHTML =
-        '<span class="step-label">▸ ' + lblHtml + skippedTag + '</span>'
-        + '<span class="step-before"><span class="ws-region">'
-        + escapeHtml(before || '') + '</span></span>'
-        + '<span class="step-after"><span class="step-arrow">→</span>'
-        + '<span class="ws-region">' + escapeHtml(after || '') + '</span></span>';
+      const stepEl = document.createElement('div');
+      if (before === after) {
+        // Unchanged: the label line is the whole story — repeating the full
+        // text twice said nothing.
+        stepEl.className = 'trace-step skipped';
+        stepEl.innerHTML = '<span class="step-label">\u25b8 ' + lblHtml
+          + ' <span class="skipped-tag">[unchanged]</span></span>';
+        det.appendChild(stepEl);
+        continue;
+      }
+      stepEl.className = 'trace-step';
+      const long = (before || '').length > TRACE_DIFF_CHARS
+        || (after || '').length > TRACE_DIFF_CHARS;
+      if (!long) {
+        stepEl.innerHTML =
+          '<span class="step-label">\u25b8 ' + lblHtml + '</span>'
+          + '<span class="step-before"><span class="ws-region">'
+          + escapeHtml(before || '') + '</span></span>'
+          + '<span class="step-after"><span class="step-arrow">\u2192</span>'
+          + '<span class="ws-region">' + escapeHtml(after || '') + '</span></span>';
+        det.appendChild(stepEl);
+        continue;
+      }
+      // Long text: word-diff excerpts instead of two full copies.
+      const A = (before || '').split(/\s+/), B = (after || '').split(/\s+/);
+      const regions = wordDiffRegions(A, B);
+      const head = document.createElement('span');
+      head.className = 'step-label';
+      head.innerHTML = '\u25b8 ' + lblHtml
+        + ' <span class="skipped-tag">changed ' + fmtCount(regions.length)
+        + ' spot' + (regions.length === 1 ? '' : 's') + '</span>';
+      stepEl.appendChild(head);
+      for (const r of regions.slice(0, TRACE_DIFF_SAMPLE)) {
+        stepEl.appendChild(diffExcerpt(A, B, r));
+      }
+      const foot = document.createElement('div');
+      foot.className = 'step-excerpt';
+      if (regions.length > TRACE_DIFF_SAMPLE) {
+        const more = document.createElement('span');
+        more.className = 'dx-count';
+        more.textContent = '+ ' + fmtCount(regions.length - TRACE_DIFF_SAMPLE) + ' more \u00b7 ';
+        foot.appendChild(more);
+      }
+      const full = document.createElement('span');
+      full.className = 'dx-full';
+      full.textContent = 'show full before/after';
+      full.addEventListener('click', () => {
+        const fullEl = document.createElement('div');
+        fullEl.innerHTML =
+          '<span class="step-before"><span class="ws-region">'
+          + escapeHtml(before || '') + '</span></span>'
+          + '<span class="step-after"><span class="step-arrow">\u2192</span>'
+          + '<span class="ws-region">' + escapeHtml(after || '') + '</span></span>';
+        stepEl.appendChild(fullEl);
+        foot.remove();
+      });
+      foot.appendChild(full);
+      stepEl.appendChild(foot);
       det.appendChild(stepEl);
     }
     item.appendChild(det);
   }
 
-  const final = document.createElement('div');
-  final.className = 'trace-text trace-final';
-  final.innerHTML = '<span class="trace-tag">final</span>'
-    + '<span class="ws-region">' + escapeHtml(entry.final || '') + '</span>';
-  item.appendChild(final);
+  item.appendChild(traceTextBlock('final', entry.final || '', 'trace-final'));
 
   // Action row: "Report" button + (conditional) "✓ reported" badge.
   // The inline form is lazy — built on first click, kept in DOM after
