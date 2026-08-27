@@ -307,32 +307,69 @@ def restore_quantized_state(*args, **kwargs):
     Write-Host "model terms on huggingface.co plus WHISPER_HF_TOKEN in the service env." -ForegroundColor Green
 }
 
-# --- ffmpeg (live-streaming encoded transport) ------------------------------
-# Only the encoded transport (browser Opus/WebM) needs the ffmpeg executable;
-# raw-PCM dictation does not. imageio-ffmpeg (installed above) bundles a binary
-# as a guaranteed fallback, but a system ffmpeg on PATH is preferred. Best-effort
-# winget install of a system ffmpeg; non-fatal (the bundled binary always works).
+# --- ffmpeg -----------------------------------------------------------------
+# Base install: only the live-streaming *encoded* transport (browser Opus/WebM)
+# needs the ffmpeg executable; raw-PCM dictation does not. imageio-ffmpeg
+# (installed above) bundles a binary as a guaranteed fallback, so a system
+# ffmpeg is merely preferred and the winget attempt stays best-effort.
+# -Full: torchcodec (pyannote's decoder) and audio-separator load the ffmpeg
+# *shared libraries* (avutil/avcodec DLLs), which neither the bundled imageio
+# binary nor Gyan's default static build ship. Provisioning order: shared
+# ffmpeg already on PATH -> repo-local copy from an earlier run -> winget ->
+# pinned BtbN shared zip extracted to <repo>\ffmpeg (hash-verified like
+# WinSW; main.py prepends ffmpeg\bin to the service PATH at startup).
+function Test-FfmpegShared($cmd) {
+    # Shared builds ship avutil-*.dll next to ffmpeg.exe; static builds don't.
+    return [bool]($cmd -and (Get-ChildItem -Path (Split-Path $cmd.Source) -Filter "avutil-*.dll" -ErrorAction SilentlyContinue))
+}
 $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
-if ($ff) {
+$RepoFfmpegExe = Join-Path $RepoDir "ffmpeg\bin\ffmpeg.exe"
+
+if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
     Write-Host "ffmpeg present: $($ff.Source)" -ForegroundColor DarkGray
+} elseif ($Full -and (Test-Path $RepoFfmpegExe)) {
+    Write-Host "repo-local shared ffmpeg present: $RepoFfmpegExe" -ForegroundColor DarkGray
 } else {
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if ($winget) {
-        # -Full needs the SHARED build: torchcodec (pyannote's decoder) and
-        # audio-separator load the ffmpeg DLLs, which Gyan's default static
-        # build doesn't ship. The shared package includes the exe too.
         $ffId = if ($Full) { "Gyan.FFmpeg.Shared" } else { "Gyan.FFmpeg" }
-        Write-Host "ffmpeg not on PATH; attempting 'winget install $ffId' (optional)..." -ForegroundColor Cyan
+        Write-Host "ffmpeg not usable; attempting 'winget install $ffId' (optional)..." -ForegroundColor Cyan
         $oldPref = $ErrorActionPreference; $ErrorActionPreference = "Continue"
         & winget install --id $ffId -e --silent --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
         $ErrorActionPreference = $oldPref
     }
-    if (Get-Command ffmpeg -ErrorAction SilentlyContinue) {
+    # winget's PATH change only reaches new shells, so this re-check usually
+    # still fails right after a successful winget install — for -Full the
+    # pinned download below then provisions deterministically anyway.
+    $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
+    if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
         Write-Host "ffmpeg installed (a new shell may be needed for PATH)." -ForegroundColor Green
     } elseif ($Full) {
-        Write-Host "WARNING: -Full needs a system ffmpeg (shared build) on PATH for" -ForegroundColor Yellow
-        Write-Host "  diarization / music separation. Install one manually, then" -ForegroundColor Yellow
-        Write-Host "  Restart-Service WhisperAPI." -ForegroundColor Yellow
+        # Pinned BtbN shared build, ffmpeg 7.1 — the same major the -full
+        # Docker image gets from Debian 13 apt (torchcodec is picky about
+        # ffmpeg majors; 7.x = avutil-59 is the validated one). BtbN's newer
+        # autobuilds dropped the 7.1 branch, hence the older tag. These two
+        # MUST be updated together, like the WinSW pin above.
+        $FfmpegZipUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-08-16-13-00/ffmpeg-n7.1.5-16-g9a4bb2c579-win64-gpl-shared-7.1.zip"
+        $FfmpegZipSha = "AF514FAE0AF8565EB9125848FF61F7D7E9E878A6CF6AF512434C4741FC6BE488"
+        Write-Host "Downloading pinned shared ffmpeg into $RepoDir\ffmpeg ..." -ForegroundColor Cyan
+        $zipPath = Join-Path $env:TEMP "ffmpeg-shared.zip"
+        Invoke-WebRequest -Uri $FfmpegZipUrl -OutFile $zipPath -UseBasicParsing
+        $hash = (Get-FileHash -Path $zipPath -Algorithm SHA256).Hash
+        if ($hash -ne $FfmpegZipSha) {
+            Remove-Item -Force $zipPath
+            throw "ffmpeg download hash mismatch - got $hash, expected $FfmpegZipSha. Refusing to install the downloaded file."
+        }
+        $extractDir = Join-Path $env:TEMP "ffmpeg-shared-extract"
+        if (Test-Path $extractDir) { Remove-Item -Recurse -Force $extractDir }
+        Expand-Archive -Path $zipPath -DestinationPath $extractDir
+        $inner = Get-ChildItem -Directory $extractDir | Select-Object -First 1
+        $ffTarget = Join-Path $RepoDir "ffmpeg"
+        if (Test-Path $ffTarget) { Remove-Item -Recurse -Force $ffTarget }
+        Move-Item $inner.FullName $ffTarget
+        Remove-Item -Force $zipPath
+        Remove-Item -Recurse -Force $extractDir
+        Write-Host "Shared ffmpeg installed at $ffTarget (main.py puts ffmpeg\bin on the service PATH)." -ForegroundColor Green
     } else {
         Write-Host "No system ffmpeg; the bundled imageio-ffmpeg binary will be used for the encoded streaming transport." -ForegroundColor DarkGray
     }

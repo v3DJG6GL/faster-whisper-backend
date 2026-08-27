@@ -191,8 +191,27 @@ def _preload_windows_cuda_dlls() -> None:
         logger.warning("Failed to pre-load DLLs: %s", e)
 
 
+def _add_local_ffmpeg_to_path() -> None:
+    """install-service.ps1 -Full drops a pinned shared-build ffmpeg into
+    <repo>\\ffmpeg\\bin when no shared ffmpeg is on PATH (torchcodec and
+    audio-separator load the avutil/avcodec DLLs, which the bundled
+    imageio-ffmpeg executable does not ship). Make it visible to this process
+    and its subprocesses. Prepended so its DLLs also win over a static build
+    elsewhere on PATH. Idempotent — same reload concern as the CUDA preloader."""
+    ff_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg", "bin")
+    if not os.path.isfile(os.path.join(ff_bin, "ffmpeg.exe")):
+        return
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    if ff_bin not in parts:
+        os.environ["PATH"] = os.pathsep.join([ff_bin] + parts)
+    if hasattr(os, "add_dll_directory"):
+        os.add_dll_directory(ff_bin)
+    logger.info("Repo-local ffmpeg on PATH: %s", ff_bin)
+
+
 if sys.platform == "win32":
     _preload_windows_cuda_dlls()
+    _add_local_ffmpeg_to_path()
 
 
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Response, Depends

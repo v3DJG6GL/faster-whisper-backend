@@ -100,6 +100,9 @@ logs/
 WhisperAPI.exe
 WhisperAPI.xml
 WhisperAPI.wrapper.log
+# Pinned shared-build ffmpeg, downloaded by install-service.ps1 -Full when no
+# shared ffmpeg is on PATH (main.py puts ffmpeg/bin on the service PATH)
+ffmpeg/
 # Legacy NSSM era — install-service.ps1 -RemoveLocal cleans this up
 nssm.exe
 SIMPLIFY_NOTES.md
