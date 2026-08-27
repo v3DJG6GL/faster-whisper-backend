@@ -22,5 +22,5 @@ audio-separator[cpu]>=0.44.5
 # 0.x line audio-separator is actually tested against. Mirror any change here
 # in Dockerfile.gpu's inline extras install. Drop both pins once
 # audio-separator declares audioread / supports librosa 1.x.
-audioread>=2.1.9
-librosa<1.0
+audioread>=3.1.0
+librosa<1.1
