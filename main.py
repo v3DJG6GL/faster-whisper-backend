@@ -140,6 +140,21 @@ def _preload_windows_cuda_dlls() -> None:
     cudnn_bin = os.path.join(nvidia_base, "cudnn", "bin")
     cublas_bin = os.path.join(nvidia_base, "cublas", "bin")
 
+    # -Full installs bring torch, whose Windows cu126 wheel BUNDLES its own
+    # cuDNN/cuBLAS in torch\lib (it does not use the nvidia-* wheels above).
+    # Two cudnn64_9.dll versions then live in one venv, Windows resolves DLL
+    # dependencies by module NAME with first-loaded-wins — so preloading the
+    # newer wheel here made the other family's cudnn_cnn64_9.dll fail with
+    # WinError 127 (procedure not found) at model load. Prefer torch's copy so
+    # the process holds ONE consistent stack — the same outcome the Linux
+    # -full image reaches by letting pip downgrade the nvidia wheels to
+    # torch's pins (see Dockerfile.gpu). cuDNN 9.x / cuBLAS 12.x is all
+    # ctranslate2 requires. Bonus: torch\lib also carries cudart/cufft/curand,
+    # which onnxruntime-gpu's CUDA provider needs and the lean dirs lack.
+    torch_lib = os.path.join(base_path, "Lib", "site-packages", "torch", "lib")
+    if os.path.isfile(os.path.join(torch_lib, "cudnn64_9.dll")):
+        cudnn_bin = cublas_bin = torch_lib
+
     logger.info("Base path: %s", base_path)
     logger.info("cuDNN path: %s", cudnn_bin)
 
