@@ -245,6 +245,9 @@ if ($Full) {
         Write-Host "No diffq-fixed wheel for this Python - installing a stub (quantized Demucs models won't work; MDX is unaffected)..." -ForegroundColor Yellow
         $stubDir = Join-Path $env:TEMP "diffq-fixed-stub"
         New-Item -ItemType Directory -Force -Path (Join-Path $stubDir "diffq") | Out-Null
+        # -Encoding ASCII, NOT UTF8: Windows PowerShell 5.1 writes UTF8 with a
+        # BOM, which Python's tomllib rejects ("Invalid statement" at 1:1).
+        # Both files are pure ASCII anyway.
         @'
 [build-system]
 requires = ["setuptools>=61"]
@@ -257,7 +260,7 @@ description = "Stub satisfying audio-separator's dependency; only quantized-Demu
 
 [tool.setuptools]
 packages = ["diffq"]
-'@ | Set-Content -Path (Join-Path $stubDir "pyproject.toml") -Encoding UTF8
+'@ | Set-Content -Path (Join-Path $stubDir "pyproject.toml") -Encoding ASCII
         @'
 """Stub diffq (installed by install-service.ps1): the real diffq-fixed has no
 wheel for this Python and a broken sdist. Only audio-separator's
@@ -284,7 +287,7 @@ class UniformQuantizer:
 
 def restore_quantized_state(*args, **kwargs):
     _unavailable()
-'@ | Set-Content -Path (Join-Path $stubDir "diffq\__init__.py") -Encoding UTF8
+'@ | Set-Content -Path (Join-Path $stubDir "diffq\__init__.py") -Encoding ASCII
         & $Python -m pip install $stubDir
         if ($LASTEXITCODE -ne 0) { throw "diffq-fixed stub install failed (exit $LASTEXITCODE)" }
     }
