@@ -227,6 +227,68 @@ if ($Gpu) {
 #     also win over the CPU-only onnxruntime faster-whisper pulls in.
 if ($Full) {
     Write-Host "Installing full extras (diarization + music separation, several GB)..." -ForegroundColor Cyan
+
+    # audio-separator's Windows-only dependency `diffq-fixed` ships wheels only
+    # up to cp313, and its sdist is broken ("'bitpack.pyx' doesn't match any
+    # files"), so on Python 3.14+ its install always fails. diffq is imported
+    # only by audio-separator's quantized-Demucs modules
+    # (uvr_lib_v5/demucs/{states,pretrained,utils}.py); the MDX models
+    # bgm_separation.py loads never touch it. Try the real wheel first; if
+    # none exists for this Python, install a local stub that satisfies pip and
+    # raises a clear error if quantized Demucs is ever actually used. (Linux
+    # depends on plain `diffq`, whose sdist compiles — the .sh handles that
+    # with best-effort gcc instead.)
+    $oldPref = $ErrorActionPreference; $ErrorActionPreference = "Continue"
+    & $Python -m pip install --only-binary :all: "diffq-fixed>=0.2" 2>&1 | Out-Null
+    $ErrorActionPreference = $oldPref
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "No diffq-fixed wheel for this Python - installing a stub (quantized Demucs models won't work; MDX is unaffected)..." -ForegroundColor Yellow
+        $stubDir = Join-Path $env:TEMP "diffq-fixed-stub"
+        New-Item -ItemType Directory -Force -Path (Join-Path $stubDir "diffq") | Out-Null
+        @'
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "diffq-fixed"
+version = "0.2.4"
+description = "Stub satisfying audio-separator's dependency; only quantized-Demucs models need the real diffq."
+
+[tool.setuptools]
+packages = ["diffq"]
+'@ | Set-Content -Path (Join-Path $stubDir "pyproject.toml") -Encoding UTF8
+        @'
+"""Stub diffq (installed by install-service.ps1): the real diffq-fixed has no
+wheel for this Python and a broken sdist. Only audio-separator's
+quantized-Demucs code imports these names; the MDX models this backend uses
+never do. Anything that does reach them fails loudly instead of silently."""
+
+
+def _unavailable():
+    raise RuntimeError(
+        "diffq is a stub on this install - quantized Demucs models are not "
+        "supported; use an MDX separation model"
+    )
+
+
+class DiffQuantizer:
+    def __init__(self, *args, **kwargs):
+        _unavailable()
+
+
+class UniformQuantizer:
+    def __init__(self, *args, **kwargs):
+        _unavailable()
+
+
+def restore_quantized_state(*args, **kwargs):
+    _unavailable()
+'@ | Set-Content -Path (Join-Path $stubDir "diffq\__init__.py") -Encoding UTF8
+        & $Python -m pip install $stubDir
+        if ($LASTEXITCODE -ne 0) { throw "diffq-fixed stub install failed (exit $LASTEXITCODE)" }
+    }
+
     $diarizeReq = Join-Path $RepoDir "requirements-diarize.txt"
     if ($Gpu) {
         & $Python -m pip install -r $diarizeReq "audio-separator[gpu]>=0.44" "audioread>=2.1.9" "librosa<1.0" --extra-index-url https://download.pytorch.org/whl/cu126
