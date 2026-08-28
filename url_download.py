@@ -86,6 +86,15 @@ def yt_dlp_version() -> "str | None":
 _UNSET = object()
 _YTDLP_VERSION: "str | None | object" = _UNSET
 
+# The one format selector, shared by probe and download. Whisper resamples to
+# 16 kHz mono regardless, so "best audio" is about container sanity, not
+# fidelity: prefer m4a (PyAV-friendly), fall back to any bestaudio, then best
+# (video container with audio). The probe MUST use the same selector —
+# otherwise extract_info resolves yt-dlp's default (merged video+audio) and
+# filesize_approx reflects the full VIDEO, tripping the size policy for media
+# whose audio track is well within the cap.
+DOWNLOAD_FORMAT = "bestaudio[ext=m4a]/bestaudio/best"
+
 
 def validate_url(url: str) -> str:
     """Normalise + gate a client-supplied URL. Raises UrlDownloadError."""
@@ -254,6 +263,9 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             "no_warnings": True,
             "noplaylist": True,
             "skip_download": True,
+            # Same selector as the download: filesize_approx must describe
+            # what we'd actually fetch (audio), not the default merged video.
+            "format": DOWNLOAD_FORMAT,
             "socket_timeout": float(getattr(cfg, "URL_SOCKET_TIMEOUT_SEC", 15)),
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -278,8 +290,10 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         duration=(float(info["duration"]) if info.get("duration") is not None
                   else None),
         uploader=info.get("uploader") or info.get("channel"),
-        filesize_approx=(int(info["filesize_approx"])
-                         if info.get("filesize_approx") else None),
+        filesize_approx=(int(info.get("filesize_approx")
+                             or info.get("filesize"))
+                         if (info.get("filesize_approx")
+                             or info.get("filesize")) else None),
         is_live=bool(info.get("is_live")),
         thumbnail_url=info.get("thumbnail"),
     )
@@ -418,10 +432,7 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str
 
     return [
         sys.executable, "-m", "yt_dlp",
-        # Whisper resamples to 16 kHz mono regardless, so "best audio" is
-        # about container sanity, not fidelity: prefer m4a (PyAV-friendly),
-        # fall back to any bestaudio, then best (video container with audio).
-        "-f", "bestaudio[ext=m4a]/bestaudio/best",
+        "-f", DOWNLOAD_FORMAT,
         "--no-playlist",
         "--playlist-items", "1",  # belt+braces: never more than one item
         "--restrict-filenames",

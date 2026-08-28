@@ -2878,12 +2878,20 @@ async def transcribe(
                 import url_media_store as _ums
                 _url_max = int(getattr(cfg, "URL_MAX_BYTES", 0) or 0) or max_upload
                 _progress_set(_pid, stage="resolving", progress=None)
+                logger.info("[url-dl] transcribe-from-url requested (host %s)",
+                            _url_host_for_log(source_url))
                 try:
                     _check_cancelled(_pid)
                     _url = _udl.validate_url(source_url)
                     _uinfo = await _udl.probe(
                         _url,
                         timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_SEC", 20)))
+                    logger.info(
+                        "[url-dl] resolved (host %s): extractor=%s duration=%s"
+                        " — starting download",
+                        _url_host_for_log(_url), _uinfo.extractor_key,
+                        f"{_uinfo.duration:.0f}s"
+                        if _uinfo.duration is not None else "?")
                     _progress_set(_pid, stage="downloading", progress=None,
                                   total_bytes=None,
                                   step=(_uinfo.extractor_key or None))
@@ -2901,9 +2909,14 @@ async def transcribe(
                                 total_bytes=tot),
                             cancel_check=lambda: _cancel_requested(_pid))
                 except _udl.UrlCancelled:
+                    logger.info("[url-dl] download cancelled by client "
+                                "(host %s)", _url_host_for_log(source_url))
                     raise _ClientCancelled() from None
                 except _udl.UrlDownloadError as _ue:
                     # str() is client-safe by the module's contract.
+                    logger.info("[url-dl] rejected (host %s): %s",
+                                _url_host_for_log(source_url),
+                                _log_safe(str(_ue)))
                     raise HTTPException(status_code=400, detail=str(_ue))
                 audio_bytes = os.path.getsize(_dl_path)
                 # Pipeline copy FIRST (hardlink where possible), THEN move
@@ -3860,6 +3873,16 @@ def _check_url_preview_rate(host: str) -> None:
                             detail="too many link previews — slow down")
 
 
+def _url_host_for_log(url: str) -> str:
+    """Best-effort hostname for log lines — never the full URL (it can carry
+    tokens/identifiers we don't want in logs)."""
+    try:
+        import urllib.parse as _p
+        return _log_safe(_p.urlsplit(url.strip()).hostname or "?")
+    except Exception:  # noqa: BLE001 — logging must never raise
+        return "?"
+
+
 @app.post("/v1/audio/url-preview")
 async def url_preview(request: Request,
                       user: dict = Depends(_get_current_user_dep)):
@@ -3880,15 +3903,25 @@ async def url_preview(request: Request,
     url = body.get("url") if isinstance(body, dict) else None
     if not isinstance(url, str) or not url.strip():
         raise HTTPException(status_code=422, detail="expected {\"url\": …}")
+    _uhost = _url_host_for_log(url)
+    logger.info("[url-dl] preview requested (host %s)", _uhost)
     try:
         info = await _udl.probe(
             url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_SEC", 20)))
     except _udl.UrlDownloadError as e:
         # str() is client-safe by the module's contract.
+        logger.info("[url-dl] preview rejected (host %s): %s",
+                    _uhost, _log_safe(str(e)))
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:  # noqa: BLE001 — never forward raw errors
-        logger.error("[url-dl] preview failed: %s", _log_safe(str(e)))
+        logger.error("[url-dl] preview failed (host %s): %s",
+                     _uhost, _log_safe(str(e)))
         raise HTTPException(status_code=500, detail="link preview failed")
+    logger.info(
+        "[url-dl] preview ok (host %s): extractor=%s duration=%s est_bytes=%s",
+        _uhost, info.extractor_key,
+        f"{info.duration:.0f}s" if info.duration is not None else "?",
+        info.filesize_approx if info.filesize_approx is not None else "?")
     thumb = await _udl.fetch_thumbnail_data_uri(info.thumbnail_url)
     return {
         "title": info.title,

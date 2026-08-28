@@ -328,3 +328,42 @@ def test_real_argv_shape(monkeypatch):
     assert "--max-filesize" in argv and "123" in argv
     assert not any("%(title)s" in a for a in argv)
     assert "--no-playlist" in argv
+    # download fetches audio-only, so the probe must judge the same format.
+    fmt_idx = argv.index("-f")
+    assert argv[fmt_idx + 1] == udl.DOWNLOAD_FORMAT
+
+
+def test_probe_selects_download_format(monkeypatch):
+    """Regression: without an explicit format, extract_info resolves the
+    default merged VIDEO and filesize_approx trips the size cap for media
+    whose audio track is far below it."""
+    captured: dict = {}
+
+    class _FakeYDL:
+        def __init__(self, opts):
+            captured.update(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"extractor_key": "Youtube", "title": "t",
+                    "duration": 60, "filesize": 900_000}
+
+        def sanitize_info(self, info):
+            return info
+
+    fake = type(sys)("yt_dlp")
+    fake.YoutubeDL = _FakeYDL
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
+    monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    # A cap smaller than any merged video but above the audio track: the
+    # probe must pass, and estimated size must come from `filesize` too.
+    monkeypatch.setattr(udl.cfg, "URL_MAX_BYTES", 1_000_000, raising=False)
+    info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert captured.get("format") == udl.DOWNLOAD_FORMAT
+    assert info.filesize_approx == 900_000
