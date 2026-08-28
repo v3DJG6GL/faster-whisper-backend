@@ -21,6 +21,7 @@ Protocol (see streaming_session for the emission contract):
     2. BINARY frames: raw 16 kHz mono s16le PCM  (encoded formats: phase E)
     3. control TEXT frames: {"type":"flush"} | {"type":"stop"}
   server → client:
+    {"type":"loading",model}  (keepalive while a cold model loads — may repeat)
     {"type":"ready",..} / {"type":"partial",committed,pending} /
     {"type":"final",committed,tail,last?} / {"type":"error",code,message}
     (final: ``committed`` is append-only/locked, ``tail`` is the provisional
@@ -456,11 +457,31 @@ async def transcribe_stream(ws: WebSocket) -> None:
         final_model = main._resolve_model_name(model_req)
         partial_cfg = getattr(cfg, "STREAMING_PARTIAL_MODEL", "") or ""
         partial_model_name = partial_cfg or final_model
+        async def _load_with_keepalive(name: str):
+            # A cold large-v3 load takes 15 s+ with NOTHING on the wire, and
+            # clients treat that silence as a dead server — the frontend's
+            # stream drain used to discard a finished dictation seconds before
+            # its transcript arrived. Signal liveness every few seconds; the
+            # frame is additive, clients that don't know it ignore it.
+            task = asyncio.ensure_future(main._get_or_load_model(name))
+            while not task.done():
+                done, _ = await asyncio.wait({task}, timeout=3.0)
+                if done:
+                    break
+                try:
+                    await ws.send_json({"type": "loading", "model": name})
+                except Exception:  # noqa: BLE001
+                    # Client gone mid-load: stop signalling, but still await
+                    # the load so the model lands in the cache for the next
+                    # connection (and its error, if any, is consumed here).
+                    break
+            return await task
+
         try:
-            final_model_obj = await main._get_or_load_model(final_model)
+            final_model_obj = await _load_with_keepalive(final_model)
             partial_model_obj = (
                 final_model_obj if partial_model_name == final_model
-                else await main._get_or_load_model(partial_model_name)
+                else await _load_with_keepalive(partial_model_name)
             )
         except Exception as exc:  # noqa: BLE001
             # The handshake `model` field lands verbatim in the not-in-allowed-
