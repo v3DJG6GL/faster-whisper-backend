@@ -1606,6 +1606,20 @@ def get_inference_semaphore() -> "asyncio.Semaphore":
     return _inference_semaphore
 
 
+# Separate limiter for transcribe-from-URL downloads: network-bound work that
+# must NOT occupy a GPU slot (a slow site would starve inference otherwise).
+# Same lazy-build/restart-required contract as the inference semaphore.
+_url_download_semaphore: "asyncio.Semaphore | None" = None
+
+
+def _get_url_download_semaphore() -> "asyncio.Semaphore":
+    global _url_download_semaphore
+    if _url_download_semaphore is None:
+        n = max(1, int(getattr(cfg, "URL_DOWNLOAD_CONCURRENCY", 2)))
+        _url_download_semaphore = asyncio.Semaphore(n)
+    return _url_download_semaphore
+
+
 # faster-whisper short name OR HuggingFace repo id (org/name) — the same shape
 # config_store._MODEL_ID_PATTERN validates configured model ids against. Used
 # below to bound what an EMPTY ALLOWED_MODELS accepts from a request.
@@ -2061,6 +2075,15 @@ async def lifespan(app: FastAPI):
     bgm_evictor_task = asyncio.create_task(
         _bgm_separation.idle_evictor_loop())
 
+    # Transcribe-from-URL retention: wipe the dir (ids die with the process,
+    # so every surviving file is an orphan) and start the TTL/LRU janitor.
+    url_media_janitor_task = None
+    if getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
+        import url_media_store as _url_media_store
+        _url_media_store.startup_reset()
+        url_media_janitor_task = asyncio.create_task(
+            _url_media_store.janitor_loop())
+
     # Open the API-keys SQLite store and start the open-mode warning loop.
     # In OPEN mode (no admin key exists yet) the loop nags every 60 s; this
     # is the operator's prompt to bootstrap an admin via /settings/api-keys.
@@ -2213,6 +2236,8 @@ async def lifespan(app: FastAPI):
     await _diarization.drop_pipeline()
     await _cancel(bgm_evictor_task)
     await _bgm_separation.drop_separator()
+    if url_media_janitor_task is not None:
+        await _cancel(url_media_janitor_task)
     await _cancel(reports_sweep_task)
     await _cancel(captures_sweep_task)
     await _cancel(sessions_purge_task)
@@ -2709,7 +2734,8 @@ def _form_bool(value: "str | None") -> "bool | None":
 @app.post("/v1/audio/transcriptions")
 async def transcribe(
     request: Request,
-    file: UploadFile = File(...),
+    file: "UploadFile | None" = File(None),
+    source_url: "str | None" = Form(None),
     model_name: str = Form("whisper-1", alias="model"),
     response_format: str = Form("json"),
     language: str = Form(None),
@@ -2764,6 +2790,22 @@ async def transcribe(
     # set of names instead of batch silently rejecting whitespace-padded ones.
     override_profile = (override_profile or "").strip() or None
 
+    # Transcribe-from-URL: exactly one source. Both/neither is a caller error
+    # (422, like a bad `task`); a URL on a server with the feature off is a
+    # curated 403 so the client can say "not enabled here" instead of
+    # guessing. Gate BEFORE the model load — no GPU work for a rejected URL.
+    source_url = (source_url or "").strip() or None
+    if source_url is not None and file is not None:
+        raise HTTPException(status_code=422,
+                            detail="provide either a file or a source_url, "
+                                   "not both")
+    if source_url is None and file is None:
+        raise HTTPException(status_code=422,
+                            detail="provide a file or a source_url")
+    if source_url is not None and not getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
+        raise HTTPException(status_code=403,
+                            detail="URL download is not enabled on this server")
+
     # Bracket the entire request with metrics.in_flight + record_transcription
     # so failed loads / failed transcriptions still surface in the dashboard.
     # request_id is generated up-front (was deferred to post-transcribe) so
@@ -2775,6 +2817,10 @@ async def transcribe(
     _audio_dur: float = 0.0
     _words: int = 0
     tmp_path = None
+    # Transcribe-from-URL state: the private download dir (rmtree'd in the
+    # inner finally on every path) and the retention id echoed to the client.
+    _url_job_dir: "str | None" = None
+    _source_media_id: "str | None" = None
     request_id = uuid.uuid4().hex
     _user_id = user.get("user_id")
     _key_id = user.get("key_id")
@@ -2819,21 +2865,76 @@ async def transcribe(
         )
 
         try:
-            # Stream the part to the temp file in chunks, counting bytes as we
-            # go: the upload is never fully resident, and an oversized body is
-            # cut off mid-read instead of after it has been materialised. Only
-            # the SIZE is needed downstream (capture size guard + log block).
-            audio_bytes = 0
-            with tempfile.NamedTemporaryFile(delete=False, suffix=_safe_tmp_suffix(file.filename)) as tmp_file:
-                tmp_path = tmp_file.name
-                while True:
-                    chunk = await file.read(_UPLOAD_CHUNK_BYTES)
-                    if not chunk:
-                        break
-                    audio_bytes += len(chunk)
-                    if audio_bytes > max_upload:
-                        raise HTTPException(status_code=413, detail="upload too large")
-                    tmp_file.write(chunk)
+            if source_url is not None:
+                # Transcribe-from-URL: policy-gated metadata probe, then a
+                # yt-dlp subprocess download into a private job dir. The
+                # result is moved into the retention store (so the client can
+                # fetch it once for playback) and a pipeline-owned copy takes
+                # the tmp_path slot — everything downstream, including the
+                # BGM tmp_path swap and the finally's unlink, is unchanged.
+                # The download deliberately does NOT hold the inference
+                # semaphore (network-bound); it has its own, narrower one.
+                import url_download as _udl
+                import url_media_store as _ums
+                _url_max = int(getattr(cfg, "URL_MAX_BYTES", 0) or 0) or max_upload
+                _progress_set(_pid, stage="resolving", progress=None)
+                try:
+                    _check_cancelled(_pid)
+                    _url = _udl.validate_url(source_url)
+                    _uinfo = await _udl.probe(
+                        _url,
+                        timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_SEC", 20)))
+                    _progress_set(_pid, stage="downloading", progress=None,
+                                  total_bytes=None,
+                                  step=(_uinfo.extractor_key or None))
+                    _url_job_dir = tempfile.mkdtemp(prefix="urldl-")
+                    async with _get_url_download_semaphore():
+                        _check_cancelled(_pid)
+                        _dl_path = await _udl.download(
+                            _url,
+                            dest_dir=_url_job_dir,
+                            max_bytes=_url_max,
+                            timeout=float(getattr(
+                                cfg, "URL_DOWNLOAD_TIMEOUT_SEC", 900)),
+                            progress_cb=lambda f, tot: _progress_set(
+                                _pid, stage="downloading", progress=f,
+                                total_bytes=tot),
+                            cancel_check=lambda: _cancel_requested(_pid))
+                except _udl.UrlCancelled:
+                    raise _ClientCancelled() from None
+                except _udl.UrlDownloadError as _ue:
+                    # str() is client-safe by the module's contract.
+                    raise HTTPException(status_code=400, detail=str(_ue))
+                audio_bytes = os.path.getsize(_dl_path)
+                # Pipeline copy FIRST (hardlink where possible), THEN move
+                # the original into the retention store — afterwards each
+                # side owns its file outright: tmp_path follows the normal
+                # unlink-in-finally lifecycle (including the BGM swap), and
+                # the retained file serves GET /v1/audio/url-media/{id}.
+                tmp_path = _ums.make_pipeline_copy(_dl_path)
+                if tmp_path is None:
+                    # Disk trouble (logged by the store) — generic 500 path.
+                    raise RuntimeError("url pipeline copy failed")
+                # Retention is a playback nicety: None just means the client
+                # gets no audio copy, never a failed transcription.
+                _source_media_id = _ums.register(_dl_path, user_id=_user_id)
+            else:
+                # Stream the part to the temp file in chunks, counting bytes as
+                # we go: the upload is never fully resident, and an oversized
+                # body is cut off mid-read instead of after it has been
+                # materialised. Only the SIZE is needed downstream (capture
+                # size guard + log block).
+                audio_bytes = 0
+                with tempfile.NamedTemporaryFile(delete=False, suffix=_safe_tmp_suffix(file.filename)) as tmp_file:
+                    tmp_path = tmp_file.name
+                    while True:
+                        chunk = await file.read(_UPLOAD_CHUNK_BYTES)
+                        if not chunk:
+                            break
+                        audio_bytes += len(chunk)
+                        if audio_bytes > max_upload:
+                            raise HTTPException(status_code=413, detail="upload too large")
+                        tmp_file.write(chunk)
 
             # word_timestamps: AND of the (per-model-overrideable) global
             # config knob and the per-request ask. Disabled (False) bypasses
@@ -3442,11 +3543,27 @@ async def transcribe(
             # Always emit the rich diagnostic block — it's how empty-output
             # failures are debugged. The per-pipeline transformation trace
             # is only included when cfg.TRACE_ENABLED is on.
-            _src_fmt = _log_safe(file.content_type
-                                 or os.path.splitext(file.filename or "")[1].lstrip(".")
-                                 or "audio")
+            if source_url is not None:
+                # Never the full URL in the log block (query strings carry
+                # tokens); the host is enough to correlate, and it still goes
+                # through _log_safe like every caller-supplied string.
+                import urllib.parse as _uparse
+                _url_host = _log_safe(
+                    _uparse.urlsplit(source_url).hostname or "?")
+                _src_fmt = _log_safe(
+                    os.path.splitext(tmp_path or "")[1].lstrip(".") or "audio")
+                _file_label = (f"url:{_url_host}  ({audio_bytes/1024:.1f} KB, "
+                               f"{_log_safe(response_format)})")
+                _audio_src_label = f"{_src_fmt} → 16 kHz mono (url download via yt-dlp"
+            else:
+                _src_fmt = _log_safe(file.content_type
+                                     or os.path.splitext(file.filename or "")[1].lstrip(".")
+                                     or "audio")
+                _file_label = (f"{_log_safe(file.filename)}  ({audio_bytes/1024:.1f} KB, "
+                               f"{_log_safe(response_format)})")
+                _audio_src_label = f"{_src_fmt} → 16 kHz mono (file upload"
             logger.info(_format_request_block(
-                file_label=f"{_log_safe(file.filename)}  ({audio_bytes/1024:.1f} KB, {_log_safe(response_format)})",
+                file_label=_file_label,
                 model_name=resolved_model,
                 info=info,
                 kwargs=transcribe_kwargs,
@@ -3457,7 +3574,7 @@ async def transcribe(
                 request_id=request_id,
                 captured_id=captured_id,
                 endpoint="/v1/audio/transcriptions",
-                audio_source=(f"{_src_fmt} → 16 kHz mono (file upload"
+                audio_source=(_audio_src_label
                               + (f"; +{_lead_pad_ms} ms lead pad)"
                                  if _pad_applied else ")")),
                 ident=ident,
@@ -3529,8 +3646,22 @@ async def transcribe(
                 # was unknown or the feature is gated off) — only when asked.
                 if override_profile:
                     response["profile_applied"] = ident.request_profile_applied
+                # URL flow: where the client can fetch the downloaded audio
+                # for local playback, and how long that offer stands.
+                # Additive keys — OpenAI-compat callers ignore them.
+                if _source_media_id is not None:
+                    import url_media_store as _ums
+                    response["source_media_id"] = _source_media_id
+                    response["source_media_expires_at"] = (
+                        _ums.expires_at_unix(_source_media_id))
                 return response
 
+            if _source_media_id is not None:
+                import url_media_store as _ums
+                return {"text": full_text_str,
+                        "source_media_id": _source_media_id,
+                        "source_media_expires_at":
+                            _ums.expires_at_unix(_source_media_id)}
             return {"text": full_text_str}
 
         except _ClientCancelled:
@@ -3570,6 +3701,11 @@ async def transcribe(
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+            # URL flow: the private download dir (partials, fragments) goes
+            # on every path — cancel, 4xx, 500 included. The retained copy
+            # (url_media_store) has its own TTL lifecycle.
+            if _url_job_dir:
+                shutil.rmtree(_url_job_dir, ignore_errors=True)
 
     except Exception:
         # Catches failures BEFORE the inner try (e.g. _get_or_load_model
@@ -3595,7 +3731,8 @@ async def transcribe(
 @app.post("/v1/audio/translations")
 async def translate_audio(
     request: Request,
-    file: UploadFile = File(...),
+    file: "UploadFile | None" = File(None),
+    source_url: "str | None" = Form(None),
     model_name: str = Form("whisper-1", alias="model"),
     response_format: str = Form("json"),
     language: str = Form(None),
@@ -3619,6 +3756,7 @@ async def translate_audio(
     return await transcribe(
         request=request,
         file=file,
+        source_url=source_url,
         model_name=model_name,
         response_format=response_format,
         language=language,
@@ -3642,10 +3780,12 @@ async def translate_audio(
 async def transcription_progress(progress_id: str):
     """Live progress of an in-flight file transcription that was posted with a
     matching `progress_id` form field. Stages: waiting (semaphore queue) →
-    separating → analyzing (audio decode + VAD, inside transcribe()) →
-    transcribing (with `progress` 0..1 and the audio `duration`)
-    → diarizing. An unknown/finished id answers stage "unknown" — the POST's
-    own response is the completion signal, so the poller just stops."""
+    [resolving → downloading (URL flow: `progress` 0..1 when the size is
+    known, with `total_bytes`)] → separating → analyzing (audio decode +
+    VAD, inside transcribe()) → transcribing (with `progress` 0..1 and the
+    audio `duration`) → diarizing. An unknown/finished id answers stage
+    "unknown" — the POST's own response is the completion signal, so the
+    poller just stops."""
     if not _PROGRESS_ID_RE.match(progress_id):
         raise HTTPException(status_code=422, detail="malformed progress_id")
     entry = _BATCH_PROGRESS.get(progress_id)
@@ -3667,6 +3807,9 @@ async def transcription_progress(progress_id: str):
         # Fraction of the audio the VAD kept (0..1), set once decoding starts;
         # null when the filter was off. Persists for the rest of the run.
         "vad_retained": entry.get("vad_retained"),
+        # URL flow, downloading stage: bytes expected (progress is the
+        # downloaded fraction when this is known; null on fragmented streams).
+        "total_bytes": entry.get("total_bytes"),
         # Requested stages this server declined to run (feature disabled) —
         # ["separating"] / ["diarizing"]. Set the moment the skip is known, so
         # the client's rail can say "skipped" instead of guessing.
@@ -3692,6 +3835,108 @@ async def transcription_cancel(progress_id: str):
     _BATCH_CANCELLED.add(progress_id)
     logger.info("[batch] cancel requested for an in-flight transcription")
     return {"cancelled": True}
+
+
+# ── Transcribe-from-URL: preview + retained-media endpoints ─────────────────
+
+# Per-host window for the metadata probe: each preview is a real outbound
+# fetch to the linked site, so a keystroke-happy client must not turn the
+# server into a probe cannon. Same shape as captures' _check_audio_rate.
+_URL_PREVIEW_RATE_WINDOW_S = 60.0
+_URL_PREVIEW_RATE_MAX = 10
+_url_preview_rate: "dict[str, tuple[int, float]]" = {}
+
+
+def _check_url_preview_rate(host: str) -> None:
+    key = host or "<unknown>"
+    now = time.time()
+    n, start = _url_preview_rate.get(key, (0, now))
+    if now - start > _URL_PREVIEW_RATE_WINDOW_S:
+        n, start = 0, now
+    n += 1
+    _url_preview_rate[key] = (n, start)
+    if n > _URL_PREVIEW_RATE_MAX:
+        raise HTTPException(status_code=429,
+                            detail="too many link previews — slow down")
+
+
+@app.post("/v1/audio/url-preview")
+async def url_preview(request: Request,
+                      user: dict = Depends(_get_current_user_dep)):
+    """Metadata for a pasted media link, WITHOUT downloading: title,
+    duration, uploader, and a server-proxied thumbnail (data: URI — the
+    client never talks to the media site itself). Advisory: the client may
+    still POST a URL whose preview failed; the download re-checks the same
+    policy authoritatively. Client-safe 400s from the policy taxonomy."""
+    if not getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
+        raise HTTPException(status_code=403,
+                            detail="URL download is not enabled on this server")
+    _check_url_preview_rate(request.client.host if request.client else "")
+    import url_download as _udl
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body is a caller error
+        raise HTTPException(status_code=422, detail="expected a JSON body")
+    url = body.get("url") if isinstance(body, dict) else None
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status_code=422, detail="expected {\"url\": …}")
+    try:
+        info = await _udl.probe(
+            url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_SEC", 20)))
+    except _udl.UrlDownloadError as e:
+        # str() is client-safe by the module's contract.
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 — never forward raw errors
+        logger.error("[url-dl] preview failed: %s", _log_safe(str(e)))
+        raise HTTPException(status_code=500, detail="link preview failed")
+    thumb = await _udl.fetch_thumbnail_data_uri(info.thumbnail_url)
+    return {
+        "title": info.title,
+        "duration": info.duration,
+        "uploader": info.uploader,
+        "extractor": info.extractor_key,
+        "estimated_bytes": info.filesize_approx,
+        "thumbnail": thumb,
+    }
+
+
+_URL_MEDIA_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
+
+
+@app.get("/v1/audio/url-media/{media_id}")
+async def url_media(media_id: str,
+                    user: dict = Depends(_get_current_user_dep)):
+    """The retained audio of a finished transcribe-from-URL run, so the
+    client can pull ONE local copy for playback. Short-lived (URL_MEDIA_TTL
+    _SEC, wiped on restart); unknown, expired and foreign-owner ids all
+    answer the same 404 — no oracle. FileResponse handles Range, so the
+    client player can seek without re-downloading."""
+    from fastapi.responses import FileResponse
+    if not getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
+        raise HTTPException(status_code=403,
+                            detail="URL download is not enabled on this server")
+    if not _URL_MEDIA_ID_RE.match(media_id):
+        raise HTTPException(status_code=422, detail="malformed media id")
+    import url_media_store as _ums
+    resolved = _ums.resolve(media_id, user_id=user.get("user_id"))
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="media not found")
+    path, ext = resolved
+    mime = {
+        "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
+        "oga": "audio/ogg", "opus": "audio/ogg", "flac": "audio/flac",
+        "m4a": "audio/mp4", "mp4": "audio/mp4", "aac": "audio/aac",
+        "webm": "audio/webm", "mka": "audio/x-matroska",
+        "mkv": "video/x-matroska",
+    }.get(ext, "application/octet-stream")
+    return FileResponse(
+        path=path,
+        media_type=mime,
+        filename=f"{media_id}.{ext}",
+        # Owner-gated audio: a shared cache must never answer the next,
+        # differently-authenticated caller (same stance as captures audio).
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @app.get("/v1/models", dependencies=[Depends(_get_current_user_dep)])
@@ -3755,6 +4000,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         getattr(cfg, "BGM_SEPARATION_ENABLED", False))
     caps["diarization_enabled"] = bool(
         getattr(cfg, "DIARIZATION_ENABLED", False))
+    # Additive: transcribe-from-URL capacity switch + the installed yt-dlp
+    # version (or null). The version is deliberately visible to user-tier
+    # callers: "is the downloader stale?" is the first question when a site
+    # stops working, and clients surface it in their error guidance.
+    caps["url_download_enabled"] = bool(
+        getattr(cfg, "URL_DOWNLOAD_ENABLED", False))
+    if caps["url_download_enabled"]:
+        import url_download as _udl
+        caps["yt_dlp_version"] = _udl.yt_dlp_version()
     return caps
 
 

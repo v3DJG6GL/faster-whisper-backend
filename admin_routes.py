@@ -138,6 +138,18 @@ _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = [
         "BGM_SEPARATION_DEVICE", "BGM_SEPARATION_IDLE_TIMEOUT_S",
         "SEPARATE_BGM",
     ])]),
+    ("Transcribe from URL", [
+        (None, [
+            "URL_DOWNLOAD_ENABLED", "URL_ALLOWED_EXTRACTORS",
+            "URL_ALLOW_DIRECT_MEDIA", "URL_ALLOW_GENERIC",
+            "URL_MAX_DURATION_SEC", "URL_MAX_BYTES",
+        ]),
+        ("Advanced — timeouts, concurrency & retention", [
+            "URL_DOWNLOAD_TIMEOUT_SEC", "URL_PREVIEW_TIMEOUT_SEC",
+            "URL_SOCKET_TIMEOUT_SEC", "URL_DOWNLOAD_CONCURRENCY",
+            "URL_MEDIA_DIR", "URL_MEDIA_TTL_SEC", "URL_MEDIA_MAX_BYTES",
+        ]),
+    ]),
     ("Per-model overrides", [(None, ["MODEL_OVERRIDES"])]),
     ("Pipeline", [(None, ["PIPELINE_RULES"])]),
     ("Logging", [(None, [

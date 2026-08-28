@@ -104,6 +104,20 @@ ENV_VAR_MAPPING: dict[str, str] = {
     "BGM_SEPARATION_DEVICE": "WHISPER_BGM_SEPARATION_DEVICE",
     "BGM_SEPARATION_IDLE_TIMEOUT_S": "WHISPER_BGM_SEPARATION_IDLE_TIMEOUT_S",
     "SEPARATE_BGM": "WHISPER_SEPARATE_BGM",
+    # Transcribe-from-URL (yt-dlp)
+    "URL_DOWNLOAD_ENABLED": "WHISPER_URL_DOWNLOAD_ENABLED",
+    "URL_ALLOWED_EXTRACTORS": "WHISPER_URL_ALLOWED_EXTRACTORS",
+    "URL_ALLOW_DIRECT_MEDIA": "WHISPER_URL_ALLOW_DIRECT_MEDIA",
+    "URL_ALLOW_GENERIC": "WHISPER_URL_ALLOW_GENERIC",
+    "URL_MAX_DURATION_SEC": "WHISPER_URL_MAX_DURATION_SEC",
+    "URL_MAX_BYTES": "WHISPER_URL_MAX_BYTES",
+    "URL_DOWNLOAD_TIMEOUT_SEC": "WHISPER_URL_DOWNLOAD_TIMEOUT_SEC",
+    "URL_PREVIEW_TIMEOUT_SEC": "WHISPER_URL_PREVIEW_TIMEOUT_SEC",
+    "URL_SOCKET_TIMEOUT_SEC": "WHISPER_URL_SOCKET_TIMEOUT_SEC",
+    "URL_DOWNLOAD_CONCURRENCY": "WHISPER_URL_DOWNLOAD_CONCURRENCY",
+    "URL_MEDIA_DIR": "WHISPER_URL_MEDIA_DIR",
+    "URL_MEDIA_TTL_SEC": "WHISPER_URL_MEDIA_TTL_SEC",
+    "URL_MEDIA_MAX_BYTES": "WHISPER_URL_MEDIA_MAX_BYTES",
     "TRACE_ENABLED": "WHISPER_TRACE",
     "LOG_FILE": "WHISPER_LOG_FILE",
     "LOG_VIEWER_INITIAL_LINES": "WHISPER_LOG_VIEWER_INITIAL_LINES",
@@ -242,6 +256,9 @@ RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset({
     "TRUSTED_ORIGINS",
     # WebSocket keepalive is passed once to uvicorn.run.
     "STREAMING_WS_PING_INTERVAL_SEC", "STREAMING_WS_PING_TIMEOUT_SEC",
+    # The URL-media retention dir is created + wiped once at startup; the
+    # download semaphore is built once on first use.
+    "URL_MEDIA_DIR", "URL_DOWNLOAD_CONCURRENCY",
 })
 
 # Load-time fields. Editing these (globally OR per-model in MODEL_OVERRIDES)
@@ -560,6 +577,55 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Whether a request separates music when it does not say (the "
         "`separate_bgm` form field overrides; lockable). Only effective "
         "while BGM_SEPARATION_ENABLED is on.",
+
+    # --- Transcribe-from-URL (yt-dlp) ---
+    "URL_DOWNLOAD_ENABLED":
+        "Allow clients to transcribe from a pasted media link (YouTube, "
+        "podcasts, direct audio/video URLs): the server downloads the audio "
+        "with yt-dlp, then runs the normal pipeline. Off by default — "
+        "enabling it makes the server fetch client-supplied URLs.",
+    "URL_ALLOWED_EXTRACTORS":
+        "Only these yt-dlp extractor keys (e.g. Youtube, Vimeo, Soundcloud; "
+        "case-insensitive) may be downloaded. Empty = every dedicated "
+        "extractor is allowed (the catch-all Generic extractor is governed "
+        "by the two switches below, not by this list).",
+    "URL_ALLOW_DIRECT_MEDIA":
+        "Accept direct links to media files (URLs no dedicated extractor "
+        "matches) after a capped probe confirms the response is audio/* or "
+        "video/*. Safer than URL_ALLOW_GENERIC: only confirmed media is "
+        "fetched.",
+    "URL_ALLOW_GENERIC":
+        "Accept ANY URL via yt-dlp's Generic webpage extractor. SSRF "
+        "hazard: the server will fetch arbitrary URLs, including internal "
+        "ones. Leave off unless you understand the exposure.",
+    "URL_MAX_DURATION_SEC":
+        "Reject linked media longer than this many seconds (checked from "
+        "metadata before downloading). Default 14400 (4 h).",
+    "URL_MAX_BYTES":
+        "Byte ceiling for one URL download. 0 = inherit MAX_UPLOAD_BYTES, "
+        "so a link can never admit more than an upload could.",
+    "URL_DOWNLOAD_TIMEOUT_SEC":
+        "Wall-clock ceiling for one download subprocess; the download is "
+        "killed and the request fails past it. Default 900 (15 min).",
+    "URL_PREVIEW_TIMEOUT_SEC":
+        "Wall-clock ceiling for a metadata probe (/v1/audio/url-preview and "
+        "the pre-download policy check). Default 20 s.",
+    "URL_SOCKET_TIMEOUT_SEC":
+        "Per-connection socket timeout passed to yt-dlp, so a stalled "
+        "remote server fails fast instead of pinning a slot.",
+    "URL_DOWNLOAD_CONCURRENCY":
+        "How many URL downloads may run at once (separate from "
+        "INFERENCE_CONCURRENCY — downloads are network-bound and do not "
+        "hold the GPU semaphore).",
+    "URL_MEDIA_DIR":
+        "Directory where downloaded audio is retained briefly so the "
+        "client can fetch it for local playback. Wiped on startup.",
+    "URL_MEDIA_TTL_SEC":
+        "How long a downloaded file stays fetchable via "
+        "/v1/audio/url-media/{id} after its transcription. Default 3600.",
+    "URL_MEDIA_MAX_BYTES":
+        "Byte cap on URL_MEDIA_DIR; oldest files are evicted first when "
+        "the sum exceeds it.",
 
     # --- Pipeline ---
     "PIPELINE_RULES":
@@ -1508,6 +1574,24 @@ class AdminConfig(BaseModel):
     BGM_SEPARATION_DEVICE: DiarizationDeviceLit | None = _F("BGM_SEPARATION_DEVICE")
     BGM_SEPARATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F("BGM_SEPARATION_IDLE_TIMEOUT_S")
     SEPARATE_BGM: bool | None = _F("SEPARATE_BGM")
+
+    # --- Transcribe-from-URL (yt-dlp) ---
+    URL_DOWNLOAD_ENABLED: bool | None = _F("URL_DOWNLOAD_ENABLED")
+    URL_ALLOWED_EXTRACTORS: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=64)]],
+        Field(max_length=128),
+    ] | None = _F("URL_ALLOWED_EXTRACTORS")
+    URL_ALLOW_DIRECT_MEDIA: bool | None = _F("URL_ALLOW_DIRECT_MEDIA")
+    URL_ALLOW_GENERIC: bool | None = _F("URL_ALLOW_GENERIC")
+    URL_MAX_DURATION_SEC: Annotated[int, Field(ge=1, le=86400 * 7)] | None = _F("URL_MAX_DURATION_SEC")
+    URL_MAX_BYTES: Annotated[int, Field(ge=0, le=10_000_000_000)] | None = _F("URL_MAX_BYTES")
+    URL_DOWNLOAD_TIMEOUT_SEC: Annotated[int, Field(ge=10, le=86400)] | None = _F("URL_DOWNLOAD_TIMEOUT_SEC")
+    URL_PREVIEW_TIMEOUT_SEC: Annotated[int, Field(ge=1, le=300)] | None = _F("URL_PREVIEW_TIMEOUT_SEC")
+    URL_SOCKET_TIMEOUT_SEC: Annotated[int, Field(ge=1, le=600)] | None = _F("URL_SOCKET_TIMEOUT_SEC")
+    URL_DOWNLOAD_CONCURRENCY: Annotated[int, Field(ge=1, le=16)] | None = _F("URL_DOWNLOAD_CONCURRENCY")
+    URL_MEDIA_DIR: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("URL_MEDIA_DIR")
+    URL_MEDIA_TTL_SEC: Annotated[int, Field(ge=10, le=86400 * 7)] | None = _F("URL_MEDIA_TTL_SEC")
+    URL_MEDIA_MAX_BYTES: Annotated[int, Field(ge=0, le=100_000_000_000)] | None = _F("URL_MEDIA_MAX_BYTES")
 
     # --- Per-model overrides ---
     MODEL_OVERRIDES: dict[ModelId, ModelOverride] | None = _F("MODEL_OVERRIDES")

@@ -42,3 +42,10 @@ pydantic>=2.13.4
 # fallback. Raw-PCM streaming needs neither. (faster-whisper's batch route decodes
 # via PyAV's bundled libs, which is separate from the ffmpeg *executable*.)
 imageio-ffmpeg>=0.6.0
+
+# Transcribe-from-URL (URL_DOWNLOAD_ENABLED): the server-side downloader for
+# pasted media links. Pure Python; the ffmpeg it may call for merges comes
+# from PATH or the imageio-ffmpeg wheel above (--ffmpeg-location). YouTube
+# ships breaking changes every few weeks, so this dep has its OWN Renovate
+# rule (ungrouped, no release-age gate) — a stale yt-dlp is a dead feature.
+yt-dlp>=2025.8.11

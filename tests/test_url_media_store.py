@@ -1,0 +1,103 @@
+"""Unit tests for url_media_store.py (retention of URL-downloaded audio)."""
+
+from __future__ import annotations
+
+import os
+
+import pytest
+
+import url_media_store as ums
+
+
+@pytest.fixture(autouse=True)
+def _fresh_store(tmp_path, monkeypatch):
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_DIR", str(tmp_path / "url_media"),
+                        raising=False)
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_SEC", 3600, raising=False)
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_MAX_BYTES", 10_000, raising=False)
+    ums.startup_reset()
+    yield
+    ums._REG.clear()
+
+
+def _make_src(tmp_path, name="dl.m4a", size=100):
+    p = tmp_path / name
+    p.write_bytes(b"x" * size)
+    return str(p)
+
+
+def test_register_resolve_roundtrip(tmp_path):
+    mid = ums.register(_make_src(tmp_path), user_id="u1")
+    assert mid and len(mid) == 32
+    resolved = ums.resolve(mid, user_id="u1")
+    assert resolved is not None
+    path, ext = resolved
+    assert ext == "m4a" and os.path.isfile(path)
+    # the source was MOVED, not copied
+    assert not os.path.exists(str(tmp_path / "dl.m4a"))
+
+
+def test_unknown_ext_becomes_bin(tmp_path):
+    mid = ums.register(_make_src(tmp_path, name="dl.weird"), user_id=None)
+    assert ums.resolve(mid, user_id=None)[1] == "bin"
+
+
+def test_owner_mismatch_hidden(tmp_path):
+    mid = ums.register(_make_src(tmp_path), user_id="owner")
+    assert ums.resolve(mid, user_id="someone-else") is None
+    # open-mode symmetry: a None on either side allows
+    assert ums.resolve(mid, user_id=None) is not None
+
+
+def test_ttl_expiry(tmp_path, monkeypatch):
+    mid = ums.register(_make_src(tmp_path), user_id=None)
+    entry_path = ums._REG[mid]["path"]
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_SEC", 0, raising=False)
+    assert ums.resolve(mid, user_id=None) is None
+    assert not os.path.exists(entry_path)  # expiry deletes the file
+
+
+def test_sweep_ttl_and_unknown_id(tmp_path, monkeypatch):
+    mid = ums.register(_make_src(tmp_path), user_id=None)
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_SEC", 0, raising=False)
+    ums.sweep()
+    assert mid not in ums._REG
+    assert ums.resolve("f" * 32, user_id=None) is None
+
+
+def test_lru_eviction_over_byte_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_MAX_BYTES", 250, raising=False)
+    first = ums.register(_make_src(tmp_path, "a.m4a", size=100), user_id=None)
+    second = ums.register(_make_src(tmp_path, "b.m4a", size=100), user_id=None)
+    third = ums.register(_make_src(tmp_path, "c.m4a", size=100), user_id=None)
+    # 300 bytes > 250 cap → the oldest goes
+    assert ums.resolve(first, user_id=None) is None
+    assert ums.resolve(second, user_id=None) is not None
+    assert ums.resolve(third, user_id=None) is not None
+
+
+def test_startup_reset_wipes(tmp_path):
+    mid = ums.register(_make_src(tmp_path), user_id=None)
+    retained = ums._REG[mid]["path"]
+    ums.startup_reset()
+    assert ums._REG == {}
+    assert not os.path.exists(retained)
+    assert os.path.isdir(ums._dir())
+
+
+def test_pipeline_copy_is_independent(tmp_path):
+    src = _make_src(tmp_path, size=64)
+    copy = ums.make_pipeline_copy(src)
+    assert copy and os.path.getsize(copy) == 64
+    mid = ums.register(src, user_id=None)  # moves the original away
+    # unlinking the pipeline copy must not touch the retained file
+    os.unlink(copy)
+    assert ums.resolve(mid, user_id=None) is not None
+
+
+def test_expires_at_unix(tmp_path):
+    mid = ums.register(_make_src(tmp_path), user_id=None)
+    exp = ums.expires_at_unix(mid)
+    import time
+    assert exp is not None and exp > time.time()
+    assert ums.expires_at_unix("f" * 32) is None

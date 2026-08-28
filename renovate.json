@@ -8,7 +8,9 @@
     ":dependencyDashboard"
   ],
   "timezone": "Etc/UTC",
-  "labels": ["dependencies"],
+  "labels": [
+    "dependencies"
+  ],
   "rangeStrategy": "bump",
   "automerge": true,
   "automergeStrategy": "squash",
@@ -19,37 +21,73 @@
   "packageRules": [
     {
       "description": "Group all Actions bumps (the github-actions manager also covers .forgejo/workflows) into one PR.",
-      "matchManagers": ["github-actions"],
+      "matchManagers": [
+        "github-actions"
+      ],
       "groupName": "github-actions"
     },
     {
       "description": "Group the Python runtime + dev requirements (base / gpu / convert / dev) into one PR.",
-      "matchManagers": ["pip_requirements"],
+      "matchManagers": [
+        "pip_requirements"
+      ],
       "groupName": "python deps"
     },
     {
+      "description": "yt-dlp chases YouTube's breaking changes \u2014 extractor fixes must land within a CI cycle, not after the 3-day release age. Own PR (ungrouped), no minimumReleaseAge, automerge.",
+      "matchManagers": [
+        "pip_requirements"
+      ],
+      "matchPackageNames": [
+        "yt-dlp"
+      ],
+      "groupName": null,
+      "minimumReleaseAge": "0 days",
+      "automerge": true
+    },
+    {
       "description": "NVIDIA CUDA wheels: never cross the pinned major. main.py's Windows DLL preloader hardcodes cublas64_12 / cudnn64_9, so a major bump (cublas 13.x, cudnn 10.x) would silently break GPU inference. The <13 / <10 caps in requirements-gpu.txt already block this; this makes the intent explicit.",
-      "matchManagers": ["pip_requirements"],
-      "matchPackageNames": ["nvidia-cublas-cu12", "nvidia-cudnn-cu12"],
-      "matchUpdateTypes": ["major"],
+      "matchManagers": [
+        "pip_requirements"
+      ],
+      "matchPackageNames": [
+        "nvidia-cublas-cu12",
+        "nvidia-cudnn-cu12"
+      ],
+      "matchUpdateTypes": [
+        "major"
+      ],
       "enabled": false
     },
     {
-      "description": "Keep workflow actions on floating major tags (@vN). Suppress pin/patch/minor so they are never pinned to an exact patch (upstream moves the @vN tag, so patch fixes land at runtime without a PR — and the local action mirrors only sync tags every 8h, so an exact-patch pin can race the mirror). A new MAJOR still surfaces via the rule below.",
-      "matchFileNames": [".forgejo/workflows/**", ".github/workflows/**"],
-      "matchDatasources": ["github-tags"],
-      "matchUpdateTypes": ["pin", "patch", "minor"],
+      "description": "Keep workflow actions on floating major tags (@vN). Suppress pin/patch/minor so they are never pinned to an exact patch (upstream moves the @vN tag, so patch fixes land at runtime without a PR \u2014 and the local action mirrors only sync tags every 8h, so an exact-patch pin can race the mirror). A new MAJOR still surfaces via the rule below.",
+      "matchFileNames": [
+        ".forgejo/workflows/**",
+        ".github/workflows/**"
+      ],
+      "matchDatasources": [
+        "github-tags"
+      ],
+      "matchUpdateTypes": [
+        "pin",
+        "patch",
+        "minor"
+      ],
       "enabled": false
     },
     {
-      "description": "Major bumps require manual review — surface as checkboxes on the Dependency Dashboard, do not open the PR automatically, do not auto-merge. Minor/patch still flow through Renovate-side automerge, which waits for both all-ci and its own minimumReleaseAge check (platformAutomerge is off: Forgejo only honours required checks, so it would merge before the release age is met).",
-      "matchUpdateTypes": ["major"],
+      "description": "Major bumps require manual review \u2014 surface as checkboxes on the Dependency Dashboard, do not open the PR automatically, do not auto-merge. Minor/patch still flow through Renovate-side automerge, which waits for both all-ci and its own minimumReleaseAge check (platformAutomerge is off: Forgejo only honours required checks, so it would merge before the release age is met).",
+      "matchUpdateTypes": [
+        "major"
+      ],
       "automerge": false,
       "dependencyDashboardApproval": true
     }
   ],
   "vulnerabilityAlerts": {
-    "labels": ["security"],
+    "labels": [
+      "security"
+    ],
     "automerge": true,
     "minimumReleaseAge": "3 days"
   }

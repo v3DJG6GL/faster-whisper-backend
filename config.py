@@ -550,6 +550,45 @@ SEPARATE_BGM: bool = _D("SEPARATE_BGM")
 
 
 # =============================================================================
+# Transcribe-from-URL (yt-dlp download of a client-supplied media link)
+# =============================================================================
+# Master capacity switch: whether /v1/audio/transcriptions accepts a
+# `source_url` field (and whether /v1/audio/url-preview answers at all).
+URL_DOWNLOAD_ENABLED: bool = _D("URL_DOWNLOAD_ENABLED")
+
+# Site policy (all three combine; see url_download._policy_check):
+#   URL_ALLOWED_EXTRACTORS  non-empty → only these yt-dlp extractor keys
+#                           (case-insensitive, e.g. "Youtube") are accepted;
+#                           empty → every dedicated extractor is accepted.
+#   URL_ALLOW_DIRECT_MEDIA  a URL only the Generic extractor matches is still
+#                           accepted when a capped probe shows the response is
+#                           audio/* or video/* (a direct media file link).
+#   URL_ALLOW_GENERIC       accept ANY Generic-extractor URL (webpage
+#                           scraping). SSRF hazard — the server will fetch
+#                           arbitrary URLs, including internal ones. Off by
+#                           default; enabling it is an explicit operator call.
+URL_ALLOWED_EXTRACTORS: "list[str]" = _D("URL_ALLOWED_EXTRACTORS")
+URL_ALLOW_DIRECT_MEDIA: bool = _D("URL_ALLOW_DIRECT_MEDIA")
+URL_ALLOW_GENERIC: bool = _D("URL_ALLOW_GENERIC")
+
+# Resource ceilings for one download. URL_MAX_BYTES=0 inherits
+# MAX_UPLOAD_BYTES so the URL path can never admit more than an upload could.
+URL_MAX_DURATION_SEC: int = _D("URL_MAX_DURATION_SEC")
+URL_MAX_BYTES: int = _D("URL_MAX_BYTES")
+URL_DOWNLOAD_TIMEOUT_SEC: int = _D("URL_DOWNLOAD_TIMEOUT_SEC")
+URL_PREVIEW_TIMEOUT_SEC: int = _D("URL_PREVIEW_TIMEOUT_SEC")
+URL_SOCKET_TIMEOUT_SEC: int = _D("URL_SOCKET_TIMEOUT_SEC")
+URL_DOWNLOAD_CONCURRENCY: int = _D("URL_DOWNLOAD_CONCURRENCY")
+
+# Retention of the downloaded audio so the client can fetch it once for local
+# playback (GET /v1/audio/url-media/{id}): TTL + byte-capped LRU under
+# URL_MEDIA_DIR; the directory is wiped on startup (ids die with the process).
+URL_MEDIA_DIR: str = _D("URL_MEDIA_DIR")
+URL_MEDIA_TTL_SEC: int = _D("URL_MEDIA_TTL_SEC")
+URL_MEDIA_MAX_BYTES: int = _D("URL_MEDIA_MAX_BYTES")
+
+
+# =============================================================================
 # Per-model overrides (MODEL_OVERRIDES)
 # =============================================================================
 # Map of model_id -> dict of override fields. Each override may set any
