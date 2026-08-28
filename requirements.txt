@@ -48,4 +48,4 @@ imageio-ffmpeg>=0.6.0
 # from PATH or the imageio-ffmpeg wheel above (--ffmpeg-location). YouTube
 # ships breaking changes every few weeks, so this dep has its OWN Renovate
 # rule (ungrouped, no release-age gate) — a stale yt-dlp is a dead feature.
-yt-dlp>=2025.12.8
+yt-dlp>=2026.8.19
