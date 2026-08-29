@@ -2759,8 +2759,12 @@ async def transcribe(
     # Seed the registry entry NOW so the cancel endpoint (which only accepts
     # ids it can see in-flight) has a target from the first moment — the
     # first stage-driven _progress_set can otherwise be seconds away (model
-    # load, semaphore queue).
-    _progress_set(_pid, stage="waiting", progress=None)
+    # load, semaphore queue). URL runs seed as "resolving": their pipeline
+    # starts at the link, and "waiting" maps onto the transcribe row in the
+    # client's rail — which would paint the download as already done.
+    _progress_set(_pid,
+                  stage=("resolving" if source_url is not None else "waiting"),
+                  progress=None)
     # Whisper's only two tasks; anything else is a caller error, not something
     # to silently coerce (unlike the clamped numeric knobs below, a wrong task
     # would return output in the wrong language with no other signal).
