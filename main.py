@@ -3208,19 +3208,23 @@ async def transcribe(
                                         pass
                                     _sep_wav = None
                                 _sep_src = tmp_path
-                            finally:
-                                _progress_set(_pid, step=None)
                         try:
                             _check_cancelled(_pid)
                             async with get_inference_semaphore():
                                 _check_cancelled(_pid)
+                                # "preparing" stays up through model load and
+                                # the separator's own audio load/normalize
+                                # (~40 s on long inputs); the first demix
+                                # chunk clears it via the progress callback.
+                                _progress_set(_pid, step="preparing")
                                 _vocals_path = await _bgm.separate(
                                     _sep_src,
                                     progress_cb=lambda f: _progress_set(
-                                        _pid, progress=f),
+                                        _pid, progress=f, step=None),
                                     cancel_check=lambda: _cancel_requested(
                                         _pid))
                         finally:
+                            _progress_set(_pid, step=None)
                             # The intermediate WAV is ours alone — unlink it
                             # even on cancel/failure (it's ~10× the source;
                             # leaking one per request adds up fast).

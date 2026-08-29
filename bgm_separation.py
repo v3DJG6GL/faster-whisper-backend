@@ -128,6 +128,12 @@ def _install_shims() -> None:
                 total = getattr(self, "total", None)
                 if cb is not None and total:
                     try:
+                        # The first chunk carries the CUDA/ORT warmup cost —
+                        # one INFO separates warmup from steady-state.
+                        if not getattr(_progress_tls, "ticked", False):
+                            _progress_tls.ticked = True
+                            logger.info(
+                                "[bgm] first chunk done — device warmed up")
                         overall = _pass_fraction(
                             getattr(_progress_tls, "pass_no", 1),
                             float(self.n) / float(total))
@@ -274,6 +280,10 @@ def _load_blocking(model_filename: str, device: str):
         output_dir=tempfile.gettempdir(),
         output_format="WAV",
         output_single_stem="Vocals",
+        # Write stems with soundfile directly instead of the pydub default,
+        # which quantizes/interleaves in Python and pipes the whole WAV
+        # through an ffmpeg subprocess — ~20 s of dead time on long audio.
+        use_soundfile=True,
     )
     if device == "cpu":
         # Separator autodetects CUDA in __init__ (setup_torch_device); there is
@@ -311,10 +321,21 @@ def _load_blocking(model_filename: str, device: str):
             if is_match_mix:
                 # Only ever read under invert_using_spec — see above.
                 return mix
+            # Everything between _run's load_t0 and here is prepare_mix:
+            # reading + validating + normalizing the whole input (tens of
+            # seconds on long audio) — bracket it so the log has no dead air.
+            load_t0 = getattr(_progress_tls, "load_t0", None)
+            if load_t0 is not None:
+                _progress_tls.load_t0 = None
+                logger.info(
+                    "[bgm] audio loaded and normalized in %.1fs — "
+                    "model pass starting", time.perf_counter() - load_t0)
             t0 = time.perf_counter()
             out = _orig_demix(mix, is_match_mix=is_match_mix)
             logger.info("[bgm] model pass done in %.1fs",
                         time.perf_counter() - t0)
+            # What follows in the library is stem synthesis + the WAV write.
+            logger.info("[bgm] assembling and writing the vocals stem")
             return out
 
         inst.demix = _demix
@@ -398,13 +419,23 @@ async def separate(path: str, *, progress_cb=None, cancel_check=None) -> str:
         _progress_tls.cancel = cancel_check
         _progress_tls.pass_no = 0
         _progress_tls.log_bucket = 0
+        _progress_tls.ticked = False
         try:
+            if _separate_mutex.locked():
+                # A cancelled request's zombie separation is still running
+                # (see the mutex comment above) — say so instead of stalling
+                # silently.
+                logger.info(
+                    "[bgm] waiting for a previous separation to finish")
             with _separate_mutex:
+                _progress_tls.load_t0 = time.perf_counter()
+                logger.info("[bgm] loading audio for separation")
                 outputs = sep.separate(
                     path, custom_output_names={"Vocals": out_name})
         finally:
             _progress_tls.cb = None
             _progress_tls.cancel = None
+            _progress_tls.load_t0 = None
         if not outputs:
             raise RuntimeError("separator returned no output files")
         out = outputs[0]
