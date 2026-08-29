@@ -51,6 +51,90 @@ def test_separate_swaps_audio_and_cleans_up(client, app_module, monkeypatch, fak
         app_module.cfg.BGM_SEPARATION_ENABLED = False
 
 
+def test_separate_transcodes_non_libsndfile_container(
+        client, app_module, monkeypatch, fake_model):
+    """An .m4a input is pre-transcoded to 44.1 kHz stereo WAV for the
+    separator (libsndfile can't read AAC/MP4 → slow audioread fallback)."""
+    import audio_transcode
+
+    app_module.cfg.BGM_SEPARATION_ENABLED = True
+    try:
+        calls = []
+        made = _stub_separate(monkeypatch, calls)
+        transcoded = []
+
+        def _fake_transcode(src, dst, *, rate, layout):
+            transcoded.append((src, dst, rate, layout))
+            with open(dst, "wb") as f:
+                f.write(b"RIFF44kWAVE")
+            return 11
+
+        monkeypatch.setattr(audio_transcode, "transcode_to_wav",
+                            _fake_transcode)
+        r = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")},
+            data={"model": "whisper-1", "response_format": "verbose_json",
+                  "separate_bgm": "true"})
+        assert r.status_code == 200, r.text
+        assert len(transcoded) == 1
+        _src, _dst, _rate, _layout = transcoded[0]
+        assert (_rate, _layout) == (44100, "stereo")
+        assert _src.endswith(".m4a") and _dst.endswith(".wav")
+        # The separator got the WAV, not the original container...
+        assert calls == [_dst]
+        # ...and the intermediate WAV was unlinked after separation.
+        assert not os.path.exists(_dst)
+        assert fake_model.last_audio == made[0]
+    finally:
+        app_module.cfg.BGM_SEPARATION_ENABLED = False
+
+
+def test_separate_transcode_failure_falls_back_to_original(
+        client, app_module, monkeypatch, fake_model):
+    import audio_transcode
+
+    app_module.cfg.BGM_SEPARATION_ENABLED = True
+    try:
+        calls = []
+        _stub_separate(monkeypatch, calls)
+
+        def _boom(src, dst, *, rate, layout):
+            raise RuntimeError("no decoder")
+
+        monkeypatch.setattr(audio_transcode, "transcode_to_wav", _boom)
+        r = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.m4a", b"\x00\x00\x00 ftypM4A ", "audio/mp4")},
+            data={"model": "whisper-1", "separate_bgm": "true"})
+        assert r.status_code == 200, r.text
+        # Separation still ran — on the original file (soft-fail, no warning
+        # surfaced to the client for a transcode hiccup).
+        assert len(calls) == 1 and calls[0].endswith(".m4a")
+    finally:
+        app_module.cfg.BGM_SEPARATION_ENABLED = False
+
+
+def test_separate_wav_input_skips_transcode(
+        client, app_module, monkeypatch, fake_model):
+    import audio_transcode
+
+    app_module.cfg.BGM_SEPARATION_ENABLED = True
+    try:
+        calls = []
+        _stub_separate(monkeypatch, calls)
+
+        def _never(src, dst, *, rate, layout):
+            raise AssertionError("wav input must not be transcoded")
+
+        monkeypatch.setattr(audio_transcode, "transcode_to_wav", _never)
+        r = _post(client, separate_bgm="true")
+        assert r.status_code == 200, r.text
+        assert len(calls) == 1 and calls[0].endswith(".wav")
+    finally:
+        app_module.cfg.BGM_SEPARATION_ENABLED = False
+
+
 def test_separate_disabled_server_soft_fails(client, app_module, monkeypatch):
     calls = []
     _stub_separate(monkeypatch, calls)

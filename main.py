@@ -3161,13 +3161,70 @@ async def transcribe(
                             device=(_bgm.actual_device()
                                     or _bgm._resolve_device()))
                         _check_cancelled(_pid)
-                        async with get_inference_semaphore():
+                        # libsndfile can't open AAC/MP4-family containers
+                        # (m4a/mp4/webm…): the separator would fall back to a
+                        # slow audioread/ffmpeg-subprocess decode — a silent
+                        # minute for a 20-minute source — and log a
+                        # "Format not recognised" warning. Hand it what it
+                        # natively consumes instead: 44.1 kHz stereo s16 WAV
+                        # via PyAV. (NOT 16 kHz mono — MDX separates on the
+                        # full band and wants the Separator's 44100 default.)
+                        # wav/flac are safe in every libsndfile; leave those.
+                        _sep_src = tmp_path
+                        _sep_wav = None
+                        _sep_ext = (os.path.splitext(tmp_path)[1]
+                                    .lstrip(".").lower())
+                        if _sep_ext not in ("wav", "flac"):
+                            try:
+                                import audio_transcode as _atc
+                                _tfd, _sep_wav = tempfile.mkstemp(
+                                    prefix="sepsrc-", suffix=".wav")
+                                os.close(_tfd)
+                                _tc0 = time.perf_counter()
+                                _progress_set(_pid, step="preparing")
+                                await asyncio.to_thread(
+                                    _atc.transcode_to_wav, tmp_path,
+                                    _sep_wav, rate=44100, layout="stereo")
+                                logger.info(
+                                    "[bgm] input .%s → 44.1 kHz WAV for "
+                                    "separation in %.1fs (%.1f MB)",
+                                    _sep_ext or "?",
+                                    time.perf_counter() - _tc0,
+                                    os.path.getsize(_sep_wav) / 1e6)
+                                _sep_src = _sep_wav
+                            except Exception as _te:  # noqa: BLE001
+                                logger.warning(
+                                    "[bgm] input transcode failed (%s); "
+                                    "separator will decode the original",
+                                    _log_safe(str(_te)))
+                                if _sep_wav is not None:
+                                    try:
+                                        os.unlink(_sep_wav)
+                                    except OSError:
+                                        pass
+                                    _sep_wav = None
+                                _sep_src = tmp_path
+                            finally:
+                                _progress_set(_pid, step=None)
+                        try:
                             _check_cancelled(_pid)
-                            _vocals_path = await _bgm.separate(
-                                tmp_path,
-                                progress_cb=lambda f: _progress_set(
-                                    _pid, progress=f),
-                                cancel_check=lambda: _cancel_requested(_pid))
+                            async with get_inference_semaphore():
+                                _check_cancelled(_pid)
+                                _vocals_path = await _bgm.separate(
+                                    _sep_src,
+                                    progress_cb=lambda f: _progress_set(
+                                        _pid, progress=f),
+                                    cancel_check=lambda: _cancel_requested(
+                                        _pid))
+                        finally:
+                            # The intermediate WAV is ours alone — unlink it
+                            # even on cancel/failure (it's ~10× the source;
+                            # leaking one per request adds up fast).
+                            if _sep_wav is not None:
+                                try:
+                                    os.unlink(_sep_wav)
+                                except OSError:
+                                    pass
                         try:
                             os.unlink(tmp_path)
                         except OSError:

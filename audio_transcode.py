@@ -1,24 +1,31 @@
 """In-process audio transcoder using PyAV (already a faster-whisper dep,
 so no extra requirement and no ffmpeg-on-PATH needed on Windows).
 
-Output is fixed: 16 kHz · mono · signed 16-bit little-endian PCM in a
-RIFF/WAVE container. That's Whisper's native input rate AND the only
-format every browser plays without a system codec — Firefox on Linux
-ships no AAC decoder, so storing the dictation client's raw .m4a would
-mean a dead Play button on the /captures page.
+Output is signed 16-bit little-endian PCM in a RIFF/WAVE container; rate
+and layout are per-caller:
+
+- captures: 16 kHz mono — Whisper's native input rate AND the only format
+  every browser plays without a system codec (Firefox on Linux ships no
+  AAC decoder, so storing the dictation client's raw .m4a would mean a
+  dead Play button on the /captures page).
+- BGM separation: 44.1 kHz stereo — what the UVR/MDX separator natively
+  consumes; anything else it would re-decode/resample itself, slowly.
 """
 from __future__ import annotations
 
 import os
 
-_OUT_RATE = 16000
-_OUT_LAYOUT = "mono"
 _OUT_FORMAT = "s16"          # signed 16-bit
 _OUT_CODEC = "pcm_s16le"     # WAV's native uncompressed codec
 
 
 def transcode_to_wav_16k_mono(src_path: str, dst_path: str) -> int:
-    """Decode anything PyAV understands, resample to 16 kHz mono, write
+    return transcode_to_wav(src_path, dst_path, rate=16000, layout="mono")
+
+
+def transcode_to_wav(src_path: str, dst_path: str, *,
+                     rate: int, layout: str) -> int:
+    """Decode anything PyAV understands, resample to `rate`/`layout`, write
     a RIFF/WAVE file at dst_path. Returns bytes written. On any failure
     the destination is best-effort unlinked."""
     try:
@@ -46,12 +53,12 @@ def transcode_to_wav_16k_mono(src_path: str, dst_path: str) -> int:
             raise ValueError("source has no audio stream")
 
         out_container = av.open(dst_path, mode="w", format="wav")
-        out_stream = out_container.add_stream(_OUT_CODEC, rate=_OUT_RATE)
-        out_stream.layout = _OUT_LAYOUT
+        out_stream = out_container.add_stream(_OUT_CODEC, rate=rate)
+        out_stream.layout = layout
         out_stream.format = _OUT_FORMAT
 
         resampler = av.AudioResampler(
-            format=_OUT_FORMAT, layout=_OUT_LAYOUT, rate=_OUT_RATE,
+            format=_OUT_FORMAT, layout=layout, rate=rate,
         )
 
         for frame in in_container.decode(in_stream):
