@@ -27,6 +27,14 @@ import system_stats
 
 logger = logging.getLogger("whisper-server")
 
+# use_soundfile=True below is a deliberate choice, but audio_separator
+# announces it with a WARNING ("Using soundfile for writing.") on every stem
+# write — drop that one message so real warnings stay visible. Registered
+# once at import; logging filters accumulate if added per load.
+logging.getLogger("audio_separator.separator.separator").addFilter(
+    lambda record: "Using soundfile for writing" not in record.getMessage()
+)
+
 # CPU-pool cap for the separation stage. ONNX Runtime sizes its intra-op pool
 # to EVERY logical core by default and its worker threads spin-wait between
 # tasks — on a many-core host that reads as the separation stage "maxing the
