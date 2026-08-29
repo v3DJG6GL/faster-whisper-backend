@@ -29,7 +29,7 @@ def _post_url(client, **data):
 def _info(**kw):
     base = dict(url=_URL, extractor_key="Youtube", title="A talk",
                 duration=90.0, uploader="chan", filesize_approx=4096,
-                is_live=False, thumbnail_url=None)
+                is_live=False, thumbnail_url=None, ext="m4a", abr=128.0)
     base.update(kw)
     return UrlMediaInfo(**base)
 
@@ -231,6 +231,7 @@ def test_preview_happy_path(client, url_enabled, monkeypatch):
     assert body == {
         "title": "A talk", "duration": 90.0, "uploader": "chan",
         "extractor": "Youtube", "estimated_bytes": 4096, "thumbnail": None,
+        "ext": "m4a", "abr": 128.0,
     }
 
 
