@@ -270,6 +270,13 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             # Same selector as the download: filesize_approx must describe
             # what we'd actually fetch (audio), not the default merged video.
             "format": DOWNLOAD_FORMAT,
+            # A channel page / playlist URL is a playlist to yt-dlp, and
+            # without this it fully resolves EVERY entry (one round-trip
+            # each) — a channel's /videos tab then times the probe out
+            # before _policy_check_info can say "playlists aren't
+            # supported". Flat entries keep the top-level _type intact and
+            # resolve in one fetch; single videos are unaffected.
+            "extract_flat": "in_playlist",
             "socket_timeout": float(getattr(cfg, "URL_SOCKET_TIMEOUT_SEC", 15)),
         }
         with yt_dlp.YoutubeDL(opts) as ydl:

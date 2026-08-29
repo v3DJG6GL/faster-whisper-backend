@@ -369,3 +369,36 @@ def test_probe_selects_download_format(monkeypatch):
     assert captured.get("format") == udl.DOWNLOAD_FORMAT
     assert info.filesize_approx == 900_000
     assert (info.ext, info.abr) == ("m4a", 129.5)
+    # Playlists/channel tabs must resolve flat, or a channel's /videos page
+    # times the probe out before the playlist rejection can fire.
+    assert captured.get("extract_flat") == "in_playlist"
+
+
+def test_probe_rejects_channel_page_as_playlist(monkeypatch):
+    """A channel /videos tab extracts as _type=playlist — the client-safe
+    rejection must be 'playlists aren't supported', not a timeout."""
+    class _FakeYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"_type": "playlist", "extractor_key": "YoutubeTab",
+                    "title": "c't 3003 - Videos",
+                    "entries": [{"_type": "url", "id": "x"}]}
+
+        def sanitize_info(self, info):
+            return info
+
+    fake = type(sys)("yt_dlp")
+    fake.YoutubeDL = _FakeYDL
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
+    monkeypatch.setattr(udl, "match_extractor", lambda u: "YoutubeTab")
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    with pytest.raises(udl.UrlDownloadError, match="[Pp]laylist"):
+        _run(udl.probe("https://www.youtube.com/@ct3003/videos", timeout=5.0))
