@@ -69,6 +69,10 @@ class UrlMediaInfo:
     filesize_approx: "int | None" = None
     is_live: bool = False
     thumbnail_url: "str | None" = None
+    # Of the format DOWNLOAD_FORMAT actually selects (audio), not the page's
+    # default merged video: container ext and audio bitrate in kbps.
+    ext: "str | None" = None
+    abr: "float | None" = None
 
 
 def yt_dlp_version() -> "str | None":
@@ -296,6 +300,8 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
                              or info.get("filesize")) else None),
         is_live=bool(info.get("is_live")),
         thumbnail_url=info.get("thumbnail"),
+        ext=(str(info["ext"]) if info.get("ext") else None),
+        abr=(float(info["abr"]) if info.get("abr") else None),
     )
 
 

@@ -351,7 +351,8 @@ def test_probe_selects_download_format(monkeypatch):
 
         def extract_info(self, url, download=False):
             return {"extractor_key": "Youtube", "title": "t",
-                    "duration": 60, "filesize": 900_000}
+                    "duration": 60, "filesize": 900_000,
+                    "ext": "m4a", "abr": 129.5}
 
         def sanitize_info(self, info):
             return info
@@ -367,3 +368,4 @@ def test_probe_selects_download_format(monkeypatch):
     info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
     assert captured.get("format") == udl.DOWNLOAD_FORMAT
     assert info.filesize_approx == 900_000
+    assert (info.ext, info.abr) == ("m4a", 129.5)

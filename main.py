@@ -3991,6 +3991,10 @@ async def url_preview(request: Request,
         "extractor": info.extractor_key,
         "estimated_bytes": info.filesize_approx,
         "thumbnail": thumb,
+        # The audio format the download would actually fetch (DOWNLOAD_FORMAT
+        # selection): container ext + bitrate, for the client's format chip.
+        "ext": info.ext,
+        "abr": info.abr,
     }
 
 
