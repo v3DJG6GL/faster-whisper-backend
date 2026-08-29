@@ -13,7 +13,7 @@
 # which is a CUDA 13 build since 1.27 — on a CUDA 12 stack its provider
 # fails to load and separation silently runs on the CPU. Dockerfile.gpu
 # force-reinstalls onnxruntime-gpu==1.26.* (the last CUDA 12.8 build) last.
-audio-separator[cpu]>=0.44.5
+audio-separator[cpu]>=0.45.0
 # audio-separator imports audioread (spec_utils.py/vr_separator.py) but does
 # not declare it — it historically rode in as a librosa dependency. librosa
 # 1.0.0 dropped audioread, which broke the 0.44.5 import chain in the -full
