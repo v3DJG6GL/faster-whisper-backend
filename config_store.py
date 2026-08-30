@@ -378,15 +378,20 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "response warning and /v1/text/translations returns 403. Needs the "
         "optional `pip install -r requirements-translate.txt`.",
     "TRANSLATION_DEFAULT_MODEL":
-        "GGUF model reference 'org/repo[:quant]' (e.g. "
-        "'tencent/HY-MT1.5-7B-GGUF:Q4_K_M') used when a request names no "
-        "model. Empty = translation requests must name a model.",
+        "GGUF model reference 'org/repo[:quant]' used when a request names "
+        "no model. Empty = translation requests must name a model. Ranked "
+        "picks:\n"
+        "  tencent/HY-MT1.5-7B-GGUF:Q4_K_M            "
+        "(Tencent, WMT25 lineage, ~5 GB)\n"
+        "  mradermacher/MiLMMT-46-12B-v0.1-GGUF:Q4_K_M (Xiaomi, ~8 GB)",
     "TRANSLATION_ALLOWED_MODELS":
-        "Allowlist of GGUF model refs clients may request, with the same "
-        "semantics as ALLOWED_MODELS for whisper models: empty lets any "
-        "well-formed 'org/repo[:quant]' ref pass — risks unknown multi-GB "
-        "downloads. Ships with the two top-ranked dedicated MT models: "
-        "HY-MT1.5-7B (Tencent, ~5 GB) and MiLMMT-46-12B (Xiaomi, ~8 GB).",
+        "Allowlist of GGUF model refs clients may request, same semantics "
+        "as ALLOWED_MODELS for whisper models: empty lets any well-formed "
+        "'org/repo[:quant]' ref pass — risks unknown multi-GB downloads. "
+        "Default:\n"
+        "  tencent/HY-MT1.5-7B-GGUF:Q4_K_M            "
+        "(Tencent, WMT25 lineage, ~5 GB)\n"
+        "  mradermacher/MiLMMT-46-12B-v0.1-GGUF:Q4_K_M (Xiaomi, ~8 GB)",
     "TRANSLATION_PRELOAD_MODELS":
         "Translation models loaded eagerly at startup so the first request "
         "skips the load. Empty = load on first use.",
