@@ -103,6 +103,15 @@ def _reset_singletons():
     except Exception:
         pass
 
+    # translation model LRU (module-global cache of loaded GGUF models —
+    # tests only ever put stubs in it, but they must not leak across tests).
+    try:
+        import translation
+        translation._models.clear()
+        translation._last_used.clear()
+    except Exception:
+        pass
+
     yield
 
 
