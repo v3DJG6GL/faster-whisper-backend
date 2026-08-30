@@ -653,3 +653,73 @@ def test_custom_template_is_single_pass():
         source_name="German", target_name="English",
         context="CTX", glossary="Rechnung = invoice")
     assert rendered == "say {glossary} verbatim -> English"
+
+
+# ---------------------------------------------------------------------------
+# render_prompt (admin prompt-lab preview — no model, no llama import)
+# ---------------------------------------------------------------------------
+
+class TestRenderPrompt:
+    def test_hunyuan_chat_messages(self):
+        p = translation.render_prompt(
+            "Hallo Welt", "en", source="de",
+            model_ref="tencent/HY-MT1.5-7B-GGUF:Q4_K_M")
+        assert p["family"] == "hunyuan" and p["chat"] is True
+        assert p["messages"][0]["role"] == "user"
+        assert "Hallo Welt" in p["messages"][0]["content"]
+        assert "English" in p["messages"][0]["content"]
+        assert p["model_loaded"] is False
+        assert p["sampling"]["temperature"] == 0.7
+
+    def test_raw_family_returns_text(self):
+        p = translation.render_prompt(
+            "Hallo", "fr", source="de", family="milmmt")
+        assert p["chat"] is False and "messages" not in p
+        assert p["text"].endswith("French:")
+
+    def test_family_override_beats_model_detection(self):
+        p = translation.render_prompt(
+            "x", "en", model_ref="tencent/HY-MT1.5-7B-GGUF:Q4_K_M",
+            family="seedx")
+        assert p["family"] == "seedx"
+
+    def test_template_forces_custom(self):
+        p = translation.render_prompt(
+            "Hallo", "en", template="T {text} -> {target_language}")
+        assert p["family"] == "custom"
+        assert p["messages"][0]["content"] == "T Hallo -> English"
+
+    def test_glossary_reaches_hunyuan_prompt(self):
+        p = translation.render_prompt(
+            "Die Messung", "en", family="hunyuan",
+            glossary="Messung = measurement")
+        assert "Messung -> measurement" in p["messages"][0]["content"]
+
+    def test_no_llama_import(self):
+        translation.render_prompt("x", "en", family="chatml")
+        assert "llama_cpp" not in sys.modules
+
+
+class TestFamilyOverride:
+    def test_translate_segments_family_override(self, monkeypatch):
+        monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL",
+                            "org/m-GGUF:Q4", raising=False)
+        seen = {}
+
+        async def fake_get_model(ref, *, lease=False):
+            class _L:  # noqa: N801
+                pass
+            return _L()
+
+        def fake_complete(llm, family, prompt, max_tokens):
+            seen["family"] = family
+            return "ok"
+
+        monkeypatch.setattr(translation, "_get_model", fake_get_model)
+        monkeypatch.setattr(translation, "_complete", fake_complete)
+        results, warnings, meta = _run(translation.translate_segments(
+            [{"text": "Hallo"}], ["en"], source_lang="de", mode="faithful",
+            family_override="seedx",
+            template_override="stale {text} {target_language}"))
+        assert seen["family"] == "seedx"
+        assert results[0]["en"] == "ok"

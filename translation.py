@@ -280,6 +280,49 @@ def _ctx_for(family: str) -> int:
     return _FAMILIES.get(family, _FAMILIES["chatml"]).n_ctx
 
 
+def render_prompt(text: str, target: str, *, source: "str | None" = None,
+                  model_ref: "str | None" = None,
+                  family: "str | None" = None, glossary: str = "",
+                  template: "str | None" = None,
+                  context: str = "") -> dict:
+    """Build the prompt EXACTLY as :func:`_run_completion` would — without
+    importing llama_cpp or loading a model. The admin WebUI prompt lab's
+    preview call. ``family`` overrides the configured/auto family (the
+    UNSAVED select value); ``template`` renders the custom family with THAT
+    template. Returns a JSON-shaped dict: chat families carry ``messages``,
+    raw-completion families carry ``text``."""
+    ref = (model_ref or "").strip() or \
+        (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+    fam_name = (family or "").strip().lower()
+    if fam_name not in _FAMILIES:
+        fam_name = "custom" if template is not None else resolve_family(ref)
+    source_code = (source or "").strip() or "en"
+    fam = _FAMILIES[fam_name]
+    if fam_name == "custom":
+        tpl = template if template is not None else \
+            (getattr(cfg, "TRANSLATION_PROMPT_TEMPLATE", "") or "")
+        prompt = [{"role": "user", "content": _render_custom_template(
+            tpl, text, _lang_name(source_code), _lang_name(target),
+            context, glossary)}]
+    else:
+        prompt = fam.build(
+            text, source_code, _lang_name(source_code), target,
+            _lang_name(target), context, glossary)
+    out: dict = {
+        "family": fam_name,
+        "chat": fam.chat,
+        "sampling": dict(fam.sampling),
+        "n_ctx": fam.n_ctx,
+        "model": ref,
+        "model_loaded": ref in _models,
+    }
+    if isinstance(prompt, list):
+        out["messages"] = prompt
+    else:
+        out["text"] = prompt
+    return out
+
+
 # =============================================================================
 # Model loading / LRU cache
 # =============================================================================
@@ -683,6 +726,7 @@ async def translate_segments(
     progress_cb=None,
     cancel_check=None,
     template_override: "str | None" = None,
+    family_override: "str | None" = None,
 ) -> "tuple[list[dict[str, str]], list[str], dict]":
     """Translate ``segments`` (``[{"text": str, "speaker": str|None}, …]``)
     into every language in ``targets``.
@@ -701,14 +745,24 @@ async def translate_segments(
     ``cancel_check`` (no-arg, truthy = abort) is polled between batches and
     raises :class:`TranslationCancelled`. ``template_override`` (the admin
     template-test path) forces the ``custom`` family and renders THAT
-    template for this call only — cfg stays untouched.
+    template for this call only — cfg stays untouched. ``family_override``
+    (the admin prompt lab) forces a specific family for this call.
     """
     ref = (model_ref or "").strip() or \
         (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
     if not ref:
         raise TranslationError(
             "no translation model configured (TRANSLATION_DEFAULT_MODEL)")
-    family = "custom" if template_override is not None else resolve_family(ref)
+    # family_override (the admin prompt lab's UNSAVED family select) wins,
+    # then a template override forces custom, then the configured/auto chain.
+    if family_override and family_override in _FAMILIES:
+        family = family_override
+    elif template_override is not None:
+        family = "custom"
+    else:
+        family = resolve_family(ref)
+    if family != "custom":
+        template_override = None   # a stale textarea must not leak in
     source_code = (source_lang or "").strip() or "en"
     ctx_n = int(getattr(cfg, "TRANSLATION_CONTEXT_SEGMENTS", 3) or 0) \
         if context_segments is None else int(context_segments)

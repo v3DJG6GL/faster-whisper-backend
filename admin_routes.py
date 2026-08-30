@@ -991,6 +991,14 @@ class _TranslationTestBody(BaseModel):
     # Overrides cfg.TRANSLATION_PROMPT_TEMPLATE for THIS call only (unsaved
     # textarea value from the WebUI's custom-template editor).
     template: Annotated[str, Field(max_length=8000)] | None = None
+    # Prompt lab (all optional, unsaved WebUI values): which model to load
+    # (allowlist-gated like the request path), which family to force, a
+    # glossary to inject, and preview=True to RENDER the prompt without
+    # loading any model.
+    model: Annotated[str, Field(max_length=160)] | None = None
+    family: Annotated[str, Field(max_length=32)] | None = None
+    glossary: Annotated[str, Field(max_length=4000)] | None = None
+    preview: bool = False
 
 
 @router.post("/translation-test",
@@ -1006,12 +1014,36 @@ async def translation_test(body: _TranslationTestBody) -> JSONResponse:
     if not getattr(cfg, "TRANSLATION_ENABLED", False):
         raise HTTPException(status.HTTP_403_FORBIDDEN,
                             "translation is disabled (TRANSLATION_ENABLED)")
+    fam = (body.family or "").strip().lower() or None
+    if fam is not None and fam not in translation._FAMILIES:
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                            content={"error": f"unknown prompt family '{fam}'"})
+    # Same allowlist semantics as the request path: a non-empty allowlist
+    # admits its members plus the configured default model.
+    ref = (body.model or "").strip()
+    default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+    allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
+    if ref and allowed and ref not in allowed and ref != default:
+        return JSONResponse(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            content={"error": "model is not in TRANSLATION_ALLOWED_MODELS"})
+    # Custom-family template only — a stale textarea must not leak into a
+    # built-in family's test (render_prompt/translate_segments guard too).
+    template = body.template if fam in (None, "custom") else None
+    prompt = translation.render_prompt(
+        body.text, body.target, source=body.source, model_ref=ref or None,
+        family=fam, glossary=body.glossary or "", template=template)
+    if body.preview:
+        # Render-only: what the model WOULD receive; nothing is loaded.
+        return JSONResponse({"prompt": prompt, "warnings": []})
+    cold = not prompt.get("model_loaded", False)
     t0 = time.perf_counter()
     try:
         results, warnings, meta = await translation.translate_segments(
             [{"text": body.text}], [body.target],
             source_lang=body.source, mode="faithful",
-            template_override=body.template)
+            model_ref=ref or None, glossary=body.glossary or "",
+            template_override=template, family_override=fam)
     except translation.TranslationError as e:
         # str(e) is client-safe by the module's failure contract.
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
@@ -1025,6 +1057,8 @@ async def translation_test(body: _TranslationTestBody) -> JSONResponse:
         "ms": ms,
         "model": meta.get("model", ""),
         "warnings": warnings,
+        "cold": cold,
+        "prompt": prompt,
     })
 
 
@@ -1232,6 +1266,34 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
   input[type="number"]::-webkit-outer-spin-button {
     -webkit-appearance: none; margin: 0;
   }
+  /* Prompt lab (TRANSLATION_PROMPT_TEMPLATE row) — two-column bench:
+     sample + test on the left, the server-rendered prompt readout on the
+     right. Collapses to one column on narrow viewports. */
+  .prompt-lab { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; }
+  @media (max-width: 900px) { .prompt-lab { grid-template-columns: 1fr; } }
+  .prompt-lab .lab-col { min-width: 0; display: flex; flex-direction: column; gap: 0.4rem; }
+  .prompt-lab .lab-row { display: flex; flex-wrap: wrap; gap: 0.45rem; align-items: center; }
+  .prompt-lab .lab-row label { color: var(--dim); font-size: var(--fs-xs); }
+  .prompt-lab .lab-row select { max-width: 100%; }
+  .prompt-lab textarea { width: 100%; box-sizing: border-box; }
+  .prompt-lab .lab-head { color: var(--bold); font-size: var(--fs-xs);
+    text-transform: uppercase; letter-spacing: 0.06em; }
+  .prompt-lab .lab-chip { color: var(--magenta); font-size: var(--fs-xs);
+    margin-left: 0.5em; text-transform: none; letter-spacing: 0; }
+  .prompt-lab .lab-readout { background: #010409; border: 1px solid var(--border);
+    border-radius: 4px; padding: 0.45rem 0.6rem; overflow-x: auto; }
+  .prompt-lab .lab-role { color: var(--magenta); font-size: var(--fs-xs);
+    text-transform: uppercase; letter-spacing: 0.06em; margin-top: 0.25rem; }
+  .prompt-lab .lab-msg { white-space: pre-wrap; margin: 0.15rem 0 0; font-size: var(--fs-sm); }
+  .prompt-lab .lab-stage { color: var(--yellow); font-size: var(--fs-xs); }
+  .prompt-lab .lab-result { border: 1px solid #1d4428; background: #071a10;
+    border-radius: 4px; padding: 0.4rem 0.6rem; margin-top: 0.35rem; font-size: var(--fs-sm); }
+  .prompt-lab .lab-result.warned { border-color: #5c4d1a; background: #1a1503; }
+  .prompt-lab .lab-result.prev { opacity: 0.55; }
+  .prompt-lab details summary { cursor: pointer; color: var(--dim); font-size: var(--fs-xs); }
+  .prompt-lab details summary:hover { color: var(--fg); }
+  .prompt-lab .tpl-preview { background: #010409; border: 1px solid var(--border);
+    border-radius: 4px; padding: 0.4rem 0.6rem; margin: 0.3rem 0 0; font-size: var(--fs-xs); }
   /* Select: replace native white triangle with a custom dim-grey SVG arrow.
      Scoped to .input-col so the header scale-picker (which has its own
      style) isn't double-overridden. */
@@ -2227,8 +2289,8 @@ function makeEditor(name) {
   if (name === 'BGM_SEPARATION_UVR_MODEL') {
     return modelDropdownEditor(name, v, { allowed: 'BGM_SEPARATION_ALLOWED_MODELS' });
   }
-  // Custom-template editor: textarea + live preview + "test with loaded
-  // model"; the whole row hides while TRANSLATION_PROMPT_FAMILY != custom.
+  // Prompt lab: server-rendered preview + model test-run for EVERY prompt
+  // family; the custom-template textarea appears inside it when family=custom.
   if (name === 'TRANSLATION_PROMPT_TEMPLATE') {
     return translationTemplateEditor(name, v || '');
   }
@@ -3071,96 +3133,267 @@ function modelMultiSelectEditor(name, v, lists) {
 }
 
 function translationTemplateEditor(name, v) {
-  // TRANSLATION_PROMPT_TEMPLATE: textarea + a client-side PREVIEW of the
-  // rendered prompt (canned sample values, the same plain .replace()
-  // semantics as translation._build_custom — never a format engine) + a
-  // "▶ Test with loaded model" button that runs ONE segment through the
-  // admin-only /settings/translation-test endpoint with the textarea's
-  // CURRENT (unsaved) value. The whole field row shows only while the
-  // (unsaved) TRANSLATION_PROMPT_FAMILY select says "custom" — the field
-  // stays in the form (display:none), so save/discard still see it.
-  const SAMPLE = {
-    text: 'Wir haben die Messung gestern wiederholt.',
-    target_language: 'English',
-    source_language: 'German',
-    context: '',
-    glossary: '',
-  };
+  // TRANSLATION_PROMPT_TEMPLATE hosts the PROMPT LAB — visible for EVERY
+  // family, not just custom (design: mockup "Prompt Lab" option B):
+  //   left column   sample (model / from / to / text / glossary, the custom
+  //                 template textarea when family=custom) + "▶ Test this
+  //                 model" with staged cold-load status and stacked results
+  //                 (previous run kept dimmed for an implicit A/B)
+  //   right column  "what the model receives": a SERVER-rendered preview via
+  //                 POST /settings/translation-test {preview:true} (debounced;
+  //                 render_prompt shares the exact builder code with real
+  //                 requests, so the preview can never drift), the family's
+  //                 sampling line, and a collapsed raw-template reference.
+  // The textarea stays in the form for save/discard whatever the family.
   const wrap = document.createElement('div');
+  wrap.className = 'prompt-lab';
+
+  // --- left: sample -------------------------------------------------------
+  const left = document.createElement('div');
+  left.className = 'lab-col';
+  const mkRow = (labelText, ctrl) => {
+    const row = document.createElement('div');
+    row.className = 'lab-row';
+    const l = document.createElement('label');
+    l.textContent = labelText;
+    row.appendChild(l); row.appendChild(ctrl);
+    left.appendChild(row);
+    return row;
+  };
+  const modelSel = document.createElement('select');
+  function refreshModels() {
+    const def = (currentValue('TRANSLATION_DEFAULT_MODEL') || '').trim();
+    const allowed = currentValue('TRANSLATION_ALLOWED_MODELS') || [];
+    const opts = [];
+    if (def) opts.push(def);
+    (Array.isArray(allowed) ? allowed : []).forEach(r => {
+      if (r && !opts.includes(r)) opts.push(r);
+    });
+    const prev = modelSel.value;
+    modelSel.textContent = '';
+    if (!opts.length) {
+      const o = document.createElement('option');
+      o.value = ''; o.textContent = '(no model configured)';
+      modelSel.appendChild(o);
+    }
+    opts.forEach((r, idx) => {
+      const o = document.createElement('option');
+      o.value = r;
+      o.textContent = r + (idx === 0 && r === def ? '  (default)' : '');
+      modelSel.appendChild(o);
+    });
+    if (prev && opts.includes(prev)) modelSel.value = prev;
+  }
+  refreshModels();
+  mkRow('model', modelSel);
+
+  const srcIn = document.createElement('input');
+  srcIn.size = 4; srcIn.value = 'de'; srcIn.setAttribute('aria-label', 'source language code');
+  const tgtIn = document.createElement('input');
+  tgtIn.size = 4; tgtIn.value = 'en'; tgtIn.setAttribute('aria-label', 'target language code');
+  const langRow = mkRow('from', srcIn);
+  const tl = document.createElement('label');
+  tl.textContent = 'to';
+  langRow.appendChild(tl); langRow.appendChild(tgtIn);
+
+  const sample = document.createElement('textarea');
+  sample.rows = 2;
+  sample.value = 'Wir haben die Messung gestern wiederholt.';
+  sample.setAttribute('aria-label', 'sample text');
+  left.appendChild(sample);
+
+  const gloss = document.createElement('input');
+  gloss.placeholder = 'glossary: Messung = measurement';
+  gloss.setAttribute('aria-label', 'glossary line');
+  left.appendChild(gloss);
+
+  // The actual config field — only shown while family says custom.
   const t = document.createElement('textarea');
   t.value = v;
-  t.rows = 6;
+  t.rows = 5;
   t.placeholder = 'Translate {text} into {target_language} …';
-  wrap.appendChild(t);
-
-  const prevLabel = document.createElement('div');
-  prevLabel.className = 'help';
-  prevLabel.textContent = 'Preview (sample: German → English):';
-  wrap.appendChild(prevLabel);
-  const preview = document.createElement('pre');
-  preview.className = 'tpl-preview';
-  preview.style.whiteSpace = 'pre-wrap';
-  wrap.appendChild(preview);
-
-  function renderPreview() {
-    preview.textContent = (t.value || '')
-      .split('{text}').join(SAMPLE.text)
-      .split('{target_language}').join(SAMPLE.target_language)
-      .split('{source_language}').join(SAMPLE.source_language)
-      .split('{context}').join(SAMPLE.context)
-      .split('{glossary}').join(SAMPLE.glossary);
-  }
-  renderPreview();
-  t.addEventListener('input', () => { setDirty(name, t.value); renderPreview(); });
+  t.setAttribute('aria-label', 'custom prompt template');
+  left.appendChild(t);
+  t.addEventListener('input', () => { setDirty(name, t.value); schedulePreview(); });
 
   const testRow = document.createElement('div');
+  testRow.className = 'lab-row';
   const testBtn = document.createElement('button');
   testBtn.type = 'button';
-  testBtn.textContent = '▶ Test with loaded model';
-  testBtn.title = 'Run the sample segment through the translation model using this template (loads the model if needed)';
-  const testOut = document.createElement('div');
-  testOut.className = 'help';
+  testBtn.textContent = '▶ Test this model';
+  testBtn.title = 'Run the sample through the selected model (loads it first if needed)';
+  testRow.appendChild(testBtn);
+  const stage = document.createElement('div');
+  stage.className = 'lab-stage';
+  testRow.appendChild(stage);
+  left.appendChild(testRow);
+  const results = document.createElement('div');
+  left.appendChild(results);
+
+  // --- right: what the model receives ------------------------------------
+  const right = document.createElement('div');
+  right.className = 'lab-col';
+  const rHead = document.createElement('div');
+  rHead.className = 'lab-head';
+  rHead.textContent = 'What the model receives';
+  const famChip = document.createElement('span');
+  famChip.className = 'lab-chip';
+  rHead.appendChild(famChip);
+  right.appendChild(rHead);
+  const readout = document.createElement('div');
+  readout.className = 'lab-readout';
+  right.appendChild(readout);
+  const sampling = document.createElement('div');
+  sampling.className = 'help';
+  right.appendChild(sampling);
+
+  // Raw logical templates for reference (documentation strings — the LIVE
+  // preview above is server-rendered and authoritative).
+  const RAW_TPL = {
+    'hunyuan': '[per glossary line]  with reference to: {src} -> {tgt}\n'
+      + 'Translate the following segment into {target_language}, without additional explanation.\n\n{text}',
+    'gemma-translate': 'type:text,source_lang_code:{source_code},target_lang_code:{target_code},text:{text}',
+    'milmmt': 'Translate this from {source_language} to {target_language}:\n{source_language}: {text}\n{target_language}:',
+    'seedx': 'Translate the following {source_language} sentence into {target_language}:\n{text} <{target_code}>',
+    'chatml': 'Translate the following text from {source_language} into {target_language}. Reply with ONLY the translation.\n\n{text}',
+  };
+  const rawDetails = document.createElement('details');
+  const rawSum = document.createElement('summary');
+  rawSum.textContent = 'View template (built-in · read-only)';
+  rawDetails.appendChild(rawSum);
+  const rawPre = document.createElement('pre');
+  rawPre.className = 'tpl-preview';
+  rawPre.style.whiteSpace = 'pre-wrap';
+  rawDetails.appendChild(rawPre);
+  right.appendChild(rawDetails);
+
+  wrap.appendChild(left);
+  wrap.appendChild(right);
+
+  function labBody(preview) {
+    return {
+      text: sample.value || ' ',
+      target: (tgtIn.value || 'en').trim(),
+      source: (srcIn.value || '').trim() || null,
+      model: modelSel.value || null,
+      family: (currentValue('TRANSLATION_PROMPT_FAMILY') || 'auto') === 'auto'
+        ? null : currentValue('TRANSLATION_PROMPT_FAMILY'),
+      glossary: gloss.value || null,
+      template: t.value || null,
+      preview: !!preview,
+    };
+  }
+
+  function renderPrompt(p) {
+    famChip.textContent = p.family + ' · ' + (p.chat ? 'chat' : 'raw completion');
+    readout.textContent = '';
+    if (p.messages) {
+      p.messages.forEach(m => {
+        const role = document.createElement('div');
+        role.className = 'lab-role';
+        role.textContent = m.role;
+        const txt = document.createElement('pre');
+        txt.className = 'lab-msg';
+        txt.textContent = m.content;
+        readout.appendChild(role); readout.appendChild(txt);
+      });
+    } else {
+      const txt = document.createElement('pre');
+      txt.className = 'lab-msg';
+      txt.textContent = p.text || '';
+      readout.appendChild(txt);
+    }
+    const samp = Object.entries(p.sampling || {})
+      .map(([k, val]) => k + ' ' + val).join(' · ');
+    sampling.textContent = 'sampling: ' + (samp || 'greedy') + ' · n_ctx ' + p.n_ctx;
+    const isCustom = p.family === 'custom';
+    t.style.display = isCustom ? '' : 'none';
+    rawDetails.style.display = isCustom ? 'none' : '';
+    if (!isCustom) rawPre.textContent = RAW_TPL[p.family] || '';
+    testBtn.dataset.cold = p.model_loaded ? '' : '1';
+  }
+
+  let previewTimer = null;
+  function schedulePreview() {
+    clearTimeout(previewTimer);
+    previewTimer = setTimeout(async () => {
+      try {
+        const r = await api('POST', '/settings/translation-test', labBody(true));
+        const j = await r.json().catch(() => ({}));
+        if (r.ok && j.prompt) renderPrompt(j.prompt);
+        else if (r.status === 403) {
+          readout.textContent = 'translation is disabled (TRANSLATION_ENABLED)';
+        }
+      } catch (e) { /* preview is best-effort; the test button reports errors */ }
+    }, 300);
+  }
+  [modelSel, srcIn, tgtIn].forEach(el => el.addEventListener('change', schedulePreview));
+  [sample, gloss, srcIn, tgtIn].forEach(el => el.addEventListener('input', schedulePreview));
+  schedulePreview();
+
+  let prevResult = null;
   testBtn.addEventListener('click', async () => {
     testBtn.disabled = true;
-    testOut.textContent = 'running…';
+    stage.textContent = testBtn.dataset.cold
+      ? 'Loading model… a first run downloads it (multi-GB), then loads into VRAM'
+      : 'Translating…';
     try {
-      const r = await api('POST', '/settings/translation-test', {
-        text: SAMPLE.text, target: 'en', source: 'de', template: t.value,
-      });
+      const r = await api('POST', '/settings/translation-test', labBody(false));
       const j = await r.json().catch(() => ({}));
+      stage.textContent = '';
+      const card = document.createElement('div');
       if (r.ok) {
-        // A guard failure falls back to the UNTRANSLATED sample — the
-        // warnings array is the tell; without it a broken template reads
-        // as a fast success.
-        const warn = (j.warnings && j.warnings.length)
-          ? '  ⚠ ' + j.warnings.join(' · ')
-          : '';
-        testOut.textContent = j.output + '  (' + j.model + ' · ' + j.ms + ' ms)' + warn;
+        const warned = j.warnings && j.warnings.length;
+        card.className = 'lab-result' + (warned ? ' warned' : '');
+        const out = document.createElement('div');
+        out.textContent = j.output;
+        card.appendChild(out);
+        const meta = document.createElement('div');
+        meta.className = 'help';
+        meta.textContent = (warned ? '⚠ ' + j.warnings.join(' · ') + ' · ' : 'ok · ')
+          + j.model + ' · ' + j.ms + ' ms' + (j.cold ? ' (incl. model load)' : '');
+        card.appendChild(meta);
+        if (j.prompt) {
+          const dbg = document.createElement('details');
+          const dsum = document.createElement('summary');
+          dsum.textContent = 'Final prompt (debug)';
+          dbg.appendChild(dsum);
+          const dpre = document.createElement('pre');
+          dpre.className = 'tpl-preview';
+          dpre.style.whiteSpace = 'pre-wrap';
+          dpre.textContent = j.prompt.messages
+            ? j.prompt.messages.map(m => m.role + ': ' + m.content).join('\n')
+              + '\n[chat wrapper applied by llama.cpp]'
+            : j.prompt.text;
+          dbg.appendChild(dpre);
+          card.appendChild(dbg);
+        }
       } else {
-        testOut.textContent = 'test failed: ' + (j.error || j.detail || r.status);
+        card.className = 'lab-result warned';
+        card.textContent = 'test failed: ' + (j.error || j.detail || r.status);
       }
+      results.textContent = '';
+      results.appendChild(card);
+      if (prevResult) {
+        prevResult.classList.add('prev');
+        results.appendChild(prevResult);
+      }
+      prevResult = card;
     } catch (e) {
-      testOut.textContent = 'test failed: ' + e;
+      stage.textContent = 'test failed: ' + e;
     }
     testBtn.disabled = false;
   });
-  testRow.appendChild(testBtn);
-  wrap.appendChild(testRow);
-  wrap.appendChild(testOut);
 
-  // Row visibility follows the (unsaved) family select. The row isn't in
-  // the DOM yet while makeEditor runs — sync on the next tick, then on
-  // every family edit via the delegated dirty listener (loadState/render
-  // rebuilds re-register through _registerAdminListener, no leak).
-  function syncVisibility() {
-    const row = document.querySelector('main .field[data-field="' + name + '"]');
-    if (!row) return;
-    const fam = currentValue('TRANSLATION_PROMPT_FAMILY');
-    row.style.display = (fam === 'custom') ? '' : 'none';
-  }
-  setTimeout(syncVisibility, 0);
-  _registerAdminListener('admin:dirty', 'translationTemplate:vis', (e) => {
-    if (e.detail && e.detail.name === 'TRANSLATION_PROMPT_FAMILY') syncVisibility();
+  // Family/model-list edits re-render (the readout is family- AND
+  // model-aware — family=auto resolves from the picked model server-side).
+  _registerAdminListener('admin:dirty', 'translationLab', (e) => {
+    if (!e.detail) return;
+    if (e.detail.name === 'TRANSLATION_PROMPT_FAMILY') schedulePreview();
+    if (e.detail.name === 'TRANSLATION_ALLOWED_MODELS'
+        || e.detail.name === 'TRANSLATION_DEFAULT_MODEL') {
+      refreshModels(); schedulePreview();
+    }
   });
   return wrap;
 }

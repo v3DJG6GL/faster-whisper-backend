@@ -585,3 +585,92 @@ def test_translation_test_translation_error_is_400(
                     json={"text": "hi", "target": "en"})
     assert r.status_code == 400
     assert "requirements-translate" in r.json()["error"]
+
+
+def test_translation_test_preview_renders_without_model(
+        client, app_module, monkeypatch):
+    """preview=True returns the rendered prompt and NEVER calls the model."""
+    import translation
+
+    app_module.cfg.TRANSLATION_ENABLED = True
+
+    async def boom(*a, **k):  # pragma: no cover - must not run
+        raise AssertionError("translate_segments called on a preview")
+
+    monkeypatch.setattr(translation, "translate_segments", boom)
+    r = client.post("/settings/translation-test", json={
+        "text": "Hallo Welt", "target": "en", "source": "de",
+        "family": "milmmt", "preview": True})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["warnings"] == []
+    p = j["prompt"]
+    assert p["family"] == "milmmt"
+    assert p["chat"] is False
+    assert "Hallo Welt" in p["text"]
+    assert "German" in p["text"] and "English" in p["text"]
+
+
+def test_translation_test_preview_family_auto_follows_model(
+        client, app_module):
+    app_module.cfg.TRANSLATION_ENABLED = True
+    app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
+    r = client.post("/settings/translation-test", json={
+        "text": "Hallo", "target": "en",
+        "model": "tencent/HY-MT1.5-7B-GGUF:Q4_K_M", "preview": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["prompt"]["family"] == "hunyuan"
+
+
+def test_translation_test_model_allowlist_gate(client, app_module):
+    app_module.cfg.TRANSLATION_ENABLED = True
+    app_module.cfg.TRANSLATION_ALLOWED_MODELS = {"org/allowed-GGUF:Q4"}
+    app_module.cfg.TRANSLATION_DEFAULT_MODEL = "org/default-GGUF:Q4"
+    r = client.post("/settings/translation-test", json={
+        "text": "hi", "target": "en", "model": "org/other-GGUF:Q4",
+        "preview": True})
+    assert r.status_code == 400
+    assert "TRANSLATION_ALLOWED_MODELS" in r.json()["error"]
+    # The configured default is exempt, like the request path.
+    r = client.post("/settings/translation-test", json={
+        "text": "hi", "target": "en", "model": "org/default-GGUF:Q4",
+        "preview": True})
+    assert r.status_code == 200, r.text
+
+
+def test_translation_test_unknown_family_400(client, app_module):
+    app_module.cfg.TRANSLATION_ENABLED = True
+    r = client.post("/settings/translation-test", json={
+        "text": "hi", "target": "en", "family": "nope", "preview": True})
+    assert r.status_code == 400
+    assert "family" in r.json()["error"]
+
+
+def test_translation_test_threads_model_family_glossary(
+        client, app_module, monkeypatch):
+    import translation
+
+    app_module.cfg.TRANSLATION_ENABLED = True
+    app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
+    seen = {}
+
+    async def fake_translate(segments, targets, **kwargs):
+        seen["kwargs"] = kwargs
+        return ([{"en": "ok"}], [], {"model": "org/m-GGUF:Q4",
+                                     "source": "de", "mode": "faithful"})
+
+    monkeypatch.setattr(translation, "translate_segments", fake_translate)
+    r = client.post("/settings/translation-test", json={
+        "text": "Hallo", "target": "en", "source": "de",
+        "model": "org/m-GGUF:Q4", "family": "hunyuan",
+        "glossary": "Messung = measurement",
+        "template": "stale {text} {target_language}"})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["prompt"]["family"] == "hunyuan"
+    assert isinstance(j["cold"], bool)
+    assert seen["kwargs"]["model_ref"] == "org/m-GGUF:Q4"
+    assert seen["kwargs"]["family_override"] == "hunyuan"
+    assert seen["kwargs"]["glossary"] == "Messung = measurement"
+    # A stale custom-template textarea must not leak into a built-in family.
+    assert seen["kwargs"]["template_override"] is None
