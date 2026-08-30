@@ -3,6 +3,8 @@ already-held transcript. llama_cpp is never imported: the tests stub
 `translation.translate_segments` at the handler boundary (the
 test_diarization pattern)."""
 
+import logging
+
 import translation
 from tests.conftest import bearer
 
@@ -205,6 +207,57 @@ def test_progress_visible_and_cancel_honored(client, app_module, monkeypatch):
     # The finally cleaned both registries.
     assert _PID not in app_module._BATCH_PROGRESS
     assert _PID not in app_module._BATCH_CANCELLED
+
+
+def test_progress_wrapper_forwards_last_text_and_logs_receipts(
+        client, app_module, monkeypatch, caplog):
+    """The handler's progress wrapper merges last_text into the progress
+    entry, and the run brackets itself with start + ✓ done log lines."""
+    _enable(app_module, monkeypatch)
+    seen = {}
+
+    async def _fake(segments, targets, *, progress_cb=None, **kwargs):
+        progress_cb(0.5, "en 1/2", "Hello there")
+        seen["entry"] = dict(app_module._BATCH_PROGRESS.get(_PID) or {})
+        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
+                   for seg in segments]
+        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        r = client.post(URL, json=_body(progress_id=_PID))
+    assert r.status_code == 200, r.text
+    assert seen["entry"].get("last_text") == "Hello there"
+    assert seen["entry"].get("progress") == 0.5
+    assert seen["entry"].get("step") == "en 1/2"
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any("[translate] req=" in m and "start: 2 segments × 1 targets"
+               in m for m in msgs)
+    assert any("✓ done" in m and "2 segs → en" in m for m in msgs)
+
+
+def test_progress_endpoint_serves_last_text(client, app_module):
+    """The GET progress endpoint already whitelists last_text — verify."""
+    app_module._progress_set(_PID, stage="translating", last_text="the tail")
+    try:
+        r = client.get(f"/v1/audio/transcriptions/progress/{_PID}")
+        assert r.status_code == 200
+        assert r.json()["last_text"] == "the tail"
+    finally:
+        app_module._BATCH_PROGRESS.pop(_PID, None)
+
+
+def test_failure_logs_terminal_line(client, app_module, monkeypatch, caplog):
+    _enable(app_module, monkeypatch)
+
+    async def _boom(*args, **kwargs):
+        raise translation.TranslationError("no translation model configured")
+    monkeypatch.setattr(translation, "translate_segments", _boom)
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        r = client.post(URL, json=_body())
+    assert r.status_code == 400
+    msgs = [rec.getMessage() for rec in caplog.records]
+    assert any("✗ failed" in m for m in msgs)
 
 
 def test_locked_translation_model_applies_to_the_text_endpoint(

@@ -741,7 +741,9 @@ async def translate_segments(
     :class:`TranslationError`. A target equal to ``source_lang`` is copied
     verbatim without a model call. ``mode``: see the module docstring.
     ``context_segments`` overrides ``TRANSLATION_CONTEXT_SEGMENTS`` when not
-    None. ``progress_cb(done_fraction, step_str)`` fires after each batch;
+    None. ``progress_cb(done_fraction, step_str, last_text)`` fires after
+    each batch — ``last_text`` is the tail (≤160 chars) of the last completed
+    translation, for live run panels; two-arg callbacks keep working;
     ``cancel_check`` (no-arg, truthy = abort) is polled between batches and
     raises :class:`TranslationCancelled`. ``template_override`` (the admin
     template-test path) forces the ``custom`` family and renders THAT
@@ -776,12 +778,21 @@ async def translate_segments(
     total_units = len(segments) * len(targets)
     done_units = 0
 
-    def _progress(step: str) -> None:
-        if progress_cb is not None:
+    def _progress(step: str, last_text: "str | None" = None) -> None:
+        if progress_cb is None:
+            return
+        frac = done_units / total_units
+        tail = (last_text or "").strip()[:160] or None
+        try:
+            progress_cb(frac, step, tail)
+        except TypeError:
+            # Older two-arg callbacks (frac, step) — keep them working.
             try:
-                progress_cb(done_units / total_units, step)
+                progress_cb(frac, step)
             except Exception:  # noqa: BLE001 — progress must never break us
                 pass
+        except Exception:  # noqa: BLE001 — progress must never break us
+            pass
 
     def _check_cancel() -> None:
         if cancel_check is not None and cancel_check():
@@ -824,7 +835,8 @@ async def translate_segments(
             for i, seg in enumerate(segments):
                 results[i][target] = (seg.get("text") or "")
             done_units += len(segments)
-            _progress(f"{target} 1/1")
+            _progress(f"{target} 1/1",
+                      (segments[-1].get("text") or "") if segments else None)
             continue
 
         if mode == "faithful":
@@ -873,7 +885,8 @@ async def translate_segments(
                 i += len(batch_idx)
                 batch_no += 1
                 done_units += len(batch_idx)
-                _progress(f"{target} {min(batch_no, n_batches)}/{n_batches}")
+                _progress(f"{target} {min(batch_no, n_batches)}/{n_batches}",
+                          results[batch_idx[-1]].get(target))
         else:
             # FLUENT: sentence-group merge → translate → redistribute.
             groups = _merge_sentences(segments)
@@ -900,7 +913,8 @@ async def translate_segments(
                                         _redistribute(src_texts, translated)):
                         results[j][target] = piece
                 done_units += len(group)
-                _progress(f"{target} {g_no}/{len(groups)}")
+                _progress(f"{target} {g_no}/{len(groups)}",
+                          results[group[-1]].get(target))
     finally:
         if llm is not None:
             await _release_model(ref)

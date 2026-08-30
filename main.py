@@ -3732,9 +3732,16 @@ async def transcribe(
                                     mode=_translation_mode,
                                     glossary=_translation_glossary,
                                     context_segments=_translation_context,
-                                    progress_cb=lambda f, step=None:
-                                        _progress_set(_pid, progress=f,
-                                                      step=step),
+                                    # last_text: live tail of the last
+                                    # translated line for the run panel —
+                                    # only merged when present so a tick
+                                    # without one doesn't blank the field.
+                                    progress_cb=lambda f, step=None,
+                                        last_text=None:
+                                        _progress_set(
+                                            _pid, progress=f, step=step,
+                                            **({"last_text": last_text}
+                                               if last_text else {})),
                                     cancel_check=lambda:
                                         _cancel_requested(_pid),
                                 )
@@ -4221,6 +4228,9 @@ async def translate_text(request: Request,
         raise HTTPException(status_code=403,
                             detail="translation is disabled on this server")
     _check_text_translate_rate(request.client.host if request.client else "")
+    # Canonical job id — stamped on every log line of this run (req=<id8>)
+    # so a multi-minute translation can be followed through the log.
+    request_id = uuid.uuid4().hex
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001 — malformed body is a caller error
@@ -4342,6 +4352,41 @@ async def translate_text(request: Request,
     progress_id = body.get("progress_id")
     _pid = progress_id if (isinstance(progress_id, str)
                            and _PROGRESS_ID_RE.match(progress_id)) else None
+
+    # ── Canonical job logging ────────────────────────────────────────────
+    # Start receipt now, throttled heartbeats from the progress wrapper,
+    # and a mirrored terminal line (✓ done / ✗ failed / ✗ cancelled) on
+    # every exit path — this endpoint used to log only on cancel/failure.
+    _uid = (user.get("user_id") or "")
+    logger.info(
+        "[translate] req=%s start: %d segments × %d targets (%s) model=%s "
+        "mode=%s user=%s",
+        request_id[:8], len(seg_in), len(targets), ",".join(targets),
+        _tr_model or "?", mode, _uid[:8] or "-")
+    _t0 = time.perf_counter()
+    # Heartbeat + load-time bookkeeping shared with the progress wrapper.
+    # first_cb approximates "model ready" — good enough to split load from
+    # infer on the completion line when the model was cold.
+    _hb = {"last_log": _t0, "last_pct": 0, "first_cb": None}
+    _was_loaded = _tr_model in _tr._models
+
+    def _on_progress(f, step=None, last_text=None):
+        now = time.perf_counter()
+        if _hb["first_cb"] is None:
+            _hb["first_cb"] = now
+        pct = int(max(0.0, min(1.0, f or 0.0)) * 100)
+        # Log on every crossed 10% boundary, and at least every 30 s.
+        if (now - _hb["last_log"] >= 30.0
+                or pct // 10 > _hb["last_pct"] // 10):
+            _hb["last_log"] = now
+            _hb["last_pct"] = pct
+            logger.info("[translate] req=%s %s %d%%",
+                        request_id[:8], step or "translating", pct)
+        fields = {"progress": f, "step": step}
+        if last_text:
+            fields["last_text"] = last_text
+        _progress_set(_pid, **fields)
+
     try:
         _progress_set(_pid, stage="translating", progress=0.0,
                       model=(_tr_model or None),
@@ -4357,8 +4402,7 @@ async def translate_text(request: Request,
                     mode=mode,
                     glossary=glossary,
                     context_segments=context_segments,
-                    progress_cb=lambda f, step=None: _progress_set(
-                        _pid, progress=f, step=step),
+                    progress_cb=_on_progress,
                     cancel_check=lambda: _cancel_requested(_pid),
                 )
             # Same policy as the batch stage: the GPU inference semaphore is
@@ -4373,21 +4417,39 @@ async def translate_text(request: Request,
         except _tr.TranslationCancelled:
             raise _ClientCancelled() from None
     except _ClientCancelled:
-        logger.info("[translate] text translation cancelled by client")
+        logger.info("[translate] req=%s ✗ cancelled after %.1fs",
+                    request_id[:8], time.perf_counter() - _t0)
         raise HTTPException(status_code=499, detail="cancelled by the client")
     except _tr.TranslationError as e:
         # str(e) is client-safe by the module's contract.
+        logger.info("[translate] req=%s ✗ failed after %.1fs (%s)",
+                    request_id[:8], time.perf_counter() - _t0,
+                    _log_safe(str(e)))
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001 — never forward raw errors
-        logger.error("[translate] text translation failed: %s",
+        logger.error("[translate] req=%s ✗ failed after %.1fs: %s",
+                     request_id[:8], time.perf_counter() - _t0,
                      _log_safe(str(e)))
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
         if _pid:
             _BATCH_PROGRESS.pop(_pid, None)
             _BATCH_CANCELLED.discard(_pid)
+
+    _elapsed = time.perf_counter() - _t0
+    # Cold model: everything up to the first progress callback is load (the
+    # cache layer logs the exact load line too); warm model: all infer.
+    _load_s = (max(0.0, _hb["first_cb"] - _t0)
+               if (not _was_loaded and _hb["first_cb"] is not None) else 0.0)
+    _chars_out = sum(len(t) for d in per_seg for t in d.values())
+    logger.info(
+        "[translate] req=%s ✓ done in %.1fs (load %.1fs · infer %.1fs) · "
+        "%d segs → %s · %d chars in / %d out · %d guard fallbacks",
+        request_id[:8], _elapsed, _load_s, max(0.0, _elapsed - _load_s),
+        len(seg_in), ",".join(targets), total_chars, _chars_out,
+        len(warnings))
 
     return {
         "segments": [{"id": ids[i], "translations": per_seg[i]}

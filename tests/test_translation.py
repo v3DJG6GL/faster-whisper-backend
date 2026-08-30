@@ -460,6 +460,20 @@ def test_progress_and_cancel(base_cfg, monkeypatch):
             cancel_check=lambda: True))
 
 
+def test_progress_carries_last_text_tail(base_cfg, monkeypatch):
+    """Three-arg callbacks get the last completed translation's tail; the
+    two-arg lambda above keeps working via the TypeError fallback."""
+    _install_fake(monkeypatch, _xlate)
+    tails = []
+    _run(translation.translate_segments(
+        _segs("Eins.", "Zwei."), ["en"], source_lang="de", mode="fluent",
+        progress_cb=lambda f, s=None, last_text=None: tails.append(last_text)))
+    assert any(t for t in tails)                       # a tail arrived
+    assert all(t is None or len(t) <= 160 for t in tails)
+    # The tail is the (pseudo-)translated text — swapcased, not the source.
+    assert any(t and "WEI" in t for t in tails)
+
+
 def test_context_lines_prefix_speakers(base_cfg):
     segs = [{"text": "Guten Tag", "speaker": "SPEAKER_00"},
             {"text": "Hallo", "speaker": None},
