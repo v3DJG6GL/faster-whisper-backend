@@ -379,7 +379,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "optional `pip install -r requirements-translate.txt`.",
     "TRANSLATION_DEFAULT_MODEL":
         "GGUF model reference 'org/repo[:quant]' (e.g. "
-        "'tencent/Hunyuan-MT-7B-GGUF:Q4_K_M') used when a request names no "
+        "'mradermacher/Hunyuan-MT-7B-GGUF:Q4_K_M') used when a request names no "
         "model. Empty = translation requests must name a model.",
     "TRANSLATION_ALLOWED_MODELS":
         "Allowlist of GGUF model refs clients may request, with the same "
@@ -988,7 +988,7 @@ DiarizationModelLit = Literal[
 ]
 # GGUF translation model reference: "org/repo" with an optional ":quant"
 # suffix selecting a quantization file inside the repo (e.g.
-# "tencent/Hunyuan-MT-7B-GGUF:Q4_K_M"). Empty string = unset.
+# "mradermacher/Hunyuan-MT-7B-GGUF:Q4_K_M"). Empty string = unset.
 _TRANSLATION_MODEL_REF_PATTERN = (
     r"^([A-Za-z0-9][A-Za-z0-9_.\-]*/[A-Za-z0-9_.\-]+(:[A-Za-z0-9_.\-]+)?)?$")
 TranslationModelRef = Annotated[str, Field(

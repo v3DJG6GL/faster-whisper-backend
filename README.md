@@ -212,7 +212,7 @@ env twins), needing `pip install -r requirements-translate.txt`:
   runs decline softly with a response warning while off and
   `POST /v1/text/translations` returns 403).
 - **Models** — `TRANSLATION_DEFAULT_MODEL` (GGUF ref `org/repo[:quant]`, e.g.
-  `tencent/Hunyuan-MT-7B-GGUF:Q4_K_M`), `TRANSLATION_ALLOWED_MODELS`
+  `mradermacher/Hunyuan-MT-7B-GGUF:Q4_K_M`), `TRANSLATION_ALLOWED_MODELS`
   (per-request allowlist; empty = any well-formed ref),
   `TRANSLATION_PRELOAD_MODELS` (warmed at startup),
   `TRANSLATION_MAX_LOADED_MODELS` (LRU cap — a 7B Q4 model holds ~5 GB),
