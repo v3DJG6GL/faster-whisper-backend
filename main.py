@@ -4641,6 +4641,66 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     if caps["url_download_enabled"]:
         import url_download as _udl
         caps["yt_dlp_version"] = _udl.yt_dlp_version()
+    # Additive: text-to-text translation capability surface. The flag is
+    # always present (pre-flight for the client's Translate control); the
+    # detail keys ride only when the stage exists — same shape discipline as
+    # yt_dlp_version above.
+    caps["translation_enabled"] = bool(
+        getattr(cfg, "TRANSLATION_ENABLED", False))
+    if caps["translation_enabled"]:
+        import translation as _tr
+        _t_default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+        _t_refs: "list[str]" = [_t_default] if _t_default else []
+        for _ref in sorted(set(getattr(cfg, "TRANSLATION_ALLOWED_MODELS", None)
+                               or set()) | set(_tr._models)):
+            if _ref not in _t_refs:
+                _t_refs.append(_ref)
+        caps["translation_models"] = [
+            {"id": _ref, "loaded": _ref in _tr._models} for _ref in _t_refs]
+        # Language menu for the client's target picker. resolve_family("")
+        # is exception-free: no configured pin → detect_family("") → the
+        # generic chatml family, whose list is the shared code set anyway.
+        caps["translation_languages"] = _tr.list_languages(
+            _tr.resolve_family(_t_default))
+        # The CALLER's effective TRANSLATE_TO default (per-identity overrides
+        # respected — unlike vad_filter_default above, which is a server-wide
+        # ghost label), parsed csv → list like the transcribe handler does.
+        _ident = build_ident(user, None)
+        _tt_raw = cfg_for(None, "TRANSLATE_TO", _ident) or ""
+        _tt_list: "list[str]" = []
+        for _code in _tt_raw.split(","):
+            _code = _code.strip()
+            if (_code and _code not in _tt_list
+                    and _TRANSLATE_CODE_RE.match(_code)):
+                _tt_list.append(_code)
+        caps["translate_to_default"] = _tt_list
+        # Engine version, yt_dlp_version-style best-effort (null when the
+        # optional dependency set isn't installed).
+        try:
+            import importlib.metadata
+            caps["llama_cpp_version"] = importlib.metadata.version(
+                "llama-cpp-python")
+        except Exception:  # noqa: BLE001 — absence is a supported state
+            caps["llama_cpp_version"] = None
+    # Additive: the stage-model allowlists with a loaded flag, mirroring
+    # translation_models — the client's model pickers pre-flight on these.
+    # "Loaded" = the module's single cached instance is exactly this model
+    # (both stages cache one pipeline/separator at a time).
+    import bgm_separation as _bgm
+    import diarization as _diar
+    _diar_loaded = (_diar._pipeline_key[0]
+                    if _diar._pipeline_key else None)
+    caps["diarization_models"] = [
+        {"id": _m, "loaded": _m == _diar_loaded}
+        for _m in (getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or [])]
+    # The separator caches by on-disk FILENAME (".onnx" implied), the
+    # allowlist holds friendly names — compare through the same mapping.
+    _sep_loaded = (_bgm._separator_key[0]
+                   if _bgm._separator_key else None)
+    caps["separation_models"] = [
+        {"id": _m,
+         "loaded": (_m if "." in _m else f"{_m}.onnx") == _sep_loaded}
+        for _m in (getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or [])]
     return caps
 
 

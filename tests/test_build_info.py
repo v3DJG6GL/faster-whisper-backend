@@ -34,3 +34,37 @@ def test_no_git_falls_back_to_unknown(monkeypatch):
     finally:
         monkeypatch.undo()
         importlib.reload(build_info)
+
+
+# --- engine_versions: optional llama-cpp-python part ----------------------
+
+def _stub_pkg_version(monkeypatch, llama):
+    """Route importlib.metadata.version through a stub: known core packages
+    answer fixed versions; llama-cpp-python answers `llama` (or raises when
+    None, like an uninstalled package)."""
+    import importlib.metadata as md
+
+    def _version(name):
+        if name == "llama-cpp-python":
+            if llama is None:
+                raise md.PackageNotFoundError(name)
+            return llama
+        return {"faster-whisper": "1.2.1", "ctranslate2": "4.6.1"}.get(name, "?")
+
+    monkeypatch.setattr(md, "version", _version)
+
+
+def test_engine_versions_appends_llama_cpp_when_installed(monkeypatch):
+    _stub_pkg_version(monkeypatch, "0.3.99")
+    s = build_info.engine_versions()
+    assert s.endswith(" · llama-cpp-python 0.3.99")
+    assert "faster-whisper 1.2.1" in s
+
+
+def test_engine_versions_omits_llama_cpp_when_absent(monkeypatch):
+    # Deliberately skipped optional install ⇒ the part is ABSENT, never a
+    # "llama-cpp-python ?" placeholder.
+    _stub_pkg_version(monkeypatch, None)
+    s = build_info.engine_versions()
+    assert "llama-cpp-python" not in s
+    assert "CTranslate2 4.6.1" in s

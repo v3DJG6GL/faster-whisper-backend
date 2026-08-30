@@ -85,7 +85,10 @@ def uptime_str(now: float | None = None) -> str:
 
 def engine_versions() -> str:
     """Display string "python 3.14.6 · faster-whisper 1.2.1 · CTranslate2 4.6.1".
-    Each part is best-effort ("?") — never raises."""
+    Each part is best-effort ("?") — never raises. Optional engines
+    (llama-cpp-python, the translation stage) append their part only when the
+    package is actually installed — never a "?" placeholder for a dependency
+    set the operator deliberately skipped."""
     try:
         from importlib.metadata import version as _pkg_version
     except Exception:  # pragma: no cover — stdlib since 3.8
@@ -99,8 +102,12 @@ def engine_versions() -> str:
         except Exception:
             return "?"
 
-    return (
+    parts = (
         f"python {platform.python_version()}"
         f" · faster-whisper {_pkg('faster-whisper')}"
         f" · CTranslate2 {_pkg('ctranslate2')}"
     )
+    llama = _pkg("llama-cpp-python")
+    if llama != "?":
+        parts += f" · llama-cpp-python {llama}"
+    return parts

@@ -61,6 +61,110 @@ def test_me_reports_stage_availability(client, app_module):
     assert j["diarization_enabled"] is True
 
 
+def test_me_translation_flag_present_details_gated(client, app_module):
+    # translation_enabled is ALWAYS present; the detail keys ride only when
+    # the stage is on (yt_dlp_version shape discipline).
+    j = client.get("/v1/me").json()
+    assert j["translation_enabled"] is False
+    for k in ("translation_models", "translation_languages",
+              "translate_to_default", "llama_cpp_version"):
+        assert k not in j
+    app_module.cfg.TRANSLATION_ENABLED = True
+    j = client.get("/v1/me").json()
+    assert j["translation_enabled"] is True
+    for k in ("translation_models", "translation_languages",
+              "translate_to_default", "llama_cpp_version"):
+        assert k in j
+
+
+def test_me_translation_models_default_first_with_loaded_flags(
+        client, app_module):
+    import translation
+    app_module.cfg.TRANSLATION_ENABLED = True
+    app_module.cfg.TRANSLATION_DEFAULT_MODEL = "org/default-GGUF:Q4"
+    app_module.cfg.TRANSLATION_ALLOWED_MODELS = {
+        "org/zeta-GGUF:Q4", "org/alpha-GGUF:Q4", "org/default-GGUF:Q4"}
+    # A loaded model OUTSIDE the allowlist (loaded before the admin tightened
+    # it) still shows up; loaded flags come from the module LRU.
+    translation._models["org/default-GGUF:Q4"] = object()
+    translation._models["org/extra-GGUF:Q4"] = object()
+    j = client.get("/v1/me").json()
+    assert j["translation_models"] == [
+        {"id": "org/default-GGUF:Q4", "loaded": True},
+        {"id": "org/alpha-GGUF:Q4", "loaded": False},
+        {"id": "org/extra-GGUF:Q4", "loaded": True},
+        {"id": "org/zeta-GGUF:Q4", "loaded": False},
+    ]
+    # Language menu: "en" first, then the sorted rest — non-empty either way.
+    langs = j["translation_languages"]
+    assert langs[0] == "en" and "de" in langs
+    # llama_cpp_version is best-effort: a string when installed, else null —
+    # never absent while the stage is enabled.
+    assert "llama_cpp_version" in j
+
+
+def test_me_translation_models_empty_default_still_answers(
+        client, app_module):
+    # No default configured: no crash, no phantom "" entry, and the language
+    # list still answers via the chatml fallback family.
+    app_module.cfg.TRANSLATION_ENABLED = True
+    app_module.cfg.TRANSLATION_DEFAULT_MODEL = ""
+    app_module.cfg.TRANSLATION_ALLOWED_MODELS = {"org/only-GGUF:Q4"}
+    j = client.get("/v1/me").json()
+    assert j["translation_models"] == [
+        {"id": "org/only-GGUF:Q4", "loaded": False}]
+    assert j["translation_languages"][0] == "en"
+
+
+def test_me_translate_to_default_respects_identity_override(
+        client, app_module, make_user_key):
+    app_module.cfg.TRANSLATION_ENABLED = True
+    app_module.cfg.TRANSLATE_TO = "en"
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    _profiles(client, h, {"de-fr": {"TRANSLATE_TO": "de,fr-CA"}})
+    uid, raw_alice = make_user_key("alice")
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {},
+        "config": {"overrides": {}, "profiles": ["de-fr"], "locks": []}})
+    assert r.status_code == 200, r.text
+    # Alice sees HER effective default (profile layer), parsed csv → list.
+    j = client.get("/v1/me", headers=bearer(raw_alice)).json()
+    assert j["translate_to_default"] == ["de", "fr-CA"]
+    # The admin (no binding) sees the global default.
+    j = client.get("/v1/me", headers=h).json()
+    assert j["translate_to_default"] == ["en"]
+
+
+def test_me_stage_model_lists_with_loaded_flags(client, app_module):
+    import bgm_separation
+    import diarization
+    # Always present (independent of the enabled switches) — the client's
+    # model pickers pre-flight on the allowlists.
+    j = client.get("/v1/me").json()
+    assert {m["id"] for m in j["diarization_models"]} == \
+        set(app_module.cfg.DIARIZATION_ALLOWED_MODELS)
+    assert all(m["loaded"] is False for m in j["diarization_models"])
+    assert {m["id"] for m in j["separation_models"]} == \
+        set(app_module.cfg.BGM_SEPARATION_ALLOWED_MODELS)
+    assert all(m["loaded"] is False for m in j["separation_models"])
+    # Loaded = the module's cached key matches (separator caches by FILENAME).
+    diar_id = app_module.cfg.DIARIZATION_ALLOWED_MODELS[0]
+    sep_id = app_module.cfg.BGM_SEPARATION_ALLOWED_MODELS[0]
+    diarization._pipeline_key = (diar_id, "cpu", 4)
+    bgm_separation._separator_key = (
+        sep_id if "." in sep_id else f"{sep_id}.onnx", "cpu")
+    try:
+        j = client.get("/v1/me").json()
+        assert {m["id"]: m["loaded"] for m in j["diarization_models"]}[
+            diar_id] is True
+        assert {m["id"]: m["loaded"] for m in j["separation_models"]}[
+            sep_id] is True
+    finally:
+        diarization._pipeline_key = None
+        bgm_separation._separator_key = None
+
+
 def test_me_reflects_per_key_gate(client, make_user_key):
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
