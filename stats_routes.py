@@ -1101,6 +1101,13 @@ function render(snap) {
   // --- Recent jobs (unified) ---
   renderJobs(snap);
 
+  // Feed the header activity cluster from THIS page's stream — on /stats
+  // the cluster opens no second EventSource (window._fwFeedActivity hook,
+  // defined by ACTIVITY_CLUSTER_JS at body-end; guard for load order).
+  if (typeof window._fwFeedActivity === 'function') {
+    try { window._fwFeedActivity(snap); } catch (_) {}
+  }
+
   // Severity pills are driven by SEV_POLLER_JS injected at body-end
   // (5-s poll of /sev), so no per-tick update needed here.
 }

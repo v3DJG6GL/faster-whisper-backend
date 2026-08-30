@@ -61,6 +61,10 @@ def job_start(
         "progress": None,
         "stage": None,
         "step": None,
+        # Set via job_update by handlers whose client opted into the
+        # progress/cancel registry — lets an admin's activity popover POST
+        # the cancel endpoint for this job.
+        "progress_id": None,
         "started_ts": time.time(),
         "started_mono": time.monotonic(),
     }
@@ -119,6 +123,9 @@ def jobs_snapshot(include_identity: bool = False) -> list[dict[str, Any]]:
                 row["user"] = e["user"]
                 row["key"] = e["key"]
                 row["detail"] = e["detail"]
+                # Cancel handle (admin viewers only): the id the cancel
+                # endpoint accepts, when the job's client registered one.
+                row["progress_id"] = e.get("progress_id")
             out.append(row)
         return out
 

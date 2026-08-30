@@ -3019,6 +3019,7 @@ async def transcribe(
                    user=_user_id, key=_key_id)
     if _pid:
         _JOB_BY_PID[_pid] = request_id
+        jobs.job_update(request_id, progress_id=_pid)
     try:
         # Upload ceiling. Content-Length is advisory (absent on chunked
         # bodies), so it only buys us an early exit before the model load —
@@ -4497,7 +4498,7 @@ async def translate_text(request: Request,
                    user=(_uid or None), key=user.get("key_id"),
                    detail=f"{len(seg_in)} segs → {','.join(targets)}",
                    )
-    jobs.job_update(request_id, stage="translating")
+    jobs.job_update(request_id, stage="translating", progress_id=_pid)
 
     def _on_progress(f, step=None, last_text=None):
         now = time.perf_counter()

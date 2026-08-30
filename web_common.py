@@ -349,6 +349,83 @@ header .spacer { flex: 1 1 0; min-width: 0.5rem; }
 /* right-side utility cluster: severity pills + scale picker (same everywhere) */
 header .hdr-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
 header .sevpills { display: inline-flex; align-items: center; gap: 0.25rem; }
+/* ---- Header activity cluster (jobs count + GPU/VRAM micro-bars) ----
+   Shell rendered by activity_cluster_html (inside {{SEV_PILLS}}); filled by
+   ACTIVITY_CLUSTER_JS from /stats/stream?lite=1. Visibility mirrors the
+   stats nav-link's whoami gate: default-hidden, JS adds `.allowed`. */
+header .hact-wrap { position: relative; display: inline-flex; }
+header .hdr-activity { display: none; align-items: center; gap: 0.4rem;
+  background: transparent; border: 1px solid var(--border); border-radius: 4px;
+  padding: 0.2rem 0.5rem; cursor: pointer; color: var(--help);
+  font-size: var(--fs-xs); line-height: 1.2; }
+header .hdr-activity.allowed { display: inline-flex; }
+header .hdr-activity:hover { color: var(--fg); background: var(--panel); }
+header .hdr-activity .hact-jobs { font-variant-numeric: tabular-nums;
+  color: var(--fg); font-weight: 600; }
+header .hdr-activity.idle .hact-jobs { color: var(--help); font-weight: 400; }
+header .hact-bars { display: inline-flex; flex-direction: column; gap: 2px; }
+header .hact-bar { display: block; width: 2.667rem; height: 5px;
+  background: #21262d; border-radius: 2px; overflow: hidden; }
+header .hact-bar i { display: block; height: 100%; width: 0;
+  background: var(--cyan); transition: width .3s ease; }
+header .hact-bar.vram i { background: var(--magenta); }
+header .hact-bar i.warn { background: var(--yellow); }
+header .hact-bar i.crit { background: var(--red); }
+header .hdr-activity.stale .hact-bar i { background: var(--help); }
+header .hdr-activity.stale .hact-jobs { color: var(--help); }
+header .hact-spin { display: inline-block; width: 0.65rem; height: 0.65rem;
+  border: 2px solid #21262d; border-top-color: var(--cyan);
+  border-radius: 50%; animation: hact-spin 0.9s linear infinite; }
+header .hact-spin[hidden] { display: none; }
+@keyframes hact-spin { to { transform: rotate(360deg); } }
+/* Popover: running jobs + system rows + loaded models + /stats link. */
+.hact-pop { position: absolute; right: 0; top: calc(100% + 0.5rem);
+  z-index: 60; min-width: 20rem; max-width: 26rem;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 8px; box-shadow: 0 12px 32px -12px rgba(0,0,0,0.8);
+  padding: 0.6rem 0.75rem; font-size: var(--fs-xs); color: var(--fg);
+  text-align: left; }
+.hact-pop[hidden] { display: none; }
+.hact-pop h4 { margin: 0.2rem 0 0.3rem; font-size: var(--fs-xs);
+  color: var(--help); text-transform: uppercase; letter-spacing: .05em;
+  font-weight: 500; }
+.hact-pop .hact-job { display: flex; align-items: center; gap: 0.45rem;
+  margin: 0.25rem 0; }
+.hact-pop .hact-kind { flex: 0 0 auto; font-size: 0.667rem;
+  padding: 0 0.35rem; border-radius: 999px; border: 1px solid var(--border);
+  color: var(--help); white-space: nowrap; }
+.hact-pop .hact-job .m { flex: 1 1 auto; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.hact-pop .hact-job .p { flex: 0 0 auto; color: var(--help);
+  font-variant-numeric: tabular-nums; }
+.hact-pop .hact-jbar { flex: 0 0 3.2rem; height: 5px; background: #21262d;
+  border-radius: 2px; overflow: hidden; }
+.hact-pop .hact-jbar i { display: block; height: 100%;
+  background: var(--cyan); }
+.hact-pop .hact-cancel { flex: 0 0 auto; background: transparent;
+  border: 1px solid var(--border); border-radius: 3px; color: var(--help);
+  font-size: 0.667rem; padding: 0 0.3rem; cursor: pointer; line-height: 1.4; }
+.hact-pop .hact-cancel:hover { color: var(--red); border-color: #5a2424; }
+.hact-pop .hact-sys { display: grid;
+  grid-template-columns: 3.2rem 1fr 3.4rem; gap: 0.25rem 0.5rem;
+  align-items: center; margin: 0.15rem 0; }
+.hact-pop .hact-sys .lbl { color: var(--help); }
+.hact-pop .hact-sys .val { text-align: right; color: var(--fg);
+  font-variant-numeric: tabular-nums; }
+.hact-pop .hact-sysbar { height: 5px; background: #21262d; border-radius: 2px;
+  overflow: hidden; }
+.hact-pop .hact-sysbar i { display: block; height: 100%;
+  background: var(--cyan); }
+.hact-pop .hact-sysbar i.warn { background: var(--yellow); }
+.hact-pop .hact-sysbar i.crit { background: var(--red); }
+.hact-pop .hact-models { margin: 0; padding: 0; list-style: none;
+  color: var(--help); }
+.hact-pop .hact-models li { overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+.hact-pop .hact-foot { margin-top: 0.5rem; padding-top: 0.4rem;
+  border-top: 1px solid var(--border); }
+.hact-pop .hact-foot a { color: var(--cyan); text-decoration: none; }
+.hact-pop .empty { color: var(--help); font-style: italic; }
 /* Square icon buttons (logout / reload …) — same chrome as text buttons via
    the page-local `header button` rule, just sized to the glyph. Labels live
    in title + aria-label so the icon stays accessible. */
@@ -441,6 +518,8 @@ header .subbar .filt-label { display: inline-flex; align-items: center; gap: 0.3
 @container hdr (max-width: 60rem) {
   header .sevpill .lbl { display: none; }
   header .sevpill { padding: 0.125rem 0.4rem; }
+  /* activity cluster: drop the micro-bars, keep spinner + jobs count */
+  header .hact-bars { display: none; }
 }
 @container hdr (max-width: 40rem) {
   header .navlink { padding: 0.25rem 0.5rem; }
@@ -1904,6 +1983,196 @@ SEV_POLLER_JS = """
 """
 
 
+# Header activity cluster: fills the activity_cluster_html shell from
+# /stats/stream?lite=1 (SSE) on every page EXCEPT /stats, where the page's
+# own full-payload renderer feeds it through window._fwFeedActivity to avoid
+# a second stream. Emitted with SEV_POLLER_JS on every template.
+ACTIVITY_CLUSTER_JS = """
+<script>(function(){
+  var btn = document.getElementById('hact');
+  if (!btn) return;
+  var pop = document.getElementById('hact-pop');
+  var spin = document.getElementById('hact-spin');
+  var jobsEl = document.getElementById('hact-jobs');
+  var gpuEl = document.getElementById('hact-gpu');
+  var vramEl = document.getElementById('hact-vram');
+  var es = null, last = null, lastTs = 0, allowed = false;
+
+  function esc(s){ return String(s == null ? '' : s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+  function onStats(){ return window.__current_page === 'stats'; }
+
+  function setBar(el, pct){
+    if (!el) return;
+    if (pct == null) { el.style.width = '0'; el.className = ''; return; }
+    el.style.width = Math.max(0, Math.min(100, pct)).toFixed(0) + '%';
+    el.className = pct >= 92 ? 'crit' : (pct >= 75 ? 'warn' : '');
+  }
+
+  function feed(snap){
+    if (!snap) return;
+    last = snap; lastTs = Date.now();
+    btn.classList.remove('stale');
+    btn.removeAttribute('data-tip');
+    var jobs = snap.jobs || [];
+    jobsEl.textContent = jobs.length;
+    btn.classList.toggle('idle', jobs.length === 0);
+    spin.hidden = jobs.length === 0;
+    var gpu = snap.gpu || null;
+    setBar(gpuEl, gpu ? (gpu.util_pct != null ? gpu.util_pct : null) : null);
+    setBar(vramEl, gpu && gpu.mem_total_mb
+      ? gpu.mem_used_mb / gpu.mem_total_mb * 100 : null);
+    if (!pop.hidden) renderPop();
+  }
+  // The /stats page renderer calls this with its own (full) snapshot so the
+  // cluster stays live there without a second SSE stream.
+  window._fwFeedActivity = feed;
+
+  function renderPop(){
+    var s = last;
+    if (!s) { pop.innerHTML = '<div class="empty">no data yet</div>'; return; }
+    var isAdmin = !!(window.__whoami && window.__whoami.is_admin);
+    var h = '<h4>Running jobs</h4>';
+    var jobs = s.jobs || [];
+    if (!jobs.length) h += '<div class="empty">— none —</div>';
+    jobs.forEach(function(j){
+      var pct = j.progress != null ? Math.round(j.progress * 100) : null;
+      h += '<div class="hact-job">'
+        + '<span class="hact-kind">' + esc(j.kind) + '</span>'
+        + '<span class="m">' + esc(j.model || j.detail || '') + '</span>'
+        + (pct != null
+            ? '<span class="hact-jbar"><i style="width:' + pct + '%"></i></span>'
+              + '<span class="p">' + pct + '%</span>'
+            : '<span class="p">' + esc(j.step || j.stage || '…') + '</span>')
+        + (isAdmin && j.progress_id
+            ? '<button class="hact-cancel" data-pid="' + esc(j.progress_id)
+              + '" title="cancel this job">✕</button>'
+            : '')
+        + '</div>';
+    });
+    h += '<h4>System</h4><div class="hact-sys">';
+    function row(lbl, pct, val){
+      h += '<span class="lbl">' + lbl + '</span>'
+        + '<span class="hact-sysbar"><i class="'
+        + (pct >= 92 ? 'crit' : pct >= 75 ? 'warn' : '')
+        + '" style="width:' + Math.max(0, Math.min(100, pct || 0)).toFixed(0)
+        + '%"></i></span>'
+        + '<span class="val">' + val + '</span>';
+    }
+    var gpu = s.gpu, host = s.host || {};
+    if (gpu) {
+      row('GPU', gpu.util_pct || 0, (gpu.util_pct != null ? gpu.util_pct : '—') + '%');
+      if (gpu.mem_total_mb) {
+        var vp = gpu.mem_used_mb / gpu.mem_total_mb * 100;
+        row('VRAM', vp, (gpu.mem_used_mb / 1024).toFixed(1) + ' GB');
+      }
+    }
+    if (host.cpu_pct != null) row('CPU', host.cpu_pct, host.cpu_pct.toFixed(0) + '%');
+    if (host.ram_pct != null)
+      row('RAM', host.ram_pct, ((host.ram_used_mb || 0) / 1024).toFixed(1) + ' GB');
+    h += '</div>';
+    var models = s.models || [];
+    if (models.length) {
+      h += '<h4>Loaded models</h4><ul class="hact-models">';
+      models.forEach(function(m){
+        h += '<li>' + esc(m.name) + (m.device ? ' · ' + esc(m.device) : '') + '</li>';
+      });
+      h += '</ul>';
+    }
+    h += '<div class="hact-foot"><a href="/stats">open /stats →</a></div>';
+    pop.innerHTML = h;
+  }
+
+  btn.addEventListener('click', function(e){
+    e.stopPropagation();
+    var show = pop.hidden;
+    pop.hidden = !show;
+    btn.setAttribute('aria-expanded', show ? 'true' : 'false');
+    if (show) renderPop();
+  });
+  document.addEventListener('click', function(e){
+    if (!pop.hidden && !pop.contains(e.target)) {
+      pop.hidden = true; btn.setAttribute('aria-expanded', 'false');
+    }
+  });
+  document.addEventListener('keydown', function(e){
+    if (e.key === 'Escape' && !pop.hidden) {
+      pop.hidden = true; btn.setAttribute('aria-expanded', 'false');
+    }
+  });
+  pop.addEventListener('click', function(e){
+    var c = e.target.closest('.hact-cancel');
+    if (!c) return;
+    fetch('/v1/audio/transcriptions/cancel/' + c.dataset.pid,
+          { method: 'POST' }).catch(function(){});
+    c.disabled = true;
+  });
+
+  function openStream(){
+    if (es || onStats() || !allowed) return;
+    if (document.visibilityState === 'hidden') return;
+    try {
+      es = new EventSource('/stats/stream?lite=1');
+      es.onmessage = function(ev){
+        try { feed(JSON.parse(ev.data)); } catch(_) {}
+      };
+      es.onerror = function(){
+        // Rely on EventSource's built-in retry; staleness greys the bars.
+      };
+    } catch(_) {}
+  }
+  function closeStream(){
+    if (es) { try { es.close(); } catch(_) {} es = null; }
+  }
+
+  // Stale detection: the lite stream ticks at 1 Hz; after >5 s of silence
+  // (3+ missed intervals) grey the bars with an explanatory tip.
+  setInterval(function(){
+    if (!allowed || !lastTs) return;
+    if (Date.now() - lastTs > 5000) {
+      btn.classList.add('stale');
+      btn.setAttribute('data-tip', 'activity feed stale — reconnecting');
+    }
+  }, 2500);
+
+  // Visibility: mirror the /stats page — no hidden-tab streams (browser
+  // 6-connections-per-origin cap).
+  document.addEventListener('visibilitychange', function(){
+    if (document.visibilityState === 'hidden') closeStream();
+    else openStream();
+  });
+
+  // Gate: mirror the stats nav-link's `.allowed` (set async by
+  // _refreshAuthChrome after /auth/whoami resolves) onto the button. A
+  // MutationObserver catches the async class flip; an initial sync covers
+  // the already-resolved case.
+  function syncAllowed(){
+    var link = document.querySelector('header a.page-link[data-page="stats"]');
+    var ok = !!(link && link.classList.contains('allowed'));
+    if (ok === allowed) return;
+    allowed = ok;
+    btn.classList.toggle('allowed', ok);
+    if (ok) { btn.hidden = false; openStream(); }
+    else {
+      btn.hidden = true; closeStream();
+      pop.hidden = true; btn.setAttribute('aria-expanded', 'false');
+    }
+  }
+  var header = document.querySelector('header');
+  if (header && window.MutationObserver) {
+    new MutationObserver(syncAllowed).observe(
+      header, { attributes: true, subtree: true,
+                attributeFilter: ['class'] });
+  }
+  window.addEventListener('whisper:auth-changed', function(){
+    setTimeout(syncAllowed, 0);
+  });
+  syncAllowed();
+})();</script>
+"""
+
+
 # Per-rule body editors shared by /settings (full editor with drag-reorder etc.)
 # and /quick-config (read-only header + body editor only). Defined as
 # top-level functions so both pages can call them with their own
@@ -2679,6 +2948,33 @@ def nav_html(current: str) -> str:
     return "".join(parts)
 
 
+def activity_cluster_html() -> str:
+    """Header activity cluster — an empty shell (jobs count + GPU/VRAM
+    micro-bars + spinner) plus its popover container, emitted as part of
+    {{SEV_PILLS}} so every template gets it with zero template edits.
+
+    Static shell, zeroes only (same caching stance as the sev pills: page
+    shells are host-gated and memoized, so no live value may render here).
+    ACTIVITY_CLUSTER_JS fills it from /stats/stream?lite=1 — visibility is
+    driven by the stats nav-link's `.allowed` class (the same whoami gate),
+    mirrored onto the button; default-hidden via [hidden] + no .allowed."""
+    return (
+        '<span class="hact-wrap">'
+        '<button id="hact" class="hdr-activity page-link" data-page="stats" '
+        'type="button" hidden aria-haspopup="true" aria-expanded="false" '
+        'title="server activity — click for running jobs">'
+        '<span id="hact-spin" class="hact-spin" hidden></span>'
+        '<span id="hact-jobs" class="hact-jobs">0</span>'
+        '<span class="hact-bars">'
+        '<span class="hact-bar" title="GPU util"><i id="hact-gpu"></i></span>'
+        '<span class="hact-bar vram" title="VRAM"><i id="hact-vram"></i></span>'
+        '</span>'
+        '</button>'
+        '<div id="hact-pop" class="hact-pop" hidden></div>'
+        '</span>'
+    )
+
+
 def sev_pills_html() -> str:
     """Render the three severity-count pills (warn/err/crit) as the
     {{SEV_PILLS}} fragment, grouped in a `.sevpills` wrapper for the header's
@@ -2698,7 +2994,9 @@ def sev_pills_html() -> str:
     puts on exactly that data. SEV_POLLER_JS already rewrites these `.n` spans
     from /sev, so for an authenticated user the only change is that the numbers
     arrive on the first poll instead of in the initial HTML."""
-    parts: list[str] = ['<span class="sevpills">']
+    # Activity cluster first: it sits left of the pills in the utility
+    # cluster and rides the same placeholder so all templates inherit it.
+    parts: list[str] = [activity_cluster_html(), '<span class="sevpills">']
     for level, key in (("warn", "WARNING"), ("err", "ERROR"), ("crit", "CRITICAL")):
         n = 0
         cls = f"sevpill admin-only {level} {'hot' if n else 'zero'}"
@@ -2759,8 +3057,11 @@ def _render_page_cached(
             "{{SEV_POLLER_JS}}",
             # Order matters: the global landing helpers must be defined
             # BEFORE OPEN_MODE_BANNER_JS runs, because the central script
-            # calls `_renderNoAccessLanding` once whoami resolves.
-            SEV_POLLER_JS + NOT_ADMIN_LANDING_GLOBAL_JS + OPEN_MODE_BANNER_JS,
+            # calls `_renderNoAccessLanding` once whoami resolves. The
+            # activity cluster comes last — it observes the .allowed class
+            # OPEN_MODE_BANNER_JS's chrome refresh sets.
+            SEV_POLLER_JS + NOT_ADMIN_LANDING_GLOBAL_JS + OPEN_MODE_BANNER_JS
+            + ACTIVITY_CLUSTER_JS,
         )
         .replace("{{SCALE_BOOTSTRAP_HEAD}}", SCALE_BOOTSTRAP_HEAD)
         .replace("{{RULE_EDITOR_JS}}", RULE_EDITOR_JS)

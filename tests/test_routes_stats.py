@@ -64,6 +64,22 @@ def test_snapshot_lite_shape(client):
                                  "ram_pct"}
 
 
+def test_header_activity_cluster_shell_on_every_page(client):
+    """The cluster shell rides {{SEV_PILLS}}, so every template gets it;
+    it renders as an empty, default-hidden shell (no live values baked into
+    the cached page shell) and the JS that fills it ships alongside."""
+    import web_common
+
+    frag = web_common.sev_pills_html()
+    assert frag.index('id="hact"') < frag.index('class="sevpills"')
+    for path in ("/stats", "/logs"):
+        html = client.get(path).text
+        assert 'id="hact"' in html, path
+        assert 'id="hact-pop"' in html, path
+        assert '/stats/stream?lite=1' in html, path
+        assert '<span id="hact-jobs" class="hact-jobs">0</span>' in html, path
+
+
 def test_translate_run_registers_a_job(client, app_module, monkeypatch):
     """The text-translations handler holds a 'translate' job for the run's
     duration — observed from inside a stubbed translate_segments."""
