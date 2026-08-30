@@ -23,7 +23,8 @@ def _stub_translate(monkeypatch, calls=None, warnings=None):
     'XLATED-<target>'. Records the handler-side call shape in `calls`."""
     async def _fake(segments, targets, *, source_lang=None, model_ref=None,
                     mode="fluent", glossary="", context_segments=None,
-                    progress_cb=None, cancel_check=None):
+                    progress_cb=None, cancel_check=None,
+                    download_cb=None):
         if calls is not None:
             calls.append({"segments": segments, "targets": list(targets),
                           "source_lang": source_lang, "model_ref": model_ref,

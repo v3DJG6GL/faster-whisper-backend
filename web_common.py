@@ -350,7 +350,9 @@ header .spacer { flex: 1 1 0; min-width: 0.5rem; }
 header .hdr-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
 header .sevpills { display: inline-flex; align-items: center; gap: 0.25rem; }
 /* ---- Header activity cluster (jobs count + GPU/VRAM micro-bars) ----
-   Shell rendered by activity_cluster_html (inside {{SEV_PILLS}}); filled by
+   Shell rendered by activity_cluster_html (rides the SEV_PILLS placeholder
+   — never spell the literal placeholder here: NAV_CSS is substituted after
+   it, so the string would leak into the page unreplaced); filled by
    ACTIVITY_CLUSTER_JS from /stats/stream?lite=1. Visibility mirrors the
    stats nav-link's whoami gate: default-hidden, JS adds `.allowed`. */
 header .hact-wrap { position: relative; display: inline-flex; }
