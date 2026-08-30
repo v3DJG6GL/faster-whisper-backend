@@ -28,8 +28,8 @@ from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
 from pydantic import (
-    BaseModel, Field, ValidationError, ValidationInfo, field_validator,
-    model_validator,
+    BaseModel, Field, ValidationError, ValidationInfo, create_model,
+    field_validator, model_validator,
 )
 
 
@@ -818,6 +818,7 @@ def _F(
     coerce: Any = None,
     client_key: str | None = None,
     model_override: bool = True,
+    evict: str | None = None,
     **kwargs: Any,
 ) -> Any:
     """`Field(default=None, description=FIELD_DESCRIPTIONS[name], **kwargs)`
@@ -881,6 +882,7 @@ def _F(
         "coerce": "set" if coerce is set else None,
         "client_key": client_key,
         "model_override": model_override,
+        "evict": evict,
     }
     return Field(default=None, description=FIELD_DESCRIPTIONS[name],
                  json_schema_extra={"x_registry": registry}, **kwargs)
@@ -1154,184 +1156,13 @@ _VIRTUAL_OVERRIDE_FIELDS: dict[str, dict[str, Any]] = {
 }
 
 
-class _CallTimeOverrideMixin(BaseModel):
-    """Call-time (decode + post-processing) override fields, shared by
-    ModelOverride (per-model) and OverrideProfile (per-identity) so the bounds
-    are single-sourced and the two layers can never drift apart. All fields
-    optional; absent = inherit the next layer down."""
-    model_config = {"extra": "forbid", "protected_namespaces": ()}
-
-    # --- Decode params (call-time) ---
-    DEFAULT_LANGUAGE: Annotated[str, Field(pattern=r"^([a-z]{2})?$")] | None = None
-    DEFAULT_PROMPT: Annotated[str, Field(max_length=2048)] | None = None
-    DEFAULT_HOTWORDS: Annotated[str, Field(max_length=2048)] | None = None
-    BEAM_SIZE: Annotated[int, Field(ge=1, le=20)] | None = None
-    BEST_OF: Annotated[int, Field(ge=1, le=20)] | None = None
-    CONDITION_ON_PREVIOUS_TEXT: bool | None = None
-    WORD_TIMESTAMPS_ENABLED: bool | None = None
-    NO_SPEECH_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
-    LOG_PROB_THRESHOLD: Annotated[float, Field(ge=-10.0, le=0.0)] | None = None
-    COMPRESSION_RATIO_THRESHOLD: Annotated[float, Field(ge=0.0, le=10.0)] | None = None
-    SEGMENT_MAX_WORDS_PER_SEC: Annotated[float, Field(ge=0.0, le=100.0)] | None = None
-    TASK: TaskLit | None = None
-    TEMPERATURE: Annotated[str, Field(max_length=64)] | None = None
-    # Diarization call-time knobs. The capacity switch DIARIZATION_ENABLED is
-    # deliberately NOT here (server-wide, like STREAMING_MAX_SESSIONS); these
-    # four are per-caller policy and therefore lockable.
-    DIARIZE: bool | None = None
-    DIARIZATION_NUM_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = None
-    DIARIZATION_MIN_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = None
-    DIARIZATION_MAX_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = None
-    # Music-separation call-time knob (capacity switch BGM_SEPARATION_ENABLED
-    # stays server-wide, like DIARIZATION_ENABLED above).
-    SEPARATE_BGM: bool | None = None
-    PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
-    LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = None
-    REPETITION_PENALTY: Annotated[float, Field(ge=0.5, le=5.0)] | None = None
-    NO_REPEAT_NGRAM_SIZE: Annotated[int, Field(ge=0, le=10)] | None = None
-    PROMPT_RESET_ON_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
-
-    # --- VAD ---
-    VAD_FILTER: bool | None = None
-    VAD_MIN_SILENCE_MS: Annotated[int, Field(ge=0, le=10000)] | None = None
-    VAD_SPEECH_PAD_MS: Annotated[int, Field(ge=0, le=2000)] | None = None
-    VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
-    LEADING_SILENCE_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = None
-
-    # --- Language detection ---
-    MULTILINGUAL: bool | None = None
-    LANGUAGE_DETECTION_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
-    LANGUAGE_DETECTION_SEGMENTS: Annotated[int, Field(ge=1, le=10)] | None = None
-
-    # --- Anti-hallucination & token control ---
-    HALLUCINATION_SILENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=60.0)] | None = None
-    SUPPRESS_BLANK: bool | None = None
-    SUPPRESS_TOKENS: Annotated[str, Field(max_length=256)] | None = None
-    SUPPRESS_CHARS: Annotated[str, Field(max_length=64)] | None = None
-    PREPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = None
-    APPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = None
-
-    # --- Output wrappers ---
-    OUTPUT_PREFIX: Annotated[str, Field(max_length=512)] | None = None
-    OUTPUT_SUFFIX: Annotated[str, Field(max_length=512)] | None = None
-
-    # --- Pipeline scoping ---
-    # EXCLUDE: force-DISABLE rules enabled at the next layer down.
-    # INCLUDE: force-ENABLE rules disabled at the next layer down. Inverse list.
-    # A slug must not appear in both — enforced by _no_overlap_… below.
-    PIPELINE_RULES_EXCLUDE: Annotated[
-        list[RuleSlug],
-        Field(max_length=200),
-    ] | None = None
-    PIPELINE_RULES_INCLUDE: Annotated[
-        list[RuleSlug],
-        Field(max_length=200),
-    ] | None = None
-
-    @model_validator(mode="after")
-    def _no_overlap_include_exclude(self) -> "_CallTimeOverrideMixin":
-        """A rule slug cannot be both force-disabled AND force-enabled in the
-        same bundle — admin must pick one. Catches obvious misconfiguration
-        (e.g. typed both lists then forgot to clean one up)."""
-        ex = set(self.PIPELINE_RULES_EXCLUDE or [])
-        inc = set(self.PIPELINE_RULES_INCLUDE or [])
-        overlap = ex & inc
-        if overlap:
-            raise ValueError(
-                f"PIPELINE_RULES_EXCLUDE and PIPELINE_RULES_INCLUDE overlap: "
-                f"{sorted(overlap)} — a rule cannot be both force-disabled "
-                f"and force-enabled in the same bundle. Remove from one of "
-                f"the lists."
-            )
-        return self
-
-
-class ModelOverride(_CallTimeOverrideMixin):
-    """Per-model override bundle. Inherits the call-time fields from
-    _CallTimeOverrideMixin; adds the load-time fields below (editing any of
-    these drains-then-evicts the affected loaded model). All fields optional;
-    absent = inherit global."""
-
-    # --- Load-time (eviction-on-edit) ---
-    MODEL_DEVICE: DeviceLit | None = None
-    MODEL_COMPUTE_TYPE: ComputeLit | None = None
-    MODEL_DEVICE_FALLBACK: DeviceLit | None = None
-    MODEL_COMPUTE_TYPE_FALLBACK: ComputeLit | None = None
-    REVISION: Annotated[str, Field(min_length=1, max_length=128)] | None = None
-    NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = None
-    DEVICE_INDEX: Annotated[int, Field(ge=0, le=15)] | None = None
-
-
-class _StreamingOverrideMixin(BaseModel):
-    """Live-streaming (WebSocket dictation) override fields that are meaningful
-    per-identity — partial-decode knobs, VAD / speech gates, finalize &
-    document-break, buffer trimming, idle timeout. Hard server-capacity caps
-    (STREAMING_ENABLED, STREAMING_MAX_SESSIONS, INFERENCE_CONCURRENCY) and the
-    partial-model selector are deliberately NOT here — they are server-wide, not
-    per-caller. The idle timeout IS here: it is a per-caller policy (a trusted
-    profile can be granted a longer silence grace than an anonymous one).
-    Bounds are lifted verbatim from the AdminConfig STREAMING_* fields so the
-    two stay in lockstep. All optional; absent = inherit the next layer down."""
-    model_config = {"extra": "forbid", "protected_namespaces": ()}
-
-    STREAMING_IDLE_TIMEOUT_SEC: Annotated[float, Field(ge=0.0, le=3600.0)] | None = None
-    STREAMING_PARTIAL_BEAM: Annotated[int, Field(ge=1, le=20)] | None = None
-    STREAMING_PARTIAL_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
-    STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = None
-    STREAMING_PARTIAL_INTERVAL_MS: Annotated[int, Field(ge=200, le=5000)] | None = None
-    STREAMING_VAD_BACKEND: Literal["auto", "silero", "energy"] | None = None
-    STREAMING_VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
-    STREAMING_GATE_MIN_SPEECH_MS: Annotated[int, Field(ge=0, le=5000)] | None = None
-    STREAMING_GATE_RMS_DBFS: Annotated[float, Field(ge=-90.0, le=0.0)] | None = None
-    STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = None
-    STREAMING_VAD_OUTER_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = None
-    STREAMING_FORCED_COMMIT_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = None
-    STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = None
-    STREAMING_TAIL_TRIM_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = None
-    STREAMING_HARD_BREAK_SILENCE_MS: Annotated[int, Field(ge=0, le=120000)] | None = None
-    STREAMING_HARD_BREAK_SEPARATOR: Annotated[str, Field(max_length=8)] | None = None
-    STREAMING_PROMPT_WORDS: Annotated[int, Field(ge=0, le=400)] | None = None
-    STREAMING_BUFFER_TRIM_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = None
-    STREAMING_BUFFER_TRIM_KEEP_SEC: Annotated[float, Field(ge=2.0, le=29.0)] | None = None
-
-
-# LOCKABLE_FIELDS is generated from the per-field registry (scope=
-# "per_request") in the "Generated field-registry tables" block below the
-# AdminConfig class body. OverrideProfile._validate_locks reads the module
-# global at validation time, long after import completes.
-
-
-class OverrideProfile(_CallTimeOverrideMixin, _StreamingOverrideMixin):
-    """A reusable, named per-identity override bundle — the config-bearing
-    "profile" (the evolution of the visibility-only tag concept). Carries the
-    call-time + streaming override fields (absent = inherit the next layer
-    down) plus `locks`: the field names whose resolved value a client's
-    per-request decode_override may NOT replace."""
-
-    locks: Annotated[list[str], Field(max_length=200)] | None = None
-
-    # Whether a client may NAME this profile in a per-request `override_profile`.
-    # None / True = requestable (clients can select it); False = internal-only —
-    # the profile may still be admin-applied via a per-key/per-user binding, but
-    # is never offered to clients and a request naming it is silently refused.
-    # This is profile-library metadata, NOT a per-field override or a lockable
-    # field, so it is excluded from the per-identity `direct` blob (validate_
-    # binding strips it) and rendered as a profile-level control, not in the
-    # decode-field grid.
-    requestable: bool | None = None
-
-    @field_validator("locks")
-    @classmethod
-    def _validate_locks(cls, v: list[str] | None) -> list[str] | None:
-        if not v:
-            return v
-        bad = sorted(f for f in v if f not in LOCKABLE_FIELDS)
-        if bad:
-            raise ValueError(
-                f"locks references non-lockable field(s): {bad}. Lockable "
-                f"fields are the overridable decode/streaming scalars."
-            )
-        return sorted(set(v))
+# The override models — _CallTimeOverrideMixin, _StreamingOverrideMixin,
+# ModelOverride, OverrideProfile — are GENERATED from the per-field registry
+# metadata (scope / model_override on each AdminConfig field) plus
+# _VIRTUAL_OVERRIDE_FIELDS. They are defined in the "Generated override
+# schemas" block BELOW the AdminConfig class body, because generation needs
+# AdminConfig.model_fields; AdminConfig.model_rebuild() afterwards resolves
+# its ModelOverride / OverrideProfile forward references.
 
 
 class AdminConfig(BaseModel):
@@ -1634,15 +1465,17 @@ class AdminConfig(BaseModel):
     DIARIZATION_ENABLED: bool | None = _F(
         "DIARIZATION_ENABLED", scope="server", group="Diarization")
     DIARIZATION_MODEL: DiarizationModelLit | None = _F(
-        "DIARIZATION_MODEL", scope="server", group="Diarization")
+        "DIARIZATION_MODEL", scope="server", group="Diarization",
+        evict="diarization")
     DIARIZATION_DEVICE: DiarizationDeviceLit | None = _F(
-        "DIARIZATION_DEVICE", scope="server", group="Diarization")
+        "DIARIZATION_DEVICE", scope="server", group="Diarization",
+        evict="diarization")
     DIARIZATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F(
         "DIARIZATION_IDLE_TIMEOUT_S", scope="server", group="Diarization")
     DIARIZATION_EMBEDDING_BATCH_SIZE: Annotated[int, Field(ge=1, le=64)] | None = _F(
         "DIARIZATION_EMBEDDING_BATCH_SIZE", scope="server",
         group="Diarization", subgroup="Advanced — speaker bounds & VRAM",
-        order=4)
+        order=4, evict="diarization")
     DIARIZE: bool | None = _F(
         "DIARIZE", scope="per_request", group="Diarization")
     DIARIZATION_NUM_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F(
@@ -1659,9 +1492,11 @@ class AdminConfig(BaseModel):
     BGM_SEPARATION_ENABLED: bool | None = _F(
         "BGM_SEPARATION_ENABLED", scope="server", group="Music separation")
     BGM_SEPARATION_UVR_MODEL: Annotated[str, Field(min_length=1, max_length=128)] | None = _F(
-        "BGM_SEPARATION_UVR_MODEL", scope="server", group="Music separation")
+        "BGM_SEPARATION_UVR_MODEL", scope="server",
+        group="Music separation", evict="bgm")
     BGM_SEPARATION_DEVICE: DiarizationDeviceLit | None = _F(
-        "BGM_SEPARATION_DEVICE", scope="server", group="Music separation")
+        "BGM_SEPARATION_DEVICE", scope="server", group="Music separation",
+        evict="bgm")
     BGM_SEPARATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F(
         "BGM_SEPARATION_IDLE_TIMEOUT_S", scope="server",
         group="Music separation")
@@ -2473,6 +2308,235 @@ def _build_field_groups() -> list[tuple[str, list[tuple[str | None, list[str]]]]
 FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = (
     _build_field_groups()
 )
+
+# Derived-extras eviction: editing any of the fields in a bucket drops the
+# matching cached extra (diarization pipeline / BGM separator) so its VRAM
+# frees now instead of at the idle timeout. Generated from the per-field
+# `evict=` metadata; admin_routes.post_state dispatches each bucket name
+# through its _EVICTORS table.
+EXTRAS_EVICTION: dict[str, frozenset[str]] = {
+    bucket: frozenset(
+        name for name, reg in _REGISTRY.items() if reg["evict"] == bucket
+    )
+    for bucket in sorted({r["evict"] for r in _REGISTRY.values() if r["evict"]})
+}
+
+
+# =============================================================================
+# Generated override schemas
+# =============================================================================
+# A ModelOverride bundle lives at MODEL_OVERRIDES[model_id]. Every field is
+# Optional — absent means "inherit the global default". The runtime helper
+# main.cfg_for(model_id, field) walks: per-model override > global > faster-
+# whisper default. Same precedence as everywhere else, just with one more
+# layer interposed.
+#
+# Validation: models may only carry override values that pass the same
+# constraints as the corresponding global field — guaranteed structurally:
+# each override field's annotation is copied verbatim from the AdminConfig
+# field it overrides (the bounds live inside the Annotated type), selected by
+# the per-field registry metadata:
+#   scope="per_request" + model_override=True  → call-time mixin
+#   scope="per_request" + model_override=False → streaming mixin
+#   scope="per_model"                          → ModelOverride load-time block
+# plus _VIRTUAL_OVERRIDE_FIELDS (REVISION → ModelOverride; the pipeline
+# include/exclude lists → call-time mixin). Pipeline rule scoping uses
+# PIPELINE_RULES_EXCLUDE: a flat list of rule slugs to skip for this model.
+# Rule bodies are NEVER per-model — they stay in the single global
+# PIPELINE_RULES list, edited in the global pipeline editor. The per-model
+# pane only toggles inclusion via a checklist.
+
+def _override_defs(pred: Any) -> dict[str, Any]:
+    """create_model field definitions `(annotation, None)` for every
+    AdminConfig field whose registry entry satisfies `pred`. The annotation is
+    the field's exact Optional annotated type (bounds included); the AdminConfig
+    field-level FieldInfo (description, x_registry) is deliberately NOT copied,
+    so the override schemas stay as minimal as the hand-written classes they
+    replaced."""
+    return {
+        name: (AdminConfig.model_fields[name].annotation, None)
+        for name, reg in _REGISTRY.items() if pred(reg)
+    }
+
+
+def _virtual_defs(scope: str) -> dict[str, Any]:
+    """create_model field definitions for the _VIRTUAL_OVERRIDE_FIELDS of the
+    given scope (fields that exist ONLY on the override schemas)."""
+    return {
+        name: (spec["annotation"], None)
+        for name, spec in _VIRTUAL_OVERRIDE_FIELDS.items()
+        if spec["scope"] == scope
+    }
+
+
+class _CallTimeOverrideBase(BaseModel):
+    """Config + validator carrier for the generated _CallTimeOverrideMixin
+    (create_model can't attach validators directly)."""
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+
+    @model_validator(mode="after")
+    def _no_overlap_include_exclude(self) -> "_CallTimeOverrideBase":
+        """A rule slug cannot be both force-disabled AND force-enabled in the
+        same bundle — admin must pick one. Catches obvious misconfiguration
+        (e.g. typed both lists then forgot to clean one up)."""
+        ex = set(getattr(self, "PIPELINE_RULES_EXCLUDE", None) or [])
+        inc = set(getattr(self, "PIPELINE_RULES_INCLUDE", None) or [])
+        overlap = ex & inc
+        if overlap:
+            raise ValueError(
+                f"PIPELINE_RULES_EXCLUDE and PIPELINE_RULES_INCLUDE overlap: "
+                f"{sorted(overlap)} — a rule cannot be both force-disabled "
+                f"and force-enabled in the same bundle. Remove from one of "
+                f"the lists."
+            )
+        return self
+
+
+class _StreamingOverrideBase(BaseModel):
+    """Config carrier for the generated _StreamingOverrideMixin."""
+    model_config = {"extra": "forbid", "protected_namespaces": ()}
+
+
+# Call-time (decode + post-processing) override fields, shared by ModelOverride
+# (per-model) and OverrideProfile (per-identity) so the bounds are
+# single-sourced and the two layers can never drift apart. All fields optional;
+# absent = inherit the next layer down. The diarization / BGM capacity switches
+# (DIARIZATION_ENABLED, BGM_SEPARATION_ENABLED) are deliberately server-scoped
+# so they never appear here; DIARIZE / the speaker bounds / SEPARATE_BGM are
+# per-caller policy and therefore do.
+_CallTimeOverrideMixin = create_model(
+    "_CallTimeOverrideMixin",
+    __base__=_CallTimeOverrideBase,
+    **_override_defs(
+        lambda r: r["scope"] == "per_request" and r["model_override"]),
+    **_virtual_defs("per_request"),
+)
+_CallTimeOverrideMixin.__doc__ = (
+    "Call-time (decode + post-processing) override fields, shared by "
+    "ModelOverride (per-model) and OverrideProfile (per-identity) so the "
+    "bounds are single-sourced and the two layers can never drift apart. "
+    "All fields optional; absent = inherit the next layer down. Generated "
+    "from the AdminConfig registry (scope=per_request, model_override=True) "
+    "+ the virtual pipeline include/exclude lists."
+)
+
+# Live-streaming (WebSocket dictation) override fields that are meaningful
+# per-identity — partial-decode knobs, VAD / speech gates, finalize &
+# document-break, buffer trimming, idle timeout. Hard server-capacity caps
+# (STREAMING_ENABLED, STREAMING_MAX_SESSIONS, INFERENCE_CONCURRENCY) and the
+# partial-model selector are deliberately NOT here — they are server-wide, not
+# per-caller (scope="server"). The idle timeout IS here: it is a per-caller
+# policy (a trusted profile can be granted a longer silence grace than an
+# anonymous one). Bounds are copied verbatim from the AdminConfig STREAMING_*
+# fields so the two can never drift. All optional; absent = inherit the next
+# layer down.
+_StreamingOverrideMixin = create_model(
+    "_StreamingOverrideMixin",
+    __base__=_StreamingOverrideBase,
+    **_override_defs(
+        lambda r: r["scope"] == "per_request" and not r["model_override"]),
+)
+_StreamingOverrideMixin.__doc__ = (
+    "Live-streaming override fields that are meaningful per-identity. "
+    "Generated from the AdminConfig registry (scope=per_request, "
+    "model_override=False)."
+)
+
+# Per-model override bundle: the call-time fields + the load-time fields
+# (editing any of the latter drains-then-evicts the affected loaded model).
+# All fields optional; absent = inherit global.
+ModelOverride = create_model(
+    "ModelOverride",
+    __base__=_CallTimeOverrideMixin,
+    **_override_defs(lambda r: r["scope"] == "per_model"),
+    **_virtual_defs("per_model"),
+)
+ModelOverride.__doc__ = (
+    "Per-model override bundle. Inherits the call-time fields from "
+    "_CallTimeOverrideMixin; adds the load-time fields (scope=per_model + "
+    "the virtual REVISION — editing any of these drains-then-evicts the "
+    "affected loaded model). All fields optional; absent = inherit global."
+)
+
+
+class OverrideProfile(_CallTimeOverrideMixin, _StreamingOverrideMixin):
+    """A reusable, named per-identity override bundle — the config-bearing
+    "profile" (the evolution of the visibility-only tag concept). Carries the
+    call-time + streaming override fields (absent = inherit the next layer
+    down) plus `locks`: the field names whose resolved value a client's
+    per-request decode_override may NOT replace."""
+
+    locks: Annotated[list[str], Field(max_length=200)] | None = None
+
+    # Whether a client may NAME this profile in a per-request `override_profile`.
+    # None / True = requestable (clients can select it); False = internal-only —
+    # the profile may still be admin-applied via a per-key/per-user binding, but
+    # is never offered to clients and a request naming it is silently refused.
+    # This is profile-library metadata, NOT a per-field override or a lockable
+    # field, so it is excluded from the per-identity `direct` blob (validate_
+    # binding strips it) and rendered as a profile-level control, not in the
+    # decode-field grid.
+    requestable: bool | None = None
+
+    @field_validator("locks")
+    @classmethod
+    def _validate_locks(cls, v: list[str] | None) -> list[str] | None:
+        if not v:
+            return v
+        bad = sorted(f for f in v if f not in LOCKABLE_FIELDS)
+        if bad:
+            raise ValueError(
+                f"locks references non-lockable field(s): {bad}. Lockable "
+                f"fields are the overridable decode/streaming scalars."
+            )
+        return sorted(set(v))
+
+
+# AdminConfig's MODEL_OVERRIDES / OVERRIDE_PROFILES annotations forward-
+# reference the two models generated above; resolve them now that both exist.
+AdminConfig.model_rebuild()
+
+
+# JSON-schema "type" → widget kind for override_field_meta below.
+_JSON_TYPE_TO_KIND = {
+    "integer": "int", "number": "float", "boolean": "bool",
+    "string": "str", "array": "list",
+}
+
+
+def override_field_meta(
+    model: type[BaseModel],
+    *,
+    exclude: "frozenset[str] | set[str]" = frozenset(),
+) -> dict[str, dict[str, Any]]:
+    """Widget metadata (kind / min / max / maxlen / opts) for every field of an
+    override model, derived from its JSON schema so it can never drift from
+    the Pydantic bounds. Shared by overrides_routes (OverrideProfile → the
+    profile editor + direct-override sub-editor) and admin_routes
+    (ModelOverride → the /settings per-model pane's injected FIELD_META)."""
+    schema = model.model_json_schema()
+    out: dict[str, dict[str, Any]] = {}
+    for name, spec in schema.get("properties", {}).items():
+        if name in exclude:
+            continue
+        variants = spec.get("anyOf") or [spec]
+        v = next((x for x in variants if x.get("type") != "null"), variants[0])
+        info: dict[str, Any] = {}
+        if name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
+            info["kind"] = "rulelist"
+        elif "enum" in v:
+            info["kind"] = "enum"
+            info["opts"] = v["enum"]
+        else:
+            info["kind"] = _JSON_TYPE_TO_KIND.get(v.get("type"), "str")
+        if "minimum" in v:
+            info["min"] = v["minimum"]
+        if "maximum" in v:
+            info["max"] = v["maximum"]
+        if "maxLength" in v:
+            info["maxlen"] = v["maxLength"]
+        out[name] = info
+    return out
 
 
 def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:

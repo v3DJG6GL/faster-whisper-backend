@@ -36,41 +36,15 @@ require_admin_webui_host = web_common.require_admin_webui_host
 
 router = APIRouter(prefix="/settings/overrides")
 
-_TYPE_KIND = {
-    "integer": "int", "number": "float", "boolean": "bool",
-    "string": "str", "array": "list",
-}
-
-
 def _build_field_meta() -> dict[str, dict[str, Any]]:
     """Widget metadata (kind / min / max / opts) for every overridable field,
-    derived from the OverrideProfile JSON schema so it can never drift from the
-    Pydantic bounds. Drives the profile editor + direct-override sub-editor."""
-    schema = config_store.OverrideProfile.model_json_schema()
-    out: dict[str, dict[str, Any]] = {}
-    for name, spec in schema.get("properties", {}).items():
-        # `locks` and `requestable` are profile-level metadata, not per-field
-        # overrides — rendered by dedicated controls, never in the field grid.
-        if name in ("locks", "requestable"):
-            continue
-        variants = spec.get("anyOf") or [spec]
-        v = next((x for x in variants if x.get("type") != "null"), variants[0])
-        info: dict[str, Any] = {}
-        if name in ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"):
-            info["kind"] = "rulelist"
-        elif "enum" in v:
-            info["kind"] = "enum"
-            info["opts"] = v["enum"]
-        else:
-            info["kind"] = _TYPE_KIND.get(v.get("type"), "str")
-        if "minimum" in v:
-            info["min"] = v["minimum"]
-        if "maximum" in v:
-            info["max"] = v["maximum"]
-        if "maxLength" in v:
-            info["maxlen"] = v["maxLength"]
-        out[name] = info
-    return out
+    derived from the OverrideProfile JSON schema (via the shared
+    config_store.override_field_meta) so it can never drift from the Pydantic
+    bounds. Drives the profile editor + direct-override sub-editor. `locks`
+    and `requestable` are profile-level metadata, not per-field overrides —
+    rendered by dedicated controls, never in the field grid."""
+    return config_store.override_field_meta(
+        config_store.OverrideProfile, exclude={"locks", "requestable"})
 
 
 def _build_defaults() -> dict[str, Any]:

@@ -22,6 +22,7 @@ Security model (layered):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import re
@@ -31,14 +32,95 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import TypeAdapter, ValidationError
 
+import bgm_separation
 import build_info
 import config as cfg
 import config_store
+import diarization
 import system_stats
 import web_common
 from auth import require_admin
 
 logger = logging.getLogger("whisper-api")
+
+# Async dropper per config_store.EXTRAS_EVICTION bucket: when a save touches
+# any field in a bucket, post_state awaits the matching dropper so the cached
+# extra's VRAM frees now instead of at the idle timeout. (Correctness doesn't
+# depend on this — both modules re-key on their load params per request.)
+# Both modules are lazy-import-safe: their heavy optional deps load on first
+# pipeline use, not at module import.
+_EVICTORS: dict[str, Any] = {
+    "diarization": diarization.drop_pipeline,
+    "bgm": bgm_separation.drop_separator,
+}
+
+# ---------------------------------------------------------------------------
+# Per-model pane constants injected into the /settings page at render time
+# ---------------------------------------------------------------------------
+# The page JS needs the ModelOverride load-time field set (reload badge +
+# drain-then-evict hint) and per-field widget metadata. Both used to be
+# hand-maintained JS literals that mirrored config_store; they are now derived
+# from the schemas here and substituted into the {{MO_*_JSON}} placeholders.
+
+# Widget extras the JSON schema can't express, overlaid onto the schema-derived
+# metadata: richer widget kinds ('textarea' for prompt-length text,
+# 'nullable_float' for empty-clears-override floats, 'string' for plain text),
+# spinner step sizes, and placeholder hints. The CAPTURES_* rows are not
+# ModelOverride fields — they carry their full literal metadata, kept verbatim
+# from the old JS literal.
+_MO_FIELD_META_OVERLAY: dict[str, dict[str, Any]] = {
+    "REVISION": {"kind": "string", "placeholder": "main | <git-sha>"},
+    "DEFAULT_LANGUAGE": {"kind": "string",
+                         "placeholder": "e.g. en, de (empty = auto)"},
+    "DEFAULT_PROMPT": {"kind": "textarea"},
+    "DEFAULT_HOTWORDS": {"kind": "textarea"},
+    "NO_SPEECH_THRESHOLD": {"kind": "nullable_float", "step": 0.05},
+    "LOG_PROB_THRESHOLD": {"kind": "nullable_float", "step": 0.1},
+    "COMPRESSION_RATIO_THRESHOLD": {"kind": "nullable_float", "step": 0.1},
+    "TEMPERATURE": {"kind": "string",
+                    "placeholder": "0.0,0.2,0.4,0.6,0.8,1.0"},
+    "PATIENCE": {"step": 0.1},
+    "LENGTH_PENALTY": {"step": 0.1},
+    "REPETITION_PENALTY": {"step": 0.05},
+    "PROMPT_RESET_ON_TEMPERATURE": {"step": 0.05},
+    "VAD_THRESHOLD": {"step": 0.05},
+    "LANGUAGE_DETECTION_THRESHOLD": {"step": 0.05},
+    "HALLUCINATION_SILENCE_THRESHOLD": {"kind": "nullable_float", "step": 0.5},
+    "SUPPRESS_TOKENS": {"kind": "string",
+                        "placeholder": "-1 | comma-ints | (empty = none)"},
+    "SUPPRESS_CHARS": {"kind": "string",
+                       "placeholder": "chars to mask, e.g. .,?!:;"},
+    "PREPEND_PUNCTUATIONS": {"kind": "string"},
+    "APPEND_PUNCTUATIONS": {"kind": "string"},
+    "OUTPUT_PREFIX": {"kind": "string"},
+    "OUTPUT_SUFFIX": {"kind": "string"},
+    "CAPTURES_SAMPLE_MIN_DURATION_S": {"kind": "float", "min": 0, "max": 30,
+                                       "step": 0.1},
+    "CAPTURES_SAMPLE_MAX_DURATION_S": {"kind": "float", "min": 1, "max": 30,
+                                       "step": 0.1},
+    "CAPTURES_SAMPLE_JOIN_STRATEGY": {"kind": "enum"},
+    "CAPTURES_PROPOSER_TARGET_S": {"kind": "float", "min": 1, "max": 30,
+                                   "step": 0.5},
+    "CAPTURES_PROPOSER_SESSION_GAP_S": {"kind": "int", "min": 1, "max": 86400},
+    "CAPTURES_PROPOSER_DUP_THRESHOLD": {"kind": "float", "min": 0, "max": 1,
+                                        "step": 0.01},
+    "CAPTURES_PROPOSER_MAX_PROPOSALS": {"kind": "int", "min": 1, "max": 200},
+}
+
+
+def _mo_field_meta() -> dict[str, dict[str, Any]]:
+    """Schema-derived ModelOverride widget metadata merged with the overlay."""
+    meta = config_store.override_field_meta(config_store.ModelOverride)
+    for name, extra in _MO_FIELD_META_OVERLAY.items():
+        meta[name] = {**meta.get(name, {}), **extra}
+    return meta
+
+
+# Both are static per process (schemas are fixed at import), so serialize once.
+_MO_LOAD_TIME_FIELDS_JSON: str = json.dumps(sorted(
+    config_store.LOAD_TIME_FIELDS & set(config_store.ModelOverride.model_fields)
+))
+_MO_FIELD_META_JSON: str = json.dumps(_mo_field_meta())
 
 # Discriminated-union adapter for PIPELINE_RULES canonicalization. Built once
 # at import time — TypeAdapter construction walks every rule subclass and is
@@ -272,7 +354,9 @@ async def settings_page() -> HTMLResponse:
     return HTMLResponse(
         web_common.render_page(
             _SETTINGS_VIEWER_HTML.replace("{{SETTINGS_VIEW}}", "settings")
-            .replace("{{SERVER_IDENT}}", _SERVER_IDENT_SHELL),
+            .replace("{{SERVER_IDENT}}", _SERVER_IDENT_SHELL)
+            .replace("{{MO_LOAD_TIME_FIELDS_JSON}}", _MO_LOAD_TIME_FIELDS_JSON)
+            .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON),
             current="settings"),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -295,7 +379,9 @@ async def pipeline_page() -> HTMLResponse:
         web_common.render_page(
             # No identity card on the focused pipeline editor — settings only.
             _SETTINGS_VIEWER_HTML.replace("{{SETTINGS_VIEW}}", "pipeline")
-            .replace("{{SERVER_IDENT}}", ""),
+            .replace("{{SERVER_IDENT}}", "")
+            .replace("{{MO_LOAD_TIME_FIELDS_JSON}}", _MO_LOAD_TIME_FIELDS_JSON)
+            .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON),
             current="pipeline"),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -517,23 +603,18 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
         # change still persisted; worst case they restart manually.
         logger.error("[config] eviction-on-edit failed: %s", e)
 
-    # Drop the cached pyannote pipeline when its load parameters changed, so
-    # the VRAM frees now instead of at the idle timeout. (Correctness doesn't
-    # depend on this — the diarization module re-keys on model/device/batch
-    # per request.)
-    if set(written.keys()) & {"DIARIZATION_MODEL", "DIARIZATION_DEVICE",
-                              "DIARIZATION_EMBEDDING_BATCH_SIZE"}:
+    # Drop the cached extras (pyannote pipeline / BGM separator) when their
+    # load parameters changed, so the VRAM frees now instead of at the idle
+    # timeout. Buckets and their trigger fields come from the generated
+    # config_store.EXTRAS_EVICTION (per-field `evict=` registry metadata); a
+    # failed drop never breaks the save response.
+    for _extra, _extra_fields in config_store.EXTRAS_EVICTION.items():
+        if not set(written.keys()) & _extra_fields:
+            continue
         try:
-            import diarization as _diarization
-            await _diarization.drop_pipeline()
+            await _EVICTORS[_extra]()
         except Exception as e:
-            logger.error("[config] diarization eviction-on-edit failed: %s", e)
-    if set(written.keys()) & {"BGM_SEPARATION_UVR_MODEL", "BGM_SEPARATION_DEVICE"}:
-        try:
-            import bgm_separation as _bgm
-            await _bgm.drop_separator()
-        except Exception as e:
-            logger.error("[config] bgm eviction-on-edit failed: %s", e)
+            logger.error("[config] %s eviction-on-edit failed: %s", _extra, e)
 
     # Re-sync os.environ["HF_TOKEN"] whenever cfg.HF_TOKEN changed. The
     # token is set process-wide at startup (main.py) so non-WhisperModel HF
@@ -2164,67 +2245,18 @@ function modelOverridesEditor(name, v) {
   ];
 
   // LOAD_TIME_FIELDS subset that overlaps with ModelOverride. Editing any of
-  // these triggers drain-then-evict on save (no service restart).
-  // Mirror of config_store.LOAD_TIME_FIELDS minus globals-only entries.
-  const LOAD_TIME_FIELDS = new Set([
-    'MODEL_DEVICE','MODEL_COMPUTE_TYPE',
-    'MODEL_DEVICE_FALLBACK','MODEL_COMPUTE_TYPE_FALLBACK',
-    'REVISION','NUM_WORKERS','DEVICE_INDEX',
-  ]);
+  // these triggers drain-then-evict on save (no service restart). Injected at
+  // render time from config_store.LOAD_TIME_FIELDS ∩ ModelOverride fields.
+  const LOAD_TIME_FIELDS = new Set({{MO_LOAD_TIME_FIELDS_JSON}});
 
-  // Per-field widget metadata. Mirrors ModelOverride pydantic constraints.
-  // Kept compact — extend a row only if behavior differs from a generic
-  // input.
-  const FIELD_META = {
-    // Enum opts come from the server `choices` (AdminConfig Literal) at render
-    // time (see makeInputWidget) — listed here only to mark the kind as 'enum'.
-    MODEL_DEVICE:                { kind: 'enum' },
-    MODEL_COMPUTE_TYPE:          { kind: 'enum' },
-    MODEL_DEVICE_FALLBACK:       { kind: 'enum' },
-    MODEL_COMPUTE_TYPE_FALLBACK: { kind: 'enum' },
-    REVISION:                    { kind: 'string', placeholder: 'main | <git-sha>' },
-    NUM_WORKERS:                 { kind: 'int',   min: 1, max: 8 },
-    DEVICE_INDEX:                { kind: 'int',   min: 0, max: 15 },
-    DEFAULT_LANGUAGE:            { kind: 'string', placeholder: 'e.g. en, de (empty = auto)' },
-    DEFAULT_PROMPT:              { kind: 'textarea' },
-    DEFAULT_HOTWORDS:            { kind: 'textarea' },
-    BEAM_SIZE:                   { kind: 'int',   min: 1, max: 20 },
-    BEST_OF:                     { kind: 'int',   min: 1, max: 20 },
-    CONDITION_ON_PREVIOUS_TEXT:  { kind: 'bool' },
-    WORD_TIMESTAMPS_ENABLED:     { kind: 'bool' },
-    NO_SPEECH_THRESHOLD:         { kind: 'nullable_float', min: 0, max: 1, step: 0.05 },
-    LOG_PROB_THRESHOLD:          { kind: 'nullable_float', min: -10, max: 0, step: 0.1 },
-    COMPRESSION_RATIO_THRESHOLD: { kind: 'nullable_float', min: 0, max: 10, step: 0.1 },
-    TEMPERATURE:                 { kind: 'string', placeholder: '0.0,0.2,0.4,0.6,0.8,1.0' },
-    PATIENCE:                    { kind: 'float', min: 0.5, max: 5,   step: 0.1 },
-    LENGTH_PENALTY:              { kind: 'float', min: 0.1, max: 5,   step: 0.1 },
-    REPETITION_PENALTY:          { kind: 'float', min: 0.5, max: 5,   step: 0.05 },
-    NO_REPEAT_NGRAM_SIZE:        { kind: 'int',   min: 0, max: 10 },
-    PROMPT_RESET_ON_TEMPERATURE: { kind: 'float', min: 0, max: 1,     step: 0.05 },
-    VAD_FILTER:                  { kind: 'bool' },
-    VAD_MIN_SILENCE_MS:          { kind: 'int',   min: 0, max: 10000 },
-    VAD_SPEECH_PAD_MS:           { kind: 'int',   min: 0, max: 2000 },
-    VAD_THRESHOLD:               { kind: 'float', min: 0, max: 1,     step: 0.05 },
-    LEADING_SILENCE_PAD_MS:      { kind: 'int',   min: 0, max: 5000 },
-    MULTILINGUAL:                { kind: 'bool' },
-    LANGUAGE_DETECTION_THRESHOLD:{ kind: 'float', min: 0, max: 1,     step: 0.05 },
-    LANGUAGE_DETECTION_SEGMENTS: { kind: 'int',   min: 1, max: 10 },
-    HALLUCINATION_SILENCE_THRESHOLD: { kind: 'nullable_float', min: 0, max: 60, step: 0.5 },
-    SUPPRESS_BLANK:              { kind: 'bool' },
-    SUPPRESS_TOKENS:             { kind: 'string', placeholder: '-1 | comma-ints | (empty = none)' },
-    SUPPRESS_CHARS:              { kind: 'string', placeholder: 'chars to mask, e.g. .,?!:;' },
-    PREPEND_PUNCTUATIONS:        { kind: 'string' },
-    APPEND_PUNCTUATIONS:         { kind: 'string' },
-    OUTPUT_PREFIX:               { kind: 'string' },
-    OUTPUT_SUFFIX:               { kind: 'string' },
-    CAPTURES_SAMPLE_MIN_DURATION_S:  { kind: 'float', min: 0, max: 30, step: 0.1 },
-    CAPTURES_SAMPLE_MAX_DURATION_S:  { kind: 'float', min: 1, max: 30, step: 0.1 },
-    CAPTURES_SAMPLE_JOIN_STRATEGY:   { kind: 'enum' },
-    CAPTURES_PROPOSER_TARGET_S:      { kind: 'float', min: 1, max: 30, step: 0.5 },
-    CAPTURES_PROPOSER_SESSION_GAP_S: { kind: 'int',   min: 1, max: 86400 },
-    CAPTURES_PROPOSER_DUP_THRESHOLD: { kind: 'float', min: 0, max: 1, step: 0.01 },
-    CAPTURES_PROPOSER_MAX_PROPOSALS: { kind: 'int',   min: 1, max: 200 },
-  };
+  // Per-field widget metadata. Injected at render time: derived server-side
+  // from the ModelOverride JSON schema (kind/min/max/opts can never drift
+  // from the pydantic bounds), merged with a small overlay for the extras a
+  // schema can't express (textarea/nullable_float kinds, step, placeholder)
+  // — see admin_routes._MO_FIELD_META_OVERLAY. Enum opts still come from the
+  // server `choices` (AdminConfig Literal) at render time (see
+  // makeInputWidget); the schema-derived opts are only a fallback.
+  const FIELD_META = {{MO_FIELD_META_JSON}};
 
   // -------- helpers ------------------------------------------------------
   function getOverrideValue(modelId, field) {

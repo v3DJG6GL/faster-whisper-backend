@@ -384,6 +384,68 @@ def test_settings_page_greys_out_env_pinned_inputs(client):
     assert ".field.env-pinned" in text                # greyed styling
 
 
+def test_settings_page_injects_mo_constants(client):
+    """The per-model pane's LOAD_TIME_FIELDS set and FIELD_META are no longer
+    hand-written JS literals — they are derived from config_store /
+    ModelOverride and substituted into the {{MO_*_JSON}} placeholders at
+    render time. The rendered script must carry the real data (virtual
+    REVISION in the load-time set; schema-derived NUM_WORKERS bounds in the
+    field meta) and no unsubstituted placeholder."""
+    import json
+    import re
+
+    text = client.get("/settings").text
+    assert not re.findall(r"\{\{MO_[A-Z_]+\}\}", text)
+
+    m = re.search(r"const LOAD_TIME_FIELDS = new Set\((\[.*?\])\);", text)
+    assert m, "injected LOAD_TIME_FIELDS not found"
+    load_time = json.loads(m.group(1))
+    assert "REVISION" in load_time
+    assert "MODEL_DEVICE" in load_time
+
+    m = re.search(r"const FIELD_META = (\{.*?\});\n", text)
+    assert m, "injected FIELD_META not found"
+    meta = json.loads(m.group(1))
+    assert "NUM_WORKERS" in meta
+    assert meta["NUM_WORKERS"]["kind"] == "int"
+    assert meta["NUM_WORKERS"]["min"] == 1 and meta["NUM_WORKERS"]["max"] == 8
+    # Overlay extras survive the merge (kinds the schema can't express).
+    assert meta["DEFAULT_PROMPT"]["kind"] == "textarea"
+    assert meta["NO_SPEECH_THRESHOLD"]["kind"] == "nullable_float"
+
+
+def test_save_dispatches_extras_eviction(client, monkeypatch):
+    """Editing a field in an EXTRAS_EVICTION bucket awaits that bucket's
+    evictor; untouched buckets stay quiet; an evictor failure never breaks
+    the save (error-swallowing semantics)."""
+    import admin_routes
+
+    calls = []
+
+    def _spy(name, fail=False):
+        async def _f():
+            calls.append(name)
+            if fail:
+                raise RuntimeError("boom")
+        return _f
+
+    monkeypatch.setitem(admin_routes._EVICTORS, "diarization",
+                        _spy("diarization"))
+    monkeypatch.setitem(admin_routes._EVICTORS, "bgm", _spy("bgm"))
+    r = client.post("/settings/state", json={"DIARIZATION_DEVICE": "cpu"})
+    assert r.status_code == 200
+    assert calls == ["diarization"]
+
+    # A raising evictor is swallowed — the save still succeeds.
+    calls.clear()
+    monkeypatch.setitem(admin_routes._EVICTORS, "bgm",
+                        _spy("bgm", fail=True))
+    r = client.post("/settings/state",
+                    json={"BGM_SEPARATION_DEVICE": "cpu"})
+    assert r.status_code == 200
+    assert calls == ["bgm"]
+
+
 def test_field_groups_cover_every_setting():
     """The WebUI layout (_FIELD_GROUPS) must list exactly the AdminConfig schema
     fields: no setting silently missing from the form, no stale/typo'd entry.
