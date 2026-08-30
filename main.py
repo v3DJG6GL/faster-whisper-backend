@@ -25,6 +25,11 @@ import config as cfg
 import system_stats
 # Imported for the log-file mode hardening below; module-level cost is nil (os).
 import store_common
+# Text-to-text translation stage (llama.cpp GGUF). Module-level import is
+# deliberate and cheap — like diarization/bgm_separation the module is
+# import-safe without its optional deps (llama_cpp loads lazily inside the
+# model-load path), and the stage + lifespan both need it.
+import translation as _tr
 
 # =============================================================================
 # Logging setup: stderr (with colors when TTY) + rotating file (no colors)
@@ -823,6 +828,8 @@ def _format_request_block(
     username: str | None = None,
     key_label: str | None = None,
     guards: "dict | None" = None,
+    translate_to: "list | None" = None,
+    translation_model: str | None = None,
 ) -> str:
     """Full per-request log block. `steps` is the per-pipeline trace; passed
     in only when cfg.TRACE_ENABLED so the block stays a single message.
@@ -866,6 +873,12 @@ def _format_request_block(
     if extras:
         model_line += "   " + "  ".join(extras)
     lines.append(model_line)
+    # Translation-stage receipt — only when the stage actually ran.
+    if translate_to:
+        trans_line = f"  trans  → {', '.join(translate_to)}"
+        if translation_model:
+            trans_line += f"   model={translation_model}"
+        lines.append(trans_line)
 
     lines.append(_section_rule("Audio"))
     if audio_source:
@@ -2672,6 +2685,10 @@ _BATCH_PROGRESS_MAX = 200
 _BATCH_PROGRESS_STALE_S = 2 * 3600
 _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 
+# One target-language code inside the `translate_to` csv: a 2-3 letter base
+# ("en", "de", "gsw") plus an optional BCP-47-ish subtag ("fr-CA", "zh-Hant").
+_TRANSLATE_CODE_RE = re.compile(r"\A[a-z]{2,3}(-[A-Za-z0-9]{2,8})?\Z")
+
 
 def _progress_set(pid: "str | None", **fields) -> None:
     """Merge `fields` into the progress entry for `pid` (no-op without one)."""
@@ -2749,6 +2766,10 @@ async def transcribe(
     min_speakers: int | None = Form(None),
     max_speakers: int | None = Form(None),
     separate_bgm: str | None = Form(None),
+    translate_to: str | None = Form(None),
+    translation_model: str | None = Form(None),
+    translation_mode: str | None = Form(None),
+    translation_glossary: str | None = Form(None),
     progress_id: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
@@ -2772,6 +2793,14 @@ async def transcribe(
     if task is not None and task not in ("transcribe", "translate"):
         raise HTTPException(status_code=422,
                             detail="task must be 'transcribe' or 'translate'")
+    # Translation run mode: same caller-error stance as `task` — a wrong mode
+    # would return differently-aligned output with no other signal, so 422
+    # rather than a silent coerce.
+    translation_mode = (translation_mode or "").strip() or None
+    if translation_mode is not None and translation_mode not in ("fluent", "faithful"):
+        raise HTTPException(
+            status_code=422,
+            detail="translation_mode must be 'fluent' or 'faithful'")
     # Speaker-count hints: clamp like the other schemaless numeric knobs.
     _spk_clamp = lambda v: min(32, max(1, v)) if v is not None else None  # noqa: E731
     num_speakers = _spk_clamp(num_speakers)
@@ -3091,6 +3120,74 @@ async def transcribe(
                 _separate = _sep_req
             else:
                 _separate = bool(cfg_for(resolved_model, "SEPARATE_BGM", ident))
+            # Translation (T2T) request knobs: the same locked-wins /
+            # request-wins / config-inherits ladder as diarize/separate_bgm
+            # above. The capacity gates (TRANSLATION_ENABLED, model allowlist)
+            # live at the stage itself and soft-fail into `_warnings`.
+            _tt_req = (translate_to or "").strip() or None
+            if "TRANSLATE_TO" in ident.locked:
+                _tt_raw = cfg_for(resolved_model, "TRANSLATE_TO", ident) or ""
+                if _tt_req is not None and _tt_req != _tt_raw:
+                    ignored.append("translate_to")
+            elif _tt_req is not None:
+                _tt_raw = _tt_req
+            else:
+                _tt_raw = cfg_for(resolved_model, "TRANSLATE_TO", ident) or ""
+            # csv → deduped ordered list of well-formed codes. Malformed
+            # entries drop silently (the sloppy-caller stance of the clamped
+            # knobs); the MAX_TARGETS clamp warns, naming what it dropped.
+            _translate_to: "list[str]" = []
+            for _code in (_tt_raw or "").split(","):
+                _code = _code.strip()
+                if (_code and _code not in _translate_to
+                        and _TRANSLATE_CODE_RE.match(_code)):
+                    _translate_to.append(_code)
+            _translation_max_targets = int(cfg_for(
+                resolved_model, "TRANSLATION_MAX_TARGETS", ident) or 1)
+            if len(_translate_to) > _translation_max_targets:
+                _warnings.append(
+                    "translation targets over TRANSLATION_MAX_TARGETS "
+                    f"({_translation_max_targets}) were dropped: "
+                    + ", ".join(_translate_to[_translation_max_targets:]))
+                _translate_to = _translate_to[:_translation_max_targets]
+            _tm_req = (translation_model or "").strip() or None
+            if "TRANSLATION_MODEL" in ident.locked:
+                _translation_model = cfg_for(
+                    resolved_model, "TRANSLATION_MODEL", ident) or ""
+                if _tm_req is not None and _tm_req != _translation_model:
+                    ignored.append("translation_model")
+            elif _tm_req is not None:
+                _translation_model = _tm_req
+            else:
+                _translation_model = cfg_for(
+                    resolved_model, "TRANSLATION_MODEL", ident) or ""
+            if "TRANSLATION_MODE" in ident.locked:
+                _translation_mode = cfg_for(
+                    resolved_model, "TRANSLATION_MODE", ident) or "fluent"
+                if translation_mode is not None and \
+                        translation_mode != _translation_mode:
+                    ignored.append("translation_mode")
+            elif translation_mode is not None:
+                _translation_mode = translation_mode
+            else:
+                _translation_mode = cfg_for(
+                    resolved_model, "TRANSLATION_MODE", ident) or "fluent"
+            _tg_req = translation_glossary if (translation_glossary or "").strip() else None
+            if "TRANSLATION_GLOSSARY" in ident.locked:
+                _translation_glossary = cfg_for(
+                    resolved_model, "TRANSLATION_GLOSSARY", ident) or ""
+                if _tg_req is not None and _tg_req != _translation_glossary:
+                    ignored.append("translation_glossary")
+            elif _tg_req is not None:
+                _translation_glossary = _tg_req
+            else:
+                _translation_glossary = cfg_for(
+                    resolved_model, "TRANSLATION_GLOSSARY", ident) or ""
+            # The config field is Field(max_length=4000); cap the raw client
+            # value to the same bound rather than 422ing a sloppy caller.
+            _translation_glossary = (_translation_glossary or "")[:4000]
+            _translation_context = int(cfg_for(
+                resolved_model, "TRANSLATION_CONTEXT_SEGMENTS", ident) or 0)
             # Optional per-request decode overrides (JSON object). Malformed → ignored.
             _overrides = {}
             if decode_overrides:
@@ -3488,6 +3585,104 @@ async def transcribe(
             elif _diarize:
                 _warnings.append("diarization skipped: no speech segments")
 
+            # Post-decode translation stage (soft-fail). CRITICAL invariant:
+            # translated text lives ONLY in seg["translations"] and the
+            # top-level `translations`/`translation` response blocks — it must
+            # never reach captures, raw_full_text, full_text_str or the
+            # quick-config trace, which all carry source-language dictation.
+            _translation_meta: "dict | None" = None
+            if _translate_to and segments_list:
+                if not getattr(cfg, "TRANSLATION_ENABLED", False):
+                    _warnings.append(
+                        "translation requested but TRANSLATION_ENABLED is "
+                        "off on this server")
+                    _skipped.append("translating")
+                    _progress_set(_pid, skipped=list(_skipped))
+                else:
+                    # Empty request/config model resolves to the server
+                    # default at stage time (a live admin edit applies).
+                    _tr_default = (getattr(
+                        cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+                    _tr_model = (_translation_model or "").strip() or _tr_default
+                    _tr_allowed = getattr(
+                        cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
+                    if (_tr_allowed and _tr_model not in _tr_allowed
+                            and _tr_model != _tr_default):
+                        # Soft-fail like the enabled gate — never a 4xx after
+                        # the transcript already exists.
+                        _warnings.append(
+                            "requested translation model is not in "
+                            "TRANSLATION_ALLOWED_MODELS on this server")
+                        _skipped.append("translating")
+                        _progress_set(_pid, skipped=list(_skipped))
+                    else:
+                        try:
+                            _tr_t0 = time.perf_counter()
+                            _check_cancelled(_pid)
+                            _progress_set(
+                                _pid, stage="translating", progress=0.0,
+                                position=None, last_text=None, step=None,
+                                model=(_tr_model or None),
+                                device=_tr._resolve_device(),
+                                compute="gguf")
+
+                            async def _run_translation():
+                                return await _tr.translate_segments(
+                                    [{"text": seg["text"],
+                                      "speaker": seg.get("speaker")}
+                                     for seg in segments_list],
+                                    _translate_to,
+                                    source_lang=info.language,
+                                    model_ref=_tr_model,
+                                    mode=_translation_mode,
+                                    glossary=_translation_glossary,
+                                    context_segments=_translation_context,
+                                    progress_cb=lambda f, step=None:
+                                        _progress_set(_pid, progress=f,
+                                                      step=step),
+                                    cancel_check=lambda:
+                                        _cancel_requested(_pid),
+                                )
+                            # The inference semaphore is held ONLY for GPU
+                            # translation: a llama.cpp CPU run can take
+                            # minutes, and parking it in a GPU slot would
+                            # starve decode/diarization for that long. CPU
+                            # translation is serialized by the module's own
+                            # _infer_mutex instead.
+                            if _tr._resolve_device() == "cuda":
+                                async with get_inference_semaphore():
+                                    _check_cancelled(_pid)
+                                    _per_seg, _tr_warn, _tr_meta = \
+                                        await _run_translation()
+                            else:
+                                _per_seg, _tr_warn, _tr_meta = \
+                                    await _run_translation()
+                            _warnings.extend(_tr_warn)
+                            for _i, _seg_tr in enumerate(_per_seg):
+                                if _seg_tr:
+                                    segments_list[_i]["translations"] = _seg_tr
+                            _translation_meta = {
+                                "model": _tr_meta.get("model"),
+                                "targets": list(_translate_to),
+                                "source": _tr_meta.get("source"),
+                                "mode": _tr_meta.get("mode"),
+                            }
+                            logger.info(
+                                "[translate] %d segments → %s in %.1fs",
+                                len(segments_list), ",".join(_translate_to),
+                                time.perf_counter() - _tr_t0)
+                        except _tr.TranslationCancelled:
+                            raise _ClientCancelled() from None
+                        except _tr.TranslationError as _te:
+                            # str(_te) is client-safe by the module's contract.
+                            _warnings.append(str(_te))
+                        except Exception as _te:  # noqa: BLE001 — soft-fail
+                            logger.error("[translate] unexpected failure: %s",
+                                         _log_safe(str(_te)))
+                            _warnings.append(
+                                "translation failed; the transcript is "
+                                "untranslated")
+
             raw_full_text = "".join(raw_full_text_parts)
             trace: "list | None" = [] if cfg.TRACE_ENABLED else None
             full_text_str = _postprocess_text(raw_full_text, model_name=resolved_model, trace=trace, ident=ident)
@@ -3662,6 +3857,10 @@ async def transcribe(
                 username=user.get("username"),
                 key_label=user.get("key_label"),
                 guards={"segment_max_words_per_sec": _max_wps},
+                translate_to=(_translation_meta["targets"]
+                              if _translation_meta else None),
+                translation_model=(_translation_meta["model"]
+                                   if _translation_meta else None),
             ))
 
             # Persist the trace to the durable recent-transcriptions store
@@ -3712,6 +3911,21 @@ async def transcribe(
                     response["words"] = all_words
                 if speakers_list:
                     response["speakers"] = speakers_list
+                if _translation_meta is not None:
+                    # Joined per-language transcripts. Deliberately NOT run
+                    # through _postprocess_text: the pipeline's rules are
+                    # German-dictation-shaped (dictation-map, punctuation
+                    # words) and would mangle translated text.
+                    response["translations"] = {
+                        _lang: " ".join(
+                            _s for _s in (
+                                (seg.get("translations") or {})
+                                .get(_lang, "").strip()
+                                for seg in segments_list)
+                            if _s).strip()
+                        for _lang in _translation_meta["targets"]
+                    }
+                    response["translation"] = _translation_meta
                 # Soft-failed optional stages (diarization) explain themselves
                 # here instead of failing the request.
                 if _warnings:
@@ -3823,6 +4037,10 @@ async def translate_audio(
     min_speakers: int | None = Form(None),
     max_speakers: int | None = Form(None),
     separate_bgm: str | None = Form(None),
+    translate_to: str | None = Form(None),
+    translation_model: str | None = Form(None),
+    translation_mode: str | None = Form(None),
+    translation_glossary: str | None = Form(None),
     progress_id: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
@@ -3830,7 +4048,9 @@ async def translate_audio(
     `task` pinned to "translate" (into English — Whisper's only target).
     `language` still means the SOURCE language, exactly as on the sibling
     endpoint. A locked TASK still wins inside the handler and reports
-    `overrides_ignored: ["task"]`."""
+    `overrides_ignored: ["task"]`. Distinct from the text-to-text translation
+    stage (`translate_to`) and POST /v1/text/translations, which translate a
+    finished transcript into arbitrary target languages via GGUF models."""
     return await transcribe(
         request=request,
         file=file,
@@ -3848,6 +4068,10 @@ async def translate_audio(
         min_speakers=min_speakers,
         max_speakers=max_speakers,
         separate_bgm=separate_bgm,
+        translate_to=translate_to,
+        translation_model=translation_model,
+        translation_mode=translation_mode,
+        translation_glossary=translation_glossary,
         progress_id=progress_id,
         user=user,
     )
@@ -3861,9 +4085,11 @@ async def transcription_progress(progress_id: str):
     [resolving → downloading (URL flow: `progress` 0..1 when the size is
     known, with `total_bytes`)] → separating → analyzing (audio decode +
     VAD, inside transcribe()) → transcribing (with `progress` 0..1 and the
-    audio `duration`) → diarizing. An unknown/finished id answers stage
-    "unknown" — the POST's own response is the completion signal, so the
-    poller just stops."""
+    audio `duration`) → diarizing → translating. A requested-but-declined
+    stage lands in `skipped` instead ("separating" / "diarizing" /
+    "translating"). An unknown/finished id answers stage "unknown" — the
+    POST's own response is the completion signal, so the poller just
+    stops."""
     if not _PROGRESS_ID_RE.match(progress_id):
         raise HTTPException(status_code=422, detail="malformed progress_id")
     entry = _BATCH_PROGRESS.get(progress_id)
@@ -3889,8 +4115,8 @@ async def transcription_progress(progress_id: str):
         # downloaded fraction when this is known; null on fragmented streams).
         "total_bytes": entry.get("total_bytes"),
         # Requested stages this server declined to run (feature disabled) —
-        # ["separating"] / ["diarizing"]. Set the moment the skip is known, so
-        # the client's rail can say "skipped" instead of guessing.
+        # "separating" / "diarizing" / "translating". Set the moment the skip
+        # is known, so the client's rail can say "skipped" instead of guessing.
         "skipped": entry.get("skipped"),
     }
 
