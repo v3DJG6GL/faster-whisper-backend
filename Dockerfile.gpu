@@ -21,7 +21,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Base + GPU deps first, for layer caching. The GPU wheels are large (~1 GB).
-COPY requirements.txt requirements-gpu.txt requirements-diarize.txt requirements-bgm.txt ./
+COPY requirements.txt requirements-gpu.txt requirements-diarize.txt requirements-bgm.txt requirements-translate.txt ./
 RUN pip install --upgrade pip \
  && pip install -r requirements.txt -r requirements-gpu.txt
 
@@ -57,6 +57,18 @@ RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       # the CPU-only `onnxruntime` that faster-whisper pulls in (both
       # distributions unpack into the same onnxruntime/ package dir).
       && pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*" \
+      # Text-to-text translation: llama-cpp-python from the project's CUDA
+      # wheel index. No cu126 index exists — the cu124 wheels run fine on
+      # this image's cu12.6 userspace (CUDA 12 minor-version compatibility:
+      # a cu124-linked binary loads against any >=12.4 CUDA 12 runtime).
+      # The index publishes py3-none wheels, so Python 3.14 is covered.
+      # Fallback if the wheel ever breaks: build from source with
+      #   CMAKE_ARGS="-DGGML_CUDA=on" pip install llama-cpp-python
+      # — but that needs a CUDA -devel base image (nvcc) and ~20 min.
+      # The wheel bundles its own libggml/llama and dlopens CUDA libs from
+      # torch's pip-installed nvidia/* dirs, already on LD_LIBRARY_PATH below.
+      && pip install "llama-cpp-python>=0.3.34" \
+           --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 \
       && apt-get purge -y gcc g++ \
       && apt-get autoremove -y \
       && rm -rf /var/lib/apt/lists/* ; \

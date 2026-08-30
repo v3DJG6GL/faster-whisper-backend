@@ -1,0 +1,17 @@
+# Optional: text-to-text translation (GGUF models via llama.cpp).
+# Install on top of the base file:
+#   pip install -r requirements.txt -r requirements-translate.txt
+#
+# PyPI ships llama-cpp-python as an sdist only — installing straight from
+# PyPI compiles llama.cpp from source (needs cmake + a C/C++ toolchain,
+# ~10-20 min). Prefer the project's prebuilt wheel indexes:
+#   CPU:  pip install -r requirements-translate.txt \
+#             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+#   CUDA: pip install -r requirements-translate.txt \
+#             --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+# (see Dockerfile / Dockerfile.gpu; the cu124 wheels run on a CUDA 12.6
+# userspace — CUDA 12 minor-version compatibility, no cu126 index exists).
+#
+# Model weights are NOT pip packages: GGUF files download on first use via
+# huggingface_hub into HF_HOME (<DOWNLOAD_ROOT>/hf).
+llama-cpp-python>=0.3.34

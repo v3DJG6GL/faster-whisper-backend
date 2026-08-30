@@ -17,14 +17,17 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Install deps first for layer caching.
-COPY requirements.txt requirements-diarize.txt requirements-bgm.txt ./
+COPY requirements.txt requirements-diarize.txt requirements-bgm.txt requirements-translate.txt ./
 RUN pip install --upgrade pip && pip install -r requirements.txt
 
 # Optional heavy extras (INCLUDE_EXTRAS=1 → the "-full" tag): speaker
 # diarization (pyannote) + music separation (audio-separator), torch from the
-# CPU wheel index here. ffmpeg from apt — torchcodec and audio-separator
-# decode through the system libraries. The lean image skips all of it; the
-# code lazy-imports and soft-fails with a message naming the requirements file.
+# CPU wheel index here, + text-to-text translation (llama-cpp-python from its
+# project CPU wheel index — PyPI is sdist-only and would compile llama.cpp
+# from source; gcc/g++ below would cover that fallback, at ~15 min cost).
+# ffmpeg from apt — torchcodec and audio-separator decode through the system
+# libraries. The lean image skips all of it; the code lazy-imports and
+# soft-fails with a message naming the requirements file.
 # gcc/g++ are BUILD-time only: audio-separator's diffq dependency ships no
 # cp314 wheel and compiles from source (run 372 failed on "No such file or
 # directory: 'gcc'"). Purged in the same RUN so the compiler never reaches
@@ -34,7 +37,9 @@ RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends ffmpeg gcc g++ \
       && pip install -r requirements-diarize.txt -r requirements-bgm.txt \
+           -r requirements-translate.txt \
            --extra-index-url https://download.pytorch.org/whl/cpu \
+           --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu \
       && apt-get purge -y gcc g++ \
       && apt-get autoremove -y \
       && rm -rf /var/lib/apt/lists/* ; \

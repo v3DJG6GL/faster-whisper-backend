@@ -23,6 +23,7 @@ Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) transcri
   `INFERENCE_CONCURRENCY` limiter governs streaming **and** batch so they don't oversubscribe the GPU.
 - GPU-accelerated (CUDA) via faster-whisper + CTranslate2, with **automatic CPU fallback** when no GPU is available
 - **Per-request model selection** — clients pass `model="large-v3"` / `"large-v3-turbo"` / any HF repo id; LRU-cached in VRAM
+- **Text-to-text translation stage** (optional install) — translate the finished transcript into arbitrary target languages with local GGUF models (HY-MT1.5, TranslateGemma, MiLM-MT, … via llama.cpp): `translate_to=de,fr` on a transcription request or standalone `POST /v1/text/translations`; **fluent** (sentence-group merge) or **faithful** (per-cue) mode, glossary enforcement, per-language `translations` in the response. Off by default (`WHISPER_TRANSLATION_ENABLED`).
 - **Dictation phrase map**: `"Punkt"` → `.`, `"Komma"` → `,`, `"neue Zeile"` → `\n`, `"Klammer auf"` → `(`, ~80 phrases total — every rule editable/replaceable in the WebUI
 - Auto-capitalize after sentence ends; strips Whisper noise commas; lowercases mid-sentence non-nouns after stripped Whisper terminators
 - Live HTML log viewer at `/logs` (Server-Sent Events, color-coded pipeline trace per request)
@@ -64,9 +65,9 @@ python main.py                             # serves on http://0.0.0.0:8000
 ./install-service.sh --gpu        # GPU    installs deps, writes + starts the unit)
 ./install-service.sh --gpu --full # GPU + heavy extras — the bare-metal
                                   # equivalent of the :latest-gpu-full image
-                                  # (diarization + music separation; --full
-                                  # works without --gpu too). Re-run with the
-                                  # SAME flags to refresh.
+                                  # (diarization + music separation +
+                                  # translation; --full works without --gpu
+                                  # too). Re-run with the SAME flags to refresh.
 # manage: systemctl status|restart whisper-api ; journalctl -u whisper-api -f
 # remove: ./uninstall-service.sh
 ```
@@ -77,14 +78,16 @@ CI publishes four images to the Forgejo container registry on every push to
 `main` (and on `v*` tags): `:latest` (CPU) and `:latest-gpu` (adds the CUDA 12 /
 cuDNN 9 wheels), plus `:latest-full` / `:latest-gpu-full` — the same images
 with the optional heavy extras baked in (speaker diarization: pyannote +
-torch + system ffmpeg; the GPU flavor installs torch from the cu126 index so
+torch + system ffmpeg; music separation; text-to-text translation:
+llama-cpp-python; the GPU flavor installs torch from the cu126 index so
 it shares ctranslate2's pip CUDA libraries). Every flavor is also tagged
 `:v<version>` and `:sha-<short>` with the matching suffix. The lean images
-stay fully functional — a diarization request on them soft-fails with a
-response warning naming `requirements-diarize.txt`. Model weights are never
-baked into any image: pyannote pipelines download on first use into the
-models volume (gated on huggingface.co — accept the model terms and set
-`WHISPER_HF_TOKEN` first).
+stay fully functional — a diarization/translation request on them soft-fails
+with a response warning naming the requirements file
+(`requirements-diarize.txt` / `requirements-translate.txt`). Model weights
+are never baked into any image: pyannote pipelines and GGUF translation
+models download on first use into the models volume (pyannote is gated on
+huggingface.co — accept the model terms and set `WHISPER_HF_TOKEN` first).
 
 ```bash
 # CPU — pulls forgejo.informethic.ch/v3djg6gl/faster-whisper-backend:latest
@@ -116,8 +119,9 @@ rebuild needed, volumes work with any UID out of the box.
 .\install-service.ps1 -Gpu        # also install the NVIDIA CUDA wheels
 .\install-service.ps1 -Gpu -Full  # + heavy extras — the bare-metal equivalent
                                   # of :latest-gpu-full (diarization + music
-                                  # separation; -Full works without -Gpu too).
-                                  # Re-run with the SAME flags to refresh.
+                                  # separation + translation; -Full works
+                                  # without -Gpu too). Re-run with the SAME
+                                  # flags to refresh.
 ```
 
 First server start eagerly preloads the models in `PRELOAD_MODELS` (by default
@@ -199,6 +203,36 @@ A few of the most common variables:
 | `WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS` | `ADMIN_WEBUI_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach the **admin** pages — `/settings`, `/settings/api-keys`, `/docs` (loopback always implicit; default loopback only) |
 | `WHISPER_USER_WEBUI_ALLOWED_HOSTS` | `USER_WEBUI_ALLOWED_HOSTS` | Comma-separated IPs/CIDRs allowed to reach the **user** pages — `/`, `/quick-config`, `/captures`, `/reports`, `/stats`, `/logs`, `/dictate`, `/sev` (loopback always implicit; default open `0.0.0.0/0, ::/0`) |
 
+### Translation (text-to-text, optional)
+
+The settings of the admin WebUI's **Translation** group (all with `WHISPER_*`
+env twins), needing `pip install -r requirements-translate.txt`:
+
+- **Capacity** — `TRANSLATION_ENABLED` (master switch, default off; requested
+  runs decline softly with a response warning while off and
+  `POST /v1/text/translations` returns 403).
+- **Models** — `TRANSLATION_DEFAULT_MODEL` (GGUF ref `org/repo[:quant]`, e.g.
+  `tencent/Hunyuan-MT-7B-GGUF:Q4_K_M`), `TRANSLATION_ALLOWED_MODELS`
+  (per-request allowlist; empty = any well-formed ref),
+  `TRANSLATION_PRELOAD_MODELS` (warmed at startup),
+  `TRANSLATION_MAX_LOADED_MODELS` (LRU cap — a 7B Q4 model holds ~5 GB),
+  `TRANSLATION_DEVICE` (`auto` follows `MODEL_DEVICE`),
+  `TRANSLATION_IDLE_TIMEOUT_S` (idle unload).
+- **Prompting** — `TRANSLATION_PROMPT_FAMILY` (`auto` detects from the model
+  name: HY-MT/Hunyuan, TranslateGemma, MiLM-MT, Seed-X, generic chatml;
+  `custom` renders `TRANSLATION_PROMPT_TEMPLATE`, which must contain `{text}`
+  and `{target_language}` — the WebUI previews and test-runs the template),
+  `TRANSLATION_BATCH_SEGMENTS` (faithful-mode segments per prompt).
+- **Per-request defaults** (per-identity/per-model overridable, lockable) —
+  `TRANSLATE_TO` (csv of target codes; empty = translate only when the request
+  asks), `TRANSLATION_MODEL`, `TRANSLATION_MODE` (`fluent` merges sentence
+  groups for flow, `faithful` keeps 1:1 cue alignment),
+  `TRANSLATION_CONTEXT_SEGMENTS`, `TRANSLATION_MAX_TARGETS`,
+  `TRANSLATION_GLOSSARY` (`source = target` lines enforced via the prompt).
+
+Model weights are not pip packages — GGUF files download on first use via
+huggingface_hub into the models volume (`HF_HOME`).
+
 ### Allowed hosts
 
 WebUI access is gated by two IP/CIDR allowlists, bucketed by **privilege tier** — each is the outer (host) layer; an API key is still required on the data layer.
@@ -236,6 +270,8 @@ WHISPER_TRUSTED_ORIGINS=https://whisper.example.com  # only if the proxy rewrite
 **Core API** (`/v1`, bearer API-key auth, no host allowlist — always registered):
 
 - `POST /v1/audio/transcriptions` — OpenAI-compatible transcription. Pass `model=<name>` to pick a specific model (any faster-whisper short name or HF repo id).
+- `POST /v1/audio/translations` — OpenAI-compatible Whisper translate-to-English (the transcription handler with `task` pinned to `translate`; English is Whisper's only target).
+- `POST /v1/text/translations` — **text-to-text** translation of caller-supplied text/segments into arbitrary target languages via local GGUF models (llama.cpp; see the Translation configuration group). Distinct from `/v1/audio/translations`: this translates finished text with a dedicated translation model, not audio with Whisper. 403 while `TRANSLATION_ENABLED` is off.
 - `WS   /v1/audio/transcriptions/stream` — live streaming dictation (raw 16 kHz PCM or browser WebM/Opus); see the Features section.
 - `GET  /v1/models` — list currently-loaded models, the configured default, and the allowlist (if set). Also carries the server's build identity — `server_name` ("faster-whisper-backend"), `server_version`, and the per-process `boot_id` — non-standard fields clients use to recognize the full backend and display its version. The version resolves via `WHISPER_BUILD_VERSION` (baked into container images by CI as `git describe`) or a runtime `git describe` on bare-metal checkouts (see `build_info.py`).
 - `GET  /v1/me` — the caller's effective request-override capabilities (drives client UI).
@@ -487,6 +523,7 @@ streaming_session.py       Per-connection streaming dictation state machine
 streaming_transport.py     Streaming audio decoders (raw PCM passthrough, ffmpeg WebM/Opus)
 streaming_vad.py           Streaming endpointing (two-tier Silero/energy VAD)
 streaming_localagreement.py LocalAgreement-2 hypothesis stabilization
+translation.py             Text-to-text translation stage: GGUF models via llama.cpp (LRU cache, prompt families, guards)
 audio_transcode.py         In-process audio transcoder (PyAV — no ffmpeg-on-PATH needed)
 audio_vad_trim.py          Silence-trim WAVs with the bundled Silero VAD
 audio_merge.py             stdlib-wave PCM splicer for duration-capped training-sample packing (default ≤29.9 s)
@@ -515,6 +552,7 @@ requirements.txt           Base (CPU, cross-platform) deps; transitive resolved 
 requirements-gpu.txt       NVIDIA CUDA wheels (opt-in, additive)
 requirements-dev.txt       Test deps (pytest)
 requirements-convert.txt   Deps for converting HF models to CTranslate2 (opt-in)
+requirements-translate.txt Text-to-text translation deps: llama-cpp-python (opt-in; prebuilt wheel indexes documented inside)
 pytest.ini                 Test discovery config (pytest -q from repo root)
 .forgejo/workflows/ci.yml  CI: test suite on Linux + Windows, then publishes the registry images
 static/                    Brand assets (logo.svg, favicon.*) + vendored uPlot/GridStack (offline /stats)

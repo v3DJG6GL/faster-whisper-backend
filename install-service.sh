@@ -78,14 +78,23 @@ if [ "$FULL" -eq 1 ]; then
     apt-get update -qq && apt-get install -y gcc g++ \
       || echo "  apt install failed; pip will error out if diffq has no prebuilt wheel."
   fi
-  echo "Installing full extras (diarization + music separation, several GB) ..."
+  echo "Installing full extras (diarization + music separation + translation, several GB) ..."
   if [ "$GPU" -eq 1 ]; then
     sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" \
       "audio-separator[gpu]>=0.44" "audioread>=2.1.9" "librosa<1.0" \
       --extra-index-url https://download.pytorch.org/whl/cu126
     sudo -u "$RUN_USER" "$PY" -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
+    # Translation (llama-cpp-python): the project's cu124 wheel index — no
+    # cu126 index exists; cu124 wheels run on a cu12.6 userspace (CUDA 12
+    # minor-version compatibility). PyPI is sdist-only (source build).
+    sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
+      --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
   else
     sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" -r "$REPO_DIR/requirements-bgm.txt"
+    # Translation (llama-cpp-python): prebuilt CPU wheels from the project
+    # index — PyPI is sdist-only and would compile llama.cpp from source.
+    sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
+      --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
   fi
 fi
 

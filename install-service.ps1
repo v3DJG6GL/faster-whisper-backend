@@ -226,7 +226,7 @@ if ($Gpu) {
 #     1.26.x is the last CUDA 12.8 build; forced LAST (--no-deps) so its files
 #     also win over the CPU-only onnxruntime faster-whisper pulls in.
 if ($Full) {
-    Write-Host "Installing full extras (diarization + music separation, several GB)..." -ForegroundColor Cyan
+    Write-Host "Installing full extras (diarization + music separation + translation, several GB)..." -ForegroundColor Cyan
 
     # audio-separator's Windows-only dependency `diffq-fixed` ships wheels only
     # up to cp313, and its sdist is broken ("'bitpack.pyx' doesn't match any
@@ -293,15 +293,25 @@ def restore_quantized_state(*args, **kwargs):
     }
 
     $diarizeReq = Join-Path $RepoDir "requirements-diarize.txt"
+    $translateReq = Join-Path $RepoDir "requirements-translate.txt"
     if ($Gpu) {
         & $Python -m pip install -r $diarizeReq "audio-separator[gpu]>=0.44" "audioread>=2.1.9" "librosa<1.0" --extra-index-url https://download.pytorch.org/whl/cu126
         if ($LASTEXITCODE -ne 0) { throw "pip install of the full extras failed (exit $LASTEXITCODE)" }
         & $Python -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
         if ($LASTEXITCODE -ne 0) { throw "pip install onnxruntime-gpu==1.26.* failed (exit $LASTEXITCODE)" }
+        # Translation (llama-cpp-python): the project's cu124 wheel index — no
+        # cu126 index exists; cu124 wheels run on a cu12.6 userspace (CUDA 12
+        # minor-version compatibility). PyPI is sdist-only (source build).
+        & $Python -m pip install -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
+        if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-translate.txt failed (exit $LASTEXITCODE)" }
     } else {
         $bgmReq = Join-Path $RepoDir "requirements-bgm.txt"
         & $Python -m pip install -r $diarizeReq -r $bgmReq
         if ($LASTEXITCODE -ne 0) { throw "pip install of the full extras failed (exit $LASTEXITCODE)" }
+        # Translation (llama-cpp-python): prebuilt CPU wheels from the project
+        # index — PyPI is sdist-only and would compile llama.cpp from source.
+        & $Python -m pip install -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
+        if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-translate.txt failed (exit $LASTEXITCODE)" }
     }
     Write-Host "Full extras installed. Gated pyannote pipelines additionally need accepted" -ForegroundColor Green
     Write-Host "model terms on huggingface.co plus WHISPER_HF_TOKEN in the service env." -ForegroundColor Green
