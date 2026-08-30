@@ -15,12 +15,13 @@ def _post(client, **data):
 
 def _stub_turns(monkeypatch, turns, calls=None):
     async def _fake_diarize(path, *, num_speakers=None, min_speakers=None,
-                            max_speakers=None, progress_cb=None,
-                            cancel_check=None):
+                            max_speakers=None, model_id=None,
+                            progress_cb=None, cancel_check=None):
         if calls is not None:
             calls.append({"path": path, "num_speakers": num_speakers,
                           "min_speakers": min_speakers,
-                          "max_speakers": max_speakers})
+                          "max_speakers": max_speakers,
+                          "model_id": model_id})
         return turns
     monkeypatch.setattr(diarization, "diarize", _fake_diarize)
 

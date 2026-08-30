@@ -236,12 +236,14 @@ _STATS_PREFIX = "uvr:"
 _EVICTOR_WAKE_S = 30
 
 
-def _model_filename() -> str:
-    name = (getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "").strip()
+def _model_filename(name: "str | None" = None) -> str:
+    """Resolve the friendly model name (a per-request override, else
+    cfg.BGM_SEPARATION_UVR_MODEL) to the on-disk filename audio-separator
+    wants (MDX models are .onnx)."""
+    name = (name or "").strip() or \
+        (getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "").strip()
     if not name:
         raise BgmSeparationError("no BGM_SEPARATION_UVR_MODEL configured")
-    # The config carries the friendly model name; audio-separator wants the
-    # on-disk filename (MDX models are .onnx).
     return name if "." in name else f"{name}.onnx"
 
 
@@ -379,9 +381,12 @@ def _drop_locked() -> None:
     logger.info("[bgm] separation model %s unloaded", model)
 
 
-async def _get_separator():
+async def _get_separator(model_filename: "str | None" = None):
+    """Return the cached separator, (re)loading when config (or a per-request
+    ``model_filename`` override) changed it — the (model, device) key below
+    re-keys the singleton per call."""
     global _separator, _separator_key, _last_used_monotonic
-    model = _model_filename()
+    model = _model_filename(model_filename)
     device = _resolve_device()
     key = (model, device)
     async with _lock:
@@ -406,18 +411,22 @@ async def _get_separator():
         return sep
 
 
-async def separate(path: str, *, progress_cb=None, cancel_check=None) -> str:
+async def separate(path: str, *, model_filename: "str | None" = None,
+                   progress_cb=None, cancel_check=None) -> str:
     """Separate the file → absolute path of the vocals-only WAV.
 
     The output lands in the system temp dir under a unique name; the caller
-    owns unlinking it (and the original it replaces). ``progress_cb`` (called
-    from the executor thread with a 0..1 float) reports demix chunk progress
-    via the tqdm shim — best-effort, and monotone across the two passes.
-    ``cancel_check`` (no-arg, truthy = abort) is polled at the same cadence;
-    a positive answer raises :class:`BgmCancelled` out of this coroutine.
+    owns unlinking it (and the original it replaces). ``model_filename``
+    overrides cfg.BGM_SEPARATION_UVR_MODEL for this call (per-request stage
+    models — the caller has already applied its allowlist). ``progress_cb``
+    (called from the executor thread with a 0..1 float) reports demix chunk
+    progress via the tqdm shim — best-effort, and monotone across the two
+    passes. ``cancel_check`` (no-arg, truthy = abort) is polled at the same
+    cadence; a positive answer raises :class:`BgmCancelled` out of this
+    coroutine.
     """
     global _last_used_monotonic
-    sep = await _get_separator()
+    sep = await _get_separator(model_filename)
     out_name = f"vocals-{uuid.uuid4().hex}"
 
     def _run() -> str:

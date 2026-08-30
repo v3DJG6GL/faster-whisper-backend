@@ -1612,20 +1612,26 @@ class AdminConfig(BaseModel):
     # --- Translation (T2T) ---
     TRANSLATION_ENABLED: bool | None = _F(
         "TRANSLATION_ENABLED", scope="server", group="Translation")
+    # evict="translation": editing the default/allowlist can orphan a loaded
+    # model the request path could no longer reach; editing device/cap changes
+    # the load parameters — drop the LRU on save in both cases.
     TRANSLATION_DEFAULT_MODEL: TranslationModelRef | None = _F(
-        "TRANSLATION_DEFAULT_MODEL", scope="server", group="Translation")
+        "TRANSLATION_DEFAULT_MODEL", scope="server", group="Translation",
+        evict="translation")
     # Sets serialize as JSON arrays; convert back on load (mirrors
     # ALLOWED_MODELS — list type here for per-element validation).
     TRANSLATION_ALLOWED_MODELS: list[TranslationModelRefItem] | None = _F(
         "TRANSLATION_ALLOWED_MODELS", scope="server", group="Translation",
-        coerce=set)
+        coerce=set, evict="translation")
     TRANSLATION_PRELOAD_MODELS: list[TranslationModelRefItem] | None = _F(
         "TRANSLATION_PRELOAD_MODELS", scope="server", group="Translation",
         restart=True)
     TRANSLATION_MAX_LOADED_MODELS: Annotated[int, Field(ge=1, le=4)] | None = _F(
-        "TRANSLATION_MAX_LOADED_MODELS", scope="server", group="Translation")
+        "TRANSLATION_MAX_LOADED_MODELS", scope="server", group="Translation",
+        evict="translation")
     TRANSLATION_DEVICE: DiarizationDeviceLit | None = _F(
-        "TRANSLATION_DEVICE", scope="server", group="Translation")
+        "TRANSLATION_DEVICE", scope="server", group="Translation",
+        evict="translation")
     TRANSLATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F(
         "TRANSLATION_IDLE_TIMEOUT_S", scope="server", group="Translation")
     TRANSLATION_BATCH_SEGMENTS: Annotated[int, Field(ge=1, le=50)] | None = _F(

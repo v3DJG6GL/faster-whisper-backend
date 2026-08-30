@@ -2048,6 +2048,46 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
         )
 
 
+async def _preload_extras() -> None:
+    """Best-effort startup preloads for the optional stages (translation
+    GGUFs, the diarization pipeline, the BGM separator). Every failure logs
+    and continues — the model then loads on first use; the server always
+    starts. Called from lifespan after the whisper preload loop."""
+    if getattr(cfg, "TRANSLATION_ENABLED", False):
+        _allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
+        _default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+        for ref in list(getattr(cfg, "TRANSLATION_PRELOAD_MODELS", []) or []):
+            # Same allowlist semantics as the request path: a non-empty
+            # allowlist admits its members plus the configured default.
+            if _allowed and ref not in _allowed and ref != _default:
+                logger.error(
+                    "Cannot preload translation model '%s' - it is not in "
+                    "TRANSLATION_ALLOWED_MODELS.", ref)
+                continue
+            try:
+                logger.info("Preloading translation model: %s", ref)
+                await _tr._get_model(ref)
+            except Exception as e:  # noqa: BLE001 — best-effort
+                logger.error("Failed to preload translation model '%s': %s",
+                             ref, e)
+    if getattr(cfg, "DIARIZATION_PRELOAD", False) and \
+            getattr(cfg, "DIARIZATION_ENABLED", False):
+        import diarization as _diar
+        try:
+            logger.info("Preloading the diarization pipeline")
+            await _diar._get_pipeline()
+        except Exception as e:  # noqa: BLE001 — best-effort
+            logger.error("Failed to preload the diarization pipeline: %s", e)
+    if getattr(cfg, "BGM_SEPARATION_PRELOAD", False) and \
+            getattr(cfg, "BGM_SEPARATION_ENABLED", False):
+        import bgm_separation as _bgm
+        try:
+            logger.info("Preloading the BGM separation model")
+            await _bgm._get_separator()
+        except Exception as e:  # noqa: BLE001 — best-effort
+            logger.error("Failed to preload the separation model: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("%s %s starting (boot %s)", SERVER_NAME, APP_VERSION, BOOT_ID[:8])
@@ -2087,6 +2127,14 @@ async def lifespan(app: FastAPI):
     import bgm_separation as _bgm_separation
     bgm_evictor_task = asyncio.create_task(
         _bgm_separation.idle_evictor_loop())
+    # The translation LRU gets its own idle unloader too (module-level
+    # import at the top of the file; TRANSLATION_IDLE_TIMEOUT_S read live).
+    translation_evictor_task = asyncio.create_task(
+        _tr.idle_evictor_loop())
+
+    # Best-effort preloads for the optional stages (translation GGUFs,
+    # diarization pipeline, BGM separator).
+    await _preload_extras()
 
     # Transcribe-from-URL retention: wipe the dir (ids die with the process,
     # so every surviving file is an orphan) and start the TTL/LRU janitor.
@@ -2249,6 +2297,8 @@ async def lifespan(app: FastAPI):
     await _diarization.drop_pipeline()
     await _cancel(bgm_evictor_task)
     await _bgm_separation.drop_separator()
+    await _cancel(translation_evictor_task)
+    await _tr.drop_models()
     if url_media_janitor_task is not None:
         await _cancel(url_media_janitor_task)
     await _cancel(reports_sweep_task)
@@ -2765,7 +2815,9 @@ async def transcribe(
     num_speakers: int | None = Form(None),
     min_speakers: int | None = Form(None),
     max_speakers: int | None = Form(None),
+    diarization_model: str | None = Form(None),
     separate_bgm: str | None = Form(None),
+    separation_model: str | None = Form(None),
     translate_to: str | None = Form(None),
     translation_model: str | None = Form(None),
     translation_mode: str | None = Form(None),
@@ -3120,6 +3172,51 @@ async def transcribe(
                 _separate = _sep_req
             else:
                 _separate = bool(cfg_for(resolved_model, "SEPARATE_BGM", ident))
+            # Per-request stage models (pyannote pipeline id / UVR model):
+            # same ladder again. A non-empty allowlist that misses the
+            # resolved value soft-fails by skipping THAT stage — before its
+            # enabled gate, so the warning names the actual reason.
+            _dm_req = (diarization_model or "").strip() or None
+            if "DIARIZATION_MODEL" in ident.locked:
+                _diarization_model = cfg_for(
+                    resolved_model, "DIARIZATION_MODEL", ident) or ""
+                if _dm_req is not None and _dm_req != _diarization_model:
+                    ignored.append("diarization_model")
+            elif _dm_req is not None:
+                _diarization_model = _dm_req
+            else:
+                _diarization_model = cfg_for(
+                    resolved_model, "DIARIZATION_MODEL", ident) or ""
+            _diar_allowed = getattr(cfg, "DIARIZATION_ALLOWED_MODELS", []) or []
+            if (_diarize and _diarization_model and _diar_allowed
+                    and _diarization_model not in _diar_allowed):
+                _warnings.append(
+                    "requested diarization model is not in "
+                    "DIARIZATION_ALLOWED_MODELS on this server")
+                _skipped.append("diarizing")
+                _progress_set(_pid, skipped=list(_skipped))
+                _diarize = False
+            _sm_req = (separation_model or "").strip() or None
+            if "BGM_SEPARATION_UVR_MODEL" in ident.locked:
+                _separation_model = cfg_for(
+                    resolved_model, "BGM_SEPARATION_UVR_MODEL", ident) or ""
+                if _sm_req is not None and _sm_req != _separation_model:
+                    ignored.append("separation_model")
+            elif _sm_req is not None:
+                _separation_model = _sm_req
+            else:
+                _separation_model = cfg_for(
+                    resolved_model, "BGM_SEPARATION_UVR_MODEL", ident) or ""
+            _sep_allowed = getattr(
+                cfg, "BGM_SEPARATION_ALLOWED_MODELS", []) or []
+            if (_separate and _separation_model and _sep_allowed
+                    and _separation_model not in _sep_allowed):
+                _warnings.append(
+                    "requested separation model is not in "
+                    "BGM_SEPARATION_ALLOWED_MODELS on this server")
+                _skipped.append("separating")
+                _progress_set(_pid, skipped=list(_skipped))
+                _separate = False
             # Translation (T2T) request knobs: the same locked-wins /
             # request-wins / config-inherits ladder as diarize/separate_bgm
             # above. The capacity gates (TRANSLATION_ENABLED, model allowlist)
@@ -3253,8 +3350,7 @@ async def transcribe(
                         _progress_set(
                             _pid, stage="separating", progress=None,
                             position=None, last_text=None,
-                            model=(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "")
-                                   or None),
+                            model=(_separation_model or None),
                             # The ONNX session's real placement once a model
                             # is loaded (a CUDA provider that fails to load
                             # falls back to CPU silently); the config-resolved
@@ -3316,6 +3412,7 @@ async def transcribe(
                                 _progress_set(_pid, step="preparing")
                                 _vocals_path = await _bgm.separate(
                                     _sep_src,
+                                    model_filename=(_separation_model or None),
                                     progress_cb=lambda f: _progress_set(
                                         _pid, progress=f, step=None),
                                     cancel_check=lambda: _cancel_requested(
@@ -3550,8 +3647,7 @@ async def transcribe(
                         _progress_set(
                             _pid, stage="diarizing", progress=None,
                             position=None, last_text=None, step=None,
-                            model=(getattr(cfg, "DIARIZATION_MODEL", "")
-                                   or None),
+                            model=(_diarization_model or None),
                             device=_diar._resolve_device())
                         _check_cancelled(_pid)
                         async with get_inference_semaphore():
@@ -3561,6 +3657,7 @@ async def transcribe(
                                 num_speakers=_spk.get("num_speakers"),
                                 min_speakers=_spk.get("min_speakers"),
                                 max_speakers=_spk.get("max_speakers"),
+                                model_id=(_diarization_model or None),
                                 progress_cb=lambda f, step=None: _progress_set(
                                     _pid, progress=f, step=step),
                                 cancel_check=lambda: _cancel_requested(_pid),
@@ -4036,7 +4133,9 @@ async def translate_audio(
     num_speakers: int | None = Form(None),
     min_speakers: int | None = Form(None),
     max_speakers: int | None = Form(None),
+    diarization_model: str | None = Form(None),
     separate_bgm: str | None = Form(None),
+    separation_model: str | None = Form(None),
     translate_to: str | None = Form(None),
     translation_model: str | None = Form(None),
     translation_mode: str | None = Form(None),
@@ -4067,7 +4166,9 @@ async def translate_audio(
         num_speakers=num_speakers,
         min_speakers=min_speakers,
         max_speakers=max_speakers,
+        diarization_model=diarization_model,
         separate_bgm=separate_bgm,
+        separation_model=separation_model,
         translate_to=translate_to,
         translation_model=translation_model,
         translation_mode=translation_mode,

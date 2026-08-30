@@ -157,10 +157,14 @@ def _drop_locked() -> None:
     logger.info("[diarize] pipeline %s unloaded", model_id)
 
 
-async def _get_pipeline():
-    """Return the cached pipeline, (re)loading when config changed it."""
+async def _get_pipeline(model_id: "str | None" = None):
+    """Return the cached pipeline, (re)loading when config (or a per-request
+    ``model_id`` override) changed it. ``model_id`` empty/None falls back to
+    cfg.DIARIZATION_MODEL; the (model, device, batch) key below re-keys the
+    singleton per call, so alternating models simply reload."""
     global _pipeline, _pipeline_key, _last_used_monotonic
-    model_id = getattr(cfg, "DIARIZATION_MODEL", "") or ""
+    model_id = (model_id or "").strip() or \
+        (getattr(cfg, "DIARIZATION_MODEL", "") or "")
     if not model_id:
         raise DiarizationError("no DIARIZATION_MODEL configured")
     device = _resolve_device()
@@ -258,20 +262,23 @@ def _make_hook(progress_cb, cancel_check=None):
 async def diarize(path: str, *, num_speakers: "int | None" = None,
                   min_speakers: "int | None" = None,
                   max_speakers: "int | None" = None,
+                  model_id: "str | None" = None,
                   progress_cb=None, cancel_check=None,
                   ) -> "list[tuple[float, float, str]]":
     """Diarize the audio file → [(start_s, end_s, label), ...] sorted by start.
 
     ``num_speakers`` wins over the min/max bounds (the caller enforces that
     already; this just doesn't forward the bounds alongside it — pyannote
-    treats the combination as an error). ``progress_cb`` (called from the
-    executor thread with a 0..1 float) reports pipeline step progress via
+    treats the combination as an error). ``model_id`` overrides
+    cfg.DIARIZATION_MODEL for this call (per-request stage models — the
+    caller has already applied its allowlist). ``progress_cb`` (called from
+    the executor thread with a 0..1 float) reports pipeline step progress via
     pyannote's hook kwarg — best-effort. ``cancel_check`` (no-arg, truthy =
     abort) is polled from the same hook; a positive answer raises
     :class:`DiarizeCancelled` out of this coroutine.
     """
     global _last_used_monotonic
-    pipe = await _get_pipeline()
+    pipe = await _get_pipeline(model_id)
     kwargs: dict = {}
     if num_speakers:
         kwargs["num_speakers"] = num_speakers

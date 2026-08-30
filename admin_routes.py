@@ -38,6 +38,7 @@ import config as cfg
 import config_store
 import diarization
 import system_stats
+import translation
 import web_common
 from auth import require_admin
 
@@ -52,6 +53,7 @@ logger = logging.getLogger("whisper-api")
 _EVICTORS: dict[str, Any] = {
     "diarization": diarization.drop_pipeline,
     "bgm": bgm_separation.drop_separator,
+    "translation": translation.drop_models,
 }
 
 # ---------------------------------------------------------------------------

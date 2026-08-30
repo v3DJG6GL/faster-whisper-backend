@@ -62,7 +62,7 @@ def test_bgm_cancel_is_not_a_soft_fail(client, app_module, monkeypatch):
     # original audio" warning path that BgmSeparationError takes.
     app_module.cfg.BGM_SEPARATION_ENABLED = True
     try:
-        async def _cancelled(path, *, progress_cb=None, cancel_check=None):
+        async def _cancelled(path, **kw):
             raise bgm_separation.BgmCancelled()
         monkeypatch.setattr(bgm_separation, "separate", _cancelled)
         r = _post(client, separate_bgm="1", progress_id=_PID)

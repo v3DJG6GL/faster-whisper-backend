@@ -794,4 +794,8 @@ def test_extras_eviction_buckets():
                                   "DIARIZATION_EMBEDDING_BATCH_SIZE"}),
         "bgm": frozenset({"BGM_SEPARATION_UVR_MODEL",
                           "BGM_SEPARATION_DEVICE"}),
+        "translation": frozenset({"TRANSLATION_DEVICE",
+                                  "TRANSLATION_MAX_LOADED_MODELS",
+                                  "TRANSLATION_DEFAULT_MODEL",
+                                  "TRANSLATION_ALLOWED_MODELS"}),
     }
