@@ -719,9 +719,12 @@ def _guard_reason(src: str, out: str, *, target: "str | None" = None,
                   check_copy: bool = True) -> "str | None":
     """Reason string when a translated segment fails a sanity guard, else
     None. Guards: empty output; length ratio outside script-aware bounds
-    (only once either side reaches the 20-char floor); digit multiset
-    mismatch; verbatim input copy (when the target differs from the source);
-    repetition loop."""
+    (only once either side reaches the 20-char floor); digit mismatch
+    (a source digit vanished while the output still carries digits — a
+    changed number; number-word normalization in EITHER direction is legal,
+    spoken-transcript MT constantly writes "sechzehn" as "16" and an exact
+    multiset check rejected correct translations en masse); verbatim input
+    copy (when the target differs from the source); repetition loop."""
     s = (src or "").strip()
     o = (out or "").strip()
     if not o:
@@ -731,7 +734,8 @@ def _guard_reason(src: str, out: str, *, target: "str | None" = None,
         ratio = len(o) / len(s)
         if not (lo <= ratio <= hi):
             return f"length ratio {ratio:.2f} outside [{lo}, {hi}]"
-    if Counter(re.findall(r"\d", s)) != Counter(re.findall(r"\d", o)):
+    out_digits = Counter(re.findall(r"\d", o))
+    if out_digits and (Counter(re.findall(r"\d", s)) - out_digits):
         return "digit mismatch"
     if check_copy and o == s:
         return "output copies input"
@@ -853,6 +857,10 @@ async def translate_segments(
 
     total_units = len(segments) * len(targets)
     done_units = 0
+    # Tail of the last GUARD-PASSING translation — the live-preview line.
+    # Guard-kept originals must never land here: the card would show the
+    # source language and read as "not translating".
+    last_ok: "str | None" = None
 
     def _progress(step: str, last_text: "str | None" = None) -> None:
         if progress_cb is None:
@@ -893,13 +901,16 @@ async def translate_segments(
                               seg_no: int) -> str:
         """One translation + guard; on failure ONE retry alone, then keep the
         original text + a warning."""
+        nonlocal last_ok
         out = await _translate_one(text, target, context)
         reason = _guard_reason(text, out, target=target)
         if reason is None:
+            last_ok = out
             return out
         out = await _translate_one(text, target, context)
         reason = _guard_reason(text, out, target=target)
         if reason is None:
+            last_ok = out
             return out
         warnings.append(
             f"segment {seg_no}: kept original — translation failed ({reason})")
@@ -946,6 +957,7 @@ async def translate_segments(
                         reason = _guard_reason(src, out, target=target)
                         if reason is None:
                             results[j][target] = out
+                            last_ok = out
                         else:
                             # ONE retry of that segment alone, else keep
                             # original + warning.
@@ -955,6 +967,7 @@ async def translate_segments(
                             reason = _guard_reason(src, retried, target=target)
                             if reason is None:
                                 results[j][target] = retried
+                                last_ok = retried
                             else:
                                 results[j][target] = src
                                 warnings.append(
@@ -964,7 +977,7 @@ async def translate_segments(
                 batch_no += 1
                 done_units += len(batch_idx)
                 _progress(f"{target} {min(batch_no, n_batches)}/{n_batches}",
-                          results[batch_idx[-1]].get(target))
+                          last_ok)
         else:
             # FLUENT: sentence-group merge → translate → redistribute.
             groups = _merge_sentences(segments)
@@ -990,9 +1003,9 @@ async def translate_segments(
                     for j, piece in zip(group,
                                         _redistribute(src_texts, translated)):
                         results[j][target] = piece
+                    last_ok = results[group[-1]].get(target) or last_ok
                 done_units += len(group)
-                _progress(f"{target} {g_no}/{len(groups)}",
-                          results[group[-1]].get(target))
+                _progress(f"{target} {g_no}/{len(groups)}", last_ok)
     finally:
         if llm is not None:
             await _release_model(ref)

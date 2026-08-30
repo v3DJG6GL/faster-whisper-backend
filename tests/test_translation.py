@@ -172,7 +172,12 @@ def test_guard_reasons():
     long_src = "Dies ist ein deutlich laengerer Satz mit vielen Worten."
     assert "length ratio" in g(long_src, "ok")
     assert "length ratio" in g("Hi", "x" * 40)          # output side hits floor
-    assert g("Nimm 5 Tabletten", "Take five pills") == "digit mismatch"
+    # Digit guard: a CHANGED number fails; number-word normalization in
+    # either direction is a correct translation and must pass.
+    assert g("Nimm 5 Tabletten", "Take 3 pills") == "digit mismatch"
+    assert g("Nimm 5 Tabletten", "Take five pills") is None
+    assert g("Nimm sechzehn Tabletten", "Take 16 pills") is None
+    assert g("Nimm 5 von den 10", "Take 5 of the ten") == "digit mismatch"
     assert g("Hallo Welt", "Hallo Welt") == "output copies input"
     assert g("Hallo Welt", "Hallo Welt", check_copy=False) is None
     assert g("Ein normaler Satz hier mit Laenge",
@@ -358,7 +363,7 @@ _GUARD_SRC_NO_DIGITS = "Nimm die Tabletten und ruf mich morgen wieder an"
 
 @pytest.mark.parametrize("src,bad_out,reason", [
     (_GUARD_SRC,
-     lambda t: "Take five pills now and call me again in the morning",
+     lambda t: "Take 3 pills now and call me again in the morning",
      "digit mismatch"),
     (_GUARD_SRC, lambda t: t, "output copies input"),
     (_GUARD_SRC, lambda t: "ok", "length ratio"),
