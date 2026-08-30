@@ -50,232 +50,11 @@ OVERRIDES_PATH = os.environ.get("WHISPER_CONFIG_LOCAL") or os.path.normpath(
 FACTORY_PATH = os.path.join(_REPO_DIR, "config.json")
 
 
-# Map AdminConfig field name -> env var that pins it. Mirrors the override
-# block at the bottom of config.py. Used by the WebUI to mark fields as
-# "currently overridden by WHISPER_X" with a badge.
-ENV_VAR_MAPPING: dict[str, str] = {
-    "DEFAULT_MODEL": "WHISPER_DEFAULT_MODEL",
-    "ALLOWED_MODELS": "WHISPER_ALLOWED_MODELS",
-    "MAX_LOADED_MODELS": "WHISPER_MAX_LOADED_MODELS",
-    "MODEL_IDLE_TIMEOUT_S": "WHISPER_MODEL_IDLE_TIMEOUT_S",
-    "PRELOAD_MODELS": "WHISPER_PRELOAD_MODELS",
-    "DEFAULT_PROMPT": "WHISPER_DEFAULT_PROMPT",
-    "DEFAULT_HOTWORDS": "WHISPER_DEFAULT_HOTWORDS",
-    "OUTPUT_PREFIX": "WHISPER_OUTPUT_PREFIX",
-    "OUTPUT_SUFFIX": "WHISPER_OUTPUT_SUFFIX",
-    "TASK": "WHISPER_TASK",
-    "TEMPERATURE": "WHISPER_TEMPERATURE",
-    "PATIENCE": "WHISPER_PATIENCE",
-    "LENGTH_PENALTY": "WHISPER_LENGTH_PENALTY",
-    "REPETITION_PENALTY": "WHISPER_REPETITION_PENALTY",
-    "NO_REPEAT_NGRAM_SIZE": "WHISPER_NO_REPEAT_NGRAM_SIZE",
-    "PROMPT_RESET_ON_TEMPERATURE": "WHISPER_PROMPT_RESET_ON_TEMPERATURE",
-    "MULTILINGUAL": "WHISPER_MULTILINGUAL",
-    "LANGUAGE_DETECTION_THRESHOLD": "WHISPER_LANGUAGE_DETECTION_THRESHOLD",
-    "LANGUAGE_DETECTION_SEGMENTS": "WHISPER_LANGUAGE_DETECTION_SEGMENTS",
-    "HALLUCINATION_SILENCE_THRESHOLD": "WHISPER_HALLUCINATION_SILENCE_THRESHOLD",
-    "SUPPRESS_BLANK": "WHISPER_SUPPRESS_BLANK",
-    "SUPPRESS_TOKENS": "WHISPER_SUPPRESS_TOKENS",
-    "SUPPRESS_CHARS": "WHISPER_SUPPRESS_CHARS",
-    "PREPEND_PUNCTUATIONS": "WHISPER_PREPEND_PUNCTUATIONS",
-    "APPEND_PUNCTUATIONS": "WHISPER_APPEND_PUNCTUATIONS",
-    "DOWNLOAD_ROOT": "WHISPER_DOWNLOAD_ROOT",
-    "LOCAL_FILES_ONLY": "WHISPER_LOCAL_FILES_ONLY",
-    "HF_TOKEN": "WHISPER_HF_TOKEN",
-    "AUTO_CONVERT_HF_MODELS": "WHISPER_AUTO_CONVERT_HF_MODELS",
-    "CONVERT_QUANTIZATION": "WHISPER_CONVERT_QUANTIZATION",
-    "CONVERTED_MODELS_DIR": "WHISPER_CONVERTED_MODELS_DIR",
-    "CPU_THREADS": "WHISPER_CPU_THREADS",
-    "NUM_WORKERS": "WHISPER_NUM_WORKERS",
-    "DEVICE_INDEX": "WHISPER_DEVICE_INDEX",
-    # Speaker diarization (pyannote — optional install)
-    "DIARIZATION_ENABLED": "WHISPER_DIARIZATION_ENABLED",
-    "DIARIZATION_MODEL": "WHISPER_DIARIZATION_MODEL",
-    "DIARIZATION_DEVICE": "WHISPER_DIARIZATION_DEVICE",
-    "DIARIZATION_IDLE_TIMEOUT_S": "WHISPER_DIARIZATION_IDLE_TIMEOUT_S",
-    "DIARIZATION_EMBEDDING_BATCH_SIZE": "WHISPER_DIARIZATION_EMBEDDING_BATCH_SIZE",
-    "DIARIZE": "WHISPER_DIARIZE",
-    "DIARIZATION_NUM_SPEAKERS": "WHISPER_DIARIZATION_NUM_SPEAKERS",
-    "DIARIZATION_MIN_SPEAKERS": "WHISPER_DIARIZATION_MIN_SPEAKERS",
-    "DIARIZATION_MAX_SPEAKERS": "WHISPER_DIARIZATION_MAX_SPEAKERS",
-    # Background-music separation (UVR — optional install)
-    "BGM_SEPARATION_ENABLED": "WHISPER_BGM_SEPARATION_ENABLED",
-    "BGM_SEPARATION_UVR_MODEL": "WHISPER_BGM_SEPARATION_UVR_MODEL",
-    "BGM_SEPARATION_DEVICE": "WHISPER_BGM_SEPARATION_DEVICE",
-    "BGM_SEPARATION_IDLE_TIMEOUT_S": "WHISPER_BGM_SEPARATION_IDLE_TIMEOUT_S",
-    "SEPARATE_BGM": "WHISPER_SEPARATE_BGM",
-    # Transcribe-from-URL (yt-dlp)
-    "URL_DOWNLOAD_ENABLED": "WHISPER_URL_DOWNLOAD_ENABLED",
-    "URL_ALLOWED_EXTRACTORS": "WHISPER_URL_ALLOWED_EXTRACTORS",
-    "URL_ALLOW_DIRECT_MEDIA": "WHISPER_URL_ALLOW_DIRECT_MEDIA",
-    "URL_ALLOW_GENERIC": "WHISPER_URL_ALLOW_GENERIC",
-    "URL_MAX_DURATION_SEC": "WHISPER_URL_MAX_DURATION_SEC",
-    "URL_MAX_BYTES": "WHISPER_URL_MAX_BYTES",
-    "URL_DOWNLOAD_TIMEOUT_SEC": "WHISPER_URL_DOWNLOAD_TIMEOUT_SEC",
-    "URL_PREVIEW_TIMEOUT_SEC": "WHISPER_URL_PREVIEW_TIMEOUT_SEC",
-    "URL_SOCKET_TIMEOUT_SEC": "WHISPER_URL_SOCKET_TIMEOUT_SEC",
-    "URL_DOWNLOAD_CONCURRENCY": "WHISPER_URL_DOWNLOAD_CONCURRENCY",
-    "URL_MEDIA_DIR": "WHISPER_URL_MEDIA_DIR",
-    "URL_MEDIA_TTL_SEC": "WHISPER_URL_MEDIA_TTL_SEC",
-    "URL_MEDIA_MAX_BYTES": "WHISPER_URL_MEDIA_MAX_BYTES",
-    "TRACE_ENABLED": "WHISPER_TRACE",
-    "LOG_FILE": "WHISPER_LOG_FILE",
-    "LOG_VIEWER_INITIAL_LINES": "WHISPER_LOG_VIEWER_INITIAL_LINES",
-    "LOG_VIEWER_DOM_MAX": "WHISPER_LOG_VIEWER_DOM_MAX",
-    "ADMIN_WEBUI_ALLOWED_HOSTS": "WHISPER_ADMIN_WEBUI_ALLOWED_HOSTS",
-    "USER_WEBUI_ALLOWED_HOSTS": "WHISPER_USER_WEBUI_ALLOWED_HOSTS",
-    "CORS_ALLOW_ORIGINS": "WHISPER_CORS_ALLOW_ORIGINS",
-    "TRUSTED_ORIGINS": "WHISPER_TRUSTED_ORIGINS",
-    # Browser session cookies (HttpOnly cookie auth for the WebUI). All hot.
-    "SESSION_COOKIE_SECURE": "WHISPER_SESSION_COOKIE_SECURE",
-    "SESSION_TTL_SECONDS": "WHISPER_SESSION_TTL_SECONDS",
-    "SESSION_COOKIE_NAME": "WHISPER_SESSION_COOKIE_NAME",
-    "SESSION_CSRF_COOKIE_NAME": "WHISPER_SESSION_CSRF_COOKIE_NAME",
-    # Reports + captures fields — also surfaced in the AdminConfig schema and
-    # also env-readable in config.py. Without these the WebUI silently
-    # succeeds on saves whose env-set values will revert on restart.
-    "REPORTS_DB": "WHISPER_REPORTS_DB",
-    "REPORTS_MAX": "WHISPER_REPORTS_MAX",
-    "REPORTS_RETENTION_DAYS": "WHISPER_REPORTS_RETENTION_DAYS",
-    "REPORTS_ALLOW_USER_SUBMIT": "WHISPER_REPORTS_ALLOW_USER_SUBMIT",
-    "RECENT_TRANSCRIPTIONS_DB": "WHISPER_RECENT_TRANSCRIPTIONS_DB",
-    "RECENT_TRANSCRIPTIONS_MAX": "WHISPER_RECENT_TRANSCRIPTIONS_MAX",
-    "RECENT_TRANSCRIPTIONS_TTL_DAYS": "WHISPER_RECENT_TRANSCRIPTIONS_TTL_DAYS",
-    "RECENT_TRANSCRIPTIONS_PAGE_SIZE": "WHISPER_RECENT_TRANSCRIPTIONS_PAGE_SIZE",
-    "QUICK_CONFIG_MAP_COLLAPSE_AFTER": "WHISPER_QUICK_CONFIG_MAP_COLLAPSE_AFTER",
-    "QUICK_CONFIG_WORD_SUGGESTIONS_MAX": "WHISPER_QUICK_CONFIG_WORD_SUGGESTIONS_MAX",
-    "RECENT_TRANSCRIPTIONS_PRUNE_EVERY": "WHISPER_RECENT_TRANSCRIPTIONS_PRUNE_EVERY",
-    "STATS_RECENT_TRANSCRIPTIONS_COUNT": "WHISPER_STATS_RECENT_TRANSCRIPTIONS_COUNT",
-    "CAPTURE_RECORDINGS_ENABLED": "WHISPER_CAPTURE_RECORDINGS_ENABLED",
-    "CAPTURES_DB": "WHISPER_CAPTURES_DB",
-    "CAPTURES_DIR": "WHISPER_CAPTURES_DIR",
-    "CAPTURES_MAX": "WHISPER_CAPTURES_MAX",
-    "CAPTURES_MAX_MB": "WHISPER_CAPTURES_MAX_MB",
-    "CAPTURES_RETENTION_DAYS": "WHISPER_CAPTURES_RETENTION_DAYS",
-    "CAPTURE_RECORDINGS_SAMPLE_RATE": "WHISPER_CAPTURE_RECORDINGS_SAMPLE_RATE",
-    "CAPTURE_RECORDINGS_MIN_DURATION_SEC": "WHISPER_CAPTURE_RECORDINGS_MIN_DURATION_SEC",
-    "CAPTURE_RECORDINGS_MAX_DURATION_SEC": "WHISPER_CAPTURE_RECORDINGS_MAX_DURATION_SEC",
-    "CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT": "WHISPER_CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT",
-    # Model device / compute (load-time)
-    "MODEL_DEVICE": "WHISPER_MODEL_DEVICE",
-    "MODEL_COMPUTE_TYPE": "WHISPER_MODEL_COMPUTE_TYPE",
-    "MODEL_DEVICE_FALLBACK": "WHISPER_MODEL_DEVICE_FALLBACK",
-    "MODEL_COMPUTE_TYPE_FALLBACK": "WHISPER_MODEL_COMPUTE_TYPE_FALLBACK",
-    "DEFAULT_LANGUAGE": "WHISPER_DEFAULT_LANGUAGE",
-    # Decode quality / VAD
-    "BEAM_SIZE": "WHISPER_BEAM_SIZE",
-    "BEST_OF": "WHISPER_BEST_OF",
-    "VAD_FILTER": "WHISPER_VAD_FILTER",
-    "VAD_MIN_SILENCE_MS": "WHISPER_VAD_MIN_SILENCE_MS",
-    "VAD_SPEECH_PAD_MS": "WHISPER_VAD_SPEECH_PAD_MS",
-    "VAD_THRESHOLD": "WHISPER_VAD_THRESHOLD",
-    "LEADING_SILENCE_PAD_MS": "WHISPER_LEADING_SILENCE_PAD_MS",
-    "CONDITION_ON_PREVIOUS_TEXT": "WHISPER_CONDITION_ON_PREVIOUS_TEXT",
-    "WORD_TIMESTAMPS_ENABLED": "WHISPER_WORD_TIMESTAMPS_ENABLED",
-    "NO_SPEECH_THRESHOLD": "WHISPER_NO_SPEECH_THRESHOLD",
-    "LOG_PROB_THRESHOLD": "WHISPER_LOG_PROB_THRESHOLD",
-    "COMPRESSION_RATIO_THRESHOLD": "WHISPER_COMPRESSION_RATIO_THRESHOLD",
-    "SEGMENT_MAX_WORDS_PER_SEC": "WHISPER_SEGMENT_MAX_WORDS_PER_SEC",
-    # Log rotation (restart-required)
-    "LOG_MAX_BYTES": "WHISPER_LOG_MAX_BYTES",
-    "LOG_BACKUP_COUNT": "WHISPER_LOG_BACKUP_COUNT",
-    # Server binding (restart-required). Note: changing the port in Docker also
-    # requires updating the compose `ports:` mapping.
-    "SERVER_HOST": "WHISPER_SERVER_HOST",
-    "SERVER_PORT": "WHISPER_SERVER_PORT",
-    "SERVER_WORKERS": "WHISPER_SERVER_WORKERS",
-    "SERVER_LOG_LEVEL": "WHISPER_SERVER_LOG_LEVEL",
-    # Request limits
-    "MAX_UPLOAD_BYTES": "WHISPER_MAX_UPLOAD_BYTES",
-    "MAX_REQUEST_BYTES": "WHISPER_MAX_REQUEST_BYTES",
-    # Captures: pipeline exclude + VAD trim
-    "CAPTURES_PIPELINE_RULES_EXCLUDE": "WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE",
-    "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES": "WHISPER_CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES",
-    "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS": "WHISPER_CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS",
-    "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS": "WHISPER_CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS",
-    "CAPTURES_SAMPLE_MIN_DURATION_S": "WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S",
-    "CAPTURES_SAMPLE_MAX_DURATION_S": "WHISPER_CAPTURES_SAMPLE_MAX_DURATION_S",
-    "CAPTURES_SAMPLE_JOIN_STRATEGY": "WHISPER_CAPTURES_SAMPLE_JOIN_STRATEGY",
-    "CAPTURES_PROPOSER_TARGET_S": "WHISPER_CAPTURES_PROPOSER_TARGET_S",
-    "CAPTURES_PROPOSER_SESSION_GAP_S": "WHISPER_CAPTURES_PROPOSER_SESSION_GAP_S",
-    "CAPTURES_PROPOSER_DUP_THRESHOLD": "WHISPER_CAPTURES_PROPOSER_DUP_THRESHOLD",
-    "CAPTURES_PROPOSER_MAX_PROPOSALS": "WHISPER_CAPTURES_PROPOSER_MAX_PROPOSALS",
-    # Live streaming (WebSocket dictation) + shared inference concurrency
-    "STREAMING_ENABLED": "WHISPER_STREAMING_ENABLED",
-    "STREAMING_MAX_SESSIONS": "WHISPER_STREAMING_MAX_SESSIONS",
-    "STREAMING_IDLE_TIMEOUT_SEC": "WHISPER_STREAMING_IDLE_TIMEOUT_SEC",
-    "STREAMING_WS_PING_INTERVAL_SEC": "WHISPER_STREAMING_WS_PING_INTERVAL_SEC",
-    "STREAMING_WS_PING_TIMEOUT_SEC": "WHISPER_STREAMING_WS_PING_TIMEOUT_SEC",
-    "INFERENCE_CONCURRENCY": "WHISPER_INFERENCE_CONCURRENCY",
-    "STREAMING_PARTIAL_MODEL": "WHISPER_STREAMING_PARTIAL_MODEL",
-    "STREAMING_PARTIAL_BEAM": "WHISPER_STREAMING_PARTIAL_BEAM",
-    "STREAMING_PARTIAL_TEMPERATURE": "WHISPER_STREAMING_PARTIAL_TEMPERATURE",
-    "STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT": "WHISPER_STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT",
-    "STREAMING_VAD_BACKEND": "WHISPER_STREAMING_VAD_BACKEND",
-    "STREAMING_VAD_THRESHOLD": "WHISPER_STREAMING_VAD_THRESHOLD",
-    "STREAMING_GATE_RMS_DBFS": "WHISPER_STREAMING_GATE_RMS_DBFS",
-    "STREAMING_PARTIAL_INTERVAL_MS": "WHISPER_STREAMING_PARTIAL_INTERVAL_MS",
-    "STREAMING_GATE_MIN_SPEECH_MS": "WHISPER_STREAMING_GATE_MIN_SPEECH_MS",
-    "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB": "WHISPER_STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
-    "STREAMING_FINAL_DROP_TEMPERATURE": "WHISPER_STREAMING_FINAL_DROP_TEMPERATURE",
-    "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT": "WHISPER_STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT",
-    "STREAMING_TAIL_TRIM_PAD_MS": "WHISPER_STREAMING_TAIL_TRIM_PAD_MS",
-    "STREAMING_VAD_INNER_SILENCE_MS": "WHISPER_STREAMING_VAD_INNER_SILENCE_MS",
-    "STREAMING_VAD_OUTER_SILENCE_MS": "WHISPER_STREAMING_VAD_OUTER_SILENCE_MS",
-    "STREAMING_HARD_BREAK_SILENCE_MS": "WHISPER_STREAMING_HARD_BREAK_SILENCE_MS",
-    "STREAMING_HARD_BREAK_SEPARATOR": "WHISPER_STREAMING_HARD_BREAK_SEPARATOR",
-    "STREAMING_FORCED_COMMIT_SEC": "WHISPER_STREAMING_FORCED_COMMIT_SEC",
-    "STREAMING_BUFFER_TRIM_SEC": "WHISPER_STREAMING_BUFFER_TRIM_SEC",
-    "STREAMING_BUFFER_TRIM_KEEP_SEC": "WHISPER_STREAMING_BUFFER_TRIM_KEEP_SEC",
-    "STREAMING_MAX_BUFFER_SEC": "WHISPER_STREAMING_MAX_BUFFER_SEC",
-    "STREAMING_PROMPT_WORDS": "WHISPER_STREAMING_PROMPT_WORDS",
-    # Structured fields — supplied as a JSON string (config.py parses+validates).
-    # The per-model WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention still works
-    # and merges on top of WHISPER_MODEL_OVERRIDES.
-    "PIPELINE_RULES": "WHISPER_PIPELINE_RULES",
-    "MODEL_OVERRIDES": "WHISPER_MODEL_OVERRIDES",
-    "OVERRIDE_PROFILES": "WHISPER_OVERRIDE_PROFILES",
-    "ALLOW_REQUEST_OVERRIDE_PROFILE": "WHISPER_ALLOW_REQUEST_OVERRIDE_PROFILE",
-    "ALLOW_REQUEST_DECODE_OVERRIDES": "WHISPER_ALLOW_REQUEST_DECODE_OVERRIDES",
-}
-
-# Cold settings — editing these requires a service restart for the new value
-# to take effect. The WebUI shows a 'restart' badge and offers to trigger a
-# self-restart after save. Note: MODEL_DEVICE / MODEL_COMPUTE_TYPE were
-# previously listed here but are now hot — admin save triggers drain-then-
-# evict on the affected loaded models so they reload with the new values.
-RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset({
-    "SERVER_HOST", "SERVER_PORT", "SERVER_WORKERS", "SERVER_LOG_LEVEL",
-    "LOG_FILE", "LOG_MAX_BYTES", "LOG_BACKUP_COUNT",
-    "PRELOAD_MODELS",
-    # The shared GPU inference semaphore is built once at startup.
-    "INFERENCE_CONCURRENCY",
-    # CORSMiddleware is added once at app construction.
-    "CORS_ALLOW_ORIGINS",
-    # Read once at app construction by the unsafe-method origin guard.
-    "TRUSTED_ORIGINS",
-    # WebSocket keepalive is passed once to uvicorn.run.
-    "STREAMING_WS_PING_INTERVAL_SEC", "STREAMING_WS_PING_TIMEOUT_SEC",
-    # The URL-media retention dir is created + wiped once at startup; the
-    # download semaphore is built once on first use.
-    "URL_MEDIA_DIR", "URL_DOWNLOAD_CONCURRENCY",
-})
-
-# Load-time fields. Editing these (globally OR per-model in MODEL_OVERRIDES)
-# triggers drain-then-evict on the affected loaded models so the next request
-# reloads them with the new values. These are read at WhisperModel(...)
-# construction time; changes only take effect after re-load.
-LOAD_TIME_FIELDS: frozenset[str] = frozenset({
-    "MODEL_DEVICE", "MODEL_COMPUTE_TYPE",
-    "MODEL_DEVICE_FALLBACK", "MODEL_COMPUTE_TYPE_FALLBACK",
-    "REVISION", "NUM_WORKERS", "DEVICE_INDEX",
-    "DOWNLOAD_ROOT", "LOCAL_FILES_ONLY", "HF_TOKEN", "CPU_THREADS",
-    "AUTO_CONVERT_HF_MODELS", "CONVERT_QUANTIZATION", "CONVERTED_MODELS_DIR",
-})
-
-# Hot settings whose derived caches need rebuild after edit. The admin route
-# calls main.rebuild_caches() when any of these change.
-CACHE_REBUILD_FIELDS: frozenset[str] = frozenset({"PIPELINE_RULES", "SUPPRESS_CHARS"})
+# ENV_VAR_MAPPING / RESTART_REQUIRED_FIELDS / LOAD_TIME_FIELDS /
+# CACHE_REBUILD_FIELDS / _POST_LOAD_COERCERS / FIELD_GROUPS /
+# CONFIG_TO_CLIENT_KEY / LOCKABLE_FIELDS are GENERATED from the per-field
+# registry metadata declared on each AdminConfig field via _F(...) — see the
+# "Generated field-registry tables" block below the AdminConfig class body.
 
 
 # =============================================================================
@@ -1016,15 +795,95 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def _F(name: str, **kwargs: Any) -> Any:
-    """`Field(default=None, description=FIELD_DESCRIPTIONS[name], **kwargs)`.
+# Valid values for the per-field `scope` registry key:
+#   server      — server-wide only; never overridable per-model or per-request
+#   per_model   — load-time ModelOverride-only fields that are also global
+#                 AdminConfig fields (MODEL_DEVICE, NUM_WORKERS, …)
+#   per_request — call-time / streaming fields shared with ModelOverride and
+#                 OverrideProfile (the lockable decode/streaming scalars)
+_SCOPES = ("server", "per_model", "per_request")
+
+
+def _F(
+    name: str,
+    *,
+    scope: str | None = None,
+    group: str | None,
+    subgroup: str | None = None,
+    order: int | None = None,
+    env: str | None = None,
+    restart: bool = False,
+    load_time: bool = False,
+    cache_rebuild: bool = False,
+    coerce: Any = None,
+    client_key: str | None = None,
+    model_override: bool = True,
+    **kwargs: Any,
+) -> Any:
+    """`Field(default=None, description=FIELD_DESCRIPTIONS[name], **kwargs)`
+    plus the per-field REGISTRY METADATA (stored in json_schema_extra
+    ["x_registry"]) that the generated module-level tables below the
+    AdminConfig class body are derived from:
+
+      scope          REQUIRED — one of _SCOPES (see above). ValueError at
+                     import when missing/unknown, so a new field cannot ship
+                     without declaring its override surface.
+      group          /settings form section title. None = hidden from the
+                     form (edited on a dedicated page, e.g. OVERRIDE_PROFILES).
+      subgroup       Sub-section title within `group` (None = no subheader).
+      order          Explicit position within the (group, subgroup) bucket for
+                     the few subgroups whose display order deviates from the
+                     AdminConfig declaration order. Fields without it sort by
+                     declaration order.
+      env            Env var pinning the field. Default WHISPER_<NAME>; pass
+                     only where the historical name differs (TRACE_ENABLED →
+                     WHISPER_TRACE).
+      restart        Cold setting — service restart required (→ RESTART_
+                     REQUIRED_FIELDS).
+      load_time      Read at WhisperModel(...) construction — edit triggers
+                     drain-then-evict (→ LOAD_TIME_FIELDS).
+      cache_rebuild  Edit requires main.rebuild_caches() (→ CACHE_REBUILD_
+                     FIELDS).
+      coerce         Post-load JSON coercion callable, e.g. `set`
+                     (→ _POST_LOAD_COERCERS).
+      client_key     Lowercase per-request decode_override key the field
+                     governs (→ CONFIG_TO_CLIENT_KEY).
+      model_override True (default) = a per_request field is also a
+                     per-model ModelOverride field; False marks the
+                     streaming-only fields excluded from ModelOverride.
 
     Single-source-of-truth helper: every editable field passes its name to
     this and gets its description wired up automatically. Raises KeyError
     at import time if a name is missing — keeps schema and descriptions
     in lockstep.
     """
-    return Field(default=None, description=FIELD_DESCRIPTIONS[name], **kwargs)
+    if scope not in _SCOPES:
+        raise ValueError(
+            f"AdminConfig field {name!r}: scope={scope!r} is missing or "
+            f"unknown — must be one of {_SCOPES}")
+    if coerce is not None and coerce is not set:
+        raise ValueError(
+            f"AdminConfig field {name!r}: coerce={coerce!r} — only `set` "
+            f"(or None) is supported")
+    # Everything in the registry must stay JSON-serializable: pydantic runs
+    # to_jsonable_python over json_schema_extra whenever model_json_schema()
+    # is generated, so the coercion CALLABLE is stored by name and mapped
+    # back through _COERCERS_BY_NAME when _POST_LOAD_COERCERS is built.
+    registry: dict[str, Any] = {
+        "scope": scope,
+        "group": group,
+        "subgroup": subgroup,
+        "order": order,
+        "env": env or f"WHISPER_{name}",
+        "restart": restart,
+        "load_time": load_time,
+        "cache_rebuild": cache_rebuild,
+        "coerce": "set" if coerce is set else None,
+        "client_key": client_key,
+        "model_override": model_override,
+    }
+    return Field(default=None, description=FIELD_DESCRIPTIONS[name],
+                 json_schema_extra={"x_registry": registry}, **kwargs)
 
 # faster-whisper short name OR HuggingFace repo id (org/name).
 _MODEL_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?$"
@@ -1263,6 +1122,38 @@ PipelineRule = Annotated[
 # list, edited in the global pipeline editor. The per-model pane only toggles
 # inclusion via a checklist.
 
+# Override-schema fields that are NOT AdminConfig fields — they exist ONLY on
+# the override models (ModelOverride / the call-time mixin), never as a global
+# setting. Declared here with the same Annotated types they carry in the
+# override schemas so the generated tables (and, eventually, the generated
+# override models) can source them alongside the AdminConfig registry:
+#   REVISION                — per-model HF snapshot pin; ModelOverride-only,
+#                             load-time (edit → drain-then-evict).
+#   PIPELINE_RULES_EXCLUDE/ — per-bundle rule scoping lists; call-time-mixin-
+#   PIPELINE_RULES_INCLUDE    only and NOT lockable (rules resolve via the
+#                             rule path, not the scalar-lock path).
+_VIRTUAL_OVERRIDE_FIELDS: dict[str, dict[str, Any]] = {
+    "REVISION": {
+        "annotation": Annotated[str, Field(min_length=1, max_length=128)] | None,
+        "scope": "per_model",
+        "load_time": True,
+        "lockable": False,
+    },
+    "PIPELINE_RULES_EXCLUDE": {
+        "annotation": Annotated[list[RuleSlug], Field(max_length=200)] | None,
+        "scope": "per_request",
+        "load_time": False,
+        "lockable": False,
+    },
+    "PIPELINE_RULES_INCLUDE": {
+        "annotation": Annotated[list[RuleSlug], Field(max_length=200)] | None,
+        "scope": "per_request",
+        "load_time": False,
+        "lockable": False,
+    },
+}
+
+
 class _CallTimeOverrideMixin(BaseModel):
     """Call-time (decode + post-processing) override fields, shared by
     ModelOverride (per-model) and OverrideProfile (per-identity) so the bounds
@@ -1404,13 +1295,10 @@ class _StreamingOverrideMixin(BaseModel):
     STREAMING_BUFFER_TRIM_KEEP_SEC: Annotated[float, Field(ge=2.0, le=29.0)] | None = None
 
 
-# Fields whose resolved value a client per-request decode_override may be
-# LOCKED against — every overridable scalar, i.e. everything except the
-# pipeline include/exclude lists (which are not client-overridable). Derived
-# from the schemas so it can never drift from the field definitions above.
-LOCKABLE_FIELDS: frozenset[str] = frozenset(
-    set(_CallTimeOverrideMixin.model_fields) | set(_StreamingOverrideMixin.model_fields)
-) - {"PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE"}
+# LOCKABLE_FIELDS is generated from the per-field registry (scope=
+# "per_request") in the "Generated field-registry tables" block below the
+# AdminConfig class body. OverrideProfile._validate_locks reads the module
+# global at validation time, long after import completes.
 
 
 class OverrideProfile(_CallTimeOverrideMixin, _StreamingOverrideMixin):
@@ -1458,167 +1346,423 @@ class AdminConfig(BaseModel):
     model_config = {"extra": "forbid", "protected_namespaces": ()}
 
     # --- Models ---
-    DEFAULT_MODEL: ModelId | None = _F("DEFAULT_MODEL")
+    DEFAULT_MODEL: ModelId | None = _F(
+        "DEFAULT_MODEL", scope="server", group="Models", order=1)
     # Sets serialize as JSON arrays; convert back on load. List type here lets
     # us validate per-element via the ModelId Annotated type.
-    ALLOWED_MODELS: list[ModelId] | None = _F("ALLOWED_MODELS")
-    MAX_LOADED_MODELS: Annotated[int, Field(ge=1, le=8)] | None = _F("MAX_LOADED_MODELS")
-    MODEL_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F("MODEL_IDLE_TIMEOUT_S")
-    PRELOAD_MODELS: list[ModelId] | None = _F("PRELOAD_MODELS")
-    MODEL_DEVICE: DeviceLit | None = _F("MODEL_DEVICE")
-    MODEL_COMPUTE_TYPE: ComputeLit | None = _F("MODEL_COMPUTE_TYPE")
-    MODEL_DEVICE_FALLBACK: DeviceLit | None = _F("MODEL_DEVICE_FALLBACK")
-    MODEL_COMPUTE_TYPE_FALLBACK: ComputeLit | None = _F("MODEL_COMPUTE_TYPE_FALLBACK")
+    ALLOWED_MODELS: list[ModelId] | None = _F(
+        "ALLOWED_MODELS", scope="server", group="Models", order=2,
+        coerce=set)
+    MAX_LOADED_MODELS: Annotated[int, Field(ge=1, le=8)] | None = _F(
+        "MAX_LOADED_MODELS", scope="server", group="Models", order=4)
+    MODEL_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F(
+        "MODEL_IDLE_TIMEOUT_S", scope="server", group="Models", order=5)
+    PRELOAD_MODELS: list[ModelId] | None = _F(
+        "PRELOAD_MODELS", scope="server", group="Models", order=3,
+        restart=True)
+    MODEL_DEVICE: DeviceLit | None = _F(
+        "MODEL_DEVICE", scope="per_model", group="Models", order=6,
+        load_time=True)
+    MODEL_COMPUTE_TYPE: ComputeLit | None = _F(
+        "MODEL_COMPUTE_TYPE", scope="per_model", group="Models", order=7,
+        load_time=True)
+    MODEL_DEVICE_FALLBACK: DeviceLit | None = _F(
+        "MODEL_DEVICE_FALLBACK", scope="per_model", group="Models", order=8,
+        load_time=True)
+    MODEL_COMPUTE_TYPE_FALLBACK: ComputeLit | None = _F(
+        "MODEL_COMPUTE_TYPE_FALLBACK", scope="per_model", group="Models",
+        order=9, load_time=True)
 
     # --- Decode params (transcribe-time) ---
-    DEFAULT_LANGUAGE: Annotated[str, Field(pattern=r"^([a-z]{2})?$")] | None = _F("DEFAULT_LANGUAGE")
-    DEFAULT_PROMPT: Annotated[str, Field(max_length=2048)] | None = _F("DEFAULT_PROMPT")
-    BEAM_SIZE: Annotated[int, Field(ge=1, le=20)] | None = _F("BEAM_SIZE")
-    BEST_OF: Annotated[int, Field(ge=1, le=20)] | None = _F("BEST_OF")
-    VAD_FILTER: bool | None = _F("VAD_FILTER")
-    VAD_MIN_SILENCE_MS: Annotated[int, Field(ge=0, le=10000)] | None = _F("VAD_MIN_SILENCE_MS")
-    VAD_SPEECH_PAD_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("VAD_SPEECH_PAD_MS")
-    VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("VAD_THRESHOLD")
-    LEADING_SILENCE_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("LEADING_SILENCE_PAD_MS")
-    CONDITION_ON_PREVIOUS_TEXT: bool | None = _F("CONDITION_ON_PREVIOUS_TEXT")
-    WORD_TIMESTAMPS_ENABLED: bool | None = _F("WORD_TIMESTAMPS_ENABLED")
-    NO_SPEECH_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("NO_SPEECH_THRESHOLD")
-    LOG_PROB_THRESHOLD: Annotated[float, Field(ge=-10.0, le=0.0)] | None = _F("LOG_PROB_THRESHOLD")
-    COMPRESSION_RATIO_THRESHOLD: Annotated[float, Field(ge=0.0, le=10.0)] | None = _F("COMPRESSION_RATIO_THRESHOLD")
+    DEFAULT_LANGUAGE: Annotated[str, Field(pattern=r"^([a-z]{2})?$")] | None = _F(
+        "DEFAULT_LANGUAGE", scope="per_request", group="Decode params",
+        order=1)
+    DEFAULT_PROMPT: Annotated[str, Field(max_length=2048)] | None = _F(
+        "DEFAULT_PROMPT", scope="per_request", group="Decode params",
+        order=2)
+    BEAM_SIZE: Annotated[int, Field(ge=1, le=20)] | None = _F(
+        "BEAM_SIZE", scope="per_request", group="Decode params", order=5,
+        client_key="beam_size")
+    BEST_OF: Annotated[int, Field(ge=1, le=20)] | None = _F(
+        "BEST_OF", scope="per_request", group="Decode params", order=6,
+        client_key="best_of")
+    VAD_FILTER: bool | None = _F(
+        "VAD_FILTER", scope="per_request", group="Decode params", order=7,
+        client_key="vad_filter")
+    VAD_MIN_SILENCE_MS: Annotated[int, Field(ge=0, le=10000)] | None = _F(
+        "VAD_MIN_SILENCE_MS", scope="per_request", group="Decode params",
+        order=8, client_key="vad_min_silence_duration_ms")
+    VAD_SPEECH_PAD_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F(
+        "VAD_SPEECH_PAD_MS", scope="per_request", group="Decode params",
+        order=9, client_key="vad_speech_pad_ms")
+    VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
+        "VAD_THRESHOLD", scope="per_request", group="Decode params",
+        order=10, client_key="vad_threshold")
+    LEADING_SILENCE_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F(
+        "LEADING_SILENCE_PAD_MS", scope="per_request", group="Decode params",
+        order=11)
+    CONDITION_ON_PREVIOUS_TEXT: bool | None = _F(
+        "CONDITION_ON_PREVIOUS_TEXT", scope="per_request",
+        group="Decode params", order=12,
+        client_key="condition_on_previous_text")
+    WORD_TIMESTAMPS_ENABLED: bool | None = _F(
+        "WORD_TIMESTAMPS_ENABLED", scope="per_request",
+        group="Decode params", order=13)
+    NO_SPEECH_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
+        "NO_SPEECH_THRESHOLD", scope="per_request", group="Decode params",
+        order=14, client_key="no_speech_threshold")
+    LOG_PROB_THRESHOLD: Annotated[float, Field(ge=-10.0, le=0.0)] | None = _F(
+        "LOG_PROB_THRESHOLD", scope="per_request", group="Decode params",
+        order=15, client_key="log_prob_threshold")
+    COMPRESSION_RATIO_THRESHOLD: Annotated[float, Field(ge=0.0, le=10.0)] | None = _F(
+        "COMPRESSION_RATIO_THRESHOLD", scope="per_request",
+        group="Decode params", order=16,
+        client_key="compression_ratio_threshold")
 
     # --- Decode params (advanced) ---
-    DEFAULT_HOTWORDS: Annotated[str, Field(max_length=2048)] | None = _F("DEFAULT_HOTWORDS")
-    TASK: TaskLit | None = _F("TASK")
-    TEMPERATURE: Annotated[str, Field(max_length=64)] | None = _F("TEMPERATURE")
-    PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = _F("PATIENCE")
-    LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = _F("LENGTH_PENALTY")
-    REPETITION_PENALTY: Annotated[float, Field(ge=0.5, le=5.0)] | None = _F("REPETITION_PENALTY")
-    NO_REPEAT_NGRAM_SIZE: Annotated[int, Field(ge=0, le=10)] | None = _F("NO_REPEAT_NGRAM_SIZE")
-    PROMPT_RESET_ON_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("PROMPT_RESET_ON_TEMPERATURE")
+    DEFAULT_HOTWORDS: Annotated[str, Field(max_length=2048)] | None = _F(
+        "DEFAULT_HOTWORDS", scope="per_request", group="Decode params",
+        order=3, client_key="hotwords")
+    TASK: TaskLit | None = _F(
+        "TASK", scope="per_request", group="Decode params", order=4)
+    TEMPERATURE: Annotated[str, Field(max_length=64)] | None = _F(
+        "TEMPERATURE", scope="per_request", group="Decode params",
+        subgroup="Advanced — beam & sampling", client_key="temperature")
+    PATIENCE: Annotated[float, Field(ge=0.5, le=5.0)] | None = _F(
+        "PATIENCE", scope="per_request", group="Decode params",
+        subgroup="Advanced — beam & sampling", client_key="patience")
+    LENGTH_PENALTY: Annotated[float, Field(ge=0.1, le=5.0)] | None = _F(
+        "LENGTH_PENALTY", scope="per_request", group="Decode params",
+        subgroup="Advanced — beam & sampling", client_key="length_penalty")
+    REPETITION_PENALTY: Annotated[float, Field(ge=0.5, le=5.0)] | None = _F(
+        "REPETITION_PENALTY", scope="per_request", group="Decode params",
+        subgroup="Advanced — beam & sampling",
+        client_key="repetition_penalty")
+    NO_REPEAT_NGRAM_SIZE: Annotated[int, Field(ge=0, le=10)] | None = _F(
+        "NO_REPEAT_NGRAM_SIZE", scope="per_request", group="Decode params",
+        subgroup="Advanced — beam & sampling",
+        client_key="no_repeat_ngram_size")
+    PROMPT_RESET_ON_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
+        "PROMPT_RESET_ON_TEMPERATURE", scope="per_request",
+        group="Decode params", subgroup="Advanced — beam & sampling")
 
     # --- Language detection (active when DEFAULT_LANGUAGE is empty) ---
-    MULTILINGUAL: bool | None = _F("MULTILINGUAL")
-    LANGUAGE_DETECTION_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("LANGUAGE_DETECTION_THRESHOLD")
-    LANGUAGE_DETECTION_SEGMENTS: Annotated[int, Field(ge=1, le=10)] | None = _F("LANGUAGE_DETECTION_SEGMENTS")
+    MULTILINGUAL: bool | None = _F(
+        "MULTILINGUAL", scope="per_request", group="Decode params",
+        subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)")
+    LANGUAGE_DETECTION_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
+        "LANGUAGE_DETECTION_THRESHOLD", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)")
+    LANGUAGE_DETECTION_SEGMENTS: Annotated[int, Field(ge=1, le=10)] | None = _F(
+        "LANGUAGE_DETECTION_SEGMENTS", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)")
 
     # --- Anti-hallucination & token control ---
-    HALLUCINATION_SILENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=60.0)] | None = _F("HALLUCINATION_SILENCE_THRESHOLD")
-    SEGMENT_MAX_WORDS_PER_SEC: Annotated[float, Field(ge=0.0, le=100.0)] | None = _F("SEGMENT_MAX_WORDS_PER_SEC")
-    SUPPRESS_BLANK: bool | None = _F("SUPPRESS_BLANK")
-    SUPPRESS_TOKENS: Annotated[str, Field(max_length=256)] | None = _F("SUPPRESS_TOKENS")
-    SUPPRESS_CHARS: Annotated[str, Field(max_length=64)] | None = _F("SUPPRESS_CHARS")
-    PREPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = _F("PREPEND_PUNCTUATIONS")
-    APPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = _F("APPEND_PUNCTUATIONS")
+    HALLUCINATION_SILENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=60.0)] | None = _F(
+        "HALLUCINATION_SILENCE_THRESHOLD", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control")
+    SEGMENT_MAX_WORDS_PER_SEC: Annotated[float, Field(ge=0.0, le=100.0)] | None = _F(
+        "SEGMENT_MAX_WORDS_PER_SEC", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control")
+    SUPPRESS_BLANK: bool | None = _F(
+        "SUPPRESS_BLANK", scope="per_request", group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control")
+    SUPPRESS_TOKENS: Annotated[str, Field(max_length=256)] | None = _F(
+        "SUPPRESS_TOKENS", scope="per_request", group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control",
+        client_key="suppress_tokens")
+    SUPPRESS_CHARS: Annotated[str, Field(max_length=64)] | None = _F(
+        "SUPPRESS_CHARS", scope="per_request", group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control",
+        cache_rebuild=True)
+    PREPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = _F(
+        "PREPEND_PUNCTUATIONS", scope="per_request", group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control",
+        client_key="prepend_punctuations")
+    APPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = _F(
+        "APPEND_PUNCTUATIONS", scope="per_request", group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control",
+        client_key="append_punctuations")
 
     # --- Output wrappers (NOT a faster-whisper param; backend-level) ---
-    OUTPUT_PREFIX: Annotated[str, Field(max_length=512)] | None = _F("OUTPUT_PREFIX")
-    OUTPUT_SUFFIX: Annotated[str, Field(max_length=512)] | None = _F("OUTPUT_SUFFIX")
+    OUTPUT_PREFIX: Annotated[str, Field(max_length=512)] | None = _F(
+        "OUTPUT_PREFIX", scope="per_request", group="Output wrappers")
+    OUTPUT_SUFFIX: Annotated[str, Field(max_length=512)] | None = _F(
+        "OUTPUT_SUFFIX", scope="per_request", group="Output wrappers")
 
     # --- Live streaming (WebSocket dictation) ---
-    STREAMING_ENABLED: bool | None = _F("STREAMING_ENABLED")
-    STREAMING_MAX_SESSIONS: Annotated[int, Field(ge=1, le=256)] | None = _F("STREAMING_MAX_SESSIONS")
-    STREAMING_IDLE_TIMEOUT_SEC: Annotated[float, Field(ge=0.0, le=3600.0)] | None = _F("STREAMING_IDLE_TIMEOUT_SEC")
-    STREAMING_WS_PING_INTERVAL_SEC: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F("STREAMING_WS_PING_INTERVAL_SEC")
-    STREAMING_WS_PING_TIMEOUT_SEC: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F("STREAMING_WS_PING_TIMEOUT_SEC")
-    INFERENCE_CONCURRENCY: Annotated[int, Field(ge=1, le=64)] | None = _F("INFERENCE_CONCURRENCY")
-    STREAMING_PARTIAL_MODEL: Annotated[str, Field(max_length=96)] | None = _F("STREAMING_PARTIAL_MODEL")
-    STREAMING_PARTIAL_BEAM: Annotated[int, Field(ge=1, le=20)] | None = _F("STREAMING_PARTIAL_BEAM")
-    STREAMING_PARTIAL_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("STREAMING_PARTIAL_TEMPERATURE")
-    STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = _F("STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT")
-    STREAMING_VAD_BACKEND: Literal["auto", "silero", "energy"] | None = _F("STREAMING_VAD_BACKEND")
-    STREAMING_VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("STREAMING_VAD_THRESHOLD")
-    STREAMING_GATE_RMS_DBFS: Annotated[float, Field(ge=-90.0, le=0.0)] | None = _F("STREAMING_GATE_RMS_DBFS")
-    STREAMING_PARTIAL_INTERVAL_MS: Annotated[int, Field(ge=200, le=5000)] | None = _F("STREAMING_PARTIAL_INTERVAL_MS")
-    STREAMING_GATE_MIN_SPEECH_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_GATE_MIN_SPEECH_MS")
-    STREAMING_FINAL_DROP_MIN_AVG_LOGPROB: Annotated[float, Field(ge=-100.0, le=0.0)] | None = _F("STREAMING_FINAL_DROP_MIN_AVG_LOGPROB")
-    STREAMING_FINAL_DROP_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("STREAMING_FINAL_DROP_TEMPERATURE")
-    STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = _F("STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT")
-    STREAMING_TAIL_TRIM_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_TAIL_TRIM_PAD_MS")
-    STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F("STREAMING_VAD_INNER_SILENCE_MS")
-    STREAMING_VAD_OUTER_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = _F("STREAMING_VAD_OUTER_SILENCE_MS")
-    STREAMING_HARD_BREAK_SILENCE_MS: Annotated[int, Field(ge=0, le=120000)] | None = _F("STREAMING_HARD_BREAK_SILENCE_MS")
-    STREAMING_HARD_BREAK_SEPARATOR: Annotated[str, Field(max_length=8)] | None = _F("STREAMING_HARD_BREAK_SEPARATOR")
-    STREAMING_FORCED_COMMIT_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F("STREAMING_FORCED_COMMIT_SEC")
-    STREAMING_BUFFER_TRIM_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F("STREAMING_BUFFER_TRIM_SEC")
-    STREAMING_BUFFER_TRIM_KEEP_SEC: Annotated[float, Field(ge=2.0, le=29.0)] | None = _F("STREAMING_BUFFER_TRIM_KEEP_SEC")
+    STREAMING_ENABLED: bool | None = _F(
+        "STREAMING_ENABLED", scope="server", group="Live streaming", order=1)
+    STREAMING_MAX_SESSIONS: Annotated[int, Field(ge=1, le=256)] | None = _F(
+        "STREAMING_MAX_SESSIONS", scope="server", group="Live streaming",
+        order=2)
+    STREAMING_IDLE_TIMEOUT_SEC: Annotated[float, Field(ge=0.0, le=3600.0)] | None = _F(
+        "STREAMING_IDLE_TIMEOUT_SEC", scope="per_request",
+        group="Live streaming", order=4, model_override=False)
+    STREAMING_WS_PING_INTERVAL_SEC: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F(
+        "STREAMING_WS_PING_INTERVAL_SEC", scope="server",
+        group="Live streaming", order=5, restart=True)
+    STREAMING_WS_PING_TIMEOUT_SEC: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F(
+        "STREAMING_WS_PING_TIMEOUT_SEC", scope="server",
+        group="Live streaming", order=6, restart=True)
+    INFERENCE_CONCURRENCY: Annotated[int, Field(ge=1, le=64)] | None = _F(
+        "INFERENCE_CONCURRENCY", scope="server", group="Live streaming",
+        order=3, restart=True)
+    STREAMING_PARTIAL_MODEL: Annotated[str, Field(max_length=96)] | None = _F(
+        "STREAMING_PARTIAL_MODEL", scope="server", group="Live streaming",
+        subgroup="Partial decoding (live preview)")
+    STREAMING_PARTIAL_BEAM: Annotated[int, Field(ge=1, le=20)] | None = _F(
+        "STREAMING_PARTIAL_BEAM", scope="per_request",
+        group="Live streaming", subgroup="Partial decoding (live preview)",
+        model_override=False)
+    STREAMING_PARTIAL_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
+        "STREAMING_PARTIAL_TEMPERATURE", scope="per_request",
+        group="Live streaming", subgroup="Partial decoding (live preview)",
+        model_override=False)
+    STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = _F(
+        "STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT", scope="per_request",
+        group="Live streaming", subgroup="Partial decoding (live preview)",
+        model_override=False)
+    STREAMING_VAD_BACKEND: Literal["auto", "silero", "energy"] | None = _F(
+        "STREAMING_VAD_BACKEND", scope="per_request", group="Live streaming",
+        subgroup="Endpointing (VAD) & speech gates", order=1,
+        model_override=False)
+    STREAMING_VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
+        "STREAMING_VAD_THRESHOLD", scope="per_request",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=2, model_override=False)
+    STREAMING_GATE_RMS_DBFS: Annotated[float, Field(ge=-90.0, le=0.0)] | None = _F(
+        "STREAMING_GATE_RMS_DBFS", scope="per_request",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=4, model_override=False)
+    STREAMING_PARTIAL_INTERVAL_MS: Annotated[int, Field(ge=200, le=5000)] | None = _F(
+        "STREAMING_PARTIAL_INTERVAL_MS", scope="per_request",
+        group="Live streaming", subgroup="Partial decoding (live preview)",
+        model_override=False)
+    STREAMING_GATE_MIN_SPEECH_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F(
+        "STREAMING_GATE_MIN_SPEECH_MS", scope="per_request",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=3, model_override=False)
+    STREAMING_FINAL_DROP_MIN_AVG_LOGPROB: Annotated[float, Field(ge=-100.0, le=0.0)] | None = _F(
+        "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", scope="server",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=7)
+    STREAMING_FINAL_DROP_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
+        "STREAMING_FINAL_DROP_TEMPERATURE", scope="server",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=8)
+    STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = _F(
+        "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT", scope="per_request",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=9, model_override=False)
+    STREAMING_TAIL_TRIM_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F(
+        "STREAMING_TAIL_TRIM_PAD_MS", scope="per_request",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=10, model_override=False)
+    STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F(
+        "STREAMING_VAD_INNER_SILENCE_MS", scope="per_request",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=5, model_override=False)
+    STREAMING_VAD_OUTER_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = _F(
+        "STREAMING_VAD_OUTER_SILENCE_MS", scope="per_request",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=6, model_override=False)
+    STREAMING_HARD_BREAK_SILENCE_MS: Annotated[int, Field(ge=0, le=120000)] | None = _F(
+        "STREAMING_HARD_BREAK_SILENCE_MS", scope="per_request",
+        group="Live streaming", subgroup="Finalize & document breaks",
+        order=2, model_override=False)
+    STREAMING_HARD_BREAK_SEPARATOR: Annotated[str, Field(max_length=8)] | None = _F(
+        "STREAMING_HARD_BREAK_SEPARATOR", scope="per_request",
+        group="Live streaming", subgroup="Finalize & document breaks",
+        order=3, model_override=False)
+    STREAMING_FORCED_COMMIT_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F(
+        "STREAMING_FORCED_COMMIT_SEC", scope="per_request",
+        group="Live streaming", subgroup="Finalize & document breaks",
+        order=1, model_override=False)
+    STREAMING_BUFFER_TRIM_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F(
+        "STREAMING_BUFFER_TRIM_SEC", scope="per_request",
+        group="Live streaming", subgroup="Buffer management",
+        model_override=False)
+    STREAMING_BUFFER_TRIM_KEEP_SEC: Annotated[float, Field(ge=2.0, le=29.0)] | None = _F(
+        "STREAMING_BUFFER_TRIM_KEEP_SEC", scope="per_request",
+        group="Live streaming", subgroup="Buffer management",
+        model_override=False)
     # Lower bound sits above the FORCED_COMMIT_SEC ceiling (29) so this can never
     # be tuned down into the range where it would fire during real dictation.
-    STREAMING_MAX_BUFFER_SEC: Annotated[float, Field(ge=60.0, le=3600.0)] | None = _F("STREAMING_MAX_BUFFER_SEC")
-    STREAMING_PROMPT_WORDS: Annotated[int, Field(ge=0, le=400)] | None = _F("STREAMING_PROMPT_WORDS")
+    STREAMING_MAX_BUFFER_SEC: Annotated[float, Field(ge=60.0, le=3600.0)] | None = _F(
+        "STREAMING_MAX_BUFFER_SEC", scope="server", group="Live streaming",
+        subgroup="Buffer management")
+    STREAMING_PROMPT_WORDS: Annotated[int, Field(ge=0, le=400)] | None = _F(
+        "STREAMING_PROMPT_WORDS", scope="per_request",
+        group="Live streaming", subgroup="Finalize & document breaks",
+        order=4, model_override=False)
 
     # --- Load-time, hardware (advanced) ---
-    DOWNLOAD_ROOT: Annotated[str, Field(max_length=512)] | None = _F("DOWNLOAD_ROOT")
-    LOCAL_FILES_ONLY: bool | None = _F("LOCAL_FILES_ONLY")
-    HF_TOKEN: Annotated[str, Field(max_length=256)] | None = _F("HF_TOKEN")
-    AUTO_CONVERT_HF_MODELS: bool | None = _F("AUTO_CONVERT_HF_MODELS")
-    CONVERT_QUANTIZATION: ConvertQuantLit | None = _F("CONVERT_QUANTIZATION")
-    CONVERTED_MODELS_DIR: Annotated[str, Field(max_length=512)] | None = _F("CONVERTED_MODELS_DIR")
-    CPU_THREADS: Annotated[int, Field(ge=0, le=128)] | None = _F("CPU_THREADS")
-    NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F("NUM_WORKERS")
-    DEVICE_INDEX: Annotated[int, Field(ge=0, le=15)] | None = _F("DEVICE_INDEX")
+    DOWNLOAD_ROOT: Annotated[str, Field(max_length=512)] | None = _F(
+        "DOWNLOAD_ROOT", scope="server", group="Models",
+        subgroup="Advanced — load-time hardware", load_time=True)
+    LOCAL_FILES_ONLY: bool | None = _F(
+        "LOCAL_FILES_ONLY", scope="server", group="Models",
+        subgroup="Advanced — load-time hardware", load_time=True)
+    HF_TOKEN: Annotated[str, Field(max_length=256)] | None = _F(
+        "HF_TOKEN", scope="server", group="Models",
+        subgroup="Advanced — load-time hardware", load_time=True)
+    AUTO_CONVERT_HF_MODELS: bool | None = _F(
+        "AUTO_CONVERT_HF_MODELS", scope="server", group="Models",
+        subgroup="Advanced — load-time hardware", load_time=True)
+    CONVERT_QUANTIZATION: ConvertQuantLit | None = _F(
+        "CONVERT_QUANTIZATION", scope="server", group="Models",
+        subgroup="Advanced — load-time hardware", load_time=True)
+    CONVERTED_MODELS_DIR: Annotated[str, Field(max_length=512)] | None = _F(
+        "CONVERTED_MODELS_DIR", scope="server", group="Models",
+        subgroup="Advanced — load-time hardware", load_time=True)
+    CPU_THREADS: Annotated[int, Field(ge=0, le=128)] | None = _F(
+        "CPU_THREADS", scope="server", group="Models",
+        subgroup="Advanced — load-time hardware", load_time=True)
+    NUM_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F(
+        "NUM_WORKERS", scope="per_model", group="Models",
+        subgroup="Advanced — load-time hardware", load_time=True)
+    DEVICE_INDEX: Annotated[int, Field(ge=0, le=15)] | None = _F(
+        "DEVICE_INDEX", scope="per_model", group="Models",
+        subgroup="Advanced — load-time hardware", load_time=True)
 
     # --- Speaker diarization ---
-    DIARIZATION_ENABLED: bool | None = _F("DIARIZATION_ENABLED")
-    DIARIZATION_MODEL: DiarizationModelLit | None = _F("DIARIZATION_MODEL")
-    DIARIZATION_DEVICE: DiarizationDeviceLit | None = _F("DIARIZATION_DEVICE")
-    DIARIZATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F("DIARIZATION_IDLE_TIMEOUT_S")
-    DIARIZATION_EMBEDDING_BATCH_SIZE: Annotated[int, Field(ge=1, le=64)] | None = _F("DIARIZATION_EMBEDDING_BATCH_SIZE")
-    DIARIZE: bool | None = _F("DIARIZE")
-    DIARIZATION_NUM_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F("DIARIZATION_NUM_SPEAKERS")
-    DIARIZATION_MIN_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F("DIARIZATION_MIN_SPEAKERS")
-    DIARIZATION_MAX_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F("DIARIZATION_MAX_SPEAKERS")
+    DIARIZATION_ENABLED: bool | None = _F(
+        "DIARIZATION_ENABLED", scope="server", group="Diarization")
+    DIARIZATION_MODEL: DiarizationModelLit | None = _F(
+        "DIARIZATION_MODEL", scope="server", group="Diarization")
+    DIARIZATION_DEVICE: DiarizationDeviceLit | None = _F(
+        "DIARIZATION_DEVICE", scope="server", group="Diarization")
+    DIARIZATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F(
+        "DIARIZATION_IDLE_TIMEOUT_S", scope="server", group="Diarization")
+    DIARIZATION_EMBEDDING_BATCH_SIZE: Annotated[int, Field(ge=1, le=64)] | None = _F(
+        "DIARIZATION_EMBEDDING_BATCH_SIZE", scope="server",
+        group="Diarization", subgroup="Advanced — speaker bounds & VRAM",
+        order=4)
+    DIARIZE: bool | None = _F(
+        "DIARIZE", scope="per_request", group="Diarization")
+    DIARIZATION_NUM_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F(
+        "DIARIZATION_NUM_SPEAKERS", scope="per_request", group="Diarization",
+        subgroup="Advanced — speaker bounds & VRAM", order=1)
+    DIARIZATION_MIN_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F(
+        "DIARIZATION_MIN_SPEAKERS", scope="per_request", group="Diarization",
+        subgroup="Advanced — speaker bounds & VRAM", order=2)
+    DIARIZATION_MAX_SPEAKERS: Annotated[int, Field(ge=1, le=32)] | None = _F(
+        "DIARIZATION_MAX_SPEAKERS", scope="per_request", group="Diarization",
+        subgroup="Advanced — speaker bounds & VRAM", order=3)
 
     # --- Background-music separation ---
-    BGM_SEPARATION_ENABLED: bool | None = _F("BGM_SEPARATION_ENABLED")
-    BGM_SEPARATION_UVR_MODEL: Annotated[str, Field(min_length=1, max_length=128)] | None = _F("BGM_SEPARATION_UVR_MODEL")
-    BGM_SEPARATION_DEVICE: DiarizationDeviceLit | None = _F("BGM_SEPARATION_DEVICE")
-    BGM_SEPARATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F("BGM_SEPARATION_IDLE_TIMEOUT_S")
-    SEPARATE_BGM: bool | None = _F("SEPARATE_BGM")
+    BGM_SEPARATION_ENABLED: bool | None = _F(
+        "BGM_SEPARATION_ENABLED", scope="server", group="Music separation")
+    BGM_SEPARATION_UVR_MODEL: Annotated[str, Field(min_length=1, max_length=128)] | None = _F(
+        "BGM_SEPARATION_UVR_MODEL", scope="server", group="Music separation")
+    BGM_SEPARATION_DEVICE: DiarizationDeviceLit | None = _F(
+        "BGM_SEPARATION_DEVICE", scope="server", group="Music separation")
+    BGM_SEPARATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F(
+        "BGM_SEPARATION_IDLE_TIMEOUT_S", scope="server",
+        group="Music separation")
+    SEPARATE_BGM: bool | None = _F(
+        "SEPARATE_BGM", scope="per_request", group="Music separation")
 
     # --- Transcribe-from-URL (yt-dlp) ---
-    URL_DOWNLOAD_ENABLED: bool | None = _F("URL_DOWNLOAD_ENABLED")
+    URL_DOWNLOAD_ENABLED: bool | None = _F(
+        "URL_DOWNLOAD_ENABLED", scope="server", group="Transcribe from URL")
     URL_ALLOWED_EXTRACTORS: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=128),
-    ] | None = _F("URL_ALLOWED_EXTRACTORS")
-    URL_ALLOW_DIRECT_MEDIA: bool | None = _F("URL_ALLOW_DIRECT_MEDIA")
-    URL_ALLOW_GENERIC: bool | None = _F("URL_ALLOW_GENERIC")
-    URL_MAX_DURATION_SEC: Annotated[int, Field(ge=1, le=86400 * 7)] | None = _F("URL_MAX_DURATION_SEC")
-    URL_MAX_BYTES: Annotated[int, Field(ge=0, le=10_000_000_000)] | None = _F("URL_MAX_BYTES")
-    URL_DOWNLOAD_TIMEOUT_SEC: Annotated[int, Field(ge=10, le=86400)] | None = _F("URL_DOWNLOAD_TIMEOUT_SEC")
-    URL_PREVIEW_TIMEOUT_SEC: Annotated[int, Field(ge=1, le=300)] | None = _F("URL_PREVIEW_TIMEOUT_SEC")
-    URL_SOCKET_TIMEOUT_SEC: Annotated[int, Field(ge=1, le=600)] | None = _F("URL_SOCKET_TIMEOUT_SEC")
-    URL_DOWNLOAD_CONCURRENCY: Annotated[int, Field(ge=1, le=16)] | None = _F("URL_DOWNLOAD_CONCURRENCY")
-    URL_MEDIA_DIR: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("URL_MEDIA_DIR")
-    URL_MEDIA_TTL_SEC: Annotated[int, Field(ge=10, le=86400 * 7)] | None = _F("URL_MEDIA_TTL_SEC")
-    URL_MEDIA_MAX_BYTES: Annotated[int, Field(ge=0, le=100_000_000_000)] | None = _F("URL_MEDIA_MAX_BYTES")
+    ] | None = _F(
+        "URL_ALLOWED_EXTRACTORS", scope="server",
+        group="Transcribe from URL")
+    URL_ALLOW_DIRECT_MEDIA: bool | None = _F(
+        "URL_ALLOW_DIRECT_MEDIA", scope="server",
+        group="Transcribe from URL")
+    URL_ALLOW_GENERIC: bool | None = _F(
+        "URL_ALLOW_GENERIC", scope="server", group="Transcribe from URL")
+    URL_MAX_DURATION_SEC: Annotated[int, Field(ge=1, le=86400 * 7)] | None = _F(
+        "URL_MAX_DURATION_SEC", scope="server", group="Transcribe from URL")
+    URL_MAX_BYTES: Annotated[int, Field(ge=0, le=10_000_000_000)] | None = _F(
+        "URL_MAX_BYTES", scope="server", group="Transcribe from URL")
+    URL_DOWNLOAD_TIMEOUT_SEC: Annotated[int, Field(ge=10, le=86400)] | None = _F(
+        "URL_DOWNLOAD_TIMEOUT_SEC", scope="server",
+        group="Transcribe from URL",
+        subgroup="Advanced — timeouts, concurrency & retention")
+    URL_PREVIEW_TIMEOUT_SEC: Annotated[int, Field(ge=1, le=300)] | None = _F(
+        "URL_PREVIEW_TIMEOUT_SEC", scope="server",
+        group="Transcribe from URL",
+        subgroup="Advanced — timeouts, concurrency & retention")
+    URL_SOCKET_TIMEOUT_SEC: Annotated[int, Field(ge=1, le=600)] | None = _F(
+        "URL_SOCKET_TIMEOUT_SEC", scope="server",
+        group="Transcribe from URL",
+        subgroup="Advanced — timeouts, concurrency & retention")
+    URL_DOWNLOAD_CONCURRENCY: Annotated[int, Field(ge=1, le=16)] | None = _F(
+        "URL_DOWNLOAD_CONCURRENCY", scope="server",
+        group="Transcribe from URL",
+        subgroup="Advanced — timeouts, concurrency & retention",
+        restart=True)
+    URL_MEDIA_DIR: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "URL_MEDIA_DIR", scope="server", group="Transcribe from URL",
+        subgroup="Advanced — timeouts, concurrency & retention",
+        restart=True)
+    URL_MEDIA_TTL_SEC: Annotated[int, Field(ge=10, le=86400 * 7)] | None = _F(
+        "URL_MEDIA_TTL_SEC", scope="server", group="Transcribe from URL",
+        subgroup="Advanced — timeouts, concurrency & retention")
+    URL_MEDIA_MAX_BYTES: Annotated[int, Field(ge=0, le=100_000_000_000)] | None = _F(
+        "URL_MEDIA_MAX_BYTES", scope="server", group="Transcribe from URL",
+        subgroup="Advanced — timeouts, concurrency & retention")
 
     # --- Per-model overrides ---
-    MODEL_OVERRIDES: dict[ModelId, ModelOverride] | None = _F("MODEL_OVERRIDES")
+    MODEL_OVERRIDES: dict[ModelId, ModelOverride] | None = _F(
+        "MODEL_OVERRIDES", scope="server", group="Per-model overrides")
 
     # --- Per-identity config profiles (reusable, name → override bundle) ---
-    OVERRIDE_PROFILES: dict[ProfileName, OverrideProfile] | None = _F("OVERRIDE_PROFILES")
-    ALLOW_REQUEST_OVERRIDE_PROFILE: bool | None = _F("ALLOW_REQUEST_OVERRIDE_PROFILE")
-    ALLOW_REQUEST_DECODE_OVERRIDES: bool | None = _F("ALLOW_REQUEST_DECODE_OVERRIDES")
+    OVERRIDE_PROFILES: dict[ProfileName, OverrideProfile] | None = _F(
+        "OVERRIDE_PROFILES", scope="server", group=None)
+    ALLOW_REQUEST_OVERRIDE_PROFILE: bool | None = _F(
+        "ALLOW_REQUEST_OVERRIDE_PROFILE", scope="server",
+        group="Access & sessions", order=5)
+    ALLOW_REQUEST_DECODE_OVERRIDES: bool | None = _F(
+        "ALLOW_REQUEST_DECODE_OVERRIDES", scope="server",
+        group="Access & sessions", order=6)
 
     # --- Pipeline ---
-    PIPELINE_RULES: Annotated[list[PipelineRule], Field(max_length=200)] | None = _F("PIPELINE_RULES")
-    TRACE_ENABLED: bool | None = _F("TRACE_ENABLED")
+    PIPELINE_RULES: Annotated[list[PipelineRule], Field(max_length=200)] | None = _F(
+        "PIPELINE_RULES", scope="server", group="Pipeline",
+        cache_rebuild=True)
+    TRACE_ENABLED: bool | None = _F(
+        "TRACE_ENABLED", scope="server", group="Logging", order=6,
+        env="WHISPER_TRACE")
 
     # --- Logging ---
-    LOG_FILE: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("LOG_FILE")
-    LOG_MAX_BYTES: Annotated[int, Field(ge=1024 * 1024, le=1024 * 1024 * 1024)] | None = _F("LOG_MAX_BYTES")
-    LOG_BACKUP_COUNT: Annotated[int, Field(ge=1, le=100)] | None = _F("LOG_BACKUP_COUNT")
-    LOG_VIEWER_INITIAL_LINES: Annotated[int, Field(ge=10, le=100_000)] | None = _F("LOG_VIEWER_INITIAL_LINES")
-    LOG_VIEWER_DOM_MAX: Annotated[int, Field(ge=0, le=1_000_000)] | None = _F("LOG_VIEWER_DOM_MAX")
+    LOG_FILE: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "LOG_FILE", scope="server", group="Logging", order=1, restart=True)
+    LOG_MAX_BYTES: Annotated[int, Field(ge=1024 * 1024, le=1024 * 1024 * 1024)] | None = _F(
+        "LOG_MAX_BYTES", scope="server", group="Logging", order=2,
+        restart=True)
+    LOG_BACKUP_COUNT: Annotated[int, Field(ge=1, le=100)] | None = _F(
+        "LOG_BACKUP_COUNT", scope="server", group="Logging", order=3,
+        restart=True)
+    LOG_VIEWER_INITIAL_LINES: Annotated[int, Field(ge=10, le=100_000)] | None = _F(
+        "LOG_VIEWER_INITIAL_LINES", scope="server", group="Logging", order=4)
+    LOG_VIEWER_DOM_MAX: Annotated[int, Field(ge=0, le=1_000_000)] | None = _F(
+        "LOG_VIEWER_DOM_MAX", scope="server", group="Logging", order=5)
 
     # --- Server ---
-    SERVER_HOST: Annotated[str, Field(min_length=1, max_length=64)] | None = _F("SERVER_HOST")
-    SERVER_PORT: Annotated[int, Field(ge=1, le=65535)] | None = _F("SERVER_PORT")
-    SERVER_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F("SERVER_WORKERS")
-    SERVER_LOG_LEVEL: LogLevel | None = _F("SERVER_LOG_LEVEL")
-    MAX_UPLOAD_BYTES: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F("MAX_UPLOAD_BYTES")
-    MAX_REQUEST_BYTES: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F("MAX_REQUEST_BYTES")
+    SERVER_HOST: Annotated[str, Field(min_length=1, max_length=64)] | None = _F(
+        "SERVER_HOST", scope="server", group="Server", restart=True)
+    SERVER_PORT: Annotated[int, Field(ge=1, le=65535)] | None = _F(
+        "SERVER_PORT", scope="server", group="Server", restart=True)
+    SERVER_WORKERS: Annotated[int, Field(ge=1, le=8)] | None = _F(
+        "SERVER_WORKERS", scope="server", group="Server", restart=True)
+    SERVER_LOG_LEVEL: LogLevel | None = _F(
+        "SERVER_LOG_LEVEL", scope="server", group="Server", restart=True)
+    MAX_UPLOAD_BYTES: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
+        "MAX_UPLOAD_BYTES", scope="server", group="Server")
+    MAX_REQUEST_BYTES: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
+        "MAX_REQUEST_BYTES", scope="server", group="Server")
 
     # --- WebUI access control (host allowlists, bucketed by privilege tier) ---
     # Each entry must be parseable by ipaddress.ip_network(strict=False) — bare
@@ -1626,64 +1770,116 @@ class AdminConfig(BaseModel):
     ADMIN_WEBUI_ALLOWED_HOSTS: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
-    ] | None = _F("ADMIN_WEBUI_ALLOWED_HOSTS")
+    ] | None = _F(
+        "ADMIN_WEBUI_ALLOWED_HOSTS", scope="server",
+        group="Access & sessions", order=1)
     USER_WEBUI_ALLOWED_HOSTS: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
-    ] | None = _F("USER_WEBUI_ALLOWED_HOSTS")
+    ] | None = _F(
+        "USER_WEBUI_ALLOWED_HOSTS", scope="server",
+        group="Access & sessions", order=2)
     # CORS allowlist — each entry is a browser origin (scheme://host[:port]) or
     # "*". Validated by _validate_cors_origins below.
     CORS_ALLOW_ORIGINS: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=256)]],
         Field(max_length=64),
-    ] | None = _F("CORS_ALLOW_ORIGINS")
+    ] | None = _F(
+        "CORS_ALLOW_ORIGINS", scope="server", group="Access & sessions",
+        order=3, restart=True)
     # Extra origins the unsafe-method same-origin check accepts. Same entry
     # shape as CORS_ALLOW_ORIGINS but "*" is rejected — see
     # _validate_trusted_origins below.
     TRUSTED_ORIGINS: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=256)]],
         Field(max_length=64),
-    ] | None = _F("TRUSTED_ORIGINS")
+    ] | None = _F(
+        "TRUSTED_ORIGINS", scope="server", group="Access & sessions",
+        order=4, restart=True)
     # --- Browser sessions ---
-    SESSION_COOKIE_SECURE: bool | None = _F("SESSION_COOKIE_SECURE")
+    SESSION_COOKIE_SECURE: bool | None = _F(
+        "SESSION_COOKIE_SECURE", scope="server", group="Access & sessions",
+        subgroup="Browser sessions (cookie auth)")
     SESSION_TTL_SECONDS: Annotated[
         int, Field(ge=300, le=31_536_000)
-    ] | None = _F("SESSION_TTL_SECONDS")
+    ] | None = _F(
+        "SESSION_TTL_SECONDS", scope="server", group="Access & sessions",
+        subgroup="Browser sessions (cookie auth)")
     SESSION_COOKIE_NAME: Annotated[
         str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    ] | None = _F("SESSION_COOKIE_NAME")
+    ] | None = _F(
+        "SESSION_COOKIE_NAME", scope="server", group="Access & sessions",
+        subgroup="Browser sessions (cookie auth)")
     SESSION_CSRF_COOKIE_NAME: Annotated[
         str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
-    ] | None = _F("SESSION_CSRF_COOKIE_NAME")
+    ] | None = _F(
+        "SESSION_CSRF_COOKIE_NAME", scope="server",
+        group="Access & sessions", subgroup="Browser sessions (cookie auth)")
     # --- Reports store ---
-    REPORTS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("REPORTS_DB")
-    REPORTS_MAX: Annotated[int, Field(ge=10, le=100_000)] | None = _F("REPORTS_MAX")
-    REPORTS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F("REPORTS_RETENTION_DAYS")
-    REPORTS_ALLOW_USER_SUBMIT: bool | None = _F("REPORTS_ALLOW_USER_SUBMIT")
+    REPORTS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "REPORTS_DB", scope="server", group="Reports")
+    REPORTS_MAX: Annotated[int, Field(ge=10, le=100_000)] | None = _F(
+        "REPORTS_MAX", scope="server", group="Reports")
+    REPORTS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
+        "REPORTS_RETENTION_DAYS", scope="server", group="Reports")
+    REPORTS_ALLOW_USER_SUBMIT: bool | None = _F(
+        "REPORTS_ALLOW_USER_SUBMIT", scope="server", group="Reports")
 
     # --- Recent transcriptions store (persistent /quick-config + /stats) ---
     # MAX/TTL/PRUNE_EVERY accept 0 to mean "disabled"; combined bound is
     # "tighter of MAX and TTL wins."
-    RECENT_TRANSCRIPTIONS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("RECENT_TRANSCRIPTIONS_DB")
-    RECENT_TRANSCRIPTIONS_MAX: Annotated[int, Field(ge=0, le=100_000)] | None = _F("RECENT_TRANSCRIPTIONS_MAX")
-    RECENT_TRANSCRIPTIONS_TTL_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F("RECENT_TRANSCRIPTIONS_TTL_DAYS")
-    RECENT_TRANSCRIPTIONS_PAGE_SIZE: Annotated[int, Field(ge=10, le=1000)] | None = _F("RECENT_TRANSCRIPTIONS_PAGE_SIZE")
-    QUICK_CONFIG_MAP_COLLAPSE_AFTER: Annotated[int, Field(ge=0, le=100_000)] | None = _F("QUICK_CONFIG_MAP_COLLAPSE_AFTER")
-    QUICK_CONFIG_WORD_SUGGESTIONS_MAX: Annotated[int, Field(ge=0, le=10_000)] | None = _F("QUICK_CONFIG_WORD_SUGGESTIONS_MAX")
-    RECENT_TRANSCRIPTIONS_PRUNE_EVERY: Annotated[int, Field(ge=0, le=10_000)] | None = _F("RECENT_TRANSCRIPTIONS_PRUNE_EVERY")
-    STATS_RECENT_TRANSCRIPTIONS_COUNT: Annotated[int, Field(ge=1, le=100)] | None = _F("STATS_RECENT_TRANSCRIPTIONS_COUNT")
+    RECENT_TRANSCRIPTIONS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "RECENT_TRANSCRIPTIONS_DB", scope="server",
+        group="Recent transcriptions")
+    RECENT_TRANSCRIPTIONS_MAX: Annotated[int, Field(ge=0, le=100_000)] | None = _F(
+        "RECENT_TRANSCRIPTIONS_MAX", scope="server",
+        group="Recent transcriptions")
+    RECENT_TRANSCRIPTIONS_TTL_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
+        "RECENT_TRANSCRIPTIONS_TTL_DAYS", scope="server",
+        group="Recent transcriptions")
+    RECENT_TRANSCRIPTIONS_PAGE_SIZE: Annotated[int, Field(ge=10, le=1000)] | None = _F(
+        "RECENT_TRANSCRIPTIONS_PAGE_SIZE", scope="server",
+        group="Recent transcriptions")
+    QUICK_CONFIG_MAP_COLLAPSE_AFTER: Annotated[int, Field(ge=0, le=100_000)] | None = _F(
+        "QUICK_CONFIG_MAP_COLLAPSE_AFTER", scope="server",
+        group="Recent transcriptions")
+    QUICK_CONFIG_WORD_SUGGESTIONS_MAX: Annotated[int, Field(ge=0, le=10_000)] | None = _F(
+        "QUICK_CONFIG_WORD_SUGGESTIONS_MAX", scope="server",
+        group="Recent transcriptions")
+    RECENT_TRANSCRIPTIONS_PRUNE_EVERY: Annotated[int, Field(ge=0, le=10_000)] | None = _F(
+        "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", scope="server",
+        group="Recent transcriptions")
+    STATS_RECENT_TRANSCRIPTIONS_COUNT: Annotated[int, Field(ge=1, le=100)] | None = _F(
+        "STATS_RECENT_TRANSCRIPTIONS_COUNT", scope="server",
+        group="Recent transcriptions")
 
     # --- Captures (fine-tuning data store) ---
-    CAPTURE_RECORDINGS_ENABLED: bool | None = _F("CAPTURE_RECORDINGS_ENABLED")
-    CAPTURES_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("CAPTURES_DB")
-    CAPTURES_DIR: Annotated[str, Field(min_length=1, max_length=512)] | None = _F("CAPTURES_DIR")
-    CAPTURES_MAX: Annotated[int, Field(ge=10, le=1_000_000)] | None = _F("CAPTURES_MAX")
-    CAPTURES_MAX_MB: Annotated[int, Field(ge=1, le=10_000_000)] | None = _F("CAPTURES_MAX_MB")
-    CAPTURES_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F("CAPTURES_RETENTION_DAYS")
-    CAPTURE_RECORDINGS_SAMPLE_RATE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F("CAPTURE_RECORDINGS_SAMPLE_RATE")
-    CAPTURE_RECORDINGS_MIN_DURATION_SEC: Annotated[float, Field(ge=0.0, le=3600.0)] | None = _F("CAPTURE_RECORDINGS_MIN_DURATION_SEC")
-    CAPTURE_RECORDINGS_MAX_DURATION_SEC: Annotated[float, Field(ge=0.1, le=86400.0)] | None = _F("CAPTURE_RECORDINGS_MAX_DURATION_SEC")
-    CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F("CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT")
+    CAPTURE_RECORDINGS_ENABLED: bool | None = _F(
+        "CAPTURE_RECORDINGS_ENABLED", scope="server", group="Captures",
+        order=1)
+    CAPTURES_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "CAPTURES_DB", scope="server", group="Captures", subgroup="Storage")
+    CAPTURES_DIR: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "CAPTURES_DIR", scope="server", group="Captures", subgroup="Storage")
+    CAPTURES_MAX: Annotated[int, Field(ge=10, le=1_000_000)] | None = _F(
+        "CAPTURES_MAX", scope="server", group="Captures", subgroup="Storage")
+    CAPTURES_MAX_MB: Annotated[int, Field(ge=1, le=10_000_000)] | None = _F(
+        "CAPTURES_MAX_MB", scope="server", group="Captures",
+        subgroup="Storage")
+    CAPTURES_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
+        "CAPTURES_RETENTION_DAYS", scope="server", group="Captures", order=3)
+    CAPTURE_RECORDINGS_SAMPLE_RATE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
+        "CAPTURE_RECORDINGS_SAMPLE_RATE", scope="server", group="Captures",
+        order=2)
+    CAPTURE_RECORDINGS_MIN_DURATION_SEC: Annotated[float, Field(ge=0.0, le=3600.0)] | None = _F(
+        "CAPTURE_RECORDINGS_MIN_DURATION_SEC", scope="server",
+        group="Captures", subgroup="Duration & size guards")
+    CAPTURE_RECORDINGS_MAX_DURATION_SEC: Annotated[float, Field(ge=0.1, le=86400.0)] | None = _F(
+        "CAPTURE_RECORDINGS_MAX_DURATION_SEC", scope="server",
+        group="Captures", subgroup="Duration & size guards")
+    CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
+        "CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT", scope="server",
+        group="Captures", subgroup="Duration & size guards")
     # Captures-specific pipeline-rule exclusion (set of rule slugs).
     # Stored as a list in JSON; coerced back to set at use time. The
     # admin UI surfaces this as the same rule-checklist widget used for
@@ -1692,17 +1888,39 @@ class AdminConfig(BaseModel):
     CAPTURES_PIPELINE_RULES_EXCLUDE: Annotated[
         list[Annotated[str, Field(min_length=1, max_length=64)]],
         Field(max_length=64),
-    ] | None = _F("CAPTURES_PIPELINE_RULES_EXCLUDE")
-    CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES: bool | None = _F("CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES")
-    CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS")
-    CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F("CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS")
-    CAPTURES_SAMPLE_MIN_DURATION_S: Annotated[float, Field(ge=0, le=30)] | None = _F("CAPTURES_SAMPLE_MIN_DURATION_S")
-    CAPTURES_SAMPLE_MAX_DURATION_S: Annotated[float, Field(gt=0, le=30)] | None = _F("CAPTURES_SAMPLE_MAX_DURATION_S")
-    CAPTURES_SAMPLE_JOIN_STRATEGY: Literal["space", "period_space"] | None = _F("CAPTURES_SAMPLE_JOIN_STRATEGY")
-    CAPTURES_PROPOSER_TARGET_S: Annotated[float, Field(gt=0, le=30)] | None = _F("CAPTURES_PROPOSER_TARGET_S")
-    CAPTURES_PROPOSER_SESSION_GAP_S: Annotated[int, Field(ge=1, le=86400)] | None = _F("CAPTURES_PROPOSER_SESSION_GAP_S")
-    CAPTURES_PROPOSER_DUP_THRESHOLD: Annotated[float, Field(ge=0, le=1)] | None = _F("CAPTURES_PROPOSER_DUP_THRESHOLD")
-    CAPTURES_PROPOSER_MAX_PROPOSALS: Annotated[int, Field(ge=1, le=200)] | None = _F("CAPTURES_PROPOSER_MAX_PROPOSALS")
+    ] | None = _F(
+        "CAPTURES_PIPELINE_RULES_EXCLUDE", scope="server", group="Captures",
+        subgroup="Training-form pipeline", coerce=set)
+    CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES: bool | None = _F(
+        "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", scope="server",
+        group="Captures", subgroup="Silence trim (Silero VAD)")
+    CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F(
+        "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", scope="server",
+        group="Captures", subgroup="Silence trim (Silero VAD)")
+    CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS: Annotated[int, Field(ge=0, le=2000)] | None = _F(
+        "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", scope="server",
+        group="Captures", subgroup="Silence trim (Silero VAD)")
+    CAPTURES_SAMPLE_MIN_DURATION_S: Annotated[float, Field(ge=0, le=30)] | None = _F(
+        "CAPTURES_SAMPLE_MIN_DURATION_S", scope="server", group="Captures",
+        subgroup="Sample sizing")
+    CAPTURES_SAMPLE_MAX_DURATION_S: Annotated[float, Field(gt=0, le=30)] | None = _F(
+        "CAPTURES_SAMPLE_MAX_DURATION_S", scope="server", group="Captures",
+        subgroup="Sample sizing")
+    CAPTURES_SAMPLE_JOIN_STRATEGY: Literal["space", "period_space"] | None = _F(
+        "CAPTURES_SAMPLE_JOIN_STRATEGY", scope="server", group="Captures",
+        subgroup="Sample sizing")
+    CAPTURES_PROPOSER_TARGET_S: Annotated[float, Field(gt=0, le=30)] | None = _F(
+        "CAPTURES_PROPOSER_TARGET_S", scope="server", group="Captures",
+        subgroup="Sample sizing")
+    CAPTURES_PROPOSER_SESSION_GAP_S: Annotated[int, Field(ge=1, le=86400)] | None = _F(
+        "CAPTURES_PROPOSER_SESSION_GAP_S", scope="server", group="Captures",
+        subgroup="Sample sizing")
+    CAPTURES_PROPOSER_DUP_THRESHOLD: Annotated[float, Field(ge=0, le=1)] | None = _F(
+        "CAPTURES_PROPOSER_DUP_THRESHOLD", scope="server", group="Captures",
+        subgroup="Sample sizing")
+    CAPTURES_PROPOSER_MAX_PROPOSALS: Annotated[int, Field(ge=1, le=200)] | None = _F(
+        "CAPTURES_PROPOSER_MAX_PROPOSALS", scope="server", group="Captures",
+        subgroup="Sample sizing")
 
     @model_validator(mode="after")
     def _validate_sample_sizing(self) -> "AdminConfig":
@@ -2082,13 +2300,179 @@ class AdminConfig(BaseModel):
         return v
 
 
+# =============================================================================
+# Generated field-registry tables
+# =============================================================================
+# Every table below is DERIVED from the per-field metadata declared on each
+# AdminConfig field via _F(..., scope=…, group=…, …) — see the _F docstring.
+# Public names and types are unchanged from the era when these were
+# hand-written literals, so every consumer keeps working; the metadata now
+# lives ON the field it describes and cannot drift from the schema.
+
+def _registry(name: str) -> dict[str, Any]:
+    """The x_registry metadata dict attached to an AdminConfig field."""
+    extra = AdminConfig.model_fields[name].json_schema_extra
+    reg = extra.get("x_registry") if isinstance(extra, dict) else None
+    if not isinstance(reg, dict):
+        raise ValueError(f"AdminConfig.{name} is missing x_registry metadata")
+    return reg
+
+
+_REGISTRY: dict[str, dict[str, Any]] = {
+    name: _registry(name) for name in AdminConfig.model_fields
+}
+
+# Map AdminConfig field name -> env var that pins it. Mirrors the override
+# block at the bottom of config.py. Used by the WebUI to mark fields as
+# "currently overridden by WHISPER_X" with a badge.
+ENV_VAR_MAPPING: dict[str, str] = {
+    name: reg["env"] for name, reg in _REGISTRY.items()
+}
+
+# Cold settings — editing these requires a service restart for the new value
+# to take effect. The WebUI shows a 'restart' badge and offers to trigger a
+# self-restart after save. Note: MODEL_DEVICE / MODEL_COMPUTE_TYPE are hot —
+# admin save triggers drain-then-evict on the affected loaded models so they
+# reload with the new values.
+RESTART_REQUIRED_FIELDS: frozenset[str] = frozenset(
+    name for name, reg in _REGISTRY.items() if reg["restart"]
+)
+
+# Load-time fields. Editing these (globally OR per-model in MODEL_OVERRIDES)
+# triggers drain-then-evict on the affected loaded models so the next request
+# reloads them with the new values. These are read at WhisperModel(...)
+# construction time; changes only take effect after re-load. Includes the
+# virtual (ModelOverride-only) REVISION field.
+LOAD_TIME_FIELDS: frozenset[str] = frozenset(
+    name for name, reg in _REGISTRY.items() if reg["load_time"]
+) | frozenset(
+    name for name, spec in _VIRTUAL_OVERRIDE_FIELDS.items()
+    if spec.get("load_time")
+)
+
+# Hot settings whose derived caches need rebuild after edit. The admin route
+# calls main.rebuild_caches() when any of these change.
+CACHE_REBUILD_FIELDS: frozenset[str] = frozenset(
+    name for name, reg in _REGISTRY.items() if reg["cache_rebuild"]
+)
+
 # Types that don't survive JSON round-trip natively. Convert after model_dump
 # so consumers (config.py, main.py) get the same Python types as if the values
-# were defined inline in config.py.
+# were defined inline in config.py. Mirrored by config._SET_FIELDS (kept there
+# too: config.py needs it before this module can be imported). The registry
+# stores the coercion by NAME (JSON-safe, see _F); mapped back here.
+_COERCERS_BY_NAME: dict[str, Any] = {"set": set}
 _POST_LOAD_COERCERS: dict[str, Any] = {
-    "ALLOWED_MODELS": set,
-    "CAPTURES_PIPELINE_RULES_EXCLUDE": set,
+    name: _COERCERS_BY_NAME[reg["coerce"]] for name, reg in _REGISTRY.items()
+    if reg["coerce"] is not None
 }
+
+# Map an UPPER_CASE config field → the lowercase client decode_override key it
+# governs. Mirrors the allow-list enforced by main._apply_decode_overrides, so
+# a lock on the config field blocks the matching client key. Fields absent here
+# are not client-overridable, so a lock on them is a no-op for the client gate.
+# Consumed by effective_config (which keeps its historical module-level alias
+# _CONFIG_TO_CLIENT_KEY pointing at this dict).
+CONFIG_TO_CLIENT_KEY: dict[str, str] = {
+    name: reg["client_key"] for name, reg in _REGISTRY.items()
+    if reg["client_key"]
+}
+
+# Fields whose resolved value a client per-request decode_override may be
+# LOCKED against — every overridable scalar, i.e. everything except the
+# pipeline include/exclude lists (which are virtual, not AdminConfig fields,
+# and not client-overridable). scope="per_request" IS that set.
+LOCKABLE_FIELDS: frozenset[str] = frozenset(
+    name for name, reg in _REGISTRY.items() if reg["scope"] == "per_request"
+)
+
+# The /settings form layout, generated from the per-field group/subgroup/order
+# metadata. Section order and subgroup order are pinned by _GROUP_ORDER below
+# (display order is editorial, not schema-derivable); field order within a
+# subgroup is the AdminConfig declaration order unless a field carries an
+# explicit `order` int. Section titles mirror the per-request log block phases
+# (Decode params / Pipeline / …) so an operator reading a log can find the
+# matching config knobs by section name with no translation. A subgroup title
+# of None means "no subheader" — fields render directly under the section.
+_GROUP_ORDER: list[tuple[str, list[str | None]]] = [
+    ("Models", [None, "Advanced — load-time hardware"]),
+    ("Decode params", [
+        None,
+        "Advanced — beam & sampling",
+        "Advanced — language detection (active when DEFAULT_LANGUAGE empty)",
+        "Advanced — anti-hallucination & token control",
+    ]),
+    ("Output wrappers", [None]),
+    ("Live streaming", [
+        None,
+        "Partial decoding (live preview)",
+        "Endpointing (VAD) & speech gates",
+        "Finalize & document breaks",
+        "Buffer management",
+    ]),
+    ("Diarization", [None, "Advanced — speaker bounds & VRAM"]),
+    ("Music separation", [None]),
+    ("Transcribe from URL", [
+        None,
+        "Advanced — timeouts, concurrency & retention",
+    ]),
+    ("Per-model overrides", [None]),
+    ("Pipeline", [None]),
+    ("Logging", [None]),
+    ("Server", [None]),
+    ("Access & sessions", [None, "Browser sessions (cookie auth)"]),
+    ("Reports", [None]),
+    ("Recent transcriptions", [None]),
+    ("Captures", [
+        None,
+        "Storage",
+        "Duration & size guards",
+        "Sample sizing",
+        "Training-form pipeline",
+        "Silence trim (Silero VAD)",
+    ]),
+]
+
+
+def _build_field_groups() -> list[tuple[str, list[tuple[str | None, list[str]]]]]:
+    """Assemble the _GROUP_ORDER × per-field metadata into the nested
+    section/subgroup/fields structure admin_routes renders. Raises at import
+    on any drift: a field pointing at an unlisted (group, subgroup), or a
+    listed subgroup no field belongs to."""
+    decl_idx = {name: i for i, name in enumerate(AdminConfig.model_fields)}
+    listed: set[tuple[str, str | None]] = {
+        (section, sub) for section, subs in _GROUP_ORDER for sub in subs
+    }
+    for name, reg in _REGISTRY.items():
+        if reg["group"] is not None and (reg["group"], reg["subgroup"]) not in listed:
+            raise ValueError(
+                f"AdminConfig.{name} declares group/subgroup "
+                f"({reg['group']!r}, {reg['subgroup']!r}) not listed in "
+                f"_GROUP_ORDER")
+    out: list[tuple[str, list[tuple[str | None, list[str]]]]] = []
+    for section, subs in _GROUP_ORDER:
+        rendered: list[tuple[str | None, list[str]]] = []
+        for sub in subs:
+            names = sorted(
+                (n for n, r in _REGISTRY.items()
+                 if r["group"] == section and r["subgroup"] == sub),
+                key=lambda n: (
+                    _REGISTRY[n]["order"]
+                    if _REGISTRY[n]["order"] is not None else decl_idx[n],
+                    decl_idx[n],
+                ),
+            )
+            if not names:
+                raise ValueError(
+                    f"_GROUP_ORDER lists empty subgroup ({section!r}, {sub!r})")
+            rendered.append((sub, names))
+        out.append((section, rendered))
+    return out
+
+
+FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = (
+    _build_field_groups()
+)
 
 
 def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:

@@ -51,27 +51,9 @@ SCALAR_OVERRIDE_FIELDS: frozenset[str] = config_store.LOCKABLE_FIELDS
 # governs. Mirrors the allow-list enforced by main._apply_decode_overrides, so
 # a lock on the config field blocks the matching client key. Fields absent here
 # are not client-overridable, so a lock on them is a no-op for the client gate.
-_CONFIG_TO_CLIENT_KEY: dict[str, str] = {
-    "BEAM_SIZE": "beam_size",
-    "BEST_OF": "best_of",
-    "NO_REPEAT_NGRAM_SIZE": "no_repeat_ngram_size",
-    "TEMPERATURE": "temperature",
-    "NO_SPEECH_THRESHOLD": "no_speech_threshold",
-    "LOG_PROB_THRESHOLD": "log_prob_threshold",
-    "COMPRESSION_RATIO_THRESHOLD": "compression_ratio_threshold",
-    "PATIENCE": "patience",
-    "LENGTH_PENALTY": "length_penalty",
-    "REPETITION_PENALTY": "repetition_penalty",
-    "DEFAULT_HOTWORDS": "hotwords",
-    "PREPEND_PUNCTUATIONS": "prepend_punctuations",
-    "APPEND_PUNCTUATIONS": "append_punctuations",
-    "SUPPRESS_TOKENS": "suppress_tokens",
-    "CONDITION_ON_PREVIOUS_TEXT": "condition_on_previous_text",
-    "VAD_FILTER": "vad_filter",
-    "VAD_MIN_SILENCE_MS": "vad_min_silence_duration_ms",
-    "VAD_SPEECH_PAD_MS": "vad_speech_pad_ms",
-    "VAD_THRESHOLD": "vad_threshold",
-}
+# Generated from the per-field `client_key` registry metadata in config_store;
+# the historical module-level alias name is kept for existing consumers.
+_CONFIG_TO_CLIENT_KEY: dict[str, str] = config_store.CONFIG_TO_CLIENT_KEY
 
 # Identity carriers that have no per-identity config: the synthetic open-mode
 # admin and the cookie-session pseudo key id. Both resolve to "no layer."
