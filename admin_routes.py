@@ -26,11 +26,12 @@ import json
 import logging
 import os
 import re
-from typing import Any, Literal, get_args, get_origin
+import time
+from typing import Annotated, Any, Literal, get_args, get_origin
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
-from pydantic import TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 import bgm_separation
 import build_info
@@ -979,6 +980,48 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             })
 
     return JSONResponse({"steps": steps, "final": text})
+
+
+class _TranslationTestBody(BaseModel):
+    """POST /settings/translation-test payload — pydantic-shaped so malformed
+    bodies fail 422 like POST /settings/state."""
+    text: Annotated[str, Field(min_length=1, max_length=2000)]
+    target: Annotated[str, Field(min_length=2, max_length=16)]
+    source: Annotated[str, Field(min_length=2, max_length=16)] | None = None
+    # Overrides cfg.TRANSLATION_PROMPT_TEMPLATE for THIS call only (unsaved
+    # textarea value from the WebUI's custom-template editor).
+    template: Annotated[str, Field(max_length=8000)] | None = None
+
+
+@router.post("/translation-test",
+             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
+async def translation_test(body: _TranslationTestBody) -> JSONResponse:
+    """Run ONE sample segment through the translation stage — the WebUI's
+    "▶ Test with loaded model" button next to the custom-template preview.
+    Uses the configured default model (loading it on first use, exactly like
+    a real request); a supplied `template` is threaded through
+    translate_segments(template_override=...) so the admin can test the
+    UNSAVED textarea value. 403 when the stage is off; TranslationError →
+    400 with its client-safe message (same contract as the request path)."""
+    if not getattr(cfg, "TRANSLATION_ENABLED", False):
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            "translation is disabled (TRANSLATION_ENABLED)")
+    t0 = time.perf_counter()
+    try:
+        results, _warnings, meta = await translation.translate_segments(
+            [{"text": body.text}], [body.target],
+            source_lang=body.source, mode="faithful",
+            template_override=body.template)
+    except translation.TranslationError as e:
+        # str(e) is client-safe by the module's failure contract.
+        return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
+                            content={"error": str(e)})
+    ms = int((time.perf_counter() - t0) * 1000)
+    return JSONResponse({
+        "output": results[0].get(body.target, "") if results else "",
+        "ms": ms,
+        "model": meta.get("model", ""),
+    })
 
 
 @router.post("/restart", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
@@ -1938,9 +1981,14 @@ function setDirty(name, value) {
   const empty = Object.keys(dirty).length === 0;
   $('save-btn').disabled = empty;
   $('discard-btn').disabled = empty;
-  // Notify dependent editors when the model lists change. The DEFAULT_MODEL
-  // dropdown + PRELOAD_MODELS multi-select listen for this and re-render.
-  if (name === 'ALLOWED_MODELS' || name === 'PRELOAD_MODELS') {
+  // Notify dependent editors when a model source-list changes. The
+  // model dropdown / multi-select editors (whisper, translation, stage
+  // models) listen for this and re-render their option sets.
+  if (name === 'ALLOWED_MODELS' || name === 'PRELOAD_MODELS'
+      || name === 'TRANSLATION_ALLOWED_MODELS'
+      || name === 'TRANSLATION_PRELOAD_MODELS'
+      || name === 'DIARIZATION_ALLOWED_MODELS'
+      || name === 'BGM_SEPARATION_ALLOWED_MODELS') {
     document.dispatchEvent(new CustomEvent('admin:model-lists-changed'));
   }
   // Notify per-field listeners (currently the ↺ Reset button) so they can
@@ -2162,6 +2210,24 @@ function makeEditor(name) {
   // allowlist textarea live-updates these.
   if (name === 'DEFAULT_MODEL') return modelDropdownEditor(name, v);
   if (name === 'PRELOAD_MODELS') return modelMultiSelectEditor(name, v);
+  // Translation model editors: same widgets, sourced from the translation
+  // lists. DIARIZATION_MODEL deliberately stays on its Literal-derived
+  // choices <select> below — the Literal already enumerates exactly the
+  // supported pipelines (the allowlist's own element type).
+  const TR_LISTS = { allowed: 'TRANSLATION_ALLOWED_MODELS',
+                     preload: 'TRANSLATION_PRELOAD_MODELS' };
+  if (name === 'TRANSLATION_DEFAULT_MODEL') return modelDropdownEditor(name, v, TR_LISTS);
+  if (name === 'TRANSLATION_PRELOAD_MODELS') return modelMultiSelectEditor(name, v, TR_LISTS);
+  // UVR separator model: dropdown over the separation allowlist (no preload
+  // list concept → no "(preloaded)" suffix), free text when the list is empty.
+  if (name === 'BGM_SEPARATION_UVR_MODEL') {
+    return modelDropdownEditor(name, v, { allowed: 'BGM_SEPARATION_ALLOWED_MODELS' });
+  }
+  // Custom-template editor: textarea + live preview + "test with loaded
+  // model"; the whole row hides while TRANSLATION_PROMPT_FAMILY != custom.
+  if (name === 'TRANSLATION_PROMPT_TEMPLATE') {
+    return translationTemplateEditor(name, v || '');
+  }
   if (Array.isArray(v)) return linesEditor(name, v);
   // Empty/missing array-shaped fields fall through here; only force a list
   // editor when we know the field is a collection by name.
@@ -2854,36 +2920,39 @@ function modelOverridesEditor(name, v) {
   return wrap;
 }
 
-function modelDropdownEditor(name, v) {
-  // Single-select dropdown for DEFAULT_MODEL. Options come from the current
-  // ALLOWED_MODELS (including unsaved edits in the textarea above), with a
-  // "(preloaded)" suffix on entries that are also in PRELOAD_MODELS so the
-  // user can see which choices avoid the cold-start cost. Re-renders on
-  // any change to either list.
+function modelDropdownEditor(name, v, lists) {
+  // Single-select dropdown for a model field. Options come from the current
+  // state of the field named by `lists.allowed` (including unsaved edits in
+  // its editor), with a "(preloaded)" suffix on entries that are also in
+  // `lists.preload` (when that list concept exists) so the user can see
+  // which choices avoid the cold-start cost. Re-renders on any source-list
+  // change. Defaults to the whisper lists (DEFAULT_MODEL's wiring).
   //
-  // Empty ALLOWED_MODELS means "any model passes" (per config.py): falls
+  // An empty allowlist means "any model passes" (per config.py): falls
   // back to a free-text input — a dropdown of nothing is useless.
-  // A current value not in ALLOWED_MODELS is preserved as a "(custom)"
-  // option so opening this page after editing the allowlist doesn't
-  // silently drop a deliberate choice.
+  // A current value not in the allowlist is preserved as an extra option
+  // so opening this page after editing the allowlist doesn't silently
+  // drop a deliberate choice.
+  lists = lists || { allowed: 'ALLOWED_MODELS', preload: 'PRELOAD_MODELS' };
   const wrap = document.createElement('div');
   function render() {
     wrap.innerHTML = '';
-    const allowed = Array.isArray(currentValue('ALLOWED_MODELS'))
-      ? currentValue('ALLOWED_MODELS') : [];
-    const preload = new Set(Array.isArray(currentValue('PRELOAD_MODELS'))
-      ? currentValue('PRELOAD_MODELS') : []);
+    const allowed = Array.isArray(currentValue(lists.allowed))
+      ? currentValue(lists.allowed) : [];
+    const preload = new Set(lists.preload
+      && Array.isArray(currentValue(lists.preload))
+      ? currentValue(lists.preload) : []);
     const cur = currentValue(name) || '';
 
     if (allowed.length === 0) {
       const i = document.createElement('input');
       i.type = 'text'; i.value = cur;
-      i.placeholder = 'any model id (ALLOWED_MODELS is empty)';
+      i.placeholder = 'any model id (' + lists.allowed + ' is empty)';
       i.addEventListener('input', () => setDirty(name, i.value));
       wrap.appendChild(i);
       const help = document.createElement('div');
       help.className = 'help';
-      help.textContent = 'ALLOWED_MODELS is empty — free-form. Add entries above for a dropdown.';
+      help.textContent = lists.allowed + ' is empty — free-form. Add entries there for a dropdown.';
       wrap.appendChild(help);
       return;
     }
@@ -2907,7 +2976,7 @@ function modelDropdownEditor(name, v) {
     if (cur && !curInList) {
       const opt = document.createElement('option');
       opt.value = cur;
-      opt.textContent = cur + '  (NOT in ALLOWED_MODELS — request will fail)';
+      opt.textContent = cur + '  (NOT in ' + lists.allowed + ' — request will fail)';
       opt.selected = true;
       sel.insertBefore(opt, sel.firstChild);
     }
@@ -2919,16 +2988,18 @@ function modelDropdownEditor(name, v) {
   return wrap;
 }
 
-function modelMultiSelectEditor(name, v) {
-  // Checkbox list for PRELOAD_MODELS. Universe = ALLOWED_MODELS ∪ current
-  // PRELOAD entries (so a stale entry no longer in the allowlist still
-  // shows, with a warning, instead of silently disappearing). Empty
-  // ALLOWED_MODELS falls back to a textarea — same idea as the dropdown.
+function modelMultiSelectEditor(name, v, lists) {
+  // Checkbox list for a preload-models field. Universe = the `lists.allowed`
+  // field's entries ∪ the current value (so a stale entry no longer in the
+  // allowlist still shows, with a warning, instead of silently
+  // disappearing). Empty allowlist falls back to a textarea — same idea as
+  // the dropdown. Defaults to the whisper lists (PRELOAD_MODELS' wiring).
+  lists = lists || { allowed: 'ALLOWED_MODELS', preload: 'PRELOAD_MODELS' };
   const wrap = document.createElement('div');
   function render() {
     wrap.innerHTML = '';
-    const allowed = Array.isArray(currentValue('ALLOWED_MODELS'))
-      ? currentValue('ALLOWED_MODELS') : [];
+    const allowed = Array.isArray(currentValue(lists.allowed))
+      ? currentValue(lists.allowed) : [];
     const preload = Array.isArray(currentValue(name))
       ? currentValue(name) : [];
     const preloadSet = new Set(preload);
@@ -2945,7 +3016,7 @@ function modelMultiSelectEditor(name, v) {
       wrap.appendChild(t);
       const help = document.createElement('div');
       help.className = 'help';
-      help.textContent = 'ALLOWED_MODELS is empty — free-form. Add entries above for checkboxes.';
+      help.textContent = lists.allowed + ' is empty — free-form. Add entries there for checkboxes.';
       wrap.appendChild(help);
       return;
     }
@@ -2975,7 +3046,7 @@ function modelMultiSelectEditor(name, v) {
       txt.textContent = m;
       if (!allowed.includes(m)) {
         const warn = document.createElement('em');
-        warn.textContent = '  (not in ALLOWED_MODELS)';
+        warn.textContent = '  (not in ' + lists.allowed + ')';
         warn.style.color = 'var(--yellow)';
         warn.style.fontStyle = 'normal';
         txt.appendChild(warn);
@@ -2987,11 +3058,100 @@ function modelMultiSelectEditor(name, v) {
     const help = document.createElement('div');
     help.className = 'help';
     help.textContent = 'preload at startup — first request to each is hot. '
-      + 'keep <= MAX_LOADED_MODELS to avoid LRU evicting your own preloads.';
+      + 'keep within the loaded-models cap to avoid LRU evicting your own preloads.';
     wrap.appendChild(help);
   }
   render();
   _registerAdminListener('admin:model-lists-changed', 'modelMultiSelect:' + name, render);
+  return wrap;
+}
+
+function translationTemplateEditor(name, v) {
+  // TRANSLATION_PROMPT_TEMPLATE: textarea + a client-side PREVIEW of the
+  // rendered prompt (canned sample values, the same plain .replace()
+  // semantics as translation._build_custom — never a format engine) + a
+  // "▶ Test with loaded model" button that runs ONE segment through the
+  // admin-only /settings/translation-test endpoint with the textarea's
+  // CURRENT (unsaved) value. The whole field row shows only while the
+  // (unsaved) TRANSLATION_PROMPT_FAMILY select says "custom" — the field
+  // stays in the form (display:none), so save/discard still see it.
+  const SAMPLE = {
+    text: 'Wir haben die Messung gestern wiederholt.',
+    target_language: 'English',
+    source_language: 'German',
+    context: '',
+    glossary: '',
+  };
+  const wrap = document.createElement('div');
+  const t = document.createElement('textarea');
+  t.value = v;
+  t.rows = 6;
+  t.placeholder = 'Translate {text} into {target_language} …';
+  wrap.appendChild(t);
+
+  const prevLabel = document.createElement('div');
+  prevLabel.className = 'help';
+  prevLabel.textContent = 'Preview (sample: German → English):';
+  wrap.appendChild(prevLabel);
+  const preview = document.createElement('pre');
+  preview.className = 'tpl-preview';
+  preview.style.whiteSpace = 'pre-wrap';
+  wrap.appendChild(preview);
+
+  function renderPreview() {
+    preview.textContent = (t.value || '')
+      .split('{text}').join(SAMPLE.text)
+      .split('{target_language}').join(SAMPLE.target_language)
+      .split('{source_language}').join(SAMPLE.source_language)
+      .split('{context}').join(SAMPLE.context)
+      .split('{glossary}').join(SAMPLE.glossary);
+  }
+  renderPreview();
+  t.addEventListener('input', () => { setDirty(name, t.value); renderPreview(); });
+
+  const testRow = document.createElement('div');
+  const testBtn = document.createElement('button');
+  testBtn.type = 'button';
+  testBtn.textContent = '▶ Test with loaded model';
+  testBtn.title = 'Run the sample segment through the translation model using this template (loads the model if needed)';
+  const testOut = document.createElement('div');
+  testOut.className = 'help';
+  testBtn.addEventListener('click', async () => {
+    testBtn.disabled = true;
+    testOut.textContent = 'running…';
+    try {
+      const r = await api('POST', '/settings/translation-test', {
+        text: SAMPLE.text, target: 'en', source: 'de', template: t.value,
+      });
+      const j = await r.json().catch(() => ({}));
+      if (r.ok) {
+        testOut.textContent = j.output + '  (' + j.model + ' · ' + j.ms + ' ms)';
+      } else {
+        testOut.textContent = 'test failed: ' + (j.error || j.detail || r.status);
+      }
+    } catch (e) {
+      testOut.textContent = 'test failed: ' + e;
+    }
+    testBtn.disabled = false;
+  });
+  testRow.appendChild(testBtn);
+  wrap.appendChild(testRow);
+  wrap.appendChild(testOut);
+
+  // Row visibility follows the (unsaved) family select. The row isn't in
+  // the DOM yet while makeEditor runs — sync on the next tick, then on
+  // every family edit via the delegated dirty listener (loadState/render
+  // rebuilds re-register through _registerAdminListener, no leak).
+  function syncVisibility() {
+    const row = document.querySelector('main .field[data-field="' + name + '"]');
+    if (!row) return;
+    const fam = currentValue('TRANSLATION_PROMPT_FAMILY');
+    row.style.display = (fam === 'custom') ? '' : 'none';
+  }
+  setTimeout(syncVisibility, 0);
+  _registerAdminListener('admin:dirty', 'translationTemplate:vis', (e) => {
+    if (e.detail && e.detail.name === 'TRANSLATION_PROMPT_FAMILY') syncVisibility();
+  });
   return wrap;
 }
 

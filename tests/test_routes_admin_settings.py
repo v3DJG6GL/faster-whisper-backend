@@ -465,3 +465,123 @@ def test_field_groups_cover_every_setting():
     stale = set(displayed) - schema
     assert not missing, f"settings missing from the WebUI layout: {sorted(missing)}"
     assert not stale, f"_FIELD_GROUPS entries that are not config fields: {sorted(stale)}"
+
+
+# ---------------------------------------------------------------------------
+# Translation model editors + template preview / test endpoint
+# ---------------------------------------------------------------------------
+
+def test_settings_page_wires_translation_model_editors(client):
+    """The model dropdown / multi-select editors are parameterized by a
+    source-lists spec; the dispatch wires the translation + separation model
+    fields to their OWN allowlists (not the whisper ALLOWED_MODELS)."""
+    text = client.get("/settings").text
+    # Parameterized signatures.
+    assert "function modelDropdownEditor(name, v, lists)" in text
+    assert "function modelMultiSelectEditor(name, v, lists)" in text
+    # Dispatch: translation fields source from the translation lists…
+    assert "allowed: 'TRANSLATION_ALLOWED_MODELS'" in text
+    assert "preload: 'TRANSLATION_PRELOAD_MODELS'" in text
+    assert "modelDropdownEditor(name, v, TR_LISTS)" in text
+    assert "modelMultiSelectEditor(name, v, TR_LISTS)" in text
+    # …and the UVR model from the separation allowlist (no preload concept).
+    assert "{ allowed: 'BGM_SEPARATION_ALLOWED_MODELS' }" in text
+    # The re-render event fires for the new source lists too.
+    assert "name === 'TRANSLATION_ALLOWED_MODELS'" in text
+    assert "name === 'BGM_SEPARATION_ALLOWED_MODELS'" in text
+
+
+def test_settings_page_ships_template_editor_and_preview(client):
+    text = client.get("/settings").text
+    assert "function translationTemplateEditor" in text
+    # Client-side preview uses the canned sample + .replace semantics.
+    assert "Wir haben die Messung gestern wiederholt." in text
+    # The test button posts the UNSAVED textarea value to the new endpoint.
+    assert "/settings/translation-test" in text
+    # Visibility follows the (unsaved) family select.
+    assert "TRANSLATION_PROMPT_FAMILY" in text
+
+
+def test_translation_test_endpoint_threads_template_override(
+        client, app_module, monkeypatch):
+    import translation
+
+    app_module.cfg.TRANSLATION_ENABLED = True
+    seen = {}
+
+    async def fake_translate(segments, targets, **kwargs):
+        seen["segments"] = segments
+        seen["targets"] = targets
+        seen["kwargs"] = kwargs
+        return ([{"en": "We repeated the measurement yesterday."}], [],
+                {"model": "org/model-GGUF:Q4", "source": "de",
+                 "mode": "faithful"})
+
+    monkeypatch.setattr(translation, "translate_segments", fake_translate)
+    r = client.post("/settings/translation-test", json={
+        "text": "Wir haben die Messung gestern wiederholt.",
+        "target": "en", "source": "de",
+        "template": "X {text} -> {target_language}"})
+    assert r.status_code == 200, r.text
+    j = r.json()
+    assert j["output"] == "We repeated the measurement yesterday."
+    assert j["model"] == "org/model-GGUF:Q4"
+    assert isinstance(j["ms"], int) and j["ms"] >= 0
+    assert seen["segments"] == [
+        {"text": "Wir haben die Messung gestern wiederholt."}]
+    assert seen["targets"] == ["en"]
+    assert seen["kwargs"]["source_lang"] == "de"
+    assert seen["kwargs"]["mode"] == "faithful"
+    assert seen["kwargs"]["template_override"] == "X {text} -> {target_language}"
+
+
+def test_translation_test_403_when_disabled(client, app_module):
+    app_module.cfg.TRANSLATION_ENABLED = False
+    r = client.post("/settings/translation-test",
+                    json={"text": "hi", "target": "en"})
+    assert r.status_code == 403
+
+
+def test_translation_test_admin_gated(client, app_module, make_user_key):
+    from conftest import bearer
+
+    app_module.cfg.TRANSLATION_ENABLED = True
+    make_user_key("root", is_admin=True)
+    r = client.post("/settings/translation-test",
+                    json={"text": "hi", "target": "en"})
+    assert r.status_code == 401                       # locked down, no key
+    _uid, raw = make_user_key("alice", is_admin=False)
+    r = client.post("/settings/translation-test",
+                    json={"text": "hi", "target": "en"},
+                    headers=bearer(raw))
+    assert r.status_code == 403                       # valid key, not admin
+
+
+def test_translation_test_422_bad_shape(client, app_module):
+    app_module.cfg.TRANSLATION_ENABLED = True
+    assert client.post("/settings/translation-test",
+                       json={"target": "en"}).status_code == 422  # no text
+    assert client.post("/settings/translation-test",
+                       json={"text": "x" * 2001,
+                             "target": "en"}).status_code == 422  # over cap
+    assert client.post("/settings/translation-test",
+                       json={"text": "hi", "target": "en",
+                             "template": "y" * 8001}).status_code == 422
+
+
+def test_translation_test_translation_error_is_400(
+        client, app_module, monkeypatch):
+    import translation
+
+    app_module.cfg.TRANSLATION_ENABLED = True
+
+    async def boom(*a, **k):
+        raise translation.TranslationError(
+            "translation dependencies are not installed on this server — "
+            "pip install -r requirements-translate.txt")
+
+    monkeypatch.setattr(translation, "translate_segments", boom)
+    r = client.post("/settings/translation-test",
+                    json={"text": "hi", "target": "en"})
+    assert r.status_code == 400
+    assert "requirements-translate" in r.json()["error"]

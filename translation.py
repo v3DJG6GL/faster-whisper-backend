@@ -188,18 +188,25 @@ def _build_chatml(text, source_code, source_name, target_code, target_name,
         f"{target_name}. Reply with ONLY the translation.\n\n{text}")}]
 
 
-def _build_custom(text, source_code, source_name, target_code, target_name,
-                  context, glossary):
+def _render_custom_template(tpl, text, source_name, target_name, context,
+                            glossary):
     # Plain .replace() rendering (never str.format — transcript text may carry
     # braces). Missing optional slots render as "". The config validator
-    # guarantees {text} and {target_language} are present in a saved template.
+    # guarantees {text} and {target_language} are present in a saved template;
+    # the admin test endpoint may pass an UNSAVED template through
+    # translate_segments(template_override=...), rendered by these same rules.
+    return (tpl.replace("{text}", text)
+               .replace("{target_language}", target_name)
+               .replace("{source_language}", source_name or "")
+               .replace("{context}", context or "")
+               .replace("{glossary}", glossary or ""))
+
+
+def _build_custom(text, source_code, source_name, target_code, target_name,
+                  context, glossary):
     tpl = getattr(cfg, "TRANSLATION_PROMPT_TEMPLATE", "") or ""
-    rendered = (tpl.replace("{text}", text)
-                   .replace("{target_language}", target_name)
-                   .replace("{source_language}", source_name or "")
-                   .replace("{context}", context or "")
-                   .replace("{glossary}", glossary or ""))
-    return [{"role": "user", "content": rendered}]
+    return [{"role": "user", "content": _render_custom_template(
+        tpl, text, source_name, target_name, context, glossary)}]
 
 
 @dataclass(frozen=True)
@@ -561,13 +568,21 @@ def _context_lines(segments: "list[dict]", upto: int, count: int) -> str:
 
 
 async def _run_completion(llm, family: str, text: str, source_code: str,
-                          target_code: str, context: str, glossary: str) -> str:
+                          target_code: str, context: str, glossary: str,
+                          template_override: "str | None" = None) -> str:
     """Build the family prompt for ``text`` and run one completion in the
-    executor (via the _complete seam)."""
+    executor (via the _complete seam). ``template_override`` (custom family
+    only) renders THAT template instead of cfg.TRANSLATION_PROMPT_TEMPLATE —
+    the admin template-test path, never persisted."""
     fam = _FAMILIES[family]
-    prompt = fam.build(
-        text, source_code, _lang_name(source_code), target_code,
-        _lang_name(target_code), context, glossary)
+    if template_override is not None and family == "custom":
+        prompt = [{"role": "user", "content": _render_custom_template(
+            template_override, text, _lang_name(source_code),
+            _lang_name(target_code), context, glossary)}]
+    else:
+        prompt = fam.build(
+            text, source_code, _lang_name(source_code), target_code,
+            _lang_name(target_code), context, glossary)
     max_tokens = len(text) // 2 + 256
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
@@ -585,6 +600,7 @@ async def translate_segments(
     context_segments: "int | None" = None,
     progress_cb=None,
     cancel_check=None,
+    template_override: "str | None" = None,
 ) -> "tuple[list[dict[str, str]], list[str], dict]":
     """Translate ``segments`` (``[{"text": str, "speaker": str|None}, …]``)
     into every language in ``targets``.
@@ -601,14 +617,16 @@ async def translate_segments(
     ``context_segments`` overrides ``TRANSLATION_CONTEXT_SEGMENTS`` when not
     None. ``progress_cb(done_fraction, step_str)`` fires after each batch;
     ``cancel_check`` (no-arg, truthy = abort) is polled between batches and
-    raises :class:`TranslationCancelled`.
+    raises :class:`TranslationCancelled`. ``template_override`` (the admin
+    template-test path) forces the ``custom`` family and renders THAT
+    template for this call only — cfg stays untouched.
     """
     ref = (model_ref or "").strip() or \
         (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
     if not ref:
         raise TranslationError(
             "no translation model configured (TRANSLATION_DEFAULT_MODEL)")
-    family = resolve_family(ref)
+    family = "custom" if template_override is not None else resolve_family(ref)
     source_code = (source_lang or "").strip() or "en"
     ctx_n = int(getattr(cfg, "TRANSLATION_CONTEXT_SEGMENTS", 3) or 0) \
         if context_segments is None else int(context_segments)
@@ -644,7 +662,7 @@ async def translate_segments(
     async def _translate_one(text: str, target: str, context: str) -> str:
         return await _run_completion(
             await _model(), family, text, source_code, target, context,
-            glossary)
+            glossary, template_override=template_override)
 
     async def _guarded_single(text: str, target: str, context: str,
                               seg_no: int) -> str:

@@ -554,3 +554,57 @@ def test_resolve_device_auto_follows_model_device(monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_DEVICE", "cpu", raising=False)
     monkeypatch.setattr(cfg, "MODEL_DEVICE", "cuda", raising=False)
     assert translation._resolve_device() == "cpu"
+
+
+# ---------------------------------------------------------------------------
+# template_override (admin template-test path)
+# ---------------------------------------------------------------------------
+
+def test_template_override_forces_custom_family_and_renders_it(
+        base_cfg, monkeypatch):
+    """translate_segments(template_override=...) must render THAT template
+    (not cfg.TRANSLATION_PROMPT_TEMPLATE) and force the custom family, even
+    for a model whose name detects a different family."""
+    monkeypatch.setattr(cfg, "TRANSLATION_PROMPT_TEMPLATE",
+                        "SAVED {text}", raising=False)
+    prompts = []
+
+    def fake(llm, family, prompt_or_msgs, max_tokens):
+        prompts.append((family, prompt_or_msgs))
+        return "Hello world."
+    monkeypatch.setattr(translation, "_complete", fake)
+
+    async def fake_get_model(ref):
+        return "STUB-LLM"
+    monkeypatch.setattr(translation, "_get_model", fake_get_model)
+
+    res, warns, meta = _run(translation.translate_segments(
+        _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful",
+        model_ref="tencent/Hunyuan-MT-7B-GGUF:Q4",   # would detect hunyuan
+        template_override="OVERRIDE {text} -> {target_language}"))
+    assert res == [{"en": "Hello world."}]
+    family, msgs = prompts[0]
+    assert family == "custom"
+    assert msgs == [{"role": "user",
+                     "content": "OVERRIDE Hallo Welt. -> English"}]
+
+
+def test_without_override_custom_family_still_reads_cfg(base_cfg, monkeypatch):
+    monkeypatch.setattr(cfg, "TRANSLATION_PROMPT_FAMILY", "custom",
+                        raising=False)
+    monkeypatch.setattr(cfg, "TRANSLATION_PROMPT_TEMPLATE",
+                        "SAVED {text}", raising=False)
+    prompts = []
+
+    def fake(llm, family, prompt_or_msgs, max_tokens):
+        prompts.append(prompt_or_msgs)
+        return "Hello world."
+    monkeypatch.setattr(translation, "_complete", fake)
+
+    async def fake_get_model(ref):
+        return "STUB-LLM"
+    monkeypatch.setattr(translation, "_get_model", fake_get_model)
+
+    _run(translation.translate_segments(
+        _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful"))
+    assert prompts[0] == [{"role": "user", "content": "SAVED Hallo Welt."}]
