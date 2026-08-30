@@ -14,4 +14,4 @@
 #
 # Model weights are NOT pip packages: GGUF files download on first use via
 # huggingface_hub into HF_HOME (<DOWNLOAD_ROOT>/hf).
-llama-cpp-python>=0.3.34
+llama-cpp-python>=0.3.35
