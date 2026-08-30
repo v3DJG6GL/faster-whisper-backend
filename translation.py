@@ -64,6 +64,9 @@ class TranslationError(RuntimeError):
 # Serializes actual llama.cpp inference across threads — llama.cpp contexts
 # are NOT thread-safe (same hazard class as diarization._infer_mutex).
 _infer_mutex = threading.Lock()
+# ref → count of jobs currently holding a lease on the cached model — an
+# in-use model is never evicted (see _drop_locked).
+_active: "dict[str, int]" = {}
 
 _lock = asyncio.Lock()
 # ref → loaded llama_cpp.Llama, insertion-ordered oldest-first (LRU: a cache
@@ -190,16 +193,25 @@ def _build_chatml(text, source_code, source_name, target_code, target_name,
 
 def _render_custom_template(tpl, text, source_name, target_name, context,
                             glossary):
-    # Plain .replace() rendering (never str.format — transcript text may carry
-    # braces). Missing optional slots render as "". The config validator
-    # guarantees {text} and {target_language} are present in a saved template;
-    # the admin test endpoint may pass an UNSAVED template through
+    # SINGLE-PASS rendering (never str.format — transcript text may carry
+    # braces, and sequential .replace would re-substitute placeholder tokens
+    # occurring literally INSIDE the user-controlled transcript). Missing
+    # optional slots render as "". The config validator guarantees {text} and
+    # {target_language} are present in a saved template; the admin test
+    # endpoint may pass an UNSAVED template through
     # translate_segments(template_override=...), rendered by these same rules.
-    return (tpl.replace("{text}", text)
-               .replace("{target_language}", target_name)
-               .replace("{source_language}", source_name or "")
-               .replace("{context}", context or "")
-               .replace("{glossary}", glossary or ""))
+    slots = {
+        "{text}": text,
+        "{target_language}": target_name,
+        "{source_language}": source_name or "",
+        "{context}": context or "",
+        "{glossary}": glossary or "",
+    }
+    return re.sub(
+        r"\{(?:text|target_language|source_language|context|glossary)\}",
+        lambda m: slots[m.group(0)],
+        tpl,
+    )
 
 
 def _build_custom(text, source_code, source_name, target_code, target_name,
@@ -280,9 +292,23 @@ def _load_blocking(ref: str, device: str, family: str):
     download_root = getattr(cfg, "DOWNLOAD_ROOT", None)
     if download_root:
         os.environ.setdefault("HF_HOME", os.path.join(download_root, "hf"))
+    # LOCAL_FILES_ONLY is a HOT setting — scope the offline env var to this
+    # load and restore it after, or one offline load would poison every later
+    # huggingface_hub download until a process restart.
+    offline_prev = os.environ.get("HF_HUB_OFFLINE")
     if getattr(cfg, "LOCAL_FILES_ONLY", False):
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        return _load_blocking_inner(ref, device, family)
+    finally:
+        if getattr(cfg, "LOCAL_FILES_ONLY", False):
+            if offline_prev is None:
+                os.environ.pop("HF_HUB_OFFLINE", None)
+            else:
+                os.environ["HF_HUB_OFFLINE"] = offline_prev
 
+
+def _load_blocking_inner(ref: str, device: str, family: str):
     try:
         import llama_cpp
     except ImportError as e:
@@ -314,12 +340,17 @@ def _load_blocking(ref: str, device: str, family: str):
         ) from e
 
 
-def _drop_locked(ref: str) -> None:
-    """Drop one cached model. Caller holds _lock."""
+def _drop_locked(ref: str) -> bool:
+    """Drop one cached model. Caller holds _lock. Declines (False) while a
+    job holds a lease on it — closing llama.cpp's native context under a
+    running decode is a use-after-free that takes the whole process down."""
+    if _active.get(ref, 0) > 0:
+        logger.info("[translate] model %s is in use — eviction deferred", ref)
+        return False
     llm = _models.pop(ref, None)
     _last_used.pop(ref, None)
     if llm is None:
-        return
+        return True
     try:
         llm.close()
     except Exception:  # noqa: BLE001 — best-effort teardown
@@ -334,9 +365,10 @@ def _drop_locked(ref: str) -> None:
     except ImportError:
         pass
     logger.info("[translate] model %s unloaded", ref)
+    return True
 
 
-async def _get_model(ref: str):
+async def _get_model(ref: str, *, lease: bool = False):
     """Return the cached model for ``ref``, loading (and LRU-evicting past
     TRANSLATION_MAX_LOADED_MODELS) on a miss."""
     async with _lock:
@@ -344,10 +376,23 @@ async def _get_model(ref: str):
             _models.move_to_end(ref)
             _last_used[ref] = time.monotonic()
             system_stats.touch_loaded_model(_STATS_PREFIX + ref)
+            if lease:
+                _active[ref] = _active.get(ref, 0) + 1
             return _models[ref]
         cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
         while len(_models) >= cap:
-            _drop_locked(next(iter(_models)))
+            victim = next(
+                (r for r in _models if not _active.get(r, 0)), None)
+            if victim is None:
+                # Every cached model is mid-job — overflow the cap rather
+                # than free a context under a running decode; the idle
+                # evictor trims the excess once the jobs release.
+                logger.warning(
+                    "[translate] all %d cached models are in use — "
+                    "temporarily exceeding TRANSLATION_MAX_LOADED_MODELS",
+                    len(_models))
+                break
+            _drop_locked(victim)
         device = _resolve_device()
         family = resolve_family(ref)
         vram_before = system_stats.gpu_mem_used_bytes()
@@ -363,7 +408,23 @@ async def _get_model(ref: str):
                     ref, device, time.perf_counter() - t0)
         _models[ref] = llm
         _last_used[ref] = time.monotonic()
+        if lease:
+            _active[ref] = _active.get(ref, 0) + 1
         return llm
+
+
+async def _release_model(ref: str) -> None:
+    """Release a lease taken by ``_get_model(..., lease=True)`` and restart
+    the model's idle clock (a long job must not be evicted the moment it
+    ends because its LOAD time stamp aged past the timeout)."""
+    async with _lock:
+        n = _active.get(ref, 0) - 1
+        if n <= 0:
+            _active.pop(ref, None)
+        else:
+            _active[ref] = n
+        if ref in _models:
+            _last_used[ref] = time.monotonic()
 
 
 async def drop_models() -> None:
@@ -520,19 +581,40 @@ _RATIO_LO, _RATIO_HI = 0.4, 3.0
 _RATIO_FLOOR_CHARS = 20
 
 
-def _guard_reason(src: str, out: str, *, check_copy: bool = True) -> "str | None":
+_CJK_TARGETS = {"zh", "ja", "ko"}
+_CJK_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
+
+
+def _ratio_bounds(src: str, target: "str | None") -> "tuple[float, float]":
+    """Char-count ratio bounds, script-aware: CJK text carries ~2-4x the
+    information per character of Latin text, so the default [0.4, 3.0] band
+    would reject nearly every valid Latin→CJK translation (and vice versa)."""
+    tgt_cjk = bool(target) and target.strip().lower().split("-")[0] in _CJK_TARGETS
+    cjk_chars = len(_CJK_CHAR_RE.findall(src))
+    src_cjk = len(src) > 0 and cjk_chars / len(src) > 0.3
+    if tgt_cjk and not src_cjk:
+        return (0.12, _RATIO_HI)
+    if src_cjk and not tgt_cjk:
+        return (_RATIO_LO, 9.0)
+    return (_RATIO_LO, _RATIO_HI)
+
+
+def _guard_reason(src: str, out: str, *, target: "str | None" = None,
+                  check_copy: bool = True) -> "str | None":
     """Reason string when a translated segment fails a sanity guard, else
-    None. Guards: empty output; length ratio outside [0.4, 3.0] (only once
-    either side reaches the 20-char floor); digit multiset mismatch; verbatim
-    input copy (when the target differs from the source); repetition loop."""
+    None. Guards: empty output; length ratio outside script-aware bounds
+    (only once either side reaches the 20-char floor); digit multiset
+    mismatch; verbatim input copy (when the target differs from the source);
+    repetition loop."""
     s = (src or "").strip()
     o = (out or "").strip()
     if not o:
         return "empty output"
     if s and (len(s) >= _RATIO_FLOOR_CHARS or len(o) >= _RATIO_FLOOR_CHARS):
+        lo, hi = _ratio_bounds(s, target)
         ratio = len(o) / len(s)
-        if not (_RATIO_LO <= ratio <= _RATIO_HI):
-            return f"length ratio {ratio:.2f} outside [{_RATIO_LO}, {_RATIO_HI}]"
+        if not (lo <= ratio <= hi):
+            return f"length ratio {ratio:.2f} outside [{lo}, {hi}]"
     if Counter(re.findall(r"\d", s)) != Counter(re.findall(r"\d", o)):
         return "digit mismatch"
     if check_copy and o == s:
@@ -656,7 +738,7 @@ async def translate_segments(
     async def _model():
         nonlocal llm
         if llm is None:
-            llm = await _get_model(ref)
+            llm = await _get_model(ref, lease=True)
         return llm
 
     async def _translate_one(text: str, target: str, context: str) -> str:
@@ -669,18 +751,19 @@ async def translate_segments(
         """One translation + guard; on failure ONE retry alone, then keep the
         original text + a warning."""
         out = await _translate_one(text, target, context)
-        reason = _guard_reason(text, out)
+        reason = _guard_reason(text, out, target=target)
         if reason is None:
             return out
         out = await _translate_one(text, target, context)
-        reason = _guard_reason(text, out)
+        reason = _guard_reason(text, out, target=target)
         if reason is None:
             return out
         warnings.append(
             f"segment {seg_no}: kept original — translation failed ({reason})")
         return text
 
-    for target in targets:
+    try:
+      for target in targets:
         _check_cancel()
         if _same_lang(target, source_lang):
             # Same-language short-circuit: copy each text verbatim.
@@ -716,7 +799,7 @@ async def translate_segments(
                         continue
                     for j, out in zip(batch_idx, parsed):
                         src = segments[j].get("text") or ""
-                        reason = _guard_reason(src, out)
+                        reason = _guard_reason(src, out, target=target)
                         if reason is None:
                             results[j][target] = out
                         else:
@@ -725,7 +808,7 @@ async def translate_segments(
                             retried = await _translate_one(
                                 src, target,
                                 _context_lines(segments, j, ctx_n))
-                            reason = _guard_reason(src, retried)
+                            reason = _guard_reason(src, retried, target=target)
                             if reason is None:
                                 results[j][target] = retried
                             else:
@@ -746,10 +829,10 @@ async def translate_segments(
                 joined = " ".join(t.strip() for t in src_texts).strip()
                 context = _context_lines(segments, group[0], ctx_n)
                 translated = await _translate_one(joined, target, context)
-                reason = _guard_reason(joined, translated)
+                reason = _guard_reason(joined, translated, target=target)
                 if reason is not None:
                     translated = await _translate_one(joined, target, context)
-                    reason = _guard_reason(joined, translated)
+                    reason = _guard_reason(joined, translated, target=target)
                 if reason is not None:
                     for j in group:
                         results[j][target] = segments[j].get("text") or ""
@@ -764,5 +847,8 @@ async def translate_segments(
                         results[j][target] = piece
                 done_units += len(group)
                 _progress(f"{target} {g_no}/{len(groups)}")
+    finally:
+        if llm is not None:
+            await _release_model(ref)
 
     return results, warnings, meta

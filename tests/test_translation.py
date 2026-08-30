@@ -252,7 +252,7 @@ def _install_fake(monkeypatch, transform, calls=None):
         return transform(payload)
     monkeypatch.setattr(translation, "_complete", fake)
 
-    async def fake_get_model(ref):
+    async def fake_get_model(ref, *, lease=False):
         return "STUB-LLM"
     monkeypatch.setattr(translation, "_get_model", fake_get_model)
 
@@ -337,7 +337,7 @@ def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
         return _xlate(payload)
     monkeypatch.setattr(translation, "_complete", fake)
 
-    async def fake_get_model(ref):
+    async def fake_get_model(ref, *, lease=False):
         return "STUB-LLM"
     monkeypatch.setattr(translation, "_get_model", fake_get_model)
 
@@ -574,7 +574,7 @@ def test_template_override_forces_custom_family_and_renders_it(
         return "Hello world."
     monkeypatch.setattr(translation, "_complete", fake)
 
-    async def fake_get_model(ref):
+    async def fake_get_model(ref, *, lease=False):
         return "STUB-LLM"
     monkeypatch.setattr(translation, "_get_model", fake_get_model)
 
@@ -601,10 +601,55 @@ def test_without_override_custom_family_still_reads_cfg(base_cfg, monkeypatch):
         return "Hello world."
     monkeypatch.setattr(translation, "_complete", fake)
 
-    async def fake_get_model(ref):
+    async def fake_get_model(ref, *, lease=False):
         return "STUB-LLM"
     monkeypatch.setattr(translation, "_get_model", fake_get_model)
 
     _run(translation.translate_segments(
         _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful"))
     assert prompts[0] == [{"role": "user", "content": "SAVED Hallo Welt."}]
+
+
+# ── review-fix regressions ───────────────────────────────────────────────────
+
+def test_busy_model_is_never_evicted():
+    """A leased model declines eviction (closing llama.cpp's context under a
+    running decode is a native use-after-free)."""
+    class _Closable:
+        closed = False
+        def close(self):
+            self.closed = True
+    llm = _Closable()
+    translation._models["org/busy:Q4"] = llm
+    translation._last_used["org/busy:Q4"] = 0.0
+    translation._active["org/busy:Q4"] = 1
+    try:
+        assert translation._drop_locked("org/busy:Q4") is False
+        assert "org/busy:Q4" in translation._models
+        assert not llm.closed
+        translation._active.pop("org/busy:Q4", None)
+        assert translation._drop_locked("org/busy:Q4") is True
+        assert llm.closed
+    finally:
+        translation._models.pop("org/busy:Q4", None)
+        translation._last_used.pop("org/busy:Q4", None)
+        translation._active.pop("org/busy:Q4", None)
+
+
+def test_cjk_target_ratio_bounds_admit_compressed_output():
+    src = "Wir haben die Messung gestern wiederholt und dokumentiert."
+    out = "我们昨天重复了测量。"  # ~0.17x the chars — valid Chinese
+    assert translation._guard_reason(src, out, target="zh") is None
+    # …and the default band still rejects it for a Latin target.
+    assert translation._guard_reason(src, out, target="fr") is not None
+
+
+def test_custom_template_is_single_pass():
+    """Placeholder tokens INSIDE the transcript text must not be
+    re-substituted by later slots."""
+    rendered = translation._render_custom_template(
+        "{text} -> {target_language}",
+        text="say {glossary} verbatim",
+        source_name="German", target_name="English",
+        context="CTX", glossary="Rechnung = invoice")
+    assert rendered == "say {glossary} verbatim -> English"

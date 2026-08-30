@@ -205,3 +205,36 @@ def test_progress_visible_and_cancel_honored(client, app_module, monkeypatch):
     # The finally cleaned both registries.
     assert _PID not in app_module._BATCH_PROGRESS
     assert _PID not in app_module._BATCH_CANCELLED
+
+
+def test_locked_translation_model_applies_to_the_text_endpoint(
+        client, app_module, make_user_key, monkeypatch):
+    """Per-identity locks bind HERE too — otherwise a key locked to a small
+    model on the batch path just switches endpoints (review finding)."""
+    from tests.conftest import bearer
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    calls = []
+    _stub_translate(monkeypatch, calls=calls)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    r = client.post("/settings/overrides/state", headers=admin_h,
+                    json={"OVERRIDE_PROFILES": {
+                        "small-mt": {
+                            "TRANSLATION_MODEL": "org/small:Q4_K_M",
+                            "locks": ["TRANSLATION_MODEL"]}}})
+    assert r.status_code == 200, r.text
+    uid, raw_bob = make_user_key("bob", is_admin=False)
+    r = client.patch(
+        f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
+        json={"pages": {}, "config": {"overrides": {},
+                                      "profiles": ["small-mt"], "locks": []}})
+    assert r.status_code == 200, r.text
+
+    r = client.post(
+        "/v1/text/translations", headers=bearer(raw_bob),
+        json={"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
+              "translation_model": "org/huge:Q8_0"})
+    assert r.status_code == 200, r.text
+    assert calls[0]["model_ref"] == "org/small:Q4_K_M"  # locked value wins
+    assert any("locked" in w for w in r.json().get("warnings", []))

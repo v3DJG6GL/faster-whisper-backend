@@ -1399,6 +1399,23 @@ def cfg_for(model_id: "str | None", field: str, ident=None):
                 return v
     return getattr(cfg, field)
 
+def _resolve_request_knob(resolved_model, ident, ignored: "list[str]",
+                          cfg_name: str, client_name: str, req_val,
+                          default=""):
+    """The locked-wins / request-wins / config-inherits ladder every
+    per-request string knob shares (the speaker counts use the numeric tuple
+    loop next to their form parsing). Locked: the resolved server value wins
+    and a differing request lands in ``ignored`` under its client name."""
+    if cfg_name in ident.locked:
+        val = cfg_for(resolved_model, cfg_name, ident) or default
+        if req_val is not None and req_val != val:
+            ignored.append(client_name)
+        return val
+    if req_val is not None:
+        return req_val
+    return cfg_for(resolved_model, cfg_name, ident) or default
+
+
 
 def build_ident(user: "dict | None", model_id: "str | None",
                 request_overrides: "dict | None" = None,
@@ -2056,7 +2073,19 @@ async def _preload_extras() -> None:
     if getattr(cfg, "TRANSLATION_ENABLED", False):
         _allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
         _default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
-        for ref in list(getattr(cfg, "TRANSLATION_PRELOAD_MODELS", []) or []):
+        _preload = list(dict.fromkeys(
+            getattr(cfg, "TRANSLATION_PRELOAD_MODELS", []) or []))
+        _cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
+        if len(_preload) > _cap:
+            # Mirror the whisper preload's cap warning — loading past the LRU
+            # cap would silently close each earlier preload as the next loads.
+            logger.warning(
+                "TRANSLATION_PRELOAD_MODELS lists %d models but "
+                "TRANSLATION_MAX_LOADED_MODELS is %d — preloading only the "
+                "first %d (dropped: %s)",
+                len(_preload), _cap, _cap, ", ".join(_preload[_cap:]))
+            _preload = _preload[:_cap]
+        for ref in _preload:
             # Same allowlist semantics as the request path: a non-empty
             # allowlist admits its members plus the configured default.
             if _allowed and ref not in _allowed and ref != _default:
@@ -3177,43 +3206,38 @@ async def transcribe(
             # resolved value soft-fails by skipping THAT stage — before its
             # enabled gate, so the warning names the actual reason.
             _dm_req = (diarization_model or "").strip() or None
-            if "DIARIZATION_MODEL" in ident.locked:
-                _diarization_model = cfg_for(
-                    resolved_model, "DIARIZATION_MODEL", ident) or ""
-                if _dm_req is not None and _dm_req != _diarization_model:
-                    ignored.append("diarization_model")
-            elif _dm_req is not None:
-                _diarization_model = _dm_req
-            else:
-                _diarization_model = cfg_for(
-                    resolved_model, "DIARIZATION_MODEL", ident) or ""
-            _diar_allowed = getattr(cfg, "DIARIZATION_ALLOWED_MODELS", []) or []
-            if (_diarize and _diarization_model and _diar_allowed
+            _diarization_model = _resolve_request_knob(
+                resolved_model, ident, ignored,
+                "DIARIZATION_MODEL", "diarization_model", _dm_req)
+            # The allowlist constrains only the CLIENT-requested value (a
+            # config/identity-inherited model is admin policy and always
+            # passes) and always admits the configured default — so an EMPTY
+            # allowlist means "the configured model only", never "anything".
+            _diar_allowed = set(
+                getattr(cfg, "DIARIZATION_ALLOWED_MODELS", []) or [])
+            _diar_allowed.add(getattr(cfg, "DIARIZATION_MODEL", "") or "")
+            if (_diarize and _dm_req is not None
+                    and _diarization_model == _dm_req
                     and _diarization_model not in _diar_allowed):
                 _warnings.append(
-                    "requested diarization model is not in "
-                    "DIARIZATION_ALLOWED_MODELS on this server")
+                    "requested diarization model is not allowed on this "
+                    "server (DIARIZATION_ALLOWED_MODELS)")
                 _skipped.append("diarizing")
                 _progress_set(_pid, skipped=list(_skipped))
                 _diarize = False
             _sm_req = (separation_model or "").strip() or None
-            if "BGM_SEPARATION_UVR_MODEL" in ident.locked:
-                _separation_model = cfg_for(
-                    resolved_model, "BGM_SEPARATION_UVR_MODEL", ident) or ""
-                if _sm_req is not None and _sm_req != _separation_model:
-                    ignored.append("separation_model")
-            elif _sm_req is not None:
-                _separation_model = _sm_req
-            else:
-                _separation_model = cfg_for(
-                    resolved_model, "BGM_SEPARATION_UVR_MODEL", ident) or ""
-            _sep_allowed = getattr(
-                cfg, "BGM_SEPARATION_ALLOWED_MODELS", []) or []
-            if (_separate and _separation_model and _sep_allowed
+            _separation_model = _resolve_request_knob(
+                resolved_model, ident, ignored,
+                "BGM_SEPARATION_UVR_MODEL", "separation_model", _sm_req)
+            _sep_allowed = set(
+                getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", []) or [])
+            _sep_allowed.add(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "")
+            if (_separate and _sm_req is not None
+                    and _separation_model == _sm_req
                     and _separation_model not in _sep_allowed):
                 _warnings.append(
-                    "requested separation model is not in "
-                    "BGM_SEPARATION_ALLOWED_MODELS on this server")
+                    "requested separation model is not allowed on this "
+                    "server (BGM_SEPARATION_ALLOWED_MODELS)")
                 _skipped.append("separating")
                 _progress_set(_pid, skipped=list(_skipped))
                 _separate = False
@@ -3222,14 +3246,9 @@ async def transcribe(
             # above. The capacity gates (TRANSLATION_ENABLED, model allowlist)
             # live at the stage itself and soft-fail into `_warnings`.
             _tt_req = (translate_to or "").strip() or None
-            if "TRANSLATE_TO" in ident.locked:
-                _tt_raw = cfg_for(resolved_model, "TRANSLATE_TO", ident) or ""
-                if _tt_req is not None and _tt_req != _tt_raw:
-                    ignored.append("translate_to")
-            elif _tt_req is not None:
-                _tt_raw = _tt_req
-            else:
-                _tt_raw = cfg_for(resolved_model, "TRANSLATE_TO", ident) or ""
+            _tt_raw = _resolve_request_knob(
+                resolved_model, ident, ignored,
+                "TRANSLATE_TO", "translate_to", _tt_req)
             # csv → deduped ordered list of well-formed codes. Malformed
             # entries drop silently (the sloppy-caller stance of the clamped
             # knobs); the MAX_TARGETS clamp warns, naming what it dropped.
@@ -3248,38 +3267,17 @@ async def transcribe(
                     + ", ".join(_translate_to[_translation_max_targets:]))
                 _translate_to = _translate_to[:_translation_max_targets]
             _tm_req = (translation_model or "").strip() or None
-            if "TRANSLATION_MODEL" in ident.locked:
-                _translation_model = cfg_for(
-                    resolved_model, "TRANSLATION_MODEL", ident) or ""
-                if _tm_req is not None and _tm_req != _translation_model:
-                    ignored.append("translation_model")
-            elif _tm_req is not None:
-                _translation_model = _tm_req
-            else:
-                _translation_model = cfg_for(
-                    resolved_model, "TRANSLATION_MODEL", ident) or ""
-            if "TRANSLATION_MODE" in ident.locked:
-                _translation_mode = cfg_for(
-                    resolved_model, "TRANSLATION_MODE", ident) or "fluent"
-                if translation_mode is not None and \
-                        translation_mode != _translation_mode:
-                    ignored.append("translation_mode")
-            elif translation_mode is not None:
-                _translation_mode = translation_mode
-            else:
-                _translation_mode = cfg_for(
-                    resolved_model, "TRANSLATION_MODE", ident) or "fluent"
+            _translation_model = _resolve_request_knob(
+                resolved_model, ident, ignored,
+                "TRANSLATION_MODEL", "translation_model", _tm_req)
+            _translation_mode = _resolve_request_knob(
+                resolved_model, ident, ignored,
+                "TRANSLATION_MODE", "translation_mode", translation_mode,
+                default="fluent")
             _tg_req = translation_glossary if (translation_glossary or "").strip() else None
-            if "TRANSLATION_GLOSSARY" in ident.locked:
-                _translation_glossary = cfg_for(
-                    resolved_model, "TRANSLATION_GLOSSARY", ident) or ""
-                if _tg_req is not None and _tg_req != _translation_glossary:
-                    ignored.append("translation_glossary")
-            elif _tg_req is not None:
-                _translation_glossary = _tg_req
-            else:
-                _translation_glossary = cfg_for(
-                    resolved_model, "TRANSLATION_GLOSSARY", ident) or ""
+            _translation_glossary = _resolve_request_knob(
+                resolved_model, ident, ignored,
+                "TRANSLATION_GLOSSARY", "translation_glossary", _tg_req)
             # The config field is Field(max_length=4000); cap the raw client
             # value to the same bound rather than 422ing a sloppy caller.
             _translation_glossary = (_translation_glossary or "")[:4000]
@@ -4259,8 +4257,24 @@ async def translate_text(request: Request,
             detail=f"segments exceed {_TEXT_TRANSLATE_MAX_CHARS} total "
                    "characters")
 
+    # Per-identity policy (locks + overrides) applies here exactly as on the
+    # batch path — reading bare cfg would let a locked-down key bypass its
+    # profile by using this endpoint instead of the transcription form.
+    ident = build_ident(user, None)
+    _ignored: "list[str]" = []
+
+    def _knob(cfg_name: str, client_name: str, body_val):
+        if cfg_name in ident.locked:
+            inherited = cfg_for(None, cfg_name, ident)
+            if body_val is not None and body_val != inherited:
+                _ignored.append(client_name)
+            return inherited
+        if body_val is not None:
+            return body_val
+        return cfg_for(None, cfg_name, ident)
+
     raw_targets = body.get("targets")
-    max_targets = int(getattr(cfg, "TRANSLATION_MAX_TARGETS", 3) or 1)
+    max_targets = int(_knob("TRANSLATION_MAX_TARGETS", "", None) or 1)
     if not isinstance(raw_targets, list) or not raw_targets:
         raise HTTPException(status_code=422,
                             detail="targets must be a non-empty list of "
@@ -4288,28 +4302,31 @@ async def translate_text(request: Request,
         raise HTTPException(
             status_code=422,
             detail="translation_mode must be 'fluent' or 'faithful'")
-    if mode is None:
-        mode = (getattr(cfg, "TRANSLATION_MODE", "") or "fluent")
+    mode = _knob("TRANSLATION_MODE", "translation_mode", mode) or "fluent"
     glossary = body.get("translation_glossary")
     if glossary is not None and not isinstance(glossary, str):
         raise HTTPException(status_code=422,
                             detail="translation_glossary must be a string")
-    if glossary is None:
-        glossary = getattr(cfg, "TRANSLATION_GLOSSARY", "") or ""
-    glossary = glossary[:4000]
+    glossary = (_knob("TRANSLATION_GLOSSARY", "translation_glossary",
+                      glossary) or "")[:4000]
     context_segments = body.get("context_segments")
     if context_segments is not None and not isinstance(context_segments, int):
         raise HTTPException(status_code=422,
                             detail="context_segments must be an integer")
     if context_segments is not None:
         context_segments = min(10, max(0, context_segments))
+    _ctx_resolved = _knob("TRANSLATION_CONTEXT_SEGMENTS", "context_segments",
+                          context_segments)
+    context_segments = int(_ctx_resolved) if _ctx_resolved is not None else None
 
     model_ref = body.get("translation_model")
     if model_ref is not None and not isinstance(model_ref, str):
         raise HTTPException(status_code=422,
                             detail="translation_model must be a string")
     _tr_default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
-    _tr_model = (model_ref or "").strip() or _tr_default
+    _tr_model = (_knob("TRANSLATION_MODEL", "translation_model",
+                       (model_ref or "").strip() or None) or "").strip() \
+        or _tr_default
     _tr_allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
     if (_tr_allowed and _tr_model not in _tr_allowed
             and _tr_model != _tr_default):
@@ -4377,7 +4394,10 @@ async def translate_text(request: Request,
                      for i in range(len(ids))],
         "translation": {"model": meta.get("model"), "targets": targets,
                         "source": meta.get("source"), "mode": meta.get("mode")},
-        "warnings": warnings,
+        "warnings": warnings + [
+            f"{name} is locked on this server — your value was ignored"
+            for name in _ignored if name
+        ],
     }
 
 

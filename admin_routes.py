@@ -1008,7 +1008,7 @@ async def translation_test(body: _TranslationTestBody) -> JSONResponse:
                             "translation is disabled (TRANSLATION_ENABLED)")
     t0 = time.perf_counter()
     try:
-        results, _warnings, meta = await translation.translate_segments(
+        results, warnings, meta = await translation.translate_segments(
             [{"text": body.text}], [body.target],
             source_lang=body.source, mode="faithful",
             template_override=body.template)
@@ -1017,10 +1017,14 @@ async def translation_test(body: _TranslationTestBody) -> JSONResponse:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content={"error": str(e)})
     ms = int((time.perf_counter() - t0) * 1000)
+    # A guard-failed test FALLS BACK to the untranslated source text — the
+    # warnings are the only signal, so they MUST reach the admin (otherwise a
+    # broken template reads as a fast success).
     return JSONResponse({
         "output": results[0].get(body.target, "") if results else "",
         "ms": ms,
         "model": meta.get("model", ""),
+        "warnings": warnings,
     })
 
 
@@ -3125,7 +3129,13 @@ function translationTemplateEditor(name, v) {
       });
       const j = await r.json().catch(() => ({}));
       if (r.ok) {
-        testOut.textContent = j.output + '  (' + j.model + ' · ' + j.ms + ' ms)';
+        // A guard failure falls back to the UNTRANSLATED sample — the
+        // warnings array is the tell; without it a broken template reads
+        // as a fast success.
+        const warn = (j.warnings && j.warnings.length)
+          ? '  ⚠ ' + j.warnings.join(' · ')
+          : '';
+        testOut.textContent = j.output + '  (' + j.model + ' · ' + j.ms + ' ms)' + warn;
       } else {
         testOut.textContent = 'test failed: ' + (j.error || j.detail || r.status);
       }

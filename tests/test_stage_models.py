@@ -254,3 +254,45 @@ def test_translation_device_edit_dispatches_eviction(client, monkeypatch):
     r = client.post("/settings/state", json={"TRANSLATION_MODE": "faithful"})
     assert r.status_code == 200, r.text
     assert calls == []
+
+
+# ── review-fix regressions: allowlist semantics ─────────────────────────────
+
+def test_empty_bgm_allowlist_admits_only_the_configured_model(
+        client, app_module, monkeypatch):
+    """Empty allowlist = the configured model ONLY — clearing the list is a
+    lockdown, never an open gate."""
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ALLOWED_MODELS", [],
+                        raising=False)
+    calls = []
+    _stub_separate(monkeypatch, calls)
+    r = _post(client, separate_bgm="true",
+              separation_model="Kim_Vocal_2.onnx")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert any("not allowed" in w for w in body.get("warnings", []))
+    assert not calls  # the stage was skipped, nothing loaded
+    # The configured default still runs untouched.
+    r = _post(client, separate_bgm="true")
+    assert r.status_code == 200
+    assert len(calls) == 1
+
+
+def test_allowlist_never_blocks_the_config_inherited_default(
+        client, app_module, monkeypatch):
+    """A narrowed allowlist missing the configured default must not disable
+    the stage for requests that named no model at all."""
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ALLOWED_MODELS",
+                        ["pyannote/speaker-diarization-3.1"], raising=False)
+    # Config default stays community-1 — NOT in the allowlist.
+    calls = []
+    _stub_diarize(monkeypatch, calls)
+    r = _post(client, diarize="true")
+    assert r.status_code == 200, r.text
+    assert len(calls) == 1
+    assert calls[0]["model_id"] == "pyannote/speaker-diarization-community-1"
+    assert "warnings" not in r.json()
