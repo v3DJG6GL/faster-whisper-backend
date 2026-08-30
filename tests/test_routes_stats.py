@@ -77,7 +77,9 @@ def test_header_activity_cluster_shell_on_every_page(client):
         assert 'id="hact"' in html, path
         assert 'id="hact-pop"' in html, path
         assert '/stats/stream?lite=1' in html, path
-        assert '<span id="hact-jobs" class="hact-jobs">0</span>' in html, path
+        assert '<span id="hact-jobs" class="v">0</span>' in html, path
+        # GPU/VRAM values render as placeholders, never live numbers.
+        assert 'id="hact-gpuv"' in html, path
 
 
 def test_translate_run_registers_a_job(client, app_module, monkeypatch):

@@ -356,77 +356,103 @@ header .sevpills { display: inline-flex; align-items: center; gap: 0.25rem; }
    ACTIVITY_CLUSTER_JS from /stats/stream?lite=1. Visibility mirrors the
    stats nav-link's whoami gate: default-hidden, JS adds `.allowed`. */
 header .hact-wrap { position: relative; display: inline-flex; }
-header .hdr-activity { display: none; align-items: center; gap: 0.4rem;
-  background: transparent; border: 1px solid var(--border); border-radius: 4px;
-  padding: 0.2rem 0.5rem; cursor: pointer; color: var(--help);
-  font-size: var(--fs-xs); line-height: 1.2; }
+/* Button chrome per the mockup: mono type, recessed ground, cyan hover ring. */
+header .hdr-activity { display: none; align-items: center; gap: 0.65rem;
+  background: #10151c; border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.2rem 0.65rem; cursor: pointer; color: var(--fg);
+  font-family: "Geist Mono", var(--font-mono); font-size: var(--fs-xs);
+  line-height: 1.2; }
 header .hdr-activity.allowed { display: inline-flex; }
-header .hdr-activity:hover { color: var(--fg); background: var(--panel); }
-header .hdr-activity .hact-jobs { font-variant-numeric: tabular-nums;
-  color: var(--fg); font-weight: 600; }
-header .hdr-activity.idle .hact-jobs { color: var(--help); font-weight: 400; }
-header .hact-bars { display: inline-flex; flex-direction: column; gap: 2px; }
-header .hact-bar { display: block; width: 2.667rem; height: 5px;
-  background: #21262d; border-radius: 2px; overflow: hidden; }
+header .hdr-activity:hover { border-color: var(--cyan); }
+header .hdr-activity .v { font-variant-numeric: tabular-nums; }
+/* Jobs: spinning ring + count — magenta while busy, static + dim when idle.
+   The ring stays painted at every width so the control keeps its identity
+   even collapsed to ring+count (a naked "0" reads as a broken sev pill). */
+header .hact-jobs { display: inline-flex; align-items: center; gap: 0.35rem;
+  color: var(--magenta); }
+header .hact-ring { width: 0.73rem; height: 0.73rem; border-radius: 50%;
+  border: 1.5px solid var(--magenta); border-top-color: transparent;
+  animation: hact-spin 1.1s linear infinite; }
+header .hdr-activity.idle .hact-jobs { color: var(--help); }
+header .hdr-activity.idle .hact-ring { animation: none;
+  border-color: var(--border); }
+@keyframes hact-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  header .hact-ring { animation: none; } }
+/* GPU / VRAM metric: micro-label · horizontal micro-bar · live value. */
+header .hact-m { display: inline-flex; align-items: center; gap: 0.35rem; }
+header .hact-m .lbl { color: var(--help); font-size: 0.62rem;
+  letter-spacing: 0.05em; }
+header .hact-bar { width: 2.667rem; height: 5px; background: #21262d;
+  border-radius: 3px; overflow: hidden; }
 header .hact-bar i { display: block; height: 100%; width: 0;
-  background: var(--cyan); transition: width .3s ease; }
+  border-radius: 3px; background: var(--cyan); transition: width .4s ease; }
 header .hact-bar.vram i { background: var(--magenta); }
 header .hact-bar i.warn { background: var(--yellow); }
 header .hact-bar i.crit { background: var(--red); }
 header .hdr-activity.stale .hact-bar i { background: var(--help); }
 header .hdr-activity.stale .hact-jobs { color: var(--help); }
-header .hact-spin { display: inline-block; width: 0.65rem; height: 0.65rem;
-  border: 2px solid #21262d; border-top-color: var(--cyan);
-  border-radius: 50%; animation: hact-spin 0.9s linear infinite; }
-header .hact-spin[hidden] { display: none; }
-@keyframes hact-spin { to { transform: rotate(360deg); } }
-/* Popover: running jobs + system rows + loaded models + /stats link. */
+header .hdr-activity.stale .hact-ring { animation: none;
+  border-color: var(--border); }
+/* Popover: bordered sections (running · server · models) + footer link. */
 .hact-pop { position: absolute; right: 0; top: calc(100% + 0.5rem);
-  z-index: 60; min-width: 20rem; max-width: 26rem;
+  z-index: 60; width: 28rem; max-width: calc(100vw - 2rem);
   background: var(--panel); border: 1px solid var(--border);
-  border-radius: 8px; box-shadow: 0 12px 32px -12px rgba(0,0,0,0.8);
-  padding: 0.6rem 0.75rem; font-size: var(--fs-xs); color: var(--fg);
-  text-align: left; }
+  border-radius: 8px; box-shadow: 0 12px 32px rgba(0,0,0,0.5);
+  font-size: var(--fs-sm); color: var(--fg); text-align: left; }
 .hact-pop[hidden] { display: none; }
-.hact-pop h4 { margin: 0.2rem 0 0.3rem; font-size: var(--fs-xs);
-  color: var(--help); text-transform: uppercase; letter-spacing: .05em;
-  font-weight: 500; }
-.hact-pop .hact-job { display: flex; align-items: center; gap: 0.45rem;
-  margin: 0.25rem 0; }
-.hact-pop .hact-kind { flex: 0 0 auto; font-size: 0.667rem;
-  padding: 0 0.35rem; border-radius: 999px; border: 1px solid var(--border);
-  color: var(--help); white-space: nowrap; }
-.hact-pop .hact-job .m { flex: 1 1 auto; overflow: hidden;
+.hact-pop .sec { padding: 0.65rem 0.95rem;
+  border-bottom: 1px solid var(--border); }
+.hact-pop .sec-t { font-family: "Geist Mono", var(--font-mono);
+  font-size: 0.62rem; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--help); margin-bottom: 0.5rem; }
+.hact-pop .hact-job { display: flex; align-items: center; gap: 0.65rem;
+  padding: 0.3rem 0; }
+.hact-pop .hact-kind { flex: none; font-family: "Geist Mono", var(--font-mono);
+  font-size: 0.64rem; padding: 0.1em 0.5em; border-radius: 999px;
+  border: 1px solid var(--border); color: var(--help); white-space: nowrap; }
+.hact-pop .hact-kind.tr { color: var(--cyan); }
+.hact-pop .hact-kind.tl { color: var(--magenta); }
+.hact-pop .hact-kind.dc { color: var(--green); }
+.hact-pop .hact-kind.dl { color: var(--yellow); }
+.hact-pop .hact-job .m { flex: 1 1 auto; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
-.hact-pop .hact-job .p { flex: 0 0 auto; color: var(--help);
-  font-variant-numeric: tabular-nums; }
-.hact-pop .hact-jbar { flex: 0 0 3.2rem; height: 5px; background: #21262d;
-  border-radius: 2px; overflow: hidden; }
-.hact-pop .hact-jbar i { display: block; height: 100%;
+.hact-pop .hact-job .m small { color: var(--help);
+  font-family: "Geist Mono", var(--font-mono); font-size: 0.85em; }
+.hact-pop .hact-jbar { flex: none; width: 4.4rem; height: 5px;
+  background: #21262d; border-radius: 3px; overflow: hidden; }
+.hact-pop .hact-jbar i { display: block; height: 100%; border-radius: 3px;
   background: var(--cyan); }
-.hact-pop .hact-cancel { flex: 0 0 auto; background: transparent;
-  border: 1px solid var(--border); border-radius: 3px; color: var(--help);
-  font-size: 0.667rem; padding: 0 0.3rem; cursor: pointer; line-height: 1.4; }
-.hact-pop .hact-cancel:hover { color: var(--red); border-color: #5a2424; }
-.hact-pop .hact-sys { display: grid;
-  grid-template-columns: 3.2rem 1fr 3.4rem; gap: 0.25rem 0.5rem;
-  align-items: center; margin: 0.15rem 0; }
-.hact-pop .hact-sys .lbl { color: var(--help); }
-.hact-pop .hact-sys .val { text-align: right; color: var(--fg);
+.hact-pop .hact-jbar i.tl { background: var(--magenta); }
+.hact-pop .hact-jbar i.dl { background: var(--yellow); }
+.hact-pop .hact-job .p { flex: none; width: 4.2rem; text-align: right;
+  font-family: "Geist Mono", var(--font-mono); font-size: 0.68rem;
+  color: var(--help); font-variant-numeric: tabular-nums; }
+.hact-pop .hact-cancel { flex: none; background: transparent;
+  border: 1px solid var(--border); border-radius: 4px; color: var(--help);
+  font-size: 0.72rem; padding: 0 0.4em; cursor: pointer; line-height: 1.4; }
+.hact-pop .hact-cancel:hover { color: var(--red); border-color: var(--red); }
+.hact-pop .resline { display: flex; align-items: center; gap: 0.55rem;
+  padding: 0.2rem 0; font-family: "Geist Mono", var(--font-mono);
+  font-size: 0.7rem; }
+.hact-pop .resline .rl { width: 2.9rem; color: var(--help); }
+.hact-pop .resline .rbar { flex: 1; height: 5px; background: #21262d;
+  border-radius: 3px; overflow: hidden; }
+.hact-pop .resline .rbar i { display: block; height: 100%;
+  border-radius: 3px; }
+.hact-pop .resline .rbar i.c-cyan { background: var(--cyan); }
+.hact-pop .resline .rbar i.c-mag { background: var(--magenta); }
+.hact-pop .resline .rbar i.c-green { background: var(--green); }
+.hact-pop .resline .rv { width: 8rem; text-align: right; color: var(--fg);
   font-variant-numeric: tabular-nums; }
-.hact-pop .hact-sysbar { height: 5px; background: #21262d; border-radius: 2px;
-  overflow: hidden; }
-.hact-pop .hact-sysbar i { display: block; height: 100%;
-  background: var(--cyan); }
-.hact-pop .hact-sysbar i.warn { background: var(--yellow); }
-.hact-pop .hact-sysbar i.crit { background: var(--red); }
-.hact-pop .hact-models { margin: 0; padding: 0; list-style: none;
-  color: var(--help); }
-.hact-pop .hact-models li { overflow: hidden; text-overflow: ellipsis;
-  white-space: nowrap; }
-.hact-pop .hact-foot { margin-top: 0.5rem; padding-top: 0.4rem;
-  border-top: 1px solid var(--border); }
-.hact-pop .hact-foot a { color: var(--cyan); text-decoration: none; }
+.hact-pop .modline { display: flex; gap: 0.55rem;
+  font-family: "Geist Mono", var(--font-mono); font-size: 0.68rem;
+  color: var(--help); padding: 0.15rem 0; }
+.hact-pop .modline .mn { color: var(--fg); flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hact-pop .hact-foot { text-align: right; padding: 0.5rem 0.95rem; }
+.hact-pop .hact-foot a { color: var(--cyan); font-size: 0.74rem;
+  text-decoration: none; }
 .hact-pop .empty { color: var(--help); font-style: italic; }
 /* Square icon buttons (logout / reload …) — same chrome as text buttons via
    the page-local `header button` rule, just sized to the glyph. Labels live
@@ -520,12 +546,18 @@ header .subbar .filt-label { display: inline-flex; align-items: center; gap: 0.3
 @container hdr (max-width: 60rem) {
   header .sevpill .lbl { display: none; }
   header .sevpill { padding: 0.125rem 0.4rem; }
-  /* activity cluster: drop the micro-bars, keep spinner + jobs count */
-  header .hact-bars { display: none; }
+  /* activity cluster degrades in tiers: micro-labels go first … */
+  header .hact-m .lbl { display: none; }
+}
+@container hdr (max-width: 48rem) {
+  /* … then the VRAM metric … */
+  header .hact-m.vramm { display: none; }
 }
 @container hdr (max-width: 40rem) {
   header .navlink { padding: 0.25rem 0.5rem; }
   header .brand-sep { display: none; }
+  /* … ring + jobs count always remain (never a bare unlabeled zero). */
+  header .hact-m { display: none; }
 }
 
 /* ---- Admin-only nav elements ----
@@ -1994,16 +2026,24 @@ ACTIVITY_CLUSTER_JS = """
   var btn = document.getElementById('hact');
   if (!btn) return;
   var pop = document.getElementById('hact-pop');
-  var spin = document.getElementById('hact-spin');
   var jobsEl = document.getElementById('hact-jobs');
   var gpuEl = document.getElementById('hact-gpu');
+  var gpuvEl = document.getElementById('hact-gpuv');
   var vramEl = document.getElementById('hact-vram');
+  var vramvEl = document.getElementById('hact-vramv');
   var es = null, last = null, lastTs = 0, allowed = false;
 
   function esc(s){ return String(s == null ? '' : s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
     .replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
   function onStats(){ return window.__current_page === 'stats'; }
+  function gb(mb){ return ((mb || 0) / 1024).toFixed(1); }
+  // Job-kind → accent class (mockup palette: transcribe cyan, translate
+  // magenta, dictate green, download yellow).
+  function kindCls(k){
+    return {transcribe:'tr', stream:'tr', translate:'tl',
+            dictate:'dc', download:'dl'}[k] || '';
+  }
 
   function setBar(el, pct){
     if (!el) return;
@@ -2020,11 +2060,14 @@ ACTIVITY_CLUSTER_JS = """
     var jobs = snap.jobs || [];
     jobsEl.textContent = jobs.length;
     btn.classList.toggle('idle', jobs.length === 0);
-    spin.hidden = jobs.length === 0;
     var gpu = snap.gpu || null;
     setBar(gpuEl, gpu ? (gpu.util_pct != null ? gpu.util_pct : null) : null);
     setBar(vramEl, gpu && gpu.mem_total_mb
       ? gpu.mem_used_mb / gpu.mem_total_mb * 100 : null);
+    gpuvEl.textContent = gpu && gpu.util_pct != null
+      ? Math.round(gpu.util_pct) + '%' : '\\u2013';
+    vramvEl.textContent = gpu && gpu.mem_used_mb != null
+      ? gb(gpu.mem_used_mb) + 'G' : '\\u2013';
     if (!pop.hidden) renderPop();
   }
   // The /stats page renderer calls this with its own (full) snapshot so the
@@ -2033,19 +2076,27 @@ ACTIVITY_CLUSTER_JS = """
 
   function renderPop(){
     var s = last;
-    if (!s) { pop.innerHTML = '<div class="empty">no data yet</div>'; return; }
+    if (!s) {
+      pop.innerHTML = '<div class="sec"><div class="empty">no data yet</div></div>';
+      return;
+    }
     var isAdmin = !!(window.__whoami && window.__whoami.is_admin);
-    var h = '<h4>Running jobs</h4>';
     var jobs = s.jobs || [];
+    var h = '<div class="sec"><div class="sec-t">Running now · '
+      + jobs.length + '</div>';
     if (!jobs.length) h += '<div class="empty">— none —</div>';
     jobs.forEach(function(j){
+      var kc = kindCls(j.kind);
       var pct = j.progress != null ? Math.round(j.progress * 100) : null;
+      var sub = [j.detail, j.user].filter(Boolean).map(esc).join(' · ');
       h += '<div class="hact-job">'
-        + '<span class="hact-kind">' + esc(j.kind) + '</span>'
-        + '<span class="m">' + esc(j.model || j.detail || '') + '</span>'
+        + '<span class="hact-kind ' + kc + '">' + esc(j.kind) + '</span>'
+        + '<span class="m">' + esc(j.model || '')
+        + (sub ? ' <small>· ' + sub + '</small>' : '') + '</span>'
         + (pct != null
-            ? '<span class="hact-jbar"><i style="width:' + pct + '%"></i></span>'
-              + '<span class="p">' + pct + '%</span>'
+            ? '<span class="hact-jbar"><i class="' + kc + '" style="width:'
+              + pct + '%"></i></span>'
+              + '<span class="p">' + esc(j.step || (pct + '%')) + '</span>'
             : '<span class="p">' + esc(j.step || j.stage || '…') + '</span>')
         + (isAdmin && j.progress_id
             ? '<button class="hact-cancel" data-pid="' + esc(j.progress_id)
@@ -2053,37 +2104,58 @@ ACTIVITY_CLUSTER_JS = """
             : '')
         + '</div>';
     });
-    h += '<h4>System</h4><div class="hact-sys">';
-    function row(lbl, pct, val){
-      h += '<span class="lbl">' + lbl + '</span>'
-        + '<span class="hact-sysbar"><i class="'
-        + (pct >= 92 ? 'crit' : pct >= 75 ? 'warn' : '')
-        + '" style="width:' + Math.max(0, Math.min(100, pct || 0)).toFixed(0)
-        + '%"></i></span>'
-        + '<span class="val">' + val + '</span>';
+    h += '</div><div class="sec"><div class="sec-t">Server</div>';
+    function row(lbl, pct, colorCls, val){
+      h += '<div class="resline"><span class="rl">' + lbl + '</span>'
+        + '<span class="rbar"><i class="' + colorCls + '" style="width:'
+        + Math.max(0, Math.min(100, pct || 0)).toFixed(0) + '%"></i></span>'
+        + '<span class="rv">' + val + '</span></div>';
     }
     var gpu = s.gpu, host = s.host || {};
     if (gpu) {
-      row('GPU', gpu.util_pct || 0, (gpu.util_pct != null ? gpu.util_pct : '—') + '%');
-      if (gpu.mem_total_mb) {
-        var vp = gpu.mem_used_mb / gpu.mem_total_mb * 100;
-        row('VRAM', vp, (gpu.mem_used_mb / 1024).toFixed(1) + ' GB');
-      }
+      row('GPU', gpu.util_pct || 0, 'c-cyan',
+          (gpu.util_pct != null ? Math.round(gpu.util_pct) : '—') + '%'
+          + (gpu.temp_c != null ? ' · ' + Math.round(gpu.temp_c) + '°C' : ''));
+      if (gpu.mem_total_mb)
+        row('VRAM', gpu.mem_used_mb / gpu.mem_total_mb * 100, 'c-mag',
+            gb(gpu.mem_used_mb) + ' / ' + gb(gpu.mem_total_mb) + ' G');
     }
-    if (host.cpu_pct != null) row('CPU', host.cpu_pct, host.cpu_pct.toFixed(0) + '%');
     if (host.ram_pct != null)
-      row('RAM', host.ram_pct, ((host.ram_used_mb || 0) / 1024).toFixed(1) + ' GB');
+      row('RAM', host.ram_pct, 'c-green',
+          host.ram_total_mb
+            ? gb(host.ram_used_mb) + ' / ' + gb(host.ram_total_mb) + ' G'
+            : gb(host.ram_used_mb) + ' G');
+    if (host.cpu_pct != null)
+      row('CPU', host.cpu_pct, 'c-cyan', host.cpu_pct.toFixed(0) + '%');
     h += '</div>';
     var models = s.models || [];
     if (models.length) {
-      h += '<h4>Loaded models</h4><ul class="hact-models">';
+      h += '<div class="sec"><div class="sec-t">Loaded models · '
+        + models.length + '</div>';
       models.forEach(function(m){
-        h += '<li>' + esc(m.name) + (m.device ? ' · ' + esc(m.device) : '') + '</li>';
+        var bits = [m.device, m.compute_type,
+                    m.vram_bytes ? gb(m.vram_bytes / 1048576) + 'G' : null]
+          .filter(Boolean).map(esc).join(' · ');
+        h += '<div class="modline"><span class="mn">' + esc(m.name)
+          + '</span><span>' + bits + '</span></div>';
       });
-      h += '</ul>';
+      h += '</div>';
     }
-    h += '<div class="hact-foot"><a href="/stats">open /stats →</a></div>';
+    h += '<div class="hact-foot"><a href="/stats">Open stats →</a></div>';
     pop.innerHTML = h;
+  }
+
+  // The button can wrap to the LEFT edge of a narrow header; right:0
+  // anchoring would then push the 28rem popover off-screen. Clamp the
+  // rendered box into the viewport after every open.
+  function positionPop(){
+    pop.style.left = ''; pop.style.right = '0';
+    var r = pop.getBoundingClientRect();
+    if (r.left < 8) {
+      var wr = pop.parentElement.getBoundingClientRect();
+      pop.style.right = 'auto';
+      pop.style.left = (8 - wr.left) + 'px';
+    }
   }
 
   btn.addEventListener('click', function(e){
@@ -2091,7 +2163,10 @@ ACTIVITY_CLUSTER_JS = """
     var show = pop.hidden;
     pop.hidden = !show;
     btn.setAttribute('aria-expanded', show ? 'true' : 'false');
-    if (show) renderPop();
+    if (show) { renderPop(); positionPop(); }
+  });
+  window.addEventListener('resize', function(){
+    if (!pop.hidden) positionPop();
   });
   document.addEventListener('click', function(e){
     if (!pop.hidden && !pop.contains(e.target)) {
@@ -2965,12 +3040,14 @@ def activity_cluster_html() -> str:
         '<button id="hact" class="hdr-activity page-link" data-page="stats" '
         'type="button" hidden aria-haspopup="true" aria-expanded="false" '
         'title="server activity — click for running jobs">'
-        '<span id="hact-spin" class="hact-spin" hidden></span>'
-        '<span id="hact-jobs" class="hact-jobs">0</span>'
-        '<span class="hact-bars">'
-        '<span class="hact-bar" title="GPU util"><i id="hact-gpu"></i></span>'
-        '<span class="hact-bar vram" title="VRAM"><i id="hact-vram"></i></span>'
-        '</span>'
+        '<span class="hact-jobs"><span class="hact-ring"></span>'
+        '<span id="hact-jobs" class="v">0</span></span>'
+        '<span class="hact-m" title="GPU util"><span class="lbl">GPU</span>'
+        '<span class="hact-bar"><i id="hact-gpu"></i></span>'
+        '<span id="hact-gpuv" class="v">&ndash;</span></span>'
+        '<span class="hact-m vramm" title="VRAM"><span class="lbl">VRAM</span>'
+        '<span class="hact-bar vram"><i id="hact-vram"></i></span>'
+        '<span id="hact-vramv" class="v">&ndash;</span></span>'
         '</button>'
         '<div id="hact-pop" class="hact-pop" hidden></div>'
         '</span>'
