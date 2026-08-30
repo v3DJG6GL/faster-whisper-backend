@@ -434,6 +434,58 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   table.usage-board td.name .usage-swatch { margin-right: 0.4rem; }
   table.usage-board td.name .sub { color: var(--dim);
     font-size: var(--fs-xs); margin-left: 0.4rem; }
+  /* Recent-jobs table: kind chips, pipeline glyph strip, expandable
+     per-stage bars, pinned running rows. Colors reuse the page tokens. */
+  .rj-flag { color: var(--dim); font-size: var(--fs-xs); white-space: nowrap;
+    display: inline-flex; align-items: center; gap: 0.3rem; }
+  #rj-user { background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.15rem 0.35rem; font: inherit; font-size: var(--fs-sm); }
+  .rj-x { width: 1.4rem; }
+  .rj-tbl tr.rj-main { cursor: pointer; }
+  .rj-tbl tr.rj-main:hover td { background: rgba(121, 192, 255, 0.04); }
+  .rj-caret { color: var(--dim); display: inline-block;
+    transition: transform .15s ease; }
+  tr.rj-main.open .rj-caret { transform: rotate(90deg); }
+  .kindchip { display: inline-block; font-size: 0.667rem;
+    padding: 0.0625rem 0.375rem; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--dim); white-space: nowrap; }
+  .kindchip.transcribe { color: var(--cyan);    border-color: #1f3a5a; }
+  .kindchip.dictate    { color: var(--green);   border-color: #1f4d2a; }
+  .kindchip.translate  { color: var(--magenta); border-color: #3d2a5a; }
+  .kindchip.download   { color: var(--yellow);  border-color: #4d3e1f; }
+  .pipe { display: inline-flex; gap: 2px; }
+  .pipe i { display: inline-block; width: 0.55rem; height: 0.55rem;
+    border-radius: 2px; background: #21262d; }
+  .pipe i.separating   { background: var(--magenta); }
+  .pipe i.transcribing { background: var(--cyan); }
+  .pipe i.diarizing    { background: var(--yellow); }
+  .pipe i.translating,
+  .pipe i.translate    { background: var(--green); }
+  .pipe i.download     { background: var(--cyan); }
+  tr.rj-expand td { background: rgba(110, 118, 129, 0.06); }
+  .rj-stages { padding: 0.25rem 0.25rem 0.35rem; }
+  .rj-stage-row { display: flex; align-items: center; gap: 0.5rem;
+    font-size: var(--fs-xs); margin: 0.15rem 0; }
+  .rj-stage-row .nm { flex: 0 0 6.5rem; color: var(--dim);
+    text-transform: uppercase; letter-spacing: .03em; }
+  .rj-stage-row .stage-bar { flex: 1 1 auto; height: 8px;
+    background: #21262d; border-radius: 3px; overflow: hidden; }
+  .rj-stage-row .stage-bar i { display: block; height: 100%; }
+  .rj-stage-row .secs { flex: 0 0 4.5rem; text-align: right;
+    font-variant-numeric: tabular-nums; color: var(--fg); }
+  .rj-stage-row .det { flex: 0 1 auto; color: var(--dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  tr.rj-run td { background: rgba(121, 192, 255, 0.05); }
+  .rj-runbar { display: inline-block; width: 5rem; height: 6px;
+    background: #21262d; border-radius: 3px; overflow: hidden;
+    vertical-align: middle; }
+  .rj-runbar i { display: block; height: 100%; background: var(--cyan); }
+  .rj-spin { display: inline-block; width: 0.7rem; height: 0.7rem;
+    border: 2px solid #21262d; border-top-color: var(--cyan);
+    border-radius: 50%; animation: rj-spin 0.9s linear infinite;
+    vertical-align: middle; }
+  @keyframes rj-spin { to { transform: rotate(360deg); } }
   /* GridStack integration — drag-to-reorder + click-to-resize tiles. */
   .grid-stack { background: transparent; }
   .grid-stack-item-content { background: transparent; padding: 0; overflow: visible; }
@@ -658,15 +710,30 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     </tbody></table>
    </div></div>
   </div>
-  <!-- Recent transcriptions -->
+  <!-- Recent jobs (unified: transcribe / dictate / translate / download;
+       running jobs from snap.jobs pinned on top) -->
   <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="30" gs-w="12" gs-h="6">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>Recent transcriptions (last <span id="rt-n">0</span>)</h3>
-    <table class="tbl rcards"><thead><tr>
-      <th>when</th><th>model</th>
-      <th class="num">audio</th><th class="num">wall</th><th class="num">RTF</th>
-      <th class="num">words</th><th>status</th>
-    </tr></thead><tbody id="rt-rows"><tr><td colspan="7" class="empty">— no requests yet —</td></tr></tbody></table>
+    <div class="usage-toolbar">
+      <h3>Recent jobs (last <span id="rt-n">0</span>)</h3>
+      <span class="spacer"></span>
+      <div class="usage-seg"><span class="seg-label">kind</span>
+        <div class="seg-ctrl" id="rj-kind">
+          <button data-v="" class="active">all</button>
+          <button data-v="transcribe">transcribe</button>
+          <button data-v="dictate">dictate</button>
+          <button data-v="translate">translate</button>
+          <button data-v="download">download</button>
+        </div>
+      </div>
+      <label class="rj-flag"><input type="checkbox" id="rj-warnonly"> warnings only</label>
+      <select id="rj-user" aria-label="filter by user"><option value="">all users</option></select>
+    </div>
+    <table class="tbl rcards rj-tbl"><thead><tr>
+      <th class="rj-x"></th><th>when</th><th>type</th><th>pipeline</th><th>model</th>
+      <th>user·key</th><th class="num">input</th><th class="num">wall</th>
+      <th class="num">speed</th><th>status</th>
+    </tr></thead><tbody id="rt-rows"><tr><td colspan="10" class="empty">— no jobs yet —</td></tr></tbody></table>
    </div></div>
   </div>
  </div>
@@ -1031,27 +1098,193 @@ function render(snap) {
   $('models-rows').innerHTML = mrows.length
     ? mrows.join('') : '<tr><td colspan="8" class="empty">— no models loaded —</td></tr>';
 
-  // --- Recent transcriptions ---
-  const rt = snap.recent_transcriptions || [];
-  $('rt-n').textContent = rt.length;
-  if (rt.length === 0) {
-    $('rt-rows').innerHTML =
-      '<tr><td colspan="7" class="empty">— no requests yet —</td></tr>';
-  } else {
-    $('rt-rows').innerHTML = rt.map(r => `<tr>
-      <td class="ts" data-label="when" data-ts="${r.ts || 0}" title="${absTime(r.ts)}">${fmtWhen(r.ts)}</td>
-      <td data-label="model">${esc(r.model)}</td>
-      <td class="num" data-label="audio">${r.audio_dur.toFixed(1)} s</td>
-      <td class="num" data-label="wall">${r.proc_dur.toFixed(2)} s</td>
-      <td class="num" data-label="RTF">${r.rtf != null ? r.rtf.toFixed(2) + '×' : '—'}</td>
-      <td class="num" data-label="words">${r.words}</td>
-      <td data-label="status"><span class="badge ${r.status === 'ok' ? 'ok' : 'err'}">${r.status}</span></td>
-    </tr>`).join('');
-  }
+  // --- Recent jobs (unified) ---
+  renderJobs(snap);
 
   // Severity pills are driven by SEV_POLLER_JS injected at body-end
   // (5-s poll of /sev), so no per-tick update needed here.
 }
+
+// --- Recent jobs table -------------------------------------------------------
+// One table for every job kind: running jobs (snap.jobs) pinned on top,
+// finished rows (snap.recent_transcriptions — the store keeps its historic
+// name) below. Filters re-render from the last snapshot without waiting for
+// the next SSE tick. Expanded rows survive re-renders via a ts-keyed set.
+let lastJobsSnap = null;
+const rjExpanded = new Set();
+
+function segValRJ() {
+  const b = document.querySelector('#rj-kind button.active');
+  return b ? b.dataset.v : '';
+}
+
+function jobSpeed(r) {
+  const wall = r.proc_dur || 0;
+  if (r.kind === 'download') {
+    const st = (r.stages || []).find(s => s.bytes);
+    if (st && st.secs > 0) return ((st.bytes / 1048576) / st.secs).toFixed(1) + ' MB/s';
+    return '—';
+  }
+  if (r.kind === 'translate') {
+    const st = (r.stages || [])[0];
+    const m = st && st.detail && String(st.detail).match(/^(\d+) segs/);
+    if (m && wall > 0) return (Number(m[1]) / wall).toFixed(1) + ' seg/s';
+    return '—';
+  }
+  return r.rtf != null ? r.rtf.toFixed(2) + '×' : '—';
+}
+
+function jobInput(r) {
+  if (r.kind === 'download') {
+    const st = (r.stages || []).find(s => s.bytes);
+    return st ? (st.bytes / 1073741824).toFixed(2) + ' GB' : '—';
+  }
+  if (r.kind === 'translate') {
+    const st = (r.stages || [])[0];
+    const m = st && st.detail && String(st.detail).match(/^(\d+) segs/);
+    return m ? m[1] + ' segs' : '—';
+  }
+  return (r.audio_dur || 0).toFixed(1) + ' s';
+}
+
+function pipeGlyph(r) {
+  const stages = (r.stages || []).length ? r.stages
+    : [{ name: r.kind === 'dictate' ? 'transcribing' : r.kind }];
+  return '<span class="pipe">' + stages.map(s =>
+    `<i class="${esc(s.name)}" title="${esc(s.name)} ${s.secs != null ? s.secs + 's' : ''}"></i>`
+  ).join('') + '</span>';
+}
+
+function stageRows(r) {
+  const stages = r.stages || [];
+  if (!stages.length) {
+    return '<div class="rj-stages"><span class="empty">no per-stage timings recorded</span></div>';
+  }
+  const max = Math.max(...stages.map(s => s.secs || 0), 0.001);
+  return '<div class="rj-stages">' + stages.map(s => `
+    <div class="rj-stage-row">
+      <span class="nm">${esc(s.name)}</span>
+      <span class="stage-bar"><i class="pipe-fill ${esc(s.name)}"
+        style="width:${Math.max(2, (s.secs || 0) / max * 100).toFixed(1)}%;
+               background:${stageColor(s.name)}"></i></span>
+      <span class="secs">${(s.secs || 0).toFixed(2)} s</span>
+      <span class="det">${esc([s.model, s.detail].filter(Boolean).join(' · '))}</span>
+    </div>`).join('') + '</div>';
+}
+
+function stageColor(name) {
+  return ({ separating: 'var(--magenta)', transcribing: 'var(--cyan)',
+            diarizing: 'var(--yellow)', translating: 'var(--green)',
+            translate: 'var(--green)', download: 'var(--cyan)' })[name]
+    || 'var(--dim)';
+}
+
+function renderJobs(snap) {
+  lastJobsSnap = snap;
+  const kindF = segValRJ();
+  const warnOnly = $('rj-warnonly').checked;
+  const userSel = $('rj-user');
+  const userF = userSel.value;
+
+  const rt = (snap.recent_transcriptions || []);
+  const running = (snap.jobs || []);
+
+  // Keep the user select populated (preserving the current choice).
+  const users = Array.from(new Set(rt.map(r => r.username).filter(Boolean))).sort();
+  const want = ['', ...users];
+  const have = Array.from(userSel.options).map(o => o.value);
+  if (want.join(',') !== have.join(',')) {
+    userSel.innerHTML = '<option value="">all users</option>'
+      + users.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join('');
+    userSel.value = want.includes(userF) ? userF : '';
+  }
+
+  const runRows = running
+    .filter(j => !kindF || j.kind === kindF)
+    .filter(j => !userF)          // running rows carry ids, not usernames
+    .filter(() => !warnOnly)
+    .map(j => {
+      const pct = j.progress != null ? Math.round(j.progress * 100) : null;
+      return `<tr class="rj-run">
+      <td><span class="rj-spin" title="running"></span></td>
+      <td class="ts">running · ${fmtSec(j.elapsed_s)}</td>
+      <td><span class="kindchip ${esc(j.kind)}">${esc(j.kind)}</span></td>
+      <td>${esc(j.stage || '')}</td>
+      <td>${esc(j.model || '—')}</td>
+      <td>${esc(j.user || '')}</td>
+      <td class="num">${esc(j.detail || '—')}</td>
+      <td class="num">—</td>
+      <td class="num">${pct != null
+        ? `<span class="rj-runbar"><i style="width:${pct}%"></i></span> ${pct}%`
+        : (esc(j.step || '') || '—')}</td>
+      <td><span class="badge warm">running</span></td>
+    </tr>`;
+    });
+
+  const doneRows = rt
+    .filter(r => !kindF || r.kind === kindF)
+    .filter(r => !warnOnly || r.status !== 'ok')
+    .filter(r => !userF || r.username === userF)
+    .map(r => {
+      const key = String(r.ts || 0);
+      const open = rjExpanded.has(key);
+      const who = [r.username, r.key_label].filter(Boolean).join(' · ');
+      const main = `<tr class="rj-main${open ? ' open' : ''}" data-key="${esc(key)}">
+      <td><span class="rj-caret">▸</span></td>
+      <td class="ts" data-label="when" data-ts="${r.ts || 0}" title="${absTime(r.ts)}">${fmtWhen(r.ts)}</td>
+      <td data-label="type"><span class="kindchip ${esc(r.kind)}">${esc(r.kind)}</span></td>
+      <td data-label="pipeline">${pipeGlyph(r)}</td>
+      <td data-label="model">${esc(r.model)}</td>
+      <td data-label="user·key">${esc(who || '—')}</td>
+      <td class="num" data-label="input">${jobInput(r)}</td>
+      <td class="num" data-label="wall">${r.proc_dur.toFixed(2)} s</td>
+      <td class="num" data-label="speed">${jobSpeed(r)}</td>
+      <td data-label="status"><span class="badge ${r.status === 'ok' ? 'ok' : 'err'}">${esc(r.status)}</span></td>
+    </tr>`;
+      const detail = open
+        ? `<tr class="rj-expand"><td colspan="10">${stageRows(r)}</td></tr>`
+        : '';
+      return main + detail;
+    });
+
+  $('rt-n').textContent = rt.length;
+  const all = runRows.concat(doneRows);
+  $('rt-rows').innerHTML = all.length
+    ? all.join('')
+    : '<tr><td colspan="10" class="empty">— no jobs yet —</td></tr>';
+}
+
+// Filter wiring: kind segments, warnings-only, user select — all re-render
+// from the last snapshot immediately.
+(() => {
+  const kindCtl = $('rj-kind');
+  if (kindCtl) {
+    kindCtl.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b || b.classList.contains('active')) return;
+      kindCtl.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      if (lastJobsSnap) renderJobs(lastJobsSnap);
+    });
+  }
+  const warnCtl = $('rj-warnonly');
+  if (warnCtl) warnCtl.addEventListener('change', () => {
+    if (lastJobsSnap) renderJobs(lastJobsSnap);
+  });
+  const userCtl = $('rj-user');
+  if (userCtl) userCtl.addEventListener('change', () => {
+    if (lastJobsSnap) renderJobs(lastJobsSnap);
+  });
+  // Row expansion (event delegation — rows are re-rendered every tick).
+  const body = $('rt-rows');
+  if (body) body.addEventListener('click', (e) => {
+    const tr = e.target.closest('tr.rj-main');
+    if (!tr) return;
+    const key = tr.dataset.key;
+    if (rjExpanded.has(key)) rjExpanded.delete(key); else rjExpanded.add(key);
+    if (lastJobsSnap) renderJobs(lastJobsSnap);
+  });
+})();
 
 // --- SSE consumer ----------------------------------------------------------
 let es = null;

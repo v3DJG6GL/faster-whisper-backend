@@ -3000,6 +3000,10 @@ async def transcribe(
     _status = "ok"
     _audio_dur: float = 0.0
     _words: int = 0
+    # Per-stage wall-clock receipts ({name, secs, model?, detail?}) — the
+    # durations were previously computed for log lines and discarded; now
+    # they also persist as the recent-jobs row's stages_json.
+    _stage_timings: "list[dict]" = []
     tmp_path = None
     # Transcribe-from-URL state: the private download dir (rmtree'd in the
     # inner finally on every path) and the retention id echoed to the client.
@@ -3509,6 +3513,12 @@ async def transcribe(
                         tmp_path = _vocals_path
                         logger.info("[bgm] separated in %.1fs",
                                     time.perf_counter() - _sep_t0)
+                        _stage_timings.append({
+                            "name": "separating",
+                            "secs": round(time.perf_counter() - _sep_t0, 2),
+                            "model": _separation_model or None,
+                            "detail": "incl. transcode",
+                        })
                     except _bgm.BgmCancelled:
                         raise _ClientCancelled() from None
                     except _bgm.BgmSeparationError as _se:
@@ -3618,8 +3628,14 @@ async def transcribe(
             _check_cancelled(_pid)
             async with get_inference_semaphore():
                 _check_cancelled(_pid)
+                _dec_t0 = time.perf_counter()
                 segments_iter, info, _pad_applied = await loop.run_in_executor(
                     None, _do_transcribe)
+                _stage_timings.append({
+                    "name": "transcribing",
+                    "secs": round(time.perf_counter() - _dec_t0, 2),
+                    "model": resolved_model,
+                })
 
             all_words = []
             segments_list = []
@@ -3743,6 +3759,13 @@ async def transcribe(
                             "segments in %.1fs",
                             len(_turns), len(speakers_list), len(segments_list),
                             time.perf_counter() - _diar_t0)
+                        _stage_timings.append({
+                            "name": "diarizing",
+                            "secs": round(
+                                time.perf_counter() - _diar_t0, 2),
+                            "model": _diarization_model or None,
+                            "detail": f"{len(speakers_list)} speakers",
+                        })
                     except _diar.DiarizeCancelled:
                         raise _ClientCancelled() from None
                     except _diar.DiarizationError as _de:
@@ -3860,6 +3883,14 @@ async def transcribe(
                                 "[translate] %d segments → %s in %.1fs",
                                 len(segments_list), ",".join(_translate_to),
                                 time.perf_counter() - _tr_t0)
+                            _stage_timings.append({
+                                "name": "translating",
+                                "secs": round(
+                                    time.perf_counter() - _tr_t0, 2),
+                                "model": _tr_meta.get("model"),
+                                "detail": (f"{len(segments_list)} segs → "
+                                           f"{','.join(_translate_to)}"),
+                            })
                         except _tr.TranslationCancelled:
                             raise _ClientCancelled() from None
                         except _tr.TranslationError as _te:
@@ -4209,6 +4240,7 @@ async def transcribe(
             request_id=request_id,
             user_id=_user_id,
             key_id=_key_id,
+            stages=_stage_timings or None,
         )
 
 
@@ -4495,6 +4527,26 @@ async def translate_text(request: Request,
         _progress_set(_pid, stage="downloading", progress=frac,
                       total_bytes=total or None)
 
+    def _record_run(status: str) -> None:
+        """Persist this run as a recent-jobs row (kind='translate') on every
+        terminal path. No audio duration; segment count lives in the stage
+        detail (words_count=0 — a segment count is not a word count)."""
+        secs = round(time.perf_counter() - _t0, 3)
+        metrics.record_transcription(
+            model=(_tr_model or ""),
+            audio_dur=0.0,
+            proc_dur=secs,
+            status=status,
+            words=0,
+            request_id=request_id,
+            user_id=(_uid or None),
+            key_id=user.get("key_id"),
+            kind="translate",
+            stages=[{"name": "translate", "secs": secs,
+                     "model": (_tr_model or None),
+                     "detail": f"{len(seg_in)} segs → {','.join(targets)}"}],
+        )
+
     try:
         _progress_set(_pid, stage="translating", progress=0.0,
                       model=(_tr_model or None),
@@ -4528,12 +4580,14 @@ async def translate_text(request: Request,
     except _ClientCancelled:
         logger.info("[translate] req=%s ✗ cancelled after %.1fs",
                     request_id[:8], time.perf_counter() - _t0)
+        _record_run("cancelled")
         raise HTTPException(status_code=499, detail="cancelled by the client")
     except _tr.TranslationError as e:
         # str(e) is client-safe by the module's contract.
         logger.info("[translate] req=%s ✗ failed after %.1fs (%s)",
                     request_id[:8], time.perf_counter() - _t0,
                     _log_safe(str(e)))
+        _record_run("failed")
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
@@ -4541,6 +4595,7 @@ async def translate_text(request: Request,
         logger.error("[translate] req=%s ✗ failed after %.1fs: %s",
                      request_id[:8], time.perf_counter() - _t0,
                      _log_safe(str(e)))
+        _record_run("failed")
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
         jobs.job_end(request_id)
@@ -4560,6 +4615,7 @@ async def translate_text(request: Request,
         request_id[:8], _elapsed, _load_s, max(0.0, _elapsed - _load_s),
         len(seg_in), ",".join(targets), total_chars, _chars_out,
         len(warnings))
+    _record_run("ok")
 
     return {
         "segments": [{"id": ids[i], "translations": per_seg[i]}

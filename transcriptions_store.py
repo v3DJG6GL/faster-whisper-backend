@@ -69,6 +69,12 @@ _CAP_MODEL = 96
 # then served back through /quick-config/recent and the SSE replay. 32 is far
 # above any BCP-47 tag.
 _CAP_LANGUAGE = 32
+# Recent-jobs extras. stages_json is server-built ([{name, secs, model?,
+# detail?}, …] — a handful of pipeline stages), so the cap is a defensive
+# bound, not a fight with an attacker. key_label mirrors api_keys' label cap.
+_CAP_KIND = 16
+_CAP_STAGES_JSON = 20_000
+_CAP_KEY_LABEL = 120
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recent_transcriptions (
@@ -115,6 +121,19 @@ def init_db(path: str) -> None:
     if "source" not in cols:
         _conn.execute(
             "ALTER TABLE recent_transcriptions ADD COLUMN source TEXT NOT NULL DEFAULT 'file'")
+    # "Recent jobs" columns (nullable, additive): `kind` distinguishes
+    # transcribe/translate/download rows (NULL reads as a transcription and
+    # resolves via `source`), `stages_json` carries the per-stage timing list
+    # ([{name, secs, model?, detail?}, …]) and `key_label` snapshots the API
+    # key's display label at record time (labels are mutable/deletable in
+    # api_keys, so resolving at read time would lie about history).
+    for col, ddl in (
+        ("kind", "ADD COLUMN kind TEXT"),
+        ("stages_json", "ADD COLUMN stages_json TEXT"),
+        ("key_label", "ADD COLUMN key_label TEXT"),
+    ):
+        if col not in cols:
+            _conn.execute(f"ALTER TABLE recent_transcriptions {ddl}")
 
 
 def _require_conn() -> sqlite3.Connection:
@@ -190,6 +209,15 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     d["username"] = d.get("username") or ""
     d["language"] = d.get("language") or ""
     d["source"] = d.get("source") or "file"
+    # Recent-jobs extras — absent on rows written before the migration.
+    try:
+        d["stages"] = json.loads(d.pop("stages_json", None) or "[]")
+        if not isinstance(d["stages"], list):
+            d["stages"] = []
+    except (TypeError, ValueError):
+        d["stages"] = []
+    d["kind"] = d.get("kind") or None
+    d["key_label"] = d.get("key_label") or ""
     return d
 
 
@@ -279,6 +307,9 @@ def record_timing(
     words_count: int,
     user_id: str | None = None,
     created_ts: float | None = None,
+    kind: str | None = None,
+    stages: list | None = None,
+    key_label: str | None = None,
     prune_every: int = 50,
     max_rows: int = 500,
     ttl_days: float = 30.0,
@@ -287,26 +318,47 @@ def record_timing(
     it runs on BOTH success (after record_trace) and error paths. UPSERT
     by request_id: on success it patches timing fields onto the row
     record_trace already wrote; on error it inserts a minimal row with
-    no raw/final/steps."""
+    no raw/final/steps.
+
+    `kind` ('translate' / 'download' / NULL = a transcription, resolved
+    via `source`), `stages` (per-stage timing dicts, JSON-encoded) and
+    `key_label` are the additive "Recent jobs" fields — all optional,
+    COALESCEd on conflict so a caller that omits them never blanks what
+    an earlier write recorded."""
     if not request_id:
         return
     model = (model or "")[:_CAP_MODEL]
+    kind = (kind or "")[:_CAP_KIND] or None
+    key_label = (key_label or "")[:_CAP_KEY_LABEL] or None
+    stages_blob = None
+    if stages:
+        try:
+            stages_blob = json.dumps(list(stages),
+                                     ensure_ascii=False)[:_CAP_STAGES_JSON]
+            json.loads(stages_blob)   # truncation may have cut mid-token
+        except (TypeError, ValueError):
+            stages_blob = None
     ts = float(created_ts) if created_ts else time.time()
     conn = _require_conn()
     with _lock:
         conn.execute(
             "INSERT INTO recent_transcriptions ("
             "  request_id, created_ts, user_id, model, status,"
-            "  audio_dur_s, proc_dur_s, words_count"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+            "  audio_dur_s, proc_dur_s, words_count,"
+            "  kind, stages_json, key_label"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(request_id) DO UPDATE SET"
             "  status      = excluded.status,"
             "  audio_dur_s = excluded.audio_dur_s,"
             "  proc_dur_s  = excluded.proc_dur_s,"
             "  words_count = excluded.words_count,"
-            "  model       = excluded.model",
+            "  model       = excluded.model,"
+            "  kind        = COALESCE(excluded.kind, recent_transcriptions.kind),"
+            "  stages_json = COALESCE(excluded.stages_json, recent_transcriptions.stages_json),"
+            "  key_label   = COALESCE(excluded.key_label, recent_transcriptions.key_label)",
             (request_id, ts, user_id, model, status,
-             audio_dur_s, proc_dur_s, words_count),
+             audio_dur_s, proc_dur_s, words_count,
+             kind, stages_blob, key_label),
         )
         _lazy_prune_if_due(prune_every, max_rows, ttl_days)
 

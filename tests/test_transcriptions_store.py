@@ -1,7 +1,82 @@
 """Tests for transcriptions_store: trace/timing UPSERT merge, pagination,
 prune, step truncation, and the row-to-dict derivations."""
 
+import sqlite3
 import time
+
+
+# ---------------------------------------------------------------------------
+# Recent-jobs columns (kind / stages_json / key_label) + migration
+# ---------------------------------------------------------------------------
+
+def test_kind_stages_key_label_roundtrip(tx_store):
+    ts = tx_store
+    stages = [{"name": "translate", "secs": 1.25, "model": "org/m:Q4",
+               "detail": "3 segs → en"}]
+    ts.record_timing(request_id="t1", model="org/m:Q4", audio_dur_s=None,
+                     proc_dur_s=1.25, status="ok", words_count=0,
+                     kind="translate", stages=stages, key_label="ci-key")
+    row = ts.list_recent(limit=10)[0]
+    assert row["kind"] == "translate"
+    assert row["key_label"] == "ci-key"
+    assert row["stages"] == stages
+
+
+def test_timing_without_kind_keeps_earlier_values(tx_store):
+    ts = tx_store
+    ts.record_timing(request_id="k1", model="m", audio_dur_s=None,
+                     proc_dur_s=1.0, status="ok", words_count=0,
+                     kind="download", stages=[{"name": "download", "secs": 1}],
+                     key_label="lbl")
+    # A later kwarg-less write (e.g. legacy caller) must not blank them.
+    ts.record_timing(request_id="k1", model="m", audio_dur_s=None,
+                     proc_dur_s=2.0, status="ok", words_count=0)
+    row = ts.list_recent(limit=10)[0]
+    assert row["kind"] == "download"
+    assert row["key_label"] == "lbl"
+    assert row["stages"] and row["proc_dur"] == 2.0
+
+
+def test_migration_adds_columns_to_old_db(tmp_path):
+    """A DB created before the recent-jobs columns migrates on init_db and
+    its old rows still render (kind None, stages [], key_label '')."""
+    import transcriptions_store as mod
+
+    path = str(tmp_path / "old.sqlite3")
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+    CREATE TABLE recent_transcriptions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      request_id TEXT NOT NULL UNIQUE,
+      created_ts REAL NOT NULL,
+      user_id TEXT, username TEXT,
+      model TEXT NOT NULL, language TEXT,
+      status TEXT NOT NULL DEFAULT 'ok',
+      audio_dur_s REAL, proc_dur_s REAL, words_count INTEGER,
+      raw_text TEXT, final_text TEXT,
+      steps_json TEXT, tokens_json TEXT, bigrams_json TEXT
+    );
+    INSERT INTO recent_transcriptions
+      (request_id, created_ts, model, status, audio_dur_s, proc_dur_s, words_count)
+      VALUES ('old1', 1000.0, 'm', 'ok', 2.0, 1.0, 5);
+    """)
+    conn.commit()
+    conn.close()
+
+    mod.init_db(path)
+    try:
+        cols = {r["name"] for r in mod._require_conn().execute(
+            "PRAGMA table_info(recent_transcriptions)")}
+        assert {"source", "kind", "stages_json", "key_label"} <= cols
+        row = mod.list_recent(limit=10)[0]
+        assert row["request_id"] == "old1"
+        assert row["kind"] is None
+        assert row["stages"] == []
+        assert row["key_label"] == ""
+        assert row["source"] == "file"
+    finally:
+        mod._require_conn().close()
+        mod._conn = None
 
 
 # ---------------------------------------------------------------------------

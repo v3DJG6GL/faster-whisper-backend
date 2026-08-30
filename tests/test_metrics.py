@@ -178,3 +178,43 @@ def test_unmatched_route_keys_capped():
     # ...and a matched route is never folded.
     metrics.record_request("/v1/models", 200, 1.0)
     assert metrics.req_count["/v1/models"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Recent-jobs projection (kind / username / key_label / stages)
+# ---------------------------------------------------------------------------
+
+def test_snapshot_projection_carries_job_fields(tx_store):
+    stages = [{"name": "transcribing", "secs": 1.5, "model": "large-v3"}]
+    metrics.record_transcription(
+        "large-v3", 3.0, 1.5, "ok", 5, request_id="rj1", user_id="u1",
+        stages=stages)
+    tx_store.record_trace(request_id="rj1", model="large-v3", raw="x",
+                          final="y", username="alice")
+    metrics.record_transcription(
+        "org/m:Q4", 0.0, 0.8, "ok", 0, request_id="rj2",
+        kind="translate",
+        stages=[{"name": "translate", "secs": 0.8, "model": "org/m:Q4",
+                 "detail": "2 segs → en"}])
+    recent = metrics.metrics_snapshot()["recent_transcriptions"]
+    by_model = {r["model"]: r for r in recent}
+    tr = by_model["large-v3"]
+    assert tr["kind"] == "transcribe"            # NULL kind + source 'file'
+    assert tr["username"] == "alice"
+    assert tr["stages"] == stages
+    tl = by_model["org/m:Q4"]
+    assert tl["kind"] == "translate"
+    assert tl["stages"][0]["detail"] == "2 segs → en"
+    # The projection still never carries transcript text.
+    assert "raw" not in tr and "final" not in tr
+
+
+def test_record_download_persists_a_download_row(tx_store):
+    metrics.record_download(model="gguf:org/m:Q4", seconds=2.0,
+                            bytes_done=4 * (1 << 30))
+    recent = metrics.metrics_snapshot()["recent_transcriptions"]
+    row = [r for r in recent if r["kind"] == "download"][0]
+    assert row["model"] == "gguf:org/m:Q4"
+    assert row["proc_dur"] == 2.0
+    assert row["stages"][0]["bytes"] == 4 * (1 << 30)
+    assert "GB" in row["stages"][0]["detail"]

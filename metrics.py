@@ -90,11 +90,30 @@ def record_request(path: str, status: int, duration_ms: float,
         _latency.append(duration_ms)
 
 
+def _key_label_for(key_id: str | None) -> str | None:
+    """Best-effort display label of an API key, snapshotted at record time
+    (labels are mutable, so read-time resolution would rewrite history)."""
+    if not key_id:
+        return None
+    try:
+        import api_keys_store
+        rec = api_keys_store.get_key(key_id)
+        if not rec:
+            return None
+        label = (rec.get("label") or "").strip()
+        prefix = (rec.get("key_prefix") or "").strip()
+        return label or (prefix + "…" if prefix else None)
+    except Exception:  # noqa: BLE001 — bookkeeping only
+        return None
+
+
 def record_transcription(model: str, audio_dur: float, proc_dur: float,
                          status: str, words: int,
                          request_id: str | None = None,
                          user_id: str | None = None,
-                         key_id: str | None = None) -> None:
+                         key_id: str | None = None,
+                         kind: str | None = None,
+                         stages: list | None = None) -> None:
     """Called from the transcribe handler's outer finally on every
     /transcribe request (both success and error paths). UPSERTs the
     timing half of the recent-transcriptions row keyed by request_id;
@@ -119,6 +138,9 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
             status=status,
             words_count=int(words or 0),
             user_id=user_id,
+            kind=kind,
+            stages=stages,
+            key_label=_key_label_for(key_id),
             prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
             max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
             ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_TTL_DAYS", 30)),
@@ -136,6 +158,38 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
         )
     except Exception as e:
         logger.warning("[metrics] usage rollup failed: %s", e)
+
+
+def record_download(model: str, seconds: float, bytes_done: int) -> None:
+    """Persist a finished model download as a 'download' recent-jobs row
+    (called by download_progress.capture's exit when bytes actually moved).
+    Minted request_id — downloads have no request of their own. No usage
+    rollup: a download is server work, not user throughput."""
+    try:
+        import uuid
+
+        import config as cfg
+        import transcriptions_store
+        mb_s = (bytes_done / (1 << 20)) / seconds if seconds > 0 else 0.0
+        transcriptions_store.record_timing(
+            request_id=uuid.uuid4().hex,
+            model=model,
+            audio_dur_s=None,
+            proc_dur_s=round(seconds, 3),
+            status="ok",
+            words_count=0,
+            kind="download",
+            stages=[{"name": "download", "secs": round(seconds, 3),
+                     "model": model,
+                     "detail": f"{bytes_done / (1 << 30):.2f} GB · "
+                               f"{mb_s:.1f} MB/s",
+                     "bytes": int(bytes_done)}],
+            prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
+            max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
+            ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_TTL_DAYS", 30)),
+        )
+    except Exception as e:
+        logger.warning("[metrics] record_download persist failed: %s", e)
 
 
 def record_model_load(model: str, load_seconds: float) -> None:
@@ -205,6 +259,16 @@ def metrics_snapshot() -> dict[str, Any]:
             "rtf": r.get("rtf"),
             "words": r.get("words") or 0,
             "status": r.get("status") or "error",
+            # Recent-jobs fields. kind: explicit column wins; legacy rows
+            # resolve via source ('stream' = live dictation). username and
+            # key_label are display identities, not transcript content —
+            # the projection still carries no raw/final text.
+            "kind": r.get("kind")
+                    or ("dictate" if r.get("source") == "stream"
+                        else "transcribe"),
+            "username": r.get("username") or "",
+            "key_label": r.get("key_label") or "",
+            "stages": r.get("stages") or [],
         }
         for r in rows
     ]
