@@ -112,6 +112,16 @@ def _reset_singletons():
     except Exception:
         pass
 
+    # /v1/text/translations rate limiter (module-global fixed-window counter):
+    # clear so a rate-limit test can't 429 a later translate test. Guarded on
+    # sys.modules — don't force the heavy main import on pure-unit tests.
+    _main = sys.modules.get("main")
+    if _main is not None:
+        try:
+            _main._text_translate_rate.clear()
+        except Exception:
+            pass
+
     yield
 
 

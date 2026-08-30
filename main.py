@@ -4077,6 +4077,209 @@ async def translate_audio(
     )
 
 
+# ── Text-to-text translation (translate an existing transcript) ─────────────
+
+# Per-host fixed window: every accepted request is real llama.cpp inference
+# (possibly minutes of it), so a retry-happy client must not queue unbounded
+# work. Same shape as _check_url_preview_rate below.
+_TEXT_TRANSLATE_RATE_WINDOW_S = 60.0
+_TEXT_TRANSLATE_RATE_MAX = 20
+_text_translate_rate: "dict[str, tuple[int, float]]" = {}
+
+
+def _check_text_translate_rate(host: str) -> None:
+    key = host or "<unknown>"
+    now = time.time()
+    n, start = _text_translate_rate.get(key, (0, now))
+    if now - start > _TEXT_TRANSLATE_RATE_WINDOW_S:
+        n, start = 0, now
+    n += 1
+    _text_translate_rate[key] = (n, start)
+    if n > _TEXT_TRANSLATE_RATE_MAX:
+        raise HTTPException(status_code=429,
+                            detail="too many translation requests — slow down")
+
+
+# Request-shape ceilings: entry count and total characters. The 4 MiB JSON
+# body cap (_max_body_mw) bounds the wire size before either check runs.
+_TEXT_TRANSLATE_MAX_SEGMENTS = 2000
+_TEXT_TRANSLATE_MAX_CHARS = 200_000
+
+
+@app.post("/v1/text/translations")
+async def translate_text(request: Request,
+                         user: dict = Depends(_get_current_user_dep)):
+    """Translate already-transcribed segments (text→text via GGUF models) —
+    the standalone twin of the batch handler's `translate_to` stage, for
+    translating a transcript the client already holds without re-uploading
+    the audio. Body: {"segments": [{"id", "text", "speaker"?}], "targets":
+    [codes], "source"?, "translation_model"?, "translation_mode"?,
+    "translation_glossary"?, "context_segments"?, "progress_id"?}. The
+    optional progress_id plugs into the same GET progress / POST cancel
+    endpoints as a batch transcription. Answers each input segment's id in
+    input order with its {target: text} translations."""
+    if not getattr(cfg, "TRANSLATION_ENABLED", False):
+        raise HTTPException(status_code=403,
+                            detail="translation is disabled on this server")
+    _check_text_translate_rate(request.client.host if request.client else "")
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body is a caller error
+        raise HTTPException(status_code=422, detail="expected a JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="expected a JSON object")
+
+    segments = body.get("segments")
+    if not isinstance(segments, list) or not segments:
+        raise HTTPException(status_code=422,
+                            detail="segments must be a non-empty list")
+    if len(segments) > _TEXT_TRANSLATE_MAX_SEGMENTS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"segments is capped at {_TEXT_TRANSLATE_MAX_SEGMENTS} "
+                   "entries")
+    seg_in: "list[dict]" = []
+    ids: "list" = []
+    total_chars = 0
+    for i, seg in enumerate(segments):
+        if not isinstance(seg, dict) or not isinstance(seg.get("text"), str):
+            raise HTTPException(
+                status_code=422,
+                detail=f"segments[{i}] must be an object with a string "
+                       "'text'")
+        total_chars += len(seg["text"])
+        speaker = seg.get("speaker")
+        seg_in.append({"text": seg["text"],
+                       "speaker": speaker if isinstance(speaker, str) else None})
+        ids.append(seg.get("id", i))
+    if total_chars > _TEXT_TRANSLATE_MAX_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail=f"segments exceed {_TEXT_TRANSLATE_MAX_CHARS} total "
+                   "characters")
+
+    raw_targets = body.get("targets")
+    max_targets = int(getattr(cfg, "TRANSLATION_MAX_TARGETS", 3) or 1)
+    if not isinstance(raw_targets, list) or not raw_targets:
+        raise HTTPException(status_code=422,
+                            detail="targets must be a non-empty list of "
+                                   "language codes")
+    targets: "list[str]" = []
+    for t in raw_targets:
+        code = t.strip() if isinstance(t, str) else ""
+        if not _TRANSLATE_CODE_RE.match(code):
+            raise HTTPException(
+                status_code=422,
+                detail=f"targets contains an invalid language code: {t!r}")
+        if code not in targets:
+            targets.append(code)
+    if len(targets) > max_targets:
+        raise HTTPException(
+            status_code=422,
+            detail=f"targets is capped at TRANSLATION_MAX_TARGETS "
+                   f"({max_targets})")
+
+    source = body.get("source")
+    if source is not None and not isinstance(source, str):
+        raise HTTPException(status_code=422, detail="source must be a string")
+    mode = body.get("translation_mode")
+    if mode is not None and mode not in ("fluent", "faithful"):
+        raise HTTPException(
+            status_code=422,
+            detail="translation_mode must be 'fluent' or 'faithful'")
+    if mode is None:
+        mode = (getattr(cfg, "TRANSLATION_MODE", "") or "fluent")
+    glossary = body.get("translation_glossary")
+    if glossary is not None and not isinstance(glossary, str):
+        raise HTTPException(status_code=422,
+                            detail="translation_glossary must be a string")
+    if glossary is None:
+        glossary = getattr(cfg, "TRANSLATION_GLOSSARY", "") or ""
+    glossary = glossary[:4000]
+    context_segments = body.get("context_segments")
+    if context_segments is not None and not isinstance(context_segments, int):
+        raise HTTPException(status_code=422,
+                            detail="context_segments must be an integer")
+    if context_segments is not None:
+        context_segments = min(10, max(0, context_segments))
+
+    model_ref = body.get("translation_model")
+    if model_ref is not None and not isinstance(model_ref, str):
+        raise HTTPException(status_code=422,
+                            detail="translation_model must be a string")
+    _tr_default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+    _tr_model = (model_ref or "").strip() or _tr_default
+    _tr_allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
+    if (_tr_allowed and _tr_model not in _tr_allowed
+            and _tr_model != _tr_default):
+        raise HTTPException(
+            status_code=400,
+            detail="requested translation model is not in "
+                   "TRANSLATION_ALLOWED_MODELS on this server")
+
+    # Optional progress/cancel plumbing: a valid id joins _BATCH_PROGRESS so
+    # the existing GET progress and POST cancel endpoints work unchanged
+    # (cancel only accepts ids it can see in flight). Malformed → absent,
+    # matching the batch handler's stance.
+    progress_id = body.get("progress_id")
+    _pid = progress_id if (isinstance(progress_id, str)
+                           and _PROGRESS_ID_RE.match(progress_id)) else None
+    try:
+        _progress_set(_pid, stage="translating", progress=0.0,
+                      model=(_tr_model or None),
+                      device=_tr._resolve_device(), compute="gguf")
+        try:
+            _check_cancelled(_pid)
+
+            async def _run_translation():
+                return await _tr.translate_segments(
+                    seg_in, targets,
+                    source_lang=(source or None),
+                    model_ref=_tr_model,
+                    mode=mode,
+                    glossary=glossary,
+                    context_segments=context_segments,
+                    progress_cb=lambda f, step=None: _progress_set(
+                        _pid, progress=f, step=step),
+                    cancel_check=lambda: _cancel_requested(_pid),
+                )
+            # Same policy as the batch stage: the GPU inference semaphore is
+            # held only when translation actually runs on cuda — a llama.cpp
+            # CPU run must not occupy a GPU slot for its duration.
+            if _tr._resolve_device() == "cuda":
+                async with get_inference_semaphore():
+                    _check_cancelled(_pid)
+                    per_seg, warnings, meta = await _run_translation()
+            else:
+                per_seg, warnings, meta = await _run_translation()
+        except _tr.TranslationCancelled:
+            raise _ClientCancelled() from None
+    except _ClientCancelled:
+        logger.info("[translate] text translation cancelled by client")
+        raise HTTPException(status_code=499, detail="cancelled by the client")
+    except _tr.TranslationError as e:
+        # str(e) is client-safe by the module's contract.
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — never forward raw errors
+        logger.error("[translate] text translation failed: %s",
+                     _log_safe(str(e)))
+        raise HTTPException(status_code=500, detail="translation failed")
+    finally:
+        if _pid:
+            _BATCH_PROGRESS.pop(_pid, None)
+            _BATCH_CANCELLED.discard(_pid)
+
+    return {
+        "segments": [{"id": ids[i], "translations": per_seg[i]}
+                     for i in range(len(ids))],
+        "translation": {"model": meta.get("model"), "targets": targets,
+                        "source": meta.get("source"), "mode": meta.get("mode")},
+        "warnings": warnings,
+    }
+
+
 @app.get("/v1/audio/transcriptions/progress/{progress_id}",
          dependencies=[Depends(_get_current_user_dep)])
 async def transcription_progress(progress_id: str):
