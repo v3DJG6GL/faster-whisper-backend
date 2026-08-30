@@ -43,6 +43,31 @@ def test_lockable_excludes_pipeline_lists():
     assert "STREAMING_MAX_SESSIONS" not in cs.LOCKABLE_FIELDS
 
 
+def test_translation_lockable_membership():
+    # Per-request translation defaults are lockable; the capacity master
+    # switch and the server-side model plumbing are not.
+    assert "TRANSLATE_TO" in cs.LOCKABLE_FIELDS
+    assert "TRANSLATION_MODEL" in cs.LOCKABLE_FIELDS
+    assert "TRANSLATION_MODE" in cs.LOCKABLE_FIELDS
+    assert "TRANSLATION_ENABLED" not in cs.LOCKABLE_FIELDS
+    assert "TRANSLATION_DEFAULT_MODEL" not in cs.LOCKABLE_FIELDS
+    assert "TRANSLATION_ALLOWED_MODELS" not in cs.LOCKABLE_FIELDS
+    assert "TRANSLATION_MAX_LOADED_MODELS" not in cs.LOCKABLE_FIELDS
+
+
+def test_stage_model_fields_now_per_request():
+    # The scope flip: a caller (or profile / per-model bundle) may pick the
+    # diarization pipeline and the UVR model; the allowlists stay server-only.
+    assert "DIARIZATION_MODEL" in cs.OverrideProfile.model_fields
+    assert "DIARIZATION_MODEL" in cs.ModelOverride.model_fields
+    assert "DIARIZATION_MODEL" in cs.LOCKABLE_FIELDS
+    assert "BGM_SEPARATION_UVR_MODEL" in cs.LOCKABLE_FIELDS
+    assert "DIARIZATION_ALLOWED_MODELS" not in cs.OverrideProfile.model_fields
+    assert "BGM_SEPARATION_ALLOWED_MODELS" not in cs.OverrideProfile.model_fields
+    # VRAM-capacity knob deliberately stays server-scoped.
+    assert "DIARIZATION_EMBEDDING_BATCH_SIZE" not in cs.LOCKABLE_FIELDS
+
+
 def test_model_override_keeps_loadtime_and_calltime():
     f = set(cs.ModelOverride.model_fields)
     assert {"MODEL_DEVICE", "NUM_WORKERS", "REVISION"} <= f      # load-time

@@ -356,6 +356,83 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Whether a request separates music when it does not say (the "
         "`separate_bgm` form field overrides; lockable). Only effective "
         "while BGM_SEPARATION_ENABLED is on.",
+    "DIARIZATION_ALLOWED_MODELS":
+        "Allowlist of pyannote pipeline ids clients may request per-call. "
+        "Both supported pipelines are listed by default; remove one to "
+        "forbid it.",
+    "DIARIZATION_PRELOAD":
+        "Load the diarization pipeline at startup instead of on first use, "
+        "so the first diarize request skips the warm-up (costs VRAM while "
+        "idle).",
+    "BGM_SEPARATION_ALLOWED_MODELS":
+        "Allowlist of UVR separation model names clients may request "
+        "per-call. Empty = only the configured BGM_SEPARATION_UVR_MODEL.",
+    "BGM_SEPARATION_PRELOAD":
+        "Load the separation model at startup instead of on first use, so "
+        "the first separate_bgm request skips the download/warm-up.",
+
+    # --- Translation (T2T) ---
+    "TRANSLATION_ENABLED":
+        "Master switch for text-to-text translation (llama.cpp GGUF "
+        "models). Off = requested translation runs decline softly with a "
+        "response warning and /v1/text/translations returns 403. Needs the "
+        "optional `pip install -r requirements-translate.txt`.",
+    "TRANSLATION_DEFAULT_MODEL":
+        "GGUF model reference 'org/repo[:quant]' (e.g. "
+        "'tencent/Hunyuan-MT-7B-GGUF:Q4_K_M') used when a request names no "
+        "model. Empty = translation requests must name a model.",
+    "TRANSLATION_ALLOWED_MODELS":
+        "Allowlist of GGUF model refs clients may request, with the same "
+        "semantics as ALLOWED_MODELS for whisper models: empty lets any "
+        "well-formed 'org/repo[:quant]' ref pass — risks unknown multi-GB "
+        "downloads.",
+    "TRANSLATION_PRELOAD_MODELS":
+        "Translation models loaded eagerly at startup so the first request "
+        "skips the load. Empty = load on first use.",
+    "TRANSLATION_MAX_LOADED_MODELS":
+        "Max GGUF translation models kept loaded at once (LRU evicts "
+        "beyond this). A 7B Q4 model holds roughly 5 GB.",
+    "TRANSLATION_DEVICE":
+        "auto follows MODEL_DEVICE; cuda / cpu pin it. On cuda llama.cpp "
+        "offloads every layer to the GPU.",
+    "TRANSLATION_IDLE_TIMEOUT_S":
+        "Unload a translation model after this many idle seconds, like "
+        "MODEL_IDLE_TIMEOUT_S for whisper models. 0 = keep loaded once "
+        "used.",
+    "TRANSLATION_BATCH_SEGMENTS":
+        "Segments per prompt in faithful (per-segment) mode — batched as a "
+        "numbered list the model must echo back. Halved automatically when "
+        "the reply's line count mismatches.",
+    "TRANSLATION_PROMPT_FAMILY":
+        "Prompt template family. auto = detect from the model name "
+        "(hunyuan / translategemma / milmmt / seed-x, else the generic "
+        "chatml prompt); custom renders TRANSLATION_PROMPT_TEMPLATE.",
+    "TRANSLATION_PROMPT_TEMPLATE":
+        "Custom prompt template, used when TRANSLATION_PROMPT_FAMILY is "
+        "'custom'. Must contain {text} and {target_language}; optional "
+        "slots: {source_language}, {context}, {glossary}.",
+    "TRANSLATE_TO":
+        "Comma-separated target language codes (e.g. 'en' or 'en,fr-CA') "
+        "a transcription is translated into when the request does not say. "
+        "Empty = translation off unless the request asks.",
+    "TRANSLATION_MODEL":
+        "Per-request default GGUF model ref 'org/repo[:quant]'. Empty = "
+        "use TRANSLATION_DEFAULT_MODEL.",
+    "TRANSLATION_CONTEXT_SEGMENTS":
+        "Previous source segments prepended as context for each "
+        "translation batch (families that support a context slot). 0 = no "
+        "context.",
+    "TRANSLATION_MAX_TARGETS":
+        "Max target languages one request may ask for.",
+    "TRANSLATION_MODE":
+        "fluent merges consecutive segments into sentence groups before "
+        "translating (better flow; the translation is redistributed across "
+        "the member segments); faithful translates segment-by-segment "
+        "(exact cue alignment).",
+    "TRANSLATION_GLOSSARY":
+        "Terminology enforced via the prompt: one 'source = target' pair "
+        "per line, passed to prompt families that support reference "
+        "pairs.",
 
     # --- Transcribe-from-URL (yt-dlp) ---
     "URL_DOWNLOAD_ENABLED":
@@ -909,6 +986,19 @@ DiarizationModelLit = Literal[
     "pyannote/speaker-diarization-community-1",
     "pyannote/speaker-diarization-3.1",
 ]
+# GGUF translation model reference: "org/repo" with an optional ":quant"
+# suffix selecting a quantization file inside the repo (e.g.
+# "tencent/Hunyuan-MT-7B-GGUF:Q4_K_M"). Empty string = unset.
+_TRANSLATION_MODEL_REF_PATTERN = (
+    r"^([A-Za-z0-9][A-Za-z0-9_.\-]*/[A-Za-z0-9_.\-]+(:[A-Za-z0-9_.\-]+)?)?$")
+TranslationModelRef = Annotated[str, Field(
+    max_length=160, pattern=_TRANSLATION_MODEL_REF_PATTERN)]
+# Non-empty variant for the allow/preload list entries.
+TranslationModelRefItem = Annotated[str, Field(
+    min_length=1, max_length=160, pattern=_TRANSLATION_MODEL_REF_PATTERN)]
+# Comma-separated target language codes: "en" / "fr-CA" / "en,de,pt-BR".
+_TRANSLATE_TO_PATTERN = (
+    r"^([a-z]{2,3}(-[A-Za-z0-9]{2,8})?(,[a-z]{2,3}(-[A-Za-z0-9]{2,8})?)*)?$")
 # Runtime compute_type — the full CTranslate2 set (verified vs ctranslate2 4.7.2
 # + the CT2 docs). "auto" lets CT2 pick the fastest type supported on the device;
 # "default" keeps the model's converted type. A choice unsupported on the
@@ -1464,9 +1554,16 @@ class AdminConfig(BaseModel):
     # --- Speaker diarization ---
     DIARIZATION_ENABLED: bool | None = _F(
         "DIARIZATION_ENABLED", scope="server", group="Diarization")
+    # Per-request since the stage-model-allowlist work: a caller may pick the
+    # pipeline (subject to DIARIZATION_ALLOWED_MODELS); the evict metadata
+    # stays so a global edit still drops the cached pipeline.
     DIARIZATION_MODEL: DiarizationModelLit | None = _F(
-        "DIARIZATION_MODEL", scope="server", group="Diarization",
+        "DIARIZATION_MODEL", scope="per_request", group="Diarization",
         evict="diarization")
+    DIARIZATION_ALLOWED_MODELS: list[DiarizationModelLit] | None = _F(
+        "DIARIZATION_ALLOWED_MODELS", scope="server", group="Diarization")
+    DIARIZATION_PRELOAD: bool | None = _F(
+        "DIARIZATION_PRELOAD", scope="server", group="Diarization")
     DIARIZATION_DEVICE: DiarizationDeviceLit | None = _F(
         "DIARIZATION_DEVICE", scope="server", group="Diarization",
         evict="diarization")
@@ -1491,9 +1588,18 @@ class AdminConfig(BaseModel):
     # --- Background-music separation ---
     BGM_SEPARATION_ENABLED: bool | None = _F(
         "BGM_SEPARATION_ENABLED", scope="server", group="Music separation")
+    # Per-request since the stage-model-allowlist work (see DIARIZATION_MODEL).
     BGM_SEPARATION_UVR_MODEL: Annotated[str, Field(min_length=1, max_length=128)] | None = _F(
-        "BGM_SEPARATION_UVR_MODEL", scope="server",
+        "BGM_SEPARATION_UVR_MODEL", scope="per_request",
         group="Music separation", evict="bgm")
+    BGM_SEPARATION_ALLOWED_MODELS: Annotated[
+        list[Annotated[str, Field(min_length=1, max_length=128)]],
+        Field(max_length=64),
+    ] | None = _F(
+        "BGM_SEPARATION_ALLOWED_MODELS", scope="server",
+        group="Music separation")
+    BGM_SEPARATION_PRELOAD: bool | None = _F(
+        "BGM_SEPARATION_PRELOAD", scope="server", group="Music separation")
     BGM_SEPARATION_DEVICE: DiarizationDeviceLit | None = _F(
         "BGM_SEPARATION_DEVICE", scope="server", group="Music separation",
         evict="bgm")
@@ -1502,6 +1608,56 @@ class AdminConfig(BaseModel):
         group="Music separation")
     SEPARATE_BGM: bool | None = _F(
         "SEPARATE_BGM", scope="per_request", group="Music separation")
+
+    # --- Translation (T2T) ---
+    TRANSLATION_ENABLED: bool | None = _F(
+        "TRANSLATION_ENABLED", scope="server", group="Translation")
+    TRANSLATION_DEFAULT_MODEL: TranslationModelRef | None = _F(
+        "TRANSLATION_DEFAULT_MODEL", scope="server", group="Translation")
+    # Sets serialize as JSON arrays; convert back on load (mirrors
+    # ALLOWED_MODELS — list type here for per-element validation).
+    TRANSLATION_ALLOWED_MODELS: list[TranslationModelRefItem] | None = _F(
+        "TRANSLATION_ALLOWED_MODELS", scope="server", group="Translation",
+        coerce=set)
+    TRANSLATION_PRELOAD_MODELS: list[TranslationModelRefItem] | None = _F(
+        "TRANSLATION_PRELOAD_MODELS", scope="server", group="Translation",
+        restart=True)
+    TRANSLATION_MAX_LOADED_MODELS: Annotated[int, Field(ge=1, le=4)] | None = _F(
+        "TRANSLATION_MAX_LOADED_MODELS", scope="server", group="Translation")
+    TRANSLATION_DEVICE: DiarizationDeviceLit | None = _F(
+        "TRANSLATION_DEVICE", scope="server", group="Translation")
+    TRANSLATION_IDLE_TIMEOUT_S: Annotated[int, Field(ge=0, le=86400)] | None = _F(
+        "TRANSLATION_IDLE_TIMEOUT_S", scope="server", group="Translation")
+    TRANSLATION_BATCH_SEGMENTS: Annotated[int, Field(ge=1, le=50)] | None = _F(
+        "TRANSLATION_BATCH_SEGMENTS", scope="server", group="Translation")
+    TRANSLATION_PROMPT_FAMILY: Literal[
+        "auto", "hunyuan", "gemma-translate", "milmmt", "seedx", "chatml",
+        "custom",
+    ] | None = _F(
+        "TRANSLATION_PROMPT_FAMILY", scope="server", group="Translation")
+    TRANSLATION_PROMPT_TEMPLATE: Annotated[str, Field(max_length=8000)] | None = _F(
+        "TRANSLATION_PROMPT_TEMPLATE", scope="server", group="Translation")
+    # Call-time defaults (per-identity > per-model > global; lockable).
+    TRANSLATE_TO: Annotated[
+        str, Field(max_length=64, pattern=_TRANSLATE_TO_PATTERN)
+    ] | None = _F(
+        "TRANSLATE_TO", scope="per_request", group="Translation",
+        subgroup="Per-request defaults")
+    TRANSLATION_MODEL: TranslationModelRef | None = _F(
+        "TRANSLATION_MODEL", scope="per_request", group="Translation",
+        subgroup="Per-request defaults")
+    TRANSLATION_CONTEXT_SEGMENTS: Annotated[int, Field(ge=0, le=10)] | None = _F(
+        "TRANSLATION_CONTEXT_SEGMENTS", scope="per_request",
+        group="Translation", subgroup="Per-request defaults")
+    TRANSLATION_MAX_TARGETS: Annotated[int, Field(ge=1, le=10)] | None = _F(
+        "TRANSLATION_MAX_TARGETS", scope="per_request", group="Translation",
+        subgroup="Per-request defaults")
+    TRANSLATION_MODE: Literal["fluent", "faithful"] | None = _F(
+        "TRANSLATION_MODE", scope="per_request", group="Translation",
+        subgroup="Per-request defaults")
+    TRANSLATION_GLOSSARY: Annotated[str, Field(max_length=4000)] | None = _F(
+        "TRANSLATION_GLOSSARY", scope="per_request", group="Translation",
+        subgroup="Per-request defaults")
 
     # --- Transcribe-from-URL (yt-dlp) ---
     URL_DOWNLOAD_ENABLED: bool | None = _F(
@@ -1817,7 +1973,9 @@ class AdminConfig(BaseModel):
             raise ValueError("invalid host string")
         return v
 
-    @field_validator("ALLOWED_MODELS", "PRELOAD_MODELS")
+    @field_validator("ALLOWED_MODELS", "PRELOAD_MODELS",
+                     "TRANSLATION_ALLOWED_MODELS",
+                     "TRANSLATION_PRELOAD_MODELS")
     @classmethod
     def _cap_list(cls, v: list[Any] | None) -> list[Any] | None:
         if v is None:
@@ -2063,6 +2221,24 @@ class AdminConfig(BaseModel):
                 )
         return v
 
+    @field_validator("TRANSLATION_PROMPT_TEMPLATE")
+    @classmethod
+    def _validate_translation_template(cls, v: str | None) -> str | None:
+        """A non-empty custom template must carry the two mandatory slots the
+        renderer substitutes — a template without them would silently translate
+        nothing (no {text}) or into nowhere (no {target_language})."""
+        if v is None or not v.strip():
+            return v
+        missing = [s for s in ("{text}", "{target_language}") if s not in v]
+        if missing:
+            raise ValueError(
+                f"TRANSLATION_PROMPT_TEMPLATE must contain the "
+                f"{' and '.join(missing)} placeholder"
+                f"{'s' if len(missing) > 1 else ''} (optional slots: "
+                "{source_language}, {context}, {glossary})"
+            )
+        return v
+
     @field_validator("SUPPRESS_TOKENS")
     @classmethod
     def _validate_suppress_tokens(cls, v: str | None) -> str | None:
@@ -2247,6 +2423,7 @@ _GROUP_ORDER: list[tuple[str, list[str | None]]] = [
     ]),
     ("Diarization", [None, "Advanced — speaker bounds & VRAM"]),
     ("Music separation", [None]),
+    ("Translation", [None, "Per-request defaults"]),
     ("Transcribe from URL", [
         None,
         "Advanced — timeouts, concurrency & retention",

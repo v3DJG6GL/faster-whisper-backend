@@ -152,6 +152,86 @@ def test_server_log_level_literal():
 
 
 # ---------------------------------------------------------------------------
+# Translation (T2T) fields
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("val", ["", "org/repo", "org/repo:Q4_K_M",
+                                 "tencent/Hunyuan-MT-7B-GGUF:Q4_K_M"])
+def test_translation_model_ref_valid(val):
+    assert _ok(TRANSLATION_DEFAULT_MODEL=val).TRANSLATION_DEFAULT_MODEL == val
+    assert _ok(TRANSLATION_MODEL=val).TRANSLATION_MODEL == val
+
+
+@pytest.mark.parametrize("val", ["no-slash-model:q4", "no-slash-model",
+                                 "/leading", "org/repo:", "a/b:c:d",
+                                 "has space/repo", "x" * 161])
+def test_translation_model_ref_invalid(val):
+    _bad(TRANSLATION_DEFAULT_MODEL=val)
+    _bad(TRANSLATION_MODEL=val)
+
+
+@pytest.mark.parametrize("val", ["", "de", "en,de", "fr-CA", "en,pt-BR,uk",
+                                 "yue"])
+def test_translate_to_valid(val):
+    assert _ok(TRANSLATE_TO=val).TRANSLATE_TO == val
+
+
+@pytest.mark.parametrize("val", ["german", "DE", "en,", ",en", "en de",
+                                 "en;de", "d"])
+def test_translate_to_invalid(val):
+    _bad(TRANSLATE_TO=val)
+
+
+def test_translation_prompt_template_placeholders():
+    # Empty = unset (family "custom" then has nothing to render — a runtime
+    # concern, not a schema one).
+    _ok(TRANSLATION_PROMPT_TEMPLATE="")
+    _ok(TRANSLATION_PROMPT_TEMPLATE=(
+        "Translate into {target_language}:\n\n{text}"))
+    # Non-empty without the mandatory slots must be a 422 at save.
+    _bad(TRANSLATION_PROMPT_TEMPLATE="Translate into {target_language}: hi")
+    _bad(TRANSLATION_PROMPT_TEMPLATE="Just do it: {text}")
+    _bad(TRANSLATION_PROMPT_TEMPLATE="no placeholders at all")
+
+
+def test_translation_list_fields_validate_entries():
+    _ok(TRANSLATION_ALLOWED_MODELS=["org/repo", "org/repo:Q8_0"])
+    _ok(TRANSLATION_PRELOAD_MODELS=["org/repo:Q4_K_M"])
+    _bad(TRANSLATION_ALLOWED_MODELS=[""])            # empty entry
+    _bad(TRANSLATION_ALLOWED_MODELS=["no-slash:q4"])
+    _bad(TRANSLATION_PRELOAD_MODELS=["no-slash"])
+
+
+def test_translation_bounds_and_literals():
+    _ok(TRANSLATION_MAX_LOADED_MODELS=1)
+    _ok(TRANSLATION_MAX_LOADED_MODELS=4)
+    _bad(TRANSLATION_MAX_LOADED_MODELS=0)
+    _bad(TRANSLATION_MAX_LOADED_MODELS=5)
+    _ok(TRANSLATION_BATCH_SEGMENTS=1)
+    _bad(TRANSLATION_BATCH_SEGMENTS=51)
+    _ok(TRANSLATION_CONTEXT_SEGMENTS=0)
+    _bad(TRANSLATION_CONTEXT_SEGMENTS=11)
+    _ok(TRANSLATION_MAX_TARGETS=10)
+    _bad(TRANSLATION_MAX_TARGETS=0)
+    _ok(TRANSLATION_MODE="faithful")
+    _bad(TRANSLATION_MODE="literal")
+    _ok(TRANSLATION_PROMPT_FAMILY="gemma-translate")
+    _bad(TRANSLATION_PROMPT_FAMILY="alpaca")
+    _ok(TRANSLATION_DEVICE="auto")
+    _bad(TRANSLATION_DEVICE="rocm")
+
+
+def test_load_overrides_coerces_translation_allowed_models_to_set(tmp_path):
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps(
+        {"TRANSLATION_ALLOWED_MODELS": ["org/a", "org/b:Q4_0"]}),
+        encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert out["TRANSLATION_ALLOWED_MODELS"] == {"org/a", "org/b:Q4_0"}
+    assert isinstance(out["TRANSLATION_ALLOWED_MODELS"], set)
+
+
+# ---------------------------------------------------------------------------
 # CONVERT_QUANTIZATION / TEMPERATURE / SUPPRESS_TOKENS validators
 # ---------------------------------------------------------------------------
 

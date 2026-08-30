@@ -79,7 +79,8 @@ _MODELS_DIR = (os.environ.get("WHISPER_MODELS_DIR") or "").strip() or (
 # Fields stored as JSON arrays but used as sets in code -- mirror of
 # config_store._POST_LOAD_COERCERS (kept here too: config_store imports THIS
 # module, so it can't be imported this early).
-_SET_FIELDS = frozenset({"ALLOWED_MODELS", "CAPTURES_PIPELINE_RULES_EXCLUDE"})
+_SET_FIELDS = frozenset({"ALLOWED_MODELS", "CAPTURES_PIPELINE_RULES_EXCLUDE",
+                         "TRANSLATION_ALLOWED_MODELS"})
 
 
 def _load_defaults() -> "dict[str, object]":
@@ -504,7 +505,13 @@ DIARIZATION_ENABLED: bool = _D("DIARIZATION_ENABLED")
 # Pipeline id. community-1 (CC-BY-4.0) is the default; 3.1 (MIT) is the
 # proven-VRAM alternative. Both are HF-gated: the operator must accept the
 # model terms on huggingface.co and set HF_TOKEN before first use.
+# Per-request overridable (subject to DIARIZATION_ALLOWED_MODELS); lockable.
 DIARIZATION_MODEL: str = _D("DIARIZATION_MODEL")
+
+# Allowlist of pipeline ids a request may pick; both supported pipelines by
+# default. Whether to load the pipeline eagerly at startup (default: first use).
+DIARIZATION_ALLOWED_MODELS: "list[str]" = _D("DIARIZATION_ALLOWED_MODELS")
+DIARIZATION_PRELOAD: bool = _D("DIARIZATION_PRELOAD")
 
 # "auto" follows MODEL_DEVICE (with its fallback semantics); cuda/cpu pin it.
 DIARIZATION_DEVICE: str = _D("DIARIZATION_DEVICE")
@@ -535,8 +542,14 @@ DIARIZATION_MAX_SPEAKERS: "int | None" = _D("DIARIZATION_MAX_SPEAKERS")
 BGM_SEPARATION_ENABLED: bool = _D("BGM_SEPARATION_ENABLED")
 
 # UVR model name (MDX-Net .onnx implied when no extension). Auto-downloaded
-# to <DOWNLOAD_ROOT>/audio-separator on first use.
+# to <DOWNLOAD_ROOT>/audio-separator on first use. Per-request overridable
+# (subject to BGM_SEPARATION_ALLOWED_MODELS); lockable.
 BGM_SEPARATION_UVR_MODEL: str = _D("BGM_SEPARATION_UVR_MODEL")
+
+# Allowlist of UVR model names a request may pick, and whether to load the
+# separator eagerly at startup (default: first use).
+BGM_SEPARATION_ALLOWED_MODELS: "list[str]" = _D("BGM_SEPARATION_ALLOWED_MODELS")
+BGM_SEPARATION_PRELOAD: bool = _D("BGM_SEPARATION_PRELOAD")
 
 # "auto" follows MODEL_DEVICE; cpu pins the separator to CPU.
 BGM_SEPARATION_DEVICE: str = _D("BGM_SEPARATION_DEVICE")
@@ -547,6 +560,59 @@ BGM_SEPARATION_IDLE_TIMEOUT_S: int = _D("BGM_SEPARATION_IDLE_TIMEOUT_S")
 # Call-time default (per-identity > per-model > global; lockable): whether a
 # request separates music when it doesn't say.
 SEPARATE_BGM: bool = _D("SEPARATE_BGM")
+
+
+# =============================================================================
+# Translation (T2T) — llama.cpp GGUF (optional install, requirements-translate.txt)
+# =============================================================================
+# Master capacity switch: whether this server runs text-to-text translation at
+# all. Off = requested runs decline softly (response warning), and the
+# dedicated /v1/text/translations endpoint returns 403.
+TRANSLATION_ENABLED: bool = _D("TRANSLATION_ENABLED")
+
+# GGUF model ref "org/repo[:quant]" used when a request names no model
+# (e.g. "tencent/Hunyuan-MT-7B-GGUF:Q4_K_M"). Empty = requests must name one.
+TRANSLATION_DEFAULT_MODEL: str = _D("TRANSLATION_DEFAULT_MODEL")
+
+# Per-request allowlist with ALLOWED_MODELS semantics: empty set = any
+# well-formed "org/repo[:quant]" ref passes.
+TRANSLATION_ALLOWED_MODELS: "set[str]" = _D("TRANSLATION_ALLOWED_MODELS")
+
+# Translation models warmed at startup (restart to change); LRU cap on how
+# many stay loaded at once (a 7B Q4 model holds ~5 GB).
+TRANSLATION_PRELOAD_MODELS: "list[str]" = _D("TRANSLATION_PRELOAD_MODELS")
+TRANSLATION_MAX_LOADED_MODELS: int = _D("TRANSLATION_MAX_LOADED_MODELS")
+
+# "auto" follows MODEL_DEVICE; cuda/cpu pin it. Idle-unload like
+# MODEL_IDLE_TIMEOUT_S (0 = keep loaded once used).
+TRANSLATION_DEVICE: str = _D("TRANSLATION_DEVICE")
+TRANSLATION_IDLE_TIMEOUT_S: int = _D("TRANSLATION_IDLE_TIMEOUT_S")
+
+# Faithful-mode batching: segments per numbered-list prompt (auto-halved on a
+# reply line-count mismatch).
+TRANSLATION_BATCH_SEGMENTS: int = _D("TRANSLATION_BATCH_SEGMENTS")
+
+# Prompt family: "auto" detects from the model name (hunyuan / translategemma
+# / milmmt / seed-x, else generic chatml); "custom" renders the template below,
+# which must contain {text} and {target_language} (optional slots:
+# {source_language}, {context}, {glossary}).
+TRANSLATION_PROMPT_FAMILY: str = _D("TRANSLATION_PROMPT_FAMILY")
+TRANSLATION_PROMPT_TEMPLATE: str = _D("TRANSLATION_PROMPT_TEMPLATE")
+
+# Call-time defaults (per-identity > per-model > global; lockable):
+#   TRANSLATE_TO      — csv of target codes ("en,fr-CA"); empty = translation
+#                       off unless the request asks.
+#   TRANSLATION_MODEL — per-request model ref; empty = TRANSLATION_DEFAULT_MODEL.
+#   CONTEXT_SEGMENTS  — previous source segments given as prompt context.
+#   MAX_TARGETS       — cap on target languages per request.
+#   MODE              — "fluent" (sentence-group merge) or "faithful" (per-cue).
+#   GLOSSARY          — "source = target" lines enforced via the prompt.
+TRANSLATE_TO: str = _D("TRANSLATE_TO")
+TRANSLATION_MODEL: str = _D("TRANSLATION_MODEL")
+TRANSLATION_CONTEXT_SEGMENTS: int = _D("TRANSLATION_CONTEXT_SEGMENTS")
+TRANSLATION_MAX_TARGETS: int = _D("TRANSLATION_MAX_TARGETS")
+TRANSLATION_MODE: str = _D("TRANSLATION_MODE")
+TRANSLATION_GLOSSARY: str = _D("TRANSLATION_GLOSSARY")
 
 
 # =============================================================================
@@ -1301,6 +1367,7 @@ CAPTURES_PROPOSER_CACHE_TTL_S = _env_int(
 _ENV_SPECIAL_CASES = {
     "ALLOWED_MODELS", "ADMIN_WEBUI_ALLOWED_HOSTS", "USER_WEBUI_ALLOWED_HOSTS",
     "CAPTURES_PIPELINE_RULES_EXCLUDE", "CONVERT_QUANTIZATION",
+    "TRANSLATION_ALLOWED_MODELS",
 }
 _ENV_JSON_FIELDS = {"PIPELINE_RULES", "MODEL_OVERRIDES", "OVERRIDE_PROFILES"}
 _ENV_READER_OVERRIDES = {
@@ -1400,6 +1467,13 @@ except ImportError:
 _env_allowed = os.environ.get("WHISPER_ALLOWED_MODELS")
 if _env_allowed is not None:
     ALLOWED_MODELS = {s.strip() for s in _env_allowed.split(",") if s.strip()}
+
+# TRANSLATION_ALLOWED_MODELS mirrors ALLOWED_MODELS: CSV → set; explicit ""
+# means an empty set ("any well-formed ref passes").
+_env_translation_allowed = os.environ.get("WHISPER_TRANSLATION_ALLOWED_MODELS")
+if _env_translation_allowed is not None:
+    TRANSLATION_ALLOWED_MODELS = {
+        s.strip() for s in _env_translation_allowed.split(",") if s.strip()}
 
 # CAPTURES_PIPELINE_RULES_EXCLUDE is stored/used as a set of rule slugs.
 _env_cap_excl = os.environ.get("WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE")
