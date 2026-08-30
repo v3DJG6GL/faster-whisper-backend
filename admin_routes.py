@@ -999,6 +999,11 @@ class _TranslationTestBody(BaseModel):
     family: Annotated[str, Field(max_length=32)] | None = None
     glossary: Annotated[str, Field(max_length=4000)] | None = None
     preview: bool = False
+    # Opt-in live progress: a hex id the lab JS polls at
+    # GET /v1/audio/transcriptions/progress/{id} while the test runs
+    # (download → load → translate). Malformed → ignored, like the
+    # request path's stance.
+    progress_id: Annotated[str, Field(max_length=64)] | None = None
 
 
 @router.post("/translation-test",
@@ -1037,17 +1042,40 @@ async def translation_test(body: _TranslationTestBody) -> JSONResponse:
         # Render-only: what the model WOULD receive; nothing is loaded.
         return JSONResponse({"prompt": prompt, "warnings": []})
     cold = not prompt.get("model_loaded", False)
+    # Optional progress plumbing: joins the shared _BATCH_PROGRESS registry
+    # so the lab JS can poll the existing progress endpoint while a cold
+    # test downloads (multi-GB) + loads + translates. Lazy main import —
+    # main imports this module at startup.
+    import main as _main
+    _pid = (body.progress_id
+            if (body.progress_id
+                and _main._PROGRESS_ID_RE.match(body.progress_id))
+            else None)
+    _main._progress_set(_pid, stage="starting", progress=None,
+                        model=(ref or default or None), compute="gguf")
     t0 = time.perf_counter()
     try:
         results, warnings, meta = await translation.translate_segments(
             [{"text": body.text}], [body.target],
             source_lang=body.source, mode="faithful",
             model_ref=ref or None, glossary=body.glossary or "",
-            template_override=template, family_override=fam)
+            template_override=template, family_override=fam,
+            progress_cb=lambda f, step=None, last_text=None:
+                _main._progress_set(_pid, stage="translating",
+                                    progress=f, step=step),
+            download_cb=lambda done, total:
+                _main._progress_set(
+                    _pid, stage="downloading",
+                    progress=(done / total) if total else None,
+                    total_bytes=total or None))
     except translation.TranslationError as e:
         # str(e) is client-safe by the module's failure contract.
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content={"error": str(e)})
+    finally:
+        if _pid:
+            _main._BATCH_PROGRESS.pop(_pid, None)
+            _main._BATCH_CANCELLED.discard(_pid)
     ms = int((time.perf_counter() - t0) * 1000)
     # A guard-failed test FALLS BACK to the untranslated source text — the
     # warnings are the only signal, so they MUST reach the admin (otherwise a
@@ -3334,11 +3362,43 @@ function translationTemplateEditor(name, v) {
   let prevResult = null;
   testBtn.addEventListener('click', async () => {
     testBtn.disabled = true;
+    // Static fallback text — replaced by live staged progress below the
+    // moment the server's progress entry answers the 1-s poll.
     stage.textContent = testBtn.dataset.cold
       ? 'Loading model… a first run downloads it (multi-GB), then loads into VRAM'
       : 'Translating…';
+    // Live staged progress: mint a progress id, thread it through the test
+    // body, and poll the shared transcription-progress endpoint at 1 Hz.
+    const pid = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map(b => b.toString(16).padStart(2, '0')).join('');
+    const fmtGB = b => (b / 1073741824).toFixed(2);
+    const poll = setInterval(async () => {
+      try {
+        const pr = await fetch('/v1/audio/transcriptions/progress/' + pid,
+                               { cache: 'no-store' });
+        if (!pr.ok) return;
+        const p = await pr.json();
+        if (p.stage === 'downloading') {
+          const pct = p.progress != null ? Math.round(p.progress * 100) : null;
+          let txt = 'Downloading model' + (pct != null ? '… ' + pct + '%' : '…');
+          if (p.total_bytes) {
+            const done = p.progress != null ? p.progress * p.total_bytes : null;
+            txt += ' (' + (done != null ? fmtGB(done) : '?') + ' / '
+              + fmtGB(p.total_bytes) + ' GB)';
+          }
+          stage.textContent = txt;
+        } else if (p.stage === 'starting') {
+          stage.textContent = 'Loading model…';
+        } else if (p.stage === 'translating') {
+          stage.textContent = 'Translating…' + (p.step ? ' ' + p.step : '');
+        }
+      } catch (_) { /* progress is best-effort */ }
+    }, 1000);
     try {
-      const r = await api('POST', '/settings/translation-test', labBody(false));
+      const bodyObj = labBody(false);
+      bodyObj.progress_id = pid;
+      const r = await api('POST', '/settings/translation-test', bodyObj);
+      clearInterval(poll);
       const j = await r.json().catch(() => ({}));
       stage.textContent = '';
       const card = document.createElement('div');
@@ -3381,6 +3441,8 @@ function translationTemplateEditor(name, v) {
       prevResult = card;
     } catch (e) {
       stage.textContent = 'test failed: ' + e;
+    } finally {
+      clearInterval(poll);
     }
     testBtn.disabled = false;
   });

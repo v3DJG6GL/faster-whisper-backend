@@ -1770,6 +1770,58 @@ async def _get_or_load_model(name: str) -> "WhisperModel":
         if _revision:
             load_kwargs["revision"] = _revision
 
+        # Pre-download the repo under a progress capture when the weights
+        # will come from the Hub — faster-whisper hardcodes a disabled tqdm,
+        # so the constructor's own multi-GB fetch is otherwise invisible in
+        # the log / jobs registry. Same snapshot args as faster_whisper's
+        # download_model (allow_patterns, cache_dir=download_root, revision,
+        # token), so the constructor then finds a warm cache. Best-effort:
+        # ANY failure falls through to the constructor's stock download.
+        if not load_kwargs.get("local_files_only") and not os.path.isdir(load_path):
+            try:
+                import download_progress
+                from huggingface_hub import snapshot_download
+                _dl_repo = load_path
+                if "/" not in _dl_repo:
+                    from faster_whisper.utils import _MODELS as _FW_MODELS
+                    _dl_repo = _FW_MODELS.get(_dl_repo) or ""
+                if _dl_repo:
+                    _dl_label = f"whisper:{name}"
+                    _dl_job = jobs.job_start("download", model=_dl_label)
+
+                    def _dl_hook(done, total, _job=_dl_job):
+                        jobs.job_update(
+                            _job,
+                            progress=(done / total) if total else None,
+                            total_bytes=total or None)
+
+                    _snap_kwargs = {
+                        "repo_id": _dl_repo,
+                        "allow_patterns": [
+                            "config.json", "preprocessor_config.json",
+                            "model.bin", "tokenizer.json", "vocabulary.*",
+                        ],
+                    }
+                    if _download_root:
+                        _snap_kwargs["cache_dir"] = _download_root
+                    if _revision:
+                        _snap_kwargs["revision"] = _revision
+                    if _auth_token:
+                        _snap_kwargs["token"] = _auth_token
+                    try:
+                        with download_progress.capture(
+                                _dl_label, cb=_dl_hook) as _cap:
+                            _snap_kwargs.update(_cap.tqdm_kwargs)
+                            await loop.run_in_executor(
+                                None,
+                                lambda: snapshot_download(**_snap_kwargs))
+                    finally:
+                        jobs.job_end(_dl_job)
+            except Exception as _dl_err:  # noqa: BLE001 — best-effort
+                logger.warning(
+                    "Pre-download of %s failed (%s); the model constructor "
+                    "will download instead", name, _dl_err)
+
         loaded_device = primary_device
         loaded_compute = primary_compute
         try:
@@ -3761,14 +3813,24 @@ async def transcribe(
                                     # translated line for the run panel —
                                     # only merged when present so a tick
                                     # without one doesn't blank the field.
+                                    # stage is re-asserted per tick so the
+                                    # first batch flips a cold-download's
+                                    # "downloading" back to "translating".
                                     progress_cb=lambda f, step=None,
                                         last_text=None:
                                         _progress_set(
-                                            _pid, progress=f, step=step,
+                                            _pid, stage="translating",
+                                            progress=f, step=step,
                                             **({"last_text": last_text}
                                                if last_text else {})),
                                     cancel_check=lambda:
                                         _cancel_requested(_pid),
+                                    download_cb=lambda done, total:
+                                        _progress_set(
+                                            _pid, stage="downloading",
+                                            progress=((done / total)
+                                                      if total else None),
+                                            total_bytes=total or None),
                                 )
                             # The inference semaphore is held ONLY for GPU
                             # translation: a llama.cpp CPU run can take
@@ -4417,11 +4479,21 @@ async def translate_text(request: Request,
             _hb["last_pct"] = pct
             logger.info("[translate] req=%s %s %d%%",
                         request_id[:8], step or "translating", pct)
-        jobs.job_update(request_id, progress=f, step=step)
-        fields = {"progress": f, "step": step}
+        # stage is re-asserted on every tick so the first real batch flips
+        # a "downloading" entry (cold model fetch) back to "translating".
+        jobs.job_update(request_id, stage="translating", progress=f,
+                        step=step)
+        fields = {"stage": "translating", "progress": f, "step": step}
         if last_text:
             fields["last_text"] = last_text
         _progress_set(_pid, **fields)
+
+    def _on_download(done, total):
+        frac = (done / total) if total else None
+        jobs.job_update(request_id, stage="downloading", progress=frac,
+                        total_bytes=total or None)
+        _progress_set(_pid, stage="downloading", progress=frac,
+                      total_bytes=total or None)
 
     try:
         _progress_set(_pid, stage="translating", progress=0.0,
@@ -4440,6 +4512,7 @@ async def translate_text(request: Request,
                     context_segments=context_segments,
                     progress_cb=_on_progress,
                     cancel_check=lambda: _cancel_requested(_pid),
+                    download_cb=_on_download,
                 )
             # Same policy as the batch stage: the GPU inference semaphore is
             # held only when translation actually runs on cuda — a llama.cpp

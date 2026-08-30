@@ -107,11 +107,23 @@ def _load_blocking(model_id: str, device: str, batch_size: int):
 
     token = getattr(cfg, "HF_TOKEN", None) or None
     try:
+        # Download-or-load receipt: pyannote fetches its (small) files via
+        # huggingface_hub internally — the capture's hub-tqdm shim surfaces
+        # any actual download in the log / jobs registry; a warm cache stays
+        # silent. Coarse by design (no per-byte client progress needed here).
+        import download_progress
+        import jobs
+        _dl_job = jobs.job_start("download", model=_STATS_PREFIX + model_id)
         try:
-            pipe = Pipeline.from_pretrained(model_id, token=token)
-        except TypeError:
-            # pyannote 3.x spells the kwarg use_auth_token.
-            pipe = Pipeline.from_pretrained(model_id, use_auth_token=token)
+            with download_progress.capture(_STATS_PREFIX + model_id):
+                try:
+                    pipe = Pipeline.from_pretrained(model_id, token=token)
+                except TypeError:
+                    # pyannote 3.x spells the kwarg use_auth_token.
+                    pipe = Pipeline.from_pretrained(model_id,
+                                                    use_auth_token=token)
+        finally:
+            jobs.job_end(_dl_job)
     except DiarizationError:
         raise
     except Exception as e:
@@ -186,8 +198,14 @@ async def _get_pipeline(model_id: "str | None" = None):
             vram_before is not None and vram_after is not None) else None
         system_stats.register_loaded_model(
             _STATS_PREFIX + model_id, vram, device, "torch")
+        load_secs = time.perf_counter() - t0
         logger.info("[diarize] pipeline %s loaded on %s in %.1fs",
-                    model_id, device, time.perf_counter() - t0)
+                    model_id, device, load_secs)
+        try:
+            import metrics
+            metrics.record_model_load(_STATS_PREFIX + model_id, load_secs)
+        except Exception:  # noqa: BLE001 — stats only
+            pass
         _pipeline = pipe
         _pipeline_key = key
         _last_used_monotonic = time.monotonic()

@@ -327,9 +327,10 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
 # Model loading / LRU cache
 # =============================================================================
 
-def _load_blocking(ref: str, device: str, family: str):
+def _load_blocking(ref: str, device: str, family: str, download_cb=None):
     """Import llama_cpp and load the GGUF model. Runs in the default
-    executor."""
+    executor. ``download_cb(done_bytes, total_bytes)`` (optional) receives
+    byte progress while the weights download."""
     # Keep HF downloads on the models volume (whisper weights already live
     # there via download_root); a set HF_HOME always wins.
     download_root = getattr(cfg, "DOWNLOAD_ROOT", None)
@@ -342,7 +343,7 @@ def _load_blocking(ref: str, device: str, family: str):
     if getattr(cfg, "LOCAL_FILES_ONLY", False):
         os.environ["HF_HUB_OFFLINE"] = "1"
     try:
-        return _load_blocking_inner(ref, device, family)
+        return _load_blocking_inner(ref, device, family, download_cb)
     finally:
         if getattr(cfg, "LOCAL_FILES_ONLY", False):
             if offline_prev is None:
@@ -351,7 +352,8 @@ def _load_blocking(ref: str, device: str, family: str):
                 os.environ["HF_HUB_OFFLINE"] = offline_prev
 
 
-def _load_blocking_inner(ref: str, device: str, family: str):
+def _load_blocking_inner(ref: str, device: str, family: str,
+                         download_cb=None):
     try:
         import llama_cpp
     except ImportError as e:
@@ -364,7 +366,26 @@ def _load_blocking_inner(ref: str, device: str, family: str):
         ) from e
 
     repo, quant = _parse_model_ref(ref)
+    # Pre-download under a progress capture so the server log / jobs
+    # registry / a waiting client see the multi-GB fetch move —
+    # Llama.from_pretrained downloads through hf_hub_download silently.
+    # ANY pre-download failure falls back to the stock path below.
+    local_path = None
+    if not getattr(cfg, "LOCAL_FILES_ONLY", False):
+        try:
+            local_path = _predownload_gguf(repo, quant, download_cb)
+        except Exception as e:  # noqa: BLE001 — pre-download is best-effort
+            logger.warning(
+                "[translate] pre-download of %s failed (%s) — falling back "
+                "to llama.cpp's own downloader", ref, e)
     try:
+        if local_path:
+            return llama_cpp.Llama(
+                model_path=local_path,
+                n_gpu_layers=(-1 if device == "cuda" else 0),
+                n_ctx=_ctx_for(family),
+                verbose=False,
+            )
         return llama_cpp.Llama.from_pretrained(
             repo_id=repo,
             filename=(f"*{quant}.gguf" if quant else "*.gguf"),
@@ -381,6 +402,50 @@ def _load_blocking_inner(ref: str, device: str, family: str):
             f"('org/repo[:quant]'), the quantization filename, and that the "
             f"download is reachable"
         ) from e
+
+
+def _predownload_gguf(repo: str, quant: "str | None",
+                      download_cb=None) -> "str | None":
+    """Resolve the concrete .gguf filename (the same glob
+    Llama.from_pretrained applies) and fetch it under a download_progress
+    capture + a "download" jobs entry. Returns the local path, or None when
+    the listing is empty/ambiguous (from_pretrained then produces its own,
+    familiar error). Raises on listing/download failures — the caller falls
+    back. Runs in the executor (blocking network I/O)."""
+    import fnmatch
+
+    from huggingface_hub import HfApi, hf_hub_download
+
+    import download_progress
+    import jobs
+
+    pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
+    files = [s.rfilename
+             for s in (HfApi().model_info(repo).siblings or [])]
+    matches = sorted(f for f in files
+                     if fnmatch.fnmatch(f.lower(), pattern))
+    if len(matches) != 1:
+        # 0 or ambiguous: let from_pretrained's own resolver speak.
+        return None
+    label = _STATS_PREFIX + repo + (f":{quant}" if quant else "")
+    job_id = jobs.job_start("download", model=label, detail=matches[0])
+
+    def _hook(done: int, total: int) -> None:
+        jobs.job_update(job_id,
+                        progress=(done / total) if total else None,
+                        total_bytes=total or None)
+        if download_cb is not None:
+            try:
+                download_cb(done, total)
+            except Exception:  # noqa: BLE001 — progress must never break us
+                pass
+
+    try:
+        with download_progress.capture(label, cb=_hook) as cap:
+            return hf_hub_download(repo_id=repo, filename=matches[0],
+                                   **cap.tqdm_kwargs)
+    finally:
+        jobs.job_end(job_id)
 
 
 def _drop_locked(ref: str) -> bool:
@@ -411,9 +476,10 @@ def _drop_locked(ref: str) -> bool:
     return True
 
 
-async def _get_model(ref: str, *, lease: bool = False):
+async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
     """Return the cached model for ``ref``, loading (and LRU-evicting past
-    TRANSLATION_MAX_LOADED_MODELS) on a miss."""
+    TRANSLATION_MAX_LOADED_MODELS) on a miss. ``download_cb(done, total)``
+    receives byte progress when the miss also has to download weights."""
     async with _lock:
         if ref in _models:
             _models.move_to_end(ref)
@@ -441,14 +507,21 @@ async def _get_model(ref: str, *, lease: bool = False):
         vram_before = system_stats.gpu_mem_used_bytes()
         loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
-        llm = await loop.run_in_executor(None, _load_blocking, ref, device, family)
+        llm = await loop.run_in_executor(
+            None, _load_blocking, ref, device, family, download_cb)
         vram_after = system_stats.gpu_mem_used_bytes()
         vram = (vram_after - vram_before) if (
             vram_before is not None and vram_after is not None) else None
         system_stats.register_loaded_model(
             _STATS_PREFIX + ref, vram, device, "gguf")
+        load_secs = time.perf_counter() - t0
         logger.info("[translate] model %s loaded on %s in %.1fs",
-                    ref, device, time.perf_counter() - t0)
+                    ref, device, load_secs)
+        try:
+            import metrics
+            metrics.record_model_load(_STATS_PREFIX + ref, load_secs)
+        except Exception:  # noqa: BLE001 — stats only
+            pass
         _models[ref] = llm
         _last_used[ref] = time.monotonic()
         if lease:
@@ -727,6 +800,7 @@ async def translate_segments(
     cancel_check=None,
     template_override: "str | None" = None,
     family_override: "str | None" = None,
+    download_cb=None,
 ) -> "tuple[list[dict[str, str]], list[str], dict]":
     """Translate ``segments`` (``[{"text": str, "speaker": str|None}, …]``)
     into every language in ``targets``.
@@ -749,6 +823,8 @@ async def translate_segments(
     template-test path) forces the ``custom`` family and renders THAT
     template for this call only — cfg stays untouched. ``family_override``
     (the admin prompt lab) forces a specific family for this call.
+    ``download_cb(done_bytes, total_bytes)`` receives byte progress when a
+    cold model also has to download its weights.
     """
     ref = (model_ref or "").strip() or \
         (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
@@ -803,7 +879,9 @@ async def translate_segments(
     async def _model():
         nonlocal llm
         if llm is None:
-            llm = await _get_model(ref, lease=True)
+            # Kwarg only when set — keeps two-arg _get_model stubs working.
+            _kw = {"download_cb": download_cb} if download_cb else {}
+            llm = await _get_model(ref, lease=True, **_kw)
         return llm
 
     async def _translate_one(text: str, target: str, context: str) -> str:

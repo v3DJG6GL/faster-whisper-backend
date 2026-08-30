@@ -622,6 +622,45 @@ def test_translation_test_preview_family_auto_follows_model(
     assert r.json()["prompt"]["family"] == "hunyuan"
 
 
+def test_translation_test_progress_id_seeds_registry(
+        client, app_module, monkeypatch):
+    """A progress_id in the test body joins _BATCH_PROGRESS (stage
+    'starting' before the run, 'downloading'/'translating' as the hooks
+    fire) and the endpoint's finally pops it. Malformed ids are ignored,
+    not 422."""
+    import translation
+
+    app_module.cfg.TRANSLATION_ENABLED = True
+    pid = "beef" * 8
+    seen = {}
+
+    async def fake_translate(segments, targets, **kwargs):
+        seen["at_start"] = dict(app_module._BATCH_PROGRESS.get(pid) or {})
+        kwargs["download_cb"](512, 1024)
+        seen["downloading"] = dict(app_module._BATCH_PROGRESS.get(pid) or {})
+        kwargs["progress_cb"](1.0, "en 1/1", None)
+        seen["translating"] = dict(app_module._BATCH_PROGRESS.get(pid) or {})
+        return ([{"en": "hi"}], [], {"model": "org/m", "source": "de",
+                                     "mode": "faithful"})
+
+    monkeypatch.setattr(translation, "translate_segments", fake_translate)
+    r = client.post("/settings/translation-test", json={
+        "text": "hallo", "target": "en", "progress_id": pid})
+    assert r.status_code == 200, r.text
+    assert seen["at_start"].get("stage") == "starting"
+    assert seen["downloading"].get("stage") == "downloading"
+    assert seen["downloading"].get("progress") == 0.5
+    assert seen["downloading"].get("total_bytes") == 1024
+    assert seen["translating"].get("stage") == "translating"
+    assert seen["translating"].get("progress") == 1.0
+    assert pid not in app_module._BATCH_PROGRESS       # popped by finally
+
+    # Malformed id: ignored (no registry entry), request still succeeds.
+    r = client.post("/settings/translation-test", json={
+        "text": "hallo", "target": "en", "progress_id": "NOT-HEX"})
+    assert r.status_code == 200, r.text
+
+
 def test_translation_test_model_allowlist_gate(client, app_module):
     app_module.cfg.TRANSLATION_ENABLED = True
     app_module.cfg.TRANSLATION_ALLOWED_MODELS = {"org/allowed-GGUF:Q4"}

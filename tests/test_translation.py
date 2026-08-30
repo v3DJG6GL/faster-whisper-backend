@@ -474,6 +474,81 @@ def test_progress_carries_last_text_tail(base_cfg, monkeypatch):
     assert any(t and "WEI" in t for t in tails)
 
 
+# ---------------------------------------------------------------------------
+# GGUF pre-download (progress-visible fetch) + from_pretrained fallback
+# ---------------------------------------------------------------------------
+
+def _install_fake_llama(monkeypatch, record):
+    import types
+
+    mod = types.ModuleType("llama_cpp")
+
+    class Llama:
+        def __init__(self, *, model_path=None, **kw):
+            record.append(("direct", model_path, kw))
+
+        @classmethod
+        def from_pretrained(cls, **kw):
+            record.append(("from_pretrained", kw))
+            return "LLM-FP"
+
+    mod.Llama = Llama
+    monkeypatch.setitem(sys.modules, "llama_cpp", mod)
+
+
+def test_load_uses_predownloaded_path(monkeypatch):
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+    monkeypatch.setattr(translation, "_predownload_gguf",
+                        lambda repo, quant, cb=None: "/models/x.Q4.gguf")
+    translation._load_blocking_inner("org/repo:Q4_K_M", "cpu", "chatml")
+    assert record[0][0] == "direct"
+    assert record[0][1] == "/models/x.Q4.gguf"
+    assert record[0][2]["n_gpu_layers"] == 0
+
+
+def test_load_falls_back_when_predownload_raises(monkeypatch, caplog):
+    import logging as _logging
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    def boom(repo, quant, cb=None):
+        raise RuntimeError("listing failed")
+    monkeypatch.setattr(translation, "_predownload_gguf", boom)
+    with caplog.at_level(_logging.WARNING, logger="whisper-api"):
+        out = translation._load_blocking_inner("org/repo:Q4", "cuda", "chatml")
+    assert out == "LLM-FP"
+    assert record[0][0] == "from_pretrained"
+    assert record[0][1]["repo_id"] == "org/repo"
+    assert record[0][1]["filename"] == "*Q4.gguf"
+    assert any("falling back" in r.getMessage() for r in caplog.records)
+
+
+def test_load_falls_back_when_no_unique_match(monkeypatch):
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+    monkeypatch.setattr(translation, "_predownload_gguf",
+                        lambda repo, quant, cb=None: None)
+    translation._load_blocking_inner("org/repo", "cpu", "chatml")
+    assert record[0][0] == "from_pretrained"
+    assert record[0][1]["filename"] == "*.gguf"
+
+
+def test_local_files_only_skips_predownload(monkeypatch):
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
+
+    def never(repo, quant, cb=None):
+        raise AssertionError("pre-download must not run offline")
+    monkeypatch.setattr(translation, "_predownload_gguf", never)
+    translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record[0][0] == "from_pretrained"
+
+
 def test_context_lines_prefix_speakers(base_cfg):
     segs = [{"text": "Guten Tag", "speaker": "SPEAKER_00"},
             {"text": "Hallo", "speaker": None},
@@ -501,7 +576,7 @@ class _FakeLlama:
 def lru_env(monkeypatch):
     made = {}
 
-    def fake_load(ref, device, family):
+    def fake_load(ref, device, family, download_cb=None):
         made[ref] = _FakeLlama(ref)
         return made[ref]
     monkeypatch.setattr(translation, "_load_blocking", fake_load)

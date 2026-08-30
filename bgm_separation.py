@@ -398,13 +398,30 @@ async def _get_separator(model_filename: "str | None" = None):
         vram_before = system_stats.gpu_mem_used_bytes()
         loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
-        sep = await loop.run_in_executor(None, _load_blocking, model, device)
+        # Coarse download-or-load job entry (indeterminate progress):
+        # audio-separator downloads through its own requests+tqdm stack, so
+        # the hub shim can't see the bytes — the entry still tells /stats
+        # and the header cluster that a model fetch/load is in flight.
+        import jobs
+        _dl_job = jobs.job_start("download", model=_STATS_PREFIX + model,
+                                 detail="download-or-load")
+        try:
+            sep = await loop.run_in_executor(
+                None, _load_blocking, model, device)
+        finally:
+            jobs.job_end(_dl_job)
         vram_after = system_stats.gpu_mem_used_bytes()
         vram = (vram_after - vram_before) if (
             vram_before is not None and vram_after is not None) else None
         system_stats.register_loaded_model(_STATS_PREFIX + model, vram, device, "onnx")
+        load_secs = time.perf_counter() - t0
         logger.info("[bgm] separation model %s loaded on %s in %.1fs",
-                    model, device, time.perf_counter() - t0)
+                    model, device, load_secs)
+        try:
+            import metrics
+            metrics.record_model_load(_STATS_PREFIX + model, load_secs)
+        except Exception:  # noqa: BLE001 — stats only
+            pass
         _separator = sep
         _separator_key = key
         _last_used_monotonic = time.monotonic()
