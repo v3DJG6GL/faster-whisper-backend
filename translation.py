@@ -11,7 +11,7 @@ an NVML VRAM delta, registration in ``system_stats`` (as ``gguf:<ref>``) so
 
 Models are addressed by a GGUF ref ``org/repo[:quant]`` — the optional
 ``:quant`` suffix selects a quantization file inside the repo (resolved as the
-``*<quant>.gguf`` filename glob), e.g. ``mradermacher/Hunyuan-MT-7B-GGUF:Q4_K_M``.
+``*<quant>.gguf`` filename glob), e.g. ``tencent/HY-MT1.5-7B-GGUF:Q4_K_M``.
 
 Prompting is family-based (``_FAMILIES``): the family is auto-detected from
 the model name (``detect_family``) unless ``TRANSLATION_PROMPT_FAMILY`` pins

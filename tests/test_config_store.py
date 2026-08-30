@@ -156,7 +156,7 @@ def test_server_log_level_literal():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("val", ["", "org/repo", "org/repo:Q4_K_M",
-                                 "mradermacher/Hunyuan-MT-7B-GGUF:Q4_K_M"])
+                                 "tencent/HY-MT1.5-7B-GGUF:Q4_K_M"])
 def test_translation_model_ref_valid(val):
     assert _ok(TRANSLATION_DEFAULT_MODEL=val).TRANSLATION_DEFAULT_MODEL == val
     assert _ok(TRANSLATION_MODEL=val).TRANSLATION_MODEL == val

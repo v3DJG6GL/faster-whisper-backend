@@ -214,6 +214,10 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
     from tests.conftest import bearer
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
+    # Open allowlist: this test is about the lock, not the allowlist gate
+    # (the shipped config now allowlists two real models by default).
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", set(),
+                        raising=False)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
     _, raw_admin = make_user_key("admin", is_admin=True)

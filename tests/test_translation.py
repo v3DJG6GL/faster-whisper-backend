@@ -38,7 +38,7 @@ def test_parse_model_ref_splits_on_last_colon():
 
 
 @pytest.mark.parametrize("ref,family", [
-    ("mradermacher/Hunyuan-MT-7B-GGUF:Q4_K_M", "hunyuan"),
+    ("tencent/HY-MT1.5-7B-GGUF:Q4_K_M", "hunyuan"),
     ("bartowski/HY-MT-1.5-GGUF", "hunyuan"),
     ("google/translategemma-9b-GGUF", "gemma-translate"),
     ("mradermacher/MiLMMT-8B-GGUF", "milmmt"),
@@ -580,7 +580,7 @@ def test_template_override_forces_custom_family_and_renders_it(
 
     res, warns, meta = _run(translation.translate_segments(
         _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful",
-        model_ref="mradermacher/Hunyuan-MT-7B-GGUF:Q4",   # would detect hunyuan
+        model_ref="tencent/HY-MT1.5-7B-GGUF:Q4",   # would detect hunyuan
         template_override="OVERRIDE {text} -> {target_language}"))
     assert res == [{"en": "Hello world."}]
     family, msgs = prompts[0]

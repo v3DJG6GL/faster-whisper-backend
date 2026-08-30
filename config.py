@@ -571,7 +571,7 @@ SEPARATE_BGM: bool = _D("SEPARATE_BGM")
 TRANSLATION_ENABLED: bool = _D("TRANSLATION_ENABLED")
 
 # GGUF model ref "org/repo[:quant]" used when a request names no model
-# (e.g. "mradermacher/Hunyuan-MT-7B-GGUF:Q4_K_M"). Empty = requests must name one.
+# (e.g. "tencent/HY-MT1.5-7B-GGUF:Q4_K_M"). Empty = requests must name one.
 TRANSLATION_DEFAULT_MODEL: str = _D("TRANSLATION_DEFAULT_MODEL")
 
 # Per-request allowlist with ALLOWED_MODELS semantics: empty set = any
