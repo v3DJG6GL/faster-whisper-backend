@@ -2448,6 +2448,10 @@ async def _redoc_ui():
 # HTTP request — bumps in_flight tracked separately by the transcribe handler.
 import metrics
 
+# Central running-jobs registry (transcribe/dictate/translate/download) —
+# feeds /stats and the WebUI header activity cluster.
+import jobs
+
 
 _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
 # Paths that issue a session and therefore can't carry a CSRF token yet.
@@ -2769,10 +2773,24 @@ _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 _TRANSLATE_CODE_RE = re.compile(r"\A[a-z]{2,3}(-[A-Za-z0-9]{2,8})?\Z")
 
 
+# progress_id → job id: handlers that registered a job in jobs.py bind their
+# progress_id here so every _progress_set call (all stages already flow
+# through it) mirrors stage/progress into the central registry for free.
+# last_text is deliberately NOT mirrored — job rows never carry transcript
+# text (see jobs.jobs_snapshot's scrubbing contract).
+_JOB_BY_PID: "dict[str, str]" = {}
+_JOB_MIRROR_FIELDS = ("stage", "progress", "step", "model", "total_bytes")
+
+
 def _progress_set(pid: "str | None", **fields) -> None:
     """Merge `fields` into the progress entry for `pid` (no-op without one)."""
     if not pid:
         return
+    _job_id = _JOB_BY_PID.get(pid)
+    if _job_id:
+        jobs.job_update(_job_id,
+                        **{k: fields[k] for k in _JOB_MIRROR_FIELDS
+                           if fields.get(k) is not None})
     entry = _BATCH_PROGRESS.get(pid)
     if entry is None:
         now = time.monotonic()
@@ -2938,6 +2956,13 @@ async def transcribe(
     request_id = uuid.uuid4().hex
     _user_id = user.get("user_id")
     _key_id = user.get("key_id")
+    # Central running-jobs registry: one entry per in-flight request; stage/
+    # progress mirror in via _progress_set (bound through _JOB_BY_PID) when
+    # the client opted into progress reporting.
+    jobs.job_start("transcribe", id=request_id, model=resolved_model,
+                   user=_user_id, key=_key_id)
+    if _pid:
+        _JOB_BY_PID[_pid] = request_id
     try:
         # Upload ceiling. Content-Length is advisory (absent on chunked
         # bodies), so it only buys us an early exit before the model load —
@@ -4110,6 +4135,9 @@ async def transcribe(
         raise
     finally:
         metrics.in_flight_transcriptions -= 1
+        if _pid:
+            _JOB_BY_PID.pop(_pid, None)
+        jobs.job_end(request_id)
         metrics.record_transcription(
             model=resolved_model,
             audio_dur=_audio_dur,
@@ -4369,6 +4397,13 @@ async def translate_text(request: Request,
     # infer on the completion line when the model was cold.
     _hb = {"last_log": _t0, "last_pct": 0, "first_cb": None}
     _was_loaded = _tr_model in _tr._models
+    # Central running-jobs registry entry. Progress feeds in directly from
+    # _on_progress below (works whether or not the client sent a progress_id).
+    jobs.job_start("translate", id=request_id, model=(_tr_model or None),
+                   user=(_uid or None), key=user.get("key_id"),
+                   detail=f"{len(seg_in)} segs → {','.join(targets)}",
+                   )
+    jobs.job_update(request_id, stage="translating")
 
     def _on_progress(f, step=None, last_text=None):
         now = time.perf_counter()
@@ -4382,6 +4417,7 @@ async def translate_text(request: Request,
             _hb["last_pct"] = pct
             logger.info("[translate] req=%s %s %d%%",
                         request_id[:8], step or "translating", pct)
+        jobs.job_update(request_id, progress=f, step=step)
         fields = {"progress": f, "step": step}
         if last_text:
             fields["last_text"] = last_text
@@ -4434,6 +4470,7 @@ async def translate_text(request: Request,
                      _log_safe(str(e)))
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
+        jobs.job_end(request_id)
         if _pid:
             _BATCH_PROGRESS.pop(_pid, None)
             _BATCH_CANCELLED.discard(_pid)

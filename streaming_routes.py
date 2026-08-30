@@ -50,6 +50,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 import auth
 import config_store
 import effective_config
+import jobs
 import metrics
 import store_common
 import web_common
@@ -361,6 +362,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
     session_id = uuid.uuid4().hex
     _active_sessions.add(session_id)
     metrics.in_flight_transcriptions += 1
+    # Central running-jobs registry: one "dictate" entry per live session
+    # (no progress — a dictation has no defined end until the client stops).
+    jobs.job_start("dictate", id=session_id,
+                   user=user.get("user_id"), key=user.get("key_id"))
     session: "StreamSession | None" = None
     transport = None
     consumer_task: "asyncio.Task | None" = None
@@ -1200,6 +1205,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # nothing the teardown below needs.
         metrics.in_flight_transcriptions -= 1
         _active_sessions.discard(session_id)
+        jobs.job_end(session_id)
         # Idempotent backstop so every exit path (normal, disconnect, error)
         # converges here and the ffmpeg subprocess + stdout-reader task are
         # always torn down. On the normal path the inner `finally` already

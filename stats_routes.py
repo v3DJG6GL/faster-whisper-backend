@@ -28,6 +28,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 import config as cfg
+import jobs
 import metrics
 import system_stats
 import web_common
@@ -75,13 +76,38 @@ def _require_stats_page_sse(request: Request) -> dict[str, Any]:
     return rec
 
 
-def _build_payload() -> dict[str, Any]:
-    """Combine request metrics + system snapshot into one payload."""
-    return {
+def _build_payload(*, lite: bool = False,
+                   include_identity: bool = False) -> dict[str, Any]:
+    """Combine request metrics + system snapshot into one payload.
+
+    `lite=True` is the header activity cluster's diet: ts, running jobs,
+    gpu, host, loaded models, in-flight count and severity — skipping
+    metrics_snapshot() and with it the recent-transcriptions SQLite query
+    (the cluster polls/streams from EVERY WebUI page, so the full payload
+    would multiply that query by the open-tab count).
+
+    `include_identity` gates the job rows' user/key/detail fields — admin
+    viewers only (jobs.jobs_snapshot scrubs them otherwise)."""
+    sysnap = system_stats.system_snapshot()
+    base = {
         "ts": time.time(),
-        **metrics.metrics_snapshot(),
-        **system_stats.system_snapshot(),
+        "jobs": jobs.jobs_snapshot(include_identity=include_identity),
         "severity": web_common.severity_counts(),
+    }
+    if lite:
+        host = sysnap.get("host") or {}
+        return {
+            **base,
+            "gpu": sysnap.get("gpu"),
+            "host": {k: host.get(k) for k in
+                     ("cpu_pct", "ram_used_mb", "ram_total_mb", "ram_pct")},
+            "models": sysnap.get("models"),
+            "in_flight_transcriptions": metrics.in_flight_transcriptions,
+        }
+    return {
+        **base,
+        **metrics.metrics_snapshot(),
+        **sysnap,
     }
 
 
@@ -108,14 +134,16 @@ async def stats_page() -> HTMLResponse:
 
 @router.get(
     "/stats/snapshot",
-    dependencies=[
-        Depends(_require_stats_host),
-        Depends(require_page("stats")),
-    ],
+    dependencies=[Depends(_require_stats_host)],
 )
-async def stats_snapshot() -> dict[str, Any]:
-    """One-shot JSON. Useful for scripts and for the page's initial render."""
-    return _build_payload()
+async def stats_snapshot(
+    lite: int = 0,
+    user: dict[str, Any] = Depends(require_page("stats")),
+) -> dict[str, Any]:
+    """One-shot JSON. Useful for scripts and for the page's initial render.
+    `?lite=1` returns the header activity cluster's diet payload."""
+    return _build_payload(lite=bool(lite),
+                          include_identity=bool(user.get("is_admin")))
 
 
 @router.get(
@@ -246,18 +274,22 @@ async def stats_usage(
 
 @router.get(
     "/stats/stream",
-    dependencies=[
-        Depends(_require_stats_host),
-        Depends(_require_stats_page_sse),
-    ],
+    dependencies=[Depends(_require_stats_host)],
 )
-async def stats_stream() -> StreamingResponse:
+async def stats_stream(
+    lite: int = 0,
+    user: dict[str, Any] = Depends(_require_stats_page_sse),
+) -> StreamingResponse:
     """1 Hz SSE stream of the snapshot payload. The 1-second data cadence
     already counts as traffic for idle-proxy timeout purposes — no separate
-    keepalive frame needed."""
+    keepalive frame needed. `?lite=1` streams the activity-cluster diet
+    payload (see _build_payload)."""
+    _lite = bool(lite)
+    _admin = bool(user.get("is_admin"))
+
     async def gen():
         while True:
-            payload = _build_payload()
+            payload = _build_payload(lite=_lite, include_identity=_admin)
             yield f"data: {json.dumps(payload)}\n\n"
             await asyncio.sleep(1.0)
 

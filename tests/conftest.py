@@ -88,6 +88,13 @@ def _reset_singletons():
     # api-key debounce cache (the index/lockdown are rebuilt by init_db)
     api_keys_store._LAST_USED_CACHE.clear()
 
+    # central running-jobs registry
+    try:
+        import jobs
+        jobs._reset_for_tests()
+    except Exception:
+        pass
+
     # session-store caches (the index is rebuilt by init_db)
     try:
         import sessions_store
@@ -119,6 +126,10 @@ def _reset_singletons():
     if _main is not None:
         try:
             _main._text_translate_rate.clear()
+        except Exception:
+            pass
+        try:
+            _main._JOB_BY_PID.clear()
         except Exception:
             pass
 
