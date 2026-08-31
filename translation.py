@@ -133,6 +133,20 @@ def list_languages(family: str) -> "list[str]":
     return ["en"] + codes
 
 
+# Chinese language names for HY-MT's official contextual template (the
+# instruction that carries them is Chinese — see _build_hunyuan). Keys are
+# lowercase base codes; anything absent falls back to the English name.
+_ZH_LANG_NAMES: "dict[str, str]" = {
+    "en": "英语", "de": "德语", "fr": "法语", "es": "西班牙语",
+    "it": "意大利语", "pt": "葡萄牙语", "ru": "俄语", "ja": "日语",
+    "ko": "韩语", "zh": "中文", "nl": "荷兰语", "pl": "波兰语",
+    "tr": "土耳其语", "ar": "阿拉伯语", "cs": "捷克语", "sv": "瑞典语",
+    "da": "丹麦语", "fi": "芬兰语", "no": "挪威语", "uk": "乌克兰语",
+    "ro": "罗马尼亚语", "hu": "匈牙利语", "el": "希腊语", "hi": "印地语",
+    "th": "泰语", "vi": "越南语", "id": "印尼语",
+}
+
+
 def _glossary_pairs(glossary: str) -> "list[tuple[str, str]]":
     """Parse "source = target" lines (one pair per line; malformed lines are
     skipped)."""
@@ -146,18 +160,37 @@ def _glossary_pairs(glossary: str) -> "list[tuple[str, str]]":
 
 def _build_hunyuan(text, source_code, source_name, target_code, target_name,
                    context, glossary):
-    parts: "list[str]" = []
+    if context:
+        # Tencent's official HY-MT1.5 contextual template — documented ONLY
+        # with a Chinese instruction, used verbatim because that is what the
+        # model was tuned on. The 注意不需要翻译上文 clause ("do not translate
+        # the preceding text") is load-bearing: without it the model
+        # translates context + payload together (context echo).
+        parts: "list[str]" = []
+        pairs = _glossary_pairs(glossary)
+        if pairs:
+            # Official terminology-intervention style, placed FIRST.
+            parts.append("参考下面的翻译：")
+            for src, tgt in pairs:
+                parts.append(f"{src} 翻译成 {tgt}")
+            parts.append("")
+        parts.append(context)
+        base = (target_code or "").strip().lower().split("-")[0]
+        # Fallback: the English target name — the mixed-language instruction
+        # still works for targets outside the mapped set.
+        zh_target = _ZH_LANG_NAMES.get(base) or target_name
+        parts.append(
+            f"参考上面的信息，把下面的文本翻译成{zh_target}，"
+            f"注意不需要翻译上文，也不要额外解释：")
+        parts.append(text)
+        return [{"role": "user", "content": "\n".join(parts)}]
+    # No context: the official English XX<=>XX prompt.
+    parts = []
     for src, tgt in _glossary_pairs(glossary):
         parts.append(f"with reference to: {src} -> {tgt}")
-    if context:
-        parts.append(context)
-        parts.append(
-            f"referring to the information above, translate the following "
-            f"text into {target_name}: {text}")
-    else:
-        parts.append(
-            f"Translate the following segment into {target_name}, "
-            f"without additional explanation.\n\n{text}")
+    parts.append(
+        f"Translate the following segment into {target_name}, "
+        f"without additional explanation.\n\n{text}")
     return [{"role": "user", "content": "\n".join(parts)}]
 
 
@@ -785,7 +818,10 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
         prompt = fam.build(
             text, source_code, _lang_name(source_code), target_code,
             _lang_name(target_code), context, glossary)
-    max_tokens = len(text) // 2 + 256
+    # Context counts toward the budget: a context-echoing model (the guard
+    # catches it) must not ALSO be truncated mid-sentence into a secondary
+    # guard failure.
+    max_tokens = (len(text) + len(context or "")) // 2 + 256
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         None, _complete, llm, family, prompt, max_tokens)
@@ -897,21 +933,32 @@ async def translate_segments(
             await _model(), family, text, source_code, target, context,
             glossary, template_override=template_override)
 
+    # Greedy (temperature-0) families are deterministic: re-sending an
+    # identical prompt is a guaranteed no-op, so their retry only makes sense
+    # when dropping the context actually changes the prompt. Sampled families
+    # (hunyuan, temp 0.7) get a meaningful re-roll either way.
+    greedy = not _FAMILIES[family].sampling.get("temperature")
+
     async def _guarded_single(text: str, target: str, context: str,
                               seg_no: int) -> str:
-        """One translation + guard; on failure ONE retry alone, then keep the
-        original text + a warning."""
+        """One translation + guard; on failure ONE retry WITHOUT context
+        (context echo is the dominant failure mode — a context-free prompt is
+        the highest-value second attempt), then keep the original text + a
+        warning. Greedy families skip the retry when the first attempt
+        already had no context (identical prompt at temperature 0 =
+        guaranteed same output)."""
         nonlocal last_ok
         out = await _translate_one(text, target, context)
         reason = _guard_reason(text, out, target=target)
         if reason is None:
             last_ok = out
             return out
-        out = await _translate_one(text, target, context)
-        reason = _guard_reason(text, out, target=target)
-        if reason is None:
-            last_ok = out
-            return out
+        if context or not greedy:
+            out = await _translate_one(text, target, "")
+            reason = _guard_reason(text, out, target=target)
+            if reason is None:
+                last_ok = out
+                return out
         warnings.append(
             f"segment {seg_no}: kept original — translation failed ({reason})")
         return text
@@ -959,11 +1006,12 @@ async def translate_segments(
                             results[j][target] = out
                             last_ok = out
                         else:
-                            # ONE retry of that segment alone, else keep
-                            # original + warning.
-                            retried = await _translate_one(
-                                src, target,
-                                _context_lines(segments, j, ctx_n))
+                            # ONE retry of that segment alone WITHOUT context
+                            # (context echo is the dominant failure mode; the
+                            # standalone prompt already differs from the
+                            # batched one, so the retry is never a no-op),
+                            # else keep original + warning.
+                            retried = await _translate_one(src, target, "")
                             reason = _guard_reason(src, retried, target=target)
                             if reason is None:
                                 results[j][target] = retried
@@ -988,8 +1036,12 @@ async def translate_segments(
                 context = _context_lines(segments, group[0], ctx_n)
                 translated = await _translate_one(joined, target, context)
                 reason = _guard_reason(joined, translated, target=target)
-                if reason is not None:
-                    translated = await _translate_one(joined, target, context)
+                if reason is not None and (context or not greedy):
+                    # ONE retry WITHOUT context (see _guarded_single); greedy
+                    # families skip it when the first attempt already had no
+                    # context — an identical prompt at temperature 0 cannot
+                    # produce a different output.
+                    translated = await _translate_one(joined, target, "")
                     reason = _guard_reason(joined, translated, target=target)
                 if reason is not None:
                     for j in group:

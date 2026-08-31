@@ -99,13 +99,34 @@ def test_gemma_structured_turn_ignores_context_and_glossary():
 
 
 def test_hunyuan_prompt_plain_context_and_glossary():
+    # No-context branch: the official English XX<=>XX prompt, unchanged.
     plain = _build("hunyuan", "Hallo")[0]["content"]
     assert plain == ("Translate the following segment into English, "
                      "without additional explanation.\n\nHallo")
+    # Contextual branch: Tencent's official Chinese-instruction template —
+    # context above the instruction, the explicit "do not translate the
+    # preceding text" clause, payload on its own line after the fullwidth
+    # colon.
     with_ctx = _build("hunyuan", "Hallo", context="A: Guten Tag")[0]["content"]
-    assert "A: Guten Tag" in with_ctx
-    assert ("referring to the information above, translate the following "
-            "text into English: Hallo") in with_ctx
+    assert with_ctx == (
+        "A: Guten Tag\n"
+        "参考上面的信息，把下面的文本翻译成英语，"
+        "注意不需要翻译上文，也不要额外解释：\n"
+        "Hallo")
+    assert with_ctx.index("A: Guten Tag") < with_ctx.index("参考上面的信息")
+    # Glossary (official terminology-intervention style) comes FIRST in the
+    # contextual template; malformed lines are skipped.
+    both = _build("hunyuan", "Hallo", context="A: Guten Tag",
+                  glossary="Herz = heart\nbogus line")[0]["content"]
+    assert both.startswith(
+        "参考下面的翻译：\nHerz 翻译成 heart\n\nA: Guten Tag\n")
+    assert "bogus" not in both
+    # Unknown target code: falls back to the English name (mixed-language
+    # instruction still works).
+    fallback = _build("hunyuan", "Hallo", target="rm",
+                      context="A: Guten Tag")[0]["content"]
+    assert "把下面的文本翻译成Rm，" in fallback
+    # No-context glossary stays in the English prompt style, as today.
     with_gl = _build("hunyuan", "Hallo",
                      glossary="Herz = heart\nbogus line")[0]["content"]
     assert with_gl.startswith("with reference to: Herz -> heart\n")
@@ -376,10 +397,71 @@ def test_guards_keep_original_after_one_retry(base_cfg, monkeypatch,
     res, warns, _ = _run(translation.translate_segments(
         _segs(src), ["en"], source_lang="de", mode="faithful"))
     assert res == [{"en": src}]                          # original kept
-    assert len(calls) == 2                               # initial + ONE retry
+    # Greedy family (chatml) + no context on the first attempt: the retry
+    # would re-send a bit-identical prompt at temperature 0 — skipped.
+    assert len(calls) == 1
     assert len(warns) == 1
     assert "segment 1: kept original" in warns[0]
     assert reason in warns[0]
+
+
+def _install_hunyuan_model(monkeypatch):
+    monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL",
+                        "tencent/HY-MT1.5-7B-GGUF:Q4", raising=False)
+
+    async def fake_get_model(ref, *, lease=False):
+        return "STUB-LLM"
+    monkeypatch.setattr(translation, "_get_model", fake_get_model)
+
+
+def test_retry_drops_context(base_cfg, monkeypatch):
+    """A guard failure retries WITHOUT context: first attempt carries the
+    context lines, the retry prompt does not (context echo is the dominant
+    failure mode). max_tokens is sized for the context on the first attempt."""
+    monkeypatch.setattr(cfg, "TRANSLATION_CONTEXT_SEGMENTS", 1, raising=False)
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
+    _install_hunyuan_model(monkeypatch)
+    prompts = []
+
+    def fake(llm, family, msgs, max_tokens):
+        content = msgs[0]["content"]
+        prompts.append((content, max_tokens))
+        if "参考上面的信息" in content:
+            return "x" * 400          # simulated context echo → ratio guard
+        return "A GOOD ENOUGH TRANSLATION HERE"
+    monkeypatch.setattr(translation, "_complete", fake)
+
+    segs = _segs("Hallo Welt du schoene.", "Wie geht es dir denn heute?")
+    res, warns, _ = _run(translation.translate_segments(
+        segs, ["en"], source_lang="de", mode="faithful"))
+    assert warns == []
+    assert res[1]["en"] == "A GOOD ENOUGH TRANSLATION HERE"
+    # seg 1 (no context) + seg 2 first attempt (context) + seg 2 retry.
+    assert len(prompts) == 3
+    assert "Hallo Welt du schoene." in prompts[1][0]     # context present
+    assert "参考上面的信息" in prompts[1][0]
+    assert "Hallo Welt" not in prompts[2][0]             # retry: context-free
+    assert "参考上面的信息" not in prompts[2][0]
+    assert prompts[1][1] > prompts[2][1]                 # max_tokens saw ctx
+
+
+def test_hunyuan_no_context_still_rerolls(base_cfg, monkeypatch):
+    """Sampled family (hunyuan, temp 0.7): even a context-free first attempt
+    gets ONE re-roll before keeping the original."""
+    _install_hunyuan_model(monkeypatch)
+    calls = []
+
+    def fake(llm, family, msgs, max_tokens):
+        calls.append(msgs[0]["content"])
+        return ""                     # empty output → guard fails every time
+    monkeypatch.setattr(translation, "_complete", fake)
+
+    res, warns, _ = _run(translation.translate_segments(
+        _segs("Hallo Welt"), ["en"], source_lang="de", mode="faithful"))
+    assert res == [{"en": "Hallo Welt"}]
+    assert len(calls) == 2                               # initial + ONE retry
+    assert calls[0] == calls[1]      # same (context-free) prompt, re-rolled
+    assert len(warns) == 1 and "kept original" in warns[0]
 
 
 def test_batch_guard_failure_retries_that_segment_alone(base_cfg, monkeypatch):
