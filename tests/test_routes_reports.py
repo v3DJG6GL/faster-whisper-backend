@@ -29,13 +29,36 @@ def test_submit_unknown_field_422(client):
     assert r.status_code == 422
 
 
-def test_submit_rate_limit_429(client):
-    # 20/600s per user (open-mode user_id is a single sentinel key). The 21st
-    # submit in the window trips the limiter.
+def test_submit_rate_limit_429(client, app_module):
+    # REPORTS_SUBMIT_RATE_PER_10MIN per identity (in open mode every request
+    # is the one synthetic admin). The submit past the limit trips it.
+    limit = int(app_module.cfg.REPORTS_SUBMIT_RATE_PER_10MIN)
     last = None
-    for i in range(21):
+    for i in range(limit + 1):
         last = client.post(_SUBMIT, json=_payload(request_id=f"req-{i}"))
     assert last.status_code == 429
+    assert int(last.headers["Retry-After"]) >= 1
+    body = last.json()
+    assert body["error"]["type"] == "rate_limit_exceeded"
+    assert body["error"]["param"] == "REPORTS_SUBMIT_RATE_PER_10MIN"
+    assert body["detail"] == body["error"]["message"]
+
+
+def test_submit_rate_limit_is_per_user(client, app_module, make_user_key):
+    """The loopback `client` fixture is OPEN MODE — one synthetic admin, one
+    bucket. Real keys are what prove the limit is keyed per identity."""
+    _uid_a, key_a = make_user_key("alice", is_admin=True)
+    _uid_b, key_b = make_user_key("bob", is_admin=True)
+    limit = int(app_module.cfg.REPORTS_SUBMIT_RATE_PER_10MIN)
+
+    for i in range(limit):
+        r = client.post(_SUBMIT, json=_payload(request_id=f"a-{i}"),
+                        headers=bearer(key_a))
+        assert r.status_code == 200
+    assert client.post(_SUBMIT, json=_payload(request_id="a-over"),
+                       headers=bearer(key_a)).status_code == 429
+    assert client.post(_SUBMIT, json=_payload(request_id="b-1"),
+                       headers=bearer(key_b)).status_code == 200
 
 
 def test_reports_page(client):

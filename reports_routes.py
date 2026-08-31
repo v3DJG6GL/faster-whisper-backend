@@ -25,15 +25,13 @@ at /quick-config for single-word fixes; the captures-side merge-proposal
 + batch-review flow at /captures handles bulk corrections on stored
 training data.
 
-Per-user rate limit on submission: in-memory fixed-window counter
-keyed on the resolved user_id from the API key, falling back to
-request.client.host when no user_id is present.
+Per-identity rate limit on submission: the shared rate_limit.FixedWindow,
+keyed on user_id, else the API key id, else request.client.host.
 """
 from __future__ import annotations
 
 import asyncio
 import json
-import time
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -43,6 +41,7 @@ from pydantic import BaseModel, Field
 
 import api_keys_store
 import config as cfg
+import rate_limit
 import reports_store
 import web_common
 from web_common import require_user_webui_host
@@ -101,31 +100,20 @@ class ReportSubmitIn(BaseModel):
 
 
 # ---------------------------------------------------------------------
-# Rate limit (per reporter — keyed on user_id, or host fallback)
+# Rate limit (per reporter — identity, with a host fallback)
 # ---------------------------------------------------------------------
-# Fixed-window counter, reset on roll. ~15 LOC, no third-party dep. The
-# threat model is "accidental double-click / runaway script", not a
+# The threat model is "accidental double-click / runaway script", not a
 # motivated attacker — for that the LAN box is already locked down by
-# require_user_webui_host.
+# require_user_webui_host. Each accepted submission writes a durable row and
+# runs an eviction sweep, so the window is long (10 min) and the budget small.
 
-_RATE_WINDOW_S = 600.0
-_RATE_MAX = 20
-_rate: dict[str, tuple[int, float]] = {}
-
-
-def _check_rate_limit(key: str) -> None:
-    key = key or "<unknown>"
-    now = time.time()
-    n, start = _rate.get(key, (0, now))
-    if now - start > _RATE_WINDOW_S:
-        n, start = 0, now
-    n += 1
-    _rate[key] = (n, start)
-    if n > _RATE_MAX:
-        raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            "Too many reports. Try again in a few minutes.",
-        )
+_rate = rate_limit.FixedWindow(
+    config_field="REPORTS_SUBMIT_RATE_PER_10MIN",
+    window_s=600.0,
+    default_max=20,
+    message="Too many reports ({limit} per 10 minutes). Try again in "
+            "{retry_after}s.",
+)
 
 
 # ---------------------------------------------------------------------
@@ -151,10 +139,7 @@ async def submit_report(
             "Report submission is disabled by the admin.",
         )
 
-    rate_key = user.get("user_id") or (
-        request.client.host if request.client else ""
-    )
-    _check_rate_limit(rate_key)
+    _rate.hit(rate_limit.identity_key(user, request))
 
     intended = (payload.intended_text or "").strip()
     comment = (payload.user_comment or "").strip()

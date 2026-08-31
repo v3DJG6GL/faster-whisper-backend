@@ -4334,25 +4334,26 @@ async def translate_audio(
 
 # ── Text-to-text translation (translate an existing transcript) ─────────────
 
-# Per-host fixed window: every accepted request is real llama.cpp inference
-# (possibly minutes of it), so a retry-happy client must not queue unbounded
-# work. Same shape as _check_url_preview_rate below.
-_TEXT_TRANSLATE_RATE_WINDOW_S = 60.0
-_TEXT_TRANSLATE_RATE_MAX = 20
-_text_translate_rate: "dict[str, tuple[int, float]]" = {}
-
-
-def _check_text_translate_rate(host: str) -> None:
-    key = host or "<unknown>"
-    now = time.time()
-    n, start = _text_translate_rate.get(key, (0, now))
-    if now - start > _TEXT_TRANSLATE_RATE_WINDOW_S:
-        n, start = 0, now
-    n += 1
-    _text_translate_rate[key] = (n, start)
-    if n > _TEXT_TRANSLATE_RATE_MAX:
-        raise HTTPException(status_code=429,
-                            detail="too many translation requests — slow down")
+# Every accepted request is real llama.cpp inference, possibly minutes of it,
+# so the meaningful limit is CONCURRENCY, not rate: what hurts is one client
+# holding the model while everyone else waits, and a per-minute counter cannot
+# express that (a single request can outlive its own window). The in-flight
+# gauge is the protection; the window below is only a backstop against a
+# runaway loop that never reaches the gauge because each attempt fails
+# validation first.
+_translate_inflight = _rl.InFlight(
+    config_field="TRANSLATE_MAX_INFLIGHT_PER_USER",
+    default_max=2,
+    message="you already have {limit} translations running — "
+            "wait for one to finish",
+)
+_text_translate_rate = _rl.FixedWindow(
+    config_field="TRANSLATE_RATE_PER_MIN",
+    window_s=60.0,
+    default_max=120,
+    message="too many translation requests — slow down "
+            "({limit}/min; retry in {retry_after}s)",
+)
 
 
 # Request-shape ceilings: entry count and total characters. The 4 MiB JSON
@@ -4397,7 +4398,11 @@ async def translate_text(request: Request,
     if not getattr(cfg, "TRANSLATION_ENABLED", False):
         raise HTTPException(status_code=403,
                             detail="translation is disabled on this server")
-    _check_text_translate_rate(request.client.host if request.client else "")
+    # Cheap and early: the per-minute backstop costs one dict lookup and needs
+    # nothing parsed. The in-flight slot is taken much later, right before the
+    # work starts — see below.
+    _inflight_key = _rl.identity_key(user, request)
+    _text_translate_rate.hit(_inflight_key)
     # Canonical job id — stamped on every log line of this run (req=<id8>)
     # so a multi-minute translation can be followed through the log.
     request_id = uuid.uuid4().hex
@@ -4539,63 +4544,73 @@ async def translate_text(request: Request,
     # infer on the completion line when the model was cold.
     _hb = {"last_log": _t0, "last_pct": 0, "first_cb": None}
     _was_loaded = _tr_model in _tr._models
-    # Central running-jobs registry entry. Progress feeds in directly from
-    # _on_progress below (works whether or not the client sent a progress_id).
-    jobs.job_start("translate", id=request_id, model=(_tr_model or None),
-                   user=(_uid or None), key=user.get("key_id"),
-                   detail=f"{len(seg_in)} segs → {','.join(targets)}",
-                   )
-    jobs.job_update(request_id, stage="translating", progress_id=_pid)
-
-    def _on_progress(f, step=None, last_text=None):
-        now = time.perf_counter()
-        if _hb["first_cb"] is None:
-            _hb["first_cb"] = now
-        pct = int(max(0.0, min(1.0, f or 0.0)) * 100)
-        # Log on every crossed 10% boundary, and at least every 30 s.
-        if (now - _hb["last_log"] >= 30.0
-                or pct // 10 > _hb["last_pct"] // 10):
-            _hb["last_log"] = now
-            _hb["last_pct"] = pct
-            logger.info("[translate] req=%s %s %d%%",
-                        request_id[:8], step or "translating", pct)
-        # stage is re-asserted on every tick so the first real batch flips
-        # a "downloading" entry (cold model fetch) back to "translating".
-        jobs.job_update(request_id, stage="translating", progress=f,
-                        step=step)
-        fields = {"stage": "translating", "progress": f, "step": step}
-        if last_text:
-            fields["last_text"] = last_text
-        _progress_set(_pid, **fields)
-
-    def _on_download(done, total):
-        frac = (done / total) if total else None
-        jobs.job_update(request_id, stage="downloading", progress=frac,
-                        total_bytes=total or None)
-        _progress_set(_pid, stage="downloading", progress=frac,
-                      total_bytes=total or None)
-
-    def _record_run(status: str) -> None:
-        """Persist this run as a recent-jobs row (kind='translate') on every
-        terminal path. No audio duration; segment count lives in the stage
-        detail (words_count=0 — a segment count is not a word count)."""
-        secs = round(time.perf_counter() - _t0, 3)
-        metrics.record_transcription(
-            model=(_tr_model or ""),
-            audio_dur=0.0,
-            proc_dur=secs,
-            status=status,
-            words=0,
-            request_id=request_id,
-            user_id=(_uid or None),
-            key_id=user.get("key_id"),
-            kind="translate",
-            stages=[{"name": "translate", "secs": secs,
-                     "model": (_tr_model or None),
-                     "detail": f"{len(seg_in)} segs → {','.join(targets)}"}],
-        )
-
+    # Take the in-flight slot HERE rather than next to the rate check at
+    # the top: a dozen `raise HTTPException` validation exits sit between
+    # the two, and each one would have to remember to release a slot it
+    # never actually used. From this line to the finally there is exactly
+    # one path out.
+    _translate_inflight.acquire(_inflight_key)
+    # Set only AFTER a successful acquire — the acquire itself sits
+    # outside the try, so a refused request never releases a slot it does
+    # not hold.
+    _inflight_held: "str | None" = _inflight_key
     try:
+        # Central running-jobs registry entry. Progress feeds in directly from
+        # _on_progress below (works whether or not the client sent a progress_id).
+        jobs.job_start("translate", id=request_id, model=(_tr_model or None),
+                       user=(_uid or None), key=user.get("key_id"),
+                       detail=f"{len(seg_in)} segs → {','.join(targets)}",
+                       )
+        jobs.job_update(request_id, stage="translating", progress_id=_pid)
+
+        def _on_progress(f, step=None, last_text=None):
+            now = time.perf_counter()
+            if _hb["first_cb"] is None:
+                _hb["first_cb"] = now
+            pct = int(max(0.0, min(1.0, f or 0.0)) * 100)
+            # Log on every crossed 10% boundary, and at least every 30 s.
+            if (now - _hb["last_log"] >= 30.0
+                    or pct // 10 > _hb["last_pct"] // 10):
+                _hb["last_log"] = now
+                _hb["last_pct"] = pct
+                logger.info("[translate] req=%s %s %d%%",
+                            request_id[:8], step or "translating", pct)
+            # stage is re-asserted on every tick so the first real batch flips
+            # a "downloading" entry (cold model fetch) back to "translating".
+            jobs.job_update(request_id, stage="translating", progress=f,
+                            step=step)
+            fields = {"stage": "translating", "progress": f, "step": step}
+            if last_text:
+                fields["last_text"] = last_text
+            _progress_set(_pid, **fields)
+
+        def _on_download(done, total):
+            frac = (done / total) if total else None
+            jobs.job_update(request_id, stage="downloading", progress=frac,
+                            total_bytes=total or None)
+            _progress_set(_pid, stage="downloading", progress=frac,
+                          total_bytes=total or None)
+
+        def _record_run(status: str) -> None:
+            """Persist this run as a recent-jobs row (kind='translate') on every
+            terminal path. No audio duration; segment count lives in the stage
+            detail (words_count=0 — a segment count is not a word count)."""
+            secs = round(time.perf_counter() - _t0, 3)
+            metrics.record_transcription(
+                model=(_tr_model or ""),
+                audio_dur=0.0,
+                proc_dur=secs,
+                status=status,
+                words=0,
+                request_id=request_id,
+                user_id=(_uid or None),
+                key_id=user.get("key_id"),
+                kind="translate",
+                stages=[{"name": "translate", "secs": secs,
+                         "model": (_tr_model or None),
+                         "detail": f"{len(seg_in)} segs → {','.join(targets)}"}],
+            )
+
         _progress_set(_pid, stage="translating", progress=0.0,
                       model=(_tr_model or None),
                       device=_tr._resolve_device(), compute="gguf")
@@ -4646,6 +4661,17 @@ async def translate_text(request: Request,
         _record_run("failed")
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
+        # Release FIRST — before any await and before job_end. A client
+        # disconnect raises CancelledError, which is a BaseException, so every
+        # `except Exception` arm above is skipped and only `finally` runs; a
+        # release sitting after an await in here would in turn be skipped if
+        # the cancellation landed on that await. That is exactly the bug class
+        # documented at streaming_routes.py:1200-1207, where it permanently
+        # burned one of STREAMING_MAX_SESSIONS. Nullable local: only a
+        # successful acquire sets it, so a refused request releases nothing.
+        if _inflight_held is not None:
+            _translate_inflight.release(_inflight_held)
+            _inflight_held = None
         jobs.job_end(request_id)
         if _pid:
             _BATCH_PROGRESS.pop(_pid, None)
@@ -4749,25 +4775,19 @@ async def transcription_cancel(progress_id: str):
 
 # ── Transcribe-from-URL: preview + retained-media endpoints ─────────────────
 
-# Per-host window for the metadata probe: each preview is a real outbound
+# Per-identity window for the metadata probe: each preview is a real outbound
 # fetch to the linked site, so a keystroke-happy client must not turn the
-# server into a probe cannon. Same shape as captures' _check_audio_rate.
-_URL_PREVIEW_RATE_WINDOW_S = 60.0
-_URL_PREVIEW_RATE_MAX = 10
-_url_preview_rate: "dict[str, tuple[int, float]]" = {}
-
-
-def _check_url_preview_rate(host: str) -> None:
-    key = host or "<unknown>"
-    now = time.time()
-    n, start = _url_preview_rate.get(key, (0, now))
-    if now - start > _URL_PREVIEW_RATE_WINDOW_S:
-        n, start = 0, now
-    n += 1
-    _url_preview_rate[key] = (n, start)
-    if n > _URL_PREVIEW_RATE_MAX:
-        raise HTTPException(status_code=429,
-                            detail="too many link previews — slow down")
+# server into a probe cannon. This is the only endpoint in the tree whose
+# limit protects a THIRD PARTY — the server is the abuse vector and the victim
+# is somebody else's infrastructure, which is why the default is far tighter
+# than anything else here.
+_url_preview_rate = _rl.FixedWindow(
+    config_field="URL_PREVIEW_RATE_PER_MIN",
+    window_s=60.0,
+    default_max=10,
+    message="too many link previews — slow down "
+            "({limit}/min; retry in {retry_after}s)",
+)
 
 
 def _url_host_for_log(url: str) -> str:
@@ -4791,7 +4811,7 @@ async def url_preview(request: Request,
     if not getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
         raise HTTPException(status_code=403,
                             detail="URL download is not enabled on this server")
-    _check_url_preview_rate(request.client.host if request.client else "")
+    _url_preview_rate.hit(_rl.identity_key(user, request))
     import url_download as _udl
     try:
         body = await request.json()
@@ -5707,6 +5727,19 @@ async def whoami(
     return _JSONResponse(out, headers={"Cache-Control": "no-store"})
 
 
+# Keyed by client HOST, not identity: a login attempt has no identity yet, and
+# the key it presents is exactly what must not be trusted. Only FAILURES are
+# counted and a success clears the window, so an operator fat-fingering one
+# paste never walks toward a lockout.
+_login_failures = _rl.FixedWindow(
+    config_field="LOGIN_FAILURE_RATE",
+    window_s=60.0,
+    default_max=10,
+    message="too many failed sign-ins ({limit}/min) — "
+            "retry in {retry_after}s",
+)
+
+
 @app.post("/auth/login")
 async def login(request: Request, response: Response):
     """Exchange a pasted API key for an HttpOnly session cookie.
@@ -5721,6 +5754,11 @@ async def login(request: Request, response: Response):
     import sessions_store
     if not _ak.is_locked_down():
         return {"open_mode": True}
+    # Below the open-mode short-circuit on purpose: open mode checks no
+    # credential, so there is nothing to throttle, and locking an operator out
+    # of an already-unlocked box would be absurd.
+    host = request.client.host if request.client else ""
+    _login_failures.guard(host)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001 — malformed/empty body → treat as no key
@@ -5728,9 +5766,18 @@ async def login(request: Request, response: Response):
     key = body.get("key") if isinstance(body, dict) else None
     rec = _ak.lookup_by_raw_key(key or "")
     if rec is None:
+        # NEVER log the attempted key — it is a credential, right or wrong.
+        if _login_failures.penalize(host):
+            logger.info(
+                "[auth] login failure limit (LOGIN_FAILURE_RATE=%d) reached "
+                "for host %s", _login_failures.limit(), _log_safe(host))
         raise HTTPException(
             401, "invalid API key", headers={"WWW-Authenticate": "Bearer"},
         )
+    # Clear BEFORE create_session: a session-store failure below is the
+    # server's problem, and must not leave the host carrying penalties for a
+    # credential that was in fact correct.
+    _login_failures.reset(host)
     raw_token, csrf_token = sessions_store.create_session(
         rec["user_id"], cfg.SESSION_TTL_SECONDS, key_id=rec.get("key_id"),
     )

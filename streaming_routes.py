@@ -52,6 +52,7 @@ import config_store
 import effective_config
 import jobs
 import metrics
+import rate_limit
 import store_common
 import web_common
 from streaming_session import StreamConfig, StreamSession
@@ -97,6 +98,16 @@ def _write_pcm16_wav(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
 
 # Active sessions, for the /stats gauge and the max-session cap (phase D).
 _active_sessions: set[str] = set()
+
+# Per-identity slice of that cap. Modelled as an InFlight rather than a second
+# hand-rolled dict so it inherits the shared 0 = unlimited path, the typed
+# refusal and — the one that matters here — reset_all(), which keeps a leaked
+# slot in one test from refusing connections in the next.
+_stream_sessions = rate_limit.InFlight(
+    config_field="STREAMING_MAX_SESSIONS_PER_USER",
+    default_max=4,
+    message="you already have {limit} live sessions open",
+)
 
 # WebSocket close codes (4000-4999 = application-defined).
 _WS_UNAUTH = 4401
@@ -350,8 +361,27 @@ async def transcribe_stream(ws: WebSocket) -> None:
     if user is None:
         await ws.close(code=_WS_UNAUTH)
         return
+    # Per-identity cap FIRST: one client filling the pool while others are
+    # locked out is the failure we actually see, and refusing it here means
+    # the global cap below still has headroom for everybody else.
+    _stream_key = rate_limit.identity_key(user, ws)
+    try:
+        _stream_sessions.acquire(_stream_key)
+    except rate_limit.RateLimited:
+        logger.info(
+            "[stream] refused: per-user cap "
+            "(STREAMING_MAX_SESSIONS_PER_USER=%d) reached for %s",
+            _stream_sessions.limit(), store_common.log_safe(_stream_key))
+        await ws.close(code=_WS_TOO_MANY)
+        return
     max_sessions = int(getattr(cfg, "STREAMING_MAX_SESSIONS", 10))
     if len(_active_sessions) >= max_sessions:
+        # Release the slot just taken — this connection never becomes a
+        # session, and the finally below is not reached from here.
+        _stream_sessions.release(_stream_key)
+        logger.info(
+            "[stream] refused: server-wide cap "
+            "(STREAMING_MAX_SESSIONS=%d) reached", max_sessions)
         await ws.close(code=_WS_TOO_MANY)
         return
 
@@ -361,6 +391,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
     await ws.accept(subprotocol=_ws_bearer_subprotocol(ws) or None)
     session_id = uuid.uuid4().hex
     _active_sessions.add(session_id)
+    # Set only now: from here every exit runs the finally that releases it.
+    _stream_held: "str | None" = _stream_key
     metrics.in_flight_transcriptions += 1
     # Central running-jobs registry: one "dictate" entry per live session
     # (no progress — a dictation has no defined end until the client stops).
@@ -1197,14 +1229,18 @@ async def transcribe_stream(ws: WebSocket) -> None:
         except Exception:  # noqa: BLE001
             pass
     finally:
-        # Release the slot and the gauge FIRST. They used to sit after three
+        # Release the slots and the gauge FIRST. They used to sit after three
         # awaits guarded by `except Exception`, and CancelledError is a
         # BaseException — a cancellation delivered anywhere in the teardown
         # (lifespan shutdown is the reachable one) skipped both, permanently
-        # burning one of STREAMING_MAX_SESSIONS. Both are idempotent and touch
-        # nothing the teardown below needs.
+        # burning one of STREAMING_MAX_SESSIONS. The per-user slot joins them
+        # for the same reason. All three are idempotent and touch nothing the
+        # teardown below needs.
         metrics.in_flight_transcriptions -= 1
         _active_sessions.discard(session_id)
+        if _stream_held is not None:
+            _stream_sessions.release(_stream_held)
+            _stream_held = None
         jobs.job_end(session_id)
         # Idempotent backstop so every exit path (normal, disconnect, error)
         # converges here and the ffmpeg subprocess + stdout-reader task are

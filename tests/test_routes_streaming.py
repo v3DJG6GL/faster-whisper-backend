@@ -331,3 +331,82 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
             ws.send_json({"type": "stop"})
             msgs = _drain(ws)
     assert not any(m.get("code") == "idle_timeout" for m in msgs)
+
+
+# --- per-user session cap ----------------------------------------------------
+
+_STREAM_URL = "/v1/audio/transcriptions/stream"
+
+
+def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
+        client, app_module, monkeypatch, caplog):
+    """One client must not be able to fill the pool. The global cap is left
+    wide open, so a refusal here can only come from the per-user one."""
+    import logging
+    import streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 10,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
+                        raising=False)
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        with client.websocket_connect(_STREAM_URL) as ws:
+            assert _handshake(ws)["type"] == "ready"
+            assert len(streaming_routes._active_sessions) == 1
+            with pytest.raises(WebSocketDisconnect) as ei:
+                with client.websocket_connect(_STREAM_URL) as ws2:
+                    ws2.receive_json()
+            assert ei.value.code == streaming_routes._WS_TOO_MANY
+    assert any("STREAMING_MAX_SESSIONS_PER_USER" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_per_user_cap_zero_is_unlimited(client, app_module, monkeypatch):
+    import streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0,
+                        raising=False)
+    with client.websocket_connect(_STREAM_URL) as a, \
+            client.websocket_connect(_STREAM_URL) as b, \
+            client.websocket_connect(_STREAM_URL) as c:
+        for ws in (a, b, c):
+            assert _handshake(ws)["type"] == "ready"
+    assert streaming_routes._stream_sessions._counts == {}
+
+
+def test_serial_sessions_never_leak_a_slot(client, app_module, monkeypatch):
+    """The leak guard: open and close cap+2 sessions one at a time. Each must
+    succeed, and the gauge must be empty afterwards — a release skipped on any
+    teardown path would strand a slot and refuse the next connection."""
+    import streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 2,
+                        raising=False)
+    for _ in range(4):
+        with client.websocket_connect(_STREAM_URL) as ws:
+            assert _handshake(ws)["type"] == "ready"
+    assert streaming_routes._stream_sessions._counts == {}
+
+
+def test_per_user_cap_is_per_user(client, make_user_key, app_module,
+                                  monkeypatch):
+    """Open mode resolves every caller to one synthetic admin, so real keys
+    are what prove the cap is keyed per identity."""
+    import streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
+                        raising=False)
+    make_user_key("root", is_admin=True)          # locks the server down
+    _uid_a, key_a = make_user_key("alice")
+    _uid_b, key_b = make_user_key("bob")
+
+    with client.websocket_connect(_STREAM_URL, headers=bearer(key_a)) as a:
+        assert _handshake(a)["type"] == "ready"
+        with pytest.raises(WebSocketDisconnect) as ei:
+            with client.websocket_connect(_STREAM_URL,
+                                          headers=bearer(key_a)) as dup:
+                dup.receive_json()
+        assert ei.value.code == streaming_routes._WS_TOO_MANY
+        # bob's own slot is untouched by alice holding hers.
+        with client.websocket_connect(_STREAM_URL, headers=bearer(key_b)) as b:
+            assert _handshake(b)["type"] == "ready"

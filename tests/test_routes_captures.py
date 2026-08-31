@@ -621,3 +621,26 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
     )
     assert r.status_code == 200
     assert r.headers["cache-control"] == "no-store"
+
+
+def test_audio_rate_limit_is_hot_and_per_identity(client, app_module,
+                                                  monkeypatch):
+    """The cap is read from config on every call, so a test can lower it to 2
+    and raise it to 0 (= unlimited) without restarting anything. A missing cid
+    404s, but only AFTER the limiter runs — which is what we are measuring."""
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_AUDIO_RATE_PER_MIN", 2,
+                        raising=False)
+    assert client.get("/captures/api/nope0001/audio").status_code == 404
+    assert client.get("/captures/api/nope0001/audio").status_code == 404
+    r = client.get("/captures/api/nope0001/audio")
+    assert r.status_code == 429
+    body = r.json()
+    assert body["error"]["param"] == "CAPTURES_AUDIO_RATE_PER_MIN"
+    assert body["error"]["type"] == "rate_limit_exceeded"
+    assert body["detail"] == body["error"]["message"]
+
+    # 0 = unlimited, applied to the very next request with no reset.
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_AUDIO_RATE_PER_MIN", 0,
+                        raising=False)
+    for _ in range(20):
+        assert client.get("/captures/api/nope0001/audio").status_code == 404

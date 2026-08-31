@@ -254,8 +254,40 @@ def test_preview_rate_limited(client, url_enabled, monkeypatch):
     async def _thumb(url, **kw):
         return None
     monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
-    for _ in range(url_enabled._URL_PREVIEW_RATE_MAX):
+    limit = int(url_enabled.cfg.URL_PREVIEW_RATE_PER_MIN)
+    for _ in range(limit):
         assert client.post("/v1/audio/url-preview",
                            json={"url": _URL}).status_code == 200
     r = client.post("/v1/audio/url-preview", json={"url": _URL})
     assert r.status_code == 429
+    assert int(r.headers["Retry-After"]) >= 1
+    body = r.json()
+    assert body["error"]["type"] == "rate_limit_exceeded"
+    assert body["error"]["param"] == "URL_PREVIEW_RATE_PER_MIN"
+    # The in-repo toast handlers read j.detail — it mirrors error.message.
+    assert body["detail"] == body["error"]["message"]
+
+
+def test_preview_rate_limit_is_per_user(client, url_enabled, make_user_key,
+                                        monkeypatch):
+    """Two identities must not share a bucket. The loopback `client` fixture
+    runs in OPEN mode as one synthetic admin, so a user-keyed limit would
+    degrade to a single shared bucket there — real keys are needed (creating
+    the first admin key also flips the app to locked-down)."""
+    from conftest import bearer
+
+    async def _thumb(url, **kw):
+        return None
+    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
+    _uid_a, key_a = make_user_key("alice", is_admin=True)
+    _uid_b, key_b = make_user_key("bob", is_admin=True)
+
+    limit = int(url_enabled.cfg.URL_PREVIEW_RATE_PER_MIN)
+    for _ in range(limit):
+        assert client.post("/v1/audio/url-preview", json={"url": _URL},
+                           headers=bearer(key_a)).status_code == 200
+    assert client.post("/v1/audio/url-preview", json={"url": _URL},
+                       headers=bearer(key_a)).status_code == 429
+    # bob's budget is untouched by alice spending hers.
+    assert client.post("/v1/audio/url-preview", json={"url": _URL},
+                       headers=bearer(key_b)).status_code == 200

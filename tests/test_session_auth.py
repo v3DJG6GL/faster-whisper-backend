@@ -356,3 +356,55 @@ def test_slide_expiry_touches_slide_cache_only_under_the_lock(tmp_path):
     raw, _csrf = w.create_session("u", 3600.0)
     assert w.lookup_session(raw) is not None      # drives the slide path
     assert unlocked == []
+
+
+# --- failed-login throttle --------------------------------------------------
+
+def test_login_failures_are_throttled(client, app_module, make_user_key):
+    """Keyed by client host (a login has no identity yet). The attempt past
+    LOGIN_FAILURE_RATE is refused before the key is even looked up."""
+    make_user_key("root", is_admin=True)
+    limit = int(app_module.cfg.LOGIN_FAILURE_RATE)
+    for _ in range(limit):
+        assert client.post("/auth/login",
+                           json={"key": "wk_nope"}).status_code == 401
+    r = client.post("/auth/login", json={"key": "wk_nope"})
+    assert r.status_code == 429
+    assert int(r.headers["Retry-After"]) >= 1
+    body = r.json()
+    assert body["error"]["type"] == "rate_limit_exceeded"
+    assert body["error"]["param"] == "LOGIN_FAILURE_RATE"
+    assert body["detail"] == body["error"]["message"]
+
+
+def test_login_success_resets_the_window(client, app_module, make_user_key):
+    _uid, raw = make_user_key("root", is_admin=True)
+    limit = int(app_module.cfg.LOGIN_FAILURE_RATE)
+    for _ in range(limit - 1):
+        assert client.post("/auth/login",
+                           json={"key": "wk_nope"}).status_code == 401
+    assert client.post("/auth/login", json={"key": raw}).status_code == 200
+    # The window is cleared, so a fresh run of failures is admitted again.
+    for _ in range(limit):
+        assert client.post("/auth/login",
+                           json={"key": "wk_nope"}).status_code == 401
+
+
+def test_login_open_mode_is_never_throttled(client, app_module, monkeypatch):
+    # No admin key => open mode => no credential is checked, so there is
+    # nothing to throttle and nobody to lock out.
+    monkeypatch.setattr(app_module.cfg, "LOGIN_FAILURE_RATE", 1,
+                        raising=False)
+    for _ in range(5):
+        r = client.post("/auth/login", json={"key": "anything"})
+        assert r.status_code == 200 and r.json() == {"open_mode": True}
+
+
+def test_login_failure_rate_zero_is_unlimited(client, app_module,
+                                              make_user_key, monkeypatch):
+    make_user_key("root", is_admin=True)
+    monkeypatch.setattr(app_module.cfg, "LOGIN_FAILURE_RATE", 0,
+                        raising=False)
+    for _ in range(30):
+        assert client.post("/auth/login",
+                           json={"key": "wk_nope"}).status_code == 401

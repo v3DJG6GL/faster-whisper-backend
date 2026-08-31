@@ -48,6 +48,7 @@ import api_keys_store
 import captures_merge_proposer
 import captures_store
 import config as cfg
+import rate_limit
 import store_common
 import text_corrections
 import web_common
@@ -87,30 +88,22 @@ router = APIRouter(
 
 
 # ---------------------------------------------------------------------
-# Rate limit per host on the audio-streaming endpoint
+# Rate limit per identity on the audio-streaming endpoints
 # ---------------------------------------------------------------------
-# Bursty admins double-clicking review cards shouldn't be punished, but a
-# misbehaving script shouldn't be able to pull GB/s. 60 audio fetches per
-# 60s gives ~1 row/sec which is far above any human review cadence.
+# Sized for how the review UI actually behaves, not for a steady cadence:
+# working a captures backlog means auditioning card after card, plus the
+# merge modal's preview and the sample players, so a reviewer produces bursts
+# of dozens of fetches within a few seconds. The budget is per IDENTITY now
+# rather than per host, so a shared office egress IP no longer pools every
+# reviewer's clicks into one bucket.
 
-_AUDIO_RATE_WINDOW_S = 60.0
-_AUDIO_RATE_MAX = 60
-_audio_rate: dict[str, tuple[int, float]] = {}
-
-
-def _check_audio_rate(host: str) -> None:
-    key = host or "<unknown>"
-    now = time.time()
-    n, start = _audio_rate.get(key, (0, now))
-    if now - start > _AUDIO_RATE_WINDOW_S:
-        n, start = 0, now
-    n += 1
-    _audio_rate[key] = (n, start)
-    if n > _AUDIO_RATE_MAX:
-        raise HTTPException(
-            status.HTTP_429_TOO_MANY_REQUESTS,
-            "Too many audio requests from this host.",
-        )
+_audio_rate = rate_limit.FixedWindow(
+    config_field="CAPTURES_AUDIO_RATE_PER_MIN",
+    window_s=60.0,
+    default_max=240,
+    message="Too many audio requests ({limit}/min) — retry in "
+            "{retry_after}s.",
+)
 
 
 def _audit_cross_user_read(
@@ -576,7 +569,7 @@ async def get_audio_api(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
 ) -> FileResponse:
-    _check_audio_rate(request.client.host if request.client else "")
+    _audio_rate.hit(rate_limit.identity_key(user, request))
     row = captures_store.get_capture(cid)
     if row is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
@@ -1377,7 +1370,7 @@ async def preview_merge_audio_api(
     modal to let users preview the merged audio before committing."""
     import audio_merge
 
-    _check_audio_rate(request.client.host if request.client else "")
+    _audio_rate.hit(rate_limit.identity_key(user, request))
 
     _captures, _owner, member_paths, _total_audio_ms = (
         await asyncio.to_thread(
@@ -2560,7 +2553,7 @@ async def get_sample_audio_api(
 ):
     """Stream the merged WAV, self-healing if it's missing on disk
     but reconstructable from member captures."""
-    _check_audio_rate(request.client.host if request.client else "")
+    _audio_rate.hit(rate_limit.identity_key(user, request))
     import capture_samples_store
     g = capture_samples_store.get_sample(sid)
     if g is None:

@@ -5,6 +5,8 @@ test_diarization pattern)."""
 
 import logging
 
+import pytest
+
 import translation
 from tests.conftest import bearer
 
@@ -135,14 +137,114 @@ def test_403_when_translation_disabled(client, app_module, monkeypatch):
     assert "disabled" in r.json()["detail"]
 
 
-def test_429_after_rate_limit(client, app_module, monkeypatch):
+def test_serial_translations_are_not_rate_limited(client, app_module,
+                                                  monkeypatch):
+    """One request at a time, over and over, is what the review UI does when a
+    user retranslates line by line — it must never 429. The protection is the
+    in-flight cap below, not a per-minute counter."""
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
-    for _ in range(app_module._TEXT_TRANSLATE_RATE_MAX):
+    for _ in range(25):
         assert client.post(URL, json=_body()).status_code == 200
+
+
+# --- in-flight cap -----------------------------------------------------------
+
+def _open_key():
+    """The identity a request from the open-mode `client` fixture resolves to
+    — the synthetic admin's user_id."""
+    import api_keys_store
+    return api_keys_store.OPEN_MODE_USER["user_id"]
+
+
+def test_inflight_cap_rejects_when_the_identity_is_full(client, app_module,
+                                                        monkeypatch):
+    _enable(app_module, monkeypatch)
+    _stub_translate(monkeypatch)
+    gauge = app_module._translate_inflight
+    limit = int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)
+    for _ in range(limit):
+        gauge.acquire(_open_key())
+
     r = client.post(URL, json=_body())
     assert r.status_code == 429
-    assert "slow down" in r.json()["detail"]
+    body = r.json()
+    assert body["error"]["param"] == "TRANSLATE_MAX_INFLIGHT_PER_USER"
+    assert body["error"]["type"] == "rate_limit_exceeded"
+    assert body["detail"] == body["error"]["message"]
+    assert r.headers["Retry-After"] == str(body["error"]["retry_after"])
+    # A refused request must not release a slot it never held.
+    assert gauge.count(_open_key()) == limit
+
+    gauge.clear()
+    assert client.post(URL, json=_body()).status_code == 200
+
+
+def test_inflight_slot_is_released_on_success(client, app_module, monkeypatch):
+    _enable(app_module, monkeypatch)
+    _stub_translate(monkeypatch)
+    assert client.post(URL, json=_body()).status_code == 200
+    assert app_module._translate_inflight._counts == {}
+
+
+@pytest.mark.parametrize("make_exc,status", [
+    (lambda: translation.TranslationError("nope"), 400),
+    (lambda: translation.TranslationCancelled(), 499),
+    (lambda: RuntimeError("boom"), 500),
+])
+def test_inflight_slot_is_released_on_every_error_path(
+        client, app_module, monkeypatch, make_exc, status):
+    _enable(app_module, monkeypatch)
+
+    async def _boom(*args, **kwargs):
+        raise make_exc()
+    monkeypatch.setattr(translation, "translate_segments", _boom)
+    assert client.post(URL, json=_body()).status_code == status
+    assert app_module._translate_inflight._counts == {}
+
+
+def test_inflight_slot_is_released_on_cancellation(client, app_module,
+                                                   monkeypatch):
+    """CancelledError is a BaseException, so every `except Exception` arm in
+    the handler is skipped on a client disconnect — only the `finally` runs.
+    That is why the release lives there and not in an except arm."""
+    import asyncio
+
+    _enable(app_module, monkeypatch)
+
+    async def _cancelled(*args, **kwargs):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(translation, "translate_segments", _cancelled)
+
+    with pytest.raises(BaseException):
+        client.post(URL, json=_body())
+    assert app_module._translate_inflight._counts == {}
+
+
+def test_inflight_zero_is_unlimited(client, app_module, monkeypatch):
+    _enable(app_module, monkeypatch, TRANSLATE_MAX_INFLIGHT_PER_USER=0)
+    _stub_translate(monkeypatch)
+    # A stale count from before the field was zeroed must not gate anything.
+    app_module._translate_inflight._counts[_open_key()] = 99
+    assert client.post(URL, json=_body()).status_code == 200
+
+
+def test_inflight_cap_is_per_user(client, app_module, make_user_key,
+                                  monkeypatch):
+    """The loopback `client` fixture is OPEN MODE — one synthetic admin, one
+    bucket — so real keys are what prove the gauge is keyed per identity."""
+    _enable(app_module, monkeypatch)
+    _stub_translate(monkeypatch)
+    uid_a, key_a = make_user_key("alice", is_admin=True)
+    _uid_b, key_b = make_user_key("bob", is_admin=False)
+    gauge = app_module._translate_inflight
+    for _ in range(int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)):
+        gauge.acquire(uid_a)
+
+    assert client.post(URL, json=_body(),
+                       headers=bearer(key_a)).status_code == 429
+    assert client.post(URL, json=_body(),
+                       headers=bearer(key_b)).status_code == 200
 
 
 def test_400_on_allowlist_miss(client, app_module, monkeypatch):
