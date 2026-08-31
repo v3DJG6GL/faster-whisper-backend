@@ -274,6 +274,33 @@ LOG_VIEWER_INITIAL_LINES = _D("LOG_VIEWER_INITIAL_LINES")
 # append path; "Load older" pagination grows the DOM beyond it.
 LOG_VIEWER_DOM_MAX = _D("LOG_VIEWER_DOM_MAX")
 
+# Receipt block tunables.
+#
+# LOG_SEGMENT_ROWS_MAX — how many per-segment rows the receipt writes to
+# the log FILE. The viewer can only ever reveal what was written, so this
+# is the real ceiling on "show more". 0 = unlimited. A 31-minute
+# interview is ~612 rows ≈ 55 KB; the default covers a typical hour-long
+# file completely and truncates longer ones with an honest "(N not
+# logged)" note rather than silently.
+LOG_SEGMENT_ROWS_MAX = _D("LOG_SEGMENT_ROWS_MAX")
+#
+# LOG_SEGMENT_ROWS_SHOWN — how many of those rows the /logs viewer shows
+# before folding the rest behind a "show 50 / show all" control. Purely
+# a display cap; the folded rows are already in the DOM.
+LOG_SEGMENT_ROWS_SHOWN = _D("LOG_SEGMENT_ROWS_SHOWN")
+#
+# LOG_RECEIPT_HOLD_S — IDLE timeout on a dictation receipt held open
+# waiting for its translation, which arrives on a SEPARATE request. Not
+# an absolute deadline: every progress heartbeat from that translate job
+# restamps it, so a genuinely slow cold model load waits as long as it
+# needs. Only a crashed, wedged or never-sent translation trips it.
+LOG_RECEIPT_HOLD_S = _D("LOG_RECEIPT_HOLD_S")
+#
+# LOG_STAGE_COLORS — colorize the receipt's per-stage sections in the
+# /logs viewer with the same hues the frontend's stage rail uses, so a
+# stage is the same color in the log as while the user watched it run.
+LOG_STAGE_COLORS = _D("LOG_STAGE_COLORS")
+
 # Print a fancy multi-line trace block for every transcription request.
 # Disable for production / high-traffic deployments where the log volume
 # becomes problematic.

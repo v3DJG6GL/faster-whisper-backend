@@ -584,6 +584,28 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "tail. 0 = auto (= LOG_VIEWER_INITIAL_LINES × 4). The cap applies "
         "only to live-tail appends — \"Load older\" pagination is allowed "
         "to grow the DOM beyond it.",
+    "LOG_SEGMENT_ROWS_MAX":
+        "Per-segment rows the request receipt writes to the log file. The "
+        "viewer can only reveal rows that were written, so this is the real "
+        "ceiling on \"show more\". 0 = unlimited. A 31-minute interview is "
+        "roughly 612 rows; longer files truncate with a \"(N not logged)\" "
+        "note rather than silently.",
+    "LOG_SEGMENT_ROWS_SHOWN":
+        "Segment rows the /logs viewer shows before folding the rest behind "
+        "a \"show 50 / show all\" control. Display-only — the folded rows "
+        "are already present and searchable in the log file.",
+    "LOG_RECEIPT_HOLD_S":
+        "Idle timeout, in seconds, on a dictation receipt held open while "
+        "its translation runs as a separate request. Not an absolute "
+        "deadline: each progress heartbeat from the translate job restamps "
+        "it, so a slow cold model load waits as long as it needs. Only a "
+        "crashed, wedged or never-sent translation trips it, and the "
+        "receipt is then released with a note saying why.",
+    "LOG_STAGE_COLORS":
+        "Colorize the receipt's per-stage sections in the /logs viewer "
+        "using the same hues the app's stage rail uses, so a stage reads "
+        "the same color in the log as while it ran. Disable for a "
+        "monochrome log.",
 
     # --- Server ---
     "SERVER_HOST":
@@ -1833,6 +1855,14 @@ class AdminConfig(BaseModel):
         "LOG_VIEWER_INITIAL_LINES", scope="server", group="Logging", order=4)
     LOG_VIEWER_DOM_MAX: Annotated[int, Field(ge=0, le=1_000_000)] | None = _F(
         "LOG_VIEWER_DOM_MAX", scope="server", group="Logging", order=5)
+    LOG_SEGMENT_ROWS_MAX: Annotated[int, Field(ge=0, le=100_000)] | None = _F(
+        "LOG_SEGMENT_ROWS_MAX", scope="server", group="Logging", order=7)
+    LOG_SEGMENT_ROWS_SHOWN: Annotated[int, Field(ge=1, le=1000)] | None = _F(
+        "LOG_SEGMENT_ROWS_SHOWN", scope="server", group="Logging", order=8)
+    LOG_RECEIPT_HOLD_S: Annotated[int, Field(ge=5, le=3600)] | None = _F(
+        "LOG_RECEIPT_HOLD_S", scope="server", group="Logging", order=9)
+    LOG_STAGE_COLORS: bool | None = _F(
+        "LOG_STAGE_COLORS", scope="server", group="Logging", order=10)
 
     # --- Server ---
     SERVER_HOST: Annotated[str, Field(min_length=1, max_length=64)] | None = _F(
