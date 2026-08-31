@@ -25,7 +25,7 @@ NOTHING IS EVER SILENTLY LOST
 
 Every exit releases the receipt exactly once, with a note saying why: the
 client cancelled, the translation failed, nobody claimed it, the buffer
-filled, or the server shut down. A held receipt that vanished would be worse
+filled, a second park superseded it, or the server shut down. A held receipt that vanished would be worse
 than the split one it replaces.
 
 This module deliberately imports nothing from the app. It stores the
@@ -68,6 +68,15 @@ def park(key: str, kwargs: "dict[str, Any]", *, hold_s: float) -> None:
             evicted = _held.pop(victim)
             evicted["note"] = "released — pending receipt buffer full"
             _overflow.append(evicted)
+        displaced = _held.get(key)
+        if displaced is not None:
+            # Two parks on one key: a capture id was reused, or a retry parked
+            # a second receipt before the first was claimed. Overwriting would
+            # drop the first one on the floor, which this module promises never
+            # to do — so the DISPLACED receipt goes to overflow for the next
+            # sweep to log, exactly like a cap eviction.
+            displaced["note"] = "released — receipt superseded by a later one"
+            _overflow.append(displaced)
         _held[key] = {
             "kwargs": dict(kwargs),
             "touched": now,

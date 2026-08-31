@@ -126,6 +126,21 @@ def test_release_after_a_claim_is_a_no_op():
     assert receipt_hold.release("cap2", "connection closed after 3.0s") is None
 
 
+def test_parking_twice_on_one_key_emits_the_displaced_receipt():
+    """A reused capture id must not silently swallow the first receipt: the
+    displaced one goes to overflow, and the next sweep logs it."""
+    receipt_hold.park("cap1", _kwargs(1), hold_s=90)
+    receipt_hold.park("cap1", _kwargs(2), hold_s=90)
+    assert receipt_hold.pending() == 1
+    out = receipt_hold.sweep()
+    assert len(out) == 1
+    assert out[0]["file_label"] == "utt#1"       # the displaced one
+    assert any("superseded" in s for s in out[0]["skipped"])
+    # The second park is still held and still claimable.
+    got = receipt_hold.claim("cap1")
+    assert got is not None and got["file_label"] == "utt#2"
+
+
 def test_flush_all_drains_everything_for_shutdown():
     for i in range(3):
         receipt_hold.park(f"cap{i}", _kwargs(i), hold_s=90)
