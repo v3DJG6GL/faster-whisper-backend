@@ -683,6 +683,7 @@ Dockerfile / Dockerfile.gpu / .dockerignore
 docker-compose.yml / docker-compose.gpu.yml   CPU base + GPU overlay (NVIDIA)
                            CPU container image + compose (named volumes for state); run on any OS
 requirements.txt           Base (CPU, cross-platform) deps; transitive resolved by pip
+requirements-heavy.txt     The large compiled wheels, `-r`-included by requirements.txt (own Docker layer)
 requirements-gpu.txt       NVIDIA CUDA wheels (opt-in, additive)
 requirements-dev.txt       Test deps (pytest)
 requirements-convert.txt   Deps for converting HF models to CTranslate2 (opt-in)

@@ -34,9 +34,13 @@
 #     the ephemeral GITHUB_TOKEN; the GHCR login retry-loop is gone (local
 #     registry, no flaky token proxy).
 #   * Buildx cache: type=gha -> type=registry on the Forgejo registry
-#     (buildcache-cpu / buildcache-gpu tags), per-variant so cpu/gpu don't
-#     evict each other. ignore-error on export: a transient cache-push
-#     failure must not fail a publish.
+#     (buildcache-<variant> tags), per-variant so cpu/gpu don't evict each
+#     other, and per-producer so one PR can't clobber another's — see the
+#     "Compute buildx cache refs" step. ignore-error on export: a transient
+#     cache-push failure must not fail a publish.
+#   * Image layers are pushed zstd-compressed, matching the cache, so a
+#     cached layer is reused as a blob instead of being re-gzipped on every
+#     export. Needs Docker >= 23 on the hosts that pull these images.
 #   * buildkitd docker.io mirror (mirror.gcr.io): both variants resolve the
 #     python:3.x-slim base from Docker Hub; the mirror keeps repeated
 #     matrix/PR builds away from Hub's anonymous rate limit.
@@ -266,6 +270,62 @@ jobs:
         id: ver
         run: echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
 
+      # Buildx cache refs, per variant AND per producer.
+      #
+      # One shared PR bucket did not work (2026-08-31): every open PR wrote
+      # buildcache-<variant>-pr, so a long-lived base-digest PR and a routine
+      # pin bump PR overwrote each other, and whether a release build hit its
+      # cache came down to which PR had exported last. Run 624 caught it
+      # mid-race — gpu-full read the useful bucket and finished in 21 s while
+      # the other three variants read a clobbered one and rebuilt for 2-9 min.
+      #
+      # So each PR gets its OWN bucket, and non-PR runs (tags, dispatch) keep
+      # the main one. To let a release build still reuse the work its PR
+      # already did, non-PR runs additionally read the bucket of the PR named
+      # in the merge commit's subject — Renovate squash-merges land as
+      # "chore(deps): update dependency pydantic to >=2.13.5 (#76)", so the
+      # number is right there. Missing buckets are not an error: buildkit logs
+      # "failed to configure registry cache importer: not found" and carries on.
+      #
+      # Stale buckets from abandoned PRs are the cost of this; they are cache
+      # tags on the container package and can be deleted in the registry UI.
+      - name: Compute buildx cache refs
+        id: cache
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          IMAGE: ${{ env.REGISTRY }}/${{ steps.img.outputs.name }}
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          base="${IMAGE}:buildcache-${VARIANT}"
+
+          scope=""
+          if [ "$EVENT" = "pull_request" ]; then
+            # github.event.pull_request.number is the documented field; fall
+            # back to the ref (refs/pull/<n>/{head,merge}) so a payload shape
+            # difference degrades to the old shared bucket instead of failing.
+            n="$PR_NUMBER"
+            [ -n "$n" ] || n=$(printf '%s' "$GITHUB_REF" | sed -n 's|^refs/pull/\([0-9]\+\)/.*|\1|p')
+            scope="-pr-${n:-shared}"
+          fi
+
+          echo "to=type=registry,ref=${base}${scope},mode=max,ignore-error=true,compression=zstd,force-compression=true" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "from<<CACHE_REFS"
+            echo "type=registry,ref=${base}"
+            if [ -n "$scope" ]; then
+              echo "type=registry,ref=${base}${scope}"
+            else
+              merged=$(git log -1 --format=%s | sed -n 's|.*(#\([0-9]\+\))$|\1|p')
+              if [ -n "$merged" ]; then
+                echo "type=registry,ref=${base}-pr-${merged}"
+              fi
+            fi
+            echo CACHE_REFS
+          } >> "$GITHUB_OUTPUT"
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
         with:
@@ -325,7 +385,6 @@ jobs:
         with:
           context: .
           file: ${{ matrix.dockerfile }}
-          push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
@@ -335,21 +394,24 @@ jobs:
           # registries — off until verified on this instance.
           provenance: false
           sbom: false
-          # Per-variant registry cache so the cpu and gpu builds don't evict
-          # each other. PR builds import AND export (same-repo branches only
-          # on this instance, so the cache is trusted) — but they export to a
-          # separate -pr tag: a Renovate PR bumping the base digest or a
-          # requirements pin would otherwise overwrite the main cache with
-          # layers keyed to the NEW inputs, and the next tag run (still on
-          # the old inputs) misses from layer one and rebuilds everything
-          # (run 593, gpu-full: 28 min instead of ~2 — clobbered by PR #75's
-          # base-digest bump in run 589). Both refs are imported everywhere,
-          # so a merged Renovate PR's tag run hits the -pr cache and stays
-          # fast too.
+          # zstd image layers, via `outputs` rather than `push:` (the two are
+          # the same --output flag and cannot both be set). The build cache is
+          # already zstd; the image was still gzip, so EVERY layer restored
+          # from cache had to be decompressed and re-gzipped at export — 702 s
+          # on the gpu-full leg of run 593, 134 s on run 624's gpu leg, even
+          # for layers that never changed. Matching the two formats lets
+          # buildkit reuse the cached blob as-is.
+          # No force-compression: the base image's own layers stay gzip, so
+          # they keep deduplicating against every other python:3.14-slim image
+          # in the registry instead of being recompressed into private copies.
+          # COMPATIBILITY: pulling zstd layers needs Docker >= 23 (2023),
+          # containerd >= 1.5, or any current podman. Every host that runs
+          # these images must clear that bar.
+          outputs: type=image,push=${{ github.event_name != 'pull_request' }},compression=zstd,oci-mediatypes=true
+          # Per-variant, per-producer registry cache — see the "Compute buildx
+          # cache refs" step for what the refs are and why.
           # cache-to deliberately lives in the separate step below — see there.
-          cache-from: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}-pr
+          cache-from: ${{ steps.cache.outputs.from }}
 
       # Cache export runs as its own buildx invocation, AFTER the push above.
       # Sharing one invocation makes buildkit push the image layers and export
@@ -373,9 +435,7 @@ jobs:
             INCLUDE_EXTRAS=${{ matrix.extras }}
           provenance: false
           sbom: false
-          cache-from: |
-            type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}
-            type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}-pr
+          cache-from: ${{ steps.cache.outputs.from }}
           # zstd instead of the default gzip: "preparing build cache for
           # export" gzip-compresses every layer, and on the gpu-full leg
           # (~7 GB of CUDA/torch wheels) that alone took 327s of the 402s
@@ -383,9 +443,9 @@ jobs:
           # times faster; force-compression recompresses layers imported from
           # the old gzip cache so the blobs converge on zstd instead of
           # mixing.
-          # PR runs write to the -pr tag so a dep-bump PR can't clobber the
-          # main cache — see the cache-from comment on the push step above.
-          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ steps.img.outputs.name }}:buildcache-${{ matrix.variant }}${{ github.event_name == 'pull_request' && '-pr' || '' }},mode=max,ignore-error=true,compression=zstd,force-compression=true
+          # The ref is per variant AND per producer (PR runs write their own
+          # bucket) — see the "Compute buildx cache refs" step.
+          cache-to: ${{ steps.cache.outputs.to }}
 
   # Kick mirror-ghcr.yml exactly once per publishing run, after every
   # variant has pushed. Replaces that workflow's registry_package trigger,

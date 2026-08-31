@@ -1,0 +1,31 @@
+# Heavy, slow-moving dependencies — split out of requirements.txt purely for
+# Docker layer caching. Everything here pulls large compiled wheels; everything
+# left in requirements.txt is small and pure-Python and gets bumped often.
+#
+# Both Dockerfiles install THIS file in its own layer, before the light one, so
+# a routine pin bump (pydantic, yt-dlp, fastapi) rebuilds a ~30 s layer instead
+# of re-downloading ~200 MB here — ~1.2 GB on the GPU image, whose CUDA wheels
+# (requirements-gpu.txt) share this layer. Before the split, a one-line
+# pydantic bump cost the release build 6-9 minutes per variant (run 624).
+#
+# You do not install this file directly: requirements.txt `-r`-includes it, so
+# `pip install -r requirements.txt` still installs everything in one command.
+# Renovate's pip_requirements manager picks it up like any other requirements
+# file (its default file pattern already matches requirements-*.txt).
+#
+# Keep this list SHORT and stable. A bump to anything here invalidates the
+# heavy layer and every layer after it — which is the correct behaviour, just
+# an expensive one, so a package only belongs here if it is genuinely large.
+
+# Pulls the compiled inference stack: ctranslate2, onnxruntime, tokenizers,
+# PyAV (bundles the ffmpeg libraries) and numpy — ~200 MB of wheels.
+faster-whisper>=1.2.1
+
+# Bundled, cross-platform ffmpeg BINARY for the live-streaming endpoint's
+# encoded transport (browser Opus/WebM → 16 kHz PCM). Ships a static ffmpeg in
+# the wheel (Linux/macOS/Windows), so the encoded transport works with no
+# system package manager. A system `ffmpeg` on PATH is preferred when present;
+# this is the fallback. Raw-PCM streaming needs neither. (faster-whisper's
+# batch route decodes via PyAV's bundled libs, which is separate from the
+# ffmpeg *executable*.)
+imageio-ffmpeg>=0.6.0

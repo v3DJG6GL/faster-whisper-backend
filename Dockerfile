@@ -16,9 +16,19 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Install deps first for layer caching.
-COPY requirements.txt requirements-diarize.txt requirements-bgm.txt requirements-translate.txt ./
-RUN pip install --upgrade pip && pip install -r requirements.txt
+# Deps first, in three layers ordered by how often they change — cheapest
+# rebuild for the commonest change (2026-08-31). Renovate bumps a small pin in
+# requirements.txt most weeks; when all of pip lived in one layer, that
+# one-line change re-downloaded the whole compiled stack and re-ran the extras
+# install (run 624: 6-9 min per variant for a pydantic bump). Now:
+#   1. heavy  — the big compiled wheels (requirements-heavy.txt)
+#   2. extras — the optional -full stack, before the light layer so a light
+#               bump cannot invalidate this 5-minute layer
+#   3. light  — the small pure-Python pins that actually churn
+# Layer invalidation cascades downward, so the order is the whole point: only
+# a bump to a heavy pin pays for a full rebuild.
+COPY requirements-heavy.txt ./
+RUN pip install --upgrade pip && pip install -r requirements-heavy.txt
 
 # Optional heavy extras (INCLUDE_EXTRAS=1 → the "-full" tag): speaker
 # diarization (pyannote) + music separation (audio-separator), torch from the
@@ -33,6 +43,7 @@ RUN pip install --upgrade pip && pip install -r requirements.txt
 # directory: 'gcc'"). Purged in the same RUN so the compiler never reaches
 # the final layer.
 ARG INCLUDE_EXTRAS=0
+COPY requirements-diarize.txt requirements-bgm.txt requirements-translate.txt ./
 RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends ffmpeg gcc g++ \
@@ -44,6 +55,15 @@ RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       && apt-get autoremove -y \
       && rm -rf /var/lib/apt/lists/* ; \
     fi
+
+# Light layer — the small, frequently-bumped pins. requirements.txt
+# `-r`-includes requirements-heavy.txt, already installed above, so pip finds
+# those satisfied and only adds the small ones; its default only-if-needed
+# upgrade strategy leaves the heavy layer's resolution alone. Nothing left in
+# requirements.txt depends on the compiled stack, so this cannot reinstall
+# ctranslate2/onnxruntime behind the extras layer's back.
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
 
 # Non-root runtime user (a compromised app process can't rewrite /app code or
 # install packages). The build args only seed the /etc/passwd entry — the

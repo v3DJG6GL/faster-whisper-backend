@@ -20,10 +20,14 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Base + GPU deps first, for layer caching. The GPU wheels are large (~1 GB).
-COPY requirements.txt requirements-gpu.txt requirements-diarize.txt requirements-bgm.txt requirements-translate.txt ./
+# Deps in three layers ordered by churn — see the same block in Dockerfile for
+# the reasoning. The payoff is largest here: the CUDA wheels in
+# requirements-gpu.txt are ~1.2 GB (cuBLAS alone is 581 MB), and before the
+# split a one-line pydantic bump in requirements.txt re-downloaded all of it
+# (run 624, gpu leg: 107 s of pip on top of a 134 s layer export).
+COPY requirements-heavy.txt requirements-gpu.txt ./
 RUN pip install --upgrade pip \
- && pip install -r requirements.txt -r requirements-gpu.txt
+ && pip install -r requirements-heavy.txt -r requirements-gpu.txt
 
 # Optional heavy extras (INCLUDE_EXTRAS=1 → the "-full" tag): speaker
 # diarization + music separation. torch comes from the cu126 index so the
@@ -43,6 +47,7 @@ RUN pip install --upgrade pip \
 # directory: 'gcc'"). Purged in the same RUN so the compiler never reaches
 # the final layer.
 ARG INCLUDE_EXTRAS=0
+COPY requirements-diarize.txt requirements-bgm.txt requirements-translate.txt ./
 RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends ffmpeg gcc g++ \
@@ -73,6 +78,21 @@ RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       && apt-get autoremove -y \
       && rm -rf /var/lib/apt/lists/* ; \
     fi
+
+# Light layer — the small, frequently-bumped pins, LAST so a bump here does
+# not invalidate the two expensive layers above.
+#
+# This runs after the extras layer's `--force-reinstall onnxruntime-gpu`, so
+# the "onnxruntime-gpu must win the shared onnxruntime/ package dir" invariant
+# documented above depends on this install not touching onnxruntime. It cannot:
+# faster-whisper (the only thing that pulls onnxruntime) moved to
+# requirements-heavy.txt, which is installed and satisfied by the first layer,
+# and pip's default only-if-needed strategy leaves satisfied pins alone. Keep
+# it that way — never move a package that drags the compiled inference stack
+# back into requirements.txt, or the -full GPU image silently separates on the
+# CPU again (the 2026-08-26 regression).
+COPY requirements.txt ./
+RUN pip install -r requirements.txt
 
 # ctranslate2 dlopens libcublas / libcudnn at runtime but does not search
 # site-packages, and main.py's CUDA-lib preloader is Windows-only — so put the

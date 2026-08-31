@@ -16,10 +16,16 @@
 #   # GPU (NVIDIA, Windows or Linux):  pip install -r requirements-gpu.txt
 #   # Running the tests:               pip install -r requirements-dev.txt
 
+# The large compiled wheels (faster-whisper's ctranslate2/onnxruntime/PyAV
+# stack, the bundled ffmpeg binary) live in their own file so Docker can cache
+# them in a layer that a routine pin bump below does not invalidate — see the
+# header there. Installing this file installs those too, so every documented
+# `pip install -r requirements.txt` still does the whole job.
+-r requirements-heavy.txt
+
 fastapi>=0.141.1
 uvicorn[standard]>=0.52.4
 python-multipart>=0.0.32
-faster-whisper>=1.2.1
 
 # Auto-loads a local .env file at startup (config.py). Optional at runtime:
 # config.py guards the import, so a missing python-dotenv just disables .env
@@ -34,14 +40,6 @@ python-dotenv>=1.2.3
 nvidia-ml-py>=13.610.43
 psutil>=7.2.2
 pydantic>=2.13.5
-
-# Bundled, cross-platform ffmpeg binary for the live-streaming endpoint's encoded
-# transport (browser Opus/WebM → 16 kHz PCM). Ships a static ffmpeg in the wheel
-# (Linux/macOS/Windows), so the encoded transport works with no system package
-# manager. A system `ffmpeg` on PATH is preferred when present; this is the
-# fallback. Raw-PCM streaming needs neither. (faster-whisper's batch route decodes
-# via PyAV's bundled libs, which is separate from the ffmpeg *executable*.)
-imageio-ffmpeg>=0.6.0
 
 # Transcribe-from-URL (URL_DOWNLOAD_ENABLED): the server-side downloader for
 # pasted media links. Pure Python; the ffmpeg it may call for merges comes
