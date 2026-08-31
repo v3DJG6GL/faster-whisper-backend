@@ -336,6 +336,38 @@ def _trim_trailing_nonspeech(audio: "np.ndarray", pad_ms: int,
     return audio[:end]
 
 
+def _parse_translate_expect(conf: dict) -> "dict | None":
+    """The client's declaration that a translation is coming on a SEPARATE
+    request, so each utterance's log receipt is held until it lands and the two
+    halves read as one block.
+
+    Defensively typed like `override_profile`: a malformed handshake value
+    degrades to "no declaration", never a crash, and every field is bounded
+    here because it becomes server-authored output afterwards.
+
+    `per_utterance` says whether a translate request arrives for EVERY
+    utterance (live mode) or once for the whole transcript (stop-timing). Only
+    the first can claim a per-utterance receipt; the second would leave every
+    held receipt to the idle sweep, so those are logged inline instead and its
+    one translate call gets a standalone receipt. Absent means a client from
+    before the field, which behaved per-utterance — keep that.
+    """
+    tx = conf.get("translate_expect")
+    if not isinstance(tx, dict):
+        return None
+    targets = tx.get("targets")
+    if not isinstance(targets, list):
+        return None
+    clean = [t.strip()[:16] for t in targets if isinstance(t, str) and t.strip()][:8]
+    if not clean:
+        return None
+    return {
+        "targets": clean,
+        "include_original": bool(tx.get("include_original")),
+        "per_utterance": bool(tx.get("per_utterance", True)),
+    }
+
+
 @router.websocket("/v1/audio/transcriptions/stream")
 async def transcribe_stream(ws: WebSocket) -> None:
     import main  # lazy — avoids the import cycle and is loaded by connect time
@@ -488,18 +520,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # held until the translation lands so the two halves read as one
         # block. Defensively typed like override_profile above: a malformed
         # handshake value degrades to "no declaration", never a crash.
-        _tx = conf.get("translate_expect")
-        translate_expect: "dict | None" = None
-        if isinstance(_tx, dict):
-            _tgts = _tx.get("targets")
-            if isinstance(_tgts, list):
-                _clean = [t.strip()[:16] for t in _tgts
-                          if isinstance(t, str) and t.strip()][:8]
-                if _clean:
-                    translate_expect = {
-                        "targets": _clean,
-                        "include_original": bool(_tx.get("include_original")),
-                    }
+        translate_expect = _parse_translate_expect(conf)
         include_words = response_format == "verbose_json"
         audio_fmt = (conf.get("audio") or {}).get("format", "pcm_s16le")
         if audio_fmt not in RAW_FORMATS and audio_fmt not in ENCODED_FORMATS:
@@ -864,10 +885,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     stages=[{"name": "transcribing",
                              "secs": round(float(info["proc_dur"] or 0.0), 2),
                              "model": final_model}])
-                # Hold only when the client said a translation is coming AND
-                # there is a capture id to key it on — that id is the only
-                # handle the separate translate request can name us by.
-                if translate_expect and captured_id:
+                # Hold only when the client said a per-utterance translation
+                # is coming AND there is a capture id to key it on — that id is
+                # the only handle the separate translate request can name us
+                # by. A stop-timing session declares per_utterance=False and
+                # logs each utterance immediately, because its one translate
+                # call names no capture and would leave every held receipt to
+                # the idle sweep.
+                if translate_expect and translate_expect["per_utterance"] and captured_id:
                     _block_kwargs["translation"] = {
                         "targets": list(translate_expect["targets"]),
                         "include_original": translate_expect["include_original"],
