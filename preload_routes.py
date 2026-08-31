@@ -1,0 +1,127 @@
+"""POST /v1/models/preload — ask the server to warm the models a job is about
+to need.
+
+Mounted always-on in main.py (like /v1/client-settings), so a route-level 404
+keeps its client-side meaning of "this backend build doesn't have the
+endpoint" rather than "preloading is switched off here" — the latter is a 202
+with every entry `deferred`.
+
+Security model:
+  - User-tier bearer auth ONLY: Depends(get_current_user), the same tier as
+    /v1/models and /v1/me, both of which already publish `loaded` flags for
+    every family this endpoint can warm. Deliberately NO require_page gate and
+    NO host allowlist, for the reason client_settings_routes.py states: a key
+    that may transcribe must be able to prepare the server for its own
+    transcription, and remote desktop clients must reach it.
+  - The endpoint cannot load anything a transcribe request could not: the
+    per-family allowlists are applied exactly as the batch handler applies
+    them, including the "an empty allowlist means the configured model only,
+    never anything" rule for diarization/separation.
+
+There is NO 4xx path beyond pydantic's 422 for a structurally invalid body.
+A disallowed model, a disabled stage and a disabled feature all answer 202
+with `deferred` plus a reason, because every one of them is a statement about
+the server's state, not about the request being wrong — and the client's
+fallback for all three is identical: let the stage load its model in-band.
+
+Idempotency: a `plan_id` from the client (else one derived from the caller and
+the sorted entries) means a repeat POST restamps the plan's TTL and re-admits
+only what is not already warmed, instead of accumulating duplicate plans.
+
+Cancellation/expiry: `preload.cancel_plan` marks a plan dead and the worker
+skips its items at dequeue. A load already inside an executor thread is NOT
+cancellable — it finishes and registers normally, which at worst leaves a
+model loaded nobody asked for and at best hands the size ledger a free
+measurement of it.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from fastapi import APIRouter, Depends, status
+from pydantic import BaseModel, Field
+
+import config as cfg
+import preload
+from auth import get_current_user
+
+router = APIRouter(prefix="/v1")
+
+
+class PreloadModel(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    family: Literal["whisper", "diarization", "separation", "translation"]
+    # 128 is comfortably above the longest real id (a GGUF `org/repo:QUANT`);
+    # the point is a bound, not a schema — ids are matched against the
+    # allowlists below, never used to build a path.
+    id: str = Field(min_length=1, max_length=128)
+
+
+class PreloadRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
+    # 6, not 4: a client may legitimately name two whisper models (the one it
+    # will use plus the one its next queued job will).
+    models: list[PreloadModel] = Field(min_length=1, max_length=6)
+    # Hex so a client id can never collide with a server-derived one in a way
+    # that would let a caller adopt another caller's plan by guessing shape.
+    # ^…$ rather than the \A…\Z main._PROGRESS_ID_RE uses: pydantic v2 compiles
+    # patterns with the Rust regex engine, which rejects \A/\Z outright (a
+    # SchemaError at import, not a failed match). In that engine ^/$ are
+    # end-of-TEXT anchors without a multiline flag, so the two are equivalent.
+    plan_id: "str | None" = Field(default=None, pattern=r"^[0-9a-f]{8,64}$")
+    stage_ahead: bool = True
+
+
+def _allowed(family: str, model_id: str) -> bool:
+    """The batch handler's allowlist rules, verbatim.
+
+    whisper: an EMPTY ALLOWED_MODELS admits any well-formed id (that is what
+    the setting means there), a non-empty one admits its members plus the
+    configured default. diarization/separation: the allowlist plus the
+    configured model, and an empty allowlist therefore means "the configured
+    model only", never "anything". translation: like whisper — empty is open,
+    non-empty admits its members plus the default."""
+    if family == "whisper":
+        allow = set(getattr(cfg, "ALLOWED_MODELS", None) or ())
+        if not allow:
+            return True
+        return model_id in allow or model_id == getattr(cfg, "DEFAULT_MODEL", "")
+    if family == "diarization":
+        allow = set(getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or ())
+        allow.add(getattr(cfg, "DIARIZATION_MODEL", "") or "")
+        return model_id in allow
+    if family == "separation":
+        allow = set(getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or ())
+        allow.add(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "")
+        return model_id in allow
+    allow = set(getattr(cfg, "TRANSLATION_ALLOWED_MODELS", None) or ())
+    if not allow:
+        return True
+    return model_id in allow or model_id == (
+        getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+
+
+@router.post("/models/preload", status_code=status.HTTP_202_ACCEPTED)
+async def preload_models(body: PreloadRequest,
+                         user: dict = Depends(get_current_user)) -> dict:
+    """Register a preload plan. Always 202."""
+    entries: "list[tuple[str, str]]" = []
+    denied: "dict[tuple[str, str], str]" = {}
+    for m in body.models:
+        pair = (m.family, m.id.strip())
+        if pair in entries or pair in denied:
+            continue
+        if not _allowed(m.family, pair[1]):
+            denied[pair] = "not_allowed"
+        entries.append(pair)
+
+    # stage_ahead=False still registers the plan (the entries are admitted
+    # once and the warm leases exist); it only opts out of the server
+    # advancing the plan from job progress — for a client that drives its own
+    # pipeline and will POST again at each step.
+    return preload.register_plan(user.get("user_id"), entries,
+                                 plan_id=body.plan_id, denied=denied,
+                                 stage_ahead=body.stage_ahead)

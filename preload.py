@@ -115,6 +115,9 @@ class Plan:
     inflight: "set[str]" = field(default_factory=set)
     job_id: "str | None" = None
     dead: bool = False
+    # False = the client drives its own pipeline and will POST again; the plan
+    # still holds its warm leases, the server just never advances it.
+    stage_ahead: bool = True
 
 
 # =============================================================================
@@ -406,7 +409,8 @@ def register_plan(user_id: "str | None",
                   entries: "list[tuple[str, str]]",
                   *,
                   plan_id: "str | None" = None,
-                  denied: "dict[tuple[str, str], str] | None" = None) -> dict:
+                  denied: "dict[tuple[str, str], str] | None" = None,
+                  stage_ahead: bool = True) -> dict:
     """Create or restamp a plan; returns the endpoint's response body.
 
     NEVER raises. Every failure mode — an unknown family, a full registry, a
@@ -419,7 +423,7 @@ def register_plan(user_id: "str | None",
     reason and never join the plan."""
     try:
         return _register_plan(user_id, entries, plan_id=plan_id,
-                              denied=denied or {})
+                              denied=denied or {}, stage_ahead=stage_ahead)
     except Exception as e:  # noqa: BLE001 — a preload must never fail a request
         logger.error("[preload] register_plan failed: %s", e)
         return {
@@ -430,7 +434,7 @@ def register_plan(user_id: "str | None",
         }
 
 
-def _register_plan(user_id, entries, *, plan_id, denied) -> dict:
+def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead) -> dict:
     now = time.monotonic()
     ttl = _ttl()
     kept = [(f, m) for f, m in entries if (f, m) not in denied]
@@ -449,7 +453,7 @@ def _register_plan(user_id, entries, *, plan_id, denied) -> dict:
                 _drop_plan_locked(oldest, "registry full")
             plan = Plan(plan_id=pid, user_id=user_id or "", entries=list(kept),
                         stages=[_FAMILY_STAGE.get(f, 99) for f, _ in kept],
-                        expires_mono=now + ttl)
+                        expires_mono=now + ttl, stage_ahead=stage_ahead)
             _plans[pid] = plan
         else:
             # A repeat POST restamps and merges; it does not reset the cursor,
@@ -571,7 +575,7 @@ def on_stage_start(plan_id: str, stage: str) -> None:
         item = None
         with _lock:
             plan = _plans.get(plan_id)
-            if plan is None or plan.dead:
+            if plan is None or plan.dead or not plan.stage_ahead:
                 return
             # Restamp on every stage start, advancing or not: a long job keeps
             # its plan alive for free, which is the whole reason the TTL can be

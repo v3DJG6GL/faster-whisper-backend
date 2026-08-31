@@ -296,3 +296,89 @@ def test_allowlist_never_blocks_the_config_inherited_default(
     assert len(calls) == 1
     assert calls[0]["model_id"] == "pyannote/speaker-diarization-community-1"
     assert "warnings" not in r.json()
+
+
+# --- stage-ahead (the _progress_set hook) ------------------------------------
+
+def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
+    """Register a plan bound to `pid` with the enqueue path stubbed, so the
+    test observes exactly what the cursor decided to warm."""
+    import preload
+    import model_sizes
+    # Nothing measured, so REGISTRATION admits nothing and the plan starts
+    # with an empty queue — what the cursor does next is then unambiguous.
+    # on_stage_start deliberately does not consult the ladder; the worker
+    # re-admits at dequeue, which is exactly the split under test.
+    monkeypatch.setattr(model_sizes, "fits",
+                        lambda *a, **k: (None, "size_unknown"))
+    for k, v in (("MODEL_PRELOAD_ENABLED", True),
+                 ("MODEL_PRELOAD_WARM_TTL_S", 180),
+                 ("DIARIZATION_ENABLED", True),
+                 ("BGM_SEPARATION_ENABLED", True),
+                 ("TRANSLATION_ENABLED", True)):
+        monkeypatch.setattr(app_module.cfg, k, v, raising=False)
+
+    enqueued = []
+    monkeypatch.setattr(preload, "_enqueue_threadsafe", enqueued.append)
+
+    class _StubQueue:
+        def qsize(self):
+            return 0
+
+        def empty(self):
+            return True
+    monkeypatch.setattr(preload, "_queue", _StubQueue())
+
+    plan = preload.register_plan("u", entries, plan_id=pid)
+    enqueued.clear()          # registration's own admissions are not the test
+    app_module._PLAN_BY_PID[pid] = plan["plan_id"]
+    return preload, enqueued
+
+
+def test_stage_ahead_cursor_is_monotone(app_module, monkeypatch):
+    """separating → diarizing → separating enqueues the diarization model once
+    and nothing at all on the replay."""
+    pid = "ab" * 8
+    preload, enqueued = _plan_with_stub_queue(
+        app_module, monkeypatch,
+        [("separation", "UVR-A"), ("diarization", "p/x")], pid=pid)
+
+    app_module._progress_set(pid, stage="separating")
+    assert [e[1:] for e in enqueued] == [("diarization", "p/x")]
+
+    enqueued.clear()
+    app_module._progress_set(pid, stage="diarizing")
+    assert enqueued == []       # nothing left past the cursor
+
+    app_module._progress_set(pid, stage="separating")
+    assert enqueued == []       # replayed stage: the cursor never walks back
+    assert preload._plans[pid].cursor == preload.STAGE_INDEX["diarizing"]
+
+
+def test_waiting_and_analyzing_map_to_the_transcribing_index(app_module,
+                                                             monkeypatch):
+    """Both are sub-stages of the decode. Mapped anywhere else they would read
+    as unknown stages and stall the cursor mid-pipeline."""
+    pid = "cd" * 8
+    preload, enqueued = _plan_with_stub_queue(
+        app_module, monkeypatch,
+        [("diarization", "p/x"), ("translation", "o/r:Q4")], pid=pid)
+
+    app_module._progress_set(pid, stage="waiting")
+    assert preload._plans[pid].cursor == preload.STAGE_INDEX["transcribing"]
+    assert [e[1:] for e in enqueued] == [("diarization", "p/x")]
+
+    enqueued.clear()
+    app_module._progress_set(pid, stage="analyzing")
+    # Same index — not an advance, so no second enqueue.
+    assert preload._plans[pid].cursor == preload.STAGE_INDEX["transcribing"]
+    assert enqueued == []
+
+
+def test_stage_ahead_is_a_no_op_without_a_bound_plan(app_module, monkeypatch):
+    import preload
+    calls = []
+    monkeypatch.setattr(preload, "on_stage_start",
+                        lambda *a: calls.append(a))
+    app_module._progress_set("ef" * 8, stage="transcribing")
+    assert calls == []

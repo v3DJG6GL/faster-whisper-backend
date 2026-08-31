@@ -193,6 +193,10 @@ def _reset_singletons():
             _main._JOB_BY_PID.clear()
         except Exception:
             pass
+        try:
+            _main._PLAN_BY_PID.clear()
+        except Exception:
+            pass
         # Whisper job leases: a leaked lease would make a later eviction test
         # see a refusal instead of the drop it asserts.
         try:

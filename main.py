@@ -2945,6 +2945,16 @@ _TRANSLATE_CODE_RE = re.compile(r"\A[a-z]{2,3}(-[A-Za-z0-9]{2,8})?\Z")
 _JOB_BY_PID: "dict[str, str]" = {}
 _JOB_MIRROR_FIELDS = ("stage", "progress", "step", "model", "total_bytes")
 
+# progress_id → preload plan id, the same shape and lifetime as _JOB_BY_PID
+# above and popped in the same finally. Bound once, right after the batch
+# handler has fully resolved the stage plan.
+#
+# ONE hook, here, rather than four per-stage ones: every stage transition in
+# the pipeline already flows through _progress_set, and it already carries a
+# side effect of exactly this shape (the job mirror). Four hooks placed at the
+# four stage entry points would drift the first time a stage moved.
+_PLAN_BY_PID: "dict[str, str]" = {}
+
 
 def _progress_set(pid: "str | None", **fields) -> None:
     """Merge `fields` into the progress entry for `pid` (no-op without one)."""
@@ -2955,6 +2965,13 @@ def _progress_set(pid: "str | None", **fields) -> None:
         jobs.job_update(_job_id,
                         **{k: fields[k] for k in _JOB_MIRROR_FIELDS
                            if fields.get(k) is not None})
+    _stage = fields.get("stage")
+    if _stage and pid in _PLAN_BY_PID:
+        # Advances the plan's cursor and warms the next stage's model. Sync,
+        # never awaits, and swallows everything internally — this runs on
+        # executor threads (the decode, the demix, the pyannote hook) and
+        # progress must never break a request.
+        preload.on_stage_start(_PLAN_BY_PID[pid], _stage)
     entry = _BATCH_PROGRESS.get(pid)
     if entry is None:
         now = time.monotonic()
@@ -3034,6 +3051,7 @@ async def transcribe(
     translation_mode: str | None = Form(None),
     translation_glossary: str | None = Form(None),
     progress_id: str | None = Form(None),
+    preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     resolved_model = _resolve_model_name(model_name)
@@ -3481,6 +3499,38 @@ async def transcribe(
             _translation_glossary = (_translation_glossary or "")[:4000]
             _translation_context = int(cfg_for(
                 resolved_model, "TRANSLATION_CONTEXT_SEGMENTS", ident) or 0)
+
+            # Stage-ahead: the stage plan is fully resolved here (every
+            # enable/allowlist/soft-skip verdict above has landed), so this is
+            # the first point at which the server knows which models this job
+            # will actually need. Registered through the SAME register_plan the
+            # endpoint calls — the client-driven and server-driven paths must
+            # be one mechanism, or they will diverge.
+            #
+            # Whisper is deliberately NOT a stage-ahead target of its own job:
+            # it is loaded above, before this plan can exist. Only a CLIENT
+            # plan ever warms whisper. Do not "fix" that.
+            #
+            # A client that already POSTed a plan hands back its id in the
+            # `preload_plan` form field instead of the server duplicating it.
+            _preload_entries: "list[tuple[str, str]]" = []
+            if _separate and _separation_model:
+                _preload_entries.append(("separation", _separation_model))
+            if _diarize and _diarization_model:
+                _preload_entries.append(("diarization", _diarization_model))
+            if _translate_to:
+                _tr_ref = (_translation_model or "").strip() or (getattr(
+                    cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+                if _tr_ref:
+                    _preload_entries.append(("translation", _tr_ref))
+            if _pid and _preload_entries:
+                _plan_hint = (preload_plan or "").strip() or None
+                if _plan_hint is not None and not _PROGRESS_ID_RE.match(_plan_hint):
+                    _plan_hint = None   # malformed → derive one, never a 422
+                _plan = preload.register_plan(
+                    _user_id, _preload_entries, plan_id=_plan_hint)
+                _PLAN_BY_PID[_pid] = _plan["plan_id"]
+
             # Optional per-request decode overrides (JSON object). Malformed → ignored.
             _overrides = {}
             if decode_overrides:
@@ -4357,6 +4407,10 @@ async def transcribe(
         metrics.in_flight_transcriptions -= 1
         if _pid:
             _JOB_BY_PID.pop(_pid, None)
+            # The plan itself is NOT cancelled here: its warm leases are what
+            # keep the models this job just used alive for the next one, and
+            # the TTL retires them on its own.
+            _PLAN_BY_PID.pop(_pid, None)
         jobs.job_end(request_id)
         metrics.record_transcription(
             model=resolved_model,
@@ -4395,6 +4449,7 @@ async def translate_audio(
     translation_mode: str | None = Form(None),
     translation_glossary: str | None = Form(None),
     progress_id: str | None = Form(None),
+    preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
 ):
     """OpenAI-compatible translation endpoint: the transcription handler with
@@ -4428,6 +4483,7 @@ async def translate_audio(
         translation_mode=translation_mode,
         translation_glossary=translation_glossary,
         progress_id=progress_id,
+        preload_plan=preload_plan,
         user=user,
     )
 
@@ -6022,6 +6078,24 @@ try:
     )
 except Exception as _e:
     logger.error("Failed to load client-settings router: %s", _e)
+
+
+# =============================================================================
+# /v1/models/preload - ask the server to warm the models a job will need
+# =============================================================================
+# Always registered, same rationale as /v1/client-settings above: a route-level
+# 404 must keep meaning "backend build too old for preloading", never
+# "preloading is off here" — the latter is a 202 with every entry `deferred`.
+# User-tier bearer auth only (the tier /v1/models and /v1/me already use to
+# publish `loaded` flags for these exact models); no page gate, no host
+# allowlist. See preload_routes.py.
+try:
+    from preload_routes import router as _preload_router
+    app.include_router(_preload_router)
+    logger.info("Model preloading at POST /v1/models/preload (enabled=%s)",
+                bool(getattr(cfg, "MODEL_PRELOAD_ENABLED", True)))
+except Exception as _e:
+    logger.error("Failed to load preload router: %s", _e)
 
 
 # =============================================================================
