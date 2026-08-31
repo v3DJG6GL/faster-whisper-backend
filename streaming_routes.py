@@ -809,7 +809,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
             rid = uuid.uuid4().hex
             raw_text = info["raw_text"] or ""
             words = info.get("words") or []
-            dec = last_decode
+            # SNAPSHOT, not an alias: last_decode lives for the whole session
+            # and decode_final clears/refills it for every utterance. on_final
+            # awaits below (the capture thread, the `captured` frame), and the
+            # log block is assembled after those awaits — reading through the
+            # live dict there would be one refactor away from printing the NEXT
+            # utterance's guards under this one's text. The values are all
+            # rebuilt per decode, so a shallow copy is enough.
+            dec = dict(last_decode)
             fw_info = dec.get("info")
             seg_diag = dec.get("seg_diag", [])
             kwargs = dec.get("kwargs", {})
