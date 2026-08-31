@@ -140,3 +140,59 @@ def test_unreadable_file_degrades_to_no_data(ledger, body):
     model_sizes._reset_for_tests()
     assert model_sizes.estimate("a", "cuda", "f16") is None
     assert model_sizes.fits("a", "cuda", "f16", reserve_bytes=0)[1] is not None
+
+
+# ---------------------------------------------------------------------------
+# Disk-size prior
+#
+# Without it, a model that has never been loaded cannot be sized, so preload
+# refuses it, so it is never loaded, so it is never measured. On a fresh
+# install that deadlock covers every model and fails completely silently.
+# ---------------------------------------------------------------------------
+
+def test_disk_size_reads_a_uvr_onnx_file(ledger, tmp_path, monkeypatch):
+    import config as cfg
+    root = tmp_path / "dl"
+    (root / "audio-separator").mkdir(parents=True)
+    blob = root / "audio-separator" / "UVR-MDX-NET-Inst_HQ_4.onnx"
+    blob.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(root), raising=False)
+
+    assert model_sizes.disk_size("uvr:UVR-MDX-NET-Inst_HQ_4") == 4096
+    # The `.onnx` suffix is implied by the friendly name, as elsewhere.
+    assert model_sizes.disk_size("uvr:UVR-MDX-NET-Inst_HQ_4.onnx") == 4096
+
+
+def test_disk_size_sums_a_hf_repo_dir(ledger, tmp_path, monkeypatch):
+    hf = tmp_path / "hf"
+    d = hf / "hub" / "models--tencent--HY-MT1.5-7B-GGUF" / "blobs"
+    d.mkdir(parents=True)
+    (d / "a").write_bytes(b"x" * 1000)
+    (d / "b").write_bytes(b"x" * 2000)
+    monkeypatch.setenv("HF_HOME", str(hf))
+
+    assert model_sizes.disk_size("gguf:tencent/HY-MT1.5-7B-GGUF:Q4_K_M") == 3000
+
+
+def test_disk_size_is_none_when_nothing_is_there(ledger, tmp_path, monkeypatch):
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "nope"))
+    assert model_sizes.disk_size("gguf:no/such") is None
+
+
+def test_estimate_falls_back_to_disk_then_prefers_a_measurement(
+        ledger, tmp_path, monkeypatch):
+    hf = tmp_path / "hf"
+    d = hf / "hub" / "models--openai--whisper-tiny"
+    d.mkdir(parents=True)
+    (d / "model.bin").write_bytes(b"x" * 8192)
+    monkeypatch.setenv("HF_HOME", str(hf))
+
+    # Never measured → the prior stands in, and fits() can now decide.
+    assert model_sizes.estimate("openai/whisper-tiny", "cuda", "float16") == 8192
+    assert model_sizes.fits("openai/whisper-tiny", "cpu", "float16",
+                            reserve_bytes=0)[1] != "size_unknown"
+
+    # A real measurement supersedes it.
+    model_sizes.record("openai/whisper-tiny", "cuda", "float16", 99 * 1024)
+    assert model_sizes.estimate("openai/whisper-tiny", "cuda",
+                                "float16") == 99 * 1024

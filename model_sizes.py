@@ -151,7 +151,72 @@ def estimate(name: str, device: str, compute_type: str) -> int | None:
     for k, v in models.items():
         if k.startswith(prefix):
             return int(v["bytes"])
+    # Never measured anywhere. Fall back to what the model WEIGHS ON DISK,
+    # which for a GGUF or an ONNX file is a solid lower bound on its resident
+    # size, and for a CT2 directory is close enough to decide whether a load
+    # is even plausible. Without this, a model that has never been loaded
+    # cannot be sized, so preload refuses it, so it is never loaded, so it is
+    # never measured — the deadlock this fallback exists to break.
+    return disk_size(name)
+
+
+def disk_size(name: str) -> int | None:
+    """On-disk footprint for a namespaced stats key, or None if not found.
+
+    Deliberately best-effort and exception-swallowing: this is a prior for an
+    admission heuristic, not an accounting figure, and a stat() that fails
+    must degrade to "unknown" rather than break a load."""
+    try:
+        path = _model_path(name)
+        if not path:
+            return None
+        if os.path.isfile(path):
+            return int(os.path.getsize(path))
+        if os.path.isdir(path):
+            total = 0
+            for root, _dirs, files in os.walk(path):
+                for fn in files:
+                    try:
+                        total += os.path.getsize(os.path.join(root, fn))
+                    except OSError:
+                        pass
+            return total or None
+    except Exception:  # noqa: BLE001 — a prior is never worth an exception
+        return None
     return None
+
+
+def _model_path(name: str) -> "str | None":
+    """Filesystem location for a namespaced stats key.
+
+    The prefixes are the ones preload.stats_key mints: `uvr:`, `gguf:`,
+    `pyannote:`, and a bare id for whisper."""
+    import config as _cfg
+    root = (getattr(_cfg, "DOWNLOAD_ROOT", "") or "").strip()
+    if name.startswith("uvr:"):
+        model = name[4:]
+        if "." not in model:
+            model += ".onnx"
+        return os.path.join(root, "audio-separator", model) if root else None
+    hf_home = os.environ.get("HF_HOME") or (
+        os.path.join(root, "hf") if root else "")
+    if not hf_home:
+        return None
+    if name.startswith("gguf:"):
+        repo = name[5:].split(":", 1)[0]
+        return _hf_repo_dir(hf_home, repo)
+    if name.startswith("pyannote:"):
+        return _hf_repo_dir(hf_home, name[9:])
+    # Whisper: a converted CT2 directory when one exists, else the HF cache.
+    return _hf_repo_dir(hf_home, name)
+
+
+def _hf_repo_dir(hf_home: str, repo: str) -> "str | None":
+    """`<HF_HOME>/hub/models--org--repo`, the layout huggingface_hub uses."""
+    if not repo:
+        return None
+    return os.path.join(hf_home, "hub",
+                        "models--" + repo.replace("/", "--"))
 
 
 def fits(name: str, device: str, compute_type: str, *,

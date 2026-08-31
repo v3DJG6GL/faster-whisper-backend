@@ -383,6 +383,21 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
             and bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
             and _idle_peer(family, model_id) is not None):
         return (_pending_state(), None)
+    if ok is None and reason == "size_unknown":
+        # `fits` returns None to mean "cannot say", explicitly distinct from a
+        # definite no, so that a caller may try anyway. Treating it as a hard
+        # refusal made the check self-defeating: preload never loaded an
+        # unmeasured model, so the load that would have measured it never
+        # happened, so it stayed unmeasured forever. On a fresh install that
+        # is every model, and it fails silently.
+        #
+        # Trying is how a model gets measured — but only when nothing has to
+        # be evicted for it, so an unknown model can never displace a known
+        # one. If it OOMs, the loader's own error path handles it and the job
+        # falls back to loading in-band, which is the pre-preload behaviour.
+        if _idle_peer(family, model_id) is None:
+            return (_pending_state(), None)
+        return ("deferred", "size_unknown")
     return ("deferred", reason or "size_unknown")
 
 
@@ -410,7 +425,8 @@ def register_plan(user_id: "str | None",
                   *,
                   plan_id: "str | None" = None,
                   denied: "dict[tuple[str, str], str] | None" = None,
-                  stage_ahead: bool = True) -> dict:
+                  stage_ahead: bool = True,
+                  trigger: "str | None" = None) -> dict:
     """Create or restamp a plan; returns the endpoint's response body.
 
     NEVER raises. Every failure mode — an unknown family, a full registry, a
@@ -420,10 +436,15 @@ def register_plan(user_id: "str | None",
 
     `denied` carries per-entry verdicts the CALLER already made (a model the
     request's allowlist refuses); those entries are reported with the caller's
-    reason and never join the plan."""
+    reason and never join the plan.
+
+    `trigger` is a free-text label naming what asked for this plan
+    (dictation / transcribe / viewer / job), echoed into the log receipt so
+    an operator can tell which client path fired."""
     try:
         return _register_plan(user_id, entries, plan_id=plan_id,
-                              denied=denied or {}, stage_ahead=stage_ahead)
+                              denied=denied or {}, stage_ahead=stage_ahead,
+                              trigger=trigger)
     except Exception as e:  # noqa: BLE001 — a preload must never fail a request
         logger.error("[preload] register_plan failed: %s", e)
         return {
@@ -434,7 +455,8 @@ def register_plan(user_id: "str | None",
         }
 
 
-def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead) -> dict:
+def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
+                   trigger=None) -> dict:
     now = time.monotonic()
     ttl = _ttl()
     kept = [(f, m) for f, m in entries if (f, m) not in denied]
@@ -510,7 +532,48 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead) -> dict:
     for item in to_enqueue:
         _enqueue_threadsafe(item)
 
+    _log_plan_receipt(pid, user_id, results, trigger)
+
     return {"plan_id": pid, "expires_in_s": ttl, "models": results}
+
+
+def _log_plan_receipt(pid: str, user_id: "str | None",
+                      results: "list[dict]", trigger: "str | None") -> None:
+    """One info block per accepted plan, listing every entry and its verdict.
+
+    Every log line this module had lived in the WORKER, and the worker only
+    runs for entries that were actually enqueued — so the three most common
+    outcomes produced no output at all:
+
+      * `resident`, which is what a plan returns once a model has been used
+        once, i.e. the normal steady state. Preload working perfectly was
+        indistinguishable from preload never being called.
+      * every registration-time deferral, whose reason went into the HTTP
+        response body and nowhere else.
+      * a plan that never arrived, since the endpoint logged nothing either.
+
+    Deliberately `info` and never `warning`: preload is best-effort, a
+    deferral is the system working as designed, and warning-level noise here
+    would train an operator to ignore the one channel that explains it."""
+    try:
+        who = (user_id or "-")[:8]
+        head = f"[preload] plan {pid[:8]}  user={who}"
+        if trigger:
+            head += f"  from={trigger}"
+        lines = [head]
+        for r in results:
+            state = r.get("state", "?")
+            row = f"[preload]   {r.get('family', '?'):<11} {r.get('id', '?')}"
+            row += f"   {state}"
+            if r.get("reason"):
+                row += f" — {r['reason']}"
+            lines.append(row)
+        if results and all(r.get("state") == "resident" for r in results):
+            lines.append(f"[preload] nothing to warm — all {len(results)} "
+                         f"models already resident")
+        logger.info("\n".join(lines))
+    except Exception:  # noqa: BLE001 — a receipt must never break a preload
+        pass
 
 
 def cancel_plan(plan_id: str) -> bool:
@@ -601,6 +664,8 @@ def on_stage_start(plan_id: str, stage: str) -> None:
                 item = (plan_id, fam, mid)
                 break
         if item is not None:
+            logger.debug("[preload] plan %s stage %s → warming %s ahead",
+                         plan_id[:8], stage, stats_key(item[1], item[2]))
             _enqueue_threadsafe(item)
     except Exception:  # noqa: BLE001 — never break the progress callback
         pass
@@ -609,13 +674,19 @@ def on_stage_start(plan_id: str, stage: str) -> None:
 def _enqueue_threadsafe(item: "tuple[str, str, str]") -> None:
     loop, q = _loop, _queue
     if loop is None or q is None or loop.is_closed():
+        # Silently dropping this was the failure that looked most like
+        # "preload is broken" while leaving no trace whatsoever: the plan
+        # reports `queued`, and nothing ever loads.
+        logger.debug("[preload] enqueue dropped (worker not running): %s",
+                     stats_key(item[1], item[2]))
         return
     try:
         loop.call_soon_threadsafe(q.put_nowait, item)
     except RuntimeError:
         # The loop closed between the check and the call — shutdown racing a
         # last progress callback. Nothing to warm on a dying process.
-        pass
+        logger.debug("[preload] enqueue dropped (loop closing): %s",
+                     stats_key(item[1], item[2]))
 
 
 # =============================================================================

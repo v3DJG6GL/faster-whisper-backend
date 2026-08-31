@@ -305,12 +305,20 @@ def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
     test observes exactly what the cursor decided to warm."""
     import preload
     import model_sizes
-    # Nothing measured, so REGISTRATION admits nothing and the plan starts
-    # with an empty queue — what the cursor does next is then unambiguous.
-    # on_stage_start deliberately does not consult the ladder; the worker
-    # re-admits at dequeue, which is exactly the split under test.
+    # REGISTRATION must admit nothing, so the plan starts with an empty queue
+    # and what the CURSOR does next is unambiguous. on_stage_start
+    # deliberately does not consult the ladder; the worker re-admits at
+    # dequeue, which is exactly the split under test.
+    #
+    # A definite "no room" is the right refusal to stub. `size_unknown` used
+    # to serve here, but only by accident: it means "cannot say", and the
+    # ladder now TRIES on it, because refusing meant an unmeasured model was
+    # never loaded and therefore never measured. Left as size_unknown this
+    # helper would silently let registration enqueue everything, leaving the
+    # cursor with nothing to do and the test asserting on an empty list.
     monkeypatch.setattr(model_sizes, "fits",
-                        lambda *a, **k: (None, "size_unknown"))
+                        lambda *a, **k: (False, "insufficient_vram"))
+    monkeypatch.setattr(preload, "_idle_peer", lambda *a, **k: None)
     for k, v in (("MODEL_PRELOAD_ENABLED", True),
                  ("MODEL_PRELOAD_WARM_TTL_S", 180),
                  ("DIARIZATION_ENABLED", True),

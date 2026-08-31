@@ -3752,7 +3752,8 @@ async def transcribe(
                 if _plan_hint is not None and not _PROGRESS_ID_RE.match(_plan_hint):
                     _plan_hint = None   # malformed → derive one, never a 422
                 _plan = preload.register_plan(
-                    _user_id, _preload_entries, plan_id=_plan_hint)
+                    _user_id, _preload_entries, plan_id=_plan_hint,
+                    trigger="job")
                 _PLAN_BY_PID[_pid] = _plan["plan_id"]
 
             # Now that the stage plan is resolved, tell the running-jobs

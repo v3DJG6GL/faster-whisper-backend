@@ -111,10 +111,29 @@ def test_rung3_idle_peer_evictable_admits_despite_no_room(monkeypatch):
                                                     "insufficient_vram")
 
 
-def test_rung4_deferred_reasons(monkeypatch):
+def test_size_unknown_tries_when_nothing_must_be_evicted(monkeypatch):
+    """`fits` returns None for "cannot say", explicitly distinct from a
+    definite no. Refusing on it made the check self-defeating: preload never
+    loaded an unmeasured model, so the load that would have measured it never
+    happened, so it stayed unmeasured — forever, and silently. Trying is how
+    a model gets measured."""
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
+    # Nothing resident in the way → try it, and let the load measure it.
+    assert preload._admit("diarization", "p/x") == ("loading", None)
+
+
+def test_size_unknown_never_displaces_a_known_model(monkeypatch):
+    """The bound on the rung above: an unmeasured model is worth a try, but
+    never at the cost of evicting something whose size we DO know."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    monkeypatch.setattr(diarization, "_pipeline_key", ("p/other", "cpu", 4))
     assert preload._admit("diarization", "p/x") == ("deferred", "size_unknown")
+
+
+def test_rung4_deferred_reasons(monkeypatch):
+    _enable(monkeypatch)
     _fits(monkeypatch, (False, "vram_unknown"))
     assert preload._admit("diarization", "p/x") == ("deferred", "vram_unknown")
 
@@ -386,3 +405,48 @@ def test_diagnostics_shape():
     d = preload.diagnostics()
     assert set(d) == {"enabled", "worker_alive", "plans", "warm",
                       "queue_depth"}
+
+
+# ---------------------------------------------------------------------------
+# The plan receipt
+#
+# Every log line this module had lived in the worker, and the worker only runs
+# for entries that were ENQUEUED — so `resident` (the normal steady state) and
+# every registration-time deferral produced no output at all. A working
+# preload and a preload that was never called looked identical.
+# ---------------------------------------------------------------------------
+
+def test_plan_receipt_logs_the_all_resident_case(monkeypatch, caplog):
+    _enable(monkeypatch)
+    monkeypatch.setattr(preload, "is_resident", lambda f, m: True)
+    with caplog.at_level("INFO"):
+        preload.register_plan("u1", [("diarization", "p/x")],
+                              trigger="dictation")
+    text = caplog.text
+    assert "[preload] plan" in text
+    assert "from=dictation" in text
+    assert "resident" in text
+    assert "nothing to warm" in text
+
+
+def test_plan_receipt_states_a_registration_time_deferral(monkeypatch, caplog):
+    """The reason used to exist only in the HTTP response body."""
+    _enable(monkeypatch, DIARIZATION_ENABLED=False)
+    with caplog.at_level("INFO"):
+        preload.register_plan("u1", [("diarization", "p/x")])
+    assert "stage_disabled" in caplog.text
+
+
+def test_plan_receipt_never_breaks_registration(monkeypatch):
+    """A receipt is a courtesy; a broken one must not cost a caller its
+    plan. The formatter swallows internally, and register_plan's own guard
+    is the backstop."""
+    _enable(monkeypatch)
+    monkeypatch.setattr(preload, "is_resident", lambda f, m: True)
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("receipt exploded")
+
+    monkeypatch.setattr(preload.logger, "info", _boom)
+    out = preload.register_plan("u1", [("diarization", "p/x")])
+    assert out["models"] and out["models"][0]["state"] == "resident"

@@ -135,12 +135,20 @@ def register_loaded_model(name: str, vram_bytes: int | None,
     # (whisper's cuda->cpu fallback in main._get_or_load_model passes the real
     # one), so the ledger inherits that correctness for free. Imported lazily:
     # model_sizes imports this module. Never fatal to a load.
-    if vram_bytes:
-        try:
-            import model_sizes
-            model_sizes.record(name, device, compute_type, vram_bytes)
-        except Exception:
-            pass
+    # `if vram_bytes:` used to guard this, which quietly excluded every CPU
+    # load and every load whose NVML delta came back 0 or None — those models
+    # then had no ledger row, so preload could not size them, so it refused
+    # to load them, so they were never measured. Fall back to the on-disk
+    # footprint instead: a rough number that lets an admission decision be
+    # made beats no row at all, and a real measurement supersedes it (record
+    # keeps the high-water mark).
+    try:
+        import model_sizes
+        measured = vram_bytes or model_sizes.disk_size(name)
+        if measured:
+            model_sizes.record(name, device, compute_type, measured)
+    except Exception:
+        pass
 
 
 def load_secs_since(name: str, since_ts: float) -> float:

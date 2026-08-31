@@ -37,6 +37,7 @@ measurement of it.
 
 from __future__ import annotations
 
+import logging
 from typing import Literal
 
 from fastapi import APIRouter, Depends, status
@@ -45,6 +46,12 @@ from pydantic import BaseModel, Field
 import config as cfg
 import preload
 from auth import get_current_user
+
+# Same logger name the rest of the model machinery uses, so a preload and the
+# load it causes sit under one name in the log. This module had no logging at
+# all, which meant a POST that landed left no trace and was indistinguishable
+# from one that was never sent.
+logger = logging.getLogger("whisper-server")
 
 router = APIRouter(prefix="/v1")
 
@@ -73,6 +80,11 @@ class PreloadRequest(BaseModel):
     # end-of-TEXT anchors without a multiline flag, so the two are equivalent.
     plan_id: "str | None" = Field(default=None, pattern=r"^[0-9a-f]{8,64}$")
     stage_ahead: bool = True
+    # Free-text label naming the client path that fired this plan
+    # (dictation / transcribe / viewer). Echoed into the log receipt so an
+    # operator can tell WHICH trigger ran, not just that one did. Bounded
+    # and never used for anything but display.
+    trigger: "str | None" = Field(default=None, max_length=32)
 
 
 def _allowed(family: str, model_id: str) -> bool:
@@ -122,6 +134,10 @@ async def preload_models(body: PreloadRequest,
     # once and the warm leases exist); it only opts out of the server
     # advancing the plan from job progress — for a client that drives its own
     # pipeline and will POST again at each step.
+    logger.debug("[preload] POST %d model(s) from=%s user=%s",
+                 len(entries), body.trigger or "-",
+                 (user.get("user_id") or "-")[:8])
     return preload.register_plan(user.get("user_id"), entries,
                                  plan_id=body.plan_id, denied=denied,
-                                 stage_ahead=body.stage_ahead)
+                                 stage_ahead=body.stage_ahead,
+                                 trigger=body.trigger)
