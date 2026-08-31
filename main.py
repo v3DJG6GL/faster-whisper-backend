@@ -1765,6 +1765,97 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     # local path with model.bin.
     load_path = await _ensure_ct2_model(name)
 
+    loop = asyncio.get_running_loop()
+    load_t0 = time.perf_counter()
+    # Per-model override > global default. Each loaded model can pin its
+    # own device/compute_type/etc. independently.
+    primary_device = cfg_for(name, "MODEL_DEVICE")
+    primary_compute = cfg_for(name, "MODEL_COMPUTE_TYPE")
+    fallback_device = cfg_for(name, "MODEL_DEVICE_FALLBACK")
+    fallback_compute = cfg_for(name, "MODEL_COMPUTE_TYPE_FALLBACK")
+    # Load-time hardware kwargs (also per-model overrideable).
+    load_kwargs = {
+        "device": primary_device,
+        "compute_type": primary_compute,
+        "device_index": cfg_for(name, "DEVICE_INDEX"),
+        "cpu_threads": cfg_for(name, "CPU_THREADS"),
+        "num_workers": cfg_for(name, "NUM_WORKERS"),
+    }
+    # Optional load-time fields — only forwarded if non-default to keep
+    # WhisperModel(...) clean for the common path.
+    _download_root = cfg_for(name, "DOWNLOAD_ROOT")
+    if _download_root:
+        load_kwargs["download_root"] = _download_root
+    if cfg_for(name, "LOCAL_FILES_ONLY"):
+        load_kwargs["local_files_only"] = True
+    _auth_token = cfg_for(name, "HF_TOKEN")
+    if _auth_token:
+        load_kwargs["use_auth_token"] = _auth_token
+    # PM-only field (no global counterpart): read directly from override.
+    _overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
+    _m_over = _overrides.get(name) if isinstance(_overrides, dict) else None
+    _revision = _m_over.get("REVISION") if isinstance(_m_over, dict) else None
+    if _revision:
+        load_kwargs["revision"] = _revision
+
+    # Pre-download the repo under a progress capture when the weights
+    # will come from the Hub — faster-whisper hardcodes a disabled tqdm,
+    # so the constructor's own multi-GB fetch is otherwise invisible in
+    # the log / jobs registry. Same snapshot args as faster_whisper's
+    # download_model (allow_patterns, cache_dir=download_root, revision,
+    # token), so the constructor then finds a warm cache. Best-effort:
+    # ANY failure falls through to the constructor's stock download.
+    #
+    # Runs OUTSIDE _model_load_lock, like _ensure_ct2_model above and for the
+    # same reason: held across the fetch, one cold multi-GB download stalled
+    # EVERY other whisper load on the server for its whole duration. The
+    # re-check under the lock below is what keeps a concurrent loader that
+    # won the race honoured.
+    if not load_kwargs.get("local_files_only") and not os.path.isdir(load_path):
+        try:
+            import download_progress
+            from huggingface_hub import snapshot_download
+            _dl_repo = load_path
+            if "/" not in _dl_repo:
+                from faster_whisper.utils import _MODELS as _FW_MODELS
+                _dl_repo = _FW_MODELS.get(_dl_repo) or ""
+            if _dl_repo:
+                _dl_label = f"whisper:{name}"
+                _dl_job = jobs.job_start("download", model=_dl_label)
+
+                def _dl_hook(done, total, _job=_dl_job):
+                    jobs.job_update(
+                        _job,
+                        progress=(done / total) if total else None,
+                        total_bytes=total or None)
+
+                _snap_kwargs = {
+                    "repo_id": _dl_repo,
+                    "allow_patterns": [
+                        "config.json", "preprocessor_config.json",
+                        "model.bin", "tokenizer.json", "vocabulary.*",
+                    ],
+                }
+                if _download_root:
+                    _snap_kwargs["cache_dir"] = _download_root
+                if _revision:
+                    _snap_kwargs["revision"] = _revision
+                if _auth_token:
+                    _snap_kwargs["token"] = _auth_token
+                try:
+                    with download_progress.capture(
+                            _dl_label, cb=_dl_hook) as _cap:
+                        _snap_kwargs.update(_cap.tqdm_kwargs)
+                        await loop.run_in_executor(
+                            None,
+                            lambda: snapshot_download(**_snap_kwargs))
+                finally:
+                    jobs.job_end(_dl_job)
+        except Exception as _dl_err:  # noqa: BLE001 — best-effort
+            logger.warning(
+                "Pre-download of %s failed (%s); the model constructor "
+                "will download instead", name, _dl_err)
+
     async with _model_load_lock:
         # Re-check under the lock — another request may have loaded it.
         cached = _loaded_models.get(name)
@@ -1792,97 +1883,12 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             _drop_loaded_model(evicted_name)
 
         logger.info("Loading model: %s", name)
-        loop = asyncio.get_running_loop()
         # NVML delta sampling: compare GPU memory before/after construction
         # to estimate this model's VRAM footprint. Done under
         # _model_load_lock so concurrent loads can't pollute the delta.
         # Subsequent loads of the same size may under-report due to
         # CTranslate2's caching allocator (cached freed memory gets reused).
         vram_before = system_stats.gpu_mem_used_bytes()
-        load_t0 = time.perf_counter()
-        # Per-model override > global default. Each loaded model can pin its
-        # own device/compute_type/etc. independently.
-        primary_device = cfg_for(name, "MODEL_DEVICE")
-        primary_compute = cfg_for(name, "MODEL_COMPUTE_TYPE")
-        fallback_device = cfg_for(name, "MODEL_DEVICE_FALLBACK")
-        fallback_compute = cfg_for(name, "MODEL_COMPUTE_TYPE_FALLBACK")
-        # Load-time hardware kwargs (also per-model overrideable).
-        load_kwargs = {
-            "device": primary_device,
-            "compute_type": primary_compute,
-            "device_index": cfg_for(name, "DEVICE_INDEX"),
-            "cpu_threads": cfg_for(name, "CPU_THREADS"),
-            "num_workers": cfg_for(name, "NUM_WORKERS"),
-        }
-        # Optional load-time fields — only forwarded if non-default to keep
-        # WhisperModel(...) clean for the common path.
-        _download_root = cfg_for(name, "DOWNLOAD_ROOT")
-        if _download_root:
-            load_kwargs["download_root"] = _download_root
-        if cfg_for(name, "LOCAL_FILES_ONLY"):
-            load_kwargs["local_files_only"] = True
-        _auth_token = cfg_for(name, "HF_TOKEN")
-        if _auth_token:
-            load_kwargs["use_auth_token"] = _auth_token
-        # PM-only field (no global counterpart): read directly from override.
-        _overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-        _m_over = _overrides.get(name) if isinstance(_overrides, dict) else None
-        _revision = _m_over.get("REVISION") if isinstance(_m_over, dict) else None
-        if _revision:
-            load_kwargs["revision"] = _revision
-
-        # Pre-download the repo under a progress capture when the weights
-        # will come from the Hub — faster-whisper hardcodes a disabled tqdm,
-        # so the constructor's own multi-GB fetch is otherwise invisible in
-        # the log / jobs registry. Same snapshot args as faster_whisper's
-        # download_model (allow_patterns, cache_dir=download_root, revision,
-        # token), so the constructor then finds a warm cache. Best-effort:
-        # ANY failure falls through to the constructor's stock download.
-        if not load_kwargs.get("local_files_only") and not os.path.isdir(load_path):
-            try:
-                import download_progress
-                from huggingface_hub import snapshot_download
-                _dl_repo = load_path
-                if "/" not in _dl_repo:
-                    from faster_whisper.utils import _MODELS as _FW_MODELS
-                    _dl_repo = _FW_MODELS.get(_dl_repo) or ""
-                if _dl_repo:
-                    _dl_label = f"whisper:{name}"
-                    _dl_job = jobs.job_start("download", model=_dl_label)
-
-                    def _dl_hook(done, total, _job=_dl_job):
-                        jobs.job_update(
-                            _job,
-                            progress=(done / total) if total else None,
-                            total_bytes=total or None)
-
-                    _snap_kwargs = {
-                        "repo_id": _dl_repo,
-                        "allow_patterns": [
-                            "config.json", "preprocessor_config.json",
-                            "model.bin", "tokenizer.json", "vocabulary.*",
-                        ],
-                    }
-                    if _download_root:
-                        _snap_kwargs["cache_dir"] = _download_root
-                    if _revision:
-                        _snap_kwargs["revision"] = _revision
-                    if _auth_token:
-                        _snap_kwargs["token"] = _auth_token
-                    try:
-                        with download_progress.capture(
-                                _dl_label, cb=_dl_hook) as _cap:
-                            _snap_kwargs.update(_cap.tqdm_kwargs)
-                            await loop.run_in_executor(
-                                None,
-                                lambda: snapshot_download(**_snap_kwargs))
-                    finally:
-                        jobs.job_end(_dl_job)
-            except Exception as _dl_err:  # noqa: BLE001 — best-effort
-                logger.warning(
-                    "Pre-download of %s failed (%s); the model constructor "
-                    "will download instead", name, _dl_err)
-
         loaded_device = primary_device
         loaded_compute = primary_compute
         try:
