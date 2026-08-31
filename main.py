@@ -4631,6 +4631,26 @@ async def transcribe(
                     response["words"] = all_words
                 if speakers_list:
                     response["speakers"] = speakers_list
+                    # `speakers` gives labels but never said WHICH pipeline
+                    # produced them — unlike translation, which has always
+                    # reported its model. Same shape, so a client can render
+                    # both provenances identically.
+                    response["diarization"] = {
+                        "model": _diarization_model or None,
+                        "speakers": len(set(speakers_list)),
+                    }
+                # Separation left no trace in the response at all, so a client
+                # could not tell a vocals-only transcript from a raw one.
+                if _stage_ran(_stage_timings, "separating"):
+                    response["separation"] = {
+                        "model": _separation_model or None,
+                        "stem": "vocals",
+                    }
+                # Per-stage timings were built for the log and the client's
+                # progress rail and then dropped from the response, so a
+                # caller could see WHAT ran but never what it cost.
+                if _stage_timings:
+                    response["stages"] = _stage_timings
                 if _translation_meta is not None:
                     # Joined per-language transcripts. Deliberately NOT run
                     # through _postprocess_text: the pipeline's rules are
