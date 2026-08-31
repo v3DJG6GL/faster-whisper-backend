@@ -47,6 +47,11 @@ _CAP_STEPS_ROWS = 500
 _CAP_INTENDED = 2_000
 _CAP_COMMENT = 4_000
 _CAP_REQUEST_ID = 128
+# Job provenance, added so a report about a translation identifies the
+# translation. Same caps the recent-transcriptions store uses for the same
+# two fields, so a value that fits one row fits the other.
+_CAP_LANGUAGE = 32
+_CAP_STAGES_JSON = 20_000
 # Anything past this is not a plausible trace timestamp (year 2100). The point
 # is not the upper bound but rejecting inf/NaN: sqlite stores them in a REAL
 # column intact, and Starlette renders JSON with allow_nan=False, so one such
@@ -109,7 +114,27 @@ def init_db(path: str) -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA)
+    _ensure_columns(_conn)
     store_common.secure_db_file(path)
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Idempotent additive migrations for columns added after the initial
+    release. `CREATE TABLE IF NOT EXISTS` never alters an existing table, so
+    a new column must be ALTER-ed in here. Safe to run on every init.
+
+    Same convention as api_keys_store._ensure_columns; this store had no such
+    hook because it had never needed one."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(reports)")}
+    for col, ddl in (
+        # A report used to identify only the Whisper model, so "the French
+        # translation is wrong" produced a row naming neither the language
+        # nor the translation nor the model that made it.
+        ("language", "ADD COLUMN language TEXT"),
+        ("stages_json", "ADD COLUMN stages_json TEXT"),
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE reports {ddl}")
 
 
 def _require_conn() -> sqlite3.Connection:
@@ -151,6 +176,14 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         d["corrections"] = json.loads(d.pop("corrections_json", "[]") or "[]")
     except (TypeError, ValueError):
         d["corrections"] = []
+    # Absent on rows written before the provenance migration.
+    try:
+        d["stages"] = json.loads(d.pop("stages_json", None) or "[]")
+        if not isinstance(d["stages"], list):
+            d["stages"] = []
+    except (TypeError, ValueError):
+        d["stages"] = []
+    d["language"] = d.get("language") or ""
     return d
 
 
@@ -236,6 +269,8 @@ def upsert_report(
     user_comment: str,
     reporter_role: str,
     reporter_host: str,
+    language: "str | None" = None,
+    stages: "list | None" = None,
 ) -> "tuple[str, bool]":
     """Insert a new report or update the existing one keyed on
     (user_id, request_id). Returns (report_id, was_updated). The
@@ -260,6 +295,9 @@ def upsert_report(
     now = time.time()
     trace_t = _clean_trace_ts(trace_ts, now)
 
+    lang_t = (language or "")[:_CAP_LANGUAGE] or None
+    stages_t = json.dumps(stages or [], ensure_ascii=False)[:_CAP_STAGES_JSON]
+
     conn = _require_conn()
     if existing is not None:
         # Re-clean the union: three_way_merge_corrections returns current +
@@ -277,6 +315,10 @@ def upsert_report(
                 "  steps_json = ?, corrections_json = ?,"
                 "  intended_text = ?, user_comment = ?,"
                 "  reporter_role = ?, reporter_host = ?,"
+                # COALESCE so a resubmission that omits the provenance never
+                # blanks what the first submission recorded.
+                "  language = COALESCE(?, language),"
+                "  stages_json = COALESCE(?, stages_json),"
                 "  status = 'open', resolved_ts = NULL"
                 " WHERE id = ?",
                 (
@@ -284,6 +326,7 @@ def upsert_report(
                     json.dumps(steps_t, ensure_ascii=False),
                     json.dumps(merged, ensure_ascii=False),
                     intended_t, comment_t, role_t, reporter_host or "",
+                    lang_t, stages_t if stages else None,
                     rid,
                 ),
             )
@@ -298,15 +341,15 @@ def upsert_report(
             " raw, final, steps_json, corrections_json,"
             " intended_text, user_comment, reporter_role, reporter_host,"
             " status, admin_notes, resolved_ts,"
-            " user_id"
-            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            " user_id, language, stages_json"
+            ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 rid, now, trace_t, request_id, model,
                 raw_t, final_t,
                 json.dumps(steps_t, ensure_ascii=False),
                 json.dumps(corr_in, ensure_ascii=False),
                 intended_t, comment_t, role_t, reporter_host or "",
-                "open", "", None, user_id,
+                "open", "", None, user_id, lang_t, stages_t,
             ),
         )
         _evict_to_cap(conn)

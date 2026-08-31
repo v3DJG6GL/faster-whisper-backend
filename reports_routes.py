@@ -97,6 +97,12 @@ class ReportSubmitIn(BaseModel):
     # truncated) into a 422 with the text lost.
     intended_text: str = Field(default="", max_length=65_536)
     user_comment: str = Field(default="", max_length=65_536)
+    # Job provenance. extra="forbid" above means the client cannot send
+    # these until they are declared here -- a report about a translation
+    # used to identify neither the language nor the translation nor the
+    # model that produced it.
+    language: str = Field(default="", max_length=32)
+    stages: list[Any] = Field(default=[], max_length=32)
 
 
 # ---------------------------------------------------------------------
@@ -172,6 +178,8 @@ async def submit_report(
         user_comment=comment,
         reporter_role="admin" if is_admin else "user",
         reporter_host=host,
+        language=payload.language or None,
+        stages=list(payload.stages or []),
     )
     return JSONResponse({
         "ok": True,
@@ -942,6 +950,9 @@ _REPORTS_HTML = """<!doctype html>
             ? '<span class="pill" title="reported by (unknown user)">' + escapeHtml((r.user_id||'').slice(0,6)) + '</span>'
             : '')) +
       (r.model ? '<span class="pill">' + escapeHtml(r.model) + '</span>' : '') +
+      (r.language
+        ? '<span class="pill" title="language">' + escapeHtml(r.language) + '</span>'
+        : '') +
       (r.request_id
         ? '<span class="req" title="cross-reference key in the log file (grep req=' +
             escapeHtml((r.request_id || '').slice(0, 8)) + ')">req ' +
@@ -982,6 +993,24 @@ _REPORTS_HTML = """<!doctype html>
       v.textContent = value || '(empty)';
       row.appendChild(v);
       return row;
+    }
+    // What the job actually ran. Without it a report saying "the French
+    // translation is wrong" names neither the translation, its target, nor
+    // the model that produced it — the triager has nothing to act on.
+    var stages = Array.isArray(r.stages) ? r.stages : [];
+    if (stages.length) {
+      var parts = [];
+      for (var si = 0; si < stages.length; si++) {
+        var st = stages[si] || {};
+        if (!st.name) continue;
+        var bit = String(st.name);
+        if (st.model) bit += ' (' + st.model + ')';
+        if (st.detail) bit += ' · ' + st.detail;
+        parts.push(bit);
+      }
+      if (parts.length) {
+        card.appendChild(textLine('stages', 'pipeline', parts.join('   →   ')));
+      }
     }
     card.appendChild(textLine('raw', 'raw', r.raw));
     card.appendChild(textLine('final', 'final', r.final));

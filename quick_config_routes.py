@@ -2512,6 +2512,10 @@ async function submitReport(form) {
       steps: entry.steps || [],
       corrections: corrections,
       user_comment: comment,
+      // Provenance the trace row already carries. Sending it is what lets a
+      // triager see which translation a report is actually about.
+      language: entry.language || '',
+      stages: entry.stages || [],
     });
     if (!r.ok) {
       let msg = 'Report failed (' + r.status + ')';
