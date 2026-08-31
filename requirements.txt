@@ -33,7 +33,7 @@ python-dotenv>=1.2.3
 # present (AMD GPU / CPU dev box / macOS).
 nvidia-ml-py>=13.610.43
 psutil>=7.2.2
-pydantic>=2.13.4
+pydantic>=2.13.5
 
 # Bundled, cross-platform ffmpeg binary for the live-streaming endpoint's encoded
 # transport (browser Opus/WebM → 16 kHz PCM). Ships a static ffmpeg in the wheel
