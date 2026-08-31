@@ -235,6 +235,135 @@ env twins), needing `pip install -r requirements-translate.txt`:
 Model weights are not pip packages — GGUF files download on first use via
 huggingface_hub into the models volume (`HF_HOME`).
 
+### Rate limits & concurrency
+
+Four request budgets, all in the **Concurrency & Request Limits** settings
+group, all with `WHISPER_*` env twins, and all **hot** — the limiters re-read
+their ceiling on every call, so raising one applies to the next request with
+no restart and no bucket reset.
+
+| Setting | Shape | Guards |
+|---|---|---|
+| `TRANSLATE_MAX_INFLIGHT_PER_USER` | concurrency (default 2) | `POST /v1/text/translations` — how many translations one caller may have *running* |
+| `TRANSLATE_RATE_PER_MIN` | 120/min | backstop for a loop that never reaches the gauge because each attempt fails validation first |
+| `STREAMING_MAX_SESSIONS_PER_USER` | concurrency (default 4) | live-dictation WebSockets per caller |
+| `URL_PREVIEW_RATE_PER_MIN` | 10/min | `POST /v1/audio/url-preview` |
+| `CAPTURES_AUDIO_RATE_PER_MIN` | 240/min | capture-audio fetches |
+| `REPORTS_SUBMIT_RATE_PER_10MIN` | 20/10 min | user report submissions |
+| `LOGIN_FAILURE_RATE` | 10/min | `POST /auth/login` — **failures only** |
+
+**Keying.** Every budget except the login throttle is charged to
+`user_id → key_id → client host`, in that order: the user if the key carries
+one, else the key itself (machine clients often have no user), else the peer
+address. The host rung means several callers behind one NAT share a bucket —
+the conservative direction. In **open mode** (no admin key exists yet) every
+caller resolves to the same synthetic admin, so per-user budgets behave
+**server-wide** there; that is a property of open mode, not a bug, and it goes
+away the moment you create an admin key.
+
+**Concurrency vs rate.** `TRANSLATE_MAX_INFLIGHT_PER_USER` is a concurrency
+cap, not a per-minute ceiling, because a single translation can run for
+minutes — what hurts is one client holding the GGUF model while everyone else
+waits, and a per-minute counter cannot express that (a request can outlive its
+own window). `STREAMING_MAX_SESSIONS_PER_USER` is the per-caller twin of the
+server-wide `STREAMING_MAX_SESSIONS`: the per-user check runs first, so one
+client cannot fill the whole server-wide pool.
+
+**The login throttle** is keyed by client **host**, not identity — an attempt
+has no identity yet, and the key it presents is exactly what must not be
+trusted. Only *failures* count and a success clears the window, so fat-fingering
+one paste never walks you toward a lockout. It is a **cookie-login** guard
+only: bearer API-key auth is never throttled, so an automation client cannot
+be locked out by somebody else's browser. `LOGIN_FAILURE_RATE=0` disables it
+outright — the escape hatch if you ever throttle yourself out of the WebUI.
+
+**`0` = unlimited** for every setting above, and short-circuits before any
+bookkeeping, so a single-user box pays nothing for machinery it doesn't want.
+
+**The 429.** Bodies are OpenAI-shaped and name the field an admin would raise:
+
+```json
+{"error": {"message": "you already have 2 translations running — wait for one to finish",
+           "type": "rate_limit_exceeded",
+           "param": "TRANSLATE_MAX_INFLIGHT_PER_USER",
+           "retry_after": 5},
+ "detail": "you already have 2 translations running — wait for one to finish"}
+```
+
+`error.param` is the setting to raise; `Retry-After` rides as a header too (on
+a concurrency cap it is an advisory nudge — there is no honest deadline for
+"when somebody else finishes").
+
+**Per-process caveat.** All limiter state is in-process. With
+`SERVER_WORKERS > 1` each worker enforces its own copy, so every budget is
+effectively multiplied by the worker count. The threat model is "runaway
+script / accidental double-click / one client starving the others", not a
+motivated attacker spreading load across workers; anything stronger needs
+shared state (Redis) and does not belong in-process.
+
+### Model preloading
+
+`POST /v1/models/preload` asks the server to warm the models a job is about to
+need, so a stage's load happens *during* the previous stage instead of after
+it. User-tier bearer auth, no host allowlist — the same tier as `/v1/models`
+and `/v1/me`, which already publish `loaded` flags for these models.
+
+```bash
+curl -X POST http://localhost:8000/v1/models/preload \
+  -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"models":[{"family":"separation","id":"UVR-MDX-NET-Inst_HQ_4"},
+                 {"family":"diarization","id":"pyannote/speaker-diarization-community-1"}]}'
+```
+
+Families are `whisper`, `diarization`, `separation` and `translation`. (There
+is deliberately no `vad`: Silero ships inside faster-whisper, runs on the CPU
+and has neither a registry entry nor an evictor.) Each entry comes back with
+one of four states:
+
+- **`resident`** — already loaded; its idle clock was restarted.
+- **`loading`** — the worker is loading it now.
+- **`queued`** — admitted, waiting behind another load (one worker, so loads
+  serialise — which is also what keeps the VRAM measurement clean).
+- **`deferred`** — not warmed, with a `reason`: `insufficient_vram`,
+  `insufficient_ram`, `vram_unknown`, `size_unknown`, `family_busy`,
+  `not_allowed`, `stage_disabled`, `queue_full` or `disabled`.
+
+**The endpoint never errors.** It answers `202` for everything except a
+structurally invalid body (`422`). A model your allowlist refuses, a stage
+that is switched off and a server with preloading disabled all come back
+`202` + `deferred` + a reason, because the client's response to all three is
+the same: let the stage load its model in-band, exactly as it did before this
+endpoint existed. A `404` therefore keeps its old meaning — "this backend
+build is too old" — and never means "preloading is off here".
+
+The server registers the same kind of plan for every batch job once the stage
+plan is resolved, and advances it as the job moves between stages, so
+preloading works with no client changes at all. A client that already POSTed a
+plan can hand its id back on the transcribe request as the `preload_plan` form
+field instead of the server duplicating it.
+
+**Warm leases vs job leases.** A running job holds a *job lease*: its model
+cannot be freed underneath it. A plan holds a weaker *warm lease*, which does
+exactly one thing — makes the model ineligible for idle eviction (and for
+preload-driven eviction) while the plan is alive. It never forces a model to
+stay resident, never pins memory against a job that needs it, and never gates
+a loader, so **a job is never delayed by warmth**. Leases are released as a
+cascade: when a plan expires, its keys are dropped unless another live plan
+still wants them.
+
+Settings (Models → *Advanced — preload & warm cache*):
+`MODEL_PRELOAD_ENABLED` (master switch), `MODEL_PRELOAD_WARM_TTL_S` (plan
+lifetime, restamped by a re-POST and by every stage start of the owning job —
+so it bounds idle plans, not long ones), `MODEL_PRELOAD_VRAM_RESERVE_MB` /
+`MODEL_PRELOAD_RAM_RESERVE_MB` (headroom a preload must leave free; the VRAM
+figure is checked against the *driver's* free memory, since other processes on
+the card are invisible to our own bookkeeping), and
+`MODEL_PRELOAD_EVICT_IDLE_MODELS` (whether a preload may drop an idle,
+unleased, unwarmed peer of the same family to make room — off means "never
+disturb what is already loaded"). `/stats` carries a `preload` block (worker
+alive, plan count, warm count, queue depth) so you can tell the feature apart
+from the feature doing nothing.
+
 ### Allowed hosts
 
 WebUI access is gated by two IP/CIDR allowlists, bucketed by **privilege tier** — each is the outer (host) layer; an API key is still required on the data layer.
@@ -259,6 +388,8 @@ CIDR is accepted (`192.168.0.0/16`) and so are bare IPs (`10.0.0.5`). For a dual
 Two things change once the app is reached through a proxy:
 
 - **Client IP.** Without `FORWARDED_ALLOW_IPS` the app sees the *proxy's* IP, so the allowlists above gate on that (admin pages 403 for everyone). Set it to the proxy's IP/subnet — it is read by **uvicorn directly**, so it carries no `WHISPER_` prefix — and uvicorn then rewrites the client IP from `X-Forwarded-For`. Never `*` unless the app is unreachable except through the proxy (the header is spoofable).
+
+  This is also the **only** mechanism that makes per-host keying meaningful behind a proxy. Everything that falls back to the client host — the login throttle (always) and any rate limit charged to a caller with no user or key id (see [Rate limits & concurrency](#rate-limits--concurrency)) — otherwise sees one address for the whole internet, collapsing every caller into a single shared bucket. `FORWARDED_ALLOW_IPS` is peer-validated: uvicorn trusts `X-Forwarded-For` only when the *connecting socket* is one of the listed addresses, which is what stops a client from forging its way into somebody else's bucket. Set it to the proxy's address, never `*`.
 - **Origin.** Unsafe methods (`POST`/`PUT`/`DELETE`) must come from the same origin as the request's `Host` header. Nginx Proxy Manager, NPMplus, Caddy and Traefik pass `Host` through by default, so the check already succeeds and nothing is needed. A proxy configured to **rewrite `Host` to the upstream** (e.g. `proxy_set_header Host backend:8000`) makes every WebUI mutation fail with `403 Origin not allowed for this host` — list the public origin in `TRUSTED_ORIGINS`. This only widens that check; cross-origin API access is still governed solely by `CORS_ALLOW_ORIGINS`.
 
 ```bash
@@ -276,6 +407,7 @@ WHISPER_TRUSTED_ORIGINS=https://whisper.example.com  # only if the proxy rewrite
 - `POST /v1/text/translations` — **text-to-text** translation of caller-supplied text/segments into arbitrary target languages via local GGUF models (llama.cpp; see the Translation configuration group). Distinct from `/v1/audio/translations`: this translates finished text with a dedicated translation model, not audio with Whisper. 403 while `TRANSLATION_ENABLED` is off.
 - `WS   /v1/audio/transcriptions/stream` — live streaming dictation (raw 16 kHz PCM or browser WebM/Opus); see the Features section.
 - `GET  /v1/models` — list currently-loaded models, the configured default, and the allowlist (if set). Also carries the server's build identity — `server_name` ("faster-whisper-backend"), `server_version`, and the per-process `boot_id` — non-standard fields clients use to recognize the full backend and display its version. The version resolves via `WHISPER_BUILD_VERSION` (baked into container images by CI as `git describe`) or a runtime `git describe` on bare-metal checkouts (see `build_info.py`).
+- `POST /v1/models/preload` — ask the server to warm the models a job is about to need, so a stage's load overlaps the previous stage instead of following it. Always `202` (only a structurally invalid body is a `422`); each entry answers `resident`/`loading`/`queued`/`deferred`. See [Model preloading](#model-preloading).
 - `GET  /v1/me` — the caller's effective request-override capabilities (drives client UI).
 - `GET  /v1/override-profiles` (+ `/{name}`) — the override profiles this caller may request per-request; name list / single-profile preview.
 - `GET/PATCH /v1/pipeline-rules` — the exposed post-processing rules this caller may view/edit (same gating + semantics as `/quick-config`, for API clients).
