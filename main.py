@@ -3755,6 +3755,20 @@ async def transcribe(
                     _user_id, _preload_entries, plan_id=_plan_hint)
                 _PLAN_BY_PID[_pid] = _plan["plan_id"]
 
+            # Now that the stage plan is resolved, tell the running-jobs
+            # registry what this job is going to DO. job_start fires before
+            # the plan exists, so /stats showed a bare "—" for the whole life
+            # of a job that was about to separate, diarize and translate.
+            _plan_names = [n for n, on in (("separate", _separate),
+                                           ("diarize", _diarize),
+                                           ("translate", bool(_translate_to)))
+                           if on]
+            if _plan_names:
+                _job_detail = " + ".join(_plan_names)
+                if _translate_to:
+                    _job_detail += f" → {','.join(_translate_to)}"
+                jobs.job_update(request_id, detail=_job_detail)
+
             # Optional per-request decode overrides (JSON object). Malformed → ignored.
             _overrides = {}
             if decode_overrides:
@@ -3943,8 +3957,17 @@ async def transcribe(
             # fails (undecodable bytes, native stack absent), fall back to
             # passing the path so the request fails — or a stubbed model
             # succeeds — exactly as without the feature.
+            # transcribe() decodes the audio and runs Silero EAGERLY, before
+            # it hands back the segment generator (see _collect's note). That
+            # makes the pre-roll separately measurable from the decode itself,
+            # which is the only reason VAD can be a real stage row rather than
+            # a footnote. Written once from the executor thread; a plain dict
+            # write is GIL-atomic, same as the _progress_set traffic below.
+            _decode_timing: dict = {}
+
             def _do_transcribe(_model=model, _path=tmp_path,
-                               _kw=transcribe_kwargs, _pad_ms=_lead_pad_ms):
+                               _kw=transcribe_kwargs, _pad_ms=_lead_pad_ms,
+                               _t=_decode_timing):
                 # Materialize the lazy segment generator WITH live progress:
                 # each yielded segment carries its end time, and info.duration
                 # is known up front — that ratio is genuine decode progress
@@ -4011,10 +4034,14 @@ async def transcribe(
                             _pad_err)
                         _audio = None
                 if _audio is not None:
+                    _pre = time.perf_counter()
                     _segs, _info = _model.transcribe(_audio, **_kw)
+                    _t["pre_secs"] = time.perf_counter() - _pre
                     return (*_shift_to_original_timeline(
                         _collect(_segs, _info), _info, _pad_ms / 1000.0), True)
+                _pre = time.perf_counter()
                 _segs, _info = _model.transcribe(_path, **_kw)
+                _t["pre_secs"] = time.perf_counter() - _pre
                 return _collect(_segs, _info), _info, False
             loop = asyncio.get_running_loop()
             _progress_set(_pid, stage="waiting", progress=None,
@@ -4026,9 +4053,32 @@ async def transcribe(
                 _dec_t0 = time.perf_counter()
                 segments_iter, info, _pad_applied = await loop.run_in_executor(
                     None, _do_transcribe)
+                _total_secs = time.perf_counter() - _dec_t0
+                # VAD is the stage that most often eats the user's audio and
+                # it was the only one with no row anywhere — /stats, the
+                # receipt and the trace viewer were all blind to it. Its cost
+                # is the eager pre-roll, so bill it separately and leave the
+                # decode row showing decode only, rather than double-counting.
+                _pre_secs = float(_decode_timing.get("pre_secs") or 0.0)
+                if transcribe_kwargs.get("vad_filter") and _pre_secs > 0:
+                    _dav_v = getattr(info, "duration_after_vad", None)
+                    _dur_v = float(getattr(info, "duration", 0.0) or 0.0)
+                    _detail = "audio decode + Silero"
+                    if _dav_v is not None and _dur_v > 0:
+                        _detail += (f" · {float(_dav_v):.2f}s kept of "
+                                    f"{_dur_v:.2f}s "
+                                    f"({float(_dav_v) / _dur_v * 100:.0f} %)")
+                    _stage_timings.append({
+                        "name": "vad",
+                        "secs": round(_pre_secs, 2),
+                        "model": "silero",
+                        "device": "cpu",
+                        "detail": _detail,
+                    })
+                    _total_secs = max(0.0, _total_secs - _pre_secs)
                 _stage_timings.append({
                     "name": "transcribing",
-                    "secs": round(time.perf_counter() - _dec_t0, 2),
+                    "secs": round(_total_secs, 2),
                     "model": resolved_model,
                     **_stage_extras(resolved_model, _dec_t0),
                 })

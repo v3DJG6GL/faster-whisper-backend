@@ -396,7 +396,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
     metrics.in_flight_transcriptions += 1
     # Central running-jobs registry: one "dictate" entry per live session
     # (no progress — a dictation has no defined end until the client stops).
-    jobs.job_start("dictate", id=session_id,
+    jobs.job_start("dictate", id=session_id, detail="live",
                    user=user.get("user_id"), key=user.get("key_id"))
     session: "StreamSession | None" = None
     # One entry per lease taken by _load_with_keepalive. The final and partial
@@ -851,10 +851,19 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 logger.error("[stream %s] record_trace failed: %s", session_id[:8], _qe)
 
             # Timing/usage half — UPSERTs onto the same request_id row as record_trace.
+            # kind + stages are both supported here and were both omitted,
+            # which is why every dictation row on /stats read "no per-stage
+            # timings recorded" and fell back to the synthetic pipeline glyph.
+            # A live utterance has exactly one stage, but saying so beats
+            # saying nothing and makes dictation rows comparable with batch.
             metrics.record_transcription(
                 model=final_model, audio_dur=info["audio_dur"],
                 proc_dur=info["proc_dur"], status="ok",
-                words=len(final_text.split()),
+                words=len(final_text.split()), kind="dictate",
+                stages=[{"name": "transcribing",
+                         "secs": round(float(info["proc_dur"] or 0.0), 2),
+                         "model": final_model,
+                         "detail": f"utt#{info['utterance']}"}],
                 request_id=rid, user_id=user.get("user_id"), key_id=user.get("key_id"))
 
         session = StreamSession(

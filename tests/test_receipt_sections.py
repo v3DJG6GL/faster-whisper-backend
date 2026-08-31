@@ -90,6 +90,26 @@ def test_pipeline_table_splits_load_from_run(app_module):
     assert "0.0s" in whi
 
 
+def test_vad_renders_as_its_own_stage(app_module):
+    """VAD is the stage that most often eats the user's audio and it had no
+    row anywhere. transcribe() runs Silero eagerly before handing back the
+    generator, so the cost is genuinely separable from the decode."""
+    stages = [
+        {"name": "vad", "secs": 1.2, "model": "silero", "device": "cpu",
+         "detail": "audio decode + Silero · 13.24s kept of 13.56s (98 %)"},
+        {"name": "transcribing", "secs": 12.4, "model": "large-v2",
+         "device": "cuda", "load_secs": 0.0},
+    ]
+    block = _block(app_module, stages=stages)
+    row = next(l for l in block.splitlines() if " vad " in l)
+    assert "silero" in row and "cpu" in row and "1.2s" in row
+    assert "98 %" in block
+    # VAD sorts ahead of the decode it precedes.
+    names = [l.split()[1] for l in block.splitlines()
+             if l.startswith("     ") and ("vad" in l or "transcribing" in l)]
+    assert names == ["vad", "transcribing"]
+
+
 def test_pipeline_header_says_stage_count_and_wall(app_module):
     block = _block(app_module, stages=_STAGES)
     head = next(l for l in block.splitlines() if "─── Pipeline" in l)
