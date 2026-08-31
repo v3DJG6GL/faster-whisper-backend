@@ -110,6 +110,15 @@ def _reset_singletons():
     except Exception:
         pass
 
+    # shared per-identity limiters (rate_limit._ALL): one hook clears every
+    # FixedWindow/InFlight bucket, so a limit tripped in one case cannot 429
+    # or refuse a slot in the next.
+    try:
+        import rate_limit
+        rate_limit.reset_all()
+    except Exception:
+        pass
+
     # translation model LRU (module-global cache of loaded GGUF models —
     # tests only ever put stubs in it, but they must not leak across tests).
     try:

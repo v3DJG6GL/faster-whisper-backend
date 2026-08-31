@@ -30,6 +30,9 @@ import store_common
 # import-safe without its optional deps (llama_cpp loads lazily inside the
 # model-load path), and the stage + lifespan both need it.
 import translation as _tr
+# Shared per-identity limiters. Imports only stdlib + fastapi + config, so it
+# is safe this early and cannot close an import cycle back through main.
+import rate_limit as _rl
 
 # =============================================================================
 # Logging setup: stderr (with colors when TTY) + rotating file (no colors)
@@ -2760,6 +2763,21 @@ async def _security_headers_mw(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Content-Security-Policy", _CSP)
     return response
+
+
+@app.exception_handler(_rl.RateLimited)
+async def _rate_limited_handler(request: Request, exc: _rl.RateLimited):
+    """Render every rate-limit refusal as the typed envelope from
+    RateLimited.body() — which config field refused, and for how long.
+
+    Registered for the SUBCLASS: Starlette walks type(exc).__mro__ looking for
+    a handler, so this wins over the built-in HTTPException one even though
+    RateLimited is an HTTPException. Without it the default handler would emit
+    {"detail": …} and drop error.param/error.retry_after.
+    """
+    from fastapi.responses import JSONResponse
+    return JSONResponse(exc.body(), status_code=429,
+                        headers={"Retry-After": str(exc.retry_after)})
 
 
 def _shift_to_original_timeline(segments, info, pad_s: float):
