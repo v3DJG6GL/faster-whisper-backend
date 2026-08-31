@@ -53,6 +53,7 @@ import effective_config
 import jobs
 import metrics
 import rate_limit
+import receipt_hold
 import store_common
 import web_common
 from streaming_session import StreamConfig, StreamSession
@@ -480,6 +481,25 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _req_profile = conf.get("override_profile")
         req_override_profile = (_req_profile.strip() or None
                                 if isinstance(_req_profile, str) else None)
+        # The client DECLARES that it will translate this session's utterances
+        # on a separate request. Without a declaration the per-utterance
+        # receipt is logged immediately, exactly as before — which is what
+        # keeps an older client's log identical. With one, the receipt is
+        # held until the translation lands so the two halves read as one
+        # block. Defensively typed like override_profile above: a malformed
+        # handshake value degrades to "no declaration", never a crash.
+        _tx = conf.get("translate_expect")
+        translate_expect: "dict | None" = None
+        if isinstance(_tx, dict):
+            _tgts = _tx.get("targets")
+            if isinstance(_tgts, list):
+                _clean = [t.strip()[:16] for t in _tgts
+                          if isinstance(t, str) and t.strip()][:8]
+                if _clean:
+                    translate_expect = {
+                        "targets": _clean,
+                        "include_original": bool(_tx.get("include_original")),
+                    }
         include_words = response_format == "verbose_json"
         audio_fmt = (conf.get("audio") or {}).get("format", "pcm_s16le")
         if audio_fmt not in RAW_FORMATS and audio_fmt not in ENCODED_FORMATS:
@@ -821,7 +841,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # VAD-ate-audio / empty-output / pipeline-step diagnostics show up for
             # streaming too. file_label marks it as a streamed utterance.
             try:
-                logger.info(main._format_request_block(
+                _block_kwargs = dict(
                     file_label=f"stream {session_id[:8]} utt#{info['utterance']}  "
                                f"({info['audio_dur']:.2f}s, "
                                f"{store_common.log_safe(str(response_format))})",
@@ -833,7 +853,33 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     ident=ident, overrides_ignored=overrides_ignored,
                     user_id=user.get("user_id"), key_id=user.get("key_id"),
                     username=user.get("username"), key_label=user.get("key_label"),
-                    guards=dec.get("guards")))
+                    guards=dec.get("guards"),
+                    stages=[{"name": "transcribing",
+                             "secs": round(float(info["proc_dur"] or 0.0), 2),
+                             "model": final_model}])
+                # Hold only when the client said a translation is coming AND
+                # there is a capture id to key it on — that id is the only
+                # handle the separate translate request can name us by.
+                if translate_expect and captured_id:
+                    _block_kwargs["translation"] = {
+                        "targets": list(translate_expect["targets"]),
+                        "include_original": translate_expect["include_original"],
+                        "model": None, "mode": None,
+                    }
+                    receipt_hold.park(
+                        captured_id, _block_kwargs,
+                        hold_s=float(getattr(cfg, "LOG_RECEIPT_HOLD_S", 90)))
+                    # Tell the client which capture to claim. The `final`
+                    # frame has already gone out by the time on_final runs
+                    # (streaming_session emits it first), so this rides its
+                    # own follow-up frame.
+                    try:
+                        await emit({"type": "captured", "id": captured_id,
+                                    "utterance": info["utterance"]})
+                    except Exception:  # noqa: BLE001 — best effort
+                        pass
+                else:
+                    logger.info(main._format_request_block(**_block_kwargs))
             except Exception as _le:  # noqa: BLE001
                 logger.warning("[stream %s] log block failed: %s", session_id[:8], _le)
 

@@ -878,6 +878,46 @@ def _stage_extras(stats_key: "str | None", t0_perf: float) -> dict:
     return out
 
 
+def _log_held_receipts(entries: "list[dict]") -> None:
+    """Render and log receipts released without their translation.
+
+    A held receipt that vanished would be strictly worse than the split one
+    it replaces, so every release path funnels through here — including the
+    sweeper's and the shutdown flush's."""
+    for kwargs in entries:
+        try:
+            logger.info(_format_request_block(**kwargs))
+        except Exception as e:  # noqa: BLE001 — a receipt is never fatal
+            logger.warning("[receipt] release render failed: %s", e)
+
+
+def _release_held_receipt(key: "str | None", note: str) -> None:
+    """Release one held receipt on a translate failure/cancel path."""
+    if not key:
+        return
+    entry = receipt_hold.release(key, note)
+    if entry is not None:
+        _log_held_receipts([entry])
+
+
+async def _receipt_sweeper() -> None:
+    """Release receipts whose translation went quiet.
+
+    The hold is an IDLE timer restamped by the translate job's progress
+    heartbeat, so this only fires for a translation that crashed, wedged, or
+    was never sent at all — never for one that is merely slow."""
+    while True:
+        try:
+            await asyncio.sleep(5.0)
+            released = receipt_hold.sweep()
+            if released:
+                _log_held_receipts(released)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — a sweeper must not die
+            logger.warning("[receipt] sweeper error: %s", e)
+
+
 def _stage_ran(stages: "list | None", name: str) -> bool:
     """Did this stage produce a timing entry? The one honest test for "the
     stage ran" — the request FLAGS say what was asked for, which is a
@@ -2520,6 +2560,7 @@ async def lifespan(app: FastAPI):
     # cadence shape as the four evictors above.
     await preload.start()
     preload_sweeper_task = asyncio.create_task(preload.sweeper_loop())
+    receipt_sweeper_task = asyncio.create_task(_receipt_sweeper())
 
     # Best-effort preloads for the optional stages (translation GGUFs,
     # diarization pipeline, BGM separator).
@@ -2691,6 +2732,10 @@ async def lifespan(app: FastAPI):
     # Before the model drops below: stop() clears the warm predicate, so the
     # shutdown teardown cannot be second-guessed by a lease nobody can renew.
     await _cancel(preload_sweeper_task)
+    await _cancel(receipt_sweeper_task)
+    # Anything still waiting on a translation that will now never come. A
+    # restart must not eat a receipt that was merely being patient.
+    _log_held_receipts(receipt_hold.flush_all())
     await preload.stop()
     if url_media_janitor_task is not None:
         await _cancel(url_media_janitor_task)
@@ -2824,6 +2869,10 @@ import jobs
 # below (the two `loaded` flag endpoints and _progress_set) reach it on hot
 # paths. preload itself imports main only lazily, so the cycle never closes.
 import preload
+
+# Dictation receipts held open until their translation arrives on a separate
+# request. Imports nothing from the app, so no cycle.
+import receipt_hold
 
 
 _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
@@ -5029,6 +5078,14 @@ async def translate_text(request: Request,
     _pid = progress_id if (isinstance(progress_id, str)
                            and _PROGRESS_ID_RE.match(progress_id)) else None
 
+    # A dictation utterance whose receipt is being held open for us. The
+    # stream logged nothing for it and is waiting on this request to complete
+    # the block, so EVERY exit below has to release it — including the ones
+    # that never reach the success path.
+    _cap = body.get("captured_id")
+    _held_key = (_cap.strip()[:64]
+                 if isinstance(_cap, str) and _cap.strip() else None)
+
     # ── Canonical job logging ────────────────────────────────────────────
     # Start receipt now, throttled heartbeats from the progress wrapper,
     # and a mirrored terminal line (✓ done / ✗ failed / ✗ cancelled) on
@@ -5068,6 +5125,12 @@ async def translate_text(request: Request,
             now = time.perf_counter()
             if _hb["first_cb"] is None:
                 _hb["first_cb"] = now
+            # Restamp the held receipt's IDLE timer. This is what makes the
+            # hold safe to keep short: a cold GGUF load that takes two minutes
+            # keeps its receipt alive because it keeps reporting, while a
+            # wedged one stops reporting and is released on schedule.
+            if _held_key:
+                receipt_hold.touch(_held_key)
             pct = int(max(0.0, min(1.0, f or 0.0)) * 100)
             # Log on every crossed 10% boundary, and at least every 30 s.
             if (now - _hb["last_log"] >= 30.0
@@ -5144,6 +5207,9 @@ async def translate_text(request: Request,
     except _ClientCancelled:
         logger.info("[translate] req=%s ✗ cancelled after %.1fs",
                     request_id[:8], time.perf_counter() - _t0)
+        _release_held_receipt(
+            _held_key,
+            f"cancelled by client after {time.perf_counter() - _t0:.1f}s")
         _record_run("cancelled")
         raise HTTPException(status_code=499, detail="cancelled by the client")
     except _tr.TranslationError as e:
@@ -5151,14 +5217,21 @@ async def translate_text(request: Request,
         logger.info("[translate] req=%s ✗ failed after %.1fs (%s)",
                     request_id[:8], time.perf_counter() - _t0,
                     _log_safe(str(e)))
+        _release_held_receipt(
+            _held_key,
+            f"failed after {time.perf_counter() - _t0:.1f}s — {_log_safe(str(e))}")
         _record_run("failed")
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
+        _release_held_receipt(_held_key, "request rejected")
         raise
     except Exception as e:  # noqa: BLE001 — never forward raw errors
         logger.error("[translate] req=%s ✗ failed after %.1fs: %s",
                      request_id[:8], time.perf_counter() - _t0,
                      _log_safe(str(e)))
+        _release_held_receipt(
+            _held_key,
+            f"failed after {time.perf_counter() - _t0:.1f}s")
         _record_run("failed")
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
@@ -5191,6 +5264,39 @@ async def translate_text(request: Request,
         len(seg_in), ",".join(targets), total_chars, _chars_out,
         len(warnings))
     _record_run("ok")
+
+    # Complete the dictation receipt this request was holding open, so the
+    # utterance and its translation read as ONE block instead of a receipt
+    # and four orphan [translate] lines with nothing linking them.
+    if _held_key:
+        _used_model = meta.get("model") or _tr_model
+        _tr_key = preload.stats_key("translation", _used_model or "")
+        _held = receipt_hold.claim(_held_key)
+        if _held is not None:
+            _held["translation"] = {
+                "model": _used_model or None,
+                "device": _model_compute_device(_tr_key)[1] or _OMIT,
+                "targets": list(targets),
+                "source": (source or "").strip() or _OMIT,
+                "mode": mode,
+                "result": (f"{len(seg_in)} segs · {total_chars} chars in / "
+                           f"{_chars_out} out · {len(warnings)} guard fallbacks"),
+            }
+            # Append the translate row to the stage table the utterance was
+            # parked with, so the Pipeline section shows both halves and the
+            # cold-load cost lands where a reader looks for it.
+            _held["stages"] = list(_held.get("stages") or []) + [{
+                "name": "translating",
+                "secs": round(_elapsed, 2),
+                "model": _used_model or None,
+                "load_secs": round(_load_s, 2),
+                "device": _model_compute_device(_tr_key)[1],
+                "detail": f"{len(seg_in)} segs → {','.join(targets)}",
+            }]
+            try:
+                logger.info(_format_request_block(**_held))
+            except Exception as _me:  # noqa: BLE001 — never fail on a receipt
+                logger.warning("[translate] held receipt render failed: %s", _me)
 
     # kept_original: targets for which the guard fallback returned the SOURCE
     # text — without it a kept German line under translations["en"] is

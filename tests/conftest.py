@@ -95,6 +95,14 @@ def _reset_singletons():
     except Exception:
         pass
 
+    # held dictation receipts — a leftover would be swept into a later test's
+    # log output, and would count against the pending cap.
+    try:
+        import receipt_hold
+        receipt_hold._reset_for_tests()
+    except Exception:
+        pass
+
     # preload plan registry + warm leases. The warm predicate is cleared
     # separately from _reset_for_tests: one left installed in system_stats
     # would keep a later eviction test's model pinned by a plan this test
