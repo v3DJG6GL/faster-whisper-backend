@@ -760,6 +760,45 @@ SESSION_CSRF_COOKIE_NAME = _D("SESSION_CSRF_COOKIE_NAME")
 
 
 # =============================================================================
+# Concurrency & request limits
+# =============================================================================
+# Per-identity budgets enforced by rate_limit.py. Identity is the user id, else
+# the API key id, else the client host — so a shared LAN egress IP is only the
+# fallback rung. Every limit here is HOT (the limiters re-read this module on
+# each call) and treats 0 as unlimited. All state is in-process: with
+# SERVER_WORKERS > 1 each worker enforces its own copy, so the effective budget
+# is N times the number configured.
+
+# Concurrent /v1/text/translations decodes per identity. Sized so one client
+# cannot monopolise the translation model while others wait.
+TRANSLATE_MAX_INFLIGHT_PER_USER: int = _D("TRANSLATE_MAX_INFLIGHT_PER_USER")
+
+# Loose per-minute backstop against a runaway client loop. The in-flight cap
+# above is the real protection; this only bounds pathological churn.
+TRANSLATE_RATE_PER_MIN: int = _D("TRANSLATE_RATE_PER_MIN")
+
+# Live streaming sessions one identity may hold. Checked BEFORE the server-wide
+# STREAMING_MAX_SESSIONS so a single client cannot take the whole pool.
+STREAMING_MAX_SESSIONS_PER_USER: int = _D("STREAMING_MAX_SESSIONS_PER_USER")
+
+# URL previews per identity per 60s. The preview makes the SERVER fetch a
+# third-party page, so the abuse lands on someone else's infrastructure —
+# hence the tight default.
+URL_PREVIEW_RATE_PER_MIN: int = _D("URL_PREVIEW_RATE_PER_MIN")
+
+# Capture-audio fetches per identity per 60s. Sized for the review UI's burst
+# pattern (scrubbing through a page of captures), not steady-state use.
+CAPTURES_AUDIO_RATE_PER_MIN: int = _D("CAPTURES_AUDIO_RATE_PER_MIN")
+
+# Report submissions per identity per 600s — a flood guard on a durable store.
+REPORTS_SUBMIT_RATE_PER_10MIN: int = _D("REPORTS_SUBMIT_RATE_PER_10MIN")
+
+# FAILED /auth/login attempts per client host per 60s. Keyed by host, not
+# identity: a login attempt has no identity yet. A success clears the window.
+LOGIN_FAILURE_RATE: int = _D("LOGIN_FAILURE_RATE")
+
+
+# =============================================================================
 # Transcription error reports
 # =============================================================================
 # Users can flag a wrong transcription from /quick-config; admins triage on

@@ -619,6 +619,35 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "SESSION_CSRF_COOKIE_NAME":
         "Name of the JS-readable CSRF cookie echoed back as the X-CSRF-Token "
         "header on cookie-authenticated mutations. Letters, digits, '_', '-'.",
+    # --- Concurrency & request limits ---
+    "TRANSLATE_MAX_INFLIGHT_PER_USER":
+        "Max /v1/text/translations requests one identity (user, else API key, "
+        "else client IP) may have decoding at once; further requests are "
+        "refused with 429 rather than queued behind a long job. 0 = unlimited.",
+    "TRANSLATE_RATE_PER_MIN":
+        "Ceiling on /v1/text/translations requests per identity per 60 "
+        "seconds. A loose backstop against a runaway client loop, not a quota "
+        "— the in-flight cap is what protects the GPU. 0 = unlimited.",
+    "STREAMING_MAX_SESSIONS_PER_USER":
+        "Max simultaneous streaming sessions ONE identity may hold. Checked "
+        "before the server-wide STREAMING_MAX_SESSIONS, so one client cannot "
+        "take the whole pool. 0 = unlimited (only the global cap applies).",
+    "URL_PREVIEW_RATE_PER_MIN":
+        "Ceiling on URL-preview requests per identity per 60 seconds. Each "
+        "preview makes the SERVER fetch a third-party page, so this bounds "
+        "what an authenticated client can aim outbound. 0 = unlimited.",
+    "CAPTURES_AUDIO_RATE_PER_MIN":
+        "Ceiling on capture-audio fetches per identity per 60 seconds. Sized "
+        "for the review UI's burst pattern (scrubbing a page of captures), "
+        "not for steady-state use. 0 = unlimited.",
+    "REPORTS_SUBMIT_RATE_PER_10MIN":
+        "Ceiling on report submissions per identity per 600 seconds — keeps "
+        "one client from flooding the reports store. 0 = unlimited.",
+    "LOGIN_FAILURE_RATE":
+        "Max FAILED /auth/login attempts per client host per 60 seconds "
+        "before further attempts are refused; a successful login clears the "
+        "host's window immediately. 0 = unlimited.",
+
     # --- Reports store ---
     "REPORTS_DB":
         "Path to the SQLite file holding transcription error reports. "
@@ -782,7 +811,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Off → the endpoint refuses connections (batch /transcribe is unaffected).",
     "STREAMING_MAX_SESSIONS":
         "Max simultaneous streaming sessions; further connections are refused. "
-        "Bound to your GPU's real concurrent capacity.",
+        "Bound to your GPU's real concurrent capacity. A single client is "
+        "additionally capped by STREAMING_MAX_SESSIONS_PER_USER, which is "
+        "checked first.",
     "STREAMING_IDLE_TIMEOUT_SEC":
         "Close a live-dictation connection that sends no audio for this many "
         "seconds, freeing its slot (bounds idle/abandoned connections). 0 = off. "
@@ -1818,6 +1849,47 @@ class AdminConfig(BaseModel):
     ] | None = _F(
         "SESSION_CSRF_COOKIE_NAME", scope="server",
         group="Access & sessions", subgroup="Browser sessions (cookie auth)")
+    # --- Concurrency & request limits ---
+    # All hot: the limiters re-read cfg on every call, so an edit takes effect
+    # on the next request with no restart and no bucket reset. Every one of
+    # them treats 0 as "unlimited" — the escape hatch for a single-user box.
+    # Budgets are per PROCESS: SERVER_WORKERS > 1 splits each one N ways.
+    TRANSLATE_MAX_INFLIGHT_PER_USER: Annotated[
+        int, Field(ge=0, le=64)
+    ] | None = _F(
+        "TRANSLATE_MAX_INFLIGHT_PER_USER", scope="server",
+        group="Concurrency & Request Limits", order=1)
+    TRANSLATE_RATE_PER_MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "TRANSLATE_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=2)
+    STREAMING_MAX_SESSIONS_PER_USER: Annotated[
+        int, Field(ge=0, le=256)
+    ] | None = _F(
+        "STREAMING_MAX_SESSIONS_PER_USER", scope="server",
+        group="Concurrency & Request Limits", order=3)
+    URL_PREVIEW_RATE_PER_MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "URL_PREVIEW_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=4)
+    CAPTURES_AUDIO_RATE_PER_MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "CAPTURES_AUDIO_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=5)
+    REPORTS_SUBMIT_RATE_PER_10MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "REPORTS_SUBMIT_RATE_PER_10MIN", scope="server",
+        group="Concurrency & Request Limits", order=6)
+    LOGIN_FAILURE_RATE: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "LOGIN_FAILURE_RATE", scope="server",
+        group="Concurrency & Request Limits", order=7)
+
     # --- Reports store ---
     REPORTS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "REPORTS_DB", scope="server", group="Reports")
@@ -2445,6 +2517,7 @@ _GROUP_ORDER: list[tuple[str, list[str | None]]] = [
     ("Logging", [None]),
     ("Server", [None]),
     ("Access & sessions", [None, "Browser sessions (cookie auth)"]),
+    ("Concurrency & Request Limits", [None]),
     ("Reports", [None]),
     ("Recent transcriptions", [None]),
     ("Captures", [
