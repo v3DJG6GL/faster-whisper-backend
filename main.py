@@ -1994,6 +1994,12 @@ async def _idle_evictor() -> None:
             for name, info in list(system_stats._loaded_models.items()):
                 if name not in _loaded_models:
                     continue
+                # A warm lease (some live preload plan still expects this
+                # model) outranks the idle clock but never a job lease — see
+                # preload.py's precedence note. The predicate is inverted
+                # through system_stats so this module needn't import preload.
+                if system_stats.is_warm(name):
+                    continue
                 last = info.get("last_used_monotonic", now)
                 if now - last >= timeout:
                     stale.append(name)
@@ -2285,6 +2291,11 @@ async def lifespan(app: FastAPI):
     # import at the top of the file; TRANSLATION_IDLE_TIMEOUT_S read live).
     translation_evictor_task = asyncio.create_task(
         _tr.idle_evictor_loop())
+    # Model preloading: bind the worker to THIS loop (on_stage_start hands
+    # work to it from executor threads) and run the plan sweeper on the same
+    # cadence shape as the four evictors above.
+    await preload.start()
+    preload_sweeper_task = asyncio.create_task(preload.sweeper_loop())
 
     # Best-effort preloads for the optional stages (translation GGUFs,
     # diarization pipeline, BGM separator).
@@ -2453,6 +2464,10 @@ async def lifespan(app: FastAPI):
     await _bgm_separation.drop_separator()
     await _cancel(translation_evictor_task)
     await _tr.drop_models()
+    # Before the model drops below: stop() clears the warm predicate, so the
+    # shutdown teardown cannot be second-guessed by a lease nobody can renew.
+    await _cancel(preload_sweeper_task)
+    await preload.stop()
     if url_media_janitor_task is not None:
         await _cancel(url_media_janitor_task)
     await _cancel(reports_sweep_task)
@@ -2577,9 +2592,14 @@ async def _redoc_ui():
 # HTTP request — bumps in_flight tracked separately by the transcribe handler.
 import metrics
 
-# Central running-jobs registry (transcribe/dictate/translate/download) —
-# feeds /stats and the WebUI header activity cluster.
+# Central running-jobs registry (transcribe/dictate/translate/download/preload)
+# — feeds /stats and the WebUI header activity cluster.
 import jobs
+
+# Model preloading. Imported here rather than lazily because three call sites
+# below (the two `loaded` flag endpoints and _progress_set) reach it on hot
+# paths. preload itself imports main only lazily, so the cycle never closes.
+import preload
 
 
 _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
@@ -5002,7 +5022,10 @@ async def list_models():
                 "object": "model",
                 "created": now,
                 "owned_by": "local",
-                "loaded": n in _loaded_models,
+                # preload.is_resident, not `n in _loaded_models`: one
+                # residency predicate for all four families, so this flag and
+                # the preloader's admission ladder can never disagree.
+                "loaded": preload.is_resident("whisper", n),
             }
             for n in names
         ],
@@ -5058,7 +5081,8 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
             if _ref not in _t_refs:
                 _t_refs.append(_ref)
         caps["translation_models"] = [
-            {"id": _ref, "loaded": _ref in _tr._models} for _ref in _t_refs]
+            {"id": _ref, "loaded": preload.is_resident("translation", _ref)}
+            for _ref in _t_refs]
         # Language menu for the client's target picker. resolve_family("")
         # is exception-free: no configured pin → detect_family("") → the
         # generic chatml family, whose list is the shared code set anyway.
@@ -5087,21 +5111,14 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # Additive: the stage-model allowlists with a loaded flag, mirroring
     # translation_models — the client's model pickers pre-flight on these.
     # "Loaded" = the module's single cached instance is exactly this model
-    # (both stages cache one pipeline/separator at a time).
-    import bgm_separation as _bgm
-    import diarization as _diar
-    _diar_loaded = (_diar._pipeline_key[0]
-                    if _diar._pipeline_key else None)
+    # (both stages cache one pipeline/separator at a time). preload.is_resident
+    # owns that comparison for every family, including the separator's
+    # friendly-name → ".onnx" filename mapping this used to open-code.
     caps["diarization_models"] = [
-        {"id": _m, "loaded": _m == _diar_loaded}
+        {"id": _m, "loaded": preload.is_resident("diarization", _m)}
         for _m in (getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or [])]
-    # The separator caches by on-disk FILENAME (".onnx" implied), the
-    # allowlist holds friendly names — compare through the same mapping.
-    _sep_loaded = (_bgm._separator_key[0]
-                   if _bgm._separator_key else None)
     caps["separation_models"] = [
-        {"id": _m,
-         "loaded": (_m if "." in _m else f"{_m}.onnx") == _sep_loaded}
+        {"id": _m, "loaded": preload.is_resident("separation", _m)}
         for _m in (getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or [])]
     return caps
 

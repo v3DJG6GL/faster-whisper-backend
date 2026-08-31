@@ -95,6 +95,21 @@ def _reset_singletons():
     except Exception:
         pass
 
+    # preload plan registry + warm leases. The warm predicate is cleared
+    # separately from _reset_for_tests: one left installed in system_stats
+    # would keep a later eviction test's model pinned by a plan this test
+    # owned, and the failure would look like a broken evictor.
+    try:
+        import preload
+        preload._reset_for_tests()
+    except Exception:
+        pass
+    try:
+        import system_stats as _ss
+        _ss.set_warm_predicate(None)
+    except Exception:
+        pass
+
     # session-store caches (the index is rebuilt by init_db)
     try:
         import sessions_store

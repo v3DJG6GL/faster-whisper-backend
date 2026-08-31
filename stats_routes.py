@@ -30,6 +30,7 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 import config as cfg
 import jobs
 import metrics
+import preload
 import system_stats
 import web_common
 from auth import (
@@ -93,6 +94,12 @@ def _build_payload(*, lite: bool = False,
         "ts": time.time(),
         "jobs": jobs.jobs_snapshot(include_identity=include_identity),
         "severity": web_common.severity_counts(),
+        # Beside the loaded-model list, and in the lite payload too: the most
+        # likely failure of model preloading is SILENCE (no worker, no plans,
+        # no loads), which is invisible everywhere else. Five cheap scalars,
+        # no identities — assembled here rather than in system_stats so that
+        # import-light module needn't reach preload.
+        "preload": preload.diagnostics(),
     }
     if lite:
         host = sysnap.get("host") or {}

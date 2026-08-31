@@ -620,6 +620,13 @@ async def idle_evictor_loop() -> None:
             timeout = int(getattr(cfg, "BGM_SEPARATION_IDLE_TIMEOUT_S", 0) or 0)
             if timeout <= 0 or _separator is None:
                 continue
+            # A warm lease (a live preload plan still expects this separator)
+            # suspends the idle clock — never a job lease, which _drop_locked
+            # already honours. Inverted through system_stats so preload can
+            # reach us without either module importing the other.
+            if _separator_key and system_stats.is_warm(
+                    _STATS_PREFIX + _separator_key[0]):
+                continue
             if time.monotonic() - _last_used_monotonic >= timeout:
                 await drop_separator(force=False)
         except asyncio.CancelledError:

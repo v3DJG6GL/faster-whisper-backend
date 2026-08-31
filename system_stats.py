@@ -150,6 +150,39 @@ def unregister_loaded_model(name: str) -> None:
         _loaded_models.pop(name, None)
 
 
+# --- Warm-lease predicate (dependency inversion for preload.py) --------------
+# preload.py holds "warm leases": a model that some live plan expects to use
+# soon and that the idle evictors must therefore leave alone. All four evictors
+# live in modules preload itself imports (main, diarization, bgm_separation,
+# translation), so asking preload directly would close an import cycle in every
+# one of them. They all already import THIS module, so the predicate is
+# registered here instead and the dependency points the safe way.
+_warm_predicate: "Callable[[str], bool] | None" = None
+
+
+def set_warm_predicate(fn: "Callable[[str], bool] | None") -> None:
+    """Install (or clear, with None) the warm-lease predicate. Called by
+    preload.start(); cleared by preload._reset_for_tests()."""
+    global _warm_predicate
+    _warm_predicate = fn
+
+
+def is_warm(name: str) -> bool:
+    """True when a live preload plan holds a warm lease on this stats key.
+
+    NEVER raises and defaults to False: an unregistered predicate (preload
+    disabled, or a unit test importing only this module) and a predicate that
+    throws must both degrade to "not warm" — the fail-safe direction, since the
+    only consequence is that the idle evictor is free to reclaim the VRAM."""
+    fn = _warm_predicate
+    if fn is None:
+        return False
+    try:
+        return bool(fn(name))
+    except Exception:  # noqa: BLE001 — eviction must never break on this
+        return False
+
+
 def loaded_models_snapshot() -> list[dict[str, Any]]:
     """Returned in /stats/snapshot. Sorted by load order (oldest first)."""
     with _loaded_models_lock:
