@@ -183,6 +183,24 @@ MODEL_COMPUTE_TYPE = _D("MODEL_COMPUTE_TYPE")
 MODEL_DEVICE_FALLBACK = _D("MODEL_DEVICE_FALLBACK")
 MODEL_COMPUTE_TYPE_FALLBACK = _D("MODEL_COMPUTE_TYPE_FALLBACK")
 
+# Stage-ahead model preloading (preload.py + POST /v1/models/preload). Warming
+# the NEXT stage's model while the current one runs hides its load time inside
+# work the job is doing anyway. Deliberately incapable of delaying a job: a
+# preload never gates a loader, and a warm lease only makes a model ineligible
+# for idle eviction. Off = every stage loads its model in-band on first use.
+MODEL_PRELOAD_ENABLED = _D("MODEL_PRELOAD_ENABLED")
+# Plan lifetime. Restamped by a re-POST and by every stage start of the owning
+# job, so it bounds IDLE plans, not long ones.
+MODEL_PRELOAD_WARM_TTL_S = _D("MODEL_PRELOAD_WARM_TTL_S")
+# Headroom a preload must leave free. The VRAM figure is checked against the
+# DRIVER's free memory (see model_sizes.fits) because other processes on the
+# same card are invisible to our own registry.
+MODEL_PRELOAD_VRAM_RESERVE_MB = _D("MODEL_PRELOAD_VRAM_RESERVE_MB")
+MODEL_PRELOAD_RAM_RESERVE_MB = _D("MODEL_PRELOAD_RAM_RESERVE_MB")
+# Whether a preload may make room by dropping an idle, unleased, unwarmed peer
+# of the same family. Off = "never disturb what is already loaded".
+MODEL_PRELOAD_EVICT_IDLE_MODELS = _D("MODEL_PRELOAD_EVICT_IDLE_MODELS")
+
 
 # =============================================================================
 # Locale

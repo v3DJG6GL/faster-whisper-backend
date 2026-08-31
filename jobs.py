@@ -1,5 +1,5 @@
 """Central registry of running jobs (transcribe / dictate / translate /
-download).
+download / preload).
 
 One process-wide dict guarded by a threading.Lock: handlers run on the
 asyncio loop, but model loads and downloads report from executor threads,
@@ -28,7 +28,11 @@ import time
 import uuid
 from typing import Any
 
-KINDS = ("transcribe", "dictate", "translate", "download")
+# An unknown kind is silently coerced to "transcribe" in job_start below, so a
+# family missing from this tuple does not merely lose its label — it shows up
+# in the /stats activity cluster as somebody transcribing. "preload" earns its
+# place for exactly that reason: warming a model is not a transcription.
+KINDS = ("transcribe", "dictate", "translate", "download", "preload")
 
 _MAX_JOBS = 200
 

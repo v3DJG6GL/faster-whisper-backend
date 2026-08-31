@@ -301,6 +301,31 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "GPU index to bind to. Default 0. Set per-model on multi-GPU boxes "
         "to pin a model to a specific card.",
 
+    # --- Preload & warm cache (advanced) ---
+    "MODEL_PRELOAD_ENABLED":
+        "Serve POST /v1/models/preload and warm the NEXT pipeline stage's "
+        "model while the current one runs. Off = the endpoint still answers "
+        "202 but every entry comes back 'deferred' and nothing is loaded; "
+        "stages then load their model in-band on first use, as before.",
+    "MODEL_PRELOAD_WARM_TTL_S":
+        "How long a preload plan (and the warm leases it holds) stays alive "
+        "without being touched. Re-POSTing the plan or starting any stage of "
+        "the owning job restamps it, so a long job keeps its plan for free. "
+        "A warm lease only makes a model ineligible for idle eviction — it "
+        "never forces a load and never delays a job.",
+    "MODEL_PRELOAD_VRAM_RESERVE_MB":
+        "Free VRAM a preload must leave behind after loading, measured "
+        "against the DRIVER's free memory (other processes on the card are "
+        "invisible to our own bookkeeping). A model whose measured size "
+        "would eat into this reserve is deferred, never loaded.",
+    "MODEL_PRELOAD_RAM_RESERVE_MB":
+        "Same reserve for CPU-placed models, measured against available "
+        "system RAM.",
+    "MODEL_PRELOAD_EVICT_IDLE_MODELS":
+        "Let a preload evict an idle, unleased, unwarmed model of the SAME "
+        "family to make room. Off = a preload that doesn't fit is simply "
+        "deferred; nothing already loaded is ever disturbed.",
+
     # --- Speaker diarization ---
     "DIARIZATION_ENABLED":
         "Allow clients to request speaker diarization (pyannote). The "
@@ -1588,6 +1613,31 @@ class AdminConfig(BaseModel):
         "DEVICE_INDEX", scope="per_model", group="Models",
         subgroup="Advanced — load-time hardware", load_time=True)
 
+    # --- Preload & warm cache (advanced) ---
+    # All HOT: preload.py re-reads every one of these per admission decision,
+    # so an operator raising a reserve or switching the feature off applies to
+    # the next plan with no restart. None is load_time — a warm lease changes
+    # only eviction eligibility, never how a model is constructed.
+    MODEL_PRELOAD_ENABLED: bool | None = _F(
+        "MODEL_PRELOAD_ENABLED", scope="server", group="Models",
+        subgroup="Advanced — preload & warm cache")
+    MODEL_PRELOAD_WARM_TTL_S: Annotated[int, Field(ge=30, le=3600)] | None = _F(
+        "MODEL_PRELOAD_WARM_TTL_S", scope="server", group="Models",
+        subgroup="Advanced — preload & warm cache")
+    MODEL_PRELOAD_VRAM_RESERVE_MB: Annotated[
+        int, Field(ge=0, le=32768)
+    ] | None = _F(
+        "MODEL_PRELOAD_VRAM_RESERVE_MB", scope="server", group="Models",
+        subgroup="Advanced — preload & warm cache")
+    MODEL_PRELOAD_RAM_RESERVE_MB: Annotated[
+        int, Field(ge=0, le=131072)
+    ] | None = _F(
+        "MODEL_PRELOAD_RAM_RESERVE_MB", scope="server", group="Models",
+        subgroup="Advanced — preload & warm cache")
+    MODEL_PRELOAD_EVICT_IDLE_MODELS: bool | None = _F(
+        "MODEL_PRELOAD_EVICT_IDLE_MODELS", scope="server", group="Models",
+        subgroup="Advanced — preload & warm cache")
+
     # --- Speaker diarization ---
     DIARIZATION_ENABLED: bool | None = _F(
         "DIARIZATION_ENABLED", scope="server", group="Diarization")
@@ -2490,7 +2540,8 @@ LOCKABLE_FIELDS: frozenset[str] = frozenset(
 # matching config knobs by section name with no translation. A subgroup title
 # of None means "no subheader" — fields render directly under the section.
 _GROUP_ORDER: list[tuple[str, list[str | None]]] = [
-    ("Models", [None, "Advanced — load-time hardware"]),
+    ("Models", [None, "Advanced — load-time hardware",
+                "Advanced — preload & warm cache"]),
     ("Decode params", [
         None,
         "Advanced — beam & sampling",
