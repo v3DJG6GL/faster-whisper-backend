@@ -114,8 +114,35 @@ def init(db_path: str, audio_dir: str) -> None:
     _conn.execute("PRAGMA journal_mode=WAL;")
     _conn.execute("PRAGMA synchronous=NORMAL;")
     _conn.executescript(_SCHEMA_CORE)
+    _ensure_columns(_conn)
     store_common.secure_db_file(db_path)
     store_common.secure_dir(audio_dir)   # raw dictation WAVs live under here
+
+
+def _ensure_columns(conn: sqlite3.Connection) -> None:
+    """Idempotent additive migrations. `CREATE TABLE IF NOT EXISTS` never
+    alters an existing table, so a new column must be ALTER-ed in here.
+    Safe on every init; same convention as api_keys_store._ensure_columns.
+
+    The four columns are what makes a capture usable as TRANSLATION training
+    data. Whisper is natively multitask — a large share of its original
+    training is X→English speech translation — so (non-English audio, English
+    text) with task="translate" is a legitimate finetuning pair. Our English
+    text is a cascade pseudo-label (Whisper → HY-MT), which is worth keeping
+    only because this UI has a human-correction workflow that can promote it
+    to gold; `translation_source` records that provenance so an exporter can
+    tell the two apart. Non-English targets are stored for review but are
+    never training data: Whisper's translate task only ever targets English.
+    """
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
+    for col, ddl in (
+        ("translations_json", "ADD COLUMN translations_json TEXT"),
+        ("translation_model", "ADD COLUMN translation_model TEXT"),
+        ("translation_source", "ADD COLUMN translation_source TEXT"),
+        ("task", "ADD COLUMN task TEXT"),
+    ):
+        if col not in cols:
+            conn.execute(f"ALTER TABLE captures {ddl}")
 
 
 def _require_conn() -> sqlite3.Connection:
@@ -207,6 +234,14 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
     else:
         d.pop("words_json", None)
         d.pop("segments_json", None)
+    # Per-language translations. A JSON column needs an explicit decode here
+    # or it reaches the UI as a raw string; absent on pre-migration rows.
+    try:
+        d["translations"] = json.loads(d.pop("translations_json", None) or "{}")
+        if not isinstance(d["translations"], dict):
+            d["translations"] = {}
+    except (TypeError, ValueError):
+        d["translations"] = {}
     return d
 
 
@@ -246,6 +281,10 @@ def create_capture(
     words: list[dict[str, Any]],
     segments: list[dict[str, Any]],
     user_id: str | None = None,
+    translations: "dict[str, str] | None" = None,
+    translation_model: str | None = None,
+    translation_source: str | None = None,
+    task: str | None = None,
 ) -> str:
     """Transcode source audio into a 16 kHz mono WAV at the row's
     audio_relpath, then insert the SQLite row. On row-insert failure
@@ -299,6 +338,8 @@ def create_capture(
     training_t = (text_for_training or "")[:_CAP_FINAL] if text_for_training is not None else None
     words_t = _truncate_json(words or [], _CAP_WORDS_JSON)
     segments_t = _truncate_json(segments or [], _CAP_SEGMENTS_JSON)
+    translations_t = (json.dumps(translations, ensure_ascii=False)[:_CAP_FINAL]
+                      if translations else None)
 
     try:
         conn = _require_conn()
@@ -310,8 +351,11 @@ def create_capture(
                 " raw, final, text_for_training, audio_trimmed_relpath,"
                 " words_json, segments_json,"
                 " corrected_text, corrections_json, admin_notes,"
-                " status, reviewed_ts, user_id, sample_id, sample_order"
-                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                " status, reviewed_ts, user_id, sample_id, sample_order,"
+                " translations_json, translation_model, translation_source,"
+                " task"
+                ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
+                "?,?,?,?)",
                 (
                     cid, now, request_id, model or "", language or "",
                     float(duration_seconds or 0.0), relpath, "wav",
@@ -320,6 +364,8 @@ def create_capture(
                     "", "[]", "",
                     "new", None,
                     user_id, None, None,
+                    translations_t, translation_model or None,
+                    translation_source or None, task or None,
                 ),
             )
             _evict_to_cap(conn)
@@ -556,7 +602,8 @@ _LIST_COLUMNS = (
     " raw, final, text_for_training, audio_trimmed_relpath,"
     " audio_trim_lead_ms, audio_trim_trail_ms,"
     " corrected_text, corrections_json, admin_notes,"
-    " status, reviewed_ts, user_id, sample_id, sample_order"
+    " status, reviewed_ts, user_id, sample_id, sample_order,"
+    " translations_json, translation_model, translation_source, task"
 )
 
 
@@ -715,6 +762,12 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         sets.append("text_for_training = ?")
         val = patch["text_for_training"]
         params.append(str(val)[:_CAP_FINAL] if val is not None else None)
+    if "translations" in patch:
+        # Human-corrected translations are the ONLY reason a cascade
+        # pseudo-label is worth keeping, so this has to be writable.
+        val = patch["translations"]
+        sets.append("translations_json = ?")
+        params.append(json.dumps(val, ensure_ascii=False) if val else None)
     if "audio_trimmed_relpath" in patch:
         sets.append("audio_trimmed_relpath = ?")
         val = patch["audio_trimmed_relpath"]

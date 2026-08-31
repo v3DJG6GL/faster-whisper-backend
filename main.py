@@ -4437,6 +4437,23 @@ async def transcribe(
                     extra_excludes=cfg.CAPTURES_PIPELINE_RULES_EXCLUDE,
                     ident=ident,
                 )
+            # Per-language transcripts for the capture row, joined the same
+            # way verbose_json joins them. Kept as a KEYED map, not a blob:
+            # only the English track is ever eligible as Whisper training
+            # data (its translate task targets English and nothing else), so
+            # the exporter has to be able to pick one language out.
+            _capture_translations: "dict[str, str] | None" = None
+            if will_capture and _translation_meta is not None:
+                _capture_translations = {
+                    _lang: " ".join(
+                        _s for _s in (
+                            (seg.get("translations") or {}).get(_lang, "").strip()
+                            for seg in segments_list)
+                        if _s).strip()
+                    for _lang in _translation_meta["targets"]
+                }
+                _capture_translations = {
+                    k: v for k, v in _capture_translations.items() if v}
             # Output wrappers (G/PM): plain prefix/suffix concatenated to
             # the final transcript text after the pipeline runs (including
             # the in-pipeline terminal trim) and BEFORE a defensive
@@ -4530,6 +4547,20 @@ async def transcribe(
                                     words=all_words,
                                     segments=seg_diag,
                                     user_id=user.get("user_id"),
+                                    # _task has existed since the translate
+                                    # endpoint landed and is echoed in the
+                                    # response, but never reached the store —
+                                    # so the finetuning manifest could not say
+                                    # whether a row trains transcribe or
+                                    # translate.
+                                    task=_task,
+                                    translations=_capture_translations,
+                                    translation_model=(
+                                        _translation_meta.get("model")
+                                        if _translation_meta else None),
+                                    translation_source=(
+                                        "cascade-mt" if _translation_meta
+                                        else None),
                                 ))
                         else:
                             logger.warning(

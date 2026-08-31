@@ -2598,13 +2598,20 @@ def _build_manifest_row(
     member_count: int,
     admin_notes: str,
     corrections: list,
+    task: str = "transcribe",
 ) -> dict[str, Any]:
-    """Build a single manifest line dict with the unified 13-key schema.
+    """Build a single manifest line dict with the unified 14-key schema.
 
     Same keys for singletons and groups — defaults populate the keys
     that don't apply (e.g. groups → request_id=""; singletons →
     member_count=1). Heterogeneous-field-set was a documented pain
-    point for cross-corpus filtering during fine-tuning."""
+    point for cross-corpus filtering during fine-tuning.
+
+    `task` is Whisper's own multitask label: "transcribe" pairs audio with
+    text in the SAME language, "translate" pairs non-English audio with
+    English text. A finetuning run has to condition on it, and a row that
+    does not say which it is cannot be used for either.
+    """
     return {
         "audio_filepath": audio_filepath,
         "text": text,
@@ -2619,7 +2626,19 @@ def _build_manifest_row(
         "member_count": int(member_count or 0),
         "admin_notes": admin_notes or "",
         "corrections": list(corrections or []),
+        "task": task or "transcribe",
     }
+
+
+def _group_task(members: list) -> str:
+    """The task label for a merged group.
+
+    A group is one audio file built from several members, so it only has a
+    task if every member agrees on one. Anything mixed falls back to
+    "transcribe" — the conservative answer, since mislabelling a row as
+    translate would feed a finetuning run text in the wrong language."""
+    tasks = {(m.get("task") or "transcribe") for m in (members or [])}
+    return tasks.pop() if len(tasks) == 1 else "transcribe"
 
 
 def _build_export_stream(only_status: str | None, include_audio: bool):
@@ -2708,6 +2727,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 member_count=len(members),
                 admin_notes=g.get("admin_notes") or "",
                 corrections=[],
+                task=_group_task(members),
             ), ensure_ascii=False).encode("utf-8") + b"\n")
 
             if include_audio:
@@ -2768,7 +2788,35 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 member_count=1,
                 admin_notes=row.get("admin_notes") or "",
                 corrections=row.get("corrections") or [],
+                task=row.get("task") or "transcribe",
             ), ensure_ascii=False).encode("utf-8") + b"\n")
+
+            # A second manifest line for the English translation, when one
+            # exists AND a human has reviewed it. Whisper's translate task
+            # targets English only, so no other track is ever eligible; and
+            # an unreviewed line is a cascade pseudo-label (Whisper → HY-MT)
+            # whose errors compound, which is exactly the material a
+            # finetuning run should not be fed silently. The review workflow
+            # is what promotes it, so `ready` is the gate.
+            _tr = row.get("translations") or {}
+            _en = (_tr.get("en") or "").strip()
+            if _en and (row.get("status") or "") == "ready":
+                manifest_lines.write(json.dumps(_build_manifest_row(
+                    audio_filepath=audio_name,
+                    text=_en,
+                    duration=float(row.get("duration_seconds") or 0.0),
+                    language=row.get("language") or "",
+                    source="singleton",
+                    user_id=row.get("user_id") or "",
+                    status_value=row.get("status") or "",
+                    created_ts=float(row.get("created_ts") or 0.0),
+                    model=row.get("translation_model") or "",
+                    request_id=row.get("request_id") or "",
+                    member_count=1,
+                    admin_notes=row.get("admin_notes") or "",
+                    corrections=[],
+                    task="translate",
+                ), ensure_ascii=False).encode("utf-8") + b"\n")
 
             if include_audio:
                 info = tarfile.TarInfo(audio_name)
@@ -3156,6 +3204,15 @@ _CAPTURES_HTML = r"""<!doctype html>
     white-space: pre-wrap; word-wrap: break-word;
     user-select: text; cursor: text;
   }
+  /* Translation tracks — one row per language, tagged, so the reviewer can
+     read them apart and can see at a glance which one is exportable. */
+  .cc-tr-row { display: grid; grid-template-columns: 3rem 1fr;
+    gap: 0.5rem; align-items: start; margin-top: 0.4rem; }
+  .cc-tr-lang { font-family: var(--font-mono); font-size: var(--fs-xs);
+    letter-spacing: 0.06em; color: var(--dim); padding-top: 0.7rem; }
+  .cc-tr-lang.cc-tr-eligible { color: #4dd0c4; }
+  .cc-tr-text { min-height: 0; margin-top: 0; }
+  .pill-mt { color: #4dd0c4; border-color: #4dd0c4; }
   /* Final-result karaoke: words render inline (natural text flow); the active
      word lights up in sync with the Corrections strip as audio plays. */
   .cc-ground .word { display: inline; border-radius: 3px; }
@@ -4170,6 +4227,16 @@ _CAPTURES_HTML = r"""<!doctype html>
         escapeHtml(r.status || 'new') + '</span>' +
       (r.model ? '<span class="pill">' + escapeHtml(r.model) + '</span>' : '') +
       (r.language ? '<span class="pill">' + escapeHtml(r.language) + '</span>' : '') +
+      // Translation tracks this capture carries. Only the English one is
+      // ever training data (Whisper's translate task targets English and
+      // nothing else); the rest are review context, so the chip says which
+      // languages exist rather than implying they are all usable.
+      (r.translations && Object.keys(r.translations).length
+        ? '<span class="pill pill-mt" title="translations on this capture'
+          + ' (only EN is eligible as translate-task training data)">→ '
+          + escapeHtml(Object.keys(r.translations).join(' ').toUpperCase())
+          + '</span>'
+        : '') +
       '<span class="duration">'
         + ((r.effective_duration_seconds !== undefined
             ? r.effective_duration_seconds
@@ -4438,6 +4505,50 @@ _CAPTURES_HTML = r"""<!doctype html>
     // Initial paint: layer existing chip corrections onto finalText so
     // the preview matches what would be exported right now.
     applyCorrectionsToGround(state);
+
+    // --- translations ---
+    // One track per language, so a reviewer can read them apart. Only the
+    // English one is exportable as translate-task training data, and only
+    // once the capture is marked `ready` — an unreviewed line is a cascade
+    // pseudo-label (Whisper → HY-MT) whose errors compound, which is
+    // exactly the material a finetuning run should not be fed silently.
+    var trs = r.translations || {};
+    var trLangs = Object.keys(trs);
+    if (trLangs.length) {
+      var trSec = document.createElement('div');
+      trSec.className = 'cc-section';
+      var eligible = trs.en && String(trs.en).trim();
+      trSec.innerHTML = '<h3>Translations</h3>'
+        + '<div class="help">'
+        + (r.translation_model
+            ? 'Machine-translated by ' + escapeHtml(r.translation_model) + '. '
+            : '')
+        + (eligible
+            ? 'The English track is exported as <code>task=translate</code> '
+              + 'training data once this capture is marked <em>ready</em>.'
+            : 'No English track, so nothing here is exportable — Whisper\\u2019s '
+              + 'translate task targets English only.')
+        + '</div>';
+      trLangs.sort();
+      for (var ti = 0; ti < trLangs.length; ti++) {
+        var lg = trLangs[ti];
+        var trRow = document.createElement('div');
+        trRow.className = 'cc-tr-row';
+        var tag = document.createElement('span');
+        tag.className = 'cc-tr-lang' + (lg === 'en' ? ' cc-tr-eligible' : '');
+        tag.textContent = lg.toUpperCase();
+        if (lg !== 'en') tag.title = 'review only — not training data';
+        var val = document.createElement('div');
+        val.className = 'cc-ground cc-tr-text';
+        val.setAttribute('role', 'textbox');
+        val.setAttribute('aria-readonly', 'true');
+        val.textContent = trs[lg] || '';
+        trRow.appendChild(tag);
+        trRow.appendChild(val);
+        trSec.appendChild(trRow);
+      }
+      body.appendChild(trSec);
+    }
 
     // --- notes ---
     var notesSec = document.createElement('div');
