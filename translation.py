@@ -545,9 +545,9 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
         vram_after = system_stats.gpu_mem_used_bytes()
         vram = (vram_after - vram_before) if (
             vram_before is not None and vram_after is not None) else None
-        system_stats.register_loaded_model(
-            _STATS_PREFIX + ref, vram, device, "gguf")
         load_secs = time.perf_counter() - t0
+        system_stats.register_loaded_model(
+            _STATS_PREFIX + ref, vram, device, "gguf", load_secs)
         logger.info("[translate] model %s loaded on %s in %.1fs",
                     ref, device, load_secs)
         try:

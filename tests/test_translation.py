@@ -696,7 +696,7 @@ def lru_env(monkeypatch):
                         lambda: None)
     stats = {"registered": [], "unregistered": [], "touched": []}
     monkeypatch.setattr(translation.system_stats, "register_loaded_model",
-                        lambda name, vram, device, kind:
+                        lambda name, vram, device, kind, load_secs=None:
                         stats["registered"].append((name, device, kind)))
     monkeypatch.setattr(translation.system_stats, "unregister_loaded_model",
                         lambda name: stats["unregistered"].append(name))

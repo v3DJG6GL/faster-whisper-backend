@@ -501,8 +501,9 @@ async def _get_separator(model_filename: "str | None" = None, *,
         vram_after = system_stats.gpu_mem_used_bytes()
         vram = (vram_after - vram_before) if (
             vram_before is not None and vram_after is not None) else None
-        system_stats.register_loaded_model(_STATS_PREFIX + model, vram, device, "onnx")
         load_secs = time.perf_counter() - t0
+        system_stats.register_loaded_model(_STATS_PREFIX + model, vram, device,
+                                           "onnx", load_secs)
         logger.info("[bgm] separation model %s loaded on %s in %.1fs",
                     model, device, load_secs)
         try:

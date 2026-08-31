@@ -597,6 +597,11 @@ _SEG_TEXT_MAX = 80    # truncate per-segment text in the table (full text in FIN
 _SEG_ROWS_MAX = 30    # truncate the segment table itself
 _LOG_FIELD_MAX = store_common.LOG_FIELD_MAX  # cap on a client-supplied label
 
+# "don't render this row" sentinel for the stage params sections. Distinct
+# from None, which is a real value there and prints as `(none)` — an unset
+# num_speakers genuinely means "auto" and is worth showing.
+_OMIT = object()
+
 # Single implementation lives in store_common so the stores can sanitise their
 # own audit lines without importing main (which imports them).
 _log_safe = store_common.log_safe
@@ -646,7 +651,29 @@ _KWARG_TO_CFG = {
     "tail_trim_pad_ms": "STREAMING_TAIL_TRIM_PAD_MS",
     "final_drop_min_avg_logprob": "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
     "final_drop_temperature": "STREAMING_FINAL_DROP_TEMPERATURE",
+    # Post-decode STAGE params (pseudo-kwargs too: rendered in the block's
+    # Separation / Diarization / Translation sections). Listing them here is
+    # the whole wiring the `*` marker needs — _is_non_default is a whitelist
+    # keyed by this dict, so without an entry a stage param can never be
+    # marked non-default no matter how far it strays from the config.
+    "num_speakers": "DIARIZATION_NUM_SPEAKERS",
+    "min_speakers": "DIARIZATION_MIN_SPEAKERS",
+    "max_speakers": "DIARIZATION_MAX_SPEAKERS",
+    "embedding_batch_size": "DIARIZATION_EMBEDDING_BATCH_SIZE",
+    "diarization_model": "DIARIZATION_MODEL",
+    "separation_model": "BGM_SEPARATION_UVR_MODEL",
+    "translation_model": "TRANSLATION_DEFAULT_MODEL",
+    "mode": "TRANSLATION_MODE",
+    "context_segments": "TRANSLATION_CONTEXT_SEGMENTS",
+    "batch_segments": "TRANSLATION_BATCH_SEGMENTS",
 }
+
+
+# Canonical pipeline order for the Pipeline table. Stage names are the ones
+# _stage_timings already uses, so the table is a straight render of that list
+# rather than a second source of truth that can drift from it.
+_STAGE_ORDER = ("downloading", "separating", "vad", "transcribing",
+                "diarizing", "translating")
 
 
 def _pretty_value(v) -> str:
@@ -750,9 +777,23 @@ def _format_decode_params(kwargs: dict) -> list[str]:
     return out
 
 
-def _format_segments_section(seg_diag: list[dict], info, kwargs: dict) -> list[str]:
+def _short_speaker(label: str) -> str:
+    """`SPEAKER_00` → `S0`. Keeps the segments table's new speaker column to
+    the 5 characters the row budget can spare; anything unrecognised is just
+    truncated."""
+    m = re.search(r"(\d+)\s*$", label or "")
+    return f"S{int(m.group(1))}" if m else (label or "")[:4]
+
+
+def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
+                             speakers: "list | None" = None) -> list[str]:
     """Either a fixed-width segments table OR an empty-output diagnostic
-    banner whose hint depends on `info.duration_after_vad` and `kwargs`."""
+    banner whose hint depends on `info.duration_after_vad` and `kwargs`.
+
+    `speakers` (per-segment labels, when diarization ran) adds a `spk`
+    column. It costs 5 of the text budget, so it is only ever added for runs
+    that actually diarized — a decode-only receipt keeps the shape it has
+    always had, and no existing log looks different."""
     n = len(seg_diag)
     if n == 0:
         out = [_section_rule("Segments  (n=0)  [!] no output produced")]
@@ -779,26 +820,155 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict) -> list[s
     if dropped_n:
         label += f"  [✗ = {dropped_n} dropped by post-decode guard]"
     out = [_section_rule(label)]
+    has_spk = bool(speakers) and any(speakers)
+    spk_head = f"{'spk':>5}  " if has_spk else ""
     out.append(
-        f"    {'#':>3}  {'start':>7}  {'end':>7}  "
+        f"    {'#':>3}  {'start':>7}  {'end':>7}  {spk_head}"
         f"{'alp':>6}  {'nsp':>5}  {'cr':>5}  {'T':>4}    text"
     )
-    rows = min(n, _SEG_ROWS_MAX)
+    # The FILE keeps up to LOG_SEGMENT_ROWS_MAX rows (0 = unlimited). The
+    # /logs viewer folds them for display — but it can only ever reveal rows
+    # that were written, which is exactly why the old inert "(+610 more)"
+    # tail could never expand into anything.
+    cap = int(getattr(cfg, "LOG_SEGMENT_ROWS_MAX", 0) or 0)
+    rows = n if cap <= 0 else min(n, cap)
+    text_max = _SEG_TEXT_MAX - 5 if has_spk else _SEG_TEXT_MAX
     for i in range(rows):
         s = seg_diag[i]
         text = s["text"]
-        if len(text) > _SEG_TEXT_MAX:
-            text = text[:_SEG_TEXT_MAX - 3] + "..."
+        if len(text) > text_max:
+            text = text[:text_max - 3] + "..."
         mark = "✗" if s.get("dropped") else " "
+        spk = ""
+        if has_spk:
+            raw_spk = speakers[i] if i < len(speakers) else ""
+            spk = f"{_short_speaker(raw_spk or ''):>5}  "
         out.append(
             f"    {s['id']:>3d}  "
-            f"{s['start']:>6.2f}s  {s['end']:>6.2f}s  "
+            f"{s['start']:>6.2f}s  {s['end']:>6.2f}s  {spk}"
             f"{s['alp']:>+6.2f}  {s['nsp']:>5.2f}  {s['cr']:>5.2f}  "
             f"{s['temp']:>4.1f}  {mark} {text}"
         )
     if n > rows:
-        out.append(f"    … (+{n - rows} more)")
+        out.append(f"    … (+{n - rows} more, not logged — "
+                   f"raise LOG_SEGMENT_ROWS_MAX)")
     return out
+
+
+def _stage_extras(stats_key: "str | None", t0_perf: float) -> dict:
+    """`device` + `load_secs` for one Pipeline-table row.
+
+    Keyed by the NAMESPACED stats key (`pyannote:` / `uvr:` / `gguf:`
+    prefixes), not the bare model name — _model_compute_device looks up by
+    bare name and would silently miss every non-whisper family.
+
+    The stage's wall-clock start is reconstructed from its perf_counter
+    origin so `load_secs_since` can tell "this stage paid for the load" from
+    "it was already resident", without threading a second clock through
+    four call sites."""
+    out: dict = {}
+    if not stats_key:
+        return out
+    started_wall = time.time() - (time.perf_counter() - t0_perf)
+    out["load_secs"] = system_stats.load_secs_since(stats_key, started_wall)
+    for entry in system_stats.loaded_models_snapshot():
+        if entry.get("name") == stats_key:
+            out["device"] = entry.get("device")
+            break
+    return out
+
+
+def _stage_ran(stages: "list | None", name: str) -> bool:
+    """Did this stage produce a timing entry? The one honest test for "the
+    stage ran" — the request FLAGS say what was asked for, which is a
+    different question when a stage soft-fails or is disabled server-side."""
+    return any(s.get("name") == name for s in (stages or []))
+
+
+def _stage_field(stages: "list | None", name: str, key: str):
+    """One field off a stage's timing entry, or the _OMIT sentinel."""
+    for s in (stages or []):
+        if s.get("name") == name:
+            v = s.get(key)
+            return v if v is not None else _OMIT
+    return _OMIT
+
+
+def _fmt_secs(v) -> str:
+    """`12.3s` / `-` for a missing or zero timing, right-alignable."""
+    if v is None:
+        return "-"
+    return f"{float(v):.1f}s"
+
+
+def _format_pipeline_section(stages: "list[dict] | None") -> list[str]:
+    """`─── Pipeline ───`: one row per stage that actually ran.
+
+    Answers the question an operator opens the log with — where did the six
+    minutes go — which no amount of per-stage params answers. The `load`
+    column is the point: a cold model load becomes a named cost instead of
+    an unexplained gap between two timestamps, and `load 0.0s` on a stage
+    is the receipt's own proof that preloading worked.
+
+    Reuses the fixed-width column idiom _format_segments_section
+    established; there is no generic table helper and two of them would
+    drift."""
+    rows = [s for s in (stages or []) if s and s.get("name")]
+    if not rows:
+        return []
+    rows.sort(key=lambda s: (_STAGE_ORDER.index(s["name"])
+                             if s["name"] in _STAGE_ORDER else len(_STAGE_ORDER)))
+    total = sum(float(s.get("secs") or 0.0) for s in rows)
+    mins, secs = divmod(int(total), 60)
+    wall = f"{mins}:{secs:02d}" if mins else f"{total:.1f}s"
+    n = len(rows)
+    out = [_section_rule(
+        f"Pipeline  ({n} stage{'s' if n != 1 else ''} · {wall} wall)")]
+    out.append(f"    {'#':>2}  {'stage':<12} {'model':<32} {'dev':<6} "
+               f"{'load':>7} {'run':>8}")
+    for i, s in enumerate(rows, 1):
+        model = str(s.get("model") or "")
+        if len(model) > 32:
+            model = model[:29] + "..."
+        load = s.get("load_secs")
+        run = float(s.get("secs") or 0.0) - float(load or 0.0)
+        out.append(
+            f"    {i:>2}  {s['name'][:12]:<12} {model:<32} "
+            f"{str(s.get('device') or '')[:6]:<6} "
+            f"{_fmt_secs(load):>7} {_fmt_secs(max(0.0, run)):>8}"
+        )
+        detail = s.get("detail")
+        if detail:
+            out.append(f"        {detail}")
+    return out
+
+
+def _format_stage_section(label: str, rows: "list[tuple]") -> list[str]:
+    """A `─── <Stage> ───` params block. `rows` are (key, value) pairs; a
+    value of the sentinel `_OMIT` drops the row so callers can build a flat
+    list without branching around every optional knob."""
+    body = [_param_row("    ", k, v) for k, v in rows if v is not _OMIT]
+    if not body:
+        return []
+    return [_section_rule(f"{label}  (* = non-default)"), *body]
+
+
+def _format_notes_section(warnings: "list | None",
+                          skipped: "list | None") -> list[str]:
+    """`─── Notes ───`: soft failures and stages that didn't run.
+
+    These already exist as log lines, but they fire minutes before the
+    receipt and scroll away — and the receipt is the only place an operator
+    looks. `( )` marks a skip and `[!]` a warning; deliberately NOT `✗`,
+    which the segments table already owns for guard-dropped rows."""
+    out: list[str] = []
+    for s in (skipped or []):
+        out.append(f"    ( ) {_log_safe(str(s))}")
+    for w in (warnings or []):
+        out.append(f"    [!] {_log_safe(str(w))}")
+    if not out:
+        return []
+    return [_section_rule("Notes"), *out]
 
 
 def _model_compute_device(name: str) -> "tuple[str | None, str | None]":
@@ -833,6 +1003,13 @@ def _format_request_block(
     guards: "dict | None" = None,
     translate_to: "list | None" = None,
     translation_model: str | None = None,
+    stages: "list | None" = None,
+    separation: "dict | None" = None,
+    diarization: "dict | None" = None,
+    translation: "dict | None" = None,
+    speakers: "list | None" = None,
+    warnings: "list | None" = None,
+    skipped: "list | None" = None,
 ) -> str:
     """Full per-request log block. `steps` is the per-pipeline trace; passed
     in only when cfg.TRACE_ENABLED so the block stays a single message.
@@ -850,7 +1027,15 @@ def _format_request_block(
     for the batch (file-upload) route, `…/stream` for live dictation — so the two
     sources are distinguishable in the log. `audio_source` (when given) describes
     the input transport/codec + rate, shown as an `input` line in the Audio
-    section (the model itself always decodes at 16 kHz mono)."""
+    section (the model itself always decodes at 16 kHz mono).
+
+    `stages` / `separation` / `diarization` / `translation` / `speakers` /
+    `warnings` / `skipped` describe the post-decode pipeline. All optional:
+    this renderer was written when the pipeline was decode and nothing else,
+    and callers that still are (live dictation, the test modules) pass none
+    of them and get exactly the block they got before. A stage section is
+    emitted only when that stage actually ran, so a decode-only receipt is
+    unchanged and a four-stage one finally says what it did."""
     title_rule = "═" * _LOG_WIDTH
     rule = "─" * _LOG_WIDTH
 
@@ -876,12 +1061,17 @@ def _format_request_block(
     if extras:
         model_line += "   " + "  ".join(extras)
     lines.append(model_line)
-    # Translation-stage receipt — only when the stage actually ran.
-    if translate_to:
+    # Translation-stage one-liner. Kept for the callers that pass only
+    # translate_to/translation_model (live dictation until it grows a full
+    # translation section); suppressed when the richer section is present so
+    # the same fact isn't stated twice.
+    if translate_to and not translation:
         trans_line = f"  trans  → {', '.join(translate_to)}"
         if translation_model:
             trans_line += f"   model={translation_model}"
         lines.append(trans_line)
+
+    lines.extend(_format_pipeline_section(stages))
 
     lines.append(_section_rule("Audio"))
     if audio_source:
@@ -900,6 +1090,37 @@ def _format_request_block(
             f"{float(dav):.2f}s   ({retained:.0f} % retained)"
         )
 
+    # Post-decode stage params, in pipeline order. Every one of these was in
+    # scope at the call site all along; the block simply never asked for them.
+    if separation:
+        lines.extend(_format_stage_section("Separation", [
+            ("separation_model", separation.get("model")),
+            ("device", separation.get("device", _OMIT)),
+            ("resample", separation.get("resample", _OMIT)),
+            ("stem", separation.get("stem", _OMIT)),
+        ]))
+    if diarization:
+        lines.extend(_format_stage_section("Diarization", [
+            ("diarization_model", diarization.get("model")),
+            ("device", diarization.get("device", _OMIT)),
+            ("num_speakers", diarization.get("num_speakers")),
+            ("min_speakers", diarization.get("min_speakers")),
+            ("max_speakers", diarization.get("max_speakers")),
+            ("embedding_batch_size", diarization.get("embedding_batch_size", _OMIT)),
+            ("result", diarization.get("result", _OMIT)),
+        ]))
+    if translation:
+        lines.extend(_format_stage_section("Translation", [
+            ("translation_model", translation.get("model")),
+            ("device", translation.get("device", _OMIT)),
+            ("targets", translation.get("targets")),
+            ("source_lang", translation.get("source", _OMIT)),
+            ("mode", translation.get("mode")),
+            ("context_segments", translation.get("context_segments", _OMIT)),
+            ("glossary", translation.get("glossary", _OMIT)),
+            ("result", translation.get("result", _OMIT)),
+        ]))
+
     lines.append(_section_rule("Decode params  (* = non-default)"))
     lines.extend(_format_decode_params(kwargs))
 
@@ -912,7 +1133,9 @@ def _format_request_block(
         for gk, gv in guards.items():
             lines.append(_param_row("    ", gk, gv))
 
-    lines.extend(_format_segments_section(seg_diag, info, kwargs))
+    lines.extend(_format_segments_section(seg_diag, info, kwargs, speakers))
+
+    lines.extend(_format_notes_section(warnings, skipped))
 
     # Identity section — always shown when the caller is known, so the resolved
     # user/key (and any applied per-identity overrides, or their ABSENCE) is
@@ -1930,6 +2153,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             vram_bytes=vram_delta,
             device=loaded_device,
             compute_type=loaded_compute,
+            load_secs=load_secs,
         )
 
         _loaded_models[name] = new_model
@@ -3685,6 +3909,10 @@ async def transcribe(
                             "secs": round(time.perf_counter() - _sep_t0, 2),
                             "model": _separation_model or None,
                             "detail": "incl. transcode",
+                            **_stage_extras(
+                                preload.stats_key("separation",
+                                                  _separation_model or ""),
+                                _sep_t0),
                         })
                     except _bgm.BgmCancelled:
                         raise _ClientCancelled() from None
@@ -3802,6 +4030,7 @@ async def transcribe(
                     "name": "transcribing",
                     "secs": round(time.perf_counter() - _dec_t0, 2),
                     "model": resolved_model,
+                    **_stage_extras(resolved_model, _dec_t0),
                 })
 
             all_words = []
@@ -3932,6 +4161,10 @@ async def transcribe(
                                 time.perf_counter() - _diar_t0, 2),
                             "model": _diarization_model or None,
                             "detail": f"{len(speakers_list)} speakers",
+                            **_stage_extras(
+                                preload.stats_key("diarization",
+                                                  _diarization_model or ""),
+                                _diar_t0),
                         })
                     except _diar.DiarizeCancelled:
                         raise _ClientCancelled() from None
@@ -4065,6 +4298,11 @@ async def transcribe(
                                 "model": _tr_meta.get("model"),
                                 "detail": (f"{len(segments_list)} segs → "
                                            f"{','.join(_translate_to)}"),
+                                **_stage_extras(
+                                    preload.stats_key(
+                                        "translation",
+                                        _tr_meta.get("model") or ""),
+                                    _tr_t0),
                             })
                         except _tr.TranslationCancelled:
                             raise _ClientCancelled() from None
@@ -4256,6 +4494,42 @@ async def transcribe(
                               if _translation_meta else None),
                 translation_model=(_translation_meta["model"]
                                    if _translation_meta else None),
+                # Post-decode pipeline. Reconstructed from the locals in
+                # scope rather than from preload._plans: the plan omits
+                # whisper (loaded before the plan exists) and is absent
+                # entirely when there is no progress id.
+                stages=_stage_timings or None,
+                separation=({
+                    "model": _separation_model or None,
+                    "device": _stage_field(_stage_timings, "separating", "device"),
+                    "resample": "44100 Hz stereo",
+                    "stem": "vocals",
+                } if _stage_ran(_stage_timings, "separating") else None),
+                diarization=({
+                    "model": _diarization_model or None,
+                    "device": _stage_field(_stage_timings, "diarizing", "device"),
+                    "num_speakers": _spk.get("num_speakers"),
+                    "min_speakers": _spk.get("min_speakers"),
+                    "max_speakers": _spk.get("max_speakers"),
+                    "embedding_batch_size": getattr(
+                        cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", _OMIT),
+                    "result": (f"{len(set(speakers_list))} speakers across "
+                               f"{len(speakers_list)} segments"),
+                } if speakers_list else None),
+                translation=({
+                    "model": _translation_meta.get("model"),
+                    "device": _stage_field(_stage_timings, "translating", "device"),
+                    "targets": list(_translation_meta.get("targets") or []),
+                    "source": _translation_meta.get("source") or _OMIT,
+                    "mode": _translation_meta.get("mode"),
+                    "context_segments": _translation_context,
+                    "glossary": (f"{len(_translation_glossary)} chars"
+                                 if _translation_glossary else _OMIT),
+                    "result": f"{len(segments_list)} segs",
+                } if _translation_meta else None),
+                speakers=speakers_list or None,
+                warnings=_warnings or None,
+                skipped=_skipped or None,
             ))
 
             # Persist the trace to the durable recent-transcriptions store

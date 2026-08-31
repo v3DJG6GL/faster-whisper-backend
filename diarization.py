@@ -293,9 +293,9 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
         vram_after = system_stats.gpu_mem_used_bytes()
         vram = (vram_after - vram_before) if (
             vram_before is not None and vram_after is not None) else None
-        system_stats.register_loaded_model(
-            _STATS_PREFIX + model_id, vram, device, "torch")
         load_secs = time.perf_counter() - t0
+        system_stats.register_loaded_model(
+            _STATS_PREFIX + model_id, vram, device, "torch", load_secs)
         logger.info("[diarize] pipeline %s loaded on %s in %.1fs",
                     model_id, device, load_secs)
         try:

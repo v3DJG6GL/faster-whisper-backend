@@ -104,16 +104,25 @@ def gpu_name() -> str | None:
 
 
 def register_loaded_model(name: str, vram_bytes: int | None,
-                          device: str, compute_type: str) -> None:
+                          device: str, compute_type: str,
+                          load_secs: float | None = None) -> None:
     """Called from main._get_or_load_model after a successful load. The VRAM
     delta sample comes from the caller — see main.py for the before/after
-    dance under _model_load_lock."""
+    dance under _model_load_lock.
+
+    `load_secs` is how long the load itself took. Every family already
+    measures this for its "loaded on %s in %.1fs" line; recording it here
+    is what lets a request receipt split a stage's wall time into load vs
+    run, so a cold start reads as a cost rather than as an unexplained gap
+    between two timestamps. Optional — an omitting caller just gets no
+    split."""
     with _loaded_models_lock:
         _loaded_models[name] = {
             "name": name,
             "device": device,
             "compute_type": compute_type,
             "vram_bytes": vram_bytes,
+            "load_secs": load_secs,
             "loaded_at": time.time(),
             "last_used": time.time(),
             # Monotonic counterpart for the idle-evictor's safe time math
@@ -132,6 +141,22 @@ def register_loaded_model(name: str, vram_bytes: int | None,
             model_sizes.record(name, device, compute_type, vram_bytes)
         except Exception:
             pass
+
+
+def load_secs_since(name: str, since_ts: float) -> float:
+    """How much of a stage's wall time went into loading this model.
+
+    Returns the recorded load duration when the model was (re)loaded at or
+    after `since_ts` — i.e. inside the stage that is asking — and 0.0 when
+    it was already resident. That 0.0 is the interesting answer: it is the
+    receipt's own proof that preloading did its job."""
+    with _loaded_models_lock:
+        info = _loaded_models.get(name)
+        if info is None:
+            return 0.0
+        if float(info.get("loaded_at") or 0.0) < since_ts:
+            return 0.0
+        return float(info.get("load_secs") or 0.0)
 
 
 def touch_loaded_model(name: str) -> None:
