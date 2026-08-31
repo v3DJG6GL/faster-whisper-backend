@@ -251,7 +251,7 @@ def test_model_load_failure_delivers_generic_error_and_closes(
     client-facing error reply touched by the same security fix."""
     _, raw_alice = make_user_key("alice")
 
-    async def _boom(name):
+    async def _boom(name, *, lease=False):
         raise RuntimeError("/srv/models/secret-path missing")
 
     monkeypatch.setattr(app_module, "_get_or_load_model", _boom)

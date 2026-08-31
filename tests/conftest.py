@@ -141,6 +141,12 @@ def _reset_singletons():
             _main._JOB_BY_PID.clear()
         except Exception:
             pass
+        # Whisper job leases: a leaked lease would make a later eviction test
+        # see a refusal instead of the drop it asserts.
+        try:
+            _main._model_leases.clear()
+        except Exception:
+            pass
 
     yield
 
@@ -452,7 +458,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     import main
     importlib.reload(main)
 
-    async def _fake_loader(name: str):
+    async def _fake_loader(name: str, *, lease: bool = False):
         return fake_model
     monkeypatch.setattr(main, "_get_or_load_model", _fake_loader)
 

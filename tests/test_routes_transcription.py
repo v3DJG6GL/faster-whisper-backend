@@ -101,7 +101,7 @@ def test_model_transcribe_raises_returns_500(client, app_module, monkeypatch):
         def transcribe(self, path, **kwargs):
             raise RuntimeError("decode blew up")
 
-    async def _loader(name):
+    async def _loader(name, *, lease=False):
         return BoomModel()
 
     monkeypatch.setattr(app_module, "_get_or_load_model", _loader)

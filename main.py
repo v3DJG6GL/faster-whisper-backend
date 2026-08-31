@@ -1000,6 +1000,19 @@ from collections import OrderedDict
 # Insertion order = LRU order (oldest at front). move_to_end on hit.
 _loaded_models: "OrderedDict[str, WhisperModel]" = OrderedDict()
 _model_load_lock = asyncio.Lock()
+# name → count of requests currently decoding on the cached model. A leased
+# model is never freed (see _drop_loaded_model): closing CTranslate2's native
+# translator under a running decode is a use-after-free that takes the whole
+# process down, and the caller's local Python reference alone does not stop
+# the LRU/idle paths from dropping the entry.
+#
+# Deliberately NOT guarded by _model_load_lock: every mutation happens on the
+# event loop with no await between the check and the write, and every eviction
+# path (_drop_loaded_model's callers: the LRU loop, _idle_evictor,
+# drain_then_evict, shutdown) is a synchronous block on that same loop. Loop
+# semantics therefore make check-then-mutate atomic — the same reasoning that
+# already lets the cache-hit fast path in _get_or_load_model run lock-free.
+_model_leases: "dict[str, int]" = {}
 
 
 # =============================================================================
@@ -1350,14 +1363,40 @@ def _drop_suppress_chars_cache(model_id: str) -> None:
             _suppress_chars_cache.pop(k, None)
 
 
-def _drop_loaded_model(name: str) -> None:
+def _drop_loaded_model(name: str, *, force: bool = False) -> bool:
     """Single unload entry point: pop the cached WhisperModel, drop its
     suppress-chars entries, and unregister from the system_stats registry.
     Caller is responsible for holding _model_load_lock when the unload is
-    racy with loads (LRU eviction and idle eviction paths)."""
+    racy with loads (LRU eviction and idle eviction paths).
+
+    Declines (False) while a request holds a lease on the model, unless
+    ``force``. ``force`` is for the drain-then-evict / shutdown paths, whose
+    documented contract (see drain_then_evict) is that in-flight requests keep
+    running on the local reference they already captured."""
+    if not force and _model_leases.get(name, 0) > 0:
+        logger.info("Model %s is in use — eviction deferred", name)
+        return False
     _loaded_models.pop(name, None)
     _drop_suppress_chars_cache(name)
     system_stats.unregister_loaded_model(name)
+    return True
+
+
+def _release_model_lease(name: str) -> None:
+    """Release a lease taken by ``_get_or_load_model(..., lease=True)`` and
+    restart the model's idle clock — a long transcription must not be evicted
+    the instant it ends because the LOAD timestamp aged past the idle timeout.
+
+    Synchronous and lock-free (see the _model_leases comment). Tolerates a name
+    that is no longer cached: drain_then_evict/shutdown force-drop entries out
+    from under their lease holders by design."""
+    n = _model_leases.get(name, 0) - 1
+    if n <= 0:
+        _model_leases.pop(name, None)
+    else:
+        _model_leases[name] = n
+    # No-op for a name the registry no longer knows (force-dropped mid-job).
+    system_stats.touch_loaded_model(name)
 
 
 def _resolve_model_name(requested: str) -> str:
@@ -1664,7 +1703,13 @@ def _get_url_download_semaphore() -> "asyncio.Semaphore":
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?\Z")
 
 
-async def _get_or_load_model(name: str) -> "WhisperModel":
+async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel":
+    """Return the cached WhisperModel for ``name``, loading it on a miss.
+
+    ``lease=True`` marks the model as in-use until the caller passes the same
+    name to :func:`_release_model_lease` (a `finally:` — see the transcribe
+    handler). A leased model survives LRU and idle eviction. The startup
+    preload deliberately does NOT lease: it wants plain LRU/idle semantics."""
     # Lazy import (see the TYPE_CHECKING note up top): only when a model is
     # actually loaded do we need the native faster_whisper stack.
     from faster_whisper import WhisperModel  # noqa: F401  (used in executor lambdas below)
@@ -1693,6 +1738,8 @@ async def _get_or_load_model(name: str) -> "WhisperModel":
         except KeyError:
             pass
         system_stats.touch_loaded_model(name)
+        if lease:
+            _model_leases[name] = _model_leases.get(name, 0) + 1
         return cached
 
     # No allowlist configured: the name arrives verbatim from the request, and
@@ -1724,11 +1771,22 @@ async def _get_or_load_model(name: str) -> "WhisperModel":
         if cached is not None:
             _loaded_models.move_to_end(name)
             system_stats.touch_loaded_model(name)
+            if lease:
+                _model_leases[name] = _model_leases.get(name, 0) + 1
             return cached
 
-        # Evict the least-recently-used model(s) until we have room.
+        # Evict the least-recently-used UNLEASED model(s) until we have room.
         while len(_loaded_models) >= cfg.MAX_LOADED_MODELS:
-            evicted_name = next(iter(_loaded_models))
+            evicted_name = next(
+                (n for n in _loaded_models if not _model_leases.get(n, 0)), None)
+            if evicted_name is None:
+                # Every cached model is mid-request — overflow the cap rather
+                # than free a translator under a running decode; the idle
+                # evictor trims the excess once the requests release.
+                logger.warning(
+                    "All %d cached models are in use — temporarily exceeding "
+                    "MAX_LOADED_MODELS", len(_loaded_models))
+                break
             logger.info("Evicting model from VRAM (LRU, max=%d): %s",
                         cfg.MAX_LOADED_MODELS, evicted_name)
             _drop_loaded_model(evicted_name)
@@ -1869,6 +1927,8 @@ async def _get_or_load_model(name: str) -> "WhisperModel":
         )
 
         _loaded_models[name] = new_model
+        if lease:
+            _model_leases[name] = _model_leases.get(name, 0) + 1
         return new_model
 
 
@@ -1897,7 +1957,9 @@ async def drain_then_evict(model_id: "str | None" = None) -> list[str]:
         for name in names:
             logger.info("[evict-on-edit] dropping %s from cache; "
                         "reload on next request", name)
-            _drop_loaded_model(name)
+            # force: the drain contract above IS the lease's guarantee — an
+            # in-flight request keeps its own reference and finishes on it.
+            _drop_loaded_model(name, force=True)
             evicted.append(name)
     return evicted
 
@@ -1937,6 +1999,8 @@ async def _idle_evictor() -> None:
                         continue   # raced with another path
                     logger.info("[idle-evict] unloading %s after %ds idle",
                                 name, timeout)
+                    # Not forced: a refusal costs nothing, the next 30 s tick
+                    # picks the model up again once the request releases.
                     _drop_loaded_model(name)
             gc.collect()
             try:
@@ -2390,7 +2454,11 @@ async def lifespan(app: FastAPI):
     await _cancel(sessions_purge_task)
     await _cancel(open_mode_task)
 
-    _loaded_models.clear()
+    # force: the process is going away, so leases buy nothing — same contract
+    # as drain_then_evict, where an in-flight request finishes on its own ref.
+    for _name in list(_loaded_models):
+        _drop_loaded_model(_name, force=True)
+    _model_leases.clear()
     # Best-effort NVML shutdown so the service exit doesn't leak driver
     # handles. Safe to call when NVML didn't init.
     system_stats.shutdown()
@@ -3027,6 +3095,9 @@ async def transcribe(
     # inner finally on every path) and the retention id echoed to the client.
     _url_job_dir: "str | None" = None
     _source_media_id: "str | None" = None
+    # Set only AFTER the load returns, so the outer finally never releases a
+    # lease that was never taken (a rejected/failed load takes none).
+    _leased_model: "str | None" = None
     request_id = uuid.uuid4().hex
     _user_id = user.get("user_id")
     _key_id = user.get("key_id")
@@ -3047,7 +3118,8 @@ async def transcribe(
         if _clen and _clen.isdigit() and int(_clen) > max_upload:
             raise HTTPException(status_code=413, detail="upload too large")
 
-        model = await _get_or_load_model(resolved_model)
+        model = await _get_or_load_model(resolved_model, lease=True)
+        _leased_model = resolved_model
 
         # Resolve the caller's effective per-identity config ONCE for this
         # request: layered decode params, pipeline include/exclude, output
@@ -4254,6 +4326,8 @@ async def transcribe(
         _status = "error"
         raise
     finally:
+        if _leased_model is not None:
+            _release_model_lease(_leased_model)
         metrics.in_flight_transcriptions -= 1
         if _pid:
             _JOB_BY_PID.pop(_pid, None)

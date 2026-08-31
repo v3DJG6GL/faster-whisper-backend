@@ -55,7 +55,7 @@ def test_timestamps_shifted_back_to_original_timeline(client, app_module, monkey
     info.duration_after_vad = 1.2
     model = FakeModel(segments=[seg], info=info)
 
-    async def _loader(name):
+    async def _loader(name, *, lease=False):
         return model
     monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
 
