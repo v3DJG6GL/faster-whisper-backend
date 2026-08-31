@@ -190,6 +190,40 @@ def test_zero_cap_means_unlimited(app_module, monkeypatch):
 # The `*` marker now reaches stage params
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# The /logs viewer parses this block with JS regexes. Nothing else connects
+# the two, so a renamed section or a re-spaced row breaks colouring silently
+# and nobody finds out until someone opens the page.
+# ---------------------------------------------------------------------------
+
+def test_viewer_section_regex_matches_every_section(app_module):
+    import re
+    block = _block(app_module, stages=_STAGES,
+                   separation={"model": "UVR.onnx", "device": "cuda"},
+                   diarization={"model": "pyannote/x", "min_speakers": 2},
+                   translation={"model": "HY", "targets": ["en", "fr"],
+                                "mode": "fluent"},
+                   warnings=["w"], skipped=["s"])
+    # Mirrors _SEC_RE in the viewer's decorate().
+    sec = re.compile(r"^\s+─── ([A-Za-z][A-Za-z \-]*?)(?:\s\s|\s─)")
+    found = [m.group(1) for m in
+             (sec.match(l) for l in block.splitlines()) if m]
+    for label in ("Pipeline", "Audio", "Separation", "Diarization",
+                  "Translation", "Decode params", "Segments", "Notes"):
+        assert label in found, f"{label} no longer matches the viewer regex"
+
+
+def test_viewer_segment_row_regex_skips_the_pipeline_table(app_module):
+    """Both tables are indented numeric rows. If the segment-row pattern also
+    matched Pipeline rows, the fold control would hide stage timings."""
+    import re
+    block = _block(app_module, stages=_STAGES)
+    seg = re.compile(r"^\s+\d+\s+[-\d]")
+    matched = [l for l in block.splitlines() if seg.match(l)]
+    assert len(matched) == len(_SEG)
+    assert not any("separating" in l or "transcribing" in l for l in matched)
+
+
 def test_stage_params_can_be_marked_non_default(app_module):
     """_is_non_default is a whitelist keyed by _KWARG_TO_CFG; without the
     stage entries a diarization knob could stray arbitrarily far from the

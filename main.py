@@ -5792,6 +5792,32 @@ _LOG_VIEWER_HTML = """<!doctype html>
      disabled (SKIPPED). Mirrors the /quick-config skipped-step treatment;
      opacity (not a color) so the label/before/after keep their hue, just faded. */
   .line.dim     { opacity: 0.55; }
+  /* Per-stage hues for the request receipt. These are the SAME values the
+     desktop app's stage rail uses (STAGE_COLORS in Transcribe.tsx), so a
+     stage reads the same color in the log as it did while the user watched
+     it run. Before this, every receipt line that described the job fell
+     through classify()'s last branch to .line.info and the whole block read
+     as one monochrome wall. */
+  .line.st-sep  { color: #6faed9; }   /* music source separation */
+  .line.st-whi  { color: #93b76f; }   /* transcribe (+ its audio/params) */
+  .line.st-dia  { color: #c68fb4; }   /* diarization */
+  .line.st-tra  { color: #4dd0c4; }   /* translation */
+  .line.st-dl   { color: #d9a45b; }   /* download */
+  /* F2: on a stage PARAM row only the key column takes the hue; the value
+     stays --fg. Ten rows of solid pink drowns the numbers you opened the
+     log to read, and a row scrolled away from its section header still
+     needs to say which stage it belongs to. */
+  .line .v      { color: var(--fg); }
+  /* Folded segment rows. The rows exist in the DOM (and in the log file) —
+     this is display only, which is the whole difference from the old inert
+     "(+610 more)" tail, where the rows were never written at all. */
+  .line.folded  { display: none; }
+  .fold-ctl { color: var(--dim); cursor: default; }
+  .fold-ctl button { background: transparent; color: var(--cyan);
+    border: 1px solid var(--border); border-radius: 4px; font: inherit;
+    font-size: 0.9em; padding: 0 0.5rem; margin-left: 0.5rem;
+    cursor: pointer; }
+  .fold-ctl button:hover { background: var(--panel); }
   {{NAV_CSS}}
 </style></head>
 <body>
@@ -5850,12 +5876,38 @@ _LOG_VIEWER_HTML = """<!doctype html>
     // card-position numbering) — and the older bare "▸ 8 …" rotated format.
     if (/▸\\s+#?\\d/.test(line)) return 'step';
     if (/^\\s*→\\s/.test(line)) return 'after';
-    if (/file=|lang=|duration=|segments=|words=|format=/.test(line)) return 'meta';
+    // WARNING/ERROR must outrank `meta`: the meta test matches any line
+    // containing lang= or duration=, so a warning that happens to mention
+    // one used to render cyan and read as ordinary metadata.
     if (/(WARNING|WARN)/.test(line)) return 'warning';
     if (/(ERROR|CRITICAL)/.test(line)) return 'error';
+    if (/file=|lang=|duration=|segments=|words=|format=/.test(line)) return 'meta';
     if (/^\\s+'.*'$/.test(line)) return 'before';
     return 'info';
   }
+  // Receipt section headers: "  ─── Diarization  (* = non-default) ─────…".
+  // classify()'s `rule` branch only matches lines that are PURE box-drawing
+  // after trim, so these fell through to 'info' — which is why every section
+  // header in the block rendered the same grey as its body.
+  const _SEC_RE = /^\\s+─── ([A-Za-z][A-Za-z \\-]*?)(?:\\s\\s|\\s─)/;
+  const _SEC_STAGE = {
+    'Pipeline': '', 'Separation': 'st-sep', 'Diarization': 'st-dia',
+    'Translation': 'st-tra', 'Audio': 'st-whi', 'Decode params': 'st-whi',
+    'Post-decode guards': 'st-whi', 'Segments': 'st-whi',
+    'Identity': '', 'Notes': '', 'Timing': 'st-tra', 'Output': 'st-tra',
+  };
+  // Live per-stage progress lines OUTSIDE the receipt, so a whole job reads
+  // in one color scheme rather than only its trailing block.
+  const _LIVE_STAGE = [
+    [/\\[bgm\\]/, 'st-sep'], [/\\[diarize\\]/, 'st-dia'],
+    [/\\[translate\\]/, 'st-tra'], [/\\[transcribe\\]/, 'st-whi'],
+    [/\\[vad-trim\\]|\\[lead-pad\\]/, 'st-whi'], [/\\[preload\\]/, 'st-tra'],
+  ];
+  const _SEG_SHOWN = {{LOG_SEGMENT_ROWS_SHOWN}};
+  const _SEG_STEP = 50;
+  // A segment data row: "      0    0.31s   13.29s  …". The header row starts
+  // with '#' and must not be counted or folded.
+  const _SEG_ROW = /^\\s+\\d+\\s+[-\\d]/;
   // Pipeline steps that didn't run — force-EXCLUDED for this model, or globally
   // disabled (SKIPPED) — are logged as a 3-line group: a ▸ label carrying the
   // marker, then an identical before/after pair. Dim the whole group (same as
@@ -5864,16 +5916,131 @@ _LOG_VIEWER_HTML = """<!doctype html>
   // each get their own state object) so groups never dim across a boundary.
   const _SKIP_MARK = /\\[(EXCLUDED|SKIPPED)/;
   function decorate(line, st) {
+    // Section scope. A bare row like "    min_speakers      2 *" carries
+    // nothing that identifies it as diarization, so no per-line regex can
+    // ever colour it — the section header has to set the scope and the rows
+    // inherit it. Same shape as the dimLeft group tracking below, which is
+    // the precedent for cross-line state on this render pass.
+    const sec = _SEC_RE.exec(line);
+    if (sec) {
+      const label = sec[1].trim();
+      st.stage = _SEC_STAGE[label] || '';
+      st.inSeg = (label === 'Segments');
+      st.segRows = 0;
+      st.dimLeft = 0;
+      return 'rule' + (st.stage ? ' ' + st.stage : '');
+    }
     const cls = classify(line);
     if (cls === 'step') {
       if (_SKIP_MARK.test(line)) { st.dimLeft = 2; return cls + ' dim'; }
       st.dimLeft = 0; return cls;            // a step that ran resets the group
     }
     if (cls === 'rule' || cls === 'title' || cls === 'raw' || cls === 'final') {
-      st.dimLeft = 0; return cls;            // section boundary — stop dimming
+      // Block boundary: end the dim group AND the section scope, so a stage
+      // hue can never bleed past the receipt it belongs to.
+      st.dimLeft = 0; st.stage = ''; st.inSeg = false;
+      return cls;
     }
     if (st.dimLeft > 0) { st.dimLeft--; return cls + ' dim'; }
+    if (st.inSeg && _SEG_ROW.test(line)) {
+      st.segRows = (st.segRows || 0) + 1;
+      if (st.segRows > _SEG_SHOWN) {
+        if (st.segRows === _SEG_SHOWN + 1) st.needCtl = true;
+        return cls + ' ' + (st.stage || 'st-whi') + ' folded';
+      }
+    }
+    if (st.stage && /^ {4}\\S/.test(line)) return cls + ' ' + st.stage;
+    if (st.stage && cls === 'info') return cls + ' ' + st.stage;
+    if (!st.stage) {
+      for (const [re, k] of _LIVE_STAGE) if (re.test(line)) return cls + ' ' + k;
+    }
     return cls;
+  }
+  // One line element, shared by the live tail and the "Load older" batch so
+  // the two can never render the same text differently. Content always via
+  // textContent — never innerHTML — which is what keeps a transcript
+  // containing markup inert.
+  function makeLine(line, st) {
+    const el = document.createElement('span');
+    const cls = decorate(line, st);
+    el.className = 'line ' + cls;
+    const txt = localizeLogTs(line);
+    const stage = /\\bst-\\w+\\b/.test(cls);
+    // F2: split at the receipt's fixed 32-char name column so the key takes
+    // the stage hue and the value stays readable. Fixed width, so no parsing.
+    if (stage && !/\\brule\\b/.test(cls) && /^ {4}\\S/.test(txt) && txt.length > 32) {
+      const k = document.createElement('span');
+      k.textContent = txt.slice(0, 32);
+      const v = document.createElement('span');
+      v.className = 'v';
+      v.textContent = txt.slice(32) + '\\n';
+      el.appendChild(k); el.appendChild(v);
+      return el;
+    }
+    el.textContent = txt + '\\n';
+    return el;
+  }
+  function _foldRemaining(ctl) {
+    let n = 0;
+    for (let e = ctl.nextSibling; e; e = e.nextSibling) {
+      if (!e.classList || !e.classList.contains('line')) continue;
+      if (e.classList.contains('folded')) { n++; continue; }
+      if (e.classList.contains('fold-ctl')) continue;
+      break;
+    }
+    return n;
+  }
+  function _unfold(ctl, n) {
+    let done = 0;
+    for (let e = ctl.nextSibling; e && done < n; e = e.nextSibling) {
+      if (!e.classList || !e.classList.contains('line')) continue;
+      if (e.classList.contains('folded')) {
+        e.classList.remove('folded'); applyFilter(e); done++;
+      } else if (!e.classList.contains('fold-ctl')) break;
+    }
+    const left = _foldRemaining(ctl);
+    if (left <= 0) { ctl.remove(); return; }
+    ctl.firstChild.textContent = '    ▸ ' + left + ' more segment rows';
+  }
+  function makeFoldCtl() {
+    const el = document.createElement('span');
+    el.className = 'line fold-ctl';
+    const lbl = document.createElement('span');
+    lbl.textContent = '    ▸ more segment rows';
+    el.appendChild(lbl);
+    const b50 = document.createElement('button');
+    b50.type = 'button';
+    b50.textContent = 'show ' + _SEG_STEP;
+    b50.addEventListener('click', () => _unfold(el, _SEG_STEP));
+    const ball = document.createElement('button');
+    ball.type = 'button';
+    ball.textContent = 'show all';
+    ball.addEventListener('click', () => _unfold(el, 1e9));
+    el.appendChild(b50); el.appendChild(ball);
+    const nl = document.createElement('span');
+    nl.textContent = '\\n';
+    el.appendChild(nl);
+    return el;
+  }
+  // Append one rendered line, inserting the fold control immediately before
+  // the first row it hides. decorate() raises st.needCtl while classifying
+  // that row, so the control always lands on the right side of it.
+  function appendLine(container, line, st) {
+    const el = makeLine(line, st);
+    if (st.needCtl) {
+      st.needCtl = false;
+      const ctl = makeFoldCtl();
+      container.appendChild(ctl);
+      st.ctl = ctl;
+    }
+    applyFilter(el);
+    container.appendChild(el);
+    if (st.ctl) {
+      const left = _foldRemaining(st.ctl);
+      if (left > 0) st.ctl.firstChild.textContent =
+        '    ▸ ' + left + ' more segment rows';
+    }
+    return el;
   }
   function applyFilter(el) {
     if (filterText && !el.textContent.toLowerCase().includes(filterText)) {
@@ -5911,12 +6078,18 @@ _LOG_VIEWER_HTML = """<!doctype html>
       if (lo) lo.style.display = '';
       return;
     }
-    const el = document.createElement('span');
-    el.className = 'line ' + decorate(line, _liveDim);
-    el.textContent = localizeLogTs(line) + '\\n';
-    applyFilter(el);
-    log.appendChild(el);
-    while (log.childElementCount > _LOG_DOM_MAX) log.firstChild.remove();
+    appendLine(log, line, _liveDim);
+    while (log.childElementCount > _LOG_DOM_MAX) {
+      // Trimming away a fold control would strand its hidden rows with no
+      // way to reveal them, so unfold them on the way out.
+      const first = log.firstChild;
+      if (first && first.classList && first.classList.contains('fold-ctl')) {
+        _unfold(first, 1e9);
+        if (first.parentNode) first.remove();
+      } else {
+        log.firstChild.remove();
+      }
+    }
     if (!paused) window.scrollTo(0, document.body.scrollHeight);
   }
 
@@ -5968,13 +6141,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
         // line so the new batch honors any active substring search.
         const frag = document.createDocumentFragment();
         const olderDim = { dimLeft: 0 };   // batch-local; no leak to live tail
-        for (const line of lines) {
-          const el = document.createElement('span');
-          el.className = 'line ' + decorate(line, olderDim);
-          el.textContent = localizeLogTs(line) + '\\n';
-          applyFilter(el);
-          frag.appendChild(el);
-        }
+        for (const line of lines) appendLine(frag, line, olderDim);
         log.insertBefore(frag, log.firstChild);
         _logsSkip += lines.length;
         if (j.next_skip == null) loadOlderBtn.style.display = 'none';

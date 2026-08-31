@@ -3097,6 +3097,7 @@ def _render_page_cached(
     admin_ui: bool,
     log_initial: int,
     log_dom: int,
+    seg_shown: int,
 ) -> str:
     """The actual placeholder substitution, memoized on everything it can
     vary on.
@@ -3109,11 +3110,12 @@ def _render_page_cached(
     very response), so an unauthenticated caller can drive both the CPU and the
     ~270 KB of egress at will.
 
-    The key is exhaustive by construction. All 19 placeholders were traced:
+    The key is exhaustive by construction. All 20 placeholders were traced:
     14 substitute module-level constants; {{SEV_PILLS}} hardcodes n = 0 by
     design (see sev_pills_html); {{HEADER_VTAG}} is computed once at import;
     {{NAV}} varies only on `current` plus cfg.ADMIN_UI_ENABLED; the rest vary
-    on `current` or the two LOG_VIEWER_* values. No nonce, CSRF token,
+    on `current`, the two LOG_VIEWER_* values or LOG_SEGMENT_ROWS_SHOWN. No
+    nonce, CSRF token,
     username or per-request version is substituted server-side — if one is
     ever added it MUST enter this key, or the cache becomes a cross-user
     poisoning bug. The three cfg reads are hot-mutable via the settings save
@@ -3128,6 +3130,7 @@ def _render_page_cached(
         .replace("{{NAV_CSS}}", NAV_CSS)
         .replace("{{LOG_VIEWER_INITIAL_LINES}}", str(log_initial))
         .replace("{{LOG_VIEWER_DOM_MAX}}", str(log_dom))
+        .replace("{{LOG_SEGMENT_ROWS_SHOWN}}", str(seg_shown))
         .replace("{{SCALE_PICKER}}", SCALE_PICKER_HTML)
         .replace("{{RELOAD}}", RELOAD_BTN_HTML)
         .replace("{{LOGOUT}}", LOGOUT_BTN_HTML)
@@ -3191,8 +3194,9 @@ def render_page(template: str, current: str) -> str:
     _log_initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     _log_dom = int(getattr(cfg, "LOG_VIEWER_DOM_MAX", 0)) or (_log_initial * 4)
     _admin_ui = bool(getattr(cfg, "ADMIN_UI_ENABLED", False))
+    _seg_shown = int(getattr(cfg, "LOG_SEGMENT_ROWS_SHOWN", 15) or 15)
     return _render_page_cached(
-        template, current, _admin_ui, _log_initial, _log_dom,
+        template, current, _admin_ui, _log_initial, _log_dom, _seg_shown,
     )
 
 
