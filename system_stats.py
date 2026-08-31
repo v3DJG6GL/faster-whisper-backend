@@ -79,6 +79,21 @@ def gpu_mem_used_bytes() -> int | None:
         return None
 
 
+def gpu_mem_free_bytes() -> int | None:
+    """Return currently free VRAM (in bytes), or None if NVML unavailable.
+
+    `.free` is the DRIVER's global view, which is exactly why it is the right
+    number for a pre-load fit check: it accounts for every other process on the
+    machine (a second worker, a game, the desktop compositor), not just the
+    models we registered above."""
+    if not NVML_OK:
+        return None
+    try:
+        return int(pynvml.nvmlDeviceGetMemoryInfo(_nvml_handle).free)
+    except Exception:
+        return None
+
+
 def gpu_name() -> str | None:
     """The GPU's marketing name ("NVIDIA GeForce RTX 3080"), or None when NVML
     found no device. Older pynvml returns bytes — normalized to str."""
@@ -105,6 +120,18 @@ def register_loaded_model(name: str, vram_bytes: int | None,
             # (wall-clock can jump on NTP correction; monotonic cannot).
             "last_used_monotonic": time.monotonic(),
         }
+    # Persist the measurement so a fresh process can size this model BEFORE
+    # loading it. All four families (whisper, pyannote, UVR, GGUF) come through
+    # here, so this one hook covers the lot; `device` is the ACTUAL placement
+    # (whisper's cuda->cpu fallback in main._get_or_load_model passes the real
+    # one), so the ledger inherits that correctness for free. Imported lazily:
+    # model_sizes imports this module. Never fatal to a load.
+    if vram_bytes:
+        try:
+            import model_sizes
+            model_sizes.record(name, device, compute_type, vram_bytes)
+        except Exception:
+            pass
 
 
 def touch_loaded_model(name: str) -> None:

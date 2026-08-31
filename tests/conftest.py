@@ -157,6 +157,14 @@ def _reset_singletons():
     except Exception:
         pass
 
+    # Persisted measured-size ledger: drop the in-memory read cache so a test
+    # that repoints PATH doesn't inherit the previous test's file contents.
+    try:
+        import model_sizes
+        model_sizes._reset_for_tests()
+    except Exception:
+        pass
+
     # /v1/text/translations rate limiter (module-global fixed-window counter):
     # clear so a rate-limit test can't 429 a later translate test. Guarded on
     # sys.modules — don't force the heavy main import on pure-unit tests.
@@ -482,6 +490,18 @@ def app_module(tmp_path, monkeypatch, fake_model):
         _defaults = list(_fn.__defaults__ or ())
         if _defaults:
             _defaults[-1] = _tmp_overrides
+            monkeypatch.setattr(_fn, "__defaults__", tuple(_defaults), raising=False)
+
+    # model_sizes has the same default-ARG trap: _read/_write bind path=PATH at
+    # def time, so a route test that loads a model would otherwise write the
+    # measured-size ledger into the REAL /data (or <repo>\data).
+    import model_sizes
+    _tmp_sizes = str(tmp_path / "model_sizes.json")
+    monkeypatch.setattr(model_sizes, "PATH", _tmp_sizes, raising=False)
+    for _fn in (model_sizes._read, model_sizes._write):
+        _defaults = list(_fn.__defaults__ or ())
+        if _defaults:
+            _defaults[-1] = _tmp_sizes
             monkeypatch.setattr(_fn, "__defaults__", tuple(_defaults), raising=False)
 
     import main
