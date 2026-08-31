@@ -849,7 +849,11 @@ async def translate_segments(
     one ``{target_code: translated_text}`` dict per INPUT segment (cue count
     and timing stay the caller's — this function only returns per-segment
     strings), client-safe warning strings for segments kept untranslated,
-    and ``meta = {"model", "source", "mode"}``.
+    and ``meta = {"model", "source", "mode", "kept"}`` where ``kept`` maps
+    each segment INDEX whose guard fallback kept the SOURCE text to the list
+    of target codes it was kept for (``dict[int, list[str]]`` — empty when
+    every segment translated cleanly; the same-language verbatim copy is a
+    legitimate translation, never flagged).
 
     ``model_ref`` empty → ``TRANSLATION_DEFAULT_MODEL``; both empty →
     :class:`TranslationError`. A target equal to ``source_lang`` is copied
@@ -887,7 +891,13 @@ async def translate_segments(
 
     results: "list[dict[str, str]]" = [{} for _ in segments]
     warnings: "list[str]" = []
-    meta = {"model": ref, "source": source_lang or "", "mode": mode}
+    # Segment index → target codes whose guard fallback kept the source text.
+    # Exposed via meta["kept"] so clients can tell a kept-original apart from
+    # a real translation (the source text under translations[lang] is
+    # otherwise indistinguishable).
+    kept: "dict[int, list[str]]" = {}
+    meta = {"model": ref, "source": source_lang or "", "mode": mode,
+            "kept": kept}
     if not segments or not targets:
         return results, warnings, meta
 
@@ -939,8 +949,11 @@ async def translate_segments(
     # (hunyuan, temp 0.7) get a meaningful re-roll either way.
     greedy = not _FAMILIES[family].sampling.get("temperature")
 
+    def _mark_kept(idx: int, target: str) -> None:
+        kept.setdefault(idx, []).append(target)
+
     async def _guarded_single(text: str, target: str, context: str,
-                              seg_no: int) -> str:
+                              seg_idx: int) -> str:
         """One translation + guard; on failure ONE retry WITHOUT context
         (context echo is the dominant failure mode — a context-free prompt is
         the highest-value second attempt), then keep the original text + a
@@ -960,7 +973,9 @@ async def translate_segments(
                 last_ok = out
                 return out
         warnings.append(
-            f"segment {seg_no}: kept original — translation failed ({reason})")
+            f"segment {seg_idx + 1}: kept original — translation failed "
+            f"({reason})")
+        _mark_kept(seg_idx, target)
         return text
 
     try:
@@ -987,7 +1002,7 @@ async def translate_segments(
                 context = _context_lines(segments, i, ctx_n)
                 if len(batch_idx) == 1:
                     results[batch_idx[0]][target] = await _guarded_single(
-                        texts[0], target, context, batch_idx[0] + 1)
+                        texts[0], target, context, batch_idx[0])
                 else:
                     payload = (f"{_NUMBERED_INSTRUCTION}\n\n"
                                f"{_build_numbered(texts)}")
@@ -1021,6 +1036,7 @@ async def translate_segments(
                                 warnings.append(
                                     f"segment {j + 1}: kept original — "
                                     f"translation failed ({reason})")
+                                _mark_kept(j, target)
                 i += len(batch_idx)
                 batch_no += 1
                 done_units += len(batch_idx)
@@ -1044,8 +1060,10 @@ async def translate_segments(
                     translated = await _translate_one(joined, target, "")
                     reason = _guard_reason(joined, translated, target=target)
                 if reason is not None:
+                    # Whole-group revert: every member is a kept-original.
                     for j in group:
                         results[j][target] = segments[j].get("text") or ""
+                        _mark_kept(j, target)
                     span = (f"segment {group[0] + 1}" if len(group) == 1 else
                             f"segments {group[0] + 1}-{group[-1] + 1}")
                     warnings.append(

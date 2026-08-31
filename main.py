@@ -3871,9 +3871,17 @@ async def transcribe(
                                 _per_seg, _tr_warn, _tr_meta = \
                                     await _run_translation()
                             _warnings.extend(_tr_warn)
+                            _tr_kept = _tr_meta.get("kept") or {}
                             for _i, _seg_tr in enumerate(_per_seg):
-                                if _seg_tr:
-                                    segments_list[_i]["translations"] = _seg_tr
+                                # Unconditional: an untranslated segment
+                                # carries an explicit empty map, not a
+                                # missing key. translations_kept names the
+                                # targets whose guard fallback kept the
+                                # SOURCE text (absent when clean).
+                                segments_list[_i]["translations"] = _seg_tr
+                                if _tr_kept.get(_i):
+                                    segments_list[_i]["translations_kept"] = \
+                                        list(_tr_kept[_i])
                             _translation_meta = {
                                 "model": _tr_meta.get("model"),
                                 "targets": list(_translate_to),
@@ -4334,6 +4342,27 @@ def _check_text_translate_rate(host: str) -> None:
 _TEXT_TRANSLATE_MAX_SEGMENTS = 2000
 _TEXT_TRANSLATE_MAX_CHARS = 200_000
 
+# translate_segments' warning strings name segments by 1-based POSITION
+# ("segment 2", "segments 1-3"). On this endpoint clients address segments by
+# their own ids — rewrite the references before returning.
+_TR_SEG_WARN_RE = re.compile(r"segments (\d+)-(\d+)|segment (\d+)")
+
+
+def _client_id_warnings(warnings: "list[str]", ids: "list") -> "list[str]":
+    """Rewrite positional 1-based segment references in translation warnings
+    to the CLIENT-supplied segment ids (a group span expands to the member
+    ids, which need not be sequential)."""
+    def _sub(m: "re.Match") -> str:
+        if m.group(3) is not None:
+            i = int(m.group(3)) - 1
+            return f"segment {ids[i]}" if 0 <= i < len(ids) else m.group(0)
+        a, b = int(m.group(1)) - 1, int(m.group(2)) - 1
+        if 0 <= a <= b < len(ids):
+            return "segments " + ", ".join(str(ids[j])
+                                           for j in range(a, b + 1))
+        return m.group(0)
+    return [_TR_SEG_WARN_RE.sub(_sub, w) for w in warnings]
+
 
 @app.post("/v1/text/translations")
 async def translate_text(request: Request,
@@ -4618,12 +4647,18 @@ async def translate_text(request: Request,
         len(warnings))
     _record_run("ok")
 
+    # kept_original: targets for which the guard fallback returned the SOURCE
+    # text — without it a kept German line under translations["en"] is
+    # indistinguishable from a real translation. Absent when clean.
+    _kept = meta.get("kept") or {}
     return {
-        "segments": [{"id": ids[i], "translations": per_seg[i]}
+        "segments": [{"id": ids[i], "translations": per_seg[i],
+                      **({"kept_original": list(_kept[i])}
+                         if _kept.get(i) else {})}
                      for i in range(len(ids))],
         "translation": {"model": meta.get("model"), "targets": targets,
                         "source": meta.get("source"), "mode": meta.get("mode")},
-        "warnings": warnings + [
+        "warnings": _client_id_warnings(warnings, ids) + [
             f"{name} is locked on this server — your value was ignored"
             for name in _ignored if name
         ],

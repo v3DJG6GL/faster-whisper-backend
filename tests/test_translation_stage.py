@@ -72,6 +72,48 @@ def test_translation_stage_populates_segments_and_response(
     assert "XLATED" not in body["text"]
 
 
+def test_translations_kept_marks_guard_fallback_segments(
+        client, app_module, monkeypatch):
+    """A kept-original segment carries translations_kept in verbose_json."""
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+
+    async def _fake(segments, targets, **kwargs):
+        # Guard fallback: the SOURCE text under every target.
+        per_seg = [{t: seg["text"] for t in targets} for seg in segments]
+        return per_seg, ["segment 1: kept original — translation failed "
+                         "(length ratio)"], {
+            "model": "org/d:Q4", "source": "de", "mode": "fluent",
+            "kept": {0: list(targets)}}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    r = _post(client, translate_to="en")
+    assert r.status_code == 200, r.text
+    seg = r.json()["segments"][0]
+    assert seg["translations"] == {"en": "hallo welt"}
+    assert seg["translations_kept"] == ["en"]
+
+
+def test_untranslated_segment_gets_explicit_empty_translations(
+        client, app_module, monkeypatch):
+    """When targets were requested, every segment carries a translations map
+    — an untranslated one an explicit empty dict, never a missing key (and
+    no translations_kept when nothing was kept)."""
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+
+    async def _fake(segments, targets, **kwargs):
+        return [{} for _ in segments], [], {
+            "model": "org/d:Q4", "source": "de", "mode": "fluent", "kept": {}}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    r = _post(client, translate_to="en")
+    assert r.status_code == 200, r.text
+    seg = r.json()["segments"][0]
+    assert seg["translations"] == {}
+    assert "translations_kept" not in seg
+
+
 def test_translation_disabled_soft_fails_with_progress_skip(
         client, app_module, monkeypatch):
     # TRANSLATION_ENABLED defaults off: the request still succeeds, no

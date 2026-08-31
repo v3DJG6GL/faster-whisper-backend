@@ -325,7 +325,9 @@ def test_same_language_short_circuit_no_model_calls(base_cfg, monkeypatch):
     assert res == [{"de": "Hallo Welt.", "de-CH": "Hallo Welt."},
                    {"de": "Noch was.", "de-CH": "Noch was."}]
     assert warns == []
-    assert meta == {"model": "org/model", "source": "de", "mode": "faithful"}
+    # The verbatim copy is a legitimate translation — never flagged as kept.
+    assert meta == {"model": "org/model", "source": "de", "mode": "faithful",
+                    "kept": {}}
 
 
 def test_faithful_batches_as_numbered_list(base_cfg, monkeypatch):
@@ -394,7 +396,7 @@ def test_guards_keep_original_after_one_retry(base_cfg, monkeypatch,
                                               src, bad_out, reason):
     calls = []
     _install_fake(monkeypatch, bad_out, calls)
-    res, warns, _ = _run(translation.translate_segments(
+    res, warns, meta = _run(translation.translate_segments(
         _segs(src), ["en"], source_lang="de", mode="faithful"))
     assert res == [{"en": src}]                          # original kept
     # Greedy family (chatml) + no context on the first attempt: the retry
@@ -403,6 +405,7 @@ def test_guards_keep_original_after_one_retry(base_cfg, monkeypatch,
     assert len(warns) == 1
     assert "segment 1: kept original" in warns[0]
     assert reason in warns[0]
+    assert meta["kept"] == {0: ["en"]}
 
 
 def _install_hunyuan_model(monkeypatch):
@@ -497,6 +500,26 @@ def test_batch_guard_failure_retries_that_segment_alone(base_cfg, monkeypatch):
     assert calls[-1] == "Zweitens kaputt."               # retried alone
 
 
+def test_batch_kept_original_recorded_per_segment(base_cfg, monkeypatch):
+    """A batch member whose standalone retry ALSO fails lands in meta['kept']
+    under its segment index; the clean member does not."""
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 2, raising=False)
+
+    def per_item(t):
+        if t == "Zweitens kaputt.":
+            return t                                     # copy → guard fails
+        return _xlate(t)
+    _install_fake(monkeypatch, per_item)
+
+    res, warns, meta = _run(translation.translate_segments(
+        _segs("Erstens gut.", "Zweitens kaputt."), ["en"],
+        source_lang="de", mode="faithful"))
+    assert res[0]["en"] == "eRSTENS GUT."
+    assert res[1]["en"] == "Zweitens kaputt."            # source kept
+    assert meta["kept"] == {1: ["en"]}
+    assert len(warns) == 1 and "segment 2: kept original" in warns[0]
+
+
 def test_fluent_merges_translates_and_redistributes(base_cfg, monkeypatch):
     calls = []
 
@@ -521,12 +544,14 @@ def test_fluent_merges_translates_and_redistributes(base_cfg, monkeypatch):
 def test_fluent_group_failure_keeps_member_originals(base_cfg, monkeypatch):
     _install_fake(monkeypatch, lambda t: t)              # always a copy → fail
     segs = _segs("Hallo Welt und mehr Text", "es dir heute wirklich?")
-    res, warns, _ = _run(translation.translate_segments(
+    res, warns, meta = _run(translation.translate_segments(
         segs, ["en"], source_lang="de", mode="fluent"))
     assert res[0]["en"] == segs[0]["text"]
     assert res[1]["en"] == segs[1]["text"]
     assert len(warns) == 1 and "kept original" in warns[0]
     assert "segments 1-2" in warns[0]
+    # Whole-group revert flags EVERY member as kept-original.
+    assert meta["kept"] == {0: ["en"], 1: ["en"]}
 
 
 def test_progress_and_cancel(base_cfg, monkeypatch):

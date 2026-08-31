@@ -70,6 +70,41 @@ def test_translates_and_echoes_ids_in_input_order(client, app_module,
     assert calls[0]["mode"] == "faithful"
 
 
+def test_kept_original_surfaces_with_client_ids(client, app_module,
+                                                monkeypatch):
+    """Guard fallbacks are marked per segment via kept_original, and warning
+    text references the CLIENT ids (deliberately non-sequential to prove the
+    positional→id mapping), never the 1-based positions."""
+    _enable(app_module, monkeypatch)
+
+    async def _fake(segments, targets, **kwargs):
+        per_seg = [{t: seg["text"] for t in targets} for seg in segments]
+        return per_seg, [
+            "segment 2: kept original — translation failed (length ratio)",
+            "segments 2-3: kept original — translation failed (empty output)",
+        ], {"model": "org/d:Q4", "source": "de", "mode": "fluent",
+            "kept": {1: ["en"], 2: ["en"]}}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    r = client.post(URL, json={
+        "segments": [{"id": 7, "text": "eins"}, {"id": 3, "text": "zwei"},
+                     {"id": 42, "text": "drei"}],
+        "targets": ["en"], "source": "de"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    segs = body["segments"]
+    assert "kept_original" not in segs[0]                # clean → absent
+    assert segs[1] == {"id": 3, "translations": {"en": "zwei"},
+                       "kept_original": ["en"]}
+    assert segs[2]["kept_original"] == ["en"]
+    # Positional "segment 2" → client id 3; group span → the member ids.
+    assert any(w.startswith("segment 3: kept original") for w
+               in body["warnings"])
+    assert any(w.startswith("segments 3, 42: kept original") for w
+               in body["warnings"])
+    assert not any("segment 2" in w for w in body["warnings"])
+
+
 def test_segment_without_id_echoes_its_index(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
