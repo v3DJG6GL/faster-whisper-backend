@@ -5143,6 +5143,11 @@ async def translate_text(request: Request,
     # outside the try, so a refused request never releases a slot it does
     # not hold.
     _inflight_held: "str | None" = _inflight_key
+    # Set once the translation itself has returned. From that point the
+    # success path below OWNS the held receipt and will claim it — and the
+    # claim happens after the finally, so the finally has to know not to
+    # release the receipt out from under it.
+    _receipt_claimed_below = False
     try:
         # Central running-jobs registry entry. Progress feeds in directly from
         # _on_progress below (works whether or not the client sent a progress_id).
@@ -5233,6 +5238,7 @@ async def translate_text(request: Request,
                     per_seg, warnings, meta = await _run_translation()
             else:
                 per_seg, warnings, meta = await _run_translation()
+            _receipt_claimed_below = True
         except _tr.TranslationCancelled:
             raise _ClientCancelled() from None
     except _ClientCancelled:
@@ -5277,6 +5283,19 @@ async def translate_text(request: Request,
         if _inflight_held is not None:
             _translate_inflight.release(_inflight_held)
             _inflight_held = None
+        # Same reasoning for the held dictation receipt: the five except arms
+        # above cover every exception, but a dropped connection raises
+        # CancelledError past all of them, and the receipt would then survive
+        # only until the 90 s idle sweep — long after the utterance it belongs
+        # to scrolled off. Releasing here is the catch-all, not a sixth
+        # duplicate: release on an already-released or already-claimed key is a
+        # no-op, so the five paths above keep their own, more specific notes.
+        # The success path claims the receipt AFTER this finally runs, which is
+        # what the flag guards.
+        if _held_key and not _receipt_claimed_below:
+            _release_held_receipt(
+                _held_key,
+                f"connection closed after {time.perf_counter() - _t0:.1f}s")
         jobs.job_end(request_id)
         if _pid:
             _BATCH_PROGRESS.pop(_pid, None)

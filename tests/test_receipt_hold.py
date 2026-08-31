@@ -110,6 +110,22 @@ def test_release_preserves_existing_notes():
     assert "failed" in out["skipped"][1]
 
 
+def test_release_after_a_claim_is_a_no_op():
+    """The translate handler's `finally` is a catch-all release for the paths
+    no `except` arm covers (a dropped connection raises CancelledError, a
+    BaseException). It runs on the success path too, where the receipt has
+    already been claimed — so a release there must not manufacture a second,
+    contradictory copy of the same receipt."""
+    receipt_hold.park("cap1", _kwargs(), hold_s=90)
+    assert receipt_hold.claim("cap1") is not None
+    assert receipt_hold.release("cap1", "connection closed after 3.0s") is None
+    assert receipt_hold.sweep() == []
+    # And releasing twice hands the receipt back exactly once.
+    receipt_hold.park("cap2", _kwargs(2), hold_s=90)
+    assert receipt_hold.release("cap2", "connection closed after 3.0s") is not None
+    assert receipt_hold.release("cap2", "connection closed after 3.0s") is None
+
+
 def test_flush_all_drains_everything_for_shutdown():
     for i in range(3):
         receipt_hold.park(f"cap{i}", _kwargs(i), hold_s=90)
