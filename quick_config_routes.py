@@ -1257,6 +1257,17 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
     border-color: rgba(79,140,255,0.55); }
   .trace-meta .src-chip.src-file { background: rgba(255,255,255,0.03);
     color: var(--dim); }
+  /* Per-stage chips. Same hues the /logs receipt and the desktop app's
+     stage rail use, so a stage is one colour everywhere it appears. */
+  .trace-stages { margin-top: 0.25rem; }
+  .trace-meta .stage-chip { font-family: var(--font-mono);
+    text-transform: none; letter-spacing: 0; }
+  .trace-meta .stage-separating  { color: #6faed9; border-color: #6faed9; }
+  .trace-meta .stage-vad         { color: #93b76f; border-color: #93b76f; }
+  .trace-meta .stage-transcribing{ color: #93b76f; border-color: #93b76f; }
+  .trace-meta .stage-diarizing   { color: #c68fb4; border-color: #c68fb4; }
+  .trace-meta .stage-translating { color: #4dd0c4; border-color: #4dd0c4; }
+  .trace-meta .stage-downloading { color: #d9a45b; border-color: #d9a45b; }
   .trace-text { font-family: var(--font-mono); font-size: var(--fs-sm);
     word-wrap: break-word; }
   .trace-raw { color: var(--dim); margin-bottom: 0.25rem; }
@@ -1856,6 +1867,18 @@ function renderTrace(entry) {
     src.textContent = isStream ? 'live' : 'file';
     meta.appendChild(src);
   }
+  // Language. The column has existed on the row since record_trace was
+  // written and reaches the browser already decoded — it was simply never
+  // rendered, so this viewer showed fewer job attributes than the DB row
+  // behind it. Sits left of the speaker chip because it is a property of
+  // the decode, like model and source, not of the person.
+  if (entry.language) {
+    const lang = document.createElement('span');
+    lang.className = 'pill';
+    lang.title = 'detected / requested language';
+    lang.textContent = String(entry.language).slice(0, 12);
+    meta.appendChild(lang);
+  }
   if (entry.username) {
     const spk = document.createElement('span');
     spk.className = 'pill';
@@ -1887,7 +1910,29 @@ function renderTrace(entry) {
       meta.appendChild(size);
     }
   }
-  item.appendChild(meta);
+  // Stage chips: what this run actually DID, and what each stage cost.
+  // stages_json has been on the row since the preload work and reaches the
+  // browser already decoded; the viewer just never looked at it. Placed
+  // above `raw` so "how this run executed" precedes "what it produced".
+  // Batch rows only for now — a live utterance records one stage.
+  {
+    const stages = Array.isArray(entry.stages) ? entry.stages : [];
+    if (stages.length) {
+      const row = document.createElement('div');
+      row.className = 'trace-meta trace-stages';
+      for (const st of stages) {
+        if (!st || !st.name) continue;
+        const chip = document.createElement('span');
+        chip.className = 'pill stage-chip stage-' + String(st.name);
+        const secs = Number(st.secs);
+        chip.textContent = st.name +
+          (Number.isFinite(secs) && secs > 0 ? ' ' + secs.toFixed(1) + 's' : '');
+        if (st.model) chip.title = String(st.model);
+        row.appendChild(chip);
+      }
+      if (row.childElementCount) item.appendChild(row);
+    }
+  }
 
   item.appendChild(traceTextBlock('raw', entry.raw || '', 'trace-raw'));
 
