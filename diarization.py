@@ -51,6 +51,19 @@ _pipeline = None
 _pipeline_key: "tuple[str, str, int] | None" = None
 _last_used_monotonic: float = 0.0
 _STATS_PREFIX = "pyannote:"
+# model_id → count of jobs currently running inference on the CACHED pipeline,
+# and model_id → count still running on a pipeline that has already been
+# dropped from the cache (see _drop_locked's orphan branch). Freeing a torch
+# pipeline while another job's executor thread is inside it is a use-after-free
+# in native code; until this existed, the only thing preventing it was the
+# caller's local Python reference.
+#
+# Mutated without _lock on the cache-hit fast path only: that path has no await
+# between the key check and the increment, and every drop runs synchronously on
+# the same event loop, so check-then-mutate is atomic by loop semantics (the
+# same argument main._model_leases documents).
+_leases: "dict[str, int]" = {}
+_orphans: "dict[str, int]" = {}
 
 # The idle loop mirrors main._idle_evictor's cadence.
 _EVICTOR_WAKE_S = 30
@@ -149,15 +162,23 @@ def _load_blocking(model_id: str, device: str, batch_size: int):
     return pipe
 
 
-def _drop_locked() -> None:
-    """Drop the cached pipeline. Caller holds _lock."""
-    global _pipeline, _pipeline_key
-    if _pipeline is None:
-        return
-    model_id = _pipeline_key[0] if _pipeline_key else "?"
-    _pipeline = None
-    _pipeline_key = None
-    system_stats.unregister_loaded_model(_STATS_PREFIX + model_id)
+def _resolve_model_id(model_id: "str | None" = None) -> str:
+    """Per-request override, else cfg.DIARIZATION_MODEL. Also the lease key,
+    so ``diarize`` releases exactly what ``_get_pipeline`` leased."""
+    resolved = (model_id or "").strip() or \
+        (getattr(cfg, "DIARIZATION_MODEL", "") or "")
+    if not resolved:
+        raise DiarizationError("no DIARIZATION_MODEL configured")
+    return resolved
+
+
+def _free_locked(model_id: str) -> None:
+    """Give the pipeline's memory back. Caller holds _lock and has already
+    removed the pipeline from the cache."""
+    # A same-id RELOAD can have happened while an orphan was still draining;
+    # the stats entry then describes the live pipeline, not the dying one.
+    if not (_pipeline_key and _pipeline_key[0] == model_id):
+        system_stats.unregister_loaded_model(_STATS_PREFIX + model_id)
     import gc
     gc.collect()
     try:
@@ -169,25 +190,101 @@ def _drop_locked() -> None:
     logger.info("[diarize] pipeline %s unloaded", model_id)
 
 
-async def _get_pipeline(model_id: "str | None" = None):
+def _drop_locked(*, force: bool = False) -> bool:
+    """Drop the cached pipeline. Caller holds _lock. Returns False when it
+    declined.
+
+    Leased and not ``force`` → declines, so the idle evictor can simply try
+    again on its next tick. Leased and ``force`` → ORPHANS the pipeline: the
+    cache is cleared (new callers reload) but nothing is unregistered or
+    collected, because the job inside the executor is still calling into it on
+    its own reference. The last ``_release_pipeline`` finishes the teardown.
+    That is the "drain comes for free from refcounting" contract
+    main.drain_then_evict documents, made explicit for a singleton."""
+    global _pipeline, _pipeline_key
+    if _pipeline is None:
+        return True
+    model_id = _pipeline_key[0] if _pipeline_key else "?"
+    leased = _leases.get(model_id, 0)
+    if leased and not force:
+        logger.info("[diarize] pipeline %s is in use — eviction deferred",
+                    model_id)
+        return False
+    _pipeline = None
+    _pipeline_key = None
+    if leased:
+        _leases.pop(model_id, None)
+        _orphans[model_id] = _orphans.get(model_id, 0) + leased
+        logger.info("[diarize] pipeline %s evicted with %d job(s) still "
+                    "running — freed when the last one finishes",
+                    model_id, leased)
+        return True
+    _free_locked(model_id)
+    return True
+
+
+def _release_locked(model_id: str) -> None:
+    """Drop one lease. Caller holds _lock. Orphans are decremented first: a
+    holder that outlived its pipeline is by definition one of them."""
+    global _last_used_monotonic
+    n = _orphans.get(model_id, 0)
+    if n:
+        n -= 1
+        if n:
+            _orphans[model_id] = n
+        else:
+            _orphans.pop(model_id, None)
+            _free_locked(model_id)
+        return
+    n = _leases.get(model_id, 0) - 1
+    if n <= 0:
+        _leases.pop(model_id, None)
+    else:
+        _leases[model_id] = n
+    if _pipeline is not None and _pipeline_key and _pipeline_key[0] == model_id:
+        # Restart the idle clock: a long job must not be evicted the instant
+        # it ends because the LOAD timestamp aged past the timeout.
+        _last_used_monotonic = time.monotonic()
+        system_stats.touch_loaded_model(_STATS_PREFIX + model_id)
+
+
+async def _release_pipeline(model_id: str) -> None:
+    """Release a lease taken by ``_get_pipeline(..., lease=True)``."""
+    async with _lock:
+        _release_locked(model_id)
+
+
+async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
     """Return the cached pipeline, (re)loading when config (or a per-request
     ``model_id`` override) changed it. ``model_id`` empty/None falls back to
     cfg.DIARIZATION_MODEL; the (model, device, batch) key below re-keys the
     singleton per call, so alternating models simply reload."""
     global _pipeline, _pipeline_key, _last_used_monotonic
-    model_id = (model_id or "").strip() or \
-        (getattr(cfg, "DIARIZATION_MODEL", "") or "")
-    if not model_id:
-        raise DiarizationError("no DIARIZATION_MODEL configured")
+    model_id = _resolve_model_id(model_id)
     device = _resolve_device()
     batch = int(getattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4) or 4)
     key = (model_id, device, batch)
+    # Lock-free cache hit. Read the singleton into a LOCAL first so a
+    # concurrent _drop_locked cannot null it between the check and the return.
+    # Taking _lock before the key comparison (as this did) made every job on a
+    # warm pipeline block for the full duration of any other job's load.
+    pipe = _pipeline
+    if pipe is not None and _pipeline_key == key:
+        _last_used_monotonic = time.monotonic()
+        system_stats.touch_loaded_model(_STATS_PREFIX + model_id)
+        if lease:
+            _leases[model_id] = _leases.get(model_id, 0) + 1
+        return pipe
     async with _lock:
         if _pipeline is not None and _pipeline_key == key:
             _last_used_monotonic = time.monotonic()
             system_stats.touch_loaded_model(_STATS_PREFIX + model_id)
+            if lease:
+                _leases[model_id] = _leases.get(model_id, 0) + 1
             return _pipeline
-        _drop_locked()
+        # force: a request for a DIFFERENT model must never be blocked by a
+        # running job — orphaning lets both coexist until the old one drains.
+        _drop_locked(force=True)
         vram_before = system_stats.gpu_mem_used_bytes()
         loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
@@ -209,6 +306,8 @@ async def _get_pipeline(model_id: "str | None" = None):
         _pipeline = pipe
         _pipeline_key = key
         _last_used_monotonic = time.monotonic()
+        if lease:
+            _leases[model_id] = _leases.get(model_id, 0) + 1
         return pipe
 
 
@@ -294,9 +393,30 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
     pyannote's hook kwarg — best-effort. ``cancel_check`` (no-arg, truthy =
     abort) is polled from the same hook; a positive answer raises
     :class:`DiarizeCancelled` out of this coroutine.
+
+    The job lease is taken HERE, not in the caller — deliberately asymmetric
+    with translation.py, whose lease spans many completions and therefore has
+    to live in its handler. Diarization has exactly one entry point that both
+    loads and runs, so no handler code has to know about leases at all.
     """
     global _last_used_monotonic
-    pipe = await _get_pipeline(model_id)
+    pipe = await _get_pipeline(model_id, lease=True)
+    leased_id = _resolve_model_id(model_id)
+    try:
+        return await _diarize_with(pipe, path, num_speakers=num_speakers,
+                                   min_speakers=min_speakers,
+                                   max_speakers=max_speakers,
+                                   progress_cb=progress_cb,
+                                   cancel_check=cancel_check)
+    finally:
+        await _release_pipeline(leased_id)
+
+
+async def _diarize_with(pipe, path: str, *, num_speakers, min_speakers,
+                        max_speakers, progress_cb, cancel_check,
+                        ) -> "list[tuple[float, float, str]]":
+    """Run one diarization on an already-leased pipeline (see ``diarize``)."""
+    global _last_used_monotonic
     kwargs: dict = {}
     if num_speakers:
         kwargs["num_speakers"] = num_speakers
@@ -383,10 +503,14 @@ def assign_speakers(segments_list: "list[dict]",
     return labels
 
 
-async def drop_pipeline() -> None:
-    """Evict the cached pipeline (admin edited model/device, or shutdown)."""
+async def drop_pipeline(*, force: bool = True) -> bool:
+    """Evict the cached pipeline (admin edited model/device, or shutdown).
+
+    Forced by default: an admin edit must take effect on the next request, and
+    a running job simply orphans the old pipeline and frees it when it ends.
+    The idle evictor passes force=False — there a refusal costs nothing."""
     async with _lock:
-        _drop_locked()
+        return _drop_locked(force=force)
 
 
 async def idle_evictor_loop() -> None:
@@ -400,7 +524,7 @@ async def idle_evictor_loop() -> None:
             if timeout <= 0 or _pipeline is None:
                 continue
             if time.monotonic() - _last_used_monotonic >= timeout:
-                await drop_pipeline()
+                await drop_pipeline(force=False)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — the loop must survive

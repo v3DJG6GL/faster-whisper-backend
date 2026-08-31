@@ -125,6 +125,35 @@ def _reset_singletons():
         import translation
         translation._models.clear()
         translation._last_used.clear()
+        # A leaked lease makes every later eviction test see a refusal.
+        translation._active.clear()
+    except Exception:
+        pass
+
+    # Stage-model singletons (pyannote / UVR) + their job leases. Tests only
+    # ever put stubs in them, but a leaked pipeline/lease would change what a
+    # later eviction or cache-hit test observes.
+    try:
+        import diarization
+        diarization._pipeline = None
+        diarization._pipeline_key = None
+        diarization._leases.clear()
+        diarization._orphans.clear()
+    except Exception:
+        pass
+    try:
+        import bgm_separation
+        bgm_separation._separator = None
+        bgm_separation._separator_key = None
+        bgm_separation._leases.clear()
+        bgm_separation._orphans.clear()
+    except Exception:
+        pass
+
+    # Loaded-model registry behind /stats: stage tests register stubs in it.
+    try:
+        import system_stats
+        system_stats._loaded_models.clear()
     except Exception:
         pass
 

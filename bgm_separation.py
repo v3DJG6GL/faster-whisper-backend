@@ -233,6 +233,17 @@ _separator = None
 _separator_key: "tuple[str, str] | None" = None  # (model_filename, device)
 _last_used_monotonic: float = 0.0
 _STATS_PREFIX = "uvr:"
+# model filename → count of jobs currently running inference on the CACHED
+# separator, and → count still running on one already dropped from the cache
+# (see _drop_locked's orphan branch). Tearing an ONNX session down while
+# another job's executor thread is inside it is a use-after-free in native
+# code; until this existed, the only thing preventing it was the caller's
+# local Python reference.
+#
+# Mutated without _lock on the cache-hit fast path only — see the same note on
+# diarization._leases for why loop semantics make that safe.
+_leases: "dict[str, int]" = {}
+_orphans: "dict[str, int]" = {}
 _EVICTOR_WAKE_S = 30
 
 
@@ -361,15 +372,13 @@ def _load_blocking(model_filename: str, device: str):
     return sep
 
 
-def _drop_locked() -> None:
-    """Drop the cached separator. Caller holds _lock."""
-    global _separator, _separator_key
-    if _separator is None:
-        return
-    model = _separator_key[0] if _separator_key else "?"
-    _separator = None
-    _separator_key = None
-    system_stats.unregister_loaded_model(_STATS_PREFIX + model)
+def _free_locked(model: str) -> None:
+    """Give the separator's memory back. Caller holds _lock and has already
+    removed it from the cache."""
+    # A same-model RELOAD can have happened while an orphan was still
+    # draining; the stats entry then describes the live separator.
+    if not (_separator_key and _separator_key[0] == model):
+        system_stats.unregister_loaded_model(_STATS_PREFIX + model)
     import gc
     gc.collect()
     try:
@@ -381,7 +390,71 @@ def _drop_locked() -> None:
     logger.info("[bgm] separation model %s unloaded", model)
 
 
-async def _get_separator(model_filename: "str | None" = None):
+def _drop_locked(*, force: bool = False) -> bool:
+    """Drop the cached separator. Caller holds _lock. Returns False when it
+    declined.
+
+    Leased and not ``force`` → declines, so the idle evictor just retries on
+    its next tick. Leased and ``force`` → ORPHANS the separator: the cache is
+    cleared (new callers reload) but nothing is unregistered or collected,
+    because the job inside the executor is still calling into it on its own
+    reference. The last ``_release_separator`` finishes the teardown — the
+    "drain comes for free from refcounting" contract main.drain_then_evict
+    documents, made explicit for a singleton."""
+    global _separator, _separator_key
+    if _separator is None:
+        return True
+    model = _separator_key[0] if _separator_key else "?"
+    leased = _leases.get(model, 0)
+    if leased and not force:
+        logger.info("[bgm] separation model %s is in use — eviction deferred",
+                    model)
+        return False
+    _separator = None
+    _separator_key = None
+    if leased:
+        _leases.pop(model, None)
+        _orphans[model] = _orphans.get(model, 0) + leased
+        logger.info("[bgm] separation model %s evicted with %d job(s) still "
+                    "running — freed when the last one finishes", model, leased)
+        return True
+    _free_locked(model)
+    return True
+
+
+def _release_locked(model: str) -> None:
+    """Drop one lease. Caller holds _lock. Orphans are decremented first: a
+    holder that outlived its separator is by definition one of them."""
+    global _last_used_monotonic
+    n = _orphans.get(model, 0)
+    if n:
+        n -= 1
+        if n:
+            _orphans[model] = n
+        else:
+            _orphans.pop(model, None)
+            _free_locked(model)
+        return
+    n = _leases.get(model, 0) - 1
+    if n <= 0:
+        _leases.pop(model, None)
+    else:
+        _leases[model] = n
+    if _separator is not None and _separator_key and _separator_key[0] == model:
+        # Restart the idle clock: a long separation must not be evicted the
+        # instant it ends because the LOAD timestamp aged past the timeout.
+        _last_used_monotonic = time.monotonic()
+        system_stats.touch_loaded_model(_STATS_PREFIX + model)
+
+
+async def _release_separator(model: str) -> None:
+    """Release a lease taken by ``_get_separator(..., lease=True)``."""
+    async with _lock:
+        _release_locked(model)
+
+
+async def _get_separator(model_filename: "str | None" = None, *,
+                         lease: bool = False):
     """Return the cached separator, (re)loading when config (or a per-request
     ``model_filename`` override) changed it — the (model, device) key below
     re-keys the singleton per call."""
@@ -389,12 +462,27 @@ async def _get_separator(model_filename: "str | None" = None):
     model = _model_filename(model_filename)
     device = _resolve_device()
     key = (model, device)
+    # Lock-free cache hit. Read the singleton into a LOCAL first so a
+    # concurrent _drop_locked cannot null it between the check and the return.
+    # Taking _lock before the key comparison (as this did) made every job on a
+    # warm separator block for the full duration of any other job's load.
+    sep = _separator
+    if sep is not None and _separator_key == key:
+        _last_used_monotonic = time.monotonic()
+        system_stats.touch_loaded_model(_STATS_PREFIX + model)
+        if lease:
+            _leases[model] = _leases.get(model, 0) + 1
+        return sep
     async with _lock:
         if _separator is not None and _separator_key == key:
             _last_used_monotonic = time.monotonic()
             system_stats.touch_loaded_model(_STATS_PREFIX + model)
+            if lease:
+                _leases[model] = _leases.get(model, 0) + 1
             return _separator
-        _drop_locked()
+        # force: a request for a DIFFERENT model must never be blocked by a
+        # running job — orphaning lets both coexist until the old one drains.
+        _drop_locked(force=True)
         vram_before = system_stats.gpu_mem_used_bytes()
         loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
@@ -425,6 +513,8 @@ async def _get_separator(model_filename: "str | None" = None):
         _separator = sep
         _separator_key = key
         _last_used_monotonic = time.monotonic()
+        if lease:
+            _leases[model] = _leases.get(model, 0) + 1
         return sep
 
 
@@ -441,9 +531,24 @@ async def separate(path: str, *, model_filename: "str | None" = None,
     passes. ``cancel_check`` (no-arg, truthy = abort) is polled at the same
     cadence; a positive answer raises :class:`BgmCancelled` out of this
     coroutine.
+
+    The job lease is taken HERE, not in the caller — deliberately asymmetric
+    with translation.py, whose lease spans many completions and therefore has
+    to live in its handler. Separation has exactly one entry point that both
+    loads and runs, so no handler code has to know about leases at all.
     """
+    sep = await _get_separator(model_filename, lease=True)
+    leased = _model_filename(model_filename)
+    try:
+        return await _separate_with(sep, path, progress_cb=progress_cb,
+                                    cancel_check=cancel_check)
+    finally:
+        await _release_separator(leased)
+
+
+async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
+    """Run one separation on an already-leased separator (see ``separate``)."""
     global _last_used_monotonic
-    sep = await _get_separator(model_filename)
     out_name = f"vocals-{uuid.uuid4().hex}"
 
     def _run() -> str:
@@ -497,10 +602,14 @@ async def separate(path: str, *, model_filename: "str | None" = None,
     return result
 
 
-async def drop_separator() -> None:
-    """Evict the cached separator (admin edited model/device, or shutdown)."""
+async def drop_separator(*, force: bool = True) -> bool:
+    """Evict the cached separator (admin edited model/device, or shutdown).
+
+    Forced by default: an admin edit must take effect on the next request, and
+    a running job simply orphans the old separator and frees it when it ends.
+    The idle evictor passes force=False — there a refusal costs nothing."""
     async with _lock:
-        _drop_locked()
+        return _drop_locked(force=force)
 
 
 async def idle_evictor_loop() -> None:
@@ -512,7 +621,7 @@ async def idle_evictor_loop() -> None:
             if timeout <= 0 or _separator is None:
                 continue
             if time.monotonic() - _last_used_monotonic >= timeout:
-                await drop_separator()
+                await drop_separator(force=False)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — the loop must survive
