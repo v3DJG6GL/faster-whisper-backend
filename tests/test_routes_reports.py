@@ -132,10 +132,56 @@ def test_clear_reports_admin(client):
 
 
 def test_export_reports_admin(client):
+    import json
+    client.post(_SUBMIT, json=_payload(request_id="exp-1"))
     r = client.get("/reports/api/export")
     assert r.status_code == 200
     assert "attachment" in r.headers.get("content-disposition", "")
-    assert "reports" in r.json()
+    body = json.loads(r.text)
+    assert "reports" in body
+    assert body["reports"][0]["request_id"] == "exp-1"
+
+
+def test_export_with_legacy_nonfinite_trace_ts_raises_not_infinity(client):
+    """The export shares the store and rows with /reports/api/list, so it
+    must fail the same way on a non-finite trace_ts (allow_nan=False)
+    instead of returning 200 with bare `Infinity` — a "backup" JSON.parse,
+    jq and every strict parser reject."""
+    import pytest
+    import reports_store
+    client.post(_SUBMIT, json=_payload(request_id="nan-exp"))
+    reports_store._require_conn().execute(
+        "UPDATE reports SET trace_ts = ?", (float("inf"),))
+    with pytest.raises(ValueError):
+        client.get("/reports/api/export")
+
+
+def test_list_signals_truncation_with_uncapped_counts(client, monkeypatch):
+    """`reports` stops at LIST_LIMIT while `counts` states the scope total,
+    so the payload must say the ceiling was hit — otherwise the toolbar
+    claims rows the page cannot show."""
+    import reports_store
+    monkeypatch.setattr(reports_store, "LIST_LIMIT", 3)
+    for i in range(4):
+        # Direct store writes: the submit route is rate-limited per identity.
+        reports_store.upsert_report(
+            user_id="u-trunc", request_id=f"tr-{i}", trace_ts=1000.0 + i,
+            model="m", raw="r", final="f", steps=[], corrections=[],
+            intended_text="", user_comment="c", reporter_role="user",
+            reporter_host="127.0.0.1",
+        )
+    body = client.get("/reports/api/list").json()
+    assert len(body["reports"]) == 3
+    assert body["truncated"] is True
+    assert body["counts"]["open"] == 4
+
+    reports_store.delete_report(body["reports"][0]["id"])
+    body = client.get("/reports/api/list").json()
+    assert len(body["reports"]) == 3
+    assert body["truncated"] is True  # exactly at the ceiling still flags
+    reports_store.delete_report(body["reports"][0]["id"])
+    body = client.get("/reports/api/list").json()
+    assert len(body["reports"]) == 2 and body["truncated"] is False
 
 
 def test_submit_disabled_for_nonadmin_403(client, app_module, make_user_key):
@@ -165,5 +211,37 @@ def test_correction_field_under_cap_still_accepted(client):
     r = client.post(_SUBMIT, json={
         "request_id": "req-cap-ok",
         "corrections": [{"wrong": "x" * 4000, "correct": "y", "idx": 0}],
+    })
+    assert r.status_code == 200
+
+
+def test_nested_string_in_steps_over_cap_422(client):
+    """steps/stages are list[Any] whose max_length bounds the item count
+    only; a single oversized string nested inside must hit the same 64 KB
+    ceiling as intended_text/user_comment instead of being parsed whole and
+    truncated to a few KB by the store."""
+    r = client.post(_SUBMIT, json={
+        "request_id": "req-steps-big",
+        "user_comment": "x",
+        "steps": [["stage", "x" * 200_000, "y"]],
+    })
+    assert r.status_code == 422
+    r = client.post(_SUBMIT, json={
+        "request_id": "req-stages-big",
+        "user_comment": "x",
+        "stages": [{"name": "transcribing", "note": "x" * 200_000}],
+    })
+    assert r.status_code == 422
+
+
+def test_realistic_steps_and_stages_still_accepted(client):
+    steps = [[f"stage-{i}", "before " * 200, "after " * 200] for i in range(40)]
+    stages = [{"name": "transcribing", "model": "large-v3", "seconds": 1.5},
+              {"name": "translating", "target": "en"}]
+    r = client.post(_SUBMIT, json={
+        "request_id": "req-steps-ok",
+        "user_comment": "x",
+        "steps": steps,
+        "stages": stages,
     })
     assert r.status_code == 200

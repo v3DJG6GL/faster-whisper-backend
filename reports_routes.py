@@ -37,7 +37,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 import api_keys_store
 import config as cfg
@@ -69,6 +69,12 @@ class CorrectionIn(BaseModel):
     # to idx) for single-word corrections. Validation happens server-side
     # in reports_store._clean_corrections.
     idx_end: int | None = None
+
+
+# Bounds for the nested walk in ReportSubmitIn._bound_nested_strings.
+_NESTED_STR_MAX = 65_536
+_NESTED_BUDGET = {"steps": 1_048_576, "stages": 262_144}
+_NESTED_MAX_NODES = 10_000
 
 
 class ReportSubmitIn(BaseModel):
@@ -103,6 +109,39 @@ class ReportSubmitIn(BaseModel):
     # model that produced it.
     language: str = Field(default="", max_length=32)
     stages: list[Any] = Field(default=[], max_length=32)
+
+    # Parity with the intended_text/user_comment ceilings above: max_length
+    # on a list[Any] bounds the ITEM COUNT only, so one 100 MB string nested
+    # in steps[0] (or inside a stages dict) reproduces exactly the case the
+    # 64 KB ceilings were added to kill. Any contained str is bounded at the
+    # same 64 KB, and the walked total at a budget far above the store's
+    # _CAP_STEPS_JSON / _CAP_STAGES_JSON, so nothing stored intact today
+    # starts 422-ing. The types stay list[Any]: tightening them would turn
+    # shapes _truncate_steps silently drops today into 422s.
+    @field_validator("steps", "stages")
+    @classmethod
+    def _bound_nested_strings(cls, v: list[Any], info: Any) -> list[Any]:
+        budget = _NESTED_BUDGET[info.field_name]
+        total = 0
+        stack: list[Any] = [v]
+        visited = 0
+        while stack:
+            item = stack.pop()
+            visited += 1
+            if visited > _NESTED_MAX_NODES:
+                raise ValueError("field too large")
+            if isinstance(item, str):
+                if len(item) > _NESTED_STR_MAX:
+                    raise ValueError("field too large")
+                total += len(item)
+                if total > budget:
+                    raise ValueError("field too large")
+            elif isinstance(item, dict):
+                stack.extend(item.keys())
+                stack.extend(item.values())
+            elif isinstance(item, (list, tuple)):
+                stack.extend(item)
+        return v
 
 
 # ---------------------------------------------------------------------
@@ -226,7 +265,7 @@ class PatchReportIn(BaseModel):
 )
 async def list_reports_api(
     user: dict[str, Any] = Depends(get_current_user),
-) -> JSONResponse:
+) -> Response:
     """Scope-aware report list. `scope=own` users see only their own
     reports; `scope=all` users (incl. admins) see every report. Closes
     the previous "list_reports returns ALL rows" leak the moment non-
@@ -235,7 +274,8 @@ async def list_reports_api(
     caller_uid = user.get("user_id") or ""
     effective_user = perms.effective_user_id_for("reports", caller_uid)
     def _render() -> str:
-        rows = reports_store.list_reports(user_id=effective_user)
+        limit = reports_store.LIST_LIMIT
+        rows = reports_store.list_reports(user_id=effective_user, limit=limit)
         usernames = api_keys_store.get_usernames(
             [r.get("user_id") for r in rows],
         )
@@ -243,6 +283,10 @@ async def list_reports_api(
             r["username"] = usernames.get(r.get("user_id"))
         return json.dumps({
             "reports": rows,
+            # counts are UNCAPPED (the toolbar states scope totals) while
+            # `reports` stops at LIST_LIMIT; `truncated` tells the page the
+            # ceiling was hit so it can say that older rows exist.
+            "truncated": len(rows) >= limit,
             "counts": reports_store.counts_by_status(user_id=effective_user),
             "retention_days": int(getattr(cfg, "REPORTS_RETENTION_DAYS", 0)),
             "is_admin": bool(user.get("is_admin")),
@@ -385,7 +429,11 @@ async def export_reports_api() -> Response:
             # REPORTS_MAX is raised above _LIST_LIMIT.
             "reports": reports_store.list_reports(limit=None),
         }
-        return json.dumps(payload, ensure_ascii=False, indent=2)
+        # allow_nan=False for the same reason as list_reports_api: a
+        # non-finite legacy trace_ts must fail loudly here, not ship a
+        # "backup" carrying bare Infinity/NaN that no strict parser reads.
+        return json.dumps(payload, ensure_ascii=False, indent=2,
+                          allow_nan=False)
 
     # Same shape as list_reports_api: query AND serialize off the loop.
     blob = await asyncio.to_thread(_render)
@@ -877,6 +925,7 @@ _REPORTS_HTML = """<!doctype html>
   // -------------------------------------------------------------------
   var _allReports = [];
   var _counts = { open: 0, resolved: 0, dismissed: 0 };
+  var _truncated = false;
 
   // absTime / relTime / fmtWhen / timeTick are injected via TIME_HELPERS_JS.
   function escapeHtml(s) {
@@ -929,7 +978,8 @@ _REPORTS_HTML = """<!doctype html>
     el.innerHTML =
       '<span class="n">' + _counts.open + '</span> open · ' +
       '<span class="n">' + _counts.resolved + '</span> resolved · ' +
-      '<span class="n">' + _counts.dismissed + '</span> dismissed';
+      '<span class="n">' + _counts.dismissed + '</span> dismissed' +
+      (_truncated ? ' · showing newest ' + _allReports.length : '');
   }
 
   // -------------------------------------------------------------------
@@ -1145,7 +1195,7 @@ _REPORTS_HTML = """<!doctype html>
       r.status = j.report.status;
       r.resolved_ts = j.report.resolved_ts;
       toast('Status updated.');
-      reloadCounts();
+      adjustCounts(prev, r.status);
     } catch (e) {
       sel.value = prev;
       sel.className = 'status-' + prev;
@@ -1172,7 +1222,7 @@ _REPORTS_HTML = """<!doctype html>
       await api('DELETE', '/reports/api/' + encodeURIComponent(r.id));
       _allReports = _allReports.filter(function(x) { return x.id !== r.id; });
       render();
-      reloadCounts();
+      adjustCounts(r.status, null);
       toast('Deleted.');
     } catch (e) {
       toast('Failed: ' + e.message, true);
@@ -1262,6 +1312,7 @@ _REPORTS_HTML = """<!doctype html>
       var j = await api('GET', '/reports/api/list');
       _allReports = j.reports || [];
       _counts = j.counts || { open: 0, resolved: 0, dismissed: 0 };
+      _truncated = !!j.truncated;
       rebuildModelFilter();
       updateCounts();
       render();
@@ -1274,11 +1325,14 @@ _REPORTS_HTML = """<!doctype html>
     }
   }
 
-  function reloadCounts() {
-    _counts = { open: 0, resolved: 0, dismissed: 0 };
-    _allReports.forEach(function(r) {
-      if (_counts.hasOwnProperty(r.status)) _counts[r.status] += 1;
-    });
+  // Adjust the server-side totals by delta instead of recounting
+  // _allReports: the list is capped at LIST_LIMIT rows while the counts
+  // are not, so a recount would make the toolbar jump on the first edit.
+  function adjustCounts(fromStatus, toStatus) {
+    if (fromStatus && _counts.hasOwnProperty(fromStatus) && _counts[fromStatus] > 0) {
+      _counts[fromStatus] -= 1;
+    }
+    if (toStatus && _counts.hasOwnProperty(toStatus)) _counts[toStatus] += 1;
     updateCounts();
   }
 

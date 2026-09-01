@@ -113,7 +113,17 @@ def test_render_page_key_tracks_hot_mutable_cfg(monkeypatch):
 
 def test_render_page_substitutes_no_per_user_value():
     """Guard against a future per-user substitution silently entering a shared
-    cache. Every placeholder must be resolved, and none from a request."""
+    cache. Every placeholder must be resolved, and none from a request.
+
+    The template is DERIVED from _render_page_cached's own substitution list
+    rather than hand-written, so a placeholder added there is covered
+    automatically instead of leaving a 4-placeholder stub green."""
+    import inspect
+    import re
     import web_common
-    out = web_common.render_page(_TPL, "logs")
+    names = sorted(set(re.findall(
+        r"\{\{[A-Z_]+\}\}", inspect.getsource(web_common._render_page_cached))))
+    assert len(names) >= 20, names
+    tpl = "".join(names)
+    out = web_common.render_page(tpl, "logs")
     assert "{{" not in out

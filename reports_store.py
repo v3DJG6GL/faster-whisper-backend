@@ -62,6 +62,8 @@ _CAP_ADMIN_NOTES = 8_000
 # default, so a store inside its own cap is unaffected; it bounds the response
 # when eviction has not yet caught up or the cap was raised at runtime.
 _LIST_LIMIT = 1000
+# Public alias so the list route can tell the page when the ceiling was hit.
+LIST_LIMIT = _LIST_LIMIT
 _CAP_CORRECTIONS = text_corrections.CAP_CORRECTIONS
 _CAP_CORRECTION_FIELD = text_corrections.CAP_CORRECTION_FIELD
 
@@ -295,11 +297,18 @@ def upsert_report(
     trace_t = _clean_trace_ts(trace_ts, now)
 
     lang_t = (language or "")[:_CAP_LANGUAGE] or None
-    try:
-        stages_t = json.dumps(stages or [], ensure_ascii=False)[:_CAP_STAGES_JSON]
-        json.loads(stages_t)   # truncation may have cut mid-token
-    except (TypeError, ValueError):
-        stages_t = "[]"
+    # NULL, not "[]", when the blob cannot be stored: the UPDATE below
+    # COALESCEs stages_json, so an oversized resubmission must keep what the
+    # first submission recorded rather than blank it (transcriptions_store
+    # .record does the same). _row_to_dict maps NULL to [] on read.
+    stages_t: str | None = None
+    if stages:
+        try:
+            cand = json.dumps(stages, ensure_ascii=False)[:_CAP_STAGES_JSON]
+            json.loads(cand)   # truncation may have cut mid-token
+            stages_t = cand
+        except (TypeError, ValueError):
+            stages_t = None
 
     conn = _require_conn()
     # Lookup and write share one lock span: with the lookup outside, two
@@ -334,7 +343,7 @@ def upsert_report(
                     json.dumps(steps_t, ensure_ascii=False),
                     json.dumps(merged, ensure_ascii=False),
                     intended_t, comment_t, role_t, reporter_host or "",
-                    lang_t, stages_t if stages else None,
+                    lang_t, stages_t,
                     rid,
                 ),
             )
