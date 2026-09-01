@@ -222,7 +222,9 @@ ENV_VAR_MAPPING_SNAPSHOT = (
 )
 
 RESTART_REQUIRED_SNAPSHOT = frozenset(
-    ['CORS_ALLOW_ORIGINS',
+    ['BGM_SEPARATION_PRELOAD',
+     'CORS_ALLOW_ORIGINS',
+     'DIARIZATION_PRELOAD',
      'INFERENCE_CONCURRENCY',
      'LOG_BACKUP_COUNT',
      'LOG_FILE',
@@ -660,6 +662,24 @@ def test_lockable_fields_match_snapshot():
 
 def test_field_groups_match_snapshot():
     assert cs.FIELD_GROUPS == FIELD_GROUPS_SNAPSHOT
+
+
+def test_field_groups_cover_every_admin_config_field():
+    """The snapshot pins the table against edits but cannot see a NEW field
+    whose _F(...) forgot its group — that field simply never shows up in the
+    admin form. Assert completeness in both directions."""
+    grouped = {f for _g, subs in cs.FIELD_GROUPS for _sub, fields in subs
+               for f in fields}
+    # OVERRIDE_PROFILES is deliberately ungrouped: profiles are edited on
+    # their own admin page, there is no admin-form widget for the raw dict.
+    assert set(cs.AdminConfig.model_fields) - grouped == {"OVERRIDE_PROFILES"}
+    assert grouped - set(cs.AdminConfig.model_fields) == set()
+
+
+def test_env_var_mapping_covers_every_admin_config_field():
+    """Same gap for env vars: a field missing from ENV_VAR_MAPPING is silently
+    unsettable from the environment."""
+    assert set(cs.AdminConfig.model_fields) == set(cs.ENV_VAR_MAPPING)
 
 
 # ---------------------------------------------------------------------------

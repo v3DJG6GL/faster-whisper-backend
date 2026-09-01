@@ -1277,9 +1277,16 @@ except ImportError:
 # (config.py runs too early to log), so a typo like WHISPER_BEAM_SIZE=ten is
 # surfaced as a warning rather than silently ignored. See main.py startup.
 _ENV_WARNINGS: list[str] = []
+# Names of env vars whose value a reader below could not parse (and so kept
+# the current value). The validation pass at the bottom folds these into
+# _ENV_REJECTED: a value that controls nothing must not badge its field as
+# env-pinned either.
+_ENV_UNPARSED: "set[str]" = set()
 
+# Boolean spellings, symmetric with _FALSY below. Anything outside both tables
+# KEEPS the current value and warns (see _env_bool) rather than coercing.
 def _truthy(s: str) -> bool:
-    return s.strip().lower() in ("1", "true", "yes", "on")
+    return s.strip().lower() in ("1", "true", "yes", "on", "y", "t", "enabled")
 
 def _env_int(name: str, current: int) -> int:
     raw = os.environ.get(name)
@@ -1289,6 +1296,7 @@ def _env_int(name: str, current: int) -> int:
         return int(raw)
     except ValueError:
         _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid integer; keeping {current!r}")
+        _ENV_UNPARSED.add(name)
         return current
 
 def _env_float(name: str, current: float) -> float:
@@ -1299,6 +1307,7 @@ def _env_float(name: str, current: float) -> float:
         return float(raw)
     except ValueError:
         _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid number; keeping {current!r}")
+        _ENV_UNPARSED.add(name)
         return current
 
 def _env_float_or_none(name: str, current: "float | None") -> "float | None":
@@ -1312,6 +1321,7 @@ def _env_float_or_none(name: str, current: "float | None") -> "float | None":
         return float(raw)
     except ValueError:
         _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid number; keeping {current!r}")
+        _ENV_UNPARSED.add(name)
         return current
 
 def _env_int_or_none(name: str, current: "int | None") -> "int | None":
@@ -1325,10 +1335,11 @@ def _env_int_or_none(name: str, current: "int | None") -> "int | None":
         return int(raw)
     except ValueError:
         _ENV_WARNINGS.append(f"{name}={raw!r} is not a valid integer; keeping {current!r}")
+        _ENV_UNPARSED.add(name)
         return current
 
 
-_FALSY = ("0", "false", "no", "off")
+_FALSY = ("0", "false", "no", "off", "n", "f", "disabled")
 
 
 def _env_bool(name: str, current: bool) -> bool:
@@ -1352,6 +1363,7 @@ def _env_bool(name: str, current: bool) -> bool:
         return True
     _ENV_WARNINGS.append(
         f"{name}={raw!r} is not a valid boolean; keeping {current!r}")
+    _ENV_UNPARSED.add(name)
     return current
 
 def _env_str(name: str, current: str) -> str:
@@ -1604,12 +1616,23 @@ _OVERRIDE_LIST_FIELDS = frozenset({
 })
 
 
+# Returned by _coerce_override_value for a bool field whose value is neither
+# spelling — the assembly loop below warns and skips it, the same keep-and-warn
+# contract as _env_bool (which used to be _truthy here too, so DIARIZE=enabled
+# silently became False).
+_UNPARSED = object()
+
+
 def _coerce_override_value(field: str, raw: str) -> object:
     """Coerce a raw env-var string to the right type for a ModelOverride field.
     Falls back to the raw string for fields we can't easily classify (the
     pydantic validator will catch type mismatches at save-merge time)."""
     if field in _OVERRIDE_BOOL_FIELDS:
-        return _truthy(raw)
+        if raw.strip().lower() in _FALSY:
+            return False
+        if _truthy(raw):
+            return True
+        return _UNPARSED
     if field in _OVERRIDE_INT_FIELDS:
         try:
             return int(raw)
@@ -1657,7 +1680,12 @@ for _k, _v in os.environ.items():
     _field = _rest[_idx + 2:]
     _model_id = _decode_model_id(_enc_id)
     _entry = MODEL_OVERRIDES.setdefault(_model_id, {})
-    _entry[_field] = _coerce_override_value(_field, _v)
+    _coerced = _coerce_override_value(_field, _v)
+    if _coerced is _UNPARSED:
+        _ENV_WARNINGS.append(
+            f"{_k}={_v!r} is not a valid boolean; ignoring it for {_model_id}")
+        continue
+    _entry[_field] = _coerced
 
 
 # =============================================================================
@@ -1703,6 +1731,10 @@ def _env_validation_reason(exc: BaseException) -> str:
 _ENV_REJECTED: "set[str]" = set()
 try:
     _ENV_VALIDATE_SKIP = _ENV_JSON_FIELDS | {"MODEL_OVERRIDES"}
+    # A value the reader could not parse controls nothing either — the field
+    # kept its pre-env value — so it must not badge the field as pinned.
+    _ENV_REJECTED.update(
+        _f for _f, _e in _ENV_VAR_MAPPING.items() if _e in _ENV_UNPARSED)
 
     def _revert_env_field(_field: str, _reason: str) -> None:
         """Put the pre-env value back, record the rejection, and warn.
@@ -1769,6 +1801,25 @@ try:
                         _AdminConfig.model_validate({_field: globals()[_field]})
                     except Exception as _ferr:  # noqa: BLE001
                         _revert_env_field(_field, _env_validation_reason(_ferr))
+        # Cross-field / empty-loc backstop. A model validator (the sample-sizing
+        # triple) reports loc=() so nothing above is attributed, and each half
+        # of an inconsistent pair passes in isolation — the one failure the
+        # batch pass exists for would otherwise never be rejected. Re-validate
+        # whatever still stands as a group; revert the fields the error names
+        # (or the whole remainder when it names none) until the group passes.
+        for _ in range(len(_changed) + 1):
+            _left = {_f: globals()[_f] for _f in _changed
+                     if _f not in _ENV_REJECTED}
+            if not _left:
+                break
+            try:
+                _AdminConfig.model_validate(_left)
+                break
+            except Exception as _gerr:  # noqa: BLE001
+                _reason = _env_validation_reason(_gerr)
+                _named = [_f for _f in sorted(_left) if _f in str(_gerr)]
+                for _f in (_named or sorted(_left)):
+                    _revert_env_field(_f, _reason)
 
     # MODEL_OVERRIDES is assembled key-by-key from the
     # WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention, which bypasses
@@ -1808,21 +1859,25 @@ except NameError:
 # the operator knows to move the files or point WHISPER_DATA_DIR at them.
 # (main drains _ENV_WARNINGS into the logger once logging is up.)
 def _legacy_state_warnings(
-    repo_dir: str, data_dir: str, api_keys_db: str
+    repo_dir: str, data_dir: str, configured: "dict[str, str]"
 ) -> "list[str]":
+    """`configured` maps each legacy repo-relative path to where that state
+    is configured to live now."""
     out: "list[str]" = []
-    for _legacy_name, _configured in (
-        ("config.local.json",
-         os.environ.get("WHISPER_CONFIG_LOCAL")
-         or os.path.normpath(os.path.join(data_dir, "config.local.json"))),
-        ("api_keys.local.sqlite3", api_keys_db),
-    ):
-        _legacy_path = os.path.join(repo_dir, _legacy_name)
-        if (os.path.normpath(_legacy_path) != os.path.normpath(_configured)
-                and os.path.exists(_legacy_path)
-                and not os.path.exists(_configured)):
+    for _legacy_name, _configured in configured.items():
+        # Probe the repo root AND the data-dir root: pre-db-layout compose
+        # installs kept the SQLite stores directly under /data, so an
+        # upgrade that now defaults to {DATA_DIR}/db must not silently
+        # orphan them either.
+        _candidates = [os.path.join(repo_dir, _legacy_name),
+                       os.path.join(data_dir, _legacy_name)]
+        _legacy_path = next(
+            (c for c in _candidates
+             if os.path.normpath(c) != os.path.normpath(_configured)
+             and os.path.exists(c)), None)
+        if _legacy_path is not None and not os.path.exists(_configured):
             out.append(
-                f"legacy in-repo state {_legacy_path} exists but the "
+                f"legacy state {_legacy_path} exists but the "
                 f"configured path {_configured} does not — it is being "
                 f"IGNORED. Move the file there, or set WHISPER_DATA_DIR "
                 f"(currently {data_dir!r}) to the old location."
@@ -1830,4 +1885,23 @@ def _legacy_state_warnings(
     return out
 
 
-_ENV_WARNINGS.extend(_legacy_state_warnings(_REPO_DIR, _DATA_DIR, API_KEYS_DB))
+# The loader's own constant, so the warning can never name a path the app
+# does not read (the fallback keeps the pydantic-less import path working).
+try:
+    from config_store import OVERRIDES_PATH as _overrides_path
+except ImportError:
+    _overrides_path = (os.environ.get("WHISPER_CONFIG_LOCAL")
+                       or os.path.normpath(
+                           os.path.join(_DATA_DIR, "config.local.json")))
+_ENV_WARNINGS.extend(_legacy_state_warnings(_REPO_DIR, _DATA_DIR, {
+    "config.local.json": _overrides_path,
+    "api_keys.local.sqlite3": API_KEYS_DB,
+    "usage.local.sqlite3": USAGE_DB,
+    "sessions.local.sqlite3": SESSIONS_DB,
+    "reports.local.sqlite3": REPORTS_DB,
+    "recent_transcriptions.local.sqlite3": RECENT_TRANSCRIPTIONS_DB,
+    "captures.local.sqlite3": CAPTURES_DB,
+    "client_settings.local.sqlite3": CLIENT_SETTINGS_DB,
+    "captures": CAPTURES_DIR,
+    os.path.join("logs", "whisper.log"): LOG_FILE,
+}))

@@ -51,6 +51,23 @@ def test_env_bool(monkeypatch):
     assert config._env_bool("X_B", True) is True     # blank -> current
     monkeypatch.delenv("X_B")
     assert config._env_bool("X_B", True) is True
+    # The common short / verbose spellings parse symmetrically.
+    monkeypatch.setenv("X_B", "y")
+    assert config._env_bool("X_B", False) is True
+    monkeypatch.setenv("X_B", "enabled")
+    assert config._env_bool("X_B", False) is True
+    monkeypatch.setenv("X_B", "n")
+    assert config._env_bool("X_B", True) is False
+    monkeypatch.setenv("X_B", "disabled")
+    assert config._env_bool("X_B", True) is False
+    # A genuinely unparseable value keeps the current setting and warns.
+    monkeypatch.setattr(config, "_ENV_WARNINGS", [])
+    monkeypatch.setattr(config, "_ENV_UNPARSED", set())
+    monkeypatch.setenv("X_B", "maybe")
+    assert config._env_bool("X_B", True) is True
+    assert config._env_bool("X_B", False) is False
+    assert any("X_B='maybe'" in w for w in config._ENV_WARNINGS)
+    assert "X_B" in config._ENV_UNPARSED
 
 
 def test_env_str(monkeypatch):
@@ -483,6 +500,63 @@ def test_per_model_env_override_coerces_newer_field_types(monkeypatch):
         importlib.reload(config)
 
 
+def test_per_model_env_override_unparseable_bool_is_skipped(monkeypatch):
+    """The per-model path used to coerce bools with _truthy, so DIARIZE=enabled
+    silently became False (a valid bool the revalidation cannot catch). It must
+    warn and leave that one field out, keeping the model's other overrides."""
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_MODEL_OVERRIDE__TINY__DIARIZE="maybe",
+            WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="3",
+        )
+        entry = config.MODEL_OVERRIDES.get("TINY", {})
+        assert "DIARIZE" not in entry
+        assert entry.get("BEAM_SIZE") == 3
+        assert any("DIARIZE" in w and "not a valid boolean" in w
+                   for w in config._ENV_WARNINGS), config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_per_model_env_override_accepts_verbose_bool_spellings(monkeypatch):
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_MODEL_OVERRIDE__TINY__DIARIZE="enabled",
+            WHISPER_MODEL_OVERRIDE__TINY__VAD_FILTER="n",
+        )
+        entry = config.MODEL_OVERRIDES.get("TINY", {})
+        assert entry.get("DIARIZE") is True
+        assert entry.get("VAD_FILTER") is False
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_reader_level_env_rejection_clears_the_pin(monkeypatch):
+    """A value the reader could not parse controls nothing, exactly like one
+    the schema pass reverted — so it must land in _ENV_REJECTED and drop out
+    of env_pinned_fields(), or the admin's /settings edit never applies."""
+    import config_store
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_BEAM_SIZE="abc",
+            WHISPER_SESSION_COOKIE_SECURE="maybe",
+        )
+        assert config.BEAM_SIZE == config._BASELINE["BEAM_SIZE"]
+        assert "BEAM_SIZE" in config._ENV_REJECTED
+        assert "SESSION_COOKIE_SECURE" in config._ENV_REJECTED
+        pinned = config_store.env_pinned_fields()
+        assert "BEAM_SIZE" not in pinned
+        assert "SESSION_COOKIE_SECURE" not in pinned
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_save_overrides_migrates_use_auth_token(tmp_path):
     """The save path re-reads the raw file and merges the payload on top; a
     surviving pre-rename USE_AUTH_TOKEN key would make AdminConfig
@@ -520,6 +594,28 @@ def test_env_cross_field_triple_validates_as_a_batch(monkeypatch):
         importlib.reload(config)
 
 
+def test_env_cross_field_triple_inconsistent_pair_is_reverted(monkeypatch):
+    """The cross-field validator reports loc=(), so the attribution pass
+    cannot name a field and the per-field fallback passes each half in
+    isolation. The group backstop must still revert the inconsistent pair."""
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_CAPTURES_SAMPLE_MIN_DURATION_S="20",
+            WHISPER_CAPTURES_PROPOSER_TARGET_S="10",
+        )
+        assert (config.CAPTURES_SAMPLE_MIN_DURATION_S
+                == config._BASELINE["CAPTURES_SAMPLE_MIN_DURATION_S"])
+        assert (config.CAPTURES_PROPOSER_TARGET_S
+                == config._BASELINE["CAPTURES_PROPOSER_TARGET_S"])
+        assert "CAPTURES_SAMPLE_MIN_DURATION_S" in config._ENV_REJECTED
+        assert "CAPTURES_PROPOSER_TARGET_S" in config._ENV_REJECTED
+        assert [m for m in config._ENV_WARNINGS if "CAPTURES_" in m]
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
     """An in-place upgrade that still has runtime state under the checkout,
     with nothing at the configured (data-dir) location, must say so instead of
@@ -531,8 +627,14 @@ def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
     data.mkdir()
     (repo / "config.local.json").write_text("{}", encoding="utf-8")
     api_db = str(data / "db" / "api_keys.local.sqlite3")
+    usage_db = str(data / "db" / "usage.local.sqlite3")
+    configured = {
+        "config.local.json": str(data / "config.local.json"),
+        "api_keys.local.sqlite3": api_db,
+        "usage.local.sqlite3": usage_db,
+    }
 
-    warns = config._legacy_state_warnings(str(repo), str(data), api_db)
+    warns = config._legacy_state_warnings(str(repo), str(data), configured)
     assert len(warns) == 1                      # config.local.json only
     assert str(repo / "config.local.json") in warns[0]
     assert str(data / "config.local.json") in warns[0]
@@ -540,10 +642,45 @@ def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
 
     # Once the configured file exists the warning goes away.
     (data / "config.local.json").write_text("{}", encoding="utf-8")
-    assert config._legacy_state_warnings(str(repo), str(data), api_db) == []
+    assert config._legacy_state_warnings(str(repo), str(data), configured) == []
 
     # And the legacy api-keys DB warns the same way.
     (repo / "api_keys.local.sqlite3").write_text("", encoding="utf-8")
-    warns = config._legacy_state_warnings(str(repo), str(data), api_db)
+    warns = config._legacy_state_warnings(str(repo), str(data), configured)
     assert len(warns) == 1
     assert "api_keys.local.sqlite3" in warns[0]
+
+    # Every relocated store is covered, not just config + api keys: a usage
+    # DB left under the checkout (empty usage history after the upgrade).
+    (data / "db").mkdir()
+    (data / "db" / "api_keys.local.sqlite3").write_text("", encoding="utf-8")
+    (repo / "usage.local.sqlite3").write_text("", encoding="utf-8")
+    warns = config._legacy_state_warnings(str(repo), str(data), configured)
+    assert len(warns) == 1
+    assert "usage.local.sqlite3" in warns[0]
+
+
+def test_legacy_state_mapping_uses_the_loader_overrides_path():
+    """The startup call feeds config_store.OVERRIDES_PATH (the file the loader
+    actually reads) into the mapping — not a re-derived copy of the rule."""
+    import config_store
+    assert config._overrides_path == config_store.OVERRIDES_PATH
+
+def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
+    """Pre-db-layout compose installs kept SQLite stores at the data-dir
+    ROOT; the upgrade note relies on this probe catching them too."""
+    import config as cfg
+    legacy = tmp_path / "api_keys.local.sqlite3"
+    legacy.write_bytes(b"")
+    warns = cfg._legacy_state_warnings(
+        str(tmp_path / "repo"), str(tmp_path),
+        {"api_keys.local.sqlite3": str(tmp_path / "db" / "api_keys.local.sqlite3")},
+    )
+    assert len(warns) == 1 and str(legacy) in warns[0]
+    # and silent when the configured path exists
+    (tmp_path / "db").mkdir()
+    (tmp_path / "db" / "api_keys.local.sqlite3").write_bytes(b"")
+    assert cfg._legacy_state_warnings(
+        str(tmp_path / "repo"), str(tmp_path),
+        {"api_keys.local.sqlite3": str(tmp_path / "db" / "api_keys.local.sqlite3")},
+    ) == []

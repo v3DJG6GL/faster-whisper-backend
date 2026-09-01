@@ -234,6 +234,27 @@ def test_preload_extras_survives_load_failures(app_module, monkeypatch):
     assert loaded == [("bgm", None)]
 
 
+def test_translation_model_allowed_shape_checks_client_ref(app_module,
+                                                          monkeypatch):
+    """An EMPTY allowlist admits any WELL-FORMED ref (the docstring's contract,
+    and what the whisper path enforces): the client value reaches
+    hf_hub_download as a repo id, so a traversal string or an unbounded blob
+    must be refused — while an inherited ref is admin policy and passes."""
+    cfg = app_module.cfg
+    monkeypatch.setattr(cfg, "TRANSLATION_ALLOWED_MODELS", set(),
+                        raising=False)
+    monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL", "", raising=False)
+    allowed = app_module._translation_model_allowed
+    assert allowed("../../etc/passwd", requested="../../etc/passwd") is False
+    assert allowed("a" * 200, requested="a" * 200) is False
+    assert allowed("no-slash", requested="no-slash") is False
+    assert allowed("org/repo-GGUF:Q4_K_M",
+                   requested="org/repo-GGUF:Q4_K_M") is True
+    # Config-inherited refs are not the client's to be gated.
+    assert allowed("../../etc/passwd", requested=None) is True
+    assert allowed("../../etc/passwd", requested="org/other") is True
+
+
 # --- eviction-on-edit --------------------------------------------------------
 
 def test_translation_device_edit_dispatches_eviction(client, monkeypatch):

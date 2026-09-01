@@ -120,7 +120,4 @@ def test_config_column_migration_on_legacy_db(tmp_path):
         except Exception:
             pass
         ak._conn = None
-        ak._KEY_INDEX = {}
-        ak._IS_LOCKED_DOWN = False
-        ak._DB_READY = False
-        ak._DATA_VERSION = -1
+        ak._reset_for_tests()

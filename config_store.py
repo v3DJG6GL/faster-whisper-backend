@@ -1,9 +1,11 @@
 """
 Persistence layer for the admin WebUI.
 
-Stores user-edited overrides in <repo>/config.local.json. The file is loaded
-by config.py BETWEEN the in-file defaults and the env-var override block, so
-precedence stays:  ENV  >  config.local.json  >  config.py defaults.
+Stores user-edited overrides in config.local.json inside the data dir
+(default /data, on Windows the repo's data dir; WHISPER_DATA_DIR moves the dir,
+WHISPER_CONFIG_LOCAL moves just this file). The file is loaded by config.py
+BETWEEN the in-file defaults and the env-var override block, so precedence
+stays:  ENV  >  config.local.json  >  config.py defaults.
 
 Validation uses Pydantic v2. Every field is Optional — missing means "use the
 config.py default". `model_config = {"extra": "forbid"}` rejects unknown keys
@@ -509,7 +511,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "client can fetch it for local playback. Wiped on startup.",
     "URL_MEDIA_TTL_SEC":
         "How long a downloaded file stays fetchable via "
-        "/v1/audio/url-media/{id} after its transcription. Default 3600.",
+        "/v1/audio/url-media/{id}. The window starts when the download "
+        "finishes (before transcription), so keep it comfortably longer "
+        "than your slowest job. Default 3600.",
     "URL_MEDIA_MAX_BYTES":
         "Byte cap on URL_MEDIA_DIR; oldest files are evicted first when "
         "the sum exceeds it.",
@@ -963,6 +967,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
 #   per_request — call-time / streaming fields shared with ModelOverride and
 #                 OverrideProfile (the lockable decode/streaming scalars)
 _SCOPES = ("server", "per_model", "per_request")
+# Derived-extras buckets a field may name via `evict=`. admin_routes._EVICTORS
+# must carry a dropper for each — an unknown name would otherwise ship as a
+# bucket whose eviction only ever logs a KeyError on edit.
+_EVICT_BUCKETS = ("diarization", "bgm", "translation")
 
 
 def _F(
@@ -1006,6 +1014,9 @@ def _F(
                      drain-then-evict (→ LOAD_TIME_FIELDS).
       cache_rebuild  Edit requires main.rebuild_caches() (→ CACHE_REBUILD_
                      FIELDS).
+      evict          Derived-extras bucket dropped when this field is edited
+                     — one of _EVICT_BUCKETS (→ EXTRAS_EVICTION, dispatched
+                     via admin_routes._EVICTORS).
       coerce         Post-load JSON coercion callable, e.g. `set`
                      (→ _POST_LOAD_COERCERS).
       client_key     Lowercase per-request decode_override key the field
@@ -1027,6 +1038,10 @@ def _F(
         raise ValueError(
             f"AdminConfig field {name!r}: coerce={coerce!r} — only `set` "
             f"(or None) is supported")
+    if evict is not None and evict not in _EVICT_BUCKETS:
+        raise ValueError(
+            f"AdminConfig field {name!r}: evict={evict!r} — must be one of "
+            f"{_EVICT_BUCKETS}")
     # Everything in the registry must stay JSON-serializable: pydantic runs
     # to_jsonable_python over json_schema_extra whenever model_json_schema()
     # is generated, so the coercion CALLABLE is stored by name and mapped
@@ -1672,7 +1687,8 @@ class AdminConfig(BaseModel):
     DIARIZATION_ALLOWED_MODELS: list[DiarizationModelLit] | None = _F(
         "DIARIZATION_ALLOWED_MODELS", scope="server", group="Diarization")
     DIARIZATION_PRELOAD: bool | None = _F(
-        "DIARIZATION_PRELOAD", scope="server", group="Diarization")
+        "DIARIZATION_PRELOAD", scope="server", group="Diarization",
+        restart=True)
     DIARIZATION_DEVICE: DiarizationDeviceLit | None = _F(
         "DIARIZATION_DEVICE", scope="server", group="Diarization",
         evict="diarization")
@@ -1708,7 +1724,8 @@ class AdminConfig(BaseModel):
         "BGM_SEPARATION_ALLOWED_MODELS", scope="server",
         group="Music separation")
     BGM_SEPARATION_PRELOAD: bool | None = _F(
-        "BGM_SEPARATION_PRELOAD", scope="server", group="Music separation")
+        "BGM_SEPARATION_PRELOAD", scope="server", group="Music separation",
+        restart=True)
     BGM_SEPARATION_DEVICE: DiarizationDeviceLit | None = _F(
         "BGM_SEPARATION_DEVICE", scope="server", group="Music separation",
         evict="bgm")
@@ -2113,6 +2130,30 @@ class AdminConfig(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_body_caps(self) -> "AdminConfig":
+        # MAX_REQUEST_BYTES is documented (config.py, FIELD_DESCRIPTIONS,
+        # main._max_body_mw) as sitting ABOVE MAX_UPLOAD_BYTES so an oversized
+        # audio POST hits the upload-specific 413 that names the right setting.
+        # Enforce it on the EFFECTIVE values with the same _BASELINE fallback
+        # as _validate_sample_sizing (see the rationale there).
+        import config as _cfg
+        _base = getattr(_cfg, "_BASELINE", {})
+
+        def _default(name: str) -> int:
+            return int(_base[name] if name in _base else getattr(_cfg, name))
+
+        up = self.MAX_UPLOAD_BYTES
+        rq = self.MAX_REQUEST_BYTES
+        up = up if up is not None else _default("MAX_UPLOAD_BYTES")
+        rq = rq if rq is not None else _default("MAX_REQUEST_BYTES")
+        if rq < up:
+            raise ValueError(
+                "require MAX_REQUEST_BYTES >= MAX_UPLOAD_BYTES "
+                f"(got {rq} < {up})"
+            )
+        return self
+
     @field_validator("LOG_FILE")
     @classmethod
     def _safe_log_path(cls, v: str | None) -> str | None:
@@ -2450,12 +2491,12 @@ class AdminConfig(BaseModel):
         for entry in v:
             if entry == "*":
                 continue
-            m = re.fullmatch(r"https?://[^/?#\s]+", entry)
+            m = re.fullmatch(r"https?://[^/?#\s*]+", entry)
             if not m:
                 raise ValueError(
                     f"'{entry}' is not a valid CORS origin — use 'scheme://host[:port]' "
                     f"(e.g. 'https://app.example.com' or 'http://192.168.1.50:8000') "
-                    f"or '*'; no trailing path/slash."
+                    f"or '*'; no trailing path/slash, and no wildcard host."
                 )
         return v
 
@@ -2467,7 +2508,7 @@ class AdminConfig(BaseModel):
         if v is None:
             return v
         for entry in v:
-            if not re.fullmatch(r"https?://[^/?#\s]+", entry):
+            if not re.fullmatch(r"https?://[^/?#\s*]+", entry):
                 raise ValueError(
                     f"'{entry}' is not a valid trusted origin — use "
                     f"'scheme://host[:port]' (e.g. 'https://whisper.example.com' "
@@ -2895,6 +2936,27 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if "USE_AUTH_TOKEN" in raw:
         raw.setdefault("HF_TOKEN", raw["USE_AUTH_TOKEN"])
         del raw["USE_AUTH_TOKEN"]
+    # Wildcard-host origins ('https://*.example.com') used to pass the origin
+    # validators but never matched anything (both the CORS middleware and the
+    # trusted-origin guard compare the Origin header by exact string). They
+    # are rejected now; strip the already-inert entries from a stored file so
+    # the tightened rule cannot wipe every other override at boot. A bare '*'
+    # stays legal for CORS only.
+    for key in ("TRUSTED_ORIGINS", "CORS_ALLOW_ORIGINS"):
+        entries = raw.get(key)
+        if not isinstance(entries, list):
+            continue
+        kept = [e for e in entries
+                if not (isinstance(e, str) and "*" in e
+                        and not (key == "CORS_ALLOW_ORIGINS" and e == "*"))]
+        if len(kept) != len(entries):
+            print(f"[config_store] dropped wildcard {key} entries "
+                  f"{[e for e in entries if e not in kept]} — never matched "
+                  f"an Origin header and are no longer accepted", file=sys.stderr)
+            if kept:
+                raw[key] = kept
+            else:
+                del raw[key]
     return raw
 
 
@@ -3124,6 +3186,14 @@ _CONFIG_VERSION = 0
 # no reload path for them, so signalling those here would only make it
 # re-resolve values that are themselves stale.
 _KEYS_DATA_VERSION: int = -1
+# config_version() runs synchronously on the event loop once per partial-decode
+# interval per live streaming session, and the probe is a PRAGMA under
+# api_keys_store._lock — the lock every store read/write holds. Rate-limit it
+# so the loop cannot queue behind an unrelated store write more than ~4×/s;
+# a sibling worker's binding change is still seen within this window, far
+# below the utterance cadence that consumes the counter.
+_KEYS_PROBE_MIN_INTERVAL_S = 0.25
+_KEYS_LAST_PROBE: float = 0.0
 
 
 def bump_config_version() -> None:
@@ -3140,8 +3210,14 @@ def _bump_if_sibling_committed() -> None:
     api_keys_store._refresh_if_sibling_committed(): `PRAGMA data_version` only
     moves for commits made by a different connection, so a single-worker server
     never bumps here. The first sample is adopted silently — the store opening
-    is not a sibling write."""
-    global _KEYS_DATA_VERSION
+    is not a sibling write. Once a sample is adopted the PRAGMA runs at most
+    every _KEYS_PROBE_MIN_INTERVAL_S — see the note on that constant."""
+    global _KEYS_DATA_VERSION, _KEYS_LAST_PROBE
+    now = time.monotonic()
+    if (_KEYS_DATA_VERSION >= 0
+            and now - _KEYS_LAST_PROBE < _KEYS_PROBE_MIN_INTERVAL_S):
+        return
+    _KEYS_LAST_PROBE = now
     import api_keys_store   # local import keeps module import order flexible
     v = api_keys_store.data_version()
     if v == _KEYS_DATA_VERSION:
@@ -3228,7 +3304,10 @@ def save_overrides(
 
         # guard_regex: run the out-of-process catastrophic-backtracking check —
         # this is a SAVE of (possibly non-admin) submitted rules.
-        context: dict[str, Any] = {"guard_regex": True}
+        # Screen regex rules only when this save actually submits rules —
+        # otherwise one stored legacy pattern that fails today's structural
+        # screen would brick every unrelated settings save.
+        context: dict[str, Any] = {"guard_regex": True} if "PIPELINE_RULES" in payload else {}
         if guard_slugs is not None:
             context["guard_slugs"] = frozenset(guard_slugs)
         validated = AdminConfig.model_validate(merged, context=context)

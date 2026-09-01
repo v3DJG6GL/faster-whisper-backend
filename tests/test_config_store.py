@@ -159,7 +159,8 @@ def test_server_log_level_literal():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("val", ["", "org/repo", "org/repo:Q4_K_M",
-                                 "tencent/HY-MT1.5-7B-GGUF:Q4_K_M"])
+                                 "tencent/HY-MT1.5-7B-GGUF:Q4_K_M",
+                                 "org/" + "x" * 156])   # exactly max_length
 def test_translation_model_ref_valid(val):
     assert _ok(TRANSLATION_DEFAULT_MODEL=val).TRANSLATION_DEFAULT_MODEL == val
     assert _ok(TRANSLATION_MODEL=val).TRANSLATION_MODEL == val
@@ -167,7 +168,11 @@ def test_translation_model_ref_valid(val):
 
 @pytest.mark.parametrize("val", ["no-slash-model:q4", "no-slash-model",
                                  "/leading", "org/repo:", "a/b:c:d",
-                                 "has space/repo", "x" * 161])
+                                 "has space/repo",
+                                 # Well-formed but over max_length=160: a
+                                 # slash-less string is rejected by the
+                                 # pattern alone and never reaches the cap.
+                                 "org/" + "x" * 200])
 def test_translation_model_ref_invalid(val):
     _bad(TRANSLATION_DEFAULT_MODEL=val)
     _bad(TRANSLATION_MODEL=val)
@@ -471,6 +476,31 @@ def test_pipeline_guard_scoped_to_guard_slugs():
     # No guard_slugs in the context -> unchanged full-list behaviour.
     with pytest.raises(ValidationError):
         _ok_on_save(PIPELINE_RULES=[bad, good, _terminal()])
+
+
+def test_save_overrides_guard_slugs_reaches_the_validator(tmp_path):
+    # Same scenario through the public entry point: the `guard_slugs` kwarg
+    # must become the `guard_slugs` validation-context key the pipeline
+    # validator reads, and omitting it must keep the full-list probe.
+    bad = _regex("legacy-boom", pattern="(n|d|nd)+#", replacement="X")
+    good = _regex("harmless", pattern="Komma", replacement=",")
+    p = str(tmp_path / "config.local.json")
+    with open(p, "w", encoding="utf-8") as fh:
+        json.dump({"PIPELINE_RULES": [bad, good, _terminal()]}, fh)
+
+    edited = _regex("harmless", pattern="Komma", replacement=";")
+    changed = cs.save_overrides({"PIPELINE_RULES": [bad, edited, _terminal()]},
+                                p, guard_slugs=frozenset({"harmless"}))
+    assert "PIPELINE_RULES" in changed
+    on_disk = json.loads(open(p, encoding="utf-8").read())
+    assert on_disk["PIPELINE_RULES"][1]["entries"][0]["replacement"] == ";"
+
+    with pytest.raises(ValidationError) as ei:
+        cs.save_overrides({"PIPELINE_RULES": [bad, good, _terminal()]}, p,
+                          guard_slugs=frozenset({"harmless", "legacy-boom"}))
+    assert "catastrophic backtracking" in str(ei.value)
+    with pytest.raises(ValidationError):
+        cs.save_overrides({"PIPELINE_RULES": [bad, good, _terminal()]}, p)
 
 
 def test_pipeline_guard_scoping_never_skips_compile_and_template_checks():
@@ -869,6 +899,7 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
     cs.save_overrides({"BEAM_SIZE": 5}, p)
 
     slow_inside = threading.Event()
+    fast_started = threading.Event()
     fast_done = threading.Event()
     real_validate = cs.AdminConfig.model_validate
 
@@ -896,6 +927,7 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
             # lock it blocks here; unlocked it read the pre-BEST_OF file and
             # was overwritten by the slow saver's stale document.
             slow_inside.wait(10)
+            fast_started.set()
             cs.save_overrides({"ADMIN_WEBUI_ALLOWED_HOSTS": ["10.0.0.1"]}, p)
         except Exception as e:               # noqa: BLE001
             errors.append(e)
@@ -906,10 +938,20 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
     for t in ts:
         t.start()
     # The fast saver must not be able to finish while the slow one holds the
-    # lock, so release the slow saver on a timer if the lock did its job.
-    threading.Timer(1.0, fast_done.set).start()
-    for t in ts:
-        t.join(30)
+    # lock, so release the slow saver on a timer if the lock did its job. The
+    # timer is armed only once the fast saver has actually entered
+    # save_overrides: armed on the wall clock from here it could release the
+    # slow saver before the fast one contends for the lock, and an unlocked
+    # save_overrides would then pass by accident on a loaded box.
+    assert fast_started.wait(10)
+    timer = threading.Timer(0.5, fast_done.set)
+    timer.start()
+    try:
+        for t in ts:
+            t.join(30)
+    finally:
+        timer.cancel()
+    assert not [t for t in ts if t.is_alive()]
     assert errors == []
 
     on_disk = json.loads(open(p, encoding="utf-8").read())
@@ -919,8 +961,9 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
 
 
 def test_save_lock_timeout_surfaces_as_oserror(tmp_path, monkeypatch):
-    """Callers wrap save_overrides in `except OSError`; a lock timeout must
-    land there rather than escaping as filelock.Timeout."""
+    """Callers wrap save_overrides in `except OSError`. A same-process peer
+    holding the save lock trips the in-process threading.Lock timeout, which
+    must surface as an OSError naming the peer save."""
     import threading
 
     p = str(tmp_path / "config.local.json")
@@ -937,11 +980,43 @@ def test_save_lock_timeout_surfaces_as_oserror(tmp_path, monkeypatch):
     t.start()
     try:
         holder_in.wait(10)
-        with pytest.raises(OSError):
+        with pytest.raises(OSError, match="peer save in progress"):
             cs.save_overrides({"BEAM_SIZE": 5}, p)
     finally:
         release.set()
         t.join(10)
+
+
+def test_save_lock_cross_process_timeout_surfaces_as_plain_oserror(tmp_path, monkeypatch):
+    """The cross-worker path: another process holds `<path>.lock`. filelock's
+    Timeout already subclasses OSError, so `pytest.raises(OSError)` alone
+    would not prove the conversion — pin the plain OSError type and the
+    'peer worker' message the except-branch produces."""
+    import subprocess
+    import sys
+
+    pytest.importorskip("filelock")
+    p = str(tmp_path / "config.local.json")
+    lock_path = os.path.abspath(p) + ".lock"
+    child = subprocess.Popen(
+        [sys.executable, "-c",
+         "import sys, filelock\n"
+         "lk = filelock.FileLock(sys.argv[1]); lk.acquire()\n"
+         "print('ready', flush=True); sys.stdin.readline()\n",
+         lock_path],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        assert child.stdout.readline().strip() == "ready"
+        monkeypatch.setattr(cs, "_SAVE_LOCK_TIMEOUT_S", 0.2)
+        with pytest.raises(OSError, match="peer worker save in progress") as ei:
+            cs.save_overrides({"BEAM_SIZE": 5}, p)
+        assert type(ei.value) is OSError
+    finally:
+        try:
+            child.stdin.close()
+            child.wait(10)
+        except Exception:                    # noqa: BLE001
+            child.kill()
 
 
 def test_save_lock_file_does_not_disturb_the_config_dir(tmp_path):
@@ -957,3 +1032,67 @@ def test_save_lock_file_does_not_disturb_the_config_dir(tmp_path):
     # may sit next to the config.
     assert [n for n in names if n != "config.local.json"] in (
         [], ["config.local.json.lock"])
+
+
+# ---------------------------------------------------------------------------
+# MAX_REQUEST_BYTES must stay >= MAX_UPLOAD_BYTES (effective values)
+# ---------------------------------------------------------------------------
+
+def test_upload_cap_above_baseline_request_cap_rejected():
+    # 1 GB upload cap alone: the baseline request cap (256 MiB) would answer
+    # first with the generic body-too-large 413 instead of the upload 413.
+    _bad(MAX_UPLOAD_BYTES=1_000_000_000)
+
+
+def test_upload_and_request_caps_raised_together_ok():
+    _ok(MAX_UPLOAD_BYTES=1_000_000_000, MAX_REQUEST_BYTES=2_000_000_000)
+
+
+def test_request_cap_below_baseline_upload_cap_rejected():
+    _bad(MAX_REQUEST_BYTES=1024)
+
+
+# ---------------------------------------------------------------------------
+# Origin allowlists: wildcard hosts are rejected (they never matched anyway)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("bad", ["https://*.example.com", "https://*"])
+def test_trusted_origins_rejects_wildcard_host(bad):
+    _bad(TRUSTED_ORIGINS=[bad])
+
+
+@pytest.mark.parametrize("bad", ["https://*.example.com", "https://*"])
+def test_cors_origins_rejects_wildcard_host(bad):
+    _bad(CORS_ALLOW_ORIGINS=[bad])
+
+
+def test_cors_origins_bare_star_still_allowed():
+    _ok(CORS_ALLOW_ORIGINS=["*"])
+
+
+def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):
+    # A stored file from before wildcard hosts were rejected must not wipe
+    # every other override at boot: only the inert wildcard entries go.
+    p = str(tmp_path / "config.local.json")
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump({"TRUSTED_ORIGINS": ["https://*.example.com"],
+                   "CORS_ALLOW_ORIGINS": ["*", "https://*.example.com",
+                                          "https://app.example.com"],
+                   "BEAM_SIZE": 7}, f)
+    out = cs.load_overrides(p)
+    assert out["BEAM_SIZE"] == 7
+    assert "TRUSTED_ORIGINS" not in out            # list emptied → key dropped
+    assert out["CORS_ALLOW_ORIGINS"] == ["*", "https://app.example.com"]
+
+
+# ---------------------------------------------------------------------------
+# _F(evict=...) is a closed set
+# ---------------------------------------------------------------------------
+
+def test_extras_eviction_buckets_are_declared():
+    assert set(cs.EXTRAS_EVICTION) <= set(cs._EVICT_BUCKETS)
+
+
+def test_field_helper_rejects_unknown_evict_bucket():
+    with pytest.raises(ValueError, match="evict="):
+        cs._F("DEFAULT_MODEL", scope="server", group="Models", evict="diarizaton")
