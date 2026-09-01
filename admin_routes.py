@@ -68,9 +68,7 @@ _EVICTORS: dict[str, Any] = {
 # Widget extras the JSON schema can't express, overlaid onto the schema-derived
 # metadata: richer widget kinds ('textarea' for prompt-length text,
 # 'nullable_float' for empty-clears-override floats, 'string' for plain text),
-# spinner step sizes, and placeholder hints. The CAPTURES_* rows are not
-# ModelOverride fields — they carry their full literal metadata, kept verbatim
-# from the old JS literal.
+# spinner step sizes, and placeholder hints.
 _MO_FIELD_META_OVERLAY: dict[str, dict[str, Any]] = {
     "REVISION": {"kind": "string", "placeholder": "main | <git-sha>"},
     "DEFAULT_LANGUAGE": {"kind": "string",
@@ -97,17 +95,6 @@ _MO_FIELD_META_OVERLAY: dict[str, dict[str, Any]] = {
     "APPEND_PUNCTUATIONS": {"kind": "string"},
     "OUTPUT_PREFIX": {"kind": "string"},
     "OUTPUT_SUFFIX": {"kind": "string"},
-    "CAPTURES_SAMPLE_MIN_DURATION_S": {"kind": "float", "min": 0, "max": 30,
-                                       "step": 0.1},
-    "CAPTURES_SAMPLE_MAX_DURATION_S": {"kind": "float", "min": 1, "max": 30,
-                                       "step": 0.1},
-    "CAPTURES_SAMPLE_JOIN_STRATEGY": {"kind": "enum"},
-    "CAPTURES_PROPOSER_TARGET_S": {"kind": "float", "min": 1, "max": 30,
-                                   "step": 0.5},
-    "CAPTURES_PROPOSER_SESSION_GAP_S": {"kind": "int", "min": 1, "max": 86400},
-    "CAPTURES_PROPOSER_DUP_THRESHOLD": {"kind": "float", "min": 0, "max": 1,
-                                        "step": 0.01},
-    "CAPTURES_PROPOSER_MAX_PROPOSALS": {"kind": "int", "min": 1, "max": 200},
 }
 
 
@@ -307,28 +294,48 @@ def _server_ident_fields() -> dict[str, str]:
     cfg._DATA_DIR/_DB_DIR keep their underscore on purpose: uppercase config
     globals get swept into the admin-editable _BASELINE, and these resolved
     layout facts must stay out of it (see config.py)."""
+    # Device word from what the server actually decodes on, not from NVML
+    # merely finding a card: a box with an NVIDIA GPU but MODEL_DEVICE=cpu
+    # (or a CUDA-less CTranslate2 build after the cuda→cpu fallback) must not
+    # claim "gpu — …" in the card or in pasted bug reports. Prefer a loaded
+    # model's observed device; fall back to the configured one before any
+    # model has loaded.
     gpu = system_stats.gpu_name()
-    runs = f"{build_info.runs_as()} · {('gpu — ' + gpu) if gpu else 'cpu'}"
+    loaded = system_stats.loaded_models_snapshot()
+    device = str((loaded[0].get("device") if loaded else None)
+                 or getattr(cfg, "MODEL_DEVICE", "") or "")
+    if device.startswith("cuda"):
+        device_word = f"gpu — {gpu}" if gpu else "gpu"
+    else:
+        device_word = "cpu" + (f" ({gpu} present)" if gpu else "")
+    runs = f"{build_info.runs_as()} · {device_word}"
     engines = build_info.engine_versions()
     boot = (
         f"{build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}"
         f" · up {build_info.uptime_str()}"
     )
+    # Resolve once and reuse for both the card fields and the report line, so
+    # the two can never disagree: DOWNLOAD_ROOT is `str | None` (None = the
+    # standard HF cache), and f-stringing the raw value handed the copy button
+    # a literal "models None".
+    data_dir = cfg._DATA_DIR or "(unset)"
+    db_dir = cfg._DB_DIR or "(unset)"
+    models_dir = cfg.DOWNLOAD_ROOT or "(HF default cache)"
     return {
         "version": build_info.APP_VERSION,
         "runs_as": runs,
         "engine": engines,
         "boot": boot,
-        "data_dir": cfg._DATA_DIR,
-        "db_dir": cfg._DB_DIR,
-        "models_dir": cfg.DOWNLOAD_ROOT,
+        "data_dir": data_dir,
+        "db_dir": db_dir,
+        "models_dir": models_dir,
         # Pre-joined copy-report payload — the page hands it straight to the
         # card's copy button (_fwCopyBuild reads it from data-build).
         "report": "\n".join([
             f"{build_info.SERVER_NAME} {build_info.APP_VERSION}",
             f"runs-as: {runs} · {engines}",
             f"boot {build_info.BOOT_ID[:8]} · started {build_info.STARTED_UTC}",
-            f"data {cfg._DATA_DIR} · db {cfg._DB_DIR} · models {cfg.DOWNLOAD_ROOT}",
+            f"data {data_dir} · db {db_dir} · models {models_dir}",
         ]),
     }
 
@@ -405,7 +412,7 @@ async def get_state(response: Response) -> dict[str, Any]:
     # shell and every sibling data endpoint already send this; without it the
     # payload is heuristically cacheable by the browser and any intermediary.
     response.headers["Cache-Control"] = "no-store"
-    saved = config_store.load_overrides()
+    saved = await asyncio.to_thread(config_store.load_overrides)
     env_pinned = config_store.env_pinned_fields()
     field_descs = config_store.FIELD_DESCRIPTIONS
     pyd_fields = config_store.AdminConfig.model_fields
@@ -705,14 +712,14 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
     # Recompute the EFFECTIVE rule list. config.local.json's PIPELINE_RULES
     # still wins if present (per-deployment local override — unchanged); only
     # when there is no local override does the factory list run directly.
-    overrides = config_store.load_overrides()
+    overrides = await asyncio.to_thread(config_store.load_overrides)
     local_rules = overrides.get("PIPELINE_RULES")
     shadowed = isinstance(local_rules, list)
     cfg.PIPELINE_RULES = local_rules if shadowed else [dict(r) for r in saved]
 
     try:
         import main as _main
-        _main.rebuild_caches()
+        await asyncio.to_thread(_main.rebuild_caches)
         logger.info("[config] rebuilt pipeline caches after factory-rules save")
     except Exception as e:
         logger.error("[config] cache rebuild failed after factory save: %s", e)
@@ -746,7 +753,7 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     try:
         await asyncio.to_thread(
             config_store.save_overrides, {"PIPELINE_RULES": None})
-        factory = config_store.load_factory_rules()
+        factory = await asyncio.to_thread(config_store.load_factory_rules)
     except (ValidationError, RuntimeError, OSError) as e:
         logger.error("[config] clear-local-override failed: %s", e)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -755,7 +762,7 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     cfg.PIPELINE_RULES = factory
     try:
         import main as _main
-        _main.rebuild_caches()
+        await asyncio.to_thread(_main.rebuild_caches)
         logger.info("[config] rebuilt pipeline caches after clearing local override")
     except Exception as e:
         logger.error("[config] cache rebuild failed after clear-local-override: %s", e)
@@ -768,10 +775,30 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
 
 # Dry-run input bounds. Every rule can burn a full 2 s of a worker thread, so
 # both the list length and the sample have to be bounded before the loop runs.
-# The rule cap mirrors AdminConfig.PIPELINE_RULES' max_length (config_store) so
-# anything the editor is allowed to SAVE is still testable here; the sample cap
-# is far above any realistic transcript the test panel sends.
-_TEST_PIPELINE_MAX_RULES = 200
+# The rule cap is read off AdminConfig.PIPELINE_RULES' schema so anything the
+# editor is allowed to SAVE is still testable here; the sample cap is far
+# above any realistic transcript the test panel sends.
+
+
+def _pipeline_rules_max() -> int:
+    """AdminConfig.PIPELINE_RULES' max_length, read off the schema.
+
+    The bound sits inside an `Annotated[list[...], Field(max_length=...)]`
+    union arm (`... | None`), so `model_fields[...].metadata` is EMPTY and
+    the derivation has to walk the annotation's arms for the FieldInfo
+    carrying a MaxLen constraint. Falls back to the historical 200 if the
+    metadata layout ever changes (a test pins the derivation against that)."""
+    field = config_store.AdminConfig.model_fields["PIPELINE_RULES"]
+    for arm in (field.annotation, *get_args(field.annotation)):
+        for fi in getattr(arm, "__metadata__", ()):
+            for m in (*getattr(fi, "metadata", ()), fi):
+                ml = getattr(m, "max_length", None)
+                if isinstance(ml, int):
+                    return ml
+    return 200
+
+
+_TEST_PIPELINE_MAX_RULES = _pipeline_rules_max()
 _TEST_PIPELINE_MAX_SAMPLE = 8192
 
 
@@ -806,6 +833,18 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     """
     import threading
 
+    import regex_guard
+
+    # Advisory shown instead of starting a thread on an exponential shape: a
+    # timed-out guard thread here is ABANDONED, not killed (CPython cannot
+    # interrupt re.sub), so each one would pin a core for the life of the
+    # process. The save path refuses the same shapes (config_store ->
+    # regex_guard.validate), so screening keeps the panel consistent with it.
+    _NESTED_REP_MSG = (
+        "nested repetition (catastrophic backtracking risk) — not run; "
+        "the save path refuses this pattern too"
+    )
+
     sample = str(payload.get("sample") or "")
     rules = payload.get("rules") or []
     if not isinstance(rules, list):
@@ -826,6 +865,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
 
     def _run_rule(text: str, rule: dict) -> dict[str, Any]:
         """Apply one rule to `text`. Returns the step dict for the response."""
+        # Dry-run contract is parity with main.py's engine — use its replacer
+        # factories rather than a second copy that could drift.
+        import main as _main
         rtype = rule.get("type", "?")
         label = rule.get("label", rule.get("name", "?"))
         common = {"label": label, "type": rtype, "before": text, "matches": 0,
@@ -855,6 +897,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                     for entry in entries:
                         ep = entry.get("pattern", "") or ""
                         if not ep:
+                            continue
+                        if regex_guard._nested_repetition(str(ep)):
+                            if bad is None:
+                                bad = _NESTED_REP_MSG
                             continue
                         try:
                             ecre = re.compile(ep)
@@ -894,34 +940,22 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                     return {**common, "after": text, "skipped": True}
                 alternation = "|".join(re.escape(k) for k in sorted(m, key=len, reverse=True))
                 cre = re.compile(r"\b(" + alternation + r")\b", re.IGNORECASE)
-                lookup = {k.lower(): v for k, v in m.items()}
-                replacer = lambda mt: lookup.get(mt.group(0).lower(), mt.group(0))
+                replacer = _main._make_map_replacer(
+                    {k.lower(): v for k, v in m.items()})
             else:
                 pattern = rule.get("pattern", "") or ""
                 if not pattern:
                     return {**common, "after": text, "skipped": True}
+                if regex_guard._nested_repetition(str(pattern)):
+                    return {**common, "after": text, "error": _NESTED_REP_MSG}
                 cre = re.compile(pattern)
                 if rtype == "callback:lowercase-wordlist":
-                    wordlist = frozenset(w.lower() for w in (rule.get("wordlist") or []))
-                    def replacer(mt, _wl=wordlist):
-                        try:
-                            ws, first, rest = mt.group(1), mt.group(2), mt.group(3)
-                        except IndexError:
-                            return ""
-                        if (first + rest).lower() in _wl:
-                            return ws + first.lower() + rest
-                        return ws + first + rest
+                    replacer = _main._make_lowercase_wordlist_replacer(
+                        frozenset(w.lower() for w in (rule.get("wordlist") or [])))
                 elif rtype == "callback:dedup":
-                    def replacer(mt):
-                        run = mt.group(0)
-                        non_comma = [c for c in run if c != ","]
-                        return non_comma[-1] if non_comma else ","
+                    replacer = _main._dedup_callback
                 elif rtype == "callback:upper":
-                    def replacer(mt):
-                        try:
-                            return mt.group(1) + mt.group(2).upper()
-                        except IndexError:
-                            return mt.group(0).upper()
+                    replacer = _main._upper_callback
                 else:
                     return {**common, "after": text, "skipped": True,
                             "error": f"unknown rule type: {rtype}"}
@@ -955,8 +989,22 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     text = sample
     steps: list[dict[str, Any]] = []
     saw_terminal = False
+    # Whole-request budget: each timed-out rule strands an uninterruptible
+    # guard thread, so once the budget is burnt the remaining rules are
+    # reported `slow` WITHOUT starting more threads.
+    deadline = time.monotonic() + 5.0
     for idx, rule in enumerate(rules):
         if not isinstance(rule, dict):
+            continue
+        if time.monotonic() > deadline:
+            step = {"label": rule.get("label", rule.get("name", "?")),
+                    "type": rule.get("type", "?"), "before": text,
+                    "after": text, "matches": 0, "skipped": False,
+                    "error": None, "slow": True}
+            step["ordinal"] = idx + 1
+            steps.append(step)
+            if rule.get("type") == "terminal":
+                saw_terminal = True
             continue
         # _run_rule blocks for up to 2 s on its guard thread's join — run it on
         # a worker so one pathological pattern cannot stall unrelated requests.
@@ -2406,8 +2454,15 @@ function modelOverridesEditor(name, v) {
       basic: [],
       adv:   ['HALLUCINATION_SILENCE_THRESHOLD','SUPPRESS_BLANK','SUPPRESS_TOKENS',
               'SUPPRESS_CHARS','PREPEND_PUNCTUATIONS','APPEND_PUNCTUATIONS'] },
+    { id: 'stages', title: 'Pipeline stages (diarization, BGM, translation)',
+      advTitle: 'stage models & tuning',
+      basic: ['TASK','DIARIZE','SEPARATE_BGM','TRANSLATE_TO'],
+      adv:   ['DIARIZATION_MODEL','DIARIZATION_MIN_SPEAKERS','DIARIZATION_MAX_SPEAKERS',
+              'DIARIZATION_NUM_SPEAKERS','BGM_SEPARATION_UVR_MODEL',
+              'TRANSLATION_MODEL','TRANSLATION_MODE','TRANSLATION_CONTEXT_SEGMENTS',
+              'TRANSLATION_GLOSSARY','TRANSLATION_MAX_TARGETS'] },
     { id: 'output', title: 'Output wrappers', advTitle: null,
-      basic: ['OUTPUT_PREFIX','OUTPUT_SUFFIX'], adv: [] },
+      basic: ['OUTPUT_PREFIX','OUTPUT_SUFFIX','SEGMENT_MAX_WORDS_PER_SEC'], adv: [] },
   ];
 
   // LOAD_TIME_FIELDS subset that overlaps with ModelOverride. Editing any of
@@ -3434,7 +3489,12 @@ function translationTemplateEditor(name, v) {
         }
       } else {
         card.className = 'lab-result warned';
-        card.textContent = 'test failed: ' + (j.error || j.detail || r.status);
+        // FastAPI's 422 `detail` is an ARRAY of error dicts — string-coercing
+        // it printed "[object Object]". Normalize it to "field: message".
+        const det = Array.isArray(j.detail)
+          ? j.detail.map(d => String((d.loc || []).slice(-1)) + ': ' + d.msg).join(' · ')
+          : j.detail;
+        card.textContent = 'test failed: ' + (j.error || det || r.status);
       }
       results.textContent = '';
       results.appendChild(card);
@@ -5211,7 +5271,18 @@ function pipelineTestPanel() {
       sample: sample.value,
       rules: currentValue('PIPELINE_RULES') || [],
     });
-    if (!r.ok) { out.innerHTML = '<em class="err">test endpoint error</em>'; return; }
+    if (!r.ok) {
+      // Surface the endpoint's reason (e.g. "sample too long (max 8192
+      // chars)") instead of a blanket message that hides the fix.
+      let j = {};
+      try { j = await r.json(); } catch (_) {}
+      out.textContent = '';
+      const em = document.createElement('em');
+      em.className = 'err';
+      em.textContent = j.error || ('test endpoint error (' + r.status + ')');
+      out.appendChild(em);
+      return;
+    }
     const j = await r.json();
     const tbl = document.createElement('table');
     tbl.className = 'pipeline-test-table';

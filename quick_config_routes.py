@@ -8,7 +8,8 @@ Mounted at /quick-config. Endpoints:
   POST /quick-config/state                Patch enabled / body fields on exposed rules
   POST /quick-config/reapply-rules        Kick off bulk-reapply job over existing captures
   GET  /quick-config/reapply-rules/status Poll bulk-reapply job state
-  GET  /quick-config/recent               Snapshot of the recent-traces ring buffer
+  GET  /quick-config/recent               Snapshot of the recent traces
+  POST /quick-config/recent/search        Free-text search over recent traces
   GET  /quick-config/stream               SSE stream of recent traces (live updates)
 
 Security model:
@@ -20,9 +21,11 @@ Security model:
                         against `{"locked": false}`-style bypass attempts —
                         the filter runs BEFORE the merge into PIPELINE_RULES.
 
-The recent-traces ring buffer holds literal dictation snippets, which
-can be sensitive. RAM-only, capped, lost on restart. Don't log
-buffer contents and don't persist them.
+The recent traces hold literal dictation snippets, which can be sensitive.
+They live in transcriptions_store — a durable SQLite/WAL database at
+`cfg.RECENT_TRANSCRIPTIONS_DB`, row-capped by RECENT_TRANSCRIPTIONS_MAX and
+aged out by RECENT_TRANSCRIPTIONS_TTL_DAYS — so they survive restarts.
+Never log trace contents.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ import hashlib
 import json
 import logging
 import time
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -82,6 +86,28 @@ _GUARDED_SAVE_EXECUTOR = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="regex-guard",
 )
 
+# Serializes apply_rules_patch: it snapshots cfg.PIPELINE_RULES, awaits the
+# offloaded save (up to the guard timeout), and writes the WHOLE key back —
+# so two overlapping patches would both snapshot the pre-update list and the
+# second save would silently revert the first caller's edit. This closes the
+# single-worker window only; with SERVER_WORKERS > 1 the cross-process case
+# still relies on config_store._save_lock + the per-slug fingerprints.
+# Keyed weakly per event loop: an asyncio.Lock binds to the first loop that
+# awaits it, and this module (unlike main) is not reloaded per test, so a
+# single module-level Lock would raise "bound to a different event loop" on
+# the second TestClient. In production one worker = one loop = one lock.
+_PATCH_LOCKS: "weakref.WeakKeyDictionary[Any, asyncio.Lock]" = (
+    weakref.WeakKeyDictionary()
+)
+
+
+def _patch_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _PATCH_LOCKS.get(loop)
+    if lock is None:
+        lock = _PATCH_LOCKS[loop] = asyncio.Lock()
+    return lock
+
 # Ingress cap for a callback:map patch, read off the schema so the two can
 # never drift. The same bound is enforced by Pydantic inside save_overrides,
 # but only AFTER the stamping loop below has already walked the caller's dict
@@ -90,7 +116,7 @@ _MAP_MAX_ENTRIES: int = next(
     (m.max_length
      for m in config_store.MapRule.model_fields["map"].metadata
      if getattr(m, "max_length", None) is not None),
-    500,
+    10_000,  # fallback mirrors MapRule.map's max_length
 )
 
 
@@ -270,16 +296,42 @@ def _redact_invisible_slugs(
     ]
     if not hidden:
         return errors
+    import re
+    # List POSITIONS of hidden rules: a plain Pydantic field error carries no
+    # slug at all, only a dotted loc like `PIPELINE_RULES.7.regex-list...` —
+    # the index (and rule type) leak the same existence information the slug
+    # substitution below exists to hide.
+    hidden_idx = {
+        i for i, r in enumerate(rules)
+        if r.get("name") and not perms.can_see_rule(r)
+    }
     # format_validation_errors returns {"loc": ..., "msg": ...} dicts, not
     # bare strings — redact each field rather than the mapping.
     out: list[dict[str, str]] = []
     for entry in errors:
         red = dict(entry)
+        loc = str(red.get("loc") or "")
+        m = re.match(r"PIPELINE_RULES\.(\d+)\b", loc)
+        if m and int(m.group(1)) in hidden_idx:
+            # The whole error is about a rule this user may not see — blank
+            # both fields so the page's '<hidden rule>' guard routes it to the
+            # generic "contact admin" toast.
+            red["loc"] = "<hidden rule>"
+            red["msg"] = "<hidden rule>"
+            out.append(red)
+            continue
         for key in ("loc", "msg"):
             val = str(red.get(key) or "")
             for slug in hidden:
                 # config_store formats the slug with !r, hence the quotes.
                 val = val.replace(f"'{slug}'", "'<hidden rule>'")
+            # config_store's guard messages read `rule {idx} ({slug!r}) entry
+            # {eidx}: ...` — after the slug swap the ordinal still gives away
+            # the hidden rule's list position and entry count. Collapse it.
+            val = re.sub(
+                r"rule \d+ \('<hidden rule>'\)(?: entry \d+)?",
+                "a hidden rule", val,
+            )
             red[key] = val
         out.append(red)
     return out
@@ -305,6 +357,20 @@ async def apply_rules_patch(
     for 400 (malformed patch / unknown slug / disallowed field), 403 (rule not
     visible to this user / terminal rule / rule locked by an admin) or 500
     (config write failure)."""
+    async with _patch_lock():
+        return await _apply_rules_patch_locked(
+            user, rules_patch, fingerprints, client_host=client_host,
+        )
+
+
+async def _apply_rules_patch_locked(
+    user: dict[str, Any],
+    rules_patch: dict[str, dict[str, Any]],
+    fingerprints: dict[str, str] | None = None,
+    *,
+    client_host: str = "?",
+) -> tuple[int, dict[str, Any]]:
+    """Body of apply_rules_patch — call only under _PATCH_LOCK."""
     fingerprints = fingerprints or {}
     if not rules_patch:
         return 200, {
@@ -328,6 +394,20 @@ async def apply_rules_patch(
     # served. _canon_rules drops None fields and sorts dict keys.
     canonical_now = {r["name"]: r for r in _canon_rules(current_rules)
                      if isinstance(r, dict) and r.get("name")}
+
+    # Whole-request bound: the per-slug cap below limits ONE map, but a patch
+    # naming several map rules could still walk a multiple of the cap on the
+    # event loop. Bound the sum before touching any of them.
+    total_map_entries = sum(
+        len(p["map"]) for p in rules_patch.values()
+        if isinstance(p, dict) and isinstance(p.get("map"), dict)
+    )
+    if total_map_entries > _MAP_MAX_ENTRIES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"too many dictionary entries in one request (server cap: "
+            f"{_MAP_MAX_ENTRIES} entries in total)",
+        )
 
     saved: list[str] = []
     conflicts: list[dict[str, Any]] = []
@@ -356,12 +436,7 @@ async def apply_rules_patch(
             idx is not None
             and user["permissions"].can_see_rule(current_rules[idx])
         )
-        if not visible and not user.get("is_admin"):
-            raise HTTPException(
-                status.HTTP_400_BAD_REQUEST,
-                f"unknown rule slug: '{slug}' (adding rules is not allowed)",
-            )
-        if idx is None:
+        if idx is None or (not visible and not user.get("is_admin")):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 f"unknown rule slug: '{slug}' (adding rules is not allowed)",
@@ -410,11 +485,13 @@ async def apply_rules_patch(
         # check, before the overlay — so the client can't forge timestamps.
         if rtype == "callback:map" and "map" in patch:
             old_map = target.get("map") or {}
-            new_map = patch["map"] or {}
+            new_map = patch["map"]
             # rules_patch is typed dict[str, dict[str, Any]], so the per-FIELD
             # value is unconstrained and Pydantic only sees it later, inside
             # save_overrides. A non-dict here reached .items() below as an
-            # unhandled AttributeError -> bare 500.
+            # unhandled AttributeError -> bare 500. Checked on the RAW value:
+            # an `or {}` coercion first let every falsy non-dict (None, [],
+            # "") slip past this guard into a generic 422 from Pydantic.
             if not isinstance(new_map, dict):
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
@@ -426,11 +503,15 @@ async def apply_rules_patch(
             # not reached until save_overrides, which runs after. Anything over
             # the cap was already destined for a 422 there, so only the shape
             # of the rejection changes.
+            # User-facing wording: this 400 fires BEFORE save_overrides, so
+            # Pydantic's "...at most N items..." 422 (which the page used to
+            # translate) is unreachable and this detail lands in the toast
+            # verbatim.
             if len(new_map) > _MAP_MAX_ENTRIES:
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
-                    f"rules_patch['{slug}']['map'] may hold at most "
-                    f"{_MAP_MAX_ENTRIES} entries",
+                    f"this dictionary is full (server cap: {_MAP_MAX_ENTRIES} "
+                    "entries) — delete some entries before adding new ones",
                 )
             if not isinstance(old_map, dict):
                 old_map = {}
@@ -3188,11 +3269,10 @@ async function doSave() {
     for (const e of errs) {
       const loc = String((e && e.loc) || ''), m = String((e && e.msg) || '');
       if (m.indexOf('<hidden rule>') !== -1) continue;
-      const cap = /at most (\d+) items/.exec(m);
-      msg = (cap && loc.indexOf('callback:map') !== -1)
-        ? 'this dictionary is full (server cap: ' + cap[1]
-          + ' entries) — delete some entries before adding new ones'
-        : (loc ? loc + ': ' : '') + m.slice(0, 200);
+      // The full-dictionary case never reaches this 422 path any more: the
+      // ingress guard 400s first with a user-facing detail (shown by the
+      // generic !r.ok branch below), so no map-cap translation is needed.
+      msg = (loc ? loc + ': ' : '') + m.slice(0, 200);
       break;
     }
     showToast(msg || 'admin pipeline has a validation error — please contact admin', 'err');

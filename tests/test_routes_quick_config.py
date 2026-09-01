@@ -2,6 +2,8 @@
 
 import copy
 
+import pytest
+
 
 def _expose_first_regex_list_rule(app_module):
     """Mark the first regex-list rule exposed so /quick-config can see + patch it.
@@ -33,6 +35,11 @@ def test_quick_config_page(client):
     assert ".seg-download" in r.text
     assert ".stage-translate " in r.text
     assert ".stage-download " in r.text
+    # The map editor's "n / cap" readout must repaint on row add/remove: it is
+    # painted by paintCount(), wired to a childList MutationObserver (the add
+    # and delete paths mutate <tr>s directly without re-rendering the editor).
+    assert ("new MutationObserver(paintCount).observe(tbl, { childList: true });"
+            in r.text)
 
 
 def test_state_open_mode(client):
@@ -218,8 +225,17 @@ def test_post_patch_oversized_map_400(client, app_module):
 
     slug = _expose_first_map_rule(app_module)
     assert slug is not None, "fixture config has no callback:map rule"
+    import config_store
+
     cap = quick_config_routes._MAP_MAX_ENTRIES
-    assert cap == 10_000
+    # Track the schema rather than re-pinning the literal: this still catches
+    # the derivation silently taking its fallback if pydantic's metadata
+    # layout changes, without failing on a deliberate schema-side cap change.
+    expected = next(
+        m.max_length
+        for m in config_store.MapRule.model_fields["map"].metadata
+        if getattr(m, "max_length", None) is not None)
+    assert cap == expected
     big = {f"wort{i}": str(i) for i in range(cap + 1)}
     r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": big}}})
     assert r.status_code == 400, r.text
@@ -315,3 +331,160 @@ def test_state_carries_locked_and_role_for_nonadmin(client, app_module,
     # Every visible rule carries the flag (never dropped by exclude_none),
     # so the page can decide per card without a second lookup.
     assert all("locked" in r for r in body["rules"])
+
+
+@pytest.mark.parametrize("bad", [None, [], ""])
+def test_post_patch_falsy_nondict_map_400(client, app_module, bad):
+    """A FALSY non-dict map (None, [], "") used to be coerced to {} by an
+    `or {}` before the isinstance guard, slipping past the precise 400 into a
+    generic Pydantic 422 from save_overrides."""
+    slug = _expose_first_map_rule(app_module)
+    assert slug is not None
+    r = client.post("/quick-config/state",
+                    json={"rules_patch": {slug: {"map": bad}}})
+    assert r.status_code == 400, r.text
+    assert "must be an object" in r.json()["detail"]
+
+
+def _expose_two_map_rules(app_module):
+    """Expose the first callback:map rule and a clone of it, returning both
+    slugs."""
+    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
+    first = None
+    for r in rules:
+        if isinstance(r, dict) and r.get("type") == "callback:map":
+            r["exposed"] = True
+            first = r
+            break
+    if first is None:
+        return None, None
+    clone = copy.deepcopy(first)
+    clone["name"] = "zweite-map"
+    rules.insert(rules.index(first) + 1, clone)
+    app_module.cfg.PIPELINE_RULES = rules
+    return first["name"], clone["name"]
+
+
+def test_post_patch_map_total_over_cap_400(client, app_module):
+    """The per-slug cap bounds ONE map; a patch naming several map rules must
+    not walk a multiple of the cap on the event loop. The request-wide sum is
+    bounded too, while each map alone stays under the per-slug cap."""
+    import quick_config_routes
+
+    slug_a, slug_b = _expose_two_map_rules(app_module)
+    assert slug_a and slug_b, "fixture config has no callback:map rule"
+    half = quick_config_routes._MAP_MAX_ENTRIES // 2 + 1
+    map_a = {f"awort{i}": str(i) for i in range(half)}
+    map_b = {f"bwort{i}": str(i) for i in range(half)}
+    r = client.post("/quick-config/state", json={"rules_patch": {
+        slug_a: {"map": map_a}, slug_b: {"map": map_b}}})
+    assert r.status_code == 400, r.text
+    # Each alone is under the per-slug cap and passes the ingress guards.
+    r = client.post("/quick-config/state",
+                    json={"rules_patch": {slug_a: {"map": map_a}}})
+    assert r.status_code != 400, r.text
+
+
+def test_hidden_rule_validation_error_is_fully_redacted(
+        client, app_module, make_user_key):
+    """A 422 caused by a rule the caller may not see must not leak the slug,
+    its list position, or its rule type — a plain Pydantic field error carries
+    all three in its dotted loc."""
+    from tests.conftest import bearer
+
+    slug = _expose_first_regex_list_rule(app_module)
+    assert slug is not None
+    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
+    # Hidden (not exposed) rule whose map KEY fails the schema pattern —
+    # sits fine in the live config (assignment is unvalidated) but 422s the
+    # next full save.
+    rules.insert(0, {"name": "geheim", "label": "geheim",
+                     "type": "callback:map", "map": {"böse<>#key": "x"}})
+    app_module.cfg.PIPELINE_RULES = rules
+
+    make_user_key("root", is_admin=True)  # flips lockdown
+    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+
+    r = client.post("/quick-config/state",
+                    json={"rules_patch": {slug: {"enabled": False}}},
+                    headers=bearer(raw))
+    assert r.status_code == 422, r.text
+    assert "geheim" not in r.text
+    errs = r.json()["errors"]
+    assert errs, "the hidden rule's schema error must still be reported"
+    for e in errs:
+        assert e["loc"] == "<hidden rule>", e
+        assert e["msg"] == "<hidden rule>", e
+
+
+def test_redact_collapses_hidden_rule_ordinals():
+    """config_store's guard messages read `rule {idx} ({slug!r}) entry {e}:`
+    — after the slug swap the ordinal still gave away the hidden rule's list
+    position and entry count."""
+    import quick_config_routes as q
+
+    class _Perms:
+        def can_see_rule(self, rule):
+            return bool(rule.get("exposed"))
+
+    user = {"is_admin": False, "permissions": _Perms()}
+    rules = [{"name": "geheim", "exposed": False},
+             {"name": "meins", "exposed": True}]
+    out = q._redact_invisible_slugs(
+        [{"loc": "PIPELINE_RULES", "msg": "rule 0 ('geheim') entry 2: boom"}],
+        user, rules)
+    assert out == [{"loc": "PIPELINE_RULES", "msg": "a hidden rule: boom"}]
+    # A dotted Pydantic loc on the hidden index is blanked wholesale so the
+    # page's '<hidden rule>' guard routes it to the generic toast.
+    out = q._redact_invisible_slugs(
+        [{"loc": "PIPELINE_RULES.0.callback:map.map.x",
+          "msg": "Input should be a valid string"}],
+        user, rules)
+    assert out == [{"loc": "<hidden rule>", "msg": "<hidden rule>"}]
+    # The visible rule's errors stay legible.
+    out = q._redact_invisible_slugs(
+        [{"loc": "PIPELINE_RULES.1.regex-list.entries.0.pattern",
+          "msg": "rule 1 ('meins'): bad"}],
+        user, rules)
+    assert out == [{"loc": "PIPELINE_RULES.1.regex-list.entries.0.pattern",
+                    "msg": "rule 1 ('meins'): bad"}]
+
+
+def test_concurrent_patches_do_not_lose_an_update(client, app_module,
+                                                  monkeypatch):
+    """Two overlapping patches of DIFFERENT rules both used to snapshot the
+    pre-update PIPELINE_RULES and both write the whole key across the
+    offloaded save — the second save silently reverted the first caller's
+    edit. apply_rules_patch is serialized now, so both edits must survive."""
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import config_store
+
+    slug_a = _expose_first_regex_list_rule(app_module)
+    slug_b = _expose_first_map_rule(app_module)
+    assert slug_a and slug_b and slug_a != slug_b
+
+    orig_save = config_store.save_overrides
+
+    def _slow_save(*a, **kw):
+        _time.sleep(0.2)  # hold the offloaded-save window open
+        return orig_save(*a, **kw)
+
+    monkeypatch.setattr(config_store, "save_overrides", _slow_save)
+
+    def _patch(slug):
+        return client.post("/quick-config/state",
+                           json={"rules_patch": {slug: {"enabled": False}}})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        ra, rb = pool.map(lambda s: _patch(s), [slug_a, slug_b])
+    assert ra.status_code == 200, ra.text
+    assert rb.status_code == 200, rb.text
+
+    by_name = {}
+    for r in app_module.cfg.PIPELINE_RULES:
+        d = r.model_dump() if hasattr(r, "model_dump") else dict(r)
+        by_name[d.get("name")] = d
+    assert by_name[slug_a].get("enabled") is False
+    assert by_name[slug_b].get("enabled") is False

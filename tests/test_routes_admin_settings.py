@@ -343,6 +343,46 @@ def test_test_pipeline_rules_not_list_400(client):
     assert r.status_code == 400
 
 
+def test_test_pipeline_nested_repetition_screened_not_run(client):
+    """An exponential shape must be refused on structure, not started: a
+    timed-out dry-run thread is abandoned, not killed, and would pin a core
+    for the life of the process. Both the regex-list and single-pattern paths
+    screen with regex_guard before compiling."""
+    r = client.post(
+        "/settings/test-pipeline",
+        json={
+            "sample": "aaaaaaaaaaaaaaaaaaaa!",
+            "rules": [
+                {"name": "boom-list", "type": "regex-list", "enabled": True,
+                 "entries": [{"pattern": r"(\w+ )+$", "replacement": ""}]},
+                {"name": "boom-single", "type": "callback:upper",
+                 "enabled": True, "pattern": r"(\w+ ?)+"},
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    steps = r.json()["steps"]
+    assert "nested repetition" in (steps[0]["error"] or "")
+    assert not steps[0]["slow"]
+    assert "nested repetition" in (steps[1]["error"] or "")
+    assert not steps[1]["slow"]
+
+
+def test_test_pipeline_rule_cap_tracks_schema():
+    """_TEST_PIPELINE_MAX_RULES is derived from AdminConfig.PIPELINE_RULES'
+    max_length; a metadata-layout change must not silently fall back."""
+    from typing import get_args
+
+    import admin_routes
+    import config_store
+
+    ann = config_store.AdminConfig.model_fields["PIPELINE_RULES"].annotation
+    fi = get_args(ann)[0].__metadata__[0]
+    expected = next(m.max_length for m in fi.metadata
+                    if getattr(m, "max_length", None) is not None)
+    assert admin_routes._TEST_PIPELINE_MAX_RULES == expected
+
+
 def test_post_state_requires_admin_when_locked(client, make_user_key):
     from conftest import bearer
 
@@ -413,6 +453,49 @@ def test_settings_page_injects_mo_constants(client):
     assert meta["DEFAULT_PROMPT"]["kind"] == "textarea"
     assert meta["NO_SPEECH_THRESHOLD"]["kind"] == "nullable_float"
 
+    # Every FIELD_META key is a real ModelOverride field — the payload once
+    # shipped seven CAPTURES_* rows no renderer could ever read.
+    import admin_routes
+    import config_store
+    assert (set(json.loads(admin_routes._MO_FIELD_META_JSON))
+            <= set(config_store.ModelOverride.model_fields))
+
+
+def test_model_sections_cover_every_model_override_field(client):
+    """The per-model editor renders only the fields SECTIONS names (no
+    catch-all), so a ModelOverride field absent from the literal is invisible
+    and uneditable there — 15 stage/translation fields once shipped that way.
+    Mirrors test_field_groups_cover_every_setting for the per-model pane."""
+    import re
+
+    import config_store
+
+    text = client.get("/settings").text
+    m = re.search(r"const SECTIONS = \[(.*?)\n  \];", text, re.S)
+    assert m, "SECTIONS literal not found in the rendered page"
+    listed = set()
+    for arr in re.findall(r"(?:basic|adv):\s*\[([^\]]*)\]", m.group(1)):
+        listed.update(re.findall(r"'([A-Z][A-Z0-9_]*)'", arr))
+    expected = (set(config_store.ModelOverride.model_fields)
+                - {"PIPELINE_RULES_INCLUDE", "PIPELINE_RULES_EXCLUDE"})
+    missing = expected - listed
+    stale = listed - expected
+    assert not missing, f"ModelOverride fields missing from SECTIONS: {sorted(missing)}"
+    assert not stale, f"SECTIONS entries that are not ModelOverride fields: {sorted(stale)}"
+
+
+def test_server_ident_report_never_prints_none(app_module, monkeypatch):
+    """DOWNLOAD_ROOT is `str | None` (None = standard HF cache); the copy
+    report and the card fields must resolve the same fallback string rather
+    than f-stringing a literal 'models None'."""
+    import admin_routes
+
+    monkeypatch.setattr(admin_routes.cfg, "DOWNLOAD_ROOT", None)
+    ident = admin_routes._server_ident_fields()
+    assert "None" not in ident["report"]
+    tail = ident["report"].splitlines()[-1]
+    assert tail.split(" · models ")[-1] == ident["models_dir"]
+
 
 def test_save_dispatches_extras_eviction(client, monkeypatch):
     """Editing a field in an EXTRAS_EVICTION bucket awaits that bucket's
@@ -476,14 +559,11 @@ def test_settings_page_wires_translation_model_editors(client):
     source-lists spec; the dispatch wires the translation + separation model
     fields to their OWN allowlists (not the whisper ALLOWED_MODELS)."""
     text = client.get("/settings").text
-    # Parameterized signatures.
-    assert "function modelDropdownEditor(name, v, lists)" in text
-    assert "function modelMultiSelectEditor(name, v, lists)" in text
     # Dispatch: translation fields source from the translation lists…
+    # (Asserted by the data wiring, not JS function signatures / local
+    # variable names — those are implementation detail, not contract.)
     assert "allowed: 'TRANSLATION_ALLOWED_MODELS'" in text
     assert "preload: 'TRANSLATION_PRELOAD_MODELS'" in text
-    assert "modelDropdownEditor(name, v, TR_LISTS)" in text
-    assert "modelMultiSelectEditor(name, v, TR_LISTS)" in text
     # …and the UVR model from the separation allowlist (no preload concept).
     assert "{ allowed: 'BGM_SEPARATION_ALLOWED_MODELS' }" in text
     # The re-render event fires for the new source lists too.
