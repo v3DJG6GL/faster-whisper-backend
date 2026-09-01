@@ -461,6 +461,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .kindchip.dictate    { color: var(--green);   border-color: #1f4d2a; }
   .kindchip.translate  { color: var(--magenta); border-color: #3d2a5a; }
   .kindchip.download   { color: var(--yellow);  border-color: #4d3e1f; }
+  .kindchip.preload    { color: var(--help);    border-color: var(--border); }
   .pipe { display: inline-flex; gap: 2px; }
   .pipe i { display: inline-block; width: 0.55rem; height: 0.55rem;
     border-radius: 2px; background: #21262d; }
@@ -470,6 +471,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .pipe i.translating,
   .pipe i.translate    { background: var(--green); }
   .pipe i.download     { background: var(--cyan); }
+  .pipe i.preload      { background: var(--help); }
   tr.rj-expand td { background: rgba(110, 118, 129, 0.06); }
   .rj-stages { padding: 0.25rem 0.25rem 0.35rem; }
   .rj-stage-row { display: flex; align-items: center; gap: 0.5rem;
@@ -731,6 +733,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
           <button data-v="dictate">dictate</button>
           <button data-v="translate">translate</button>
           <button data-v="download">download</button>
+          <button data-v="preload">preload</button>
         </div>
       </div>
       <label class="rj-flag"><input type="checkbox" id="rj-warnonly"> warnings only</label>
@@ -1215,7 +1218,7 @@ function renderJobs(snap) {
 
   const runRows = running
     .filter(j => !kindF || j.kind === kindF)
-    .filter(j => !userF)          // running rows carry ids, not usernames
+    .filter(j => !userF || j.user === userF)   // j.user is the username, like r.username
     .filter(() => !warnOnly)
     .map(j => {
       const pct = j.progress != null ? Math.round(j.progress * 100) : null;

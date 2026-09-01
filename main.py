@@ -6141,6 +6141,8 @@ _LOG_VIEWER_HTML = """<!doctype html>
     [/\\[vad-trim\\]|\\[lead-pad\\]/, 'st-whi'], [/\\[preload\\]/, 'st-tra'],
   ];
   const _SEG_SHOWN = {{LOG_SEGMENT_ROWS_SHOWN}};
+  // LOG_STAGE_COLORS: false → no per-stage hue classes (monochrome log).
+  const _STAGE_COLORS = {{LOG_STAGE_COLORS}};
   const _SEG_STEP = 50;
   // A segment data row: "      0    0.31s   13.29s  …". The header row starts
   // with '#' and must not be counted or folded.
@@ -6161,7 +6163,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
     const sec = _SEC_RE.exec(line);
     if (sec) {
       const label = sec[1].trim();
-      st.stage = _SEC_STAGE[label] || '';
+      st.stage = _STAGE_COLORS ? (_SEC_STAGE[label] || '') : '';
       st.inSeg = (label === 'Segments');
       st.segRows = 0;
       st.dimLeft = 0;
@@ -6183,12 +6185,13 @@ _LOG_VIEWER_HTML = """<!doctype html>
       st.segRows = (st.segRows || 0) + 1;
       if (st.segRows > _SEG_SHOWN) {
         if (st.segRows === _SEG_SHOWN + 1) st.needCtl = true;
-        return cls + ' ' + (st.stage || 'st-whi') + ' folded';
+        return cls + ' ' + (_STAGE_COLORS ? (st.stage || 'st-whi') : '')
+          + ' folded';
       }
     }
     if (st.stage && /^ {4}\\S/.test(line)) return cls + ' ' + st.stage;
     if (st.stage && cls === 'info') return cls + ' ' + st.stage;
-    if (!st.stage) {
+    if (!st.stage && _STAGE_COLORS) {
       for (const [re, k] of _LIVE_STAGE) if (re.test(line)) return cls + ' ' + k;
     }
     return cls;

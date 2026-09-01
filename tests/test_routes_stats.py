@@ -82,6 +82,54 @@ def test_header_activity_cluster_shell_on_every_page(client):
         assert 'id="hact-gpuv"' in html, path
 
 
+def test_header_activity_cluster_js_contract():
+    """The cluster's inline JS has no unit harness, so pin the load-bearing
+    strings: the cancel POST must carry the CSRF header (the cookie-auth
+    middleware 403s it otherwise), the VRAM chip must read the `vram_mb`
+    field the lite stream actually emits, a fatal EventSource close must be
+    retried, and staleness is signalled via `title` (the data-tip CSS
+    tooltip is scoped to the .vtag chip)."""
+    import web_common
+
+    js = web_common.ACTIVITY_CLUSTER_JS
+    cancel = js[js.index("transcriptions/cancel/"):]
+    cancel = cancel[:cancel.index(".then(")]
+    assert "X-CSRF-Token" in cancel and "_csrfToken()" in cancel
+    assert "c.disabled = false" in js
+    assert "vram_mb" in js and "vram_bytes" not in js
+    assert "readyState === 2" in js
+    assert "activity feed stale" in js
+    assert "setAttribute('data-tip', 'activity feed stale" not in js
+    assert "preload:'pl'" in js
+
+
+def test_stats_page_renders_every_job_kind(client):
+    """jobs.KINDS is the single source of truth; each kind needs a kindchip
+    colour and a Recent-jobs filter button or it renders as an unstyled,
+    unfilterable grey chip."""
+    html = client.get("/stats").text
+    for kind in jobs.KINDS:
+        assert f".kindchip.{kind}" in html, kind
+        assert f'data-v="{kind}"' in html, kind
+
+
+def test_log_stage_colors_flag_reaches_logs_page(client, app_module,
+                                                monkeypatch):
+    """LOG_STAGE_COLORS is hot-mutable via the settings save path, so it
+    must enter the render_page memo key and land in the viewer JS."""
+    import web_common
+
+    monkeypatch.setattr(app_module.cfg, "LOG_STAGE_COLORS", True,
+                        raising=False)
+    assert "const _STAGE_COLORS = true;" in client.get("/logs").text
+    monkeypatch.setattr(app_module.cfg, "LOG_STAGE_COLORS", False,
+                        raising=False)
+    html = client.get("/logs").text
+    assert "const _STAGE_COLORS = false;" in html
+    assert "{{LOG_STAGE_COLORS}}" not in html
+    assert web_common.cfg is app_module.cfg
+
+
 def test_translate_run_registers_a_job(client, app_module, monkeypatch):
     """The text-translations handler holds a 'translate' job for the run's
     duration — observed from inside a stubbed translate_segments."""
@@ -115,3 +163,37 @@ def test_stats_page_host_gate_rejects_non_loopback(app_module, monkeypatch):
     )
     with TestClient(app_module.app, client=("8.8.8.8", 1)) as c:
         assert c.get("/stats").status_code == 403
+
+
+def test_snapshot_running_row_carries_the_username(client, app_module,
+                                                    make_user_key, monkeypatch):
+    """The running rows and the finished rows share one user column, so a
+    job started from a request must register the caller's display name —
+    the same value the finished rows show — not the opaque user_id."""
+    from conftest import bearer
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    _, raw_admin = make_user_key("root", is_admin=True)
+    seen = {}
+
+    async def _fake(segments, targets, *, progress_cb=None, **kwargs):
+        seen["jobs"] = jobs.jobs_snapshot(include_identity=True)
+        return ([{t: s["text"] for t in targets} for s in segments], [],
+                {"model": "org/m", "source": "", "mode": "fluent"})
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    r = client.post("/v1/text/translations", headers=bearer(raw_admin),
+                    json={"segments": [{"id": 0, "text": "hi"}],
+                          "targets": ["en"]})
+    assert r.status_code == 200, r.text
+    row = next(j for j in seen["jobs"] if j["kind"] == "translate")
+    assert row["user"] == "root"
+    # /stats/snapshot echoes the registry rows verbatim (pinned above by
+    # test_snapshot_carries_running_jobs), so a row parked with a username
+    # surfaces as that username to an admin viewer.
+    jid = jobs.job_start("transcribe", model="m", user="root")
+    try:
+        snap = client.get("/stats/snapshot", headers=bearer(raw_admin)).json()
+        assert next(j for j in snap["jobs"] if j["id"] == jid)["user"] == "root"
+    finally:
+        jobs.job_end(jid)

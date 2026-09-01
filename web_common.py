@@ -415,6 +415,7 @@ header .hdr-activity.stale .hact-ring { animation: none;
 .hact-pop .hact-kind.tl { color: var(--magenta); }
 .hact-pop .hact-kind.dc { color: var(--green); }
 .hact-pop .hact-kind.dl { color: var(--yellow); }
+.hact-pop .hact-kind.pl { color: var(--help); }
 .hact-pop .hact-job .m { flex: 1 1 auto; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap; }
 .hact-pop .hact-job .m small { color: var(--help);
@@ -2032,6 +2033,7 @@ ACTIVITY_CLUSTER_JS = """
   var vramEl = document.getElementById('hact-vram');
   var vramvEl = document.getElementById('hact-vramv');
   var es = null, last = null, lastTs = 0, allowed = false;
+  var retryTimer = null, delay = 1500;
 
   function esc(s){ return String(s == null ? '' : s)
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -2039,10 +2041,11 @@ ACTIVITY_CLUSTER_JS = """
   function onStats(){ return window.__current_page === 'stats'; }
   function gb(mb){ return ((mb || 0) / 1024).toFixed(1); }
   // Job-kind → accent class (mockup palette: transcribe cyan, translate
-  // magenta, dictate green, download yellow).
+  // magenta, dictate green, download yellow, preload muted). Keep in step
+  // with jobs.KINDS and the /stats kindchip CSS + #rj-kind filter.
   function kindCls(k){
     return {transcribe:'tr', stream:'tr', translate:'tl',
-            dictate:'dc', download:'dl'}[k] || '';
+            dictate:'dc', download:'dl', preload:'pl'}[k] || '';
   }
 
   function setBar(el, pct){
@@ -2056,7 +2059,8 @@ ACTIVITY_CLUSTER_JS = """
     if (!snap) return;
     last = snap; lastTs = Date.now();
     btn.classList.remove('stale');
-    btn.removeAttribute('data-tip');
+    btn.title = 'server activity — click for running jobs';
+    delay = 1500;
     var jobs = snap.jobs || [];
     jobsEl.textContent = jobs.length;
     btn.classList.toggle('idle', jobs.length === 0);
@@ -2134,7 +2138,7 @@ ACTIVITY_CLUSTER_JS = """
         + models.length + '</div>';
       models.forEach(function(m){
         var bits = [m.device, m.compute_type,
-                    m.vram_bytes ? gb(m.vram_bytes / 1048576) + 'G' : null]
+                    m.vram_mb != null ? gb(m.vram_mb) + 'G' : null]
           .filter(Boolean).map(esc).join(' · ');
         h += '<div class="modline"><span class="mn">' + esc(m.name)
           + '</span><span>' + bits + '</span></div>';
@@ -2181,9 +2185,14 @@ ACTIVITY_CLUSTER_JS = """
   pop.addEventListener('click', function(e){
     var c = e.target.closest('.hact-cancel');
     if (!c) return;
-    fetch('/v1/audio/transcriptions/cancel/' + c.dataset.pid,
-          { method: 'POST' }).catch(function(){});
+    // Cookie-authenticated pages go through _csrf_mw, which 403s any
+    // unsafe-method request without the token (same as _signOut).
     c.disabled = true;
+    fetch('/v1/audio/transcriptions/cancel/' + c.dataset.pid,
+          { method: 'POST',
+            headers: { 'X-CSRF-Token': window._csrfToken() } })
+      .then(function(r){ if (!r.ok) c.disabled = false; },
+            function(){ c.disabled = false; });
   });
 
   function openStream(){
@@ -2195,21 +2204,30 @@ ACTIVITY_CLUSTER_JS = """
         try { feed(JSON.parse(ev.data)); } catch(_) {}
       };
       es.onerror = function(){
-        // Rely on EventSource's built-in retry; staleness greys the bars.
+        // A transient drop keeps readyState CONNECTING and the browser
+        // retries on its own; an HTTP error response leaves it CLOSED (2)
+        // with no retry, so reopen ourselves with backoff (mirrors /stats).
+        if (es && es.readyState === 2) {
+          closeStream();
+          retryTimer = setTimeout(openStream, delay);
+          delay = Math.min(delay * 1.7, 30000);
+        }
       };
     } catch(_) {}
   }
   function closeStream(){
+    if (retryTimer) { clearTimeout(retryTimer); retryTimer = null; }
     if (es) { try { es.close(); } catch(_) {} es = null; }
   }
 
   // Stale detection: the lite stream ticks at 1 Hz; after >5 s of silence
-  // (3+ missed intervals) grey the bars with an explanatory tip.
+  // (3+ missed intervals) grey the bars with an explanatory title (the
+  // data-tip CSS tooltip is scoped to the .vtag chip, not this button).
   setInterval(function(){
     if (!allowed || !lastTs) return;
     if (Date.now() - lastTs > 5000) {
       btn.classList.add('stale');
-      btn.setAttribute('data-tip', 'activity feed stale — reconnecting');
+      btn.title = 'activity feed stale — reconnecting';
     }
   }, 2500);
 
@@ -3098,6 +3116,7 @@ def _render_page_cached(
     log_initial: int,
     log_dom: int,
     seg_shown: int,
+    stage_colors: bool = True,
 ) -> str:
     """The actual placeholder substitution, memoized on everything it can
     vary on.
@@ -3114,11 +3133,11 @@ def _render_page_cached(
     14 substitute module-level constants; {{SEV_PILLS}} hardcodes n = 0 by
     design (see sev_pills_html); {{HEADER_VTAG}} is computed once at import;
     {{NAV}} varies only on `current` plus cfg.ADMIN_UI_ENABLED; the rest vary
-    on `current`, the two LOG_VIEWER_* values or LOG_SEGMENT_ROWS_SHOWN. No
-    nonce, CSRF token,
+    on `current`, the two LOG_VIEWER_* values, LOG_SEGMENT_ROWS_SHOWN or
+    LOG_STAGE_COLORS. No nonce, CSRF token,
     username or per-request version is substituted server-side — if one is
     ever added it MUST enter this key, or the cache becomes a cross-user
-    poisoning bug. The three cfg reads are hot-mutable via the settings save
+    poisoning bug. The cfg reads are hot-mutable via the settings save
     path, hence their presence in the key rather than a read at import.
 
     Returns an immutable str, so sharing one object across callers is safe.
@@ -3131,6 +3150,7 @@ def _render_page_cached(
         .replace("{{LOG_VIEWER_INITIAL_LINES}}", str(log_initial))
         .replace("{{LOG_VIEWER_DOM_MAX}}", str(log_dom))
         .replace("{{LOG_SEGMENT_ROWS_SHOWN}}", str(seg_shown))
+        .replace("{{LOG_STAGE_COLORS}}", "true" if stage_colors else "false")
         .replace("{{SCALE_PICKER}}", SCALE_PICKER_HTML)
         .replace("{{RELOAD}}", RELOAD_BTN_HTML)
         .replace("{{LOGOUT}}", LOGOUT_BTN_HTML)
@@ -3195,8 +3215,10 @@ def render_page(template: str, current: str) -> str:
     _log_dom = int(getattr(cfg, "LOG_VIEWER_DOM_MAX", 0)) or (_log_initial * 4)
     _admin_ui = bool(getattr(cfg, "ADMIN_UI_ENABLED", False))
     _seg_shown = int(getattr(cfg, "LOG_SEGMENT_ROWS_SHOWN", 15) or 15)
+    _stage_colors = bool(getattr(cfg, "LOG_STAGE_COLORS", True))
     return _render_page_cached(
         template, current, _admin_ui, _log_initial, _log_dom, _seg_shown,
+        _stage_colors,
     )
 
 
