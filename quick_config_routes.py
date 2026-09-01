@@ -1246,17 +1246,78 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .trace-item { background: var(--panel); border: 1px solid var(--border);
     border-radius: 4px; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; }
   .trace-meta { display: flex; gap: 0.5rem; color: var(--dim);
-    font-size: var(--fs-xs); margin-bottom: 0.375rem; align-items: center; }
+    font-size: var(--fs-xs); margin-bottom: 0.375rem; align-items: center;
+    /* The row now carries source + kind + model + language + speaker + key +
+       three numbers; without wrapping it overflows on a narrow window. */
+    flex-wrap: wrap; }
   .trace-meta .pill { background: var(--panel-alt, rgba(255,255,255,0.04));
     border: 1px solid var(--border); border-radius: 999rem;
     padding: 0.05rem 0.5rem; color: var(--fg); font-family: var(--font-sans);
     font-size: var(--fs-xs); }
-  /* source chip: live (streaming) vs file (batch upload) */
+  .trace-meta .trace-ts { font-variant-numeric: tabular-nums; }
+  /* Two chips, two questions, deliberately kept apart: the SOURCE chip says
+     where the audio came from (live mic / uploaded file / fetched URL), the
+     KIND chip says what the job was (batch decode / dictation / text
+     translation / model download). One binary chip used to answer both, which
+     is why a URL fetch was indistinguishable from an upload. */
   .trace-meta .src-chip { text-transform: uppercase; letter-spacing: 0.04em; }
   .trace-meta .src-chip.src-stream { background: rgba(79,140,255,0.18);
     border-color: rgba(79,140,255,0.55); }
   .trace-meta .src-chip.src-file { background: rgba(255,255,255,0.03);
     color: var(--dim); }
+  .trace-meta .src-chip.src-url { background: rgba(210,168,255,0.16);
+    border-color: rgba(210,168,255,0.5); color: var(--magenta); }
+  /* Dashed: a classification, not a measurement. */
+  .trace-meta .kind-chip { font-family: var(--font-mono);
+    text-transform: uppercase; letter-spacing: 0.04em;
+    background: transparent; color: var(--dim); border-style: dashed; }
+  .trace-meta .kind-chip.kind-translate { color: #4dd0c4;
+    border-color: rgba(77,208,196,0.5); }
+  .trace-meta .kind-chip.kind-download { color: #d9a45b;
+    border-color: rgba(217,164,91,0.5); }
+  /* Model gets a pill like every other attribute — it was a bare <span>, the
+     one unstyled item in a row of chips. */
+  .trace-meta .model-chip { font-family: var(--font-mono); }
+  .trace-meta .lang-chip { font-family: var(--font-mono);
+    text-transform: uppercase; letter-spacing: 0.06em; }
+  .trace-meta .key-chip { font-family: var(--font-mono); color: var(--dim); }
+  /* Measurements, not categories: mono + tabular so audio duration, word
+     count and RTF line up down the list instead of jittering per row. */
+  .trace-meta .num { font-family: var(--font-mono); color: var(--fg);
+    font-variant-numeric: tabular-nums; }
+  .trace-meta .num.rtf-ok   { color: var(--green); }
+  .trace-meta .num.rtf-warn { color: var(--yellow); }
+  .trace-meta .num.rtf-bad  { color: var(--red); }
+  /* A failed job used to render as a row with nothing in it. */
+  .trace-item.st-error { border-left: 3px solid var(--red); }
+  .trace-meta .err-chip { font-family: var(--font-mono); color: var(--red);
+    border-color: rgba(255,123,114,0.5); background: rgba(255,123,114,0.12);
+    text-transform: uppercase; letter-spacing: 0.04em; }
+  .trace-notext { color: var(--dim); font-style: italic;
+    font-size: var(--fs-sm); }
+  /* Stage cost rail: the stage list drawn to scale instead of only listed.
+     Segment widths are each stage's seconds over the rail scale; the tick sits
+     at audio duration, so a rail running past it is a job slower than the
+     audio it decoded. The stage chips stay directly below as the exact
+     readout — the rail carries proportion, the chips carry seconds. */
+  .trace-rail { margin: 0.1rem 0 0.4rem; }
+  .trace-rail .rail-track { display: flex; height: 5px; border-radius: 999rem;
+    overflow: hidden; background: rgba(255,255,255,0.05); }
+  .trace-rail .rail-track .seg { height: 100%; min-width: 1px; }
+  .trace-rail .rail-mark { position: relative; height: 9px; margin-top: 2px; }
+  .trace-rail .rail-mark .tick { position: absolute; top: 0; width: 1px;
+    height: 5px; background: var(--dim); }
+  .trace-rail .rail-mark .tick::after { content: "1\00d7"; position: absolute;
+    top: 4px; left: -0.55rem; font-family: var(--font-mono); font-size: 9px;
+    color: var(--dim); letter-spacing: 0.04em; }
+  .seg-separating  { background: #6faed9; }
+  .seg-vad         { background: #93b76f; }
+  .seg-transcribing{ background: #93b76f; }
+  .seg-diarizing   { background: #c68fb4; }
+  .seg-translating { background: #4dd0c4; }
+  .seg-translate   { background: #4dd0c4; }
+  .seg-downloading { background: #d9a45b; }
+  .seg-other       { background: var(--dim); }
   /* Per-stage chips. Same hues the /logs receipt and the desktop app's
      stage rail use, so a stage is one colour everywhere it appears. */
   .trace-stages { margin-top: 0.25rem; }
@@ -1837,9 +1898,78 @@ function diffExcerpt(A, B, region) {
   return el;
 }
 
+// Audio/processing seconds in the row's compact form: "42 s", "7 min",
+// "1 h 12 min". Was inline in the size pill; the rail's tick title wants it too.
+function traceDur(secs) {
+  const s = Number(secs);
+  if (!Number.isFinite(s) || s <= 0) return '';
+  if (s >= 3600) return Math.floor(s / 3600) + ' h ' + Math.round((s % 3600) / 60) + ' min';
+  if (s >= 60) return Math.round(s / 60) + ' min';
+  return Math.round(s) + ' s';
+}
+
+// The stage list drawn to scale, in the canonical stage hues. Returns null
+// when there is nothing to draw — a live utterance records one stage and rows
+// written before the stages_json migration record none.
+function traceRail(stages, audioDur) {
+  let total = 0;
+  for (const st of stages) total += Math.max(0, Number(st.secs) || 0);
+  const audio = Number(audioDur);
+  const scale = Math.max(total, Number.isFinite(audio) && audio > 0 ? audio : 0);
+  if (!(scale > 0) || !stages.length) return null;
+
+  const wrap = document.createElement('div');
+  wrap.className = 'trace-rail';
+  const track = document.createElement('div');
+  track.className = 'rail-track';
+  for (const st of stages) {
+    const secs = Number(st.secs) || 0;
+    if (secs <= 0) continue;
+    const seg = document.createElement('div');
+    seg.className = 'seg seg-' + String(st.name);
+    seg.style.width = (secs / scale * 100) + '%';
+    seg.title = st.name + ' · ' + secs.toFixed(1) + 's'
+      + (st.model ? ' · ' + String(st.model) : '');
+    track.appendChild(seg);
+  }
+  if (!track.childElementCount) return null;
+  wrap.appendChild(track);
+
+  // Only worth a tick when the job actually outran its own audio; otherwise
+  // the mark sits at the very end of the rail and says nothing.
+  if (Number.isFinite(audio) && audio > 0 && audio < scale) {
+    const mark = document.createElement('div');
+    mark.className = 'rail-mark';
+    const tick = document.createElement('span');
+    tick.className = 'tick';
+    tick.style.left = (audio / scale * 100) + '%';
+    tick.title = 'realtime — audio is ' + traceDur(audio);
+    mark.appendChild(tick);
+    wrap.appendChild(mark);
+  }
+  return wrap;
+}
+
+const TRACE_SRC_CHIPS = {
+  stream: ['live', 'src-stream', 'live streaming dictation (WebSocket)'],
+  url:    ['url',  'src-url',    'fetched from a source_url (yt-dlp)'],
+  file:   ['file', 'src-file',   'uploaded file (multipart)'],
+};
+// Jobs with no audio input at all: a source chip on these would be reporting
+// the record_trace default, not a fact about the job.
+const TRACE_KINDS_NO_AUDIO = { translate: true, download: true };
+const TRACE_KIND_TITLES = {
+  batch:     'batch decode (/v1/audio/transcriptions)',
+  translate: 'text translation (/v1/text/translations)',
+  download:  'model download',
+};
+
 function renderTrace(entry) {
   const item = document.createElement('div');
-  item.className = 'trace-item';
+  // A failed job used to render as a row with nothing in it — no chip, no
+  // stripe, just empty raw/final blocks.
+  const failed = !!(entry.status && entry.status !== 'ok');
+  item.className = 'trace-item' + (failed ? ' st-error' : '');
   // Stash the entry so rebuildDatalist() can read tokens/bigrams without
   // a separate cache. JSON encoding is fine — tokens/bigrams are small.
   try { item.dataset.entry = JSON.stringify(entry); } catch (_) {}
@@ -1852,20 +1982,38 @@ function renderTrace(entry) {
   ts.textContent = fmtWhen(_ets);
   if (_ets) { ts.dataset.ts = String(_ets); ts.title = absTime(_ets); }
   meta.appendChild(ts);
-  if (entry.model) {
-    const mdl = document.createElement('span');
-    mdl.textContent = entry.model;
-    meta.appendChild(mdl);
-  }
-  // Source chip: live streaming dictation vs file-upload (batch) transcription.
+  const addPill = (text, cls, title) => {
+    const p = document.createElement('span');
+    p.className = 'pill' + (cls ? ' ' + cls : '');
+    p.textContent = text;
+    if (title) p.title = title;
+    meta.appendChild(p);
+    return p;
+  };
+
+  // Two chips, two questions. KIND is what the job was; SOURCE is where its
+  // audio came from. The kind column is NULL on plain transcriptions and on
+  // every row written before the migration, so derive it the same way
+  // metrics.py's /stats projection does: source 'stream' means dictation,
+  // anything else is a batch decode.
   {
-    const isStream = entry.source === 'stream';
-    const src = document.createElement('span');
-    src.className = 'pill src-chip ' + (isStream ? 'src-stream' : 'src-file');
-    src.title = isStream ? 'live streaming dictation (WebSocket)'
-                         : 'file upload (batch /v1/audio/transcriptions)';
-    src.textContent = isStream ? 'live' : 'file';
-    meta.appendChild(src);
+    const kind = entry.kind || (entry.source === 'stream' ? 'dictate' : 'batch');
+    // Source chip. Three values, not two: a URL fetch used to be
+    // indistinguishable from an upload because main.py knew the difference
+    // but wrote it only to the log line, never to the row. Suppressed
+    // entirely for kinds that consume no audio — the source column still
+    // says 'file' on those rows, and repeating it would be a lie.
+    if (!TRACE_KINDS_NO_AUDIO[kind]) {
+      const spec = TRACE_SRC_CHIPS[entry.source] || TRACE_SRC_CHIPS.file;
+      addPill(spec[0], 'src-chip ' + spec[1], spec[2]);
+    }
+    // 'live' already says 'dictate'. Two chips saying one thing is noise.
+    if (kind !== 'dictate') {
+      addPill(kind, 'kind-chip kind-' + kind, TRACE_KIND_TITLES[kind] || kind);
+    }
+  }
+  if (entry.model) {
+    addPill(entry.model, 'model-chip', 'model');
   }
   // Language. The column has existed on the row since record_trace was
   // written and reaches the browser already decoded — it was simply never
@@ -1873,55 +2021,67 @@ function renderTrace(entry) {
   // behind it. Sits left of the speaker chip because it is a property of
   // the decode, like model and source, not of the person.
   if (entry.language) {
-    const lang = document.createElement('span');
-    lang.className = 'pill';
-    lang.title = 'detected / requested language';
-    lang.textContent = String(entry.language).slice(0, 12);
-    meta.appendChild(lang);
+    addPill(String(entry.language).slice(0, 12), 'lang-chip',
+            'detected / requested language');
   }
   if (entry.username) {
-    const spk = document.createElement('span');
-    spk.className = 'pill';
-    spk.title = 'speaker';
-    spk.textContent = entry.username;
-    meta.appendChild(spk);
+    addPill(entry.username, null, 'speaker');
   } else if (entry.user_id) {
-    const spk = document.createElement('span');
-    spk.className = 'pill';
-    spk.title = 'speaker (unknown user)';
-    spk.textContent = String(entry.user_id).slice(0, 6);
-    meta.appendChild(spk);
+    addPill(String(entry.user_id).slice(0, 6), null, 'speaker (unknown user)');
   }
-  // Size readout for long texts — the fold never hides how much is folded.
+  if (entry.key_label) {
+    addPill(String(entry.key_label).slice(0, 24), 'key-chip', 'API key');
+  }
+  if (failed) {
+    // The store has no error-detail column — the status value is all there
+    // is to say, so the chip carries it in the title rather than inventing
+    // a reason.
+    addPill('error', 'err-chip', 'status: ' + String(entry.status));
+  }
+  // Size readout. Used to render only when the text was longer than
+  // TRACE_CLAMP_CHARS, which meant a short dictation showed neither its
+  // duration nor its word count. Both are columns on the row — show them
+  // whenever the row actually carries them.
   {
+    const secs = Number(entry.audio_dur);
+    if (Number.isFinite(secs) && secs > 0) {
+      addPill(traceDur(secs), 'num', 'audio duration');
+    }
+    // Prefer the stored count over re-splitting the text: it is what the
+    // request actually recorded, and it survives an empty raw/final.
+    const stored = Number(entry.words_count);
     const t = entry.final || entry.raw || '';
-    if (t.length > TRACE_CLAMP_CHARS) {
-      const size = document.createElement('span');
-      size.className = 'pill';
-      size.style.fontFamily = 'var(--font-mono)';
-      const words = t.trim() ? t.trim().split(/\s+/).length : 0;
-      const secs = Number(entry.audio_dur);
-      const dur = Number.isFinite(secs) && secs > 0
-        ? (secs >= 3600
-            ? Math.floor(secs / 3600) + ' h ' + Math.round((secs % 3600) / 60) + ' min'
-            : secs >= 60 ? Math.round(secs / 60) + ' min' : Math.round(secs) + ' s')
-        : '';
-      size.textContent = (dur ? dur + ' \u00b7 ' : '') + fmtCount(words) + ' words';
-      meta.appendChild(size);
+    const words = Number.isFinite(stored) && stored > 0
+      ? stored
+      : (t.trim() ? t.trim().split(/\s+/).length : 0);
+    if (words) addPill(fmtCount(words) + ' words', 'num', 'words produced');
+    // rtf is computed server-side in _row_to_dict precisely so consumers do
+    // not repeat audio_dur_s / proc_dur_s — this one never read it.
+    const rtf = Number(entry.rtf);
+    if (Number.isFinite(rtf) && rtf > 0) {
+      addPill(rtf.toFixed(1) + '\u00d7',
+        'num ' + (rtf >= 1 ? 'rtf-ok' : rtf >= 0.5 ? 'rtf-warn' : 'rtf-bad'),
+        'realtime factor \u2014 audio seconds decoded per second of server time');
     }
   }
+  item.appendChild(meta);
+
   // Stage chips: what this run actually DID, and what each stage cost.
   // stages_json has been on the row since the preload work and reaches the
   // browser already decoded; the viewer just never looked at it. Placed
   // above `raw` so "how this run executed" precedes "what it produced".
   // Batch rows only for now — a live utterance records one stage.
   {
-    const stages = Array.isArray(entry.stages) ? entry.stages : [];
+    const stages = (Array.isArray(entry.stages) ? entry.stages : [])
+      .filter(st => st && st.name);
     if (stages.length) {
+      // Rail first: proportion at a glance. Chips below keep the exact
+      // seconds, so nothing about a stage becomes hover-only.
+      const rail = traceRail(stages, entry.audio_dur);
+      if (rail) item.appendChild(rail);
       const row = document.createElement('div');
       row.className = 'trace-meta trace-stages';
       for (const st of stages) {
-        if (!st || !st.name) continue;
         const chip = document.createElement('span');
         chip.className = 'pill stage-chip stage-' + String(st.name);
         const secs = Number(st.secs);
@@ -1934,7 +2094,19 @@ function renderTrace(entry) {
     }
   }
 
-  item.appendChild(traceTextBlock('raw', entry.raw || '', 'trace-raw'));
+  // record_timing() writes an error row with the text columns still NULL, so
+  // the two empty RAW/FINAL blocks would just be furniture. One honest line
+  // replaces them; the action row below still renders, because a failed job
+  // is exactly the kind of thing worth reporting.
+  const noText = !(entry.raw || '') && !(entry.final || '');
+  if (failed && noText) {
+    const none = document.createElement('div');
+    none.className = 'trace-notext';
+    none.textContent = 'No transcript recorded \u2014 the job did not finish.';
+    item.appendChild(none);
+  } else {
+    item.appendChild(traceTextBlock('raw', entry.raw || '', 'trace-raw'));
+  }
 
   const steps = entry.steps || [];
   const changed = steps.filter(s =>
@@ -2055,7 +2227,9 @@ function renderTrace(entry) {
     item.appendChild(det);
   }
 
-  item.appendChild(traceTextBlock('final', entry.final || '', 'trace-final'));
+  if (!(failed && noText)) {
+    item.appendChild(traceTextBlock('final', entry.final || '', 'trace-final'));
+  }
 
   // Action row: "Report" button + (conditional) "✓ reported" badge.
   // The inline form is lazy — built on first click, kept in DOM after

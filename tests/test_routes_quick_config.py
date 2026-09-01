@@ -22,6 +22,11 @@ def test_quick_config_page(client):
     r = client.get("/quick-config")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+    # renderTrace() builds the metadata row (timestamp, model, source, language,
+    # speaker, duration) into a detached node; a refactor once dropped the append
+    # and the whole row silently vanished from every trace. Nothing else in the
+    # suite looks at the rendered markup, so guard the attachment itself.
+    assert "item.appendChild(meta);" in r.text
 
 
 def test_state_open_mode(client):

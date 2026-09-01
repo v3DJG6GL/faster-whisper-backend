@@ -4678,6 +4678,12 @@ async def transcribe(
                     steps=trace if trace is not None else [],
                     final=full_text_str,
                     language=info.language,
+                    # A URL fetch and an uploaded file are different jobs, and
+                    # this branch already knows which one ran (see the
+                    # url:<host> label built for the request block above). The
+                    # distinction used to reach the log and stop there, so
+                    # /quick-config chipped every URL download as "file".
+                    source="url" if source_url is not None else "file",
                     user_id=_user_id,
                 )
             except Exception as _qc_err:
