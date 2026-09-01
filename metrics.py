@@ -55,6 +55,12 @@ _MAX_UNMATCHED_KEY_LEN = 120
 # `status == "ok"`, so the mapping happens here, before the hand-off.
 _USAGE_NON_ERROR_STATUSES = frozenset(("ok", "cancelled"))
 
+# Recent-jobs `kind` → usage-rollup kind. The recent-jobs vocabulary predates
+# the per-kind statistics and is what /stats renders, so it stays; the rollup
+# wants the desktop app's four words. Batch callers say file/url directly via
+# `usage_kind` (their recent-jobs kind is None → "transcribe").
+_USAGE_KIND_BY_JOB_KIND = {"dictate": "dictation", "translate": "text"}
+
 req_count: Counter[str] = Counter()         # path -> total
 err_count: Counter[str] = Counter()         # path -> 5xx total
 
@@ -104,7 +110,10 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
                          key_id: str | None = None,
                          kind: str | None = None,
                          stages: list | None = None,
-                         key_label: str | None = None) -> None:
+                         key_label: str | None = None,
+                         job_id: str | None = None,
+                         usage_kind: str | None = None,
+                         language: str | None = None) -> None:
     """Called from the transcribe handler's outer finally on every
     /transcribe request (both success and error paths). UPSERTs the
     timing half of the recent-transcriptions row keyed by request_id;
@@ -120,7 +129,14 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
 
     Also bumps the durable per-key/per-user usage rollup (usage_store),
     which — unlike recent_transcriptions — is never pruned to a rolling
-    window, so it backs lifetime totals on /api-keys and /stats."""
+    window, so it backs lifetime totals on /api-keys and /stats and the
+    desktop app's statistics. ``job_id`` groups the utterances of one
+    dictation session (and names a batch run by its client progress id) so
+    the rollup counts sessions, not phrases; ``usage_kind`` is the rollup's
+    own kind word (dictation/file/url/text) when the recent-jobs ``kind``
+    does not map to one. Structured stage keys (``targets``, ``speakers``,
+    ``retained``, ``kept_original``) on the ``stages`` dicts feed the
+    per-stage statistics; their ``detail`` strings never do."""
     if not request_id:
         return
     try:
@@ -151,6 +167,12 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
             audio_s=audio_dur or 0.0,
             words=int(words or 0),
             status="ok" if status in _USAGE_NON_ERROR_STATUSES else status,
+            kind=usage_kind or _USAGE_KIND_BY_JOB_KIND.get(kind or ""),
+            job_id=job_id or request_id,
+            stages=stages,
+            model=model or None,
+            language=language,
+            proc_s=proc_dur,
         )
     except Exception as e:
         logger.warning("[metrics] usage rollup failed: %s", e)

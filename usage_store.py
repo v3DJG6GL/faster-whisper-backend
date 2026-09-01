@@ -5,20 +5,41 @@ cfg.USAGE_DB (defaults to usage.local.sqlite3 alongside config.local.json).
 
 Why a separate store: the recent-transcriptions table
 (transcriptions_store.py) is a pruned rolling window (row-cap + 30-day TTL),
-so it cannot back lifetime usage totals. This store keeps a compact HOURLY
-ROLLUP — one row per (hour, key_id) — that is never aggressively pruned, so
-lifetime totals are a SUM over hours.
+so it cannot back lifetime usage totals. This store keeps compact HOURLY
+ROLLUPS that are never aggressively pruned, so lifetime totals are a SUM over
+hours.
 
-Each /transcribe request bumps one row via an UPSERT, called from
+Tables (every rollup is keyed by UTC epoch-hour, see below):
+
+  usage_hourly            hour × key_id × kind — requests/errors/words/audio_s/
+                          proc_s and `sessions` (jobs, counted once per job_id)
+  usage_jobs              one row per job_id (client-minted): the per-job sums
+                          plus the dictation OUTCOME the desktop app reports
+                          afterwards (activation / delivery / app / translation)
+  usage_job_stages        job_id × stage — what the optional stages cost
+  usage_stage_hourly      hour × user × stage — stage runs, seconds, speakers…
+  usage_target_hourly     hour × user × stage × target — translation targets
+  usage_dictation_hourly  hour × user × activation × delivery × translation
+  usage_app_hourly        hour × user × app_id — where dictations landed
+
+`kind` is one of dictation / file / url / text; rows written before the kind
+column existed read as 'unknown' and only ever contribute to the all-kinds
+totals.
+
+Each /transcribe request (and each dictation utterance, and each text
+translation) bumps the rollups via record_usage, called from
 metrics.record_transcription (which already runs inside a try/except on the
 outer finally of the transcribe handler, on both success and error paths).
+A dictation SESSION is many utterances under one job_id; `sessions` is bumped
+only for the utterance that creates the job row, so "Runs" counts sessions,
+not phrases.
 
 **Bucketing is UTC epoch-hour** (`int(ts // 3600)`). Storing in UTC at hour
 granularity lets every consumer reckon "days" in whatever timezone it wants by
 summing the hours that fall inside that timezone's local day:
 
-  - the per-user /quick-config "today" banner reckons in the VIEWER's local
-    timezone (the browser sends its local-midnight epoch);
+  - the desktop app's /v1/usage document reckons in the CALLER's IANA zone
+    (`tz` param → zoneinfo), falling back to the server's local zone;
   - the admin /stats + /api-keys dashboards reckon in the SERVER's local
     timezone (the operator's perspective), via local_day_start_hour() and
     epoch_day_for().
@@ -36,10 +57,14 @@ a user or key never drops their historical usage, and aggregation needs no
 join to the api-keys DB.
 
 Module-level connection: WAL mode lets us share one connection across
-threads (check_same_thread=False); _lock serialises writers.
+threads (check_same_thread=False); _lock serialises writers. The connection
+is in autocommit mode, so the multi-table writes below open an explicit
+transaction — a job row without its rollup (or vice versa) would make the
+session and utterance counts disagree forever.
 
-Do not log row content — dictation data can be sensitive. Module log
-lines carry only counts and id prefixes.
+Do not log row content — dictation data can be sensitive (an app_id names
+the program a user dictated into). Module log lines carry only counts and id
+prefixes.
 """
 from __future__ import annotations
 
@@ -48,6 +73,7 @@ import logging
 import sqlite3
 import threading
 import time
+import zoneinfo
 from typing import Any
 
 import store_common
@@ -67,19 +93,130 @@ OPEN_MODE_ID = "(open-mode)"
 # ORDER BY column names are interpolated, so they MUST come from this set.
 _METRICS: frozenset[str] = frozenset(("requests", "errors", "words", "audio_s"))
 
+# Job kinds the per-kind breakdown knows. Anything else is folded into
+# 'unknown' rather than rejected: a usage write must never fail a request.
+KINDS: tuple[str, ...] = ("dictation", "file", "url", "text")
+UNKNOWN_KIND = "unknown"
+
+# Stage names as the batch handler emits them. The text-translation endpoint
+# names its one stage 'translate'; it is the same work as the batch
+# 'translating' stage and must land in the same row.
+_STAGE_ALIASES = {"translate": "translating"}
+
+# Which jobs a stage COULD have run on — the denominator of the "ran on N of
+# M" meter. Translation applies to every kind (a dictation is translated via
+# the text endpoint, a file inline); the audio stages only to batch inputs.
+STAGE_APPLIES_TO: dict[str, tuple[str, ...]] = {
+    "translating": KINDS,
+    "diarizing": ("file", "url"),
+    "separating": ("file", "url"),
+    "vad": ("file", "url"),
+}
+
+# The desktop app's outcome vocabulary. Validated at the route (pydantic
+# enums); repeated here so the sweep's 'unreported' marker and the document's
+# fixed bucket lists come from one place.
+ACTIVATIONS: tuple[str, ...] = ("hold", "handsfree")
+DELIVERIES: tuple[str, ...] = ("typed", "clipboard", "none", "unreported")
+TRANSLATIONS: tuple[str, ...] = ("translated", "kept_original", "not_asked",
+                                 "aborted", "unreported")
+UNREPORTED = "unreported"
+
+# Reading speed the "time saved" figure is measured against: a dictated
+# word would have taken 1/40 min to type at a comfortable 40 wpm.
+TYPING_WPM = 40.0
+
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS usage_hourly (
   hour     INTEGER NOT NULL,
   key_id   TEXT    NOT NULL,
   user_id  TEXT    NOT NULL,
+  kind     TEXT    NOT NULL DEFAULT 'unknown',
   requests INTEGER NOT NULL DEFAULT 0,
   errors   INTEGER NOT NULL DEFAULT 0,
   words    INTEGER NOT NULL DEFAULT 0,
   audio_s  REAL    NOT NULL DEFAULT 0,
-  PRIMARY KEY (hour, key_id)
+  proc_s   REAL    NOT NULL DEFAULT 0,
+  sessions INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (hour, key_id, kind)
 );
 CREATE INDEX IF NOT EXISTS idx_usage_user_hour ON usage_hourly(user_id, hour);
 CREATE INDEX IF NOT EXISTS idx_usage_hour      ON usage_hourly(hour);
+
+CREATE TABLE IF NOT EXISTS usage_jobs (
+  job_id      TEXT    PRIMARY KEY,
+  user_id     TEXT    NOT NULL,
+  key_id      TEXT    NOT NULL,
+  kind        TEXT    NOT NULL,
+  created_ts  REAL    NOT NULL,
+  status      TEXT    NOT NULL,
+  audio_s     REAL    NOT NULL DEFAULT 0,
+  words       INTEGER NOT NULL DEFAULT 0,
+  proc_s      REAL    NOT NULL DEFAULT 0,
+  utterances  INTEGER NOT NULL DEFAULT 0,
+  model       TEXT,
+  language    TEXT,
+  activation  TEXT,
+  delivery    TEXT,
+  app_id      TEXT,
+  translation TEXT,
+  reported_ts REAL
+);
+CREATE INDEX IF NOT EXISTS idx_usage_jobs_created ON usage_jobs(created_ts);
+
+CREATE TABLE IF NOT EXISTS usage_job_stages (
+  job_id   TEXT NOT NULL,
+  stage    TEXT NOT NULL,
+  secs     REAL NOT NULL DEFAULT 0,
+  model    TEXT,
+  targets  TEXT,
+  speakers INTEGER,
+  retained REAL,
+  PRIMARY KEY (job_id, stage)
+);
+
+CREATE TABLE IF NOT EXISTS usage_stage_hourly (
+  hour          INTEGER NOT NULL,
+  user_id       TEXT    NOT NULL,
+  stage         TEXT    NOT NULL,
+  runs          INTEGER NOT NULL DEFAULT 0,
+  audio_s       REAL    NOT NULL DEFAULT 0,
+  secs          REAL    NOT NULL DEFAULT 0,
+  speakers      INTEGER NOT NULL DEFAULT 0,
+  retained_sum  REAL    NOT NULL DEFAULT 0,
+  kept_original INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (hour, user_id, stage)
+);
+
+CREATE TABLE IF NOT EXISTS usage_target_hourly (
+  hour    INTEGER NOT NULL,
+  user_id TEXT    NOT NULL,
+  stage   TEXT    NOT NULL,
+  target  TEXT    NOT NULL,
+  runs    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (hour, user_id, stage, target)
+);
+
+CREATE TABLE IF NOT EXISTS usage_dictation_hourly (
+  hour        INTEGER NOT NULL,
+  user_id     TEXT    NOT NULL,
+  activation  TEXT    NOT NULL,
+  delivery    TEXT    NOT NULL,
+  translation TEXT    NOT NULL,
+  sessions    INTEGER NOT NULL DEFAULT 0,
+  words       INTEGER NOT NULL DEFAULT 0,
+  audio_s     REAL    NOT NULL DEFAULT 0,
+  PRIMARY KEY (hour, user_id, activation, delivery, translation)
+);
+
+CREATE TABLE IF NOT EXISTS usage_app_hourly (
+  hour     INTEGER NOT NULL,
+  user_id  TEXT    NOT NULL,
+  app_id   TEXT    NOT NULL,
+  sessions INTEGER NOT NULL DEFAULT 0,
+  words    INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (hour, user_id, app_id)
+);
 """
 
 
@@ -90,8 +227,58 @@ def init_db(path: str) -> None:
     global _conn
     _conn = store_common.open_wal_db(path)
     _conn.execute("PRAGMA temp_store=MEMORY;")
+    _park_legacy_hourly(_conn)
     _conn.executescript(_SCHEMA)
+    _fold_legacy_hourly(_conn)
     store_common.secure_db_file(path)
+
+
+def _park_legacy_hourly(conn: sqlite3.Connection) -> None:
+    """First half of the pre-`kind` rebuild: rename the old usage_hourly
+    aside. Its primary key grew a column, which ALTER TABLE cannot express,
+    so _SCHEMA re-creates the table; the old indexes are dropped first
+    because SQLite index names are database-global and CREATE INDEX IF NOT
+    EXISTS would otherwise find them attached to the parked table."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(usage_hourly)")}
+    if not cols or "kind" in cols:
+        return
+    conn.executescript(
+        "DROP INDEX IF EXISTS idx_usage_user_hour;"
+        "DROP INDEX IF EXISTS idx_usage_hour;"
+        "ALTER TABLE usage_hourly RENAME TO usage_hourly_legacy;"
+    )
+
+
+def _fold_legacy_hourly(conn: sqlite3.Connection) -> None:
+    """Second half: copy the parked rows into the new table and drop the
+    parking table. Old rows know no kind and no job, so every request
+    counts as its own session — the truest reading of history that was
+    recorded per request. Copy + drop share a transaction so a crash in
+    between cannot leave the rows counted twice on the next start."""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_hourly_legacy'"
+    ).fetchone()
+    if exists is None:
+        return
+    with _lock:
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "INSERT INTO usage_hourly"
+                " (hour, key_id, user_id, kind, requests, errors, words,"
+                "  audio_s, proc_s, sessions)"
+                " SELECT hour, key_id, user_id, ?, requests, errors, words,"
+                "  audio_s, 0, requests"
+                " FROM usage_hourly_legacy",
+                (UNKNOWN_KIND,),
+            )
+            conn.execute("DROP TABLE usage_hourly_legacy")
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    logger.info("[usage] migrated %d hourly rows to the per-kind rollup",
+                cur.rowcount or 0)
 
 
 def _require_conn() -> sqlite3.Connection:
@@ -133,6 +320,67 @@ def local_day_start_hour(days_ago: int = 0) -> int:
     return int(midnight_ts // 3600)
 
 
+def resolve_tz(name: str | None) -> zoneinfo.ZoneInfo | None:
+    """The caller's IANA zone, or None for "reckon in the server's local
+    zone". Anything zoneinfo does not know — including an empty or absurdly
+    long string — falls back rather than erroring: the zone only decides
+    where the day boundaries fall, and a wrong-but-consistent boundary beats
+    a broken statistics page."""
+    if not name or len(name) > 64:
+        return None
+    try:
+        return zoneinfo.ZoneInfo(name)
+    except (zoneinfo.ZoneInfoNotFoundError, ValueError, OSError):
+        return None
+
+
+def _date_of(ts: float, tz: zoneinfo.ZoneInfo | None) -> datetime.date:
+    """Calendar date containing `ts` in `tz` (None = server-local)."""
+    return datetime.datetime.fromtimestamp(ts, tz).date()
+
+
+def _midnight_hour(day: datetime.date, tz: zoneinfo.ZoneInfo | None) -> int:
+    """UTC epoch-hour of local midnight on `day` in `tz`. A naive datetime
+    resolves in the server's local zone, an aware one in its own — both are
+    calendar arithmetic, so DST transitions land where the zone says."""
+    midnight = datetime.datetime(day.year, day.month, day.day, tzinfo=tz)
+    return int(midnight.timestamp() // 3600)
+
+
+# --- write path -----------------------------------------------------------
+
+def _norm_kind(kind: str | None) -> str:
+    return kind if kind in KINDS else UNKNOWN_KIND
+
+
+def _stage_rows(stages: list | None) -> list[dict[str, Any]]:
+    """Reduce the handler's stage timing dicts to what the rollup keeps.
+    Only structured keys are read — the human `detail` string stays where
+    it is (the recent-jobs receipt) and is never parsed back."""
+    out: list[dict[str, Any]] = []
+    for s in stages or []:
+        if not isinstance(s, dict):
+            continue
+        name = s.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        targets = s.get("targets")
+        speakers = s.get("speakers")
+        retained = s.get("retained")
+        kept = s.get("kept_original")
+        out.append({
+            "stage": _STAGE_ALIASES.get(name, name),
+            "secs": float(s.get("secs") or 0.0),
+            "model": s.get("model") if isinstance(s.get("model"), str) else None,
+            "targets": ([str(t) for t in targets if t]
+                        if isinstance(targets, (list, tuple)) else []),
+            "speakers": int(speakers) if isinstance(speakers, (int, float)) else None,
+            "retained": float(retained) if isinstance(retained, (int, float)) else None,
+            "kept_original": int(kept) if isinstance(kept, (int, float)) else 0,
+        })
+    return out
+
+
 def record_usage(
     *,
     key_id: str | None,
@@ -141,35 +389,287 @@ def record_usage(
     words: int | None,
     status: str,
     hour: int | None = None,
+    kind: str | None = None,
+    job_id: str | None = None,
+    stages: list | None = None,
+    model: str | None = None,
+    language: str | None = None,
+    proc_s: float | None = None,
 ) -> None:
-    """Bump the (hour, key_id) rollup row for one transcription. Best-effort:
-    any failure is logged, never raised — a usage write must not break a
-    transcription. Falsy ids fall back to the open-mode sentinel so the
-    NOT NULL columns stay valid."""
+    """Record one transcription request (a batch run, a text translation, or
+    ONE dictation utterance) into the rollups. Best-effort: any failure is
+    logged, never raised — a usage write must not break a transcription.
+    Falsy ids fall back to the open-mode sentinel so the NOT NULL columns
+    stay valid.
+
+    `job_id` groups utterances into a session: the first record under an id
+    creates the job row and counts the session; later ones only add to its
+    sums. Without a job id every request is its own session. `hour` lets
+    tests seed history; the job row is then stamped at that hour too."""
     try:
         kid = key_id or OPEN_MODE_ID
         uid = user_id or OPEN_MODE_ID
         h = now_hour() if hour is None else int(hour)
+        created_ts = time.time() if hour is None else h * 3600
         err = 0 if status == "ok" else 1
         w = int(words or 0)
         a = float(audio_s or 0.0)
+        p = float(proc_s or 0.0)
+        k = _norm_kind(kind)
+        jid = job_id[:64] if isinstance(job_id, str) and job_id else None
+        stage_rows = _stage_rows(stages)
         conn = _require_conn()
         with _lock:
-            conn.execute(
-                "INSERT INTO usage_hourly"
-                " (hour, key_id, user_id, requests, errors, words, audio_s)"
-                " VALUES (?, ?, ?, 1, ?, ?, ?)"
-                " ON CONFLICT(hour, key_id) DO UPDATE SET"
-                "  requests = requests + 1,"
-                "  errors   = errors + excluded.errors,"
-                "  words    = words  + excluded.words,"
-                "  audio_s  = audio_s + excluded.audio_s,"
-                "  user_id  = excluded.user_id",
-                (h, kid, uid, err, w, a),
-            )
+            conn.execute("BEGIN")
+            try:
+                new_session = True
+                if jid is not None:
+                    owner = conn.execute(
+                        "SELECT user_id FROM usage_jobs WHERE job_id = ?", (jid,)
+                    ).fetchone()
+                    if owner is not None and owner["user_id"] != uid:
+                        # Client-minted ids can collide across users in
+                        # theory: count the work, never merge it into
+                        # someone else's job.
+                        jid = None
+                    else:
+                        new_session = owner is None
+                        conn.execute(
+                            "INSERT INTO usage_jobs"
+                            " (job_id, user_id, key_id, kind, created_ts, status,"
+                            "  audio_s, words, proc_s, utterances, model, language)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
+                            " ON CONFLICT(job_id) DO UPDATE SET"
+                            "  utterances = utterances + 1,"
+                            "  audio_s    = audio_s + excluded.audio_s,"
+                            "  words      = words + excluded.words,"
+                            "  proc_s     = proc_s + excluded.proc_s,"
+                            "  status     = excluded.status,"
+                            "  model      = COALESCE(excluded.model, model),"
+                            "  language   = COALESCE(excluded.language, language)",
+                            (jid, uid, kid, k, created_ts, status, a, w, p,
+                             model or None, language or None),
+                        )
+                conn.execute(
+                    "INSERT INTO usage_hourly"
+                    " (hour, key_id, user_id, kind, requests, errors, words,"
+                    "  audio_s, proc_s, sessions)"
+                    " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
+                    " ON CONFLICT(hour, key_id, kind) DO UPDATE SET"
+                    "  requests = requests + 1,"
+                    "  errors   = errors + excluded.errors,"
+                    "  words    = words  + excluded.words,"
+                    "  audio_s  = audio_s + excluded.audio_s,"
+                    "  proc_s   = proc_s + excluded.proc_s,"
+                    "  sessions = sessions + excluded.sessions,"
+                    "  user_id  = excluded.user_id",
+                    (h, kid, uid, k, err, w, a, p, 1 if new_session else 0),
+                )
+                for st in stage_rows:
+                    _record_stage(conn, h, uid, jid, a, st)
+                conn.execute("COMMIT")
+            except Exception:
+                conn.execute("ROLLBACK")
+                raise
     except Exception as e:
         logger.warning("[usage] record_usage failed: %s", e)
 
+
+def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
+                  jid: str | None, audio_s: float, st: dict[str, Any]) -> None:
+    """One stage of one request into the per-job detail row and the hourly
+    stage/target rollups. A dictation's stage repeats per utterance, so the
+    per-job row accumulates seconds instead of failing on the key."""
+    if jid is not None:
+        conn.execute(
+            "INSERT INTO usage_job_stages"
+            " (job_id, stage, secs, model, targets, speakers, retained)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(job_id, stage) DO UPDATE SET"
+            "  secs     = secs + excluded.secs,"
+            "  model    = COALESCE(excluded.model, model),"
+            "  targets  = COALESCE(excluded.targets, targets),"
+            "  speakers = COALESCE(excluded.speakers, speakers),"
+            "  retained = COALESCE(excluded.retained, retained)",
+            (jid, st["stage"], st["secs"], st["model"],
+             ",".join(st["targets"]) or None, st["speakers"], st["retained"]),
+        )
+    conn.execute(
+        "INSERT INTO usage_stage_hourly"
+        " (hour, user_id, stage, runs, audio_s, secs, speakers, retained_sum,"
+        "  kept_original)"
+        " VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)"
+        " ON CONFLICT(hour, user_id, stage) DO UPDATE SET"
+        "  runs          = runs + 1,"
+        "  audio_s       = audio_s + excluded.audio_s,"
+        "  secs          = secs + excluded.secs,"
+        "  speakers      = speakers + excluded.speakers,"
+        "  retained_sum  = retained_sum + excluded.retained_sum,"
+        "  kept_original = kept_original + excluded.kept_original",
+        (hour, uid, st["stage"], audio_s, st["secs"], st["speakers"] or 0,
+         st["retained"] or 0.0, st["kept_original"]),
+    )
+    for target in st["targets"]:
+        conn.execute(
+            "INSERT INTO usage_target_hourly (hour, user_id, stage, target, runs)"
+            " VALUES (?, ?, ?, ?, 1)"
+            " ON CONFLICT(hour, user_id, stage, target) DO UPDATE SET"
+            "  runs = runs + 1",
+            (hour, uid, st["stage"], target[:16]),
+        )
+
+
+def _roll_outcome(conn: sqlite3.Connection, job: sqlite3.Row,
+                  activation: str, delivery: str, translation: str,
+                  app_id: str | None) -> None:
+    """Fold a reported (or sweep-marked) job into the dictation rollups.
+    Bucketed by the job's OWN hour, not the report's: an outcome posted after
+    midnight still belongs to the evening it was dictated."""
+    hour = hour_for_ts(float(job["created_ts"]))
+    uid = job["user_id"]
+    words = int(job["words"] or 0)
+    audio_s = float(job["audio_s"] or 0.0)
+    conn.execute(
+        "INSERT INTO usage_dictation_hourly"
+        " (hour, user_id, activation, delivery, translation, sessions, words,"
+        "  audio_s)"
+        " VALUES (?, ?, ?, ?, ?, 1, ?, ?)"
+        " ON CONFLICT(hour, user_id, activation, delivery, translation)"
+        " DO UPDATE SET"
+        "  sessions = sessions + 1,"
+        "  words    = words + excluded.words,"
+        "  audio_s  = audio_s + excluded.audio_s",
+        (hour, uid, activation, delivery, translation, words, audio_s),
+    )
+    if app_id:
+        conn.execute(
+            "INSERT INTO usage_app_hourly (hour, user_id, app_id, sessions, words)"
+            " VALUES (?, ?, ?, 1, ?)"
+            " ON CONFLICT(hour, user_id, app_id) DO UPDATE SET"
+            "  sessions = sessions + 1,"
+            "  words    = words + excluded.words",
+            (hour, uid, app_id, words),
+        )
+
+
+def record_outcome(
+    *,
+    user_id: str,
+    job_id: str,
+    activation: str,
+    delivery: str,
+    translation: str,
+    app_id: str | None = None,
+) -> str:
+    """Attach the desktop app's outcome to one dictation job. Returns
+    'accepted' on the first report and 'duplicate' for every later one (or
+    for a job that belongs to someone else — indistinguishable on purpose).
+
+    A job the server never saw (a session with no finished utterance, or
+    one whose utterances raced the report) gets a stub row so the outcome
+    still counts as a session; the stub carries no words or audio because
+    the server only trusts its own utterance rows for those. Raises on
+    store failure — the route maps that to a 5xx, unlike record_usage."""
+    conn = _require_conn()
+    now = time.time()
+    with _lock:
+        conn.execute("BEGIN")
+        try:
+            cur = conn.execute(
+                "UPDATE usage_jobs SET activation = ?, delivery = ?,"
+                " translation = ?, app_id = ?, reported_ts = ?"
+                " WHERE job_id = ? AND user_id = ? AND reported_ts IS NULL",
+                (activation, delivery, translation, app_id, now, job_id, user_id),
+            )
+            if cur.rowcount == 0:
+                exists = conn.execute(
+                    "SELECT 1 FROM usage_jobs WHERE job_id = ?", (job_id,)
+                ).fetchone()
+                if exists is not None:
+                    conn.execute("COMMIT")
+                    return "duplicate"
+                conn.execute(
+                    "INSERT INTO usage_jobs"
+                    " (job_id, user_id, key_id, kind, created_ts, status,"
+                    "  activation, delivery, translation, app_id, reported_ts)"
+                    " VALUES (?, ?, ?, 'dictation', ?, 'ok', ?, ?, ?, ?, ?)",
+                    (job_id, user_id, OPEN_MODE_ID, now, activation, delivery,
+                     translation, app_id, now),
+                )
+            job = conn.execute(
+                "SELECT user_id, created_ts, words, audio_s FROM usage_jobs"
+                " WHERE job_id = ?", (job_id,),
+            ).fetchone()
+            _roll_outcome(conn, job, activation, delivery, translation, app_id)
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    return "accepted"
+
+
+def sweep(
+    *,
+    unreported_after_h: int,
+    jobs_retention_days: int,
+    app_retention_days: int,
+    hourly_retention_days: int,
+) -> dict[str, int]:
+    """Hourly maintenance: close out dictation jobs whose outcome never
+    arrived, then prune. Returns counts for the log line.
+
+    A dictation older than `unreported_after_h` with no outcome is rolled
+    into the dictation buckets as 'unreported' (activation included, so the
+    row's NOT NULL key is satisfied without inventing a mode) — the client
+    was closed, crashed, or has the report turned off, and the session
+    still happened. Only dictation jobs are eligible: batch and text jobs
+    never report an outcome. Retention: 0 keeps everything."""
+    conn = _require_conn()
+    now = time.time()
+    marked = pruned_jobs = pruned_apps = 0
+    with _lock:
+        conn.execute("BEGIN")
+        try:
+            stale = conn.execute(
+                "SELECT job_id, user_id, created_ts, words, audio_s"
+                " FROM usage_jobs"
+                " WHERE kind = 'dictation' AND reported_ts IS NULL"
+                "   AND created_ts < ?",
+                (now - max(1, int(unreported_after_h)) * 3600,),
+            ).fetchall()
+            for job in stale:
+                conn.execute(
+                    "UPDATE usage_jobs SET activation = ?, delivery = ?,"
+                    " translation = ?, reported_ts = ? WHERE job_id = ?",
+                    (UNREPORTED, UNREPORTED, UNREPORTED, now, job["job_id"]),
+                )
+                _roll_outcome(conn, job, UNREPORTED, UNREPORTED, UNREPORTED, None)
+                marked += 1
+            if jobs_retention_days > 0:
+                cutoff = now - int(jobs_retention_days) * 86400
+                conn.execute(
+                    "DELETE FROM usage_job_stages WHERE job_id IN"
+                    " (SELECT job_id FROM usage_jobs WHERE created_ts < ?)",
+                    (cutoff,),
+                )
+                pruned_jobs = conn.execute(
+                    "DELETE FROM usage_jobs WHERE created_ts < ?", (cutoff,)
+                ).rowcount or 0
+            if app_retention_days > 0:
+                pruned_apps = conn.execute(
+                    "DELETE FROM usage_app_hourly WHERE hour < ?",
+                    (now_hour() - int(app_retention_days) * 24,),
+                ).rowcount or 0
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    pruned_hourly = prune(retention_days=hourly_retention_days)
+    return {"marked": marked, "jobs": pruned_jobs, "apps": pruned_apps,
+            "hourly": pruned_hourly}
+
+
+# --- read path (admin dashboards) -----------------------------------------
 
 def _window_clause(start_hour: int | None, end_hour: int | None,
                    ) -> tuple[str, list[Any]]:
@@ -235,8 +735,8 @@ def totals_for_user(
     end_hour: int | None = None,
 ) -> dict[str, Any]:
     """Summed usage for one user over an optional [start_hour, end_hour]
-    window. Returns a zeros dict when the user has no rows (uses
-    idx_usage_user_hour). Backs the per-user self-usage banner on
+    window, all kinds folded. Returns a zeros dict when the user has no rows
+    (uses idx_usage_user_hour). Backs the per-user self-usage banner on
     /quick-config: pass start_hour = hour_for_ts(<viewer local midnight>)
     for a per-viewer-local 'today'."""
     conn = _require_conn()
@@ -266,11 +766,11 @@ def series(
     key_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Time-series of summed usage, one entry per SERVER-LOCAL day (the operator
-    dashboard's perspective), ascending. Hours are rolled into local days in
-    Python via epoch_day_for(hour*3600) — DST-correct. `day` is days-since-epoch
-    so `day*86400` is UTC midnight of that date (the client's label math).
-    bucket='week' groups into 7-day blocks (day - day % 7). user_id / key_id
-    None => global (all keys)."""
+    dashboard's perspective), ascending, all kinds folded. Hours are rolled
+    into local days in Python via epoch_day_for(hour*3600) — DST-correct.
+    `day` is days-since-epoch so `day*86400` is UTC midnight of that date
+    (the client's label math). bucket='week' groups into 7-day blocks
+    (day - day % 7). user_id / key_id None => global (all keys)."""
     conn = _require_conn()
     where, params = _window_clause(start_hour, end_hour)
     if user_id is not None:
@@ -339,6 +839,14 @@ def is_empty() -> bool:
     return row is None
 
 
+# Every hour-keyed statistics table shares USAGE_RETENTION_DAYS: they are the
+# same grain, and pruning one without the others would leave stage meters
+# denominated over jobs that no longer exist. usage_app_hourly has its own,
+# shorter clock (USAGE_APP_RETENTION_DAYS, applied by sweep()).
+_HOURLY_TABLES = ("usage_hourly", "usage_stage_hourly", "usage_target_hourly",
+                  "usage_dictation_hourly")
+
+
 def prune(*, retention_days: int) -> int:
     """Drop rollup rows older than the retention cutoff. retention_days <= 0
     is a no-op (the rollup is tiny — unbounded is the default)."""
@@ -346,6 +854,253 @@ def prune(*, retention_days: int) -> int:
         return 0
     cutoff = now_hour() - int(retention_days) * 24
     conn = _require_conn()
+    removed = 0
     with _lock:
-        cur = conn.execute("DELETE FROM usage_hourly WHERE hour < ?", (cutoff,))
-        return cur.rowcount or 0
+        for table in _HOURLY_TABLES:
+            cur = conn.execute(f"DELETE FROM {table} WHERE hour < ?", (cutoff,))
+            removed += cur.rowcount or 0
+    return removed
+
+
+# --- read path (the desktop app's /v1/usage document) ---------------------
+
+def _zero_cell() -> dict[str, Any]:
+    return {"sessions": 0, "requests": 0, "errors": 0, "words": 0,
+            "audio_s": 0.0, "proc_s": 0.0}
+
+
+def _zero_split() -> dict[str, dict[str, Any]]:
+    return {"all": _zero_cell(), **{k: _zero_cell() for k in KINDS}}
+
+
+def _add_row(split: dict[str, dict[str, Any]], r: sqlite3.Row) -> None:
+    """Add one usage_hourly row (or per-kind SUM row) to a split: always to
+    `all`, and to its kind when the kind is one the client knows."""
+    for cell in (split["all"], split.get(r["kind"])):
+        if cell is None:
+            continue
+        cell["sessions"] += int(r["sessions"] or 0)
+        cell["requests"] += int(r["requests"] or 0)
+        cell["errors"] += int(r["errors"] or 0)
+        cell["words"] += int(r["words"] or 0)
+        cell["audio_s"] += float(r["audio_s"] or 0.0)
+        cell["proc_s"] += float(r["proc_s"] or 0.0)
+
+
+def _rounded(split: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    for cell in split.values():
+        cell["audio_s"] = round(cell["audio_s"], 3)
+        cell["proc_s"] = round(cell["proc_s"], 3)
+    return split
+
+
+def empty_document(*, days: int, calendar_days: int, tz: str) -> dict[str, Any]:
+    """The zeroed shape the route serves when the store is unavailable, so
+    the client renders an empty page instead of erroring."""
+    return {
+        "tz": tz,
+        "range": {"days": days, "calendar_days": calendar_days},
+        "today": _zero_split(),
+        "total": _zero_split(),
+        "series": [],
+        "stages": [],
+        "dictation": {
+            "sessions": 0, "words": 0, "audio_s": 0.0, "wpm": 0.0,
+            "activation": {a: 0 for a in ACTIVATIONS},
+            "delivery": {d: 0 for d in DELIVERIES},
+            "translation": {t: 0 for t in TRANSLATIONS},
+        },
+        "apps": [],
+        "calendar": [],
+        "streak": {"current": 0, "best": 0},
+        "time_saved_s": 0.0,
+    }
+
+
+def document(
+    user_id: str,
+    *,
+    days: int,
+    calendar_days: int,
+    tz: zoneinfo.ZoneInfo | None,
+    tz_name: str,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """One user's statistics document (everything /v1/usage returns except
+    the username), reckoned in `tz` (None = server-local; `tz_name` is only
+    echoed).
+
+    `total` is lifetime; `today` and everything else covers the trailing
+    `days` window, except `calendar` + `streak` which cover `calendar_days`.
+    Days are days-since-epoch (caller-local calendar date; ×86 400 → UTC midnight of that date, the client's label math)s in the caller's zone — the client never has to
+    convert. Series and calendar are sparse: a day without usage is absent.
+    `dictation.sessions/words/audio_s` come from the request rollup (every
+    session the server transcribed); the activation/delivery/translation
+    buckets come from the reported outcomes, so they only add up to
+    `sessions` once every session has reported or been swept."""
+    conn = _require_conn()
+    now = time.time() if now is None else float(now)
+    today = _date_of(now, tz)
+    window_start = _midnight_hour(today - datetime.timedelta(days=days - 1), tz)
+    calendar_start = _midnight_hour(
+        today - datetime.timedelta(days=calendar_days - 1), tz)
+    today_start = _midnight_hour(today, tz)
+
+    doc = empty_document(days=days, calendar_days=calendar_days, tz=tz_name)
+
+    total = _zero_split()
+    for r in conn.execute(
+        "SELECT kind, SUM(sessions) AS sessions, SUM(requests) AS requests,"
+        " SUM(errors) AS errors, SUM(words) AS words, SUM(audio_s) AS audio_s,"
+        " SUM(proc_s) AS proc_s FROM usage_hourly WHERE user_id = ?"
+        " GROUP BY kind", (user_id,),
+    ):
+        _add_row(total, r)
+
+    today_split = _zero_split()
+    window = _zero_split()
+    by_day: dict[datetime.date, dict[str, dict[str, Any]]] = {}
+    words_by_day: dict[datetime.date, int] = {}
+    for r in conn.execute(
+        "SELECT hour, kind, sessions, requests, errors, words, audio_s, proc_s"
+        " FROM usage_hourly WHERE user_id = ? AND hour >= ?",
+        (user_id, min(window_start, calendar_start)),
+    ):
+        h = int(r["hour"])
+        day = _date_of(h * 3600, tz)
+        if h >= today_start:
+            _add_row(today_split, r)
+        if h >= window_start:
+            _add_row(window, r)
+            split = by_day.get(day)
+            if split is None:
+                split = by_day[day] = _zero_split()
+            _add_row(split, r)
+        if h >= calendar_start:
+            words_by_day[day] = words_by_day.get(day, 0) + int(r["words"] or 0)
+
+    doc["total"] = _rounded(total)
+    doc["today"] = _rounded(today_split)
+    doc["series"] = [{"day": (d - _EPOCH).days, **_rounded(by_day[d])}
+                     for d in sorted(by_day)]
+    doc["stages"] = _stages(conn, user_id, window_start, window)
+    doc["dictation"] = _dictation(conn, user_id, window_start,
+                                  window["dictation"])
+    doc["apps"] = [
+        {"app_id": r["app_id"], "sessions": int(r["sessions"] or 0),
+         "words": int(r["words"] or 0)}
+        for r in conn.execute(
+            "SELECT app_id, SUM(sessions) AS sessions, SUM(words) AS words"
+            " FROM usage_app_hourly WHERE user_id = ? AND hour >= ?"
+            " GROUP BY app_id ORDER BY sessions DESC, words DESC, app_id"
+            " LIMIT 8", (user_id, window_start),
+        )
+    ]
+    doc["calendar"] = [{"day": (d - _EPOCH).days, "words": words_by_day[d]}
+                       for d in sorted(words_by_day) if words_by_day[d] > 0]
+    doc["streak"] = _streak(words_by_day, today)
+    dictation = window["dictation"]
+    doc["time_saved_s"] = round(max(
+        0.0, dictation["words"] / TYPING_WPM * 60.0 - dictation["audio_s"]), 1)
+    return doc
+
+
+def _stages(conn: sqlite3.Connection, user_id: str, start_hour: int,
+            window: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Stage rows for the window. Only the OPTIONAL stages are listed (the
+    ones a user can switch on and wonder about); the decode itself and a URL
+    download are the job, not a stage of it. The per-stage extras are
+    emitted only where they mean something: a speaker average for
+    diarization, a retained-audio average for silence skipping, a
+    kept-original count for translation."""
+    targets: dict[str, list[dict[str, Any]]] = {}
+    for r in conn.execute(
+        "SELECT stage, target, SUM(runs) AS runs FROM usage_target_hourly"
+        " WHERE user_id = ? AND hour >= ? GROUP BY stage, target"
+        " ORDER BY runs DESC, target", (user_id, start_hour),
+    ):
+        targets.setdefault(r["stage"], []).append(
+            {"code": r["target"], "runs": int(r["runs"] or 0)})
+    out: list[dict[str, Any]] = []
+    for r in conn.execute(
+        "SELECT stage, SUM(runs) AS runs, SUM(audio_s) AS audio_s,"
+        " SUM(secs) AS secs, SUM(speakers) AS speakers,"
+        " SUM(retained_sum) AS retained_sum, SUM(kept_original) AS kept_original"
+        " FROM usage_stage_hourly WHERE user_id = ? AND hour >= ?"
+        " GROUP BY stage", (user_id, start_hour),
+    ):
+        stage = r["stage"]
+        applies = STAGE_APPLIES_TO.get(stage)
+        if applies is None:
+            continue
+        runs = int(r["runs"] or 0)
+        row: dict[str, Any] = {
+            "stage": stage,
+            "runs": runs,
+            "of_runs": sum(window[k]["sessions"] for k in applies),
+            "audio_s": round(float(r["audio_s"] or 0.0), 3),
+            "secs": round(float(r["secs"] or 0.0), 3),
+            "targets": targets.get(stage, [])[:16],
+        }
+        if stage == "diarizing":
+            row["speakers_avg"] = (round(int(r["speakers"] or 0) / runs, 2)
+                                   if runs else 0.0)
+        elif stage == "vad":
+            row["retained_avg"] = (round(float(r["retained_sum"] or 0.0) / runs, 3)
+                                   if runs else 0.0)
+        elif stage == "translating":
+            row["kept_original"] = int(r["kept_original"] or 0)
+        out.append(row)
+    order = {s: i for i, s in enumerate(STAGE_APPLIES_TO)}
+    out.sort(key=lambda s: order[s["stage"]])
+    return out
+
+
+def _dictation(conn: sqlite3.Connection, user_id: str, start_hour: int,
+               cell: dict[str, Any]) -> dict[str, Any]:
+    activation = {a: 0 for a in ACTIVATIONS}
+    delivery = {d: 0 for d in DELIVERIES}
+    translation = {t: 0 for t in TRANSLATIONS}
+    for r in conn.execute(
+        "SELECT activation, delivery, translation, SUM(sessions) AS sessions"
+        " FROM usage_dictation_hourly WHERE user_id = ? AND hour >= ?"
+        " GROUP BY activation, delivery, translation", (user_id, start_hour),
+    ):
+        n = int(r["sessions"] or 0)
+        if r["activation"] in activation:
+            activation[r["activation"]] += n
+        if r["delivery"] in delivery:
+            delivery[r["delivery"]] += n
+        if r["translation"] in translation:
+            translation[r["translation"]] += n
+    audio_s = float(cell["audio_s"])
+    return {
+        "sessions": int(cell["sessions"]),
+        "words": int(cell["words"]),
+        "audio_s": round(audio_s, 3),
+        "wpm": round(cell["words"] / (audio_s / 60.0), 1) if audio_s > 0 else 0.0,
+        "activation": activation,
+        "delivery": delivery,
+        "translation": translation,
+    }
+
+
+def _streak(words_by_day: dict[datetime.date, int],
+            today: datetime.date) -> dict[str, int]:
+    """Consecutive days with any words. `current` runs back from today —
+    or from yesterday while today is still empty, so a streak is not shown
+    as broken at breakfast. `best` is the longest run inside the calendar
+    window."""
+    active = {d for d, w in words_by_day.items() if w > 0}
+    current = 0
+    day = today if today in active else today - datetime.timedelta(days=1)
+    while day in active:
+        current += 1
+        day -= datetime.timedelta(days=1)
+    best = run = 0
+    prev: datetime.date | None = None
+    for d in sorted(active):
+        run = run + 1 if prev is not None and d - prev == datetime.timedelta(days=1) else 1
+        best = max(best, run)
+        prev = d
+    return {"current": current, "best": best}

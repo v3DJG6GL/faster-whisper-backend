@@ -2381,6 +2381,31 @@ async def _captures_retention_loop() -> None:
             logger.error("[captures] retention loop error: %s", _ce)
 
 
+async def _usage_retention_loop() -> None:
+    """Hourly sweep for the usage-statistics store: closes out dictation
+    sessions whose outcome never arrived and prunes the job/app rows past
+    their retention. Same shape as the reports loop; the four knobs are
+    read from cfg on every tick so a /settings edit applies without a
+    restart."""
+    import usage_store
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            counts = await asyncio.to_thread(
+                usage_store.sweep,
+                unreported_after_h=int(getattr(cfg, "USAGE_UNREPORTED_AFTER_H", 24)),
+                jobs_retention_days=int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365)),
+                app_retention_days=int(getattr(cfg, "USAGE_APP_RETENTION_DAYS", 90)),
+                hourly_retention_days=int(getattr(cfg, "USAGE_RETENTION_DAYS", 0)),
+            )
+            if any(counts.values()):
+                logger.info("[usage] sweep: %s", counts)
+        except asyncio.CancelledError:
+            raise
+        except Exception as _ue:
+            logger.error("[usage] retention loop error: %s", _ue)
+
+
 async def _sessions_purge_loop() -> None:
     """Hourly reap of revoked/expired session rows.
 
@@ -2637,11 +2662,17 @@ async def lifespan(app: FastAPI):
         logger.error("Failed to initialize recent-transcriptions store: %s", _te)
 
     # Open the durable usage-rollup store. Backs the per-key/per-user usage
-    # numbers on /api-keys and the usage-over-time section on /stats. Non-fatal.
+    # numbers on /api-keys, the usage-over-time section on /stats and the
+    # desktop app's statistics (/v1/usage). Non-fatal. Its sweep task is
+    # started further down, after the fatal api-keys init (no long-lived
+    # task may exist before that point) and only when the store opened —
+    # without a connection it would log the same error every hour.
+    usage_store_ready = False
     try:
         import usage_store
         usage_store.init_db(cfg.USAGE_DB)
         logger.info("Usage rollup store initialized at %s", cfg.USAGE_DB)
+        usage_store_ready = True
     except Exception as _ue:
         logger.error("Failed to initialize usage store: %s", _ue)
 
@@ -2786,6 +2817,9 @@ async def lifespan(app: FastAPI):
     except Exception as _se:
         logger.error("Failed to initialize session store: %s", _se)
 
+    usage_sweep_task = (asyncio.create_task(_usage_retention_loop())
+                        if usage_store_ready else None)
+
     # Open the reports SQLite store (durable, plaintext dictation content
     # on disk) and run an immediate retention sweep before serving traffic.
     # Failure here is non-fatal: the rest of the app must keep working even if
@@ -2877,6 +2911,7 @@ async def lifespan(app: FastAPI):
         await _cancel(url_media_janitor_task)
     await _cancel(reports_sweep_task)
     await _cancel(captures_sweep_task)
+    await _cancel(usage_sweep_task)
     await _cancel(sessions_purge_task)
     await _cancel(open_mode_task)
 
@@ -3634,6 +3669,9 @@ async def transcribe(
     _status = "ok"
     _audio_dur: float = 0.0
     _words: int = 0
+    # Detected (or requested) language for the usage job row; None until the
+    # decode has run, and stays None on the error path.
+    _language: "str | None" = None
     # Per-stage wall-clock receipts ({name, secs, model?, detail?}) — the
     # durations were previously computed for log lines and discarded; now
     # they also persist as the recent-jobs row's stages_json.
@@ -4423,16 +4461,21 @@ async def transcribe(
                     _dav_v = getattr(info, "duration_after_vad", None)
                     _dur_v = float(getattr(info, "duration", 0.0) or 0.0)
                     _detail = "audio decode + Silero"
+                    # Kept-audio fraction, structured for the usage
+                    # statistics (the detail string is for the receipt).
+                    _retained = None
                     if _dav_v is not None and _dur_v > 0:
+                        _retained = float(_dav_v) / _dur_v
                         _detail += (f" · {float(_dav_v):.2f}s kept of "
                                     f"{_dur_v:.2f}s "
-                                    f"({float(_dav_v) / _dur_v * 100:.0f} %)")
+                                    f"({_retained * 100:.0f} %)")
                     _stage_timings.append({
                         "name": "vad",
                         "secs": round(_pre_secs, 2),
                         "model": "silero",
                         "device": "cpu",
                         "detail": _detail,
+                        "retained": _retained,
                     })
                     _total_secs = max(0.0, _total_secs - _pre_secs)
                 # Measured from the load's own origin (not _dec_t0) so a cold
@@ -4581,6 +4624,7 @@ async def transcribe(
                                 time.perf_counter() - _diar_t0, 2),
                             "model": _diarization_model or None,
                             "detail": f"{len(speakers_list)} speakers",
+                            "speakers": len(speakers_list),
                             **_stage_extras(
                                 preload.stats_key("diarization",
                                                   _diarization_model or ""),
@@ -4730,6 +4774,11 @@ async def transcribe(
                                 "model": _tr_meta.get("model"),
                                 "detail": (f"{len(segments_list)} segs → "
                                            f"{','.join(_translate_to)}"),
+                                "targets": list(_translate_to),
+                                # Segments whose guard fallback kept the
+                                # source text in at least one target.
+                                "kept_original": sum(
+                                    1 for _k in _tr_kept.values() if _k),
                                 **_stage_extras(
                                     preload.stats_key(
                                         "translation",
@@ -5034,6 +5083,7 @@ async def transcribe(
                 logger.error("[quick-config] record_trace failed: %s", _qc_err)
 
             _audio_dur = float(info.duration)
+            _language = getattr(info, "language", None) or None
             # Word count from the final post-processed text — matches what the
             # client actually receives. Counting len(all_words) instead would
             # yield 0 whenever WORD_TIMESTAMPS_ENABLED is off or the request
@@ -5231,6 +5281,11 @@ async def transcribe(
             key_id=_key_id,
             key_label=user.get("key_label"),
             stages=_stage_timings or None,
+            # The client's progress id names this run on its side too, so
+            # the usage job row is addressable by both ends.
+            job_id=_pid or request_id,
+            usage_kind="url" if source_url is not None else "file",
+            language=_language,
         )
 
 
@@ -5621,7 +5676,9 @@ async def translate_text(request: Request,
                 kind="translate",
                 stages=[{"name": "translate", "secs": secs,
                          "model": (_tr_model or None),
-                         "detail": f"{len(seg_in)} segs → {','.join(targets)}"}],
+                         "detail": f"{len(seg_in)} segs → {','.join(targets)}",
+                         "targets": list(targets)}],
+                job_id=_pid or request_id,
             )
 
         # `owner` binds the entry to this caller, exactly like the batch
@@ -7222,6 +7279,16 @@ try:
     )
 except Exception as _e:
     logger.error("Failed to load client-settings router: %s", _e)
+
+# Dictation outcomes from the desktop app (activation / delivery / app /
+# translation per session). Same always-on, user-tier, no-host-gate stance
+# as the settings sync above; see usage_routes.py.
+try:
+    from usage_routes import router as _usage_router
+    app.include_router(_usage_router)
+    logger.info("Usage outcomes at POST /v1/usage/outcome")
+except Exception as _e:
+    logger.error("Failed to load usage router: %s", _e)
 
 
 # =============================================================================

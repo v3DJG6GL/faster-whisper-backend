@@ -735,6 +735,25 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Auto-delete entries older than this many days. 0 = TTL "
         "disabled (count-cap only). Combined with the row cap: "
         "whichever bound is tighter wins.",
+    # --- Usage statistics ---
+    "USAGE_RETENTION_DAYS":
+        "Auto-delete hourly usage rollup rows (requests, words, audio, "
+        "stages, dictation outcomes) older than this many days. 0 = keep "
+        "forever — the rollup is tiny and lifetime totals stay complete.",
+    "USAGE_JOBS_RETENTION_DAYS":
+        "Auto-delete per-job usage rows (one per dictation session, file, "
+        "URL or text translation, with their stage detail) older than this "
+        "many days. 0 = keep forever.",
+    "USAGE_APP_RETENTION_DAYS":
+        "Auto-delete the per-app dictation rollup (which program each "
+        "dictation was typed into) older than this many days. Names "
+        "programs on the user's machine, so it defaults shorter than the "
+        "rest. 0 = keep forever.",
+    "USAGE_UNREPORTED_AFTER_H":
+        "Hours after which a dictation session the desktop app never "
+        "reported an outcome for (closed, crashed, or reporting switched "
+        "off) is counted as 'unreported' in the dictation breakdown.",
+
     "RECENT_TRANSCRIPTIONS_PAGE_SIZE":
         "Number of entries the browser fetches per page on "
         "/quick-config (initial load + each \"Load older\" click). "
@@ -2031,6 +2050,16 @@ class AdminConfig(BaseModel):
         "STATS_RECENT_TRANSCRIPTIONS_COUNT", scope="server",
         group="Recent transcriptions")
 
+    # --- Usage statistics (the desktop app's /v1/usage + admin /stats) ---
+    USAGE_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
+        "USAGE_RETENTION_DAYS", scope="server", group="Usage statistics")
+    USAGE_JOBS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
+        "USAGE_JOBS_RETENTION_DAYS", scope="server", group="Usage statistics")
+    USAGE_APP_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
+        "USAGE_APP_RETENTION_DAYS", scope="server", group="Usage statistics")
+    USAGE_UNREPORTED_AFTER_H: Annotated[int, Field(ge=1, le=720)] | None = _F(
+        "USAGE_UNREPORTED_AFTER_H", scope="server", group="Usage statistics")
+
     # --- Captures (fine-tuning data store) ---
     CAPTURE_RECORDINGS_ENABLED: bool | None = _F(
         "CAPTURE_RECORDINGS_ENABLED", scope="server", group="Captures",
@@ -2648,6 +2677,7 @@ _GROUP_ORDER: list[tuple[str, list[str | None]]] = [
     ("Concurrency & Request Limits", [None]),
     ("Reports", [None]),
     ("Recent transcriptions", [None]),
+    ("Usage statistics", [None]),
     ("Captures", [
         None,
         "Storage",

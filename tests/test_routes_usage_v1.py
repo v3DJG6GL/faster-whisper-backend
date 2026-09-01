@@ -1,28 +1,42 @@
-"""Integration tests for GET /v1/usage — the desktop app's self-scoped usage:
-today + lifetime totals + a daily/weekly trend SERIES (for the Home stats tiles,
-trend chart, and the optional chip readout).
+"""Integration tests for GET /v1/usage — the desktop app's self-scoped usage
+statistics document: today + lifetime totals per kind, a per-kind daily
+series, stage meters, the dictation breakdown, top apps, the rhythm calendar
+and streak, and the time-saved figure.
 
 Like /v1/recent-words and /v1/pipeline-rules it lives in the /v1 namespace with
 NO host allowlist (so a remote client isn't 403'd by USER_WEBUI_ALLOWED_HOSTS),
 and it is STRICTLY self-scoped: a caller only ever sees their own user_id's
 numbers — even an admin (the global view is the host-gated /stats page).
 
-Day/week bucketing is server-local, so the series tests pin TZ via set_tz.
+Days are reckoned in the caller's `tz`; without one, server-local (pinned via
+set_tz where it matters).
 """
+
+import datetime
+import zoneinfo
 
 from conftest import bearer
 
+_KINDS = ("dictation", "file", "url", "text")
+_CELL = {"sessions", "requests", "errors", "words", "audio_s", "proc_s"}
 
-def _seed(uid, *, hour, words=0, audio_s=0.0, status="ok", key_id=None):
-    """Insert one hourly rollup row for `uid` directly (the app lifespan has
-    already init'd usage_store onto the temp DB). key_id defaults to a per-uid
-    value because usage_hourly's PRIMARY KEY is (hour, key_id) — two users
-    sharing a key at the same hour would collide into one row."""
+
+def _seed(uid, *, hour, words=0, audio_s=0.0, status="ok", kind="dictation",
+          job_id=None, stages=None):
+    """Insert one request into the rollups directly (the app lifespan has
+    already init'd usage_store onto the temp DB). key_id is per-uid because
+    usage_hourly's key is (hour, key_id, kind)."""
     import usage_store
     usage_store.record_usage(
-        key_id=key_id or f"k-{uid}", user_id=uid, audio_s=audio_s, words=words,
-        status=status, hour=hour,
+        key_id=f"k-{uid}", user_id=uid, audio_s=audio_s, words=words,
+        status=status, hour=hour, kind=kind, job_id=job_id, stages=stages,
     )
+
+
+def _hour_in(tz, days_ago=0, hh=12):
+    day = datetime.datetime.now(tz).date() - datetime.timedelta(days=days_ago)
+    return int(datetime.datetime(day.year, day.month, day.day, hh,
+                                 tzinfo=tz).timestamp() // 3600)
 
 
 # --------------------------------------------------------------------------
@@ -31,139 +45,150 @@ def _seed(uid, *, hour, words=0, audio_s=0.0, status="ok", key_id=None):
 
 def test_v1_usage_shape(client):
     body = client.get("/v1/usage").json()
-    assert set(body) == {"username", "today", "total", "range", "series"}
+    assert set(body) == {
+        "username", "tz", "range", "today", "total", "series", "stages",
+        "dictation", "apps", "calendar", "streak", "time_saved_s"}
+    assert body["range"] == {"days": 30, "calendar_days": 90}
     for k in ("today", "total"):
-        assert set(body[k]) == {"requests", "errors", "words", "audio_s"}
-    assert set(body["range"]) == {"days", "bucket"}
-    assert body["range"]["bucket"] == "day" and body["range"]["days"] == 30
-    assert isinstance(body["series"], list)
+        assert set(body[k]) == {"all", *_KINDS}
+        assert all(set(body[k][kind]) == _CELL for kind in body[k])
+    assert body["series"] == [] and body["stages"] == [] and body["apps"] == []
+    assert body["calendar"] == [] and body["streak"] == {"current": 0, "best": 0}
+    d = body["dictation"]
+    assert set(d) == {"sessions", "words", "audio_s", "wpm", "activation",
+                      "delivery", "translation"}
+    assert set(d["delivery"]) == {"typed", "clipboard", "none", "unreported"}
+    assert set(d["translation"]) == {"translated", "kept_original", "not_asked",
+                                     "aborted", "unreported"}
+    assert body["time_saved_s"] == 0.0
+    assert body["tz"] == "local"
+
+
+def test_v1_usage_params_clamped_and_tz_echoed(client):
+    body = client.get("/v1/usage", params={"days": 9999, "calendar_days": 0,
+                                           "tz": "Europe/Zurich"}).json()
+    assert body["range"] == {"days": 366, "calendar_days": 1}
+    assert body["tz"] == "Europe/Zurich"
+    body = client.get("/v1/usage", params={"days": -3, "tz": "Mars/Olympus"}).json()
+    assert body["range"]["days"] == 1
+    assert body["tz"] == "local"
+    # An unparseable number is a caller error, like every other int query.
+    assert client.get("/v1/usage", params={"days": "abc"}).status_code == 422
 
 
 # --------------------------------------------------------------------------
-# Totals + series correctness
+# Totals + series + kinds
 # --------------------------------------------------------------------------
 
-def test_v1_usage_totals_and_series(client, make_user_key, set_tz):
-    set_tz("UTC")
-    import usage_store
+def test_v1_usage_per_kind_totals_series_and_today(client, make_user_key):
     make_user_key("root", is_admin=True)  # flip lockdown
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
-    today_h = usage_store.local_day_start_hour(0)
-    _seed(uid, hour=today_h, words=100, audio_s=60.0)
-    _seed(uid, hour=today_h + 1, words=40, audio_s=30.0)                  # also today
-    _seed(uid, hour=usage_store.local_day_start_hour(2), words=10, audio_s=5.0)  # 2 days ago
+    zh = zoneinfo.ZoneInfo("Europe/Zurich")
+    # Two utterances of one dictation session today, a file yesterday, a
+    # failed url three days ago, a text translation eight days ago (outside a
+    # 7-day window, inside lifetime).
+    _seed(uid, hour=_hour_in(zh, 0, 9), words=30, audio_s=20.0, job_id="a" * 32)
+    _seed(uid, hour=_hour_in(zh, 0, 10), words=70, audio_s=40.0, job_id="a" * 32)
+    _seed(uid, hour=_hour_in(zh, 1), words=500, audio_s=600.0, kind="file")
+    _seed(uid, hour=_hour_in(zh, 3), words=0, audio_s=0.0, kind="url", status="error")
+    _seed(uid, hour=_hour_in(zh, 8), words=0, audio_s=0.0, kind="text")
 
-    body = client.get("/v1/usage?days=7", headers=bearer(raw)).json()
+    body = client.get("/v1/usage", params={"days": 7, "tz": "Europe/Zurich"},
+                      headers=bearer(raw)).json()
     assert body["username"] == "alice"
-    assert body["today"]["words"] == 140 and body["today"]["requests"] == 2
-    assert body["today"]["audio_s"] == 90.0
-    assert body["total"]["words"] == 150 and body["total"]["requests"] == 3
-    assert body["range"] == {"days": 7, "bucket": "day"}
-    # Series spans >=2 distinct days and sums to the lifetime total here.
-    assert len(body["series"]) >= 2
-    assert sum(c["words"] for c in body["series"]) == 150
-    assert all(set(c) == {"day", "requests", "errors", "words", "audio_s"} for c in body["series"])
+    today = body["today"]
+    assert today["dictation"] == {"sessions": 1, "requests": 2, "errors": 0,
+                                  "words": 100, "audio_s": 60.0, "proc_s": 0.0}
+    assert today["all"]["words"] == 100 and today["file"]["words"] == 0
+    total = body["total"]
+    assert total["all"]["requests"] == 5 and total["all"]["errors"] == 1
+    assert total["text"]["requests"] == 1 and total["url"]["errors"] == 1
+    assert [p["day"] for p in body["series"]] == sorted(p["day"] for p in body["series"])
+    assert len(body["series"]) == 3
+    assert body["series"][-1]["dictation"]["sessions"] == 1
+    assert body["series"][-2]["file"]["words"] == 500
+    assert body["series"][0]["url"]["errors"] == 1
+    assert body["series"][-1]["day"] == (datetime.datetime.now(zh).date() - datetime.date(1970, 1, 1)).days
+    # Dictation-only derived figures: 100 words / 1 min speech.
+    assert body["dictation"]["wpm"] == 100.0
+    assert body["time_saved_s"] == 100 / 40 * 60 - 60
+    assert body["streak"]["current"] == 2 and body["streak"]["best"] == 2
+    assert [c["words"] for c in body["calendar"]] == [500, 100]
 
 
-def test_v1_usage_tz_midnight_shifts_today(client, make_user_key, set_tz):
-    set_tz("UTC")
-    import usage_store
+def test_v1_usage_stages_from_batch_extras(client, make_user_key):
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
-    today_h = usage_store.local_day_start_hour(0)
-    _seed(uid, hour=today_h, words=50, audio_s=10.0)        # after today's midnight
-    _seed(uid, hour=today_h - 5, words=7, audio_s=2.0)      # before it (yesterday)
-
-    tz_mid = today_h * 3600  # the client's local midnight, in epoch seconds
-    body = client.get(f"/v1/usage?tz_midnight={tz_mid}", headers=bearer(raw)).json()
-    assert body["today"]["words"] == 50     # only the post-midnight row
-    assert body["total"]["words"] == 57     # both rows
-
-
-# --------------------------------------------------------------------------
-# Self-scoping (the security property)
-# --------------------------------------------------------------------------
-
-def test_v1_usage_self_scoped(client, make_user_key, set_tz):
-    set_tz("UTC")
-    import usage_store
-    make_user_key("root", is_admin=True)
-    uid_a, raw_a = make_user_key("alice", pages={"quick_config": "own"})
-    uid_b, raw_b = make_user_key("bob", pages={"quick_config": "own"})
-    h = usage_store.local_day_start_hour(0)
-    _seed(uid_a, hour=h, words=11, audio_s=1.0)
-    _seed(uid_b, hour=h, words=99, audio_s=9.0)
-
-    assert client.get("/v1/usage", headers=bearer(raw_a)).json()["total"]["words"] == 11
-    assert client.get("/v1/usage", headers=bearer(raw_b)).json()["total"]["words"] == 99
+    utc = zoneinfo.ZoneInfo("UTC")
+    _seed(uid, hour=_hour_in(utc), words=100, audio_s=120.0,
+          kind="file", job_id="1" * 32, stages=[
+              {"name": "diarizing", "secs": 5.0, "speakers": 2},
+              {"name": "translating", "secs": 3.0, "targets": ["en"],
+               "kept_original": 1}])
+    _seed(uid, hour=_hour_in(utc), words=10, audio_s=5.0, kind="url", job_id="2" * 32)
+    stages = {s["stage"]: s for s in
+              client.get("/v1/usage", params={"tz": "UTC"},
+                         headers=bearer(raw)).json()["stages"]}
+    assert stages["diarizing"]["runs"] == 1 and stages["diarizing"]["of_runs"] == 2
+    assert stages["diarizing"]["speakers_avg"] == 2.0
+    assert stages["translating"]["targets"] == [{"code": "en", "runs": 1}]
+    assert stages["translating"]["kept_original"] == 1
 
 
-def test_v1_usage_admin_is_self_scoped(client, make_user_key, set_tz):
-    set_tz("UTC")
-    import api_keys_store, usage_store
-    uid_root, raw_root = make_user_key("root", is_admin=True)
-    uid_other = api_keys_store.create_user("alice", is_admin=False)
-    h = usage_store.local_day_start_hour(0)
-    _seed(uid_root, hour=h, words=3, audio_s=1.0)
-    _seed(uid_other, hour=h, words=500, audio_s=50.0)
-    # The admin sees ONLY their own usage here — not the global total.
-    body = client.get("/v1/usage", headers=bearer(raw_root)).json()
-    assert body["total"]["words"] == 3
-
-
-# --------------------------------------------------------------------------
-# Window: lifetime (days<=0) + week bucket
-# --------------------------------------------------------------------------
-
-def test_v1_usage_lifetime_and_week_bucket(client, make_user_key, set_tz):
-    set_tz("UTC")
-    import usage_store
+def test_v1_usage_server_local_days_without_tz(client, make_user_key, set_tz):
+    set_tz("Asia/Tokyo")
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
-    old_h = usage_store.now_hour() - 24 * 100   # ~100 days ago
-    _seed(uid, hour=old_h, words=5, audio_s=1.0)
-    _seed(uid, hour=usage_store.local_day_start_hour(0), words=8, audio_s=2.0)
-
-    # days=7: total still counts the old row, but the series window excludes it.
-    wk = client.get("/v1/usage?days=7", headers=bearer(raw)).json()
-    assert wk["total"]["words"] == 13
-    assert sum(c["words"] for c in wk["series"]) == 8
-
-    # days<=0: lifetime series includes the old row too.
-    life = client.get("/v1/usage?days=0&bucket=week", headers=bearer(raw)).json()
-    assert life["range"] == {"days": 0, "bucket": "week"}
-    assert sum(c["words"] for c in life["series"]) == 13
-
-
-def test_v1_usage_days_clamped(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
-    assert client.get("/v1/usage?days=99999", headers=bearer(raw)).json()["range"]["days"] == 366
+    tokyo = zoneinfo.ZoneInfo("Asia/Tokyo")
+    _seed(uid, hour=_hour_in(tokyo, 0, 1), words=5)   # 01:00 Tokyo = yesterday UTC
+    body = client.get("/v1/usage", headers=bearer(raw)).json()
+    assert body["tz"] == "local"
+    assert body["today"]["all"]["words"] == 5
+    assert body["series"][-1]["day"] == (datetime.datetime.now(tokyo).date() - datetime.date(1970, 1, 1)).days
 
 
 # --------------------------------------------------------------------------
-# Auth / page-permission gating
+# Scoping + auth
 # --------------------------------------------------------------------------
 
-def test_v1_usage_requires_quick_config_page(client, make_user_key):
+def test_v1_usage_self_scoped_even_for_admin(client, make_user_key):
+    admin_uid, admin_raw = make_user_key("root", is_admin=True)
+    alice_uid, alice_raw = make_user_key("alice", pages={"quick_config": "own"})
+    utc = zoneinfo.ZoneInfo("UTC")
+    _seed(alice_uid, hour=_hour_in(utc), words=1000, kind="file")
+    _seed(admin_uid, hour=_hour_in(utc), words=1, kind="file")
+    assert client.get("/v1/usage", headers=bearer(admin_raw)).json()["total"]["all"]["words"] == 1
+    assert client.get("/v1/usage", headers=bearer(alice_raw)).json()["total"]["all"]["words"] == 1000
+
+
+def test_v1_usage_requires_bearer_when_locked_down(client, make_user_key):
     make_user_key("root", is_admin=True)
-    _uid, raw = make_user_key("bob", pages={"quick_config": "none"})
+    assert client.get("/v1/usage").status_code == 401
+
+
+def test_v1_usage_403_without_quick_config_page(client, make_user_key):
+    make_user_key("root", is_admin=True)
+    _uid, raw = make_user_key("nopage", pages={"quick_config": "none"})
     assert client.get("/v1/usage", headers=bearer(raw)).status_code == 403
 
 
-def test_v1_usage_requires_auth_when_locked_down(client, make_user_key):
-    make_user_key("root", is_admin=True)
-    assert client.get("/v1/usage").status_code == 401  # no bearer
-
-
-# --------------------------------------------------------------------------
-# The whole point: /v1/usage is NOT host-gated (unlike /quick-config/usage)
-# --------------------------------------------------------------------------
-
 def test_v1_usage_not_host_gated(app_module, make_user_key):
+    """A remote desktop client (non-loopback) must reach it with a bearer."""
     from starlette.testclient import TestClient
-    app_module.cfg.USER_WEBUI_ALLOWED_HOSTS = ["127.0.0.1/32"]
-    with TestClient(app_module.app, client=("203.0.113.9", 9999)) as c:
-        _uid, raw = make_user_key("root", is_admin=True)
-        assert c.get("/quick-config/usage", headers=bearer(raw)).status_code == 403
-        assert c.get("/v1/usage", headers=bearer(raw)).status_code == 200
+    with TestClient(app_module.app, client=("203.0.113.9", 4242)) as remote:
+        make_user_key("root", is_admin=True)
+        _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+        assert remote.get("/v1/usage").status_code == 401
+        assert remote.get("/v1/usage", headers=bearer(raw)).status_code == 200
+
+
+def test_v1_usage_zeroed_when_store_unavailable(client, make_user_key, monkeypatch):
+    make_user_key("root", is_admin=True)
+    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+    import usage_store
+    monkeypatch.setattr(usage_store, "_conn", None)
+    r = client.get("/v1/usage", params={"days": 5}, headers=bearer(raw))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["username"] == "alice" and body["range"]["days"] == 5
+    assert body["total"]["all"]["requests"] == 0 and body["series"] == []

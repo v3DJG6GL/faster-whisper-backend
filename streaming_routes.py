@@ -568,6 +568,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
         _req_profile = conf.get("override_profile")
         req_override_profile = (_req_profile.strip() or None
                                 if isinstance(_req_profile, str) else None)
+        # The client's own id for this session, so the usage job it reports
+        # an outcome for afterwards is the one the utterances landed in. Same
+        # alphabet as a batch progress id; malformed → the server's session
+        # id, which the client never learns — its outcome then lands as a
+        # stub session and the utterances are swept as unreported.
+        _req_job = conf.get("client_job")
+        usage_job_id = (_req_job if isinstance(_req_job, str)
+                        and main._PROGRESS_ID_RE.match(_req_job) else session_id)
         # The client DECLARES that it will translate this session's utterances
         # on a separate request. Without a declaration the per-utterance
         # receipt is logged immediately, exactly as before — which is what
@@ -1056,7 +1064,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 stages=([{**stages[0], "detail": f"utt#{info['utterance']}"}]
                         if stages else None),
                 request_id=rid, user_id=user.get("user_id"), key_id=user.get("key_id"),
-                key_label=user.get("key_label"))
+                key_label=user.get("key_label"),
+                job_id=usage_job_id,
+                language=(getattr(fw_info, "language", None) or req_language or None))
 
         session = StreamSession(
             config=_stream_config(cfg, ident),

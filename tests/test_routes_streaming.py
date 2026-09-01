@@ -534,3 +534,40 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
             ws.receive_json()
     assert app_module._model_leases == {}
     assert streaming_routes._active_sessions == set()
+
+
+# --- usage job id ------------------------------------------------------------
+
+def _dictate_one_utterance(client, conf_extra):
+    with client.websocket_connect(_STREAM_URL) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000},
+                      **conf_extra})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))   # speech
+        ws.send_bytes(_pcm(0, 1500))      # silence → finalize
+        ws.send_json({"type": "stop"})
+        _drain(ws)
+
+
+def test_stream_client_job_names_the_usage_job(app_module, monkeypatch):
+    """The handshake's `client_job` becomes the usage job id, so the outcome
+    the client posts afterwards lands on the session's own utterances."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    import usage_store
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        _dictate_one_utterance(client, {"client_job": "ab" * 16})
+        rows = usage_store._require_conn().execute(
+            "SELECT job_id, kind, utterances FROM usage_jobs").fetchall()
+    assert [tuple(r) for r in rows] == [("ab" * 16, "dictation", 1)]
+
+
+def test_stream_malformed_client_job_falls_back_to_session_id(app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    import usage_store
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        _dictate_one_utterance(client, {"client_job": "../not-hex"})
+        rows = usage_store._require_conn().execute(
+            "SELECT job_id, kind FROM usage_jobs").fetchall()
+    assert len(rows) == 1 and rows[0]["kind"] == "dictation"
+    assert len(rows[0]["job_id"]) == 32 and rows[0]["job_id"] != "../not-hex"

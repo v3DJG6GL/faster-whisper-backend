@@ -957,8 +957,23 @@ USAGE_DB = _D("USAGE_DB")
 # Auto-delete rollup rows older than this many days. 0 = unbounded (the
 # default): the rollup is at most one row per active key per hour, so it
 # stays tiny and lifetime totals stay complete. Set >0 only if you want a
-# bounded retention window.
+# bounded retention window. Applies to every hour-keyed statistics table.
 USAGE_RETENTION_DAYS = _D("USAGE_RETENTION_DAYS")
+
+# Per-job rows (one per dictation session / file / URL / text translation,
+# with their stage detail) are only needed while an outcome can still be
+# attached and for per-job drill-down; a year covers every window the
+# desktop app offers. 0 = keep forever.
+USAGE_JOBS_RETENTION_DAYS = _D("USAGE_JOBS_RETENTION_DAYS")
+
+# The "which app did I dictate into" rollup names programs on the user's
+# machine, so it gets the shortest clock of the three. 0 = keep forever.
+USAGE_APP_RETENTION_DAYS = _D("USAGE_APP_RETENTION_DAYS")
+
+# A dictation session whose outcome the desktop app never reported (closed,
+# crashed, or reporting switched off) is counted as 'unreported' after this
+# many hours, so the dictation breakdown stops waiting for it.
+USAGE_UNREPORTED_AFTER_H = _D("USAGE_UNREPORTED_AFTER_H")
 
 
 # =============================================================================
@@ -1443,7 +1458,6 @@ SESSIONS_DB = _env_str("WHISPER_SESSIONS_DB", SESSIONS_DB)
 BOOTSTRAP_ADMIN_KEY = _env_str("WHISPER_BOOTSTRAP_ADMIN_KEY", BOOTSTRAP_ADMIN_KEY)
 USAGE_DB = _env_str("WHISPER_USAGE_DB", USAGE_DB)
 CLIENT_SETTINGS_DB = _env_str("WHISPER_CLIENT_SETTINGS_DB", CLIENT_SETTINGS_DB)
-USAGE_RETENTION_DAYS = _env_int("WHISPER_USAGE_RETENTION_DAYS", USAGE_RETENTION_DAYS)
 # CAPTURES_PROPOSER_CACHE_TTL_S only: it is genuinely absent from
 # ENV_VAR_MAPPING, so the generic loop below never reaches it.
 #
