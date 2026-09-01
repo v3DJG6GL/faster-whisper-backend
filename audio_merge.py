@@ -24,6 +24,8 @@ import time
 import wave
 from hashlib import sha256
 
+import store_common
+
 logger = logging.getLogger("whisper-api")
 
 # Required source format. Anything else gets rejected (defense-in-depth
@@ -244,10 +246,7 @@ def merge_wavs(
         # world-writable system temp dir. Merged dictation audio is PHI;
         # pin owner-only before the swap. No-op semantically for the
         # captures store (its directory is already 0700).
-        try:
-            os.chmod(tmp_path, 0o600)
-        except OSError:
-            pass
+        store_common.secure_file(tmp_path)
         try:
             with open(tmp_path, "rb") as fp:
                 os.fsync(fp.fileno())

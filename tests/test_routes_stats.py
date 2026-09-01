@@ -82,7 +82,27 @@ def test_header_activity_cluster_shell_on_every_page(client):
         assert 'id="hact-gpuv"' in html, path
 
 
-def test_header_activity_cluster_js_contract():
+def test_header_activity_cluster_inert_on_headerless_hub(client):
+    """The hub's status strip is a plain <div> — no <header> — so
+    syncAllowed()'s header-scoped selector can never reveal the button. The
+    JS must bail before installing its timer/listeners, and the hub CSS hides
+    the empty flex item the shared fragment still ships."""
+    import web_common
+
+    assert "document.querySelector('header')" in web_common.ACTIVITY_CLUSTER_JS
+    html = client.get("/").text
+    # a CSS comment mentions "<header>", so assert on the closing tag
+    assert "</header>" not in html
+    assert ".hub-sev .hact-wrap { display: none; }" in html
+
+
+def test_stats_page_colours_the_vad_stage(client):
+    """main.py emits a "vad" row into stage timings; both /stats renderers of
+    the stage vocabulary (the .pipe glyph CSS and stageColor's map) must know
+    it, with the same hue /quick-config assigns (.seg-vad #93b76f)."""
+    html = client.get("/stats").text
+    assert ".pipe i.vad" in html
+    assert "vad: '#93b76f'" in html
     """The cluster's inline JS has no unit harness, so pin the load-bearing
     strings: the cancel POST must carry the CSRF header (the cookie-auth
     middleware 403s it otherwise), the VRAM chip must read the `vram_mb`

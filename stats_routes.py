@@ -465,6 +465,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .pipe { display: inline-flex; gap: 2px; }
   .pipe i { display: inline-block; width: 0.55rem; height: 0.55rem;
     border-radius: 2px; background: #21262d; }
+  .pipe i.vad          { background: #93b76f; }  /* matches /quick-config's .seg-vad */
   .pipe i.separating   { background: var(--magenta); }
   .pipe i.transcribing { background: var(--cyan); }
   .pipe i.diarizing    { background: var(--yellow); }
@@ -1190,7 +1191,10 @@ function stageRows(r) {
 }
 
 function stageColor(name) {
-  return ({ separating: 'var(--magenta)', transcribing: 'var(--cyan)',
+  // Keep in step with the .pipe i.<name> CSS rules above and with the
+  // stage vocabulary main.py emits (vad hue matches /quick-config's .seg-vad).
+  return ({ vad: '#93b76f', separating: 'var(--magenta)',
+            transcribing: 'var(--cyan)',
             diarizing: 'var(--yellow)', translating: 'var(--green)',
             translate: 'var(--green)', download: 'var(--cyan)' })[name]
     || 'var(--dim)';

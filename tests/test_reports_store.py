@@ -88,6 +88,43 @@ def test_list_reports_filter(reports_store_db):
     assert len(rs.list_reports(user_id="a")) == 1
 
 
+def test_concurrent_upsert_same_key_single_row(reports_store_db):
+    # The lookup and the INSERT/UPDATE share one _lock span: two parallel
+    # submits of the same (user_id, request_id) must never both see "no
+    # existing row" and stack duplicates (the index is not UNIQUE).
+    import threading
+    rs = reports_store_db
+    barrier = threading.Barrier(2)
+    errors = []
+
+    def worker(n):
+        try:
+            barrier.wait()
+            _submit(rs, user_comment=f"submit {n}")
+        except Exception as e:                      # pragma: no cover
+            errors.append(e)
+
+    threads = [threading.Thread(target=worker, args=(i,)) for i in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors
+    assert len(rs.list_reports()) == 1
+
+
+def test_list_reports_limit_and_uncapped_export_path(reports_store_db):
+    # The read ceiling bounds the browser list, but limit=None (the export
+    # path) must return every row — a raised REPORTS_MAX otherwise silently
+    # truncates the documented full dump at _LIST_LIMIT.
+    rs = reports_store_db
+    for i in range(5):
+        _submit(rs, user_id=f"u{i}", request_id=f"r{i}")
+    assert len(rs.list_reports(limit=3)) == 3
+    assert len(rs.list_reports(limit=None)) == 5
+    assert len(rs.list_reports()) == 5      # default cap far above 5
+
+
 def test_get_report_missing(reports_store_db):
     assert reports_store_db.get_report("does-not-exist") is None
 

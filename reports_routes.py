@@ -247,14 +247,16 @@ async def list_reports_api(
             "retention_days": int(getattr(cfg, "REPORTS_RETENTION_DAYS", 0)),
             "is_admin": bool(user.get("is_admin")),
             "scope": perms.scope("reports"),
-        }, ensure_ascii=False)
+        }, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
 
     # The SERIALIZATION has to happen in the thread too, not just the query:
     # at the store's 1000-row LIMIT with max-size rows this measured 2.17 s of
     # frozen event loop, of which the DB read plus per-row json.loads was only
     # 0.36 s — the remaining 1.8 s was JSONResponse rendering the body. Rows
-    # are plain types out of _row_to_dict, so a bare json.dumps produces the
-    # same bytes FastAPI would.
+    # are plain types out of _row_to_dict, and the dumps kwargs mirror
+    # Starlette's JSONResponse.render (allow_nan=False in particular: a
+    # legacy non-finite trace_ts must raise here, not emit bare `NaN` that
+    # breaks the browser's response.json()). Matches captures_routes.
     body = await asyncio.to_thread(_render)
     return Response(content=body, media_type="application/json")
 
@@ -378,7 +380,10 @@ async def export_reports_api() -> Response:
             "exported_at": datetime.now(timezone.utc).isoformat(
                 timespec="seconds"),
             "app": "faster-whisper-backend",
-            "reports": reports_store.list_reports(),
+            # limit=None: this is the documented FULL dump — the browser
+            # list's read ceiling must not truncate a backup when
+            # REPORTS_MAX is raised above _LIST_LIMIT.
+            "reports": reports_store.list_reports(limit=None),
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 

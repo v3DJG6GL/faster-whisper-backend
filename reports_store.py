@@ -284,7 +284,6 @@ def upsert_report(
     the row re-floats to the top of /reports.
     """
     request_id = (request_id or None) and str(request_id)[:_CAP_REQUEST_ID]
-    existing = find_by_request_user(request_id, user_id)
     raw_t = (raw or "")[:_CAP_RAW]
     final_t = (final or "")[:_CAP_FINAL]
     steps_t = _truncate_steps(steps or [])
@@ -303,16 +302,21 @@ def upsert_report(
         stages_t = "[]"
 
     conn = _require_conn()
-    if existing is not None:
-        # Re-clean the union: three_way_merge_corrections returns current +
-        # edited with no cap, so without this a caller resubmitting the same
-        # request_id with fresh keys grows one row without bound. The captures
-        # path already re-cleans via captures_store.update_capture.
-        merged = _clean_corrections(text_corrections.three_way_merge_corrections(
-            baseline=[], edited=corr_in, current=existing.get("corrections") or [],
-        ))
-        rid = existing["id"]
-        with _lock:
+    # Lookup and write share one lock span: with the lookup outside, two
+    # concurrent submits of the same (user_id, request_id) could both see "no
+    # existing row" and both INSERT — the index is not UNIQUE, so nothing else
+    # deduplicates. find_by_request_user does not take _lock itself.
+    with _lock:
+        existing = find_by_request_user(request_id, user_id)
+        if existing is not None:
+            # Re-clean the union: three_way_merge_corrections returns current +
+            # edited with no cap, so without this a caller resubmitting the same
+            # request_id with fresh keys grows one row without bound. The captures
+            # path already re-cleans via captures_store.update_capture.
+            merged = _clean_corrections(text_corrections.three_way_merge_corrections(
+                baseline=[], edited=corr_in, current=existing.get("corrections") or [],
+            ))
+            rid = existing["id"]
             conn.execute(
                 "UPDATE reports SET"
                 "  created_ts = ?, trace_ts = ?, model = ?, raw = ?, final = ?,"
@@ -334,11 +338,10 @@ def upsert_report(
                     rid,
                 ),
             )
-        logger.info("[reports] upsert-updated id=%s role=%s", rid[:8], role_t)
-        return rid, True
+            logger.info("[reports] upsert-updated id=%s role=%s", rid[:8], role_t)
+            return rid, True
 
-    rid = uuid.uuid4().hex
-    with _lock:
+        rid = uuid.uuid4().hex
         conn.execute(
             "INSERT INTO reports ("
             " id, created_ts, trace_ts, request_id, model,"
@@ -413,11 +416,17 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
 # Read
 # ---------------------------------------------------------------------
 
-def list_reports(user_id: str | None = None) -> list[dict[str, Any]]:
+def list_reports(user_id: str | None = None, *,
+                 limit: "int | None" = _LIST_LIMIT) -> list[dict[str, Any]]:
     """Return reports newest-first. `user_id=None` means "no filter"
     (admin / scope=all context); a string narrows to a single owner.
     Client filters/searches in-page; the soft cap keeps the row count
     under what a browser can render.
+
+    `limit=None` disables the read ceiling — the export path is the
+    uncapped caller: REPORTS_MAX is operator-settable well above
+    _LIST_LIMIT, and the "full JSON dump" must not silently drop
+    everything past the newest 1000 rows.
 
     Symmetric to `captures_store.list_captures(user_id=...)`. The
     permission layer threads the right value via
@@ -429,16 +438,18 @@ def list_reports(user_id: str | None = None) -> list[dict[str, Any]]:
     # text plus a JSON parse of steps_json, inline in an async handler. A LIMIT
     # makes the documented ceiling real. _LIST_LIMIT is the eviction cap, so a
     # store at or under its own cap returns exactly what it returns today.
+    # SQLite treats a negative LIMIT as "no limit".
+    lim = -1 if limit is None else limit
     if user_id is None:
         cur = conn.execute(
             "SELECT * FROM reports ORDER BY created_ts DESC LIMIT ?",
-            (_LIST_LIMIT,),
+            (lim,),
         )
     else:
         cur = conn.execute(
             "SELECT * FROM reports WHERE user_id = ?"
             " ORDER BY created_ts DESC LIMIT ?",
-            (user_id, _LIST_LIMIT),
+            (user_id, lim),
         )
     return [_row_to_dict(r) for r in cur.fetchall()]
 

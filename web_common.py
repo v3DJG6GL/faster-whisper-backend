@@ -2025,7 +2025,10 @@ SEV_POLLER_JS = """
 ACTIVITY_CLUSTER_JS = """
 <script>(function(){
   var btn = document.getElementById('hact');
-  if (!btn) return;
+  // A headerless shell (the hub's status strip is a plain div) can never
+  // satisfy syncAllowed()'s header-scoped selector, so the button would stay
+  // hidden forever — bail before installing the poll timer and listeners.
+  if (!btn || !document.querySelector('header')) return;
   var pop = document.getElementById('hact-pop');
   var jobsEl = document.getElementById('hact-jobs');
   var gpuEl = document.getElementById('hact-gpu');
@@ -2847,13 +2850,9 @@ function renderTypeEditor(rule, commitData, opts) {
     // bounces off the server's entry cap. __mme is set by the quick-config
     // page load(); pages that don't set it just show the plain count.
     const mapCap = (typeof window.__mme === 'number') ? window.__mme : 0;
-    const nEntries = Object.keys(rule.map || {}).length;
     const cnt = document.createElement('div');
     cnt.className = 'help';
-    cnt.textContent = nEntries + (mapCap ? ' / ' + mapCap : '') + ' entries'
-      + ((mapCap && nEntries >= mapCap)
-         ? ' — full: delete entries before adding new ones' : '');
-    box.appendChild(cnt);
+    box.appendChild(cnt);  // text painted by paintCount() once the table exists
     const showDate = !!opts.showMapDates;
     const meta = rule.map_meta || {};
     const tbl = document.createElement('table');
@@ -2933,6 +2932,21 @@ function renderTypeEditor(rule, commitData, opts) {
       btnRow.appendChild(saveBtn);
     }
     box.appendChild(btnRow);
+    // Repaint the count on every row add/remove: mutations deliberately avoid
+    // re-rendering the editor (the add handler appends a <tr> directly, the
+    // per-row × removes one), so a build-time-only readout froze the moment a
+    // row changed. Counts DOM rows (not rule.map) so a blank just-added row
+    // shows in the total; the MutationObserver catches the delete path too —
+    // the × handler detaches the row, so no event ever bubbles to tbl.
+    const paintCount = () => {
+      const n = tbl.querySelectorAll('tr').length;
+      cnt.textContent = n + (mapCap ? ' / ' + mapCap : '') + ' entries'
+        + ((mapCap && n >= mapCap)
+           ? ' — full: delete entries before adding new ones' : '');
+      addBtn.disabled = !!(mapCap && n >= mapCap);
+    };
+    new MutationObserver(paintCount).observe(tbl, { childList: true });
+    paintCount();
     return box;
   }
 
@@ -3095,14 +3109,13 @@ def sev_pills_html() -> str:
     # cluster and rides the same placeholder so all templates inherit it.
     parts: list[str] = [activity_cluster_html(), '<span class="sevpills">']
     for level, key in (("warn", "WARNING"), ("err", "ERROR"), ("crit", "CRITICAL")):
-        n = 0
-        cls = f"sevpill admin-only {level} {'hot' if n else 'zero'}"
+        cls = f"sevpill admin-only {level} zero"
         title = f"{key}+ since process start — click to filter logs"
         parts.append(
             f'<a id="sev-{level}" class="{cls}" '
             f'href="/logs?filter={key}" title="{title}">'
             f'<span class="lbl">{level}</span> '
-            f'<span class="n">{n}</span></a>'
+            f'<span class="n">0</span></a>'
         )
     parts.append("</span>")
     return "".join(parts)

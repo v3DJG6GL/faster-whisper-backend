@@ -183,6 +183,10 @@ _HUB_HTML = """<!doctype html>
      whoami pass (the pills' .admin-only class only has effect in <header>). */
   .hub-sev { display: none; align-items: center; gap: 0.25rem; }
   body.hub-admin .hub-sev { display: inline-flex; }
+  /* The activity cluster rides {{SEV_PILLS}} into every shell, but its JS
+     bails on this headerless page — hide the empty flex item so it does not
+     consume the strip's gap. */
+  .hub-sev .hact-wrap { display: none; }
   .hub-sev .sevpill { font-size: var(--fs-xs); padding: 0.1rem 0.5rem;
     border-radius: 4px; border: 1px solid var(--border); color: var(--dim);
     text-decoration: none; display: inline-flex; gap: 0.3em;

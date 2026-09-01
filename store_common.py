@@ -62,8 +62,9 @@ def secure_file(path: str) -> None:
 
     Used for surfaces that hold the same plaintext dictation as the stores but
     are not SQLite: the rotating server log (every request block carries RAW
-    WHISPER / FINAL text) and config.local.json (which carries the admin host
-    allowlist and the compiled pipeline rules).
+    WHISPER / FINAL text — main.py), config.local.json (admin host allowlist
+    and compiled pipeline rules — config_store.py), the model-sizes cache
+    (model_sizes.py) and downloaded URL media files (url_media_store.py).
     """
     _chmod(path, 0o600)
 

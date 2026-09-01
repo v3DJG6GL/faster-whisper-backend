@@ -77,6 +77,29 @@ def test_settings_state_carries_identity_fields(client):
     assert build_info.APP_VERSION in ident["report"]
 
 
+def test_identity_card_reports_configured_device_not_nvml(client, monkeypatch):
+    """A box with an NVIDIA card but MODEL_DEVICE=cpu must not claim "gpu — …"
+    in the card / copy-report: the device word follows what the server decodes
+    on, not NVML merely finding a device."""
+    import admin_routes
+    import system_stats
+    monkeypatch.setattr(system_stats, "gpu_name",
+                        lambda: "NVIDIA GeForce RTX 3080")
+    monkeypatch.setattr(system_stats, "loaded_models_snapshot", lambda: [])
+    monkeypatch.setattr(cfg, "MODEL_DEVICE", "cpu", raising=False)
+    ident = admin_routes._server_ident_fields()
+    assert "gpu —" not in ident["runs_as"]
+    assert "cpu" in ident["runs_as"]
+    # the card present-but-unused hint may appear, but never as the device
+    assert "gpu —" not in ident["report"]
+
+    # and a loaded cuda model wins over the config fallback
+    monkeypatch.setattr(system_stats, "loaded_models_snapshot",
+                        lambda: [{"device": "cuda"}])
+    ident = admin_routes._server_ident_fields()
+    assert "gpu — NVIDIA GeForce RTX 3080" in ident["runs_as"]
+
+
 def test_pipeline_view_has_no_identity_card(client):
     r = client.get("/settings/pipeline")
     assert r.status_code == 200

@@ -30,7 +30,10 @@ def test_overrides_page_renders(client):
     # render_page substituted every placeholder (none leak through)
     assert not re.findall(r"\{\{[A-Z_]+\}\}", body)
     for marker in ("panel-profiles", "panel-explorer", "_renderWaterfall",
-                   "ov-wrap", "tab-explorer", "/settings/overrides"):
+                   "ov-wrap", "tab-explorer", "/settings/overrides",
+                   # save() surfaces the server 409 in-use guard's detail
+                   # instead of a bare "save failed (409)"
+                   "profile still in use"):
         assert marker in body, marker
 
 
@@ -102,6 +105,27 @@ def test_delete_guard_counts_allowlist_only_reference(client, make_user_key):
     usage = client.get(f"{OV}/state", headers=h).json()["usage"]["clinic-de"]
     assert kid in usage["keys"]          # allowlist-only ref now counted
     assert usage["users"] == []          # not forced/allowed on any user
+
+
+def test_delete_guard_refuses_null_profiles_payload(client, make_user_key):
+    # {"OVERRIDE_PROFILES": null} is save_overrides' remove-the-whole-key
+    # sentinel: it deletes EVERY profile. The in-use guard must treat it as
+    # "all profiles removed", not skip the check because the value isn't a
+    # dict — otherwise a curl POST wipes in-use profiles and their locks.
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
+    uid, _ = make_user_key("alice", is_admin=False)
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
+                                "locks": []}})
+    assert r.status_code == 200, r.text
+
+    r = client.post(f"{OV}/state", headers=h, json={"OVERRIDE_PROFILES": None})
+    assert r.status_code == 409
+    assert "clinic-de" in r.json()["detail"]
+    # the profile survived the attempt
+    j = client.get(f"{OV}/state", headers=h).json()
+    assert "clinic-de" in j["profiles"]
 
 
 def test_bad_profile_value_422(client, make_user_key):

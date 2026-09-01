@@ -15,6 +15,7 @@ endpoints are admin-only (host allowlist + admin key).
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 from typing import Any
@@ -36,6 +37,7 @@ require_admin_webui_host = web_common.require_admin_webui_host
 
 router = APIRouter(prefix="/settings/overrides")
 
+@functools.lru_cache(maxsize=1)
 def _build_field_meta() -> dict[str, dict[str, Any]]:
     """Widget metadata (kind / min / max / opts) for every overridable field,
     derived from the OverrideProfile JSON schema (via the shared
@@ -134,7 +136,13 @@ def _models() -> list[str]:
 @router.get("/state",
             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def get_state() -> dict[str, Any]:
-    """Profiles + the metadata the editors need."""
+    """Profiles + the metadata the editors need. Off the loop: _build_usage
+    walks users/keys in SQLite and _build_field_meta regenerates the Pydantic
+    JSON schema — the same work post_state already moved to a thread."""
+    return await asyncio.to_thread(_state_payload)
+
+
+def _state_payload() -> dict[str, Any]:
     return {
         "profiles": dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {}),
         "field_meta": _build_field_meta(),
@@ -187,10 +195,15 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     # layer, so every `locks` entry it contributed disappears and fields the
     # admin had pinned against per-request decode_override become
     # client-overridable again, with no error anywhere.
-    incoming = payload.get("OVERRIDE_PROFILES")
-    if isinstance(incoming, dict):
+    # Presence-keyed, not isinstance-keyed: `{"OVERRIDE_PROFILES": null}` is
+    # the save_overrides remove-the-whole-key sentinel, which deletes EVERY
+    # profile — so a non-dict value must count all current profiles as removed
+    # rather than skip the guard.
+    if "OVERRIDE_PROFILES" in payload:
+        incoming = payload["OVERRIDE_PROFILES"]
+        keep = set(incoming) if isinstance(incoming, dict) else set()
         current = getattr(cfg, "OVERRIDE_PROFILES", None) or {}
-        removed = set(current) - set(incoming)
+        removed = set(current) - keep
         if removed:
             usage = await asyncio.to_thread(_build_usage)
             in_use = sorted(
@@ -1256,6 +1269,16 @@ window._renderWaterfall = (function () {
     if (r.status === 422) {
       var j = await r.json();
       setStatus('invalid: ' + (j.errors || []).map(function (e) { return e.loc + ' ' + e.msg; }).join('; '), 'err');
+      return;
+    }
+    if (r.status === 409) {
+      // Server-side in-use guard: surface its actionable detail (which
+      // profiles are still bound) and refresh the stale usage map that let
+      // the delete through client-side.
+      var jc = await r.json().catch(function () { return {}; });
+      await loadState(true);
+      render(); refreshButtons();
+      setStatus(jc.detail || 'profile still in use', 'err');
       return;
     }
     if (!r.ok) { setStatus('save failed (' + r.status + ')', 'err'); return; }

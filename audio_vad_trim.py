@@ -25,6 +25,7 @@ import time
 import wave
 
 import audio_merge
+import store_common
 
 logger = logging.getLogger("whisper-api")
 
@@ -150,10 +151,7 @@ def trim_wav(
         # process umask (0644 typically), and os.replace hands that mode to
         # dst_path — which would widen an 0600 temp file. Trimmed dictation
         # audio is PHI; keep it owner-only across the swap.
-        try:
-            os.chmod(tmp_path, 0o600)
-        except OSError:
-            pass
+        store_common.secure_file(tmp_path)
         try:
             with open(tmp_path, "rb") as fp:
                 os.fsync(fp.fileno())
