@@ -623,6 +623,28 @@ def test_sweep_retention_protects_members_of_a_current_sample(
     assert cs.get_capture(member) is not None
 
 
+def test_count_evictable_ignores_grouped_members(
+    captures_store_db, groups_store_db, monkeypatch, tmp_path,
+):
+    """The ingest cap gate compares count_evictable() to CAPTURES_MAX; grouped
+    rows are bounded by retention, not the cap, so they must not count —
+    otherwise grouped rows alone at the cap wedge ingestion shut while the
+    evictor sees nothing to evict."""
+    import time
+    cs = captures_store_db
+    gs = groups_store_db
+    member = _make(cs, monkeypatch, tmp_path)
+    ungrouped = _make(cs, monkeypatch, tmp_path)
+    assert cs.count() == 2
+    assert cs.count_evictable() == 2
+    now = time.time()
+    _group_one(cs, gs, "gcountevict00000", member,
+               sample_ts=now, member_ts=now)
+    assert cs.count() == 2
+    assert cs.count_evictable() == 1
+    assert cs.get_capture(ungrouped) is not None
+
+
 def test_sweep_retention_expires_an_over_age_sample_and_its_members(
     captures_store_db, groups_store_db, monkeypatch, tmp_path,
 ):

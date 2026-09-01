@@ -698,3 +698,51 @@ def test_export_skips_translate_row_for_english_source(
                    language="en-GB", translations={"en": "quelle"})
     rows = _export_manifest()
     assert [r["task"] for r in rows] == ["transcribe"]
+
+
+def test_rebuild_lock_survives_prune_while_in_flight():
+    """A Lock handed out but not yet acquired must not be pruned: the prune in
+    _get_rebuild_lock skips sids pinned in _rebuild_inflight, so a second
+    caller for the same sid gets the SAME object instead of minting a new one
+    (which would let two rebuilds run concurrently)."""
+    import captures_routes as cr
+
+    saved_locks = dict(cr._rebuild_locks)
+    saved_inflight = dict(cr._rebuild_inflight)
+    cr._rebuild_locks.clear()
+    cr._rebuild_inflight.clear()
+    try:
+        sid = "sid-in-flight"
+        # Mirror _rebuild_lock's handout window: sid pinned, lock not yet
+        # acquired (so v.locked() alone would not protect it).
+        with cr._rebuild_locks_guard:
+            cr._rebuild_inflight[sid] = 1
+        first = cr._get_rebuild_lock(sid)
+        assert not first.locked()
+        # Trigger the opportunistic prune with a flood of other sids.
+        for i in range(cr._REBUILD_LOCKS_MAX + 1):
+            cr._get_rebuild_lock(f"sid-filler-{i}")
+        assert cr._get_rebuild_lock(sid) is first
+        # And _release_rebuild_lock must not drop a pinned sid either.
+        cr._release_rebuild_lock(sid)
+        assert cr._rebuild_locks.get(sid) is first
+    finally:
+        cr._rebuild_locks.clear()
+        cr._rebuild_locks.update(saved_locks)
+        cr._rebuild_inflight.clear()
+        cr._rebuild_inflight.update(saved_inflight)
+
+
+def test_rebuild_lock_contextmanager_pins_and_unpins():
+    """_rebuild_lock registers the sid in _rebuild_inflight for the whole
+    handout-to-release span and cleans up after itself."""
+    import captures_routes as cr
+
+    sid = "sid-ctx-pin"
+    with cr._rebuild_lock(sid):
+        assert cr._rebuild_inflight.get(sid) == 1
+        assert cr._rebuild_locks[sid].locked()
+    assert sid not in cr._rebuild_inflight
+    assert not cr._rebuild_locks[sid].locked()
+    cr._release_rebuild_lock(sid)
+    assert sid not in cr._rebuild_locks

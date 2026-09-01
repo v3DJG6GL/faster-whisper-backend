@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import functools
 import io
 import json
@@ -290,7 +291,9 @@ async def propose_merges_api(
     sees_all = perms.scope("captures") == "all"
     # Off the event loop AND off the default executor. On a cold
     # _TRIM_DUR_CACHE (every restart) this walks up to
-    # CAPTURES_PROPOSER_WINDOW rows doing a PCM read plus a full VAD pass each,
+    # the hardcoded 500-row proposer window
+    # (captures_merge_proposer._propose_merges_locked) doing a PCM read plus a
+    # full VAD pass per row,
     # and the candidate walk itself is O(N*M^2) — measured 25-144 s on a
     # 500-row bucket. asyncio.to_thread would put that on the DEFAULT executor,
     # which is the pool main.transcribe runs CT2 inference in, so concurrent
@@ -2403,7 +2406,7 @@ async def regenerate_sample_api(
     silence_ms = _global_silence_ms()
 
     def _regenerate() -> dict[str, Any]:
-        with _get_rebuild_lock(sid):
+        with _rebuild_lock(sid):
             duration_ms, hashes, member_trims = _build_merged_wav(
                 sid=sid,
                 member_ids=[m["id"] for m in members],
@@ -2455,6 +2458,11 @@ async def dissolve_sample_api(
 _rebuild_locks: dict[str, threading.Lock] = {}
 _REBUILD_LOCKS_MAX = 512
 _rebuild_locks_guard = threading.Lock()
+# Sids whose Lock has been handed out but not necessarily acquired yet
+# (value = number of such callers). `v.locked()` alone can't protect that
+# window: the prune below would drop the entry and a later caller would mint
+# a SECOND Lock for the same sid, letting two rebuilds run concurrently.
+_rebuild_inflight: dict[str, int] = {}
 
 
 def _get_rebuild_lock(sid: str) -> threading.Lock:
@@ -2463,19 +2471,41 @@ def _get_rebuild_lock(sid: str) -> threading.Lock:
         if lock is None:
             # Opportunistic prune before growing. Sample ids are random and a
             # dissolved sample's id never returns, so without this the dict is
-            # an unbounded create/regenerate/dissolve leak. Only idle locks are
+            # an unbounded create/regenerate/dissolve leak. Only idle locks
+            # that are not in flight (handed out but not yet acquired) are
             # dropped, so a rebuild in flight is never orphaned.
             if len(_rebuild_locks) >= _REBUILD_LOCKS_MAX:
-                for k in [k for k, v in _rebuild_locks.items() if not v.locked()]:
+                for k in [k for k, v in _rebuild_locks.items()
+                          if not v.locked() and k not in _rebuild_inflight]:
                     del _rebuild_locks[k]
             lock = threading.Lock()
             _rebuild_locks[sid] = lock
         return lock
 
 
+@contextlib.contextmanager
+def _rebuild_lock(sid: str):
+    """Hold the per-sid rebuild lock, keeping the sid pinned against the
+    prune in _get_rebuild_lock for the whole handout-to-release span."""
+    with _rebuild_locks_guard:
+        _rebuild_inflight[sid] = _rebuild_inflight.get(sid, 0) + 1
+    try:
+        with _get_rebuild_lock(sid):
+            yield
+    finally:
+        with _rebuild_locks_guard:
+            n = _rebuild_inflight.get(sid, 1) - 1
+            if n <= 0:
+                _rebuild_inflight.pop(sid, None)
+            else:
+                _rebuild_inflight[sid] = n
+
+
 def _release_rebuild_lock(sid: str) -> None:
     """Drop a sample's lock entry once the sample itself is gone."""
     with _rebuild_locks_guard:
+        if sid in _rebuild_inflight:
+            return
         lock = _rebuild_locks.get(sid)
         if lock is not None and not lock.locked():
             del _rebuild_locks[sid]
@@ -2523,8 +2553,7 @@ def _ensure_sample_wav(g: dict[str, Any]) -> str:
             )
 
     member_ids = [m["id"] for m in members]
-    lock = _get_rebuild_lock(g["id"])
-    with lock:
+    with _rebuild_lock(g["id"]):
         if os.path.exists(abs_p):
             return abs_p
         logger.warning(
@@ -7533,21 +7562,8 @@ _CAPTURES_HTML = r"""<!doctype html>
     }));
     combined.sort(function(a, b) { return b.ts - a.ts; });
 
-    if (combined.length === 0) {
-      var empty = document.createElement('div');
-      empty.className = 'empty-state';
-      empty.innerHTML = _allCaptures.length === 0
-        ? '<strong>No captures yet.</strong> Enable <em>CAPTURE_RECORDINGS_ENABLED</em> in /settings and send a transcription request.'
-        : 'No captures match the current filters.';
-      list.appendChild(empty);
-      return;
-    }
-    combined.forEach(function(item) {
-      list.appendChild(item.kind === 'capture'
-        ? renderCard(item.data)
-        : _renderSampleCard(item.data));
-    });
-    if (_samplesNext) {
+    function appendMoreFooter(list) {
+      if (!_samplesNext) return;
       // Footer for the remaining group pages. Built with DOM APIs (no
       // innerHTML) and auto-triggered when it scrolls into view, with the
       // button as the fallback for browsers without IntersectionObserver
@@ -7564,6 +7580,11 @@ _CAPTURES_HTML = r"""<!doctype html>
       list.appendChild(more);
       if (!_samplesLoading && window.IntersectionObserver) {
         var io = new IntersectionObserver(function(entries) {
+          // Re-rendering collapses open group cards (their <audio> does
+          // not survive the innerHTML wipe), so while one is expanded
+          // let only the manual button page further — never the scroll
+          // auto-trigger.
+          if (Object.keys(_openSamples).length !== 0) return;
           if (entries.some(function(e) { return e.isIntersecting; })) {
             io.disconnect();
             loadMoreSamples();
@@ -7572,6 +7593,25 @@ _CAPTURES_HTML = r"""<!doctype html>
         io.observe(more);
       }
     }
+
+    if (combined.length === 0) {
+      var empty = document.createElement('div');
+      empty.className = 'empty-state';
+      empty.innerHTML = _allCaptures.length === 0
+        ? '<strong>No captures yet.</strong> Enable <em>CAPTURE_RECORDINGS_ENABLED</em> in /settings and send a transcription request.'
+        : 'No captures match the current filters.';
+      list.appendChild(empty);
+      // A client-side status filter can empty this page while more group
+      // pages remain server-side — keep the load-more footer reachable.
+      appendMoreFooter(list);
+      return;
+    }
+    combined.forEach(function(item) {
+      list.appendChild(item.kind === 'capture'
+        ? renderCard(item.data)
+        : _renderSampleCard(item.data));
+    });
+    appendMoreFooter(list);
     openIds.forEach(function(cid) {
       var card = list.querySelector('.capture-card[data-id="' + cid + '"]');
       if (card) {

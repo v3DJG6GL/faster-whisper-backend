@@ -64,9 +64,12 @@ _CACHE: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 # up front now (see propose_merges); this is the belt-and-braces half, so the
 # dict is bounded however the key is derived.
 _CACHE_MAX = 512
-# Serializes the sweep itself (see propose_merges). Also makes the _CACHE and
-# _TRIM_DUR_CACHE mutations single-threaded again now that the route dispatches
-# this through asyncio.to_thread.
+# Serializes the sweep itself (see propose_merges) — sweeps only. It does NOT
+# make the _CACHE / _TRIM_DUR_CACHE mutations single-threaded: invalidate()
+# pops _CACHE from store write threads, and trimmed_duration_s() mutates
+# _TRIM_DUR_CACHE from the default executor (merge validation via
+# asyncio.to_thread), neither of which takes this lock. Eviction below
+# therefore snapshots keys instead of iterating the live dict.
 _SWEEP_LOCK = threading.Lock()
 
 # Per-capture trimmed-duration cache. Capture audio is immutable once written,
@@ -120,8 +123,11 @@ def trimmed_duration_s(row: dict[str, Any]) -> float:
         )
         dur_s = float(res.get("new_duration_ms") or 0) / 1000.0 or raw
         # dicts keep insertion order, so this evicts the least recently added.
-        while len(_TRIM_DUR_CACHE) >= _TRIM_DUR_CACHE_MAX:
-            _TRIM_DUR_CACHE.pop(next(iter(_TRIM_DUR_CACHE)), None)
+        # Snapshot the keys first: other threads mutate this dict concurrently
+        # (see _SWEEP_LOCK note above), and iterating the live dict while it
+        # changes size raises RuntimeError.
+        for k in list(_TRIM_DUR_CACHE)[:max(0, len(_TRIM_DUR_CACHE) - _TRIM_DUR_CACHE_MAX + 1)]:
+            _TRIM_DUR_CACHE.pop(k, None)
         _TRIM_DUR_CACHE[cid] = (mtime, edge, max_gap, dur_s)
         return dur_s
     except Exception as e:  # read/VAD failure → raw fallback
@@ -356,8 +362,9 @@ def propose_merges(
     The cache is only written AFTER a sweep completes, so concurrent requests
     all miss and all run the full sweep. That was harmless while the route
     called this inline on the single-threaded event loop, but it now runs via
-    asyncio.to_thread — and on a cold trim cache each sweep costs up to
-    CAPTURES_PROPOSER_WINDOW VAD passes in the SAME default executor the
+    asyncio.to_thread — and on a cold trim cache each sweep costs up to the
+    hardcoded 500-row proposer window (_propose_merges_locked) of VAD
+    passes in the SAME default executor the
     Whisper decode uses, so N cheap GETs starved transcription of threads.
     One global lock: the waiters find the fresh cache entry and return at once.
     """
@@ -386,7 +393,10 @@ def _propose_merges_locked(
     # Resolve effective filter + cache key.
     if not is_admin:
         effective_user_id = caller_user_id
-        cache_key = _user_cache_key(caller_user_id) if caller_user_id else _ALL_USERS
+        # Unconditionally namespaced: an empty caller id must never fall back
+        # to the cross-user _ALL_USERS sentinel (it would both serve and
+        # poison the admin entry with a scoped sweep).
+        cache_key = _user_cache_key(caller_user_id)
     elif user_id_filter:
         # Reject an unknown id before it can mint a cache key: the sweep for a
         # nonexistent user returns nothing anyway, so this costs a caller
@@ -505,8 +515,11 @@ def _propose_merges_locked(
         if len(proposals) >= max_proposals:
             break
 
-    while len(_CACHE) >= _CACHE_MAX:
-        _CACHE.pop(next(iter(_CACHE)), None)
+    # Snapshot the keys first: invalidate() pops _CACHE from store write
+    # threads without _SWEEP_LOCK, and iterating the live dict while it
+    # changes size raises RuntimeError.
+    for k in list(_CACHE)[:max(0, len(_CACHE) - _CACHE_MAX + 1)]:
+        _CACHE.pop(k, None)
     _CACHE[cache_key] = (now, proposals)
     logger.info(
         "[proposer] user=%s n_eligible=%d sessions=%d candidates=%d proposals=%d",

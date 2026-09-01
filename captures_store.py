@@ -268,6 +268,21 @@ def count(user_id: str | None = None) -> int:
     return int(row[0]) if row else 0
 
 
+def count_evictable() -> int:
+    """Row count the ingest cap gate should compare against CAPTURES_MAX.
+
+    Mirrors _evict_to_cap's scope: only ungrouped rows (`sample_id IS
+    NULL`) count, because grouped rows back a merged WAV and are bounded
+    by retention, not by this cap. Comparing the unfiltered count()
+    against the cap would wedge ingestion shut once grouped rows alone
+    reach CAPTURES_MAX while the evictor sees nothing to evict."""
+    conn = _require_conn()
+    row = conn.execute(
+        "SELECT COUNT(*) FROM captures WHERE sample_id IS NULL",
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
 def create_capture(
     *,
     audio_src_path: str,
