@@ -55,10 +55,8 @@ from admin_routes import (
     _canon_rules,
 )
 from web_common import require_user_webui_host
-from auth import (
-    Permissions, get_current_user, open_mode_host_ok, require_page,
-    user_from_session_cookie,
-)
+import auth
+from auth import Permissions, get_current_user, require_page
 
 logger = logging.getLogger("whisper-api")
 
@@ -118,6 +116,12 @@ _MAP_MAX_ENTRIES: int = next(
      if getattr(m, "max_length", None) is not None),
     10_000,  # fallback mirrors MapRule.map's max_length
 )
+# Request-wide bound for a patch naming SEVERAL map rules: it caps the
+# event-loop work of one POST, and is deliberately NOT the per-dictionary
+# cap above — the page sends every dirty map in full in a single request, so
+# reusing _MAP_MAX_ENTRIES here made two individually valid dictionaries
+# unsaveable together.
+_MAP_MAX_TOTAL_ENTRIES: int = 4 * _MAP_MAX_ENTRIES
 
 
 _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
@@ -134,38 +138,11 @@ _PATCH_ALLOWED_FIELDS: dict[str, frozenset[str]] = {
 # the browser sends automatically on a same-origin stream.
 
 def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
-    """SSE-aware variant of get_current_user + require_page("quick_config").
-    Resolves auth from (in order) the bearer header and the HttpOnly session
-    cookie (EventSource sends it automatically). Attaches the Permissions
-    policy object and rejects callers whose quick_config scope is "none".
-
-    In OPEN mode the synthetic admin is confined to the admin host
-    allowlist (auth.open_mode_host_ok), like every other gate."""
-    import api_keys_store
-    if not api_keys_store.is_locked_down() and open_mode_host_ok(request):
-        rec = dict(api_keys_store.OPEN_MODE_USER)
-    else:
-        auth_header = request.headers.get("authorization") or ""
-        raw = ""
-        if auth_header.lower().startswith("bearer "):
-            raw = auth_header.split(" ", 1)[1].strip()
-        rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
-        if rec is None:
-            rec = user_from_session_cookie(request)
-        if rec is None:
-            raise HTTPException(
-                status.HTTP_401_UNAUTHORIZED,
-                "invalid or missing API key",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-    rec["permissions"] = Permissions(
-        rec.get("permissions_raw") or {}, bool(rec.get("is_admin")),
-    )
-    if not rec["permissions"].can("quick_config"):
-        raise HTTPException(
-            status.HTTP_403_FORBIDDEN, "no access to /quick-config",
-        )
-    return rec
+    """SSE-aware get_current_user + require_page("quick_config") — one line
+    over the shared resolver in auth, so this gate can never drift from the
+    Depends path (bearer header, then the session cookie; open mode only on
+    the admin host allowlist)."""
+    return auth.resolve_user_for_page_sse(request, "quick_config")
 
 
 class QuickPatchPayload(BaseModel):
@@ -290,21 +267,20 @@ def _redact_invisible_slugs(
     # The slug lives under "name" on a rule dict (see by_slug below); _RuleBase
     # forbids extras, so no rule ever carries a "slug" key and keying on one
     # made this a silent no-op.
-    hidden = [
-        str(r.get("name") or "") for r in rules
-        if r.get("name") and not perms.can_see_rule(r)
-    ]
+    # Also collect list POSITIONS of hidden rules: a plain Pydantic field
+    # error carries no slug at all, only a dotted loc like
+    # `PIPELINE_RULES.7.regex-list...` — the index (and rule type) leak the
+    # same existence information the slug substitution below exists to hide.
+    hidden: list[str] = []
+    hidden_idx: set[int] = set()
+    for i, r in enumerate(rules):
+        name = r.get("name")
+        if name and not perms.can_see_rule(r):
+            hidden.append(str(name))
+            hidden_idx.add(i)
     if not hidden:
         return errors
     import re
-    # List POSITIONS of hidden rules: a plain Pydantic field error carries no
-    # slug at all, only a dotted loc like `PIPELINE_RULES.7.regex-list...` —
-    # the index (and rule type) leak the same existence information the slug
-    # substitution below exists to hide.
-    hidden_idx = {
-        i for i, r in enumerate(rules)
-        if r.get("name") and not perms.can_see_rule(r)
-    }
     # format_validation_errors returns {"loc": ..., "msg": ...} dicts, not
     # bare strings — redact each field rather than the mapping.
     out: list[dict[str, str]] = []
@@ -327,10 +303,13 @@ def _redact_invisible_slugs(
                 val = val.replace(f"'{slug}'", "'<hidden rule>'")
             # config_store's guard messages read `rule {idx} ({slug!r}) entry
             # {eidx}: ...` — after the slug swap the ordinal still gives away
-            # the hidden rule's list position and entry count. Collapse it.
+            # the hidden rule's list position and entry count. Collapse it,
+            # but the '<hidden rule>' sentinel MUST survive: the page's doSave
+            # keys on it to route the error to the generic "contact admin"
+            # toast instead of showing the admin rule's regex error verbatim.
             val = re.sub(
                 r"rule \d+ \('<hidden rule>'\)(?: entry \d+)?",
-                "a hidden rule", val,
+                "<hidden rule>", val,
             )
             red[key] = val
         out.append(red)
@@ -395,18 +374,35 @@ async def _apply_rules_patch_locked(
     canonical_now = {r["name"]: r for r in _canon_rules(current_rules)
                      if isinstance(r, dict) and r.get("name")}
 
-    # Whole-request bound: the per-slug cap below limits ONE map, but a patch
-    # naming several map rules could still walk a multiple of the cap on the
-    # event loop. Bound the sum before touching any of them.
-    total_map_entries = sum(
-        len(p["map"]) for p in rules_patch.values()
-        if isinstance(p, dict) and isinstance(p.get("map"), dict)
-    )
-    if total_map_entries > _MAP_MAX_ENTRIES:
+    # Bound every map BEFORE walking any of them: the stamping loop and the
+    # comprehension in the per-slug loop below both iterate a caller-supplied
+    # dict on the event loop, and the only other cap (MapRule.map's
+    # max_length) is not reached until save_overrides, which runs after.
+    # Anything over the cap was already destined for a 422 there, so only the
+    # shape of the rejection changes.
+    # User-facing wording: this 400 fires BEFORE save_overrides, so Pydantic's
+    # "...at most N items..." 422 (which the page used to translate) is
+    # unreachable and this detail lands in the toast verbatim. The
+    # per-dictionary check runs first so a single full dictionary gets the
+    # actionable message rather than the request-wide one.
+    total_map_entries = 0
+    for p in rules_patch.values():
+        if isinstance(p, dict) and isinstance(p.get("map"), dict):
+            if len(p["map"]) > _MAP_MAX_ENTRIES:
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    f"this dictionary is full (server cap: {_MAP_MAX_ENTRIES} "
+                    "entries) — delete some entries before adding new ones",
+                )
+            total_map_entries += len(p["map"])
+    # Whole-request bound: the per-dictionary cap limits ONE map, but a patch
+    # naming several map rules could still walk a multiple of it on the event
+    # loop. Bounded against the (larger) request-wide cap, not the per-map one.
+    if total_map_entries > _MAP_MAX_TOTAL_ENTRIES:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"too many dictionary entries in one request (server cap: "
-            f"{_MAP_MAX_ENTRIES} entries in total)",
+            f"{_MAP_MAX_TOTAL_ENTRIES} entries in total)",
         )
 
     saved: list[str] = []
@@ -497,22 +493,8 @@ async def _apply_rules_patch_locked(
                     status.HTTP_400_BAD_REQUEST,
                     f"rules_patch['{slug}']['map'] must be an object",
                 )
-            # Bound the dict BEFORE walking it: the stamping loop and the
-            # comprehension below both iterate a caller-supplied dict on the
-            # event loop, and the only other cap (MapRule.map's max_length) is
-            # not reached until save_overrides, which runs after. Anything over
-            # the cap was already destined for a 422 there, so only the shape
-            # of the rejection changes.
-            # User-facing wording: this 400 fires BEFORE save_overrides, so
-            # Pydantic's "...at most N items..." 422 (which the page used to
-            # translate) is unreachable and this detail lands in the toast
-            # verbatim.
-            if len(new_map) > _MAP_MAX_ENTRIES:
-                raise HTTPException(
-                    status.HTTP_400_BAD_REQUEST,
-                    f"this dictionary is full (server cap: {_MAP_MAX_ENTRIES} "
-                    "entries) — delete some entries before adding new ones",
-                )
+            # Size was bounded by the pre-pass above, before any map was
+            # walked; nothing over _MAP_MAX_ENTRIES reaches this loop.
             if not isinstance(old_map, dict):
                 old_map = {}
             meta = dict(target.get("map_meta") or {})
@@ -608,7 +590,7 @@ async def _apply_rules_patch_locked(
     if user.get("is_admin") and getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False):
         try:
             import captures_store
-            captures_count = captures_store.count()
+            captures_count = await asyncio.to_thread(captures_store.count)
         except Exception as _e:
             logger.warning("[pipeline-rules] capture count lookup failed: %s", _e)
 
@@ -1630,7 +1612,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
       <span class="recent-label" title="Persisted in SQLite (WAL). Caps and TTL are configurable at /settings.">persistent · paginated</span>
       <label class="subbar-search" title="search recent transcriptions">
         <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
-        <input id="recent-search" type="text" aria-label="search recent transcriptions" placeholder="text in raw / final">
+        <input id="recent-search" type="text" maxlength="512" aria-label="search recent transcriptions" placeholder="text in raw / final">
       </label>
     </div>
     <div id="recent-list">
@@ -3466,7 +3448,9 @@ if (_recentSearchInput) {
     if (_recentSearchTimer) clearTimeout(_recentSearchTimer);
     _recentSearchTimer = setTimeout(() => {
       _recentSearchTimer = null;
-      const next = (_recentSearchInput.value || '').trim();
+      // 512 mirrors RecentSearchIn.q's max_length; a paste past the input's
+      // maxlength (or a programmatic set) must not turn into a bare 422.
+      const next = (_recentSearchInput.value || '').trim().slice(0, 512);
       if (next === _searchQuery) return;
       _searchQuery = next;
       reloadRecent();

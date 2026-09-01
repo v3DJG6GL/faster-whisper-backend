@@ -1,6 +1,7 @@
 """Integration tests for /quick-config routes."""
 
 import copy
+import re
 
 import pytest
 
@@ -240,6 +241,11 @@ def test_post_patch_oversized_map_400(client, app_module):
     r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": big}}})
     assert r.status_code == 400, r.text
     assert str(cap) in r.json()["detail"]
+    # The single-dictionary overflow must get the actionable per-dictionary
+    # wording, not the request-wide "in total" one (the request-wide check
+    # used to reuse the per-map cap and shadowed this branch entirely).
+    assert "this dictionary is full" in r.json()["detail"]
+    assert "in total" not in r.json()["detail"]
 
 
 def test_post_patch_map_at_cap_is_not_rejected_by_the_guard(client, app_module):
@@ -365,23 +371,37 @@ def _expose_two_map_rules(app_module):
     return first["name"], clone["name"]
 
 
-def test_post_patch_map_total_over_cap_400(client, app_module):
+def test_post_patch_map_total_over_cap_400(client, app_module, monkeypatch):
     """The per-slug cap bounds ONE map; a patch naming several map rules must
     not walk a multiple of the cap on the event loop. The request-wide sum is
-    bounded too, while each map alone stays under the per-slug cap."""
+    bounded against a DISTINCT, larger cap: two dictionaries that are each
+    valid on their own must save together (the page always posts every dirty
+    map in one request), which the old guard — reusing the per-map cap for
+    the sum — made impossible."""
     import quick_config_routes
 
     slug_a, slug_b = _expose_two_map_rules(app_module)
     assert slug_a and slug_b, "fixture config has no callback:map rule"
+    assert (quick_config_routes._MAP_MAX_TOTAL_ENTRIES
+            > quick_config_routes._MAP_MAX_ENTRIES)
     half = quick_config_routes._MAP_MAX_ENTRIES // 2 + 1
     map_a = {f"awort{i}": str(i) for i in range(half)}
     map_b = {f"bwort{i}": str(i) for i in range(half)}
     r = client.post("/quick-config/state", json={"rules_patch": {
         slug_a: {"map": map_a}, slug_b: {"map": map_b}}})
+    assert r.status_code != 400, r.text
+    # The request-wide guard still exists, and names the total cap.
+    monkeypatch.setattr(quick_config_routes, "_MAP_MAX_TOTAL_ENTRIES", 10)
+    small_a = {f"awort{i}": str(i) for i in range(6)}
+    small_b = {f"bwort{i}": str(i) for i in range(6)}
+    r = client.post("/quick-config/state", json={"rules_patch": {
+        slug_a: {"map": small_a}, slug_b: {"map": small_b}}})
     assert r.status_code == 400, r.text
-    # Each alone is under the per-slug cap and passes the ingress guards.
+    assert "in total" in r.json()["detail"]
+    assert "10" in r.json()["detail"]
+    # Each alone is under the (patched) request-wide cap and saves.
     r = client.post("/quick-config/state",
-                    json={"rules_patch": {slug_a: {"map": map_a}}})
+                    json={"rules_patch": {slug_a: {"map": small_a}}})
     assert r.status_code != 400, r.text
 
 
@@ -417,6 +437,42 @@ def test_hidden_rule_validation_error_is_fully_redacted(
         assert e["msg"] == "<hidden rule>", e
 
 
+def test_hidden_rule_guard_error_keeps_sentinel_for_page(
+        client, app_module, make_user_key):
+    """config_store's compile guard raises `rule {idx} ({slug!r}) entry
+    {eidx}: invalid regex: ...` for a rule the caller may not see. The
+    ordinal collapse used to rewrite that to 'a hidden rule: ...', which
+    dropped the only token the page's doSave keys on — so the admin rule's
+    regex error was shown verbatim as an actionable toast. The sentinel must
+    survive; the ordinal and the slug must not."""
+    from tests.conftest import bearer
+
+    slug = _expose_first_regex_list_rule(app_module)
+    assert slug is not None
+    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
+    rules.insert(0, {"name": "geheim", "label": "geheim",
+                     "type": "regex-list",
+                     "entries": [{"pattern": "(unclosed", "replacement": ""}]})
+    app_module.cfg.PIPELINE_RULES = rules
+
+    make_user_key("root", is_admin=True)  # flips lockdown
+    _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
+
+    r = client.post("/quick-config/state",
+                    json={"rules_patch": {slug: {"enabled": False}}},
+                    headers=bearer(raw))
+    assert r.status_code == 422, r.text
+    assert "geheim" not in r.text
+    assert "a hidden rule" not in r.text
+    errs = r.json()["errors"]
+    assert errs, "the hidden rule's guard error must still be reported"
+    regex_errs = [e for e in errs if "invalid regex" in e["msg"]]
+    assert regex_errs, errs
+    for e in regex_errs:
+        assert "<hidden rule>" in e["msg"], e
+        assert not re.search(r"\b(rule|entry) \d+", e["msg"]), e
+
+
 def test_redact_collapses_hidden_rule_ordinals():
     """config_store's guard messages read `rule {idx} ({slug!r}) entry {e}:`
     — after the slug swap the ordinal still gave away the hidden rule's list
@@ -433,7 +489,12 @@ def test_redact_collapses_hidden_rule_ordinals():
     out = q._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES", "msg": "rule 0 ('geheim') entry 2: boom"}],
         user, rules)
-    assert out == [{"loc": "PIPELINE_RULES", "msg": "a hidden rule: boom"}]
+    assert out == [{"loc": "PIPELINE_RULES", "msg": "<hidden rule>: boom"}]
+    # The sentinel must survive the collapse — static/page doSave keys on it
+    # to route the error to the generic "contact admin" toast — and no
+    # digit-bearing ordinal may remain.
+    assert "<hidden rule>" in out[0]["msg"]
+    assert not re.search(r"\b(rule|entry) \d+", out[0]["msg"])
     # A dotted Pydantic loc on the hidden index is blanked wholesale so the
     # page's '<hidden rule>' guard routes it to the generic toast.
     out = q._redact_invisible_slugs(
