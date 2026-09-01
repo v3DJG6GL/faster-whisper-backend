@@ -22,6 +22,7 @@ Security model (layered):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
@@ -285,6 +286,13 @@ def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
+# Stats-registry prefixes of the NON-decode model families, which share
+# system_stats' loaded-model registry with whisper (whisper registers bare
+# model names): translation._STATS_PREFIX / diarization._STATS_PREFIX /
+# bgm_separation._STATS_PREFIX.
+_NON_DECODE_PREFIXES = ("gguf:", "pyannote:", "uvr:")
+
+
 def _server_ident_fields() -> dict[str, str]:
     """The "This server" identity card's values (build + runtime facts), built
     per request so the uptime is fresh. They ride the admin-gated
@@ -301,8 +309,16 @@ def _server_ident_fields() -> dict[str, str]:
     # model's observed device; fall back to the configured one before any
     # model has loaded.
     gpu = system_stats.gpu_name()
+    # The snapshot is shared by EVERY model family in load order; only a
+    # decode (whisper) model's observed device may drive the device word — a
+    # cuda pyannote pipeline on a MODEL_DEVICE=cpu box must not flip the card
+    # (and a cpu gguf translator loaded first must not hide a cuda decode).
     loaded = system_stats.loaded_models_snapshot()
-    device = str((loaded[0].get("device") if loaded else None)
+    _dec = next(
+        (e for e in loaded
+         if not str(e.get("name") or "").startswith(_NON_DECODE_PREFIXES)),
+        None)
+    device = str((_dec.get("device") if _dec else None)
                  or getattr(cfg, "MODEL_DEVICE", "") or "")
     if device.startswith("cuda"):
         device_word = f"gpu — {gpu}" if gpu else "gpu"
@@ -467,6 +483,21 @@ async def get_state(response: Response) -> dict[str, Any]:
     }
 
 
+def _pipeline_rules_lock() -> asyncio.Lock:
+    """The loop-keyed lock that serializes every PIPELINE_RULES
+    read-modify-write — SHARED with /quick-config, which defined it first:
+    quick_config_routes.apply_rules_patch snapshots cfg.PIPELINE_RULES from
+    memory, holds it across the offloaded save, and writes the WHOLE key
+    back, so an admin save landing inside that window would be persisted,
+    applied, answered 200 — and then silently reverted by the stale
+    quick-config document. Both routers queueing on one lock closes the
+    cross-endpoint half of that lost update (the intra-endpoint half is
+    quick_config_routes._PATCH_LOCKS' original job). Lazy import:
+    quick_config_routes imports this module at startup."""
+    from quick_config_routes import _patch_lock
+    return _patch_lock()
+
+
 @router.post("/state", dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     """Validate and persist overrides. Returns the diff (which fields were
@@ -478,23 +509,31 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     # config.local.json instead of rewriting it with the default value, so the
     # "↺ Reset to default" button actually clears the "local.json" badge.
     payload = _prune_defaults_to_removal(payload)
-    try:
-        # Off the loop: save_overrides validates PIPELINE_RULES through
-        # regex_guard, which spawns a child interpreter and waits up to
-        # _GUARD_TIMEOUT (2.0 s). test_pipeline next door already uses this
-        # idiom for the same reason; the save path was left behind.
-        written = await asyncio.to_thread(config_store.save_overrides, payload)
-    except ValidationError as e:
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={"errors": config_store.format_validation_errors(e)},
-        )
-    except OSError as e:
-        logger.error("[config] save failed: %s", e)
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            f"could not write config.local.json: {e}")
+    # A PIPELINE_RULES save is a whole-key write racing /quick-config's
+    # read-modify-write patches: hold the shared pipeline lock across the
+    # save + hot-apply so a concurrent quick-config patch snapshots the
+    # post-save list instead of silently reverting this edit. Unrelated
+    # scalar saves stay off the shared lock.
+    _lock = (_pipeline_rules_lock() if "PIPELINE_RULES" in payload
+             else contextlib.nullcontext())
+    async with _lock:
+        try:
+            # Off the loop: save_overrides validates PIPELINE_RULES through
+            # regex_guard, which spawns a child interpreter and waits up to
+            # _GUARD_TIMEOUT (2.0 s). test_pipeline next door already uses this
+            # idiom for the same reason; the save path was left behind.
+            written = await asyncio.to_thread(config_store.save_overrides, payload)
+        except ValidationError as e:
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={"errors": config_store.format_validation_errors(e)},
+            )
+        except OSError as e:
+            logger.error("[config] save failed: %s", e)
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                f"could not write config.local.json: {e}")
 
-    applied = await _apply_hot_changes(written)
+        applied = await _apply_hot_changes(written)
 
     client_host = request.client.host if request.client else "?"
     logger.info(
@@ -508,6 +547,32 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         **applied,
         "requires_restart": bool(applied["cold_pending"]),
     })
+
+
+async def _rebuild_caches(reason: str) -> None:
+    """Recompile main's derived pipeline caches, off the event loop.
+
+    Off the loop because rebuild_caches recompiles every rule; a
+    callback:map builds a \\b(alt|alt|...)\\b alternation and
+    re.compile()s it — measured at 68 ms for 500 random 13-char keys, 116 ms
+    at 1000, 250 ms at 2000, and a *changed* map (exactly what every caller
+    here produces) always misses re._cache.
+
+    rebuild_caches mutates module globals, so this is only safe under a
+    single-writer assumption. That assumption already had to hold:
+    save_overrides — the far heavier writer one frame up the same call
+    chain — has been offloaded to a worker thread for a while, so the write
+    side of this path was already running off the loop. Moving the rebuild
+    alongside it does not widen the window; both are awaited in sequence, so
+    no two rebuilds from a single request's chain can overlap, and
+    concurrent requests were already able to interleave at the
+    save_overrides await."""
+    try:
+        import main as _main
+        await asyncio.to_thread(_main.rebuild_caches)
+        logger.info("[config] rebuilt pipeline caches after %s", reason)
+    except Exception as e:
+        logger.error("[config] cache rebuild failed after %s: %s", reason, e)
 
 
 async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
@@ -560,27 +625,7 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
             hot_changed.append(name)
 
     if needs_cache_rebuild:
-        try:
-            import main as _main
-            # Off the loop as well. rebuild_caches recompiles every rule; a
-            # callback:map builds a \b(alt|alt|...)\b alternation and
-            # re.compile()s it — measured at 68 ms for 500 random 13-char keys,
-            # 116 ms at 1000, 250 ms at 2000, and a *changed* map (exactly what
-            # this path produces on every save) always misses re._cache.
-            #
-            # rebuild_caches mutates module globals, so this is only safe under
-            # a single-writer assumption. That assumption already had to hold:
-            # save_overrides — the far heavier writer one frame up the same
-            # call chain — has been offloaded to a worker thread for a while,
-            # so the write side of this path was already running off the loop.
-            # Moving the rebuild alongside it does not widen the window; both
-            # are awaited in sequence, so no two rebuilds from a single
-            # request's chain can overlap, and concurrent requests were already
-            # able to interleave at the save_overrides await.
-            await asyncio.to_thread(_main.rebuild_caches)
-            logger.info("[config] rebuilt pipeline caches after admin update")
-        except Exception as e:
-            logger.error("[config] cache rebuild failed: %s", e)
+        await _rebuild_caches("admin update")
 
     # Eviction-on-edit: when a load-time field changed (globally or per-model),
     # drop the affected loaded model(s) from the cache so the next request
@@ -640,6 +685,14 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
             os.environ.pop("HF_TOKEN", None)
             logger.info("[config] HF_TOKEN env cleared (config field unset)")
 
+    # save_overrides already bumped the config version when the FILE was
+    # written, but the running cfg only got the new values in the setattr loop
+    # above — two awaits later. A streaming session whose _refresh_ident ran
+    # in that window stamped the new version while resolving from the OLD cfg
+    # and would never re-resolve. Bump again now that cfg is current; consumers
+    # only compare for inequality, so the cost is one redundant re-resolve.
+    config_store.bump_config_version()
+
     return {
         "hot_applied": hot_changed,
         "cold_pending": cold_changed,
@@ -692,37 +745,35 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
             status.HTTP_400_BAD_REQUEST,
             "payload must contain a 'PIPELINE_RULES' array",
         )
-    try:
-        saved = await asyncio.to_thread(config_store.save_factory_rules, rules)
-    except ValidationError as e:
-        return JSONResponse(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={"errors": config_store.format_validation_errors(e)},
-        )
-    except OSError as e:
-        logger.error("[config] factory-rules save failed: %s", e)
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            f"could not write config.json: {e}")
+    # Under the shared pipeline lock: this write races /quick-config's
+    # read-modify-write patches the same way post_state's does.
+    async with _pipeline_rules_lock():
+        try:
+            saved = await asyncio.to_thread(config_store.save_factory_rules, rules)
+        except ValidationError as e:
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={"errors": config_store.format_validation_errors(e)},
+            )
+        except OSError as e:
+            logger.error("[config] factory-rules save failed: %s", e)
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                f"could not write config.json: {e}")
 
-    # config.json IS the factory baseline — refresh the in-memory snapshot the
-    # WebUI's "↺ reset to default" and /settings/state `default_value` rely on.
-    if isinstance(getattr(cfg, "_BASELINE", None), dict):
-        cfg._BASELINE["PIPELINE_RULES"] = [dict(r) for r in saved]
+        # config.json IS the factory baseline — refresh the in-memory snapshot the
+        # WebUI's "↺ reset to default" and /settings/state `default_value` rely on.
+        if isinstance(getattr(cfg, "_BASELINE", None), dict):
+            cfg._BASELINE["PIPELINE_RULES"] = [dict(r) for r in saved]
 
-    # Recompute the EFFECTIVE rule list. config.local.json's PIPELINE_RULES
-    # still wins if present (per-deployment local override — unchanged); only
-    # when there is no local override does the factory list run directly.
-    overrides = await asyncio.to_thread(config_store.load_overrides)
-    local_rules = overrides.get("PIPELINE_RULES")
-    shadowed = isinstance(local_rules, list)
-    cfg.PIPELINE_RULES = local_rules if shadowed else [dict(r) for r in saved]
+        # Recompute the EFFECTIVE rule list. config.local.json's PIPELINE_RULES
+        # still wins if present (per-deployment local override — unchanged); only
+        # when there is no local override does the factory list run directly.
+        overrides = await asyncio.to_thread(config_store.load_overrides)
+        local_rules = overrides.get("PIPELINE_RULES")
+        shadowed = isinstance(local_rules, list)
+        cfg.PIPELINE_RULES = local_rules if shadowed else [dict(r) for r in saved]
 
-    try:
-        import main as _main
-        await asyncio.to_thread(_main.rebuild_caches)
-        logger.info("[config] rebuilt pipeline caches after factory-rules save")
-    except Exception as e:
-        logger.error("[config] cache rebuild failed after factory save: %s", e)
+        await _rebuild_caches("factory-rules save")
 
     client_host = request.client.host if request.client else "?"
     logger.info("[config] factory-rules update from=%s rules=%d shadowed_by_local=%s",
@@ -745,27 +796,27 @@ async def clear_local_pipeline_override(request: Request) -> JSONResponse:
     local snapshot is redundant and only shadows config.json. Clearing it makes
     config.json the runtime source here too.
 
-    Done as a dedicated route (not POST /settings/state with a None sentinel)
-    because _apply_hot_changes, on override removal, falls back to the stale
-    in-memory value rather than the baseline — so it would not take effect
-    until restart. Here we explicitly reload config.json into cfg.
+    Kept as a dedicated route (not POST /settings/state with a None sentinel)
+    so the clear re-reads config.json into cfg directly, instead of depending
+    on cfg._BASELINE["PIPELINE_RULES"] being in sync with the file
+    post_factory_rules just wrote. The None sentinel DOES revert to the
+    baseline these days (_apply_hot_changes' removal branch reads
+    cfg._BASELINE), so this route is a convenience + freshness guarantee,
+    not a workaround.
     """
-    try:
-        await asyncio.to_thread(
-            config_store.save_overrides, {"PIPELINE_RULES": None})
-        factory = await asyncio.to_thread(config_store.load_factory_rules)
-    except (ValidationError, RuntimeError, OSError) as e:
-        logger.error("[config] clear-local-override failed: %s", e)
-        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            f"could not clear local override: {e}")
+    # Shared pipeline lock: same whole-key write race as post_state.
+    async with _pipeline_rules_lock():
+        try:
+            await asyncio.to_thread(
+                config_store.save_overrides, {"PIPELINE_RULES": None})
+            factory = await asyncio.to_thread(config_store.load_factory_rules)
+        except (ValidationError, RuntimeError, OSError) as e:
+            logger.error("[config] clear-local-override failed: %s", e)
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                f"could not clear local override: {e}")
 
-    cfg.PIPELINE_RULES = factory
-    try:
-        import main as _main
-        await asyncio.to_thread(_main.rebuild_caches)
-        logger.info("[config] rebuilt pipeline caches after clearing local override")
-    except Exception as e:
-        logger.error("[config] cache rebuild failed after clear-local-override: %s", e)
+        cfg.PIPELINE_RULES = factory
+        await _rebuild_caches("clearing local override")
 
     client_host = request.client.host if request.client else "?"
     logger.info("[config] local PIPELINE_RULES override cleared from=%s — "
@@ -838,11 +889,18 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     # Advisory shown instead of starting a thread on an exponential shape: a
     # timed-out guard thread here is ABANDONED, not killed (CPython cannot
     # interrupt re.sub), so each one would pin a core for the life of the
-    # process. The save path refuses the same shapes (config_store ->
-    # regex_guard.validate), so screening keeps the panel consistent with it.
+    # process. A NEW save of the same shape is refused (config_store ->
+    # regex_guard.validate) — but a rule saved BEFORE the guard tightened
+    # still compiles and runs in the engine (main.rebuild_caches does no
+    # structural screen), so the message must not claim engine parity, and
+    # `not_run` marks the step so the panel renders it as a warning, not as
+    # "the engine skips this too".
     _NESTED_REP_MSG = (
-        "nested repetition (catastrophic backtracking risk) — not run; "
-        "the save path refuses this pattern too"
+        "nested repetition (catastrophic backtracking risk) — not executed "
+        "here: a timed-out dry-run thread cannot be interrupted. A NEW save "
+        "of this pattern would be rejected; if the rule is already saved it "
+        "IS still running in the live pipeline, so this step is not what "
+        "production produces"
     )
 
     sample = str(payload.get("sample") or "")
@@ -901,6 +959,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         if regex_guard._nested_repetition(str(ep)):
                             if bad is None:
                                 bad = _NESTED_REP_MSG
+                            lout["not_run"] = True
                             continue
                         try:
                             ecre = re.compile(ep)
@@ -931,11 +990,17 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
             # A bad entry no longer blanks the card (the engine skips it per-entry),
             # so show the valid entries' result + the bad pattern as an advisory.
             return {**common, "after": lout["after"], "matches": lout["matches"],
-                    "error": lout.get("err")}
+                    "error": lout.get("err"),
+                    **({"not_run": True} if lout.get("not_run") else {})}
 
         try:
             if rtype == "callback:map":
                 m = rule.get("map", {}) or {}
+                # Editor rules skip _PIPELINE_RULE_ADAPTER: a list/str map
+                # would survive to m.items() below and 500 the whole dry run.
+                if not isinstance(m, dict):
+                    return {**common, "after": text,
+                            "error": "map must be an object"}
                 if not m:
                     return {**common, "after": text, "skipped": True}
                 alternation = "|".join(re.escape(k) for k in sorted(m, key=len, reverse=True))
@@ -947,7 +1012,8 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                 if not pattern:
                     return {**common, "after": text, "skipped": True}
                 if regex_guard._nested_repetition(str(pattern)):
-                    return {**common, "after": text, "error": _NESTED_REP_MSG}
+                    return {**common, "after": text, "error": _NESTED_REP_MSG,
+                            "not_run": True}
                 cre = re.compile(pattern)
                 if rtype == "callback:lowercase-wordlist":
                     replacer = _main._make_lowercase_wordlist_replacer(
@@ -965,7 +1031,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         # re.compile as e.g. an int and raises TypeError — which re.error does not
         # cover, turning a dry run into an unhandled 500 instead of a per-step
         # error the panel already knows how to render.
-        except (re.error, TypeError, ValueError) as e:
+        except (re.error, AttributeError, TypeError, ValueError) as e:
             return {**common, "after": text, "error": str(e)}
 
         out: dict[str, Any] = {"done": False, "after": text, "matches": 0}
@@ -1056,7 +1122,10 @@ class _TranslationTestBody(BaseModel):
 
 @router.post("/translation-test",
              dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
-async def translation_test(body: _TranslationTestBody) -> JSONResponse:
+async def translation_test(
+        body: _TranslationTestBody,
+        user: dict[str, Any] = Depends(require_admin),
+) -> JSONResponse:
     """Run ONE sample segment through the translation stage — the WebUI's
     "▶ Test with loaded model" button next to the custom-template preview.
     Uses the configured default model (loading it on first use, exactly like
@@ -1071,12 +1140,14 @@ async def translation_test(body: _TranslationTestBody) -> JSONResponse:
     if fam is not None and fam not in translation._FAMILIES:
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content={"error": f"unknown prompt family '{fam}'"})
-    # Same allowlist semantics as the request path: a non-empty allowlist
-    # admits its members plus the configured default model.
+    # Same admission rule as the request path — main._translation_model_allowed
+    # is the one home for the allowlist semantics (an empty allowlist admits
+    # any well-formed ref; a non-empty one admits members + the configured
+    # default). Lazy main import — main imports this module at startup.
+    import main as _main
     ref = (body.model or "").strip()
     default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
-    allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
-    if ref and allowed and ref not in allowed and ref != default:
+    if ref and not _main._translation_model_allowed(ref, requested=ref):
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": "model is not in TRANSLATION_ALLOWED_MODELS"})
@@ -1096,15 +1167,16 @@ async def translation_test(body: _TranslationTestBody) -> JSONResponse:
     cold = not prompt.get("model_loaded", False)
     # Optional progress plumbing: joins the shared _BATCH_PROGRESS registry
     # so the lab JS can poll the existing progress endpoint while a cold
-    # test downloads (multi-GB) + loads + translates. Lazy main import —
-    # main imports this module at startup.
-    import main as _main
+    # test downloads (multi-GB) + loads + translates.
     _pid = (body.progress_id
             if (body.progress_id
                 and _main._PROGRESS_ID_RE.match(body.progress_id))
             else None)
+    # Owner-stamped like the batch/stage-ahead seeds in main: an owner-less
+    # entry is readable/cancellable by ANY authenticated caller holding the id.
     _main._progress_set(_pid, stage="starting", progress=None,
-                        model=(ref or default or None), compute="gguf")
+                        model=(ref or default or None), compute="gguf",
+                        owner=(user.get("user_id") or user.get("key_id")))
     t0 = time.perf_counter()
     try:
         results, warnings, meta = await translation.translate_segments(
@@ -2109,7 +2181,12 @@ function currentValue(name) {
 // with the setDirty() guard below + the greyed .env-pinned row styling.
 function disableEnvPinnedEditor(el) {
   el.classList.add('env-pinned-editor');
-  el.querySelectorAll('input, select, textarea, button').forEach(c => { c.disabled = true; });
+  // Read-only diagnostics hosted inside a pinned field's editor (the prompt
+  // lab's sample/test controls) stay usable — they mutate nothing.
+  el.querySelectorAll('input, select, textarea, button').forEach(c => {
+    if (c.dataset.diagnostic) return;
+    c.disabled = true;
+  });
 }
 
 function setDirty(name, value) {
@@ -3316,6 +3393,11 @@ function translationTemplateEditor(name, v) {
   left.appendChild(testRow);
   const results = document.createElement('div');
   left.appendChild(results);
+
+  // Lab-only diagnostic controls: usable even when the FIELD is env-pinned
+  // (they mutate nothing — the test endpoint is read-only). The config
+  // textarea `t` is deliberately NOT marked; the pin still disables it.
+  [modelSel, srcIn, tgtIn, sample, gloss, testBtn].forEach(c => { c.dataset.diagnostic = '1'; });
 
   // --- right: what the model receives ------------------------------------
   const right = document.createElement('div');
@@ -4568,6 +4650,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
             const n = step.matches || 0;
             status.textContent = '⚠ ' + n + ' match' + (n === 1 ? '' : 'es')
               + ' · bad pattern skipped: ' + step.error;
+          } else if (step.not_run) {
+            // Screened, not executed — a warning, not a failure: an
+            // already-saved rule of this shape still runs in the engine.
+            status.className = 'regex-status warn';
+            status.textContent = '⚠ ' + step.error;
           } else if (step.error) {
             status.className = 'regex-status err';
             status.textContent = '✗ ' + step.error;
@@ -5298,13 +5385,14 @@ function pipelineTestPanel() {
       const advisory = step.error && step.type === 'regex-list';
       if (step.skipped) badge = testBadge('empty', 'skipped');
       else if (advisory) badge = testBadge('warn', '⚠ ' + (step.matches || 0) + ' matches · bad pattern skipped');
+      else if (step.not_run) badge = testBadge('warn', '⚠ not run');
       else if (step.error) badge = testBadge('err', '✗');
       else if (step.slow) badge = testBadge('warn', '⚠ slow');
       else if (step.matches) badge = testBadge('ok', step.matches + ' matches');
       const changed = step.before !== step.after;
       const outCell = document.createElement('td');
       outCell.className = 'out';
-      if (step.error && !advisory) {
+      if (step.error && !advisory && !step.not_run) {
         const err = document.createElement('span');
         err.className = 'err';
         err.textContent = step.error;
@@ -5312,7 +5400,12 @@ function pipelineTestPanel() {
       } else {
         if (!changed) outCell.innerHTML = '<span class="nochange">(no change)</span>';
         else outCell.textContent = step.after;
-        if (advisory) {
+        if (step.not_run && step.error) {
+          const warn = document.createElement('span');
+          warn.className = 'err';
+          warn.textContent = ' ⚠ ' + step.error;
+          outCell.appendChild(warn);
+        } else if (advisory) {
           const warn = document.createElement('span');
           warn.className = 'err';
           warn.textContent = ' ⚠ ' + step.error;

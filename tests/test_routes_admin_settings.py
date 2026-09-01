@@ -366,6 +366,87 @@ def test_test_pipeline_nested_repetition_screened_not_run(client):
     assert not steps[0]["slow"]
     assert "nested repetition" in (steps[1]["error"] or "")
     assert not steps[1]["slow"]
+    # Screened steps carry `not_run` so the panel renders a warning, not an
+    # engine-parity claim: an already-saved rule of this shape still runs in
+    # the live pipeline (main.rebuild_caches does no structural screen).
+    assert steps[0].get("not_run") is True
+    assert steps[1].get("not_run") is True
+
+
+def test_test_pipeline_map_rule_non_dict_map_is_step_error(client):
+    """A callback:map rule whose `map` is a list/string (editor rules skip
+    _PIPELINE_RULE_ADAPTER) must degrade into a per-step error card, not an
+    unhandled 500 from m.items()."""
+    r = client.post(
+        "/settings/test-pipeline",
+        json={"sample": "hallo",
+              "rules": [{"name": "x", "label": "x", "type": "callback:map",
+                         "enabled": True, "map": ["hallo"]}]},
+    )
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+    assert step["error"]
+    assert step["after"] == "hallo"      # sample passed through unchanged
+
+
+def test_admin_rules_save_survives_concurrent_quick_config_patch(
+        client, app_module, monkeypatch):
+    """POST /settings/state's PIPELINE_RULES save queues on the SAME lock as
+    /quick-config's read-modify-write patches. Without it, a quick-config
+    patch whose cfg snapshot was taken mid-admin-save wrote the whole key
+    back and silently reverted the admin's edit (both requests 200)."""
+    import copy
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor
+
+    import config_store
+
+    rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
+    slug = None
+    for r in rules:
+        if isinstance(r, dict) and r.get("type") == "regex-list":
+            r["exposed"] = True
+            slug = r["name"]
+            break
+    app_module.cfg.PIPELINE_RULES = rules
+    assert slug is not None
+
+    # The admin edits a DIFFERENT rule's label than the one quick-config
+    # patches, so both edits can coexist in the final document.
+    admin_rules = copy.deepcopy(rules)
+    edited = next(r for r in admin_rules
+                  if isinstance(r, dict) and r.get("name") != slug)
+    edited["label"] = "ADMIN-EDIT"
+
+    orig_save = config_store.save_overrides
+
+    def _slow_save(*a, **kw):
+        _time.sleep(0.3)              # hold the offloaded-save window open
+        return orig_save(*a, **kw)
+
+    monkeypatch.setattr(config_store, "save_overrides", _slow_save)
+
+    def _admin():
+        return client.post("/settings/state",
+                           json={"PIPELINE_RULES": admin_rules})
+
+    def _quick():
+        _time.sleep(0.1)              # land inside the admin save's window
+        return client.post("/quick-config/state",
+                           json={"rules_patch": {slug: {"enabled": False}}})
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        fa, fq = pool.submit(_admin), pool.submit(_quick)
+        ra, rq = fa.result(), fq.result()
+    assert ra.status_code == 200, ra.text
+    assert rq.status_code == 200, rq.text
+
+    by_name = {}
+    for r in config_store.load_overrides()["PIPELINE_RULES"]:
+        d = r.model_dump() if hasattr(r, "model_dump") else dict(r)
+        by_name[d.get("name")] = d
+    assert by_name[edited["name"]].get("label") == "ADMIN-EDIT"
+    assert by_name[slug].get("enabled") is False
 
 
 def test_test_pipeline_rule_cap_tracks_schema():
@@ -580,6 +661,13 @@ def test_settings_page_ships_template_editor_and_preview(client):
     assert "/settings/translation-test" in text
     # Visibility follows the (unsaved) family select.
     assert "TRANSLATION_PROMPT_FAMILY" in text
+    # Env-pinning TRANSLATION_PROMPT_TEMPLATE must not disable the lab's
+    # read-only diagnostics (model/from/to/sample/glossary/test button).
+    assert "dataset.diagnostic = '1'" in text
+    assert "if (c.dataset.diagnostic) return;" in text
+
+
+_GUARD_WARNING = "segment 1: guard rejected the model output; kept the source text"
 
 
 def test_translation_test_endpoint_threads_template_override(
@@ -593,7 +681,8 @@ def test_translation_test_endpoint_threads_template_override(
         seen["segments"] = segments
         seen["targets"] = targets
         seen["kwargs"] = kwargs
-        return ([{"en": "We repeated the measurement yesterday."}], [],
+        return ([{"en": "We repeated the measurement yesterday."}],
+                [_GUARD_WARNING],
                 {"model": "org/model-GGUF:Q4", "source": "de",
                  "mode": "faithful"})
 
@@ -607,6 +696,9 @@ def test_translation_test_endpoint_threads_template_override(
     assert j["output"] == "We repeated the measurement yesterday."
     assert j["model"] == "org/model-GGUF:Q4"
     assert isinstance(j["ms"], int) and j["ms"] >= 0
+    # A guard-failed test falls back to the untranslated source — the
+    # warnings are the only signal, so they must reach the admin.
+    assert j["warnings"] == [_GUARD_WARNING]
     assert seen["segments"] == [
         {"text": "Wir haben die Messung gestern wiederholt."}]
     assert seen["targets"] == ["en"]
@@ -688,17 +780,26 @@ def test_translation_test_translation_error_is_400(
     import translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
+    pid = "deadbeef"
+    seen = {}
 
     async def boom(*a, **k):
+        # The entry must exist while the run is in flight...
+        seen["registered"] = pid in app_module._BATCH_PROGRESS
         raise translation.TranslationError(
             "translation dependencies are not installed on this server — "
             "pip install -r requirements-translate.txt")
 
     monkeypatch.setattr(translation, "translate_segments", boom)
     r = client.post("/settings/translation-test",
-                    json={"text": "hi", "target": "en"})
+                    json={"text": "hi", "target": "en", "progress_id": pid})
     assert r.status_code == 400
     assert "requirements-translate" in r.json()["error"]
+    assert seen["registered"] is True
+    # ...and the failure path must not strand it, or the lab's poller reads
+    # a permanent "starting" stage for a run that already died.
+    assert pid not in app_module._BATCH_PROGRESS
+    assert pid not in app_module._BATCH_CANCELLED
 
 
 def test_translation_test_preview_renders_without_model(
@@ -773,6 +874,32 @@ def test_translation_test_progress_id_seeds_registry(
     r = client.post("/settings/translation-test", json={
         "text": "hallo", "target": "en", "progress_id": "NOT-HEX"})
     assert r.status_code == 200, r.text
+
+
+def test_translation_test_progress_entry_is_owner_stamped(
+        client, app_module, monkeypatch, make_user_key):
+    """The lab's seed joins _BATCH_PROGRESS with an owner, like the batch and
+    stage-ahead seeds in main — an owner-less entry would be readable (and
+    cancellable) by ANY authenticated caller holding the id."""
+    import translation
+    from conftest import bearer
+
+    app_module.cfg.TRANSLATION_ENABLED = True
+    _uid, raw = make_user_key("root", is_admin=True)
+    pid = "feed" * 8
+    seen = {}
+
+    async def fake_translate(segments, targets, **kwargs):
+        seen["owner"] = (app_module._BATCH_PROGRESS.get(pid) or {}).get("owner")
+        return ([{"en": "hi"}], [],
+                {"model": "org/m", "source": "de", "mode": "faithful"})
+
+    monkeypatch.setattr(translation, "translate_segments", fake_translate)
+    r = client.post("/settings/translation-test",
+                    json={"text": "hallo", "target": "en", "progress_id": pid},
+                    headers=bearer(raw))
+    assert r.status_code == 200, r.text
+    assert seen["owner"] is not None
 
 
 def test_translation_test_model_allowlist_gate(client, app_module):

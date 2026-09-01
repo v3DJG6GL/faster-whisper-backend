@@ -31,7 +31,9 @@ def test_page_ships_sync_ui(client):
 def test_meta_map_empty(client):
     r = client.get(f"{_API}/client-settings")
     assert r.status_code == 200
-    assert r.json() == {"by_user": {}}
+    # `unavailable` False keeps "healthy but empty" distinguishable from a
+    # store outage (which also serves an empty map).
+    assert r.json() == {"by_user": {}, "unavailable": False}
 
 
 def test_meta_map_after_open_mode_push(client):
@@ -53,13 +55,40 @@ def test_export_download(client, make_user_key):
     )
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("application/json")
+    # The blob may carry the account's saved API keys — no browser or
+    # intermediary may cache it.
+    assert r.headers["cache-control"] == "no-store"
     # Filename carries a sanitized username + the stored version.
     assert (
         'filename="client-settings_Dr.-Mueller_v1.json"'
         in r.headers["content-disposition"]
     )
-    # Pretty-printed but parses back to the identical document.
+    # Pretty-printed (a human inspecting/restoring it beats byte-fidelity)
+    # but parses back to the identical document.
+    assert b'\n  "general"' in r.content
     assert json.loads(r.content) == {"general": {"theme": "dark"}}
+
+
+def test_export_import_roundtrip_unknown_schema(client, make_user_key):
+    """The contract the JS import honours (via the export's filename): a
+    server-exported document round-trips through Import even when its
+    top-level keys match none of the known desktop categories."""
+    uid, key = make_user_key("future", is_admin=True)
+    blob = {"futureCategory": {"x": 1}}
+    _seed(client, blob, headers=bearer(key))
+    r = client.get(
+        f"{_API}/users/{uid}/client-settings/export", headers=bearer(key)
+    )
+    assert r.status_code == 200
+    exported = json.loads(r.content)
+    assert exported == blob
+    r = client.post(
+        f"{_API}/users/{uid}/client-settings/import",
+        json={"blob": exported},
+        headers=bearer(key),
+    )
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
 
 
 def test_export_nothing_stored_404(client, make_user_key):
@@ -130,6 +159,22 @@ def test_import_oversize_413(client, make_user_key):
         headers=bearer(key),
     )
     assert r.status_code == 413
+
+
+def test_import_non_finite_float_422(client, make_user_key):
+    """Bare NaN in the import body must be a 422 with nothing force-written
+    — not a landed write followed by a 500 (see client_settings_store.InvalidBlob)."""
+    uid, key = make_user_key("nan", is_admin=True)
+    _seed(client, {"n": 1}, headers=bearer(key))
+    r = client.post(
+        f"{_API}/users/{uid}/client-settings/import",
+        content=b'{"blob": {"x": NaN}}',
+        headers={**bearer(key), "content-type": "application/json"},
+    )
+    assert r.status_code == 422
+    assert "NaN" in r.json()["detail"]
+    got = client.get(_V1, headers=bearer(key)).json()
+    assert got["version"] == 1 and got["blob"] == {"n": 1}
 
 
 def test_import_malformed_422(client, make_user_key):
@@ -203,8 +248,9 @@ def test_admin_gate(client, make_user_key):
 
 def test_admin_endpoints_when_store_unavailable(client, make_user_key, monkeypatch):
     """Store never initialized: the meta map degrades to empty (the page must
-    still render its users), while the drawer's export/import/delete surface
-    a 503 instead of a bare 500."""
+    still render its users) but flags `unavailable: true` so the drawers say
+    "store down" rather than the falsehood "nothing stored"; export/import/
+    delete surface a 503 instead of a bare 500."""
     import client_settings_store
 
     uid, key = make_user_key("sadmin", is_admin=True)
@@ -213,7 +259,7 @@ def test_admin_endpoints_when_store_unavailable(client, make_user_key, monkeypat
 
     r = client.get(f"{_API}/client-settings", headers=h)
     assert r.status_code == 200
-    assert r.json() == {"by_user": {}}
+    assert r.json() == {"by_user": {}, "unavailable": True}
 
     assert (
         client.get(f"{_API}/users/{uid}/client-settings/export", headers=h).status_code
