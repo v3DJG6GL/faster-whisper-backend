@@ -21,6 +21,12 @@ Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) transcri
   system `ffmpeg` on PATH is used when present); two-tier Silero/energy endpointing. Try it in the browser at `/dictate`.
   On by default (auth-gated); tune everything via `WHISPER_STREAMING_*` / `/settings`. A shared
   `INFERENCE_CONCURRENCY` limiter governs streaming **and** batch so they don't oversubscribe the GPU.
+  **Per-utterance translation handshake:** a client that declares `translate_expect`
+  (with `per_utterance: true`) in the WebSocket handshake gets a follow-up frame
+  `{"type": "captured", "id": …, "utterance": …}` after each `final`; the server holds that
+  utterance's log receipt open and the client must echo the id back as `captured_id` on its
+  `POST /v1/text/translations` so both halves log as one block. An id never claimed is released
+  by the `LOG_RECEIPT_HOLD_S` idle sweep (default 90 s) with a "never sent" note.
 - GPU-accelerated (CUDA) via faster-whisper + CTranslate2, with **automatic CPU fallback** when no GPU is available
 - **Per-request model selection** — clients pass `model="large-v3"` / `"large-v3-turbo"` / any HF repo id; LRU-cached in VRAM
 - **Text-to-text translation stage** (optional install) — translate the finished transcript into arbitrary target languages with local GGUF models (HY-MT1.5, TranslateGemma, MiLM-MT, … via llama.cpp): `translate_to=de,fr` on a transcription request or standalone `POST /v1/text/translations`; **fluent** (sentence-group merge) or **faithful** (per-cue) mode, glossary enforcement, per-language `translations` in the response. Off by default (`WHISPER_TRANSLATION_ENABLED`).
@@ -104,7 +110,9 @@ the NVIDIA device reservation). The GPU path needs an NVIDIA driver (CUDA 12.x)
 auto-falls back to CPU/int8. To build locally instead of pulling, uncomment
 `build:` in the compose file (the GPU build uses `Dockerfile.gpu`). The package
 inherits the repo's visibility; if the repo is private, `docker login
-forgejo.informethic.ch` first.
+forgejo.informethic.ch` first. The published images use zstd-compressed OCI
+layers, so pulling them needs Docker >= 23, containerd >= 1.5, or a current
+podman — an older daemon fails the pull with an unhelpful media-type error.
 
 The container runs as a **non-root user** (default `1000:1000`); set `PUID` /
 `PGID` in `.env` (or the environment) to run as a different user/group — no
@@ -215,7 +223,10 @@ env twins), needing `pip install -r requirements-translate.txt`:
   `tencent/HY-MT1.5-7B-GGUF:Q4_K_M`), `TRANSLATION_ALLOWED_MODELS`
   (per-request allowlist; empty = any well-formed ref — ships with the two
   top-ranked dedicated MT models, `tencent/HY-MT1.5-7B-GGUF:Q4_K_M` and
-  `mradermacher/MiLMMT-46-12B-v0.1-GGUF:Q4_K_M`),
+  `mradermacher/MiLMMT-46-12B-v0.1-GGUF:Q4_K_M`; **upgrading** from a release
+  where this shipped empty: add your model to the list or set
+  `WHISPER_TRANSLATION_ALLOWED_MODELS=` (empty) to keep the old any-ref
+  behaviour, otherwise requests for other refs are refused),
   `TRANSLATION_PRELOAD_MODELS` (warmed at startup),
   `TRANSLATION_MAX_LOADED_MODELS` (LRU cap — a 7B Q4 model holds ~5 GB),
   `TRANSLATION_DEVICE` (`auto` follows `MODEL_DEVICE`),
@@ -237,7 +248,7 @@ huggingface_hub into the models volume (`HF_HOME`).
 
 ### Rate limits & concurrency
 
-Four request budgets, all in the **Concurrency & Request Limits** settings
+Seven request budgets, all in the **Concurrency & Request Limits** settings
 group, all with `WHISPER_*` env twins, and all **hot** — the limiters re-read
 their ceiling on every call, so raising one applies to the next request with
 no restart and no bucket reset.
