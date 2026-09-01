@@ -9,8 +9,10 @@ bars into:
     (every crossed 10% boundary, at least every 30 s) plus start/done
     receipts,
   * an optional caller callback ``cb(done_bytes, total_bytes)`` (the request
-    handlers map it onto their progress registry entry), and
-  * a "download" entry in the central jobs registry.
+    handlers map it onto their progress registry entry, and the call sites
+    also use it to drive their own ``jobs.job_start("download", ...)`` entry
+    — this module never touches the jobs registry itself), and
+  * a persisted 'download' row via ``metrics.record_download`` on exit.
 
 Usage::
 
@@ -26,10 +28,14 @@ not bytes (snapshot_download's outer per-FILE bar) are ignored.
 
 Scope: the active capture is module-global (not thread-local), because
 snapshot_download fans file downloads out to worker threads that would never
-see a thread-local. Model loads are already serialized per module (`_lock`
-in translation/diarization/bgm, `_model_load_lock` in main), so concurrent
-captures are not a real shape; if two ever overlap, byte counts may blend —
-progress is a convenience, never a correctness surface.
+see a thread-local. Most model loads are serialized per module (`_lock` in
+translation/diarization/bgm), but main's whisper pre-download deliberately
+runs *outside* `_model_load_lock`, so two cold whisper loads (or a request
+plus a preload worker) can overlap. When they do, the later scope replaces
+the earlier one: bars constructed afterwards report under the later label
+and the inner exit restores `ReportingTqdm` rather than the original tqdm
+until the outer exit — byte counts may blend, and progress is a
+convenience, never a correctness surface.
 
 The `capture` context also monkeypatches the hub-internal default tqdm
 (``huggingface_hub.utils.tqdm.tqdm`` + ``file_download``'s alias) for its
@@ -42,6 +48,7 @@ from __future__ import annotations
 import contextlib
 import importlib
 import inspect
+import itertools
 import logging
 import threading
 import time
@@ -71,7 +78,10 @@ class _Capture:
         self.label = label
         self.cb = cb
         self.lock = threading.Lock()
-        self.bars: dict[int, list[int]] = {}   # id(bar) -> [done, total]
+        # bar key -> [done, total]. Keyed by a monotonic sequence number, not
+        # id(bar): finished bars are garbage-collected and CPython reuses the
+        # address for the next one, which would overwrite a done file's bytes.
+        self.bars: dict[int, list[int]] = {}
         self.t0 = time.monotonic()
         self._started_logged = False
         self._last_log = self.t0
@@ -128,6 +138,9 @@ class _Capture:
         return dict(_TQDM_CLASS_KWARGS)
 
 
+# Process-unique bar keys for `_Capture.bars` (see its comment).
+_bar_seq = itertools.count()
+
 if _hub_tqdm_mod is not None:
 
     class ReportingTqdm(_BaseTqdm):
@@ -139,12 +152,13 @@ if _hub_tqdm_mod is not None:
             self._dp_n = int(kwargs.get("initial") or 0)
             self._dp_total = int(kwargs.get("total") or 0)
             unit = str(kwargs.get("unit") or "")
+            self._dp_key = next(_bar_seq)
             super().__init__(*args, **kwargs)
             cap = _active_capture()
             self._dp_cap = cap if (cap is not None
                                    and unit.startswith("B")) else None
             if self._dp_cap is not None:
-                self._dp_cap.add_bar(id(self), self._dp_total)
+                self._dp_cap.add_bar(self._dp_key, self._dp_total)
 
         def update(self, n=1):
             out = super().update(n)
@@ -155,7 +169,7 @@ if _hub_tqdm_mod is not None:
                 self._dp_n = max(0, self._dp_n)
                 total = int(getattr(self, "total", None)
                             or self._dp_total or 0)
-                cap.bump(id(self), self._dp_n, total)
+                cap.bump(self._dp_key, self._dp_n, total)
             return out
 
 else:  # pragma: no cover — hub always importable in this deployment
@@ -250,10 +264,6 @@ def _record_download(label: str, done_bytes: int, secs: float) -> None:
         import metrics
         metrics.record_download(model=label, seconds=secs,
                                 bytes_done=done_bytes)
-    except AttributeError:
-        # metrics.record_download lands in a later change — logging above
-        # is the receipt until then.
-        pass
     except Exception as e:  # noqa: BLE001
         logger.warning("[download] record failed: %s", e)
 
