@@ -8,7 +8,6 @@ with zero font dependencies. Run from the repo root:
 Needs: fontTools + brotli (pip install fonttools brotli).
 """
 
-import sys
 from fontTools.ttLib import TTFont
 from fontTools.varLib import instancer
 from fontTools.pens.svgPathPen import SVGPathPen
@@ -119,7 +118,8 @@ def build(product, theme, out_path):
         + "\n".join(parts)
         + "\n</svg>\n"
     )
-    open(out_path, "w").write(svg)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write(svg)
     print(out_path, f"{width}x124")
 
 if __name__ == "__main__":

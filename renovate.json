@@ -34,18 +34,6 @@
       "groupName": "python deps"
     },
     {
-      "description": "yt-dlp chases YouTube's breaking changes \u2014 extractor fixes must land within a CI cycle, not after the 3-day release age. Own PR (ungrouped), no minimumReleaseAge, automerge.",
-      "matchManagers": [
-        "pip_requirements"
-      ],
-      "matchPackageNames": [
-        "yt-dlp"
-      ],
-      "groupName": null,
-      "minimumReleaseAge": "0 days",
-      "automerge": true
-    },
-    {
       "description": "NVIDIA CUDA wheels: never cross the pinned major. main.py's Windows DLL preloader hardcodes cublas64_12 / cudnn64_9, so a major bump (cublas 13.x, cudnn 10.x) would silently break GPU inference. The <13 / <10 caps in requirements-gpu.txt already block this; this makes the intent explicit.",
       "matchManagers": [
         "pip_requirements"
@@ -89,9 +77,23 @@
       ],
       "automerge": false,
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "yt-dlp chases YouTube's breaking changes \u2014 extractor fixes must land within a CI cycle, not after the 3-day release age. Own PR (ungrouped), no minimumReleaseAge, automerge. MUST STAY LAST IN THIS ARRAY: yt-dlp is date-versioned (requirements.txt pins yt-dlp>=2026.x), so the annual year rollover is a pep440 *major* and the blanket major rule above also matches it. Renovate merges every matching rule in array order with later keys winning, so from this position the fast lane survives the rollover; from its old position the January bump would have waited for a Dependency Dashboard checkbox \u2014 exactly the stale-extractor state this rule exists to prevent. dependencyDashboardApproval is spelled out for the same reason (last-wins is per property, so omitting it would leave the major rule's approval gate in force).",
+      "matchManagers": [
+        "pip_requirements"
+      ],
+      "matchPackageNames": [
+        "yt-dlp"
+      ],
+      "groupName": null,
+      "minimumReleaseAge": "0 days",
+      "automerge": true,
+      "dependencyDashboardApproval": false
     }
   ],
   "vulnerabilityAlerts": {
+    "description": "Security advisories automerge, MAJOR bumps included: this block is applied on top of packageRules for a vulnerability PR, so automerge:true here deliberately overrides the 'Major bumps require manual review' rule above. The value changed false \u2192 true during the GitHub \u2192 Forgejo port; keeping it true is a maintainer policy call (a fix only available in the next major should not sit behind a dashboard checkbox), not an oversight \u2014 flip it back if security PRs should wait for manual approval like any other major.",
     "labels": [
       "security"
     ],

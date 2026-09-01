@@ -41,6 +41,9 @@ WhisperAPI.exe
 WhisperAPI.xml
 WhisperAPI.wrapper.log
 nssm.exe
+# Pinned Windows shared-build ffmpeg extracted by install-service.ps1 -Full
+# (gitignored; ~150 MB of DLLs, unusable in a Linux image).
+ffmpeg/
 # Editor / preview cruft.
 *-preview.html
 # Review ledgers + local test cruft (gitignored; keep them out of LOCAL builds

@@ -37,6 +37,11 @@
 # runnable images, and they churn every run). sha-* tags ARE mirrored:
 # the GitHub-era CI always published them to this package, and they alias
 # the digests of latest/v* builds, so each one costs only a manifest copy.
+# That set only ever grows (one sha-<short> per release, x4 variants, and
+# nothing prunes them), so a sha-* tag already present on the destination
+# is skipped without a digest compare: it is content-addressed, presence
+# IS identity. Otherwise every dispatch and both crons would pay two
+# registry round trips per historical tag, forever.
 
 name: mirror-ghcr
 
@@ -134,8 +139,26 @@ jobs:
             exit 1
           fi
 
-          copied=0 fresh=0
+          # Destination tag list, fetched once. Empty on the very first run
+          # (the ghcr repo may not exist yet) — then nothing is skipped and
+          # every tag takes the digest-compare path below.
+          dst_tags=$(crane ls "$DST_IMAGE" 2>/dev/null || true)
+
+          copied=0 fresh=0 immutable=0
           for tag in $tags; do
+            # sha-<short> is content-addressed and can never be re-pushed to
+            # point elsewhere, so presence on the destination already proves
+            # it is in sync. latest*/v* ARE re-pushed (a new release moves
+            # them), so those keep the full two-request digest compare.
+            case "$tag" in
+              sha-*)
+                if printf '%s\n' "$dst_tags" | grep -qxF "$tag"; then
+                  fresh=$((fresh + 1))
+                  immutable=$((immutable + 1))
+                  continue
+                fi
+                ;;
+            esac
             src_digest=$(crane digest "$SRC_IMAGE:$tag")
             dst_digest=$(crane digest "$DST_IMAGE:$tag" 2>/dev/null || true)
             if [ "$src_digest" = "$dst_digest" ]; then
@@ -146,4 +169,4 @@ jobs:
             crane cp "$SRC_IMAGE:$tag" "$DST_IMAGE:$tag"
             copied=$((copied + 1))
           done
-          echo "::notice::mirror-ghcr: $copied tag(s) copied, $fresh already in sync"
+          echo "::notice::mirror-ghcr: $copied tag(s) copied, $fresh already in sync ($immutable immutable sha-* tag(s) skipped without a digest compare)"

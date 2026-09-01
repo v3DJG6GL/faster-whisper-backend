@@ -154,7 +154,11 @@ pip install -r requirements-dev.txt
 pytest -q
 ```
 
-CI runs the suite on Linux and Windows for every push (`.forgejo/workflows/ci.yml`).
+CI runs the suite on Linux (Python 3.12/3.13/3.14) and Windows for every pull
+request and every push to `main`, and fails the run if coverage drops below the
+gate configured in `.coveragerc` (`.forgejo/workflows/ci.yml`). A `v*` tag run
+deliberately skips both suites — a tag is only minted for a commit that already
+tested green — and goes straight to building and publishing the images.
 
 ## Usage
 
@@ -193,8 +197,10 @@ cp .env.example .env     # auto-loaded on startup; gitignored
 Notes:
 - An env-pinned setting is **read-only in the admin WebUI** (greyed out, badged
   `env: WHISPER_…`). Unset the variable to make it editable in the UI again.
-- Booleans accept `1/true/yes/on`; lists are comma-separated; an empty value
-  clears/disables nullable settings (e.g. `WHISPER_NO_SPEECH_THRESHOLD=`).
+- Booleans accept `1/true/yes/on/y/t/enabled` and `0/false/no/off/n/f/disabled`
+  (any other value keeps the current setting and logs a warning at startup);
+  lists are comma-separated; an empty value clears/disables nullable settings
+  (e.g. `WHISPER_NO_SPEECH_THRESHOLD=`).
 - **Secrets** (`WHISPER_BOOTSTRAP_ADMIN_KEY`, `WHISPER_HF_TOKEN`) also
   accept a `*_FILE` form pointing at a mounted secret file, so the value stays
   out of `docker inspect` / the process environment. (`WHISPER_USE_AUTH_TOKEN`,
@@ -573,7 +579,7 @@ The nav row at the top of every page (logs ↔ stats ↔ quick-config ↔ captur
 
 A second WebUI at `/settings` lets you edit every setting from the browser, with hot-reload for safe knobs (transcribe params, dictation map, prompt) and an automatic service restart for cold ones (server port, log file, preload list).
 
-**On by default** (`ADMIN_UI_ENABLED = true`). Set `WHISPER_ADMIN_UI=0` (or flip `ADMIN_UI_ENABLED` in `config.json` / `config.local.json`) and restart to unregister `/settings*` (plus `/quick-config`, `/captures`, `/reports`, which ride the same switch). The page opens at `http://localhost:8000/settings` from the server itself or any host in `ADMIN_WEBUI_ALLOWED_HOSTS`. Settings pinned by a `WHISPER_*` env var appear **read-only** (greyed out, badged with the variable name) since the environment takes precedence.
+**On by default** (`ADMIN_UI_ENABLED = true`). Set `WHISPER_ADMIN_UI=0` (or flip `ADMIN_UI_ENABLED` in `config.json`) and restart to unregister `/settings*` (plus `/quick-config`, `/captures`, `/reports`, which ride the same switch). Don't put the key in `config.local.json`: that file only accepts `AdminConfig` fields, and an unknown key makes the whole file fail validation — every override in it is then ignored (with a message on stderr at startup). The page opens at `http://localhost:8000/settings` from the server itself or any host in `ADMIN_WEBUI_ALLOWED_HOSTS`. Settings pinned by a `WHISPER_*` env var appear **read-only** (greyed out, badged with the variable name) since the environment takes precedence.
 
 ### Authentication: per-user API keys
 
@@ -598,7 +604,7 @@ Other layers:
 - **Server-side validation**: every payload is validated against `config_store.AdminConfig` (Pydantic v2).
 - **Auto-restart**: when a "cold" setting changes (server port, log file, preload list, …), a confirmation modal asks whether to restart the service. WinSW relaunches the wrapper; the page polls `/v1/models` until back up.
 
-Edits land in **`config.local.json`** at the repo root (gitignored). See `config.local.example.json` for the schema. The one exception is the Pipeline section's **promote** action, which writes the committed **`config.json`** instead (see [Post-processing pipeline](#post-processing-pipeline)).
+Edits land in **`config.local.json`** in the data dir (default `/data/config.local.json` — see [Configuration](#configuration) for `WHISPER_DATA_DIR` / `WHISPER_CONFIG_LOCAL`; gitignored). See `config.local.example.json` for the schema. The one exception is the Pipeline section's **promote** action, which writes the committed **`config.json`** instead (see [Post-processing pipeline](#post-processing-pipeline)).
 
 ### Per-identity config overrides
 
@@ -726,8 +732,11 @@ requirements-translate.txt Text-to-text translation deps: llama-cpp-python (opt-
 requirements-diarize.txt   Speaker-diarization deps: pyannote.audio + torch (opt-in)
 requirements-bgm.txt       Background-music separation deps: audio-separator (opt-in; GPU paths swap in the [gpu] extra)
 pytest.ini                 Test discovery config (pytest -q from repo root)
+.coveragerc                Coverage config; CI runs pytest --cov-fail-under against it
 renovate.json              Renovate dependency-update policy (grouping, automerge rules)
-.forgejo/workflows/ci.yml  CI: test suite on Linux + Windows, then publishes the registry images
+.forgejo/workflows/ci.yml  CI: test suite on Linux + Windows; the v* tag run builds and publishes the registry images
+.forgejo/workflows/release.yml      Tag-first release flow: mints the next v* tag off a green main push ("[skip release]" opts out)
+.forgejo/workflows/mirror-ghcr.yml  Mirrors the published images to ghcr.io; needs the GHCR_USER/GHCR_TOKEN secrets, else it no-ops
 static/                    Brand assets (logo.svg, favicon.*) + vendored uPlot/GridStack (offline /stats)
 .gitignore / .gitattributes
 logs/                      Created at first run; rotates at 10 MB × 10 files

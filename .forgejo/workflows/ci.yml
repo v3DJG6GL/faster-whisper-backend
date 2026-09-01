@@ -24,10 +24,16 @@
 #     label windows-latest:host — see forgejo-runner-windows/
 #     windows-runner-setup.md). It uses the SYSTEM python, like the frontend
 #     uses the system node. VM prerequisite (one-time, admin PowerShell):
-#         choco install -y python
+#         choco install -y python nodejs ffmpeg
 #     then add C:\Python314;C:\Python314\Scripts to the nssm
 #     AppEnvironmentExtra PATH (setup guide §5) and `nssm restart
 #     forgejo-runner`. Until then this leg fails at "python not found".
+#     node and ffmpeg are prerequisites, not conveniences: the suite guards
+#     the inline <script> blocks with `node --check` and decodes real
+#     WebM/Opus with ffmpeg, and both guards SKIP themselves when the tool
+#     is missing — the leg would report green having checked neither. The
+#     "Verify system test tools" step fails loudly instead; the Linux legs
+#     apt-install the same two tools into their container.
 #   * Registry: ghcr.io -> the Forgejo container registry (REGISTRY env).
 #     Auth via a PAT (secrets.REGISTRY_USER / REGISTRY_TOKEN, scope
 #     package:write — same secret pair as nextcloud-fpm-nginx) instead of
@@ -63,6 +69,10 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
+  # The instance host, spelled out once for the whole file: it is both the
+  # container registry and the git remote the manual checkouts fetch from
+  # (they read it via a GIT_HOST step env). Keep it that way — a hostname
+  # copy that only fails at fetch time is the drift this replaces.
   REGISTRY: forgejo.informethic.ch
   # The Linux test legs run as root inside python:* job containers — that's
   # the whole environment, not a system Python worth protecting, so silence
@@ -104,6 +114,12 @@ jobs:
         env:
           GIT_REF: ${{ github.ref }}
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Single-source the instance host from env.REGISTRY above (it is
+          # the same host that serves git and the registry). The rest of the
+          # family derives it too — mirror-ghcr.yml strips GITHUB_SERVER_URL
+          # — so an instance rename stays a one-line edit instead of a hunt
+          # for literals that only surface as a DNS/auth error mid-fetch.
+          GIT_HOST: ${{ env.REGISTRY }}
         run: |
           # Fetch from the credentialed URL directly instead of `git remote
           # add`: that persists the token verbatim into .git/config, where any
@@ -112,8 +128,27 @@ jobs:
           # workspace is a real directory on a long-lived VM with no cleanup —
           # but keep both legs identical so the pattern does not drift back.
           git init -q .
-          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 "https://x-access-token:${GIT_TOKEN}@forgejo.informethic.ch/${{ github.repository }}.git" "$GIT_REF"
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 "https://x-access-token:${GIT_TOKEN}@${GIT_HOST}/${{ github.repository }}.git" "$GIT_REF"
           git checkout -q --force FETCH_HEAD
+          # --force resets tracked files only. A no-op in this ephemeral
+          # container, but the persistent Windows workspace below would carry
+          # .coverage / __pycache__ / test-created dirs into the next run —
+          # keep both legs identical so each starts from the ref's content.
+          git clean -qffdx
+
+      # python:<ver>-trixie ships neither node nor ffmpeg, and the suite does
+      # not fail without them — it SKIPS its two real guards:
+      # test_inline_scripts_parse (`node --check` over the inline <script>
+      # blocks of /settings/pipeline, /quick-config and /settings) and the
+      # WebM/Opus transport tests (the only ones decoding MediaRecorder-shaped
+      # input). A silently skipped guard is not coverage, so install both.
+      - name: Install system test tools (node, ffmpeg)
+        run: |
+          apt-get update -qq
+          apt-get install -y --no-install-recommends nodejs ffmpeg
+          rm -rf /var/lib/apt/lists/*
+          node --version
+          ffmpeg -version | head -1
 
       # No pip cache: the job container is ephemeral and actions/cache is a
       # JS action (no node here). The deps are modest CPU wheels; PyPI is
@@ -150,12 +185,34 @@ jobs:
         env:
           GIT_REF: ${{ github.ref }}
           GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same single-sourced host as the Linux leg (env.REGISTRY).
+          GIT_HOST: ${{ env.REGISTRY }}
         run: |
           # No `git remote add`: see the Linux leg. This runner is host mode,
           # so .git/config survives the job on a persistent machine.
           git init -q .
-          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 "https://x-access-token:${env:GIT_TOKEN}@forgejo.informethic.ch/${{ github.repository }}.git" "$env:GIT_REF"
+          git -c protocol.version=2 fetch --no-tags --prune --no-recurse-submodules --depth=1 "https://x-access-token:${env:GIT_TOKEN}@${env:GIT_HOST}/${{ github.repository }}.git" "$env:GIT_REF"
           git checkout -q --force FETCH_HEAD
+          # The workspace is a real directory on a long-lived VM with no
+          # cleanup, and --force resets tracked files only: without this,
+          # .coverage / __pycache__ / dirs a test wrote under the repo root
+          # survive into the next run and make the parity guard depend on
+          # what ran before it.
+          git clean -qffdx
+
+      # The VM is provisioned by hand (header prerequisite), so assert the
+      # tools the suite's guards need are on PATH. Missing, they only make
+      # test_inline_scripts_parse and the WebM/Opus transport tests skip,
+      # and the leg goes green having checked nothing.
+      - name: Verify system test tools (node, ffmpeg)
+        run: |
+          $missing = @('node', 'ffmpeg') | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
+          if ($missing) {
+            Write-Output "::error::not on the runner PATH: $($missing -join ', ') - run 'choco install -y nodejs ffmpeg' on the VM (workflow header) and restart the runner service"
+            exit 1
+          }
+          node --version
+          ffmpeg -version | Select-Object -First 1
 
       # Host mode: this installs into the VM's system python and doubles as
       # a warm cache across runs (same trade-off as the frontend's persistent
@@ -211,8 +268,11 @@ jobs:
   #   cpu      — Dockerfile      → :latest, :v*, :sha-<short>     (CPU-only base)
   #   gpu      — Dockerfile.gpu  → :latest-gpu, …                 (CUDA 12 / cuDNN 9
   #              wheels from requirements-gpu.txt)
-  #   cpu-full — Dockerfile      → :latest-full, …                (+ optional extras:
-  #              diarization/pyannote + apt ffmpeg, INCLUDE_EXTRAS=1)
+  #   cpu-full — Dockerfile      → :latest-full, …                (INCLUDE_EXTRAS=1:
+  #              everything that Dockerfile's INCLUDE_EXTRAS block installs —
+  #              diarization/pyannote + music separation (audio-separator) +
+  #              llama-cpp translation, plus apt ffmpeg and a build-and-purge
+  #              gcc/g++ cycle. That block stays the source of truth.)
   #   gpu-full — Dockerfile.gpu  → :latest-gpu-full, …            (extras on the cu126
   #              torch index so ctranslate2's pip CUDA libs are shared)
   # The suffix is applied to every tag via metadata-action's flavor.suffix.

@@ -46,6 +46,11 @@ services:
     # .env.example). Values in `environment:` below and real env vars win over it.
     # env_file:
     #   - .env
+    # UPGRADE NOTE: deployments created before the /data/db layout kept their
+    # SQLite stores at /data/*.local.sqlite3. On such a volume either move the
+    # *.local.sqlite3* files into /data/db/ or set WHISPER_DB_DIR: /data below —
+    # otherwise the server starts with EMPTY stores (issued API keys stop
+    # working) while the old files sit ignored at the volume root.
     environment:
       # Path defaults are container-first: runtime state under /data (SQLite
       # stores in /data/db; config.local.json, logs/, captures/) and models

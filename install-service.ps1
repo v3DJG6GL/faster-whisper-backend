@@ -434,7 +434,14 @@ function Install-ConvertDeps {
         return
     }
     Write-Host "Installing conversion extras (transformers + torch + accelerate, ~2 GB)..." -ForegroundColor Cyan
-    & $Python -m pip install -r $convertReq
+    if ($Gpu) {
+        # Keep any torch resolution on the same CUDA 12 userspace the -Full/-Gpu
+        # block established (see its "one CUDA 12 userspace" rationale) — the
+        # default PyPI index could swap in a CPU / cu13 torch wheel.
+        & $Python -m pip install -r $convertReq --extra-index-url https://download.pytorch.org/whl/cu126
+    } else {
+        & $Python -m pip install -r $convertReq
+    }
     if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-convert.txt failed (exit $LASTEXITCODE)" }
     Write-Host "Conversion extras installed. AUTO_CONVERT_HF_MODELS=true will now work." -ForegroundColor Green
 }

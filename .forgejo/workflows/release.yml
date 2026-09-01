@@ -39,7 +39,13 @@
 # Safety properties:
 #   * concurrency group serializes overlapping dispatches; version compute
 #     happens inside the job, so the second run sees the first run's tag.
-#   * idempotent: re-dispatch for an already-tagged commit no-ops.
+#   * idempotent: re-dispatch for an already-tagged commit mints no new
+#     tag — but it does re-check that the tag's release exists, because
+#     the tag push and the release POST are two separate writes with no
+#     compensation between them: a 5xx, a network blip or a token-scope
+#     problem on the second one used to be unrecoverable (the re-dispatch
+#     took the no-op branch forever, so that version never got its
+#     changelog entry, and every run reported success).
 #   * out-of-order CI completions (an older commit's all-ci finishing after
 #     a newer commit was already tagged) are detected via an ancestor check
 #     and skipped — tags stay monotonic along main.
@@ -139,9 +145,17 @@ jobs:
           latest_commit=$(git rev-parse "$latest^{commit}" 2>/dev/null || true)
 
           # Idempotence: re-dispatch / retry for an already-tagged commit.
+          # Resumable, not a hard no-op: emit the EXISTING tag so the release
+          # step below still runs and can repair a missing release (it probes
+          # first, so the normal case costs one GET and changes nothing).
           if [ "$latest_commit" = "$target" ]; then
-            echo "::notice::$target is already tagged $latest — nothing to do"
-            echo "tag=" >> "$GITHUB_OUTPUT"
+            echo "::notice::$target is already tagged $latest — no new tag; checking its release"
+            prev=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -2 | head -1 || true)
+            # Single-tag repo: tail -2 | head -1 returns $latest itself —
+            # fall back to v0.0.0 so the changelog range covers all history.
+            if [ "$prev" = "$latest" ]; then prev=""; fi
+            echo "tag=$latest" >> "$GITHUB_OUTPUT"
+            echo "prev=${prev:-v0.0.0}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           # Monotonicity: an older commit whose CI run finished late must not
@@ -182,6 +196,15 @@ jobs:
           PREV: ${{ steps.bump.outputs.prev }}
         run: |
           set -euo pipefail
+          # Reachable a second time for the same tag (the already-tagged
+          # branch above re-enters here on a re-dispatch), so probe before
+          # posting: a re-run of a successful release is a clean no-op, and
+          # a run whose POST failed after the tag was pushed repairs itself.
+          if curl -fsS -H "Authorization: token $TOKEN" \
+              "$GITHUB_API_URL/repos/$REPO/releases/tags/$TAG" > /dev/null 2>&1; then
+            echo "::notice::release $TAG already exists — nothing to create"
+            exit 0
+          fi
           if [ "$PREV" = "v0.0.0" ] || ! git rev-parse -q --verify "$PREV^{commit}" > /dev/null; then
             range="$TAG"
           else

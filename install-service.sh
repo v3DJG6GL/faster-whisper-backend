@@ -54,6 +54,11 @@ if [ ! -x "$PY" ]; then
   sudo -u "$RUN_USER" python3 -m venv "$VENV"
 fi
 
+# Stop a running service before pip touches the venv — otherwise wheels whose
+# .so files the live process has mapped (torch, ctranslate2, onnxruntime) get
+# swapped underneath it (mirrors install-service.ps1's stop -> install -> start).
+systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
+
 echo "Installing dependencies (gpu=$GPU full=$FULL) ..."
 sudo -u "$RUN_USER" "$PY" -m pip install --upgrade pip
 if [ "$GPU" -eq 1 ]; then
@@ -92,7 +97,11 @@ if [ "$FULL" -eq 1 ]; then
     sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
       --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
   else
-    sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" -r "$REPO_DIR/requirements-bgm.txt"
+    # CPU torch from the PyTorch cpu index — the PyPI wheel hard-depends on
+    # the whole nvidia-* CUDA runtime (mirrors Dockerfile's extras install).
+    sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" \
+      -r "$REPO_DIR/requirements-bgm.txt" \
+      --extra-index-url https://download.pytorch.org/whl/cpu
     # Translation (llama-cpp-python): prebuilt CPU wheels from the project
     # index — PyPI is sdist-only and would compile llama.cpp from source.
     sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-translate.txt" \
@@ -167,13 +176,17 @@ WantedBy=multi-user.target
 EOF
 
 # Pre-create the state dirs the unit pins above, owned by the service user
-# (api_keys_store refuses to start when it cannot create its db dir).
-mkdir -p "$REPO_DIR/data" "$REPO_DIR/models"
-chown -R "$RUN_USER" "$REPO_DIR/data" "$REPO_DIR/models"
+# (api_keys_store refuses to start when it cannot create its db dir; main.py
+# soft-fails to stderr-only logging when logs/ cannot be created).
+mkdir -p "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/logs"
+chown -R "$RUN_USER" "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/logs"
 
-echo "Enabling + starting ${SERVICE_NAME} ..."
+echo "Enabling + restarting ${SERVICE_NAME} ..."
 systemctl daemon-reload
-systemctl enable --now "${SERVICE_NAME}"
+systemctl enable "${SERVICE_NAME}"
+# `restart` also starts an inactive unit, so first install and re-run both come
+# up on the fresh venv + rewritten unit (`enable --now` is a no-op when active).
+systemctl restart "${SERVICE_NAME}"
 
 if [ "$FULL" -eq 1 ]; then
   echo
