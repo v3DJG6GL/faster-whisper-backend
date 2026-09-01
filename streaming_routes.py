@@ -49,7 +49,6 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 import auth
 import config_store
-import effective_config
 import jobs
 import metrics
 import rate_limit
@@ -66,6 +65,11 @@ logger = logging.getLogger(__name__)
 # entered at a rate the client controls, and the log is a fixed-size rotating
 # chain — unthrottled they are a way to erase the audit trail.
 _SHED_LOG_INTERVAL_S = 10.0
+# Absolute cap on QUEUED items in a session's audio queue. The byte cap bounds
+# bytes, not tuples: control items carry no PCM and a raw-PCM client may send
+# 2-byte frames, so without this a client could queue millions of tuples under
+# the byte cap (each PCM frame may re-arm one queued flush).
+_HARD_CAP_ITEMS = 4096
 
 router = APIRouter()
 
@@ -88,7 +92,9 @@ def _write_pcm16_wav(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
     path. Used to hand a streamed utterance's audio to the captures pipeline
     (which re-transcodes any source file to its canonical 16 kHz mono WAV)."""
     pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2")
-    fd, path = tempfile.mkstemp(suffix=".wav")
+    # "whisperup-" is one of the prefixes main's hard-restart TMPDIR sweep
+    # reclaims, so an orphaned capture WAV does not outlive the process.
+    fd, path = tempfile.mkstemp(prefix="whisperup-", suffix=".wav")
     os.close(fd)
     with wave.open(path, "wb") as wf:
         wf.setnchannels(1)
@@ -110,7 +116,11 @@ _stream_sessions = rate_limit.InFlight(
     message="you already have {limit} live sessions open",
 )
 
-# WebSocket close codes (4000-4999 = application-defined).
+# WebSocket close codes (4000-4999 = application-defined). A refusal must
+# ACCEPT before it closes with one of these: per ASGI a `websocket.close` sent
+# before `websocket.accept` is a handshake rejection, which uvicorn turns into a
+# bare HTTP 403 — the code never reaches the wire and a browser sees 1006. See
+# _refuse.
 _WS_UNAUTH = 4401
 _WS_DISABLED = 4503
 _WS_TOO_MANY = 4429
@@ -119,11 +129,27 @@ _WS_IDLE_TIMEOUT = 4408  # client sent no audio for STREAMING_IDLE_TIMEOUT_SEC
 
 # The client decode_override keys the server actually honors (main._apply_decode_
 # overrides consumes exactly this set; every other key is discarded there). Bound
-# once at import so the handshake can narrow the client's dict without reaching
-# into effective_config's private mapping — and without retaining an unbounded,
-# connection-lifetime dict of attacker-chosen keys.
+# once at import from the public config_store.CONFIG_TO_CLIENT_KEY registry so
+# the handshake can narrow the client's dict — and without retaining an
+# unbounded, connection-lifetime dict of attacker-chosen keys.
 _CLIENT_OVERRIDE_KEYS: frozenset[str] = frozenset(
-    effective_config._CONFIG_TO_CLIENT_KEY.values())
+    config_store.CONFIG_TO_CLIENT_KEY.values())
+
+
+async def _refuse(ws: WebSocket, code: int, reason: str) -> None:
+    """Refuse a handshake so the client learns WHY: accept (echoing the bearer
+    subprotocol, or a browser fails the handshake before it sees anything),
+    then close with the application code and a short reason. Closing
+    pre-accept would discard the code as a plain HTTP 403. No `error` frame
+    first: the first receive must raise the close, which is the contract the
+    dictate page's onclose branches and the clients' handshake tests rely on.
+    Nothing is allocated before this runs, so the accept is cheap; a peer that
+    already went away is simply ignored."""
+    try:
+        await ws.accept(subprotocol=_ws_bearer_subprotocol(ws) or None)
+        await ws.close(code=code, reason=reason)
+    except Exception:  # noqa: BLE001 — refusal is best effort; the peer may be gone
+        pass
 
 
 async def _receive_idle(ws: WebSocket, timeout_sec: float):
@@ -266,7 +292,8 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
         # prompt + this utterance's own text — which it then confidently echoes
         # into the transcript. OFF gives the leftover window an empty text
         # context (nothing to echo); the first window still gets initial_prompt,
-        # so cross-utterance context is unaffected.
+        # so cross-utterance context is unaffected. The pin overrides any
+        # client decode_overrides value too (reported via overrides_ignored).
         kwargs["condition_on_previous_text"] = bool(
             cfg_for(model_name, "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT", ident))
         return kwargs
@@ -336,6 +363,17 @@ def _trim_trailing_nonspeech(audio: "np.ndarray", pad_ms: int,
     return audio[:end]
 
 
+def _note_pinned_condition(req_overrides: dict, overrides_ignored: list) -> None:
+    """The streaming final decode pins condition_on_previous_text from
+    STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT (see _build_transcribe_kwargs),
+    so a client override for it is applied by the assembler and then
+    overwritten. Say so in `overrides_ignored` instead of dropping it silently.
+    Called at every site that rebuilds the list (handshake + ident refresh)."""
+    if ("condition_on_previous_text" in req_overrides
+            and "condition_on_previous_text" not in overrides_ignored):
+        overrides_ignored.append("condition_on_previous_text")
+
+
 def _parse_translate_expect(conf: dict) -> "dict | None":
     """The client's declaration that a translation is coming on a SEPARATE
     request, so each utterance's log receipt is held until it lands and the two
@@ -374,7 +412,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
     cfg = main.cfg
     if not getattr(cfg, "STREAMING_ENABLED", True):
-        await ws.close(code=_WS_DISABLED)
+        await _refuse(ws, _WS_DISABLED, "live dictation is disabled on this server")
         return
     # Same-origin check, matching every unsafe-method HTTP route. main._csrf_mw
     # is registered with @app.middleware("http"), and BaseHTTPMiddleware passes
@@ -388,11 +426,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
     # exactly as on the HTTP side.
     if not main._origin_is_allowed(ws):
         main._log_origin_rejected(ws)
-        await ws.close(code=_WS_BAD_ORIGIN)
+        await _refuse(ws, _WS_BAD_ORIGIN, "handshake rejected (origin)")
         return
     user = authenticate_ws(ws)
     if user is None:
-        await ws.close(code=_WS_UNAUTH)
+        await _refuse(ws, _WS_UNAUTH, "no valid credential")
         return
     # Per-identity cap FIRST: one client filling the pool while others are
     # locked out is the failure we actually see, and refusing it here means
@@ -405,7 +443,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             "[stream] refused: per-user cap "
             "(STREAMING_MAX_SESSIONS_PER_USER=%d) reached for %s",
             _stream_sessions.limit(), store_common.log_safe(_stream_key))
-        await ws.close(code=_WS_TOO_MANY)
+        await _refuse(ws, _WS_TOO_MANY,
+                      f"you already have {_stream_sessions.limit()} live sessions open")
         return
     max_sessions = int(getattr(cfg, "STREAMING_MAX_SESSIONS", 10))
     if len(_active_sessions) >= max_sessions:
@@ -415,7 +454,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
         logger.info(
             "[stream] refused: server-wide cap "
             "(STREAMING_MAX_SESSIONS=%d) reached", max_sessions)
-        await ws.close(code=_WS_TOO_MANY)
+        await _refuse(ws, _WS_TOO_MANY,
+                      f"the server's {max_sessions} live sessions are all in use")
         return
 
     # A browser fails the handshake unless the server echoes one of the
@@ -531,6 +571,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # block. Defensively typed like override_profile above: a malformed
         # handshake value degrades to "no declaration", never a crash.
         translate_expect = _parse_translate_expect(conf)
+        if translate_expect and not getattr(cfg, "TRANSLATION_ENABLED", False):
+            # /v1/text/translations refuses with 403 before it parses the
+            # capture key, so nothing would ever claim a parked receipt: every
+            # utterance's log would wait out LOG_RECEIPT_HOLD_S and land late,
+            # mis-annotated "no result". Treat the declaration as absent.
+            translate_expect = None
         include_words = response_format == "verbose_json"
         audio_fmt = (conf.get("audio") or {}).get("format", "pcm_s16le")
         if audio_fmt not in RAW_FORMATS and audio_fmt not in ENCODED_FORMATS:
@@ -547,6 +593,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
             else f"{audio_fmt} → {SAMPLE_RATE} Hz mono (ffmpeg decode, WebSocket)")
 
         final_model = main._resolve_model_name(model_req)
+        # Unknown at job_start (it comes from the handshake): fill the running
+        # row's model now so /stats reads it like the finished rows.
+        jobs.job_update(session_id, model=final_model)
         partial_cfg = getattr(cfg, "STREAMING_PARTIAL_MODEL", "") or ""
         partial_model_name = partial_cfg or final_model
         async def _load_with_keepalive(name: str):
@@ -637,6 +686,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # decode_overrides keys are dropped in the assembler; record them here.
         overrides_ignored = sorted(k for k in req_overrides
                                    if k in ident.locked_client_keys)
+        _note_pinned_condition(req_overrides, overrides_ignored)
         if "DEFAULT_LANGUAGE" in ident.locked:
             _locked_lang = main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
             if req_language and req_language != _locked_lang:
@@ -861,24 +911,44 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # One finalized utterance == one mini-transcription: replicate the batch
             # route's per-request side-effects (rich log block, durable trace for
             # /quick-config + /reports, capture, metrics) so streaming has parity.
+            #
+            # Same guard as decode_final: on_final is reachable WITHOUT a decode
+            # (the session's near-silence gate skips the decoder but still
+            # reports the committed text), so the pre-model raise there no
+            # longer covers every side-effect sink. A revoked identity gets no
+            # captures row, no trace, no usage row from this path either.
+            _refresh_ident()
+            if _auth_revoked:
+                return
             rid = uuid.uuid4().hex
             raw_text = info["raw_text"] or ""
             words = info.get("words") or []
+            decoded = bool(info.get("decoded", True))
             # SNAPSHOT, not an alias: last_decode lives for the whole session
             # and decode_final clears/refills it for every utterance. on_final
             # awaits below (the capture thread, the `captured` frame), and the
             # log block is assembled after those awaits — reading through the
             # live dict there would be one refactor away from printing the NEXT
             # utterance's guards under this one's text. The values are all
-            # rebuilt per decode, so a shallow copy is enough.
-            dec = dict(last_decode)
+            # rebuilt per decode, so a shallow copy is enough. When NO decode
+            # ran for this utterance the dict still holds the PREVIOUS
+            # utterance's info/diagnostics/guards — those must not be
+            # attributed to this text, so the snapshot is empty then (fw_info
+            # None: the block, the capture and the trace all tolerate it).
+            dec = dict(last_decode) if decoded else {}
             fw_info = dec.get("info")
             seg_diag = dec.get("seg_diag", [])
             kwargs = dec.get("kwargs", {})
 
             steps: "list | None" = [] if getattr(cfg, "TRACE_ENABLED", False) else None
             final_text = main._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident)
-            if info.get("trimmed_sec"):
+            if not decoded:
+                logger.info(
+                    "[stream %s] utt#%s: near-silence gate skipped the final "
+                    "decode — the text is the partial-committed transcript "
+                    "(%.2fs banked by a mid-utterance trim)",
+                    session_id[:8], info["utterance"], info["trimmed_sec"])
+            elif info.get("trimmed_sec"):
                 # The session banked the trimmed audio + committed words, so
                 # raw_text / words / info["audio"] all span the WHOLE utterance;
                 # only the final DECODE ran on the shortened buffer.
@@ -899,6 +969,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     _maybe_capture, rid, info, raw_text, final_text, words,
                     fw_info)
 
+            # One `transcribing` stage per live utterance — but none at all when
+            # the gate skipped the decode: a 0.00 s stage that never ran would
+            # skew the /stats dictation timing aggregates.
+            stages = ([{"name": "transcribing",
+                        "secs": round(float(info["proc_dur"] or 0.0), 2),
+                        "model": final_model}]
+                      if decoded else None)
+
             # Rich diagnostic block — same formatter the batch route uses, so the
             # VAD-ate-audio / empty-output / pipeline-step diagnostics show up for
             # streaming too. file_label marks it as a streamed utterance.
@@ -916,9 +994,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     user_id=user.get("user_id"), key_id=user.get("key_id"),
                     username=user.get("username"), key_label=user.get("key_label"),
                     guards=dec.get("guards"),
-                    stages=[{"name": "transcribing",
-                             "secs": round(float(info["proc_dur"] or 0.0), 2),
-                             "model": final_model}])
+                    stages=stages)
                 # Hold only when the client said a per-utterance translation
                 # is coming AND there is a capture id to key it on — that id is
                 # the only handle the separate translate request can name us
@@ -972,11 +1048,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 model=final_model, audio_dur=info["audio_dur"],
                 proc_dur=info["proc_dur"], status="ok",
                 words=len(final_text.split()), kind="dictate",
-                stages=[{"name": "transcribing",
-                         "secs": round(float(info["proc_dur"] or 0.0), 2),
-                         "model": final_model,
-                         "detail": f"utt#{info['utterance']}"}],
-                request_id=rid, user_id=user.get("user_id"), key_id=user.get("key_id"))
+                stages=([{**stages[0], "detail": f"utt#{info['utterance']}"}]
+                        if stages else None),
+                request_id=rid, user_id=user.get("user_id"), key_id=user.get("key_id"),
+                key_label=user.get("key_label"))
 
         session = StreamSession(
             config=_stream_config(cfg, ident),
@@ -1054,6 +1129,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 out_suffix = main.cfg_for(final_model, "OUTPUT_SUFFIX", ident) or ""
                 overrides_ignored = sorted(k for k in req_overrides
                                            if k in ident.locked_client_keys)
+                _note_pinned_condition(req_overrides, overrides_ignored)
                 req_language = _client_language
                 if "DEFAULT_LANGUAGE" in ident.locked:
                     _ll = main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
@@ -1137,7 +1213,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # grow without bound. Skip-if-behind normally prevents reaching this.
             _shed_items = 0
             _shed_bytes = 0
-            while _qbytes + len(pcm) > _hard_cap_bytes:
+            while (_qbytes + len(pcm) > _hard_cap_bytes
+                   or audio_q.qsize() >= _HARD_CAP_ITEMS):
                 try:
                     kind, old = audio_q.get_nowait()
                 except asyncio.QueueEmpty:

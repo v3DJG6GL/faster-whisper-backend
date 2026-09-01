@@ -2,27 +2,17 @@
 overrides surfaced in the `ready` frame, and profile decode params reach the
 final decode. Driven in-process; no faster-whisper needed."""
 
-import numpy as np
-from starlette.websockets import WebSocketDisconnect
-
+from tests._streaming_helpers import const_pcm, ws_drain
 from tests.conftest import bearer
 
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
 
-
-def _pcm(level, ms, sr=16000):
-    return np.full(sr * ms // 1000, level, dtype="<i2").tobytes()
+_pcm = const_pcm
 
 
 def _drain(ws, limit=200):
-    msgs = []
-    try:
-        for _ in range(limit):
-            msgs.append(ws.receive_json())
-    except WebSocketDisconnect:
-        pass
-    return msgs
+    return ws_drain(ws, limit)[0]
 
 
 def _profile(client, h, name, **fields):
@@ -310,15 +300,7 @@ def test_handshake_drops_unknown_decode_override_keys(
 # be the only credential check for the whole connection: revoking a key left the
 # revoked identity decoding and writing captures/trace/usage rows indefinitely.
 
-def _drain_with_code(ws, limit=200):
-    """_drain, but also returns the close code the server used."""
-    msgs = []
-    try:
-        for _ in range(limit):
-            msgs.append(ws.receive_json())
-    except WebSocketDisconnect as exc:
-        return msgs, exc.code
-    return msgs, None
+_drain_with_code = ws_drain   # _drain, but also returns the server's close code
 
 
 def test_stream_closes_when_key_is_revoked_mid_session(

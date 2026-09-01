@@ -422,13 +422,23 @@ class StreamSession:
             # agreed. la.committed spans the WHOLE utterance (pop_committed
             # only prunes the agreement buffer), so this already includes any
             # trim-banked words — do NOT prepend _trimmed_text here.
-            raw = self.la.committed_text + self.la.text_of(self.la.finish())
+            tail = self.la.finish()
+            raw = self.la.committed_text + self.la.text_of(tail)
             if not raw.strip():
                 self._reset_utterance()
                 return
             proc_dur = 0.0
-            words = []  # no decode ran; the trim-banked word dicts are merged below
+            decoded = False
+            # No decode ran, so LocalAgreement is the only word source. Its
+            # committed list + tail span the WHOLE utterance in absolute
+            # (utterance) time and already hold any trim-banked words, so the
+            # list is complete as it stands — the trim merge below must NOT
+            # re-base it or prepend _trimmed_words (every banked word would
+            # appear twice).
+            words = [{"word": w.text, "start": w.start, "end": w.end}
+                     for w in (self.la.committed + tail)]
         else:
+            decoded = True
             t0 = time.perf_counter()
             raw, words, dropped_all = await self.decode_final(audio.copy(), self._prompt)
             proc_dur = time.perf_counter() - t0
@@ -454,12 +464,16 @@ class StreamSession:
         # the remaining buffer, and the banked word dicts (absolute times) + the
         # final decode's words shifted from buffer-relative to utterance time.
         # Captures therefore store the full audio↔text pair, not a fragment.
+        # The gate path's words are already utterance-absolute and already
+        # include the banked prefix (see above), so only a real decode's
+        # buffer-relative words are re-based here.
         if self._trimmed_audio:
             full_audio = np.concatenate([*self._trimmed_audio, audio])
-            off = self._buffer_offset
-            words = self._trimmed_words + [
-                {**w, "start": w["start"] + off, "end": w["end"] + off}
-                for w in words]
+            if decoded:
+                off = self._buffer_offset
+                words = self._trimmed_words + [
+                    {**w, "start": w["start"] + off, "end": w["end"] + off}
+                    for w in words]
         else:
             full_audio = audio
         self.raw_confirmed += raw
@@ -471,6 +485,10 @@ class StreamSession:
                 "utterance": self._utterance_index,
                 "audio_dur": full_audio.shape[0] / self.cfg.sample_rate,
                 "trimmed_sec": self._trimmed_sec,  # >0 → a mid-utterance trim fired
+                # False → the near-silence gate skipped the final decode: the
+                # text is the partial-committed transcript, no decoder
+                # diagnostics belong to this utterance, and proc_dur is 0.
+                "decoded": decoded,
                 "proc_dur": proc_dur,
                 "raw_text": raw,       # full utterance text (incl. trim-banked prefix)
                 "words": words,        # word-timestamp dicts (for captures / verbose)

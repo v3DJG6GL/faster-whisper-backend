@@ -9,26 +9,18 @@ allowlist only (loopback here).
 
 import time
 
-import numpy as np
 import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from _streaming_helpers import const_pcm, ws_drain
 from conftest import bearer
 
-
-def _pcm(level, ms, sr=16000):
-    return np.full(sr * ms // 1000, level, dtype="<i2").tobytes()
+_pcm = const_pcm
 
 
 def _drain(ws, limit=200):
-    msgs = []
-    try:
-        for _ in range(limit):
-            msgs.append(ws.receive_json())
-    except WebSocketDisconnect:
-        pass
-    return msgs
+    return ws_drain(ws, limit)[0]
 
 
 def test_stream_happy_path_partials_then_final(app_module, monkeypatch):
@@ -183,7 +175,7 @@ def test_stream_disabled_closes_connection(app_module, monkeypatch):
         try:
             with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
                 # If it doesn't reject pre-accept, it must close immediately.
-                with __import__("pytest").raises(WebSocketDisconnect):
+                with pytest.raises(WebSocketDisconnect):
                     ws.receive_json()
         except WebSocketDisconnect:
             pass  # rejected during handshake — also acceptable
@@ -212,6 +204,27 @@ def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
     # streamed utterances are tagged source='stream' so /quick-config can chip them.
     assert any(r.get("source") == "stream" for r in rows), \
         "streamed trace not tagged source='stream'"
+
+
+def test_stream_records_the_key_label_on_the_trace_row(
+        client, app_module, make_user_key, monkeypatch):
+    """The recent-transcriptions row snapshots the API key's label straight
+    from the auth record (user["key_label"]), the same way /transcribe does."""
+    import api_keys_store
+    import metrics
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    make_user_key("root", is_admin=True)   # locks the server down
+    uid = api_keys_store.create_user("alice", is_admin=False)
+    raw, _rec = api_keys_store.create_key(uid, label="alice-laptop")
+    with client.websocket_connect(_STREAM_URL, headers=bearer(raw)) as ws:
+        assert _handshake(ws)["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))   # speech
+        ws.send_bytes(_pcm(0, 1500))      # silence → finalize
+        ws.send_json({"type": "stop"})
+        _drain(ws)
+    rows = metrics.metrics_snapshot(include_identity=True)["recent_transcriptions"]
+    assert rows, "no recent-transcription row recorded for the utterance"
+    assert rows[0]["key_label"] == "alice-laptop"
 
 
 def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch):
@@ -280,7 +293,6 @@ def test_stream_handshake_idle_timeout_frees_slot(app_module, monkeypatch):
     # A client that connects + passes auth but never sends its config handshake
     # must not hold a session slot forever: the server abandons the wait after
     # STREAMING_IDLE_TIMEOUT_SEC and closes with the idle close code (4408).
-    import pytest
     from streaming_routes import _WS_IDLE_TIMEOUT
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 0.3, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
@@ -396,7 +408,7 @@ def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
-    with caplog.at_level(logging.INFO, logger="whisper-api"):
+    with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
         with client.websocket_connect(_STREAM_URL) as ws:
             assert _handshake(ws)["type"] == "ready"
             assert len(streaming_routes._active_sessions) == 1
@@ -418,7 +430,9 @@ def test_per_user_cap_zero_is_unlimited(client, app_module, monkeypatch):
             client.websocket_connect(_STREAM_URL) as c:
         for ws in (a, b, c):
             assert _handshake(ws)["type"] == "ready"
-    assert streaming_routes._stream_sessions._counts == {}
+        assert len(streaming_routes._active_sessions) == 3
+        # limit<=0 short-circuits in InFlight.acquire, so no key is ever booked
+        assert streaming_routes._stream_sessions._counts == {}
 
 
 def test_serial_sessions_never_leak_a_slot(client, app_module, monkeypatch):

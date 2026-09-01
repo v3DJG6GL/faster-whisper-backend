@@ -7,8 +7,7 @@ plugin is required.
 
 import asyncio
 
-import numpy as np
-
+from _streaming_helpers import const_pcm
 from streaming_session import StreamConfig, StreamSession
 from streaming_vad import EnergyEndpointer
 
@@ -118,9 +117,7 @@ def test_close_commits_unterminated_tail():
 
 # ---- full PCM loop --------------------------------------------------------
 
-def _pcm(level: int, ms: int, sample_rate: int = 16000) -> bytes:
-    n = sample_rate * ms // 1000
-    return (np.full(n, level, dtype="<i2")).tobytes()
+_pcm = const_pcm
 
 
 def test_pcm_loop_emits_partials_then_a_final_after_silence():

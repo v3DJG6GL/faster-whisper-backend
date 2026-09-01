@@ -15,6 +15,7 @@ import asyncio
 
 import numpy as np
 
+from _streaming_helpers import const_pcm
 from streaming_session import StreamConfig, StreamSession
 from streaming_vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
 
@@ -22,8 +23,7 @@ SR = 16000
 WORD_SEC = 0.2  # deterministic word grid: word i spans [i*0.2, (i+1)*0.2)
 
 
-def _pcm(level: int, ms: int) -> bytes:
-    return (np.full(SR * ms // 1000, level, dtype="<i2")).tobytes()
+_pcm = const_pcm
 
 
 def _grid_words(start_s: float, end_s: float):
@@ -78,17 +78,24 @@ def _run_long_utterance(speech_ms: int):
     )
     session_box.append(s)
 
+    # _trimmed_text is cleared by the finalize, so watch it live while feeding.
+    trimmed: list[str] = []
+
     async def run():
-        await s.feed_pcm(_pcm(8000, speech_ms))
-        await s.feed_pcm(_pcm(0, 400))  # silence → finalize
+        for level, ms in ((8000, speech_ms), (0, 400)):  # speech, then silence → finalize
+            for _ in range(ms // FRAME_MS):
+                await s.feed_pcm(_pcm(level, FRAME_MS))
+                if s._trimmed_text:
+                    trimmed.append(s._trimmed_text)
 
     asyncio.run(run())
-    return s, msgs, finals_meta
+    return s, msgs, finals_meta, trimmed
 
 
 def test_trim_preserves_committed_opening_in_final_document():
-    s, msgs, finals_meta = _run_long_utterance(speech_ms=3500)
+    s, msgs, finals_meta, trimmed = _run_long_utterance(speech_ms=3500)
     assert finals_meta, "no final emitted"
+    assert trimmed, "trim never banked text — the helper's live watch is broken"
     info = finals_meta[-1]
     # Sanity: the trim actually fired (otherwise this test regressed to the
     # short-utterance case and asserts nothing).
@@ -168,11 +175,11 @@ def test_short_utterance_unchanged_no_trim():
     """Below buffer_trim_sec nothing is banked: the final decode's text stands
     alone, no trim is reported, and the payload audio is the plain buffer
     (pre-fix behaviour preserved)."""
-    s, msgs, finals_meta = _run_long_utterance(speech_ms=800)
+    s, msgs, finals_meta, trimmed = _run_long_utterance(speech_ms=800)
     info = finals_meta[-1]
     assert info["trimmed_sec"] == 0.0
     assert abs(info["audio"].shape[0] / SR - info["audio_dur"]) < 1e-6
-    assert s._trimmed_text == ""
+    assert trimmed == [], "nothing should ever have been banked"
 
 
 # ---- hard ceiling ---------------------------------------------------------
