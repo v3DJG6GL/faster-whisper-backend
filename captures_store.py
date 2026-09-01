@@ -338,8 +338,7 @@ def create_capture(
     training_t = (text_for_training or "")[:_CAP_FINAL] if text_for_training is not None else None
     words_t = _truncate_json(words or [], _CAP_WORDS_JSON)
     segments_t = _truncate_json(segments or [], _CAP_SEGMENTS_JSON)
-    translations_t = (json.dumps(translations, ensure_ascii=False)[:_CAP_FINAL]
-                      if translations else None)
+    translations_t = _truncate_translations(translations, _CAP_FINAL)
 
     try:
         conn = _require_conn()
@@ -409,6 +408,36 @@ def _truncate_json(items: list[Any], cap_bytes: int) -> str:
         else:
             hi = mid - 1
     return json.dumps(items[:lo], ensure_ascii=False)
+
+
+def _truncate_translations(translations: "dict[str, str] | None",
+                           cap_bytes: int) -> str | None:
+    """Serialize the per-language map, trimming every language's TEXT (not
+    the blob) until it fits. A raw slice of the JSON lands mid-token and
+    the reader then swallows the decode error as {} — every track lost
+    instead of merely shortened. None for an empty/unserializable map."""
+    if not translations:
+        return None
+    try:
+        blob = json.dumps(translations, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+    if len(blob) <= cap_bytes:
+        return blob
+    texts = {str(k): str(v or "") for k, v in translations.items()}
+
+    def _dump(n: int) -> str:
+        return json.dumps({k: v[:n] for k, v in texts.items()},
+                          ensure_ascii=False)
+
+    lo, hi = 0, max(len(v) for v in texts.values())
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if len(_dump(mid)) <= cap_bytes:
+            lo = mid
+        else:
+            hi = mid - 1
+    return _dump(lo)
 
 
 def _evict_to_cap(conn: sqlite3.Connection) -> None:
@@ -725,7 +754,7 @@ def counts_by_status(user_id: str | None = None) -> dict[str, int]:
 
 def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     """Apply a partial update. Allowed fields: status, corrected_text,
-    corrections, admin_notes, final, text_for_training,
+    corrections, admin_notes, final, text_for_training, translations,
     audio_trimmed_relpath, audio_trim_lead_ms, audio_trim_trail_ms.
     Returns the updated row or None if not found."""
     if not patch:
@@ -764,10 +793,13 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         params.append(str(val)[:_CAP_FINAL] if val is not None else None)
     if "translations" in patch:
         # Human-corrected translations are the ONLY reason a cascade
-        # pseudo-label is worth keeping, so this has to be writable.
+        # pseudo-label is worth keeping, so this has to be writable. Same
+        # shape and cap as create_capture: a keyed map, valid JSON always.
         val = patch["translations"]
+        if val is not None and not isinstance(val, dict):
+            raise ValueError("translations must be a {lang: text} map")
         sets.append("translations_json = ?")
-        params.append(json.dumps(val, ensure_ascii=False) if val else None)
+        params.append(_truncate_translations(val, _CAP_FINAL))
     if "audio_trimmed_relpath" in patch:
         sets.append("audio_trimmed_relpath = ?")
         val = patch["audio_trimmed_relpath"]

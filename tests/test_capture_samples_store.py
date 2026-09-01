@@ -337,3 +337,42 @@ def test_reconcile_keeps_valid_fk(captures_store_db, groups_store_db):
     _, _, orphan_fks = gs.reconcile_on_startup()
     assert orphan_fks == 0
     assert cs.get_capture("capvalidfk000001")["sample_id"] == sid
+
+
+# ---------------------------------------------------------------------------
+# get_members carries `task` → the group manifest row can say "translate"
+# ---------------------------------------------------------------------------
+
+def test_get_members_carries_task_and_group_manifest_row_says_translate(
+        captures_store_db, groups_store_db):
+    """`_group_task` reads `m.get("task")` off get_members rows; without the
+    column in the projection every group exported as "transcribe"."""
+    import io
+    import tarfile
+
+    import captures_routes
+
+    cs = captures_store_db
+    gs = groups_store_db
+    sid = "gtasktranslate0a"
+    relpath = _insert_group(gs, sid, status="ready", transcript="hello there")
+    for i, cid in enumerate(("captask000000000", "captask000000001")):
+        _insert_capture(cs, cid, sample_id=sid, sample_order=i)
+        cs._require_conn().execute(
+            "UPDATE captures SET task = 'translate', text_for_training = 'hi'"
+            " WHERE id = ?", (cid,))
+    abs_p = gs.abs_path_for(relpath)
+    os.makedirs(os.path.dirname(abs_p), exist_ok=True)
+    with open(abs_p, "wb") as f:
+        f.write(b"RIFF")
+
+    members = gs.get_members(sid)
+    assert [m["task"] for m in members] == ["translate", "translate"]
+
+    blob = b"".join(captures_routes._build_export_stream("ready", False))
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        manifest = tar.extractfile("manifest.jsonl").read().decode("utf-8")
+    rows = [json.loads(line) for line in manifest.splitlines() if line]
+    assert len(rows) == 1
+    assert rows[0]["source"] == "sample"
+    assert rows[0]["task"] == "translate"

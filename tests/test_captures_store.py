@@ -642,3 +642,50 @@ def test_sweep_retention_expires_an_over_age_sample_and_its_members(
     assert cs.sweep_retention() == 1
     assert cs.get_capture(member) is None
     assert gs.get_sample(sid) is None
+
+
+# ---------------------------------------------------------------------------
+# translations_json stays valid JSON at any size (create + update)
+# ---------------------------------------------------------------------------
+
+def test_create_capture_oversized_translations_stay_valid_json(
+        captures_store_db, monkeypatch, tmp_path):
+    """A raw slice of the JSON blob lands mid-token; the reader then swallows
+    the decode error as {} and EVERY track is lost. Trim the text instead."""
+    cs = captures_store_db
+    big = {"en": "e" * cs._CAP_FINAL, "fr": "f" * cs._CAP_FINAL}
+    cid = _make(cs, monkeypatch, tmp_path, translations=big)
+    raw = cs._require_conn().execute(
+        "SELECT translations_json FROM captures WHERE id = ?", (cid,)
+    ).fetchone()[0]
+    assert len(raw) <= cs._CAP_FINAL
+    got = json.loads(raw)  # valid JSON, not a torn slice
+    assert set(got) == {"en", "fr"}
+    assert all(v and v[0] == k[0] for k, v in got.items())
+    assert cs.get_capture(cid)["translations"] == got
+
+
+def test_truncate_translations_small_map_is_untouched():
+    import captures_store
+    blob = captures_store._truncate_translations({"en": "hi"}, 50_000)
+    assert json.loads(blob) == {"en": "hi"}
+    assert captures_store._truncate_translations({}, 50_000) is None
+    assert captures_store._truncate_translations(None, 50_000) is None
+
+
+def test_update_translations_rejects_non_dict_and_caps_dict(
+        captures_store_db, monkeypatch, tmp_path):
+    cs = captures_store_db
+    cid = _make(cs, monkeypatch, tmp_path)
+    with pytest.raises(ValueError):
+        cs.update_capture(cid, {"translations": ["not", "a", "map"]})
+    with pytest.raises(ValueError):
+        cs.update_capture(cid, {"translations": "en: hi"})
+    # Nothing was stored by the rejected writes.
+    assert cs.get_capture(cid)["translations"] == {}
+
+    row = cs.update_capture(cid, {"translations": {"en": "e" * (cs._CAP_FINAL * 2)}})
+    assert set(row["translations"]) == {"en"}
+    assert 0 < len(row["translations"]["en"]) < cs._CAP_FINAL
+    row = cs.update_capture(cid, {"translations": None})
+    assert row["translations"] == {}

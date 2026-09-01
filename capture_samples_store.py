@@ -214,7 +214,7 @@ def get_members(sid: str) -> list[dict[str, Any]]:
         "SELECT id, created_ts, duration_seconds, raw, final,"
         " text_for_training, audio_trimmed_relpath,"
         " corrected_text, corrections_json, status, sample_order, user_id,"
-        " language"
+        " language, task"
         " FROM captures WHERE sample_id = ? ORDER BY sample_order ASC",
         (sid,),
     ).fetchall()

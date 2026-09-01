@@ -5,6 +5,7 @@ tests focus on the read/list/route-ordering/auth surface that works without
 fabricating audio blobs.
 """
 
+import json
 import os
 
 import pytest
@@ -644,3 +645,56 @@ def test_audio_rate_limit_is_hot_and_per_identity(client, app_module,
                         raising=False)
     for _ in range(20):
         assert client.get("/captures/api/nope0001/audio").status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Export: the English translate row
+# ---------------------------------------------------------------------------
+
+def _export_manifest(only_status="ready"):
+    import io
+    import tarfile
+
+    import captures_routes
+
+    blob = b"".join(captures_routes._build_export_stream(only_status, False))
+    with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
+        text = tar.extractfile("manifest.jsonl").read().decode("utf-8")
+    return [json.loads(line) for line in text.splitlines() if line]
+
+
+def _ready_capture(cs, monkeypatch, tmp_path, *, language, translations):
+    _fake_wav_transcode(monkeypatch)
+    src = tmp_path / "src.bin"
+    src.write_bytes(b"junk")
+    cid = cs.create_capture(
+        audio_src_path=str(src), request_id="r1", model="small",
+        language=language, duration_seconds=1.0, raw="r", final="quelle",
+        words=[], segments=[], user_id="alice", translations=translations,
+        translation_model="HY-MT", translation_source="cascade-mt",
+    )
+    cs.update_capture(cid, {"status": "ready"})
+    return cid
+
+
+def test_export_matches_english_track_by_base_subtag(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """`en-US` is an accepted translate target and is stored under that key;
+    the exporter used to look for the literal "en" and never emit the row."""
+    _ready_capture(captures_store_db, monkeypatch, tmp_path,
+                   language="de", translations={"en-US": "hi there"})
+    rows = _export_manifest()
+    assert [r["task"] for r in rows] == ["transcribe", "translate"]
+    assert rows[1]["text"] == "hi there"
+    assert rows[1]["model"] == "HY-MT"
+
+
+def test_export_skips_translate_row_for_english_source(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """An English source with target `en` is the same-language short-circuit:
+    the "translation" IS the transcript, and English audio labelled
+    task=translate is never valid training data."""
+    _ready_capture(captures_store_db, monkeypatch, tmp_path,
+                   language="en-GB", translations={"en": "quelle"})
+    rows = _export_manifest()
+    assert [r["task"] for r in rows] == ["transcribe"]

@@ -2630,6 +2630,11 @@ def _build_manifest_row(
     }
 
 
+def _lang_base(code: str) -> str:
+    """`en-US` → `en`: the base subtag is what "English track" means."""
+    return (str(code or "").split("-", 1)[0] or "").strip().lower()
+
+
 def _group_task(members: list) -> str:
     """The task label for a merged group.
 
@@ -2797,10 +2802,15 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             # an unreviewed line is a cascade pseudo-label (Whisper → HY-MT)
             # whose errors compound, which is exactly the material a
             # finetuning run should not be fed silently. The review workflow
-            # is what promotes it, so `ready` is the gate.
+            # is what promotes it, so `ready` is the gate. Match the track by
+            # BASE subtag (`en-US` is accepted as a target and stored under
+            # that key), and never emit one for English-language audio: the
+            # "translation" of an English source is its own transcript.
             _tr = row.get("translations") or {}
-            _en = (_tr.get("en") or "").strip()
-            if _en and (row.get("status") or "") == "ready":
+            _en_key = next((k for k in _tr if _lang_base(k) == "en"), None)
+            _en = (_tr.get(_en_key) or "").strip() if _en_key else ""
+            _src_is_en = _lang_base(row.get("language") or "") == "en"
+            if _en and not _src_is_en and (row.get("status") or "") == "ready":
                 manifest_lines.write(json.dumps(_build_manifest_row(
                     audio_filepath=audio_name,
                     text=_en,
@@ -4517,7 +4527,15 @@ _CAPTURES_HTML = r"""<!doctype html>
     if (trLangs.length) {
       var trSec = document.createElement('div');
       trSec.className = 'cc-section';
-      var eligible = trs.en && String(trs.en).trim();
+      // Match by BASE subtag: an `en-US` target is stored under that key.
+      var enKey = null;
+      for (var ei = 0; ei < trLangs.length; ei++) {
+        if (String(trLangs[ei]).split('-')[0].toLowerCase() === 'en') {
+          enKey = trLangs[ei];
+          break;
+        }
+      }
+      var eligible = enKey && trs[enKey] && String(trs[enKey]).trim();
       trSec.innerHTML = '<h3>Translations</h3>'
         + '<div class="help">'
         + (r.translation_model
@@ -4535,9 +4553,9 @@ _CAPTURES_HTML = r"""<!doctype html>
         var trRow = document.createElement('div');
         trRow.className = 'cc-tr-row';
         var tag = document.createElement('span');
-        tag.className = 'cc-tr-lang' + (lg === 'en' ? ' cc-tr-eligible' : '');
+        tag.className = 'cc-tr-lang' + (lg === enKey ? ' cc-tr-eligible' : '');
         tag.textContent = lg.toUpperCase();
-        if (lg !== 'en') tag.title = 'review only — not training data';
+        if (lg !== enKey) tag.title = 'review only — not training data';
         var val = document.createElement('div');
         val.className = 'cc-ground cc-tr-text';
         val.setAttribute('role', 'textbox');

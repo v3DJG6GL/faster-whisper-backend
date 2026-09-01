@@ -4448,7 +4448,8 @@ async def transcribe(
                     _lang: " ".join(
                         _s for _s in (
                             (seg.get("translations") or {}).get(_lang, "").strip()
-                            for seg in segments_list)
+                            for seg in segments_list
+                            if _lang not in (seg.get("translations_kept") or ()))
                         if _s).strip()
                     for _lang in _translation_meta["targets"]
                 }
@@ -4467,6 +4468,11 @@ async def transcribe(
                     # Trailer step — not a rule card, so no `#N` prefix.
                     trace.append(("output-wrapper",
                                   _wrap_before, full_text_str))
+            # Segments whose guard fallback KEPT the source text for a target
+            # (translations_kept) are skipped for that target: the response
+            # flags them per segment, but the stored track has no such
+            # marker, so a kept original would be exported as translated
+            # text — source-language audio labelled task=translate.
             # Post-wrapper trim — strips whitespace that the wrapper config
             # itself may carry. Runs unconditionally (the per-model exclude
             # only governs the in-pipeline trim). Preserves a leading or
