@@ -24,10 +24,13 @@
 #     label windows-latest:host — see forgejo-runner-windows/
 #     windows-runner-setup.md). It uses the SYSTEM python, like the frontend
 #     uses the system node. VM prerequisite (one-time, admin PowerShell):
-#         choco install -y python nodejs ffmpeg
-#     then add C:\Python314;C:\Python314\Scripts to the nssm
-#     AppEnvironmentExtra PATH (setup guide §5) and `nssm restart
-#     forgejo-runner`. Until then this leg fails at "python not found".
+#         .\setup-runner.ps1 -ToolchainOnly   (forgejo-runner-windows repo)
+#     which choco-installs python, node and ffmpeg AND rewrites the nssm
+#     AppEnvironmentExtra PATH (the service PATH is explicit, so a bare
+#     `choco install` never reaches the runner — ffmpeg's shim lives in
+#     C:\ProgramData\chocolatey\bin, which only the script puts on it)
+#     and restarts the service. Until then this leg fails at "python not
+#     found" or in "Verify system test tools".
 #     node and ffmpeg are prerequisites, not conveniences: the suite guards
 #     the inline <script> blocks with `node --check` and decodes real
 #     WebM/Opus with ffmpeg, and both guards SKIP themselves when the tool
@@ -208,7 +211,7 @@ jobs:
         run: |
           $missing = @('node', 'ffmpeg') | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
           if ($missing) {
-            Write-Output "::error::not on the runner PATH: $($missing -join ', ') - run 'choco install -y nodejs ffmpeg' on the VM (workflow header) and restart the runner service"
+            Write-Output "::error::not on the runner PATH: $($missing -join ', ') - run '.\setup-runner.ps1 -ToolchainOnly' from forgejo-runner-windows on the VM (workflow header); it installs the tool and rewrites the service PATH"
             exit 1
           }
           node --version
