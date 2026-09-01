@@ -16,6 +16,7 @@ write path only.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import tempfile
@@ -94,13 +95,20 @@ def _read(path: str = PATH) -> dict[str, dict]:
 
 
 def _write(models: dict[str, dict], path: str = PATH) -> None:
-    global _cache, _cache_mtime
     # Lazy: config_store drags in pydantic and the whole AdminConfig schema,
     # which this module's importers (system_stats) must not pay for.
-    from config_store import _atomic_write_json, _save_lock
-    doc = {"version": SCHEMA_VERSION, "models": models}
+    from config_store import _save_lock
     with _save_lock(path):
-        _atomic_write_json(doc, path, sort_keys=True, tmp_prefix=".model_sizes")
+        _write_locked(models, path)
+
+
+def _write_locked(models: dict[str, dict], path: str = PATH) -> None:
+    """The write itself; the caller holds config_store._save_lock(path)
+    (a plain threading.Lock per path, NOT reentrant — never nest)."""
+    global _cache, _cache_mtime
+    from config_store import _atomic_write_json
+    doc = {"version": SCHEMA_VERSION, "models": models}
+    _atomic_write_json(doc, path, sort_keys=True, tmp_prefix=".model_sizes")
     import store_common
     store_common.secure_file(path)
     _cache = models
@@ -126,34 +134,57 @@ def record(name: str, device: str, compute_type: str, vram_bytes: int, *,
     k = _key(name, device, compute_type)
     src = "measured" if measured else "disk"
     with _lock:
-        models = dict(_read())
-        old = models.get(k)
-        if old is not None:
-            prev = int(old.get("bytes") or 0)
-            old_measured = old.get("src") != "disk"
-            if old_measured and not measured:
-                return
-            if measured and not old_measured:
-                size = int(vram_bytes)
-            else:
-                if prev and abs(vram_bytes - prev) <= prev * _REWRITE_THRESHOLD:
-                    return
-                # max(), not last-write: CTranslate2's caching allocator makes
-                # RE-loads under-report (the freed blocks it kept get reused,
-                # see system_stats.py's module docstring). Under-estimating is
-                # the dangerous direction — it is exactly what turns a "fits"
-                # verdict into an OOM — so the ledger keeps the high-water mark.
-                size = max(prev, int(vram_bytes))
-            models[k] = {
-                "bytes": size,
-                "ts": time.time(),
-                "n": int(old.get("n") or 0) + 1,
-                "src": src,
-            }
+        # The read-modify-write below rewrites the WHOLE ledger, so with
+        # SERVER_WORKERS > 1 two workers measuring different models would
+        # each write back their own stale document and lose the other's
+        # row. config_store._save_lock serialises it across workers; a lock
+        # timeout (OSError) falls back to the unlocked path — record() must
+        # never break a load.
+        with contextlib.ExitStack() as stack:
+            try:
+                from config_store import _save_lock
+                stack.enter_context(_save_lock(PATH))
+                write = _write_locked
+            except OSError:
+                write = _write
+            _record_locked(k, vram_bytes, measured, src, write)
+
+
+def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
+                   write) -> None:
+    """The merge half of record(); ``write`` is _write_locked when the
+    caller already holds config_store._save_lock(PATH), else _write."""
+    global _cache_mtime
+    # Drop the mtime cache so the merge sees a peer's just-written rows.
+    _cache_mtime = None
+    models = dict(_read())
+    old = models.get(k)
+    if old is not None:
+        prev = int(old.get("bytes") or 0)
+        old_measured = old.get("src") != "disk"
+        if old_measured and not measured:
+            return
+        if measured and not old_measured:
+            size = int(vram_bytes)
         else:
-            models[k] = {"bytes": int(vram_bytes), "ts": time.time(), "n": 1,
-                         "src": src}
-        _write(models)
+            if prev and abs(vram_bytes - prev) <= prev * _REWRITE_THRESHOLD:
+                return
+            # max(), not last-write: CTranslate2's caching allocator makes
+            # RE-loads under-report (the freed blocks it kept get reused,
+            # see system_stats.py's module docstring). Under-estimating is
+            # the dangerous direction — it is exactly what turns a "fits"
+            # verdict into an OOM — so the ledger keeps the high-water mark.
+            size = max(prev, int(vram_bytes))
+        models[k] = {
+            "bytes": size,
+            "ts": time.time(),
+            "n": int(old.get("n") or 0) + 1,
+            "src": src,
+        }
+    else:
+        models[k] = {"bytes": int(vram_bytes), "ts": time.time(), "n": 1,
+                     "src": src}
+    write(models)
 
 
 def estimate(name: str, device: str, compute_type: str) -> int | None:
@@ -219,8 +250,11 @@ def _model_path(name: str) -> "str | None":
         # so a default install (no DOWNLOAD_ROOT) is still sizeable.
         return os.path.join(root or tempfile.gettempdir(), "audio-separator",
                             model)
+    # Same default as system_stats._build_host: no HF_HOME and no
+    # DOWNLOAD_ROOT means the hub's standard cache, ~/.cache/huggingface.
     hf_home = os.environ.get("HF_HOME") or (
-        os.path.join(root, "hf") if root else "")
+        os.path.join(root, "hf") if root
+        else os.path.expanduser("~/.cache/huggingface"))
     if not hf_home:
         return None
     if name.startswith("gguf:"):
@@ -228,11 +262,27 @@ def _model_path(name: str) -> "str | None":
         return _hf_repo_dir(hf_home, repo)
     if name.startswith("pyannote:"):
         return _hf_repo_dir(hf_home, name[9:])
-    # Whisper: the HF cache dir. A transformers checkpoint that main converts
-    # to CT2 lives under a separate root keyed by quantisation (see
-    # main._converted_dir_for), which this name-only lookup cannot address;
-    # the source repo is an adequate prior for it.
-    return _hf_repo_dir(hf_home, name)
+    # Whisper: main resolves a bare id ('large-v3') through faster_whisper's
+    # _MODELS table and passes DOWNLOAD_ROOT itself as snapshot_download's
+    # cache_dir (no `/hf` sub-dir — that convention belongs to
+    # translation/diarization's HF_HOME setdefault), so the repo dir sits
+    # directly under the root; without a root the hub cache is used. A
+    # transformers checkpoint that main converts to CT2 lives under a
+    # separate root keyed by quantisation (see main._converted_dir_for),
+    # which this name-only lookup cannot address; the source repo is an
+    # adequate prior for it.
+    try:
+        from faster_whisper.utils import _MODELS
+        repo = _MODELS.get(name) or name
+    except Exception:  # noqa: BLE001 — faster_whisper absent = bare repo id
+        repo = name
+    leaf = "models--" + repo.replace("/", "--")
+    candidates = [os.path.join(root, leaf)] if root else []
+    candidates.append(os.path.join(hf_home, "hub", leaf))
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    return candidates[0]
 
 
 def _hf_repo_dir(hf_home: str, repo: str) -> "str | None":

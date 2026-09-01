@@ -28,19 +28,21 @@ not bytes (snapshot_download's outer per-FILE bar) are ignored.
 
 Scope: the active capture is module-global (not thread-local), because
 snapshot_download fans file downloads out to worker threads that would never
-see a thread-local. Most model loads are serialized per module (`_lock` in
-translation/diarization/bgm), but main's whisper pre-download deliberately
-runs *outside* `_model_load_lock`, so two cold whisper loads (or a request
-plus a preload worker) can overlap. When they do, the later scope replaces
+see a thread-local. diarization/bgm serialize their loads module-wide, but
+translation serializes only per ref (`_loading[ref]`) and runs the load
+outside its `_lock`, and main's whisper pre-download deliberately runs
+*outside* `_model_load_lock` — so two different refs downloading at once,
+two cold whisper loads, or a request plus a preload worker can overlap.
+When they do, the later scope replaces
 the earlier one: bars constructed afterwards report under the later label
 and the inner exit restores `ReportingTqdm` rather than the original tqdm
 until the outer exit — byte counts may blend, and progress is a
 convenience, never a correctness surface.
 
-The `capture` context also monkeypatches the hub-internal default tqdm
-(``huggingface_hub.utils.tqdm.tqdm`` + ``file_download``'s alias) for its
-duration as a fallback for call paths that don't accept ``tqdm_class``,
-restoring both in its finally.
+The `capture` context also monkeypatches the hub-internal default tqdm for
+its duration as a fallback for call paths that don't accept ``tqdm_class``:
+every ``(module, attr)`` pair in ``_PATCH_TARGETS`` is rebound to
+``ReportingTqdm`` and restored to its previous value in the finally.
 """
 
 from __future__ import annotations
@@ -87,6 +89,11 @@ class _Capture:
         self._last_log = self.t0
         self._last_bucket = 0
         self._last_cb = 0.0
+        # Largest aggregate handed to cb so far. bump() computes the sum
+        # under the lock but delivers outside it, so a snapshot worker that
+        # computed 500 can be preempted and deliver after a peer's 800 —
+        # a stale delivery would walk the WebUI bar backwards.
+        self._last_sent = -1
 
     # -- called from ReportingTqdm ------------------------------------------
     def add_bar(self, bar_id: int, total: int) -> None:
@@ -114,9 +121,11 @@ class _Capture:
                             self.label, pct, _fmt_bytes(done_b),
                             _fmt_bytes(total_b), _fmt_bytes(done_b / secs))
             fire_cb = (self.cb is not None
-                       and now - self._last_cb >= _CB_MIN_INTERVAL_S)
+                       and now - self._last_cb >= _CB_MIN_INTERVAL_S
+                       and done_b >= self._last_sent)
             if fire_cb:
                 self._last_cb = now
+                self._last_sent = done_b
         if fire_cb:
             try:
                 self.cb(done_b, total_b)
@@ -152,11 +161,18 @@ if _hub_tqdm_mod is not None:
             self._dp_n = int(kwargs.get("initial") or 0)
             self._dp_total = int(kwargs.get("total") or 0)
             unit = str(kwargs.get("unit") or "")
+            name = str(kwargs.get("name") or "")
             self._dp_key = next(_bar_seq)
             super().__init__(*args, **kwargs)
             cap = _active_capture()
+            # snapshot_download builds TWO byte-unit aggregate bars from
+            # tqdm_class over the same bytes: `...snapshot_download` (the
+            # reconstruct bar, whose total the hub grows per file) and
+            # `...snapshot_download.transfer`. Registering both would count
+            # every byte twice, so the transfer twin is left out.
             self._dp_cap = cap if (cap is not None
-                                   and unit.startswith("B")) else None
+                                   and unit.startswith("B")
+                                   and not name.endswith(".transfer")) else None
             if self._dp_cap is not None:
                 self._dp_cap.add_bar(self._dp_key, self._dp_total)
 
@@ -198,8 +214,9 @@ _capture_lock = threading.Lock()
 _current: "_Capture | None" = None
 _PATCH_TARGETS = (
     ("huggingface_hub.utils.tqdm", "tqdm"),
+    # Defensive no-op on hub >= 1.29 (file_download imports tqdm only for
+    # annotations and builds its bar through utils.tqdm); kept for older hubs.
     ("huggingface_hub.file_download", "tqdm"),
-    ("huggingface_hub._snapshot_download", "tqdm"),
 )
 
 
@@ -213,12 +230,15 @@ def capture(label: str, cb: "Callable[[int, int], None] | None" = None,
     """Scope inside which every hub download reports as `label`.
 
     Yields the `_Capture` (use `.tqdm_kwargs` where the API takes a
-    tqdm_class). On exit logs the done receipt when bytes actually moved
-    (a warm cache hit stays silent) and — with `record=True` — persists a
-    'download' row via metrics (lazy import; no-op before init_db)."""
+    tqdm_class). On exit, when bytes actually moved (a warm cache hit stays
+    silent), logs a done receipt — or an "aborted" warning when the body
+    raised — and with `record=True` persists a 'download' row via metrics
+    (lazy import; no-op before init_db) whose status says which it was. A
+    failed download never fires `cb` with a completion-shaped pair."""
     global _current
     cap = _Capture(label, cb)
-    patched: list[tuple[Any, Any]] = []
+    patched: list[tuple[Any, str, Any]] = []
+    failed = False
     with _capture_lock:
         _current = cap
     if _hub_tqdm_mod is not None:
@@ -226,16 +246,21 @@ def capture(label: str, cb: "Callable[[int, int], None] | None" = None,
             try:
                 mod = importlib.import_module(mod_name)
                 if getattr(mod, attr, None) is not None:
-                    patched.append((mod, getattr(mod, attr)))
+                    patched.append((mod, attr, getattr(mod, attr)))
                     setattr(mod, attr, ReportingTqdm)
             except Exception:  # noqa: BLE001 — fallback patch is best-effort
                 pass
     try:
         yield cap
+    except BaseException:
+        # The body raised (network drop, full disk, cancellation): the
+        # finally still runs, but must not hand out a "done" receipt.
+        failed = True
+        raise
     finally:
-        for mod, prev in patched:
+        for mod, attr, prev in patched:
             try:
-                setattr(mod, "tqdm", prev)
+                setattr(mod, attr, prev)
             except Exception:  # noqa: BLE001
                 pass
         with _capture_lock:
@@ -244,26 +269,34 @@ def capture(label: str, cb: "Callable[[int, int], None] | None" = None,
         done_b, total_b = cap.totals()
         secs = max(1e-6, time.monotonic() - cap.t0)
         if done_b > 0:
-            logger.info("[download] %s done: %s in %.1fs (%s/s)",
-                        cap.label, _fmt_bytes(done_b), secs,
-                        _fmt_bytes(done_b / secs))
-            if cap.cb is not None:
-                try:
-                    cap.cb(done_b, total_b or done_b)
-                except Exception:  # noqa: BLE001
-                    pass
+            if failed:
+                logger.warning("[download] %s aborted after %s in %.1fs",
+                               cap.label, _fmt_bytes(done_b), secs)
+            else:
+                logger.info("[download] %s done: %s in %.1fs (%s/s)",
+                            cap.label, _fmt_bytes(done_b), secs,
+                            _fmt_bytes(done_b / secs))
+                if cap.cb is not None:
+                    try:
+                        cap.cb(done_b, total_b or done_b)
+                    except Exception:  # noqa: BLE001
+                        pass
             if record:
-                _record_download(cap.label, done_b, secs)
+                _record_download(cap.label, done_b, secs, ok=not failed)
 
 
-def _record_download(label: str, done_bytes: int, secs: float) -> None:
-    """Persist a finished download as a recent-jobs row. Lazy import keeps
-    this module free of a metrics/transcriptions_store import cycle; every
-    failure is swallowed — recording is bookkeeping, not control flow."""
+def _record_download(label: str, done_bytes: int, secs: float, *,
+                     ok: bool = True) -> None:
+    """Persist a download that moved bytes as a recent-jobs row — status
+    'ok' when it finished, 'error' when the body raised mid-transfer. Lazy
+    import keeps this module free of a metrics/transcriptions_store import
+    cycle; every failure is swallowed — recording is bookkeeping, not
+    control flow."""
     try:
         import metrics
         metrics.record_download(model=label, seconds=secs,
-                                bytes_done=done_bytes)
+                                bytes_done=done_bytes,
+                                status="ok" if ok else "error")
     except Exception as e:  # noqa: BLE001
         logger.warning("[download] record failed: %s", e)
 

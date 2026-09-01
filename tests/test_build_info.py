@@ -3,7 +3,20 @@
 import importlib
 import subprocess
 
+import pytest
+
 import build_info
+
+
+@pytest.fixture(autouse=True)
+def _keep_process_identity():
+    """importlib.reload re-mints BOOT_ID / STARTED_AT / STARTED_UTC, but
+    main.py imports BOOT_ID by value at import time and serves it on
+    /v1/models — a reload here would leave the two diverged for the rest of
+    the session. Reinstate the originals after each test's reloads."""
+    saved = (build_info.BOOT_ID, build_info.STARTED_AT, build_info.STARTED_UTC)
+    yield
+    build_info.BOOT_ID, build_info.STARTED_AT, build_info.STARTED_UTC = saved
 
 
 def test_resolves_to_nonempty_string():
@@ -68,3 +81,21 @@ def test_engine_versions_omits_llama_cpp_when_absent(monkeypatch):
     s = build_info.engine_versions()
     assert "llama-cpp-python" not in s
     assert "CTranslate2 4.6.1" in s
+
+
+def test_reload_does_not_leak_a_new_boot_id(monkeypatch):
+    before = build_info.BOOT_ID
+    monkeypatch.setenv("WHISPER_BUILD_VERSION", "v0.0.0-reload")
+    importlib.reload(build_info)
+    monkeypatch.delenv("WHISPER_BUILD_VERSION")
+    importlib.reload(build_info)
+    # A reload mints a fresh id inside the test; the autouse fixture puts
+    # the process one back afterwards (checked by the next test).
+    assert build_info.BOOT_ID != before
+
+
+def test_process_identity_survives_the_reload_tests():
+    # Runs after the reload tests above (file order): the identity main.py
+    # bound by value must still be the one build_info serves.
+    import main
+    assert main.BOOT_ID == build_info.BOOT_ID

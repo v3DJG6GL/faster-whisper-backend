@@ -196,7 +196,8 @@ def test_snapshot_projection_carries_job_fields(tx_store):
         kind="translate",
         stages=[{"name": "translate", "secs": 0.8, "model": "org/m:Q4",
                  "detail": "2 segs → en"}])
-    recent = metrics.metrics_snapshot()["recent_transcriptions"]
+    recent = metrics.metrics_snapshot(
+        include_identity=True)["recent_transcriptions"]
     by_model = {r["model"]: r for r in recent}
     tr = by_model["large-v3"]
     assert tr["kind"] == "transcribe"            # NULL kind + source 'file'
@@ -218,3 +219,59 @@ def test_record_download_persists_a_download_row(tx_store):
     assert row["proc_dur"] == 2.0
     assert row["stages"][0]["bytes"] == 4 * (1 << 30)
     assert "GB" in row["stages"][0]["detail"]
+
+
+def test_snapshot_scrubs_identity_for_non_admin_viewers(tx_store):
+    """/stats has no scope=own: a non-admin holder of pages.stats must not
+    read other users' username / key_label (same gate as jobs_snapshot)."""
+    stages = [{"name": "transcribing", "secs": 1.5, "model": "large-v3"}]
+    metrics.record_transcription(
+        "large-v3", 3.0, 1.5, "ok", 5, request_id="rj1", user_id="u1",
+        kind="transcribe", stages=stages, key_label="alice-laptop")
+    tx_store.record_trace(request_id="rj1", model="large-v3", raw="x",
+                          final="y", username="alice")
+    row = metrics.metrics_snapshot()["recent_transcriptions"][0]
+    assert row["username"] == "" and row["key_label"] == ""
+    assert row["model"] == "large-v3" and row["kind"] == "transcribe"
+    assert row["stages"] == stages
+    admin = metrics.metrics_snapshot(
+        include_identity=True)["recent_transcriptions"][0]
+    assert admin["username"] == "alice"
+    assert admin["key_label"] == "alice-laptop"
+
+
+def test_record_transcription_takes_the_key_label_from_the_caller(
+        tx_store, monkeypatch):
+    # The auth record already holds the label; no per-request key lookup.
+    import api_keys_store
+
+    def _no_lookup(*_a, **_k):
+        raise AssertionError("get_key was queried")
+    monkeypatch.setattr(api_keys_store, "get_key", _no_lookup)
+    metrics.record_transcription(
+        "m", 1.0, 0.5, "ok", 3, request_id="rk1", key_id="k1",
+        key_label="team-key")
+    row = metrics.metrics_snapshot(
+        include_identity=True)["recent_transcriptions"][0]
+    assert row["key_label"] == "team-key"
+
+
+def test_record_download_aborted_row_is_not_ok(tx_store):
+    metrics.record_download(model="gguf:org/m:Q4", seconds=2.0,
+                            bytes_done=1 << 30, status="error")
+    row = [r for r in metrics.metrics_snapshot()["recent_transcriptions"]
+           if r["kind"] == "download"][0]
+    assert row["status"] == "error"
+    assert row["stages"][0]["bytes"] == 1 << 30
+    assert "aborted" in row["stages"][0]["detail"]
+
+
+def test_cancelled_run_is_not_a_usage_error(usage_store_db):
+    us = usage_store_db
+    metrics.record_transcription("m", 1.0, 0.5, "cancelled", 0,
+                                 request_id="c1", user_id="u", key_id="k")
+    metrics.record_transcription("m", 1.0, 0.5, "error", 0,
+                                 request_id="c2", user_id="u", key_id="k")
+    r = us.totals_by_key()[0]
+    assert r["requests"] == 2
+    assert r["errors"] == 1        # the error, not the client cancel

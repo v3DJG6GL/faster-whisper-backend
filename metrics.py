@@ -49,6 +49,12 @@ _UNMATCHED_OVERFLOW = "(other)"
 # than any real route.
 _MAX_UNMATCHED_KEY_LEN = 120
 
+# Statuses the durable usage rollup must NOT count as errors. A client
+# cancel is not a server error (main preserves 'cancelled' into the
+# recent-jobs row for the same reason); usage_store's only error test is
+# `status == "ok"`, so the mapping happens here, before the hand-off.
+_USAGE_NON_ERROR_STATUSES = frozenset(("ok", "cancelled"))
+
 req_count: Counter[str] = Counter()         # path -> total
 err_count: Counter[str] = Counter()         # path -> 5xx total
 
@@ -90,22 +96,6 @@ def record_request(path: str, status: int, duration_ms: float,
         _latency.append(duration_ms)
 
 
-def _key_label_for(key_id: str | None) -> str | None:
-    """Best-effort display label of an API key, snapshotted at record time
-    (labels are mutable, so read-time resolution would rewrite history)."""
-    if not key_id:
-        return None
-    try:
-        import api_keys_store
-        rec = api_keys_store.get_key(key_id)
-        if not rec:
-            return None
-        label = (rec.get("label") or "").strip()
-        prefix = (rec.get("key_prefix") or "").strip()
-        return label or (prefix + "…" if prefix else None)
-    except Exception:  # noqa: BLE001 — bookkeeping only
-        return None
-
 
 def record_transcription(model: str, audio_dur: float, proc_dur: float,
                          status: str, words: int,
@@ -113,7 +103,8 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
                          user_id: str | None = None,
                          key_id: str | None = None,
                          kind: str | None = None,
-                         stages: list | None = None) -> None:
+                         stages: list | None = None,
+                         key_label: str | None = None) -> None:
     """Called from the transcribe handler's outer finally on every
     /transcribe request (both success and error paths). UPSERTs the
     timing half of the recent-transcriptions row keyed by request_id;
@@ -121,6 +112,11 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
     half on the success path, so this call only patches timing fields
     in. On the error path it inserts a minimal row so /stats still
     counts the request.
+
+    ``key_label`` is the API key's display label as the auth record already
+    holds it (``user["key_label"]``), snapshotted at record time because
+    labels are mutable and read-time resolution would rewrite history.
+    When the caller passes none, it is looked up from ``key_id``.
 
     Also bumps the durable per-key/per-user usage rollup (usage_store),
     which — unlike recent_transcriptions — is never pruned to a rolling
@@ -140,7 +136,7 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
             user_id=user_id,
             kind=kind,
             stages=stages,
-            key_label=_key_label_for(key_id),
+            key_label=key_label,
             prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
             max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
             ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_TTL_DAYS", 30)),
@@ -154,35 +150,41 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
             user_id=user_id,
             audio_s=audio_dur or 0.0,
             words=int(words or 0),
-            status=status,
+            status="ok" if status in _USAGE_NON_ERROR_STATUSES else status,
         )
     except Exception as e:
         logger.warning("[metrics] usage rollup failed: %s", e)
 
 
-def record_download(model: str, seconds: float, bytes_done: int) -> None:
-    """Persist a finished model download as a 'download' recent-jobs row
-    (called by download_progress.capture's exit when bytes actually moved).
-    Minted request_id — downloads have no request of their own. No usage
-    rollup: a download is server work, not user throughput."""
+def record_download(model: str, seconds: float, bytes_done: int, *,
+                    status: str = "ok") -> None:
+    """Persist a model download that moved bytes as a 'download' recent-jobs
+    row (called by download_progress.capture's exit). ``status`` is 'ok'
+    for a finished transfer and 'error' for one that died mid-way — the
+    GB / MB/s figures are still the bytes that moved, but the stage detail
+    says the transfer did not complete. Minted request_id — downloads have
+    no request of their own. No usage rollup: a download is server work,
+    not user throughput."""
     try:
         import uuid
 
         import config as cfg
         import transcriptions_store
         mb_s = (bytes_done / (1 << 20)) / seconds if seconds > 0 else 0.0
+        detail = f"{bytes_done / (1 << 30):.2f} GB · {mb_s:.1f} MB/s"
+        if status != "ok":
+            detail += " · aborted"
         transcriptions_store.record_timing(
             request_id=uuid.uuid4().hex,
             model=model,
             audio_dur_s=None,
             proc_dur_s=round(seconds, 3),
-            status="ok",
+            status=status,
             words_count=0,
             kind="download",
             stages=[{"name": "download", "secs": round(seconds, 3),
                      "model": model,
-                     "detail": f"{bytes_done / (1 << 30):.2f} GB · "
-                               f"{mb_s:.1f} MB/s",
+                     "detail": detail,
                      "bytes": int(bytes_done)}],
             prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
             max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
@@ -223,8 +225,11 @@ def _errors_in(seconds: float) -> int:
     return n
 
 
-def metrics_snapshot() -> dict[str, Any]:
-    """Build the JSON payload returned by /stats/snapshot and /stats/stream."""
+def metrics_snapshot(*, include_identity: bool = False) -> dict[str, Any]:
+    """Build the JSON payload returned by /stats/snapshot and /stats/stream.
+
+    ``include_identity`` follows jobs.jobs_snapshot's admin gate: only an
+    admin viewer gets the username / key_label of the recent jobs."""
     durations = sorted(_latency)
     loads_summary = {}
     for m, v in model_loads.items():
@@ -262,12 +267,14 @@ def metrics_snapshot() -> dict[str, Any]:
             # Recent-jobs fields. kind: explicit column wins; legacy rows
             # resolve via source ('stream' = live dictation). username and
             # key_label are display identities, not transcript content —
-            # the projection still carries no raw/final text.
+            # the projection still carries no raw/final text — but they
+            # are OTHER users' identities, so like jobs_snapshot they are
+            # scrubbed unless the viewer is an admin (include_identity).
             "kind": r.get("kind")
                     or ("dictate" if r.get("source") == "stream"
                         else "transcribe"),
-            "username": r.get("username") or "",
-            "key_label": r.get("key_label") or "",
+            "username": (r.get("username") or "") if include_identity else "",
+            "key_label": (r.get("key_label") or "") if include_identity else "",
             "stages": r.get("stages") or [],
         }
         for r in rows

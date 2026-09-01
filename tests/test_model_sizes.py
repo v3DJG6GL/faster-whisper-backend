@@ -20,7 +20,8 @@ def ledger(tmp_path, monkeypatch):
     time — the same trap conftest documents for config_store)."""
     p = str(tmp_path / "model_sizes.json")
     monkeypatch.setattr(model_sizes, "PATH", p, raising=False)
-    for fn in (model_sizes._read, model_sizes._write):
+    for fn in (model_sizes._read, model_sizes._write,
+               model_sizes._write_locked):
         defaults = list(fn.__defaults__ or ())
         defaults[-1] = p
         monkeypatch.setattr(fn, "__defaults__", tuple(defaults), raising=False)
@@ -67,8 +68,8 @@ def test_one_percent_drift_does_not_rewrite_the_file(ledger, monkeypatch):
     model_sizes.record("large-v3", "cuda", "float16", 1000 * 1000 * 1000)
 
     writes = []
-    real_write = model_sizes._write
-    monkeypatch.setattr(model_sizes, "_write",
+    real_write = model_sizes._write_locked
+    monkeypatch.setattr(model_sizes, "_write_locked",
                         lambda *a, **k: (writes.append(1), real_write(*a, **k))[1])
 
     model_sizes.record("large-v3", "cuda", "float16", 1010 * 1000 * 1000)  # +1%
@@ -230,3 +231,70 @@ def test_measurement_replaces_a_larger_disk_prior(ledger):
     # Measured-vs-measured still keeps the high-water mark.
     model_sizes.record("large-v3", "cuda", "float16", 1 * GB)
     assert model_sizes.estimate("large-v3", "cuda", "float16") == 3 * GB
+
+
+def test_disk_size_defaults_to_the_hub_cache_without_any_root(
+        ledger, tmp_path, monkeypatch):
+    """Empty DOWNLOAD_ROOT + no HF_HOME is the documented default install
+    (.env.example: 'empty = standard HF cache ~/.cache/huggingface'); the
+    prior must look there instead of giving up."""
+    import config as cfg
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    d = tmp_path / ".cache" / "huggingface" / "hub" / "models--org--repo"
+    d.mkdir(parents=True)
+    (d / "x.bin").write_bytes(b"x" * 1234)
+
+    assert model_sizes.disk_size("gguf:org/repo") == 1234
+
+
+def test_disk_size_finds_whisper_under_download_root(
+        ledger, tmp_path, monkeypatch):
+    """main passes DOWNLOAD_ROOT itself as snapshot_download's cache_dir and
+    maps 'large-v3' through faster_whisper's _MODELS table — the prior must
+    look where the bytes actually land."""
+    pytest.importorskip("faster_whisper")
+    import config as cfg
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
+    d = tmp_path / "models--Systran--faster-whisper-large-v3"
+    d.mkdir()
+    (d / "model.bin").write_bytes(b"x" * 5000)
+
+    assert model_sizes.disk_size("large-v3") == 5000
+    assert model_sizes.disk_size("Systran/faster-whisper-large-v3") == 5000
+
+
+def test_record_merges_a_peer_workers_row_instead_of_clobbering_it(ledger):
+    """Two workers share the file. A peer's row written while this process
+    holds a stale in-memory copy (same mtime — writes within one clock
+    tick) must survive our next record(), which rewrites the whole
+    document."""
+    model_sizes.record("a", "cuda", "float16", 1 * GB)      # warms the cache
+    doc = json.loads(open(ledger, encoding="utf-8").read())
+    doc["models"]["peer|cpu|int8"] = {"bytes": 7, "ts": 0, "n": 1,
+                                      "src": "measured"}
+    with open(ledger, "w", encoding="utf-8") as f:
+        json.dump(doc, f)
+    os.utime(ledger, (model_sizes._cache_mtime, model_sizes._cache_mtime))
+    assert model_sizes._read() is model_sizes._cache      # cache looks fresh
+
+    model_sizes.record("b", "cuda", "float16", 2 * GB)
+    models = json.loads(open(ledger, encoding="utf-8").read())["models"]
+    assert set(models) >= {"a|cuda|float16", "peer|cpu|int8", "b|cuda|float16"}
+
+
+def test_record_holds_the_cross_process_save_lock(ledger, monkeypatch):
+    import config_store
+    entered = []
+    real = config_store._save_lock
+
+    def spy(path):
+        entered.append(path)
+        return real(path)
+    monkeypatch.setattr(config_store, "_save_lock", spy)
+    model_sizes.record("a", "cuda", "float16", 1 * GB)
+    # Once around the whole read-modify-write — never re-acquired inside
+    # the write (the per-path lock is not reentrant).
+    assert entered == [ledger]
