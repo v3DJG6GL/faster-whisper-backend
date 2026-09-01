@@ -2,6 +2,9 @@
 the pure segment-assignment helper. pyannote is never imported — the module's
 `diarize` coroutine is monkeypatched, exactly the boundary the handler uses."""
 
+import logging
+import os
+
 import diarization
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -181,18 +184,29 @@ def test_assign_speakers_no_turns_is_noop():
 
 # --- progress hook -----------------------------------------------------------
 
-def test_hook_maps_steps_and_stays_monotone():
+def test_hook_maps_steps_and_stays_monotone(caplog):
     seen = []
     hook = diarization._make_hook(lambda f, step=None: seen.append(f))
-    hook("segmentation", None, total=10, completed=5)
-    hook("segmentation", None, total=10, completed=10)
-    hook("embeddings", None, total=4, completed=2)
-    # A regression (pyannote re-reports an earlier step) must not move the bar
-    # backwards — it is simply dropped.
-    hook("segmentation", None, total=10, completed=1)
-    hook("clustering", None)          # no total → logged but never moves the bar
-    hook("embeddings", None, total=4, completed=4)
-    assert seen == [0.225, 0.45, 0.675, 0.9]
+    with caplog.at_level(logging.INFO, logger="whisper-server"):
+        hook("segmentation", None, total=10, completed=5)
+        hook("segmentation", None, total=10, completed=10)
+        hook("embeddings", None, total=4, completed=2)
+        # A regression (pyannote re-reports an earlier step) must not move the
+        # bar backwards — it is simply dropped.
+        hook("segmentation", None, total=10, completed=1)
+        hook("clustering", None)      # no total → logged but never moves the bar
+        hook("embeddings", None, total=4, completed=4)
+        assert seen == [0.225, 0.45, 0.675, 0.9]
+        # A repeated bare call stays silent (no bar move, no re-log); a later
+        # CHUNKED call from the same step promotes it to the next free window
+        # instead of staying untracked forever.
+        hook("clustering", None)
+        hook("clustering", None, total=4, completed=4)
+    assert seen == [0.225, 0.45, 0.675, 0.9, 1.0]
+    step_lines = [r.getMessage() for r in caplog.records
+                  if "step: clustering" in r.getMessage()]
+    assert step_lines == ["[diarize] step: clustering (untracked)",
+                          "[diarize] step: clustering (promoted)"]
 
 
 def test_hook_swallows_bad_callback():
@@ -200,6 +214,33 @@ def test_hook_swallows_bad_callback():
         raise RuntimeError("cb exploded")
     hook = diarization._make_hook(_boom)
     hook("segmentation", None, total=10, completed=5)  # must not raise
+
+
+# --- offline env var is scoped to the load -----------------------------------
+
+def test_load_scopes_hf_hub_offline_to_the_load(monkeypatch):
+    """LOCAL_FILES_ONLY is hot-editable: one offline pyannote load must not
+    pin HF_HUB_OFFLINE process-wide (it would poison every later
+    huggingface_hub download — whisper snapshots, translation weights —
+    until a restart)."""
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(diarization.cfg, "LOCAL_FILES_ONLY", True,
+                        raising=False)
+    seen = {}
+
+    def _fake_inner(model_id, device, batch_size):
+        seen["offline"] = os.environ.get("HF_HUB_OFFLINE")
+        return object()
+    monkeypatch.setattr(diarization, "_load_blocking_inner", _fake_inner)
+
+    diarization._load_blocking("m1", "cpu", 4)
+    assert seen["offline"] == "1"          # offline DURING the load...
+    assert "HF_HUB_OFFLINE" not in os.environ   # ...and restored after
+
+    # A pre-existing value is restored, not popped.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    diarization._load_blocking("m1", "cpu", 4)
+    assert os.environ["HF_HUB_OFFLINE"] == "0"
 
 
 # --- lease key is resolved once ---------------------------------------------

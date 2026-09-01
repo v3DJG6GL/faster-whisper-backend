@@ -217,6 +217,44 @@ def test_model_filename_appends_onnx(app_module):
     app_module.cfg.BGM_SEPARATION_UVR_MODEL = "UVR-MDX-NET-Inst_HQ_4"
 
 
+# --- actual-device bookkeeping -----------------------------------------------
+
+def test_free_locked_clears_the_session_device(monkeypatch):
+    """actual_device() must not keep reporting an evicted model's session —
+    unless a live separator still owns one (an orphan draining after a
+    same-model reload must not wipe the live session's placement)."""
+    monkeypatch.setattr(bgm_separation, "_separator", None)
+    monkeypatch.setattr(bgm_separation, "_session_device", "cuda")
+    bgm_separation._free_locked("m")
+    assert bgm_separation.actual_device() is None
+
+    bgm_separation._session_device = "cuda"
+    monkeypatch.setattr(bgm_separation, "_separator", object())
+    bgm_separation._free_locked("m")
+    assert bgm_separation.actual_device() == "cuda"
+
+
+def test_register_records_the_actual_session_device(monkeypatch):
+    """ORT can silently fall back to CPU at session creation — the stats/
+    ledger row must carry the session's real placement, not the request."""
+    import asyncio
+    import system_stats
+
+    cfg = bgm_separation.cfg
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cuda", raising=False)
+    monkeypatch.setattr(bgm_separation, "_session_device", None)
+
+    def _load(model, device):
+        assert device == "cuda"
+        bgm_separation._session_device = "cpu"   # the silent fallback
+        return object()
+    monkeypatch.setattr(bgm_separation, "_load_blocking", _load)
+
+    asyncio.run(bgm_separation._get_separator("Foo"))
+    assert system_stats._loaded_models["uvr:Foo.onnx"]["device"] == "cpu"
+
+
 # --- progress weighting ------------------------------------------------------
 
 def test_pass_fraction_weights_model_pass_heavier():

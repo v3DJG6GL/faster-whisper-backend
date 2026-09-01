@@ -148,6 +148,68 @@ def test_diarize_balances_the_lease_on_cancel(diar_cfg, monkeypatch, tmp_path):
     assert diarization._leases == {}
 
 
+def test_diarize_forward_typeerror_is_not_retried(diar_cfg, monkeypatch,
+                                                  tmp_path):
+    """The hookless retry exists for pipelines without the `hook` kwarg. A
+    TypeError from INSIDE the forward pass (version/dtype skew, a bad
+    speaker-count combination) must fail once, not silently re-run the whole
+    inference without progress or cancel."""
+    calls = []
+
+    class _BoomPipe:
+        def __call__(self, path, **kw):
+            calls.append(dict(kw))
+            raise TypeError("boom")
+
+    _stub_pipes(monkeypatch, [], _BoomPipe())
+    with pytest.raises(diarization.DiarizationError):
+        asyncio.run(diarization.diarize(str(tmp_path / "a.wav"),
+                                        progress_cb=lambda f, step=None: None))
+    assert len(calls) == 1
+
+
+def test_diarize_hookless_pipeline_retries_without_the_hook(
+        diar_cfg, monkeypatch, tmp_path):
+    calls = []
+
+    class _HooklessPipe:
+        def __call__(self, path, **kw):
+            calls.append(dict(kw))
+            if "hook" in kw:
+                raise TypeError(
+                    "__call__() got an unexpected keyword argument 'hook'")
+            return _Ann()
+
+    _stub_pipes(monkeypatch, [], _HooklessPipe())
+    turns = asyncio.run(diarization.diarize(
+        str(tmp_path / "a.wav"), progress_cb=lambda f, step=None: None))
+    assert turns == [(0.0, 1.0, "S0")]
+    assert len(calls) == 2 and "hook" not in calls[1]
+
+
+def test_diarize_cancel_only_still_installs_the_hook(diar_cfg, monkeypatch,
+                                                     tmp_path):
+    """cancel_check without progress_cb must still be polled from the hook,
+    not just at the pre-flight check."""
+    answers = iter([False, True])   # pre-flight passes; the hook cancels
+    state = {"hooked": False}
+
+    class _HookedPipe:
+        def __call__(self, path, **kw):
+            hook = kw.get("hook")
+            state["hooked"] = hook is not None
+            if hook is not None:
+                hook("segmentation", None, total=2, completed=1)
+            return _Ann()
+
+    _stub_pipes(monkeypatch, [], _HookedPipe())
+    with pytest.raises(diarization.DiarizeCancelled):
+        asyncio.run(diarization.diarize(str(tmp_path / "a.wav"),
+                                        cancel_check=lambda: next(answers)))
+    assert state["hooked"]
+    assert diarization._leases == {}
+
+
 # --- bgm separation ----------------------------------------------------------
 
 class _Sep:

@@ -94,9 +94,24 @@ def _load_blocking(model_id: str, device: str, batch_size: int):
     download_root = getattr(cfg, "DOWNLOAD_ROOT", None)
     if download_root:
         os.environ.setdefault("HF_HOME", os.path.join(download_root, "hf"))
+    # LOCAL_FILES_ONLY is a HOT setting — scope the offline env var to this
+    # load and restore it after (same hazard translation._load_blocking
+    # documents: one offline load would otherwise poison every later
+    # huggingface_hub download until a process restart).
+    offline_prev = os.environ.get("HF_HUB_OFFLINE")
     if getattr(cfg, "LOCAL_FILES_ONLY", False):
-        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ["HF_HUB_OFFLINE"] = "1"
+    try:
+        return _load_blocking_inner(model_id, device, batch_size)
+    finally:
+        if getattr(cfg, "LOCAL_FILES_ONLY", False):
+            if offline_prev is None:
+                os.environ.pop("HF_HUB_OFFLINE", None)
+            else:
+                os.environ["HF_HUB_OFFLINE"] = offline_prev
 
+
+def _load_blocking_inner(model_id: str, device: str, batch_size: int):
     try:
         import torch
         from pyannote.audio import Pipeline
@@ -185,8 +200,8 @@ def _free_locked(model_id: str) -> None:
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    except ImportError:
-        pass
+    except Exception:  # noqa: BLE001 — teardown is best-effort (empty_cache
+        pass           # raises RuntimeError after a prior CUDA fault)
     logger.info("[diarize] pipeline %s unloaded", model_id)
 
 
@@ -351,7 +366,11 @@ def _make_hook(progress_cb, cancel_check=None):
         try:
             name = str(step_name or "").lower()
             chunked = bool(total) and completed is not None
-            if name not in spans:
+            first_seen = name not in spans
+            # A step first announced BARE (no total) parks at span=None; a
+            # later chunked call from the same step promotes it to the next
+            # free window instead of staying untracked forever.
+            if first_seen or (spans[name] is None and chunked):
                 span = None
                 for key, named in _HOOK_NAMED_SPANS:
                     if key in name and named not in spans.values():
@@ -363,9 +382,12 @@ def _make_hook(progress_cb, cancel_check=None):
                         (s for s in _HOOK_ORDER_SPANS if s not in used),
                         _HOOK_ORDER_SPANS[-1])
                 spans[name] = span
-                quartile[name] = 0
-                logger.info("[diarize] step: %s%s", name,
-                            "" if span else " (untracked)")
+                quartile.setdefault(name, 0)
+                if first_seen:
+                    logger.info("[diarize] step: %s%s", name,
+                                "" if span else " (untracked)")
+                elif span is not None:
+                    logger.info("[diarize] step: %s (promoted)", name)
             span = spans[name]
             if span is None or not chunked:
                 return
@@ -440,14 +462,24 @@ async def _diarize_with(pipe, path: str, *, num_speakers, min_speakers,
         if cancel_check is not None and cancel_check():
             raise DiarizeCancelled()
         with _infer_mutex:
-            if progress_cb is not None:
+            # cancel_check alone still needs the hook — it is polled from
+            # there, not just at the pre-flight check above.
+            if progress_cb is not None or cancel_check is not None:
                 try:
                     result = pipe(path,
-                                  hook=_make_hook(progress_cb, cancel_check),
+                                  hook=_make_hook(
+                                      progress_cb or (lambda *_a, **_k: None),
+                                      cancel_check),
                                   **kwargs)
-                except TypeError:
+                except TypeError as _te:
                     # A pipeline without the hook kwarg (or a test stub) —
                     # run without progress rather than failing the stage.
+                    # Only for the unsupported-kwarg case (which always
+                    # names the kwarg): a TypeError from inside the forward
+                    # pass must not silently re-run the whole multi-minute
+                    # inference, hookless and uncancellable.
+                    if "hook" not in str(_te):
+                        raise
                     result = pipe(path, **kwargs)
             else:
                 result = pipe(path, **kwargs)

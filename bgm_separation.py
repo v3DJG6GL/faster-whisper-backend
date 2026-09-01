@@ -101,23 +101,11 @@ def actual_device() -> "str | None":
     return _session_device
 
 
-def _install_shims() -> None:
-    """Wrap audio-separator's MDX internals (once): a tqdm subclass that
-    reports chunk progress to the thread-local callback, and an onnxruntime
-    shim that tames the session's CPU thread pool (see _CPU_THREADS_CAP).
-    Both are audio-separator internals — every step is defensive and a
-    failure just means stock behavior."""
-    global _shims_installed
-    if _shims_installed:
-        return
+def _wrap_tqdm(mod) -> None:
+    """Swap ``mod.tqdm`` for the reporting/cancelling subclass (see
+    _install_shims). Defensive — failure means stock tqdm for that module."""
     try:
-        from audio_separator.separator.architectures import mdx_separator
-    except Exception as e:  # noqa: BLE001 — shims are best-effort
-        logger.debug("[bgm] shims not installed: %s", e)
-        return
-
-    try:
-        _base_tqdm = mdx_separator.tqdm
+        _base_tqdm = mod.tqdm
 
         class _ReportingTqdm(_base_tqdm):
             def __init__(self, *args, **kwargs):
@@ -156,65 +144,96 @@ def _install_shims() -> None:
                         pass
                 return out
 
-        mdx_separator.tqdm = _ReportingTqdm
+        mod.tqdm = _ReportingTqdm
     except Exception as e:  # noqa: BLE001
-        logger.debug("[bgm] tqdm shim not installed: %s", e)
+        logger.debug("[bgm] tqdm shim not installed for %s: %s",
+                     getattr(mod, "__name__", mod), e)
 
+
+class _OrtShim:
+    """Proxy for the onnxruntime module as an architecture module sees it:
+    InferenceSession gains capped, non-spinning CPU pools; everything
+    else passes through untouched. Scoped to those modules — the
+    global onnxruntime (Silero VAD etc.) is unaffected."""
+
+    def __init__(self, real):
+        self._real = real
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+    def InferenceSession(self, *args, **kwargs):  # noqa: N802 — ORT API
+        so = kwargs.get("sess_options")
+        if so is None:
+            so = self._real.SessionOptions()
+            kwargs["sess_options"] = so
+        try:
+            so.intra_op_num_threads = _cpu_threads()
+            so.inter_op_num_threads = 1
+            so.add_session_config_entry(
+                "session.intra_op.allow_spinning", "0")
+            so.add_session_config_entry(
+                "session.inter_op.allow_spinning", "0")
+        except Exception:  # noqa: BLE001 — tuning only
+            logger.debug("[bgm] could not tune ORT session options")
+        session = self._real.InferenceSession(*args, **kwargs)
+        # The architecture module keeps the session only inside a closure,
+        # so THIS is the one place the real placement is visible.
+        global _session_device
+        try:
+            active = list(session.get_providers())
+            _session_device = (
+                "cuda" if "CUDAExecutionProvider" in active else "cpu")
+            logger.info(
+                "[bgm] onnx session providers (actual): %s", active)
+            wanted = kwargs.get("providers") or []
+            if ("CUDAExecutionProvider" in wanted
+                    and "CUDAExecutionProvider" not in active):
+                logger.warning(
+                    "[bgm] the CUDA provider failed to initialize — "
+                    "separation runs on the CPU (onnxruntime printed "
+                    "the dlopen error to stderr; usual cause: an "
+                    "onnxruntime-gpu build for a different CUDA "
+                    "major than this image ships)")
+        except Exception:  # noqa: BLE001 — diagnostics only
+            _session_device = None
+        return session
+
+
+def _wrap_ort(mod) -> None:
     try:
-        class _OrtShim:
-            """Proxy for the onnxruntime module as mdx_separator sees it:
-            InferenceSession gains capped, non-spinning CPU pools; everything
-            else passes through untouched. Scoped to this one module — the
-            global onnxruntime (Silero VAD etc.) is unaffected."""
-
-            def __init__(self, real):
-                self._real = real
-
-            def __getattr__(self, name):
-                return getattr(self._real, name)
-
-            def InferenceSession(self, *args, **kwargs):  # noqa: N802 — ORT API
-                so = kwargs.get("sess_options")
-                if so is None:
-                    so = self._real.SessionOptions()
-                    kwargs["sess_options"] = so
-                try:
-                    so.intra_op_num_threads = _cpu_threads()
-                    so.inter_op_num_threads = 1
-                    so.add_session_config_entry(
-                        "session.intra_op.allow_spinning", "0")
-                    so.add_session_config_entry(
-                        "session.inter_op.allow_spinning", "0")
-                except Exception:  # noqa: BLE001 — tuning only
-                    logger.debug("[bgm] could not tune ORT session options")
-                session = self._real.InferenceSession(*args, **kwargs)
-                # mdx_separator keeps the session only inside a closure, so
-                # THIS is the one place the real placement is visible.
-                global _session_device
-                try:
-                    active = list(session.get_providers())
-                    _session_device = (
-                        "cuda" if "CUDAExecutionProvider" in active else "cpu")
-                    logger.info(
-                        "[bgm] onnx session providers (actual): %s", active)
-                    wanted = kwargs.get("providers") or []
-                    if ("CUDAExecutionProvider" in wanted
-                            and "CUDAExecutionProvider" not in active):
-                        logger.warning(
-                            "[bgm] the CUDA provider failed to initialize — "
-                            "separation runs on the CPU (onnxruntime printed "
-                            "the dlopen error to stderr; usual cause: an "
-                            "onnxruntime-gpu build for a different CUDA "
-                            "major than this image ships)")
-                except Exception:  # noqa: BLE001 — diagnostics only
-                    _session_device = None
-                return session
-
-        if not isinstance(mdx_separator.ort, _OrtShim):
-            mdx_separator.ort = _OrtShim(mdx_separator.ort)
+        if not isinstance(mod.ort, _OrtShim):
+            mod.ort = _OrtShim(mod.ort)
     except Exception as e:  # noqa: BLE001
-        logger.debug("[bgm] ort shim not installed: %s", e)
+        logger.debug("[bgm] ort shim not installed for %s: %s",
+                     getattr(mod, "__name__", mod), e)
 
+
+def _install_shims() -> None:
+    """Wrap audio-separator's per-architecture internals (once): a tqdm
+    subclass that reports chunk progress (and polls cancel) via the
+    thread-local callback, and an onnxruntime shim that tames the session's
+    CPU thread pool (see _CPU_THREADS_CAP). The shipped allowlist is not
+    MDX-only (a roformer .ckpt routes through mdxc_separator), so every
+    architecture module that exposes the attributes gets wrapped. All of it
+    is audio-separator internals — every step is defensive and a failure
+    just means stock behavior for that architecture."""
+    global _shims_installed
+    if _shims_installed:
+        return
+    import importlib
+    for mod_name in ("mdx_separator", "mdxc_separator", "vr_separator",
+                     "demucs_separator"):
+        try:
+            mod = importlib.import_module(
+                "audio_separator.separator.architectures." + mod_name)
+        except Exception as e:  # noqa: BLE001 — shims are best-effort
+            logger.debug("[bgm] %s shims not installed: %s", mod_name, e)
+            continue
+        if hasattr(mod, "tqdm"):
+            _wrap_tqdm(mod)
+        if hasattr(mod, "ort"):
+            _wrap_ort(mod)
     _shims_installed = True
 
 
@@ -316,6 +335,11 @@ def _load_blocking(model_filename: str, device: str):
             sep.onnx_execution_provider = ["CPUExecutionProvider"]
         except Exception:
             logger.debug("[bgm] could not pin separator to cpu")
+    # Placement is unknown until THIS load's session exists — clear the
+    # previous session's verdict so the check below (and actual_device())
+    # reads this load's truth, not a stale one from an evicted model.
+    global _session_device
+    _session_device = None
     try:
         sep.load_model(model_filename=model_filename)
     except Exception as e:
@@ -379,14 +403,20 @@ def _free_locked(model: str) -> None:
     # draining; the stats entry then describes the live separator.
     if not (_separator_key and _separator_key[0] == model):
         system_stats.unregister_loaded_model(_STATS_PREFIX + model)
+    # No live separator left → no session; actual_device() must stop
+    # reporting the dead one. (A draining orphan freed AFTER a reload must
+    # not wipe the live session's placement.)
+    global _session_device
+    if _separator is None:
+        _session_device = None
     import gc
     gc.collect()
     try:
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-    except ImportError:
-        pass
+    except Exception:  # noqa: BLE001 — teardown is best-effort (empty_cache
+        pass           # raises RuntimeError after a prior CUDA fault)
     logger.info("[bgm] separation model %s unloaded", model)
 
 
@@ -510,10 +540,14 @@ async def _get_separator(model_filename: "str | None" = None, *,
         vram = (vram_after - vram_before) if (
             vram_before is not None and vram_after is not None) else None
         load_secs = time.perf_counter() - t0
-        system_stats.register_loaded_model(_STATS_PREFIX + model, vram, device,
+        # register_loaded_model's contract wants the ACTUAL placement — ORT
+        # can silently fall back to CPU at session creation, and the ledger
+        # (model_sizes) keys rows by device.
+        actual = actual_device() or device
+        system_stats.register_loaded_model(_STATS_PREFIX + model, vram, actual,
                                            "onnx", load_secs)
         logger.info("[bgm] separation model %s loaded on %s in %.1fs",
-                    model, device, load_secs)
+                    model, actual, load_secs)
         try:
             import metrics
             metrics.record_model_load(_STATS_PREFIX + model, load_secs)
