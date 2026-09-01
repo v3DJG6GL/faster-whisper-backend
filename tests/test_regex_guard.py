@@ -214,3 +214,82 @@ def test_scaling_ratio_alone_cannot_reject_a_fast_pattern(monkeypatch):
     assert g._probe([["Komma", ","]]) is None
     # A representative slice of shipped-style rules, all microsecond-scale.
     assert g._probe([[r"(\d+),(\d+)", r"\1.\2"], [r"z\.B\.", "zum Beispiel"]]) is None
+
+
+def test_chain_seed_survives_a_saturated_chain():
+    """`_chain_advance` appends the witness to the TAIL but `[:_CHAIN_CAP]`
+    keeps the HEAD, so once enough non-matching entries had saturated the
+    chain the seed — and the manufactured run it produces — fell off the end
+    and the later `(-+)…#` entry never saw it. The seed must stay inside the
+    cap."""
+    import re
+    chained = g.FIXTURE
+    for i in range(400):
+        pat = r"\bwort%d\b" % i
+        chained = g._chain_advance(re.compile(pat), pat, "X", chained)
+    # Saturated: the chain sits at the cap (minus the last entry's shrink).
+    assert len(chained) > g._CHAIN_CAP - 64, "premise: the chain is saturated"
+    pattern, replacement = _MANUFACTURED[0][1], _MANUFACTURED[0][2]
+    out = g._chain_advance(re.compile(pattern), pattern, replacement, chained)
+    assert len(out) <= g._CHAIN_CAP
+    assert "-" * 60 in out
+
+
+def test_manufactured_pair_is_still_rejected_deep_in_a_large_list():
+    """End to end: placing the pair after enough harmless entries to saturate
+    the chain must not evade the chained probe."""
+    checks = [(f"r{i}", r"\bwort%d\b" % i, "X") for i in range(400)]
+    checks += _MANUFACTURED
+    with pytest.raises(ValueError) as ei:
+        g.validate(checks, timeout=1.5)
+    assert "e1" in str(ei.value)
+
+
+def test_non_ascii_brace_run_is_a_literal_not_a_crash():
+    """`re.compile('a{²}')` succeeds (a non-ASCII-digit brace run is a
+    literal to CPython), but `str.isdigit()` is True for `²` and `int()` then
+    raised a raw ValueError out of the structural screen naming no rule."""
+    assert g._read_quantifier("a{²}", 1) == (False, False, 1, False)
+    assert g._read_quantifier("a{١,²}", 1) == (False, False, 1, False)
+    g.validate([("rule 0", "a{²}", "b")])
+    # Ordinary ASCII quantifiers are unaffected.
+    assert g._read_quantifier("a{2}", 1)[0] is True
+    assert g._read_quantifier("a{2,}", 1) == (True, False, 5, True)
+
+
+def test_budget_grows_with_the_list_and_a_large_rule_set_passes():
+    """A flat 2 s budget 422'd a large legitimate rule set as 'catastrophic
+    backtracking' (~0.44 ms/entry measured, 40k entries permitted). The
+    budget is now 2 s plus a per-entry allowance, capped."""
+    assert g._GUARD_TIMEOUT + g._PER_CHECK_BUDGET * 3000 > 2.0
+    assert g._GUARD_TIMEOUT_MAX >= g._GUARD_TIMEOUT
+    g.validate([(f"r{i}", r"\bwort%d\b" % i, "X") for i in range(3000)])
+
+
+def test_timeout_verdict_names_the_real_probe_inputs(monkeypatch):
+    """A genuinely catastrophic entry still trips the (lowered) budget, and
+    the message no longer claims the pattern was slow on 'a 1 KB fixture'
+    when the child also runs scaled, adversarial, synthetic and chained
+    inputs."""
+    monkeypatch.setattr(g, "_GUARD_TIMEOUT", 0.5)
+    with pytest.raises(ValueError) as ei:
+        g.validate(_MANUFACTURED)
+    msg = str(ei.value)
+    assert "e1" in msg
+    assert "1 KB fixture" not in msg
+    assert "test inputs" in msg and "catastrophic backtracking" in msg
+
+
+@pytest.mark.parametrize("pat", [
+    r"[]](a+)+",      # a `]` first in the class is a literal
+    r"[^]\\](a+)+",   # negated, leading literal `]`, escaped backslash
+    r"[a\]b](a+)+",   # escaped `]` inside the class
+])
+def test_class_skipper_agrees_on_the_closing_bracket(pat):
+    """The class scan is shared by the structural screen and the synthetic
+    probe (`_skip_class`); the leading-`]` and escape paths must still find
+    the real closing bracket so the nested repeat after it is seen."""
+    assert g._nested_repetition(pat)
+    # The same scan drives _next_atom: the class is one atom ending at `]`.
+    _char, body, end = g._next_atom(pat, 0)
+    assert body is None and pat[end - 1] == "]" and pat[end] == "("

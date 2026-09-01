@@ -47,10 +47,19 @@ import os
 # ~1 KB realistic fixture (mirrors the former in-process guard's fixture).
 FIXTURE = "Hallo. Wie geht's? 10.23 Uhr! Bitte. " * 32
 
-# Whole-validation wall-clock budget. Legit find->replace patterns finish in
-# microseconds against a 1 KB input; only catastrophic backtracking approaches
-# this. Module-level so tests can lower it.
+# Whole-validation wall-clock budget: _GUARD_TIMEOUT plus a per-entry
+# allowance, capped at _GUARD_TIMEOUT_MAX. Legit find->replace patterns finish
+# in microseconds against a 1 KB input; only catastrophic backtracking
+# approaches this. But the child runs ~7 probe inputs per entry (measured
+# ~0.44 ms/entry on trivial rules), and an admin full save re-probes EVERY
+# stored entry, so a flat 2 s would 422 a large legitimate rule set naming
+# whichever innocent entry was in flight. Module-level so tests can lower it.
 _GUARD_TIMEOUT = 2.0
+# ~10x the measured per-entry cost: generous headroom for richer patterns.
+_PER_CHECK_BUDGET = 5e-3
+# Hard ceiling so a save can never block the admin thread indefinitely
+# (quick_config_routes.py documents the wait around the save call).
+_GUARD_TIMEOUT_MAX = 10.0
 
 # Max output/input length ratio for ONE substitution against the fixture. A
 # legit correction rule shrinks the text or barely grows it; an expanding
@@ -134,6 +143,13 @@ _SHORTHAND_CHARS = {
 _SELF = os.path.abspath(__file__)
 
 
+def _ascii_digits(s: str) -> bool:
+    """CPython's quantifier parser accepts ASCII digits only, so any other
+    brace run (`a{²}`, Arabic-Indic digits) is a literal `{` to the engine
+    and must not reach ``int()`` — which would raise a raw, rule-less error."""
+    return s.isascii() and s.isdigit()
+
+
 def _read_quantifier(pat: str, i: int) -> "tuple[bool, bool, int, bool]":
     """Read a quantifier at ``pat[i]``.
 
@@ -163,12 +179,12 @@ def _read_quantifier(pat: str, i: int) -> "tuple[bool, bool, int, bool]":
             return False, False, i, False  # a literal `{`, not a quantifier
         lo, comma, hi = pat[i + 1:j].partition(",")
         if comma:
-            if not (lo.isdigit() or not lo) or not (hi.isdigit() or not hi):
+            if not (_ascii_digits(lo) or not lo) or not (_ascii_digits(hi) or not hi):
                 return False, False, i, False
             repeats = not hi or int(hi) > 1  # {n,} is unbounded
             variable = repeats and (not hi or int(hi) > (int(lo) if lo else 0))
         else:
-            if not lo.isdigit():
+            if not _ascii_digits(lo):
                 return False, False, i, False
             repeats = int(lo) > 1
             variable = False  # {n} matches exactly one way
@@ -179,6 +195,28 @@ def _read_quantifier(pat: str, i: int) -> "tuple[bool, bool, int, bool]":
     if i < len(pat) and pat[i] in "?+":
         i += 1  # lazy or possessive suffix
     return repeats, atomic, i, variable
+
+
+def _skip_class(pat: str, i: int) -> "tuple[int, int, bool]":
+    """Scan the character class opening at ``pat[i] == "["``.
+
+    Returns ``(body_start, body_end, negated)`` where ``body_end`` is the index
+    of the closing ``]`` (``len(pat)`` when unterminated). A leading ``^``
+    negates, a ``]`` first in the body is a literal, and a backslash escapes
+    the next character. The structural screen and the synthetic probe must
+    agree on which ``]`` closes a class, so the rule lives here exactly once.
+    """
+    n = len(pat)
+    j = i + 1
+    negated = False
+    if j < n and pat[j] == "^":
+        negated, j = True, j + 1
+    if j < n and pat[j] == "]":
+        j += 1  # a `]` first in the class is a literal
+    start = j
+    while j < n and pat[j] != "]":
+        j += 2 if pat[j] == "\\" else 1
+    return start, j, negated
 
 
 def _nested_repetition(pat: str) -> bool:
@@ -216,14 +254,7 @@ def _nested_repetition(pat: str) -> bool:
             i += 2
             continue
         if c == "[":
-            i += 1
-            if i < n and pat[i] == "^":
-                i += 1
-            if i < n and pat[i] == "]":
-                i += 1  # a `]` first in the class is a literal
-            while i < n and pat[i] != "]":
-                i += 2 if pat[i] == "\\" else 1
-            i += 1
+            i = _skip_class(pat, i)[1] + 1
             continue
         if c == "(":
             atomic = False
@@ -360,15 +391,7 @@ def _next_atom(pat: str, i: int) -> "tuple[str | None, str | None, int]":
             return None, None, i + 2  # zero-width assertion or backreference
         return esc, None, i + 2
     if c == "[":
-        j = i + 1
-        negated = False
-        if j < n and pat[j] == "^":
-            negated, j = True, j + 1
-        if j < n and pat[j] == "]":
-            j += 1  # a `]` first in the class is a literal
-        start = j
-        while j < n and pat[j] != "]":
-            j += 2 if pat[j] == "\\" else 1
+        start, j, negated = _skip_class(pat, i)
         if j >= n:
             return None, None, n
         return _class_char(pat[start:j], negated), None, j + 1
@@ -397,14 +420,7 @@ def _next_atom(pat: str, i: int) -> "tuple[str | None, str | None, int]":
                 k += 2
                 continue
             if ch == "[":
-                k += 1
-                if k < n and pat[k] == "^":
-                    k += 1
-                if k < n and pat[k] == "]":
-                    k += 1
-                while k < n and pat[k] != "]":
-                    k += 2 if pat[k] == "\\" else 1
-                k += 1
+                k = _skip_class(pat, k)[1] + 1
                 continue
             depth += 1 if ch == "(" else (-1 if ch == ")" else 0)
             k += 1
@@ -536,14 +552,24 @@ def _chain_advance(rx, pattern: str, replacement: str, chained: str) -> str:
     verdict is the parent's timeout — it must not invent a rejection reason.
     """
     try:
+        seeded = False
         if not rx.search(chained):
             # An entry that matches nothing in the running fixture substitutes
             # nothing, so its replacement — possibly the very run that
             # detonates a later entry — never enters the chain. Seed it.
             seed = _witness(pattern)
             if seed:
-                chained = chained + (" " + seed) * 4
-        return rx.sub(replacement, chained)[:_CHAIN_CAP]
+                # Trim BEFORE appending so the seed is inside the cap: a chain
+                # already at the cap would otherwise drop it (and the
+                # manufactured run it produces) off the tail.
+                tail = (" " + seed) * 4
+                chained = chained[:max(0, _CHAIN_CAP - len(tail))] + tail
+                seeded = True
+        out = rx.sub(replacement, chained)
+        # A seeded entry touched nothing but the seed at the tail, so keep the
+        # TAIL — a head cut would trim the very run the seed was planted to
+        # produce once the replacement expands it. Otherwise keep the head.
+        return out[-_CHAIN_CAP:] if seeded else out[:_CHAIN_CAP]
     except Exception:  # noqa: BLE001 - best effort; drop the chain, keep going
         return ""
 
@@ -588,7 +614,9 @@ def validate(checks: list, timeout: float | None = None) -> None:
     import subprocess
     import sys
 
-    budget = _GUARD_TIMEOUT if timeout is None else timeout
+    budget = (timeout if timeout is not None
+              else min(_GUARD_TIMEOUT + _PER_CHECK_BUDGET * len(checks),
+                       _GUARD_TIMEOUT_MAX))
     payload = json.dumps([[c[1], c[2]] for c in checks])
     try:
         proc = subprocess.run(
@@ -599,8 +627,10 @@ def validate(checks: list, timeout: float | None = None) -> None:
         idx = _last_index(getattr(exc, "stderr", None))
         where = checks[idx][0] if isinstance(idx, int) and 0 <= idx < len(checks) else "a rule"
         raise ValueError(
-            f"{where}: regex took > {budget:.0f} s on a 1 KB fixture "
-            "(likely catastrophic backtracking). Simplify the pattern."
+            f"{where}: regex took > {budget:.0f} s on the guard's test inputs "
+            "(1 KB of prose, a 4x longer copy, short repetitive runs, and the "
+            "text the preceding rules produce) — likely catastrophic "
+            "backtracking. Simplify the pattern."
         )
     except Exception as exc:  # noqa: BLE001 - guard infra failure -> fail open
         logging.getLogger("whisper-api").warning(
