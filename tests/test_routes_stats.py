@@ -1,5 +1,7 @@
 """Integration tests for the /stats router (host-gated dashboard)."""
 
+import json
+
 from starlette.testclient import TestClient
 
 import jobs
@@ -103,6 +105,9 @@ def test_stats_page_colours_the_vad_stage(client):
     html = client.get("/stats").text
     assert ".pipe i.vad" in html
     assert "vad: '#93b76f'" in html
+
+
+def test_header_activity_cluster_js_contract():
     """The cluster's inline JS has no unit harness, so pin the load-bearing
     strings: the cancel POST must carry the CSRF header (the cookie-auth
     middleware 403s it otherwise), the VRAM chip must read the `vram_mb`
@@ -121,6 +126,70 @@ def test_stats_page_colours_the_vad_stage(client):
     assert "activity feed stale" in js
     assert "setAttribute('data-tip', 'activity feed stale" not in js
     assert "preload:'pl'" in js
+    # The 1 Hz popover rebuild wipes DOM state, so the cancel button's
+    # disabled flag must live in the module-scope `cancelling` map.
+    assert "cancelling[" in js
+
+
+def test_nav_css_defines_the_magenta_token():
+    """NAV_CSS's own activity cluster paints with var(--magenta) (.hact-ring
+    border, .hact-bar.vram fill). Pages that define no --magenta of their own
+    (/dictate, /settings/api-keys) rely on NAV_CSS's :root carrying it --
+    without it the ring is invisible and the VRAM bar always reads empty."""
+    import web_common
+
+    assert "--magenta: #d2a8ff;" in web_common.NAV_CSS
+
+
+def test_stats_stream_frame_is_built_off_the_loop(client):
+    """Each /stats/stream frame is built via asyncio.to_thread (the builder
+    does blocking psutil/NVML/SQLite work), so a slow host snapshot cannot
+    stall the loop that serves every other request. Driving the endpoint
+    itself is not an option — the generator never ends, and TestClient has
+    no way to cancel it — so pin the offload at the source and check the
+    payload shape the frame carries survives being built in a worker
+    thread."""
+    import asyncio
+    import inspect
+
+    import stats_routes
+
+    src = inspect.getsource(stats_routes.stats_stream)
+    assert "await asyncio.to_thread(" in src
+    assert "_build_payload" in src.split("await asyncio.to_thread(")[1][:80]
+
+    snap = asyncio.run(asyncio.to_thread(
+        stats_routes._build_payload, lite=True, include_identity=False))
+    assert set(snap) >= {"ts", "jobs", "gpu", "host", "models",
+                         "in_flight_transcriptions", "severity"}
+
+
+def test_stats_stage_vocabulary_is_covered_by_both_renderers(client):
+    """Every stage name main.py emits (plus the preload job kind that reaches
+    the compact glyph via pipeGlyph's kind fallback) needs both a
+    `.pipe i.<name>` CSS rule and a stageColor() map entry, or one of the two
+    renderers falls back to unstyled grey."""
+    html = client.get("/stats").text
+    expect = {
+        "vad": "'#93b76f'", "separating": "'var(--magenta)'",
+        "transcribing": "'var(--cyan)'", "diarizing": "'var(--yellow)'",
+        "translating": "'var(--green)'", "downloading": "'var(--cyan)'",
+        "preload": "'var(--help)'",
+    }
+    for name, colour in expect.items():
+        assert f".pipe i.{name}" in html, name
+        assert f"{name}: {colour}" in html, name
+
+
+def test_recent_jobs_counter_counts_rendered_rows(client):
+    """The heading counter must describe the table it heads: running rows
+    included and the kind/warnings/user filters applied (all.length), not the
+    raw unfiltered finished list (rt.length). The inline JS has no unit
+    harness, so pin the strings."""
+    html = client.get("/stats").text
+    assert 'Recent jobs (<span id="rt-n">0</span> shown)' in html
+    assert "$('rt-n').textContent = all.length;" in html
+    assert "textContent = rt.length" not in html
 
 
 def test_stats_page_renders_every_job_kind(client):

@@ -84,7 +84,8 @@ def test_security_headers_on_every_response(client):
 def test_data_responses_default_to_no_store(client):
     assert client.get("/").headers["Cache-Control"] == "no-store"
     # ...including the early returns from the inner middlewares.
-    assert client.get("/logs/older?skip=0&limit=5").headers["Cache-Control"]
+    older = client.get("/logs/older?skip=0&limit=5")
+    assert older.headers["Cache-Control"] == "no-store"
 
 
 def test_static_assets_stay_cacheable(client):

@@ -20,6 +20,7 @@ from fastapi import HTTPException, Request, status
 from starlette.requests import HTTPConnection
 
 import config as cfg
+import config_store
 
 
 # IPv4-mapped-in-IPv6 prefix surfaces on Windows dual-stack `::` binds when a
@@ -107,7 +108,11 @@ require_user_webui_host = require_allowed_host(lambda: cfg.USER_WEBUI_ALLOWED_HO
 
 # --- Severity ring (in-memory log-level counts, since process start) ---------
 # A logging.Handler appends (timestamp, levelno) on every record. The /stats
-# page and the nav row read severity_counts() at request time. Bounded ring
+# page reads severity_counts() at request time; the nav pills ship as ZEROES
+# and are filled client-side by SEV_POLLER_JS from the authenticated GET /sev
+# (deliberately -- see sev_pills_html's docstring: the host-allowlisted page
+# shell must not hand an unauthenticated caller an error-rate oracle).
+# Bounded ring
 # (maxlen=2000) keeps memory predictable under burst logging — once the ring
 # fills, oldest entries fall off and the per-level counters cap accordingly.
 _SEVERITY_LOG: deque[tuple[float, int]] = deque(maxlen=2000)
@@ -210,7 +215,11 @@ NAV_CSS = """
    ships on every Windows since Vista; Consolas on every Windows; both
    listed first so we never fall through to Times New Roman / Courier New
    on boxes without ui-monospace or Cascadia Code installed. --help is
-   one notch brighter than --dim for description text. */
+   one notch brighter than --dim for description text. --magenta is
+   consumed by NAV_CSS's own header activity cluster (.hact-ring border,
+   .hact-bar.vram fill), so it must live here: pages that define no
+   --magenta of their own (/dictate, /settings/api-keys) would otherwise
+   render an invisible ring and a permanently empty VRAM bar. */
 :root {
   --fs-base:  15px;
   --fs-xs:    0.733rem;   /* ~11px @ 15px base */
@@ -232,6 +241,7 @@ NAV_CSS = """
   --font-mono: Consolas, "Cascadia Code", "JetBrains Mono", Menlo,
                ui-monospace, monospace;
   --help: #8b949e;
+  --magenta: #d2a8ff;
 }
 html { font-size: var(--fs-base); color-scheme: dark; }
 /* Boundary marker for transcription values: dim brackets around the EXACT
@@ -2036,6 +2046,10 @@ ACTIVITY_CLUSTER_JS = """
   var vramEl = document.getElementById('hact-vram');
   var vramvEl = document.getElementById('hact-vramv');
   var es = null, last = null, lastTs = 0, allowed = false;
+  // Cancel-in-flight pids. Lives OUTSIDE the DOM because renderPop rebuilds
+  // the popover wholesale on every 1 Hz frame -- a disabled attribute set on
+  // the live button node is wiped by the very next rebuild.
+  var cancelling = {};
   var retryTimer = null, delay = 1500;
 
   function esc(s){ return String(s == null ? '' : s)
@@ -2089,6 +2103,11 @@ ACTIVITY_CLUSTER_JS = """
     }
     var isAdmin = !!(window.__whoami && window.__whoami.is_admin);
     var jobs = s.jobs || [];
+    // Prune marks whose pid left the snapshot so the map cannot grow.
+    Object.keys(cancelling).forEach(function(pid){
+      if (!jobs.some(function(j){ return j.progress_id === pid; }))
+        delete cancelling[pid];
+    });
     var h = '<div class="sec"><div class="sec-t">Running now · '
       + jobs.length + '</div>';
     if (!jobs.length) h += '<div class="empty">— none —</div>';
@@ -2106,7 +2125,9 @@ ACTIVITY_CLUSTER_JS = """
               + '<span class="p">' + esc(j.step || (pct + '%')) + '</span>'
             : '<span class="p">' + esc(j.step || j.stage || '…') + '</span>')
         + (isAdmin && j.progress_id
-            ? '<button class="hact-cancel" data-pid="' + esc(j.progress_id)
+            ? '<button class="hact-cancel"'
+              + (cancelling[j.progress_id] ? ' disabled' : '')
+              + ' data-pid="' + esc(j.progress_id)
               + '" title="cancel this job">✕</button>'
             : '')
         + '</div>';
@@ -2190,12 +2211,13 @@ ACTIVITY_CLUSTER_JS = """
     if (!c) return;
     // Cookie-authenticated pages go through _csrf_mw, which 403s any
     // unsafe-method request without the token (same as _signOut).
-    c.disabled = true;
-    fetch('/v1/audio/transcriptions/cancel/' + c.dataset.pid,
+    var pid = c.dataset.pid;
+    c.disabled = true; cancelling[pid] = 1;
+    fetch('/v1/audio/transcriptions/cancel/' + pid,
           { method: 'POST',
             headers: { 'X-CSRF-Token': window._csrfToken() } })
-      .then(function(r){ if (!r.ok) c.disabled = false; },
-            function(){ c.disabled = false; });
+      .then(function(r){ if (!r.ok) { c.disabled = false; delete cancelling[pid]; } },
+            function(){ c.disabled = false; delete cancelling[pid]; });
   });
 
   function openStream(){
@@ -2283,7 +2305,23 @@ ACTIVITY_CLUSTER_JS = """
 #   1. New Pydantic class in config_store.py
 #   2. New `if (rule.type === '<type>')` branch in renderTypeEditor below
 #   3. New entry in _PIPELINE_TYPES for the pill label
+# Schema-derived cap on cb:map entries, read off config_store.MapRule so the
+# editor's "n / cap" readout can never drift from the save-path bound. Baked
+# into RULE_EDITOR_JS below so EVERY page embedding the shared editor ships
+# it -- previously only /quick-config's load() assigned window.__mme, leaving
+# /settings with a bare count and a never-disabled add button.
+_MAP_MAX_ENTRIES: int = next(
+    (m.max_length
+     for m in config_store.MapRule.model_fields["map"].metadata
+     if getattr(m, "max_length", None) is not None),
+    10_000,  # fallback mirrors MapRule.map's max_length
+)
+
 RULE_EDITOR_JS = r"""<script>
+// Default the cb:map entry cap for pages that embed the editor without an
+// API payload carrying map_max_entries (/settings). /quick-config's load()
+// still overwrites it with the server value -- same schema, same number.
+window.__mme = (typeof window.__mme === 'number') ? window.__mme : __MAP_CAP__;
 // German-aware, case-insensitive collator for ordering human-visible lists
 // (cb:map keys). sensitivity:'base' folds case + accent so 'anemi' sorts next
 // to 'Amoxyzylin' and umlauts land in German position (ä≈a); numeric:true gives
@@ -2847,8 +2885,9 @@ function renderTypeEditor(rule, commitData, opts) {
       + 'word-bounded, case-insensitive). Edit entries below.';
     box.appendChild(note);
     // "n / cap" readout so a full dictionary is visible BEFORE a save
-    // bounces off the server's entry cap. __mme is set by the quick-config
-    // page load(); pages that don't set it just show the plain count.
+    // bounces off the server's entry cap. __mme now ships with the shared
+    // editor (defaulted at the top of RULE_EDITOR_JS from the MapRule
+    // schema); /quick-config's load() overwrites it with the API value.
     const mapCap = (typeof window.__mme === 'number') ? window.__mme : 0;
     const cnt = document.createElement('div');
     cnt.className = 'help';
@@ -2967,7 +3006,7 @@ function renderTypeEditor(rule, commitData, opts) {
   return box;
 }
 </script>
-"""
+""".replace("__MAP_CAP__", str(_MAP_MAX_ENTRIES))
 
 
 def _nav_items(current: str) -> list[tuple[str, str, bool]]:

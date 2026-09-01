@@ -141,11 +141,14 @@ def test_win32_winsw_restart_bang(monkeypatch):
 
     # Fire the callback: it should spawn WinSW then sleep+_exit. Stub Popen,
     # time.sleep, and os._exit so nothing real happens.
-    popen_calls = {}
+    # _flush_before_exit imports main, whose import chain shells out to
+    # `git describe` through the SAME monkeypatched subprocess.Popen, so the
+    # recorder must collect every call and select the WinSW spawn rather
+    # than assume the callback makes exactly one Popen call.
+    popen_calls = []
 
     def fake_popen(args, **kwargs):
-        popen_calls["args"] = args
-        popen_calls["kwargs"] = kwargs
+        popen_calls.append((args, kwargs))
 
     exited = {}
     monkeypatch.setattr(restart_service.subprocess, "Popen", fake_popen)
@@ -154,8 +157,10 @@ def test_win32_winsw_restart_bang(monkeypatch):
                         lambda code: exited.__setitem__("code", code))
     _FakeTimer.instances[0].function()
 
-    assert popen_calls["args"][0].endswith("WhisperAPI.exe")
-    assert popen_calls["args"][1] == "restart!"
+    winsw = [a for a, _ in popen_calls
+             if a and str(a[0]).endswith("WhisperAPI.exe")]
+    assert len(winsw) == 1
+    assert winsw[0][1] == "restart!"
     assert exited["code"] == 0
 
 

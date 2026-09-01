@@ -33,9 +33,8 @@ import metrics
 import preload
 import system_stats
 import web_common
-from auth import (
-    Permissions, open_mode_host_ok, require_page, user_from_session_cookie,
-)
+import auth
+from auth import require_page
 
 router = APIRouter()
 
@@ -43,38 +42,11 @@ _require_stats_host = web_common.require_user_webui_host
 
 
 def _require_stats_page_sse(request: Request) -> dict[str, Any]:
-    """SSE-aware variant of `require_page("stats")`. Two credential
-    carriers: the `Authorization: Bearer` header (API clients) and the
-    HttpOnly session cookie, which EventSource sends automatically on a
-    same-origin stream — EventSource cannot set a header.
-
-    In OPEN mode (no admin key yet) the synthetic admin sails through
-    from the admin host allowlist only (auth.open_mode_host_ok); in
-    locked-down mode the credential must resolve to a user with
-    scope("stats") != "none"."""
-    import api_keys_store
-    if not api_keys_store.is_locked_down() and open_mode_host_ok(request):
-        return dict(api_keys_store.OPEN_MODE_USER)
-    auth_header = request.headers.get("authorization") or ""
-    raw = ""
-    if auth_header.lower().startswith("bearer "):
-        raw = auth_header.split(" ", 1)[1].strip()
-    rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
-    if rec is None:
-        rec = user_from_session_cookie(request)
-    if rec is None:
-        raise HTTPException(
-            status.HTTP_401_UNAUTHORIZED,
-            "invalid or missing API key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    perms = Permissions(
-        rec.get("permissions_raw") or {}, bool(rec.get("is_admin")),
-    )
-    if not perms.can("stats"):
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "no access to /stats")
-    rec["permissions"] = perms
-    return rec
+    """SSE-aware `require_page("stats")` — one line over the shared resolver
+    in auth, so this gate can never drift from the Depends path (bearer
+    header, then the HttpOnly session cookie EventSource sends by itself;
+    open mode only on the admin host allowlist)."""
+    return auth.resolve_user_for_page_sse(request, "stats")
 
 
 def _build_payload(*, lite: bool = False,
@@ -296,7 +268,8 @@ async def stats_stream(
 
     async def gen():
         while True:
-            payload = _build_payload(lite=_lite, include_identity=_admin)
+            payload = await asyncio.to_thread(
+                _build_payload, lite=_lite, include_identity=_admin)
             yield f"data: {json.dumps(payload)}\n\n"
             await asyncio.sleep(1.0)
 
@@ -471,7 +444,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .pipe i.diarizing    { background: var(--yellow); }
   .pipe i.translating,
   .pipe i.translate    { background: var(--green); }
-  .pipe i.download     { background: var(--cyan); }
+  .pipe i.download,
+  .pipe i.downloading  { background: var(--cyan); }
   .pipe i.preload      { background: var(--help); }
   tr.rj-expand td { background: rgba(110, 118, 129, 0.06); }
   .rj-stages { padding: 0.25rem 0.25rem 0.35rem; }
@@ -726,7 +700,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="30" gs-w="12" gs-h="6">
    <div class="grid-stack-item-content"><div class="card">
     <div class="usage-toolbar">
-      <h3>Recent jobs (last <span id="rt-n">0</span>)</h3>
+      <h3>Recent jobs (<span id="rt-n">0</span> shown)</h3>
       <span class="spacer"></span>
       <div class="usage-seg"><span class="seg-label">kind</span>
         <div class="seg-ctrl" id="rj-kind">
@@ -1207,7 +1181,8 @@ function stageColor(name) {
   return ({ vad: '#93b76f', separating: 'var(--magenta)',
             transcribing: 'var(--cyan)',
             diarizing: 'var(--yellow)', translating: 'var(--green)',
-            translate: 'var(--green)', download: 'var(--cyan)' })[name]
+            translate: 'var(--green)', download: 'var(--cyan)',
+            downloading: 'var(--cyan)', preload: 'var(--help)' })[name]
     || 'var(--dim)';
 }
 
@@ -1279,8 +1254,10 @@ function renderJobs(snap) {
       return main + detail;
     });
 
-  $('rt-n').textContent = rt.length;
   const all = runRows.concat(doneRows);
+  // Count what the table actually shows: running rows included, kind /
+  // warnings-only / user filters applied -- not the raw finished list.
+  $('rt-n').textContent = all.length;
   $('rt-rows').innerHTML = all.length
     ? all.join('')
     : '<tr><td colspan="10" class="empty">— no jobs yet —</td></tr>';

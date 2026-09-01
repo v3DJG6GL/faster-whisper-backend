@@ -52,10 +52,6 @@
   }
   input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
 
-  /* status states on top of the shared dim #status rule */
-  header .subbar #status.live { color: var(--green); }
-  header .subbar #status.error { color: var(--red); }
-
   main { flex: 1; padding: 1.25rem; overflow: auto; }
   #doc {
     white-space: pre-wrap; word-break: break-word; line-height: 1.65;
@@ -79,6 +75,14 @@
   #note { margin-top: 0.4rem; color: var(--dim); }
 
   {{NAV_CSS}}
+
+  /* Status states on top of the shared dim #status rule. These MUST sit
+     AFTER NAV_CSS: its `header .subbar #status:not(.pill)` rule has the
+     same specificity (0,1,2,1 -- :not() takes its argument's), so source
+     order decides; placed before NAV_CSS the live/error colours lose and
+     the status text stays --dim forever. */
+  header .subbar #status.live { color: var(--green); }
+  header .subbar #status.error { color: var(--red); }
 </style>
 </head>
 <body>
