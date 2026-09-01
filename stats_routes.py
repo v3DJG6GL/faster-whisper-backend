@@ -113,7 +113,7 @@ def _build_payload(*, lite: bool = False,
         }
     return {
         **base,
-        **metrics.metrics_snapshot(),
+        **metrics.metrics_snapshot(include_identity=include_identity),
         **sysnap,
     }
 
@@ -668,6 +668,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <th class="num">age</th><th class="num">idle</th>
       <th class="num">cold-load</th>
     </tr></thead><tbody id="models-rows"></tbody></table>
+    <div class="meta" id="preload-line"></div>
    </div></div>
   </div>
 
@@ -1108,6 +1109,16 @@ function render(snap) {
   });
   $('models-rows').innerHTML = mrows.length
     ? mrows.join('') : '<tr><td colspan="8" class="empty">— no models loaded —</td></tr>';
+  // Preload diagnostics: the most likely failure of preloading is silence,
+  // and "enabled but no worker" is exactly that — so it gets the red badge.
+  const pl = snap.preload;
+  if (pl) {
+    const dead = pl.enabled && !pl.worker_alive;
+    $('preload-line').innerHTML =
+      `preload <span class="badge ${pl.enabled ? 'warm' : 'cold'}">${pl.enabled ? 'enabled' : 'off'}</span> · ` +
+      `worker <span class="badge ${dead ? 'err' : (pl.worker_alive ? 'ok' : 'cold')}">${pl.worker_alive ? 'ok' : 'down'}</span> · ` +
+      `plans <b>${pl.plans}</b> · warm <b>${pl.warm}</b> · queue <b>${pl.queue_depth}</b>`;
+  }
 
   // --- Recent jobs (unified) ---
   renderJobs(snap);

@@ -76,6 +76,10 @@ STAGE_INDEX = {
 # larger bound would just defer the same "the box is behind" answer.
 _MAX_PLANS = 8
 _MAX_QUEUE = 8
+# One plan's entries: four stages plus the two whisper ids the request schema
+# allows, with headroom. A repeat POST merges into the plan, so without this
+# a fixed plan_id fed fresh ids each time would grow the list without bound.
+_MAX_PLAN_ENTRIES = 8
 
 _lock = threading.Lock()
 _plans: "dict[str, Plan]" = {}
@@ -127,16 +131,28 @@ class Plan:
 def normalize_id(family: str, model_id: str) -> str:
     """The id as the owning module CACHES it.
 
-    Only separation differs from what a client types: audio-separator keys its
-    singleton by on-disk FILENAME while the allowlist holds friendly names.
-    That mapping lives here (and nowhere else) precisely because /v1/me open-
-    coded it once already — a second copy would disagree for exactly the UVR
-    case the moment one of them changed."""
+    Two families differ from what a client types. whisper: the transcribe
+    route maps the OpenAI alias ``whisper-1`` onto cfg.DEFAULT_MODEL before it
+    touches ``main._loaded_models``, so the same resolver runs here — a plan
+    naming ``whisper-1`` must warm, and report resident, the model the client
+    will actually be served. separation: audio-separator keys its singleton by
+    on-disk FILENAME while the allowlist holds friendly names. Both mappings
+    live here (and nowhere else) precisely because /v1/me open-coded the UVR
+    one once already — a second copy would disagree for exactly that case the
+    moment one of them changed."""
     model_id = (model_id or "").strip()
     if not model_id:
-        # Before the separation branch: a blank id must stay blank so
-        # _admit's emptiness guard fires, instead of becoming ".onnx".
+        # Before the family branches: a blank id must stay blank so _admit's
+        # emptiness guard fires, instead of becoming ".onnx" or the default.
         return ""
+    if family == "whisper":
+        try:
+            import main  # lazy: main imports this module
+            # `or ""`: with DEFAULT_MODEL unset the alias resolves to "" and
+            # _admit's emptiness guard must still fire.
+            return (main._resolve_model_name(model_id) or "").strip()
+        except Exception:  # noqa: BLE001 — a key must never fail to form
+            return model_id
     if family == "separation":
         return model_id if "." in model_id else f"{model_id}.onnx"
     return model_id
@@ -246,19 +262,30 @@ def _stage_enabled(family: str) -> bool:
     return family == "whisper"
 
 
-def _placement(family: str) -> "tuple[str, str]":
+def _placement(family: str, model_id: str = "") -> "tuple[str, str]":
     """(device, compute_type) exactly as the family's loader registers it —
     the size ledger is keyed on that tuple, so a mismatch here silently turns
-    every fit check into `size_unknown`."""
+    every fit check into `size_unknown`. The whisper pair comes from the same
+    per-model `cfg_for` ladder `main._get_or_load_model` resolves it through
+    (MODEL_OVERRIDES > global), not from the global fields alone."""
     if family == "whisper":
-        return ((getattr(cfg, "MODEL_DEVICE", "cpu") or "cpu"),
-                (getattr(cfg, "MODEL_COMPUTE_TYPE", "") or ""))
+        try:
+            import main  # lazy: main imports this module
+            mid = normalize_id(family, model_id) or None
+            return ((main.cfg_for(mid, "MODEL_DEVICE") or "cpu"),
+                    (main.cfg_for(mid, "MODEL_COMPUTE_TYPE") or ""))
+        except Exception:  # noqa: BLE001 — _admit has no try; never raise
+            return ((getattr(cfg, "MODEL_DEVICE", "cpu") or "cpu"),
+                    (getattr(cfg, "MODEL_COMPUTE_TYPE", "") or ""))
     if family == "diarization":
         import diarization
         return (diarization._resolve_device(), "torch")
     if family == "separation":
         import bgm_separation
-        return (bgm_separation._resolve_device(), "onnx")
+        # The ledger row is written under the device the session actually
+        # landed on (a cuda request may have fallen back to cpu).
+        return (bgm_separation.actual_device()
+                or bgm_separation._resolve_device(), "onnx")
     import translation
     return (translation._resolve_device(), "gguf")
 
@@ -285,7 +312,17 @@ def _family_busy(family: str, model_id: str) -> bool:
             import main
             # Held across a whisper load. A preload must never be the reason a
             # job waits on it, so a busy lock is a refusal, not a queue.
-            return main._model_load_lock.locked()
+            if main._model_load_lock.locked():
+                return True
+            # A full cache is a refusal too unless a COLD peer can be dropped:
+            # main's MAX_LOADED_MODELS loop evicts the LRU unleased model and
+            # never consults the warm predicate, so a preload that reached it
+            # could be the thing that drops another plan's warm model.
+            if _whisper_cache_full() and (
+                    not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
+                    or _idle_peer(family, model_id) is None):
+                return True
+            return False
         if family == "diarization":
             import diarization
             key = diarization._pipeline_key
@@ -310,6 +347,12 @@ def _family_busy(family: str, model_id: str) -> bool:
     except Exception:  # noqa: BLE001 — unknown state is not a reason to load
         return True
     return False
+
+
+def _whisper_cache_full() -> bool:
+    import main
+    cap = max(1, int(getattr(cfg, "MAX_LOADED_MODELS", 1) or 1))
+    return len(main._loaded_models) >= cap
 
 
 def _idle_peer(family: str, model_id: str) -> "str | None":
@@ -369,20 +412,18 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
         return ("deferred", "stage_disabled")
 
     if is_resident(family, model_id):
-        # Residency is the answer AND a courtesy: the touch restarts the idle
+        # Residency is the answer AND a courtesy: the touch restarts the IDLE
         # clock, so a plan naming an already-loaded model keeps it loaded even
-        # if the job that needs it is still minutes away.
-        key = stats_key(family, model_id)
-        system_stats.touch_loaded_model(key)
-        with _lock:
-            if _warm.get(key, 0.0) < time.monotonic() + _ttl():
-                _warm[key] = time.monotonic() + _ttl()
+        # if the job that needs it is still minutes away. The warm lease is
+        # the plan's own, via _recompute_warm_locked — nothing writes _warm
+        # outside that function (it is derived state, rebuilt wholesale).
+        system_stats.touch_loaded_model(stats_key(family, model_id))
         return ("resident", None)
 
     if _family_busy(family, model_id):
         return ("deferred", "family_busy")
 
-    device, compute = _placement(family)
+    device, compute = _placement(family, model_id)
     ok, reason = model_sizes.fits(
         stats_key(family, model_id), device, compute,
         reserve_bytes=_reserve_bytes(device))
@@ -456,6 +497,17 @@ def register_plan(user_id: "str | None",
                               trigger=trigger)
     except Exception as e:  # noqa: BLE001 — a preload must never fail a request
         logger.error("[preload] register_plan failed: %s", e)
+        # _register_plan may have inserted the Plan (and its warm lease)
+        # before the failure; a "deferred" answer must not leave models
+        # pinned against the evictors for the TTL.
+        try:
+            kept = [(f, m) for f, m in entries if (f, m) not in (denied or {})]
+            kept.sort(key=lambda e: _FAMILY_STAGE.get(e[0], 99))
+            pid = (plan_id or "").strip() or derive_plan_id(user_id or "", kept)
+            with _lock:
+                _drop_plan_locked(pid, "register failed")
+        except Exception:  # noqa: BLE001 — cleanup must not mask the fallback
+            pass
         return {
             "plan_id": plan_id or "",
             "expires_in_s": 0,
@@ -508,13 +560,32 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
         else:
             # A repeat POST restamps and merges; it does not reset the cursor,
             # so a server-driven plan already three stages in is not rewound by
-            # a late client POST of the same intent.
+            # a late client POST of the same intent. A fresh JOB binding is a
+            # new pipeline run, though, and starts at the top.
             plan.dead = False
             plan.expires_mono = now + ttl
+            if trigger == "job":
+                plan.cursor = -1
+            # Upgrade-only: a job adopting a client's stage_ahead=false plan
+            # gets server-driven warming, while a later client POST can never
+            # switch it off under a running job.
+            plan.stage_ahead = plan.stage_ahead or stage_ahead
             for f, m in kept:
+                if len(plan.entries) >= _MAX_PLAN_ENTRIES:
+                    break
                 if (f, m) not in plan.entries:
                     plan.entries.append((f, m))
-                    plan.stages.append(_FAMILY_STAGE.get(f, 99))
+            # Restore stage order (stable, so two whisper ids keep their
+            # relative order): on_stage_start walks entries in list order and
+            # stops at the first one ahead of the cursor, so an appended
+            # earlier stage would otherwise be skipped for a farther one.
+            plan.entries.sort(key=lambda e: _FAMILY_STAGE.get(e[0], 99))
+            plan.stages = [_FAMILY_STAGE.get(f, 99) for f, _ in plan.entries]
+            # A key that is no longer resident must be re-admitted, not
+            # reported `resident` forever off a stale warmed set.
+            plan.warmed = {stats_key(f, m) for f, m in plan.entries
+                           if stats_key(f, m) in plan.warmed
+                           and is_resident(f, m)}
         _recompute_warm_locked()
 
     # _lock is released around every _admit call below, and a concurrent
@@ -534,10 +605,14 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
             with _lock:
                 plan = _plans.get(pid)
                 q = _queue
-                depth = q.qsize() if q is not None else 0
-                if plan is None:
-                    # Evicted as "registry full" mid-registration; the closest
-                    # honest reason in the documented vocabulary.
+                # Items are only put on the queue after this loop, so the
+                # batch accepted so far must be counted here or one POST
+                # overshoots the cap by its own size.
+                depth = (q.qsize() if q is not None else 0) + len(to_enqueue)
+                if plan is None or (fam, mid) not in plan.entries:
+                    # Evicted as "registry full" mid-registration, or an entry
+                    # past _MAX_PLAN_ENTRIES that never joined the plan; the
+                    # closest honest reason in the documented vocabulary.
                     state, reason = "deferred", "queue_full"
                 elif key in plan.warmed or key in plan.inflight:
                     # Already warmed or already queued by an earlier POST /
@@ -769,10 +844,15 @@ async def _handle(item: "tuple[str, str, str]") -> None:
     if not is_resident(family, model_id):
         peer = None
         if bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True)):
-            device, compute = _placement(family)
+            device, compute = _placement(family, model_id)
             ok, _r = model_sizes.fits(
                 key, device, compute, reserve_bytes=_reserve_bytes(device))
             if ok is not True:
+                peer = _idle_peer(family, model_id)
+            elif family == "whisper" and _whisper_cache_full():
+                # Even when the model fits: main's cap loop would otherwise
+                # pick the LRU unleased model without consulting the warm
+                # predicate, so preload drops the COLD peer it chose itself.
                 peer = _idle_peer(family, model_id)
         if peer is not None:
             await _evict(family, peer)
@@ -833,9 +913,13 @@ async def start() -> None:
     """Bind the loop, open the queue and start the worker. Called from
     lifespan; safe to call twice."""
     global _loop, _queue, _worker
-    _loop = asyncio.get_running_loop()
-    if _queue is None:
+    loop = asyncio.get_running_loop()
+    # An asyncio.Queue binds to the loop that first awaits it, so a queue left
+    # over from a previous lifespan's loop is unusable here — the worker would
+    # die on its first get() and every plan would sit at `queued` forever.
+    if _queue is None or _loop is not loop:
         _queue = asyncio.Queue()
+    _loop = loop
     if _worker is None or _worker.done():
         _worker = asyncio.create_task(_worker_loop())
     system_stats.set_warm_predicate(is_warm)
@@ -903,6 +987,9 @@ def _reset_for_tests() -> None:
     """Same contract as jobs._reset_for_tests: drop every scrap of module
     state so one test cannot observe another's plans."""
     global _queue, _loop, _worker, _busy
+    # Mirrors stop(): a predicate left installed would keep a later test's
+    # model pinned by a plan this one owned. Outside _lock, like stop().
+    system_stats.set_warm_predicate(None)
     with _lock:
         _plans.clear()
         _warm.clear()

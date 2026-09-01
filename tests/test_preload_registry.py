@@ -97,7 +97,10 @@ def test_rung1_resident_touches_and_warms(monkeypatch):
     state, reason = preload._admit("diarization", "p/x")
     assert (state, reason) == ("resident", None)
     assert touched == ["pyannote:p/x"]
-    # The warm lease is taken immediately, not only once a plan sweeps.
+    # A bare _admit touches but takes no warm lease: _warm is derived state,
+    # rebuilt only from the plans by _recompute_warm_locked.
+    assert preload.is_warm("pyannote:p/x") is False
+    preload.register_plan("u", [("diarization", "p/x")], plan_id="1" * 8)
     assert preload.is_warm("pyannote:p/x") is True
 
 
@@ -199,7 +202,9 @@ def test_a_warm_peer_is_not_an_evictable_peer(monkeypatch):
 
 def test_ttl_sweep_drops_a_plans_keys_together_overlap_survives(monkeypatch):
     _enable(monkeypatch)
-    _fits(monkeypatch, (None, "size_unknown"))  # nothing enqueues
+    # Admitted, but start() was never called so _queue is None -> every row
+    # is rewritten to deferred/queue_full and no worker ever runs.
+    _fits(monkeypatch, (None, "size_unknown"))
 
     preload.register_plan("u1", [("diarization", "p/x"),
                                  ("separation", "UVR-A")], plan_id="a" * 8)
@@ -213,7 +218,6 @@ def test_ttl_sweep_drops_a_plans_keys_together_overlap_survives(monkeypatch):
 
     async def _one_sweep():
         task = asyncio.ensure_future(preload.sweeper_loop())
-        monkeypatch.setattr(preload, "_SWEEP_S", 0.01)
         await asyncio.sleep(0.05)
         task.cancel()
         try:
@@ -244,20 +248,6 @@ def test_is_warm_never_raises_unset_or_throwing():
 
 
 # --- registration ------------------------------------------------------------
-
-def _drain(n=64):
-    """Pop what the (loop-less) queue collected, if any."""
-    out = []
-    q = preload._queue
-    if q is None:
-        return out
-    for _ in range(n):
-        try:
-            out.append(q.get_nowait())
-        except Exception:
-            break
-    return out
-
 
 def test_reregistration_restamps_and_does_not_double_enqueue(monkeypatch):
     _enable(monkeypatch)
@@ -368,8 +358,16 @@ def test_register_plan_never_raises(monkeypatch):
         raise RuntimeError("ledger on fire")
     monkeypatch.setattr(model_sizes, "fits", _boom)
     r = preload.register_plan("u", [("diarization", "p/x")], plan_id="f" * 8)
-    # The ladder's own guard turns the blowup into a deferral, not a 500.
+    # _admit has no try/except of its own: the outer register_plan wrapper
+    # swallows the blowup and rewrites the response to a deferral, not a 500.
     assert r["models"][0]["state"] == "deferred"
+    assert r["models"][0]["reason"] == "disabled"
+    assert r["expires_in_s"] == 0
+    # ...and it leaves no residue: the plan _register_plan had already
+    # inserted (with its warm lease) is dropped again by the wrapper.
+    assert preload._plans == {}
+    assert preload.is_warm("pyannote:p/x") is False
+    assert preload._warm == {}
 
 
 # --- thread safety -----------------------------------------------------------

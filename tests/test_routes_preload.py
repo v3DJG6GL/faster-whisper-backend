@@ -148,6 +148,9 @@ def test_feature_off_registers_no_plan_and_no_warm_lease(client, app_module,
     _enable(app_module, monkeypatch, MODEL_PRELOAD_ENABLED=False)
     _one(client, _body())
     assert preload._plans == {}
+    # is_warm short-circuits on the very switch under test, so _warm is the
+    # assertion that checks the registry really left nothing behind.
+    assert preload._warm == {}
     key = preload.stats_key("diarization", _body()["models"][0]["id"])
     assert preload.is_warm(key) is False
 
@@ -200,7 +203,10 @@ def test_a_raising_loader_leaves_the_plan_intact(client, app_module,
     _enable(app_module, monkeypatch)
     monkeypatch.setattr(model_sizes, "fits", lambda *a, **k: (True, None))
 
+    seen = []
+
     async def _boom(model_id=None, **_kw):
+        seen.append(model_id)
         raise RuntimeError("gated model")
     monkeypatch.setattr(diarization, "_get_pipeline", _boom)
 
@@ -210,6 +216,8 @@ def test_a_raising_loader_leaves_the_plan_intact(client, app_module,
         if preload._queue.qsize() == 0:
             break
         client.get("/v1/models")
+    assert preload._queue.qsize() == 0
+    assert seen, "worker never dequeued the item"
     plan = preload._plans[j["plan_id"]]
     # The plan survives the failure — the stage simply loads in-band later.
     assert plan.dead is False

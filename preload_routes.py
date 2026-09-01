@@ -91,24 +91,29 @@ class PreloadRequest(BaseModel):
 def _allowed(family: str, model_id: str) -> bool:
     """The batch handler's allowlist rules.
 
-    whisper: an EMPTY ALLOWED_MODELS admits the configured default plus any
-    WELL-FORMED id — the same `_MODEL_ID_RE` / no-".." guard
-    `main._get_or_load_model` applies, so a path-shaped id is deferred here
-    instead of wasting a queue slot on a load the guard rejects anyway. A
-    non-empty one admits its members plus the configured default.
+    whisper: judged on the RESOLVED id (`whisper-1` → DEFAULT_MODEL, the
+    same mapping the transcribe route applies before its gate). An EMPTY
+    ALLOWED_MODELS admits the configured default plus any WELL-FORMED id —
+    the same `_MODEL_ID_RE` / no-".." guard `main._get_or_load_model`
+    applies, so a path-shaped id is deferred here instead of wasting a queue
+    slot on a load the guard rejects anyway. A non-empty one admits exactly
+    its members, as that gate does (the default is NOT implied: a load of it
+    would 400 there).
     diarization/separation: the allowlist plus the configured model, and an
     empty allowlist therefore means "the configured model only", never
-    "anything". translation: like whisper but deliberately looser — empty is
-    open to any id (the GGUF loader has no shape guard of its own), non-empty
-    admits its members plus the default."""
+    "anything". translation: `main._translation_model_allowed`, the rule the
+    batch stage and the job plan share."""
     if family == "whisper":
+        import main  # lazy: main imports this module
+        model_id = preload.normalize_id(family, model_id)
+        if not model_id:
+            return False
         allow = set(getattr(cfg, "ALLOWED_MODELS", None) or ())
         if not allow:
-            import main  # lazy: main imports this module
             return model_id == getattr(cfg, "DEFAULT_MODEL", "") or (
                 ".." not in model_id
                 and bool(main._MODEL_ID_RE.match(model_id)))
-        return model_id in allow or model_id == getattr(cfg, "DEFAULT_MODEL", "")
+        return model_id in allow
     if family == "diarization":
         allow = set(getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or ())
         allow.add(getattr(cfg, "DIARIZATION_MODEL", "") or "")
@@ -117,11 +122,10 @@ def _allowed(family: str, model_id: str) -> bool:
         allow = set(getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or ())
         allow.add(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "")
         return model_id in allow
-    allow = set(getattr(cfg, "TRANSLATION_ALLOWED_MODELS", None) or ())
-    if not allow:
-        return True
-    return model_id in allow or model_id == (
-        getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+    import main  # lazy: main imports this module
+    # requested=model_id makes it the CLIENT-value rule: a bare call would
+    # let any ref through as admin policy.
+    return main._translation_model_allowed(model_id, requested=model_id)
 
 
 @router.post("/models/preload", status_code=status.HTTP_202_ACCEPTED)
