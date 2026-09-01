@@ -82,8 +82,8 @@ def test_kept_original_surfaces_with_client_ids(client, app_module,
     async def _fake(segments, targets, **kwargs):
         per_seg = [{t: seg["text"] for t in targets} for seg in segments]
         return per_seg, [
-            "segment 2: kept original — translation failed (length ratio)",
-            "segments 2-3: kept original — translation failed (empty output)",
+            "segment 2 (en): kept original — translation failed (length ratio)",
+            "segments 2-3 (en): kept original — translation failed (empty output)",
         ], {"model": "org/d:Q4", "source": "de", "mode": "fluent",
             "kept": {1: ["en"], 2: ["en"]}}
     monkeypatch.setattr(translation, "translate_segments", _fake)
@@ -104,9 +104,9 @@ def test_kept_original_surfaces_with_client_ids(client, app_module,
                        "translations_kept": ["en"]}
     assert segs[2]["kept_original"] == ["en"]
     # Positional "segment 2" → client id 3; group span → the member ids.
-    assert any(w.startswith("segment 3: kept original") for w
+    assert any(w.startswith("segment 3 (en): kept original") for w
                in body["warnings"])
-    assert any(w.startswith("segments 3, 42: kept original") for w
+    assert any(w.startswith("segments 3, 42 (en): kept original") for w
                in body["warnings"])
     assert not any("segment 2" in w for w in body["warnings"])
 
@@ -144,12 +144,45 @@ def test_403_when_translation_disabled(client, app_module, monkeypatch):
 def test_serial_translations_are_not_rate_limited(client, app_module,
                                                   monkeypatch):
     """One request at a time, over and over, is what the review UI does when a
-    user retranslates line by line — it must never 429. The protection is the
-    in-flight cap below, not a per-minute counter."""
+    user retranslates line by line — below the per-minute ceiling it must
+    never 429. The protection is the in-flight cap below; the per-minute
+    counter is only a flood backstop (next test)."""
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
     for _ in range(25):
         assert client.post(URL, json=_body()).status_code == 200
+
+
+def test_per_minute_backstop_429s_and_releases_the_held_receipt(
+        client, app_module, monkeypatch):
+    """The per-minute counter is hit FIRST inside the release-on-reject
+    bracket: over the ceiling the request 429s with the config field named,
+    and a parked dictation receipt is handed back instead of left to the
+    sweeper."""
+    import receipt_hold
+
+    _enable(app_module, monkeypatch, TRANSLATE_RATE_PER_MIN=2)
+    _stub_translate(monkeypatch)
+    window = app_module._text_translate_rate
+    window._state.clear()
+    try:
+        for _ in range(2):
+            assert client.post(URL, json=_body()).status_code == 200
+        r = client.post(URL, json=_body())
+        assert r.status_code == 429, r.text
+        body = r.json()
+        assert body["error"]["param"] == "TRANSLATE_RATE_PER_MIN"
+        assert r.headers["Retry-After"] == str(body["error"]["retry_after"])
+
+        receipt_hold.park("cap2", {"file_label": "utt#1", "model_name": "m",
+                                   "raw": "r", "final": "f", "seg_diag": [],
+                                   "kwargs": {}}, hold_s=90)
+        r = client.post(URL, json=_body(captured_id="cap2"))
+        assert r.status_code == 429
+        assert receipt_hold.pending() == 0
+    finally:
+        window._state.clear()
+        receipt_hold._reset_for_tests()
 
 
 # --- in-flight cap -----------------------------------------------------------
@@ -292,10 +325,14 @@ def test_422_malformed_shapes(client, app_module, monkeypatch):
         _body(translation_mode="poetic"),
         _body(context_segments="three"),
         "just a string",
+        {"segments": [{"id": i, "text": "x"} for i
+                      in range(app_module._TEXT_TRANSLATE_MAX_SEGMENTS + 1)],
+         "targets": ["en"]},                                  # over entry cap
     ]
     for case in cases:
         r = client.post(URL, json=case)
         assert r.status_code == 422, (case, r.status_code, r.text)
+    assert "capped at" in r.json()["detail"]     # the last case: entry cap
     assert calls == []
 
 
@@ -377,6 +414,37 @@ def test_progress_wrapper_forwards_last_text_and_logs_receipts(
     assert any("✓ done" in m and "2 segs → en" in m for m in msgs)
 
 
+def test_download_progress_is_published(client, app_module, monkeypatch):
+    """A cold-model fetch reports bytes through download_cb: the progress
+    entry flips to stage=downloading with a byte fraction + total, and the
+    first real progress tick flips it back to translating."""
+    _enable(app_module, monkeypatch)
+    seen = {}
+
+    async def _fake(segments, targets, *, progress_cb=None, download_cb=None,
+                    **kwargs):
+        download_cb(0, 0)
+        seen["unknown_total"] = dict(app_module._BATCH_PROGRESS.get(_PID)
+                                     or {})
+        download_cb(512, 2048)
+        seen["download"] = dict(app_module._BATCH_PROGRESS.get(_PID) or {})
+        progress_cb(0.0, "en 1/1", None)
+        seen["after"] = dict(app_module._BATCH_PROGRESS.get(_PID) or {})
+        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
+                   for seg in segments]
+        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    r = client.post(URL, json=_body(progress_id=_PID))
+    assert r.status_code == 200, r.text
+    assert seen["unknown_total"].get("stage") == "downloading"
+    assert seen["unknown_total"].get("progress") is None
+    assert seen["download"].get("stage") == "downloading"
+    assert seen["download"].get("progress") == 0.25
+    assert seen["download"].get("total_bytes") == 2048
+    assert seen["after"].get("stage") == "translating"
+
+
 def test_progress_endpoint_serves_last_text(client, app_module):
     """The GET progress endpoint already whitelists last_text — verify."""
     app_module._progress_set(_PID, stage="translating", last_text="the tail")
@@ -405,7 +473,6 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
         client, app_module, make_user_key, monkeypatch):
     """Per-identity locks bind HERE too — otherwise a key locked to a small
     model on the batch path just switches endpoints (review finding)."""
-    from tests.conftest import bearer
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     # Open allowlist: this test is about the lock, not the allowlist gate
@@ -462,6 +529,33 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
         receipt_hold._reset_for_tests()
 
 
+def test_validation_reject_releases_the_held_receipt(client, app_module,
+                                                     monkeypatch):
+    """Every validation exit (422 shape, 413 size) runs inside the same
+    release-on-reject bracket as the rate hit: a parked receipt must be
+    handed back on a malformed request, not left for the 90 s sweeper."""
+    import receipt_hold
+
+    _enable(app_module, monkeypatch)
+    _stub_translate(monkeypatch)
+    payload = {"file_label": "utt#1", "model_name": "m", "raw": "r",
+               "final": "f", "seg_diag": [], "kwargs": {}}
+    try:
+        receipt_hold.park("cap-v", payload, hold_s=90)
+        r = client.post(URL, json={"segments": [], "targets": ["en"],
+                                   "captured_id": "cap-v"})
+        assert r.status_code == 422, r.text
+        assert receipt_hold.pending() == 0
+
+        receipt_hold.park("cap-s", payload, hold_s=90)
+        r = client.post(URL, json=_body(
+            segments=[{"id": 0, "text": "x" * 200_001}], captured_id="cap-s"))
+        assert r.status_code == 413, r.text
+        assert receipt_hold.pending() == 0
+    finally:
+        receipt_hold._reset_for_tests()
+
+
 def test_admin_pinned_model_passes_the_allowlist_gate(
         client, app_module, make_user_key, monkeypatch):
     """The allowlist constrains only the CLIENT-requested value (the
@@ -506,3 +600,44 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
         json={"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
               "translation_model": "org/evil-GGUF:Q8"})
     assert r.status_code == 400, r.text
+
+
+def test_translation_error_records_status_error(client, app_module,
+                                                monkeypatch):
+    # The terminal-error status is "error" — the batch handler's spelling
+    # and metrics.py's default — never "failed": both land in the same
+    # recent_transcriptions.status column rendered verbatim by /stats.
+    _enable(app_module, monkeypatch)
+
+    async def _boom(*a, **kw):
+        raise translation.TranslationError("nope")
+    monkeypatch.setattr(translation, "translate_segments", _boom)
+    recorded = []
+    _orig = app_module.metrics.record_transcription
+
+    def _spy(**kw):
+        recorded.append(kw)
+        return _orig(**kw)
+    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    r = client.post(URL, json=_body())
+    assert r.status_code == 400, r.text
+    assert recorded and recorded[-1]["status"] == "error"
+    assert recorded[-1]["kind"] == "translate"
+    assert "key_label" in recorded[-1]
+    import transcriptions_store
+    rows = transcriptions_store.list_recent(limit=5)
+    assert rows and rows[0]["status"] == "error"
+
+
+def test_empty_translation_allowlist_admits_any_well_formed_ref(app_module,
+                                                                monkeypatch):
+    # Documented (config_store TRANSLATION_ALLOWED_MODELS help): an EMPTY
+    # allowlist is permissive — unlike the diarization/separation gates.
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", set(),
+                        raising=False)
+    assert app_module._translation_model_allowed(
+        "someone/other:Q4", requested="someone/other:Q4") is True
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
+                        {"org/a:Q4"}, raising=False)
+    assert app_module._translation_model_allowed(
+        "someone/other:Q4", requested="someone/other:Q4") is False

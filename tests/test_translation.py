@@ -276,6 +276,19 @@ def test_redistribute_never_emits_empty_members():
         ["Hallo", "Welt", "wie", "geht", "es", "dir"], "Hi there")
     assert all(pieces)
     assert "".join(pieces) == "Hithere"
+    # Leading cuts reserve one char per remaining member: a 6-char reply over
+    # 6 members yields six single chars, never a fat head and blank tail.
+    pieces = translation._redistribute(
+        ["Hallo", "Welt", "wie", "geht", "es", "dir"], "abcdef")
+    assert pieces == list("abcdef")
+    # Shorter than the member count is unsplittable: the documented
+    # degenerate contract is one piece per member, nothing lost, and the
+    # CALLER (translate_segments) reverts the group on the empties.
+    pieces = translation._redistribute(
+        ["uh", "um", "ja", "ne", "so", "hm"], "ok")
+    assert len(pieces) == 6
+    assert "".join(pieces) == "ok"
+    assert not all(pieces)
 
 
 # ---------------------------------------------------------------------------
@@ -347,7 +360,7 @@ def test_same_language_short_circuit_no_model_calls(base_cfg, monkeypatch):
     calls = []
     _install_fake(monkeypatch, _xlate, calls)
 
-    async def boom(ref):
+    async def boom(ref, **kwargs):
         raise AssertionError("model must not load for a same-language target")
     monkeypatch.setattr(translation, "_get_model", boom)
 
@@ -570,6 +583,21 @@ def test_fluent_merges_translates_and_redistributes(base_cfg, monkeypatch):
     assert len(calls) == 2                               # one call per group
 
 
+def test_fluent_short_reply_reverts_group_instead_of_blank_cues(
+        base_cfg, monkeypatch):
+    """A fluent reply shorter than the group's member count cannot be
+    redistributed without blank cues — the group reverts to its originals
+    and every member lands in meta['kept'], exactly like a guard hit."""
+    _install_fake(monkeypatch, lambda t: "ok")           # 2 chars, 6 members
+    segs = _segs("uh", "um", "ja", "ne", "so", "hm")
+    res, warns, meta = _run(translation.translate_segments(
+        segs, ["en"], source_lang="de", mode="fluent"))
+    assert all(r["en"] for r in res)
+    assert [r["en"] for r in res] == [s["text"] for s in segs]
+    assert len(warns) == 1 and "redistribution left empty cues" in warns[0]
+    assert meta["kept"] == {i: ["en"] for i in range(6)}
+
+
 def test_fluent_group_failure_keeps_member_originals(base_cfg, monkeypatch):
     _install_fake(monkeypatch, lambda t: t)              # always a copy → fail
     segs = _segs("Hallo Welt und mehr Text", "es dir heute wirklich?")
@@ -703,6 +731,7 @@ def test_load_uses_predownloaded_path(monkeypatch):
     assert record[0][0] == "direct"
     assert record[0][1] == "/models/x.Q4.gguf"
     assert record[0][2]["n_gpu_layers"] == 0
+    assert record[0][2]["n_ctx"] == translation._ctx_for("chatml")
 
 
 def test_load_falls_back_when_predownload_raises(monkeypatch, caplog):
@@ -720,7 +749,21 @@ def test_load_falls_back_when_predownload_raises(monkeypatch, caplog):
     assert record[0][0] == "from_pretrained"
     assert record[0][1]["repo_id"] == "org/repo"
     assert record[0][1]["filename"] == "*Q4.gguf"
+    assert record[0][1]["n_gpu_layers"] == -1          # cuda: full offload
+    assert record[0][1]["n_ctx"] == translation._ctx_for("chatml")
     assert any("falling back" in r.getMessage() for r in caplog.records)
+
+
+def test_load_n_ctx_follows_family(monkeypatch):
+    """n_ctx is the FAMILY's window, not one module constant."""
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+    monkeypatch.setattr(translation, "_predownload_gguf",
+                        lambda repo, quant, cb=None: "/models/h.gguf")
+    translation._load_blocking_inner("org/hy", "cpu", "hunyuan")
+    assert record[0][2]["n_ctx"] == translation._ctx_for("hunyuan")
+    assert translation._ctx_for("hunyuan") != translation._ctx_for("chatml")
 
 
 def test_load_falls_back_when_no_unique_match(monkeypatch):
@@ -744,6 +787,204 @@ def test_local_files_only_skips_predownload(monkeypatch):
     monkeypatch.setattr(translation, "_predownload_gguf", never)
     translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
     assert record[0][0] == "from_pretrained"
+    # The hub freezes HF_HUB_OFFLINE at import, so the env var alone cannot
+    # keep the load off the network — the flag must reach the call itself.
+    assert record[0][1]["local_files_only"] is True
+
+
+def test_online_load_passes_local_files_only_false(monkeypatch):
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+    monkeypatch.setattr(translation, "_predownload_gguf",
+                        lambda repo, quant, cb=None: None)
+    translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record[0][1]["local_files_only"] is False
+
+
+def test_load_blocking_threads_offline_flag_explicitly(monkeypatch):
+    """_load_blocking hands its ONE snapshot of LOCAL_FILES_ONLY down as the
+    explicit ``offline`` argument (not just via the env var)."""
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    seen = {}
+
+    def inner(ref, device, family, download_cb=None, offline=None):
+        seen["offline"] = offline
+        return "LLM"
+    monkeypatch.setattr(translation, "_load_blocking_inner", inner)
+    assert translation._load_blocking("o/r", "cpu", "chatml") == "LLM"
+    assert seen["offline"] is True
+
+
+# ---------------------------------------------------------------------------
+# HF cache dir is passed EXPLICITLY (the hub freezes HF_HOME at import)
+# ---------------------------------------------------------------------------
+
+def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",)):
+    import types
+
+    class _Sib:
+        def __init__(self, name):
+            self.rfilename = name
+
+    class _Info:
+        siblings = [_Sib(f) for f in files]
+
+    class HfApi:
+        def model_info(self, repo):
+            return _Info()
+
+    def hf_hub_download(**kw):
+        record.append(kw)
+        return "/cache/m.Q4.gguf"
+
+    mod = types.ModuleType("huggingface_hub")
+    mod.HfApi = HfApi
+    mod.hf_hub_download = hf_hub_download
+    monkeypatch.setitem(sys.modules, "huggingface_hub", mod)
+
+
+def test_predownload_passes_download_root_cache_dir(monkeypatch, tmp_path):
+    record = []
+    _install_fake_hub(monkeypatch, record)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
+    out = translation._predownload_gguf("org/repo", "Q4")
+    assert out == "/cache/m.Q4.gguf"
+    assert record[0]["repo_id"] == "org/repo"
+    assert record[0]["filename"] == "m.Q4.gguf"
+    assert record[0]["cache_dir"] == str(tmp_path / "hf" / "hub")
+
+
+def test_predownload_set_hf_home_wins_over_download_root(monkeypatch,
+                                                         tmp_path):
+    record = []
+    _install_fake_hub(monkeypatch, record)
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "custom"))
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path / "root"),
+                        raising=False)
+    translation._predownload_gguf("org/repo", "Q4")
+    assert record[0]["cache_dir"] == str(tmp_path / "custom" / "hub")
+
+
+def _install_fake_progress(monkeypatch):
+    """Stub download_progress.capture + the jobs registry around the real
+    _predownload_gguf; returns the recorder (the capture cb lands in
+    rec["cb"])."""
+    import contextlib
+
+    import download_progress
+    import jobs
+
+    rec = {"cb": None, "jobs": []}
+
+    @contextlib.contextmanager
+    def capture(label, cb=None, **kw):
+        rec["cb"] = cb
+        rec["label"] = label
+        yield type("Cap", (), {"tqdm_kwargs": {}})()
+    monkeypatch.setattr(download_progress, "capture", capture)
+    monkeypatch.setattr(jobs, "job_start",
+                        lambda kind, **kw: rec["jobs"].append(
+                            ("start", kind, kw)) or "JOB-1")
+    monkeypatch.setattr(jobs, "job_update",
+                        lambda job_id, **kw: rec["jobs"].append(
+                            ("update", job_id, kw)))
+    monkeypatch.setattr(jobs, "job_end",
+                        lambda job_id: rec["jobs"].append(("end", job_id)))
+    return rec
+
+
+def test_predownload_matches_quant_case_insensitively(monkeypatch):
+    record = []
+    _install_fake_hub(monkeypatch, record,
+                      files=("a.Q4_K_M.GGUF", "README.md", "b.Q8_0.gguf"))
+    rec = _install_fake_progress(monkeypatch)
+    out = translation._predownload_gguf("org/repo", "q4_k_m")
+    assert out == "/cache/m.Q4.gguf"
+    assert record[0]["filename"] == "a.Q4_K_M.GGUF"
+    assert rec["jobs"][0] == ("start", "download", {
+        "model": "gguf:org/repo:q4_k_m", "detail": "a.Q4_K_M.GGUF"})
+    assert rec["jobs"][-1] == ("end", "JOB-1")
+
+
+def test_predownload_ambiguous_listing_returns_none(monkeypatch):
+    record = []
+    _install_fake_hub(monkeypatch, record,
+                      files=("m-00001.Q4.gguf", "m-00002.Q4.gguf"))
+    rec = _install_fake_progress(monkeypatch)
+    assert translation._predownload_gguf("org/repo", "Q4") is None
+    assert record == [] and rec["jobs"] == []      # from_pretrained speaks
+
+
+def test_predownload_no_quant_matches_any_gguf(monkeypatch):
+    record = []
+    _install_fake_hub(monkeypatch, record, files=("only.GGUF", "cfg.json"))
+    rec = _install_fake_progress(monkeypatch)
+    assert translation._predownload_gguf("org/repo", None) == \
+        "/cache/m.Q4.gguf"
+    assert record[0]["filename"] == "only.GGUF"
+    assert rec["label"] == "gguf:org/repo"
+
+
+def test_predownload_hook_updates_job_and_shields_download_cb(monkeypatch):
+    record = []
+    _install_fake_hub(monkeypatch, record)
+    rec = _install_fake_progress(monkeypatch)
+    seen = []
+    translation._predownload_gguf("org/repo", "Q4",
+                                  lambda d, t: seen.append((d, t)))
+    hook = rec["cb"]
+    hook(5, 10)
+    assert ("update", "JOB-1", {"progress": 0.5, "total_bytes": 10}) \
+        in rec["jobs"]
+    assert seen == [(5, 10)]
+    hook(5, 0)                                    # unknown total: no ratio
+    assert rec["jobs"][-1] == ("update", "JOB-1",
+                               {"progress": None, "total_bytes": None})
+
+    def raising_cb(d, t):
+        raise RuntimeError("client went away")
+    rec2 = _install_fake_progress(monkeypatch)
+    translation._predownload_gguf("org/repo", "Q4", raising_cb)
+    rec2["cb"](1, 2)                              # swallowed, job still moves
+    assert rec2["jobs"][-1] == ("update", "JOB-1",
+                                {"progress": 0.5, "total_bytes": 2})
+
+
+def test_predownload_ends_job_when_download_raises(monkeypatch):
+    _install_fake_hub(monkeypatch, [])
+    rec = _install_fake_progress(monkeypatch)
+
+    def boom(**kw):
+        raise OSError("disk full")
+    sys.modules["huggingface_hub"].hf_hub_download = boom
+    with pytest.raises(OSError, match="disk full"):
+        translation._predownload_gguf("org/repo", "Q4")
+    assert rec["jobs"] == [("start", "download",
+                            {"model": "gguf:org/repo:Q4",
+                             "detail": "m.Q4.gguf"}),
+                           ("end", "JOB-1")]
+
+
+def test_from_pretrained_fallback_passes_cache_dir(monkeypatch, tmp_path):
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+    monkeypatch.setattr(translation, "_predownload_gguf",
+                        lambda repo, quant, cb=None: None)
+    translation._load_blocking_inner("org/repo", "cpu", "chatml")
+    assert record[0][1]["cache_dir"] == str(tmp_path / "hf" / "hub")
+
+
+def test_hf_cache_dir_none_without_root_or_hf_home(monkeypatch):
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
+    assert translation._hf_cache_dir() is None
 
 
 def test_offline_env_restored_when_flag_flips_mid_load(monkeypatch):
@@ -754,13 +995,55 @@ def test_offline_env_restored_when_flag_flips_mid_load(monkeypatch):
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
 
-    def inner(ref, device, family, download_cb=None):
+    def inner(ref, device, family, download_cb=None, offline=None):
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
         monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
         return "LLM"
     monkeypatch.setattr(translation, "_load_blocking_inner", inner)
     assert translation._load_blocking("o/r", "cpu", "chatml") == "LLM"
     assert "HF_HUB_OFFLINE" not in os.environ
+
+
+def test_offline_env_preset_value_restored_after_load(monkeypatch):
+    """An operator's process-wide HF_HUB_OFFLINE (here '0') survives one
+    offline load — restored, not popped."""
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+
+    def inner(ref, device, family, download_cb=None, offline=None):
+        assert os.environ["HF_HUB_OFFLINE"] == "1"
+        return "LLM"
+    monkeypatch.setattr(translation, "_load_blocking_inner", inner)
+    assert translation._load_blocking("o/r", "cpu", "chatml") == "LLM"
+    assert os.environ["HF_HUB_OFFLINE"] == "0"
+
+
+def test_online_load_leaves_preset_offline_env_untouched(monkeypatch):
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "1")
+
+    def inner(ref, device, family, download_cb=None, offline=None):
+        assert os.environ["HF_HUB_OFFLINE"] == "1"
+        assert offline is False
+        return "LLM"
+    monkeypatch.setattr(translation, "_load_blocking_inner", inner)
+    translation._load_blocking("o/r", "cpu", "chatml")
+    assert os.environ["HF_HUB_OFFLINE"] == "1"
+
+
+def test_offline_env_restored_when_load_raises(monkeypatch):
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+
+    def inner(ref, device, family, download_cb=None, offline=None):
+        raise translation.TranslationError("load failed")
+    monkeypatch.setattr(translation, "_load_blocking_inner", inner)
+    with pytest.raises(translation.TranslationError):
+        translation._load_blocking("o/r", "cpu", "chatml")
+    assert os.environ["HF_HUB_OFFLINE"] == "0"
 
 
 def test_context_lines_prefix_speakers(base_cfg):
@@ -807,12 +1090,17 @@ def lru_env(monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 2,
                         raising=False)
     monkeypatch.setattr(cfg, "TRANSLATION_DEVICE", "cpu", raising=False)
+    _clear_lru_state()
+    yield made, stats
+    _clear_lru_state()
+
+
+def _clear_lru_state():
     translation._models.clear()
     translation._last_used.clear()
     translation._active.clear()
     translation._params.clear()
     translation._loading.clear()
-    return made, stats
 
 
 def test_lru_eviction_bookkeeping(lru_env):
@@ -851,6 +1139,82 @@ def test_drop_models_clears_everything(lru_env):
     assert sorted(stats["unregistered"]) == ["gguf:o/a", "gguf:o/b"]
 
 
+def test_drop_models_keeps_leased_model_resident(lru_env):
+    """'Unload all' over a busy model: the leased one stays (closing a
+    llama.cpp context under a running decode is a use-after-free), the
+    idle one still goes and is unregistered."""
+    made, stats = lru_env
+
+    async def run():
+        await translation._get_model("o/a", lease=True)
+        await translation._get_model("o/b")
+        await translation.drop_models()
+    asyncio.run(run())
+
+    assert list(translation._models) == ["o/a"]
+    assert not made["o/a"].closed and made["o/b"].closed
+    assert stats["unregistered"] == ["gguf:o/b"]
+
+
+_real_sleep = asyncio.sleep
+
+
+async def _run_evictor_once(monkeypatch):
+    """Drive idle_evictor_loop through exactly ONE wake: the first sleep
+    returns immediately, the second cancels the loop."""
+    calls = {"n": 0}
+
+    async def fake_sleep(secs):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise asyncio.CancelledError()
+        await _real_sleep(0)
+    monkeypatch.setattr(translation.asyncio, "sleep", fake_sleep)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await translation.idle_evictor_loop()
+    finally:
+        monkeypatch.setattr(translation.asyncio, "sleep", _real_sleep)
+    assert calls["n"] == 2
+
+
+def test_idle_evictor_honours_warm_lease_then_evicts(lru_env, monkeypatch):
+    made, stats = lru_env
+    monkeypatch.setattr(cfg, "TRANSLATION_IDLE_TIMEOUT_S", 1, raising=False)
+    warm = {"gguf:o/a"}
+    monkeypatch.setattr(translation.system_stats, "is_warm",
+                        lambda name: name in warm)
+
+    async def run():
+        await translation._get_model("o/a")
+        await translation._get_model("o/b")
+        translation._last_used["o/a"] -= 100
+        await _run_evictor_once(monkeypatch)
+        # A warm (preload) lease suspends the idle clock.
+        assert set(translation._models) == {"o/a", "o/b"}
+        warm.clear()
+        await _run_evictor_once(monkeypatch)
+    asyncio.run(run())
+    assert list(translation._models) == ["o/b"]         # o/b: recently used
+    assert made["o/a"].closed and not made["o/b"].closed
+    assert stats["unregistered"] == ["gguf:o/a"]
+
+
+def test_idle_evictor_zero_timeout_never_evicts(lru_env, monkeypatch):
+    made, stats = lru_env
+    monkeypatch.setattr(cfg, "TRANSLATION_IDLE_TIMEOUT_S", 0, raising=False)
+    monkeypatch.setattr(translation.system_stats, "is_warm",
+                        lambda name: False)
+
+    async def run():
+        await translation._get_model("o/a")
+        translation._last_used["o/a"] -= 100_000
+        await _run_evictor_once(monkeypatch)
+    asyncio.run(run())
+    assert list(translation._models) == ["o/a"]
+    assert not made["o/a"].closed and stats["unregistered"] == []
+
+
 def test_warm_hit_does_not_block_on_cold_load(lru_env, monkeypatch):
     """A warm cache hit must return while ANOTHER ref's cold load is still
     running — taking the module _lock before the hit check (as this once
@@ -879,6 +1243,70 @@ def test_warm_hit_does_not_block_on_cold_load(lru_env, monkeypatch):
     asyncio.run(run())
 
 
+def _two_overlapping_loads(monkeypatch, made, refs=("o/a", "o/b")):
+    """Run _get_model on two refs whose _load_blocking calls overlap in the
+    executor (both parked until both have started), then return the models."""
+    started = threading.Barrier(2, timeout=5)
+
+    def slow_load(ref, device, family, download_cb=None):
+        started.wait()                 # neither finishes before both start
+        made[ref] = _FakeLlama(ref)
+        return made[ref]
+    monkeypatch.setattr(translation, "_load_blocking", slow_load)
+
+    async def run():
+        return await asyncio.gather(*(translation._get_model(r)
+                                      for r in refs))
+    return asyncio.run(run())
+
+
+def test_concurrent_misses_respect_max_loaded_models(lru_env, monkeypatch):
+    """Two misses on DIFFERENT refs both pass the pre-load cap check (the
+    load runs outside _lock) — the post-load insert must re-trim, or the
+    default cap of 1 silently holds two multi-GB contexts."""
+    made, stats = lru_env
+    monkeypatch.setattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1,
+                        raising=False)
+    _two_overlapping_loads(monkeypatch, made)
+    assert len(translation._models) == 1
+    kept = next(iter(translation._models))
+    evicted = "o/b" if kept == "o/a" else "o/a"
+    assert made[evicted].closed
+    assert stats["unregistered"] == [translation._STATS_PREFIX + evicted]
+    assert not made[kept].closed
+
+
+def test_overlapping_loads_publish_no_vram_delta(lru_env, monkeypatch):
+    """With the cap >= 2 two refs load concurrently; a before/after NVML
+    delta straddling the other load belongs to neither, so both register
+    vram=None instead of a mis-attributed number."""
+    made, stats = lru_env
+    reads = iter([1000, 1000, 5000, 5000])
+    monkeypatch.setattr(translation.system_stats, "gpu_mem_used_bytes",
+                        lambda: next(reads))
+    seen = {}
+    monkeypatch.setattr(translation.system_stats, "register_loaded_model",
+                        lambda name, vram, device, kind, load_secs=None:
+                        seen.__setitem__(name, vram))
+    _two_overlapping_loads(monkeypatch, made)
+    assert seen == {translation._STATS_PREFIX + "o/a": None,
+                    translation._STATS_PREFIX + "o/b": None}
+    assert translation._loads_in_flight == 0
+
+
+def test_solo_load_still_publishes_vram_delta(lru_env, monkeypatch):
+    made, stats = lru_env
+    reads = iter([1000, 5000])
+    monkeypatch.setattr(translation.system_stats, "gpu_mem_used_bytes",
+                        lambda: next(reads))
+    seen = {}
+    monkeypatch.setattr(translation.system_stats, "register_loaded_model",
+                        lambda name, vram, device, kind, load_secs=None:
+                        seen.__setitem__(name, vram))
+    asyncio.run(translation._get_model("o/a"))
+    assert seen == {translation._STATS_PREFIX + "o/a": 4000}
+
+
 def test_cancelled_translation_releases_lease(lru_env, monkeypatch):
     """A cancellation mid-inference still releases the model lease — a
     leaked _active entry would pin the model against eviction forever."""
@@ -897,9 +1325,6 @@ def test_cancelled_translation_releases_lease(lru_env, monkeypatch):
     asyncio.run(run())
     assert translation._active == {}
     assert "o/a" in translation._models      # released, not torn down
-    translation._models.clear()
-    translation._last_used.clear()
-    translation._params.clear()
 
 
 def test_device_change_rekeys_model_after_lease_release(lru_env, monkeypatch):
@@ -1016,6 +1441,34 @@ def test_cjk_target_ratio_bounds_admit_compressed_output():
     assert translation._guard_reason(src, out, target="fr") is not None
 
 
+def test_cjk_source_ratio_bounds_admit_expanded_output():
+    """The mirror branch: a Chinese source renders ~4x longer in English —
+    the default 3.0 cap would keep the untranslated Chinese line."""
+    src = "我们昨天重复了测量并记录了结果，今天再检查。"      # 22 chars
+    out = ("We repeated the measurement yesterday and documented the "
+           "result, and we are checking it again today.")     # ~4.5x
+    assert translation._guard_reason(src, out, target="en") is None
+    too_long = out + " " + out + " " + out[:20]              # >9x
+    assert translation._guard_reason(src, too_long, target="en") \
+        is not None
+
+
+def test_both_cjk_keeps_default_ratio_band():
+    src = "我们昨天重复了测量并记录了结果，今天再检查一次。"
+    out = "昨日測定。"                          # ~0.2x: rejected zh->ja
+    assert translation._guard_reason(src, out, target="ja") is not None
+
+
+def test_ratio_bounds_three_branches():
+    latin = "Wir haben die Messung gestern wiederholt."
+    cjk = "我们昨天重复了测量并记录了结果。"
+    assert translation._ratio_bounds(latin, "zh") == (0.12, 3.0)
+    assert translation._ratio_bounds(cjk, "en") == (0.4, 9.0)
+    assert translation._ratio_bounds(cjk, "ja-JP") == (0.4, 3.0)
+    assert translation._ratio_bounds(latin, "fr") == (0.4, 3.0)
+    assert translation._ratio_bounds(latin, None) == (0.4, 3.0)
+
+
 def test_custom_template_is_single_pass():
     """Placeholder tokens INSIDE the transcript text must not be
     re-substituted by later slots."""
@@ -1071,6 +1524,25 @@ class TestRenderPrompt:
         translation.render_prompt("x", "en", family="chatml")
         assert "llama_cpp" not in sys.modules
 
+    def test_unknown_source_omits_from_clause(self):
+        # The preview must match what translate_segments really sends: an
+        # unknown source is left out, never asserted to be English.
+        p = translation.render_prompt("Hallo", "fr", family="chatml")
+        content = p["messages"][0]["content"]
+        assert "from English" not in content
+        assert "into French" in content
+
+    def test_unknown_source_milmmt_matches_builder(self):
+        p = translation.render_prompt("Hallo", "fr", family="milmmt")
+        assert p["text"] == translation._build_milmmt(
+            "Hallo", "", "", "fr", "French", "", "")
+        assert "English" not in p["text"]
+
+    def test_unknown_source_custom_template_renders_empty(self):
+        p = translation.render_prompt(
+            "Hallo", "fr", template="[{source_language}] {text}")
+        assert p["messages"][0]["content"] == "[] Hallo"
+
 
 class TestFamilyOverride:
     def test_translate_segments_family_override(self, monkeypatch):
@@ -1080,6 +1552,7 @@ class TestFamilyOverride:
 
         def fake_complete(llm, family, prompt, max_tokens):
             seen["family"] = family
+            seen["prompt"] = prompt
             return "ok"
 
         _stub_get_model(monkeypatch)
@@ -1089,4 +1562,55 @@ class TestFamilyOverride:
             family_override="seedx",
             template_override="stale {text} {target_language}"))
         assert seen["family"] == "seedx"
+        # seedx is a raw family: the prompt is the builder's string, and the
+        # stale textarea template never leaks into it.
+        assert isinstance(seen["prompt"], str)
+        assert "stale" not in seen["prompt"]
+        assert seen["prompt"].endswith("Hallo <en>")
         assert results[0]["en"] == "ok"
+
+
+class TestComplete:
+    """translation._complete is the one llama_cpp return-shape adapter —
+    exercised with duck-typed fakes (no llama_cpp import)."""
+
+    class _Llm:
+        def __init__(self, chat_out=None, raw_out=None):
+            self.chat_out, self.raw_out = chat_out, raw_out
+            self.chat_calls, self.raw_calls = [], []
+
+        def create_chat_completion(self, messages, max_tokens, **kw):
+            self.chat_calls.append((messages, max_tokens, kw))
+            return self.chat_out
+
+        def __call__(self, prompt, max_tokens, **kw):
+            self.raw_calls.append((prompt, max_tokens, kw))
+            return self.raw_out
+
+    def test_chat_family_strips_content_and_forwards_sampling(self):
+        llm = self._Llm(chat_out={"choices": [
+            {"message": {"content": "  Bonjour  "}}]})
+        msgs = [{"role": "user", "content": "Hallo"}]
+        assert translation._complete(llm, "hunyuan", msgs, 64) == "Bonjour"
+        assert llm.chat_calls == [
+            (msgs, 64, translation._FAMILIES["hunyuan"].sampling)]
+        assert llm.chat_calls[0][2]["temperature"] == 0.7
+        assert llm.raw_calls == []
+
+    def test_raw_family_calls_llm_directly(self):
+        llm = self._Llm(raw_out={"choices": [{"text": " Salut "}]})
+        assert translation._complete(llm, "milmmt", "PROMPT", 32) == "Salut"
+        assert llm.raw_calls == [("PROMPT", 32, translation._GREEDY)]
+        assert llm.chat_calls == []
+
+    def test_greedy_chat_family_pins_temperature_zero(self):
+        llm = self._Llm(chat_out={"choices": [
+            {"message": {"content": "x"}}]})
+        translation._complete(llm, "chatml", [], 8)
+        assert llm.chat_calls[0][2] == {"temperature": 0.0}
+
+    def test_missing_content_coerces_to_empty(self):
+        chat = self._Llm(chat_out={"choices": [{"message": {"content": None}}]})
+        assert translation._complete(chat, "hunyuan", [], 8) == ""
+        raw = self._Llm(raw_out={"choices": [{}]})
+        assert translation._complete(raw, "seedx", "p", 8) == ""

@@ -86,6 +86,11 @@ _last_used: "dict[str, float]" = {}
 # loaded; popping them on release would open a re-create race that lets two
 # jobs load the same model concurrently.
 _loading: "dict[str, asyncio.Lock]" = {}
+# Loads currently inside _load_blocking, and how many times a load has
+# started while another was already running — a VRAM delta measured across
+# such an overlap belongs to neither load (see _get_model).
+_loads_in_flight = 0
+_load_overlaps = 0
 # ref → (device, n_ctx) the cached model was loaded with. A cache hit re-keys
 # on these so an admin device/prompt-family edit reloads the model instead of
 # serving one built for the old parameters forever.
@@ -367,7 +372,10 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
     fam_name = (family or "").strip().lower()
     if fam_name not in _FAMILIES:
         fam_name = "custom" if template is not None else resolve_family(ref)
-    source_code = (source or "").strip() or "en"
+    # An unknown source stays EMPTY, exactly as translate_segments passes
+    # it — only _build_gemma defaults to "en" itself (its wire format
+    # needs a code); every other builder drops the "from X" clause.
+    source_code = (source or "").strip()
     fam = _FAMILIES[fam_name]
     if fam_name == "custom":
         tpl = template if template is not None else \
@@ -398,6 +406,22 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
 # Model loading / LRU cache
 # =============================================================================
 
+def _hf_cache_dir() -> "str | None":
+    """The hub cache directory to pass EXPLICITLY to every hub download.
+    huggingface_hub freezes HF_HUB_CACHE from the environment at import
+    time, long before a translation job runs, so the HF_HOME setdefault in
+    _load_blocking alone cannot redirect the multi-GB GGUF; a set HF_HOME
+    always wins, else <DOWNLOAD_ROOT>/hf/hub (the layout model_sizes
+    reads), else None (the hub's own default)."""
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return os.path.join(hf_home, "hub")
+    download_root = getattr(cfg, "DOWNLOAD_ROOT", None)
+    if download_root:
+        return os.path.join(download_root, "hf", "hub")
+    return None
+
+
 def _load_blocking(ref: str, device: str, family: str, download_cb=None):
     """Import llama_cpp and load the GGUF model. Runs in the default
     executor. ``download_cb(done_bytes, total_bytes)`` (optional) receives
@@ -412,13 +436,17 @@ def _load_blocking(ref: str, device: str, family: str, download_cb=None):
     # huggingface_hub download until a process restart. Snapshot the flag
     # ONCE: an admin can flip it during this minutes-long load, and a second
     # live read in the finally would then skip the restore (leaking
-    # HF_HUB_OFFLINE=1) or clobber a value this call never set.
+    # HF_HUB_OFFLINE=1) or clobber a value this call never set. The env var
+    # only reaches subprocesses / a fresh import — the hub freezes
+    # HF_HUB_OFFLINE at import — so the flag is ALSO threaded down
+    # explicitly as local_files_only.
     offline = bool(getattr(cfg, "LOCAL_FILES_ONLY", False))
     offline_prev = os.environ.get("HF_HUB_OFFLINE")
     if offline:
         os.environ["HF_HUB_OFFLINE"] = "1"
     try:
-        return _load_blocking_inner(ref, device, family, download_cb)
+        return _load_blocking_inner(ref, device, family, download_cb,
+                                    offline=offline)
     finally:
         if offline:
             if offline_prev is None:
@@ -428,7 +456,9 @@ def _load_blocking(ref: str, device: str, family: str, download_cb=None):
 
 
 def _load_blocking_inner(ref: str, device: str, family: str,
-                         download_cb=None):
+                         download_cb=None, offline: "bool | None" = None):
+    if offline is None:
+        offline = bool(getattr(cfg, "LOCAL_FILES_ONLY", False))
     try:
         import llama_cpp
     except ImportError as e:
@@ -446,7 +476,7 @@ def _load_blocking_inner(ref: str, device: str, family: str,
     # Llama.from_pretrained downloads through hf_hub_download silently.
     # ANY pre-download failure falls back to the stock path below.
     local_path = None
-    if not getattr(cfg, "LOCAL_FILES_ONLY", False):
+    if not offline:
         try:
             local_path = _predownload_gguf(repo, quant, download_cb)
         except Exception as e:  # noqa: BLE001 — pre-download is best-effort
@@ -464,6 +494,8 @@ def _load_blocking_inner(ref: str, device: str, family: str,
         return llama_cpp.Llama.from_pretrained(
             repo_id=repo,
             filename=(f"*{quant}.gguf" if quant else "*.gguf"),
+            cache_dir=_hf_cache_dir(),
+            local_files_only=offline,
             n_gpu_layers=(-1 if device == "cuda" else 0),
             n_ctx=_ctx_for(family),
             verbose=False,
@@ -518,6 +550,7 @@ def _predownload_gguf(repo: str, quant: "str | None",
     try:
         with download_progress.capture(label, cb=_hook) as cap:
             return hf_hub_download(repo_id=repo, filename=matches[0],
+                                   cache_dir=_hf_cache_dir(),
                                    **cap.tqdm_kwargs)
     finally:
         jobs.job_end(job_id)
@@ -550,6 +583,30 @@ def _drop_locked(ref: str) -> bool:
         pass
     logger.info("[translate] model %s unloaded", ref)
     return True
+
+
+def _trim_locked(cap: int) -> None:
+    """Evict unleased models until the cache is under ``cap``. Caller holds
+    _lock. Runs BEFORE a load (free VRAM before allocating) and AGAIN right
+    before the post-load insert: the load itself runs outside _lock, so two
+    misses on different refs both see room and would both insert."""
+    while len(_models) >= cap:
+        victim = next(
+            (r for r in _models if not _active.get(r, 0)), None)
+        if victim is None:
+            # Every cached model is mid-job — overflow the cap rather
+            # than free a context under a running decode; the idle
+            # evictor trims the excess once the jobs release.
+            logger.warning(
+                "[translate] all %d cached models are in use — "
+                "temporarily exceeding TRANSLATION_MAX_LOADED_MODELS",
+                len(_models))
+            break
+        _drop_locked(victim)
+
+
+def _load_cap() -> int:
+    return max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
 
 
 async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
@@ -595,28 +652,28 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             async with _lock:
                 _drop_locked(ref)
         async with _lock:
-            cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
-            while len(_models) >= cap:
-                victim = next(
-                    (r for r in _models if not _active.get(r, 0)), None)
-                if victim is None:
-                    # Every cached model is mid-job — overflow the cap rather
-                    # than free a context under a running decode; the idle
-                    # evictor trims the excess once the jobs release.
-                    logger.warning(
-                        "[translate] all %d cached models are in use — "
-                        "temporarily exceeding TRANSLATION_MAX_LOADED_MODELS",
-                        len(_models))
-                    break
-                _drop_locked(victim)
+            _trim_locked(_load_cap())
+        # The VRAM delta is only attributable to THIS load when no other
+        # translation load overlapped the before/after window (only the
+        # per-ref lock is held here); otherwise publish None, as the
+        # CPU / no-NVML path already does, rather than a fabricated number.
+        global _loads_in_flight, _load_overlaps
+        overlaps_before = _load_overlaps
+        _loads_in_flight += 1
+        if _loads_in_flight > 1:
+            _load_overlaps += 1
         vram_before = system_stats.gpu_mem_used_bytes()
         loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
-        llm = await loop.run_in_executor(
-            None, _load_blocking, ref, device, family, download_cb)
+        try:
+            llm = await loop.run_in_executor(
+                None, _load_blocking, ref, device, family, download_cb)
+        finally:
+            _loads_in_flight -= 1
         vram_after = system_stats.gpu_mem_used_bytes()
         vram = (vram_after - vram_before) if (
-            vram_before is not None and vram_after is not None) else None
+            vram_before is not None and vram_after is not None
+            and _load_overlaps == overlaps_before) else None
         load_secs = time.perf_counter() - t0
         system_stats.register_loaded_model(
             _STATS_PREFIX + ref, vram, device, "gguf", load_secs)
@@ -628,6 +685,8 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
         except Exception:  # noqa: BLE001 — stats only
             pass
         async with _lock:
+            # Re-trim: another ref's load may have inserted meanwhile.
+            _trim_locked(_load_cap())
             _models[ref] = llm
             _params[ref] = params
             _last_used[ref] = time.monotonic()
@@ -752,7 +811,7 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     cuts: "list[int]" = []
     acc = 0
     prev = 0
-    for t in group_texts[:-1]:
+    for i, t in enumerate(group_texts[:-1]):
         acc += len(t)
         ideal = len(translated) * acc / total
         # Only spaces strictly PAST the previous cut are candidates — two
@@ -762,9 +821,14 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
         if cands:
             cut = min(cands, key=lambda s: abs(s - ideal))
         else:
-            # No word boundary left: raw proportional cut, forced forward and
-            # past any whitespace-only slice (which .strip() would empty).
-            cut = min(len(translated), max(int(round(ideal)), prev + 1))
+            cut = int(round(ideal))
+        # Forced forward, and reserving one char per REMAINING member so the
+        # leading cuts can never eat the tail. (A translation shorter than
+        # the member count is unsplittable — the caller reverts the group.)
+        cut = max(prev + 1, min(cut, len(translated) - (n - 1 - i)))
+        if not cands:
+            # No word boundary left: raw proportional cut, pushed past any
+            # whitespace-only slice (which .strip() would empty).
             while cut < len(translated) and not translated[prev:cut].strip():
                 cut += 1
         cuts.append(cut)
@@ -1169,6 +1233,14 @@ async def translate_segments(
                     # 0 cannot produce a different output.
                     translated, reason = await _retry_context_free(
                         joined, target)
+                pieces: "list[str]" = []
+                if reason is None:
+                    pieces = _redistribute(src_texts, translated)
+                    if not all(p.strip() for p in pieces):
+                        # A reply shorter than the member count cannot be
+                        # split without blank cues for segments that have
+                        # source text — revert the group like a guard hit.
+                        reason = "redistribution left empty cues"
                 if reason is not None:
                     # Whole-group revert: every member is a kept-original.
                     for j in group:
@@ -1177,8 +1249,7 @@ async def translate_segments(
                             f"segments {group[0] + 1}-{group[-1] + 1}")
                     _keep_original(span, group, target, reason)
                 else:
-                    for j, piece in zip(group,
-                                        _redistribute(src_texts, translated)):
+                    for j, piece in zip(group, pieces):
                         results[j][target] = piece
                     last_ok = results[group[-1]].get(target) or last_ok
                 done_units += len(group)
