@@ -14,10 +14,45 @@ from starlette.testclient import TestClient
 from conftest import bearer
 
 
+@pytest.fixture(autouse=True)
+def _reset_vad_reprocess_state():
+    """captures_vad_reprocess is the one worker conftest never resets; pin
+    it to the module's idle shape so a finished run cannot leak into the
+    next test's status read."""
+    import captures_vad_reprocess as vr
+
+    def _reset():
+        vr._worker = None
+        vr._state = {
+            "status": "idle", "started_ts": None, "finished_ts": None,
+            "total": 0, "processed": 0, "rebuilt": 0, "skipped": 0,
+            "stale": 0, "error": None,
+        }
+
+    _reset()
+    yield
+    _reset()
+
+
 def test_captures_page(client):
     r = client.get("/captures")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+
+
+def test_captures_page_403_landing_short_circuits_for_admin(client):
+    """Admins are stored with permissions '{}' so whoami returns pages = {},
+    which is truthy in JS and has no `captures` key. The landing gate must
+    bail on is_admin before it looks at the pages map, and treat an EMPTY
+    map as "permissions absent" rather than "no scope" — otherwise any 403
+    (stale CSRF token) wipes <main> for the admin."""
+    html = client.get("/captures").text
+    gate = html[html.index("async function _renderAdminOnlyIfNonAdmin()"):]
+    gate = gate[:gate.index("_renderNoAccessLanding({ page: 'captures' })")]
+    assert "if (j && j.is_admin) return false;" in gate
+    assert "if (pages && !Object.keys(pages).length) pages = null;" in gate
+    # The admin short-circuit precedes the pages-keyed test.
+    assert gate.index("j.is_admin) return false") < gate.index("pages.captures")
 
 
 def test_captures_list_open_mode(client):
@@ -32,7 +67,7 @@ def test_reprocess_vad_job_lifecycle(client):
     # Status endpoint is registered and reports a known state.
     s0 = client.get("/captures/api/reprocess-vad/status")
     assert s0.status_code == 200
-    assert s0.json()["status"] in ("idle", "running", "done", "error")
+    assert s0.json()["status"] == "idle"
     # Start the bulk VAD re-merge on an empty store → runs and finishes clean.
     assert client.post("/captures/api/reprocess-vad").status_code == 200
     import time
@@ -542,7 +577,7 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     conn = cs._require_conn()
     _insert_capture_with_request(conn, "byreqcap0001", "req-xyz", uid_owner)
 
-    with caplog.at_level(logging.INFO, logger="captures_routes"):
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
         r = client.get(
             "/captures/api/by-request/req-xyz", headers=bearer(raw_viewer))
     assert r.status_code == 200
@@ -554,7 +589,7 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     caplog.clear()
     uid_self, raw_self = make_user_key("solo", pages={"captures": "all"})
     _insert_capture_with_request(conn, "byreqcap0002", "req-own", uid_self)
-    with caplog.at_level(logging.INFO, logger="captures_routes"):
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
         client.get("/captures/api/by-request/req-own", headers=bearer(raw_self))
     assert not [m for m in caplog.messages if "cross-user-read" in m]
 
@@ -581,7 +616,7 @@ def test_propose_merges_audits_cross_user_read(client, make_user_key,
         captures_routes.captures_merge_proposer, "propose_merges",
         _fake_propose)
 
-    with caplog.at_level(logging.INFO, logger="captures_routes"):
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
         r = client.get(
             "/captures/api/propose-merges", headers=bearer(raw_viewer))
     assert r.status_code == 200
@@ -700,6 +735,24 @@ def test_export_skips_translate_row_for_english_source(
     assert [r["task"] for r in rows] == ["transcribe"]
 
 
+def test_export_skips_translate_row_for_translate_task_capture(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """A capture made through /v1/audio/translations already IS a translate
+    row (English text, source language, task=translate). A cascade-MT track
+    on the same row would emit a second task=translate line with other text
+    and another model for the same audio file."""
+    cs = captures_store_db
+    cid = _ready_capture(cs, monkeypatch, tmp_path,
+                         language="de", translations={"en": "other text"})
+    with cs._lock:
+        with cs._require_conn() as conn:
+            conn.execute("UPDATE captures SET task = 'translate' WHERE id = ?",
+                         (cid,))
+    rows = _export_manifest()
+    assert [r["task"] for r in rows] == ["translate"]
+    assert rows[0]["text"] == "quelle"
+
+
 def test_rebuild_lock_survives_prune_while_in_flight():
     """A Lock handed out but not yet acquired must not be pruned: the prune in
     _get_rebuild_lock skips sids pinned in _rebuild_inflight, so a second
@@ -746,3 +799,75 @@ def test_rebuild_lock_contextmanager_pins_and_unpins():
     assert not cr._rebuild_locks[sid].locked()
     cr._release_rebuild_lock(sid)
     assert sid not in cr._rebuild_locks
+
+
+def _grouped_capture(cs, monkeypatch, tmp_path, sid):
+    """One ready capture packed into sample `sid`; returns the capture id."""
+    import captures_routes as cr
+
+    cid = _ready_capture(cs, monkeypatch, tmp_path, language="de",
+                         translations=None)
+    cr._insert_sample_with_sid(
+        sid=sid, user_id="alice", member_ids=[cid], transcript="quelle",
+        join_strategy="space", silence_ms=300, member_hash_map={cid: "h"},
+        duration_ms=1000, language="de", member_trims={},
+    )
+    return cid
+
+
+def test_reprocess_vad_worker_uses_pinned_rebuild_lock(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """The worker holds its per-sid lock across build + DB write for many
+    sids in a loop, so it must take the pinning _rebuild_lock: with the raw
+    _get_rebuild_lock a route's prune could drop the sid between handout and
+    acquire and mint a SECOND Lock for a concurrent regenerate."""
+    import inspect
+
+    import captures_routes as cr
+    import captures_vad_reprocess as vr
+
+    assert "_get_rebuild_lock" not in inspect.getsource(vr)
+
+    sid = "a" * 32
+    _grouped_capture(captures_store_db, monkeypatch, tmp_path, sid)
+    entered = []
+    real = cr._rebuild_lock
+
+    def _counting(s):
+        entered.append(s)
+        return real(s)
+
+    monkeypatch.setattr(cr, "_rebuild_lock", _counting)
+    monkeypatch.setattr(cr, "_build_merged_wav",
+                        lambda **kw: (1000, {}, {}))
+    vr._run()
+    assert vr.status()["status"] == "done"
+    assert vr.status()["rebuilt"] == 1
+    assert entered == [sid]
+
+
+def test_create_sample_rejects_member_already_grouped(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """create_sample_api now awaits between validation and insert, so a
+    double-submitted Merge can validate twice. The member UPDATE's rowcount
+    is the gate: the loser gets a 409 and its capture_samples row is rolled
+    back instead of persisting member-less."""
+    from fastapi import HTTPException
+
+    import captures_routes as cr
+
+    cs = captures_store_db
+    cid = _grouped_capture(cs, monkeypatch, tmp_path, "b" * 32)
+    with pytest.raises(HTTPException) as ei:
+        cr._insert_sample_with_sid(
+            sid="c" * 32, user_id="alice", member_ids=[cid],
+            transcript="quelle", join_strategy="space", silence_ms=300,
+            member_hash_map={cid: "h"}, duration_ms=1000, language="de",
+            member_trims={},
+        )
+    assert ei.value.status_code == 409
+    conn = cs._require_conn()
+    ids = [r[0] for r in conn.execute(
+        "SELECT id FROM capture_samples ORDER BY id").fetchall()]
+    assert ids == ["b" * 32]
+    assert cs.get_capture(cid)["sample_id"] == "b" * 32

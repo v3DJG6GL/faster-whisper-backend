@@ -125,6 +125,22 @@ def test_truncate_json_non_serializable_returns_empty(captures_store_db):
     assert out == "[]"
 
 
+def test_truncate_translations_key_overhead_over_cap(captures_store_db):
+    """Trimming per-language TEXT bottoms out at n=0 still over cap when the
+    key set alone exceeds it; languages must then be dropped so the blob
+    honours the cap instead of landing an oversized row."""
+    cs = captures_store_db
+    out = cs._truncate_translations(
+        {f"lang{i}": "x" * 10 for i in range(6000)}, 50_000)
+    assert out is not None and len(out) <= 50_000
+    kept = json.loads(out)
+    assert isinstance(kept, dict) and 0 < len(kept) < 6000
+    # Front languages survive (insertion order), tail dropped.
+    assert list(kept) == [f"lang{i}" for i in range(len(kept))]
+    # A single language whose key alone cannot fit yields an empty map.
+    assert json.loads(cs._truncate_translations({"k" * 50: "v"}, 20)) == {}
+
+
 # ---------------------------------------------------------------------------
 # _safe_unlink
 # ---------------------------------------------------------------------------

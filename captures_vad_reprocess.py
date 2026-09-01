@@ -78,7 +78,7 @@ def _run() -> None:
         import config as cfg
         from captures_routes import (
             _build_merged_wav, _merged_wav_patch, _global_silence_ms,
-            _get_rebuild_lock,
+            _rebuild_lock,
         )
 
         samples = capture_samples_store.list_samples(user_id=None)
@@ -107,7 +107,7 @@ def _run() -> None:
                 # locked AFTER the job-start snapshot is never rebuilt (it may
                 # already be exported/frozen), and stops the stale flag from
                 # clobbering a regenerate that just cleared it.
-                with _get_rebuild_lock(sid):
+                with _rebuild_lock(sid):
                     fresh = capture_samples_store.get_sample(sid)
                     if fresh is None or fresh.get("is_locked"):
                         with _state_lock:

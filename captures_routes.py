@@ -1577,14 +1577,23 @@ def _insert_sample_with_sid(
 
     Group chip state lives on the member captures, not on the group
     row — every read re-projects from members — so no chip plumbing
-    appears here."""
+    appears here.
+
+    The member UPDATE's rowcount is the concurrency gate: create_sample_api
+    awaits between _validate_merge_payload and this insert, so a
+    double-submitted Merge can pass validation twice. The `sample_id IS
+    NULL` predicate makes the loser's UPDATE match nothing; raising here
+    rolls the sample row back (explicit BEGIN/ROLLBACK — the shared
+    connection is autocommit, so `with conn:` alone would not) and lets
+    the caller's except-branch unlink the merged WAV."""
     import capture_samples_store
 
     relpath = capture_samples_store._relpath_for(sid)
     now = time.time()
     conn = capture_samples_store._require_conn()
     with capture_samples_store._lock:
-        with conn:
+        conn.execute("BEGIN")
+        try:
             conn.execute(
                 "INSERT INTO capture_samples"
                 " (id, user_id, created_ts, merged_wav_relpath,"
@@ -1604,11 +1613,19 @@ def _insert_sample_with_sid(
                 ),
             )
             for order, mid in enumerate(member_ids):
-                conn.execute(
+                cur = conn.execute(
                     "UPDATE captures SET sample_id = ?, sample_order = ?"
                     " WHERE id = ? AND sample_id IS NULL",
                     (sid, order, mid),
                 )
+                if cur.rowcount != 1:
+                    raise HTTPException(
+                        status.HTTP_409_CONFLICT,
+                        "capture already belongs to a sample")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
     captures_merge_proposer.invalidate(user_id)
     logger.info(
         "[samples] created sid=%s user=%s n=%d dur=%.1fs",
@@ -2835,11 +2852,17 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             # BASE subtag (`en-US` is accepted as a target and stored under
             # that key), and never emit one for English-language audio: the
             # "translation" of an English source is its own transcript.
+            # Nor for a capture that IS a translate request: its singleton
+            # line above already carries the English target as task=translate,
+            # so an MT track would be a contradictory duplicate (other text,
+            # other model) for the same audio_filepath.
             _tr = row.get("translations") or {}
             _en_key = next((k for k in _tr if _lang_base(k) == "en"), None)
             _en = (_tr.get(_en_key) or "").strip() if _en_key else ""
             _src_is_en = _lang_base(row.get("language") or "") == "en"
-            if _en and not _src_is_en and (row.get("status") or "") == "ready":
+            _row_is_translate = (row.get("task") or "transcribe") == "translate"
+            if (_en and not _src_is_en and not _row_is_translate
+                    and (row.get("status") or "") == "ready"):
                 manifest_lines.write(json.dumps(_build_manifest_row(
                     audio_filepath=audio_name,
                     text=_en,
@@ -3967,13 +3990,20 @@ _CAPTURES_HTML = r"""<!doctype html>
     // grants no access to a page they do have — recoverable only by
     // reloading. Render it only when whoami actually shows no captures
     // scope; fall back to the old test only if permissions are absent.
+    // Admins are stored with permissions '{}' (they bypass the policy), so
+    // whoami hands them pages = {} — truthy in JS, with no `captures` key.
+    // Reading that as "no scope" wiped <main> for every admin who hit a
+    // 403 (stale CSRF token, host gate). An admin can never lack the page,
+    // and an EMPTY map means "permissions absent", not "no scope".
     try {
       var r = await fetch('/auth/whoami');
       if (r.ok) {
         var j = await r.json();
         // Cache whoami so _renderNoAccessLanding can list reachable pages.
         try { window.__whoami = j; } catch(_) {}
+        if (j && j.is_admin) return false;
         var pages = (j && j.permissions && j.permissions.pages) || null;
+        if (pages && !Object.keys(pages).length) pages = null;
         var noScope = pages
           ? (!pages.captures || pages.captures === 'none')
           : (j && j.is_admin === false);

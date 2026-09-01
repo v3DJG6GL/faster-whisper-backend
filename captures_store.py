@@ -250,10 +250,10 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
 # ---------------------------------------------------------------------
 
 def count(user_id: str | None = None) -> int:
-    """Total row count (any status). Cheap; used by the transcribe handler
-    to short-circuit the capture decision when the store is at its cap,
-    and by /quick-config to decide whether to surface the reapply-rules
-    modal.
+    """Total row count (any status), unfiltered or owner-scoped. Cheap;
+    used by /quick-config to decide whether to surface the reapply-rules
+    modal and by the captures list toolbar total. The ingest cap gate must
+    use count_evictable(), which mirrors _evict_to_cap's scope.
 
     `user_id=None` means "do not filter" (admin / scope=all); a string
     narrows to a single owner so a scope=own toolbar total matches the
@@ -430,7 +430,12 @@ def _truncate_translations(translations: "dict[str, str] | None",
     """Serialize the per-language map, trimming every language's TEXT (not
     the blob) until it fits. A raw slice of the JSON lands mid-token and
     the reader then swallows the decode error as {} — every track lost
-    instead of merely shortened. None for an empty/unserializable map."""
+    instead of merely shortened. None for an empty/unserializable map.
+
+    Invariant: the return value is None or a JSON object <= cap_bytes.
+    When the key overhead alone (thousands of languages) exceeds the cap,
+    trimming text bottoms out at n=0 still over cap, so languages are then
+    dropped from the end of insertion order until the blob fits."""
     if not translations:
         return None
     try:
@@ -452,7 +457,13 @@ def _truncate_translations(translations: "dict[str, str] | None",
             lo = mid
         else:
             hi = mid - 1
-    return _dump(lo)
+    out = _dump(lo)
+    while len(out) > cap_bytes and len(texts) > 1:
+        texts.pop(next(reversed(texts)))
+        out = _dump(lo)
+    if len(out) > cap_bytes:
+        return json.dumps({})
+    return out
 
 
 def _evict_to_cap(conn: sqlite3.Connection) -> None:
