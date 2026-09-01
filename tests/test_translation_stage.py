@@ -285,3 +285,27 @@ def test_captures_never_store_translated_text(client, app_module, monkeypatch):
     assert stored["translation_source"] == "cascade-mt"
     assert stored["translation_model"]
     assert stored["task"] == "transcribe"   # the Whisper task that ran
+
+
+def test_plain_json_carries_translations_and_warnings(client, app_module,
+                                                      monkeypatch):
+    """The default `json` shape must deliver the translation output (and the
+    soft-fail warnings) too — a caller paying for the stage should not need
+    verbose_json to see either. Additive keys, like source_media_id."""
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    _stub_translate(monkeypatch)
+    r = _post(client, translate_to="en", response_format="json")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["translations"] == {"en": "XLATED-en"}
+    assert body["translation"]["targets"] == ["en"]
+
+    # Soft-fail (stage disabled): the warning reaches the plain-json caller.
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", False,
+                        raising=False)
+    r = _post(client, translate_to="en", response_format="json")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert "translations" not in body
+    assert any("TRANSLATION_ENABLED" in w for w in body["warnings"])

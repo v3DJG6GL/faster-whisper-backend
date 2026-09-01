@@ -8,8 +8,11 @@ inside _load_blocking, and these tests stub either the module-level
 """
 
 import asyncio
+import os
 import re
 import sys
+import threading
+import time
 
 import pytest
 
@@ -60,7 +63,7 @@ def test_resolve_family_honors_config_override(monkeypatch):
 
 
 def test_list_languages_en_first_sorted():
-    langs = translation.list_languages("chatml")
+    langs = translation.list_languages()
     assert langs[0] == "en"
     assert langs[1:] == sorted(langs[1:])
     assert "de" in langs and len(langs) == len(set(langs))
@@ -200,10 +203,23 @@ def test_guard_reasons():
     assert g("Nimm sechzehn Tabletten", "Take 16 pills") is None
     assert g("Nimm 5 von den 10", "Take 5 of the ten") == "digit mismatch"
     assert g("Hallo Welt", "Hallo Welt") == "output copies input"
-    assert g("Hallo Welt", "Hallo Welt", check_copy=False) is None
     assert g("Ein normaler Satz hier mit Laenge",
              "abcdefghijkl" * 4) == "repetition loop"
     assert g("Hallo Welt", "Hello world") is None
+
+
+def test_guard_repetition_scan_is_fast_on_large_clean_output():
+    """The repetition pattern is superlinear on non-matching text; the guard
+    scans only the leading window so a large CLEAN translation cannot stall
+    the event loop for seconds."""
+    import random
+    words = ["alpha", "bravo", "charlie", "delta", "echo", "foxtrot",
+             "golf", "hotel", "india", "juliet", "kilo", "lima"]
+    src = " ".join(random.Random(1).choices(words, k=9000))      # ~50 kB
+    out = " ".join(random.Random(2).choices(words, k=9000))
+    t0 = time.monotonic()
+    assert translation._guard_reason(src, out) is None
+    assert time.monotonic() - t0 < 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +266,18 @@ def test_redistribute_edges():
     assert joined == "abcdef"
 
 
+def test_redistribute_never_emits_empty_members():
+    """3+ members whose ideal cuts snap to the same space must not yield an
+    empty slice (the cue would silently render blank in SRT/VTT/UI)."""
+    pieces = translation._redistribute(["Ich", "habe", "gegessen."], "I ate.")
+    assert all(pieces)
+    assert "".join(pieces) == "Iate."           # nothing lost but the space
+    pieces = translation._redistribute(
+        ["Hallo", "Welt", "wie", "geht", "es", "dir"], "Hi there")
+    assert all(pieces)
+    assert "".join(pieces) == "Hithere"
+
+
 # ---------------------------------------------------------------------------
 # translate_segments — stubbed through the _complete seam
 # ---------------------------------------------------------------------------
@@ -259,6 +287,14 @@ def _payload_of(prompt_or_msgs):
     content = prompt_or_msgs[-1]["content"] if isinstance(prompt_or_msgs, list) \
         else prompt_or_msgs
     return content.split("\n\n", 1)[1]
+
+
+def _stub_get_model(monkeypatch, llm="STUB-LLM"):
+    """Install a _get_model stub tolerant of the real call shape
+    (lease=..., download_cb=...)."""
+    async def _fake(ref, **kwargs):
+        return llm
+    monkeypatch.setattr(translation, "_get_model", _fake)
 
 
 def _install_fake(monkeypatch, transform, calls=None):
@@ -277,10 +313,7 @@ def _install_fake(monkeypatch, transform, calls=None):
             return "\n".join(out)
         return transform(payload)
     monkeypatch.setattr(translation, "_complete", fake)
-
-    async def fake_get_model(ref, *, lease=False):
-        return "STUB-LLM"
-    monkeypatch.setattr(translation, "_get_model", fake_get_model)
+    _stub_get_model(monkeypatch)
 
 
 def _xlate(text):
@@ -365,9 +398,7 @@ def test_faithful_mismatch_halves_batch_down_to_success(base_cfg, monkeypatch):
         return _xlate(payload)
     monkeypatch.setattr(translation, "_complete", fake)
 
-    async def fake_get_model(ref, *, lease=False):
-        return "STUB-LLM"
-    monkeypatch.setattr(translation, "_get_model", fake_get_model)
+    _stub_get_model(monkeypatch)
 
     segs = _segs("Eins zwei.", "Drei vier.", "Fuenf sechs.", "Sieben acht.")
     res, warns, _ = _run(translation.translate_segments(
@@ -403,7 +434,7 @@ def test_guards_keep_original_after_one_retry(base_cfg, monkeypatch,
     # would re-send a bit-identical prompt at temperature 0 — skipped.
     assert len(calls) == 1
     assert len(warns) == 1
-    assert "segment 1: kept original" in warns[0]
+    assert "segment 1 (en): kept original" in warns[0]
     assert reason in warns[0]
     assert meta["kept"] == {0: ["en"]}
 
@@ -412,9 +443,7 @@ def _install_hunyuan_model(monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL",
                         "tencent/HY-MT1.5-7B-GGUF:Q4", raising=False)
 
-    async def fake_get_model(ref, *, lease=False):
-        return "STUB-LLM"
-    monkeypatch.setattr(translation, "_get_model", fake_get_model)
+    _stub_get_model(monkeypatch)
 
 
 def test_retry_drops_context(base_cfg, monkeypatch):
@@ -517,7 +546,7 @@ def test_batch_kept_original_recorded_per_segment(base_cfg, monkeypatch):
     assert res[0]["en"] == "eRSTENS GUT."
     assert res[1]["en"] == "Zweitens kaputt."            # source kept
     assert meta["kept"] == {1: ["en"]}
-    assert len(warns) == 1 and "segment 2: kept original" in warns[0]
+    assert len(warns) == 1 and "segment 2 (en): kept original" in warns[0]
 
 
 def test_fluent_merges_translates_and_redistributes(base_cfg, monkeypatch):
@@ -561,7 +590,8 @@ def test_progress_and_cancel(base_cfg, monkeypatch):
     res, _, _ = _run(translation.translate_segments(
         _segs("Eins.", "Zwei."), ["en", "fr"], source_lang="de",
         mode="fluent",
-        progress_cb=lambda f, s: (fractions.append(f), steps.append(s))))
+        progress_cb=lambda f, s, t=None: (fractions.append(f),
+                                          steps.append(s))))
     assert fractions[-1] == 1.0
     assert fractions == sorted(fractions)
     assert steps[0].startswith("en ") and steps[-1].startswith("fr ")
@@ -573,8 +603,7 @@ def test_progress_and_cancel(base_cfg, monkeypatch):
 
 
 def test_progress_carries_last_text_tail(base_cfg, monkeypatch):
-    """Three-arg callbacks get the last completed translation's tail; the
-    two-arg lambda above keeps working via the TypeError fallback."""
+    """Three-arg callbacks get the last completed translation's tail."""
     _install_fake(monkeypatch, _xlate)
     tails = []
     _run(translation.translate_segments(
@@ -584,6 +613,62 @@ def test_progress_carries_last_text_tail(base_cfg, monkeypatch):
     assert all(t is None or len(t) <= 160 for t in tails)
     # The tail is the (pseudo-)translated text — swapcased, not the source.
     assert any(t and "WEI" in t for t in tails)
+
+
+def test_progress_callback_raising_typeerror_fires_once(base_cfg, monkeypatch):
+    """A TypeError raised INSIDE the callback must be swallowed, not
+    misread as a wrong arity and answered with a ghost second invocation
+    (which would re-run the callback's side effects)."""
+    _install_fake(monkeypatch, _xlate)
+    calls = []
+
+    def cb(f, s, t=None):
+        calls.append((f, s))
+        raise TypeError("internal bug")
+
+    res, warns, _ = _run(translation.translate_segments(
+        _segs("Eins."), ["en"], source_lang="de", mode="fluent",
+        progress_cb=cb))
+    assert warns == []
+    assert res[0]["en"]
+    assert len(calls) == 1
+
+
+def test_unknown_source_is_not_asserted_as_english(base_cfg, monkeypatch):
+    """source_lang omitted: the prompt must not claim the input is English —
+    the source clause is dropped instead."""
+    prompts = []
+
+    def fake(llm, family, msgs, max_tokens):
+        prompts.append(msgs[0]["content"])
+        return "Bonjour le monde ici"
+    monkeypatch.setattr(translation, "_complete", fake)
+    _stub_get_model(monkeypatch)
+
+    res, warns, _ = _run(translation.translate_segments(
+        _segs("Hallo Welt hier"), ["fr"], source_lang=None, mode="faithful"))
+    assert warns == []
+    assert res[0]["fr"] == "Bonjour le monde ici"
+    assert "English" not in prompts[0]
+    assert "French" in prompts[0]
+
+
+def test_greedy_context_blind_family_skips_context_retry(base_cfg,
+                                                         monkeypatch):
+    """chatml's builder ignores `context`, so at temperature 0 the
+    context-free retry would re-send a bit-identical prompt — skipped even
+    when the first attempt carried context (hunyuan, sampled, still
+    re-rolls: see test_retry_drops_context)."""
+    monkeypatch.setattr(cfg, "TRANSLATION_CONTEXT_SEGMENTS", 1, raising=False)
+    monkeypatch.setattr(cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
+    calls = []
+    _install_fake(monkeypatch, lambda t: t, calls)       # copy → guard fails
+    segs = _segs("Hallo Welt und mehr", "Wie geht es dir denn?")
+    res, warns, _ = _run(translation.translate_segments(
+        segs, ["en"], source_lang="de", mode="faithful"))
+    assert [r["en"] for r in res] == [s["text"] for s in segs]
+    assert len(calls) == 2       # one per segment — NO context-free retry
+    assert len(warns) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -629,7 +714,7 @@ def test_load_falls_back_when_predownload_raises(monkeypatch, caplog):
     def boom(repo, quant, cb=None):
         raise RuntimeError("listing failed")
     monkeypatch.setattr(translation, "_predownload_gguf", boom)
-    with caplog.at_level(_logging.WARNING, logger="whisper-api"):
+    with caplog.at_level(_logging.WARNING, logger="whisper-server"):
         out = translation._load_blocking_inner("org/repo:Q4", "cuda", "chatml")
     assert out == "LLM-FP"
     assert record[0][0] == "from_pretrained"
@@ -659,6 +744,23 @@ def test_local_files_only_skips_predownload(monkeypatch):
     monkeypatch.setattr(translation, "_predownload_gguf", never)
     translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
     assert record[0][0] == "from_pretrained"
+
+
+def test_offline_env_restored_when_flag_flips_mid_load(monkeypatch):
+    """LOCAL_FILES_ONLY is snapshotted ONCE per load: an admin flipping the
+    hot setting during the (minutes-long) load must not leak
+    HF_HUB_OFFLINE=1 process-wide."""
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+
+    def inner(ref, device, family, download_cb=None):
+        assert os.environ.get("HF_HUB_OFFLINE") == "1"
+        monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+        return "LLM"
+    monkeypatch.setattr(translation, "_load_blocking_inner", inner)
+    assert translation._load_blocking("o/r", "cpu", "chatml") == "LLM"
+    assert "HF_HUB_OFFLINE" not in os.environ
 
 
 def test_context_lines_prefix_speakers(base_cfg):
@@ -707,6 +809,9 @@ def lru_env(monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_DEVICE", "cpu", raising=False)
     translation._models.clear()
     translation._last_used.clear()
+    translation._active.clear()
+    translation._params.clear()
+    translation._loading.clear()
     return made, stats
 
 
@@ -746,6 +851,76 @@ def test_drop_models_clears_everything(lru_env):
     assert sorted(stats["unregistered"]) == ["gguf:o/a", "gguf:o/b"]
 
 
+def test_warm_hit_does_not_block_on_cold_load(lru_env, monkeypatch):
+    """A warm cache hit must return while ANOTHER ref's cold load is still
+    running — taking the module _lock before the hit check (as this once
+    did) parked every warm job behind any multi-GB load."""
+    made, stats = lru_env
+
+    async def run():
+        warm = await translation._get_model("o/warm")
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_load(ref, device, family, download_cb=None):
+            started.set()
+            assert release.wait(5)
+            made[ref] = _FakeLlama(ref)
+            return made[ref]
+        monkeypatch.setattr(translation, "_load_blocking", slow_load)
+        loop = asyncio.get_running_loop()
+        cold = asyncio.ensure_future(translation._get_model("o/cold"))
+        await loop.run_in_executor(None, started.wait, 5)
+        # The warm hit returns while the cold load is still parked.
+        assert await asyncio.wait_for(
+            translation._get_model("o/warm"), 1) is warm
+        release.set()
+        assert await cold is made["o/cold"]
+    asyncio.run(run())
+
+
+def test_cancelled_translation_releases_lease(lru_env, monkeypatch):
+    """A cancellation mid-inference still releases the model lease — a
+    leaked _active entry would pin the model against eviction forever."""
+    monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL", "o/a",
+                        raising=False)
+
+    async def boom(*a, **k):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(translation, "_run_completion", boom)
+
+    async def run():
+        with pytest.raises(asyncio.CancelledError):
+            await translation.translate_segments(
+                _segs("Hallo Welt"), ["en"], source_lang="de",
+                mode="faithful")
+    asyncio.run(run())
+    assert translation._active == {}
+    assert "o/a" in translation._models      # released, not torn down
+    translation._models.clear()
+    translation._last_used.clear()
+    translation._params.clear()
+
+
+def test_device_change_rekeys_model_after_lease_release(lru_env, monkeypatch):
+    """An admin TRANSLATION_DEVICE edit landing during a job: the leased
+    model keeps serving (never close a llama.cpp context under a running
+    decode), and the first unleased _get_model afterwards reloads with the
+    new parameters instead of serving the old-device model forever."""
+    made, stats = lru_env
+
+    async def run():
+        a = await translation._get_model("o/a", lease=True)
+        monkeypatch.setattr(cfg, "TRANSLATION_DEVICE", "cuda", raising=False)
+        assert await translation._get_model("o/a") is a   # leased: stale ok
+        translation._release_model("o/a")
+        b = await translation._get_model("o/a")
+        return a, b
+    a, b = asyncio.run(run())
+    assert b is not a
+    assert a.closed and not b.closed
+
+
 def test_resolve_device_auto_follows_model_device(monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_DEVICE", "auto", raising=False)
     monkeypatch.setattr(cfg, "MODEL_DEVICE", "cuda", raising=False)
@@ -775,9 +950,7 @@ def test_template_override_forces_custom_family_and_renders_it(
         return "Hello world."
     monkeypatch.setattr(translation, "_complete", fake)
 
-    async def fake_get_model(ref, *, lease=False):
-        return "STUB-LLM"
-    monkeypatch.setattr(translation, "_get_model", fake_get_model)
+    _stub_get_model(monkeypatch)
 
     res, warns, meta = _run(translation.translate_segments(
         _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful",
@@ -802,9 +975,7 @@ def test_without_override_custom_family_still_reads_cfg(base_cfg, monkeypatch):
         return "Hello world."
     monkeypatch.setattr(translation, "_complete", fake)
 
-    async def fake_get_model(ref, *, lease=False):
-        return "STUB-LLM"
-    monkeypatch.setattr(translation, "_get_model", fake_get_model)
+    _stub_get_model(monkeypatch)
 
     _run(translation.translate_segments(
         _segs("Hallo Welt."), ["en"], source_lang="de", mode="faithful"))
@@ -907,16 +1078,11 @@ class TestFamilyOverride:
                             "org/m-GGUF:Q4", raising=False)
         seen = {}
 
-        async def fake_get_model(ref, *, lease=False):
-            class _L:  # noqa: N801
-                pass
-            return _L()
-
         def fake_complete(llm, family, prompt, max_tokens):
             seen["family"] = family
             return "ok"
 
-        monkeypatch.setattr(translation, "_get_model", fake_get_model)
+        _stub_get_model(monkeypatch)
         monkeypatch.setattr(translation, "_complete", fake_complete)
         results, warnings, meta = _run(translation.translate_segments(
             [{"text": "Hallo"}], ["en"], source_lang="de", mode="faithful",

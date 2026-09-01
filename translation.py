@@ -64,6 +64,12 @@ class TranslationError(RuntimeError):
 # Serializes actual llama.cpp inference across threads — llama.cpp contexts
 # are NOT thread-safe (same hazard class as diarization._infer_mutex).
 _infer_mutex = threading.Lock()
+# Async front gate for the mutex above: waiters queue HERE, on the event
+# loop, instead of each pinning a default-executor thread while _infer_mutex
+# is held — N queued translations would otherwise occupy N pool threads
+# shared with whisper decodes and model loads. _infer_mutex stays as the
+# defensive thread guard inside _complete.
+_infer_gate = asyncio.Lock()
 # ref → count of jobs currently holding a lease on the cached model — an
 # in-use model is never evicted (see _drop_locked).
 _active: "dict[str, int]" = {}
@@ -74,6 +80,16 @@ _lock = asyncio.Lock()
 _models: "OrderedDict[str, object]" = OrderedDict()
 # ref → time.monotonic() of last use, for the idle evictor.
 _last_used: "dict[str, float]" = {}
+# ref → asyncio.Lock serializing that one ref's cold load, so a warm hit on
+# any OTHER ref never waits behind a multi-GB download (see _get_model).
+# Entries persist for the process — one tiny Lock per distinct ref ever
+# loaded; popping them on release would open a re-create race that lets two
+# jobs load the same model concurrently.
+_loading: "dict[str, asyncio.Lock]" = {}
+# ref → (device, n_ctx) the cached model was loaded with. A cache hit re-keys
+# on these so an admin device/prompt-family edit reloads the model instead of
+# serving one built for the old parameters forever.
+_params: "dict[str, tuple]" = {}
 _STATS_PREFIX = "gguf:"
 
 # The idle loop mirrors main._idle_evictor's cadence.
@@ -110,7 +126,8 @@ _LANG_NAMES: "dict[str, str]" = {
     "ru": "Russian", "uk": "Ukrainian", "cs": "Czech", "sv": "Swedish",
     "da": "Danish", "no": "Norwegian", "fi": "Finnish", "tr": "Turkish",
     "ar": "Arabic", "zh": "Chinese", "ja": "Japanese", "ko": "Korean",
-    "hu": "Hungarian",
+    "hu": "Hungarian", "ro": "Romanian", "el": "Greek", "hi": "Hindi",
+    "th": "Thai", "vi": "Vietnamese", "id": "Indonesian",
 }
 
 
@@ -124,10 +141,9 @@ def _lang_name(code: "str | None") -> str:
     return _LANG_NAMES.get(low) or _LANG_NAMES.get(base) or base.title()
 
 
-def list_languages(family: str) -> "list[str]":
-    """Language codes offered for the given family (for /v1/me): the
-    _LANG_NAMES keys, sorted, "en" first. Good enough for every family —
-    the models themselves accept far more."""
+def list_languages() -> "list[str]":
+    """Language codes offered to clients (for /v1/me): the _LANG_NAMES keys,
+    sorted, "en" first — the models themselves accept far more."""
     codes = sorted(_LANG_NAMES)
     codes.remove("en")
     return ["en"] + codes
@@ -197,8 +213,9 @@ def _build_hunyuan(text, source_code, source_name, target_code, target_name,
 def _build_gemma(text, source_code, source_name, target_code, target_name,
                  context, glossary):
     # TranslateGemma's structured single turn. The source code is REQUIRED by
-    # the format — the caller defaults an unknown source to "en". Context and
-    # glossary are silently ignored (the format has no slot for them).
+    # the format — an unknown source falls back to "en" HERE, in the one
+    # builder whose wire format needs a code. Context and glossary are
+    # silently ignored (the format has no slot for them).
     return [{"role": "user", "content": (
         f"type:text,source_lang_code:{source_code or 'en'},"
         f"target_lang_code:{target_code},text:{text}")}]
@@ -207,18 +224,30 @@ def _build_gemma(text, source_code, source_name, target_code, target_name,
 def _build_milmmt(text, source_code, source_name, target_code, target_name,
                   context, glossary):
     # Raw completion with ENGLISH language names (the MiLMMT training format).
+    # An unknown source is simply left out of the prompt, never asserted to
+    # be some default language the input may not actually be in.
+    if not source_name:
+        return (f"Translate this to {target_name}:\n"
+                f"{text}\n{target_name}:")
     return (f"Translate this from {source_name} to {target_name}:\n"
             f"{source_name}: {text}\n{target_name}:")
 
 
 def _build_seedx(text, source_code, source_name, target_code, target_name,
                  context, glossary):
+    if not source_name:
+        return (f"Translate the following sentence into "
+                f"{target_name}:\n{text} <{target_code}>")
     return (f"Translate the following {source_name} sentence into "
             f"{target_name}:\n{text} <{target_code}>")
 
 
 def _build_chatml(text, source_code, source_name, target_code, target_name,
                   context, glossary):
+    if not source_name:
+        return [{"role": "user", "content": (
+            f"Translate the following text into "
+            f"{target_name}. Reply with ONLY the translation.\n\n{text}")}]
     return [{"role": "user", "content": (
         f"Translate the following text from {source_name} into "
         f"{target_name}. Reply with ONLY the translation.\n\n{text}")}]
@@ -257,13 +286,16 @@ def _build_custom(text, source_code, source_name, target_code, target_name,
 @dataclass(frozen=True)
 class Family:
     """One prompt-family entry: chat template vs raw completion, the prompt
-    builder, sampling params, context size and stop strings."""
+    builder, sampling params and context size. ``uses_context`` records
+    whether the builder actually renders the ``context`` argument — the
+    context-free guard retry is a no-op for a greedy family whose builder
+    ignores it (identical prompt, temperature 0)."""
     chat: bool
     build: "object"     # (text, source_code, source_name, target_code,
     #                      target_name, context, glossary) -> str | list[dict]
     sampling: dict = field(default_factory=dict)
     n_ctx: int = 8192
-    stop: "list[str]" = field(default_factory=list)
+    uses_context: bool = True
 
 
 _GREEDY = {"temperature": 0.0}
@@ -274,13 +306,19 @@ _FAMILIES: "dict[str, Family]" = {
         sampling={"top_k": 20, "top_p": 0.6, "repeat_penalty": 1.05,
                   "temperature": 0.7}),
     "gemma-translate": Family(
-        chat=True, build=_build_gemma, n_ctx=2048, sampling=dict(_GREEDY)),
+        chat=True, build=_build_gemma, n_ctx=2048, sampling=dict(_GREEDY),
+        uses_context=False),
     "milmmt": Family(
-        chat=False, build=_build_milmmt, n_ctx=8192, sampling=dict(_GREEDY)),
+        chat=False, build=_build_milmmt, n_ctx=8192, sampling=dict(_GREEDY),
+        uses_context=False),
     "seedx": Family(
-        chat=False, build=_build_seedx, n_ctx=8192, sampling=dict(_GREEDY)),
+        chat=False, build=_build_seedx, n_ctx=8192, sampling=dict(_GREEDY),
+        uses_context=False),
     "chatml": Family(
-        chat=True, build=_build_chatml, n_ctx=4096, sampling=dict(_GREEDY)),
+        chat=True, build=_build_chatml, n_ctx=4096, sampling=dict(_GREEDY),
+        uses_context=False),
+    # custom: whether context reaches the prompt depends on the template
+    # having a {context} slot — translate_segments checks that itself.
     "custom": Family(
         chat=True, build=_build_custom, n_ctx=8192, sampling=dict(_GREEDY)),
 }
@@ -371,14 +409,18 @@ def _load_blocking(ref: str, device: str, family: str, download_cb=None):
         os.environ.setdefault("HF_HOME", os.path.join(download_root, "hf"))
     # LOCAL_FILES_ONLY is a HOT setting — scope the offline env var to this
     # load and restore it after, or one offline load would poison every later
-    # huggingface_hub download until a process restart.
+    # huggingface_hub download until a process restart. Snapshot the flag
+    # ONCE: an admin can flip it during this minutes-long load, and a second
+    # live read in the finally would then skip the restore (leaking
+    # HF_HUB_OFFLINE=1) or clobber a value this call never set.
+    offline = bool(getattr(cfg, "LOCAL_FILES_ONLY", False))
     offline_prev = os.environ.get("HF_HUB_OFFLINE")
-    if getattr(cfg, "LOCAL_FILES_ONLY", False):
+    if offline:
         os.environ["HF_HUB_OFFLINE"] = "1"
     try:
         return _load_blocking_inner(ref, device, family, download_cb)
     finally:
-        if getattr(cfg, "LOCAL_FILES_ONLY", False):
+        if offline:
             if offline_prev is None:
                 os.environ.pop("HF_HUB_OFFLINE", None)
             else:
@@ -490,6 +532,7 @@ def _drop_locked(ref: str) -> bool:
         return False
     llm = _models.pop(ref, None)
     _last_used.pop(ref, None)
+    _params.pop(ref, None)
     if llm is None:
         return True
     try:
@@ -513,30 +556,59 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
     """Return the cached model for ``ref``, loading (and LRU-evicting past
     TRANSLATION_MAX_LOADED_MODELS) on a miss. ``download_cb(done, total)``
     receives byte progress when the miss also has to download weights."""
-    async with _lock:
-        if ref in _models:
-            _models.move_to_end(ref)
-            _last_used[ref] = time.monotonic()
-            system_stats.touch_loaded_model(_STATS_PREFIX + ref)
-            if lease:
-                _active[ref] = _active.get(ref, 0) + 1
-            return _models[ref]
-        cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
-        while len(_models) >= cap:
-            victim = next(
-                (r for r in _models if not _active.get(r, 0)), None)
-            if victim is None:
-                # Every cached model is mid-job — overflow the cap rather
-                # than free a context under a running decode; the idle
-                # evictor trims the excess once the jobs release.
-                logger.warning(
-                    "[translate] all %d cached models are in use — "
-                    "temporarily exceeding TRANSLATION_MAX_LOADED_MODELS",
-                    len(_models))
-                break
-            _drop_locked(victim)
-        device = _resolve_device()
-        family = resolve_family(ref)
+    device = _resolve_device()
+    family = resolve_family(ref)
+    params = (device, _ctx_for(family))
+
+    def _hit(llm):
+        _models.move_to_end(ref)
+        _last_used[ref] = time.monotonic()
+        system_stats.touch_loaded_model(_STATS_PREFIX + ref)
+        if lease:
+            _active[ref] = _active.get(ref, 0) + 1
+        return llm
+
+    # Lock-free cache hit. Read the model into a LOCAL first so a concurrent
+    # _drop_locked cannot pop it between the check and the return. Taking
+    # _lock before the hit check (as this did) made every job on a warm model
+    # block for the full duration of any other job's cold load — the same
+    # lesson diarization._get_pipeline already carries.
+    llm = _models.get(ref)
+    if llm is not None and (_params.get(ref) == params
+                            or _active.get(ref, 0) > 0):
+        # A LEASED model with stale load params still serves — closing
+        # llama.cpp's context under a running decode is a use-after-free;
+        # the first unleased call after the admin edit re-keys it below.
+        return _hit(llm)
+
+    # Miss (or stale load params): serialize per REF so two jobs never load
+    # the same model twice, while warm hits on other refs stay unblocked.
+    load_lock = _loading.setdefault(ref, asyncio.Lock())
+    async with load_lock:
+        llm = _models.get(ref)
+        if llm is not None:
+            if _params.get(ref) == params or _active.get(ref, 0) > 0:
+                return _hit(llm)   # a waiter arrived after another's load
+            # Load params changed (TRANSLATION_DEVICE, or the prompt family's
+            # n_ctx) and no lease pins the model: genuinely re-key — drop the
+            # stale instance and reload with the current parameters.
+            async with _lock:
+                _drop_locked(ref)
+        async with _lock:
+            cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
+            while len(_models) >= cap:
+                victim = next(
+                    (r for r in _models if not _active.get(r, 0)), None)
+                if victim is None:
+                    # Every cached model is mid-job — overflow the cap rather
+                    # than free a context under a running decode; the idle
+                    # evictor trims the excess once the jobs release.
+                    logger.warning(
+                        "[translate] all %d cached models are in use — "
+                        "temporarily exceeding TRANSLATION_MAX_LOADED_MODELS",
+                        len(_models))
+                    break
+                _drop_locked(victim)
         vram_before = system_stats.gpu_mem_used_bytes()
         loop = asyncio.get_running_loop()
         t0 = time.perf_counter()
@@ -555,25 +627,30 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             metrics.record_model_load(_STATS_PREFIX + ref, load_secs)
         except Exception:  # noqa: BLE001 — stats only
             pass
-        _models[ref] = llm
-        _last_used[ref] = time.monotonic()
-        if lease:
-            _active[ref] = _active.get(ref, 0) + 1
+        async with _lock:
+            _models[ref] = llm
+            _params[ref] = params
+            _last_used[ref] = time.monotonic()
+            if lease:
+                _active[ref] = _active.get(ref, 0) + 1
         return llm
 
 
-async def _release_model(ref: str) -> None:
+def _release_model(ref: str) -> None:
     """Release a lease taken by ``_get_model(..., lease=True)`` and restart
     the model's idle clock (a long job must not be evicted the moment it
-    ends because its LOAD time stamp aged past the timeout)."""
-    async with _lock:
-        n = _active.get(ref, 0) - 1
-        if n <= 0:
-            _active.pop(ref, None)
-        else:
-            _active[ref] = n
-        if ref in _models:
-            _last_used[ref] = time.monotonic()
+    ends because its LOAD time stamp aged past the timeout). Synchronous and
+    lock-free — plain dict ops are atomic on the single event loop, and an
+    awaiting release could be abandoned by a cancellation delivered while
+    suspended on the lock, leaking the lease and pinning the model against
+    eviction forever (same shape as main._release_model_lease)."""
+    n = _active.get(ref, 0) - 1
+    if n <= 0:
+        _active.pop(ref, None)
+    else:
+        _active[ref] = n
+    if ref in _models:
+        _last_used[ref] = time.monotonic()
 
 
 async def drop_models() -> None:
@@ -623,8 +700,6 @@ def _complete(llm, family: str, prompt_or_msgs, max_tokens: int) -> str:
     llama_cpp installed."""
     fam = _FAMILIES[family]
     kwargs = dict(fam.sampling)
-    if fam.stop:
-        kwargs["stop"] = fam.stop
     with _infer_mutex:
         if fam.chat:
             out = llm.create_chat_completion(
@@ -680,11 +755,18 @@ def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     for t in group_texts[:-1]:
         acc += len(t)
         ideal = len(translated) * acc / total
-        if spaces:
-            cut = min(spaces, key=lambda s: abs(s - ideal))
+        # Only spaces strictly PAST the previous cut are candidates — two
+        # ideals snapping to the same space would otherwise clamp into an
+        # empty member slice (a cue with source text rendering blank).
+        cands = [s for s in spaces if s > prev]
+        if cands:
+            cut = min(cands, key=lambda s: abs(s - ideal))
         else:
-            cut = int(round(ideal))
-        cut = max(cut, prev)   # keep cuts monotonic
+            # No word boundary left: raw proportional cut, forced forward and
+            # past any whitespace-only slice (which .strip() would empty).
+            cut = min(len(translated), max(int(round(ideal)), prev + 1))
+            while cut < len(translated) and not translated[prev:cut].strip():
+                cut += 1
         cuts.append(cut)
         prev = cut
     pieces: "list[str]" = []
@@ -730,8 +812,12 @@ def _parse_numbered(reply: str, n: int) -> "list[str] | None":
 # Output guards (pure)
 # =============================================================================
 
-# Any 12+ char substring repeated 4+ times = a generation loop.
+# Any 12+ char substring repeated 4+ times = a generation loop. The pattern
+# is superlinear on NON-matching text (the common, clean case: ~228 ms for
+# 4 kB, quadratic beyond), so the guard scans only the leading window — a
+# real generation loop is always visible in the first couple of kB.
 _REPETITION_RE = re.compile(r"(.{12,}?)(?:\1){3,}", re.DOTALL)
+_REPETITION_SCAN_CHARS = 2000
 # Length-ratio guard bounds, applied only past the absolute floor below.
 _RATIO_LO, _RATIO_HI = 0.4, 3.0
 _RATIO_FLOOR_CHARS = 20
@@ -755,8 +841,8 @@ def _ratio_bounds(src: str, target: "str | None") -> "tuple[float, float]":
     return (_RATIO_LO, _RATIO_HI)
 
 
-def _guard_reason(src: str, out: str, *, target: "str | None" = None,
-                  check_copy: bool = True) -> "str | None":
+def _guard_reason(src: str, out: str, *,
+                  target: "str | None" = None) -> "str | None":
     """Reason string when a translated segment fails a sanity guard, else
     None. Guards: empty output; length ratio outside script-aware bounds
     (only once either side reaches the 20-char floor); digit mismatch
@@ -777,9 +863,9 @@ def _guard_reason(src: str, out: str, *, target: "str | None" = None,
     out_digits = Counter(re.findall(r"\d", o))
     if out_digits and (Counter(re.findall(r"\d", s)) - out_digits):
         return "digit mismatch"
-    if check_copy and o == s:
+    if o == s:
         return "output copies input"
-    if _REPETITION_RE.search(o):
+    if _REPETITION_RE.search(o[:_REPETITION_SCAN_CHARS]):
         return "repetition loop"
     return None
 
@@ -830,8 +916,9 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     # guard failure.
     max_tokens = (len(text) + len(context or "")) // 2 + 256
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(
-        None, _complete, llm, family, prompt, max_tokens)
+    async with _infer_gate:
+        return await loop.run_in_executor(
+            None, _complete, llm, family, prompt, max_tokens)
 
 
 async def translate_segments(
@@ -868,7 +955,7 @@ async def translate_segments(
     ``context_segments`` overrides ``TRANSLATION_CONTEXT_SEGMENTS`` when not
     None. ``progress_cb(done_fraction, step_str, last_text)`` fires after
     each batch — ``last_text`` is the tail (≤160 chars) of the last completed
-    translation, for live run panels; two-arg callbacks keep working;
+    translation, for live run panels;
     ``cancel_check`` (no-arg, truthy = abort) is polled between batches and
     raises :class:`TranslationCancelled`. ``template_override`` (the admin
     template-test path) forces the ``custom`` family and renders THAT
@@ -892,7 +979,11 @@ async def translate_segments(
         family = resolve_family(ref)
     if family != "custom":
         template_override = None   # a stale textarea must not leak in
-    source_code = (source_lang or "").strip() or "en"
+    # An unknown source stays EMPTY: the builders that name the source
+    # language in prose (milmmt/seedx/chatml) drop the clause rather than
+    # falsely asserting the input is English; only _build_gemma, whose wire
+    # format requires a code, defaults to "en" itself.
+    source_code = (source_lang or "").strip()
     ctx_n = int(getattr(cfg, "TRANSLATION_CONTEXT_SEGMENTS", 3) or 0) \
         if context_segments is None else int(context_segments)
 
@@ -922,12 +1013,6 @@ async def translate_segments(
         tail = (last_text or "").strip()[:160] or None
         try:
             progress_cb(frac, step, tail)
-        except TypeError:
-            # Older two-arg callbacks (frac, step) — keep them working.
-            try:
-                progress_cb(frac, step)
-            except Exception:  # noqa: BLE001 — progress must never break us
-                pass
         except Exception:  # noqa: BLE001 — progress must never break us
             pass
 
@@ -940,9 +1025,7 @@ async def translate_segments(
     async def _model():
         nonlocal llm
         if llm is None:
-            # Kwarg only when set — keeps two-arg _get_model stubs working.
-            _kw = {"download_cb": download_cb} if download_cb else {}
-            llm = await _get_model(ref, lease=True, **_kw)
+            llm = await _get_model(ref, lease=True, download_cb=download_cb)
         return llm
 
     async def _translate_one(text: str, target: str, context: str) -> str:
@@ -955,34 +1038,55 @@ async def translate_segments(
     # when dropping the context actually changes the prompt. Sampled families
     # (hunyuan, temp 0.7) get a meaningful re-roll either way.
     greedy = not _FAMILIES[family].sampling.get("temperature")
+    # ...and dropping the context only changes the prompt when the family's
+    # builder actually renders it — gemma/milmmt/seedx/chatml accept the
+    # ``context`` argument and ignore it, so their greedy retry would re-send
+    # a bit-identical prompt (custom: depends on the template having a slot).
+    ctx_changes = _FAMILIES[family].uses_context and (
+        family != "custom" or "{context}" in (
+            template_override if template_override is not None
+            else (getattr(cfg, "TRANSLATION_PROMPT_TEMPLATE", "") or "")))
 
     def _mark_kept(idx: int, target: str) -> None:
         kept.setdefault(idx, []).append(target)
 
+    async def _retry_context_free(src: str,
+                                  target: str) -> "tuple[str, str | None]":
+        """The ONE guard-failure retry WITHOUT context (context echo is the
+        dominant failure mode — a context-free prompt is the highest-value
+        second attempt). Returns (output, guard_reason)."""
+        out = await _translate_one(src, target, "")
+        return out, _guard_reason(src, out, target=target)
+
+    def _keep_original(span: str, indices: "list[int]", target: str,
+                       reason: str) -> None:
+        """Guard fallback: warn once for ``span`` and mark every member
+        segment as a kept-original for ``target``."""
+        warnings.append(
+            f"{span} ({target}): kept original — translation failed "
+            f"({reason})")
+        for j in indices:
+            _mark_kept(j, target)
+
     async def _guarded_single(text: str, target: str, context: str,
                               seg_idx: int) -> str:
-        """One translation + guard; on failure ONE retry WITHOUT context
-        (context echo is the dominant failure mode — a context-free prompt is
-        the highest-value second attempt), then keep the original text + a
-        warning. Greedy families skip the retry when the first attempt
-        already had no context (identical prompt at temperature 0 =
-        guaranteed same output)."""
+        """One translation + guard; on failure ONE context-free retry (see
+        _retry_context_free), then keep the original text + a warning.
+        Greedy families skip the retry when dropping the context cannot
+        change the prompt (identical prompt at temperature 0 = guaranteed
+        same output)."""
         nonlocal last_ok
         out = await _translate_one(text, target, context)
         reason = _guard_reason(text, out, target=target)
         if reason is None:
             last_ok = out
             return out
-        if context or not greedy:
-            out = await _translate_one(text, target, "")
-            reason = _guard_reason(text, out, target=target)
+        if (context and ctx_changes) or not greedy:
+            out, reason = await _retry_context_free(text, target)
             if reason is None:
                 last_ok = out
                 return out
-        warnings.append(
-            f"segment {seg_idx + 1}: kept original — translation failed "
-            f"({reason})")
-        _mark_kept(seg_idx, target)
+        _keep_original(f"segment {seg_idx + 1}", [seg_idx], target, reason)
         return text
 
     try:
@@ -1029,21 +1133,19 @@ async def translate_segments(
                             last_ok = out
                         else:
                             # ONE retry of that segment alone WITHOUT context
-                            # (context echo is the dominant failure mode; the
-                            # standalone prompt already differs from the
-                            # batched one, so the retry is never a no-op),
-                            # else keep original + warning.
-                            retried = await _translate_one(src, target, "")
-                            reason = _guard_reason(src, retried, target=target)
+                            # (the standalone prompt already differs from the
+                            # batched one, so the retry is never a no-op even
+                            # for a greedy context-blind family), else keep
+                            # original + warning.
+                            retried, reason = await _retry_context_free(
+                                src, target)
                             if reason is None:
                                 results[j][target] = retried
                                 last_ok = retried
                             else:
                                 results[j][target] = src
-                                warnings.append(
-                                    f"segment {j + 1}: kept original — "
-                                    f"translation failed ({reason})")
-                                _mark_kept(j, target)
+                                _keep_original(f"segment {j + 1}", [j],
+                                               target, reason)
                 i += len(batch_idx)
                 batch_no += 1
                 done_units += len(batch_idx)
@@ -1059,23 +1161,21 @@ async def translate_segments(
                 context = _context_lines(segments, group[0], ctx_n)
                 translated = await _translate_one(joined, target, context)
                 reason = _guard_reason(joined, translated, target=target)
-                if reason is not None and (context or not greedy):
+                if reason is not None and \
+                        ((context and ctx_changes) or not greedy):
                     # ONE retry WITHOUT context (see _guarded_single); greedy
-                    # families skip it when the first attempt already had no
-                    # context — an identical prompt at temperature 0 cannot
-                    # produce a different output.
-                    translated = await _translate_one(joined, target, "")
-                    reason = _guard_reason(joined, translated, target=target)
+                    # families skip it when dropping the context cannot
+                    # change the prompt — an identical prompt at temperature
+                    # 0 cannot produce a different output.
+                    translated, reason = await _retry_context_free(
+                        joined, target)
                 if reason is not None:
                     # Whole-group revert: every member is a kept-original.
                     for j in group:
                         results[j][target] = segments[j].get("text") or ""
-                        _mark_kept(j, target)
                     span = (f"segment {group[0] + 1}" if len(group) == 1 else
                             f"segments {group[0] + 1}-{group[-1] + 1}")
-                    warnings.append(
-                        f"{span}: kept original — translation failed "
-                        f"({reason})")
+                    _keep_original(span, group, target, reason)
                 else:
                     for j, piece in zip(group,
                                         _redistribute(src_texts, translated)):
@@ -1084,7 +1184,10 @@ async def translate_segments(
                 done_units += len(group)
                 _progress(f"{target} {g_no}/{len(groups)}", last_ok)
     finally:
+        # Synchronous release: an await here could itself be interrupted by a
+        # second cancellation, abandoning the lease and pinning the model
+        # against eviction forever.
         if llm is not None:
-            await _release_model(ref)
+            _release_model(ref)
 
     return results, warnings, meta
