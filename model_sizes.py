@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import threading
 import time
 
@@ -109,32 +110,49 @@ def _write(models: dict[str, dict], path: str = PATH) -> None:
         _cache_mtime = None
 
 
-def record(name: str, device: str, compute_type: str, vram_bytes: int) -> None:
-    """Note a measured footprint. Cheap no-op when the value is already known
-    to within _REWRITE_THRESHOLD, so a long-running worker writes the file a
-    handful of times rather than once per load."""
+def record(name: str, device: str, compute_type: str, vram_bytes: int, *,
+           measured: bool = True) -> None:
+    """Note a footprint. Cheap no-op when the value is already known to
+    within _REWRITE_THRESHOLD, so a long-running worker writes the file a
+    handful of times rather than once per load.
+
+    ``measured=False`` marks an on-disk PRIOR (system_stats falls back to it
+    when the NVML delta is unusable). A prior never overrides a measurement,
+    and the first measurement REPLACES a prior outright: the disk walk sums
+    every revision and fp32 blob in a hub dir, so letting it into the
+    high-water mark below would make an inflated prior unbeatable forever."""
     if not name or not vram_bytes or vram_bytes <= 0:
         return
     k = _key(name, device, compute_type)
+    src = "measured" if measured else "disk"
     with _lock:
         models = dict(_read())
         old = models.get(k)
         if old is not None:
             prev = int(old.get("bytes") or 0)
-            if prev and abs(vram_bytes - prev) <= prev * _REWRITE_THRESHOLD:
+            old_measured = old.get("src") != "disk"
+            if old_measured and not measured:
                 return
-            # max(), not last-write: CTranslate2's caching allocator makes
-            # RE-loads under-report (the freed blocks it kept get reused, see
-            # system_stats.py's module docstring). Under-estimating is the
-            # dangerous direction — it is exactly what turns a "fits" verdict
-            # into an OOM — so the ledger keeps the high-water mark.
+            if measured and not old_measured:
+                size = int(vram_bytes)
+            else:
+                if prev and abs(vram_bytes - prev) <= prev * _REWRITE_THRESHOLD:
+                    return
+                # max(), not last-write: CTranslate2's caching allocator makes
+                # RE-loads under-report (the freed blocks it kept get reused,
+                # see system_stats.py's module docstring). Under-estimating is
+                # the dangerous direction — it is exactly what turns a "fits"
+                # verdict into an OOM — so the ledger keeps the high-water mark.
+                size = max(prev, int(vram_bytes))
             models[k] = {
-                "bytes": max(prev, int(vram_bytes)),
+                "bytes": size,
                 "ts": time.time(),
                 "n": int(old.get("n") or 0) + 1,
+                "src": src,
             }
         else:
-            models[k] = {"bytes": int(vram_bytes), "ts": time.time(), "n": 1}
+            models[k] = {"bytes": int(vram_bytes), "ts": time.time(), "n": 1,
+                         "src": src}
         _write(models)
 
 
@@ -197,7 +215,10 @@ def _model_path(name: str) -> "str | None":
         model = name[4:]
         if "." not in model:
             model += ".onnx"
-        return os.path.join(root, "audio-separator", model) if root else None
+        # Same fallback bgm_separation._load_blocking uses for model_file_dir,
+        # so a default install (no DOWNLOAD_ROOT) is still sizeable.
+        return os.path.join(root or tempfile.gettempdir(), "audio-separator",
+                            model)
     hf_home = os.environ.get("HF_HOME") or (
         os.path.join(root, "hf") if root else "")
     if not hf_home:
@@ -207,7 +228,10 @@ def _model_path(name: str) -> "str | None":
         return _hf_repo_dir(hf_home, repo)
     if name.startswith("pyannote:"):
         return _hf_repo_dir(hf_home, name[9:])
-    # Whisper: a converted CT2 directory when one exists, else the HF cache.
+    # Whisper: the HF cache dir. A transformers checkpoint that main converts
+    # to CT2 lives under a separate root keyed by quantisation (see
+    # main._converted_dir_for), which this name-only lookup cannot address;
+    # the source repo is an adequate prior for it.
     return _hf_repo_dir(hf_home, name)
 
 

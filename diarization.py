@@ -223,11 +223,17 @@ def _drop_locked(*, force: bool = False) -> bool:
     return True
 
 
-def _release_locked(model_id: str) -> None:
-    """Drop one lease. Caller holds _lock. Orphans are decremented first: a
-    holder that outlived its pipeline is by definition one of them."""
+def _release_locked(model_id: str, pipe=None) -> None:
+    """Drop one lease. Caller holds _lock. ``pipe`` is the object the holder
+    was handed by ``_get_pipeline``: when it IS the live singleton the holder
+    is a live one even if orphans of the same id exist (a same-id reload after
+    a device/batch change orphans the old pipeline under the SAME key), so its
+    release must not be charged to the orphan bucket — that would free the
+    dying pipeline's stats early and skip the idle-clock restamp below. Without
+    ``pipe`` (legacy callers) orphans are decremented first, as before."""
     global _last_used_monotonic
-    n = _orphans.get(model_id, 0)
+    live = pipe is not None and pipe is _pipeline
+    n = 0 if live else _orphans.get(model_id, 0)
     if n:
         n -= 1
         if n:
@@ -248,10 +254,12 @@ def _release_locked(model_id: str) -> None:
         system_stats.touch_loaded_model(_STATS_PREFIX + model_id)
 
 
-async def _release_pipeline(model_id: str) -> None:
-    """Release a lease taken by ``_get_pipeline(..., lease=True)``."""
+async def _release_pipeline(model_id: str, pipe=None) -> None:
+    """Release a lease taken by ``_get_pipeline(..., lease=True)``. Pass the
+    pipeline that call returned so a live holder is told apart from an orphan
+    of the same id (see ``_release_locked``)."""
     async with _lock:
-        _release_locked(model_id)
+        _release_locked(model_id, pipe)
 
 
 async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
@@ -399,9 +407,11 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
     to live in its handler. Diarization has exactly one entry point that both
     loads and runs, so no handler code has to know about leases at all.
     """
-    global _last_used_monotonic
-    pipe = await _get_pipeline(model_id, lease=True)
+    # Resolve ONCE, before the load: _resolve_model_id reads cfg at call time,
+    # and an admin edit during the (unlocked, executor-long) load window would
+    # otherwise make the release key differ from the leased one.
     leased_id = _resolve_model_id(model_id)
+    pipe = await _get_pipeline(leased_id, lease=True)
     try:
         return await _diarize_with(pipe, path, num_speakers=num_speakers,
                                    min_speakers=min_speakers,
@@ -409,7 +419,7 @@ async def diarize(path: str, *, num_speakers: "int | None" = None,
                                    progress_cb=progress_cb,
                                    cancel_check=cancel_check)
     finally:
-        await _release_pipeline(leased_id)
+        await _release_pipeline(leased_id, pipe)
 
 
 async def _diarize_with(pipe, path: str, *, num_speakers, min_speakers,

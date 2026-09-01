@@ -200,3 +200,28 @@ def test_hook_swallows_bad_callback():
         raise RuntimeError("cb exploded")
     hook = diarization._make_hook(_boom)
     hook("segmentation", None, total=10, completed=5)  # must not raise
+
+
+# --- lease key is resolved once ---------------------------------------------
+
+def test_diarize_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
+    """An admin edit of DIARIZATION_MODEL while a job is loading or running
+    must not desynchronise the lease and release keys — the release would
+    then decrement a bucket that was never leased and the real lease would
+    pin the pipeline forever."""
+    import asyncio
+    cfg = diarization.cfg
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
+    monkeypatch.setattr(diarization, "_load_blocking",
+                        lambda model_id, device, batch: object())
+
+    async def _fake_diarize_with(pipe, path, **kw):
+        # The load has happened and the lease is held; the admin edits now.
+        cfg.DIARIZATION_MODEL = "m2"
+        return []
+    monkeypatch.setattr(diarization, "_diarize_with", _fake_diarize_with)
+
+    assert asyncio.run(diarization.diarize("a.wav")) == []
+    assert diarization._leases == {}
+    assert diarization._orphans == {}

@@ -422,11 +422,17 @@ def _drop_locked(*, force: bool = False) -> bool:
     return True
 
 
-def _release_locked(model: str) -> None:
-    """Drop one lease. Caller holds _lock. Orphans are decremented first: a
-    holder that outlived its separator is by definition one of them."""
+def _release_locked(model: str, sep=None) -> None:
+    """Drop one lease. Caller holds _lock. ``sep`` is the object the holder
+    was handed by ``_get_separator``: when it IS the live singleton the holder
+    is a live one even if orphans of the same model exist (a same-model reload
+    after a device change orphans the old separator under the SAME key), so
+    its release must not be charged to the orphan bucket — that would free the
+    dying separator's stats early and skip the idle-clock restamp below.
+    Without ``sep`` (legacy callers) orphans are decremented first, as before."""
     global _last_used_monotonic
-    n = _orphans.get(model, 0)
+    live = sep is not None and sep is _separator
+    n = 0 if live else _orphans.get(model, 0)
     if n:
         n -= 1
         if n:
@@ -447,10 +453,12 @@ def _release_locked(model: str) -> None:
         system_stats.touch_loaded_model(_STATS_PREFIX + model)
 
 
-async def _release_separator(model: str) -> None:
-    """Release a lease taken by ``_get_separator(..., lease=True)``."""
+async def _release_separator(model: str, sep=None) -> None:
+    """Release a lease taken by ``_get_separator(..., lease=True)``. Pass the
+    separator that call returned so a live holder is told apart from an
+    orphan of the same model (see ``_release_locked``)."""
     async with _lock:
-        _release_locked(model)
+        _release_locked(model, sep)
 
 
 async def _get_separator(model_filename: "str | None" = None, *,
@@ -538,13 +546,16 @@ async def separate(path: str, *, model_filename: "str | None" = None,
     to live in its handler. Separation has exactly one entry point that both
     loads and runs, so no handler code has to know about leases at all.
     """
-    sep = await _get_separator(model_filename, lease=True)
+    # Resolve ONCE, before the load: _model_filename reads cfg at call time,
+    # and an admin edit during the (unlocked, executor-long) load window would
+    # otherwise make the release key differ from the leased one.
     leased = _model_filename(model_filename)
+    sep = await _get_separator(leased, lease=True)
     try:
         return await _separate_with(sep, path, progress_cb=progress_cb,
                                     cancel_check=cancel_check)
     finally:
-        await _release_separator(leased)
+        await _release_separator(leased, sep)
 
 
 async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:

@@ -6,6 +6,7 @@ monkeypatch that and hand back a callable stub.
 """
 
 import asyncio
+import logging
 import types
 
 import pytest
@@ -262,3 +263,61 @@ def test_bgm_balances_the_lease_on_cancel(bgm_cfg, monkeypatch, tmp_path):
                                             cancel_check=lambda: True))
 
     assert bgm_separation._leases == {}
+
+
+# --- same-id reload: live holders are not orphans ---------------------------
+#
+# A device/batch change re-keys the singleton under the SAME model id, so the
+# orphaned pipeline and the freshly loaded one share a lease key. The live
+# holder's release must be charged to `_leases` (and restamp the idle clock),
+# not zero the orphan bucket and free the dying instance early.
+
+def test_diarize_live_release_is_not_charged_to_a_same_id_orphan(
+        diar_cfg, monkeypatch, caplog):
+    _stub_pipes(monkeypatch, [])
+    old = asyncio.run(diarization._get_pipeline("m1", lease=True))
+    monkeypatch.setattr(diar_cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 8,
+                        raising=False)
+    live = asyncio.run(diarization._get_pipeline("m1", lease=True))
+    assert live is not old
+    assert diarization._orphans == {"m1": 1}
+    assert diarization._leases == {"m1": 1}
+
+    diarization._last_used_monotonic = 0.0
+    with caplog.at_level(logging.INFO, logger="whisper-server"):
+        asyncio.run(diarization._release_pipeline("m1", live))
+
+    assert diarization._orphans == {"m1": 1}      # the orphan is still draining
+    assert diarization._leases == {}
+    assert diarization._last_used_monotonic > 0.0  # idle clock restamped
+    assert not any("unloaded" in r.getMessage() for r in caplog.records)
+    assert diarization._pipeline is live
+
+    asyncio.run(diarization._release_pipeline("m1", old))
+    assert diarization._orphans == {}
+    assert diarization._pipeline is live
+
+
+def test_bgm_live_release_is_not_charged_to_a_same_model_orphan(
+        bgm_cfg, monkeypatch, caplog):
+    _stub_seps(monkeypatch, [])
+    old = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
+    monkeypatch.setattr(bgm_cfg, "BGM_SEPARATION_DEVICE", "cuda", raising=False)
+    live = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
+    assert live is not old
+    assert bgm_separation._orphans == {"Foo.onnx": 1}
+    assert bgm_separation._leases == {"Foo.onnx": 1}
+
+    bgm_separation._last_used_monotonic = 0.0
+    with caplog.at_level(logging.INFO, logger="whisper-server"):
+        asyncio.run(bgm_separation._release_separator("Foo.onnx", live))
+
+    assert bgm_separation._orphans == {"Foo.onnx": 1}
+    assert bgm_separation._leases == {}
+    assert bgm_separation._last_used_monotonic > 0.0
+    assert not any("unloaded" in r.getMessage() for r in caplog.records)
+    assert bgm_separation._separator is live
+
+    asyncio.run(bgm_separation._release_separator("Foo.onnx", old))
+    assert bgm_separation._orphans == {}
+    assert bgm_separation._separator is live

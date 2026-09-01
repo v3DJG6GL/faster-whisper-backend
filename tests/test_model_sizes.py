@@ -196,3 +196,37 @@ def test_estimate_falls_back_to_disk_then_prefers_a_measurement(
     model_sizes.record("openai/whisper-tiny", "cuda", "float16", 99 * 1024)
     assert model_sizes.estimate("openai/whisper-tiny", "cuda",
                                 "float16") == 99 * 1024
+
+
+def test_disk_size_uvr_falls_back_to_tempdir_without_download_root(
+        ledger, tmp_path, monkeypatch):
+    """bgm_separation loads from <tempdir>/audio-separator when DOWNLOAD_ROOT
+    is unset — the sizing must look in the same place, not give up."""
+    import config as cfg
+    (tmp_path / "audio-separator").mkdir()
+    (tmp_path / "audio-separator" / "Foo.onnx").write_bytes(b"x" * 2048)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
+    monkeypatch.setattr(model_sizes.tempfile, "gettempdir",
+                        lambda: str(tmp_path))
+
+    assert model_sizes.disk_size("uvr:Foo") == 2048
+
+
+def test_measurement_replaces_a_larger_disk_prior(ledger):
+    """The disk walk over-counts (every revision, fp32 blobs); the first REAL
+    measurement must win even when it is smaller, or the prior is unbeatable
+    and fits() refuses a model that would load fine."""
+    model_sizes.record("large-v3", "cuda", "float16", 6 * GB, measured=False)
+    assert model_sizes.estimate("large-v3", "cuda", "float16") == 6 * GB
+
+    model_sizes.record("large-v3", "cuda", "float16", 3 * GB)
+    assert model_sizes.estimate("large-v3", "cuda", "float16") == 3 * GB
+    doc = json.loads(open(ledger, encoding="utf-8").read())
+    assert doc["models"]["large-v3|cuda|float16"]["src"] == "measured"
+
+    # ...and a later disk prior never drags a measured row anywhere.
+    model_sizes.record("large-v3", "cuda", "float16", 9 * GB, measured=False)
+    assert model_sizes.estimate("large-v3", "cuda", "float16") == 3 * GB
+    # Measured-vs-measured still keeps the high-water mark.
+    model_sizes.record("large-v3", "cuda", "float16", 1 * GB)
+    assert model_sizes.estimate("large-v3", "cuda", "float16") == 3 * GB

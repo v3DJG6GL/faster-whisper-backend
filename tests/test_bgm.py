@@ -232,3 +232,28 @@ def test_pass_fraction_single_pass_owns_full_span(monkeypatch):
     monkeypatch.setattr(bgm_separation, "_single_pass", True)
     assert bgm_separation._pass_fraction(1, 0.5) == 0.5
     assert bgm_separation._pass_fraction(1, 1.0) == 1.0
+
+
+# --- lease key is resolved once ---------------------------------------------
+
+def test_separate_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
+    """An admin edit of BGM_SEPARATION_UVR_MODEL while a job is loading or
+    running must not desynchronise the lease and release keys — the release
+    would then decrement a bucket that was never leased and the real lease
+    would pin the model forever."""
+    import asyncio
+    cfg = bgm_separation.cfg
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cpu", raising=False)
+    monkeypatch.setattr(bgm_separation, "_load_blocking",
+                        lambda model, device: object())
+
+    async def _fake_separate_with(sep, path, *, progress_cb, cancel_check):
+        # The load has happened and the lease is held; the admin edits now.
+        cfg.BGM_SEPARATION_UVR_MODEL = "Bar"
+        return "out.wav"
+    monkeypatch.setattr(bgm_separation, "_separate_with", _fake_separate_with)
+
+    assert asyncio.run(bgm_separation.separate("in.wav")) == "out.wav"
+    assert bgm_separation._leases == {}
+    assert bgm_separation._orphans == {}

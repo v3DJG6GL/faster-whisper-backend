@@ -141,12 +141,13 @@ def register_loaded_model(name: str, vram_bytes: int | None,
     # to load them, so they were never measured. Fall back to the on-disk
     # footprint instead: a rough number that lets an admission decision be
     # made beats no row at all, and a real measurement supersedes it (record
-    # keeps the high-water mark).
+    # replaces a disk-sourced row outright — the disk walk can over-count).
     try:
         import model_sizes
-        measured = vram_bytes or model_sizes.disk_size(name)
-        if measured:
-            model_sizes.record(name, device, compute_type, measured)
+        size = vram_bytes or model_sizes.disk_size(name)
+        if size:
+            model_sizes.record(name, device, compute_type, size,
+                               measured=bool(vram_bytes))
     except Exception:
         pass
 
