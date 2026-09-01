@@ -289,7 +289,10 @@ def test_progress_live_entry_and_cleanup(client, app_module):
     assert body["stage"] == "transcribing"
     assert body["progress"] == 0.5
     assert body["duration"] == 60.0
-    # A request that carries the same progress_id pops the entry when done.
+    # A request that carries a progress_id pops its entry when done. (The
+    # seeded entry is released first: an id still in flight is treated as
+    # absent by the handler, so it would neither adopt nor pop it.)
+    app_module._BATCH_PROGRESS.pop(pid, None)
     r = _post(client, response_format="verbose_json", progress_id=pid)
     assert r.status_code == 200
     assert client.get(f"/v1/audio/transcriptions/progress/{pid}").json() == {
@@ -410,3 +413,36 @@ def test_transcribing_row_bills_a_cold_whisper_load(client, app_module,
     row = next(s for s in seen["stages"] if s["name"] == "transcribing")
     assert row["load_secs"] == 3.0
     assert row["secs"] >= 3.0
+
+
+def test_record_transcription_carries_the_key_label(client, app_module,
+                                                    monkeypatch):
+    # The recent-jobs row snapshots the key's display label straight from
+    # the auth record (labels are mutable; read-time resolution rewrites
+    # history), so the handler passes it beside key_id.
+    recorded = []
+    _orig = app_module.metrics.record_transcription
+
+    def _spy(**kw):
+        recorded.append(kw)
+        return _orig(**kw)
+    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    assert _post(client, response_format="json").status_code == 200
+    assert recorded and "key_label" in recorded[-1]
+
+
+def test_upload_spool_carries_the_reclaim_prefix(client, app_module,
+                                                 monkeypatch):
+    # The upload temp file is named "whisperup-*" so the hard-restart sweep
+    # (_reclaim_hard_restart_orphans) can tell it from every other process's
+    # "tmp*" tempfile; tempfile's default prefix was structurally
+    # unreclaimable.
+    seen = []
+    _orig = app_module.tempfile.NamedTemporaryFile
+
+    def _spy(*a, **kw):
+        seen.append(kw.get("prefix"))
+        return _orig(*a, **kw)
+    monkeypatch.setattr(app_module.tempfile, "NamedTemporaryFile", _spy)
+    assert _post(client, response_format="json").status_code == 200
+    assert seen == ["whisperup-"]

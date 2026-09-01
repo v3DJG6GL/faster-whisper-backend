@@ -41,3 +41,16 @@ def test_plain_values_and_none_are_unchanged():
 
 def test_length_is_capped():
     assert len(store_common.log_safe("x" * 5000)) == store_common.LOG_FIELD_MAX
+
+
+def test_secure_log_dir_only_tightens_a_directory_we_created(monkeypatch):
+    # LOG_FILE is operator-chosen: chmod-ing a pre-existing /var/log to 0700
+    # would lock every other daemon out of it, so only a freshly created
+    # directory is ours to secure.
+    import main
+    seen = []
+    monkeypatch.setattr(store_common, "secure_dir", seen.append)
+    main._secure_log_dir("/some/dir", created=False)
+    assert seen == []
+    main._secure_log_dir("/some/dir", created=True)
+    assert seen == ["/some/dir"]

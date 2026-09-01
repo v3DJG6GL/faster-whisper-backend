@@ -44,6 +44,7 @@ import rate_limit as _rl
 # bare-metal box without WHISPER_DATA_DIR) must not kill the import — the
 # server degrades to stderr-only logging, the standard container posture.
 _log_dir_ok = True
+_log_dir_new = not os.path.isdir(os.path.dirname(cfg.LOG_FILE))
 try:
     os.makedirs(os.path.dirname(cfg.LOG_FILE), exist_ok=True)
 except OSError as _log_exc:
@@ -92,8 +93,18 @@ class _SecureRotatingFileHandler(logging.handlers.RotatingFileHandler):
         return stream
 
 
+def _secure_log_dir(path: str, created: bool) -> None:
+    # Only a directory WE created is ours to lock down. LOG_FILE is an
+    # operator-supplied path, so a pre-existing directory (e.g. /var/log on a
+    # root-run install) must not be re-permissioned to 0700 under the server —
+    # that locks every other user and daemon out of it. The log file itself is
+    # still tightened unconditionally by _SecureRotatingFileHandler.
+    if created:
+        store_common.secure_dir(path)
+
+
 if _log_dir_ok:
-    store_common.secure_dir(os.path.dirname(cfg.LOG_FILE))
+    _secure_log_dir(os.path.dirname(cfg.LOG_FILE), _log_dir_new)
     _file_handler = _SecureRotatingFileHandler(
         cfg.LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT,
         encoding="utf-8",
@@ -229,8 +240,6 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Res
 # ADMIN_WEBUI_ALLOWED_HOSTS — so the operator can bootstrap; otherwise it 401s
 # on missing/invalid bearer.
 from auth import Permissions, get_current_user as _get_current_user_dep
-from auth import open_mode_host_ok as _open_mode_host_ok
-from auth import user_from_session_cookie as _user_from_session_cookie
 
 # faster_whisper pulls the heavy native stack (ctranslate2/onnxruntime/av). It is
 # imported lazily at first model load (see _get_or_load_model) so this module
@@ -594,7 +603,6 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
 _LOG_WIDTH = 78
 _NAME_COL = 32        # value column starts at this character
 _SEG_TEXT_MAX = 80    # truncate per-segment text in the table (full text in FINAL)
-_LOG_FIELD_MAX = store_common.LOG_FIELD_MAX  # cap on a client-supplied label
 
 # "don't render this row" sentinel for the stage params sections. Distinct
 # from None, which is a real value there and prints as `(none)` — an unset
@@ -612,6 +620,8 @@ _log_safe = store_common.log_safe
 # baselines are strings ("0.0,0.2,…", "-1") while the kwargs are tuples/lists,
 # so equality comparison is meaningless without parsing both sides.
 _KWARG_TO_CFG = {
+    # Task
+    "task": "TASK",
     # Search / sampling
     "beam_size": "BEAM_SIZE",
     "best_of": "BEST_OF",
@@ -746,6 +756,9 @@ def _format_decode_params(kwargs: dict) -> list[str]:
     → thresholds → language detection → suppression)."""
     out: list[str] = []
     order = (
+        # Task (transcribe vs translate-to-English) — the most consequential
+        # knob, so it leads
+        "task",
         # Search / sampling
         "beam_size", "best_of", "patience", "length_penalty",
         "repetition_penalty", "no_repeat_ngram_size",
@@ -1473,6 +1486,15 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
     return kwargs
 
 
+def _temperature_ladder(s: "str | None") -> "tuple[float, ...]":
+    """Parse a comma-separated TEMPERATURE ladder; () for blank, token-less
+    (",") or unparseable text — i.e. for every value that yields no ladder."""
+    try:
+        return tuple(float(t.strip()) for t in (s or "").split(",") if t.strip())
+    except ValueError:
+        return ()
+
+
 def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
                                vad_filter, vad_parameters, want_word_ts,
                                initial_prompt, overrides=None, ident=None,
@@ -1519,12 +1541,9 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         # Per-model/identity override of the temperature ladder. Comma-
         # separated floats; falls back to the per-request `temperature`
         # (default 0.0) when unset.
-        try:
-            ladder = tuple(float(t.strip()) for t in _temp_str.split(",") if t.strip())
-            if ladder:
-                transcribe_kwargs["temperature"] = ladder
-        except ValueError:
-            pass
+        ladder = _temperature_ladder(_temp_str)
+        if ladder:
+            transcribe_kwargs["temperature"] = ladder
     _patience = cf("PATIENCE")
     if _patience and _patience != 1.0:
         transcribe_kwargs["patience"] = _patience
@@ -2130,7 +2149,11 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
                 "Pre-download of %s failed (%s); the model constructor "
                 "will download instead", name, _dl_err)
 
+    _lock_wait_t0 = time.perf_counter()
     async with _model_load_lock:
+        # Time spent queueing behind the lock is another model's load cost,
+        # not this one's — keep it out of load_secs.
+        _lock_wait = time.perf_counter() - _lock_wait_t0
         # Re-check under the lock — another request may have loaded it.
         cached = _loaded_models.get(name)
         if cached is not None:
@@ -2146,8 +2169,10 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
                 (n for n in _loaded_models if not _model_leases.get(n, 0)), None)
             if evicted_name is None:
                 # Every cached model is mid-request — overflow the cap rather
-                # than free a translator under a running decode; the idle
-                # evictor trims the excess once the requests release.
+                # than free a model under a running decode. The excess is
+                # reclaimed by the next load that finds an unleased entry, or
+                # by the idle evictor when MODEL_IDLE_TIMEOUT_S > 0 (it is 0
+                # by default, so do not rely on it).
                 logger.warning(
                     "All %d cached models are in use — temporarily exceeding "
                     "MAX_LOADED_MODELS", len(_loaded_models))
@@ -2189,7 +2214,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             loaded_compute = fallback_compute
             logger.info("Model loaded on %s: %s", fallback_device, name)
 
-        load_secs = time.perf_counter() - load_t0
+        load_secs = time.perf_counter() - load_t0 - _lock_wait
         metrics.record_model_load(name, load_secs)
         vram_after = system_stats.gpu_mem_used_bytes()
         vram_delta = (vram_after - vram_before
@@ -2284,11 +2309,13 @@ async def _idle_evictor() -> None:
                 for name in stale:
                     if name not in _loaded_models:
                         continue   # raced with another path
-                    logger.info("[idle-evict] unloading %s after %ds idle",
-                                name, timeout)
                     # Not forced: a refusal costs nothing, the next 30 s tick
                     # picks the model up again once the request releases.
-                    _drop_loaded_model(name)
+                    # Log on the result — the declined case already logs its
+                    # own "in use — eviction deferred" line.
+                    if _drop_loaded_model(name):
+                        logger.info("[idle-evict] unloaded %s after %ds idle",
+                                    name, timeout)
             gc.collect()
             try:
                 import torch
@@ -2309,7 +2336,9 @@ async def _reports_retention_loop() -> None:
     while True:
         try:
             await asyncio.sleep(3600)
-            reports_store.sweep_retention()
+            # Blocking SQLite + unlinks; off the loop like _sessions_purge_loop
+            # (the store serialises writers behind its own lock).
+            await asyncio.to_thread(reports_store.sweep_retention)
         except asyncio.CancelledError:
             raise
         except Exception as _re:
@@ -2323,7 +2352,11 @@ async def _captures_retention_loop() -> None:
     while True:
         try:
             await asyncio.sleep(3600)
-            captures_store.sweep_retention()
+            # A backlog sweep (retention day boundary, lowered
+            # CAPTURES_RETENTION_DAYS) dissolves samples and unlinks up to
+            # two files per row — off the loop, never blocking in-flight
+            # transcriptions, dictation frames or SSE ticks.
+            await asyncio.to_thread(captures_store.sweep_retention)
         except asyncio.CancelledError:
             raise
         except Exception as _ce:
@@ -2367,6 +2400,12 @@ def _bootstrap_key_is_strong(raw_key: str) -> bool:
     )
 
 
+class BootstrapAdminError(RuntimeError):
+    """WHISPER_BOOTSTRAP_ADMIN_KEY could not be honoured. Its message names
+    the actual cause (a revoked key, a hash race) — the lifespan passes it
+    through unwrapped instead of relabelling it as a store-init failure."""
+
+
 def _bootstrap_admin_from_env(raw_key: str) -> None:
     """If WHISPER_BOOTSTRAP_ADMIN_KEY is set, ensure a `bootstrap-admin`
     user holds that exact key. Idempotent — if the key hash is already in
@@ -2380,13 +2419,18 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
     human-chosen, and /auth/login has no rate limit or lockout, so a short one
     is brute-forceable online straight to full admin.
 
-    Rejection is safe for an existing install: the hash check below no-ops when
-    the key is already in the DB, so a key created before this floor existed
-    keeps working. Only first-time creation of a weak value is refused, and the
-    server then stays in its usual no-admin-key state rather than failing to
-    boot.
+    Rejection is safe for an existing install: the live-hash check runs FIRST
+    and no-ops when the key is already in the DB, so a key created before this
+    floor existed keeps working without a complaint on every boot. Only
+    first-time creation of a weak value is refused, and the server then stays
+    in its usual no-admin-key state rather than failing to boot.
     """
     import api_keys_store
+    h = api_keys_store.hash_key(raw_key)
+    # If this hash already maps to an active key, nothing to do — and nothing
+    # to complain about, however weak the value is by today's floor.
+    if api_keys_store._KEY_INDEX.get(h) is not None:
+        return
     if not _bootstrap_key_is_strong(raw_key):
         logger.error(
             "[auth] WHISPER_BOOTSTRAP_ADMIN_KEY is too weak — refusing to "
@@ -2395,10 +2439,6 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
             "python -c \"import secrets; print('wk_' + secrets.token_urlsafe(32))\"",
             _BOOTSTRAP_KEY_MIN_LEN, _BOOTSTRAP_KEY_MIN_DISTINCT,
         )
-        return
-    h = api_keys_store.hash_key(raw_key)
-    # If this hash already maps to an active key, nothing to do.
-    if api_keys_store._KEY_INDEX.get(h) is not None:
         return
     # _KEY_INDEX is built from live rows only (revoked_ts IS NULL), so a hash
     # belonging to a REVOKED key is invisible above and used to fall through to
@@ -2412,7 +2452,7 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
         (h,),
     ).fetchone()
     if _revoked is not None:
-        raise RuntimeError(
+        raise BootstrapAdminError(
             "WHISPER_BOOTSTRAP_ADMIN_KEY matches an API key that has been "
             "REVOKED. Refusing to start: silently ignoring it would leave the "
             "server with no admin key while you believe it is locked down. "
@@ -2464,7 +2504,7 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
         # The live-hash check and the revoked-hash check above both passed, so
         # a UNIQUE violation here means the row appeared underneath us. Never
         # silent: the same open-mode-without-noticing outcome applies.
-        raise RuntimeError(
+        raise BootstrapAdminError(
             "WHISPER_BOOTSTRAP_ADMIN_KEY could not be registered (the key hash "
             "already exists). Refusing to start rather than leaving the server "
             "without the admin key you configured."
@@ -2526,9 +2566,12 @@ def _reclaim_hard_restart_orphans() -> None:
     """Startup sweep of TMPDIR for temp artifacts a hard restart orphaned.
 
     The admin restart path (restart_service: os.execv / os._exit) skips the
-    ASGI shutdown, so in-flight requests leak their `urldl-` job dirs and
-    `sepsrc-`/`vocals-` separation WAVs with no finally to reclaim them —
-    url_media_store.startup_reset() wipes only URL_MEDIA_DIR. Single-service
+    ASGI shutdown, so in-flight requests leak their `urldl-` job dirs,
+    `urlmedia-` pipeline copies (url_media_store.make_pipeline_copy),
+    `whisperup-` upload spools and `sepsrc-`/`vocals-` separation WAVs with
+    no finally to reclaim them — url_media_store.startup_reset() wipes only
+    URL_MEDIA_DIR (a same-fs `urlmedia-` copy is a hardlink whose retained
+    name that reset already dropped). Single-service
     assumption (as documented for SERVER_WORKERS); a small age guard keeps
     the sweep off files a just-overlapping process may still be writing."""
     tmp = tempfile.gettempdir()
@@ -2538,7 +2581,8 @@ def _reclaim_hard_restart_orphans() -> None:
         return
     now = time.time()
     for name in names:
-        if not name.startswith(("urldl-", "sepsrc-", "vocals-")):
+        if not name.startswith(("urldl-", "urlmedia-", "whisperup-",
+                                "sepsrc-", "vocals-")):
             continue
         path = os.path.join(tmp, name)
         try:
@@ -2555,6 +2599,33 @@ def _reclaim_hard_restart_orphans() -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("%s %s starting (boot %s)", SERVER_NAME, APP_VERSION, BOOT_ID[:8])
+
+    # Open the durable recent-transcriptions store. Replaces the legacy
+    # in-memory ring buffers (quick_config_state.recent_traces +
+    # metrics.recent_tx) so the /quick-config trace panel + /stats
+    # dashboard widget survive service restart and scale beyond 20 rows.
+    # Opened BEFORE the preload loop: every startup download (whisper,
+    # translation GGUF, pyannote) persists its 'download' recent-jobs row
+    # through this store, and with it still closed those rows were lost
+    # with a "persist failed" warning. Needs only cfg + store_common.
+    try:
+        import transcriptions_store
+        transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
+        logger.info(
+            "Recent-transcriptions store initialized at %s",
+            cfg.RECENT_TRANSCRIPTIONS_DB,
+        )
+    except Exception as _te:
+        logger.error("Failed to initialize recent-transcriptions store: %s", _te)
+
+    # Open the durable usage-rollup store. Backs the per-key/per-user usage
+    # numbers on /api-keys and the usage-over-time section on /stats. Non-fatal.
+    try:
+        import usage_store
+        usage_store.init_db(cfg.USAGE_DB)
+        logger.info("Usage rollup store initialized at %s", cfg.USAGE_DB)
+    except Exception as _ue:
+        logger.error("Failed to initialize usage store: %s", _ue)
 
     # If PRELOAD_MODELS is empty, fall back to preloading just DEFAULT_MODEL
     # so a fresh start always has at least one ready-to-serve model.
@@ -2580,6 +2651,56 @@ async def lifespan(app: FastAPI):
             await _get_or_load_model(name)
         except Exception as e:
             logger.error("Failed to preload model '%s': %s", name, e)
+
+    # Open the API-keys SQLite store and start the open-mode warning loop.
+    # Placed FIRST, before any long-lived task is created: its failure is
+    # fatal, and @asynccontextmanager never reaches the post-yield teardown
+    # when startup raises, so anything already running would be orphaned.
+    # In OPEN mode (no admin key exists yet) the loop nags every 60 s; this
+    # is the operator's prompt to bootstrap an admin via /settings/api-keys.
+    # Optional WHISPER_BOOTSTRAP_ADMIN_KEY env var creates the very first
+    # admin in one shot without any UI.
+    #
+    # FATAL, unlike every other store below: without it auth can resolve
+    # nobody, so the service answers 401 to everything while still looking
+    # healthy. Raising here aborts startup — uvicorn logs the failure and
+    # exits non-zero, so the container/unit restarts instead of running as a
+    # black hole. A failed bootstrap-admin ingest is fatal for the mirror
+    # image of that reason: it would leave the server in OPEN mode with the
+    # operator believing the env key locked it down.
+    open_mode_task = None
+    try:
+        import api_keys_store
+        import auth as _auth
+        api_keys_store.init_db(cfg.API_KEYS_DB)
+        bootstrap_key = getattr(cfg, "BOOTSTRAP_ADMIN_KEY", None)
+        if bootstrap_key:
+            # Only inserts if hash isn't already in api_keys. Idempotent.
+            _bootstrap_admin_from_env(bootstrap_key)
+        logger.info(
+            "API keys store initialized at %s (locked_down=%s)",
+            cfg.API_KEYS_DB, api_keys_store.is_locked_down(),
+        )
+        open_mode_task = asyncio.create_task(
+            _auth.open_mode_warning_loop()
+        )
+    except BootstrapAdminError as _be:
+        # Its own wording names the real cause (a revoked/raced env key);
+        # the store-unavailable text below would send the operator to check
+        # filesystem permissions for a problem that has nothing to do with
+        # them.
+        logger.critical("[auth] %s", _be)
+        raise
+    except Exception as _ae:
+        logger.critical(
+            "Failed to initialize the API keys store at %s: %s — refusing to "
+            "start (check WHISPER_API_KEYS_DB / WHISPER_DB_DIR / "
+            "WHISPER_DATA_DIR and the directory's permissions)",
+            cfg.API_KEYS_DB, _ae,
+        )
+        raise RuntimeError(
+            f"API keys store unavailable at {cfg.API_KEYS_DB}: {_ae}"
+        ) from _ae
 
     evictor_task = asyncio.create_task(_idle_evictor())
     # The diarization pipeline gets its own idle unloader (module-local
@@ -2618,46 +2739,6 @@ async def lifespan(app: FastAPI):
     url_media_janitor_task = asyncio.create_task(
         _url_media_store.janitor_loop())
 
-    # Open the API-keys SQLite store and start the open-mode warning loop.
-    # In OPEN mode (no admin key exists yet) the loop nags every 60 s; this
-    # is the operator's prompt to bootstrap an admin via /settings/api-keys.
-    # Optional WHISPER_BOOTSTRAP_ADMIN_KEY env var creates the very first
-    # admin in one shot without any UI.
-    #
-    # FATAL, unlike every other store below: without it auth can resolve
-    # nobody, so the service answers 401 to everything while still looking
-    # healthy. Raising here aborts startup — uvicorn logs the failure and
-    # exits non-zero, so the container/unit restarts instead of running as a
-    # black hole. A failed bootstrap-admin ingest is fatal for the mirror
-    # image of that reason: it would leave the server in OPEN mode with the
-    # operator believing the env key locked it down.
-    open_mode_task = None
-    try:
-        import api_keys_store
-        import auth as _auth
-        api_keys_store.init_db(cfg.API_KEYS_DB)
-        bootstrap_key = getattr(cfg, "BOOTSTRAP_ADMIN_KEY", None)
-        if bootstrap_key:
-            # Only inserts if hash isn't already in api_keys. Idempotent.
-            _bootstrap_admin_from_env(bootstrap_key)
-        logger.info(
-            "API keys store initialized at %s (locked_down=%s)",
-            cfg.API_KEYS_DB, api_keys_store.is_locked_down(),
-        )
-        open_mode_task = asyncio.create_task(
-            _auth.open_mode_warning_loop()
-        )
-    except Exception as _ae:
-        logger.critical(
-            "Failed to initialize the API keys store at %s: %s — refusing to "
-            "start (check WHISPER_API_KEYS_DB / WHISPER_DB_DIR / "
-            "WHISPER_DATA_DIR and the directory's permissions)",
-            cfg.API_KEYS_DB, _ae,
-        )
-        raise RuntimeError(
-            f"API keys store unavailable at {cfg.API_KEYS_DB}: {_ae}"
-        ) from _ae
-
     # Open the browser-session store (HttpOnly cookie auth for the WebUI).
     # Non-fatal: if this fails, cookie login is unavailable but bearer auth
     # (API clients) and open mode keep working.
@@ -2685,29 +2766,6 @@ async def lifespan(app: FastAPI):
         )
     except Exception as _re:
         logger.error("Failed to initialize reports store: %s", _re)
-
-    # Open the durable recent-transcriptions store. Replaces the legacy
-    # in-memory ring buffers (quick_config_state.recent_traces +
-    # metrics.recent_tx) so the /quick-config trace panel + /stats
-    # dashboard widget survive service restart and scale beyond 20 rows.
-    try:
-        import transcriptions_store
-        transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
-        logger.info(
-            "Recent-transcriptions store initialized at %s",
-            cfg.RECENT_TRANSCRIPTIONS_DB,
-        )
-    except Exception as _te:
-        logger.error("Failed to initialize recent-transcriptions store: %s", _te)
-
-    # Open the durable usage-rollup store. Backs the per-key/per-user usage
-    # numbers on /api-keys and the usage-over-time section on /stats. Non-fatal.
-    try:
-        import usage_store
-        usage_store.init_db(cfg.USAGE_DB)
-        logger.info("Usage rollup store initialized at %s", cfg.USAGE_DB)
-    except Exception as _ue:
-        logger.error("Failed to initialize usage store: %s", _ue)
 
     # Open the desktop-client settings-sync store (one opaque blob per
     # account, served at /v1/client-settings). Non-fatal: sync degrades to
@@ -3247,6 +3305,13 @@ def _safe_tmp_suffix(filename: "str | None") -> str:
 # _progress_set iterates over a snapshot (list(...)) so a concurrent pop on
 # the loop thread can't blow up an executor-thread iteration.
 _BATCH_PROGRESS: "dict[str, dict]" = {}
+# progress_id → owner, remembered from the handler's seed so an entry that an
+# executor-thread stage re-creates after the handler's finally popped it (or
+# that the cap eviction below took) keeps its owner stamp instead of coming
+# back owner-less and readable/cancellable by any caller. Pruned in the same
+# stale-sweep/eviction pass as _BATCH_PROGRESS — deliberately NOT in the
+# handlers' finally, which is exactly the moment the re-create can follow.
+_PROGRESS_OWNER: "dict[str, str]" = {}
 _BATCH_PROGRESS_MAX = 200
 _BATCH_PROGRESS_STALE_S = 2 * 3600
 _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
@@ -3266,8 +3331,9 @@ def _translation_model_allowed(ref: str,
     """The one admission rule the startup preload, the batch stage, the
     stage-ahead plan and /v1/text/translations all share: a non-empty
     TRANSLATION_ALLOWED_MODELS admits its members plus the configured
-    default (an EMPTY allowlist means "the configured model only", never
-    "anything"). Like the diarization/separation gates, the allowlist
+    default, while an EMPTY allowlist admits any well-formed ref (an opt-in
+    allowlist — deliberately laxer than the diarization/separation gates,
+    which admit allowlist ∪ {default} only). Like those gates, the allowlist
     constrains only the CLIENT-requested value: pass `requested` (the raw
     client ref, or None when the client sent none) and a config/identity-
     inherited `ref` is admin policy and always passes."""
@@ -3305,13 +3371,18 @@ def _progress_set(pid: "str | None", **fields) -> None:
         _mirror = {k: fields[k] for k in _JOB_MIRROR_FIELDS
                    if fields.get(k) is not None}
         _new_stage = fields.get("stage")
-        if _new_stage and _new_stage != _BATCH_PROGRESS.get(pid, {}).get("stage"):
+        _prev = _BATCH_PROGRESS.get(pid, {}).get("stage")
+        if _new_stage and _prev and _new_stage != _prev:
             # A stage TRANSITION resets the derived columns the new stage did
             # not (yet) report — without this the job row keeps the previous
-            # stage's last progress/step/model (a stale ~100% bar and the
-            # decode model shown for the whole of diarizing/translating),
-            # because both this mirror and jobs.job_update skip plain Nones.
-            for k in ("progress", "step", "model"):
+            # stage's last progress/step/model/total_bytes (a stale ~100%
+            # bar, the decode model shown for the whole of diarizing/
+            # translating, the download's byte total for the rest of the
+            # request), because both this mirror and jobs.job_update skip
+            # plain Nones. The first seed is NOT a transition: there is no
+            # previous stage's stale state to clear, only job_start's model
+            # to preserve.
+            for k in ("progress", "step", "model", "total_bytes"):
                 _mirror.setdefault(k, jobs.CLEAR)
         jobs.job_update(_job_id, **_mirror)
     _stage = fields.get("stage")
@@ -3321,6 +3392,8 @@ def _progress_set(pid: "str | None", **fields) -> None:
         # executor threads (the decode, the demix, the pyannote hook) and
         # progress must never break a request.
         preload.on_stage_start(_PLAN_BY_PID[pid], _stage)
+    if fields.get("owner") is not None:
+        _PROGRESS_OWNER[pid] = fields["owner"]
     entry = _BATCH_PROGRESS.get(pid)
     if entry is None:
         # Snapshot (list(...)) before iterating: this branch runs on executor
@@ -3331,12 +3404,15 @@ def _progress_set(pid: "str | None", **fields) -> None:
         for k in [k for k, v in list(_BATCH_PROGRESS.items())
                   if now - v.get("updated", 0) > _BATCH_PROGRESS_STALE_S]:
             _BATCH_PROGRESS.pop(k, None)
+            _PROGRESS_OWNER.pop(k, None)
         if len(_BATCH_PROGRESS) >= _BATCH_PROGRESS_MAX:
             _snap = list(_BATCH_PROGRESS.items())
             if _snap:
                 oldest = min(_snap, key=lambda kv: kv[1].get("updated", 0))[0]
                 _BATCH_PROGRESS.pop(oldest, None)
-        entry = _BATCH_PROGRESS[pid] = {}
+                _PROGRESS_OWNER.pop(oldest, None)
+        entry = _BATCH_PROGRESS[pid] = (
+            {"owner": _PROGRESS_OWNER[pid]} if pid in _PROGRESS_OWNER else {})
     entry.update(fields)
     entry["updated"] = time.monotonic()
 
@@ -3410,8 +3486,15 @@ async def transcribe(
 ):
     resolved_model = _resolve_model_name(model_name)
     # Opt-in progress reporting (see _BATCH_PROGRESS). A malformed id is
-    # treated as absent — progress is a convenience, never a 422.
+    # treated as absent — progress is a convenience, never a 422. So is an
+    # id that is already in flight: the registries keyed on it are bare
+    # overwrites, and a colliding id would share one entry and one cancel
+    # flag with (and let this caller cancel) another request.
     _pid = progress_id if (progress_id and _PROGRESS_ID_RE.match(progress_id)) else None
+    if _pid and _pid in _BATCH_PROGRESS:
+        logger.info("[progress] id already in flight — progress/cancel "
+                    "disabled for this request")
+        _pid = None
     # Whisper's only two tasks; anything else is a caller error, not something
     # to silently coerce (unlike the clamped numeric knobs below, a wrong task
     # would return output in the wrong language with no other signal).
@@ -3577,6 +3660,7 @@ async def transcribe(
                 _progress_set(_pid, stage="resolving", progress=None)
                 logger.info("[url-dl] transcribe-from-url requested (host %s)",
                             _url_host_for_log(source_url))
+                _dl_t0 = time.perf_counter()
                 try:
                     _check_cancelled(_pid)
                     _url = _udl.validate_url(source_url)
@@ -3605,6 +3689,14 @@ async def transcribe(
                                 _pid, stage="downloading", progress=f,
                                 total_bytes=tot),
                             cancel_check=lambda: _cancel_requested(_pid))
+                    # Resolve + download as one receipt row: on a long link
+                    # it can dominate wall time. Cancelled/error paths leave
+                    # no entry.
+                    _stage_timings.append({
+                        "name": "downloading",
+                        "secs": round(time.perf_counter() - _dl_t0, 2),
+                        "detail": _uinfo.extractor_key or None,
+                    })
                 except _udl.UrlCancelled:
                     logger.info("[url-dl] download cancelled by client "
                                 "(host %s)", _url_host_for_log(source_url))
@@ -3641,7 +3733,9 @@ async def transcribe(
                 # materialised. Only the SIZE is needed downstream (capture
                 # size guard + log block).
                 audio_bytes = 0
-                with tempfile.NamedTemporaryFile(delete=False, suffix=_safe_tmp_suffix(file.filename)) as tmp_file:
+                # "whisperup-" marks the file for _reclaim_hard_restart_orphans
+                # — tempfile's default "tmp" prefix is every process's.
+                with tempfile.NamedTemporaryFile(delete=False, prefix="whisperup-", suffix=_safe_tmp_suffix(file.filename)) as tmp_file:
                     tmp_path = tmp_file.name
                     while True:
                         chunk = await file.read(_UPLOAD_CHUNK_BYTES)
@@ -3772,6 +3866,10 @@ async def transcribe(
             # pyannote treats num alongside min/max as an error — num wins.
             if _spk.get("num_speakers"):
                 _spk["min_speakers"] = _spk["max_speakers"] = None
+            # pyannote also rejects an inverted range — clamp min down to max.
+            elif (_spk.get("min_speakers") and _spk.get("max_speakers")
+                  and _spk["min_speakers"] > _spk["max_speakers"]):
+                _spk["min_speakers"] = _spk["max_speakers"]
             # Music separation: same shape again. Soft-failed optional stages
             # (this and diarization) collect their explanations in _warnings.
             _warnings: "list[str]" = []
@@ -3960,7 +4058,9 @@ async def transcribe(
             _temperature = temperature
             if "TEMPERATURE" in ident.locked:
                 _locked_ladder = cfg_for(resolved_model, "TEMPERATURE", ident)
-                if not (_locked_ladder or "").strip():
+                # Same parse as the assembler: a blank, token-less (",") or
+                # unparseable ladder all leave the Form field in force.
+                if not _temperature_ladder(_locked_ladder):
                     if temperature != _t_lo and "temperature" not in ignored:
                         ignored.append("temperature")
                     _temperature = _t_lo
@@ -4082,12 +4182,15 @@ async def transcribe(
                             "name": "separating",
                             "secs": round(time.perf_counter() - _sep_t0, 2),
                             "model": _separation_model or None,
-                            "detail": "incl. transcode",
+                            "detail": ("incl. transcode"
+                                       if _sep_wav is not None else None),
                             **_stage_extras(
                                 preload.stats_key("separation",
                                                   _separation_model or ""),
                                 _sep_t0),
                         })
+                    except _ClientCancelled:
+                        raise
                     except _bgm.BgmCancelled:
                         raise _ClientCancelled() from None
                     except _bgm.BgmSeparationError as _se:
@@ -4179,6 +4282,12 @@ async def transcribe(
                 _progress_set(_pid, stage="analyzing", progress=None,
                               position=None, last_text=None, step=None,
                               model=None, device=None, compute=None)
+                # One origin for both branches, taken BEFORE the lead-pad
+                # pre-decode, so the "vad" row bills decode + pad + Silero
+                # as its own detail claims (a padded ndarray input skips
+                # transcribe()'s decode; without this the decode cost slid
+                # into the "transcribing" row).
+                _pre = time.perf_counter()
                 _audio = None
                 if _pad_ms > 0:
                     try:
@@ -4194,12 +4303,10 @@ async def transcribe(
                             _pad_err)
                         _audio = None
                 if _audio is not None:
-                    _pre = time.perf_counter()
                     _segs, _info = _model.transcribe(_audio, **_kw)
                     _t["pre_secs"] = time.perf_counter() - _pre
                     return (*_shift_to_original_timeline(
                         _collect(_segs, _info), _info, _pad_ms / 1000.0), True)
-                _pre = time.perf_counter()
                 _segs, _info = _model.transcribe(_path, **_kw)
                 _t["pre_secs"] = time.perf_counter() - _pre
                 return _collect(_segs, _info), _info, False
@@ -4269,9 +4376,12 @@ async def transcribe(
             for i, segment in enumerate(segments_iter):
                 # segment.temperature reflects CT2's actual after-fallback
                 # value (may differ from the request `temperature` if fallback
-                # kicked in). segment.compression_ratio is the real gzip ratio
-                # used by the suppression check — was previously hardcoded 1.0.
-                seg_temp = getattr(segment, "temperature", temperature)
+                # kicked in); the fallback is `_temperature`, the value that
+                # was actually handed to the decoder (a locked TEMPERATURE may
+                # have reset it). segment.compression_ratio is the real gzip
+                # ratio used by the suppression check — was previously
+                # hardcoded 1.0.
+                seg_temp = getattr(segment, "temperature", _temperature)
                 seg_cr = getattr(segment, "compression_ratio", 1.0)
 
                 dropped = segment_exceeds_word_rate(segment, _max_wps)
@@ -4384,6 +4494,8 @@ async def transcribe(
                                                   _diarization_model or ""),
                                 _diar_t0),
                         })
+                    except _ClientCancelled:
+                        raise
                     except _diar.DiarizeCancelled:
                         raise _ClientCancelled() from None
                     except _diar.DiarizationError as _de:
@@ -4488,6 +4600,12 @@ async def transcribe(
                                     await _run_translation()
                             _warnings.extend(_tr_warn)
                             _tr_kept = _tr_meta.get("kept") or {}
+                            # target -> sorted segment indices whose guard
+                            # fallback kept the SOURCE text. Rides in the
+                            # shared meta so the default `json` shape (no
+                            # segment rows) can tell a kept original from a
+                            # real translation; {} when clean.
+                            _kept_by_lang: "dict[str, list[int]]" = {}
                             for _i, _seg_tr in enumerate(_per_seg):
                                 # Unconditional: an untranslated segment
                                 # carries an explicit empty map, not a
@@ -4498,11 +4616,16 @@ async def transcribe(
                                 if _tr_kept.get(_i):
                                     segments_list[_i]["translations_kept"] = \
                                         list(_tr_kept[_i])
+                                    for _lang in _tr_kept[_i]:
+                                        _kept_by_lang.setdefault(
+                                            _lang, []).append(_i)
                             _translation_meta = {
                                 "model": _tr_meta.get("model"),
                                 "targets": list(_translate_to),
                                 "source": _tr_meta.get("source"),
                                 "mode": _tr_meta.get("mode"),
+                                "kept": {_l: sorted(_ix) for _l, _ix
+                                         in _kept_by_lang.items()},
                             }
                             logger.info(
                                 "[translate] %d segments → %s in %.1fs",
@@ -4521,6 +4644,8 @@ async def transcribe(
                                         _tr_meta.get("model") or ""),
                                     _tr_t0),
                             })
+                        except _ClientCancelled:
+                            raise
                         except _tr.TranslationCancelled:
                             raise _ClientCancelled() from None
                         except _tr.TranslationError as _te:
@@ -4532,6 +4657,8 @@ async def transcribe(
                             _warnings.append(
                                 "translation failed; the transcript is "
                                 "untranslated")
+            elif _translate_to:
+                _warnings.append("translation skipped: no speech segments")
 
             raw_full_text = "".join(raw_full_text_parts)
             trace: "list | None" = [] if cfg.TRACE_ENABLED else None
@@ -4765,7 +4892,7 @@ async def transcribe(
                         cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", _OMIT),
                     "result": (f"{len(speakers_list)} speakers across "
                                f"{len(segments_list)} segments"),
-                } if speakers_list else None),
+                } if _stage_ran(_stage_timings, "diarizing") else None),
                 translation=({
                     "model": _translation_meta.get("model"),
                     "device": _stage_field(_stage_timings, "translating", "device"),
@@ -4915,6 +5042,13 @@ async def transcribe(
                 response["speakers"] = speakers_list
             if _warnings:
                 response["warnings"] = _warnings
+            # Same conditions as the verbose_json branch: an ignored override
+            # is never silently dropped, and profile_applied echoes only when
+            # a profile was asked for.
+            if ignored:
+                response["overrides_ignored"] = ignored
+            if override_profile:
+                response["profile_applied"] = ident.request_profile_applied
             if _source_media_id is not None:
                 import url_media_store as _ums
                 response["source_media_id"] = _source_media_id
@@ -4965,6 +5099,14 @@ async def transcribe(
             if _url_job_dir:
                 shutil.rmtree(_url_job_dir, ignore_errors=True)
 
+    except asyncio.CancelledError:
+        # A dropped connection (and lifespan shutdown) unwinds this handler
+        # as a BaseException, past every arm below; without this the finally
+        # would persist the run as status="ok" with zero words. Same
+        # reasoning as translate_text's finally.
+        if _status != "cancelled":
+            _status = "cancelled"
+        raise
     except Exception:
         # Catches failures BEFORE the inner try (e.g. _get_or_load_model
         # raising HTTPException, await request.form() blowing up), which
@@ -4995,6 +5137,7 @@ async def transcribe(
             request_id=request_id,
             user_id=_user_id,
             key_id=_key_id,
+            key_label=user.get("key_label"),
             stages=_stage_timings or None,
         )
 
@@ -5269,6 +5412,13 @@ async def translate_text(request: Request,
         progress_id = body.get("progress_id")
         _pid = progress_id if (isinstance(progress_id, str)
                                and _PROGRESS_ID_RE.match(progress_id)) else None
+        # An id already in flight is treated as absent too (see the batch
+        # handler): it would otherwise share the other request's entry and
+        # cancel flag.
+        if _pid and _pid in _BATCH_PROGRESS:
+            logger.info("[progress] id already in flight — progress/cancel "
+                        "disabled for this request")
+            _pid = None
     except BaseException:
         # Any rejection above (422/413/429/400) — or a client disconnect
         # mid-validation — must hand the parked receipt back NOW, or the
@@ -5375,6 +5525,7 @@ async def translate_text(request: Request,
                 request_id=request_id,
                 user_id=(_uid or None),
                 key_id=user.get("key_id"),
+                key_label=user.get("key_label"),
                 kind="translate",
                 stages=[{"name": "translate", "secs": secs,
                          "model": (_tr_model or None),
@@ -5430,7 +5581,7 @@ async def translate_text(request: Request,
         _release_held_receipt(
             _held_key,
             f"failed after {time.perf_counter() - _t0:.1f}s — {_log_safe(str(e))}")
-        _record_run("failed")
+        _record_run("error")
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         _release_held_receipt(_held_key, "request rejected")
@@ -5442,7 +5593,7 @@ async def translate_text(request: Request,
         _release_held_receipt(
             _held_key,
             f"failed after {time.perf_counter() - _t0:.1f}s")
-        _record_run("failed")
+        _record_run("error")
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
         # Release FIRST — before any await and before job_end. A client
@@ -5642,12 +5793,10 @@ _url_preview_rate = _rl.FixedWindow(
 
 def _url_host_for_log(url: str) -> str:
     """Best-effort hostname for log lines — never the full URL (it can carry
-    tokens/identifiers we don't want in logs)."""
-    try:
-        import urllib.parse as _p
-        return _log_safe(_p.urlsplit(url.strip()).hostname or "?")
-    except Exception:  # noqa: BLE001 — logging must never raise
-        return "?"
+    tokens/identifiers we don't want in logs). Delegates to the module that
+    owns that contract."""
+    import url_download as _udl
+    return _udl.host_for_log(url)
 
 
 @app.post("/v1/audio/url-preview")
@@ -5838,11 +5987,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         caps["yt_dlp_version"] = _udl.yt_dlp_version()
     # Stage-model list builder shared by all three optional stages below.
     # Configured model FIRST, then the allowlist (de-duplicated, order kept):
-    # an empty allowlist means "the configured model only" for every stage,
-    # so building from the allowlist alone published [] for a server that
-    # accepts one model — and a picker pre-flighting on it showed nothing.
-    # This is exactly the stages' own admission rule (allowlist ∪ configured)
-    # and deliberately never consults residency: a loaded-but-no-longer-
+    # an empty allowlist means "the configured model only" for the
+    # diarization/separation stages, so building from the allowlist alone
+    # published [] for a server that accepts one model — and a picker
+    # pre-flighting on it showed nothing. This is exactly those stages'
+    # admission rule (allowlist ∪ configured). Translation differs: its
+    # EMPTY allowlist is permissive at request time (_translation_model_
+    # allowed admits any well-formed ref), so translation_models is "what
+    # the picker offers", not "all the server accepts". The list
+    # deliberately never consults residency: a loaded-but-no-longer-
     # allowed model must not be offered (every request naming it would be
     # refused); residency is reported per row by the "loaded" flag instead.
     def _stage_refs(configured, allowed) -> "list[str]":
@@ -5859,7 +6012,6 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     caps["translation_enabled"] = bool(
         getattr(cfg, "TRANSLATION_ENABLED", False))
     if caps["translation_enabled"]:
-        import translation as _tr
         _t_default = _translation_default_model()
         caps["translation_models"] = [
             {"id": _ref, "loaded": preload.is_resident("translation", _ref)}
@@ -6640,41 +6792,23 @@ _LOG_VIEWER_HTML = """<!doctype html>
 </body></html>"""
 
 
-def _require_logs_page_sse(request: Request) -> dict:
+def _require_logs_page_sse(user: dict = Depends(_get_current_user_dep)) -> dict:
     """SSE-aware variant of require_page("logs"). Two credential carriers:
     the `Authorization: Bearer` header and the HttpOnly session cookie,
     which EventSource sends automatically on a same-origin stream —
-    EventSource cannot set a header. In OPEN mode (no admin key yet) the
-    synthetic admin sails through from the admin host allowlist only
-    (auth.open_mode_host_ok); in locked-down mode the credential must
-    resolve to a user with scope("logs") == "all" — the log file isn't
-    user-partitionable (a single request block carries every user's
-    transcripts, filenames, and final text via _format_request_block), so
-    "own" can't be enforced line-by-line and is rejected as access-only at
-    the schema layer."""
-    import api_keys_store
-    if not api_keys_store.is_locked_down() and _open_mode_host_ok(request):
-        return dict(api_keys_store.OPEN_MODE_USER)
-    auth_header = request.headers.get("authorization") or ""
-    raw = ""
-    if auth_header.lower().startswith("bearer "):
-        raw = auth_header.split(" ", 1)[1].strip()
-    rec = api_keys_store.lookup_by_raw_key(raw) if raw else None
-    if rec is None:
-        rec = _user_from_session_cookie(request)
-    if rec is None:
-        raise HTTPException(
-            401, "invalid or missing API key",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-    perms = Permissions(
-        rec.get("permissions_raw") or {}, bool(rec.get("is_admin")),
-    )
+    EventSource cannot set a header. Both, plus the OPEN-mode synthetic
+    admin (admin host allowlist only), are exactly auth.get_current_user's
+    ladder, so it is reused rather than copied. In locked-down mode the
+    credential must resolve to a user with scope("logs") == "all" — the log
+    file isn't user-partitionable (a single request block carries every
+    user's transcripts, filenames, and final text via
+    _format_request_block), so "own" can't be enforced line-by-line and is
+    rejected as access-only at the schema layer."""
     # scope("logs") (not can("logs")) — defends against legacy DB rows
     # still storing "own" from before logs joined ACCESS_ONLY_PAGES.
-    if perms.scope("logs") != "all":
+    if user["permissions"].scope("logs") != "all":
         raise HTTPException(403, "no access to /logs")
-    return rec
+    return user
 
 
 @app.get("/logs", response_class=HTMLResponse, dependencies=[Depends(require_user_webui_host)])
@@ -6709,7 +6843,9 @@ async def logs_older(skip: int = 0, limit: int = 0):
     number of lines from the chain head that have already been loaded
     into the browser DOM; `limit` defaults to LOG_VIEWER_INITIAL_LINES
     and is server-clamped to the same value (per-click max page size).
-    `skip` is clamped to _LOG_OLDER_MAX_PAGES pages of that size.
+    The cap of _LOG_OLDER_MAX_PAGES pages of that size TERMINATES paging
+    (next_skip=null) rather than clamping `skip`: a clamped skip would
+    re-serve the same window on every further click.
 
     Response: `{lines: [...], next_skip: <int|null>}`. lines are
     oldest-first so the client can prepend them to the top of the
@@ -6717,12 +6853,19 @@ async def logs_older(skip: int = 0, limit: int = 0):
     the rotation chain is exhausted — the client hides the button."""
     initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     want = max(1, min(limit or initial, initial))
-    skip = max(0, min(int(skip), initial * _LOG_OLDER_MAX_PAGES))
+    cap = initial * _LOG_OLDER_MAX_PAGES
+    requested = max(0, int(skip))
+    if requested >= cap:
+        # Past the cap: chain-end, not a silent clamp (which served the same
+        # window forever while the viewer kept its own cursor). No disk I/O.
+        return {"lines": [], "next_skip": None}
     # _read_chain_window does blocking disk I/O over the whole rotation
     # chain — run it off the event loop so one deep page can't stall the
     # live /logs/stream tail or any concurrent request.
     lines, next_skip = await asyncio.to_thread(
-        _read_chain_window, cfg.LOG_FILE, skip=skip, want=want)
+        _read_chain_window, cfg.LOG_FILE, skip=requested, want=want)
+    if next_skip is not None and next_skip >= cap:
+        next_skip = None
     return {"lines": lines, "next_skip": next_skip}
 
 

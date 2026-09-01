@@ -11,6 +11,8 @@ site. These tests pin the two halves of the fix:
     receipt assertions depend on (`✗`, "unchanged", "N step").
 """
 
+import re
+
 from conftest import FakeInfo
 
 _SEG = [
@@ -269,3 +271,35 @@ def test_speaker_labels_stay_on_the_kept_rows_after_a_drop(app_module):
     aligned3 = app_module._align_speakers_to_diag(
         diag3, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00"])
     assert aligned3 == ["SPEAKER_00", "", "SPEAKER_01", "SPEAKER_00"]
+
+
+def test_downloading_stage_leads_the_pipeline_table(app_module):
+    """A URL fetch can dominate wall time; it renders first and is counted in
+    the header's stage/wall totals like any other stage."""
+    stages = [{"name": "downloading", "secs": 30.0, "detail": "Youtube"},
+              *_STAGES]
+    block = _block(app_module, stages=stages)
+    lines = block.splitlines()
+    head = next(l for l in lines if "─── Pipeline" in l)
+    assert "(5 stages" in head
+    total = 30.0 + sum(s["secs"] for s in _STAGES)
+    mins, secs = divmod(int(total), 60)
+    assert f"{mins}:{secs:02d} wall" in head
+    rows = [l for l in lines if re.match(r"^\s+\d+\s+\w+\s", l)
+            and any(s["name"] in l for s in stages)]
+    assert rows[0].split()[:2] == ["1", "downloading"]
+    assert "Youtube" in lines[lines.index(rows[0]) + 1]
+
+
+def test_task_renders_in_decode_params_with_the_non_default_marker(app_module):
+    """`task` is the one kwarg that changes the output language, yet it was
+    missing from both the order tuple and _KWARG_TO_CFG, so a translate run's
+    decode block was byte-identical to a plain transcription's."""
+    baseline = getattr(app_module.cfg, "_BASELINE", {})
+    assert baseline.get("TASK") == "transcribe"
+    rows = app_module._format_decode_params({"task": "translate", "beam_size": 5})
+    assert rows[0].split()[0] == "task"
+    assert "translate" in rows[0]
+    assert rows[0].rstrip().endswith("*")
+    assert not any(r.split()[0] == "task"
+                   for r in app_module._format_decode_params({"beam_size": 5}))

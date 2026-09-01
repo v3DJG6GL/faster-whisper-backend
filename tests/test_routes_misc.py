@@ -98,3 +98,18 @@ def test_an_explicit_cache_control_is_not_overridden(client):
     # it does not stamp over a handler's deliberate choice.
     cc = client.get("/settings").headers["Cache-Control"]
     assert "must-revalidate" in cc
+
+
+def test_logs_older_past_the_page_cap_terminates_paging(client, app_module,
+                                                        monkeypatch):
+    # The _LOG_OLDER_MAX_PAGES cap ends paging (empty page, next_skip=null)
+    # instead of clamping skip — a clamped skip re-served the same window on
+    # every further "Load older" click while the viewer's own cursor grew.
+    monkeypatch.setattr(app_module.cfg, "LOG_VIEWER_INITIAL_LINES", 10,
+                        raising=False)
+    cap = 10 * app_module._LOG_OLDER_MAX_PAGES
+    r = client.get(f"/logs/older?skip={cap + 10}")
+    assert r.status_code == 200
+    assert r.json() == {"lines": [], "next_skip": None}
+    r = client.get(f"/logs/older?skip={cap}")
+    assert r.json() == {"lines": [], "next_skip": None}

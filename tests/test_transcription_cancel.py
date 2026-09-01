@@ -183,3 +183,237 @@ def test_stage_transition_clears_mirrored_progress(app_module):
         app_module._JOB_BY_PID.pop(pid, None)
         app_module._BATCH_PROGRESS.pop(pid, None)
         jobs.job_end("job-mirror-test")
+
+
+# --- a cancel that lands INSIDE a soft-fail stage -----------------------------
+# Every post-decode stage polls _check_cancelled inside its own try, and that
+# raises _ClientCancelled — a plain Exception the stage's trailing soft-fail
+# arm used to swallow as "<stage> failed", turning a cancel into a 200 with a
+# false warning (or, for separation, a bogus error log before the next check
+# finally aborted).
+
+def _flag_on(app_module, monkeypatch, pid, pred):
+    """Flag `pid` cancelled the moment a _progress_set call matches `pred`."""
+    orig = app_module._progress_set
+
+    def spy(p, **fields):
+        orig(p, **fields)
+        if p == pid and pred(fields):
+            app_module._BATCH_CANCELLED.add(pid)
+    monkeypatch.setattr(app_module, "_progress_set", spy)
+
+
+def test_cancel_inside_separation_stage_is_not_a_soft_fail(
+        client, app_module, monkeypatch, caplog):
+    app_module.cfg.BGM_SEPARATION_ENABLED = True
+    _flag_on(app_module, monkeypatch, _PID,
+             lambda f: f.get("stage") == "separating")
+
+    async def _never(path, **kw):
+        raise AssertionError("separate() must not run after a cancel")
+    monkeypatch.setattr(bgm_separation, "separate", _never)
+    try:
+        r = _post(client, separate_bgm="1", progress_id=_PID)
+        assert r.status_code == 499, r.text
+    finally:
+        app_module.cfg.BGM_SEPARATION_ENABLED = False
+        app_module._BATCH_CANCELLED.discard(_PID)
+    assert "[bgm] unexpected failure" not in caplog.text
+
+
+def test_cancel_inside_diarization_stage_is_not_a_soft_fail(
+        client, app_module, monkeypatch):
+    app_module.cfg.DIARIZATION_ENABLED = True
+    _flag_on(app_module, monkeypatch, _PID,
+             lambda f: f.get("stage") == "diarizing")
+
+    async def _never(path, **kw):
+        raise AssertionError("diarize() must not run after a cancel")
+    monkeypatch.setattr(diarization, "diarize", _never)
+    try:
+        r = _post(client, diarize="1", progress_id=_PID)
+        assert r.status_code == 499, r.text
+        assert "diarization failed" not in r.text
+    finally:
+        app_module.cfg.DIARIZATION_ENABLED = False
+        app_module._BATCH_CANCELLED.discard(_PID)
+
+
+def test_cancel_inside_translation_stage_is_not_a_soft_fail(
+        client, app_module, monkeypatch):
+    import translation
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    # The decode loop's own check runs BEFORE each segment's progress tick,
+    # so a flag raised on the (only) segment's tail is first seen by the
+    # translation stage's in-try check.
+    _flag_on(app_module, monkeypatch, _PID,
+             lambda f: f.get("last_text") is not None)
+
+    async def _never(*args, **kw):
+        raise AssertionError("translate_segments() must not run after a cancel")
+    monkeypatch.setattr(translation, "translate_segments", _never)
+    try:
+        r = _post(client, translate_to="en", progress_id=_PID)
+        assert r.status_code == 499, r.text
+        assert "translation failed" not in r.text
+    finally:
+        app_module._BATCH_CANCELLED.discard(_PID)
+
+
+# --- colliding progress ids ---------------------------------------------------
+
+def test_in_flight_progress_id_is_treated_as_absent(client, app_module):
+    # A client-chosen id that is already live belongs to another request:
+    # this one gets no progress rail instead of sharing (and popping) the
+    # other's entry and cancel flag.
+    app_module._BATCH_PROGRESS[_PID] = {
+        "stage": "transcribing", "owner": "other", "updated": 0}
+    try:
+        r = _post(client, progress_id=_PID)
+        assert r.status_code == 200, r.text
+        entry = app_module._BATCH_PROGRESS.get(_PID)
+        assert entry is not None
+        assert entry["owner"] == "other" and entry["stage"] == "transcribing"
+        assert _PID not in app_module._JOB_BY_PID
+    finally:
+        app_module._BATCH_PROGRESS.pop(_PID, None)
+        app_module._PROGRESS_OWNER.pop(_PID, None)
+
+
+def test_text_translations_in_flight_progress_id_is_treated_as_absent(
+        client, app_module, monkeypatch):
+    import translation
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
+                        "org/default-GGUF:Q4", raising=False)
+
+    async def _fake(segments, targets, **kw):
+        return ([{t: "x" for t in targets} for _ in segments], [],
+                {"model": "org/default-GGUF:Q4", "source": "de",
+                 "mode": "fluent"})
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+    app_module._BATCH_PROGRESS[_PID] = {
+        "stage": "transcribing", "owner": "other", "updated": 0}
+    try:
+        r = client.post("/v1/text/translations", json={
+            "segments": [{"text": "hallo"}], "targets": ["en"],
+            "progress_id": _PID})
+        assert r.status_code == 200, r.text
+        entry = app_module._BATCH_PROGRESS.get(_PID)
+        assert entry is not None
+        assert entry["owner"] == "other" and entry["stage"] == "transcribing"
+    finally:
+        app_module._BATCH_PROGRESS.pop(_PID, None)
+        app_module._PROGRESS_OWNER.pop(_PID, None)
+
+
+# --- owner survives a re-created entry ---------------------------------------
+
+def test_recreated_progress_entry_keeps_its_owner(client, app_module,
+                                                  make_user_key):
+    from tests.conftest import bearer
+    uid_alice, _ = make_user_key("alice")
+    _, raw_bob = make_user_key("bob")
+    make_user_key("root", is_admin=True)  # locks the app down: bob is bob
+    try:
+        app_module._progress_set(_PID, stage="waiting", owner=uid_alice)
+        # An executor-thread stage tick after the handler's finally popped
+        # the entry (or after the cap eviction took it) re-creates it —
+        # with the owner stamp, not as an open, owner-less entry.
+        app_module._BATCH_PROGRESS.pop(_PID)
+        app_module._progress_set(_PID, progress=0.5, last_text="x")
+        assert app_module._BATCH_PROGRESS[_PID]["owner"] == uid_alice
+        r = client.get(f"/v1/audio/transcriptions/progress/{_PID}",
+                       headers=bearer(raw_bob))
+        assert r.json() == {"stage": "unknown"}
+    finally:
+        app_module._BATCH_PROGRESS.pop(_PID, None)
+        app_module._PROGRESS_OWNER.pop(_PID, None)
+
+
+def test_owner_map_is_pruned_with_the_stale_sweep(app_module):
+    app_module._progress_set(_PID, stage="waiting", owner="u1")
+    try:
+        app_module._BATCH_PROGRESS[_PID]["updated"] = -1e9
+        # Any entry creation runs the stale sweep; it must prune both maps.
+        app_module._progress_set("d00d" * 8, stage="waiting")
+        assert _PID not in app_module._BATCH_PROGRESS
+        assert _PID not in app_module._PROGRESS_OWNER
+    finally:
+        app_module._BATCH_PROGRESS.pop(_PID, None)
+        app_module._BATCH_PROGRESS.pop("d00d" * 8, None)
+        app_module._PROGRESS_OWNER.pop(_PID, None)
+
+
+# --- the first seed is not a stage transition --------------------------------
+
+def test_first_seed_keeps_job_start_model(app_module):
+    import jobs
+    pid = "f00dfeed" * 4
+    jobs.job_start("transcribe", id="job-seed-test", model="large-v3")
+    app_module._JOB_BY_PID[pid] = "job-seed-test"
+    try:
+        # No previous stage → nothing stale to clear; job_start's model must
+        # survive the whole pre-decode phase (waiting/downloading/...).
+        app_module._progress_set(pid, stage="waiting", progress=None)
+        row = jobs.jobs_snapshot()[0]
+        assert row["stage"] == "waiting" and row["model"] == "large-v3"
+        # A real transition still clears the previous stage's columns.
+        app_module._progress_set(pid, stage="transcribing", progress=0.9,
+                                 step="dec")
+        app_module._progress_set(pid, stage="diarizing")
+        row = jobs.jobs_snapshot()[0]
+        assert row["stage"] == "diarizing"
+        assert row["progress"] is None and row["step"] is None
+        assert row["model"] is None
+    finally:
+        app_module._JOB_BY_PID.pop(pid, None)
+        app_module._BATCH_PROGRESS.pop(pid, None)
+        jobs.job_end("job-seed-test")
+
+
+def test_stage_transition_clears_mirrored_total_bytes(app_module):
+    import jobs
+    pid = "ba5eba11" * 4
+    jobs.job_start("transcribe", id="job-bytes-test", model="m")
+    app_module._JOB_BY_PID[pid] = "job-bytes-test"
+    try:
+        app_module._progress_set(pid, stage="downloading", progress=0.5,
+                                 total_bytes=4096)
+        assert jobs.jobs_snapshot()[0]["total_bytes"] == 4096
+        # The download's byte total is a per-stage column too — it must not
+        # stick to the row through transcribing/diarizing/translating.
+        app_module._progress_set(pid, stage="transcribing", progress=None,
+                                 total_bytes=None)
+        assert jobs.jobs_snapshot()[0]["total_bytes"] is None
+    finally:
+        app_module._JOB_BY_PID.pop(pid, None)
+        app_module._BATCH_PROGRESS.pop(pid, None)
+        jobs.job_end("job-bytes-test")
+
+
+def test_task_cancellation_records_status_cancelled(client, app_module,
+                                                    monkeypatch):
+    # A client disconnect / lifespan shutdown unwinds the handler with
+    # asyncio.CancelledError — a BaseException that skips every
+    # `except Exception` arm. The finally still records the run, and it must
+    # say "cancelled", not the seeded "ok" with zero words.
+    import asyncio
+
+    import pytest
+
+    async def _cancelled_loader(name, *, lease=False):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(app_module, "_get_or_load_model", _cancelled_loader)
+    recorded = []
+    _orig = app_module.metrics.record_transcription
+
+    def _spy(**kw):
+        recorded.append(kw)
+        return _orig(**kw)
+    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    with pytest.raises(BaseException):
+        _post(client)
+    assert recorded and recorded[-1]["status"] == "cancelled"
