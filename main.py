@@ -594,7 +594,6 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
 _LOG_WIDTH = 78
 _NAME_COL = 32        # value column starts at this character
 _SEG_TEXT_MAX = 80    # truncate per-segment text in the table (full text in FINAL)
-_SEG_ROWS_MAX = 30    # truncate the segment table itself
 _LOG_FIELD_MAX = store_common.LOG_FIELD_MAX  # cap on a client-supplied label
 
 # "don't render this row" sentinel for the stage params sections. Distinct
@@ -853,6 +852,20 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
         out.append(f"    … (+{n - rows} more, not logged — "
                    f"raise LOG_SEGMENT_ROWS_MAX)")
     return out
+
+
+def _align_speakers_to_diag(seg_diag: list, speakers: "list | None") -> "list | None":
+    """Speaker labels re-indexed to `seg_diag` rows for the receipt table.
+
+    `seg_diag` keeps EVERY decoded segment (dropped ones included, flagged
+    `dropped`), while assign_speakers labels only the kept `segments_list`.
+    Indexing the former with the latter shifts every label after a dropped
+    row by one; here each kept row consumes the next label and a dropped row
+    gets "". None when there is nothing to label (keeps the column off)."""
+    if not speakers:
+        return None
+    it = iter(speakers)
+    return [("" if s.get("dropped") else next(it, "")) for s in seg_diag]
 
 
 def _stage_extras(stats_key: "str | None", t0_perf: float) -> dict:
@@ -3421,8 +3434,10 @@ async def transcribe(
     # Central running-jobs registry: one entry per in-flight request; stage/
     # progress mirror in via _progress_set (bound through _JOB_BY_PID) when
     # the client opted into progress reporting.
+    # `user` is the display name so the running row in /stats reads the same
+    # as the finished rows beneath it ("alice", not an opaque row id).
     jobs.job_start("transcribe", id=request_id, model=resolved_model,
-                   user=_user_id, key=_key_id)
+                   user=user.get("username") or _user_id, key=_key_id)
     if _pid:
         _JOB_BY_PID[_pid] = request_id
         jobs.job_update(request_id, progress_id=_pid)
@@ -3435,6 +3450,10 @@ async def transcribe(
         if _clen and _clen.isdigit() and int(_clen) > max_upload:
             raise HTTPException(status_code=413, detail="upload too large")
 
+        # Perf origin for the whisper load: the transcribing row's decode t0
+        # is taken long after this, so `load_secs_since` from there could
+        # never see a cold load — the receipt reported `load 0.0s` always.
+        _model_t0 = time.perf_counter()
         model = await _get_or_load_model(resolved_model, lease=True)
         _leased_model = resolved_model
 
@@ -4126,11 +4145,17 @@ async def transcribe(
                         "detail": _detail,
                     })
                     _total_secs = max(0.0, _total_secs - _pre_secs)
+                # Measured from the load's own origin (not _dec_t0) so a cold
+                # whisper load shows up as this row's `load`; it is folded into
+                # `secs` too so `run = secs - load` and the wall total both hold.
+                _tr_extras = _stage_extras(resolved_model, _model_t0)
                 _stage_timings.append({
                     "name": "transcribing",
-                    "secs": round(_total_secs, 2),
+                    "secs": round(
+                        _total_secs + float(_tr_extras.get("load_secs") or 0.0),
+                        2),
                     "model": resolved_model,
-                    **_stage_extras(resolved_model, _dec_t0),
+                    **_tr_extras,
                 })
 
             all_words = []
@@ -4442,6 +4467,11 @@ async def transcribe(
             # only the English track is ever eligible as Whisper training
             # data (its translate task targets English and nothing else), so
             # the exporter has to be able to pick one language out.
+            # Segments whose guard fallback KEPT the source text for a target
+            # (translations_kept) are skipped for that target: the response
+            # flags them per segment, but the stored track has no such
+            # marker, so a kept original would be exported as translated
+            # text — source-language audio labelled task=translate.
             _capture_translations: "dict[str, str] | None" = None
             if will_capture and _translation_meta is not None:
                 _capture_translations = {
@@ -4468,11 +4498,6 @@ async def transcribe(
                     # Trailer step — not a rule card, so no `#N` prefix.
                     trace.append(("output-wrapper",
                                   _wrap_before, full_text_str))
-            # Segments whose guard fallback KEPT the source text for a target
-            # (translations_kept) are skipped for that target: the response
-            # flags them per segment, but the stored track has no such
-            # marker, so a kept original would be exported as translated
-            # text — source-language audio labelled task=translate.
             # Post-wrapper trim — strips whitespace that the wrapper config
             # itself may carry. Runs unconditionally (the per-model exclude
             # only governs the in-pipeline trim). Preserves a leading or
@@ -4664,7 +4689,7 @@ async def transcribe(
                                  if _translation_glossary else _OMIT),
                     "result": f"{len(segments_list)} segs",
                 } if _translation_meta else None),
-                speakers=speakers_list or None,
+                speakers=_align_speakers_to_diag(seg_diag, speakers_list),
                 warnings=_warnings or None,
                 skipped=_skipped or None,
             ))
@@ -5150,7 +5175,15 @@ async def translate_text(request: Request,
     # the two, and each one would have to remember to release a slot it
     # never actually used. From this line to the finally there is exactly
     # one path out.
-    _translate_inflight.acquire(_inflight_key)
+    try:
+        _translate_inflight.acquire(_inflight_key)
+    except HTTPException:
+        # Outside the try below, so the generic `except HTTPException`
+        # release there never sees this refusal — without this the parked
+        # dictation receipt would sit until the sweeper logged it as
+        # "no result within 90s" instead of the rejection it actually was.
+        _release_held_receipt(_held_key, "request rejected — too many in flight")
+        raise
     # Set only AFTER a successful acquire — the acquire itself sits
     # outside the try, so a refused request never releases a slot it does
     # not hold.
@@ -5164,7 +5197,8 @@ async def translate_text(request: Request,
         # Central running-jobs registry entry. Progress feeds in directly from
         # _on_progress below (works whether or not the client sent a progress_id).
         jobs.job_start("translate", id=request_id, model=(_tr_model or None),
-                       user=(_uid or None), key=user.get("key_id"),
+                       user=(user.get("username") or _uid or None),
+                       key=user.get("key_id"),
                        detail=f"{len(seg_in)} segs → {','.join(targets)}",
                        )
         jobs.job_update(request_id, stage="translating", progress_id=_pid)
@@ -5683,12 +5717,26 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # (both stages cache one pipeline/separator at a time). preload.is_resident
     # owns that comparison for every family, including the separator's
     # friendly-name → ".onnx" filename mapping this used to open-code.
+    # Configured model FIRST, then the allowlist (de-duplicated, order kept):
+    # an empty allowlist means "the configured model only" for both stages,
+    # so building from the allowlist alone published [] for a server that
+    # accepts one model — and a picker pre-flighting on it showed nothing.
+    def _stage_refs(configured, allowed) -> "list[str]":
+        refs = [configured] if configured else []
+        for _m in (allowed or []):
+            if _m and _m not in refs:
+                refs.append(_m)
+        return refs
     caps["diarization_models"] = [
         {"id": _m, "loaded": preload.is_resident("diarization", _m)}
-        for _m in (getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None) or [])]
+        for _m in _stage_refs(
+            (getattr(cfg, "DIARIZATION_MODEL", "") or "").strip(),
+            getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None))]
     caps["separation_models"] = [
         {"id": _m, "loaded": preload.is_resident("separation", _m)}
-        for _m in (getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or [])]
+        for _m in _stage_refs(
+            (getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "").strip(),
+            getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None))]
     return caps
 
 

@@ -372,3 +372,41 @@ def test_progress_registry_is_bounded(app_module):
         app_module._progress_set(f"{i:032x}", stage="waiting")
     assert len(app_module._BATCH_PROGRESS) <= app_module._BATCH_PROGRESS_MAX
     app_module._BATCH_PROGRESS.clear()
+
+
+def test_transcribing_row_bills_a_cold_whisper_load(client, app_module,
+                                                    monkeypatch):
+    """The transcribing row's `load` is measured from the perf origin of the
+    model load itself, not from decode start (which is always later, so the
+    row said `load 0.0s` for every stone-cold load). The load is folded into
+    the row's `secs` so `run = secs - load` and the wall total both hold."""
+    import time as _time
+    # The harness default is "" (whisper-1 → no model), and a row without a
+    # stats key gets no load column at all — give it a real one.
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL",
+                        "Systran/faster-whisper-large-v3", raising=False)
+    seen = {}
+
+    async def _loader(name, *, lease=False):
+        seen["loaded_wall"] = _time.time()
+        return FakeModel()
+    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+
+    def _load_secs_since(name, since_ts):
+        # Behaves like the real registry: the load is visible only to a
+        # stage whose origin precedes the moment the model was (re)loaded.
+        return 3.0 if since_ts <= seen["loaded_wall"] else 0.0
+    monkeypatch.setattr(app_module.system_stats, "load_secs_since",
+                        _load_secs_since)
+
+    real_block = app_module._format_request_block
+
+    def _capture(**kw):
+        seen["stages"] = kw.get("stages")
+        return real_block(**kw)
+    monkeypatch.setattr(app_module, "_format_request_block", _capture)
+
+    assert _post(client).status_code == 200
+    row = next(s for s in seen["stages"] if s["name"] == "transcribing")
+    assert row["load_secs"] == 3.0
+    assert row["secs"] >= 3.0

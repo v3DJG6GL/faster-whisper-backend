@@ -238,3 +238,25 @@ def test_stage_params_can_be_marked_non_default(app_module):
     })
     row = next(l for l in block.splitlines() if "min_speakers" in l)
     assert row.rstrip().endswith("*")
+
+
+def test_speaker_labels_stay_on_the_kept_rows_after_a_drop(app_module):
+    """seg_diag keeps the segment the word-rate guard dropped; assign_speakers
+    labels only the kept ones. The receipt must re-index the labels to the
+    diag rows — one dropped row used to shift every later speaker by one."""
+    diag = [
+        dict(_SEG[0]),
+        {"id": 1, "start": 13.44, "end": 14.00, "alp": -0.9, "nsp": 0.3,
+         "cr": 2.5, "temp": 1.0, "text": "gibberish gibberish", "dropped": True},
+        dict(_SEG[1], id=2),
+    ]
+    aligned = app_module._align_speakers_to_diag(diag, ["SPEAKER_00", "SPEAKER_01"])
+    assert aligned == ["SPEAKER_00", "", "SPEAKER_01"]
+    block = _block(app_module, seg_diag=diag, speakers=aligned)
+    rows = {int(l.split()[0]): l for l in block.splitlines()
+            if l.strip()[:1].isdigit() and "s  " in l}
+    assert "S0" in rows[0]
+    assert "S0" not in rows[1] and "S1" not in rows[1]   # the dropped row
+    assert "S1" in rows[2]
+    # Nothing to label keeps the column off entirely.
+    assert app_module._align_speakers_to_diag(diag, []) is None

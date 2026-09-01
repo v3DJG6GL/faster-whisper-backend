@@ -410,3 +410,66 @@ def test_per_user_cap_is_per_user(client, make_user_key, app_module,
         # bob's own slot is untouched by alice holding hers.
         with client.websocket_connect(_STREAM_URL, headers=bearer(key_b)) as b:
             assert _handshake(b)["type"] == "ready"
+
+
+def test_aborted_handshake_releases_the_per_user_slot(client, app_module,
+                                                       monkeypatch):
+    """ws.accept() raises when the client is already gone. The per-user slot
+    is taken BEFORE accept and the releasing finally only starts after it, so
+    every aborted handshake used to burn one slot for the life of the process."""
+    import starlette.websockets
+    import streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
+                        raising=False)
+
+    real_accept = starlette.websockets.WebSocket.accept
+
+    async def _gone(self, *args, **kwargs):
+        raise RuntimeError("client went away during the handshake")
+    monkeypatch.setattr(starlette.websockets.WebSocket, "accept", _gone)
+    with pytest.raises(Exception):
+        with client.websocket_connect(_STREAM_URL) as ws:
+            ws.receive_json()
+    assert streaming_routes._stream_sessions._counts == {}
+
+    # The slot is free again: the very next handshake from the same identity
+    # goes through instead of being refused with 4429.
+    monkeypatch.setattr(starlette.websockets.WebSocket, "accept", real_accept)
+    with client.websocket_connect(_STREAM_URL) as ws:
+        assert _handshake(ws)["type"] == "ready"
+
+
+def test_cancel_during_a_completed_load_still_releases_the_lease(
+        client, app_module, monkeypatch):
+    """A cancellation delivered while the keepalive loop waits on a load that
+    has ALREADY returned: the lease was taken, the record of it never made.
+    The teardown must still find and release it."""
+    import asyncio
+    import streaming_routes
+
+    _real = app_module._get_or_load_model
+
+    async def _loader(name, *, lease=False):
+        model = await _real(name, lease=False)
+        if lease:
+            app_module._model_leases[name] = \
+                app_module._model_leases.get(name, 0) + 1
+        return model
+    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+
+    real_wait = asyncio.wait
+
+    async def _wait_then_cancel(fs, *args, **kwargs):
+        done, pending = await real_wait(fs, *args, **kwargs)
+        if done and all(t.done() for t in fs):
+            raise asyncio.CancelledError()
+        return done, pending
+    monkeypatch.setattr(streaming_routes.asyncio, "wait", _wait_then_cancel)
+
+    with pytest.raises(BaseException):
+        with client.websocket_connect(_STREAM_URL) as ws:
+            _handshake(ws)
+            ws.receive_json()
+    assert app_module._model_leases == {}
+    assert streaming_routes._active_sessions == set()

@@ -357,3 +357,26 @@ def test_apply_no_profiles_roundtrip_and_suppresses_user_profile(client, make_us
         "user_id": uid, "key_id": kid, "model": "whisper-1"}).json()
     assert rj["profiles_applied"] == []
     assert rj["fields"]["BEAM_SIZE"]["winner_layer"] != "user.profile:clinic"
+
+
+def test_me_stage_model_lists_seed_the_configured_model(client, app_module,
+                                                        monkeypatch):
+    """An empty allowlist means "the configured model only" for both stages,
+    so /v1/me must publish that model — an empty list told the client's
+    picker nothing was available. With an allowlist, the configured model
+    leads (de-duplicated) so the picker defaults correctly."""
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_MODEL", "pyannote/x")
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ALLOWED_MODELS", [])
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_UVR_MODEL", "UVR-A")
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ALLOWED_MODELS", [])
+    j = client.get("/v1/me").json()
+    assert [m["id"] for m in j["diarization_models"]] == ["pyannote/x"]
+    assert [m["id"] for m in j["separation_models"]] == ["UVR-A"]
+
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ALLOWED_MODELS",
+                        ["pyannote/y", "pyannote/x"])
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ALLOWED_MODELS",
+                        ["UVR-B", "UVR-A"])
+    j = client.get("/v1/me").json()
+    assert [m["id"] for m in j["diarization_models"]] == ["pyannote/x", "pyannote/y"]
+    assert [m["id"] for m in j["separation_models"]] == ["UVR-A", "UVR-B"]

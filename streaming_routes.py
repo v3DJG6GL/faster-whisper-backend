@@ -421,7 +421,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
     # A browser fails the handshake unless the server echoes one of the
     # subprotocols it offered, so hand back the bearer entry when the key
     # arrived that way; None otherwise (header / cookie clients offered none).
-    await ws.accept(subprotocol=_ws_bearer_subprotocol(ws) or None)
+    # accept() awaits the client's connect frame and raises when the client
+    # already went away — an aborted handshake must not keep the per-user
+    # slot taken above (the finally that releases it only starts below).
+    try:
+        await ws.accept(subprotocol=_ws_bearer_subprotocol(ws) or None)
+    except BaseException:
+        _stream_sessions.release(_stream_key)
+        raise
     session_id = uuid.uuid4().hex
     _active_sessions.add(session_id)
     # Set only now: from here every exit runs the finally that releases it.
@@ -429,8 +436,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
     metrics.in_flight_transcriptions += 1
     # Central running-jobs registry: one "dictate" entry per live session
     # (no progress — a dictation has no defined end until the client stops).
+    # `user` is the display name so the running row in /stats reads the same
+    # as the finished rows beneath it.
     jobs.job_start("dictate", id=session_id, detail="live",
-                   user=user.get("user_id"), key=user.get("key_id"))
+                   user=user.get("username") or user.get("user_id"),
+                   key=user.get("key_id"))
     session: "StreamSession | None" = None
     # One entry per lease taken by _load_with_keepalive. The final and partial
     # model are often the SAME name — that leases it twice and releases it
@@ -546,18 +556,35 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # its transcript arrived. Signal liveness every few seconds; the
             # frame is additive, clients that don't know it ignore it.
             task = asyncio.ensure_future(main._get_or_load_model(name, lease=True))
-            while not task.done():
-                done, _ = await asyncio.wait({task}, timeout=3.0)
-                if done:
-                    break
-                try:
-                    await ws.send_json({"type": "loading", "model": name})
-                except Exception:  # noqa: BLE001
-                    # Client gone mid-load: stop signalling, but still await
-                    # the load so the model lands in the cache for the next
-                    # connection (and its error, if any, is consumed here).
-                    break
-            model = await task
+            try:
+                while not task.done():
+                    done, _ = await asyncio.wait({task}, timeout=3.0)
+                    if done:
+                        break
+                    try:
+                        await ws.send_json({"type": "loading", "model": name})
+                    except Exception:  # noqa: BLE001
+                        # Client gone mid-load: stop signalling, but still
+                        # await the load so the model lands in the cache for
+                        # the next connection (and its error, if any, is
+                        # consumed here).
+                        break
+                model = await task
+            except BaseException:
+                # A cancellation (lifespan shutdown is the reachable one)
+                # delivered at one of the awaits above, while the inner load
+                # RETURNED: its lease was taken but the append below never
+                # ran, so the teardown could not release it. Record it before
+                # propagating; a load still in flight releases its own lease
+                # once it lands, since the teardown will have run by then.
+                if task.done():
+                    if not task.cancelled() and task.exception() is None:
+                        _model_leases_held.append(name)
+                else:
+                    task.add_done_callback(
+                        lambda t: (not t.cancelled() and t.exception() is None
+                                   and main._release_model_lease(name)))
+                raise
             # Only a load that RETURNED took a lease; record it for the
             # session teardown. A raising load leaves the refcount untouched.
             _model_leases_held.append(name)

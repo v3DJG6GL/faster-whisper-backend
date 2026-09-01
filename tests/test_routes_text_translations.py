@@ -432,3 +432,27 @@ def test_locked_translation_model_applies_to_the_text_endpoint(
     assert r.status_code == 200, r.text
     assert calls[0]["model_ref"] == "org/small:Q4_K_M"  # locked value wins
     assert any("locked" in w for w in r.json().get("warnings", []))
+
+
+def test_inflight_refusal_releases_the_held_receipt(client, app_module,
+                                                     monkeypatch):
+    """The in-flight acquire sits OUTSIDE the handler's try, so its 429 never
+    reached the `except HTTPException` release. The parked dictation receipt
+    must still be released — not left for the sweeper to log 90 s later."""
+    import receipt_hold
+
+    _enable(app_module, monkeypatch)
+    _stub_translate(monkeypatch)
+    gauge = app_module._translate_inflight
+    for _ in range(int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)):
+        gauge.acquire(_open_key())
+    receipt_hold.park("cap1", {"file_label": "utt#1", "model_name": "m",
+                               "raw": "r", "final": "f", "seg_diag": [],
+                               "kwargs": {}}, hold_s=90)
+    try:
+        r = client.post(URL, json=_body(captured_id="cap1"))
+        assert r.status_code == 429
+        assert receipt_hold.pending() == 0
+    finally:
+        gauge.clear()
+        receipt_hold._reset_for_tests()
