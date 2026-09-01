@@ -94,6 +94,34 @@ services:
       # Optional: bootstrap the first admin without the UI. Prefer the *_FILE
       # form so the secret stays out of `docker inspect` / the process env:
       # WHISPER_BOOTSTRAP_ADMIN_KEY_FILE: /run/secrets/bootstrap_admin_key
+    # ── Transcribe-from-URL: outbound network isolation ────────────────────
+    # With WHISPER_URL_DOWNLOAD_ENABLED on, a client picks a link and the
+    # SERVER fetches it, so it can be aimed at addresses the client cannot
+    # reach (a LAN service, the cloud metadata endpoint 169.254.169.254).
+    # The app already refuses those on every hop — probe, redirect and
+    # yt-dlp alike, with the resolved IP pinned (net_policy.py +
+    # ytdlp_plugins/). This is the defence-in-depth half: deny the private
+    # ranges at the network layer too, on the HOST, so a bug in the guard is
+    # not the only thing in the way. Give the service its own subnet first
+    # (uncomment the `networks:` blocks below), then, as root on the host:
+    #
+    #   # /etc/nftables.d/whisper-egress.nft  —  nft -f this file
+    #   table inet whisper {
+    #     chain egress {
+    #       type filter hook forward priority filter; policy accept;
+    #       ip  saddr != 172.31.9.0/24 return          # only this service
+    #       ip  daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
+    #                   127.0.0.0/8, 169.254.0.0/16 } drop
+    #       ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop
+    #     }
+    #   }
+    #
+    # The subnet below sits inside 172.16/12, so the `ip saddr != … return`
+    # line must come first — it is what lets the container still talk to the
+    # host's DNS/gateway while everything else in the RFC1918 space is
+    # dropped. Adjust both to your network.
+    # networks:
+    #   whisper-egress:
     volumes:
       - whisper-data:/data
       - whisper-models:/models
@@ -109,3 +137,9 @@ volumes:
 # secrets:
 #   bootstrap_admin_key:
 #     file: ./secrets/bootstrap_admin_key.txt
+
+# networks:
+#   whisper-egress:
+#     ipam:
+#       config:
+#         - subnet: 172.31.9.0/24

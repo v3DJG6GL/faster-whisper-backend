@@ -675,9 +675,23 @@ URL_DOWNLOAD_ENABLED: bool = _D("URL_DOWNLOAD_ENABLED")
 #                           accepted when a capped probe shows the response is
 #                           audio/* or video/* (a direct media file link).
 #   URL_ALLOW_GENERIC       accept ANY Generic-extractor URL (webpage
-#                           scraping). SSRF hazard — the server will fetch
-#                           arbitrary URLs, including internal ones. Off by
+#                           scraping): the server will fetch whatever the
+#                           client names, so it widens how much of the public
+#                           web one caller can point this backend at. Off by
 #                           default; enabling it is an explicit operator call.
+#
+# Both of the above widen WHICH URLs are accepted, not what the server may
+# reach. Every fetch on the URL path — the direct-media probe, the thumbnail
+# fetch, yt-dlp's metadata probe AND the yt-dlp download subprocess — is held
+# to one address policy (net_policy.py): hop 0 and every redirect hop must
+# resolve outside loopback / RFC1918 / link-local (cloud metadata) / CGNAT /
+# ULA / reserved ranges, the resolved IP is pinned for the connection (so a
+# second DNS answer cannot move the target), and only http(s) is spoken. For
+# yt-dlp that policy is enforced by the guard in ytdlp_plugins/, installed in
+# this process and in the download subprocess; if it cannot be installed, link
+# downloads are REFUSED rather than run unguarded. This is application-level
+# containment: see the README's "Deployment: outbound network isolation" for
+# the firewall half.
 URL_ALLOWED_EXTRACTORS: "list[str]" = _D("URL_ALLOWED_EXTRACTORS")
 URL_ALLOW_DIRECT_MEDIA: bool = _D("URL_ALLOW_DIRECT_MEDIA")
 URL_ALLOW_GENERIC: bool = _D("URL_ALLOW_GENERIC")

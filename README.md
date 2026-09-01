@@ -410,6 +410,29 @@ WHISPER_USER_WEBUI_ALLOWED_HOSTS=127.0.0.1,::1,192.168.1.0/24
 
 CIDR is accepted (`192.168.0.0/16`) and so are bare IPs (`10.0.0.5`). For a dual-stack "any host" allowlist you need both `0.0.0.0/0` (IPv4) and `::/0` (IPv6).
 
+### Transcribe from a URL
+
+`POST /v1/audio/transcriptions` accepts a `source_url` (and `POST /v1/audio/url-preview` shows what it resolves to) when `WHISPER_URL_DOWNLOAD_ENABLED` is on. The link is fetched server-side with **yt-dlp**: `URL_ALLOWED_EXTRACTORS` limits which sites are allowed, `URL_ALLOW_DIRECT_MEDIA` (on by default) additionally accepts plain audio/video file links, and `URL_ALLOW_GENERIC` (off) accepts any page.
+
+**Deployment: outbound network isolation.** A client picks the URL, so the server can be pointed at things it can reach and the client cannot — a LAN service, the cloud metadata endpoint at `169.254.169.254`. The application blocks that on its own: one address policy (`net_policy.py`) is applied to **every** fetch on this path — the direct-media probe, the thumbnail fetch, yt-dlp's metadata probe and the yt-dlp download subprocess — on **hop 0 and every redirect hop**, with the resolved IP **pinned** for the connection (so a second DNS answer cannot move the target) and only `http(s)` spoken. yt-dlp's own opener is covered by the guard in [`ytdlp_plugins/`](ytdlp_plugins/), installed in-process and in the download subprocess; **if it cannot be installed, link downloads are refused** rather than run unguarded (look for `[url-dl] SSRF guard active` at startup).
+
+That is application-level containment. For defence in depth, also deny the private ranges at the network layer, so a bug in the guard is not the only thing standing between a pasted link and your LAN. On the container host, with the backend in its own network namespace:
+
+```nft
+# /etc/nftables.d/whisper-egress.nft  —  nft -f this file
+table inet whisper {
+  chain egress {
+    type filter hook forward priority filter; policy accept;
+    # Only traffic leaving the backend's subnet (adjust to your compose net).
+    ip  saddr != 172.20.0.0/16 return
+    ip  daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16 } drop
+    ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop
+  }
+}
+```
+
+Adjust `172.20.0.0/16` to the compose network's subnet, and drop the `172.16.0.0/12` line only if that subnet overlaps it (it does for Docker's defaults — give the service its own network with an explicit subnet outside the ranges you deny). The commented block in `docker-compose.yml` shows the same idea. On a bare-metal install, the equivalent is an `output` chain matched on the service user (`meta skuid whisper`).
+
 ### Behind a reverse proxy
 
 Two things change once the app is reached through a proxy:
@@ -690,6 +713,8 @@ diarization.py             Speaker diarization via pyannote.audio (optional inst
 bgm_separation.py          Background-music separation via audio-separator / UVR MDX-Net (optional: requirements-bgm.txt)
 url_download.py            Transcribe-from-URL: fetch a client-supplied media link with yt-dlp
 url_media_store.py         Short-term retention store for URL-downloaded audio
+net_policy.py              The one definition of which outbound addresses the server refuses
+ytdlp_plugins/             SSRF guard for yt-dlp: same policy on every hop, pinned DNS, http(s) only
 home_routes.py             Root landing hub — GET / serves the WebUI's front door
 preload.py                 Model preloading: plan registry, warm leases and the single load worker
 preload_routes.py          POST /v1/models/preload — warm the models a job is about to need

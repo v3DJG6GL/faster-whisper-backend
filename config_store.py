@@ -481,12 +481,16 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "URL_ALLOW_DIRECT_MEDIA":
         "Accept direct links to media files (URLs no dedicated extractor "
         "matches) after a capped probe confirms the response is audio/* or "
-        "video/*. Safer than URL_ALLOW_GENERIC: only confirmed media is "
+        "video/*. Narrower than URL_ALLOW_GENERIC: only confirmed media is "
         "fetched.",
     "URL_ALLOW_GENERIC":
-        "Accept ANY URL via yt-dlp's Generic webpage extractor. SSRF "
-        "hazard: the server will fetch arbitrary URLs, including internal "
-        "ones. Leave off unless you understand the exposure.",
+        "Accept ANY URL via yt-dlp's Generic webpage extractor — the server "
+        "fetches whatever page the client names, not just confirmed media. "
+        "Internal targets stay blocked either way (every hop, including "
+        "redirects and yt-dlp's own fetches, is checked against the "
+        "private/loopback/metadata ranges with the resolved IP pinned), but "
+        "this still widens how much of the public web one caller can aim "
+        "the server at. Leave off unless you need it.",
     "URL_MAX_DURATION_SEC":
         "Reject linked media longer than this many seconds (checked from "
         "metadata before downloading). Default 14400 (4 h).",

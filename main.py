@@ -2761,6 +2761,19 @@ async def lifespan(app: FastAPI):
     url_media_janitor_task = asyncio.create_task(
         _url_media_store.janitor_loop())
 
+    # Install + verify the SSRF guard that every yt-dlp fetch rides on
+    # (ytdlp_plugins/, see url_download.guard_self_check). Doing it here makes
+    # a broken guard an operator-visible startup line instead of a surprise on
+    # the first pasted link; probe()/download() re-check and refuse anyway, so
+    # a failure here is logged, never fatal. Skipped when yt-dlp isn't
+    # installed at all — there is then nothing to guard.
+    import url_download as _url_download
+    if _url_download.yt_dlp_version():
+        try:
+            _url_download.guard_self_check(force=True)
+        except Exception as _ge:  # noqa: BLE001 — guard_self_check already logged
+            logger.error("[url-dl] link downloads will be refused: %s", _ge)
+
     # Open the browser-session store (HttpOnly cookie auth for the WebUI).
     # Non-fatal: if this fails, cookie login is unavailable but bearer auth
     # (API clients) and open mode keep working.

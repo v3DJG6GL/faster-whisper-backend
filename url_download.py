@@ -17,6 +17,12 @@ Design notes:
     info dict); the actual download runs the yt-dlp *CLI in a subprocess* —
     crash isolation from ~2000 third-party extractors, trivial cancellation
     (terminate), and a real wall-clock timeout.
+  - yt-dlp fetches with its OWN opener, which used to follow redirects and
+    re-resolve DNS with no policy: a public link could 302 the downloader
+    into the LAN or the cloud metadata service behind the probe's back. Both
+    paths now install the guard in ytdlp_plugins/ (see guard_self_check) —
+    same address policy (net_policy), applied to every hop, with the resolved
+    IP pinned — and REFUSE to run if it cannot be installed.
   - No user-controlled value ever becomes a flag: the URL is the only
     client-supplied argv element and always follows a literal "--".
 """
@@ -26,17 +32,17 @@ import asyncio
 import base64
 import concurrent.futures
 import dataclasses
-import ipaddress
+import importlib.util
 import logging
 import os
 import re
-import socket
 import sys
 import time
 import urllib.parse
 import urllib.request
 
 import config as cfg
+import net_policy
 from store_common import log_safe
 
 logger = logging.getLogger("whisper-api")
@@ -146,33 +152,13 @@ def match_extractor(url: str) -> str:
     return "Generic"
 
 
-def _host_is_forbidden(host: str) -> bool:
-    """True when `host` resolves ONLY to addresses we refuse to fetch from:
-    loopback, RFC1918, link-local (cloud metadata), CGNAT, ULA, reserved.
-    Resolution failure counts as forbidden (we can't vouch for it)."""
-    try:
-        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
-    except OSError:
-        return True
-    if not infos:
-        return True
-    for info in infos:
-        addr = info[4][0]
-        try:
-            ip = ipaddress.ip_address(addr.split("%", 1)[0])
-        except ValueError:
-            return True
-        if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
-            ip = ip.ipv4_mapped
-        if (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
-            return True
-        if isinstance(ip, ipaddress.IPv4Address) and ip in _CGNAT_NET:
-            return True
-    return False
-
-
-_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+# "Which addresses do we refuse to fetch from" has exactly ONE definition,
+# in net_policy — because the yt-dlp guard (ytdlp_plugins/) enforces the same
+# rule from a separate process and must not carry a second copy of the list.
+# Bound as a module global on purpose: the redirect handler and both probes
+# look it up here, and tests monkeypatch it here.
+_host_is_forbidden = net_policy.host_is_forbidden
+_CGNAT_NET = net_policy.CGNAT_NET
 
 
 class _NoPrivateRedirects(urllib.request.HTTPRedirectHandler):
@@ -224,6 +210,78 @@ def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
 # other asyncio.to_thread in the process shares.
 _PROBE_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="url-probe")
+
+
+# ── the yt-dlp SSRF guard ───────────────────────────────────────────────────
+# The probes above gate every hop THEY make, but the two fetches that actually
+# move bytes — probe()'s extract_info and download()'s subprocess — go through
+# yt-dlp's own opener, which follows redirects and re-resolves DNS with no
+# policy at all. ytdlp_plugins/ ships a RequestHandler that re-applies
+# net_policy to hop 0 and to every redirect hop, pins the resolved IP, and
+# speaks only http(s); it also unregisters yt-dlp's built-in handlers so
+# nothing can fall through to an unguarded opener. It is installed here for
+# the in-process probe and by ytdlp_plugins/run_guarded_yt_dlp.py for the
+# download subprocess.
+GUARD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         "ytdlp_plugins")
+GUARD_LAUNCHER = os.path.join(GUARD_DIR, "run_guarded_yt_dlp.py")
+GUARD_MODULE = os.path.join(GUARD_DIR, "fwb_ssrf_guard", "yt_dlp_plugins",
+                            "extractor", "fwb_ssrf_guard.py")
+# The needle every guard refusal carries; classify_error maps it to a
+# client-safe message. Must equal fwb_ssrf_guard.MARKER (pinned by a test).
+GUARD_MARKER = "fwb-ssrf-guard"
+
+_guard_ok = False
+_guard_announced = False
+
+
+def guard_self_check(*, force: bool = False) -> None:
+    """Install the yt-dlp SSRF guard in THIS process and prove that it took.
+
+    Fail CLOSED: every caller that is about to let yt-dlp touch the network
+    goes through here first, so a yt-dlp refactor that breaks the handler
+    (it subclasses yt_dlp.networking._urllib.UrllibRH — private by name)
+    stops link downloads instead of silently running them unguarded.
+
+    Called once from the app lifespan so a broken guard is an operator-visible
+    startup line rather than a surprise on the first pasted link, and again —
+    cached — from probe() and download(). Raises UrlDownloadError, which is
+    CLIENT-SAFE by contract: the yt-dlp version and the real cause go to the
+    log, never to the caller."""
+    global _guard_ok, _guard_announced
+    if _guard_ok and not force:
+        return
+    try:
+        for path in (GUARD_LAUNCHER, GUARD_MODULE):
+            if not os.path.isfile(path):
+                raise RuntimeError(f"guard file missing: {path}")
+        spec = importlib.util.spec_from_file_location(
+            "fwb_ssrf_guard_inproc", GUARD_MODULE)
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"cannot load {GUARD_MODULE}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["fwb_ssrf_guard_inproc"] = module
+        spec.loader.exec_module(module)  # registers the handler on import
+        if module.MARKER != GUARD_MARKER:
+            raise RuntimeError("guard marker mismatch — classify_error would "
+                               "no longer recognise a refusal")
+        if not module.is_installed():
+            raise RuntimeError("the guard handler did not register")
+    except Exception as e:  # noqa: BLE001 — ANY failure must fail closed
+        _guard_ok = False
+        logger.error(
+            "[url-dl] REFUSING link downloads: the yt-dlp SSRF guard could "
+            "not be installed for yt-dlp %s (%s: %s). Without it yt-dlp would "
+            "follow redirects into private addresses unchecked. Check %s.",
+            yt_dlp_version() or "not installed", type(e).__name__,
+            log_safe(str(e)), GUARD_MODULE)
+        raise UrlDownloadError(
+            "link downloads are unavailable on this server") from None
+    _guard_ok = True
+    if not _guard_announced:
+        _guard_announced = True
+        logger.info("[url-dl] SSRF guard active for yt-dlp %s (%s)",
+                    yt_dlp_version() or "?", module.RH_NAME)
 
 
 async def check_url_policy(url: str) -> str:
@@ -284,6 +342,12 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         key = await asyncio.wait_for(check_url_policy(url), timeout)
     except asyncio.TimeoutError:
         raise UrlDownloadError("the site took too long to answer") from None
+
+    # Fail closed BEFORE extract_info: the guard registers the RequestHandler
+    # this process's YoutubeDL will pick, so it has to be in place (and
+    # verified) before the instance is built. After the policy check, so a
+    # rejected URL still gets its own message.
+    guard_self_check()
 
     def _extract() -> dict:
         import yt_dlp  # lazy: optional dependency
@@ -406,6 +470,12 @@ async def fetch_thumbnail_data_uri(
 # (substring-of-tool-output, client-safe message). Order matters: first hit
 # wins, and the more specific conditions sit above the catch-alls.
 _ERROR_TAXONOMY: "tuple[tuple[tuple[str, ...], str], ...]" = (
+    # First, and by an exact marker: the SSRF guard refused a hop. Its text
+    # names the host and the internal address it resolved to — server-log
+    # material only, so it must never fall through to a message that quotes
+    # tool output.
+    ((GUARD_MARKER,),
+     "the site could not be reached from the server"),
     # Age before bot: both messages start "Sign in to confirm …", so the
     # broader sign-in needle must not shadow the age variant.
     (("confirm your age", "age-restricted", "age restricted"),
@@ -491,7 +561,16 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str
     from streaming_transport import ffmpeg_exe
 
     return [
-        sys.executable, "-m", "yt_dlp",
+        # NOT `-m yt_dlp`: the launcher installs the SSRF guard first and
+        # exits non-zero if it cannot (yt-dlp's plugin loader would only
+        # print the import traceback and carry on unguarded), and running a
+        # script puts ytdlp_plugins/ on sys.path instead of the repo root.
+        sys.executable, GUARD_LAUNCHER,
+        # Order matters: --no-plugin-dirs clears the defaults AND anything an
+        # earlier --plugin-dirs added, so the guard's directory must follow
+        # it. An operator's stray ~/.config/yt-dlp/plugins therefore cannot
+        # pre-empt the guard.
+        "--no-plugin-dirs", "--plugin-dirs", GUARD_DIR,
         "-f", DOWNLOAD_FORMAT,
         "--no-playlist",
         "--playlist-items", "1",  # belt+braces: never more than one item
@@ -529,9 +608,17 @@ async def download(
     terminates the subprocess and raises UrlCancelled. The whole download is
     bounded by `timeout` wall-clock seconds."""
     url = validate_url(url)
+    guard_self_check()  # fail closed: never spawn an unguarded downloader
     max_bytes = int(max_bytes or _effective_max_bytes())
     timeout = float(timeout or getattr(cfg, "URL_DOWNLOAD_TIMEOUT_SEC", 900))
     argv = build_download_argv(url, dest_dir=dest_dir, max_bytes=max_bytes)
+
+    # YTDLP_NO_PLUGINS makes yt-dlp skip plugin loading entirely; the launcher
+    # installs the guard directly and so is immune, but --plugin-dirs is the
+    # belt to that braces and must not be silently disabled by the ambient
+    # environment.
+    env = dict(os.environ)
+    env.pop("YTDLP_NO_PLUGINS", None)
 
     t0 = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
@@ -539,6 +626,7 @@ async def download(
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        env=env,
     )
     stderr_tail = bytearray()
 

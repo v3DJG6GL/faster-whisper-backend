@@ -156,12 +156,15 @@ def test_unresolvable_host_is_forbidden(monkeypatch):
     def _nxdomain(*a, **k):
         raise OSError("nxdomain")
 
-    monkeypatch.setattr(udl.socket, "getaddrinfo", _nxdomain)
+    # The resolver lives in net_policy now — the ONE definition of the
+    # address gate, shared with the yt-dlp guard subprocess.
+    monkeypatch.setattr(udl.net_policy.socket, "getaddrinfo", _nxdomain)
     assert udl._host_is_forbidden("anything.invalid") is True
 
 
 def test_empty_resolution_is_forbidden(monkeypatch):
-    monkeypatch.setattr(udl.socket, "getaddrinfo", lambda *a, **k: [])
+    monkeypatch.setattr(udl.net_policy.socket, "getaddrinfo",
+                        lambda *a, **k: [])
     assert udl._host_is_forbidden("anything.invalid") is True
 
 
@@ -543,6 +546,11 @@ def test_probe_selects_download_format(monkeypatch):
     fake = type(sys)("yt_dlp")
     fake.YoutubeDL = _FakeYDL
     monkeypatch.setitem(sys.modules, "yt_dlp", fake)
+    # The stand-in yt_dlp has no .networking, so the SSRF guard cannot install
+    # into it — and probe() fails closed when it can't. Nothing here reaches
+    # the network, so stub the check out along with the downloader itself.
+    # (The guard's own behaviour is covered by tests/test_url_ssrf_guard.py.)
+    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
     monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     # A cap smaller than any merged video but above the audio track: the
@@ -581,6 +589,11 @@ def test_probe_rejects_channel_page_as_playlist(monkeypatch):
     fake = type(sys)("yt_dlp")
     fake.YoutubeDL = _FakeYDL
     monkeypatch.setitem(sys.modules, "yt_dlp", fake)
+    # The stand-in yt_dlp has no .networking, so the SSRF guard cannot install
+    # into it — and probe() fails closed when it can't. Nothing here reaches
+    # the network, so stub the check out along with the downloader itself.
+    # (The guard's own behaviour is covered by tests/test_url_ssrf_guard.py.)
+    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
     monkeypatch.setattr(udl, "match_extractor", lambda u: "YoutubeTab")
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     with pytest.raises(udl.UrlDownloadError, match="[Pp]laylist"):
