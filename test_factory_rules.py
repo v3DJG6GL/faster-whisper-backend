@@ -249,6 +249,33 @@ def test_missing_pipeline_rules_key_raises():
             os.unlink(path)
 
 
+def test_neuenzeile_fires_at_end_of_utterance():
+    """The committed dictation map's newline keys fire in the common
+    dictation positions (end of utterance, before punctuation).
+
+    Regression: config.json once shipped "Neuenzeile " with a trailing
+    space; compiled word-bounded, the escaped space + closing \\b demanded
+    a following word character, so the key never fired at end of utterance.
+    Compiles the real factory map exactly like main.rebuild_caches does for
+    callback:map rules (longest-first alternation, \\b-bounded, IGNORECASE,
+    lower-cased lookup) — kept inline so this file stays pydantic-only.
+    """
+    import re
+
+    for rule in cs.load_factory_rules():
+        if rule.get("type") == "callback:map" and "Neuenzeile" in rule.get("map", {}):
+            m = rule["map"]
+            break
+    else:
+        assert False, "no factory callback:map rule with a 'Neuenzeile' key"
+    alternation = "|".join(re.escape(k) for k in sorted(m, key=len, reverse=True))
+    cre = re.compile(r"\b(" + alternation + r")\b", re.IGNORECASE)
+    lookup = {k.lower(): v for k, v in m.items()}
+    sub = lambda text: cre.sub(lambda mt: lookup.get(mt.group(0).lower(), mt.group(0)), text)
+    assert "\n" in sub("Text Neuenzeile")
+    assert "\n" in sub("Text Neuenzeile.")
+
+
 if __name__ == "__main__":
     tests = sorted(
         (name, obj) for name, obj in globals().items()

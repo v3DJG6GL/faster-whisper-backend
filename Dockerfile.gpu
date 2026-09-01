@@ -51,8 +51,10 @@ COPY requirements-diarize.txt requirements-bgm.txt requirements-translate.txt ./
 RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       apt-get update \
       && apt-get install -y --no-install-recommends ffmpeg gcc g++ \
-      && pip install -r requirements-diarize.txt "audio-separator[gpu]>=0.44" \
-           "audioread>=2.1.9" "librosa<1.0" \
+      # requirements-bgm.txt pins the versions (single source of truth,
+      # Renovate-bumped); "audio-separator[gpu]" only swaps in the GPU extra.
+      && pip install -r requirements-diarize.txt -r requirements-bgm.txt \
+           "audio-separator[gpu]" \
            --extra-index-url https://download.pytorch.org/whl/cu126 \
       # onnxruntime-gpu >=1.27 on PyPI is a CUDA 13 build — on this image's
       # cu12 userspace its CUDA provider fails to dlopen at session creation
@@ -72,7 +74,7 @@ RUN if [ "${INCLUDE_EXTRAS}" = "1" ]; then \
       # — but that needs a CUDA -devel base image (nvcc) and ~20 min.
       # The wheel bundles its own libggml/llama and dlopens CUDA libs from
       # torch's pip-installed nvidia/* dirs, already on LD_LIBRARY_PATH below.
-      && pip install "llama-cpp-python>=0.3.34" \
+      && pip install -r requirements-translate.txt \
            --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124 \
       && apt-get purge -y gcc g++ \
       && apt-get autoremove -y \

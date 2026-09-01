@@ -78,10 +78,17 @@ python main.py                             # serves on http://0.0.0.0:8000
 # remove: ./uninstall-service.sh
 ```
 
+The generated unit pins `WHISPER_DATA_DIR=<repo>/data` and
+`WHISPER_MODELS_DIR=<repo>/models`, so state and models live inside the
+checkout (matching the Windows layout) instead of the container-first
+`/data` / `/models` defaults.
+
 ### Docker (any OS)
 
-CI publishes four images to the Forgejo container registry on every push to
-`main` (and on `v*` tags): `:latest` (CPU) and `:latest-gpu` (adds the CUDA 12 /
+CI publishes four images to the Forgejo container registry on every `v*` tag —
+and every green push to `main` mints a tag automatically, so images follow each
+merge (a commit marked `[skip release]` mints no tag and publishes no images):
+`:latest` (CPU) and `:latest-gpu` (adds the CUDA 12 /
 cuDNN 9 wheels), plus `:latest-full` / `:latest-gpu-full` — the same images
 with the optional heavy extras baked in (speaker diarization: pyannote +
 torch + system ffmpeg; music separation; text-to-text translation:
@@ -134,9 +141,10 @@ rebuild needed, volumes work with any UID out of the box.
 
 First server start eagerly preloads the models in `PRELOAD_MODELS` (by default
 two: `Systran/faster-whisper-large-v2` and `Systran/faster-whisper-large-v3` —
-several GB total) into the HuggingFace cache (`~/.cache/huggingface/hub/`, or
-`%USERPROFILE%\.cache\huggingface\hub\` on Windows; override with
-`WHISPER_DOWNLOAD_ROOT`). Set `WHISPER_PRELOAD_MODELS=large-v2` (or empty) to
+several GB total) into `WHISPER_DOWNLOAD_ROOT`, which defaults to the models
+dir (`/models` in containers and on bare-metal Linux, `<repo>\models` on
+Windows); set `WHISPER_DOWNLOAD_ROOT=` empty to fall back to the standard
+HuggingFace cache (`~/.cache/huggingface`). Set `WHISPER_PRELOAD_MODELS=large-v2` (or empty) to
 download/warm fewer models at startup.
 
 ## Running the tests
@@ -268,9 +276,11 @@ no restart and no bucket reset.
 one, else the key itself (machine clients often have no user), else the peer
 address. The host rung means several callers behind one NAT share a bucket —
 the conservative direction. In **open mode** (no admin key exists yet) every
-caller resolves to the same synthetic admin, so per-user budgets behave
-**server-wide** there; that is a property of open mode, not a bug, and it goes
-away the moment you create an admin key.
+caller passing the `ADMIN_WEBUI_ALLOWED_HOSTS` gate (loopback by default)
+resolves to the same synthetic admin, so per-user budgets behave
+**server-wide** among those callers (everyone else still gets 401); that is a
+property of open mode, not a bug, and it goes away the moment you create an
+admin key.
 
 **Concurrency vs rate.** `TRANSLATE_MAX_INFLIGHT_PER_USER` is a concurrency
 cap, not a per-minute ceiling, because a single translation can run for
@@ -424,7 +434,7 @@ WHISPER_TRUSTED_ORIGINS=https://whisper.example.com  # only if the proxy rewrite
 - `GET/PATCH /v1/pipeline-rules` — the exposed post-processing rules this caller may view/edit (same gating + semantics as `/quick-config`, for API clients).
 - `GET  /v1/recent-words` — recently-transcribed word/phrase suggestions (for rule-editor autocomplete).
 - `GET  /v1/usage` — the caller's own transcription usage rollup.
-- `GET/PUT/DELETE /v1/client-settings` — per-account opaque settings blob for desktop-client sync (all machines authenticating as the same account share one configuration). Optimistic concurrency: PUT echoes `base_version`; a mismatch returns `409` carrying the current `{version, blob, updated_at, device}` so the client can merge and re-PUT without another GET; oversized blobs get `413`, malformed bodies `422`. GET on an empty store returns `200 {version: 0, blob: null}` — a route-level `404` means the backend build predates the endpoint. The blob is stored verbatim and never logged (it may contain the client's own backend API keys). Open-mode caveat: with no admin key configured, all callers share the single `(open-mode)` row. Cookie-authenticated (non-bearer) PUT/DELETE additionally needs `X-CSRF-Token`; the desktop client uses bearer and is exempt. Admin visibility/management lives on `/settings/api-keys`: each account shows a `⇅ vN` chip plus a "Synced settings" drawer (metadata only — version/size/last device/updated; blob contents never render) with Export (file download, two-press guard because it can include the account's saved API keys), Import (accepts a desktop settings export or a previously exported server file; force-writes with a version bump so every device converges on its next sync), and Delete.
+- `GET/PUT/DELETE /v1/client-settings` — per-account opaque settings blob for desktop-client sync (all machines authenticating as the same account share one configuration). Optimistic concurrency: PUT echoes `base_version`; a mismatch returns `409` carrying the current `{version, blob, updated_at, device}` so the client can merge and re-PUT without another GET; oversized blobs get `413`, malformed bodies `422`. GET on an empty store returns `200 {version: 0, blob: null}` — a route-level `404` means the backend build predates the endpoint. The blob is stored verbatim and never logged (it may contain the client's own backend API keys). Open-mode caveat: with no admin key configured, only callers passing the `ADMIN_WEBUI_ALLOWED_HOSTS` gate (loopback by default) resolve to the synthetic `(open-mode)` user and share its single row; every other caller gets `401` until an API key exists — remote sync always needs a key. Cookie-authenticated (non-bearer) PUT/DELETE additionally needs `X-CSRF-Token`; the desktop client uses bearer and is exempt. Admin visibility/management lives on `/settings/api-keys`: each account shows a `⇅ vN` chip plus a "Synced settings" drawer (metadata only — version/size/last device/updated; blob contents never render) with Export (file download, two-press guard because it can include the account's saved API keys), Import (accepts a desktop settings export or a previously exported server file; force-writes with a version bump so every device converges on its next sync), and Delete.
 
 **User pages** (host-gated by `USER_WEBUI_ALLOWED_HOSTS`, loopback always allowed; data endpoints additionally need an API key with the page permission):
 
@@ -669,6 +679,20 @@ streaming_transport.py     Streaming audio decoders (raw PCM passthrough, ffmpeg
 streaming_vad.py           Streaming endpointing (two-tier Silero/energy VAD)
 streaming_localagreement.py LocalAgreement-2 hypothesis stabilization
 translation.py             Text-to-text translation stage: GGUF models via llama.cpp (LRU cache, prompt families, guards)
+diarization.py             Speaker diarization via pyannote.audio (optional install: requirements-diarize.txt)
+bgm_separation.py          Background-music separation via audio-separator / UVR MDX-Net (optional: requirements-bgm.txt)
+url_download.py            Transcribe-from-URL: fetch a client-supplied media link with yt-dlp
+url_media_store.py         Short-term retention store for URL-downloaded audio
+home_routes.py             Root landing hub — GET / serves the WebUI's front door
+preload.py                 Model preloading: plan registry, warm leases and the single load worker
+preload_routes.py          POST /v1/models/preload — warm the models a job is about to need
+jobs.py                    Central registry of running jobs (transcribe / dictate / translate / download / preload)
+download_progress.py       Model-download progress (huggingface_hub tqdm shim + capture scope)
+receipt_hold.py            Holds a dictation's request receipt open until its translation lands
+rate_limit.py              Shared per-identity limiters + the typed 429 envelope they raise
+store_common.py            Shared store hardening (0600/0700 chmod) + log_safe control-char screen
+model_sizes.py             Persisted ledger of measured model sizes + free-memory fit check
+build_info.py              Build + runtime identity — the version string clients and the WebUI display
 audio_transcode.py         In-process audio transcoder (PyAV — no ffmpeg-on-PATH needed)
 audio_vad_trim.py          Silence-trim WAVs with the bundled Silero VAD
 audio_merge.py             stdlib-wave PCM splicer for duration-capped training-sample packing (default ≤29.9 s)
@@ -699,7 +723,10 @@ requirements-gpu.txt       NVIDIA CUDA wheels (opt-in, additive)
 requirements-dev.txt       Test deps (pytest)
 requirements-convert.txt   Deps for converting HF models to CTranslate2 (opt-in)
 requirements-translate.txt Text-to-text translation deps: llama-cpp-python (opt-in; prebuilt wheel indexes documented inside)
+requirements-diarize.txt   Speaker-diarization deps: pyannote.audio + torch (opt-in)
+requirements-bgm.txt       Background-music separation deps: audio-separator (opt-in; GPU paths swap in the [gpu] extra)
 pytest.ini                 Test discovery config (pytest -q from repo root)
+renovate.json              Renovate dependency-update policy (grouping, automerge rules)
 .forgejo/workflows/ci.yml  CI: test suite on Linux + Windows, then publishes the registry images
 static/                    Brand assets (logo.svg, favicon.*) + vendored uPlot/GridStack (offline /stats)
 .gitignore / .gitattributes

@@ -295,7 +295,10 @@ def restore_quantized_state(*args, **kwargs):
     $diarizeReq = Join-Path $RepoDir "requirements-diarize.txt"
     $translateReq = Join-Path $RepoDir "requirements-translate.txt"
     if ($Gpu) {
-        & $Python -m pip install -r $diarizeReq "audio-separator[gpu]>=0.44" "audioread>=2.1.9" "librosa<1.0" --extra-index-url https://download.pytorch.org/whl/cu126
+        # requirements-bgm.txt pins the versions (single source of truth,
+        # Renovate-bumped); "audio-separator[gpu]" only swaps in the GPU extra.
+        $bgmReq = Join-Path $RepoDir "requirements-bgm.txt"
+        & $Python -m pip install -r $diarizeReq -r $bgmReq "audio-separator[gpu]" --extra-index-url https://download.pytorch.org/whl/cu126
         if ($LASTEXITCODE -ne 0) { throw "pip install of the full extras failed (exit $LASTEXITCODE)" }
         & $Python -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
         if ($LASTEXITCODE -ne 0) { throw "pip install onnxruntime-gpu==1.26.* failed (exit $LASTEXITCODE)" }

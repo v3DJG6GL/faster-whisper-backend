@@ -62,8 +62,7 @@
     {
       "description": "Keep workflow actions on floating major tags (@vN). Suppress pin/patch/minor so they are never pinned to an exact patch (upstream moves the @vN tag, so patch fixes land at runtime without a PR \u2014 and the local action mirrors only sync tags every 8h, so an exact-patch pin can race the mirror). A new MAJOR still surfaces via the rule below.",
       "matchFileNames": [
-        ".forgejo/workflows/**",
-        ".github/workflows/**"
+        ".forgejo/workflows/**"
       ],
       "matchDatasources": [
         "github-tags"
@@ -74,6 +73,14 @@
         "minor"
       ],
       "enabled": false
+    },
+    {
+      "description": "crane (mirror-ghcr.yml) is version+hash coupled: CRANE_SHA256 must be updated in the same commit as CRANE_VERSION, and the new release tarball must be uploaded to the instance's 'tools' generic package registry BEFORE the bump lands. Renovate can do neither, so never automerge — surface as a Dependency Dashboard checkbox handled by hand.",
+      "matchPackageNames": [
+        "google/go-containerregistry"
+      ],
+      "automerge": false,
+      "dependencyDashboardApproval": true
     },
     {
       "description": "Major bumps require manual review \u2014 surface as checkboxes on the Dependency Dashboard, do not open the PR automatically, do not auto-merge. Minor/patch still flow through Renovate-side automerge, which waits for both all-ci and its own minimumReleaseAge check (platformAutomerge is off: Forgejo only honours required checks, so it would merge before the release age is met).",

@@ -1,9 +1,10 @@
 # Optional: background-music separation (UVR / MDX-Net via audio-separator).
 # Install on top of the base file, picking the onnxruntime flavor:
-#   CPU: pip install -r requirements.txt "audio-separator[cpu]>=0.44"
-#   GPU: pip install -r requirements.txt "audio-separator[gpu]>=0.44"
-# This file pins the CPU extra; the GPU Docker build overrides the extra (see
-# Dockerfile.gpu). torch is a hard dependency of audio-separator — on the GPU
+#   CPU: pip install -r requirements.txt -r requirements-bgm.txt
+#   GPU: pip install -r requirements.txt -r requirements-bgm.txt "audio-separator[gpu]"
+# This file pins the CPU extra; the GPU paths (Dockerfile.gpu, the installers)
+# add a bare "audio-separator[gpu]" to swap the extra while this file's pins
+# stay the single source of truth. torch is a hard dependency of audio-separator — on the GPU
 # image install alongside requirements-diarize.txt with the cu126 index so a
 # single torch/cu12 stack is shared. Also needs system ffmpeg.
 #
@@ -18,9 +19,11 @@ audio-separator[cpu]>=0.47.0
 # not declare it — it historically rode in as a librosa dependency. librosa
 # 1.0.0 dropped audioread, which broke the 0.44.5 import chain in the -full
 # image (2026-08-26: "[bgm] audio_separator import failed: No module named
-# 'audioread'"). Declare the real import explicitly and keep librosa on the
-# 0.x line audio-separator is actually tested against. Mirror any change here
-# in Dockerfile.gpu's inline extras install. Drop both pins once
-# audio-separator declares audioread / supports librosa 1.x.
+# 'audioread'"). Declare the real import explicitly and cap librosa below
+# the next minor so a surprise librosa bump cannot break the import chain
+# again (audioread is now declared, so 1.0.x itself is tolerated). Every
+# install path (Dockerfile, Dockerfile.gpu, both installers) installs this
+# file with -r, so these pins are the single source of truth. Drop both
+# pins once audio-separator declares audioread / supports librosa 1.x.
 audioread>=3.1.0
 librosa<1.1

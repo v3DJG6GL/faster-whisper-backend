@@ -72,8 +72,10 @@ services:
       # to cas-bridge/transfer.xethub.hf.co is unrestricted.
       HF_HUB_DISABLE_XET: "1"
       # --- Behind a reverse proxy (remote access) ---------------------------
-      # The admin pages (/settings, /quick-config, /stats, /captures, /reports)
-      # are gated by client IP. Behind a proxy the app sees the PROXY's IP, so
+      # The WebUI pages are gated by client IP, bucketed by privilege tier
+      # (admin: /settings, /settings/api-keys, /docs; user: /, /quick-config,
+      # /captures, /reports, /stats, /logs, /dictate, /sev).
+      # Behind a proxy the app sees the PROXY's IP, so
       # those pages 403 ("host not in allowlist"). To gate on the REAL client
       # IP, trust the proxy's X-Forwarded-For: set FORWARDED_ALLOW_IPS to the
       # proxy's IP/subnet (uvicorn then rewrites the client IP). Never "*"

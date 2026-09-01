@@ -80,8 +80,10 @@ if [ "$FULL" -eq 1 ]; then
   fi
   echo "Installing full extras (diarization + music separation + translation, several GB) ..."
   if [ "$GPU" -eq 1 ]; then
+    # requirements-bgm.txt pins the versions (single source of truth,
+    # Renovate-bumped); "audio-separator[gpu]" only swaps in the GPU extra.
     sudo -u "$RUN_USER" "$PY" -m pip install -r "$REPO_DIR/requirements-diarize.txt" \
-      "audio-separator[gpu]>=0.44" "audioread>=2.1.9" "librosa<1.0" \
+      -r "$REPO_DIR/requirements-bgm.txt" "audio-separator[gpu]" \
       --extra-index-url https://download.pytorch.org/whl/cu126
     sudo -u "$RUN_USER" "$PY" -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
     # Translation (llama-cpp-python): the project's cu124 wheel index — no
@@ -147,6 +149,11 @@ Wants=network-online.target
 Type=simple
 User=${RUN_USER}
 WorkingDirectory=${REPO_DIR}
+# Bare-metal Linux: root the container-first default paths (/data, /models)
+# in the checkout instead, mirroring the Windows in-checkout layout — without
+# these the service user cannot create /data/db and startup crash-loops.
+Environment=WHISPER_DATA_DIR=${REPO_DIR}/data
+Environment=WHISPER_MODELS_DIR=${REPO_DIR}/models
 Environment=WHISPER_LOG_FILE=${REPO_DIR}/logs/whisper.log
 ${NVIDIA_ENV_LINE}
 # 'python main.py' runs uvicorn via main's __main__; matches what the
@@ -158,6 +165,11 @@ RestartSec=2
 [Install]
 WantedBy=multi-user.target
 EOF
+
+# Pre-create the state dirs the unit pins above, owned by the service user
+# (api_keys_store refuses to start when it cannot create its db dir).
+mkdir -p "$REPO_DIR/data" "$REPO_DIR/models"
+chown -R "$RUN_USER" "$REPO_DIR/data" "$REPO_DIR/models"
 
 echo "Enabling + starting ${SERVICE_NAME} ..."
 systemctl daemon-reload
