@@ -5,6 +5,8 @@ the pure segment-assignment helper. pyannote is never imported — the module's
 import logging
 import os
 
+import pytest
+
 import diarization
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -243,6 +245,36 @@ def test_load_scopes_hf_hub_offline_to_the_load(monkeypatch):
     assert os.environ["HF_HUB_OFFLINE"] == "0"
 
 
+def test_load_snapshots_local_files_only_for_the_whole_load(monkeypatch):
+    """The flag is hot and the load runs for minutes: an admin flip mid-load
+    must neither skip the restore (True → False would leak HF_HUB_OFFLINE=1
+    process-wide) nor clobber a value this load never set (False → True)."""
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    cfg = diarization.cfg
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
+
+    def _flip_off(model_id, device, batch_size):
+        assert os.environ.get("HF_HUB_OFFLINE") == "1"
+        cfg.LOCAL_FILES_ONLY = False
+        return object()
+    monkeypatch.setattr(diarization, "_load_blocking_inner", _flip_off)
+    diarization._load_blocking("m1", "cpu", 4)
+    assert "HF_HUB_OFFLINE" not in os.environ
+
+    # Mirror: starts False (nothing set), flips True inside — the finally
+    # must leave a pre-existing value alone.
+    monkeypatch.setenv("HF_HUB_OFFLINE", "0")
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
+
+    def _flip_on(model_id, device, batch_size):
+        assert os.environ.get("HF_HUB_OFFLINE") == "0"
+        cfg.LOCAL_FILES_ONLY = True
+        return object()
+    monkeypatch.setattr(diarization, "_load_blocking_inner", _flip_on)
+    diarization._load_blocking("m1", "cpu", 4)
+    assert os.environ["HF_HUB_OFFLINE"] == "0"
+
+
 # --- lease key is resolved once ---------------------------------------------
 
 def test_diarize_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
@@ -266,3 +298,94 @@ def test_diarize_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     assert asyncio.run(diarization.diarize("a.wav")) == []
     assert diarization._leases == {}
     assert diarization._orphans == {}
+
+
+# --- the release never suspends ----------------------------------------------
+
+def test_release_drops_the_lease_even_while_the_lock_is_held(monkeypatch):
+    """_lock is held across a whole executor-long load; the release must not
+    wait on it (a cancellation delivered at that wait would leak the lease
+    and pin the pipeline against idle eviction forever)."""
+    import asyncio
+    pipe = object()
+    monkeypatch.setattr(diarization, "_pipeline", pipe)
+    monkeypatch.setattr(diarization, "_pipeline_key", ("m1", "cpu", 4))
+    monkeypatch.setattr(diarization, "_leases", {"m1": 1})
+    monkeypatch.setattr(diarization, "_orphans", {})
+
+    async def _main():
+        lock = asyncio.Lock()
+        monkeypatch.setattr(diarization, "_lock", lock)
+        async with lock:                       # "a load is in flight"
+            await diarization._release_pipeline("m1", pipe)
+            assert diarization._leases == {}
+
+    asyncio.run(_main())
+
+
+def test_cancel_delivered_at_release_still_drops_the_lease(monkeypatch):
+    import asyncio
+    cfg = diarization.cfg
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
+    pipe = object()
+    monkeypatch.setattr(diarization, "_pipeline", pipe)
+    monkeypatch.setattr(diarization, "_pipeline_key", ("m1", "cpu", 4))
+    monkeypatch.setattr(diarization, "_leases", {})
+    monkeypatch.setattr(diarization, "_orphans", {})
+
+    async def _fake_diarize_with(pipe, path, **kw):
+        assert diarization._leases == {"m1": 1}
+        # The client went away: the cancellation lands on the next suspension
+        # and unwinds into diarize's finally with the lock held elsewhere.
+        asyncio.current_task().cancel()
+        await asyncio.sleep(0)
+        raise AssertionError("cancellation must land at the sleep")
+    monkeypatch.setattr(diarization, "_diarize_with", _fake_diarize_with)
+
+    async def _main():
+        lock = asyncio.Lock()
+        monkeypatch.setattr(diarization, "_lock", lock)
+        async with lock:
+            with pytest.raises(asyncio.CancelledError):
+                await diarization.diarize("a.wav")
+        assert diarization._leases == {}
+        assert await diarization.drop_pipeline(force=False) is True
+
+    asyncio.run(_main())
+
+
+# --- the tail restamp is owned by the release --------------------------------
+
+def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
+    """_diarize_with used to restamp whatever _pipeline_key named when the
+    run ended — after a mid-job re-key to another model, that model's idle
+    clock / stats 'last used' moved for a job that never touched it."""
+    import asyncio
+    import system_stats
+    cfg = diarization.cfg
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
+    monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
+    monkeypatch.setattr(diarization, "_pipeline", None)
+    monkeypatch.setattr(diarization, "_pipeline_key", None)
+    monkeypatch.setattr(diarization, "_leases", {})
+    monkeypatch.setattr(diarization, "_orphans", {})
+
+    class _Ann:
+        def itertracks(self, yield_label=True):
+            return iter([])
+
+    class _Pipe:
+        def __call__(self, path, **kw):
+            # A concurrent _get_pipeline("m2") re-keyed the singleton.
+            diarization._pipeline_key = ("m2", "cpu", 4)
+            return _Ann()
+
+    monkeypatch.setattr(diarization, "_load_blocking",
+                        lambda model_id, device, batch: _Pipe())
+    touched = []
+    monkeypatch.setattr(system_stats, "touch_loaded_model",
+                        lambda name: touched.append(name))
+    assert asyncio.run(diarization.diarize("a.wav")) == []
+    assert "pyannote:m2" not in touched
+    assert diarization._leases == {}

@@ -81,7 +81,12 @@ _single_pass = False
 def _pass_fraction(pass_no: int, frac: float) -> float:
     """Map a within-pass fraction to the overall 0..1 separation progress."""
     frac = min(1.0, max(0.0, frac))
-    w = 1.0 if _single_pass else _PASS1_WEIGHT
+    # The weighting belongs to the separator the running job leased, not to
+    # whatever _load_blocking decided most recently: a concurrent load of a
+    # DIFFERENT model flips the module global mid-run and would move this
+    # job's bar backwards. _separate_with seeds the thread-local per run.
+    sp = getattr(_progress_tls, "single_pass", None)
+    w = 1.0 if (_single_pass if sp is None else sp) else _PASS1_WEIGHT
     if pass_no <= 1:
         return w * frac
     return w + (1.0 - w) * frac
@@ -386,6 +391,12 @@ def _load_blocking(model_filename: str, device: str):
         inst.demix = _demix
         _single_pass = True
         logger.info("[bgm] match-mix pass skipped (invert_using_spec off)")
+    # Stash the verdict on the separator itself — _pass_fraction reads it
+    # per run so a later load cannot re-weight a job already in flight.
+    try:
+        sep._fwb_single_pass = _single_pass
+    except Exception:  # noqa: BLE001 — falls back to the module global
+        pass
     # Placement truth comes from the _OrtShim above (the session lives only
     # in a closure inside mdx_separator; sep.onnx_execution_provider is the
     # REQUESTED list and proves nothing).
@@ -447,6 +458,13 @@ def _drop_locked(*, force: bool = False) -> bool:
         _orphans[model] = _orphans.get(model, 0) + leased
         logger.info("[bgm] separation model %s evicted with %d job(s) still "
                     "running — freed when the last one finishes", model, leased)
+        return True
+    if _orphans.get(model, 0):
+        # A same-name orphan (force-dropped, then reloaded and idled) is
+        # still separating: freeing now would unregister its stats row and
+        # wipe the session device under it. Its last release frees it.
+        logger.info("[bgm] separation model %s dropped from cache; an orphan "
+                    "job still holds it", model)
         return True
     _free_locked(model)
     return True
@@ -589,12 +607,15 @@ async def separate(path: str, *, model_filename: "str | None" = None,
         return await _separate_with(sep, path, progress_cb=progress_cb,
                                     cancel_check=cancel_check)
     finally:
-        await _release_separator(leased, sep)
+        # _release_separator awaits _lock, which a concurrent load holds for
+        # its whole executor-long duration — a cancellation delivered while
+        # suspended there would abandon the release and pin the lease (and
+        # the model against idle eviction) for the process lifetime.
+        await asyncio.shield(_release_separator(leased, sep))
 
 
 async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
     """Run one separation on an already-leased separator (see ``separate``)."""
-    global _last_used_monotonic
     out_name = f"vocals-{uuid.uuid4().hex}"
 
     def _run() -> str:
@@ -605,6 +626,8 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
         _progress_tls.pass_no = 0
         _progress_tls.log_bucket = 0
         _progress_tls.ticked = False
+        _progress_tls.single_pass = getattr(sep, "_fwb_single_pass",
+                                            _single_pass)
         try:
             if _separate_mutex.locked():
                 # A cancelled request's zombie separation is still running
@@ -613,6 +636,10 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
                 logger.info(
                     "[bgm] waiting for a previous separation to finish")
             with _separate_mutex:
+                # The wait above can be minutes (a zombie separation) —
+                # re-check before paying for prepare_mix on a dead request.
+                if cancel_check is not None and cancel_check():
+                    raise BgmCancelled()
                 _progress_tls.load_t0 = time.perf_counter()
                 logger.info("[bgm] loading audio for separation")
                 outputs = sep.separate(
@@ -621,6 +648,7 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
             _progress_tls.cb = None
             _progress_tls.cancel = None
             _progress_tls.load_t0 = None
+            _progress_tls.single_pass = None
         if not outputs:
             raise RuntimeError("separator returned no output files")
         out = outputs[0]
@@ -642,9 +670,9 @@ async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:
             "music separation failed on this file; transcribing the "
             "original audio"
         ) from e
-    _last_used_monotonic = time.monotonic()
-    if _separator_key:
-        system_stats.touch_loaded_model(_STATS_PREFIX + _separator_key[0])
+    # The idle-clock restamp is owned by _release_locked (from separate()'s
+    # finally), which is gated on the LEASED key — _separator_key here may
+    # already name a different model a concurrent load swapped in.
     return result
 
 

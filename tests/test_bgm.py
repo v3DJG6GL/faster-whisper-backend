@@ -5,6 +5,8 @@ coroutine is monkeypatched at the boundary the handler uses."""
 import os
 import tempfile
 
+import pytest
+
 import bgm_separation
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -209,12 +211,13 @@ def test_locked_separate_ignores_client_param(client, app_module, make_user_key,
         app_module.cfg.BGM_SEPARATION_ENABLED = False
 
 
-def test_model_filename_appends_onnx(app_module):
-    app_module.cfg.BGM_SEPARATION_UVR_MODEL = "UVR-MDX-NET-Inst_HQ_4"
+def test_model_filename_appends_onnx(app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_UVR_MODEL",
+                        "UVR-MDX-NET-Inst_HQ_4")
     assert bgm_separation._model_filename() == "UVR-MDX-NET-Inst_HQ_4.onnx"
-    app_module.cfg.BGM_SEPARATION_UVR_MODEL = "model_bs_roformer.ckpt"
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_UVR_MODEL",
+                        "model_bs_roformer.ckpt")
     assert bgm_separation._model_filename() == "model_bs_roformer.ckpt"
-    app_module.cfg.BGM_SEPARATION_UVR_MODEL = "UVR-MDX-NET-Inst_HQ_4"
 
 
 # --- actual-device bookkeeping -----------------------------------------------
@@ -272,6 +275,26 @@ def test_pass_fraction_single_pass_owns_full_span(monkeypatch):
     assert bgm_separation._pass_fraction(1, 1.0) == 1.0
 
 
+def test_pass_fraction_reads_the_running_jobs_weighting(monkeypatch):
+    """A concurrent load of a DIFFERENT model flips the module global while
+    a job is mid-run — the job's bar must keep the weighting of the
+    separator it leased (seeded per run in the thread-local), or it moves
+    backwards."""
+    monkeypatch.setattr(bgm_separation, "_single_pass", False)
+    tls = bgm_separation._progress_tls
+    tls.single_pass = True
+    try:
+        assert bgm_separation._pass_fraction(1, 0.9) == 0.9
+        tls.single_pass = False
+        assert bgm_separation._pass_fraction(1, 1.0) == \
+            bgm_separation._PASS1_WEIGHT
+    finally:
+        tls.single_pass = None
+    # No running job → the module global decides, as before.
+    monkeypatch.setattr(bgm_separation, "_single_pass", True)
+    assert bgm_separation._pass_fraction(1, 0.9) == 0.9
+
+
 # --- lease key is resolved once ---------------------------------------------
 
 def test_separate_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
@@ -295,3 +318,131 @@ def test_separate_releases_the_key_it_leased_after_a_config_edit(monkeypatch):
     assert asyncio.run(bgm_separation.separate("in.wav")) == "out.wav"
     assert bgm_separation._leases == {}
     assert bgm_separation._orphans == {}
+
+
+# --- the tail restamp is owned by the release -------------------------------
+
+def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
+    """_separate_with used to restamp whatever _separator_key named when the
+    run ended — a concurrent load of another model mid-run then got its idle
+    clock / stats 'last used' refreshed by a job that never touched it."""
+    import asyncio
+    import system_stats
+    cfg = bgm_separation.cfg
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cpu", raising=False)
+    monkeypatch.setattr(bgm_separation, "_separator", None)
+    monkeypatch.setattr(bgm_separation, "_separator_key", None)
+    monkeypatch.setattr(bgm_separation, "_leases", {})
+    made = []
+
+    class _Sep:
+        def separate(self, path, custom_output_names=None):
+            # A concurrent _get_separator("other") re-keyed the singleton.
+            bgm_separation._separator_key = ("other.onnx", "cpu")
+            fd, out = tempfile.mkstemp(prefix="vocals-test-", suffix=".wav")
+            os.close(fd)
+            made.append(out)
+            return [out]
+
+    monkeypatch.setattr(bgm_separation, "_load_blocking",
+                        lambda model, device: _Sep())
+    touched = []
+    monkeypatch.setattr(system_stats, "touch_loaded_model",
+                        lambda name: touched.append(name))
+    try:
+        assert asyncio.run(bgm_separation.separate("in.wav")) == made[0]
+    finally:
+        for f in made:
+            if os.path.exists(f):
+                os.unlink(f)
+    assert "uvr:other.onnx" not in touched
+    assert bgm_separation._leases == {}
+
+
+# --- cancel is re-checked once the inference slot is ours -------------------
+
+def test_cancel_after_the_mutex_wait_skips_the_separation(monkeypatch):
+    import asyncio
+    answers = iter([False])          # queued: not yet; acquired: cancelled
+
+    def _cancel():
+        return next(answers, True)
+
+    class _Sep:
+        calls = []
+
+        def separate(self, path, custom_output_names=None):
+            self.calls.append(path)
+            return ["never.wav"]
+
+    sep = _Sep()
+    with pytest.raises(bgm_separation.BgmCancelled):
+        asyncio.run(bgm_separation._separate_with(
+            sep, "in.wav", progress_cb=None, cancel_check=_cancel))
+    assert sep.calls == []
+    assert getattr(bgm_separation._progress_tls, "cancel", None) is None
+
+
+# --- the release survives a cancellation delivered in the finally -----------
+
+def test_cancel_while_release_waits_for_the_lock_still_drops_the_lease(
+        monkeypatch):
+    """_lock is held for a whole executor-long load; a request cancelled
+    while its finally waits there must still give the lease back, or the
+    model is pinned against idle eviction for the process lifetime."""
+    import asyncio
+    cfg = bgm_separation.cfg
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cpu", raising=False)
+    sep = object()
+    monkeypatch.setattr(bgm_separation, "_separator", sep)
+    monkeypatch.setattr(bgm_separation, "_separator_key", ("Foo.onnx", "cpu"))
+    monkeypatch.setattr(bgm_separation, "_leases", {})
+    monkeypatch.setattr(bgm_separation, "_orphans", {})
+
+    async def _fake_separate_with(sep, path, *, progress_cb, cancel_check):
+        return "out.wav"
+    monkeypatch.setattr(bgm_separation, "_separate_with", _fake_separate_with)
+
+    async def _main():
+        lock = asyncio.Lock()
+        monkeypatch.setattr(bgm_separation, "_lock", lock)
+        async with lock:                       # "a load is in flight"
+            task = asyncio.create_task(bgm_separation.separate("in.wav"))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            # The job ran and its release is parked on the lock.
+            assert bgm_separation._leases == {"Foo.onnx": 1}
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert bgm_separation._leases == {"Foo.onnx": 1}
+        for _ in range(5):
+            await asyncio.sleep(0)
+        assert bgm_separation._leases == {}
+
+    asyncio.run(_main())
+
+
+# --- a same-name orphan keeps the idle drop from freeing ---------------------
+
+def test_idle_drop_defers_the_free_while_a_same_name_orphan_drains(monkeypatch):
+    """Force-drop orphans S1, a later job loads S2 under the same key and
+    releases it, the idle evictor drops S2 — that must not unregister the
+    stats row / wipe the session device while the S1 job still runs."""
+    import system_stats
+    monkeypatch.setattr(bgm_separation, "_separator", object())
+    monkeypatch.setattr(bgm_separation, "_separator_key", ("m.onnx", "cpu"))
+    monkeypatch.setattr(bgm_separation, "_leases", {})
+    monkeypatch.setattr(bgm_separation, "_orphans", {"m.onnx": 1})
+    monkeypatch.setattr(bgm_separation, "_session_device", "cuda")
+    unregistered = []
+    monkeypatch.setattr(system_stats, "unregister_loaded_model",
+                        lambda name: unregistered.append(name))
+
+    assert bgm_separation._drop_locked(force=False) is True
+    assert bgm_separation._separator is None
+    assert unregistered == []
+    assert bgm_separation._orphans == {"m.onnx": 1}
+    assert bgm_separation.actual_device() == "cuda"

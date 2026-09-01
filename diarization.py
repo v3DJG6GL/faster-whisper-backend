@@ -98,13 +98,17 @@ def _load_blocking(model_id: str, device: str, batch_size: int):
     # load and restore it after (same hazard translation._load_blocking
     # documents: one offline load would otherwise poison every later
     # huggingface_hub download until a process restart).
+    # Snapshot ONCE: the flag is hot and this runs for minutes in the
+    # executor — re-reading it in the finally would skip the restore (or
+    # clobber a value this call never set) after a mid-load admin flip.
+    offline = bool(getattr(cfg, "LOCAL_FILES_ONLY", False))
     offline_prev = os.environ.get("HF_HUB_OFFLINE")
-    if getattr(cfg, "LOCAL_FILES_ONLY", False):
+    if offline:
         os.environ["HF_HUB_OFFLINE"] = "1"
     try:
         return _load_blocking_inner(model_id, device, batch_size)
     finally:
-        if getattr(cfg, "LOCAL_FILES_ONLY", False):
+        if offline:
             if offline_prev is None:
                 os.environ.pop("HF_HUB_OFFLINE", None)
             else:
@@ -272,9 +276,16 @@ def _release_locked(model_id: str, pipe=None) -> None:
 async def _release_pipeline(model_id: str, pipe=None) -> None:
     """Release a lease taken by ``_get_pipeline(..., lease=True)``. Pass the
     pipeline that call returned so a live holder is told apart from an orphan
-    of the same id (see ``_release_locked``)."""
-    async with _lock:
-        _release_locked(model_id, pipe)
+    of the same id (see ``_release_locked``).
+
+    Deliberately lock-free (it never suspends): _lock is held across a whole
+    executor-long load, and a cancellation delivered while this waited on it
+    from diarize's finally would abandon the release, leaking the lease and
+    pinning the pipeline against idle eviction forever. _release_locked and
+    _free_locked are synchronous, so on the one event loop they still run
+    atomically w.r.t. every drop (same shape as translation._release_model
+    and main._release_model_lease)."""
+    _release_locked(model_id, pipe)
 
 
 async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
@@ -448,7 +459,6 @@ async def _diarize_with(pipe, path: str, *, num_speakers, min_speakers,
                         max_speakers, progress_cb, cancel_check,
                         ) -> "list[tuple[float, float, str]]":
     """Run one diarization on an already-leased pipeline (see ``diarize``)."""
-    global _last_used_monotonic
     kwargs: dict = {}
     if num_speakers:
         kwargs["num_speakers"] = num_speakers
@@ -511,10 +521,9 @@ async def _diarize_with(pipe, path: str, *, num_speakers, min_speakers,
             "diarization failed on this file; the transcript has no speaker "
             "labels"
         ) from e
-    _last_used_monotonic = time.monotonic()
-    model_id = _pipeline_key[0] if _pipeline_key else ""
-    if model_id:
-        system_stats.touch_loaded_model(_STATS_PREFIX + model_id)
+    # The idle-clock restamp is owned by _release_locked (from diarize's
+    # finally), gated on the LEASED id — _pipeline_key here may already name
+    # a different model a concurrent load swapped in.
     return turns
 
 
