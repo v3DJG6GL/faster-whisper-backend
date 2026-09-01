@@ -241,7 +241,11 @@ def test_disk_size_defaults_to_the_hub_cache_without_any_root(
     import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
+    # expanduser("~") reads HOME on POSIX and USERPROFILE on Windows (HOME
+    # is ignored there since 3.8): set both, or the windows-latest leg walks
+    # the runner's real profile and finds nothing (run 662).
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
     d = tmp_path / ".cache" / "huggingface" / "hub" / "models--org--repo"
     d.mkdir(parents=True)
     (d / "x.bin").write_bytes(b"x" * 1234)
