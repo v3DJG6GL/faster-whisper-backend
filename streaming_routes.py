@@ -245,7 +245,7 @@ def _stream_config(cfg, ident=None) -> StreamConfig:
 
 def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
                              prompt: str, want_words: bool,
-                             language: str = "", model_obj=None,
+                             language: "str | None" = None, model_obj=None,
                              overrides=None, ident=None) -> dict:
     """Assemble model.transcribe kwargs for a streaming decode.
 
@@ -263,7 +263,10 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
     German chunk can be mis-detected as e.g. Swedish."""
     cfg_for = main.cfg_for
     cfg = main.cfg
-    lang = (language or cfg_for(model_name, "DEFAULT_LANGUAGE", ident) or "").strip()
+    # Present-but-empty is an explicit "auto-detect" (the client's cleared
+    # state); only an ABSENT field inherits DEFAULT_LANGUAGE.
+    lang = ((language if language is not None
+             else cfg_for(model_name, "DEFAULT_LANGUAGE", ident)) or "").strip()
     _vad_filter = cfg_for(model_name, "VAD_FILTER", ident)
     vad_parameters = dict(
         min_silence_duration_ms=cfg_for(model_name, "VAD_MIN_SILENCE_MS", ident),
@@ -524,7 +527,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
         model_req = conf.get("model") or "whisper-1"
         _req_language = conf.get("language")
-        req_language = _req_language.strip() if isinstance(_req_language, str) else ""
+        # Tri-state, same as batch: key ABSENT → None → inherit DEFAULT_LANGUAGE;
+        # present-but-empty → "" → explicit auto-detect (the client's cleared state).
+        req_language = _req_language.strip() if isinstance(_req_language, str) else None
         response_format = conf.get("response_format", "json")
         # Per-connection initial prompt (the client's "Vocabulary / prompt"). Sentinel,
         # same as batch: key ABSENT → inherit DEFAULT_PROMPT; present (incl. "") →

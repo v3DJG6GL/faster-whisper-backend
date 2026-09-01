@@ -1425,7 +1425,8 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
             cv = _clamp_float(overrides[key], lo, hi)
             if cv is not None:
                 kwargs[key] = cv
-    if "condition_on_previous_text" in overrides:
+    # A JSON null on a bool override means "inherit", not False.
+    if overrides.get("condition_on_previous_text") is not None:
         kwargs["condition_on_previous_text"] = bool(overrides["condition_on_previous_text"])
     for key, cap in _DECODE_STR_CAPS.items():
         if key in overrides and isinstance(overrides[key], str):
@@ -1454,12 +1455,19 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
         if ids is not None:
             ids = [i for i in ids[:_SUPPRESS_TOKENS_MAX]
                    if -1 <= i < _SUPPRESS_TOKEN_ID_MAX]
-            # Nothing left after bounding → leave the config value in place
-            # rather than forward an override the caller didn't really make.
             if ids:
                 kwargs["suppress_tokens"] = ids
+            elif not st:
+                # An EXPLICITLY empty list / blank string is the client's
+                # "cleared — overrides inherited" state (distinct from the
+                # key being absent), and faster-whisper's own spelling of
+                # "suppress nothing" is None. A non-empty value that merely
+                # filtered away (out-of-range ids) is NOT a clear: leave the
+                # config value in place rather than forward an override the
+                # caller didn't really make.
+                kwargs["suppress_tokens"] = None
     # VAD: toggle + sub-params (sub-params rebuilt from config defaults when on).
-    if "vad_filter" in overrides:
+    if overrides.get("vad_filter") is not None:
         vf = bool(overrides["vad_filter"])
         kwargs["vad_filter"] = vf
         if not vf:
@@ -1574,6 +1582,11 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     if _suppress_blank is False:
         transcribe_kwargs["suppress_blank"] = False
     _suppress_tokens_str = cf("SUPPRESS_TOKENS")
+    # An explicitly blank SUPPRESS_TOKENS (profile / per-model / global) is
+    # "suppress nothing"; remembered so the SUPPRESS_CHARS merge below does
+    # not quietly re-add the -1 default set the admin cleared.
+    _suppress_cleared = (_suppress_tokens_str is not None
+                         and not _suppress_tokens_str.strip())
     if _suppress_tokens_str is not None:
         if _suppress_tokens_str.strip():
             try:
@@ -1593,16 +1606,21 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars)
         if extra_ids:
             existing = transcribe_kwargs.get("suppress_tokens")
-            if existing is None:
+            if _suppress_cleared:
+                merged_ids = sorted(set(extra_ids))
+            elif existing is None:
                 merged_ids = sorted({-1, *extra_ids})
             else:
                 merged_ids = sorted(set(existing) | set(extra_ids))
             transcribe_kwargs["suppress_tokens"] = merged_ids
+    # "" is an explicit "no punctuation splitting" (a cleared profile /
+    # per-model field), so it is forwarded like the per-request override
+    # path does; only an ABSENT value leaves faster-whisper's default.
     _prepend_p = cf("PREPEND_PUNCTUATIONS")
-    if _prepend_p:
+    if _prepend_p is not None:
         transcribe_kwargs["prepend_punctuations"] = _prepend_p
     _append_p = cf("APPEND_PUNCTUATIONS")
-    if _append_p:
+    if _append_p is not None:
         transcribe_kwargs["append_punctuations"] = _append_p
     # Per-request overrides win (clamped), EXCEPT fields locked by an identity
     # layer (skipped). No-op when None/empty.
@@ -3679,6 +3697,15 @@ async def transcribe(
         # accidental file part) is treated as absent.
         _prompt_field = form_data.get("prompt")
         prompt = _prompt_field if isinstance(_prompt_field, str) else None
+        # Same sentinel for the other tri-state text fields: present-but-empty
+        # is the client's "cleared — overrides inherited" state (auto-detect
+        # language / no translation targets / no glossary), absent inherits.
+        _lang_field = form_data.get("language")
+        language = _lang_field if isinstance(_lang_field, str) else None
+        _tt_field = form_data.get("translate_to")
+        translate_to = _tt_field if isinstance(_tt_field, str) else None
+        _tg_field = form_data.get("translation_glossary")
+        translation_glossary = _tg_field if isinstance(_tg_field, str) else None
         # Re-apply the clamp from above: this re-read overwrote the bounded
         # Form value with the raw one, so the cap was dead code and the field
         # reached the tokenizer at whatever size the multipart parser allowed.
@@ -3871,7 +3898,10 @@ async def transcribe(
                 if language and language != _language:
                     ignored.append("language")
             else:
-                _language = language or cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident)
+                # Present-but-empty is an explicit "auto-detect" (the client's
+                # cleared state); only an ABSENT field inherits the config.
+                _language = (language if language is not None
+                             else cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident))
             # Task: absent field inherits the resolved TASK config (per-identity
             # > per-model > global, default "transcribe"); a LOCKED TASK forbids
             # the client's `task` param the way a locked DEFAULT_LANGUAGE binds
@@ -3983,7 +4013,9 @@ async def transcribe(
             # request-wins / config-inherits ladder as diarize/separate_bgm
             # above. The capacity gates (TRANSLATION_ENABLED, model allowlist)
             # live at the stage itself and soft-fail into `_warnings`.
-            _tt_req = (translate_to or "").strip() or None
+            # Present-but-empty is an explicit "no targets" (overrides an
+            # inherited TRANSLATE_TO); only an ABSENT field inherits.
+            _tt_req = translate_to.strip() if translate_to is not None else None
             _tt_raw = _resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TRANSLATE_TO", "translate_to", _tt_req)
@@ -4012,7 +4044,9 @@ async def transcribe(
                 resolved_model, ident, ignored,
                 "TRANSLATION_MODE", "translation_mode", translation_mode,
                 default="fluent")
-            _tg_req = translation_glossary if (translation_glossary or "").strip() else None
+            # Present-but-empty is an explicit "no glossary" (overrides an
+            # inherited TRANSLATION_GLOSSARY); only an ABSENT field inherits.
+            _tg_req = translation_glossary if translation_glossary is not None else None
             _translation_glossary = _resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TRANSLATION_GLOSSARY", "translation_glossary", _tg_req)
