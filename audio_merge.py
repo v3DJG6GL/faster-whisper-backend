@@ -234,18 +234,25 @@ def merge_wavs(
     # os.makedirs, which raises FileNotFoundError on some platforms.
     os.makedirs(os.path.dirname(dst_path) or ".", exist_ok=True)
     try:
+        # Pre-create the tmp owner-only. `wave.open` uses a plain builtin
+        # open(), so left to itself the process umask (typically 022 ->
+        # 0644) would decide the mode and the whole merged PCM — PHI — would
+        # sit world-readable in e.g. the shared system temp dir for the
+        # duration of the write. open('wb') on an existing path truncates
+        # but never changes its mode, so wave.open writes into a 0600 inode.
+        os.close(os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
         with wave.open(tmp_path, "wb") as w:
             w.setnchannels(_REQ_CHANNELS)
             w.setsampwidth(_REQ_SAMPWIDTH_BYTES)
             w.setframerate(_REQ_RATE)
             w.writeframes(out_pcm)
-        # `wave.open` uses a plain builtin open(), so the process umask
-        # (typically 022 -> 0644) decides the mode and os.replace below
-        # carries THAT inode's mode onto dst_path — silently widening a
-        # 0600 destination such as tempfile.mkstemp's preview file in the
-        # world-writable system temp dir. Merged dictation audio is PHI;
-        # pin owner-only before the swap. No-op semantically for the
-        # captures store (its directory is already 0700).
+        # Belt-and-braces (the tmp is already born 0600 above; this also
+        # covers Windows / foreign-umask oddities): os.replace below carries
+        # THAT inode's mode onto dst_path, which would silently widen a 0600
+        # destination such as tempfile.mkstemp's preview file in the
+        # world-writable system temp dir. Pin owner-only before the swap.
+        # No-op semantically for the captures store (its directory is
+        # already 0700).
         store_common.secure_file(tmp_path)
         try:
             with open(tmp_path, "rb") as fp:

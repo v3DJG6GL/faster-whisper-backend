@@ -94,7 +94,10 @@ CREATE TABLE IF NOT EXISTS recent_transcriptions (
   final_text    TEXT,
   steps_json    TEXT,
   tokens_json   TEXT,
-  bigrams_json  TEXT
+  bigrams_json  TEXT,
+  kind          TEXT,
+  stages_json   TEXT,
+  key_label     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_rt_created      ON recent_transcriptions(created_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_rt_user_created ON recent_transcriptions(user_id, created_ts DESC);
@@ -187,10 +190,13 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         ("steps_json", "steps"),
         ("tokens_json", "tokens"),
         ("bigrams_json", "bigrams"),
+        ("stages_json", "stages"),
     ):
         try:
             d[key] = json.loads(d.pop(col, "[]") or "[]")
         except (TypeError, ValueError):
+            d[key] = []
+        if not isinstance(d[key], list):
             d[key] = []
     audio = d.get("audio_dur_s")
     proc = d.get("proc_dur_s")
@@ -209,13 +215,8 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     d["username"] = d.get("username") or ""
     d["language"] = d.get("language") or ""
     d["source"] = d.get("source") or "file"
-    # Recent-jobs extras — absent on rows written before the migration.
-    try:
-        d["stages"] = json.loads(d.pop("stages_json", None) or "[]")
-        if not isinstance(d["stages"], list):
-            d["stages"] = []
-    except (TypeError, ValueError):
-        d["stages"] = []
+    # Recent-jobs extras — NULL on rows written before the migration (the
+    # `d.pop(col, "[]")` default in the loop above covers `stages` there).
     d["kind"] = d.get("kind") or None
     d["key_label"] = d.get("key_label") or ""
     return d

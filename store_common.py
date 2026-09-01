@@ -64,7 +64,12 @@ def secure_file(path: str) -> None:
     are not SQLite: the rotating server log (every request block carries RAW
     WHISPER / FINAL text — main.py), config.local.json (admin host allowlist
     and compiled pipeline rules — config_store.py), the model-sizes cache
-    (model_sizes.py) and downloaded URL media files (url_media_store.py).
+    (model_sizes.py), downloaded URL media files (url_media_store.py) and
+    the merged / VAD-trimmed dictation WAVs written through the tmp+os.replace
+    swap (audio_merge.merge_wavs, audio_vad_trim.trim_wav) — os.replace
+    carries the tmp inode's mode onto the destination, so the tmp is pinned
+    owner-only before the swap (merge_wavs additionally creates its tmp 0600
+    up front; this call is belt-and-braces there).
     """
     _chmod(path, 0o600)
 

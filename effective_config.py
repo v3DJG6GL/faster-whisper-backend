@@ -24,6 +24,7 @@ pre-feature behaviour.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -131,6 +132,13 @@ def _blob_to_layer(layer_id: str, label: str, profile_name: str | None,
     }
 
 
+# Throttle the binding-fault WARNING per identity: a persistent store fault is
+# hit 2-4 times per request and would otherwise flood the (PHI-bearing) rotating
+# server log, evicting real records. Debug keeps every occurrence.
+_WARN_EVERY_S = 60.0
+_last_warn: dict[str, float] = {}
+
+
 def _safe_binding(getter: Any, ident_id: str | None) -> Any:
     """Fetch a per-identity binding, tolerating sentinel ids and any store
     error — a bad binding must never crash a decode. Returns the binding dict,
@@ -144,9 +152,16 @@ def _safe_binding(getter: Any, ident_id: str | None) -> Any:
         # Returning {} here would be indistinguishable from "this identity has
         # no restrictions" and would silently drop its gates / allowlist / locks
         # for the duration of the fault, so signal the failure instead.
-        logger.warning("[effective-config] identity binding lookup failed for"
-                       " %s: %s — refusing client-supplied overrides",
-                       ident_id, e)
+        now = time.monotonic()
+        if now - _last_warn.get(ident_id, float("-inf")) >= _WARN_EVERY_S:
+            if len(_last_warn) > 512:
+                _last_warn.clear()
+            _last_warn[ident_id] = now
+            log = logger.warning
+        else:
+            log = logger.debug
+        log("[effective-config] identity binding lookup failed for"
+            " %s: %s — refusing client-supplied overrides", ident_id, e)
         return _FETCH_FAILED
 
 
@@ -492,13 +507,17 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
     locked (``locked_client_keys`` covers all client keys) and reported ignored.
 
     If a binding fetch faults (``_FETCH_FAILED``) the identity's restrictions are
-    unknown, so both gates resolve off and the allowlist resolves empty: the
-    decode still runs on the per-model / global defaults, only client-supplied
-    customisation is refused.
+    unknown, so everything fails CLOSED: both gates resolve off, the allowlist
+    resolves empty, and EVERY lockable field resolves as locked (``locked`` =
+    SCALAR_OVERRIDE_FIELDS, ``locked_client_keys`` = every client key) so client
+    Form fields and decode_overrides alike are refused. The honest caveat: the
+    identity's own ``direct`` values and profile layers are unavailable too, so
+    the decode falls back to the per-model / global defaults.
     """
     import api_keys_store  # local import keeps module import order flexible
     key_binding = _safe_binding(api_keys_store.get_key_config, key_id)
     user_binding = _safe_binding(api_keys_store.get_user_config, user_id)
+    faulted = _fetch_failed(key_binding, user_binding)
 
     op_allowed = _effective_flag(key_binding, user_binding,
                                  "allow_request_override_profile",
@@ -523,6 +542,10 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
     # _apply_decode_overrides drops them all and every site that reports
     # `overrides_ignored` (batch + streaming) reports them — one enforcement point.
     resolved.allow_request_decode_overrides = do_allowed
+    if faulted:
+        # Unknown locks must read as "all locked": the Form-field sites in
+        # main.py gate on `locked` (config-field names), not locked_client_keys.
+        resolved.locked = set(SCALAR_OVERRIDE_FIELDS)
     if not do_allowed:
         all_client_keys = frozenset(_CONFIG_TO_CLIENT_KEY.values())
         resolved.locked_client_keys = all_client_keys

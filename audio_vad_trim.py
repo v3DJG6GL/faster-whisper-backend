@@ -142,6 +142,9 @@ def trim_wav(
     tmp_path = dst_path + ".tmp"
     os.makedirs(os.path.dirname(dst_path) or ".", exist_ok=True)
     try:
+        # Same as audio_merge.merge_wavs: create the tmp 0600 first so the
+        # PCM is never world-readable while wave.open writes it.
+        os.close(os.open(tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600))
         with wave.open(tmp_path, "wb") as w:
             w.setnchannels(1)
             w.setsampwidth(audio_merge._REQ_SAMPWIDTH_BYTES)

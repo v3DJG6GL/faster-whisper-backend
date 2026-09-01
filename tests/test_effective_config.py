@@ -496,8 +496,53 @@ def test_binding_fetch_failure_still_decodes(monkeypatch):
     _set_profiles(monkeypatch, {"fast": {"BEAM_SIZE": 3}})
     _broken_bindings(monkeypatch)
     r = ec.resolve("m", key_id="k", user_id="u")
-    assert r.values == {} and r.locked == set() and r.dropped == []
+    assert r.values == {} and r.dropped == []
     assert r.layers == [] and r.profiles_applied == []
+    # …but the identity's (unknown) locks fail CLOSED: every lockable field
+    # reads as locked so client Form fields are refused too.
+    assert r.locked == set(ec.SCALAR_OVERRIDE_FIELDS)
+
+
+def test_binding_fetch_failure_locks_every_field(monkeypatch):
+    # SECURITY: the OpenAI-compat Form fields (language=, task=, diarize=,
+    # temperature=, separate_bgm=, prompt=) gate on `locked` (config-field
+    # names), NOT on locked_client_keys. A store fault drops the identity's
+    # binding layer, so `locked` would otherwise be EMPTY and admin locks
+    # would vanish for the duration of the fault.
+    _broken_bindings(monkeypatch, user=False)
+    r = ec.resolve("m", key_id="k", user_id="u")
+    assert r.locked == set(ec.SCALAR_OVERRIDE_FIELDS)
+    for f in ("DEFAULT_LANGUAGE", "TASK", "TEMPERATURE", "SEPARATE_BGM"):
+        assert f in r.locked
+    assert r.locked_client_keys == frozenset(ec._CONFIG_TO_CLIENT_KEY.values())
+    # The healthy path with no bindings at all still yields no locks.
+    _bindings(monkeypatch)
+    assert ec.resolve("m", key_id="k", user_id="u").locked == set()
+
+
+def test_binding_fault_warning_is_throttled(monkeypatch):
+    # A persistent store fault is hit several times per request; only the
+    # first failure per identity (per _WARN_EVERY_S) reaches WARNING, the
+    # rest go to debug so the PHI-bearing server log is not flooded.
+    _broken_bindings(monkeypatch, user=False)
+    monkeypatch.setattr(ec, "_last_warn", {})
+    calls: list[str] = []
+
+    class _Rec:
+        def warning(self, *a, **k):
+            calls.append("warning")
+
+        def debug(self, *a, **k):
+            calls.append("debug")
+
+    monkeypatch.setattr(ec, "logger", _Rec())
+    for _ in range(5):
+        ec.resolve("m", key_id="k", user_id="u")
+    assert calls.count("warning") == 1 and calls.count("debug") == 4
+    # Once the throttle window has elapsed the next failure warns again.
+    ec._last_warn["k"] -= ec._WARN_EVERY_S
+    ec.resolve("m", key_id="k", user_id="u")
+    assert calls.count("warning") == 2
 
 
 def test_one_unreadable_scope_is_enough(monkeypatch):

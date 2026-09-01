@@ -257,3 +257,34 @@ def test_merge_creates_missing_parent_dir(tmp_path):
     res = audio_merge.merge_wavs([p1, p2], out, gap_ms=0, trim=False)
     assert os.path.exists(out)
     assert res["duration_ms"] == 200
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_merge_tmp_is_born_owner_only(tmp_path, monkeypatch):
+    """The tmp file must already be 0600 when wave.open starts writing.
+
+    secure_file() after the write is too late: under a 022 umask the whole
+    merged PCM (PHI) would sit world-readable in e.g. the shared system
+    temp dir for the duration of the write, and an fd opened in that window
+    survives the later chmod. merge_wavs pre-creates the tmp at 0600 so
+    wave.open only ever truncates an owner-only inode.
+    """
+    p1 = _write_wav(str(tmp_path / "a.wav"), _pcm(100)[0])
+    out = str(tmp_path / "merged.wav")
+    seen: list[int] = []
+    real_open = wave.open
+
+    def spy(path, mode="rb", *a, **kw):
+        if mode == "wb":
+            # Stat at entry, before a single frame is written.
+            seen.append(os.stat(path).st_mode & 0o777)
+        return real_open(path, mode, *a, **kw)
+
+    monkeypatch.setattr(audio_merge.wave, "open", spy)
+    old = os.umask(0o022)
+    try:
+        audio_merge.merge_wavs([p1], out, gap_ms=0, trim=False)
+    finally:
+        os.umask(old)
+    assert seen == [0o600]
+    assert os.stat(out).st_mode & 0o777 == 0o600
