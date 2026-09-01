@@ -142,6 +142,15 @@ def _reset_singletons():
     except Exception:
         pass
 
+    # streaming session-id registry: a socket torn down without the route's
+    # finally would strand an id and make the cap tests' exact-count pins
+    # order-dependent.
+    try:
+        import streaming_routes
+        streaming_routes._active_sessions.clear()
+    except Exception:
+        pass
+
     # translation model LRU (module-global cache of loaded GGUF models —
     # tests only ever put stubs in it, but they must not leak across tests).
     try:
@@ -503,6 +512,9 @@ def app_module(tmp_path, monkeypatch, fake_model):
     monkeypatch.setenv("WHISPER_CAPTURES_DIR", str(tmp_path / "captures_audio"))
     monkeypatch.setenv("WHISPER_CLIENT_SETTINGS_DB", str(tmp_path / "client_settings.sqlite3"))
     monkeypatch.setenv("WHISPER_LOG_FILE", str(tmp_path / "whisper.log"))
+    # The lifespan's url_media_store.startup_reset() rmtree's URL_MEDIA_DIR
+    # unconditionally — without this it would wipe the REAL /data/url_media.
+    monkeypatch.setenv("WHISPER_URL_MEDIA_DIR", str(tmp_path / "url_media"))
 
     import config as cfg
     # Re-apply env onto the already-imported config singleton.
@@ -546,7 +558,8 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # The lifespan's hard-restart TMPDIR sweep would prune the REAL system
     # tempdir (urldl-/sepsrc-/vocals- leftovers) on every TestClient startup
     # — neuter it here; test_routes_url exercises the real function against
-    # a fake tempdir directly.
+    # a fake tempdir directly. (The URL retention dir is temp-rooted via
+    # WHISPER_URL_MEDIA_DIR above for the same reason.)
     monkeypatch.setattr(main, "_reclaim_hard_restart_orphans", lambda: None)
 
     yield main

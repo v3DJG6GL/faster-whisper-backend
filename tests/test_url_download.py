@@ -149,8 +149,20 @@ def test_forbidden_hosts(host):
     assert udl._host_is_forbidden(host) is True
 
 
-def test_unresolvable_host_is_forbidden():
-    assert udl._host_is_forbidden("definitely-not-a-real-host.invalid") is True
+def test_unresolvable_host_is_forbidden(monkeypatch):
+    # Stubbed resolver: on wildcard / captive-portal DNS a real lookup of a
+    # bogus name can resolve to a public address and fail this for reasons
+    # unrelated to the code.
+    def _nxdomain(*a, **k):
+        raise OSError("nxdomain")
+
+    monkeypatch.setattr(udl.socket, "getaddrinfo", _nxdomain)
+    assert udl._host_is_forbidden("anything.invalid") is True
+
+
+def test_empty_resolution_is_forbidden(monkeypatch):
+    monkeypatch.setattr(udl.socket, "getaddrinfo", lambda *a, **k: [])
+    assert udl._host_is_forbidden("anything.invalid") is True
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +292,47 @@ open(os.path.join(r"__DEST__", "media.m4a"), "wb").write(b"x" * 2048)
                           max_bytes=1024, timeout=30))
 
 
+def test_download_aborts_when_stream_exceeds_cap(tmp_path, monkeypatch):
+    """An unknown-length stream must be killed the moment its progress
+    passes max_bytes — not written in full and rejected post hoc — and the
+    partial it wrote must not survive the abort."""
+    _patch_argv(monkeypatch, """
+import os, sys, time
+f = open(os.path.join(r"__DEST__", "media.m4a.part"), "wb")
+for n in (100, 500, 1500, 5000):
+    f.write(b"x" * 10); f.flush()
+    print("dl:%d NA NA" % n, flush=True)
+    time.sleep(0.05)
+time.sleep(30)
+""")
+
+    async def go():
+        t0 = asyncio.get_event_loop().time()
+        with pytest.raises(udl.UrlDownloadError, match="size limit"):
+            await udl.download("https://example.com/v", dest_dir=str(tmp_path),
+                               max_bytes=1000, timeout=60)
+        assert asyncio.get_event_loop().time() - t0 < 10
+        assert os.listdir(str(tmp_path)) == []
+    _run(go())
+
+
+def test_download_survives_stderr_drain_failure(tmp_path, monkeypatch):
+    """A stderr-drain exception in the finally must never replace the real
+    outcome (a client-safe error, or a successful download)."""
+    _patch_argv(monkeypatch, _OK_SCRIPT)
+    real_wait_for = asyncio.wait_for
+
+    async def flaky_wait_for(aw, *a, **k):
+        if isinstance(aw, asyncio.Task) and aw.get_coro().__name__ == "_drain_stderr":
+            raise BrokenPipeError("pipe closed")
+        return await real_wait_for(aw, *a, **k)
+
+    monkeypatch.setattr(udl.asyncio, "wait_for", flaky_wait_for)
+    out = _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
+                            max_bytes=10_000, timeout=30))
+    assert os.path.basename(out) == "media.m4a"
+
+
 def test_download_symlink_escape_rejected(tmp_path, monkeypatch):
     outside = tmp_path / "outside.m4a"
     outside.write_bytes(b"x" * 64)
@@ -406,6 +459,37 @@ def test_thumbnail_dribble_bounded_by_deadline(monkeypatch):
     _run(go())
 
 
+def test_direct_media_probe_bounded_by_deadline(monkeypatch):
+    """A host that answers slowly (under the per-op socket timeout, over the
+    probe budget) must not pin the probe thread: give up at the deadline."""
+    import time as _t
+
+    class _Resp:
+        headers = {"Content-Type": "audio/mpeg"}
+
+        def read(self, n):
+            return b"x"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Opener:
+        def open(self, req, timeout=None):
+            _t.sleep(0.5)  # past the 0.2 s budget, under the 1 s op timeout
+            return _Resp()
+
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(udl.urllib.request, "build_opener",
+                        lambda *handlers: _Opener())
+    t0 = _t.monotonic()
+    assert udl._direct_media_probe_sync("https://example.com/a.mp3",
+                                        timeout=0.2) is False
+    assert _t.monotonic() - t0 < 2
+
+
 def test_download_wall_clock_timeout(tmp_path, monkeypatch):
     _patch_argv(monkeypatch, """
 import time
@@ -501,3 +585,13 @@ def test_probe_rejects_channel_page_as_playlist(monkeypatch):
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     with pytest.raises(udl.UrlDownloadError, match="[Pp]laylist"):
         _run(udl.probe("https://www.youtube.com/@ct3003/videos", timeout=5.0))
+
+
+def test_host_for_log_never_raises():
+    # Logging must never raise: a hostile URL (urlsplit ValueError) and a
+    # missing one both collapse to "?", a normal one yields ONLY the host.
+    assert udl.host_for_log("http://[::1") == "?"
+    assert udl.host_for_log(None) == "?"
+    assert udl.host_for_log("") == "?"
+    assert udl.host_for_log(
+        "https://Example.com/watch?v=abc&token=secret") == "example.com"

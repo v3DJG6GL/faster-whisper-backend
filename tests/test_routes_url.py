@@ -60,6 +60,13 @@ def url_enabled(app_module, tmp_path, monkeypatch):
     return app_module
 
 
+def test_lifespan_reset_is_temp_rooted(client, app_module, tmp_path):
+    # The lifespan's startup_reset() rmtree's URL_MEDIA_DIR unconditionally;
+    # conftest must have pointed it under tmp_path before the app started.
+    assert app_module.cfg.URL_MEDIA_DIR.startswith(str(tmp_path))
+    assert os.path.isdir(app_module.cfg.URL_MEDIA_DIR)
+
+
 # --- feature flag off (the default) -----------------------------------------
 
 def test_source_url_403_when_disabled(client):
@@ -332,3 +339,36 @@ def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
     assert fresh_dir.exists()
     assert (fake_tmp / "sepsrc-live.wav").exists()
     assert (fake_tmp / "unrelated.txt").exists()
+
+
+def test_reclaim_hard_restart_orphans_covers_pipeline_copies_and_uploads(
+        tmp_path, monkeypatch):
+    """The sweep also reclaims the `urlmedia-` pipeline copies
+    (url_media_store.make_pipeline_copy) and the `whisperup-` batch upload
+    spools — neither carried a matchable name before, so no sweep could
+    ever see them — under the same 60 s age guard."""
+    import time as _time
+
+    import main as app_module
+
+    fake_tmp = tmp_path / "faketmp"
+    fake_tmp.mkdir()
+    monkeypatch.setattr(app_module.tempfile, "gettempdir",
+                        lambda: str(fake_tmp))
+    old = _time.time() - 3600
+    for name in ("urlmedia-dead.m4a", "whisperup-dead.wav"):
+        p = fake_tmp / name
+        p.write_bytes(b"x")
+        os.utime(p, (old, old))
+    (fake_tmp / "urlmedia-live.m4a").write_bytes(b"x")
+    (fake_tmp / "whisperup-live.wav").write_bytes(b"x")
+    (fake_tmp / "tmpabc123.wav").write_bytes(b"x")   # someone else's tempfile
+    os.utime(fake_tmp / "tmpabc123.wav", (old, old))
+
+    app_module._reclaim_hard_restart_orphans()
+
+    assert not (fake_tmp / "urlmedia-dead.m4a").exists()
+    assert not (fake_tmp / "whisperup-dead.wav").exists()
+    assert (fake_tmp / "urlmedia-live.m4a").exists()
+    assert (fake_tmp / "whisperup-live.wav").exists()
+    assert (fake_tmp / "tmpabc123.wav").exists()

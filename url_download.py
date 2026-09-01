@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import concurrent.futures
 import dataclasses
 import ipaddress
 import logging
@@ -193,6 +194,12 @@ def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
     """Capped GET (first byte only) that answers: does this URL serve
     audio/video directly? Host gate + redirect gate keep it off internal
     ranges. Never raises for 'no' — only returns False."""
+    # `timeout` is a wall-clock budget: the opener's timeout is per-socket-
+    # op, so a host dribbling one header byte per op could otherwise hold
+    # this worker thread far past it (the outer wait_for abandons the
+    # await, never the thread). Short per-op timeout + a monotonic deadline.
+    deadline = time.monotonic() + timeout
+    op_timeout = max(1.0, min(timeout, 5.0))
     parts = urllib.parse.urlsplit(url)
     if not parts.hostname or _host_is_forbidden(parts.hostname):
         return False
@@ -201,25 +208,37 @@ def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
         method="GET")
     opener = urllib.request.build_opener(_NoPrivateRedirects())
     try:
-        with opener.open(req, timeout=timeout) as resp:
+        with opener.open(req, timeout=op_timeout) as resp:
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            if time.monotonic() > deadline:
+                return False
             resp.read(1)  # some servers ignore Range; never read more
     except Exception:  # noqa: BLE001 — unreachable/odd server ⇒ not direct media
         return False
     return ctype.startswith(_DIRECT_MEDIA_TYPES)
 
 
+# The policy probes (extractor match, DNS in _host_is_forbidden, the capped
+# direct-media GET) run on their own small pool: a wedged probe thread must
+# only cost probe capacity, never the app-wide default executor that every
+# other asyncio.to_thread in the process shares.
+_PROBE_POOL = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4, thread_name_prefix="url-probe")
+
+
 async def check_url_policy(url: str) -> str:
     """Enforce the operator's site policy for `url` BEFORE any yt-dlp fetch.
     Returns the matched extractor key. Raises UrlDownloadError on reject."""
-    key = await asyncio.to_thread(match_extractor, url)
+    loop = asyncio.get_running_loop()
+    key = await loop.run_in_executor(_PROBE_POOL, match_extractor, url)
     if key == "Generic":
         if getattr(cfg, "URL_ALLOW_GENERIC", False):
             return key
         if getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True):
-            ok = await asyncio.to_thread(
-                _direct_media_probe_sync, url,
-                timeout=float(getattr(cfg, "URL_SOCKET_TIMEOUT_SEC", 15)))
+            probe_timeout = float(getattr(cfg, "URL_SOCKET_TIMEOUT_SEC", 15))
+            ok = await loop.run_in_executor(
+                _PROBE_POOL,
+                lambda: _direct_media_probe_sync(url, timeout=probe_timeout))
             if ok:
                 return key
             raise UrlDownloadError(
@@ -295,8 +314,6 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             max(1.0, deadline - time.monotonic()))
     except asyncio.TimeoutError:
         raise UrlDownloadError("the site took too long to answer") from None
-    except UrlDownloadError:
-        raise
     except Exception as e:  # noqa: BLE001 — classify, never forward raw
         _log_probe_failure(url, e)
         raise UrlDownloadError(classify_error(str(e))) from None
@@ -321,10 +338,17 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     )
 
 
+def host_for_log(url: "str | None") -> str:
+    """Hostname for log lines — never the full URL (it can carry tokens)."""
+    try:
+        return log_safe(urllib.parse.urlsplit((url or "").strip()).hostname or "?")
+    except Exception:  # noqa: BLE001 — logging must never raise
+        return "?"
+
+
 def _log_probe_failure(url: str, e: Exception) -> None:
     logger.warning("[url-dl] probe failed for host %s: %s",
-                   log_safe(urllib.parse.urlsplit(url).hostname or "?"),
-                   log_safe(str(e)))
+                   host_for_log(url), log_safe(str(e)))
 
 
 async def fetch_thumbnail_data_uri(
@@ -572,6 +596,14 @@ async def download(
             if not raw:
                 break
             parsed = _parse_progress_line(raw.decode("utf-8", "replace").strip())
+            # Belt and braces over --max-filesize, which only fires when the
+            # size is known up front: a chunked / fragmented response with no
+            # Content-Length would otherwise be written in full (until the
+            # wall-clock timeout) before the post-hoc size check below.
+            if parsed is not None and parsed[0] > max_bytes:
+                await _kill()
+                _discard_partials(dest_dir)
+                raise UrlDownloadError("this media exceeds the server's size limit")
             if parsed and progress_cb is not None:
                 last_parsed = parsed
                 now = time.monotonic()
@@ -606,12 +638,13 @@ async def download(
         except asyncio.CancelledError:
             stderr_task.cancel()
             raise
+        except Exception:  # noqa: BLE001 — draining stderr must never mask the real error
+            stderr_task.cancel()
 
     if proc.returncode != 0:
         tail = stderr_tail.decode("utf-8", "replace")
         logger.warning("[url-dl] yt-dlp exited %s for host %s: %s",
-                       proc.returncode,
-                       log_safe(urllib.parse.urlsplit(url).hostname or "?"),
+                       proc.returncode, host_for_log(url),
                        log_safe(tail[-300:]))
         raise UrlDownloadError(classify_error(tail))
 
@@ -626,9 +659,24 @@ async def download(
     if size == 0:
         raise UrlDownloadError("the downloaded file was empty")
     logger.info("[url-dl] downloaded %.1f MB in %.1fs (host %s)",
-                size / 1e6, time.monotonic() - t0,
-                log_safe(urllib.parse.urlsplit(url).hostname or "?"))
+                size / 1e6, time.monotonic() - t0, host_for_log(url))
     return result
+
+
+def _discard_partials(dest_dir: str) -> None:
+    """Unlink whatever the killed child left in `dest_dir` (media.* and its
+    .part), so an over-cap abort never leaves the bytes it refused."""
+    try:
+        names = os.listdir(dest_dir)
+    except OSError:
+        return
+    for name in names:
+        path = os.path.join(dest_dir, name)
+        try:
+            if not os.path.islink(path) and os.path.isfile(path):
+                os.unlink(path)
+        except OSError:
+            pass
 
 
 def _find_result_file(dest_dir: str) -> "str | None":

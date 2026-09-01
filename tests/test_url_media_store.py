@@ -141,6 +141,34 @@ def test_pipeline_copy_fallback_is_0600(tmp_path, monkeypatch):
     os.unlink(copy)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_pipeline_copy_link_path_is_0600(tmp_path, monkeypatch):
+    # The os.link fast path inherits the source's mode: a 0644 download must
+    # still end up 0600 in the shared tempdir.
+    src = _make_src(tmp_path, size=64)
+    os.chmod(src, 0o644)
+    monkeypatch.setattr(ums.tempfile, "gettempdir", lambda: str(tmp_path))
+    copy = ums.make_pipeline_copy(src)
+    assert copy is not None
+    assert os.stat(copy).st_nlink == 2  # really the link path, not the copy
+    assert os.stat(copy).st_mode & 0o777 == 0o600
+    os.unlink(copy)
+
+
+def test_register_refreshes_mtime_for_orphan_guard(tmp_path):
+    # The move preserves the download's mtime; the orphan scan must see the
+    # PLACEMENT time, or a slow cross-device move lands already "old".
+    import time
+    src = _make_src(tmp_path)
+    old = time.time() - 3600
+    os.utime(src, (old, old))
+    mid = ums.register(src, user_id=None)
+    retained = ums._REG[mid]["path"]
+    assert time.time() - os.path.getmtime(retained) < 60
+    ums.sweep()
+    assert os.path.exists(retained) and mid in ums._REG
+
+
 def test_startup_reset_wipes(tmp_path):
     mid = ums.register(_make_src(tmp_path), user_id=None)
     retained = ums._REG[mid]["path"]

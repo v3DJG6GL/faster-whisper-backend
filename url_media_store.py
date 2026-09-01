@@ -74,6 +74,10 @@ def register(src_path: str, *, user_id: "str | None") -> "str | None":
         # feature, no lifespan startup_reset) — keep it 0700 either way.
         secure_dir(_dir())
         shutil.move(src_path, dest)
+        # Both move paths preserve the SOURCE mtime (rename, or copy2's
+        # copystat), but sweep()'s orphan-age guard measures placement
+        # time — refresh it so a just-placed file can never look old.
+        os.utime(dest, None)
         secure_file(dest)
         size = os.path.getsize(dest)
     except OSError as e:
@@ -119,6 +123,9 @@ def make_pipeline_copy(src: str) -> "str | None":
         except OSError:
             pass
         return None
+    # The os.link fast path inherits the download's umask mode (typically
+    # 0644) in the shared tempdir — tighten it like the fallback already is.
+    secure_file(tmp)
     return tmp
 
 
@@ -175,7 +182,7 @@ def sweep() -> None:
     # Orphan scan: a failed unlink in _drop (Windows keeps a file locked
     # while a FileResponse streams it) leaves a registry-less file that the
     # byte cap can't see. Retry those here until they go.
-    live = {os.path.basename(e["path"]) for e in _REG.values()}
+    live = {os.path.basename(e["path"]) for e in list(_REG.values())}
     d = _dir()
     try:
         names = os.listdir(d)
@@ -206,13 +213,17 @@ def _evict_over_cap(protect: "str | None" = None) -> None:
             # wiping every older retained file to no avail.
             _drop(protect)
             protect = None
-    total = sum(e["size"] for e in _REG.values())
+    # Snapshot: register() runs on worker threads and the janitor on the
+    # loop thread, so a concurrent insert must not trip "dict changed size
+    # during iteration" here.
+    items = list(_REG.items())
+    total = sum(e["size"] for _m, e in items)
     if total <= cap:
         return
-    for mid, _e in sorted(_REG.items(), key=lambda kv: kv[1]["created"]):
+    for mid, _e in sorted(items, key=lambda kv: kv[1]["created"]):
         if total <= cap:
             break
-        if mid == protect:
+        if mid == protect or mid not in _REG:
             continue
         total -= _e["size"]
         _drop(mid)
