@@ -215,7 +215,13 @@ jobs:
             exit 1
           }
           node --version
-          ffmpeg -version | Select-Object -First 1
+          # Not `ffmpeg -version | Select-Object -First 1`: -First stops the
+          # pipeline after one line, ffmpeg dies on the closed pipe with a
+          # non-zero exit, and pwsh hands that to the runner as the step's
+          # result (run 660 attempt 2 failed right after printing the line).
+          $ffmpegVersion = ffmpeg -version
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::ffmpeg -version exited $LASTEXITCODE"; exit 1 }
+          Write-Output $ffmpegVersion[0]
 
       # Host mode: this installs into the VM's system python and doubles as
       # a warm cache across runs (same trade-off as the frontend's persistent
