@@ -87,6 +87,17 @@ def test_dictate_page_served(app_module):
     assert "startBatch" in body
 
 
+def test_dictate_page_explains_streaming_disabled_close(app_module):
+    """The WS handler refuses with close code 4503 when STREAMING_ENABLED is
+    off; the page's onclose must name that refusal (next to its 4401/4403
+    branches) instead of falling through to a bare "closed"."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    for code in ("4401", "4403", "4503"):
+        assert code in body, code
+    assert "live dictation is disabled on this server" in body
+
+
 def test_dictate_page_uses_the_shared_shell(app_module):
     """It renders through render_page like every other WebUI page: no
     unsubstituted placeholders, and the shared chrome is present."""
@@ -201,6 +212,42 @@ def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
     # streamed utterances are tagged source='stream' so /quick-config can chip them.
     assert any(r.get("source") == "stream" for r in rows), \
         "streamed trace not tagged source='stream'"
+
+
+def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch):
+    """Flush coalescing must only collapse flushes with NO audio in between:
+    `flush A → audio → flush B` has to deliver BOTH flushes to the pump (new
+    audio makes the queued flush no longer authoritative), instead of silently
+    degrading to flush A and leaving utterance B waiting for the silence gate."""
+    import asyncio
+
+    import streaming_session
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    flushes = []
+    orig_flush = streaming_session.StreamSession.flush_utterance
+
+    async def slow_flush(self):
+        # Hold the pump on flush A so audio + flush B arrive while it is still
+        # in flight — the exact window where the old coalescing dropped B.
+        flushes.append(time.monotonic())
+        await asyncio.sleep(0.4)
+        await orig_flush(self)
+
+    monkeypatch.setattr(streaming_session.StreamSession, "flush_utterance", slow_flush)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            ws.send_json({"type": "config", "model": "whisper-1",
+                          "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_bytes(_pcm(8000, 1000))   # utterance A
+            ws.send_json({"type": "flush"})   # flush A (pump held for 0.4 s)
+            ws.send_bytes(_pcm(8000, 1000))   # utterance B — new audio after A's flush
+            ws.send_json({"type": "flush"})   # flush B: must NOT coalesce into A
+            ws.send_json({"type": "stop"})
+            _drain(ws)
+    assert len(flushes) == 2, (
+        f"flush after new audio was coalesced away ({len(flushes)} reached the pump)")
 
 
 def test_safe_ws_send_swallows_dead_socket():

@@ -218,6 +218,11 @@
       tailEl.textContent = m.tail || "";
       renderPartial("", "");
     }
+    else if (m.type === "loading") {
+      // Sent every ~3 s while a cold model load is in progress — without it the
+      // page sits on "connecting…" for the whole load and reads as dead.
+      setStatus("loading model " + (m.model || "") + "…");
+    }
     else if (m.type === "error") { setStatus("error: " + (m.message || m.code), "error"); }
   }
 
@@ -327,9 +332,12 @@
       if (running) stop();
       // 4401 is the server's "no valid credential" close code — on this page
       // that means the session expired, so point at the fix instead of a bare
-      // "closed". 4403 is the handshake origin check.
+      // "closed". 4403 is the handshake origin check. 4503 is the server's
+      // "streaming disabled" close (STREAMING_ENABLED off) — batch mode on
+      // this page still works, only the live socket is refused.
       if (ev && ev.code === 4401) setStatus("signed out — reload to sign in again", "error");
       else if (ev && ev.code === 4403) setStatus("handshake rejected (origin)", "error");
+      else if (ev && ev.code === 4503) setStatus("live dictation is disabled on this server", "error");
       else setStatus("closed");
     };
 

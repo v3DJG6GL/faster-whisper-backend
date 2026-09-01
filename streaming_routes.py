@@ -708,11 +708,18 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # attributed to an identity that no longer exists.
                 raise _CredentialRevoked("credential revoked mid-session")
             tail_pad_ms = int(main.cfg_for(final_model, "STREAMING_TAIL_TRIM_PAD_MS", ident))
-            audio = _trim_trailing_nonspeech(
+            # Off the event loop: this is a full Silero sweep over the whole
+            # final buffer (up to max_buffer_sec), and decode_final is awaited
+            # from the pump task — run inline it stalls the producer's
+            # ws.receive() drain (the wedge documented at the queue-sizing
+            # note). The pump is the sole session mutator, so the extra
+            # suspension adds no new interleaving.
+            audio = await asyncio.to_thread(
+                _trim_trailing_nonspeech,
                 audio,
-                pad_ms=tail_pad_ms,
-                threshold=float(main.cfg_for(final_model, "VAD_THRESHOLD", ident)),
-                log_tag=session_id[:8])
+                tail_pad_ms,
+                float(main.cfg_for(final_model, "VAD_THRESHOLD", ident)),
+                session_id[:8])
             kwargs = _build_transcribe_kwargs(
                 main, final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language,
@@ -811,7 +818,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
                 hard_lim = int(getattr(cfg, "CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT", 100_000_000))
                 sample = float(getattr(cfg, "CAPTURE_RECORDINGS_SAMPLE_RATE", 1.0))
-                if not (_cap_store.count() < cap_max and pcm_bytes < hard_lim
+                if not (_cap_store.count_evictable() < cap_max and pcm_bytes < hard_lim
                         and random.random() < sample):
                     return None
                 dur = float(info["audio_dur"])
@@ -1173,6 +1180,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     _pending_shed_bytes = 0
             audio_q.put_nowait(("pcm", pcm))
             _qbytes += len(pcm)
+            # New audio behind a queued flush means that flush is no longer
+            # authoritative for the whole stream ("two flushes with no audio
+            # between them mean the same as one" — see the control handler):
+            # re-arm so a flush AFTER this audio queues its own item instead of
+            # being silently coalesced into the earlier one. Flush spam with no
+            # audio in between still collapses to a single queued item.
+            _flush_pending = False
 
         async def _pump() -> None:
             """Consume queued audio/control out of the receive loop's way. Sole
@@ -1197,9 +1211,21 @@ async def transcribe_stream(ws: WebSocket) -> None:
                             # client is never left unable to flush again.
                             _flush_pending = False
                 except _CredentialRevoked:
-                    # NOT a decode error: stop consuming entirely. The producer
-                    # sees the latched flag and closes with 4401; its finally
-                    # already awaits this task, which is now finished.
+                    # NOT a decode error: stop consuming entirely, and close the
+                    # socket HERE — the producer is parked in ws.receive() and
+                    # would otherwise only notice the latched flag at the next
+                    # inbound frame (a silent-but-connected client keeps the
+                    # revoked session open until the idle timeout). Closing
+                    # makes that receive() return a disconnect immediately; the
+                    # producer's own _auth_revoked branch stays as a backstop
+                    # (its send/close already tolerate a closed socket).
+                    async with send_lock:
+                        try:
+                            await ws.send_json({"type": "error", "code": "unauthorized",
+                                                "message": "credential no longer valid; closing"})
+                            await ws.close(code=_WS_UNAUTH)
+                        except Exception:  # noqa: BLE001 — peer may be gone
+                            pass
                     break
                 except Exception as exc:  # noqa: BLE001 — a decode error must not kill the pump
                     # An invalid handshake `language` makes the tokenizer raise

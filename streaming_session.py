@@ -413,29 +413,43 @@ class StreamSession:
         audio = self.audio
         # Anti-hallucination: never run the final decode on near-silence.
         if self._speech_ms < self.cfg.min_speech_ms or rms_dbfs(audio) < self.cfg.rms_gate_dbfs:
-            self._reset_utterance()
-            return
-        t0 = time.perf_counter()
-        raw, words, dropped_all = await self.decode_final(audio.copy(), self._prompt)
-        proc_dur = time.perf_counter() - t0
-        if not (raw and raw.strip()) and not dropped_all:
-            # The final decode produced nothing at all (e.g. its VAD filter trimmed
-            # the whole buffer) — fall back to the partial-built LocalAgreement
-            # transcript. But when the decode DID produce segments and dropped them
-            # all as hallucinations (dropped_all), the empty result is authoritative:
-            # the partials run at a fixed temperature and so never trip the drop —
-            # i.e. they still hold the hallucination — so keep the empty result.
-            # la.committed spans the WHOLE utterance (pop_committed only prunes the
-            # agreement buffer), so this path already includes any trim-banked words.
+            # The gate judges the LIVE (post-trim) buffer only — text already
+            # committed by LocalAgreement from earlier LOUD audio must not be
+            # discarded with the near-silent tail (reachable via the
+            # max_buffer_sec ceiling: a trim banks words, then piled-up quiet
+            # frames sink the whole-buffer RMS under the gate). Skip the DECODE
+            # — that is all the gate promises — but still emit what was already
+            # agreed. la.committed spans the WHOLE utterance (pop_committed
+            # only prunes the agreement buffer), so this already includes any
+            # trim-banked words — do NOT prepend _trimmed_text here.
             raw = self.la.committed_text + self.la.text_of(self.la.finish())
+            if not raw.strip():
+                self._reset_utterance()
+                return
+            proc_dur = 0.0
+            words = []  # no decode ran; the trim-banked word dicts are merged below
         else:
-            # The decode only heard the (possibly trim-shortened) buffer: text whose
-            # audio _maybe_trim cut from it survives in the banked committed words —
-            # without this prefix an over-15s continuous utterance loses its opening
-            # (the decode result would replace the already-committed-and-shown text).
-            # Applies to the dropped_all case too: the drop verdict judged the
-            # remaining buffer, not the banked (multi-partial-agreed) prefix.
-            raw = self._trimmed_text + raw
+            t0 = time.perf_counter()
+            raw, words, dropped_all = await self.decode_final(audio.copy(), self._prompt)
+            proc_dur = time.perf_counter() - t0
+            if not (raw and raw.strip()) and not dropped_all:
+                # The final decode produced nothing at all (e.g. its VAD filter trimmed
+                # the whole buffer) — fall back to the partial-built LocalAgreement
+                # transcript. But when the decode DID produce segments and dropped them
+                # all as hallucinations (dropped_all), the empty result is authoritative:
+                # the partials run at a fixed temperature and so never trip the drop —
+                # i.e. they still hold the hallucination — so keep the empty result.
+                # la.committed spans the WHOLE utterance (pop_committed only prunes the
+                # agreement buffer), so this path already includes any trim-banked words.
+                raw = self.la.committed_text + self.la.text_of(self.la.finish())
+            else:
+                # The decode only heard the (possibly trim-shortened) buffer: text whose
+                # audio _maybe_trim cut from it survives in the banked committed words —
+                # without this prefix an over-15s continuous utterance loses its opening
+                # (the decode result would replace the already-committed-and-shown text).
+                # Applies to the dropped_all case too: the drop verdict judged the
+                # remaining buffer, not the banked (multi-partial-agreed) prefix.
+                raw = self._trimmed_text + raw
         # Reassemble the WHOLE utterance for on_final: the banked audio slices +
         # the remaining buffer, and the banked word dicts (absolute times) + the
         # final decode's words shifted from buffer-relative to utterance time.

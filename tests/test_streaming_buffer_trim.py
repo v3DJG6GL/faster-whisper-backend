@@ -88,11 +88,11 @@ def _run_long_utterance(speech_ms: int):
 
 def test_trim_preserves_committed_opening_in_final_document():
     s, msgs, finals_meta = _run_long_utterance(speech_ms=3500)
-    # Sanity: the trim actually fired (otherwise this test regressed to the
-    # short-utterance case and asserts nothing).
-    assert s._buffer_offset == 0.0  # reset after finalize
     assert finals_meta, "no final emitted"
     info = finals_meta[-1]
+    # Sanity: the trim actually fired (otherwise this test regressed to the
+    # short-utterance case and asserts nothing).
+    assert info["trimmed_sec"] > 0.0
     # raw_text (document) must contain the utterance's FIRST word — the audio
     # for it was trimmed away mid-utterance, so only the banked committed text
     # can supply it.
@@ -112,7 +112,6 @@ def test_trim_preserves_committed_opening_in_final_document():
     # audio slices plus the remaining buffer — so audio, audio_dur, raw_text
     # and words all span the full ~3.5 s of speech fed (a trimmed buffer alone
     # would be shorter than the trim threshold's keep window).
-    assert info["trimmed_sec"] > 0.0
     assert info["audio_dur"] >= 3.2
     assert abs(info["audio"].shape[0] / SR - info["audio_dur"]) < 1e-6
     # Words merge banked (absolute) + decode (shifted) entries: the utterance's
@@ -290,6 +289,74 @@ def test_ceiling_force_finalizes_through_the_decoder_when_partials_are_skipped()
     finals = [m for m in msgs if m["type"] == "final"]
     assert finals and any(m.get("forced") for m in finals)
     assert s.raw_confirmed.count("chunk") == len(info["decoded"])
+
+
+def test_ceiling_finalize_keeps_trim_banked_text_when_the_rms_gate_trips():
+    """Loud speech long enough for a trim to bank committed words, then quiet
+    frames (VAD stuck on) pile up until the max_buffer_sec ceiling forces a
+    finalize whose LIVE buffer is near-silence. The RMS gate must skip the
+    decode only — the already-committed (and already-displayed) text has to be
+    emitted, not silently discarded with the quiet tail."""
+    cfg = StreamConfig(
+        min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+        min_speech_ms=64, forced_commit_sec=100,
+        buffer_trim_sec=2.0, buffer_trim_keep_sec=1.0,
+        rms_gate_dbfs=-42.0, preroll_keep_ms=100, max_buffer_sec=6.0,
+    )
+    msgs: list[dict] = []
+    finals_meta: list[dict] = []
+    final_decodes: list[float] = []
+    session_box: list[StreamSession] = []
+
+    async def emit(m):
+        msgs.append(m)
+
+    async def on_final(info):
+        finals_meta.append(info)
+
+    async def decode_partial(audio, prompt):
+        off = session_box[0]._buffer_offset
+        dur = audio.shape[0] / SR
+        return [(a - off, b - off, t) for a, b, t in _grid_words(off, off + dur)]
+
+    async def decode_final(audio, prompt):
+        final_decodes.append(audio.shape[0] / SR)
+        return (" should-not-run.", [], False)
+
+    s = StreamSession(
+        config=cfg, endpointer=_AlwaysSpeech(),
+        decode_partial=decode_partial, decode_final=decode_final,
+        postprocess=lambda raw: raw, emit=emit, on_final=on_final,
+    )
+    session_box.append(s)
+
+    async def run():
+        # 3.5 s loud: partials commit grid words, a trim banks the opening.
+        for _ in range(3500 // FRAME_MS):
+            await s.feed_pcm(_pcm(8000, FRAME_MS))
+        assert s._trimmed_text, "setup failed: no trim banked any text"
+        # Quiet frames until the ceiling fires (VAD stuck on, so nothing else
+        # can finalize; once the live buffer is quiet the RMS gate also stops
+        # the partials, and with them the trim).
+        for _ in range(5000 // FRAME_MS):
+            await s.feed_pcm(_pcm(1, FRAME_MS))
+            if finals_meta:
+                break
+
+    asyncio.run(run())
+    assert finals_meta, "the ceiling never forced a finalize"
+    info = finals_meta[0]
+    assert info["forced"] is True
+    assert info["trimmed_sec"] > 0.0  # sanity: the trim really banked audio
+    # The gate skipped the decode…
+    assert final_decodes == []
+    # …but the committed text (incl. the trim-banked opening word) survives.
+    assert " w0" in info["raw_text"], (
+        f"banked opening lost to the near-silence gate: {info['raw_text']!r}")
+    finals = [m for m in msgs if m["type"] == "final"]
+    assert finals, "no final document emitted"
+    doc = finals[-1]["committed"] + finals[-1]["tail"]
+    assert "w0" in doc
 
 
 # ---- buffer accounting ----------------------------------------------------

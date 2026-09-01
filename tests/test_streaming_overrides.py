@@ -362,6 +362,39 @@ def test_stream_closes_when_key_is_revoked_mid_session(
     assert not any(m.get("type") == "final" and m.get("last") for m in msgs), msgs
 
 
+def test_revoked_session_closes_without_a_further_client_frame(
+        client, make_user_key, app_module, monkeypatch):
+    """Once a decode latches the revocation, the PUMP closes the socket itself —
+    a client that then goes silent (sends no further frame) must not keep the
+    revoked session open until the idle timeout; the producer's own
+    _auth_revoked branch is only the backstop."""
+    import time
+
+    import api_keys_store
+    from streaming_routes import _WS_UNAUTH
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
+    uid, raw_alice = make_user_key("alice")
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
+        time.sleep(0.5)
+        api_keys_store.revoke_user(uid)        # bumps the config version
+        ws.send_bytes(_pcm(8000, 1500))        # next decode re-auths → revoked
+        # NO further client frame: the pump-side close must cut the socket on
+        # its own, or the drain below blocks forever.
+        msgs, code = _drain_with_code(ws)
+
+    assert code == _WS_UNAUTH, (
+        f"expected a 4401 close without further client frames, got {code!r} ({msgs!r})")
+    assert any(m.get("code") == "unauthorized" for m in msgs), msgs
+
+
 def test_stream_survives_an_unrelated_config_bump(
         client, make_user_key, fake_model, app_module, monkeypatch):
     """The other direction: a settings save bumps the same config version, and
