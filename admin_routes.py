@@ -1033,8 +1033,12 @@ async def translation_test(body: _TranslationTestBody) -> JSONResponse:
             status_code=status.HTTP_400_BAD_REQUEST,
             content={"error": "model is not in TRANSLATION_ALLOWED_MODELS"})
     # Custom-family template only — a stale textarea must not leak into a
-    # built-in family's test (render_prompt/translate_segments guard too).
-    template = body.template if fam in (None, "custom") else None
+    # built-in family's test. Resolve the EFFECTIVE family first: the lab
+    # sends family=null for "auto", and render_prompt/translate_segments
+    # would otherwise treat any non-None template as the custom family,
+    # so the panel would preview/test a family a real request never uses.
+    eff = fam or translation.resolve_family(ref or default)
+    template = body.template if eff == "custom" else None
     prompt = translation.render_prompt(
         body.text, body.target, source=body.source, model_ref=ref or None,
         family=fam, glossary=body.glossary or "", template=template)

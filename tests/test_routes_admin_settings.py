@@ -520,7 +520,7 @@ def test_translation_test_endpoint_threads_template_override(
     monkeypatch.setattr(translation, "translate_segments", fake_translate)
     r = client.post("/settings/translation-test", json={
         "text": "Wir haben die Messung gestern wiederholt.",
-        "target": "en", "source": "de",
+        "target": "en", "source": "de", "family": "custom",
         "template": "X {text} -> {target_language}"})
     assert r.status_code == 200, r.text
     j = r.json()
@@ -533,6 +533,40 @@ def test_translation_test_endpoint_threads_template_override(
     assert seen["kwargs"]["source_lang"] == "de"
     assert seen["kwargs"]["mode"] == "faithful"
     assert seen["kwargs"]["template_override"] == "X {text} -> {target_language}"
+
+
+def test_translation_test_family_auto_drops_template_for_builtin_family(
+        client, app_module, monkeypatch):
+    """The lab sends family=null for "auto" but still posts the (saved)
+    textarea value. translate_segments treats any non-None template as the
+    custom family, so a hunyuan model would have been tested — and its chip
+    reported — as "custom". The effective family must decide."""
+    import translation
+
+    app_module.cfg.TRANSLATION_ENABLED = True
+    app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
+    app_module.cfg.TRANSLATION_PROMPT_FAMILY = "auto"
+    seen = {}
+
+    async def fake_translate(segments, targets, **kwargs):
+        seen["kwargs"] = kwargs
+        return ([{"en": "Hello"}], [],
+                {"model": "tencent/HY-MT1.5-7B-GGUF:Q4_K_M", "source": "de",
+                 "mode": "faithful"})
+
+    monkeypatch.setattr(translation, "translate_segments", fake_translate)
+    body = {"text": "Hallo", "target": "en", "source": "de",
+            "model": "tencent/HY-MT1.5-7B-GGUF:Q4_K_M",
+            "template": "X {text} -> {target_language}"}
+    # Preview: the rendered family follows the model, not the stale template.
+    r = client.post("/settings/translation-test", json={**body, "preview": True})
+    assert r.status_code == 200, r.text
+    assert r.json()["prompt"]["family"] == "hunyuan"
+    # Real run: no template_override reaches translate_segments.
+    r = client.post("/settings/translation-test", json=body)
+    assert r.status_code == 200, r.text
+    assert seen["kwargs"]["template_override"] is None
+    assert seen["kwargs"]["family_override"] is None
 
 
 def test_translation_test_403_when_disabled(client, app_module):

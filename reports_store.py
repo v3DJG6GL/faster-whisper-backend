@@ -296,7 +296,11 @@ def upsert_report(
     trace_t = _clean_trace_ts(trace_ts, now)
 
     lang_t = (language or "")[:_CAP_LANGUAGE] or None
-    stages_t = json.dumps(stages or [], ensure_ascii=False)[:_CAP_STAGES_JSON]
+    try:
+        stages_t = json.dumps(stages or [], ensure_ascii=False)[:_CAP_STAGES_JSON]
+        json.loads(stages_t)   # truncation may have cut mid-token
+    except (TypeError, ValueError):
+        stages_t = "[]"
 
     conn = _require_conn()
     if existing is not None:

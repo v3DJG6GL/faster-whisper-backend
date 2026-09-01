@@ -27,6 +27,12 @@ def test_quick_config_page(client):
     # and the whole row silently vanished from every trace. Nothing else in the
     # suite looks at the rendered markup, so guard the attachment itself.
     assert "item.appendChild(meta);" in r.text
+    # Stage rail + chip colours: a download row's only stage is {"name":
+    # "download"} and the standalone translate route writes "translate" (not
+    # the "-ing" names), so both need rules or they render unpainted.
+    assert ".seg-download" in r.text
+    assert ".stage-translate " in r.text
+    assert ".stage-download " in r.text
 
 
 def test_state_open_mode(client):

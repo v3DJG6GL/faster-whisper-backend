@@ -1303,7 +1303,8 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .trace-rail { margin: 0.1rem 0 0.4rem; }
   .trace-rail .rail-track { display: flex; height: 5px; border-radius: 999rem;
     overflow: hidden; background: rgba(255,255,255,0.05); }
-  .trace-rail .rail-track .seg { height: 100%; min-width: 1px; }
+  .trace-rail .rail-track .seg { height: 100%; min-width: 1px;
+    background: var(--dim); }  /* default: an unknown stage name still paints */
   .trace-rail .rail-mark { position: relative; height: 9px; margin-top: 2px; }
   .trace-rail .rail-mark .tick { position: absolute; top: 0; width: 1px;
     height: 5px; background: var(--dim); }
@@ -1317,7 +1318,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .seg-translating { background: #4dd0c4; }
   .seg-translate   { background: #4dd0c4; }
   .seg-downloading { background: #d9a45b; }
-  .seg-other       { background: var(--dim); }
+  .seg-download    { background: #d9a45b; }
   /* Per-stage chips. Same hues the /logs receipt and the desktop app's
      stage rail use, so a stage is one colour everywhere it appears. */
   .trace-stages { margin-top: 0.25rem; }
@@ -1328,7 +1329,9 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .trace-meta .stage-transcribing{ color: #93b76f; border-color: #93b76f; }
   .trace-meta .stage-diarizing   { color: #c68fb4; border-color: #c68fb4; }
   .trace-meta .stage-translating { color: #4dd0c4; border-color: #4dd0c4; }
+  .trace-meta .stage-translate   { color: #4dd0c4; border-color: #4dd0c4; }
   .trace-meta .stage-downloading { color: #d9a45b; border-color: #d9a45b; }
+  .trace-meta .stage-download    { color: #d9a45b; border-color: #d9a45b; }
   .trace-text { font-family: var(--font-mono); font-size: var(--fs-sm);
     word-wrap: break-word; }
   .trace-raw { color: var(--dim); margin-bottom: 0.25rem; }
