@@ -26,6 +26,28 @@ def test_login_open_mode_is_noop(client):
     assert not _set_cookie_lines(r)
 
 
+def test_login_open_mode_off_admin_allowlist_issues_a_session(app_module):
+    # Open mode only means "no admin key yet" — ordinary user keys can exist.
+    # The synthetic admin is confined to ADMIN_WEBUI_ALLOWED_HOSTS, so a LAN
+    # browser 401s on /auth/whoami and shows the login gate; /auth/login must
+    # therefore run the real key exchange for that host, not the open-mode
+    # no-op, or a valid key loops the gate forever with no cookie.
+    from starlette.testclient import TestClient
+    with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
+        import api_keys_store
+        uid = api_keys_store.create_user("alice", is_admin=False)
+        api_keys_store.set_user_permissions(uid, {"pages": {"stats": "all"}})
+        raw, _rec = api_keys_store.create_key(uid)
+        assert api_keys_store.is_locked_down() is False  # still open mode
+        assert c.get("/auth/whoami").status_code == 401
+        r = c.post("/auth/login", json={"key": raw})
+        assert r.status_code == 200
+        assert r.json()["open_mode"] is False
+        assert any("whisper_session=" in ln.lower()
+                   for ln in _set_cookie_lines(r))
+        assert c.get("/auth/whoami").status_code == 200
+
+
 def test_login_good_key_sets_cookies(client, make_user_key):
     _uid, raw = make_user_key("root", is_admin=True)
     r = client.post("/auth/login", json={"key": raw})
@@ -227,6 +249,31 @@ def test_csrf_exempt_for_bearer_clients(client, make_user_key):
     assert r.status_code == 200
 
 
+def test_cookie_mutation_resolves_the_session_once(client, make_user_key,
+                                                    monkeypatch):
+    # The CSRF middleware already looked the cookie up; it hands the row to
+    # auth.user_from_session_cookie via request.state.session_record so the
+    # dependency does not hit the sessions store a second time.
+    import sessions_store
+    _uid, raw = make_user_key("root", is_admin=True)
+    tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+    calls = []
+    real = sessions_store.lookup_session
+
+    def _counted(cookie):
+        calls.append(1)
+        return real(cookie)
+    monkeypatch.setattr(sessions_store, "lookup_session", _counted)
+    r = client.post("/quick-config/state", json={"rules_patch": {}},
+                    headers={"X-CSRF-Token": tok})
+    assert r.status_code != 403
+    assert len(calls) == 1
+    # Safe methods never enter the middleware branch: still exactly one.
+    calls.clear()
+    assert client.get("/quick-config/state").status_code == 200
+    assert len(calls) == 1
+
+
 def test_csrf_covers_router_mounted_mutation(client, make_user_key):
     # The app-level CSRF middleware must also guard router-mounted routes
     # (e.g. /quick-config/*), not just app-level endpoints like /auth/logout.
@@ -329,6 +376,51 @@ def test_revoke_in_sibling_worker_is_seen_after_local_write(tmp_path):
     raw3, _ = b.create_session("victim3", 3600.0)
     a.revoke_session(raw2)
     assert a.lookup_session(raw3) is not None      # B's new session is visible
+
+
+def test_lookup_sibling_check_is_throttled(tmp_path):
+    """The read-path sibling-commit check is rate-limited: every debounced
+    slide UPDATE is its own autocommit and moves PRAGMA data_version for every
+    OTHER worker, so an unthrottled check made each sibling rebuild the whole
+    O(N) index roughly once per slide. A tight lookup loop must trigger the
+    rebuild at most a couple of times, not once per call."""
+    db = str(tmp_path / "sessions.db")
+    w = _worker("sessions_store_throttle", db)
+    raw, _csrf = w.create_session("u", 3600.0)
+
+    calls = []
+    orig = w._rebuild_index_locked
+
+    def counting_rebuild():
+        calls.append(1)
+        orig()
+
+    w._rebuild_index_locked = counting_rebuild
+    w._LAST_REFRESH_TS = 0.0
+    for _ in range(50):
+        w._DATA_VERSION = -999          # every check that runs must rebuild
+        assert w.lookup_session(raw) is not None
+    # First lookup passes the (elapsed) throttle and rebuilds; the remaining
+    # 49 run well inside _REFRESH_MIN_INTERVAL_S and must be skipped. Allow
+    # one extra in case the loop straddles an interval boundary.
+    assert len(calls) <= 2
+
+
+def test_sibling_revoke_seen_on_read_path_after_interval(tmp_path):
+    """With the throttle elapsed (interval forced to 0), a revoke committed by
+    a sibling worker is still picked up by a plain lookup — the throttle delays
+    cross-worker visibility by at most _REFRESH_MIN_INTERVAL_S, it never
+    strands a revocation."""
+    db = str(tmp_path / "sessions.db")
+    a = _worker("sessions_store_rp_a", db)
+    b = _worker("sessions_store_rp_b", db)
+
+    raw, _csrf = a.create_session("victim", 3600.0)
+    assert b.lookup_session(raw) is not None
+
+    b.revoke_session(raw)
+    a._REFRESH_MIN_INTERVAL_S = 0.0     # "the interval has elapsed"
+    assert a.lookup_session(raw) is None
 
 
 def test_slide_expiry_touches_slide_cache_only_under_the_lock(tmp_path):

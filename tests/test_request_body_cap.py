@@ -37,10 +37,47 @@ def test_oversize_json_body_is_413(client):
     assert r.json() == {"detail": "request body too large"}
 
 
-def test_oversize_json_is_rejected_before_the_route_runs(client):
+def test_oversize_json_is_rejected_before_the_route_runs(client, app_module):
     # A body this size would otherwise be json.loads-expanded (~24x RSS) before
-    # any dependency — including auth — got to run.
-    assert _put_json(client, _big_json(8 * 1024 * 1024)).status_code == 413
+    # any dependency — including auth — got to run. The spy proves the
+    # ordering the name claims: the 413 lands with auth never invoked.
+    import auth
+    seen = []
+
+    def _spy():
+        seen.append(1)
+        return {"user_id": "u", "is_admin": True, "permissions_raw": {},
+                "permissions": auth.Permissions({}, True)}
+
+    app_module.app.dependency_overrides[auth.get_current_user] = _spy
+    try:
+        assert _put_json(client, _big_json(8 * 1024 * 1024)).status_code == 413
+        assert seen == []
+    finally:
+        app_module.app.dependency_overrides.pop(auth.get_current_user, None)
+
+
+def test_oversize_json_with_plus_json_subtype_is_413(client):
+    # FastAPI parses application/*+json bodies as JSON too — a prefix test on
+    # "application/json" would hand them the 256 MB service-wide ceiling.
+    r = client.put("/v1/client-settings", content=_big_json(8 * 1024 * 1024),
+                   headers={"Content-Type": "application/merge-patch+json"})
+    assert r.status_code == 413
+
+
+def test_oversize_body_with_no_content_type_is_413(client):
+    # No Content-Type at all: FastAPI still buffers and json.loads-expands the
+    # body, so an absent header must count as JSON for the cap.
+    r = client.put("/v1/client-settings", content=_big_json(8 * 1024 * 1024))
+    assert "content-type" not in r.request.headers
+    assert r.status_code == 413
+
+
+def test_small_body_with_no_content_type_is_not_413(client):
+    # Legitimate small header-less traffic keeps flowing (the route may still
+    # reject it on its own terms, but never with the middleware's 413).
+    r = client.put("/v1/client-settings", content=_big_json(1024))
+    assert r.status_code != 413
 
 
 def test_chunked_oversize_json_is_cut_off(client):
@@ -50,7 +87,10 @@ def test_chunked_oversize_json_is_cut_off(client):
     assert r.status_code != 200
 
 
-def test_json_cap_is_configurable(client, app_module, monkeypatch):
+def test_json_cap_honours_a_cfg_override(client, app_module, monkeypatch):
+    # MAX_JSON_BODY_BYTES is an internal escape hatch (getattr with a 4 MiB
+    # default), not an operator-facing setting — it has no config_store
+    # registry entry. This pins the escape hatch, not a published knob.
     monkeypatch.setattr(app_module.cfg, "MAX_JSON_BODY_BYTES", 1024, raising=False)
     assert _put_json(client, _big_json(4096)).status_code == 413
     assert _put_json(client, _big_json(16)).status_code == 200

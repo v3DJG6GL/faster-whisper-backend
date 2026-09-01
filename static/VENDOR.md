@@ -59,7 +59,11 @@ fully offline — no CDN fetch at page-load.
 - **Known residue**: `redoc.standalone.js` renders a Redocly logo from
   `https://cdn.redoc.ly/redoc/logo-mini.svg` behind an `onError` fallback. It
   is an image, not executable code, and the page degrades cleanly without it —
-  but it does mean opening `/redoc` makes one outbound image request.
+  but it does mean opening `/redoc` makes one outbound image request, the only
+  one left on the page. `get_redoc_html` also defaults `with_google_fonts=True`
+  and would inject a `fonts.googleapis.com` stylesheet `<link>`;
+  `main._redoc_ui` passes `with_google_fonts=False` (redoc falls back to
+  system fonts) — keep that argument on any future edit.
   `swagger-ui-bundle.js` and `swagger-ui.css` make no load-time external
   requests at all.
 - **Known residue (2)**: `/docs` used to emit swagger-ui's OnlineValidatorBadge,

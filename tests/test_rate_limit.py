@@ -31,6 +31,47 @@ def gauge(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Thread safety (a `def` route/dependency runs in the threadpool)
+# ---------------------------------------------------------------------------
+
+def test_inflight_is_thread_safe_under_contention(monkeypatch):
+    import threading
+
+    monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 1,
+                        raising=False)
+    g = rate_limit.InFlight(
+        config_field="TRANSLATE_MAX_INFLIGHT_PER_USER", default_max=1,
+        message="{limit} at a time",
+    )
+    try:
+        over_limit = []
+        barrier = threading.Barrier(8)
+
+        def worker():
+            barrier.wait()
+            for _ in range(500):
+                try:
+                    g.acquire("alice")
+                except rate_limit.RateLimited:
+                    continue
+                if g.count("alice") > 1:
+                    over_limit.append(g.count("alice"))
+                g.release("alice")
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert over_limit == []
+        # Every acquire was paired with a release: the gauge returns to zero,
+        # so no slot was lost to an interleaved check-then-set.
+        assert g.count("alice") == 0
+    finally:
+        rate_limit._ALL.remove(g)
+
+
+# ---------------------------------------------------------------------------
 # FixedWindow
 # ---------------------------------------------------------------------------
 

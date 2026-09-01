@@ -182,6 +182,18 @@ def test_docs_shells_loopback_ok(client, make_user_key):
         assert client.get(path).status_code == 200, path
 
 
+def test_docs_shells_have_no_external_refs(client, make_user_key):
+    # The bundles are vendored and the two known helper defaults that re-add
+    # third-party URLs (swagger's validatorUrl badge, redoc's Google Fonts
+    # stylesheet) are explicitly disabled — see static/VENDOR.md.
+    make_user_key("root", is_admin=True)
+    for path in _DOCS_SHELLS:
+        body = client.get(path).text
+        for host in ("fonts.googleapis.com", "cdn.jsdelivr.net",
+                     "validator.swagger.io"):
+            assert host not in body, (path, host)
+
+
 def test_docs_shells_remote_403_even_with_admin_key(client, make_user_key):
     # Host-only admin gate: a remote host outside ADMIN_WEBUI_ALLOWED_HOSTS is
     # 403 regardless of key — the key cannot open the host gate.

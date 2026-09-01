@@ -13,7 +13,10 @@ box pays nothing for machinery it does not want.
 
 SINGLE PROCESS ONLY. All state is a module-level dict, so with
 SERVER_WORKERS > 1 each worker enforces its own copy and every budget here is
-effectively multiplied by the worker count. That is the same honest caveat the
+effectively multiplied by the worker count. WITHIN a process the counters are
+thread-safe (each instance guards its state with a threading.Lock), so a
+`def` route or dependency running in the threadpool may call them alongside
+the async callers. That is the same honest caveat the
 hand-rolled limiter this module replaced carried: the threat model is "runaway
 script / accidental double-click / one client starving the others", not a
 motivated attacker spreading load across workers. Anything stronger needs
@@ -27,6 +30,7 @@ and reports_routes import this module and `main` imports them, so importing
 from __future__ import annotations
 
 import math
+import threading
 import time
 from typing import Any
 
@@ -72,10 +76,9 @@ class RateLimited(HTTPException):
         """The JSON response body: an OpenAI-shaped `error` object naming the
         config field an admin would raise, plus a `detail` sibling.
 
-        `detail` is NOT redundant. Seven toast handlers in this tree read
-        `j.detail` off a failed response (reports_routes.py:736,
-        captures_routes.py:3863/6057/6062/6163,
-        quick_config_routes.py:2473/2527/2978) — they are written against
+        `detail` is NOT redundant. Several toast handlers in this tree
+        (reports_routes.py, captures_routes.py, quick_config_routes.py) read
+        `j.detail` off a failed response — they are written against
         FastAPI's default error shape, and without the sibling every one of
         them would degrade to showing a bare status code instead of the
         sentence explaining what to do about it.
@@ -128,6 +131,9 @@ class FixedWindow:
         # sees always matches the config as it stands right now.
         self.message = message
         self._state: "dict[str, tuple[int, float]]" = {}
+        # Guards _state: a `def` route/dependency runs in the threadpool, so
+        # the read-modify-write below must not interleave with the loop's.
+        self._lock = threading.Lock()
         _ALL.append(self)
 
     def limit(self) -> int:
@@ -141,12 +147,15 @@ class FixedWindow:
             return
         key = key or "<unknown>"
         now = time.time()
-        n, start = self._state.get(key, (0, now))
-        if now - start > self.window_s:
-            n, start = 0, now
-        n += 1
-        self._state[key] = (n, start)
-        self._prune(key, now)
+        with self._lock:
+            n, start = self._state.get(key, (0, now))
+            if now - start > self.window_s:
+                n, start = 0, now
+            n += 1
+            self._state[key] = (n, start)
+            self._prune(key, now)
+        # Raise OUTSIDE the lock: _reject only does arithmetic, and holding
+        # the lock across an exception path buys nothing.
         if n > limit:
             raise self._reject(start, now, limit)
 
@@ -162,7 +171,8 @@ class FixedWindow:
             return
         key = key or "<unknown>"
         now = time.time()
-        n, start = self._state.get(key, (0, now))
+        with self._lock:
+            n, start = self._state.get(key, (0, now))
         if now - start > self.window_s:
             return
         if n >= limit:
@@ -177,20 +187,23 @@ class FixedWindow:
             return False
         key = key or "<unknown>"
         now = time.time()
-        n, start = self._state.get(key, (0, now))
-        if now - start > self.window_s:
-            n, start = 0, now
-        n += 1
-        self._state[key] = (n, start)
-        self._prune(key, now)
+        with self._lock:
+            n, start = self._state.get(key, (0, now))
+            if now - start > self.window_s:
+                n, start = 0, now
+            n += 1
+            self._state[key] = (n, start)
+            self._prune(key, now)
         return n == limit
 
     def reset(self, key: str) -> None:
         """Forget a key's window entirely (a success clears its penalties)."""
-        self._state.pop(key or "<unknown>", None)
+        with self._lock:
+            self._state.pop(key or "<unknown>", None)
 
     def clear(self) -> None:
-        self._state.clear()
+        with self._lock:
+            self._state.clear()
 
     def _reject(self, start: float, now: float, limit: int) -> RateLimited:
         retry_after = max(1, math.ceil(start + self.window_s - now))
@@ -237,6 +250,9 @@ class InFlight:
         self.default_max = int(default_max)
         self.message = message
         self._counts: "dict[str, int]" = {}
+        # Same contract as FixedWindow._lock: check-then-set must be atomic
+        # or a threadpool caller over-admits a slot / loses a release.
+        self._lock = threading.Lock()
         _ALL.append(self)
 
     def limit(self) -> int:
@@ -249,29 +265,35 @@ class InFlight:
         if limit <= 0:
             return
         key = key or "<unknown>"
-        n = self._counts.get(key, 0)
-        if n >= limit:
-            raise RateLimited(
-                message=self.message.format(limit=limit,
-                                            retry_after=self.RETRY_AFTER_S),
-                config_field=self.config_field,
-                retry_after=self.RETRY_AFTER_S,
-            )
-        self._counts[key] = n + 1
+        with self._lock:
+            n = self._counts.get(key, 0)
+            if n < limit:
+                self._counts[key] = n + 1
+                return
+        # Compute the rejection under the lock, raise outside it.
+        raise RateLimited(
+            message=self.message.format(limit=limit,
+                                        retry_after=self.RETRY_AFTER_S),
+            config_field=self.config_field,
+            retry_after=self.RETRY_AFTER_S,
+        )
 
     def release(self, key: str) -> None:
         """Give a slot back. Deliberately defensive: a double release (or one
         after the limit was lowered to 0 mid-flight, where acquire was a
         no-op) must not drive a key negative and hand out free slots forever."""
         key = key or "<unknown>"
-        n = self._counts.get(key, 0)
-        if n <= 1:
-            self._counts.pop(key, None)
-            return
-        self._counts[key] = max(0, n - 1)
+        with self._lock:
+            n = self._counts.get(key, 0)
+            if n <= 1:
+                self._counts.pop(key, None)
+                return
+            self._counts[key] = max(0, n - 1)
 
     def count(self, key: str) -> int:
-        return self._counts.get(key or "<unknown>", 0)
+        with self._lock:
+            return self._counts.get(key or "<unknown>", 0)
 
     def clear(self) -> None:
-        self._counts.clear()
+        with self._lock:
+            self._counts.clear()

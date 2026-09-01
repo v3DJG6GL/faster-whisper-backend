@@ -191,12 +191,20 @@ def user_from_session_cookie(request: Request) -> dict[str, Any] | None:
     stores only a user_id, so the record (permissions, admin status) is
     re-derived per request via api_keys_store.get_user_record — permission
     edits and user revocation take effect without re-login. On a hit the
-    session's CSRF token is stashed on request.state for the CSRF
-    middleware to verify against the X-CSRF-Token header."""
+    session's CSRF token is stashed on request.state for /auth/whoami to
+    hand to the page JS (NOT for the CSRF middleware, which runs ahead of
+    dependency resolution and resolves the session itself — and, on unsafe
+    methods, stashes its own lookup on request.state.session_record so this
+    function does not hit the sessions store a second time)."""
     raw = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
     if not raw:
         return None
-    sess = sessions_store.lookup_session(raw)
+    _MISSING = object()
+    sess = getattr(request.state, "session_record", _MISSING)
+    if sess is _MISSING:
+        # Safe-method requests never enter the middleware branch; look the
+        # cookie up here.
+        sess = sessions_store.lookup_session(raw)
     if sess is None:
         return None
     rec = api_keys_store.get_user_record(sess["user_id"])
@@ -270,6 +278,48 @@ def _resolve_user(
         rec.get("permissions_raw") or {},
         bool(rec.get("is_admin")),
     )
+    return rec
+
+
+def bearer_credentials(
+    conn: HTTPConnection,
+) -> HTTPAuthorizationCredentials | None:
+    """Parse an `Authorization: Bearer <key>` header off any HTTPConnection.
+
+    The hand-rolled equivalent of what HTTPBearer does inside a Depends —
+    for the SSE/WS call sites that resolve auth outside FastAPI's dependency
+    machinery. Case-insensitive scheme match, None when absent/not bearer.
+    """
+    header = conn.headers.get("authorization") or ""
+    if not header.lower().startswith("bearer "):
+        return None
+    return HTTPAuthorizationCredentials(
+        scheme="Bearer", credentials=header.split(" ", 1)[1].strip(),
+    )
+
+
+def resolve_user_for_page_sse(
+    request: Request, page: str, *, forbidden_detail: str | None = None,
+) -> dict[str, Any]:
+    """SSE-aware get_current_user + require_page(page) in one call.
+
+    EventSource cannot set headers, so the /stream endpoints resolve auth
+    imperatively instead of via Depends: bearer header first, then the
+    HttpOnly session cookie (sent automatically on a same-origin stream).
+    Open mode hands out the synthetic admin on the admin host allowlist only
+    (open_mode_host_ok) — all through the same `_resolve_user` core, so the
+    SSE gates can never drift from the Depends path again. Raises the shared
+    401 on no credential; 403 (`forbidden_detail`, default "no access to
+    /<page>") when the resolved user cannot reach the page.
+    """
+    rec = _resolve_user(request, bearer_credentials(request))
+    if rec is None:
+        raise _UNAUTH
+    if not rec["permissions"].can(page):
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            forbidden_detail or f"no access to /{page.replace('_', '-')}",
+        )
     return rec
 
 

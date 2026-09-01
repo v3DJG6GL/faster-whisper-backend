@@ -2627,35 +2627,13 @@ async def lifespan(app: FastAPI):
     except Exception as _ue:
         logger.error("Failed to initialize usage store: %s", _ue)
 
-    # If PRELOAD_MODELS is empty, fall back to preloading just DEFAULT_MODEL
-    # so a fresh start always has at least one ready-to-serve model.
-    to_preload = list(dict.fromkeys(cfg.PRELOAD_MODELS or [cfg.DEFAULT_MODEL]))
-
-    if len(to_preload) > cfg.MAX_LOADED_MODELS:
-        logger.warning(
-            "PRELOAD_MODELS has %d entries but MAX_LOADED_MODELS=%d; "
-            "LRU eviction will discard the earliest preloaded models. "
-            "Bump MAX_LOADED_MODELS to at least %d to keep them all hot.",
-            len(to_preload), cfg.MAX_LOADED_MODELS, len(to_preload),
-        )
-
-    for name in to_preload:
-        if cfg.ALLOWED_MODELS and name not in cfg.ALLOWED_MODELS:
-            logger.error(
-                "Cannot preload '%s' - it is not in ALLOWED_MODELS. "
-                "Add it to the allowlist or remove from PRELOAD_MODELS.", name,
-            )
-            continue
-        try:
-            logger.info("Preloading model: %s", name)
-            await _get_or_load_model(name)
-        except Exception as e:
-            logger.error("Failed to preload model '%s': %s", name, e)
-
     # Open the API-keys SQLite store and start the open-mode warning loop.
-    # Placed FIRST, before any long-lived task is created: its failure is
-    # fatal, and @asynccontextmanager never reaches the post-yield teardown
-    # when startup raises, so anything already running would be orphaned.
+    # Placed BEFORE the preload loop and before any long-lived task is
+    # created: its failure is fatal, and @asynccontextmanager never reaches
+    # the post-yield teardown when startup raises, so anything already
+    # running would be orphaned — and burning a cold-start multi-GB model
+    # download before refusing to start would turn one misconfiguration into
+    # a multi-minute crash loop under restart=always.
     # In OPEN mode (no admin key exists yet) the loop nags every 60 s; this
     # is the operator's prompt to bootstrap an admin via /settings/api-keys.
     # Optional WHISPER_BOOTSTRAP_ADMIN_KEY env var creates the very first
@@ -2701,6 +2679,32 @@ async def lifespan(app: FastAPI):
         raise RuntimeError(
             f"API keys store unavailable at {cfg.API_KEYS_DB}: {_ae}"
         ) from _ae
+
+
+    # If PRELOAD_MODELS is empty, fall back to preloading just DEFAULT_MODEL
+    # so a fresh start always has at least one ready-to-serve model.
+    to_preload = list(dict.fromkeys(cfg.PRELOAD_MODELS or [cfg.DEFAULT_MODEL]))
+
+    if len(to_preload) > cfg.MAX_LOADED_MODELS:
+        logger.warning(
+            "PRELOAD_MODELS has %d entries but MAX_LOADED_MODELS=%d; "
+            "LRU eviction will discard the earliest preloaded models. "
+            "Bump MAX_LOADED_MODELS to at least %d to keep them all hot.",
+            len(to_preload), cfg.MAX_LOADED_MODELS, len(to_preload),
+        )
+
+    for name in to_preload:
+        if cfg.ALLOWED_MODELS and name not in cfg.ALLOWED_MODELS:
+            logger.error(
+                "Cannot preload '%s' - it is not in ALLOWED_MODELS. "
+                "Add it to the allowlist or remove from PRELOAD_MODELS.", name,
+            )
+            continue
+        try:
+            logger.info("Preloading model: %s", name)
+            await _get_or_load_model(name)
+        except Exception as e:
+            logger.error("Failed to preload model '%s': %s", name, e)
 
     evictor_task = asyncio.create_task(_idle_evictor())
     # The diarization pipeline gets its own idle unloader (module-local
@@ -2957,6 +2961,11 @@ async def _redoc_ui():
         title=app.title + " — redoc",
         redoc_js_url="/static/redoc.standalone.js",
         redoc_favicon_url="/static/favicon-32.png",
+        # FastAPI defaults this to True and injects a fonts.googleapis.com
+        # stylesheet <link> — a live CDN dependency on an admin-origin page,
+        # same class as the validatorUrl residue on /docs. Redoc falls back
+        # to system fonts without it.
+        with_google_fonts=False,
     )
 
 # Per-request metrics middleware. Records (path, status, duration) for every
@@ -3077,8 +3086,26 @@ async def _csrf_mw(request: Request, call_next):
                 import hmac
                 import sessions_store
                 sess = sessions_store.lookup_session(cookie)
+                # Hand the resolved row to auth.user_from_session_cookie via
+                # the shared scope state so the dependency does not look the
+                # same cookie up a second time (each lookup takes the store
+                # lock twice on the event loop).
+                request.state.session_record = sess
                 header_tok = request.headers.get("x-csrf-token", "")
-                if (
+                _auth_header = request.headers.get("authorization", "")
+                if sess is None and _auth_header.lower().startswith("bearer "):
+                    # A cookie that no longer resolves (row expired, sessions
+                    # DB wiped or moved, cookie outliving its 30 d row) riding
+                    # along with a bearer credential: the bearer wins in
+                    # auth._resolve_user and is not cookie-driven, so it cannot
+                    # be CSRF'd — refusing it would only break every API client
+                    # that also holds a stale browser cookie. Deliberately
+                    # NARROW: a dead cookie with no bearer still fails closed,
+                    # because in open mode the request would otherwise resolve
+                    # to the synthetic admin behind nothing but the Origin
+                    # check above.
+                    pass
+                elif (
                     sess is None
                     or not header_tok
                     or not hmac.compare_digest(header_tok, sess["csrf_token"])
@@ -3118,10 +3145,16 @@ async def _max_body_mw(request: Request, call_next):
     # has already built it. 4 MiB is ~2.5x the largest legitimate JSON body (a
     # full 10 000-entry callback:map patch at ~1.5 MiB worst case — 64-char
     # keys + values; next largest is the 512 KB client_settings cap).
-    # getattr default, so no config-schema change is required. multipart audio
-    # uploads keep the full MAX_REQUEST_BYTES — the prefix test only matches
-    # application/json.
-    if request.headers.get("content-type", "").startswith("application/json"):
+    # getattr default, so no config-schema change is required. The media type
+    # is parsed, not prefix-matched: FastAPI treats `application/*+json`
+    # (merge-patch+json, ld+json, ...) AND a request with NO Content-Type at
+    # all as JSON and calls request.json() on it, so both must share the
+    # ceiling or they bypass it. multipart audio uploads always declare their
+    # own media type and keep the full MAX_REQUEST_BYTES.
+    _ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    _main, _, _sub = _ctype.partition("/")
+    if not _ctype or (_main == "application"
+                      and (_sub == "json" or _sub.endswith("+json"))):
         max_body = min(max_body, int(getattr(cfg, "MAX_JSON_BODY_BYTES", 4_194_304)))
     _clen = request.headers.get("content-length")
     if _clen and _clen.isdigit() and int(_clen) > max_body:
@@ -3320,6 +3353,10 @@ _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 # ("en", "de", "gsw") plus an optional BCP-47-ish subtag ("fr-CA", "zh-Hant").
 _TRANSLATE_CODE_RE = re.compile(r"\A[a-z]{2,3}(-[A-Za-z0-9]{2,8})?\Z")
 
+# Mirrors config_store._TRANSLATION_MODEL_REF_PATTERN — org/repo[:quant].
+_TRANSLATION_REF_RE = re.compile(
+    r"\A[A-Za-z0-9][A-Za-z0-9_.\-]*/[A-Za-z0-9_.\-]+(:[A-Za-z0-9_.\-]+)?\Z")
+
 
 def _translation_default_model() -> str:
     """The configured server-wide default translation model ref ("" unset)."""
@@ -3338,6 +3375,14 @@ def _translation_model_allowed(ref: str,
     client ref, or None when the client sent none) and a config/identity-
     inherited `ref` is admin policy and always passes."""
     allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
+    # "Any well-formed ref" — the client value reaches hf_hub_download /
+    # Llama.from_pretrained as a repo id, so shape-check it the way the
+    # whisper path does; an inherited ref is admin policy (config_store
+    # already validates it at save time).
+    if (requested is not None and ref == requested
+            and (len(ref) > 160 or ".." in ref
+                 or not _TRANSLATION_REF_RE.match(ref))):
+        return False
     if not allowed or ref in allowed or ref == _translation_default_model():
         return True
     return requested is None or ref != requested
@@ -5601,8 +5646,10 @@ async def translate_text(request: Request,
         # `except Exception` arm above is skipped and only `finally` runs; a
         # release sitting after an await in here would in turn be skipped if
         # the cancellation landed on that await. That is exactly the bug class
-        # documented at streaming_routes.py:1200-1207, where it permanently
-        # burned one of STREAMING_MAX_SESSIONS. Nullable local: only a
+        # the streaming teardown documents (streaming_routes.py, the `finally`
+        # of the websocket handler that releases _stream_sessions / model
+        # leases before any await), where it permanently burned one of
+        # STREAMING_MAX_SESSIONS. Nullable local: only a
         # successful acquire sets it, so a refused request releases nothing.
         if _inflight_held is not None:
             _translate_inflight.release(_inflight_held)
@@ -6922,6 +6969,13 @@ async def whoami(
 # the key it presents is exactly what must not be trusted. Only FAILURES are
 # counted and a success clears the window, so an operator fat-fingering one
 # paste never walks toward a lockout.
+#
+# Operational caveat: the key is the SOCKET PEER (request.client.host), which
+# is the real client only when uvicorn's proxy_headers trusts the proxy
+# (default: forwarded_allow_ips=127.0.0.1, i.e. a same-host reverse proxy).
+# A reverse proxy on another host that is not in FORWARDED_ALLOW_IPS puts
+# every user into ONE bucket, where a single attacker's failures lock out
+# all sign-ins for the window. Add the proxy to FORWARDED_ALLOW_IPS.
 _login_failures = _rl.FixedWindow(
     config_field="LOGIN_FAILURE_RATE",
     window_s=60.0,
@@ -6935,15 +6989,20 @@ _login_failures = _rl.FixedWindow(
 async def login(request: Request, response: Response):
     """Exchange a pasted API key for an HttpOnly session cookie.
 
-    Open mode → no-op (everyone is already the synthetic admin). Locked
-    down → validate the key via api_keys_store, create a server-side
-    session, and set two cookies: the HttpOnly session token and a
-    JS-readable CSRF token (double-submit). Returns the same shape as
-    /auth/whoami so the client can populate chrome without a second
-    round-trip. CSRF-exempt (no session exists yet)."""
+    Open mode → no-op, but only for callers on the admin host allowlist
+    (auth.open_mode_host_ok), who are already the synthetic admin. Any other
+    host in open mode — and everyone once locked down — validates the key
+    via api_keys_store, creates a server-side session, and sets two
+    cookies: the HttpOnly session token and a JS-readable CSRF token
+    (double-submit). Open mode only means "no admin key exists yet"; ordinary
+    user keys can, and a LAN browser whose /auth/whoami 401s needs this
+    route to turn one into a cookie, or its login gate loops forever.
+    Returns the same shape as /auth/whoami so the client can populate chrome
+    without a second round-trip. CSRF-exempt (no session exists yet)."""
     import api_keys_store as _ak
+    import auth as _auth
     import sessions_store
-    if not _ak.is_locked_down():
+    if not _ak.is_locked_down() and _auth.open_mode_host_ok(request):
         return {"open_mode": True}
     # Below the open-mode short-circuit on purpose: open mode checks no
     # credential, so there is nothing to throttle, and locking an operator out
