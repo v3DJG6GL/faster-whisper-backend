@@ -133,6 +133,10 @@ def normalize_id(family: str, model_id: str) -> str:
     coded it once already — a second copy would disagree for exactly the UVR
     case the moment one of them changed."""
     model_id = (model_id or "").strip()
+    if not model_id:
+        # Before the separation branch: a blank id must stay blank so
+        # _admit's emptiness guard fires, instead of becoming ".onnx".
+        return ""
     if family == "separation":
         return model_id if "." in model_id else f"{model_id}.onnx"
     return model_id
@@ -214,8 +218,13 @@ def is_warm(key: str) -> bool:
 
     Registered as ``system_stats.set_warm_predicate`` so the four idle evictors
     can consult it without importing this module (which would close a cycle in
-    all four). Never raises."""
+    all four). Never raises.
+
+    The master switch wins outright: with MODEL_PRELOAD_ENABLED=0 nothing may
+    hold a model against the idle evictors, whatever the registry says."""
     try:
+        if not _enabled():
+            return False
         with _lock:
             exp = _warm.get(key)
             return exp is not None and exp > time.monotonic()
@@ -463,10 +472,29 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
     kept.sort(key=lambda e: _FAMILY_STAGE.get(e[0], 99))
     pid = (plan_id or "").strip() or derive_plan_id(user_id or "", kept)
 
+    if not _enabled():
+        # The master switch: no Plan, no warm lease, no /stats row. Anything
+        # registered here would pin models against the idle evictors for the
+        # TTL, which is exactly what "0 = load-on-first-use" promises not to.
+        results = [{"family": f, "id": m, "state": "deferred",
+                    "reason": "disabled"} for f, m in kept]
+        results += [{"family": f, "id": m, "state": "deferred",
+                     "reason": denied[(f, m)]}
+                    for f, m in entries if (f, m) in denied]
+        _log_plan_receipt(pid, user_id, results, trigger)
+        return {"plan_id": pid, "expires_in_s": 0, "models": results}
+
     results: "list[dict]" = []
     to_enqueue: "list[tuple[str, str, str]]" = []
     with _lock:
         plan = _plans.get(pid)
+        if plan is not None and plan.user_id != (user_id or ""):
+            # A supplied id may only ever adopt the caller's OWN plan. Naming
+            # another user's id would merge into theirs, extend its TTL and
+            # let their stage advances warm this caller's entries — so the
+            # collision is treated as a miss and the id re-derived.
+            pid = derive_plan_id(user_id or "", kept)
+            plan = _plans.get(pid)
         if plan is None:
             if len(_plans) >= _MAX_PLANS:
                 # Drop the plan closest to expiry rather than refusing: the
@@ -489,17 +517,29 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
                     plan.stages.append(_FAMILY_STAGE.get(f, 99))
         _recompute_warm_locked()
 
+    # _lock is released around every _admit call below, and a concurrent
+    # register_plan from another thread may evict THIS plan as "registry
+    # full" in between — so each block re-fetches it under the lock and treats
+    # a miss as "nothing left to record": mutating the detached object would
+    # otherwise leave a /stats row that _drop_plan_locked never gets to end.
     for fam, mid in kept:
         key = stats_key(fam, mid)
         state, reason = _admit(fam, mid)
         if state == "resident":
             with _lock:
-                plan.warmed.add(key)
+                plan = _plans.get(pid)
+                if plan is not None:
+                    plan.warmed.add(key)
         elif state in ("loading", "queued"):
             with _lock:
+                plan = _plans.get(pid)
                 q = _queue
                 depth = q.qsize() if q is not None else 0
-                if key in plan.warmed or key in plan.inflight:
+                if plan is None:
+                    # Evicted as "registry full" mid-registration; the closest
+                    # honest reason in the documented vocabulary.
+                    state, reason = "deferred", "queue_full"
+                elif key in plan.warmed or key in plan.inflight:
                     # Already warmed or already queued by an earlier POST /
                     # stage advance — restamping must not enqueue it twice.
                     state, reason = ("resident" if key in plan.warmed
@@ -520,14 +560,17 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
                             "reason": denied[(fam, mid)]})
 
     with _lock:
-        if plan.job_id is None and not _all_warmed_locked(plan):
-            # Visible in /stats: warming is real GPU work and an operator
-            # watching the activity cluster must be able to see it happen.
-            plan.job_id = jobs.job_start(
-                "preload", user=user_id,
-                model=", ".join(stats_key(f, m) for f, m in plan.entries)[:200],
-                detail=f"plan {pid[:8]}")
-        _end_job_if_settled_locked(plan)
+        plan = _plans.get(pid)
+        if plan is not None:
+            if plan.job_id is None and not _all_warmed_locked(plan):
+                # Visible in /stats: warming is real GPU work and an operator
+                # watching the activity cluster must be able to see it happen.
+                plan.job_id = jobs.job_start(
+                    "preload", user=user_id,
+                    model=", ".join(stats_key(f, m)
+                                    for f, m in plan.entries)[:200],
+                    detail=f"plan {pid[:8]}")
+            _end_job_if_settled_locked(plan)
 
     for item in to_enqueue:
         _enqueue_threadsafe(item)
@@ -574,23 +617,6 @@ def _log_plan_receipt(pid: str, user_id: "str | None",
         logger.info("\n".join(lines))
     except Exception:  # noqa: BLE001 — a receipt must never break a preload
         pass
-
-
-def cancel_plan(plan_id: str) -> bool:
-    """Mark a plan dead. The worker skips dead-plan items at dequeue rather
-    than the queue being drained: an asyncio.Queue has no removal primitive and
-    the items are three-tuples the worker discards in microseconds.
-
-    A load already inside an executor thread is NOT cancellable and is not
-    cancelled — it finishes and registers normally, which at worst leaves a
-    model loaded that nobody asked for and at best hands the size ledger a free
-    measurement of it."""
-    with _lock:
-        plan = _plans.get(plan_id)
-        if plan is None:
-            return False
-        _drop_plan_locked(plan_id, "cancelled")
-        return True
 
 
 def _drop_plan_locked(plan_id: str, why: str) -> None:
@@ -888,5 +914,13 @@ def _reset_for_tests() -> None:
                 break
     _queue = None
     _loop = None
-    _worker = None
+    # Cancel, don't just forget: an orphaned consumer parked on the old queue
+    # would make diagnostics() lie about worker_alive and let start() spawn a
+    # second consumer on the same loop. Mirrors stop().
+    task, _worker = _worker, None
+    if task is not None:
+        try:
+            task.cancel()
+        except Exception:  # noqa: BLE001 — a closed loop; nothing to cancel
+            pass
     _busy = False

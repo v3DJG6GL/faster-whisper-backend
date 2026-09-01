@@ -141,6 +141,34 @@ def test_feature_off_is_202_deferred_disabled(client, app_module, monkeypatch):
     assert row["reason"] == "disabled"
 
 
+def test_feature_off_registers_no_plan_and_no_warm_lease(client, app_module,
+                                                          monkeypatch):
+    """The master switch means load-on-first-use: a POST while disabled must
+    leave nothing behind that could hold a model against the idle evictors."""
+    _enable(app_module, monkeypatch, MODEL_PRELOAD_ENABLED=False)
+    _one(client, _body())
+    assert preload._plans == {}
+    key = preload.stats_key("diarization", _body()["models"][0]["id"])
+    assert preload.is_warm(key) is False
+
+
+def test_path_shaped_whisper_id_is_deferred_with_an_empty_allowlist(
+        client, app_module, monkeypatch):
+    """Parity with main._get_or_load_model: an empty ALLOWED_MODELS admits
+    well-formed ids, not filesystem paths — the loader would reject this
+    anyway, so it must not cost a queue slot and a warm key first."""
+    cfg = _enable(app_module, monkeypatch)
+    monkeypatch.setattr(cfg, "ALLOWED_MODELS", [], raising=False)
+    monkeypatch.setattr(cfg, "DEFAULT_MODEL", "large-v3", raising=False)
+    row = _one(client, {"models": [{"family": "whisper",
+                                    "id": "../etc/passwd"}]})
+    assert row["state"] == "deferred"
+    assert row["reason"] == "not_allowed"
+    # A well-formed id still passes the same branch.
+    ok = _one(client, {"models": [{"family": "whisper", "id": "Systran/x-y"}]})
+    assert ok.get("reason") != "not_allowed"
+
+
 # --- idempotency -------------------------------------------------------------
 
 def test_repeat_post_reuses_the_plan_and_does_not_grow_the_queue(
@@ -209,10 +237,15 @@ def test_v1_models_loaded_flag_agrees(client, app_module, monkeypatch):
 def test_v1_me_loaded_flags_agree_for_all_four_families(client, app_module,
                                                         monkeypatch):
     cfg = _enable(app_module, monkeypatch)
+    # /v1/me seeds each list with the CONFIGURED model before the allowlist,
+    # so pin both to the allowlist's first entry to keep the dicts exact.
+    monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "p/x", raising=False)
     monkeypatch.setattr(cfg, "DIARIZATION_ALLOWED_MODELS", ["p/x", "p/y"],
                         raising=False)
     # A UVR FRIENDLY name (no ".onnx") — the case where the two open-coded
     # predicates this replaced would disagree.
+    monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "UVR-Foo",
+                        raising=False)
     monkeypatch.setattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS",
                         ["UVR-Foo", "UVR-Bar"], raising=False)
     monkeypatch.setattr(cfg, "TRANSLATION_ALLOWED_MODELS", {"o/r:Q4"},

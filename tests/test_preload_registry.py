@@ -59,6 +59,16 @@ def test_stats_keys_and_uvr_friendly_name_normalisation():
     assert preload.stats_key("separation", "UVR-Foo.ckpt") == "uvr:UVR-Foo.ckpt"
 
 
+def test_blank_separation_id_stays_blank_and_is_not_admitted(monkeypatch):
+    """A blank id must not become ".onnx": that would slip past _admit's
+    emptiness guard, take a warm lease on `uvr:.onnx` and send the worker
+    to load a file that does not exist."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (True, None))
+    assert preload.normalize_id("separation", " ") == ""
+    assert preload._admit("separation", " ") == ("deferred", "not_allowed")
+
+
 def test_is_resident_per_family(monkeypatch):
     assert preload.is_resident("diarization", "p/x") is False
     monkeypatch.setattr(diarization, "_pipeline_key", ("p/x", "cpu", 4))
@@ -286,6 +296,26 @@ def test_derived_plan_id_is_stable_and_user_scoped():
     assert preload.derive_plan_id("u1", e) != preload.derive_plan_id("u2", e)
 
 
+def test_supplied_plan_id_cannot_adopt_another_users_plan(monkeypatch):
+    """Client ids arrive verbatim. A second user naming the first user's id
+    must land on a plan of their own — never merge into, restamp or get
+    stage-advanced by someone else's."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    r1 = preload.register_plan("u1", [("diarization", "p/one")],
+                               plan_id="a" * 8)
+    r2 = preload.register_plan("u2", [("diarization", "p/two")],
+                               plan_id="a" * 8)
+    assert r1["plan_id"] == "a" * 8
+    assert r2["plan_id"] != "a" * 8
+    assert preload._plans["a" * 8].entries == [("diarization", "p/one")]
+    assert preload._plans[r2["plan_id"]].user_id == "u2"
+    # Same user, same id: still honoured (the idempotency contract).
+    r3 = preload.register_plan("u1", [("diarization", "p/one")],
+                               plan_id="a" * 8)
+    assert r3["plan_id"] == "a" * 8
+
+
 def test_plan_cap_evicts_the_plan_closest_to_expiry(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
@@ -381,6 +411,14 @@ def test_sync_entry_points_are_thread_safe_against_the_sweeper(monkeypatch):
     keys = {preload.stats_key(f, m)
             for p in preload._plans.values() for f, m in p.entries}
     assert set(preload._warm) <= keys
+    # And no /stats "preload" row outlived its plan: a plan evicted as
+    # "registry full" between another thread's lock windows must not have
+    # had a job row stamped onto the detached object afterwards.
+    import jobs
+    live = {f"plan {pid[:8]}" for pid in preload._plans}
+    orphans = [j for j in jobs.jobs_snapshot(include_identity=True)
+               if j["kind"] == "preload" and j["detail"] not in live]
+    assert orphans == []
 
 
 # --- stage-ahead cursor ------------------------------------------------------
@@ -405,6 +443,21 @@ def test_diagnostics_shape():
     d = preload.diagnostics()
     assert set(d) == {"enabled", "worker_alive", "plans", "warm",
                       "queue_depth"}
+
+
+def test_reset_for_tests_cancels_the_worker():
+    """Forgetting the task is not enough: an orphaned consumer parked on the
+    old queue would let start() spawn a second one on the same loop."""
+    async def _run():
+        await preload.start()
+        task = preload._worker
+        assert task is not None and not task.done()
+        preload._reset_for_tests()
+        assert preload._worker is None
+        await asyncio.sleep(0)          # one tick for the cancellation to land
+        assert task.done() and task.cancelled()
+
+    asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------
