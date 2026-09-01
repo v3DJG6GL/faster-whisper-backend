@@ -11,15 +11,16 @@ Deliberately tiny and in-process:
     wipes the directory — every file on disk without a registry entry is an
     orphan by definition. Multi-worker deployments are already documented as
     unsupported (SERVER_WORKERS: "keep at 1").
-  - Bounded twice: per-entry TTL (URL_MEDIA_TTL_SEC) and a byte-capped LRU
-    over the whole dir (URL_MEDIA_MAX_BYTES). sweep() runs from a lifespan
-    task; register() also evicts inline so a burst can't overshoot until the
-    next tick.
+  - Bounded twice: per-entry TTL (URL_MEDIA_TTL_SEC) and a byte cap over the
+    whole dir (URL_MEDIA_MAX_BYTES, oldest download evicted first). sweep()
+    runs from a lifespan task; register() also evicts inline so a burst
+    can't overshoot until the next tick.
 """
 from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import tempfile
 import time
@@ -69,6 +70,9 @@ def register(src_path: str, *, user_id: "str | None") -> "str | None":
     dest = os.path.join(_dir(), f"{media_id}.{ext}")
     try:
         os.makedirs(_dir(), exist_ok=True)
+        # The dir can be first created HERE (runtime enable of the URL
+        # feature, no lifespan startup_reset) — keep it 0700 either way.
+        secure_dir(_dir())
         shutil.move(src_path, dest)
         secure_file(dest)
         size = os.path.getsize(dest)
@@ -79,8 +83,10 @@ def register(src_path: str, *, user_id: "str | None") -> "str | None":
         "path": dest, "ext": ext, "user_id": user_id,
         "created": time.monotonic(), "size": size,
     }
-    _evict_over_cap()
-    return media_id
+    _evict_over_cap(protect=media_id)
+    # A file that alone busts the byte cap is dropped straight away — the
+    # caller must not advertise a media_id that would 404 immediately.
+    return media_id if media_id in _REG else None
 
 
 def make_pipeline_copy(src: str) -> "str | None":
@@ -89,14 +95,23 @@ def make_pipeline_copy(src: str) -> "str | None":
     copy). None when the copy fails. Called BEFORE register() moves the
     original away, so the two files' lifecycles stay independent."""
     ext = os.path.splitext(src)[1].lstrip(".").lower() or "bin"
-    fd, tmp = tempfile.mkstemp(suffix=f".{ext}" if ext.isalnum() and len(ext) <= 8 else "")
-    os.close(fd)
+    suffix = f".{ext}" if ext.isalnum() and len(ext) <= 8 else ""
+    # A fresh unpredictable name that is NEVER pre-created then re-created
+    # (an unlink/re-create window on a shared TMPDIR invites a planted
+    # symlink): os.link refuses an existing path, and the copy fallback
+    # opens with O_EXCL|O_NOFOLLOW at mode 0600.
+    tmp = os.path.join(tempfile.gettempdir(), f"urlmedia-{uuid.uuid4().hex}{suffix}")
     try:
-        os.unlink(tmp)  # replaced by link/copy below
         try:
             os.link(src, tmp)
         except OSError:
-            shutil.copy2(src, tmp)
+            fd = os.open(
+                tmp,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+                0o600)
+            with open(src, "rb") as sf, os.fdopen(fd, "wb") as df:
+                shutil.copyfileobj(sf, df)
     except OSError as e:
         logger.error("[url-dl] pipeline copy failed: %s", e)
         try:
@@ -139,25 +154,66 @@ def expires_at_unix(media_id: str) -> "int | None":
     return int(time.time() + max(0.0, remaining))
 
 
+# Name shape register() creates: {32-hex uuid}.{ext}. Anything else in the
+# dir was not put there by this store and is left alone.
+_RETAINED_NAME_RE = re.compile(r"\A[0-9a-f]{32}\Z")
+
+# An on-disk file must be at least this old before the orphan scan trusts
+# "no registry row" — register() moves the file into place from a worker
+# thread a moment before it inserts the row.
+_ORPHAN_MIN_AGE_SEC = 60.0
+
+
 def sweep() -> None:
-    """TTL expiry + LRU byte cap. Called by the lifespan janitor task."""
+    """TTL expiry + oldest-first (FIFO) byte cap + orphan scan. Called by
+    the lifespan janitor task."""
     ttl = float(getattr(cfg, "URL_MEDIA_TTL_SEC", 3600))
     now = time.monotonic()
     for mid in [m for m, e in list(_REG.items()) if now - e["created"] > ttl]:
         _drop(mid)
     _evict_over_cap()
+    # Orphan scan: a failed unlink in _drop (Windows keeps a file locked
+    # while a FileResponse streams it) leaves a registry-less file that the
+    # byte cap can't see. Retry those here until they go.
+    live = {os.path.basename(e["path"]) for e in _REG.values()}
+    d = _dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    wall = time.time()
+    for name in names:
+        stem, _dot, _ext = name.partition(".")
+        if not _RETAINED_NAME_RE.match(stem) or name in live:
+            continue
+        path = os.path.join(d, name)
+        try:
+            if wall - os.path.getmtime(path) < _ORPHAN_MIN_AGE_SEC:
+                continue
+            os.unlink(path)
+        except OSError:
+            pass
 
 
-def _evict_over_cap() -> None:
+def _evict_over_cap(protect: "str | None" = None) -> None:
     cap = int(getattr(cfg, "URL_MEDIA_MAX_BYTES", 2_000_000_000) or 0)
     if cap <= 0:
         return
+    if protect is not None:
+        entry = _REG.get(protect)
+        if entry is not None and entry["size"] > cap:
+            # The new file alone busts the cap: drop IT rather than first
+            # wiping every older retained file to no avail.
+            _drop(protect)
+            protect = None
     total = sum(e["size"] for e in _REG.values())
     if total <= cap:
         return
     for mid, _e in sorted(_REG.items(), key=lambda kv: kv[1]["created"]):
         if total <= cap:
             break
+        if mid == protect:
+            continue
         total -= _e["size"]
         _drop(mid)
 
@@ -168,8 +224,11 @@ def _drop(media_id: str) -> None:
         return
     try:
         os.unlink(entry["path"])
-    except OSError:
-        pass
+    except OSError as e:
+        # Not lost for good: the file matches the retained-name shape, so
+        # sweep()'s orphan scan retries it once it is no longer in use.
+        logger.debug("[url-dl] retained-file unlink failed (%s): %s",
+                     entry["path"], e)
 
 
 async def janitor_loop(interval_s: float = 60.0) -> None:

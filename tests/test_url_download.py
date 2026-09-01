@@ -93,7 +93,9 @@ def test_effective_max_bytes_inherits_upload_cap(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _run(coro):
-    return asyncio.new_event_loop().run_until_complete(coro)
+    # asyncio.run (not a bare new_event_loop): the loop must be CLOSED after
+    # each call or every test leaks an epoll fd + subprocess-watcher state.
+    return asyncio.run(coro)
 
 
 def test_extractor_allowlist_case_insensitive(monkeypatch):
@@ -167,6 +169,12 @@ def test_parse_progress_line_unknown_total():
     assert udl._parse_progress_line("dl:10 NA NA") == (10, None)
 
 
+def test_parse_progress_line_infinite_total_is_none():
+    # int(float("inf")) raises OverflowError, not ValueError — it must be
+    # swallowed like 'NA', never escape as a generic 500.
+    assert udl._parse_progress_line("dl:10 inf NA") == (10, None)
+
+
 @pytest.mark.parametrize("line", [
     "", "garbage", "dl:", "dl:NA NA NA", "1024 4096 NA", "[youtube] extracting",
 ])
@@ -235,6 +243,9 @@ def test_download_success(tmp_path, monkeypatch):
     assert os.path.basename(out) == "media.m4a"
     assert os.path.getsize(out) == 64
     assert seen and seen[0][1] == 1000
+    # The terminal downloaded==total line lands inside the 0.3 s throttle
+    # window; the post-EOF flush must still deliver it so the UI hits 100 %.
+    assert seen[-1] == (1.0, 1000)
 
 
 def test_download_nonzero_exit_maps_to_taxonomy(tmp_path, monkeypatch):
@@ -304,6 +315,94 @@ time.sleep(60)
                                max_bytes=10_000, timeout=60,
                                cancel_check=cancel_after_first_poll)
         assert asyncio.get_event_loop().time() - t0 < 30
+    _run(go())
+
+
+def test_download_task_cancellation_reaps_child(tmp_path, monkeypatch):
+    """Cancelling the download() TASK (uvicorn shutdown) must not orphan the
+    yt-dlp child — the caller rmtree's the job dir right afterwards."""
+    _patch_argv(monkeypatch, """
+import time
+print("dl:1 NA NA", flush=True)
+time.sleep(60)
+""")
+    procs = []
+    real_exec = asyncio.create_subprocess_exec
+
+    async def capture_exec(*a, **k):
+        p = await real_exec(*a, **k)
+        procs.append(p)
+        return p
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", capture_exec)
+
+    async def go():
+        task = asyncio.ensure_future(udl.download(
+            "https://example.com/v", dest_dir=str(tmp_path),
+            max_bytes=10_000, timeout=60))
+        for _ in range(200):
+            if procs:
+                break
+            await asyncio.sleep(0.05)
+        assert procs, "subprocess never started"
+        await asyncio.sleep(0.2)  # let the stdout loop get going
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The finally must have kill()ed the child; wait() then returns.
+        await asyncio.wait_for(procs[0].wait(), 10)
+        assert procs[0].returncode is not None
+    _run(go())
+
+
+def test_probe_timeout_covers_policy_check(monkeypatch):
+    """`timeout` is the budget for the WHOLE probe — a policy check that
+    stalls (DNS, direct-media GET) must trip the same client-safe message."""
+    async def slow_policy(url):
+        await asyncio.sleep(30)
+        return "Generic"
+
+    monkeypatch.setattr(udl, "check_url_policy", slow_policy)
+
+    async def go():
+        t0 = asyncio.get_event_loop().time()
+        with pytest.raises(udl.UrlDownloadError, match="took too long"):
+            await udl.probe("https://example.com/v", timeout=0.3)
+        assert asyncio.get_event_loop().time() - t0 < 5
+    _run(go())
+
+
+def test_thumbnail_dribble_bounded_by_deadline(monkeypatch):
+    """A host trickling bytes under the per-socket-op timeout must not hold
+    the worker thread: the chunked read gives up at the wall-clock deadline."""
+    class _Resp:
+        headers = {"Content-Type": "image/jpeg"}
+
+        def read(self, n):
+            import time as _t
+            _t.sleep(0.1)
+            return b"x" * 100  # never EOF, always under the socket timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Opener:
+        def open(self, req, timeout=None):
+            return _Resp()
+
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(udl.urllib.request, "build_opener",
+                        lambda *handlers: _Opener())
+
+    async def go():
+        t0 = asyncio.get_event_loop().time()
+        out = await udl.fetch_thumbnail_data_uri(
+            "https://example.com/thumb.jpg", timeout=0.5)
+        assert out is None
+        assert asyncio.get_event_loop().time() - t0 < 5
     _run(go())
 
 

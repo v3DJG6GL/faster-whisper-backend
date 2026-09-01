@@ -76,6 +76,71 @@ def test_lru_eviction_over_byte_cap(tmp_path, monkeypatch):
     assert ums.resolve(third, user_id=None) is not None
 
 
+def test_register_oversized_file_returns_none_and_keeps_older(tmp_path,
+                                                              monkeypatch):
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_MAX_BYTES", 50, raising=False)
+    first = ums.register(_make_src(tmp_path, "a.m4a", size=30), user_id=None)
+    assert first is not None
+    # 100 bytes alone busts the 50-byte cap: no dead id may be advertised,
+    # and the older retained file must survive.
+    assert ums.register(_make_src(tmp_path, "b.m4a", size=100),
+                        user_id=None) is None
+    assert ums.resolve(first, user_id=None) is not None
+    assert set(ums._REG) == {first}
+    # the oversized file itself was unlinked, not left behind
+    assert sorted(os.listdir(ums._dir())) == [
+        os.path.basename(ums._REG[first]["path"])]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_register_creates_dir_0700(tmp_path):
+    # Runtime enable: register() may be the FIRST thing to create the dir
+    # (no lifespan startup_reset ran) — it must still end up 0700.
+    import shutil
+    shutil.rmtree(ums._dir())
+    mid = ums.register(_make_src(tmp_path), user_id=None)
+    assert mid is not None
+    assert os.stat(ums._dir()).st_mode & 0o777 == 0o700
+
+
+def test_sweep_reclaims_file_whose_unlink_failed(tmp_path, monkeypatch):
+    mid = ums.register(_make_src(tmp_path), user_id=None)
+    retained = ums._REG[mid]["path"]
+
+    def _no_unlink(path):
+        raise PermissionError("file busy (streaming FileResponse)")
+
+    with monkeypatch.context() as m:
+        m.setattr(ums.os, "unlink", _no_unlink)
+        ums._drop(mid)
+    assert mid not in ums._REG and os.path.exists(retained)
+    # too fresh for the orphan scan yet — a concurrent register()'s move
+    # must never be mistaken for an orphan
+    ums.sweep()
+    assert os.path.exists(retained)
+    import time
+    old = time.time() - 3600
+    os.utime(retained, (old, old))
+    ums.sweep()
+    assert not os.path.exists(retained)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
+def test_pipeline_copy_fallback_is_0600(tmp_path, monkeypatch):
+    src = _make_src(tmp_path, size=64)
+
+    def _no_link(a, b, **kw):
+        raise OSError("cross-device link")
+
+    monkeypatch.setattr(ums.os, "link", _no_link)
+    copy = ums.make_pipeline_copy(src)
+    assert copy is not None
+    with open(copy, "rb") as f:
+        assert f.read() == b"x" * 64
+    assert os.stat(copy).st_mode & 0o777 == 0o600
+    os.unlink(copy)
+
+
 def test_startup_reset_wipes(tmp_path):
     mid = ums.register(_make_src(tmp_path), user_id=None)
     retained = ums._REG[mid]["path"]

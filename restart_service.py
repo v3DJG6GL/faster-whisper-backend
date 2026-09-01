@@ -38,6 +38,27 @@ import threading
 import time
 
 
+def _flush_before_exit() -> None:
+    """Last-chance flush of the shutdown obligations that lose data.
+
+    os.execv / os._exit below bypass the ASGI shutdown, so the lifespan's
+    teardown never runs. Two of its duties are lossy if skipped: held
+    dictation receipts would vanish unlogged (receipt_hold's contract is
+    that NOTHING is silently lost) and NVML would leak driver handles.
+    Best-effort — a restart must never fail because a flush did."""
+    try:
+        import main as _main
+        import receipt_hold as _receipt_hold
+        _main._log_held_receipts(_receipt_hold.flush_all())
+    except Exception:  # noqa: BLE001 — flushing must not block the restart
+        pass
+    try:
+        import system_stats as _system_stats
+        _system_stats.shutdown()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def trigger_self_restart(delay_sec: float = 1.5) -> str:
     """Schedule process exit so WinSW relaunches us via `restart!`.
 
@@ -49,6 +70,7 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         # Re-exec the current interpreter with the same argv. Sockets carry
         # O_CLOEXEC so the port frees on exec; the new process re-binds it.
         def do_reexec() -> None:
+            _flush_before_exit()
             try:
                 os.execv(sys.executable, [sys.executable, *sys.argv])
             except Exception:
@@ -66,7 +88,11 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         # Fallback: bare exit. <onfailure action="restart"/> in WhisperAPI.xml
         # MAY relaunch us on exit 0 (v2 semantics are inconsistent). Don't
         # depend on it, but it's a non-zero chance vs none.
-        threading.Timer(delay_sec, lambda: os._exit(0)).start()
+        def do_bare_exit() -> None:
+            _flush_before_exit()
+            os._exit(0)
+
+        threading.Timer(delay_sec, do_bare_exit).start()
         return "winsw-missing-fallback"
 
     def do_restart() -> None:
@@ -90,9 +116,12 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
 
         # Give WinSW a moment to register the restart command, then exit.
         # os._exit (not sys.exit): bypass uvicorn's signal handlers and
-        # Python's atexit hooks. faster-whisper has no on-disk state that
-        # needs flushing; the OS reclaims handles and VRAM on process death.
+        # Python's atexit hooks. The lossy lifespan duties (held receipts,
+        # NVML) are flushed below; everything else — temp files, child
+        # processes — is reclaimed by the OS plus the next startup's TMPDIR
+        # sweep (main._reclaim_hard_restart_orphans).
         time.sleep(0.2)
+        _flush_before_exit()
         os._exit(0)
 
     threading.Timer(delay_sec, do_restart).start()

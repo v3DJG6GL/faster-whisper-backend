@@ -157,3 +157,65 @@ def test_win32_winsw_restart_bang(monkeypatch):
     assert popen_calls["args"][0].endswith("WhisperAPI.exe")
     assert popen_calls["args"][1] == "restart!"
     assert exited["code"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Shutdown obligations: every exec/exit path flushes the lossy lifespan
+# duties (held receipts, NVML) FIRST — the restart bypasses ASGI shutdown.
+# ---------------------------------------------------------------------------
+
+def _order_probe(monkeypatch):
+    order = []
+    monkeypatch.setattr(restart_service, "_flush_before_exit",
+                        lambda: order.append("flush"))
+    return order
+
+
+def test_reexec_flushes_before_execv(monkeypatch):
+    monkeypatch.setattr(restart_service.sys, "platform", "linux")
+    order = _order_probe(monkeypatch)
+    monkeypatch.setattr(restart_service.os, "execv",
+                        lambda path, argv: order.append("execv"))
+    restart_service.trigger_self_restart()
+    _FakeTimer.instances[0].function()
+    assert order == ["flush", "execv"]
+
+
+def test_winsw_missing_fallback_flushes_before_exit(monkeypatch):
+    monkeypatch.setattr(restart_service.sys, "platform", "win32")
+    monkeypatch.setattr(restart_service.os.path, "isfile", lambda p: False)
+    order = _order_probe(monkeypatch)
+    monkeypatch.setattr(restart_service.os, "_exit",
+                        lambda code: order.append("exit"))
+    restart_service.trigger_self_restart()
+    _FakeTimer.instances[0].function()
+    assert order == ["flush", "exit"]
+
+
+def test_winsw_restart_bang_flushes_before_exit(monkeypatch):
+    monkeypatch.setattr(restart_service.sys, "platform", "win32")
+    monkeypatch.setattr(restart_service.os.path, "isfile", lambda p: True)
+    for name in ("DETACHED_PROCESS", "CREATE_NEW_PROCESS_GROUP"):
+        if not hasattr(restart_service.subprocess, name):
+            monkeypatch.setattr(restart_service.subprocess, name, 0,
+                                raising=False)
+    order = _order_probe(monkeypatch)
+    monkeypatch.setattr(restart_service.subprocess, "Popen",
+                        lambda *a, **k: order.append("popen"))
+    monkeypatch.setattr(restart_service.time, "sleep", lambda s: None)
+    monkeypatch.setattr(restart_service.os, "_exit",
+                        lambda code: order.append("exit"))
+    restart_service.trigger_self_restart()
+    _FakeTimer.instances[0].function()
+    assert order == ["popen", "flush", "exit"]
+
+
+def test_flush_before_exit_swallows_failures(monkeypatch):
+    """A broken flush must never block the restart itself."""
+    import system_stats
+
+    def _boom():
+        raise RuntimeError("nvml exploded")
+
+    monkeypatch.setattr(system_stats, "shutdown", _boom)
+    restart_service._flush_before_exit()  # must not raise

@@ -291,3 +291,44 @@ def test_preview_rate_limit_is_per_user(client, url_enabled, make_user_key,
     # bob's budget is untouched by alice spending hers.
     assert client.post("/v1/audio/url-preview", json={"url": _URL},
                        headers=bearer(key_b)).status_code == 200
+
+
+# --- hard-restart TMPDIR sweep ----------------------------------------------
+
+def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
+    """The startup sweep reclaims what an admin restart (os.execv/os._exit,
+    no ASGI shutdown) orphaned — urldl- job dirs, sepsrc-/vocals- WAVs —
+    while leaving fresh entries (a just-overlapping process) and unrelated
+    names alone. (No app_module fixture: that fixture stubs the sweep out
+    so TestClient startups never touch the real tempdir.)"""
+    import time as _time
+
+    import main as app_module
+
+    fake_tmp = tmp_path / "faketmp"
+    fake_tmp.mkdir()
+    monkeypatch.setattr(app_module.tempfile, "gettempdir",
+                        lambda: str(fake_tmp))
+
+    old = _time.time() - 3600
+    old_dir = fake_tmp / "urldl-dead"
+    old_dir.mkdir()
+    (old_dir / "media.m4a.part").write_bytes(b"x")
+    os.utime(old_dir, (old, old))
+    for name in ("sepsrc-dead.wav", "vocals-dead.wav"):
+        p = fake_tmp / name
+        p.write_bytes(b"x")
+        os.utime(p, (old, old))
+    fresh_dir = fake_tmp / "urldl-live"
+    fresh_dir.mkdir()
+    (fake_tmp / "sepsrc-live.wav").write_bytes(b"x")
+    (fake_tmp / "unrelated.txt").write_bytes(b"x")
+
+    app_module._reclaim_hard_restart_orphans()
+
+    assert not old_dir.exists()
+    assert not (fake_tmp / "sepsrc-dead.wav").exists()
+    assert not (fake_tmp / "vocals-dead.wav").exists()
+    assert fresh_dir.exists()
+    assert (fake_tmp / "sepsrc-live.wav").exists()
+    assert (fake_tmp / "unrelated.txt").exists()

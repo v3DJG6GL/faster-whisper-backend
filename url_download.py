@@ -255,9 +255,16 @@ def _policy_check_info(info: dict) -> None:
 
 
 async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
-    """Policy-gated metadata probe (no download). Client-safe errors only."""
+    """Policy-gated metadata probe (no download). Client-safe errors only.
+    `timeout` is one wall-clock budget for the WHOLE probe — the policy
+    check (which can do DNS + a capped direct-media GET) spends from the
+    same deadline as the metadata extraction."""
     url = validate_url(url)
-    key = await check_url_policy(url)
+    deadline = time.monotonic() + timeout
+    try:
+        key = await asyncio.wait_for(check_url_policy(url), timeout)
+    except asyncio.TimeoutError:
+        raise UrlDownloadError("the site took too long to answer") from None
 
     def _extract() -> dict:
         import yt_dlp  # lazy: optional dependency
@@ -283,7 +290,9 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             return ydl.sanitize_info(ydl.extract_info(url, download=False))
 
     try:
-        info = await asyncio.wait_for(asyncio.to_thread(_extract), timeout)
+        info = await asyncio.wait_for(
+            asyncio.to_thread(_extract),
+            max(1.0, deadline - time.monotonic()))
     except asyncio.TimeoutError:
         raise UrlDownloadError("the site took too long to answer") from None
     except UrlDownloadError:
@@ -342,12 +351,26 @@ async def fetch_thumbnail_data_uri(
                 ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                 if not ctype.startswith("image/") or "svg" in ctype:
                     return None
-                data = resp.read(max_bytes + 1)
+                # Chunked against a monotonic deadline: `timeout` on the
+                # opener is per-socket-op, so a host dribbling bytes under
+                # it could otherwise hold this worker thread forever (the
+                # outer wait_for abandons the await, never the thread).
+                t0 = time.monotonic()
+                buf = bytearray()
+                while True:
+                    chunk = resp.read(32768)
+                    if not chunk:
+                        break
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        return None
+                    if time.monotonic() - t0 > timeout:
+                        return None
         except Exception:  # noqa: BLE001 — soft-fail by contract
             return None
-        if not data or len(data) > max_bytes:
+        if not buf:
             return None
-        return f"data:{ctype};base64,{base64.b64encode(data).decode('ascii')}"
+        return f"data:{ctype};base64,{base64.b64encode(bytes(buf)).decode('ascii')}"
 
     try:
         return await asyncio.wait_for(asyncio.to_thread(_fetch), timeout + 2.0)
@@ -426,7 +449,7 @@ def _parse_progress_line(line: str) -> "tuple[int | None, int | None] | None":
     def _num(s: str) -> "int | None":
         try:
             return int(float(s))
-        except ValueError:
+        except (ValueError, OverflowError):  # 'NA', noise, 'inf'/1e400
             return None
 
     downloaded = _num(fields[0])
@@ -521,8 +544,18 @@ async def download(
                 pass
             await proc.wait()
 
+    def _emit(parsed: "tuple[int, int | None]") -> None:
+        downloaded, total = parsed
+        frac = (max(0.0, min(1.0, downloaded / total)) if total else None)
+        try:
+            progress_cb(frac, total)
+        except Exception:  # noqa: BLE001 — progress must not kill the run
+            pass
+
     stderr_task = asyncio.create_task(_drain_stderr())
     last_cb = 0.0
+    last_parsed: "tuple[int, int | None] | None" = None
+    last_emitted: "tuple[int, int | None] | None" = None
     try:
         assert proc.stdout is not None
         while True:
@@ -540,25 +573,39 @@ async def download(
                 break
             parsed = _parse_progress_line(raw.decode("utf-8", "replace").strip())
             if parsed and progress_cb is not None:
+                last_parsed = parsed
                 now = time.monotonic()
                 if now - last_cb >= 0.3:
                     last_cb = now
-                    downloaded, total = parsed
-                    frac = (max(0.0, min(1.0, downloaded / total))
-                            if total else None)
-                    try:
-                        progress_cb(frac, total)
-                    except Exception:  # noqa: BLE001 — progress must not kill the run
-                        pass
+                    last_emitted = parsed
+                    _emit(parsed)
+        # Flush the terminal line the 0.3 s throttle swallowed (yt-dlp emits
+        # downloaded==total right on the heels of the previous line), so the
+        # UI's download fraction reaches 100 %.
+        if (progress_cb is not None and last_parsed is not None
+                and last_parsed != last_emitted):
+            _emit(last_parsed)
         await asyncio.wait_for(proc.wait(), max(5.0, timeout - (time.monotonic() - t0)))
     except asyncio.TimeoutError:
         await _kill()
         raise UrlDownloadError("the download timed out") from None
     finally:
+        # Reached with the child still alive only when the TASK was
+        # cancelled (e.g. uvicorn shutdown) — the deliberate abort paths
+        # already reaped via _kill(). Kill synchronously: any await here
+        # would just re-raise the pending CancelledError.
+        if proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
         try:
             await asyncio.wait_for(stderr_task, 5.0)
-        except (asyncio.TimeoutError, asyncio.CancelledError):
+        except asyncio.TimeoutError:
             stderr_task.cancel()
+        except asyncio.CancelledError:
+            stderr_task.cancel()
+            raise
 
     if proc.returncode != 0:
         tail = stderr_tail.decode("utf-8", "replace")
