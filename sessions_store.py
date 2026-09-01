@@ -20,14 +20,15 @@ readable cookie (and /auth/whoami) and echoed back as X-CSRF-Token on
 cookie-authenticated mutations; the CSRF middleware compares it against this
 stored value. Stored plaintext because it is, by design, handed to the client.
 
-Lookup is O(1) via an in-memory `_SESSION_INDEX: dict[token_hash, row]` rebuilt
-on mutation, mirroring api_keys_store. The sliding-TTL refresh on each lookup
-is debounced so an active session does not write to disk on every request.
+Lookup is O(1) via an in-memory `_SESSION_INDEX: dict[token_hash, row]`,
+maintained INCREMENTALLY on create/revoke and rebuilt in full only on init,
+purge, or when PRAGMA data_version shows a sibling worker's commit. The
+sliding-TTL refresh on each lookup is debounced so an active session does not
+write to disk on every request.
 """
 from __future__ import annotations
 
 import logging
-import os
 import secrets
 import sqlite3
 import threading
@@ -49,7 +50,11 @@ _conn: sqlite3.Connection | None = None
 # Mirrors api_keys_store._DB_READY.
 _DB_READY: bool = False
 
-# In-memory token_hash → session row index. Rebuilt on mutation.
+# In-memory token_hash → session row index. Maintained incrementally on
+# create/revoke; rebuilt in full only on init, purge, or a detected sibling
+# commit. INVARIANT: any incremental insert must carry exactly the keys
+# _rebuild_index_locked() produces (user_id, key_id, csrf_token, created_ts,
+# expires_ts).
 _SESSION_INDEX: dict[str, dict[str, Any]] = {}
 
 # Last `PRAGMA data_version` observed on _conn — same role as in
@@ -62,6 +67,16 @@ _DATA_VERSION: int = -1
 # refreshes its expiry at most once per this interval.
 _SLIDE_DEBOUNCE_S = 300.0
 _SLIDE_CACHE: dict[str, float] = {}
+
+# Throttle for the read-path sibling-commit check: every debounced slide
+# UPDATE is its own autocommit and moves PRAGMA data_version for every OTHER
+# worker, so with SERVER_WORKERS>1 unthrottled lookups would rebuild the whole
+# index (O(live sessions) under _lock) roughly once per slide. This caps the
+# cost at one rebuild per interval per worker while keeping a cross-worker
+# revocation visible within ~1 s. The pre-write check in create/revoke stays
+# unthrottled (correctness before a write).
+_REFRESH_MIN_INTERVAL_S = 1.0
+_LAST_REFRESH_TS: float = 0.0
 
 _TOKEN_BYTES = 32   # secrets.token_urlsafe(32) → 43-char base64url, 256-bit
 
@@ -88,12 +103,7 @@ def init_db(db_path: str) -> None:
     Purges expired rows and builds the in-memory index from active ones."""
     global _conn, _DB_READY
     _DB_READY = False
-    db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
-    os.makedirs(db_dir, exist_ok=True)
-    _conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA journal_mode=WAL;")
-    _conn.execute("PRAGMA synchronous=NORMAL;")
+    _conn = store_common.open_wal_db(db_path)
     _conn.executescript(_SCHEMA)
     _migrate_add_key_id(_conn)
     store_common.secure_db_file(db_path)
@@ -179,10 +189,18 @@ def _refresh_if_sibling_committed() -> None:
     """Rebuild _SESSION_INDEX when another PROCESS committed since the last
     check — one header read on the connection we already hold. Mirrors
     api_keys_store._refresh_if_sibling_committed(); without it a logout in one
-    uvicorn worker would leave the cookie valid in every other worker."""
+    uvicorn worker would leave the cookie valid in every other worker.
+
+    Throttled to one check per _REFRESH_MIN_INTERVAL_S (see the constant's
+    comment): sibling slide-UPDATE commits are frequent, and each detected one
+    costs a full O(live sessions) rebuild under _lock."""
+    global _LAST_REFRESH_TS
     if _conn is None or not _DB_READY:
         return
+    if time.time() - _LAST_REFRESH_TS < _REFRESH_MIN_INTERVAL_S:
+        return
     with _lock:
+        _LAST_REFRESH_TS = time.time()
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
 
@@ -224,6 +242,10 @@ def create_session(user_id: str, ttl_s: float,
         # _DATA_VERSION after our own commit (as this used to) reads a counter
         # that has already moved for the sibling's commit, marking it as seen
         # and stranding e.g. a revocation that landed in another worker.
+        # NOTE: with SERVER_WORKERS>1 this check can still trigger one full
+        # rebuild here when a sibling committed since the last check (bounded
+        # by _REFRESH_MIN_INTERVAL_S on the read path) — it is only the
+        # STEADY-STATE per-login rebuild that is gone.
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
         conn.execute(
@@ -237,8 +259,8 @@ def create_session(user_id: str, ttl_s: float,
         # /auth/login takes any valid key, is throttled only on FAILURES
         # (`LOGIN_FAILURE_RATE`, so a scripted valid-key login loop is
         # unthrottled), has no per-user session cap, and rows are reaped only
-        # hourly by `_sessions_purge_loop` in main.py — so a full rebuild here
-        # makes N logins cost O(N²)
+        # hourly by `_sessions_purge_loop` in main.py — so a full STEADY-STATE
+        # rebuild here made N logins cost O(N²)
         # and, because `login` is async and calls this inline, every one of those
         # rebuilds runs on the event loop. Our own commit does not move
         # PRAGMA data_version on this connection, so _DATA_VERSION stays valid
@@ -320,7 +342,9 @@ def revoke_session(raw_token: str) -> None:
     conn = _require_conn()
     with _lock:
         # See create_session: pick up a sibling worker's commit BEFORE writing,
-        # never by re-stamping the counter after our own commit.
+        # never by re-stamping the counter after our own commit. As there,
+        # this check can still cost one full rebuild on the event loop when a
+        # sibling worker has committed since the last check.
         if _data_version_locked() != _DATA_VERSION:
             _rebuild_index_locked()
         conn.execute(
@@ -349,8 +373,9 @@ def purge_expired() -> None:
 
 def _reset_for_tests() -> None:
     """Drop the in-memory caches so the autouse test fixture starts clean."""
-    global _SESSION_INDEX, _DATA_VERSION, _DB_READY
+    global _SESSION_INDEX, _DATA_VERSION, _DB_READY, _LAST_REFRESH_TS
     _SESSION_INDEX = {}
     _DATA_VERSION = -1
     _DB_READY = _conn is not None
+    _LAST_REFRESH_TS = 0.0
     _SLIDE_CACHE.clear()

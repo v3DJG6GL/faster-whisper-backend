@@ -1074,8 +1074,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             """Re-resolve this connection's per-identity config when the global
             config version changed since we last resolved — so an admin editing a
             binding / profile / setting takes effect on the next utterance instead
-            of requiring the client to reconnect. The no-change case is a cheap
-            integer compare; a real change costs a couple of indexed SQLite reads,
+            of requiring the client to reconnect. The no-change case is an
+            integer compare plus, at most every 0.25 s per process, a sibling
+            data_version PRAGMA (see config_store._KEYS_PROBE_MIN_INTERVAL_S);
+            a real change costs a couple of indexed SQLite reads,
             paid at the utterance boundary (not per partial frame). Session-shaping
             STREAMING_*/endpointer params and the word-timestamp gates stay fixed
             for the connection. Never raises — a refresh must not break dictation.

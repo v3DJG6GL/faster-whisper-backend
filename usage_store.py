@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import datetime
 import logging
-import os
 import sqlite3
 import threading
 import time
@@ -89,12 +88,7 @@ def init_db(path: str) -> None:
     once on service startup before any other function. Mirrors
     transcriptions_store.init_db."""
     global _conn
-    dst_dir = os.path.dirname(os.path.abspath(path)) or "."
-    os.makedirs(dst_dir, exist_ok=True)
-    _conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA journal_mode=WAL;")
-    _conn.execute("PRAGMA synchronous=NORMAL;")
+    _conn = store_common.open_wal_db(path)
     _conn.execute("PRAGMA temp_store=MEMORY;")
     _conn.executescript(_SCHEMA)
     store_common.secure_db_file(path)

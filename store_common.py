@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 import re
+import sqlite3
 
 # Cap and control-character screen for a CALLER-supplied label that goes into a
 # log line. Lives here rather than in main so the stores can reach it without an
@@ -37,6 +38,25 @@ def log_safe(s) -> str:
     viewer renders as extra, attacker-written lines — indistinguishable from
     genuine records, including their severity styling."""
     return _LOG_UNSAFE_RE.sub("?", s or "")[:LOG_FIELD_MAX]
+
+def open_wal_db(path: str) -> sqlite3.Connection:
+    """THE connection contract for the SQLite stores: create the parent dir,
+    open `path` with a Row factory, and switch it to WAL. Every store's
+    init_db goes through here so a change to the contract (say, adding
+    busy_timeout) lands in one place instead of seven.
+
+    isolation_level=None puts pysqlite in autocommit mode; every statement
+    commits independently (each store's _lock serialises its writers). WAL
+    gives crash-safety per statement; synchronous=NORMAL is the standard WAL
+    recommendation (full durability against power loss is FULL, but NORMAL is
+    fine against process crash and ~10x faster on small writes)."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL;")
+    conn.execute("PRAGMA synchronous=NORMAL;")
+    return conn
+
 
 # WAL keeps recently written rows in the -wal sidecar until a checkpoint, and
 # -shm carries the index into it, so both need the same mode as the DB itself.

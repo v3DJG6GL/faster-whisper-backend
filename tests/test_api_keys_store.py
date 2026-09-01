@@ -5,6 +5,7 @@ CRUD, the atomic last-admin guard (including a threaded concurrency test),
 lockdown state transitions, and the permission model.
 """
 
+import sqlite3
 import threading
 
 import pytest
@@ -469,8 +470,13 @@ def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):
     must leave _DB_READY False so the stale _KEY_INDEX/_IS_LOCKED_DOWN caches
     fail closed instead of being trusted. Mirrors sessions_store.init_db."""
     assert api_keys_db._DB_READY is True
+    old = api_keys_db._conn
     garbage = tmp_path / "garbage.sqlite3"
     garbage.write_bytes(b"this is not a sqlite database")
     with pytest.raises(Exception):
         api_keys_db.init_db(str(garbage))
     assert api_keys_db._DB_READY is False
+    # Re-init must close the previous connection instead of leaking it (plus
+    # its WAL/-shm handles) on every re-init.
+    with pytest.raises(sqlite3.ProgrammingError):
+        old.execute("SELECT 1")

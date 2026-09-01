@@ -35,11 +35,16 @@ import pytest
 # import `main` at COLLECTION time (before any fixture monkeypatch runs), so
 # root every default into a throwaway dir for the whole test session. The
 # app_module fixture still pins each store to its own tmp_path per test.
+import atexit
+import shutil
 import tempfile
 
-os.environ.setdefault(
-    "WHISPER_DATA_DIR", tempfile.mkdtemp(prefix="whisper-test-data-")
-)
+if not os.environ.get("WHISPER_DATA_DIR"):
+    _TEST_DATA_DIR = tempfile.mkdtemp(prefix="whisper-test-data-")
+    os.environ["WHISPER_DATA_DIR"] = _TEST_DATA_DIR
+    # ignore_errors: a still-open SQLite handle keeps the file locked on
+    # Windows; a leftover dir there must not fail the run.
+    atexit.register(shutil.rmtree, _TEST_DATA_DIR, True)
 
 RATE = 16000
 
@@ -125,17 +130,11 @@ def _reset_singletons():
     except Exception:
         pass
 
-    # reports submission rate-limiter (module-global fixed-window counter):
-    # clear so a rate-limit test in one case can't 429 a later submit test.
-    try:
-        import reports_routes
-        reports_routes._rate.clear()
-    except Exception:
-        pass
-
     # shared per-identity limiters (rate_limit._ALL): one hook clears every
     # FixedWindow/InFlight bucket, so a limit tripped in one case cannot 429
-    # or refuse a slot in the next.
+    # or refuse a slot in the next. This covers reports' submit limiter too:
+    # reports_routes._rate is a rate_limit.FixedWindow, which registers
+    # itself in rate_limit._ALL on construction.
     try:
         import rate_limit
         rate_limit.reset_all()
@@ -321,12 +320,9 @@ def api_keys_db(tmp_path):
     except Exception:
         pass
     api_keys_store._conn = None
-    api_keys_store._KEY_INDEX = {}
-    api_keys_store._IS_LOCKED_DOWN = False
     # Closing the connection un-readies the store; leaving _DB_READY set would
     # let a later test read this test's stale lockdown cache.
-    api_keys_store._DB_READY = False
-    api_keys_store._DATA_VERSION = -1
+    api_keys_store._reset_for_tests()
 
 
 # ---------------------------------------------------------------------------
@@ -586,10 +582,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # connection would let a later test read this test's stale lockdown
     # cache (is_locked_down() passes the _DB_READY gate, swallows the
     # RuntimeError from _require_conn(), and returns the unchanged cache).
-    api_keys_store._KEY_INDEX = {}
-    api_keys_store._IS_LOCKED_DOWN = False
-    api_keys_store._DB_READY = False
-    api_keys_store._DATA_VERSION = -1
+    api_keys_store._reset_for_tests()
     client_settings_store._DB_READY = False
     sessions_store._reset_for_tests()
 

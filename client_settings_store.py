@@ -26,7 +26,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import sqlite3
 import threading
 import time
@@ -52,6 +51,15 @@ class StoreUnavailable(RuntimeError):
     """The store was never initialized (init_db failed or wasn't called).
     Routes map this to a 503 with a pointer at the server log — the
     alternative is a bare 500 that tells the operator nothing."""
+
+
+class InvalidBlob(ValueError):
+    """The blob is not strict JSON — it carries a non-finite float
+    (NaN/Infinity). Rejected BEFORE any write: json.dumps with the default
+    allow_nan=True would store the bare literal, the response render would
+    then 500 on it, and the next GET would quietly serve the value as null.
+    Routes map this to 422. Subclasses ValueError so `except ValueError`
+    (the 413 path) must come AFTER `except InvalidBlob`."""
 
 # Size caps — applied server-side before insert. The blob is opaque JSON, so
 # an over-cap payload is REJECTED (ValueError → route maps to 413), never
@@ -80,12 +88,7 @@ def init_db(path: str) -> None:
     IF NOT EXISTS. Call before any other function in this module."""
     global _conn, _DB_READY
     _DB_READY = False
-    dst_dir = os.path.dirname(os.path.abspath(path)) or "."
-    os.makedirs(dst_dir, exist_ok=True)
-    _conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA journal_mode=WAL;")
-    _conn.execute("PRAGMA synchronous=NORMAL;")
+    _conn = store_common.open_wal_db(path)
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
     store_common.secure_db_file(path)
@@ -121,7 +124,19 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
         d["blob"] = json.loads(d["blob"])
     except (TypeError, ValueError):
         # A row we wrote can't be unparseable, but never let a corrupt DB
-        # take the endpoint down — surface it as an empty object.
+        # take the endpoint down — surface it as an empty object. Say so
+        # in the log (never the blob itself): a silent {} at the row's real
+        # version looks like "genuinely empty" to a syncing client, whose
+        # next CAS push then overwrites the last good copy.
+        raw = d["blob"]
+        logger.warning(
+            "[client-settings] stored blob for user=%s profile=%r v=%s is not"
+            " parseable JSON (%d bytes) — serving an empty object; the row is"
+            " NOT overwritten by this read",
+            _uid_tag(str(d.get("user_id", "?"))), d.get("profile", ""),
+            d.get("version"),
+            len(raw or "") if isinstance(raw, (str, bytes)) else -1,
+        )
         d["blob"] = {}
     return d
 
@@ -167,13 +182,20 @@ def put(
       ok=False — `base_version` was stale; state is the CURRENT row for
                  the 409 body (or None if the row vanished mid-flight).
 
-    Raises ValueError if the serialized blob exceeds _CAP_BLOB.
+    Raises ValueError if the serialized blob exceeds _CAP_BLOB, InvalidBlob
+    (a ValueError subclass) if it holds a non-finite float.
     Force-push needs no special flag: send the version just fetched and
     the CAS matches unless someone else wrote in between — which is
     exactly the conflict the versioning exists to catch.
     """
-    blob_json = json.dumps(blob, ensure_ascii=False, separators=(",", ":"))
-    if len(blob_json.encode("utf-8")) > _CAP_BLOB:
+    try:
+        blob_json = json.dumps(
+            blob, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+        )
+    except ValueError:
+        raise InvalidBlob("blob contains a non-finite float (NaN/Infinity)") from None
+    blob_bytes = len(blob_json.encode("utf-8"))
+    if blob_bytes > _CAP_BLOB:
         raise ValueError("blob too large")
     dev = str(device)[:_CAP_DEVICE] if device else None
     now = time.time()
@@ -193,7 +215,7 @@ def put(
                 return False, get(user_id, profile)
             logger.info(
                 "[client-settings] created user=%s profile=%r v=1 bytes=%d device=%r",
-                _uid_tag(user_id), profile, len(blob_json), dev,
+                _uid_tag(user_id), profile, blob_bytes, dev,
             )
             return True, get(user_id, profile)
 
@@ -212,7 +234,7 @@ def put(
         logger.info(
             "[client-settings] updated user=%s profile=%r v=%s bytes=%d device=%r",
             _uid_tag(user_id), profile,
-            new_row["version"] if new_row else "?", len(blob_json), dev,
+            new_row["version"] if new_row else "?", blob_bytes, dev,
         )
         return True, new_row
 
@@ -232,8 +254,14 @@ def force_put(
 
     Raises ValueError if the serialized blob exceeds _CAP_BLOB (the
     route maps it to 413, same as put())."""
-    blob_json = json.dumps(blob, ensure_ascii=False, separators=(",", ":"))
-    if len(blob_json.encode("utf-8")) > _CAP_BLOB:
+    try:
+        blob_json = json.dumps(
+            blob, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+        )
+    except ValueError:
+        raise InvalidBlob("blob contains a non-finite float (NaN/Infinity)") from None
+    blob_bytes = len(blob_json.encode("utf-8"))
+    if blob_bytes > _CAP_BLOB:
         raise ValueError("blob too large")
     dev = str(device)[:_CAP_DEVICE] if device else None
     now = time.time()
@@ -254,7 +282,7 @@ def force_put(
     logger.info(
         "[client-settings] imported user=%s profile=%r v=%s bytes=%d device=%r",
         _uid_tag(user_id), profile,
-        row["version"] if row else "?", len(blob_json), dev,
+        row["version"] if row else "?", blob_bytes, dev,
     )
     assert row is not None  # the upsert we just did can't vanish under _lock
     return row

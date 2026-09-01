@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import os
 import sqlite3
 import threading
 import time
@@ -102,19 +101,10 @@ def init_db(path: str) -> None:
     safe to call on every startup; the schema-CREATE statements use
     IF NOT EXISTS. Call before any other function in this module."""
     global _conn
-    dst_dir = os.path.dirname(os.path.abspath(path)) or "."
-    os.makedirs(dst_dir, exist_ok=True)
-    # isolation_level=None puts pysqlite in autocommit mode; every
-    # statement commits independently. _lock serialises writers (so the
-    # COUNT inside _evict_to_cap sees a stable total) but does not make
-    # the INSERT + DELETEs atomic vs crash. WAL gives crash-safety per
-    # statement; synchronous=NORMAL is the standard WAL recommendation
-    # (full durability against power loss is FULL, but NORMAL is fine
-    # against process crash and ~10× faster on small writes).
-    _conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA journal_mode=WAL;")
-    _conn.execute("PRAGMA synchronous=NORMAL;")
+    # Autocommit + WAL rationale lives on store_common.open_wal_db. _lock
+    # serialises writers (so the COUNT inside _evict_to_cap sees a stable
+    # total) but does not make the INSERT + DELETEs atomic vs crash.
+    _conn = store_common.open_wal_db(path)
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
     store_common.secure_db_file(path)

@@ -443,14 +443,17 @@ async def client_settings_meta_api() -> JSONResponse:
     already renders. v1 desktop clients always use the default (profile='')
     set; named sets stay out of this map until they exist.
     Store never initialized (init_db failed at boot) → empty map rather than
-    a 503: the page must still render its users; the drawers' endpoints
-    below surface the 503 with the actionable message."""
+    a 503 (the page must still render its users), with `unavailable: true`
+    so the drawers say "store down" instead of the falsehood "nothing
+    stored" — the flag, not the drawer endpoints, is what tells the admin."""
     import client_settings_store
+    unavailable = False
     try:
         # Off the loop like the /v1 siblings (client_settings_routes.py).
         rows = await asyncio.to_thread(client_settings_store.list_meta)
     except client_settings_store.StoreUnavailable:
         rows = []
+        unavailable = True
     by_user = {
         r["user_id"]: {
             "version": r["version"],
@@ -461,7 +464,7 @@ async def client_settings_meta_api() -> JSONResponse:
         for r in rows
         if r["profile"] == ""
     }
-    return JSONResponse({"by_user": by_user})
+    return JSONResponse({"by_user": by_user, "unavailable": unavailable})
 
 
 @router.get(
@@ -471,7 +474,8 @@ async def client_settings_meta_api() -> JSONResponse:
 async def export_client_settings_api(uid: str) -> Response:
     """Download the stored settings document as a JSON file. Pretty-printed
     — a human inspecting/restoring it beats byte-fidelity, and it re-parses
-    to the identical document (import accepts it as-is). The file may
+    to the identical document (it re-imports through the WebUI's Import
+    button, which recognises this endpoint's filename). The file may
     include the account's saved API keys; the WebUI's two-press guard warns
     before this endpoint is ever hit."""
     user = await _cs_user_or_404(uid)
@@ -517,6 +521,12 @@ async def import_client_settings_api(
         )
     except client_settings_store.StoreUnavailable as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
+    except client_settings_store.InvalidBlob:
+        # Before `except ValueError` — InvalidBlob subclasses it.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "settings blob must be strict JSON (no NaN/Infinity)",
+        )
     except ValueError:
         raise HTTPException(
             status.HTTP_413_CONTENT_TOO_LARGE, "settings blob too large",
@@ -2296,6 +2306,9 @@ _API_KEYS_HTML = r"""<!doctype html>
   function csMetaFor(uid) {
     return (window.__csMeta && window.__csMeta.by_user || {})[uid] || null;
   }
+  function csUnavailable() {
+    return !!(window.__csMeta && window.__csMeta.unavailable);
+  }
   function csApiBase(uid) {
     return '/settings/api-keys/api/users/' + encodeURIComponent(uid)
       + '/client-settings';
@@ -2410,7 +2423,8 @@ _API_KEYS_HTML = r"""<!doctype html>
     head.appendChild(t);
     var c = document.createElement('span');
     c.className = 'c';
-    c.textContent = meta ? 'v' + meta.version + ' on the server' : 'nothing stored';
+    c.textContent = meta ? 'v' + meta.version + ' on the server'
+      : (csUnavailable() ? 'store unavailable' : 'nothing stored');
     head.appendChild(c);
     card.appendChild(head);
 
@@ -2437,9 +2451,12 @@ _API_KEYS_HTML = r"""<!doctype html>
     } else {
       var hintE = document.createElement('div');
       hintE.className = 'ohint';
-      hintE.textContent = 'No device has pushed settings for this account yet. '
-        + 'Import a settings file to seed it — every device signed in with this '
-        + 'account’s keys applies it on its next sync.';
+      hintE.textContent = csUnavailable()
+        ? 'The synced-settings store is unavailable — this account’s stored '
+          + 'settings could not be read. Nothing here reflects what is stored.'
+        : 'No device has pushed settings for this account yet. '
+          + 'Import a settings file to seed it — every device signed in with this '
+          + 'account’s keys applies it on its next sync.';
       card.appendChild(hintE);
     }
     root.appendChild(card);
@@ -2503,6 +2520,9 @@ _API_KEYS_HTML = r"""<!doctype html>
     var imp = document.createElement('button');
     imp.className = 'ghost';
     imp.textContent = '⤒ Import…';
+    // Store down: a force-write over unknown state is the one thing the
+    // page must not offer; Export/Delete are already disabled via !meta.
+    imp.disabled = csUnavailable();
     var fileInp = document.createElement('input');
     fileInp.type = 'file';
     fileInp.accept = '.json,application/json';
@@ -2536,6 +2556,11 @@ _API_KEYS_HTML = r"""<!doctype html>
             + (parsed.platform ? ' · ' + parsed.platform : '');
         } else if (isObj && ['general', 'recording', 'backends', 'profiles',
                              'appRules'].some(function (k) { return k in parsed; })) {
+          blob = parsed;
+        } else if (isObj && /^client-settings_.*_v\d+\.json$/.test(f.name)) {
+          // This server's own Export names files client-settings_<name>_vN.json
+          // — accept it whatever its top-level keys, so the documented
+          // round trip holds even for schemas newer than the sniff above.
           blob = parsed;
         } else {
           showToast('Not a settings file — expected a desktop settings export '
@@ -2655,7 +2680,7 @@ _API_KEYS_HTML = r"""<!doctype html>
     // Per-account synced-settings metadata for the header chips + drawers.
     // Fetched before the empty-users early-return so an open-mode blob is
     // still surfaced when no users exist yet. Best-effort, like usage.
-    window.__csMeta = { by_user: {} };
+    window.__csMeta = { by_user: {}, unavailable: false };
     try {
       var cs = await api('GET', '/settings/api-keys/api/client-settings');
       if (cs.ok) window.__csMeta = await cs.json();

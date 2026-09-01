@@ -106,13 +106,8 @@ def init(db_path: str, audio_dir: str) -> None:
     safe to call on every startup. Call once before any other function."""
     global _conn, _audio_dir
     _audio_dir = audio_dir
-    db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
-    os.makedirs(db_dir, exist_ok=True)
     os.makedirs(audio_dir, exist_ok=True)
-    _conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA journal_mode=WAL;")
-    _conn.execute("PRAGMA synchronous=NORMAL;")
+    _conn = store_common.open_wal_db(db_path)
     _conn.executescript(_SCHEMA_CORE)
     _ensure_columns(_conn)
     store_common.secure_db_file(db_path)

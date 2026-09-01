@@ -137,8 +137,9 @@ def _models() -> list[str]:
             dependencies=[Depends(require_admin_webui_host), Depends(require_admin)])
 async def get_state() -> dict[str, Any]:
     """Profiles + the metadata the editors need. Off the loop: _build_usage
-    walks users/keys in SQLite and _build_field_meta regenerates the Pydantic
-    JSON schema — the same work post_state already moved to a thread."""
+    walks users/keys in SQLite — the same work post_state already moved to
+    a thread. (_build_field_meta is lru_cached, so it only pays the Pydantic
+    schema build on the first call.)"""
     return await asyncio.to_thread(_state_payload)
 
 
@@ -300,7 +301,9 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
 
     # 2) Cascade the new name through all bindings (now that OVERRIDE_PROFILES
     #    holds the new key, the binding set stays referentially consistent).
-    affected = api_keys_store.rename_profile_refs(old, new)
+    #    Off the loop like the save above: the cascade is a full users+keys
+    #    scan with per-row UPDATEs under the store lock.
+    affected = await asyncio.to_thread(api_keys_store.rename_profile_refs, old, new)
 
     import admin_routes
     applied = await admin_routes._apply_hot_changes(written)

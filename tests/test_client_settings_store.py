@@ -1,5 +1,8 @@
 """Unit tests for client_settings_store — CAS semantics, caps, isolation."""
 
+import json
+import logging
+
 import pytest
 
 
@@ -59,6 +62,52 @@ def test_oversize_blob_rejected(client_settings_store_db):
     assert store.get("u1") is None  # nothing landed
 
 
+def test_non_finite_blob_raises(client_settings_store_db):
+    """A non-finite float is rejected BEFORE any write: json.dumps with the
+    default allow_nan=True would store a bare NaN literal that the response
+    render 500s on and the next GET quietly rewrites to null."""
+    store = client_settings_store_db
+    with pytest.raises(store.InvalidBlob):
+        store.put("u1", {"x": float("nan")}, 0)
+    assert store.get("u1") is None                    # nothing landed
+    store.put("u1", {"n": 1}, 0)
+    with pytest.raises(store.InvalidBlob):
+        store.force_put("u1", {"x": float("inf")})
+    assert store.get("u1")["blob"] == {"n": 1}        # nothing clobbered
+
+
+def test_log_bytes_is_utf8_size(client_settings_store_db, caplog):
+    """The `bytes=` INFO field must be the stored UTF-8 size (what the cap
+    and list_meta measure), not a character count."""
+    store = client_settings_store_db
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        store.put("u1", {"s": "äöü"}, 0)
+    expected = len(json.dumps(
+        {"s": "äöü"}, ensure_ascii=False, separators=(",", ":"),
+    ).encode("utf-8"))
+    rec = [r for r in caplog.records if "[client-settings] created" in r.getMessage()]
+    assert rec and f"bytes={expected}" in rec[0].getMessage()
+    assert expected == store.list_meta()[0]["bytes"]
+
+
+def test_corrupt_blob_logs_warning(client_settings_store_db, caplog):
+    """A corrupt stored row still serves {} (endpoint stays up) but must
+    WARN — silently answering "empty settings" lets a syncing client
+    overwrite the last good copy with no trace anywhere."""
+    store = client_settings_store_db
+    store.put("u1", {"n": 1}, 0)
+    store._conn.execute(
+        "UPDATE client_settings SET blob = '{not json' WHERE user_id = 'u1'")
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        got = store.get("u1")
+    assert got["blob"] == {}
+    recs = [r for r in caplog.records
+            if "[client-settings]" in r.getMessage()
+            and "not parseable" in r.getMessage()]
+    assert recs
+    assert "{not json" not in recs[0].getMessage()    # never the blob itself
+
+
 def test_device_truncated(client_settings_store_db):
     store = client_settings_store_db
     ok, state = store.put("u1", {}, 0, device="d" * 1000)
@@ -66,13 +115,17 @@ def test_device_truncated(client_settings_store_db):
     assert len(state["device"]) == store._CAP_DEVICE
 
 
-def test_updated_at_moves_forward(client_settings_store_db):
+def test_updated_at_moves_forward(client_settings_store_db, monkeypatch):
     store = client_settings_store_db
     store.put("u1", {"n": 1}, 0)
     t1 = store.get("u1")["updated_at"]
+    # Freeze the clock ahead: a `>=` on two wall-clock reads passes even if
+    # the CAS UPDATE stops writing updated_at, and a bare `>` can flake on a
+    # coarse clock — pinning the value catches the regression loudly.
+    monkeypatch.setattr(store.time, "time", lambda: t1 + 10.0)
     store.put("u1", {"n": 2}, 1)
     t2 = store.get("u1")["updated_at"]
-    assert t2 >= t1
+    assert t2 == pytest.approx(t1 + 10.0)
 
 
 def test_delete(client_settings_store_db):

@@ -106,13 +106,16 @@ async def put_client_settings(
     """Optimistic write. 200 = stored (body carries the new version);
     409 = `base_version` is stale — the body carries the CURRENT state so
     the client can 3-way merge and re-PUT without another GET round-trip.
-    413 = blob over the server cap. Force-push is just a PUT echoing the
+    413 = blob over the server cap; 422 = blob is not strict JSON (a
+    non-finite float — nothing is stored). Force-push is just a PUT echoing the
     version fetched a moment ago; there is no bypass flag."""
     try:
         # Off the loop: put() re-serialises the caller's already-parsed dict
-        # with json.dumps + encode BEFORE the 512 KB cap can reject it, so the
-        # cost is attacker-sized up to MAX_REQUEST_BYTES. Measured ~1 s of
-        # frozen loop for a ~190 MB blob that is then rejected with a 413.
+        # with json.dumps + encode BEFORE the 512 KB cap can reject it. The
+        # body is already clamped to MAX_JSON_BODY_BYTES (4 MiB default) by
+        # main.py's _max_body_mw before the router runs, so the cost is
+        # bounded by that knob — not MAX_REQUEST_BYTES — but a 4 MiB
+        # re-serialise is still real work that must not freeze the loop.
         ok, row = await asyncio.to_thread(
             client_settings_store.put,
             user["user_id"],
@@ -122,6 +125,12 @@ async def put_client_settings(
         )
     except client_settings_store.StoreUnavailable:
         raise _store_unavailable() from None
+    except client_settings_store.InvalidBlob:
+        # Before `except ValueError` — InvalidBlob subclasses it.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "client settings blob must be strict JSON (no NaN/Infinity)",
+        )
     except ValueError:
         raise HTTPException(
             status.HTTP_413_CONTENT_TOO_LARGE,

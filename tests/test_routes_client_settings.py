@@ -68,6 +68,22 @@ def test_oversize_body_413_before_the_body_is_read(client, monkeypatch):
     assert r.status_code == 413
 
 
+def test_non_finite_float_rejected_and_nothing_stored(client):
+    """Bare NaN in the JSON body (python's json.loads accepts it) must be a
+    422 with NOTHING written — previously the write landed, the PUT 500'd,
+    and the next GET served the value silently rewritten to null."""
+    r = client.put(
+        _URL,
+        content=b'{"blob": {"x": NaN}, "base_version": 0}',
+        headers={"content-type": "application/json"},
+    )
+    assert r.status_code == 422
+    assert "NaN" in r.json()["detail"]
+    r = client.get(_URL)
+    assert r.status_code == 200
+    assert r.json()["version"] == 0 and r.json()["blob"] is None
+
+
 def test_malformed_422(client):
     # Missing base_version.
     r = client.put(_URL, json={"blob": {}})

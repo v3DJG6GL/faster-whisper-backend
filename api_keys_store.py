@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import secrets
 import sqlite3
 import threading
@@ -156,12 +155,17 @@ def init_db(db_path: str) -> None:
     Builds the in-memory key index from active rows."""
     global _conn, _DB_READY
     _DB_READY = False  # a re-init that raises partway must fail closed
-    db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
-    os.makedirs(db_dir, exist_ok=True)
-    _conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
-    _conn.row_factory = sqlite3.Row
-    _conn.execute("PRAGMA journal_mode=WAL;")
-    _conn.execute("PRAGMA synchronous=NORMAL;")
+    # Close the previous handle before rebinding, or every re-init leaks a
+    # connection (plus its WAL/-shm handles). Safe here: _DB_READY is already
+    # False, so a caller racing in fails closed via _require_conn().
+    if _conn is not None:
+        try:
+            _conn.close()
+        except sqlite3.Error:
+            pass
+        finally:
+            _conn = None
+    _conn = store_common.open_wal_db(db_path)
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
     store_common.secure_db_file(db_path)
@@ -1026,3 +1030,15 @@ def is_locked_down() -> bool:
         return True
     _refresh_if_sibling_committed()
     return _IS_LOCKED_DOWN
+
+
+def _reset_for_tests() -> None:
+    """Test-only: drop the in-process caches so a later test cannot read this
+    test's stale lockdown state or key index. Mirrors
+    sessions_store._reset_for_tests. Connection closing is left to the
+    callers that already do it."""
+    global _KEY_INDEX, _IS_LOCKED_DOWN, _DB_READY, _DATA_VERSION
+    _KEY_INDEX = {}
+    _IS_LOCKED_DOWN = False
+    _DB_READY = False
+    _DATA_VERSION = -1
