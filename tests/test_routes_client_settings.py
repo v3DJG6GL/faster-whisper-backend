@@ -145,3 +145,15 @@ def test_store_unavailable_maps_to_503_not_500(client, monkeypatch):
     assert "CLIENT_SETTINGS_DB" in r.json()["detail"]
     assert _put(client, {"n": 1}, 0).status_code == 503
     assert client.delete(_URL).status_code == 503
+
+
+def test_partial_init_maps_to_503_not_500(client, monkeypatch):
+    """init_db raising AFTER it assigned _conn (WAL pragma / schema script /
+    secure_db_file on a corrupt or read-only DB) must also answer the
+    advertised 503 — not a bare 500 from the half-open connection."""
+    import client_settings_store
+
+    monkeypatch.setattr(client_settings_store, "_DB_READY", False)
+    r = client.get(_URL)
+    assert r.status_code == 503
+    assert "CLIENT_SETTINGS_DB" in r.json()["detail"]

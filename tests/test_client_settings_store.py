@@ -171,3 +171,15 @@ def test_force_put_truncates_device(client_settings_store_db):
     store = client_settings_store_db
     state = store.force_put("u1", {}, device="d" * 500)
     assert state["device"] == "d" * store._CAP_DEVICE
+
+
+def test_partial_init_fails_closed(client_settings_store_db, monkeypatch):
+    """A half-open store — init_db assigned _conn but raised before finishing
+    (corrupt/read-only DB file) — must raise StoreUnavailable, not hand out
+    the partial connection. Mirrors sessions_store/api_keys_store._DB_READY."""
+    store = client_settings_store_db
+    monkeypatch.setattr(store, "_DB_READY", False)
+    with pytest.raises(store.StoreUnavailable):
+        store.get("u1")
+    with pytest.raises(store.StoreUnavailable):
+        store.put("u1", {"n": 1}, 0)

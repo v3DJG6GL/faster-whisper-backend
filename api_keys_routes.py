@@ -40,7 +40,14 @@ from auth import require_admin
 
 logger = logging.getLogger("whisper-api")
 
-router = APIRouter(prefix="/settings/api-keys")
+# Host gate on the router constructor so every present + future sub-route
+# inherits the check (the auth.require_page convention) — closes the
+# "forgot to gate this endpoint" hole. Router-level dependencies run before
+# route-level ones, so behaviour is identical to the per-route copies.
+router = APIRouter(
+    prefix="/settings/api-keys",
+    dependencies=[Depends(require_admin_webui_host)],
+)
 
 
 # ---------------------------------------------------------------------
@@ -133,11 +140,7 @@ class ImportClientSettingsIn(BaseModel):
 # HTML page
 # ---------------------------------------------------------------------
 
-@router.get(
-    "",
-    dependencies=[Depends(require_admin_webui_host)],
-    response_class=HTMLResponse,
-)
+@router.get("", response_class=HTMLResponse)
 async def api_keys_page() -> HTMLResponse:
     return HTMLResponse(
         web_common.render_page(_API_KEYS_HTML, current="api-keys"),
@@ -151,7 +154,7 @@ async def api_keys_page() -> HTMLResponse:
 
 @router.get(
     "/api/users",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def list_users_api() -> JSONResponse:
     import config as cfg
@@ -211,7 +214,7 @@ async def list_users_api() -> JSONResponse:
 
 @router.post(
     "/api/users",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def create_user_api(payload: CreateUserIn) -> JSONResponse:
     try:
@@ -223,7 +226,7 @@ async def create_user_api(payload: CreateUserIn) -> JSONResponse:
 
 @router.delete(
     "/api/users/{uid}",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def revoke_user_api(uid: str) -> JSONResponse:
     user = api_keys_store.get_user(uid)
@@ -243,7 +246,7 @@ async def revoke_user_api(uid: str) -> JSONResponse:
 
 @router.get(
     "/api/users/{uid}/keys",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def list_user_keys_api(uid: str) -> JSONResponse:
     if api_keys_store.get_user(uid) is None:
@@ -253,7 +256,7 @@ async def list_user_keys_api(uid: str) -> JSONResponse:
 
 @router.get(
     "/api/usage",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def usage_api(days: int = 0) -> JSONResponse:
     """Per-user and per-key usage rollup for the cards. `days=0` (default)
@@ -287,7 +290,7 @@ async def usage_api(days: int = 0) -> JSONResponse:
 
 @router.post(
     "/api/users/{uid}/keys",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def create_user_key_api(uid: str, payload: CreateKeyIn) -> JSONResponse:
     """Show-once raw key on creation. Subsequent reads via list_user_keys
@@ -305,7 +308,7 @@ async def create_user_key_api(uid: str, payload: CreateKeyIn) -> JSONResponse:
 
 @router.delete(
     "/api/users/{uid}/keys/{kid}",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def revoke_key_api(uid: str, kid: str) -> JSONResponse:
     key = api_keys_store.get_key(kid)
@@ -325,7 +328,7 @@ async def revoke_key_api(uid: str, kid: str) -> JSONResponse:
 
 @router.patch(
     "/api/users/{uid}/permissions",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def patch_user_permissions_api(
     uid: str, payload: PatchPermissionsIn,
@@ -357,7 +360,7 @@ async def patch_user_permissions_api(
 
 @router.patch(
     "/api/users/{uid}/keys/{kid}/label",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def rename_key_api(
     uid: str, kid: str, payload: RenameKeyIn,
@@ -381,7 +384,7 @@ async def rename_key_api(
 
 @router.patch(
     "/api/users/{uid}/keys/{kid}/config",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def patch_key_config_api(
     uid: str, kid: str, payload: ConfigBindingIn,
@@ -416,7 +419,7 @@ async def patch_key_config_api(
 _FILENAME_SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
-def _cs_user_or_404(uid: str) -> dict[str, Any] | None:
+async def _cs_user_or_404(uid: str) -> dict[str, Any] | None:
     """Resolve the account a synced-settings row belongs to. Accept any
     known user id — revoked included, their stored blob stays exportable/
     deletable — plus the "(open-mode)" sentinel row the desktop writes
@@ -424,7 +427,7 @@ def _cs_user_or_404(uid: str) -> dict[str, Any] | None:
     path can't create or expose rows."""
     if uid == api_keys_store.OPEN_MODE_USER["user_id"]:
         return None
-    user = api_keys_store.get_user(uid)
+    user = await asyncio.to_thread(api_keys_store.get_user, uid)
     if user is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "user not found")
     return user
@@ -432,7 +435,7 @@ def _cs_user_or_404(uid: str) -> dict[str, Any] | None:
 
 @router.get(
     "/api/client-settings",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def client_settings_meta_api() -> JSONResponse:
     """Per-account synced-settings metadata for the header chips + drawers,
@@ -444,7 +447,8 @@ async def client_settings_meta_api() -> JSONResponse:
     below surface the 503 with the actionable message."""
     import client_settings_store
     try:
-        rows = client_settings_store.list_meta()
+        # Off the loop like the /v1 siblings (client_settings_routes.py).
+        rows = await asyncio.to_thread(client_settings_store.list_meta)
     except client_settings_store.StoreUnavailable:
         rows = []
     by_user = {
@@ -462,7 +466,7 @@ async def client_settings_meta_api() -> JSONResponse:
 
 @router.get(
     "/api/users/{uid}/client-settings/export",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def export_client_settings_api(uid: str) -> Response:
     """Download the stored settings document as a JSON file. Pretty-printed
@@ -470,10 +474,10 @@ async def export_client_settings_api(uid: str) -> Response:
     to the identical document (import accepts it as-is). The file may
     include the account's saved API keys; the WebUI's two-press guard warns
     before this endpoint is ever hit."""
-    user = _cs_user_or_404(uid)
+    user = await _cs_user_or_404(uid)
     import client_settings_store
     try:
-        row = client_settings_store.get(uid)
+        row = await asyncio.to_thread(client_settings_store.get, uid)
     except client_settings_store.StoreUnavailable as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
     if row is None:
@@ -493,7 +497,7 @@ async def export_client_settings_api(uid: str) -> Response:
 
 @router.post(
     "/api/users/{uid}/client-settings/import",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def import_client_settings_api(
     uid: str, payload: ImportClientSettingsIn,
@@ -502,10 +506,13 @@ async def import_client_settings_api(
     past whatever is stored, so every device's next sync sees a newer
     server copy and applies it through its normal merge path — no
     device-side changes needed."""
-    _cs_user_or_404(uid)
+    await _cs_user_or_404(uid)
     import client_settings_store
     try:
-        state = client_settings_store.force_put(
+        # Off the loop: force_put json.dumps + encodes the whole blob BEFORE
+        # the 512 KB cap can reject it (see client_settings_routes.put).
+        state = await asyncio.to_thread(
+            client_settings_store.force_put,
             uid, payload.blob, device="WebUI import",
         )
     except client_settings_store.StoreUnavailable as e:
@@ -523,16 +530,16 @@ async def import_client_settings_api(
 
 @router.delete(
     "/api/users/{uid}/client-settings",
-    dependencies=[Depends(require_admin_webui_host), Depends(require_admin)],
+    dependencies=[Depends(require_admin)],
 )
 async def delete_client_settings_api(uid: str) -> JSONResponse:
     """Remove the account's server copy. Devices keep their local settings;
     a device still holding version N gets a 409 on its next push, correctly
     surfacing the deletion (see client_settings_store.delete)."""
-    _cs_user_or_404(uid)
+    await _cs_user_or_404(uid)
     import client_settings_store
     try:
-        deleted = client_settings_store.delete(uid)
+        deleted = await asyncio.to_thread(client_settings_store.delete, uid)
     except client_settings_store.StoreUnavailable as e:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from None
     return JSONResponse({"ok": True, "deleted": deleted})
@@ -2536,6 +2543,8 @@ _API_KEYS_HTML = r"""<!doctype html>
           return;
         }
         showCsImportModal(u, { blob: blob, source: source, fileName: f.name });
+      }).catch(function (e) {
+        showToast('Could not read the file: ' + String((e && e.message) || e), 'err');
       });
     };
     foot.appendChild(imp);
@@ -2564,28 +2573,63 @@ _API_KEYS_HTML = r"""<!doctype html>
     return root;
   }
 
+  // Shared construction for the synced-settings cards that belong to no
+  // listed user (open mode, revoked accounts).
+  function appendCsOnlyCard(ct, opts) {
+    var card = document.createElement('div');
+    card.className = 'card';
+    var h = document.createElement('h3');
+    h.appendChild(document.createTextNode(opts.heading + ' '));
+    var pill = document.createElement('span');
+    pill.className = 'pill sync';
+    pill.textContent = '⇅ v' + opts.version;
+    h.appendChild(pill);
+    card.appendChild(h);
+    var hint = document.createElement('p');
+    hint.className = 'hint';
+    hint.textContent = opts.hint;
+    card.appendChild(hint);
+    card.appendChild(buildCsDrawer({ id: opts.id, username: opts.username }));
+    ct.appendChild(card);
+  }
+
   // In OPEN mode the desktop syncs into the shared "(open-mode)" row, which
   // belongs to no listed user — surface it as its own card so the stored
   // settings are visible + manageable instead of invisible and immortal.
   function renderOpenModeCsCard(ct) {
     var om = csMetaFor('(open-mode)');
     if (!om) return;
-    var card = document.createElement('div');
-    card.className = 'card';
-    var h = document.createElement('h3');
-    h.appendChild(document.createTextNode('Synced settings — open mode '));
-    var pill = document.createElement('span');
-    pill.className = 'pill sync';
-    pill.textContent = '⇅ v' + om.version;
-    h.appendChild(pill);
-    card.appendChild(h);
-    var hint = document.createElement('p');
-    hint.className = 'hint';
-    hint.textContent = 'Stored while the server ran without admin keys — every '
-      + 'open-mode device shares this one settings set.';
-    card.appendChild(hint);
-    card.appendChild(buildCsDrawer({ id: '(open-mode)', username: 'open mode' }));
-    ct.appendChild(card);
+    appendCsOnlyCard(ct, {
+      id: '(open-mode)',
+      username: 'open mode',
+      version: om.version,
+      heading: 'Synced settings — open mode',
+      hint: 'Stored while the server ran without admin keys — every '
+        + 'open-mode device shares this one settings set.',
+    });
+  }
+
+  // A revoked account's synced-settings row deliberately survives the
+  // revoke (it may include the account's saved API keys), but the account
+  // no longer appears in the users list — surface each orphaned row as its
+  // own card, same rationale as the open-mode card above.
+  function renderOrphanCsCards(ct, users) {
+    var known = {};
+    (users || []).forEach(function (u) { known[u.id] = true; });
+    Object.keys((window.__csMeta && window.__csMeta.by_user) || {})
+      .forEach(function (uid) {
+        if (uid === '(open-mode)' || known[uid]) return;
+        var m = csMetaFor(uid);
+        if (!m) return;
+        appendCsOnlyCard(ct, {
+          id: uid,
+          username: 'revoked ' + uid.slice(0, 8),
+          version: m.version,
+          heading: 'Synced settings — revoked account ' + uid.slice(0, 8),
+          hint: 'The account is revoked; its synced settings are still '
+            + 'stored on the server.',
+        });
+      });
   }
 
   async function load() {
@@ -2620,6 +2664,7 @@ _API_KEYS_HTML = r"""<!doctype html>
       document.getElementById('perm-matrix-card').style.display = 'none';
       ct.innerHTML = '<p class="hint">No users yet. Add one above to create the first admin.</p>';
       renderOpenModeCsCard(ct);
+      renderOrphanCsCards(ct, j.users);
       return;
     }
     // Pull the usage rollup once (lifetime) so per-user strips and per-key
@@ -2640,6 +2685,7 @@ _API_KEYS_HTML = r"""<!doctype html>
     var nUsers = j.users.length;
     j.users.forEach(function(u) { ct.appendChild(renderUser(u, nUsers)); });
     renderOpenModeCsCard(ct);
+    renderOrphanCsCards(ct, j.users);
   }
 
   document.getElementById('add-user-btn').onclick = function() {

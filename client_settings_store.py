@@ -38,6 +38,14 @@ logger = logging.getLogger("whisper-api")
 
 _lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
+# Set as the LAST statement of init_db: every earlier statement (the PRAGMAs,
+# the schema script, the migration, secure_db_file) can still raise, and main
+# treats an init_db failure as non-fatal ("/v1/client-settings will answer 503
+# until this is fixed"). Gating on `_conn is not None` alone left a
+# partial-init window where the connection exists but the table does not, so
+# every call 500'd instead of the advertised 503.
+# Mirrors sessions_store._DB_READY / api_keys_store._DB_READY.
+_DB_READY: bool = False
 
 
 class StoreUnavailable(RuntimeError):
@@ -70,7 +78,8 @@ def init_db(path: str) -> None:
     """Open (or create) the client-settings DB at `path` in WAL mode.
     Idempotent: safe to call on every startup; the schema-CREATE uses
     IF NOT EXISTS. Call before any other function in this module."""
-    global _conn
+    global _conn, _DB_READY
+    _DB_READY = False
     dst_dir = os.path.dirname(os.path.abspath(path)) or "."
     os.makedirs(dst_dir, exist_ok=True)
     _conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
@@ -80,6 +89,7 @@ def init_db(path: str) -> None:
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
     store_common.secure_db_file(path)
+    _DB_READY = True
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -89,9 +99,10 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
 
 def _require_conn() -> sqlite3.Connection:
-    if _conn is None:
+    if _conn is None or not _DB_READY:
         raise StoreUnavailable(
-            "client_settings_store.init_db() was not called before use."
+            "client_settings_store.init_db() was not called (or did not"
+            " finish) before use."
         )
     return _conn
 

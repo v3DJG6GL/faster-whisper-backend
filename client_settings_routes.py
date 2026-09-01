@@ -14,9 +14,11 @@ Security model:
     account infrastructure, not a page permission; a key that may transcribe
     must be able to sync its client's settings. No host allowlist for the
     same reason /v1/usage has none: remote desktop clients must reach it.
-  - Open mode: every caller resolves to the synthetic "(open-mode)" user,
-    so ALL open-mode devices share one row. Acceptable for the single-user
-    self-host case; documented in the README.
+  - Open mode: only callers inside `ADMIN_WEBUI_ALLOWED_HOSTS` (loopback by
+    default) resolve to the synthetic "(open-mode)" user and share one row;
+    every other caller falls through to bearer/cookie auth and gets 401
+    until a real key exists — so remote sync needs a key. Acceptable for
+    the single-user self-host case; documented in the README.
   - CSRF: bearer clients are exempt from the double-submit middleware; a
     cookie-authenticated browser PUT/DELETE needs X-CSRF-Token (main.py).
 
@@ -28,7 +30,6 @@ only sizes/versions, and this module logs nothing about the payload.
 from __future__ import annotations
 
 import asyncio
-import functools
 
 from typing import Any
 
@@ -113,13 +114,11 @@ async def put_client_settings(
         # cost is attacker-sized up to MAX_REQUEST_BYTES. Measured ~1 s of
         # frozen loop for a ~190 MB blob that is then rejected with a 413.
         ok, row = await asyncio.to_thread(
-            functools.partial(
-                client_settings_store.put,
-                user["user_id"],
-                payload.blob,
-                payload.base_version,
-                device=payload.device,
-            )
+            client_settings_store.put,
+            user["user_id"],
+            payload.blob,
+            payload.base_version,
+            device=payload.device,
         )
     except client_settings_store.StoreUnavailable:
         raise _store_unavailable() from None

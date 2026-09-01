@@ -234,9 +234,11 @@ def create_session(user_id: str, ttl_s: float,
             (th, user_id, key_id, csrf_token, now, expires),
         )
         # Insert the one new row rather than re-reading the whole table.
-        # /auth/login takes any valid key, has no rate limit and no per-user
-        # session cap, and nothing reaps rows at runtime (purge_expired() has no
-        # production caller) — so a full rebuild here makes N logins cost O(N²)
+        # /auth/login takes any valid key, is throttled only on FAILURES
+        # (`LOGIN_FAILURE_RATE`, so a scripted valid-key login loop is
+        # unthrottled), has no per-user session cap, and rows are reaped only
+        # hourly by `_sessions_purge_loop` in main.py — so a full rebuild here
+        # makes N logins cost O(N²)
         # and, because `login` is async and calls this inline, every one of those
         # rebuilds runs on the event loop. Our own commit does not move
         # PRAGMA data_version on this connection, so _DATA_VERSION stays valid
@@ -330,8 +332,9 @@ def revoke_session(raw_token: str) -> None:
         # Drop the one key rather than re-reading every live session, mirroring
         # the incremental insert create_session already does. The full rebuild
         # here was O(live sessions) on the event loop — measured ~37 ms at
-        # 20 000 rows, and /auth/login has no rate limit or per-user cap, so N
-        # is caller-growable. No post-commit re-stamp: our own commit does not
+        # 20 000 rows, and /auth/login is throttled only on failures
+        # (`LOGIN_FAILURE_RATE`) with no per-user cap, so N is
+        # caller-growable. No post-commit re-stamp: our own commit does not
         # move PRAGMA data_version on this connection, and re-stamping would
         # swallow a sibling's commit that landed since the last check.
         _SESSION_INDEX.pop(th, None)

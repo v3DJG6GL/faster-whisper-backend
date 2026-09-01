@@ -58,11 +58,13 @@ _KEY_INDEX: dict[str, dict[str, Any]] = {}
 # on every user/key mutation. Only meaningful once _DB_READY is True.
 _IS_LOCKED_DOWN: bool = False
 
-# True only after init_db() has fully succeeded. The lifespan in main.py logs
-# and keeps serving when init_db() raises (bad permissions on a mounted
-# volume, corrupt file, read-only mount), so an unopened store must read as
-# LOCKED — otherwise the empty _KEY_INDEX below would look like "no admin key
-# exists" and every caller would get the synthetic open-mode admin.
+# True only after init_db() has fully succeeded. The lifespan in main.py now
+# REFUSES TO START when init_db() raises (bad permissions on a mounted
+# volume, corrupt file, read-only mount), so this guards any path that
+# reaches auth before/without init_db (tests, import-time callers) — never a
+# degraded-serving mode. An unopened store must read as LOCKED — otherwise
+# the empty _KEY_INDEX below would look like "no admin key exists" and every
+# caller would get the synthetic open-mode admin.
 _DB_READY: bool = False
 
 # Last `PRAGMA data_version` observed on _conn. SQLite bumps this value on a
@@ -153,6 +155,7 @@ def init_db(db_path: str) -> None:
     """Open the SQLite DB (WAL) and ensure the schema exists. Idempotent.
     Builds the in-memory key index from active rows."""
     global _conn, _DB_READY
+    _DB_READY = False  # a re-init that raises partway must fail closed
     db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
     os.makedirs(db_dir, exist_ok=True)
     _conn = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
@@ -1015,9 +1018,10 @@ def is_locked_down() -> bool:
     by the auth module while open. Reads the cache populated by
     _rebuild_index_locked() — no table read on the per-request hot path.
 
-    A store that never initialised reports LOCKED: init_db() failing is
-    non-fatal in the lifespan, and answering False there would hand the
-    synthetic admin to every caller for the life of the process."""
+    A store that never initialised reports LOCKED: the lifespan refuses to
+    start when init_db() fails, so this covers any path that reaches auth
+    before/without init_db (tests, import-time callers) — answering False
+    there would hand the synthetic admin to every caller."""
     if not _DB_READY:
         return True
     _refresh_if_sibling_committed()
