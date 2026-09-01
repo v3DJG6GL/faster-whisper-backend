@@ -10,6 +10,8 @@ USER_WEBUI_ALLOWED_HOSTS, unlike the browser /quick-config page).
 
 import copy
 
+import config_store
+import quick_config_routes
 from conftest import bearer
 
 
@@ -68,8 +70,14 @@ def test_v1_get_open_mode_shape(client):
     # served so the desktop client + web page agree.
     assert body["map_collapse_after"] == 15
     # The schema cap on callback:map entries, served so clients can render a
-    # "n / cap" readout instead of discovering the cap via a failed save.
-    assert body["map_max_entries"] == 10_000
+    # "n / cap" readout instead of discovering the cap via a failed save. Read
+    # off the schema here too — the module's 10_000 fallback would otherwise
+    # make a hardcoded literal pass even after the introspection went blind.
+    caps = [m.max_length
+            for m in config_store.MapRule.model_fields["map"].metadata
+            if getattr(m, "max_length", None) is not None]
+    assert caps, "MapRule.map lost its max_length — _MAP_MAX_ENTRIES silently fell back"
+    assert body["map_max_entries"] == caps[0] == quick_config_routes._MAP_MAX_ENTRIES
 
 
 def test_v1_get_empty_when_nothing_exposed(client):

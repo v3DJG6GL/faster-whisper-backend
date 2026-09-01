@@ -11,6 +11,7 @@ import time
 import types
 
 import pytest
+from fastapi import HTTPException
 
 import main
 import system_stats
@@ -119,13 +120,22 @@ def test_lease_taken_on_cache_hit_and_on_load(monkeypatch):
 
 def test_rejected_names_take_no_lease(monkeypatch):
     _stub_load(monkeypatch)
+    # Allowlist gate: it sits before the cache and the traversal guard.
     monkeypatch.setattr(main.cfg, "ALLOWED_MODELS", {"a"}, raising=False)
-    for bad in ("b", "../etc/passwd"):
-        try:
-            asyncio.run(main._get_or_load_model(bad, lease=True))
-        except Exception:  # noqa: BLE001 — HTTPException either way
-            pass
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(main._get_or_load_model("b", lease=True))
+    assert exc.value.status_code == 400
     assert main._model_leases == {}
+
+    # No allowlist: the id-shape guard is the only thing between the request
+    # string and os.path.isdir() / the converter (DEFAULT_MODEL stays exempt).
+    monkeypatch.setattr(main.cfg, "ALLOWED_MODELS", set(), raising=False)
+    monkeypatch.setattr(main.cfg, "DEFAULT_MODEL", "base", raising=False)
+    for bad in ("../etc/passwd", "http://x/y"):
+        with pytest.raises(HTTPException) as exc:
+            asyncio.run(main._get_or_load_model(bad, lease=True))
+        assert exc.value.status_code == 400
+        assert main._model_leases == {}
 
 
 # --- _release_model_lease ----------------------------------------------------
@@ -191,34 +201,56 @@ def test_idle_evictor_defers_then_evicts(monkeypatch):
 
 # --- the batch handler balances its lease ------------------------------------
 
-def _leasing_loader(app_module, model):
+def _leasing_loader(app_module, model, held):
+    """`held` records every name leased, so the tests can key the mid-decode
+    snapshot off the RESOLVED name the handler asked for, not "whisper-1"."""
     async def _loader(name, *, lease=False):
         if lease:
+            held.append(name)
             app_module._model_leases[name] = \
                 app_module._model_leases.get(name, 0) + 1
         return model
     return _loader
 
 
+class _SnapshotModel(FakeModel):
+    """Records the live lease map at the moment the decode runs — the
+    property the lease exists for is "held DURING the decode"."""
+
+    def __init__(self, app_module, boom=None):
+        super().__init__()
+        self._app = app_module
+        self._boom = boom
+        self.leases_during = None
+
+    def transcribe(self, path, **kwargs):
+        self.leases_during = dict(self._app._model_leases)
+        if self._boom is not None:
+            raise self._boom
+        return super().transcribe(path, **kwargs)
+
+
 def test_transcribe_releases_the_lease_on_success(client, app_module,
                                                   monkeypatch):
+    held: "list[str]" = []
+    model = _SnapshotModel(app_module)
     monkeypatch.setattr(app_module, "_get_or_load_model",
-                        _leasing_loader(app_module, FakeModel()))
+                        _leasing_loader(app_module, model, held))
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1"})
     assert r.status_code == 200
+    assert held and model.leases_during == {held[0]: 1}
     assert app_module._model_leases == {}
 
 
 def test_transcribe_releases_the_lease_on_error(client, app_module,
                                                 monkeypatch):
-    class BoomModel(FakeModel):
-        def transcribe(self, path, **kwargs):
-            raise RuntimeError("decode blew up")
-
+    held: "list[str]" = []
+    model = _SnapshotModel(app_module, boom=RuntimeError("decode blew up"))
     monkeypatch.setattr(app_module, "_get_or_load_model",
-                        _leasing_loader(app_module, BoomModel()))
+                        _leasing_loader(app_module, model, held))
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1"})
     assert r.status_code == 500
+    assert held and model.leases_during == {held[0]: 1}
     assert app_module._model_leases == {}

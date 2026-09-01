@@ -355,9 +355,17 @@ def test_diarize_live_release_is_not_charged_to_a_same_id_orphan(
     assert not any("unloaded" in r.getMessage() for r in caplog.records)
     assert diarization._pipeline is live
 
+    # Freeing the orphan must not unregister the LIVE pipeline's stats entry
+    # (same id, same "pyannote:m1" key) out from under /stats and the evictor.
+    unregistered: "list[str]" = []
+    monkeypatch.setattr(system_stats, "unregister_loaded_model",
+                        unregistered.append)
+    assert "pyannote:m1" in system_stats._loaded_models
     asyncio.run(diarization._release_pipeline("m1", old))
     assert diarization._orphans == {}
     assert diarization._pipeline is live
+    assert unregistered == []
+    assert "pyannote:m1" in system_stats._loaded_models
 
 
 def test_bgm_live_release_is_not_charged_to_a_same_model_orphan(
@@ -380,6 +388,17 @@ def test_bgm_live_release_is_not_charged_to_a_same_model_orphan(
     assert not any("unloaded" in r.getMessage() for r in caplog.records)
     assert bgm_separation._separator is live
 
+    # Freeing the orphan must not unregister the LIVE separator's stats entry
+    # (same "uvr:Foo.onnx" key) nor wipe the live session's placement —
+    # actual_device() keeps reporting where the live model runs.
+    unregistered: "list[str]" = []
+    monkeypatch.setattr(system_stats, "unregister_loaded_model",
+                        unregistered.append)
+    monkeypatch.setattr(bgm_separation, "_session_device", "cuda")
+    assert "uvr:Foo.onnx" in system_stats._loaded_models
     asyncio.run(bgm_separation._release_separator("Foo.onnx", old))
     assert bgm_separation._orphans == {}
     assert bgm_separation._separator is live
+    assert unregistered == []
+    assert "uvr:Foo.onnx" in system_stats._loaded_models
+    assert bgm_separation.actual_device() == "cuda"

@@ -187,6 +187,9 @@ def test_preload_extras_loads_configured_models(app_module, monkeypatch):
     monkeypatch.setattr(cfg, "TRANSLATION_PRELOAD_MODELS",
                         ["org/a-GGUF:Q4", "org/b-GGUF:Q4"], raising=False)
     # Non-empty allowlist filters the preload list (default stays exempt).
+    # The cap is raised above the list length so the ALLOWLIST is what drops
+    # org/b — the cap truncation runs first and would otherwise mask it.
+    monkeypatch.setattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 2, raising=False)
     monkeypatch.setattr(cfg, "TRANSLATION_ALLOWED_MODELS",
                         {"org/a-GGUF:Q4"}, raising=False)
     monkeypatch.setattr(cfg, "TRANSLATION_DEFAULT_MODEL", "", raising=False)
