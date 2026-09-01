@@ -260,3 +260,12 @@ def test_speaker_labels_stay_on_the_kept_rows_after_a_drop(app_module):
     assert "S1" in rows[2]
     # Nothing to label keeps the column off entirely.
     assert app_module._align_speakers_to_diag(diag, []) is None
+
+    # The helper consumes one label PER KEPT SEGMENT, so the caller must feed
+    # it the per-segment labels, never the distinct list: 3 kept rows over 2
+    # speakers still label every row (feeding the 2 distinct labels would
+    # leave the third row blank).
+    diag3 = diag + [dict(_SEG[1], id=3, start=19.10, end=22.00)]
+    aligned3 = app_module._align_speakers_to_diag(
+        diag3, ["SPEAKER_00", "SPEAKER_01", "SPEAKER_00"])
+    assert aligned3 == ["SPEAKER_00", "", "SPEAKER_01", "SPEAKER_00"]

@@ -59,3 +59,15 @@ def test_registry_is_bounded():
     assert len(jobs.jobs_snapshot()) == jobs._MAX_JOBS
     for jid in ids:
         jobs.job_end(jid)
+
+
+def test_update_clear_sentinel_writes_none():
+    jid = jobs.job_start("transcribe", model="large-v3")
+    jobs.job_update(jid, progress=0.9, step="s", stage="transcribing")
+    # None still means "leave alone"; CLEAR explicitly writes None.
+    jobs.job_update(jid, progress=jobs.CLEAR, step=None, stage="diarizing")
+    row = jobs.jobs_snapshot()[0]
+    assert row["progress"] is None
+    assert row["step"] == "s"
+    assert row["stage"] == "diarizing"
+    jobs.job_end(jid)

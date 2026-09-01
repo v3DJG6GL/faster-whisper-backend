@@ -85,14 +85,15 @@ def test_me_translation_models_default_first_with_loaded_flags(
     app_module.cfg.TRANSLATION_ALLOWED_MODELS = {
         "org/zeta-GGUF:Q4", "org/alpha-GGUF:Q4", "org/default-GGUF:Q4"}
     # A loaded model OUTSIDE the allowlist (loaded before the admin tightened
-    # it) still shows up; loaded flags come from the module LRU.
+    # it) is NOT offered — every request naming it would be refused; the list
+    # is the stage's own admission rule (allowlist ∪ configured default),
+    # residency only feeds the loaded flags (from the module LRU).
     translation._models["org/default-GGUF:Q4"] = object()
     translation._models["org/extra-GGUF:Q4"] = object()
     j = client.get("/v1/me").json()
     assert j["translation_models"] == [
         {"id": "org/default-GGUF:Q4", "loaded": True},
         {"id": "org/alpha-GGUF:Q4", "loaded": False},
-        {"id": "org/extra-GGUF:Q4", "loaded": True},
         {"id": "org/zeta-GGUF:Q4", "loaded": False},
     ]
     # Language menu: "en" first, then the sorted rest — non-empty either way.

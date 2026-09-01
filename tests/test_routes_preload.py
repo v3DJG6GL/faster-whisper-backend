@@ -279,3 +279,43 @@ def test_stats_snapshot_carries_preload_diagnostics(client, app_module,
     assert set(j["preload"]) == {"enabled", "worker_alive", "plans", "warm",
                                  "queue_depth"}
     assert j["preload"]["worker_alive"] is True
+
+
+# --- the batch handler's job plan honours the translation allowlist ----------
+
+def test_job_plan_skips_non_allowlisted_translation_model(
+        client, app_module, monkeypatch):
+    """The stage-ahead plan a transcription registers must apply the same
+    TRANSLATION_ALLOWED_MODELS verdict the stage itself renders later — a
+    ref the stage will refuse must never be pre-downloaded/loaded."""
+    _enable(app_module, monkeypatch)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
+                        "org/default-GGUF:Q4", raising=False)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
+                        {"org/default-GGUF:Q4"}, raising=False)
+
+    async def _fake(segments, targets, **kw):
+        return ([{t: "x" for t in targets} for _ in segments], [],
+                {"model": "org/default-GGUF:Q4", "source": "de",
+                 "mode": "fluent"})
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    pid = "abcd" * 8
+    files = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
+    r = client.post("/v1/audio/transcriptions", files=files, data={
+        "model": "whisper-1", "translate_to": "en",
+        "translation_model": "org/evil-GGUF:Q8", "progress_id": pid})
+    assert r.status_code == 200, r.text
+    assert not any(fam == "translation"
+                   for plan in preload._plans.values()
+                   for fam, _mid in plan.entries)
+
+    # Control: an allowlisted request DOES stage the translation model.
+    preload._reset_for_tests()
+    r = client.post("/v1/audio/transcriptions", files=files, data={
+        "model": "whisper-1", "translate_to": "en",
+        "translation_model": "org/default-GGUF:Q4", "progress_id": pid})
+    assert r.status_code == 200, r.text
+    assert any((fam, mid) == ("translation", "org/default-GGUF:Q4")
+               for plan in preload._plans.values()
+               for fam, mid in plan.entries)

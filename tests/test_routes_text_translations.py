@@ -96,8 +96,12 @@ def test_kept_original_surfaces_with_client_ids(client, app_module,
     body = r.json()
     segs = body["segments"]
     assert "kept_original" not in segs[0]                # clean → absent
+    assert "translations_kept" not in segs[0]
+    # Both names carry the same fact: kept_original (this endpoint's original
+    # key) and translations_kept (the batch endpoint's per-segment key).
     assert segs[1] == {"id": 3, "translations": {"en": "zwei"},
-                       "kept_original": ["en"]}
+                       "kept_original": ["en"],
+                       "translations_kept": ["en"]}
     assert segs[2]["kept_original"] == ["en"]
     # Positional "segment 2" → client id 3; group span → the member ids.
     assert any(w.startswith("segment 3: kept original") for w
@@ -456,3 +460,49 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
     finally:
         gauge.clear()
         receipt_hold._reset_for_tests()
+
+
+def test_admin_pinned_model_passes_the_allowlist_gate(
+        client, app_module, make_user_key, monkeypatch):
+    """The allowlist constrains only the CLIENT-requested value (the
+    diarization/separation stance): an admin who pins TRANSLATION_MODEL in a
+    profile need not also add it to the global allowlist — the pinned
+    identity used to 400 on every request even with no translation_model
+    sent at all."""
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
+                        {"org/public-GGUF:Q4"}, raising=False)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
+                        "org/public-GGUF:Q4", raising=False)
+    calls = []
+    _stub_translate(monkeypatch, calls=calls)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    r = client.post("/settings/overrides/state", headers=admin_h,
+                    json={"OVERRIDE_PROFILES": {
+                        "pinned-mt": {
+                            "TRANSLATION_MODEL": "org/pinned-GGUF:Q4",
+                            "locks": ["TRANSLATION_MODEL"]}}})
+    assert r.status_code == 200, r.text
+    uid, raw_bob = make_user_key("bob", is_admin=False)
+    r = client.patch(
+        f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
+        json={"pages": {}, "config": {"overrides": {},
+                                      "profiles": ["pinned-mt"], "locks": []}})
+    assert r.status_code == 200, r.text
+
+    # No translation_model in the request: the pinned (admin-policy) model
+    # resolves and passes even though it is not on the allowlist.
+    r = client.post(
+        "/v1/text/translations", headers=bearer(raw_bob),
+        json={"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"]})
+    assert r.status_code == 200, r.text
+    assert calls[0]["model_ref"] == "org/pinned-GGUF:Q4"
+
+    # A CLIENT asking for a non-allowlisted model is still refused.
+    r = client.post(
+        "/v1/text/translations", headers=bearer(raw_admin),
+        json={"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
+              "translation_model": "org/evil-GGUF:Q8"})
+    assert r.status_code == 400, r.text

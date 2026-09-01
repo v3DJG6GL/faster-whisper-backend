@@ -1054,8 +1054,6 @@ def _format_request_block(
     username: str | None = None,
     key_label: str | None = None,
     guards: "dict | None" = None,
-    translate_to: "list | None" = None,
-    translation_model: str | None = None,
     stages: "list | None" = None,
     separation: "dict | None" = None,
     diarization: "dict | None" = None,
@@ -1114,16 +1112,6 @@ def _format_request_block(
     if extras:
         model_line += "   " + "  ".join(extras)
     lines.append(model_line)
-    # Translation-stage one-liner. Kept for the callers that pass only
-    # translate_to/translation_model (live dictation until it grows a full
-    # translation section); suppressed when the richer section is present so
-    # the same fact isn't stated twice.
-    if translate_to and not translation:
-        trans_line = f"  trans  → {', '.join(translate_to)}"
-        if translation_model:
-            trans_line += f"   model={translation_model}"
-        lines.append(trans_line)
-
     lines.extend(_format_pipeline_section(stages))
 
     lines.append(_section_rule("Audio"))
@@ -1717,21 +1705,31 @@ def cfg_for(model_id: "str | None", field: str, ident=None):
                 return v
     return getattr(cfg, field)
 
+# Sentinel for _resolve_request_knob: skip the `or default` coercion entirely.
+# Needed by callers that resolve NUMERIC knobs through the same ladder, where
+# `or ""` would corrupt a legitimate 0 (e.g. TRANSLATION_CONTEXT_SEGMENTS).
+_NO_DEFAULT = object()
+
+
 def _resolve_request_knob(resolved_model, ident, ignored: "list[str]",
                           cfg_name: str, client_name: str, req_val,
                           default=""):
     """The locked-wins / request-wins / config-inherits ladder every
     per-request string knob shares (the speaker counts use the numeric tuple
     loop next to their form parsing). Locked: the resolved server value wins
-    and a differing request lands in ``ignored`` under its client name."""
+    and a differing request lands in ``ignored`` under its client name.
+    `default=_NO_DEFAULT` returns the resolved value raw (no falsy coercion)."""
     if cfg_name in ident.locked:
-        val = cfg_for(resolved_model, cfg_name, ident) or default
+        val = cfg_for(resolved_model, cfg_name, ident)
+        if default is not _NO_DEFAULT:
+            val = val or default
         if req_val is not None and req_val != val:
             ignored.append(client_name)
         return val
     if req_val is not None:
         return req_val
-    return cfg_for(resolved_model, cfg_name, ident) or default
+    val = cfg_for(resolved_model, cfg_name, ident)
+    return val if default is _NO_DEFAULT else (val or default)
 
 
 
@@ -2479,8 +2477,6 @@ async def _preload_extras() -> None:
     and continues — the model then loads on first use; the server always
     starts. Called from lifespan after the whisper preload loop."""
     if getattr(cfg, "TRANSLATION_ENABLED", False):
-        _allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
-        _default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
         _preload = list(dict.fromkeys(
             getattr(cfg, "TRANSLATION_PRELOAD_MODELS", []) or []))
         _cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
@@ -2494,9 +2490,10 @@ async def _preload_extras() -> None:
                 len(_preload), _cap, _cap, ", ".join(_preload[_cap:]))
             _preload = _preload[:_cap]
         for ref in _preload:
-            # Same allowlist semantics as the request path: a non-empty
-            # allowlist admits its members plus the configured default.
-            if _allowed and ref not in _allowed and ref != _default:
+            # Same allowlist semantics as the request path (the shared
+            # helper); requested=ref because a preload entry is an explicit
+            # ask for exactly that ref, never an inherited fallback.
+            if not _translation_model_allowed(ref, requested=ref):
                 logger.error(
                     "Cannot preload translation model '%s' - it is not in "
                     "TRANSLATION_ALLOWED_MODELS.", ref)
@@ -2523,6 +2520,36 @@ async def _preload_extras() -> None:
             await _bgm._get_separator()
         except Exception as e:  # noqa: BLE001 — best-effort
             logger.error("Failed to preload the separation model: %s", e)
+
+
+def _reclaim_hard_restart_orphans() -> None:
+    """Startup sweep of TMPDIR for temp artifacts a hard restart orphaned.
+
+    The admin restart path (restart_service: os.execv / os._exit) skips the
+    ASGI shutdown, so in-flight requests leak their `urldl-` job dirs and
+    `sepsrc-`/`vocals-` separation WAVs with no finally to reclaim them —
+    url_media_store.startup_reset() wipes only URL_MEDIA_DIR. Single-service
+    assumption (as documented for SERVER_WORKERS); a small age guard keeps
+    the sweep off files a just-overlapping process may still be writing."""
+    tmp = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return
+    now = time.time()
+    for name in names:
+        if not name.startswith(("urldl-", "sepsrc-", "vocals-")):
+            continue
+        path = os.path.join(tmp, name)
+        try:
+            if os.path.islink(path) or now - os.path.getmtime(path) < 60.0:
+                continue
+            if name.startswith("urldl-") and os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.isfile(path):
+                os.unlink(path)
+        except OSError:
+            continue
 
 
 @asynccontextmanager
@@ -2580,13 +2607,16 @@ async def lifespan(app: FastAPI):
     await _preload_extras()
 
     # Transcribe-from-URL retention: wipe the dir (ids die with the process,
-    # so every surviving file is an orphan) and start the TTL/LRU janitor.
-    url_media_janitor_task = None
-    if getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
-        import url_media_store as _url_media_store
-        _url_media_store.startup_reset()
-        url_media_janitor_task = asyncio.create_task(
-            _url_media_store.janitor_loop())
+    # so every surviving file is an orphan) and start the TTL/byte-cap
+    # janitor. Unconditional — URL_DOWNLOAD_ENABLED is a LIVE toggle (no
+    # restart badge), so the janitor must already be running when an admin
+    # flips it on; with the feature off both are no-ops. The TMPDIR sweep
+    # reclaims what a hard restart (restart_service) orphaned.
+    import url_media_store as _url_media_store
+    _url_media_store.startup_reset()
+    _reclaim_hard_restart_orphans()
+    url_media_janitor_task = asyncio.create_task(
+        _url_media_store.janitor_loop())
 
     # Open the API-keys SQLite store and start the open-mode warning loop.
     # In OPEN mode (no admin key exists yet) the loop nags every 60 s; this
@@ -2777,8 +2807,9 @@ app = FastAPI(
 
 # CORS — opt-in, off by default (empty allowlist → no middleware, no
 # Access-Control-* headers, unchanged behavior). Enable by listing browser
-# origins in CORS_ALLOW_ORIGINS so cross-origin JSON-API calls work (e.g. the
-# /dictate demo's batch-mode fetch from a different origin than the backend).
+# origins in CORS_ALLOW_ORIGINS so cross-origin JSON-API calls work (e.g. a
+# third-party browser app on another origin calling this backend; /dictate
+# itself always talks to its own origin).
 # '*' allows any origin, in which case credentials must be disabled per the CORS
 # spec. The WebSocket streaming path is not subject to CORS.
 _cors_origins = list(getattr(cfg, "CORS_ALLOW_ORIGINS", []) or [])
@@ -3212,7 +3243,9 @@ def _safe_tmp_suffix(filename: "str | None") -> str:
 # while its POST is in flight. Entries live only for the request (popped in the
 # handler's finally); the cap + stale sweep below bound a client that invents
 # ids and never posts. Plain dict + GIL: every writer does a single dict-entry
-# update, and the poller only reads.
+# update, and the poller only reads; the entry-creation sweep/eviction in
+# _progress_set iterates over a snapshot (list(...)) so a concurrent pop on
+# the loop thread can't blow up an executor-thread iteration.
 _BATCH_PROGRESS: "dict[str, dict]" = {}
 _BATCH_PROGRESS_MAX = 200
 _BATCH_PROGRESS_STALE_S = 2 * 3600
@@ -3221,6 +3254,27 @@ _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 # One target-language code inside the `translate_to` csv: a 2-3 letter base
 # ("en", "de", "gsw") plus an optional BCP-47-ish subtag ("fr-CA", "zh-Hant").
 _TRANSLATE_CODE_RE = re.compile(r"\A[a-z]{2,3}(-[A-Za-z0-9]{2,8})?\Z")
+
+
+def _translation_default_model() -> str:
+    """The configured server-wide default translation model ref ("" unset)."""
+    return (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
+
+
+def _translation_model_allowed(ref: str,
+                               requested: "str | None" = None) -> bool:
+    """The one admission rule the startup preload, the batch stage, the
+    stage-ahead plan and /v1/text/translations all share: a non-empty
+    TRANSLATION_ALLOWED_MODELS admits its members plus the configured
+    default (an EMPTY allowlist means "the configured model only", never
+    "anything"). Like the diarization/separation gates, the allowlist
+    constrains only the CLIENT-requested value: pass `requested` (the raw
+    client ref, or None when the client sent none) and a config/identity-
+    inherited `ref` is admin policy and always passes."""
+    allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
+    if not allowed or ref in allowed or ref == _translation_default_model():
+        return True
+    return requested is None or ref != requested
 
 
 # progress_id → job id: handlers that registered a job in jobs.py bind their
@@ -3248,9 +3302,18 @@ def _progress_set(pid: "str | None", **fields) -> None:
         return
     _job_id = _JOB_BY_PID.get(pid)
     if _job_id:
-        jobs.job_update(_job_id,
-                        **{k: fields[k] for k in _JOB_MIRROR_FIELDS
-                           if fields.get(k) is not None})
+        _mirror = {k: fields[k] for k in _JOB_MIRROR_FIELDS
+                   if fields.get(k) is not None}
+        _new_stage = fields.get("stage")
+        if _new_stage and _new_stage != _BATCH_PROGRESS.get(pid, {}).get("stage"):
+            # A stage TRANSITION resets the derived columns the new stage did
+            # not (yet) report — without this the job row keeps the previous
+            # stage's last progress/step/model (a stale ~100% bar and the
+            # decode model shown for the whole of diarizing/translating),
+            # because both this mirror and jobs.job_update skip plain Nones.
+            for k in ("progress", "step", "model"):
+                _mirror.setdefault(k, jobs.CLEAR)
+        jobs.job_update(_job_id, **_mirror)
     _stage = fields.get("stage")
     if _stage and pid in _PLAN_BY_PID:
         # Advances the plan's cursor and warms the next stage's model. Sync,
@@ -3260,14 +3323,19 @@ def _progress_set(pid: "str | None", **fields) -> None:
         preload.on_stage_start(_PLAN_BY_PID[pid], _stage)
     entry = _BATCH_PROGRESS.get(pid)
     if entry is None:
+        # Snapshot (list(...)) before iterating: this branch runs on executor
+        # threads too, and the handler's finally pops entries on the loop
+        # thread — iterating the live dict would raise "dictionary changed
+        # size during iteration" out of a healthy stage callback.
         now = time.monotonic()
-        for k in [k for k, v in _BATCH_PROGRESS.items()
+        for k in [k for k, v in list(_BATCH_PROGRESS.items())
                   if now - v.get("updated", 0) > _BATCH_PROGRESS_STALE_S]:
             _BATCH_PROGRESS.pop(k, None)
         if len(_BATCH_PROGRESS) >= _BATCH_PROGRESS_MAX:
-            oldest = min(_BATCH_PROGRESS,
-                         key=lambda k: _BATCH_PROGRESS[k].get("updated", 0))
-            _BATCH_PROGRESS.pop(oldest, None)
+            _snap = list(_BATCH_PROGRESS.items())
+            if _snap:
+                oldest = min(_snap, key=lambda kv: kv[1].get("updated", 0))[0]
+                _BATCH_PROGRESS.pop(oldest, None)
         entry = _BATCH_PROGRESS[pid] = {}
     entry.update(fields)
     entry["updated"] = time.monotonic()
@@ -3344,15 +3412,6 @@ async def transcribe(
     # Opt-in progress reporting (see _BATCH_PROGRESS). A malformed id is
     # treated as absent — progress is a convenience, never a 422.
     _pid = progress_id if (progress_id and _PROGRESS_ID_RE.match(progress_id)) else None
-    # Seed the registry entry NOW so the cancel endpoint (which only accepts
-    # ids it can see in-flight) has a target from the first moment — the
-    # first stage-driven _progress_set can otherwise be seconds away (model
-    # load, semaphore queue). URL runs seed as "resolving": their pipeline
-    # starts at the link, and "waiting" maps onto the transcribe row in the
-    # client's rail — which would paint the download as already done.
-    _progress_set(_pid,
-                  stage=("resolving" if source_url is not None else "waiting"),
-                  progress=None)
     # Whisper's only two tasks; anything else is a caller error, not something
     # to silently coerce (unlike the clamped numeric knobs below, a wrong task
     # would return output in the wrong language with no other signal).
@@ -3442,6 +3501,22 @@ async def transcribe(
         _JOB_BY_PID[_pid] = request_id
         jobs.job_update(request_id, progress_id=_pid)
     try:
+        # Seed the registry entry EARLY so the cancel endpoint (which only
+        # accepts ids it can see in-flight) has a target well before the
+        # first stage-driven _progress_set (model load, semaphore queue can
+        # be seconds away) — but only INSIDE this try, whose finally pops the
+        # entry: seeding before the validation gates above leaked an orphan
+        # "waiting" entry (and a cancellable id) on every early 4xx. URL runs
+        # seed as "resolving": their pipeline starts at the link, and
+        # "waiting" maps onto the transcribe row in the client's rail — which
+        # would paint the download as already done. `owner` binds the entry
+        # to this caller: the progress/cancel endpoints treat a mismatched
+        # caller exactly like an unknown id.
+        _progress_set(_pid,
+                      stage=("resolving" if source_url is not None
+                             else "waiting"),
+                      progress=None,
+                      owner=(_user_id or _key_id))
         # Upload ceiling. Content-Length is advisory (absent on chunked
         # bodies), so it only buys us an early exit before the model load —
         # the chunked read below is what actually enforces the bound.
@@ -3546,13 +3621,19 @@ async def transcribe(
                 # side owns its file outright: tmp_path follows the normal
                 # unlink-in-finally lifecycle (including the BGM swap), and
                 # the retained file serves GET /v1/audio/url-media/{id}.
-                tmp_path = _ums.make_pipeline_copy(_dl_path)
+                # to_thread: the copy usually hardlinks but can degrade to a
+                # full copy, and register()'s move crosses filesystems
+                # (TMPDIR → URL_MEDIA_DIR) — up to URL_MAX_BYTES of blocking
+                # I/O that must not pin the event loop.
+                tmp_path = await asyncio.to_thread(
+                    _ums.make_pipeline_copy, _dl_path)
                 if tmp_path is None:
                     # Disk trouble (logged by the store) — generic 500 path.
                     raise RuntimeError("url pipeline copy failed")
                 # Retention is a playback nicety: None just means the client
                 # gets no audio copy, never a failed transcription.
-                _source_media_id = _ums.register(_dl_path, user_id=_user_id)
+                _source_media_id = await asyncio.to_thread(
+                    _ums.register, _dl_path, user_id=_user_id)
             else:
                 # Stream the part to the temp file in chunks, counting bytes as
                 # we go: the upload is never fully resident, and an oversized
@@ -3602,7 +3683,7 @@ async def transcribe(
                     sample_rate = float(getattr(
                         cfg, "CAPTURE_RECORDINGS_SAMPLE_RATE", 1.0,
                     ))
-                    if (_cap_store.count() < cap_max
+                    if (_cap_store.count_evictable() < cap_max
                             and audio_bytes < hard_lim
                             and random.random() < sample_rate):
                         will_capture = True
@@ -3700,6 +3781,14 @@ async def transcribe(
             # inferring it — the warning text alone arrives only with the
             # final response.
             _skipped: "list[str]" = []
+
+            def _skip(stage: str) -> None:
+                """Record a declined stage + mirror it into the progress
+                entry — the second half is pure bookkeeping whose omission
+                would silently stop the client's rail from showing it."""
+                _skipped.append(stage)
+                _progress_set(_pid, skipped=list(_skipped))
+
             _sep_req = _form_bool(separate_bgm)
             if "SEPARATE_BGM" in ident.locked:
                 _separate = bool(cfg_for(resolved_model, "SEPARATE_BGM", ident))
@@ -3730,8 +3819,7 @@ async def transcribe(
                 _warnings.append(
                     "requested diarization model is not allowed on this "
                     "server (DIARIZATION_ALLOWED_MODELS)")
-                _skipped.append("diarizing")
-                _progress_set(_pid, skipped=list(_skipped))
+                _skip("diarizing")
                 _diarize = False
             _sm_req = (separation_model or "").strip() or None
             _separation_model = _resolve_request_knob(
@@ -3746,8 +3834,7 @@ async def transcribe(
                 _warnings.append(
                     "requested separation model is not allowed on this "
                     "server (BGM_SEPARATION_ALLOWED_MODELS)")
-                _skipped.append("separating")
-                _progress_set(_pid, skipped=list(_skipped))
+                _skip("separating")
                 _separate = False
             # Translation (T2T) request knobs: the same locked-wins /
             # request-wins / config-inherits ladder as diarize/separate_bgm
@@ -3811,9 +3898,14 @@ async def transcribe(
             if _diarize and _diarization_model:
                 _preload_entries.append(("diarization", _diarization_model))
             if _translate_to:
-                _tr_ref = (_translation_model or "").strip() or (getattr(
-                    cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
-                if _tr_ref:
+                _tr_ref = ((_translation_model or "").strip()
+                           or _translation_default_model())
+                # Same allowlist verdict the stage itself renders later: a
+                # ref the stage will refuse must not be pre-warmed (the plan
+                # would download/load an arbitrary GGUF the request cannot
+                # use). The stage's soft-fail warning still fires there.
+                if _tr_ref and _translation_model_allowed(_tr_ref,
+                                                          requested=_tm_req):
                     _preload_entries.append(("translation", _tr_ref))
             if _pid and _preload_entries:
                 _plan_hint = (preload_plan or "").strip() or None
@@ -3894,8 +3986,7 @@ async def transcribe(
                     _warnings.append(
                         "music separation requested but not enabled on this "
                         "server (BGM_SEPARATION_ENABLED is off)")
-                    _skipped.append("separating")
-                    _progress_set(_pid, skipped=list(_skipped))
+                    _skip("separating")
                 else:
                     import bgm_separation as _bgm
                     try:
@@ -4248,8 +4339,7 @@ async def transcribe(
                     _warnings.append(
                         "diarization requested but not enabled on this "
                         "server (DIARIZATION_ENABLED is off)")
-                    _skipped.append("diarizing")
-                    _progress_set(_pid, skipped=list(_skipped))
+                    _skip("diarizing")
                 else:
                     # The module itself is import-safe without the optional
                     # deps (pyannote is imported inside the load path).
@@ -4274,7 +4364,10 @@ async def transcribe(
                                     _pid, progress=f, step=step),
                                 cancel_check=lambda: _cancel_requested(_pid),
                             )
-                        speakers_list = _diar.assign_speakers(segments_list, _turns)
+                        # Pure-Python O(segments × turns) — off the loop so a
+                        # long file doesn't stall every other request.
+                        speakers_list = await asyncio.to_thread(
+                            _diar.assign_speakers, segments_list, _turns)
                         logger.info(
                             "[diarize] %d turns → %d speakers across %d "
                             "segments in %.1fs",
@@ -4316,25 +4409,24 @@ async def transcribe(
                     _warnings.append(
                         "translation requested but TRANSLATION_ENABLED is "
                         "off on this server")
-                    _skipped.append("translating")
-                    _progress_set(_pid, skipped=list(_skipped))
+                    _skip("translating")
                 else:
                     # Empty request/config model resolves to the server
                     # default at stage time (a live admin edit applies).
-                    _tr_default = (getattr(
-                        cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
-                    _tr_model = (_translation_model or "").strip() or _tr_default
-                    _tr_allowed = getattr(
-                        cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
-                    if (_tr_allowed and _tr_model not in _tr_allowed
-                            and _tr_model != _tr_default):
+                    # The allowlist gate (shared helper) constrains only the
+                    # CLIENT-requested value — an admin-pinned per-model/
+                    # per-identity TRANSLATION_MODEL is policy and passes,
+                    # exactly like the diarization/separation gates above.
+                    _tr_model = ((_translation_model or "").strip()
+                                 or _translation_default_model())
+                    if not _translation_model_allowed(_tr_model,
+                                                      requested=_tm_req):
                         # Soft-fail like the enabled gate — never a 4xx after
                         # the transcript already exists.
                         _warnings.append(
                             "requested translation model is not in "
                             "TRANSLATION_ALLOWED_MODELS on this server")
-                        _skipped.append("translating")
-                        _progress_set(_pid, skipped=list(_skipped))
+                        _skip("translating")
                     else:
                         try:
                             _tr_t0 = time.perf_counter()
@@ -4652,10 +4744,6 @@ async def transcribe(
                 username=user.get("username"),
                 key_label=user.get("key_label"),
                 guards={"segment_max_words_per_sec": _max_wps},
-                translate_to=(_translation_meta["targets"]
-                              if _translation_meta else None),
-                translation_model=(_translation_meta["model"]
-                                   if _translation_meta else None),
                 # Post-decode pipeline. Reconstructed from the locals in
                 # scope rather than from preload._plans: the plan omits
                 # whisper (loaded before the plan exists) and is absent
@@ -4675,8 +4763,8 @@ async def transcribe(
                     "max_speakers": _spk.get("max_speakers"),
                     "embedding_batch_size": getattr(
                         cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", _OMIT),
-                    "result": (f"{len(set(speakers_list))} speakers across "
-                               f"{len(speakers_list)} segments"),
+                    "result": (f"{len(speakers_list)} speakers across "
+                               f"{len(segments_list)} segments"),
                 } if speakers_list else None),
                 translation=({
                     "model": _translation_meta.get("model"),
@@ -4689,7 +4777,13 @@ async def transcribe(
                                  if _translation_glossary else _OMIT),
                     "result": f"{len(segments_list)} segs",
                 } if _translation_meta else None),
-                speakers=_align_speakers_to_diag(seg_diag, speakers_list),
+                # Per-SEGMENT labels (assign_speakers stamped them on the
+                # dicts), not the distinct `speakers_list` — the align helper
+                # consumes one label per kept seg_diag row.
+                speakers=_align_speakers_to_diag(
+                    seg_diag,
+                    [str(s.get("speaker") or "") for s in segments_list]
+                    if speakers_list else None),
                 warnings=_warnings or None,
                 skipped=_skipped or None,
             ))
@@ -4730,6 +4824,21 @@ async def transcribe(
             if response_format == "text":
                 return full_text_str
 
+            # Joined per-language transcripts, shared by verbose_json AND the
+            # default json shape below. Deliberately NOT run through
+            # _postprocess_text: the pipeline's rules are German-dictation-
+            # shaped (dictation-map, punctuation words) and would mangle
+            # translated text.
+            _translations_joined = ({
+                _lang: " ".join(
+                    _s for _s in (
+                        (seg.get("translations") or {})
+                        .get(_lang, "").strip()
+                        for seg in segments_list)
+                    if _s).strip()
+                for _lang in _translation_meta["targets"]
+            } if _translation_meta is not None else None)
+
             if response_format == "verbose_json":
                 response = {
                     "task": _task,
@@ -4768,20 +4877,8 @@ async def transcribe(
                 # caller could see WHAT ran but never what it cost.
                 if _stage_timings:
                     response["stages"] = _stage_timings
-                if _translation_meta is not None:
-                    # Joined per-language transcripts. Deliberately NOT run
-                    # through _postprocess_text: the pipeline's rules are
-                    # German-dictation-shaped (dictation-map, punctuation
-                    # words) and would mangle translated text.
-                    response["translations"] = {
-                        _lang: " ".join(
-                            _s for _s in (
-                                (seg.get("translations") or {})
-                                .get(_lang, "").strip()
-                                for seg in segments_list)
-                            if _s).strip()
-                        for _lang in _translation_meta["targets"]
-                    }
+                if _translations_joined is not None:
+                    response["translations"] = _translations_joined
                     response["translation"] = _translation_meta
                 # Soft-failed optional stages (diarization) explain themselves
                 # here instead of failing the request.
@@ -4805,13 +4902,25 @@ async def transcribe(
                         _ums.expires_at_unix(_source_media_id))
                 return response
 
+            # Default `json` shape. Additive keys only (OpenAI-compat callers
+            # ignore them, exactly like source_media_id below): a caller that
+            # paid for translation/diarization must not need verbose_json to
+            # see the output — or the soft-fail warnings explaining why an
+            # optional stage silently didn't run.
+            response = {"text": full_text_str}
+            if _translations_joined is not None:
+                response["translations"] = _translations_joined
+                response["translation"] = _translation_meta
+            if speakers_list:
+                response["speakers"] = speakers_list
+            if _warnings:
+                response["warnings"] = _warnings
             if _source_media_id is not None:
                 import url_media_store as _ums
-                return {"text": full_text_str,
-                        "source_media_id": _source_media_id,
-                        "source_media_expires_at":
-                            _ums.expires_at_unix(_source_media_id)}
-            return {"text": full_text_str}
+                response["source_media_id"] = _source_media_id
+                response["source_media_expires_at"] = (
+                    _ums.expires_at_unix(_source_media_id))
+            return response
 
         except _ClientCancelled:
             # The client asked (via the cancel endpoint) to abort. Not an
@@ -4860,8 +4969,11 @@ async def transcribe(
         # Catches failures BEFORE the inner try (e.g. _get_or_load_model
         # raising HTTPException, await request.form() blowing up), which
         # previously bypassed `_status = "error"` and inflated the success
-        # counter with failed requests.
-        _status = "error"
+        # counter with failed requests. The inner _ClientCancelled arm's 499
+        # also lands here (its own sibling arms can't see it) — that one is
+        # NOT an error, so "cancelled" must survive into the recorded row.
+        if _status != "cancelled":
+            _status = "error"
         raise
     finally:
         if _leased_model is not None:
@@ -5016,11 +5128,13 @@ async def translate_text(request: Request,
     if not getattr(cfg, "TRANSLATION_ENABLED", False):
         raise HTTPException(status_code=403,
                             detail="translation is disabled on this server")
-    # Cheap and early: the per-minute backstop costs one dict lookup and needs
-    # nothing parsed. The in-flight slot is taken much later, right before the
-    # work starts — see below.
+    # The per-minute backstop fires just below, INSIDE the release-on-reject
+    # bracket: it costs one dict lookup and needs nothing parsed, but its 429
+    # (like every validation exit) must release a parked dictation receipt,
+    # and the receipt key only exists once the body is parsed (the body cap
+    # middleware bounds the wire cost of parsing first). The in-flight slot
+    # is taken much later, right before the work starts — see below.
     _inflight_key = _rl.identity_key(user, request)
-    _text_translate_rate.hit(_inflight_key)
     # Canonical job id — stamped on every log line of this run (req=<id8>)
     # so a multi-minute translation can be followed through the log.
     request_id = uuid.uuid4().hex
@@ -5031,128 +5145,138 @@ async def translate_text(request: Request,
     if not isinstance(body, dict):
         raise HTTPException(status_code=422, detail="expected a JSON object")
 
-    segments = body.get("segments")
-    if not isinstance(segments, list) or not segments:
-        raise HTTPException(status_code=422,
-                            detail="segments must be a non-empty list")
-    if len(segments) > _TEXT_TRANSLATE_MAX_SEGMENTS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"segments is capped at {_TEXT_TRANSLATE_MAX_SEGMENTS} "
-                   "entries")
-    seg_in: "list[dict]" = []
-    ids: "list" = []
-    total_chars = 0
-    for i, seg in enumerate(segments):
-        if not isinstance(seg, dict) or not isinstance(seg.get("text"), str):
-            raise HTTPException(
-                status_code=422,
-                detail=f"segments[{i}] must be an object with a string "
-                       "'text'")
-        total_chars += len(seg["text"])
-        speaker = seg.get("speaker")
-        seg_in.append({"text": seg["text"],
-                       "speaker": speaker if isinstance(speaker, str) else None})
-        ids.append(seg.get("id", i))
-    if total_chars > _TEXT_TRANSLATE_MAX_CHARS:
-        raise HTTPException(
-            status_code=413,
-            detail=f"segments exceed {_TEXT_TRANSLATE_MAX_CHARS} total "
-                   "characters")
-
-    # Per-identity policy (locks + overrides) applies here exactly as on the
-    # batch path — reading bare cfg would let a locked-down key bypass its
-    # profile by using this endpoint instead of the transcription form.
-    ident = build_ident(user, None)
-    _ignored: "list[str]" = []
-
-    def _knob(cfg_name: str, client_name: str, body_val):
-        if cfg_name in ident.locked:
-            inherited = cfg_for(None, cfg_name, ident)
-            if body_val is not None and body_val != inherited:
-                _ignored.append(client_name)
-            return inherited
-        if body_val is not None:
-            return body_val
-        return cfg_for(None, cfg_name, ident)
-
-    raw_targets = body.get("targets")
-    max_targets = int(_knob("TRANSLATION_MAX_TARGETS", "", None) or 1)
-    if not isinstance(raw_targets, list) or not raw_targets:
-        raise HTTPException(status_code=422,
-                            detail="targets must be a non-empty list of "
-                                   "language codes")
-    targets: "list[str]" = []
-    for t in raw_targets:
-        code = t.strip() if isinstance(t, str) else ""
-        if not _TRANSLATE_CODE_RE.match(code):
-            raise HTTPException(
-                status_code=422,
-                detail=f"targets contains an invalid language code: {t!r}")
-        if code not in targets:
-            targets.append(code)
-    if len(targets) > max_targets:
-        raise HTTPException(
-            status_code=422,
-            detail=f"targets is capped at TRANSLATION_MAX_TARGETS "
-                   f"({max_targets})")
-
-    source = body.get("source")
-    if source is not None and not isinstance(source, str):
-        raise HTTPException(status_code=422, detail="source must be a string")
-    mode = body.get("translation_mode")
-    if mode is not None and mode not in ("fluent", "faithful"):
-        raise HTTPException(
-            status_code=422,
-            detail="translation_mode must be 'fluent' or 'faithful'")
-    mode = _knob("TRANSLATION_MODE", "translation_mode", mode) or "fluent"
-    glossary = body.get("translation_glossary")
-    if glossary is not None and not isinstance(glossary, str):
-        raise HTTPException(status_code=422,
-                            detail="translation_glossary must be a string")
-    glossary = (_knob("TRANSLATION_GLOSSARY", "translation_glossary",
-                      glossary) or "")[:4000]
-    context_segments = body.get("context_segments")
-    if context_segments is not None and not isinstance(context_segments, int):
-        raise HTTPException(status_code=422,
-                            detail="context_segments must be an integer")
-    if context_segments is not None:
-        context_segments = min(10, max(0, context_segments))
-    _ctx_resolved = _knob("TRANSLATION_CONTEXT_SEGMENTS", "context_segments",
-                          context_segments)
-    context_segments = int(_ctx_resolved) if _ctx_resolved is not None else None
-
-    model_ref = body.get("translation_model")
-    if model_ref is not None and not isinstance(model_ref, str):
-        raise HTTPException(status_code=422,
-                            detail="translation_model must be a string")
-    _tr_default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
-    _tr_model = (_knob("TRANSLATION_MODEL", "translation_model",
-                       (model_ref or "").strip() or None) or "").strip() \
-        or _tr_default
-    _tr_allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
-    if (_tr_allowed and _tr_model not in _tr_allowed
-            and _tr_model != _tr_default):
-        raise HTTPException(
-            status_code=400,
-            detail="requested translation model is not in "
-                   "TRANSLATION_ALLOWED_MODELS on this server")
-
-    # Optional progress/cancel plumbing: a valid id joins _BATCH_PROGRESS so
-    # the existing GET progress and POST cancel endpoints work unchanged
-    # (cancel only accepts ids it can see in flight). Malformed → absent,
-    # matching the batch handler's stance.
-    progress_id = body.get("progress_id")
-    _pid = progress_id if (isinstance(progress_id, str)
-                           and _PROGRESS_ID_RE.match(progress_id)) else None
-
     # A dictation utterance whose receipt is being held open for us. The
     # stream logged nothing for it and is waiting on this request to complete
-    # the block, so EVERY exit below has to release it — including the ones
-    # that never reach the success path.
+    # the block, so EVERY exit below has to release it — including the
+    # validation rejects, which is why the key is parsed FIRST and the whole
+    # validation ladder runs inside one release-on-reject bracket. (The 403 /
+    # malformed-body exits above precede the parse and cannot know the key;
+    # a stream on a translation-disabled server parks nothing.)
     _cap = body.get("captured_id")
     _held_key = (_cap.strip()[:64]
                  if isinstance(_cap, str) and _cap.strip() else None)
+
+    try:
+        _text_translate_rate.hit(_inflight_key)
+        segments = body.get("segments")
+        if not isinstance(segments, list) or not segments:
+            raise HTTPException(status_code=422,
+                                detail="segments must be a non-empty list")
+        if len(segments) > _TEXT_TRANSLATE_MAX_SEGMENTS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"segments is capped at {_TEXT_TRANSLATE_MAX_SEGMENTS} "
+                       "entries")
+        seg_in: "list[dict]" = []
+        ids: "list" = []
+        total_chars = 0
+        for i, seg in enumerate(segments):
+            if not isinstance(seg, dict) or not isinstance(seg.get("text"), str):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"segments[{i}] must be an object with a string "
+                           "'text'")
+            total_chars += len(seg["text"])
+            speaker = seg.get("speaker")
+            seg_in.append({"text": seg["text"],
+                           "speaker": speaker if isinstance(speaker, str) else None})
+            ids.append(seg.get("id", i))
+        if total_chars > _TEXT_TRANSLATE_MAX_CHARS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"segments exceed {_TEXT_TRANSLATE_MAX_CHARS} total "
+                       "characters")
+
+        # Per-identity policy (locks + overrides) applies here exactly as on the
+        # batch path — reading bare cfg would let a locked-down key bypass its
+        # profile by using this endpoint instead of the transcription form.
+        ident = build_ident(user, None)
+        _ignored: "list[str]" = []
+
+        # The module-level locked-wins / request-wins / config-inherits ladder,
+        # bound to this request. _NO_DEFAULT: this endpoint resolves numeric
+        # knobs (TRANSLATION_MAX_TARGETS, context segments) through the same
+        # ladder, where the batch sites' `or ""` would corrupt a legitimate 0.
+        _knob = functools.partial(_resolve_request_knob, None, ident, _ignored,
+                                  default=_NO_DEFAULT)
+
+        raw_targets = body.get("targets")
+        max_targets = int(_knob("TRANSLATION_MAX_TARGETS", "", None) or 1)
+        if not isinstance(raw_targets, list) or not raw_targets:
+            raise HTTPException(status_code=422,
+                                detail="targets must be a non-empty list of "
+                                       "language codes")
+        targets: "list[str]" = []
+        for t in raw_targets:
+            code = t.strip() if isinstance(t, str) else ""
+            if not _TRANSLATE_CODE_RE.match(code):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"targets contains an invalid language code: {t!r}")
+            if code not in targets:
+                targets.append(code)
+        if len(targets) > max_targets:
+            raise HTTPException(
+                status_code=422,
+                detail=f"targets is capped at TRANSLATION_MAX_TARGETS "
+                       f"({max_targets})")
+
+        source = body.get("source")
+        if source is not None and not isinstance(source, str):
+            raise HTTPException(status_code=422, detail="source must be a string")
+        mode = body.get("translation_mode")
+        if mode is not None and mode not in ("fluent", "faithful"):
+            raise HTTPException(
+                status_code=422,
+                detail="translation_mode must be 'fluent' or 'faithful'")
+        mode = _knob("TRANSLATION_MODE", "translation_mode", mode) or "fluent"
+        glossary = body.get("translation_glossary")
+        if glossary is not None and not isinstance(glossary, str):
+            raise HTTPException(status_code=422,
+                                detail="translation_glossary must be a string")
+        glossary = (_knob("TRANSLATION_GLOSSARY", "translation_glossary",
+                          glossary) or "")[:4000]
+        context_segments = body.get("context_segments")
+        if context_segments is not None and not isinstance(context_segments, int):
+            raise HTTPException(status_code=422,
+                                detail="context_segments must be an integer")
+        if context_segments is not None:
+            context_segments = min(10, max(0, context_segments))
+        _ctx_resolved = _knob("TRANSLATION_CONTEXT_SEGMENTS", "context_segments",
+                              context_segments)
+        context_segments = int(_ctx_resolved) if _ctx_resolved is not None else None
+
+        model_ref = body.get("translation_model")
+        if model_ref is not None and not isinstance(model_ref, str):
+            raise HTTPException(status_code=422,
+                                detail="translation_model must be a string")
+        _tm_req = (model_ref or "").strip() or None
+        _tr_model = (_knob("TRANSLATION_MODEL", "translation_model",
+                           _tm_req) or "").strip() or _translation_default_model()
+        # Shared allowlist gate; like the batch stage, it constrains only the
+        # CLIENT-requested value — an admin-pinned per-identity/per-model
+        # TRANSLATION_MODEL is policy and passes.
+        if not _translation_model_allowed(_tr_model, requested=_tm_req):
+            raise HTTPException(
+                status_code=400,
+                detail="requested translation model is not in "
+                       "TRANSLATION_ALLOWED_MODELS on this server")
+
+        # Optional progress/cancel plumbing: a valid id joins _BATCH_PROGRESS so
+        # the existing GET progress and POST cancel endpoints work unchanged
+        # (cancel only accepts ids it can see in flight). Malformed → absent,
+        # matching the batch handler's stance.
+        progress_id = body.get("progress_id")
+        _pid = progress_id if (isinstance(progress_id, str)
+                               and _PROGRESS_ID_RE.match(progress_id)) else None
+    except BaseException:
+        # Any rejection above (422/413/429/400) — or a client disconnect
+        # mid-validation — must hand the parked receipt back NOW, or the
+        # sweeper logs it ~90 s later as "no result within 90s", out of
+        # order and with the wrong reason. Mirrors the acquire-refusal
+        # release below.
+        _release_held_receipt(_held_key, "request rejected")
+        raise
 
     # ── Canonical job logging ────────────────────────────────────────────
     # Start receipt now, throttled heartbeats from the progress wrapper,
@@ -5257,9 +5381,12 @@ async def translate_text(request: Request,
                          "detail": f"{len(seg_in)} segs → {','.join(targets)}"}],
             )
 
+        # `owner` binds the entry to this caller, exactly like the batch
+        # seed — the progress/cancel endpoints treat a mismatch as unknown.
         _progress_set(_pid, stage="translating", progress=0.0,
                       model=(_tr_model or None),
-                      device=_tr._resolve_device(), compute="gguf")
+                      device=_tr._resolve_device(), compute="gguf",
+                      owner=(user.get("user_id") or user.get("key_id")))
         try:
             _check_cancelled(_pid)
 
@@ -5396,11 +5523,15 @@ async def translate_text(request: Request,
 
     # kept_original: targets for which the guard fallback returned the SOURCE
     # text — without it a kept German line under translations["en"] is
-    # indistinguishable from a real translation. Absent when clean.
+    # indistinguishable from a real translation. Absent when clean. Also
+    # emitted as `translations_kept`, the name the batch endpoint's segments
+    # use for the same fact, so a client can read one key on both endpoints
+    # (kept_original stays for existing consumers).
     _kept = meta.get("kept") or {}
     return {
         "segments": [{"id": ids[i], "translations": per_seg[i],
-                      **({"kept_original": list(_kept[i])}
+                      **({"kept_original": list(_kept[i]),
+                          "translations_kept": list(_kept[i])}
                          if _kept.get(i) else {})}
                      for i in range(len(ids))],
         "translation": {"model": meta.get("model"), "targets": targets,
@@ -5412,9 +5543,25 @@ async def translate_text(request: Request,
     }
 
 
-@app.get("/v1/audio/transcriptions/progress/{progress_id}",
-         dependencies=[Depends(_get_current_user_dep)])
-async def transcription_progress(progress_id: str):
+def _progress_entry_for(progress_id: str, user: dict) -> "dict | None":
+    """The _BATCH_PROGRESS entry for `progress_id` IF this caller may see it.
+    An entry stamped with an `owner` that is not this caller reads exactly
+    like a miss (no existence oracle) unless the caller is an admin (the
+    /stats activity popover cancels other users' jobs); an owner-less entry
+    (tests / legacy seeds) stays accessible to any authenticated caller."""
+    entry = _BATCH_PROGRESS.get(progress_id)
+    if entry is None:
+        return None
+    _owner = entry.get("owner")
+    if (_owner and not user.get("is_admin")
+            and _owner not in (user.get("user_id"), user.get("key_id"))):
+        return None
+    return entry
+
+
+@app.get("/v1/audio/transcriptions/progress/{progress_id}")
+async def transcription_progress(progress_id: str,
+                                 user: dict = Depends(_get_current_user_dep)):
     """Live progress of an in-flight file transcription that was posted with a
     matching `progress_id` form field. Stages: waiting (semaphore queue) →
     [resolving → downloading (URL flow: `progress` 0..1 when the size is
@@ -5427,7 +5574,7 @@ async def transcription_progress(progress_id: str):
     stops."""
     if not _PROGRESS_ID_RE.match(progress_id):
         raise HTTPException(status_code=422, detail="malformed progress_id")
-    entry = _BATCH_PROGRESS.get(progress_id)
+    entry = _progress_entry_for(progress_id, user)
     if entry is None:
         return {"stage": "unknown"}
     return {
@@ -5456,9 +5603,9 @@ async def transcription_progress(progress_id: str):
     }
 
 
-@app.post("/v1/audio/transcriptions/cancel/{progress_id}",
-          dependencies=[Depends(_get_current_user_dep)])
-async def transcription_cancel(progress_id: str):
+@app.post("/v1/audio/transcriptions/cancel/{progress_id}")
+async def transcription_cancel(progress_id: str,
+                               user: dict = Depends(_get_current_user_dep)):
     """Abort the in-flight transcription posted with this `progress_id`.
 
     Closing the upload connection does NOT stop the server-side work (the
@@ -5469,7 +5616,7 @@ async def transcription_cancel(progress_id: str):
     accepted; an unknown/finished id answers cancelled=false."""
     if not _PROGRESS_ID_RE.match(progress_id):
         raise HTTPException(status_code=422, detail="malformed progress_id")
-    if progress_id not in _BATCH_PROGRESS:
+    if _progress_entry_for(progress_id, user) is None:
         return {"cancelled": False}
     _BATCH_CANCELLED.add(progress_id)
     logger.info("[batch] cancel requested for an in-flight transcription")
@@ -5635,6 +5782,26 @@ async def list_models():
     }
 
 
+# llama-cpp-python version cache, url_download.yt_dlp_version-style: the
+# distribution finder walks sys.path (listdir/stat per entry) for a value
+# that cannot change without a restart, and /v1/me is the WebUI's per-page-
+# load capability probe — resolve once, behind a sentinel so "not installed"
+# (None) is cached too.
+_LLAMA_CPP_VERSION_UNSET = object()
+_LLAMA_CPP_VERSION: "str | None | object" = _LLAMA_CPP_VERSION_UNSET
+
+
+def _llama_cpp_version() -> "str | None":
+    global _LLAMA_CPP_VERSION
+    if _LLAMA_CPP_VERSION is _LLAMA_CPP_VERSION_UNSET:
+        try:
+            import importlib.metadata
+            _LLAMA_CPP_VERSION = importlib.metadata.version("llama-cpp-python")
+        except Exception:  # noqa: BLE001 — absence is a supported state
+            _LLAMA_CPP_VERSION = None
+    return _LLAMA_CPP_VERSION
+
+
 @app.get("/v1/me")
 async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     """The caller's effective request-override capabilities — drives the client
@@ -5669,6 +5836,22 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     if caps["url_download_enabled"]:
         import url_download as _udl
         caps["yt_dlp_version"] = _udl.yt_dlp_version()
+    # Stage-model list builder shared by all three optional stages below.
+    # Configured model FIRST, then the allowlist (de-duplicated, order kept):
+    # an empty allowlist means "the configured model only" for every stage,
+    # so building from the allowlist alone published [] for a server that
+    # accepts one model — and a picker pre-flighting on it showed nothing.
+    # This is exactly the stages' own admission rule (allowlist ∪ configured)
+    # and deliberately never consults residency: a loaded-but-no-longer-
+    # allowed model must not be offered (every request naming it would be
+    # refused); residency is reported per row by the "loaded" flag instead.
+    def _stage_refs(configured, allowed) -> "list[str]":
+        refs = [configured] if configured else []
+        for _m in (allowed or []):
+            if _m and _m not in refs:
+                refs.append(_m)
+        return refs
+
     # Additive: text-to-text translation capability surface. The flag is
     # always present (pre-flight for the client's Translate control); the
     # detail keys ride only when the stage exists — same shape discipline as
@@ -5677,20 +5860,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         getattr(cfg, "TRANSLATION_ENABLED", False))
     if caps["translation_enabled"]:
         import translation as _tr
-        _t_default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
-        _t_refs: "list[str]" = [_t_default] if _t_default else []
-        for _ref in sorted(set(getattr(cfg, "TRANSLATION_ALLOWED_MODELS", None)
-                               or set()) | set(_tr._models)):
-            if _ref not in _t_refs:
-                _t_refs.append(_ref)
+        _t_default = _translation_default_model()
         caps["translation_models"] = [
             {"id": _ref, "loaded": preload.is_resident("translation", _ref)}
-            for _ref in _t_refs]
-        # Language menu for the client's target picker. resolve_family("")
-        # is exception-free: no configured pin → detect_family("") → the
-        # generic chatml family, whose list is the shared code set anyway.
-        caps["translation_languages"] = _tr.list_languages(
-            _tr.resolve_family(_t_default))
+            for _ref in _stage_refs(
+                _t_default,
+                sorted(getattr(cfg, "TRANSLATION_ALLOWED_MODELS", None)
+                       or set()))]
+        # Language menu for the client's target picker.
+        caps["translation_languages"] = _tr.list_languages()
         # The CALLER's effective TRANSLATE_TO default (per-identity overrides
         # respected — unlike vad_filter_default above, which is a server-wide
         # ghost label), parsed csv → list like the transcribe handler does.
@@ -5704,29 +5882,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
                 _tt_list.append(_code)
         caps["translate_to_default"] = _tt_list
         # Engine version, yt_dlp_version-style best-effort (null when the
-        # optional dependency set isn't installed).
-        try:
-            import importlib.metadata
-            caps["llama_cpp_version"] = importlib.metadata.version(
-                "llama-cpp-python")
-        except Exception:  # noqa: BLE001 — absence is a supported state
-            caps["llama_cpp_version"] = None
+        # optional dependency set isn't installed); cached at module level —
+        # it cannot change without a restart.
+        caps["llama_cpp_version"] = _llama_cpp_version()
     # Additive: the stage-model allowlists with a loaded flag, mirroring
     # translation_models — the client's model pickers pre-flight on these.
     # "Loaded" = the module's single cached instance is exactly this model
     # (both stages cache one pipeline/separator at a time). preload.is_resident
     # owns that comparison for every family, including the separator's
     # friendly-name → ".onnx" filename mapping this used to open-code.
-    # Configured model FIRST, then the allowlist (de-duplicated, order kept):
-    # an empty allowlist means "the configured model only" for both stages,
-    # so building from the allowlist alone published [] for a server that
-    # accepts one model — and a picker pre-flighting on it showed nothing.
-    def _stage_refs(configured, allowed) -> "list[str]":
-        refs = [configured] if configured else []
-        for _m in (allowed or []):
-            if _m and _m not in refs:
-                refs.append(_m)
-        return refs
     caps["diarization_models"] = [
         {"id": _m, "loaded": preload.is_resident("diarization", _m)}
         for _m in _stage_refs(

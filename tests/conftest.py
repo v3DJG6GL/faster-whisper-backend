@@ -298,6 +298,7 @@ def client_settings_store_db(tmp_path):
     except Exception:
         pass
     client_settings_store._conn = None
+    client_settings_store._DB_READY = False
 
 
 @pytest.fixture
@@ -375,6 +376,11 @@ def fake_vad(monkeypatch):
 def no_vad(monkeypatch):
     """Force the 'VAD unavailable -> identity' path."""
     monkeypatch.setitem(sys.modules, "faster_whisper", None)
+    # Nulling the package alone is not enough once another test has imported
+    # the submodule: `from faster_whisper.vad import ...` resolves straight
+    # from the sys.modules cache. Null it too so the ImportError path fires
+    # regardless of test order.
+    monkeypatch.setitem(sys.modules, "faster_whisper.vad", None)
 
 
 @pytest.fixture
@@ -537,6 +543,11 @@ def app_module(tmp_path, monkeypatch, fake_model):
     async def _fake_loader(name: str, *, lease: bool = False):
         return fake_model
     monkeypatch.setattr(main, "_get_or_load_model", _fake_loader)
+    # The lifespan's hard-restart TMPDIR sweep would prune the REAL system
+    # tempdir (urldl-/sepsrc-/vocals- leftovers) on every TestClient startup
+    # — neuter it here; test_routes_url exercises the real function against
+    # a fake tempdir directly.
+    monkeypatch.setattr(main, "_reclaim_hard_restart_orphans", lambda: None)
 
     yield main
 
@@ -558,6 +569,16 @@ def app_module(tmp_path, monkeypatch, fake_model):
                 pass
             _mod._conn = None
     capture_samples_store._conn = None
+    # Same reset api_keys_db performs: leaving _DB_READY set over a closed
+    # connection would let a later test read this test's stale lockdown
+    # cache (is_locked_down() passes the _DB_READY gate, swallows the
+    # RuntimeError from _require_conn(), and returns the unchanged cache).
+    api_keys_store._KEY_INDEX = {}
+    api_keys_store._IS_LOCKED_DOWN = False
+    api_keys_store._DB_READY = False
+    api_keys_store._DATA_VERSION = -1
+    client_settings_store._DB_READY = False
+    sessions_store._reset_for_tests()
 
 
 @pytest.fixture

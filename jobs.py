@@ -40,6 +40,12 @@ KINDS = ("transcribe", "dictate", "translate", "download", "preload")
 
 _MAX_JOBS = 200
 
+# Explicit-clear sentinel for job_update: plain None means "leave the field
+# alone" (progress mirroring merges only what a tick actually carried), so a
+# caller that needs to CLEAR a stale field — e.g. the decode progress when the
+# stage flips to diarizing — passes CLEAR and job_update writes None for it.
+CLEAR = object()
+
 _lock = threading.Lock()
 _jobs: dict[str, dict[str, Any]] = {}
 
@@ -86,7 +92,8 @@ def job_start(
 
 def job_update(job_id: "str | None", **fields: Any) -> None:
     """Merge non-None `fields` into the job entry (no-op on unknown ids —
-    progress mirroring must never break the request that feeds it)."""
+    progress mirroring must never break the request that feeds it). A value
+    of `CLEAR` explicitly writes None."""
     if not job_id:
         return
     with _lock:
@@ -94,7 +101,9 @@ def job_update(job_id: "str | None", **fields: Any) -> None:
         if entry is None:
             return
         for k, v in fields.items():
-            if v is not None:
+            if v is CLEAR:
+                entry[k] = None
+            elif v is not None:
                 entry[k] = v
 
 

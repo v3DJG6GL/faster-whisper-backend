@@ -181,3 +181,35 @@ def test_eviction_takes_the_least_recently_touched_not_the_oldest():
 def test_park_without_a_key_is_a_no_op():
     receipt_hold.park("", _kwargs(), hold_s=90)
     assert receipt_hold.pending() == 0
+
+
+# ---------------------------------------------------------------------------
+# Route: a rejected /v1/text/translations releases the parked receipt
+# ---------------------------------------------------------------------------
+
+def test_validation_reject_releases_the_parked_receipt(client, app_module,
+                                                       monkeypatch):
+    """Every validation exit of the translate endpoint (422/413/429/400) must
+    hand a parked dictation receipt back NOW — not leave it for the idle
+    sweeper to log ~90 s later with a 'no result within' note."""
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    receipt_hold.park("capX", _kwargs(), hold_s=90)
+    r = client.post("/v1/text/translations", json={
+        "segments": [{"id": 0, "text": "Hallo"}],
+        "targets": "not-a-list",            # 422 in the validation ladder
+        "captured_id": "capX"})
+    assert r.status_code == 422
+    assert receipt_hold.pending() == 0      # released, not still parked
+
+    # A rejected model (400) releases too.
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
+                        {"org/only-GGUF:Q4"}, raising=False)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
+                        "org/only-GGUF:Q4", raising=False)
+    receipt_hold.park("capY", _kwargs(2), hold_s=90)
+    r = client.post("/v1/text/translations", json={
+        "segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
+        "translation_model": "org/evil-GGUF:Q8", "captured_id": "capY"})
+    assert r.status_code == 400
+    assert receipt_hold.pending() == 0
