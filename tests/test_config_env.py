@@ -456,8 +456,94 @@ def test_rejected_nonsecret_warning_still_shows_value(monkeypatch):
         _reload_with_env(monkeypatch, WHISPER_BEAM_SIZE="9999")
         warn = [m for m in config._ENV_WARNINGS if "WHISPER_BEAM_SIZE" in m]
         assert warn, config._ENV_WARNINGS
-        assert "keeping 10" in warn[0]
+        # BEAM_SIZE is the reverted (pre-env) value after the rejection.
+        assert f"keeping {config.BEAM_SIZE}" in warn[0]
         assert "<redacted>" not in warn[0]
     finally:
         monkeypatch.undo()
         importlib.reload(config)
+
+
+def test_per_model_env_override_coerces_newer_field_types(monkeypatch):
+    """DIARIZE (bool) and DIARIZATION_NUM_SPEAKERS (int) are ModelOverride
+    fields that postdate the coercion frozensets — a raw string surviving here
+    means bool("false") is True downstream and speaker hints reach pyannote
+    as strings."""
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_MODEL_OVERRIDE__TINY__DIARIZE="false",
+            WHISPER_MODEL_OVERRIDE__TINY__DIARIZATION_NUM_SPEAKERS="3",
+        )
+        entry = config.MODEL_OVERRIDES.get("TINY", {})
+        assert entry.get("DIARIZE") is False
+        assert entry.get("DIARIZATION_NUM_SPEAKERS") == 3
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_save_overrides_migrates_use_auth_token(tmp_path):
+    """The save path re-reads the raw file and merges the payload on top; a
+    surviving pre-rename USE_AUTH_TOKEN key would make AdminConfig
+    (extra=forbid) reject EVERY save forever. The first successful write must
+    migrate the key and self-heal the file."""
+    import config_store
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7}),
+                 encoding="utf-8")
+    changed = config_store.save_overrides({"BEAM_SIZE": 5}, path=str(p))
+    assert changed.get("BEAM_SIZE") == 5
+    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    assert on_disk.get("HF_TOKEN") == "hf_stored"
+    assert "USE_AUTH_TOKEN" not in on_disk
+    assert on_disk.get("BEAM_SIZE") == 5
+
+
+def test_env_cross_field_triple_validates_as_a_batch(monkeypatch):
+    """A self-consistent TARGET/MAX pair set together via env must apply.
+    Per-field validation filled the unset members from _BASELINE (TARGET
+    26.0), so MAX=20 alone was mis-rejected even though the operator also
+    set TARGET=15 in the same environment."""
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_CAPTURES_PROPOSER_TARGET_S="15",
+            WHISPER_CAPTURES_SAMPLE_MAX_DURATION_S="20",
+        )
+        assert config.CAPTURES_PROPOSER_TARGET_S == 15
+        assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 20
+        assert not [m for m in config._ENV_WARNINGS
+                    if "CAPTURES_" in m], config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
+    """An in-place upgrade that still has runtime state under the checkout,
+    with nothing at the configured (data-dir) location, must say so instead of
+    silently starting from factory config / an empty key store."""
+    monkeypatch.delenv("WHISPER_CONFIG_LOCAL", raising=False)
+    repo = tmp_path / "repo"
+    data = tmp_path / "data"
+    repo.mkdir()
+    data.mkdir()
+    (repo / "config.local.json").write_text("{}", encoding="utf-8")
+    api_db = str(data / "db" / "api_keys.local.sqlite3")
+
+    warns = config._legacy_state_warnings(str(repo), str(data), api_db)
+    assert len(warns) == 1                      # config.local.json only
+    assert str(repo / "config.local.json") in warns[0]
+    assert str(data / "config.local.json") in warns[0]
+    assert "IGNORED" in warns[0]
+
+    # Once the configured file exists the warning goes away.
+    (data / "config.local.json").write_text("{}", encoding="utf-8")
+    assert config._legacy_state_warnings(str(repo), str(data), api_db) == []
+
+    # And the legacy api-keys DB warns the same way.
+    (repo / "api_keys.local.sqlite3").write_text("", encoding="utf-8")
+    warns = config._legacy_state_warnings(str(repo), str(data), api_db)
+    assert len(warns) == 1
+    assert "api_keys.local.sqlite3" in warns[0]

@@ -407,11 +407,9 @@ def test_pipeline_backref_only_replacement_rejected():
 def test_pipeline_prefix_ambiguous_alternation_rejected():
     # The overlap screen only caught byte-IDENTICAL branches, so the
     # prefix-ambiguous forms — one run of input that splits many ways — walked
-    # through and then backtracked exponentially on real transcripts. None of
-    # these repeats a branch verbatim.
-    import regex_guard
-    for pat in ("(a|ab)+", "(x|xx)+y", "(ab|a|b)+c", "(n|d|nd)+#", "(|a)+"):
-        assert regex_guard._nested_repetition(pat), pat
+    # through and then backtracked exponentially on real transcripts.
+    # (The _nested_repetition unit assertions for the full family live in
+    # tests/test_regex_guard.py with the rest of the helper's coverage.)
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[
             _regex("boom", pattern="(n|d|nd)+#", replacement="X"), _terminal()])
@@ -813,6 +811,27 @@ def test_env_pinned_fields(monkeypatch):
     assert pinned.get("DEFAULT_MODEL") == "WHISPER_DEFAULT_MODEL"
     assert pinned.get("BEAM_SIZE") == "WHISPER_BEAM_SIZE"
     assert "USAGE_DB" not in pinned  # USAGE_DB is not an editable AdminConfig field
+
+
+def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
+    """A field whose env value was rejected and reverted by config's
+    validation pass must NOT be badged as pinned — the var no longer controls
+    it, and the /settings apply path skips pinned names, so a stale badge
+    would stop an admin's edit from ever reaching the live cfg."""
+    import importlib
+
+    import config
+    try:
+        monkeypatch.setenv("WHISPER_BEAM_SIZE", "9999")   # fails Field(le=...)
+        importlib.reload(config)
+        assert "BEAM_SIZE" in config._ENV_REJECTED
+        pinned = cs.env_pinned_fields()
+        assert "BEAM_SIZE" not in pinned
+        # A validly pinned field is unaffected by the exclusion.
+        assert cs.ENV_VAR_MAPPING["BEAM_SIZE"] == "WHISPER_BEAM_SIZE"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)  # restore from the clean environment
 
 
 def test_format_validation_errors_shape():

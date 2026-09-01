@@ -763,8 +763,9 @@ ADMIN_UI_ENABLED = _D("ADMIN_UI_ENABLED")
 ADMIN_WEBUI_ALLOWED_HOSTS: "list[str]" = _D("ADMIN_WEBUI_ALLOWED_HOSTS")
 USER_WEBUI_ALLOWED_HOSTS: "list[str]" = _D("USER_WEBUI_ALLOWED_HOSTS")
 
-# CORS allowlist for cross-origin browser calls to the JSON API (e.g. the
-# /dictate demo's BATCH mode fetch from a different origin than the backend).
+# CORS allowlist for cross-origin browser calls to the JSON API (e.g. a
+# third-party browser app on another origin calling this backend; /dictate
+# itself always talks to its own origin).
 # Empty (default) = CORS disabled, no Access-Control-* headers, same as before.
 # List explicit origins (scheme://host[:port], comma-separated in the env var)
 # to allow them; "*" allows any origin (credentials are then disabled, per the
@@ -1546,24 +1547,13 @@ except ImportError:
 
 
 # --- Special-case readers (preserve exact legacy semantics) -----------------
-# ALLOWED_MODELS: CSV → set; explicit "" means an empty set ("any well-formed
-# model name passes" — see the field's comment above).
-_env_allowed = os.environ.get("WHISPER_ALLOWED_MODELS")
-if _env_allowed is not None:
-    ALLOWED_MODELS = {s.strip() for s in _env_allowed.split(",") if s.strip()}
-
-# TRANSLATION_ALLOWED_MODELS mirrors ALLOWED_MODELS: CSV → set; explicit ""
-# means an empty set ("any well-formed ref passes").
-_env_translation_allowed = os.environ.get("WHISPER_TRANSLATION_ALLOWED_MODELS")
-if _env_translation_allowed is not None:
-    TRANSLATION_ALLOWED_MODELS = {
-        s.strip() for s in _env_translation_allowed.split(",") if s.strip()}
-
-# CAPTURES_PIPELINE_RULES_EXCLUDE is stored/used as a set of rule slugs.
-_env_cap_excl = os.environ.get("WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE")
-if _env_cap_excl is not None:
-    CAPTURES_PIPELINE_RULES_EXCLUDE = {
-        s.strip() for s in _env_cap_excl.split(",") if s.strip()}
+# The set-typed fields (_SET_FIELDS): CSV → set; explicit "" means an empty
+# set ("any well-formed name/ref passes" — see each field's comment above).
+# All three use the plain WHISPER_<NAME> env form (none pass env= to _F).
+for _f in sorted(_SET_FIELDS):
+    _raw = os.environ.get("WHISPER_" + _f)
+    if _raw is not None:
+        globals()[_f] = {s.strip() for s in _raw.split(",") if s.strip()}
 
 # Allowlists: empty string is treated as "no override" (keep in-file/local.json)
 # so the defaults can't be wiped by an empty env var.
@@ -1591,18 +1581,23 @@ def _decode_model_id(s: str) -> str:
 _OVERRIDE_BOOL_FIELDS = frozenset({
     "CONDITION_ON_PREVIOUS_TEXT", "WORD_TIMESTAMPS_ENABLED",
     "VAD_FILTER", "MULTILINGUAL", "SUPPRESS_BLANK",
+    "DIARIZE", "SEPARATE_BGM",
 })
 _OVERRIDE_INT_FIELDS = frozenset({
     "BEAM_SIZE", "BEST_OF", "VAD_MIN_SILENCE_MS", "VAD_SPEECH_PAD_MS",
     "LEADING_SILENCE_PAD_MS",
     "NO_REPEAT_NGRAM_SIZE", "LANGUAGE_DETECTION_SEGMENTS",
     "NUM_WORKERS", "DEVICE_INDEX",
+    "DIARIZATION_NUM_SPEAKERS", "DIARIZATION_MIN_SPEAKERS",
+    "DIARIZATION_MAX_SPEAKERS",
+    "TRANSLATION_CONTEXT_SEGMENTS", "TRANSLATION_MAX_TARGETS",
 })
 _OVERRIDE_FLOAT_FIELDS = frozenset({
     "VAD_THRESHOLD", "NO_SPEECH_THRESHOLD", "LOG_PROB_THRESHOLD",
     "COMPRESSION_RATIO_THRESHOLD", "PATIENCE", "LENGTH_PENALTY",
     "REPETITION_PENALTY", "PROMPT_RESET_ON_TEMPERATURE",
     "LANGUAGE_DETECTION_THRESHOLD", "HALLUCINATION_SILENCE_THRESHOLD",
+    "SEGMENT_MAX_WORDS_PER_SEC",
 })
 _OVERRIDE_LIST_FIELDS = frozenset({
     "PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE",
@@ -1701,33 +1696,79 @@ def _env_validation_reason(exc: BaseException) -> str:
 # never fails over this: refusing to boot would turn a bad env var into an
 # outage, and a reverted field is the same fail-safe the readers above already
 # apply when a value will not coerce.
+# Fields whose env value was rejected and reverted below. config_store.
+# env_pinned_fields() excludes them: a var that no longer controls the field
+# must not badge it as pinned (the /settings apply path skips pinned names,
+# so a stale badge would also make the admin's edit never reach the live cfg).
+_ENV_REJECTED: "set[str]" = set()
 try:
     _ENV_VALIDATE_SKIP = _ENV_JSON_FIELDS | {"MODEL_OVERRIDES"}
-    for _field in sorted(_ENV_PRE):
-        if _field in _ENV_VALIDATE_SKIP:
-            continue
-        _new = globals().get(_field)
-        _old = _ENV_PRE[_field]
-        if _new == _old:
-            continue  # env did not change it — nothing new to validate
+
+    def _revert_env_field(_field: str, _reason: str) -> None:
+        """Put the pre-env value back, record the rejection, and warn.
+
+        The field name and the validation reason stay — an operator has to
+        know their env value was rejected and that the previous one is in
+        force. But the reverted value itself is a STORED SECRET for the
+        credential fields (HF_TOKEN is a HuggingFace token and goes through
+        this pass like any other AdminConfig field: paste an over-long one
+        and the warning would carry the repr of the token already
+        configured). _ENV_WARNINGS is drained into the logger and that log
+        is served by /logs and /logs/stream."""
+        globals()[_field] = _ENV_PRE[_field]
+        _ENV_REJECTED.add(_field)
+        _kept = ("<redacted>" if _field in _SECRET_FIELDS
+                 else repr(_ENV_PRE[_field]))
+        _ENV_WARNINGS.append(
+            f"{_ENV_VAR_MAPPING.get(_field, _field)} is not a valid "
+            f"{_field}: {_reason}; keeping {_kept}"
+        )
+
+    # Validate every env-changed field in ONE batch, so a cross-field model
+    # validator (the MIN/TARGET/MAX sample-sizing triple) sees the whole
+    # environment together — validating one at a time filled the unset
+    # members from _BASELINE and mis-rejected a self-consistent pair like
+    # TARGET=15 + MAX=20.
+    _changed = {
+        _f: globals()[_f]
+        for _f in sorted(_ENV_PRE)
+        if _f not in _ENV_VALIDATE_SKIP and globals().get(_f) != _ENV_PRE[_f]
+    }
+    if _changed:
         try:
-            _AdminConfig.model_validate({_field: _new})
+            _AdminConfig.model_validate(_changed)
         except Exception as _verr:  # noqa: BLE001 — any validation failure
-            globals()[_field] = _old
-            # The field name and the validation reason stay — an operator has
-            # to know their env value was rejected and that the previous one is
-            # in force. But the reverted value itself is a STORED SECRET for
-            # the credential fields (HF_TOKEN is a HuggingFace token and
-            # goes through this loop like any other AdminConfig field: paste an
-            # over-long one and the warning would carry the repr of the token
-            # already configured). _ENV_WARNINGS is drained into the logger and
-            # that log is served by /logs and /logs/stream.
-            _kept = "<redacted>" if _field in _SECRET_FIELDS else repr(_old)
-            _ENV_WARNINGS.append(
-                f"{_ENV_VAR_MAPPING.get(_field, _field)} is not a valid "
-                f"{_field}: {_env_validation_reason(_verr)}; "
-                f"keeping {_kept}"
-            )
+            # Revert ONLY the fields the error locations name. Errors with an
+            # empty/unknown loc (cross-field model validators) can't be
+            # attributed, so fall back to validating each still-standing field
+            # in isolation and reverting the ones that fail on their own.
+            _err_list = []
+            _errs_fn = getattr(_verr, "errors", None)
+            if callable(_errs_fn):
+                try:
+                    _err_list = _errs_fn()
+                except Exception:  # noqa: BLE001
+                    _err_list = []
+            _unattributed = not _err_list
+            for _e in _err_list:
+                _loc = _e.get("loc") or ()
+                _f0 = str(_loc[0]) if _loc else ""
+                if _f0 in _changed:
+                    if _f0 in _ENV_REJECTED:
+                        continue  # already reverted via an earlier error
+                    _msg = _e.get("msg", "invalid value")
+                    _sub = ".".join(str(p) for p in _loc[1:])
+                    _revert_env_field(_f0, f"{_sub}: {_msg}" if _sub else _msg)
+                else:
+                    _unattributed = True
+            if _unattributed:
+                for _field in sorted(_changed):
+                    if _field in _ENV_REJECTED:
+                        continue
+                    try:
+                        _AdminConfig.model_validate({_field: globals()[_field]})
+                    except Exception as _ferr:  # noqa: BLE001
+                        _revert_env_field(_field, _env_validation_reason(_ferr))
 
     # MODEL_OVERRIDES is assembled key-by-key from the
     # WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention, which bypasses
@@ -1740,8 +1781,13 @@ try:
         _clean_overrides = {}
         for _mid, _entry in MODEL_OVERRIDES.items():
             try:
-                _AdminConfig.model_validate({"MODEL_OVERRIDES": {_mid: _entry}})
-                _clean_overrides[_mid] = _entry
+                # Keep the VALIDATED dump, not the raw entry: pydantic's lax
+                # mode coerces string leftovers ("false", "3") that the
+                # frozenset lookup above missed, so a field newly added to
+                # ModelOverride can never stay live as a raw string.
+                _clean_overrides[_mid] = _AdminConfig.model_validate(
+                    {"MODEL_OVERRIDES": {_mid: _entry}}
+                ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
             except Exception as _verr:  # noqa: BLE001
                 _ENV_WARNINGS.append(
                     f"MODEL_OVERRIDES[{_mid!r}] is invalid and was dropped: "
@@ -1752,3 +1798,36 @@ except NameError:
     # config_store was unavailable above (the ImportError fallback) — there is
     # no schema to validate against, so the bare in-file defaults stand.
     pass
+
+
+# --- Legacy in-repo runtime state left behind by the data-dir rework --------
+# Runtime state used to live under the checkout; it now resolves under
+# WHISPER_DATA_DIR (see the data-layout comment at the top). An in-place
+# upgrade that still has the old files but nothing at the new locations would
+# otherwise silently start with factory config / an empty key store — warn so
+# the operator knows to move the files or point WHISPER_DATA_DIR at them.
+# (main drains _ENV_WARNINGS into the logger once logging is up.)
+def _legacy_state_warnings(
+    repo_dir: str, data_dir: str, api_keys_db: str
+) -> "list[str]":
+    out: "list[str]" = []
+    for _legacy_name, _configured in (
+        ("config.local.json",
+         os.environ.get("WHISPER_CONFIG_LOCAL")
+         or os.path.normpath(os.path.join(data_dir, "config.local.json"))),
+        ("api_keys.local.sqlite3", api_keys_db),
+    ):
+        _legacy_path = os.path.join(repo_dir, _legacy_name)
+        if (os.path.normpath(_legacy_path) != os.path.normpath(_configured)
+                and os.path.exists(_legacy_path)
+                and not os.path.exists(_configured)):
+            out.append(
+                f"legacy in-repo state {_legacy_path} exists but the "
+                f"configured path {_configured} does not — it is being "
+                f"IGNORED. Move the file there, or set WHISPER_DATA_DIR "
+                f"(currently {data_dir!r}) to the old location."
+            )
+    return out
+
+
+_ENV_WARNINGS.extend(_legacy_state_warnings(_REPO_DIR, _DATA_DIR, API_KEYS_DB))

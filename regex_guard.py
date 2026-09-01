@@ -59,6 +59,16 @@ _GUARD_TIMEOUT = 2.0
 # into gigabytes at match time. Anything above 1x compounds; 10x is generous.
 _MAX_GROWTH = 10
 
+# Absolute floor for the ANALYTIC growth check (the one used when the pattern
+# never matches the fixture). A bounded literal expansion of a short token —
+# ("°", "Grad Celsius"), (r"\bIT\b", "Informationstechnologie") — is a normal
+# dictation rule and cannot compound: it contributes a fixed handful of
+# characters per occurrence. Only replacements past this many characters (or
+# past _MAX_GROWTH x the minimum match, whichever is larger) are refused;
+# reference-driven growth (\1 repeated) still scales with _refs * _min_match
+# and trips the ratio regardless.
+_MIN_ABS_GROWTH = 64
+
 # Extra probe inputs, run after FIXTURE. The German fixture is full of
 # punctuation and short sentences, so a pattern that only blows up on a long
 # unpunctuated run (`(\w+ ?)+` on a dictated sentence) finishes on it in
@@ -124,41 +134,51 @@ _SHORTHAND_CHARS = {
 _SELF = os.path.abspath(__file__)
 
 
-def _read_quantifier(pat: str, i: int) -> "tuple[bool, bool, int]":
-    """Read a quantifier at ``pat[i]``. Returns (repeats, atomic, next_index).
+def _read_quantifier(pat: str, i: int) -> "tuple[bool, bool, int, bool]":
+    """Read a quantifier at ``pat[i]``.
+
+    Returns (repeats, atomic, next_index, variable).
 
     ``repeats`` is True only for a quantifier that can match an atom MORE THAN
     ONCE (`*`, `+`, `{2,}`, `{0,3}`) — `?` and `{0,1}` are optional, not
     repetition, and are far too common in ordinary rules to treat as risky.
     ``atomic`` is True for a possessive quantifier (`*+`, `++`, `{n,m}+`),
     which cannot give back characters and therefore cannot backtrack.
+    ``variable`` is True only when the quantifier admits MORE THAN ONE
+    repetition count (`*`, `+`, `{n,}`, `{n,m}` with m > n). A fixed-count
+    `{n}` / `{n,n}` matches exactly one way, so it cannot split the input
+    ambiguously and is safe for the backtracking screen — `(\\d{4})+` and a
+    thousands-separator `(?:\\.\\d{3})+` are ordinary rules, not blowups.
     """
     if i >= len(pat):
-        return False, False, i
+        return False, False, i, False
     c = pat[i]
     if c in "*+?":
         repeats = c != "?"
+        variable = repeats
         i += 1
     elif c == "{":
         j = pat.find("}", i)
         if j == -1:
-            return False, False, i  # a literal `{`, not a quantifier
+            return False, False, i, False  # a literal `{`, not a quantifier
         lo, comma, hi = pat[i + 1:j].partition(",")
         if comma:
             if not (lo.isdigit() or not lo) or not (hi.isdigit() or not hi):
-                return False, False, i
+                return False, False, i, False
             repeats = not hi or int(hi) > 1  # {n,} is unbounded
+            variable = repeats and (not hi or int(hi) > (int(lo) if lo else 0))
         else:
             if not lo.isdigit():
-                return False, False, i
+                return False, False, i, False
             repeats = int(lo) > 1
+            variable = False  # {n} matches exactly one way
         i = j + 1
     else:
-        return False, False, i
+        return False, False, i, False
     atomic = i < len(pat) and pat[i] == "+"
     if i < len(pat) and pat[i] in "?+":
         i += 1  # lazy or possessive suffix
-    return repeats, atomic, i
+    return repeats, atomic, i, variable
 
 
 def _nested_repetition(pat: str) -> bool:
@@ -236,8 +256,8 @@ def _nested_repetition(pat: str) -> bool:
             frame = stack.pop()
             body = pat[frame["start"]:i]
             i += 1
-            repeats, possessive, i = _read_quantifier(pat, i)
-            if repeats and not frame["atomic"] and not possessive:
+            repeats, possessive, i, variable = _read_quantifier(pat, i)
+            if variable and not frame["atomic"] and not possessive:
                 if frame["rep"]:
                     return True
                 # (a|a)* — identical alternatives overlap, so the engine
@@ -252,21 +272,19 @@ def _nested_repetition(pat: str) -> bool:
                     branches = [pat[a:b] for a, b in zip(cuts, ends)]
                     if len(set(branches)) < len(branches):
                         return True
-                    if any(not b for b in branches):
-                        return True
                     if any(b != a and b.startswith(a)
                            for a in branches for b in branches):
                         return True
-            if frame["rep"] or repeats:
+            if frame["rep"] or variable:
                 stack[-1]["rep"] = True
             continue
         if c == "|":
             stack[-1]["alts"].append(i)
             i += 1
             continue
-        repeats, _, j = _read_quantifier(pat, i)
+        repeats, _, j, variable = _read_quantifier(pat, i)
         if j > i:
-            if repeats:
+            if variable:
                 stack[-1]["rep"] = True
             i = j
             continue
@@ -299,6 +317,21 @@ def _class_char(body: str, negated: bool) -> "str | None":
         i += 3 if (i + 2 < n and body[i + 1] == "-") else 1
     if not negated:
         return members[0] if members else None
+    # Verify each candidate against the real class instead of guessing from
+    # the expanded members: a shorthand like `\w` stands for a whole SET, so
+    # its one representative ('a') banned only 'a' and let '1' through — a
+    # character `[^\w]` can never match, silently no-op'ing the synthetic
+    # probe. Fall back to the member heuristic if the body doesn't compile.
+    import re
+    try:
+        rx = re.compile(f"[^{body}]")
+    except re.error:
+        rx = None
+    if rx is not None:
+        for cand in "a1 Zx.":
+            if rx.match(cand):
+                return cand
+        return None
     banned = set(members)
     for cand in "a1 Zx.":
         if cand not in banned:
@@ -398,7 +431,7 @@ def _first_char(body: str, depth: int = 0) -> "str | None":
                     return found
         elif char:
             return char
-        _repeats, _atomic, k = _read_quantifier(body, j)
+        _repeats, _atomic, k, _variable = _read_quantifier(body, j)
         i = max(k, j)
     return None
 
@@ -416,7 +449,7 @@ def _first_repeated_char(pat: str, depth: int = 0) -> "str | None":
     n = len(pat)
     while i < n:
         char, group, j = _next_atom(pat, i)
-        repeats, _atomic, k = _read_quantifier(pat, j)
+        repeats, _atomic, k, _variable = _read_quantifier(pat, j)
         if repeats:
             if group is not None:
                 if depth < 4:
@@ -479,7 +512,7 @@ def _witness(pat: str, depth: int = 0) -> str:
         if pat[i] == "|":
             break  # first alternative only
         char, group, j = _next_atom(pat, i)
-        repeats, _atomic, k = _read_quantifier(pat, j)
+        repeats, _atomic, k, _variable = _read_quantifier(pat, j)
         optional = k > j and not repeats  # `?` / `{0,1}` — leave it out
         piece = ""
         if group is not None:
@@ -539,7 +572,7 @@ def validate(checks: list, timeout: float | None = None) -> None:
     # Structural screen first, in-process: exponential shapes can be slower
     # than any wall-clock probe on inputs the fixtures don't happen to contain,
     # so they are refused on shape rather than on measured time.
-    for where, pattern, _repl in ((c[0], c[1], c[2]) for c in checks):
+    for where, pattern, _repl in checks:
         if pattern and _nested_repetition(pattern):
             raise ValueError(
                 f"{where}: regex test failed: nested repetition "
@@ -679,7 +712,7 @@ def _probe(checks: list):
             _refs = len(re.findall(r"\\(?:\d+|g<[^>]*>)", item[1]))
             _literal = re.sub(r"\\(?:\d+|g<[^>]*>)", "", item[1])
             _grown = len(_literal) + _refs * max(_min_match, 1)
-            if _grown > _MAX_GROWTH * max(_min_match, 1):
+            if _grown > max(_MAX_GROWTH * max(_min_match, 1), _MIN_ABS_GROWTH):
                 return i, (
                     f"replacement is {_grown} characters for a pattern "
                     f"that can match as few as {_min_match} "

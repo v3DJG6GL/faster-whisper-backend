@@ -638,8 +638,8 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "required. Loopback always allowed; default is OPEN (0.0.0.0/0, ::/0), "
         "so narrow it to restrict which networks may reach the pages.",
     "CORS_ALLOW_ORIGINS":
-        "CORS allowlist for cross-origin browser calls to the JSON API (e.g. the "
-        "/dictate demo's batch mode fetched from a different origin). Each entry "
+        "CORS allowlist for cross-origin browser calls to the JSON API (e.g. a "
+        "third-party browser app on another origin calling this backend). Each entry "
         "is an origin like 'https://app.example.com' or 'http://192.168.1.50:8000'; "
         "'*' allows any origin (credentials then disabled). Empty (default) = CORS "
         "off. Streaming (WebSocket) is not subject to CORS. Restart required.",
@@ -1722,8 +1722,9 @@ class AdminConfig(BaseModel):
     TRANSLATION_ENABLED: bool | None = _F(
         "TRANSLATION_ENABLED", scope="server", group="Translation")
     # evict="translation": editing the default/allowlist can orphan a loaded
-    # model the request path could no longer reach; editing device/cap changes
-    # the load parameters — drop the LRU on save in both cases.
+    # model the request path could no longer reach; editing device/cap — or
+    # the prompt family, which sets the load-time n_ctx — changes the load
+    # parameters. Drop the LRU on save in all these cases.
     TRANSLATION_DEFAULT_MODEL: TranslationModelRef | None = _F(
         "TRANSLATION_DEFAULT_MODEL", scope="server", group="Translation",
         evict="translation")
@@ -1749,7 +1750,8 @@ class AdminConfig(BaseModel):
         "auto", "hunyuan", "gemma-translate", "milmmt", "seedx", "chatml",
         "custom",
     ] | None = _F(
-        "TRANSLATION_PROMPT_FAMILY", scope="server", group="Translation")
+        "TRANSLATION_PROMPT_FAMILY", scope="server", group="Translation",
+        evict="translation")
     TRANSLATION_PROMPT_TEMPLATE: Annotated[str, Field(max_length=8000)] | None = _F(
         "TRANSLATION_PROMPT_TEMPLATE", scope="server", group="Translation")
     # Call-time defaults (per-identity > per-model > global; lockable).
@@ -2882,6 +2884,20 @@ def override_field_meta(
     return out
 
 
+def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
+    """One-time key migration: USE_AUTH_TOKEN → HF_TOKEN. AdminConfig forbids
+    unknown keys and a validation failure drops ALL overrides, so a stored
+    file from before the rename would otherwise silently lose every setting.
+    Called on BOTH the load path and the save path's raw re-read — save
+    merges the payload atop the raw file, so a surviving legacy key would
+    make every write raise ValidationError forever (and no save could ever
+    clean the file)."""
+    if "USE_AUTH_TOKEN" in raw:
+        raw.setdefault("HF_TOKEN", raw["USE_AUTH_TOKEN"])
+        del raw["USE_AUTH_TOKEN"]
+    return raw
+
+
 def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     """Load and validate the overrides file. NEVER raises — returns {} on any
     error (missing file, malformed JSON, validation failure). Logs to stderr
@@ -2898,12 +2914,7 @@ def load_overrides(path: str = OVERRIDES_PATH) -> dict[str, Any]:
     if not isinstance(raw, dict):
         print(f"[config_store] {path} must contain a JSON object", file=sys.stderr)
         return {}
-    # One-time key migration: USE_AUTH_TOKEN → HF_TOKEN. AdminConfig forbids
-    # unknown keys and a validation failure drops ALL overrides, so a stored
-    # file from before the rename would otherwise silently lose every setting.
-    if "USE_AUTH_TOKEN" in raw:
-        raw.setdefault("HF_TOKEN", raw["USE_AUTH_TOKEN"])
-        del raw["USE_AUTH_TOKEN"]
+    raw = _migrate_legacy_keys(raw)
     try:
         validated = AdminConfig.model_validate(raw)
     except ValidationError as e:
@@ -3201,7 +3212,7 @@ def save_overrides(
                 with open(path, "r", encoding="utf-8") as f:
                     raw = json.load(f)
                 if isinstance(raw, dict):
-                    existing = raw
+                    existing = _migrate_legacy_keys(raw)
             except (OSError, json.JSONDecodeError):
                 # Corrupted file — fall through to a clean rewrite. The new
                 # payload will be validated below, so we never write garbage.
@@ -3224,6 +3235,10 @@ def save_overrides(
         to_write = validated.model_dump(exclude_none=True, mode="json")
 
         _atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")
+        # Enforce the documented 0600 guarantee rather than inheriting it from
+        # mkstemp's default mode on the replaced tempfile.
+        import store_common
+        store_common.secure_file(path)
     bump_config_version()   # let live consumers (streaming idents) re-resolve
 
     # Return only the fields that actually changed in this call. Compare
@@ -3262,11 +3277,18 @@ def env_pinned_fields() -> dict[str, str]:
 
     The WebUI uses this to render an 'env-pinned' badge so the admin can see
     that their saved value won't take effect until the env var is unset.
+
+    A field whose env value was REJECTED and reverted by config's validation
+    pass is not pinned: the var no longer controls it, and the /settings
+    apply path skips pinned names, so a stale badge would also stop an
+    admin's edit from ever reaching the live cfg.
     """
+    import config as _cfg  # deferred — config imports this module at import
+    _rejected = getattr(_cfg, "_ENV_REJECTED", ())
     return {
         field: env
         for field, env in ENV_VAR_MAPPING.items()
-        if os.environ.get(env) is not None
+        if os.environ.get(env) is not None and field not in _rejected
     }
 
 

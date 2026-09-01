@@ -39,6 +39,15 @@ def test_fixtures_still_lack_the_attack_character():
     assert not any("-" in adv for adv in g._ADVERSARIAL)
 
 
+def test_prefix_ambiguous_alternations_are_structurally_visible():
+    """The prefix-ambiguous repeated-alternation family — one run of input
+    that splits many ways, no branch repeated verbatim — must trip
+    _nested_repetition. (Moved here from test_config_store.py: the private
+    helper's unit coverage belongs next to the module.)"""
+    for pat in ("(a|ab)+", "(x|xx)+y", "(ab|a|b)+c", "(n|d|nd)+#", "(|a)+"):
+        assert g._nested_repetition(pat), pat
+
+
 def test_sibling_quantified_groups_are_structurally_invisible():
     """The attack pattern is NOT nested repetition — that screen cannot see it,
     which is why the timed probes have to."""
@@ -144,6 +153,54 @@ def test_shipped_factory_rules_validate_through_the_save_path():
     cs.AdminConfig.model_validate(
         {"PIPELINE_RULES": cs.load_factory_rules()},
         context={"guard_regex": True})
+
+
+@pytest.mark.parametrize("pat", [
+    r"(\d{1,3}(?:\.\d{3})+)",  # thousands separator
+    r"(\d{4})+",
+    r"(?:\.\d{3})+",
+])
+def test_fixed_count_repetition_is_not_screened(pat):
+    """A comma-less `{n}` matches exactly one way, so nesting it inside a
+    repeated group cannot backtrack ambiguously — ordinary formatting rules
+    like a thousands separator must pass the structural screen."""
+    assert not g._nested_repetition(pat)
+
+
+@pytest.mark.parametrize("pat", [
+    r"(x{2,})+",
+    r"(\w+ ?)+",
+])
+def test_variable_nested_repetition_stays_rejected(pat):
+    assert g._nested_repetition(pat)
+
+
+def test_short_literal_expansions_are_accepted():
+    """A bounded literal expansion of a short token is a normal dictation
+    rule; the analytic growth bound must not refuse it."""
+    g.validate([
+        ("deg", "°", "Grad Celsius"),
+        ("it", r"\bIT\b", "Informationstechnologie"),
+    ])
+
+
+@pytest.mark.parametrize("pattern,repl", [
+    ("n", "n" * 512),
+    ("(n+)", "\\1" * 256),
+])
+def test_large_unmeasurable_growth_stays_rejected(pattern, repl):
+    with pytest.raises(ValueError):
+        g.validate([("amp", pattern, repl)])
+
+
+def test_negated_shorthand_class_gets_a_real_witness():
+    """`[^\\w]` used to get '1' — a character it can never match — so the
+    synthetic probe silently no-op'd on any negated shorthand class."""
+    import re
+    cand = g._class_char(r"\w", True)
+    assert cand is not None and re.match(r"[^\w]", cand)
+    synth = g._synthetic_fixture(r"[^\w]+#")
+    assert synth is not None and re.match(r"[^\w]", synth)
 
 
 def test_scaling_ratio_alone_cannot_reject_a_fast_pattern(monkeypatch):

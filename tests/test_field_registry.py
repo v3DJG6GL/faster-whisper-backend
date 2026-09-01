@@ -832,5 +832,6 @@ def test_extras_eviction_buckets():
         "translation": frozenset({"TRANSLATION_DEVICE",
                                   "TRANSLATION_MAX_LOADED_MODELS",
                                   "TRANSLATION_DEFAULT_MODEL",
-                                  "TRANSLATION_ALLOWED_MODELS"}),
+                                  "TRANSLATION_ALLOWED_MODELS",
+                                  "TRANSLATION_PROMPT_FAMILY"}),
     }
