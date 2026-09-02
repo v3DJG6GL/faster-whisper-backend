@@ -100,7 +100,7 @@ def test_sessions_counted_once_per_job_across_utterances(usage_store_db):
                     kind="file")
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok",
                     kind="file")
-    doc = us.document("u", days=7, calendar_days=7, tz=_UTC, tz_name="UTC")
+    doc = us.document("u", days=7, tz=_UTC, tz_name="UTC")
     assert doc["today"]["dictation"]["sessions"] == 1
     assert doc["today"]["dictation"]["requests"] == 3
     assert doc["today"]["file"]["sessions"] == 2
@@ -117,7 +117,7 @@ def test_colliding_job_id_of_another_user_is_not_merged(usage_store_db):
         "SELECT user_id, words, utterances FROM usage_jobs").fetchone()
     assert tuple(job) == ("alice", 10, 1)
     # Bob's work is still counted — as a session of its own.
-    assert us.document("bob", days=1, calendar_days=1, tz=_UTC,
+    assert us.document("bob", days=1, tz=_UTC,
                        tz_name="UTC")["today"]["dictation"]["sessions"] == 1
 
 
@@ -127,7 +127,7 @@ def test_kind_totals_and_unknown_folds_into_all_only(usage_store_db):
                         (None, 16), ("bogus", 32)):
         us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=words,
                         status="ok", kind=kind)
-    doc = us.document("u", days=1, calendar_days=1, tz=_UTC, tz_name="UTC")
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
     total = doc["total"]
     assert set(total) == {"all", "dictation", "file", "url", "text"}
     assert [total[k]["words"] for k in ("dictation", "file", "url", "text")] == [1, 2, 4, 8]
@@ -156,7 +156,7 @@ def test_stage_and_target_rollups(usage_store_db):
     us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=9,
                     status="ok", kind="dictation", job_id="d" * 32)
 
-    doc = us.document("u", days=1, calendar_days=1, tz=_UTC, tz_name="UTC")
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
     stages = {s["stage"]: s for s in doc["stages"]}
     assert list(stages) == ["translating", "diarizing", "vad"]
     tr = stages["translating"]
@@ -190,19 +190,19 @@ def test_days_reckoned_in_caller_zone_across_dst_end(usage_store_db):
                     kind="dictation", hour=_hour(2025, 10, 27, 0, 30, _ZH))
     now = _ts(2025, 10, 27, 12, 0, _UTC)
 
-    zh = us.document("u", days=7, calendar_days=7, tz=_ZH, tz_name="Europe/Zurich",
+    zh = us.document("u", days=7, tz=_ZH, tz_name="Europe/Zurich",
                      now=now)
     assert [(p["day"], p["all"]["words"]) for p in zh["series"]] == [
         (_D("2025-10-26"), 10), (_D("2025-10-27"), 20)]
     assert zh["today"]["all"]["words"] == 20
-    assert zh["streak"] == {"current": 2, "best": 2}
+    assert zh["streak"]["all"] == {"current": 2, "best": 2}
 
-    utc = us.document("u", days=7, calendar_days=7, tz=_UTC, tz_name="UTC", now=now)
+    utc = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now)
     assert [(p["day"], p["all"]["words"]) for p in utc["series"]] == [
         (_D("2025-10-25"), 10), (_D("2025-10-26"), 20)]
     assert utc["today"]["all"]["words"] == 0
     # Yesterday's streak still counts while today is empty.
-    assert utc["streak"] == {"current": 2, "best": 2}
+    assert utc["streak"]["all"] == {"current": 2, "best": 2}
 
 
 def test_server_local_fallback_matches_tz_none(usage_store_db, set_tz):
@@ -212,35 +212,164 @@ def test_server_local_fallback_matches_tz_none(usage_store_db, set_tz):
     ny = zoneinfo.ZoneInfo("America/New_York")
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=5, status="ok",
                     kind="file", hour=_hour(2025, 6, 3, 23, 0, ny))
-    doc = us.document("u", days=30, calendar_days=30, tz=None, tz_name="local",
+    doc = us.document("u", days=30, tz=None, tz_name="local",
                       now=_ts(2025, 6, 4, 12, 0, _UTC))
     assert doc["series"][0]["day"] == _D("2025-06-03")
     assert doc["tz"] == "local"
 
 
-def test_window_and_calendar_bounds_are_independent(usage_store_db):
+def test_window_forms_days_from_to_and_all(usage_store_db):
+    """`days` ends today; `from`/`to` are inclusive caller-local days; `all`
+    starts at the first day with usage. total/series/calendar/hours cover the
+    window; the streak runs over the whole history."""
     us = usage_store_db
     now = _ts(2025, 3, 20)
     for days_ago, words in ((0, 1), (5, 2), (40, 4), (100, 8)):
         us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=words,
                         status="ok", kind="text",
                         hour=int(now // 3600) - days_ago * 24)
-    doc = us.document("u", days=7, calendar_days=60, tz=_UTC, tz_name="UTC", now=now)
-    assert sum(p["all"]["words"] for p in doc["series"]) == 3
-    assert [c["words"] for c in doc["calendar"]] == [4, 2, 1]
+    today = _D("2025-03-20")
+    doc = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now)
+    assert doc["range"] == {"from": today - 6, "to": today, "days": 7,
+                            "first_day": _D("2024-12-10"), "source": "rollups",
+                            "jobs_retention_days": 365}
+    assert doc["total"]["all"]["words"] == 3
+    assert [c["all"] for c in doc["calendar"]] == [2, 1]
+    assert [c["text"] for c in doc["calendar"]] == [2, 1]
+    assert doc["streak"]["all"] == {"current": 1, "best": 1}
+    assert doc["streak"]["text"] == {"current": 1, "best": 1}
+    assert doc["streak"]["file"] == {"current": 0, "best": 0}
+
+    doc = us.document("u", from_day=today - 45, to_day=today - 30, tz=_UTC,
+                      tz_name="UTC", now=now)
+    assert doc["range"]["days"] == 16
+    assert doc["total"]["all"]["words"] == 4
+    assert [p["day"] for p in doc["series"]] == [today - 40]
+    assert doc["today"]["all"]["words"] == 1  # today is today whatever the window
+
+    doc = us.document("u", all_time=True, tz=_UTC, tz_name="UTC", now=now)
+    assert doc["range"]["from"] == _D("2024-12-10") and doc["range"]["to"] == today
     assert doc["total"]["all"]["words"] == 15
-    assert doc["streak"] == {"current": 1, "best": 1}
+    assert len(doc["calendar"]) == 4
+
+    # `to` alone ends the default 30-day window there; the span is clamped.
+    doc = us.document("u", to_day=today - 30, tz=_UTC, tz_name="UTC", now=now)
+    assert doc["range"] ["from"] == today - 59
+    doc = us.document("u", from_day=0, to_day=today, tz=_UTC, tz_name="UTC", now=now)
+    assert doc["range"]["days"] == us.MAX_WINDOW_DAYS
+    import pytest
+    with pytest.raises(ValueError):
+        us.document("u", from_day=today, to_day=today - 1, tz=_UTC, tz_name="UTC",
+                    now=now)
+    with pytest.raises(ValueError):
+        us.document("u", with_stages=("decoding",), tz=_UTC, tz_name="UTC", now=now)
+    # No usage at all: all-time is today, first_day is null.
+    doc = us.document("nobody", all_time=True, tz=_UTC, tz_name="UTC", now=now)
+    assert doc["range"]["from"] == today and doc["range"]["first_day"] is None
 
 
-def test_streak_best_is_longest_run_in_calendar(usage_store_db):
+def test_streak_is_per_kind_and_never_capped_by_the_window(usage_store_db):
     us = usage_store_db
     now = _ts(2025, 3, 20)
-    for days_ago in (0, 3, 4, 5, 6, 9):
+    for days_ago in range(0, 12):
         us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1,
                         status="ok", kind="dictation",
                         hour=int(now // 3600) - days_ago * 24)
-    doc = us.document("u", days=30, calendar_days=30, tz=_UTC, tz_name="UTC", now=now)
-    assert doc["streak"] == {"current": 1, "best": 4}
+    for days_ago in (0, 3, 4, 5, 6, 9):
+        us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1,
+                        status="ok", kind="file",
+                        hour=int(now // 3600) - days_ago * 24)
+    doc = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now)
+    assert doc["streak"]["all"] == {"current": 12, "best": 12}
+    assert doc["streak"]["dictation"] == {"current": 12, "best": 12}
+    assert doc["streak"]["file"] == {"current": 1, "best": 4}
+    assert doc["streak"]["url"] == {"current": 0, "best": 0}
+
+
+def test_hours_grid_is_local_weekday_by_hour_per_kind(usage_store_db):
+    """Europe/Zurich leaves DST on 2025-10-26: 09:30 local is 07:30 UTC on
+    the 25th (Sat) and 08:30 UTC on the 27th (Mon). Both land in the local
+    09:00 slot of their local weekday; a UTC caller sees them at 07 and 08."""
+    us = usage_store_db
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=10, status="ok",
+                    kind="dictation", hour=_hour(2025, 10, 25, 9, 30, _ZH))
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=20, status="ok",
+                    kind="file", hour=_hour(2025, 10, 27, 9, 30, _ZH))
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=5, status="ok",
+                    kind="dictation", hour=_hour(2025, 10, 27, 9, 45, _ZH))
+    now = _ts(2025, 10, 27, 12, 0, _UTC)
+    zh = us.document("u", days=7, tz=_ZH, tz_name="Europe/Zurich", now=now)
+    assert zh["hours"] == [
+        {"dow": 0, "hour": 9, "all": 25, "dictation": 5, "file": 20, "url": 0, "text": 0},
+        {"dow": 5, "hour": 9, "all": 10, "dictation": 10, "file": 0, "url": 0, "text": 0},
+    ]
+    utc = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now)
+    assert [(h["dow"], h["hour"], h["all"]) for h in utc["hours"]] == [
+        (0, 8, 25), (5, 7, 10)]
+
+
+def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
+    us = usage_store_db
+    now = _ts(2025, 6, 10, 12, 0, _UTC)
+    h = int(now // 3600)
+    # f1: translated + diarized; f2: diarized only; d1: dictation translated
+    # (via the text stage), t1: text translate.
+    us.record_usage(key_id="k", user_id="u", audio_s=100.0, words=400, status="ok",
+                    kind="file", job_id="f1" * 16, hour=h - 2, stages=[
+                        {"name": "translating", "secs": 3.0, "targets": ["de"]},
+                        {"name": "diarizing", "secs": 5.0, "speakers": 2}])
+    us.record_usage(key_id="k", user_id="u", audio_s=50.0, words=200, status="error",
+                    kind="file", job_id="f2" * 16, hour=h - 30, stages=[
+                        {"name": "diarizing", "secs": 2.0, "speakers": 4}])
+    for _ in range(2):
+        us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=30, status="ok",
+                        kind="dictation", job_id="d1" * 16, hour=h - 1,
+                        stages=[{"name": "translate", "secs": 1.0, "targets": ["fr"]}])
+    us.record_outcome(user_id="u", job_id="d1" * 16, activation="hold",
+                      delivery="typed", translation="kept_original", app_id="vim")
+    us.record_usage(key_id="k", user_id="u", audio_s=0.0, words=0, status="ok",
+                    kind="text", job_id="t1" * 16, hour=h - 3,
+                    stages=[{"name": "translate", "secs": 0.5, "targets": ["de"]}])
+
+    doc = us.document("u", days=7, with_stages=("translating",), tz=_UTC,
+                      tz_name="UTC", now=now)
+    assert doc["range"]["source"] == "jobs"
+    tot = doc["total"]
+    assert (tot["all"]["sessions"], tot["all"]["requests"], tot["all"]["errors"]) == (3, 4, 0)
+    assert tot["file"]["words"] == 400 and tot["dictation"]["words"] == 60
+    assert tot["text"]["sessions"] == 1
+    assert doc["today"]["all"]["sessions"] == 3
+    stages = {s["stage"]: s for s in doc["stages"]}
+    # The chosen stage covers every narrowed run; diarizing co-occurred once
+    # among the two narrowed batch jobs.
+    assert (stages["translating"]["runs"], stages["translating"]["of_runs"]) == (3, 3)
+    assert stages["translating"]["targets"] == [{"code": "de", "runs": 2}, {"code": "fr", "runs": 1}]
+    assert stages["translating"]["kept_original"] == 1
+    assert (stages["diarizing"]["runs"], stages["diarizing"]["of_runs"]) == (1, 1)
+    assert stages["diarizing"]["speakers_avg"] == 2.0
+    assert doc["dictation"]["sessions"] == 1
+    assert doc["dictation"]["delivery"]["typed"] == 1
+    assert doc["apps"] == [{"app_id": "vim", "sessions": 1, "words": 60}]
+    assert [c["all"] for c in doc["calendar"]] == [460]
+    assert doc["calendar"][0]["file"] == 400
+    assert sorted(h["all"] for h in doc["hours"]) == [60, 400]  # 10:00 and 11:00 slots
+    assert doc["streak"]["all"] == {"current": 1, "best": 1}
+    assert doc["time_saved_s"] == 60 / 40 * 60 - 20
+
+    both = us.document("u", days=7, with_stages=("translating", "diarizing"),
+                       tz=_UTC, tz_name="UTC", now=now)
+    assert both["total"]["all"]["sessions"] == 1
+    assert both["total"]["file"]["words"] == 400
+    assert {s["stage"]: (s["runs"], s["of_runs"]) for s in both["stages"]} == {
+        "translating": (1, 1), "diarizing": (1, 1)}
+
+    # A window that excludes f1: the error job f2 is diarized-only.
+    dia = us.document("u", from_day=_D("2025-06-08"), to_day=_D("2025-06-09"),
+                      with_stages=("diarizing",), tz=_UTC, tz_name="UTC", now=now)
+    assert dia["total"]["all"] == {"sessions": 1, "requests": 1, "errors": 1,
+                                   "words": 200, "audio_s": 50.0, "proc_s": 0.0}
+    assert dia["today"]["all"]["sessions"] == 1  # f1 is today, whatever the window
+    assert dia["range"]["first_day"] == _D("2025-06-09")
 
 
 def test_time_saved_and_wpm_over_dictation_only(usage_store_db):
@@ -250,13 +379,13 @@ def test_time_saved_and_wpm_over_dictation_only(usage_store_db):
     # A file's words are not time the user saved by speaking.
     us.record_usage(key_id="k", user_id="u", audio_s=3600.0, words=9000,
                     status="ok", kind="file")
-    doc = us.document("u", days=1, calendar_days=1, tz=_UTC, tz_name="UTC")
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
     assert doc["time_saved_s"] == 400 / 40 * 60 - 300
     assert doc["dictation"]["wpm"] == 80.0
     assert doc["dictation"]["words"] == 400
     us.record_usage(key_id="k", user_id="slow", audio_s=600.0, words=10,
                     status="ok", kind="dictation")
-    assert us.document("slow", days=1, calendar_days=1, tz=_UTC,
+    assert us.document("slow", days=1, tz=_UTC,
                        tz_name="UTC")["time_saved_s"] == 0.0
 
 
@@ -276,7 +405,7 @@ def test_outcome_is_idempotent_and_rolls_once(usage_store_db):
     assert us.record_outcome(user_id="u", job_id=jid, activation="handsfree",
                              delivery="clipboard", translation="translated",
                              app_id="thunderbird") == "duplicate"
-    doc = us.document("u", days=1, calendar_days=1, tz=_UTC, tz_name="UTC")
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
     d = doc["dictation"]
     assert d["activation"] == {"hold": 1, "handsfree": 0}
     assert d["delivery"] == {"typed": 1, "clipboard": 0, "none": 0, "unreported": 0}
@@ -296,7 +425,7 @@ def test_outcome_for_unknown_job_creates_a_stub(usage_store_db):
     ).fetchone()
     assert tuple(job)[:4] == ("dictation", 0, 0.0, 0)
     assert job["reported_ts"] is not None
-    doc = us.document("u", days=1, calendar_days=1, tz=_UTC, tz_name="UTC")
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
     assert doc["dictation"]["delivery"]["none"] == 1
     assert doc["apps"] == []
     assert us.record_outcome(user_id="u", job_id="e" * 32, activation="hold",
@@ -311,7 +440,7 @@ def test_outcome_scoped_to_owner(usage_store_db):
                              delivery="typed", translation="not_asked") == "duplicate"
     assert us._require_conn().execute(
         "SELECT reported_ts FROM usage_jobs").fetchone()["reported_ts"] is None
-    assert us.document("bob", days=1, calendar_days=1, tz=_UTC,
+    assert us.document("bob", days=1, tz=_UTC,
                        tz_name="UTC")["dictation"]["delivery"]["typed"] == 0
 
 
@@ -338,7 +467,7 @@ def test_sweep_marks_unreported_and_prunes(usage_store_db):
     counts = us.sweep(unreported_after_h=24, jobs_retention_days=0,
                       app_retention_days=90, hourly_retention_days=0)
     assert counts == {"marked": 1, "jobs": 0, "apps": 1, "hourly": 0}
-    doc = us.document("u", days=7, calendar_days=7, tz=_UTC, tz_name="UTC")
+    doc = us.document("u", days=7, tz=_UTC, tz_name="UTC")
     assert doc["dictation"]["delivery"] == {"typed": 1, "clipboard": 0,
                                             "none": 0, "unreported": 1}
     assert doc["dictation"]["translation"]["unreported"] == 1
@@ -368,17 +497,21 @@ def test_sweep_marks_unreported_and_prunes(usage_store_db):
 
 def test_empty_document_shape_matches_populated(usage_store_db):
     us = usage_store_db
-    empty = us.empty_document(days=30, calendar_days=90, tz="UTC")
+    empty = us.empty_document(from_day=_D("2025-01-01"), to_day=_D("2025-01-30"), tz="UTC")
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok",
                     kind="dictation", job_id="a" * 32)
     us.record_outcome(user_id="u", job_id="a" * 32, activation="hold",
                       delivery="typed", translation="not_asked")
-    full = us.document("u", days=30, calendar_days=90, tz=_UTC, tz_name="UTC")
+    full = us.document("u", days=30, tz=_UTC, tz_name="UTC")
     assert set(empty) == set(full)
     assert set(empty["dictation"]) == set(full["dictation"])
     for k in ("today", "total"):
         assert set(empty[k]) == set(full[k])
         assert set(empty[k]["all"]) == set(full[k]["all"])
+    assert set(empty["range"]) == set(full["range"])
+    assert set(empty["streak"]) == set(full["streak"]) == {"all", "dictation", "file", "url", "text"}
+    assert set(full["calendar"][0]) == {"day", "all", "dictation", "file", "url", "text"}
+    assert set(full["hours"][0]) == {"dow", "hour", "all", "dictation", "file", "url", "text"}
 
 
 def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(usage_store_db):

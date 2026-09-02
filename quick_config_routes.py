@@ -31,6 +31,7 @@ Never log trace contents.
 from __future__ import annotations
 
 import asyncio
+import datetime
 import functools
 import hashlib
 import json
@@ -40,7 +41,7 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
@@ -688,9 +689,12 @@ async def v1_get_recent_words(
 
 @v1_router.get("/usage")
 async def v1_get_my_usage(
-    days: int = 30,
+    days: int | None = None,
     tz: str | None = None,
-    calendar_days: int = 90,
+    from_: int | None = Query(default=None, alias="from"),
+    to: int | None = None,
+    all: bool = False,
+    with_: str | None = Query(default=None, alias="with"),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """The caller's OWN usage statistics for the desktop app's Statistics
@@ -703,35 +707,56 @@ async def v1_get_my_usage(
     STRICTLY self-scoped: reads only the authenticated user's user_id, so no
     admin scope is needed and no other user's numbers are ever returned — even
     an admin sees only their own here (the global view lives on /stats).
-    Best-effort: any failure yields the zeroed document so the client just
-    renders an empty page instead of erroring.
+    Best-effort: any store failure yields the zeroed document so the client
+    just renders an empty page instead of erroring.
 
-    `days` is the trend window (clamped 1..366), `calendar_days` the rhythm
-    calendar's (1..400). `tz` is the caller's IANA zone name; days — including
-    'today' — are reckoned in it, and in the server's local zone when it is
-    absent or unknown. See usage_store.document for the shape."""
+    Window (days-since-epoch, reckoned in `tz`): `days` (1..3650, default 30)
+    ending today, or an explicit inclusive `from`/`to`, or `all=1` from the
+    first day with usage. `with` = comma list of optional stages
+    (translating, diarizing, separating, vad); when given, the document is
+    recomputed from the per-job rows restricted to jobs that ran ALL of them.
+    `tz` is the caller's IANA zone name; days — including 'today' — are
+    reckoned in it, and in the server's local zone when it is absent or
+    unknown. See usage_store.document for the shape."""
     import usage_store
-    try:
-        eff_days = max(1, min(int(days), 366))
-    except (TypeError, ValueError):
-        eff_days = 30
-    try:
-        eff_cal = max(1, min(int(calendar_days), 400))
-    except (TypeError, ValueError):
-        eff_cal = 90
     zone = usage_store.resolve_tz(tz)
     tz_name = str(tz) if zone is not None else "local"
+    eff_days = None
+    if days is not None:
+        eff_days = max(1, min(int(days), usage_store.MAX_WINDOW_DAYS))
+    stages: tuple[str, ...] = ()
+    if with_:
+        stages = tuple(dict.fromkeys(
+            s.strip() for s in with_.split(",") if s.strip()))
+        unknown = [s for s in stages if s not in usage_store.WITH_STAGES]
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unknown stage: {unknown[0]!r} (one of "
+                       f"{', '.join(usage_store.WITH_STAGES)})")
+    if from_ is not None and to is not None and from_ > to:
+        raise HTTPException(status_code=422, detail="'from' is after 'to'")
+    jobs_retention = int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365) or 0)
+    today = datetime.datetime.now(zone).date()
+    # The zeroed fallback reckons the same window the store would, minus
+    # the first-day lookup it cannot make.
+    f0, t0 = usage_store.resolve_window(
+        today=today, days=eff_days, from_day=from_, to_day=to,
+        all_time=all, first_day=None)
+    doc = usage_store.empty_document(
+        from_day=f0, to_day=t0, tz=tz_name,
+        source="jobs" if stages else "rollups",
+        jobs_retention_days=jobs_retention)
     uid = user.get("user_id") or ""
-    doc = usage_store.empty_document(days=eff_days, calendar_days=eff_cal,
-                                     tz=tz_name)
     if uid:
         try:
-            # Off the loop: a lifetime GROUP BY plus a window scan over the
-            # hourly rollups, like the /stats gather.
+            # Off the loop: a lifetime scan over the hourly rollups (or the
+            # per-job rows under `with`), like the /stats gather.
             doc = await asyncio.to_thread(
                 functools.partial(
-                    usage_store.document, uid, days=eff_days,
-                    calendar_days=eff_cal, tz=zone, tz_name=tz_name))
+                    usage_store.document, uid, tz=zone, tz_name=tz_name,
+                    days=eff_days, from_day=from_, to_day=to, all_time=all,
+                    with_stages=stages, jobs_retention_days=jobs_retention))
         except Exception as _e:
             logger.warning("[usage] document failed: %s", _e)
     return {"username": user.get("username") or "", **doc}

@@ -47,13 +47,18 @@ def test_v1_usage_shape(client):
     body = client.get("/v1/usage").json()
     assert set(body) == {
         "username", "tz", "range", "today", "total", "series", "stages",
-        "dictation", "apps", "calendar", "streak", "time_saved_s"}
-    assert body["range"] == {"days": 30, "calendar_days": 90}
+        "dictation", "apps", "calendar", "hours", "streak", "time_saved_s"}
+    today = (datetime.date.today() - datetime.date(1970, 1, 1)).days
+    assert body["range"] == {"from": today - 29, "to": today, "days": 30,
+                             "first_day": None, "source": "rollups",
+                             "jobs_retention_days": 365}
     for k in ("today", "total"):
         assert set(body[k]) == {"all", *_KINDS}
         assert all(set(body[k][kind]) == _CELL for kind in body[k])
     assert body["series"] == [] and body["stages"] == [] and body["apps"] == []
-    assert body["calendar"] == [] and body["streak"] == {"current": 0, "best": 0}
+    assert body["calendar"] == [] and body["hours"] == []
+    assert body["streak"] == {k: {"current": 0, "best": 0}
+                              for k in ("all", *_KINDS)}
     d = body["dictation"]
     assert set(d) == {"sessions", "words", "audio_s", "wpm", "activation",
                       "delivery", "translation"}
@@ -65,15 +70,30 @@ def test_v1_usage_shape(client):
 
 
 def test_v1_usage_params_clamped_and_tz_echoed(client):
-    body = client.get("/v1/usage", params={"days": 9999, "calendar_days": 0,
-                                           "tz": "Europe/Zurich"}).json()
-    assert body["range"] == {"days": 366, "calendar_days": 1}
+    body = client.get("/v1/usage", params={"days": 9999, "tz": "Europe/Zurich"}).json()
+    assert body["range"]["days"] == 3650
     assert body["tz"] == "Europe/Zurich"
     body = client.get("/v1/usage", params={"days": -3, "tz": "Mars/Olympus"}).json()
     assert body["range"]["days"] == 1
     assert body["tz"] == "local"
     # An unparseable number is a caller error, like every other int query.
     assert client.get("/v1/usage", params={"days": "abc"}).status_code == 422
+    assert client.get("/v1/usage", params={"from": "x"}).status_code == 422
+    # from/to are inclusive caller-local days; from after to is an error.
+    body = client.get("/v1/usage", params={"from": 20000, "to": 20006}).json()
+    assert body["range"] == {"from": 20000, "to": 20006, "days": 7,
+                             "first_day": None, "source": "rollups",
+                             "jobs_retention_days": 365}
+    r = client.get("/v1/usage", params={"from": 20007, "to": 20006})
+    assert r.status_code == 422 and "from" in r.json()["detail"]
+    # `all` with no usage is just today.
+    body = client.get("/v1/usage", params={"all": 1}).json()
+    assert body["range"]["days"] == 1 and body["range"]["first_day"] is None
+    # `with` narrows to the per-job rows; an unknown stage is a caller error.
+    body = client.get("/v1/usage", params={"with": "translating,diarizing"}).json()
+    assert body["range"]["source"] == "jobs"
+    r = client.get("/v1/usage", params={"with": "decoding"})
+    assert r.status_code == 422 and "decoding" in r.json()["detail"]
 
 
 # --------------------------------------------------------------------------
@@ -100,9 +120,15 @@ def test_v1_usage_per_kind_totals_series_and_today(client, make_user_key):
     assert today["dictation"] == {"sessions": 1, "requests": 2, "errors": 0,
                                   "words": 100, "audio_s": 60.0, "proc_s": 0.0}
     assert today["all"]["words"] == 100 and today["file"]["words"] == 0
+    # `total` is the window: the text translation eight days ago is outside.
     total = body["total"]
-    assert total["all"]["requests"] == 5 and total["all"]["errors"] == 1
-    assert total["text"]["requests"] == 1 and total["url"]["errors"] == 1
+    assert total["all"]["requests"] == 4 and total["all"]["errors"] == 1
+    assert total["text"]["requests"] == 0 and total["url"]["errors"] == 1
+    lifetime = client.get("/v1/usage", params={"all": 1, "tz": "Europe/Zurich"},
+                          headers=bearer(raw)).json()
+    assert lifetime["total"]["all"]["requests"] == 5
+    assert lifetime["total"]["text"]["requests"] == 1
+    assert lifetime["range"]["days"] == 9 and lifetime["range"]["first_day"] == lifetime["range"]["from"]
     assert [p["day"] for p in body["series"]] == sorted(p["day"] for p in body["series"])
     assert len(body["series"]) == 3
     assert body["series"][-1]["dictation"]["sessions"] == 1
@@ -112,8 +138,14 @@ def test_v1_usage_per_kind_totals_series_and_today(client, make_user_key):
     # Dictation-only derived figures: 100 words / 1 min speech.
     assert body["dictation"]["wpm"] == 100.0
     assert body["time_saved_s"] == 100 / 40 * 60 - 60
-    assert body["streak"]["current"] == 2 and body["streak"]["best"] == 2
-    assert [c["words"] for c in body["calendar"]] == [500, 100]
+    assert body["streak"]["all"] == {"current": 2, "best": 2}
+    assert body["streak"]["dictation"] == {"current": 1, "best": 1}
+    assert [(c["all"], c["file"], c["dictation"]) for c in body["calendar"]] == [
+        (500, 500, 0), (100, 0, 100)]
+    assert [(h["dow"], h["hour"], h["dictation"]) for h in body["hours"]
+            if h["dictation"]] == sorted(
+        [(datetime.datetime.now(zh).weekday(), 9, 30),
+         (datetime.datetime.now(zh).weekday(), 10, 70)])
 
 
 def test_v1_usage_stages_from_batch_extras(client, make_user_key):

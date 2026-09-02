@@ -894,12 +894,36 @@ def _rounded(split: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return split
 
 
-def empty_document(*, days: int, calendar_days: int, tz: str) -> dict[str, Any]:
+# The optional stages a caller may narrow the document to (`with=`). The
+# decode and a URL download are the job, not a stage of it.
+WITH_STAGES: tuple[str, ...] = tuple(STAGE_APPLIES_TO)
+
+# Widest window the document will reckon: ten years of days.
+MAX_WINDOW_DAYS = 3650
+
+
+def empty_document(
+    *,
+    from_day: int,
+    to_day: int,
+    tz: str,
+    source: str = "rollups",
+    jobs_retention_days: int = 365,
+    first_day: int | None = None,
+) -> dict[str, Any]:
     """The zeroed shape the route serves when the store is unavailable, so
-    the client renders an empty page instead of erroring."""
+    the client renders an empty page instead of erroring. `from_day`/`to_day`
+    are days-since-epoch of the (inclusive) window in the caller's zone."""
     return {
         "tz": tz,
-        "range": {"days": days, "calendar_days": calendar_days},
+        "range": {
+            "from": int(from_day),
+            "to": int(to_day),
+            "days": int(to_day) - int(from_day) + 1,
+            "first_day": first_day,
+            "source": source,
+            "jobs_retention_days": int(jobs_retention_days),
+        },
         "today": _zero_split(),
         "total": _zero_split(),
         "series": [],
@@ -912,101 +936,368 @@ def empty_document(*, days: int, calendar_days: int, tz: str) -> dict[str, Any]:
         },
         "apps": [],
         "calendar": [],
-        "streak": {"current": 0, "best": 0},
+        "hours": [],
+        "streak": {"all": {"current": 0, "best": 0},
+                   **{k: {"current": 0, "best": 0} for k in KINDS}},
         "time_saved_s": 0.0,
     }
+
+
+def _epoch_day(d: datetime.date) -> int:
+    return (d - _EPOCH).days
+
+
+def _from_epoch_day(n: int) -> datetime.date:
+    return _EPOCH + datetime.timedelta(days=int(n))
+
+
+def resolve_window(
+    *,
+    today: datetime.date,
+    days: int | None,
+    from_day: int | None,
+    to_day: int | None,
+    all_time: bool,
+    first_day: int | None,
+) -> tuple[int, int]:
+    """The inclusive [from, to] window in days-since-epoch. `to` defaults to
+    today, `from` to `to - days + 1` (days defaults to 30); `all_time` starts
+    at the first day with usage (or today when there is none). The span is
+    clamped to MAX_WINDOW_DAYS by moving `from` forward. Raises ValueError
+    when from > to — the route turns that into a 422."""
+    t = _epoch_day(today) if to_day is None else int(to_day)
+    if all_time:
+        f = int(first_day) if first_day is not None else t
+        f = min(f, t)
+    elif from_day is not None:
+        f = int(from_day)
+    else:
+        n = 30 if days is None else max(1, min(int(days), MAX_WINDOW_DAYS))
+        f = t - n + 1
+    if f > t:
+        raise ValueError("from is after to")
+    if t - f + 1 > MAX_WINDOW_DAYS:
+        f = t - MAX_WINDOW_DAYS + 1
+    return f, t
+
+
+def _words_split() -> dict[str, int]:
+    return {"all": 0, **{k: 0 for k in KINDS}}
+
+
+def _add_words(split: dict[str, int], kind: str, words: int) -> None:
+    split["all"] += words
+    if kind in split:
+        split[kind] += words
+
+
+def _first_day(conn: sqlite3.Connection, user_id: str,
+               tz: zoneinfo.ZoneInfo | None,
+               with_stages: tuple[str, ...]) -> int | None:
+    if with_stages:
+        row = conn.execute(
+            "SELECT MIN(created_ts) AS ts FROM usage_jobs WHERE user_id = ?"
+            + _with_clause(with_stages), (user_id, *with_stages),
+        ).fetchone()
+        if row is None or row["ts"] is None:
+            return None
+        return _epoch_day(_date_of(float(row["ts"]), tz))
+    row = conn.execute(
+        "SELECT MIN(hour) AS h FROM usage_hourly WHERE user_id = ?", (user_id,),
+    ).fetchone()
+    if row is None or row["h"] is None:
+        return None
+    return _epoch_day(_date_of(int(row["h"]) * 3600, tz))
+
+
+def _with_clause(with_stages: tuple[str, ...]) -> str:
+    """SQL tail restricting usage_jobs rows to jobs that ran ALL the given
+    stages (one EXISTS per stage; the stage names are bound parameters)."""
+    return "".join(
+        " AND EXISTS (SELECT 1 FROM usage_job_stages s WHERE s.job_id ="
+        " usage_jobs.job_id AND s.stage = ?)" for _ in with_stages)
 
 
 def document(
     user_id: str,
     *,
-    days: int,
-    calendar_days: int,
     tz: zoneinfo.ZoneInfo | None,
     tz_name: str,
+    days: int | None = None,
+    from_day: int | None = None,
+    to_day: int | None = None,
+    all_time: bool = False,
+    with_stages: tuple[str, ...] = (),
+    jobs_retention_days: int = 365,
     now: float | None = None,
 ) -> dict[str, Any]:
     """One user's statistics document (everything /v1/usage returns except
     the username), reckoned in `tz` (None = server-local; `tz_name` is only
-    echoed).
+    echoed). The window is resolve_window()'s; `today` is the caller's
+    current day whatever the window; `streak` runs over the FULL retained
+    history so a short window never caps it.
 
-    `total` is lifetime; `today` and everything else covers the trailing
-    `days` window, except `calendar` + `streak` which cover `calendar_days`.
-    Days are days-since-epoch (caller-local calendar date; ×86 400 → UTC midnight of that date, the client's label math)s in the caller's zone — the client never has to
-    convert. Series and calendar are sparse: a day without usage is absent.
-    `dictation.sessions/words/audio_s` come from the request rollup (every
-    session the server transcribed); the activation/delivery/translation
-    buckets come from the reported outcomes, so they only add up to
-    `sessions` once every session has reported or been swept."""
+    Days on the wire are days-since-epoch of the caller-local calendar date
+    (×86 400 → UTC midnight of that date, the client's label math). Series,
+    calendar and hours are sparse: a day/slot without usage is absent.
+
+    `with_stages` (non-empty) recomputes the whole document from the per-job
+    rows restricted to jobs that ran every listed stage — `range.source`
+    says "jobs" and the client discloses `jobs_retention_days`."""
     conn = _require_conn()
     now = time.time() if now is None else float(now)
     today = _date_of(now, tz)
-    window_start = _midnight_hour(today - datetime.timedelta(days=days - 1), tz)
-    calendar_start = _midnight_hour(
-        today - datetime.timedelta(days=calendar_days - 1), tz)
+    with_stages = tuple(dict.fromkeys(with_stages))
+    for st in with_stages:
+        if st not in WITH_STAGES:
+            raise ValueError(f"unknown stage: {st}")
+    first_day = _first_day(conn, user_id, tz, with_stages)
+    f, t = resolve_window(today=today, days=days, from_day=from_day,
+                          to_day=to_day, all_time=all_time, first_day=first_day)
+    doc = empty_document(
+        from_day=f, to_day=t, tz=tz_name,
+        source="jobs" if with_stages else "rollups",
+        jobs_retention_days=jobs_retention_days, first_day=first_day)
+    start_hour = _midnight_hour(_from_epoch_day(f), tz)
+    end_hour = _midnight_hour(_from_epoch_day(t) + datetime.timedelta(days=1), tz)
     today_start = _midnight_hour(today, tz)
+    today_end = _midnight_hour(today + datetime.timedelta(days=1), tz)
+    if with_stages:
+        _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
+                        start_hour * 3600, end_hour * 3600,
+                        today_start * 3600, today_end * 3600)
+    else:
+        _fill_from_rollups(conn, doc, user_id, tz, today,
+                           start_hour, end_hour, today_start, today_end)
+    dictation = doc["total"]["dictation"]
+    doc["time_saved_s"] = round(max(
+        0.0, dictation["words"] / TYPING_WPM * 60.0 - dictation["audio_s"]), 1)
+    return doc
 
-    doc = empty_document(days=days, calendar_days=calendar_days, tz=tz_name)
 
-    total = _zero_split()
-    for r in conn.execute(
-        "SELECT kind, SUM(sessions) AS sessions, SUM(requests) AS requests,"
-        " SUM(errors) AS errors, SUM(words) AS words, SUM(audio_s) AS audio_s,"
-        " SUM(proc_s) AS proc_s FROM usage_hourly WHERE user_id = ?"
-        " GROUP BY kind", (user_id,),
-    ):
-        _add_row(total, r)
+def _slot_of(ts: float, tz: zoneinfo.ZoneInfo | None) -> tuple[int, int]:
+    """(weekday 0=Mon, hour 0..23) of `ts` in `tz`."""
+    dt = datetime.datetime.fromtimestamp(ts, tz)
+    return dt.weekday(), dt.hour
 
+
+def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
+            words_all_days, today: datetime.date) -> None:
+    """Common tail: the sparse arrays and the per-kind streaks."""
+    doc["series"] = [{"day": _epoch_day(d), **_rounded(by_day[d])}
+                     for d in sorted(by_day)]
+    doc["calendar"] = [{"day": _epoch_day(d), **words_by_day[d]}
+                       for d in sorted(words_by_day) if words_by_day[d]["all"] > 0]
+    doc["hours"] = [{"dow": dow, "hour": hh, **words_by_slot[(dow, hh)]}
+                    for (dow, hh) in sorted(words_by_slot)
+                    if words_by_slot[(dow, hh)]["all"] > 0]
+    doc["streak"] = {
+        k: _streak({d: w[k] for d, w in words_all_days.items()}, today)
+        for k in ("all", *KINDS)}
+
+
+def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
+                       today_start, today_end) -> None:
     today_split = _zero_split()
     window = _zero_split()
     by_day: dict[datetime.date, dict[str, dict[str, Any]]] = {}
-    words_by_day: dict[datetime.date, int] = {}
+    words_by_day: dict[datetime.date, dict[str, int]] = {}
+    words_by_slot: dict[tuple[int, int], dict[str, int]] = {}
+    words_all_days: dict[datetime.date, dict[str, int]] = {}
     for r in conn.execute(
         "SELECT hour, kind, sessions, requests, errors, words, audio_s, proc_s"
-        " FROM usage_hourly WHERE user_id = ? AND hour >= ?",
-        (user_id, min(window_start, calendar_start)),
+        " FROM usage_hourly WHERE user_id = ?", (user_id,),
     ):
         h = int(r["hour"])
-        day = _date_of(h * 3600, tz)
-        if h >= today_start:
+        ts = h * 3600
+        day = _date_of(ts, tz)
+        words = int(r["words"] or 0)
+        kind = r["kind"]
+        if words > 0:
+            _add_words(words_all_days.setdefault(day, _words_split()), kind, words)
+        if today_start <= h < today_end:
             _add_row(today_split, r)
-        if h >= window_start:
+        if start_hour <= h < end_hour:
             _add_row(window, r)
             split = by_day.get(day)
             if split is None:
                 split = by_day[day] = _zero_split()
             _add_row(split, r)
-        if h >= calendar_start:
-            words_by_day[day] = words_by_day.get(day, 0) + int(r["words"] or 0)
-
-    doc["total"] = _rounded(total)
+            _add_words(words_by_day.setdefault(day, _words_split()), kind, words)
+            _add_words(words_by_slot.setdefault(_slot_of(ts, tz), _words_split()),
+                       kind, words)
+    doc["total"] = _rounded(window)
     doc["today"] = _rounded(today_split)
-    doc["series"] = [{"day": (d - _EPOCH).days, **_rounded(by_day[d])}
-                     for d in sorted(by_day)]
-    doc["stages"] = _stages(conn, user_id, window_start, window)
-    doc["dictation"] = _dictation(conn, user_id, window_start,
+    doc["stages"] = _stages(conn, user_id, start_hour, end_hour, window)
+    doc["dictation"] = _dictation(conn, user_id, start_hour, end_hour,
                                   window["dictation"])
     doc["apps"] = [
         {"app_id": r["app_id"], "sessions": int(r["sessions"] or 0),
          "words": int(r["words"] or 0)}
         for r in conn.execute(
             "SELECT app_id, SUM(sessions) AS sessions, SUM(words) AS words"
-            " FROM usage_app_hourly WHERE user_id = ? AND hour >= ?"
+            " FROM usage_app_hourly WHERE user_id = ? AND hour >= ? AND hour < ?"
             " GROUP BY app_id ORDER BY sessions DESC, words DESC, app_id"
-            " LIMIT 8", (user_id, window_start),
+            " LIMIT 8", (user_id, start_hour, end_hour),
         )
     ]
-    doc["calendar"] = [{"day": (d - _EPOCH).days, "words": words_by_day[d]}
-                       for d in sorted(words_by_day) if words_by_day[d] > 0]
-    doc["streak"] = _streak(words_by_day, today)
-    dictation = window["dictation"]
-    doc["time_saved_s"] = round(max(
-        0.0, dictation["words"] / TYPING_WPM * 60.0 - dictation["audio_s"]), 1)
-    return doc
+    _finish(doc, by_day=by_day, words_by_day=words_by_day,
+            words_by_slot=words_by_slot, words_all_days=words_all_days,
+            today=today)
+
+
+def _job_cell(job: sqlite3.Row) -> dict[str, Any]:
+    return {
+        "sessions": 1,
+        "requests": max(1, int(job["utterances"] or 0)),
+        "errors": 0 if job["status"] == "ok" else 1,
+        "words": int(job["words"] or 0),
+        "audio_s": float(job["audio_s"] or 0.0),
+        "proc_s": float(job["proc_s"] or 0.0),
+    }
+
+
+def _add_cell(split: dict[str, dict[str, Any]], kind: str,
+              cell: dict[str, Any]) -> None:
+    for target in (split["all"], split.get(kind)):
+        if target is None:
+            continue
+        for k, v in cell.items():
+            target[k] += v
+
+
+def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
+                    start_ts, end_ts, today_start_ts, today_end_ts) -> None:
+    """The `with=` document: every figure from the per-job rows that ran all
+    of `with_stages`. Sessions are jobs, requests are utterances, an error
+    is a job whose last status was not ok. The dictation buckets come from
+    the reported outcome columns (an unreported job stays unbucketed, as in
+    the rollup); kept_original for translation is the count of jobs whose
+    reported outcome kept the original."""
+    today_split = _zero_split()
+    window = _zero_split()
+    by_day: dict[datetime.date, dict[str, dict[str, Any]]] = {}
+    words_by_day: dict[datetime.date, dict[str, int]] = {}
+    words_by_slot: dict[tuple[int, int], dict[str, int]] = {}
+    words_all_days: dict[datetime.date, dict[str, int]] = {}
+    activation = {a: 0 for a in ACTIVATIONS}
+    delivery = {d: 0 for d in DELIVERIES}
+    translation = {t: 0 for t in TRANSLATIONS}
+    apps: dict[str, dict[str, int]] = {}
+    window_jobs: list[str] = []
+    for job in conn.execute(
+        "SELECT job_id, kind, created_ts, status, audio_s, words, proc_s,"
+        " utterances, activation, delivery, translation, app_id"
+        " FROM usage_jobs WHERE user_id = ?" + _with_clause(with_stages)
+        + " ORDER BY created_ts", (user_id, *with_stages),
+    ):
+        ts = float(job["created_ts"])
+        day = _date_of(ts, tz)
+        kind = job["kind"]
+        cell = _job_cell(job)
+        words = cell["words"]
+        if words > 0:
+            _add_words(words_all_days.setdefault(day, _words_split()), kind, words)
+        if today_start_ts <= ts < today_end_ts:
+            _add_cell(today_split, kind, cell)
+        if not (start_ts <= ts < end_ts):
+            continue
+        window_jobs.append(job["job_id"])
+        _add_cell(window, kind, cell)
+        _add_cell(by_day.setdefault(day, _zero_split()), kind, cell)
+        _add_words(words_by_day.setdefault(day, _words_split()), kind, words)
+        _add_words(words_by_slot.setdefault(_slot_of(ts, tz), _words_split()),
+                   kind, words)
+        if job["activation"] in activation:
+            activation[job["activation"]] += 1
+        if job["delivery"] in delivery:
+            delivery[job["delivery"]] += 1
+        if job["translation"] in translation:
+            translation[job["translation"]] += 1
+        if job["app_id"]:
+            a = apps.setdefault(job["app_id"], {"sessions": 0, "words": 0})
+            a["sessions"] += 1
+            a["words"] += words
+    doc["total"] = _rounded(window)
+    doc["today"] = _rounded(today_split)
+    cell = window["dictation"]
+    audio_s = float(cell["audio_s"])
+    doc["dictation"] = {
+        "sessions": int(cell["sessions"]),
+        "words": int(cell["words"]),
+        "audio_s": round(audio_s, 3),
+        "wpm": round(cell["words"] / (audio_s / 60.0), 1) if audio_s > 0 else 0.0,
+        "activation": activation,
+        "delivery": delivery,
+        "translation": translation,
+    }
+    doc["apps"] = [
+        {"app_id": a, **v} for a, v in sorted(
+            apps.items(), key=lambda kv: (-kv[1]["sessions"], -kv[1]["words"], kv[0]))
+    ][:8]
+    doc["stages"] = _stages_from_jobs(conn, window_jobs, window, translation)
+    _finish(doc, by_day=by_day, words_by_day=words_by_day,
+            words_by_slot=words_by_slot, words_all_days=words_all_days,
+            today=today)
+
+
+def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
+                      window: dict[str, dict[str, Any]],
+                      translation: dict[str, int]) -> list[dict[str, Any]]:
+    """Stage rows over the narrowed jobs. A stage the caller filtered on
+    shows runs == of_runs; the others show how often they co-occurred."""
+    agg: dict[str, dict[str, Any]] = {}
+    targets: dict[str, dict[str, int]] = {}
+    # Chunk the IN list: SQLite's default variable limit is generous but
+    # a year of jobs can exceed it.
+    for i in range(0, len(job_ids), 500):
+        chunk = job_ids[i:i + 500]
+        marks = ",".join("?" * len(chunk))
+        for r in conn.execute(
+            "SELECT s.stage, s.secs, s.targets, s.speakers, s.retained,"
+            " j.audio_s FROM usage_job_stages s JOIN usage_jobs j"
+            " ON j.job_id = s.job_id WHERE s.job_id IN (" + marks + ")", chunk,
+        ):
+            stage = r["stage"]
+            if stage not in STAGE_APPLIES_TO:
+                continue
+            a = agg.setdefault(stage, {"runs": 0, "audio_s": 0.0, "secs": 0.0,
+                                       "speakers": 0, "retained_sum": 0.0})
+            a["runs"] += 1
+            a["audio_s"] += float(r["audio_s"] or 0.0)
+            a["secs"] += float(r["secs"] or 0.0)
+            a["speakers"] += int(r["speakers"] or 0)
+            a["retained_sum"] += float(r["retained"] or 0.0)
+            for code in (r["targets"] or "").split(","):
+                if code:
+                    tg = targets.setdefault(stage, {})
+                    tg[code] = tg.get(code, 0) + 1
+    out: list[dict[str, Any]] = []
+    for stage, a in agg.items():
+        runs = a["runs"]
+        row: dict[str, Any] = {
+            "stage": stage,
+            "runs": runs,
+            "of_runs": sum(window[k]["sessions"] for k in STAGE_APPLIES_TO[stage]),
+            "audio_s": round(a["audio_s"], 3),
+            "secs": round(a["secs"], 3),
+            "targets": [{"code": c, "runs": n} for c, n in sorted(
+                targets.get(stage, {}).items(), key=lambda kv: (-kv[1], kv[0]))][:16],
+        }
+        if stage == "diarizing":
+            row["speakers_avg"] = round(a["speakers"] / runs, 2) if runs else 0.0
+        elif stage == "vad":
+            row["retained_avg"] = round(a["retained_sum"] / runs, 3) if runs else 0.0
+        elif stage == "translating":
+            row["kept_original"] = int(translation.get("kept_original", 0))
+        out.append(row)
+    order = {s: i for i, s in enumerate(STAGE_APPLIES_TO)}
+    out.sort(key=lambda s: order[s["stage"]])
+    return out
 
 
 def _stages(conn: sqlite3.Connection, user_id: str, start_hour: int,
-            window: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+            end_hour: int, window: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
     """Stage rows for the window. Only the OPTIONAL stages are listed (the
     ones a user can switch on and wonder about); the decode itself and a URL
     download are the job, not a stage of it. The per-stage extras are
@@ -1016,8 +1307,8 @@ def _stages(conn: sqlite3.Connection, user_id: str, start_hour: int,
     targets: dict[str, list[dict[str, Any]]] = {}
     for r in conn.execute(
         "SELECT stage, target, SUM(runs) AS runs FROM usage_target_hourly"
-        " WHERE user_id = ? AND hour >= ? GROUP BY stage, target"
-        " ORDER BY runs DESC, target", (user_id, start_hour),
+        " WHERE user_id = ? AND hour >= ? AND hour < ? GROUP BY stage, target"
+        " ORDER BY runs DESC, target", (user_id, start_hour, end_hour),
     ):
         targets.setdefault(r["stage"], []).append(
             {"code": r["target"], "runs": int(r["runs"] or 0)})
@@ -1026,8 +1317,8 @@ def _stages(conn: sqlite3.Connection, user_id: str, start_hour: int,
         "SELECT stage, SUM(runs) AS runs, SUM(audio_s) AS audio_s,"
         " SUM(secs) AS secs, SUM(speakers) AS speakers,"
         " SUM(retained_sum) AS retained_sum, SUM(kept_original) AS kept_original"
-        " FROM usage_stage_hourly WHERE user_id = ? AND hour >= ?"
-        " GROUP BY stage", (user_id, start_hour),
+        " FROM usage_stage_hourly WHERE user_id = ? AND hour >= ? AND hour < ?"
+        " GROUP BY stage", (user_id, start_hour, end_hour),
     ):
         stage = r["stage"]
         applies = STAGE_APPLIES_TO.get(stage)
@@ -1057,14 +1348,15 @@ def _stages(conn: sqlite3.Connection, user_id: str, start_hour: int,
 
 
 def _dictation(conn: sqlite3.Connection, user_id: str, start_hour: int,
-               cell: dict[str, Any]) -> dict[str, Any]:
+               end_hour: int, cell: dict[str, Any]) -> dict[str, Any]:
     activation = {a: 0 for a in ACTIVATIONS}
     delivery = {d: 0 for d in DELIVERIES}
     translation = {t: 0 for t in TRANSLATIONS}
     for r in conn.execute(
         "SELECT activation, delivery, translation, SUM(sessions) AS sessions"
-        " FROM usage_dictation_hourly WHERE user_id = ? AND hour >= ?"
-        " GROUP BY activation, delivery, translation", (user_id, start_hour),
+        " FROM usage_dictation_hourly WHERE user_id = ? AND hour >= ? AND hour < ?"
+        " GROUP BY activation, delivery, translation",
+        (user_id, start_hour, end_hour),
     ):
         n = int(r["sessions"] or 0)
         if r["activation"] in activation:
@@ -1089,8 +1381,8 @@ def _streak(words_by_day: dict[datetime.date, int],
             today: datetime.date) -> dict[str, int]:
     """Consecutive days with any words. `current` runs back from today —
     or from yesterday while today is still empty, so a streak is not shown
-    as broken at breakfast. `best` is the longest run inside the calendar
-    window."""
+    as broken at breakfast. `best` is the longest run in the whole retained
+    history."""
     active = {d for d, w in words_by_day.items() if w > 0}
     current = 0
     day = today if today in active else today - datetime.timedelta(days=1)
