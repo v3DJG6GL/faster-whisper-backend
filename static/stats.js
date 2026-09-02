@@ -598,6 +598,11 @@ function renderTurnaround() {
       + esc(lbl) + ': ' + c + ' jobs · ' + Math.round(share * 100) + ' % of that time was queue wait</title></rect>';
     if (share > 0) s += '<rect x="' + x.toFixed(1) + '" y="' + (pt + ih - h * share).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + (h * share).toFixed(1) + '" fill="url(#ta-hatch)" rx="2"/>';
     if (i % labelEvery === 0) s += '<text x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
+    // job count: inside the bar when it is tall enough, else just above it
+    if (c > 0 && bw >= 16) {
+      const inside = h >= 16;
+      s += '<text class="' + (inside ? 'cnt in' : 'cnt') + '" x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (inside ? y + 11 : y - 3).toFixed(1) + '" text-anchor="middle">' + c + '</text>';
+    }
   });
   const xOf = (v) => {
     // position within the bucket that contains v (linear inside the bucket)

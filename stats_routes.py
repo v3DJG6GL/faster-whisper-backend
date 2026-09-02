@@ -982,6 +982,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .ta-hist svg { width: 100%; height: 100%; display: block; overflow: visible; }
   .ta-hist text { font-family: var(--font-mono); font-size: 10px; fill: var(--dim); }
   .ta-hist text.q { fill: var(--bold); }
+  .ta-hist text.cnt { fill: var(--fg); }
+  .ta-hist text.cnt.in { fill: #0d1117; font-weight: 600; }
   .ta-hist line.q { stroke: var(--bold); stroke-dasharray: 2 2; }
   .ta-wait { display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; align-items: center;
     font: var(--fs-xs) var(--font-mono); color: var(--dim); margin-top: 0.2rem;
