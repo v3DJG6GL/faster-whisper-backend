@@ -1034,7 +1034,9 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     font-size: var(--fs-md); line-height: 1.2; }
   header .subbar-break { flex-basis: 100%; height: 0; }
   header .subbar-row2 { flex: 1 1 auto; }
-  header .sb-filters-group { margin-left: auto; display: inline-flex; gap: 0.6rem; align-items: center; }
+  /* Filters take the last usage row (sentence chips grow without pushing
+     the chip groups around); the window summary sits at its right end. */
+  header .sb-filters-group { display: inline-flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
   /* The 'usage' preset has no ring cards: the rings cluster does nothing,
      so it is dimmed and inert until another preset is picked. */
   body.preset-usage .rings-label, body.preset-usage #live-range, body.preset-usage #ring-scrub,
@@ -1178,10 +1180,6 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button type="button" class="chip" data-v="url"><i class="sw" style="background:var(--kind-url)"></i>links</button>
       <button type="button" class="chip" data-v="text"><i class="sw" style="background:var(--kind-text)"></i>text</button>
     </span>
-    <span class="sb-filters-group">
-      <span class="seg-label">filters</span>
-      <span class="chips" id="sb-filters"></span>
-    </span>
     <span class="subbar-break"></span>
     <span class="seg-label" title="only jobs that ran every chosen stage (translation, speaker diarization, music separation, silence skipping)">stage</span>
     <span class="chips" id="sb-with" title="only jobs that ran every chosen stage">
@@ -1189,6 +1187,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button type="button" class="chip" data-v="diarizing">diarized</button>
       <button type="button" class="chip" data-v="separating">music separated</button>
       <button type="button" class="chip" data-v="vad">silence skipped</button>
+    </span>
+    <span class="subbar-break"></span>
+    <span class="sb-filters-group">
+      <span class="seg-label">filters</span>
+      <span class="chips" id="sb-filters"></span>
     </span>
     <span class="sb-summary" id="sb-summary"></span>
   </div>
