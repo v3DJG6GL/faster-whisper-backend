@@ -1617,9 +1617,12 @@ function renderHours() {
   });
   const kindNote = Q.kinds.length ? kindsLabel() + ' only · ' : '';
   const lg = $('hours-legend');
+  // Two legend keys, each a glyph + its reading: the cell ramp (quiet →
+  // busy, the busiest slot's value), and the side bars (a bar with the
+  // 1× tick). The measure and time zone sit at the right.
   if (lg) lg.innerHTML = br
-    ? '<span class="ramp">quiet <i></i> busy</span><span>max ' + fmtM(peakV) + ' per slot</span>'
-      + '<span title="the bars beside the grid: each hour of day / weekday relative to a flat week; the dashed tick is 1× (average)">bars vs average · ┊ = 1×</span>'
+    ? '<span class="key"><span class="ramp">quiet <i></i> busy</span><span class="sub">peak slot ' + fmtM(peakV) + '</span></span>'
+      + '<span class="key" title="the bars beside the grid: each hour of day (top) and weekday (right) relative to a flat week; the dashed tick is the average"><span class="mg"><i class="b"></i><i class="t"></i></span>side bars vs average<span class="sub">┊ = 1×</span></span>'
       + '<span class="what">' + kindNote + esc(ML) + ' per weekday-hour · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span>'
     : '<span class="what">' + kindNote + 'no ' + esc(ML) + ' in this window</span>';
   const sub = $('hours-sub');
