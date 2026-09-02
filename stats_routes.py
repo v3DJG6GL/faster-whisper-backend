@@ -36,6 +36,7 @@ import config as cfg
 import config_store
 import jobs
 import metrics
+import model_sizes
 import preload
 import system_stats
 import web_common
@@ -133,6 +134,32 @@ def _coarse_server(sysnap: dict[str, Any], any_job_running: bool
     return {"gpu": g, "models_loaded": len(sysnap.get("models") or [])}
 
 
+# (name, device, compute_type) → (expires_at, meta). model_sizes.lookup() may
+# walk a model directory on disk and the stream builds a payload every
+# second, so the answer is held for a minute.
+_SIZE_META_TTL_S = 60.0
+_size_meta_cache: dict[tuple[str, str, str], tuple[float, dict[str, Any]]] = {}
+
+
+def _model_size_meta(name: str, device: str, compute_type: str) -> dict[str, Any]:
+    """`{size_bytes, size_src, disk_bytes}` for a loaded-models row: the
+    ledger's best size with its provenance (measured / proxy / disk) and the
+    weight on disk, both None when unknown."""
+    key = (name or "", device or "", compute_type or "")
+    now = time.monotonic()
+    hit = _size_meta_cache.get(key)
+    if hit is not None and hit[0] > now:
+        return hit[1]
+    rec = model_sizes.lookup(*key)
+    meta = {
+        "size_bytes": None if rec is None else rec["bytes"],
+        "size_src": None if rec is None else rec["src"],
+        "disk_bytes": model_sizes.disk_size(name),
+    }
+    _size_meta_cache[key] = (now + _SIZE_META_TTL_S, meta)
+    return meta
+
+
 def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
                    lite: bool = False) -> dict[str, Any]:
     """Combine request metrics + system snapshot into one payload for the
@@ -191,11 +218,17 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
             "models": sysnap.get("models"),
             "in_flight_transcriptions": metrics.in_flight_transcriptions,
         }
+    models = [
+        {**m, **_model_size_meta(m.get("name"), m.get("device"),
+                                 m.get("compute_type"))}
+        for m in (sysnap.get("models") or [])
+    ]
     return {
         **base,
         **metrics.metrics_snapshot(include_identity=scope.include_identity,
                                    user_id=scope.user_id),
         **sysnap,
+        "models": models,
     }
 
 
@@ -274,19 +307,36 @@ def _opaque_key_label(key_id: str) -> str:
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_usage(
-    days: int = 30,
-    bucket: str = "day",
+    days: int | None = None,
+    bucket: str = "auto",
     by: str = "user",
     metric: str = "audio_s",
+    tz: str | None = None,
+    from_: int | None = Query(default=None, alias="from"),
+    to: int | None = None,
+    all: bool = False,
+    with_: str | None = Query(default=None, alias="with"),
+    compare: str = "off",
+    key: str | None = None,
     user_q: str | None = Query(None, alias="user"),
     user: dict[str, Any] = Depends(require_page("stats")),
 ) -> dict[str, Any]:
-    """Historical usage: a total-throughput-over-time series plus a
-    per-user (or per-key) leaderboard for the window. Served once per page
-    load / selector change — NOT part of the 1 Hz SSE payload.
+    """Historical usage, v2: usage_store.overview() — totals, today, stages,
+    the hour grid, a dense-axis breakdown of `metric` by `by`, a leaderboard
+    over the same entities, an optional comparison window and a per-model
+    table. Served once per page load / selector change — NOT part of the
+    1 Hz SSE payload.
 
-    `days<=0` is lifetime (no lower bound). `bucket` ∈ {day, week}. `by` ∈
-    {user, key}. `metric` ranks the leaderboard.
+    Window: `days` (default 30; <=0 = lifetime, the v1 spelling of `all=1`),
+    or an explicit inclusive `from`/`to` (days-since-epoch in `tz`), or
+    `all=1`; `tz` is an IANA name (server-local when absent). `bucket` ∈
+    {auto, day, week, month}; `by` ∈ {user, key, kind, model, stage};
+    `metric` ∈ {audio_s, words, requests, errors, proc_s, sessions};
+    `compare` ∈ {off, prev, yoy}; `with` narrows to jobs that ran every
+    listed stage; `key` narrows the key-bearing tables to one API key.
+    422 on an unknown stage or from > to. v1 queries keep working: the v1
+    keys (days, metric, by, bucket, lines, leaderboard) keep their meaning
+    and the board rows carry their metrics flat as before.
 
     Scope (see StatsScope): an admin sees every user, named, and may pass
     `?user=<id>` to preview exactly what that user's own scope shows. A
@@ -299,12 +349,9 @@ async def stats_usage(
     import api_keys_store
     import usage_store
 
-    bucket = "week" if bucket == "week" else "day"
     # Normalise BEFORE the scope check: an unknown `by` collapses to "user"
     # and must not slip past the own-scope refusal below.
-    by = "key" if by == "key" else "user"
-    if metric not in ("requests", "errors", "words", "audio_s"):
-        metric = "audio_s"
+    by = by if by in usage_store.BREAKDOWNS else "user"
     is_admin = bool(user.get("is_admin"))
     if user_q and not is_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN,
@@ -317,124 +364,67 @@ async def stats_usage(
             detail="per-user leaderboard needs stats scope 'all'")
     caller_uid = user.get("user_id") or None
     scrub = not scope.include_identity
-    # 10 years is past any real retention window, and date arithmetic on an
-    # unbounded value overflows inside local_day_start_hour(). 0 stays 0 so
-    # the lifetime branch below is preserved.
-    days = max(0, min(int(days), 3650))
-    # Window in UTC epoch-hours; days reckoned in the SERVER-local timezone
-    # (the operator's perspective). days<=0 = lifetime (no lower bound).
-    start_hour: int | None = None
-    if days and days > 0:
-        start_hour = usage_store.local_day_start_hour(days_ago=int(days) - 1)
+    # v1 spelling: days<=0 meant lifetime.
+    if days is not None and days <= 0:
+        days, all = None, True
+    try:
+        w = usage_store.parse_window_params(
+            days=days, from_day=from_, to_day=to, all_time=all, with_=with_,
+            tz=tz)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+    jobs_retention = int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365) or 0)
 
-    # Everything below is store work: one series() aggregate, a
-    # leaderboard(limit=50), a get_usernames, up to 50 get_key() point reads in
-    # the by=key branch, and up to K=8 further series() aggregates — ~10
-    # aggregate scans over `usage_hourly`, which is an append-only rollup that
-    # is never pruned, so the cost grows with deployment age x key count. Run
-    # the whole gather off the event loop, like the reports/quick-config
-    # siblings do with their equivalents.
+    # Everything below is store work — a handful of aggregate scans over the
+    # rollups (twice with a compare window) plus name lookups. Run the whole
+    # gather off the event loop, like the reports/quick-config siblings.
     def _gather() -> dict[str, Any]:
-        # Scoped series gives the shared x-axis (every bucket with any usage)
-        # and the per-bucket totals used to derive the "others" line.
-        series_global = usage_store.series(start_hour=start_hour, bucket=bucket,
-                                           user_id=scope.user_id)
-        day_axis = [int(p["day"]) for p in series_global]
-        axis_index = {d: i for i, d in enumerate(day_axis)}
-        n = len(day_axis)
+        out = usage_store.overview(
+            user_id=scope.user_id, key_id=key or None, tz=w.tz,
+            tz_name=w.tz_name, days=w.days, from_day=w.from_day,
+            to_day=w.to_day, all_time=w.all_time, with_stages=w.with_stages,
+            by=by, metric=metric, bucket=bucket, compare=compare,
+            jobs_retention_days=jobs_retention)
 
-        board = usage_store.leaderboard(
-            start_hour=start_hour, by=by, metric=metric, limit=50,
-            user_id=scope.user_id,
-        )
-
-        # Resolve display names + a stable `id` server-side (the /stats client has
-        # no api-keys data). Revoked users/keys still resolve; sentinels stay
+        # Resolve display names server-side (the /stats client has no
+        # api-keys data). Revoked users/keys still resolve; sentinels stay
         # literal. Non-admin "all" viewers get opaque labels instead — only
         # their own row keeps its name (and is flagged `me`).
-        names = api_keys_store.get_usernames([r["user_id"] for r in board])
+        rows = out["leaderboard"]
+        names = api_keys_store.get_usernames(
+            [r["user_id"] for r in rows if r.get("user_id")])
 
         def _user_label(uid: str) -> str:
             if scrub and uid != caller_uid:
                 return _opaque_user_label(uid)
             return names.get(uid) or uid
 
-        for r in board:
+        labels: dict[str, dict[str, Any]] = {}
+        for r in rows:
             mine = bool(caller_uid) and r.get("user_id") == caller_uid
             if by == "user":
-                r["id"] = r["user_id"]
-                r["label"] = _user_label(r["user_id"])
-            else:
-                kid = r["key_id"]
-                r["id"] = kid
+                r["label"] = _user_label(r["id"])
+            elif by == "key":
+                kid = r["id"]
                 if scrub and not mine:
                     r["label"] = _opaque_key_label(kid)
                 else:
-                    key = (api_keys_store.get_key(kid)
-                           if kid and not kid.startswith("(") else None)
-                    lbl = (key or {}).get("label") or ""
-                    disp = (key or {}).get("key_prefix")
+                    krec = (api_keys_store.get_key(kid)
+                            if kid and not kid.startswith("(") else None)
+                    lbl = (krec or {}).get("label") or ""
+                    disp = (krec or {}).get("key_prefix")
                     r["label"] = (lbl or (disp + "…" if disp else kid))
                 r["user_label"] = _user_label(r["user_id"])
             if mine:
                 r["me"] = True
-
-        # One chart line per top-K entity (by the selected metric), aligned to the
-        # shared x-axis with 0-fill for buckets where the entity had no usage.
-        K = 8
-        lines: list[dict[str, Any]] = []
-        sum_top = [0.0] * n
-        for r in board[:K]:
-            if by == "user":
-                kwargs = {"user_id": r["id"]}
-            else:
-                # Belt and braces for own scope: a key row already belongs
-                # to the caller, but pin the owner on the per-line query too.
-                kwargs = {"key_id": r["id"], "user_id": scope.user_id}
-            s = usage_store.series(start_hour=start_hour, bucket=bucket, **kwargs)
-            vals: list[float] = [0] * n
-            for p in s:
-                i = axis_index.get(int(p["day"]))
-                if i is not None:
-                    vals[i] = p[metric]
-            for i in range(n):
-                sum_top[i] += vals[i] or 0
-            line = {"id": r["id"], "label": r["label"], "values": vals}
-            if by == "key":
-                line["user_label"] = r.get("user_label")
-            if r.get("me"):
-                line["me"] = True
-            lines.append(line)
-
-        # Fold the long tail (entities beyond top-K) into one "others" line =
-        # global total minus the top-K, per bucket. Skip if nothing remains.
-        if len(board) > K and n:
-            others = []
-            any_pos = False
-            for i, p in enumerate(series_global):
-                rem = (p[metric] or 0) - sum_top[i]
-                if rem < 0:
-                    rem = 0  # float-subtraction guard
-                if rem > 0:
-                    any_pos = True
-                others.append(rem)
-            if any_pos:
-                lines.append({
-                    "id": "__others__",
-                    "label": f"others ({len(board) - K})",
-                    "values": others,
-                    "others": True,
-                })
-
-        return {
-            "days": day_axis,
-            "metric": metric,
-            "by": by,
-            "bucket": bucket,
-            "scope": scope.scope,
-            "lines": lines,
-            "leaderboard": board,
-        }
+            # v1 shape: the metrics flat on the row as well.
+            r.update(r["totals"])
+            labels[r["id"]] = {k: r[k] for k in ("label", "user_label", "me")
+                               if k in r}
+        for ln in out["lines"]:
+            ln.update(labels.get(ln["id"], {}))
+        out["scope"] = scope.scope
+        return out
 
     return await asyncio.to_thread(_gather)
 

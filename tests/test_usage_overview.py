@@ -110,7 +110,7 @@ def test_overview_by_user_top_k_and_others(usage_store_db):
     one = _ov(us, user_id="alice", key_id="k1", from_day=_D("2025-06-02"),
               to_day=_D("2025-06-11"), by="key")
     assert [ln["id"] for ln in one["lines"]] == ["k1"]
-    assert one["scope"] == {"user_id": "alice", "key_id": "k1", "key_scoped": True}
+    assert one["filter"] == {"user_id": "alice", "key_id": "k1", "key_scoped": True}
 
 
 def test_overview_by_model_from_jobs(usage_store_db):
@@ -147,7 +147,7 @@ def test_overview_by_stage_from_stage_hourly(usage_store_db):
     assert o["breakdown"]["key_scoped"] is False
     keyed = _ov(us, user_id="carol", key_id="k4", from_day=_D("2025-06-02"),
                 to_day=_D("2025-06-11"), by="stage")
-    assert keyed["scope"]["key_scoped"] is False
+    assert keyed["filter"]["key_scoped"] is False
 
 
 def test_overview_compare_prev_and_yoy_aligned(usage_store_db):

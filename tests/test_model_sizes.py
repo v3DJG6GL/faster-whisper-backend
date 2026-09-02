@@ -302,3 +302,21 @@ def test_record_holds_the_cross_process_save_lock(ledger, monkeypatch):
     # Once around the whole read-modify-write — never re-acquired inside
     # the write (the per-path lock is not reentrant).
     assert entered == [ledger]
+
+
+def test_lookup_reports_source(ledger, monkeypatch):
+    """lookup() says WHERE a size came from: the exact placement's record
+    (measured or a recorded disk prior), another placement (proxy), or a
+    live disk walk (disk); None when nothing is known."""
+    model_sizes.record("large-v3", "cuda", "float16", 3 * GB)
+    model_sizes.record("medium", "cpu", "int8", 1 * GB, measured=False)
+    got = model_sizes.lookup("large-v3", "cuda", "float16")
+    assert (got["bytes"], got["src"], got["n"]) == (3 * GB, "measured", 1)
+    assert model_sizes.lookup("medium", "cpu", "int8")["src"] == "disk"
+    assert model_sizes.lookup("large-v3", "cpu", "int8")["src"] == "proxy"
+    monkeypatch.setattr(model_sizes, "disk_size",
+                        lambda name: 2 * GB if name == "on-disk" else None)
+    assert model_sizes.lookup("on-disk", "cuda", "float16") == {
+        "bytes": 2 * GB, "src": "disk", "n": 0, "ts": None}
+    assert model_sizes.lookup("never", "cuda", "float16") is None
+    assert model_sizes.estimate("on-disk", "cuda", "float16") == 2 * GB

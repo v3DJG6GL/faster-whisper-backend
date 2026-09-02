@@ -29,6 +29,19 @@ def test_stats_usage_ok(client):
     assert r.status_code == 200
     body = r.json()
     assert set(body) >= {"days", "metric", "by", "bucket", "lines", "leaderboard"}
+    # v2 superset
+    assert body["v"] == 2
+    assert set(body) >= {"tz", "range", "filter", "totals", "today", "stages",
+                         "hours", "breakdown", "models", "compare",
+                         "time_saved_s", "scope"}
+    assert body["range"]["days"] == 30 and body["bucket"] == "day"
+    assert len(body["days"]) == 30                      # dense axis
+    assert body["compare"] is None
+    # v1 query shapes keep working.
+    old = client.get("/stats/usage?days=30&bucket=week&by=key&metric=words").json()
+    assert old["bucket"] == "week" and old["by"] == "key" and old["metric"] == "words"
+    life = client.get("/stats/usage?days=0").json()
+    assert life["range"]["days"] == 1 and life["range"]["first_day"] is None
 
 
 # /stats is user-tier (USER_WEBUI_ALLOWED_HOSTS, OPEN by default). Narrow the
@@ -578,3 +591,75 @@ def test_stats_page_removes_machine_tiles_for_own(client):
                   "latency", "endpoints", "models"):
         assert f"'{gs_id}'" in lst, gs_id
         assert f'gs-id="{gs_id}"' in html, gs_id
+
+
+def test_stats_usage_v2_params(client, app_module):
+    import usage_store as us
+    h = us.now_hour()
+    us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5,
+                    status="ok", hour=h, proc_s=2.0, job_id="j1", kind="file",
+                    stages=[{"name": "diarizing", "secs": 1.0, "speakers": 2}],
+                    model="large-v3")
+    us.record_usage(key_id="k2", user_id="bob", audio_s=4.0, words=5,
+                    status="ok", hour=h, proc_s=1.0, job_id="j2", kind="dictation")
+    kinds = client.get("/stats/usage?by=kind&metric=proc_s&compare=prev").json()
+    assert kinds["by"] == "kind" and kinds["metric"] == "proc_s"
+    # Every kind is a line (stable series identity); only two carry data.
+    assert {ln["id"] for ln in kinds["lines"]} == {"dictation", "file", "url", "text"}
+    assert {ln["id"] for ln in kinds["lines"] if sum(ln["values"])} == {"file", "dictation"}
+    assert kinds["compare"]["mode"] == "prev" and kinds["compare"]["range"]["days"] == 30
+    assert kinds["totals"]["all"]["proc_s"] == 3.0
+    assert kinds["leaderboard"][0]["proc_s"] == 2.0     # flat v1 metrics too
+    sessions = client.get("/stats/usage?by=model&metric=sessions").json()
+    assert sessions["breakdown"]["source"] == "jobs"
+    assert {r["id"] for r in sessions["leaderboard"]} == {"large-v3", "(unknown)"}
+    assert [m["model"] for m in sessions["models"]][0] == "large-v3"
+    stage = client.get("/stats/usage?by=stage&with=diarizing").json()
+    assert [ln["id"] for ln in stage["lines"]] == ["diarizing"]
+    assert stage["range"]["source"] == "jobs"
+    keyed = client.get("/stats/usage?by=key&key=k1").json()
+    assert [r["id"] for r in keyed["leaderboard"]] == ["k1"]
+    assert keyed["filter"]["key_id"] == "k1"
+    span = client.get("/stats/usage?from=20000&to=20006&bucket=month").json()
+    assert {k: span["range"][k] for k in ("from", "to", "days", "source")} == {
+        "from": 20000, "to": 20006, "days": 7, "source": "rollups"}
+    assert span["bucket"] == "month" and len(span["days"]) == 1
+    assert client.get("/stats/usage?with=decoding").status_code == 422
+    assert client.get("/stats/usage?from=20007&to=20006").status_code == 422
+    assert client.get("/stats/usage?from=x").status_code == 422
+    zone = client.get("/stats/usage?tz=Europe/Zurich").json()
+    assert zone["tz"] == "Europe/Zurich"
+    assert client.get("/stats/usage?tz=Mars/Olympus").json()["tz"] == "local"
+
+
+def test_snapshot_models_carry_size_meta(client, monkeypatch):
+    """Loaded-model rows gain the ledger size with its provenance and the
+    on-disk weight; the lookup is held for a minute because the stream
+    rebuilds the payload every second and disk_size walks a directory."""
+    import model_sizes
+    import stats_routes
+    import system_stats
+    calls = {"lookup": 0, "disk": 0}
+
+    def _lookup(name, device, compute_type):
+        calls["lookup"] += 1
+        return {"bytes": 3_000_000_000, "src": "proxy", "n": 2, "ts": 1.0}
+
+    def _disk(name):
+        calls["disk"] += 1
+        return 1_500_000_000
+    monkeypatch.setattr(model_sizes, "lookup", _lookup)
+    monkeypatch.setattr(model_sizes, "disk_size", _disk)
+    stats_routes._size_meta_cache.clear()
+    system_stats.register_loaded_model("large-v3", 2_000_000_000, "cuda", "float16")
+    try:
+        snap = client.get("/stats/snapshot").json()
+        row = next(m for m in snap["models"] if m["name"] == "large-v3")
+        assert row["size_bytes"] == 3_000_000_000 and row["size_src"] == "proxy"
+        assert row["disk_bytes"] == 1_500_000_000
+        client.get("/stats/snapshot")
+        assert calls == {"lookup": 1, "disk": 1}
+        assert "size_src" not in client.get("/stats/snapshot?lite=1").json()["models"][0]
+    finally:
+        system_stats.unregister_loaded_model("large-v3")
+        stats_routes._size_meta_cache.clear()

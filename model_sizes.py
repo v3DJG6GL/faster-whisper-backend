@@ -187,26 +187,44 @@ def _record_locked(k: str, vram_bytes: int, measured: bool, src: str,
     write(models)
 
 
-def estimate(name: str, device: str, compute_type: str) -> int | None:
-    """Best known size in bytes, or None when this model was never measured."""
+def lookup(name: str, device: str, compute_type: str) -> dict | None:
+    """Best known size WITH its provenance: `{bytes, src, n, ts}` where src is
+    "measured" (an NVML delta for exactly this placement), "disk" (the
+    on-disk prior recorded for this placement, or the live disk walk when
+    nothing was ever recorded), or "proxy" (a measurement of the same model
+    on another device / compute type). None when nothing is known at all.
+    /stats shows the source so an estimate is never mistaken for a
+    measurement."""
     models = _read()
     rec = models.get(_key(name, device, compute_type))
     if rec is not None:
-        return int(rec["bytes"])
+        return {"bytes": int(rec["bytes"]), "src": rec.get("src") or "measured",
+                "n": int(rec.get("n") or 0), "ts": rec.get("ts")}
     # Any-device fallback: a cpu/int8 measurement is a poor proxy for a
     # cuda/float16 load, but a rough number beats no check at all — and the
     # exact record replaces it the first time that placement is measured.
     prefix = f"{name}|"
     for k, v in models.items():
         if k.startswith(prefix):
-            return int(v["bytes"])
+            return {"bytes": int(v["bytes"]), "src": "proxy",
+                    "n": int(v.get("n") or 0), "ts": v.get("ts")}
     # Never measured anywhere. Fall back to what the model WEIGHS ON DISK,
     # which for a GGUF or an ONNX file is a solid lower bound on its resident
     # size, and for a CT2 directory is close enough to decide whether a load
     # is even plausible. Without this, a model that has never been loaded
     # cannot be sized, so preload refuses it, so it is never loaded, so it is
     # never measured — the deadlock this fallback exists to break.
-    return disk_size(name)
+    size = disk_size(name)
+    if size is None:
+        return None
+    return {"bytes": int(size), "src": "disk", "n": 0, "ts": None}
+
+
+def estimate(name: str, device: str, compute_type: str) -> int | None:
+    """Best known size in bytes, or None when this model was never measured
+    (see lookup() for the provenance-carrying variant)."""
+    rec = lookup(name, device, compute_type)
+    return None if rec is None else int(rec["bytes"])
 
 
 def disk_size(name: str) -> int | None:
