@@ -1063,10 +1063,12 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* The peak line and the rhythm switch share one row under the title,
      the switch pinned right, so neither the title phrase nor the peak
      text can push it around. */
-  .hours-h3 { white-space: nowrap; overflow: hidden; }
-  .hours-h3 .tag { overflow: hidden; text-overflow: ellipsis; }
-  .hours-h3 .seg-ctrl.mini { float: right; display: inline-flex; margin-right: 0.5rem; }
-  .seg-ctrl.mini button { font-size: var(--fs-xs); padding: 0 0.45rem; line-height: 1.4; text-transform: none; letter-spacing: 0; }
+  /* The rhythm switch is a toolbar segment like the usage card's bucket
+     / by controls (same label, same size); the title keeps its phrase
+     on one line with an ellipsis. */
+  .hours-toolbar { flex-wrap: nowrap; }
+  .hours-toolbar h3 { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hours-toolbar .spacer { flex: 1 1 0; min-width: 0.5rem; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
   /* Marginals share one scale: each bar is its hour's / weekday's total
      relative to a flat week (1× = average), both tracks 2.4rem long, a
@@ -1644,11 +1646,15 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Busy hours: weekday × hour of the chosen measure with marginals. -->
   <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3 class="hours-h3"><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span>
-      <span class="win" data-win="usage"></span>
-      <span class="seg-ctrl mini" id="hours-mode" title="the rhythm: weekday × hour of day, day of month × hour of day, or year × month">
-        <button data-v="hours" class="active">hours</button><button data-v="days">days</button><button data-v="months">months</button>
-      </span></h3>
+    <div class="usage-toolbar hours-toolbar">
+      <h3 class="hours-h3"><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span> <span class="win" data-win="usage"></span></h3>
+      <span class="spacer"></span>
+      <div class="usage-seg"><span class="seg-label">rhythm</span>
+        <div class="seg-ctrl" id="hours-mode" title="weekday × hour of day, day of month × hour of day, or year × month">
+          <button data-v="hours" class="active">hours</button><button data-v="days">days</button><button data-v="months">months</button>
+        </div>
+      </div>
+    </div>
     <div class="hours-sub" id="hours-sub"></div>
     <div class="hours" id="hours-grid"></div>
     <div class="hours-legend" id="hours-legend"></div>
