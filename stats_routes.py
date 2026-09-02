@@ -561,6 +561,126 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .err-strip .seg.hot b { color: var(--red); }
   .empty { color: var(--dim); font-style: italic; }
   .hidden { display: none !important; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; }
+  /* --- Scope bar (header rows): range / compare on the first subbar row,
+     kind / ran / filter chips + the resolved window on the second. --- */
+  header .subbar .seg-label { color: var(--dim); font-size: var(--fs-xs);
+    text-transform: uppercase; letter-spacing: .04em; margin-left: 0.4rem; }
+  header .subbar-usage { padding-top: 0.25rem; }
+  .chips { display: inline-flex; gap: 0.3rem; flex-wrap: wrap; align-items: center; }
+  .chip { font: inherit; font-size: var(--fs-xs); border: 1px dashed var(--border);
+    border-radius: 999px; padding: 0.05rem 0.55rem; color: var(--dim);
+    background: transparent; cursor: pointer; display: inline-flex;
+    align-items: center; gap: 0.35rem; white-space: nowrap; }
+  .chip .sw { width: 8px; height: 8px; border-radius: 2px; display: inline-block; opacity: .35; }
+  .chip.on { border-style: solid; color: var(--fg); background: var(--panel); }
+  .chip.on .sw { opacity: 1; }
+  .chip.filter { border-style: solid; border-color: #1f3a5a; color: var(--cyan);
+    background: #1f2630; }
+  .chip.filter .x { color: var(--dim); }
+  .chip:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  .sb-none { font-size: var(--fs-xs); color: var(--dim); }
+  .sb-summary { margin-left: auto; font: var(--fs-xs) var(--font-mono); color: var(--dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+  .sb-custom { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
+    padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--panel); font-size: var(--fs-sm); }
+  .sb-custom label { color: var(--dim); display: inline-flex; gap: 0.3rem; align-items: center; }
+  .sb-custom input[type=date] { background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0.1rem 0.3rem;
+    font: inherit; font-size: var(--fs-xs); }
+  .sb-custom .spans { display: inline-flex; gap: 0.25rem; flex-wrap: wrap; }
+  .sb-custom button { font: inherit; font-size: var(--fs-xs); background: var(--bg);
+    color: var(--dim); border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.1rem 0.45rem; cursor: pointer; }
+  .sb-custom button:hover { color: var(--fg); }
+  .sb-custom button.primary { color: var(--cyan); border-color: #1f3a5a; }
+  .sb-custom button:disabled { opacity: .4; cursor: not-allowed; }
+  .sb-custom .note { font: var(--fs-xs) var(--font-mono); color: var(--dim); }
+  /* --- Usage-fed cards: dim while a refetch is in flight (the previous
+     render stays; no skeleton, no jump). --- */
+  .usage-fed.updating { opacity: .6; transition: opacity .15s ease; }
+  .card h3 .tag { font-family: var(--font-mono); color: var(--cyan); text-transform: none;
+    letter-spacing: 0; font-weight: 400; margin-left: 0.3rem; }
+  .usage-error { font-size: var(--fs-xs); color: var(--yellow); }
+  .usage-error button { font: inherit; font-size: var(--fs-xs); color: var(--fg);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 0 0.4rem; cursor: pointer; margin-left: 0.3rem; }
+  .usage-chart:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .usage-empty { position: absolute; inset: 0; display: flex; align-items: center;
+    justify-content: center; text-align: center; padding: 1rem; color: var(--dim);
+    font-size: var(--fs-sm); }
+  .usage-table { flex: 1 1 auto; min-height: 9rem; overflow: auto; }
+  .usage-table table { font-family: var(--font-mono); font-size: var(--fs-xs); }
+  .usage-table td.dim { color: var(--dim); }
+  .usage-legend { display: flex; gap: 0.7rem; flex-wrap: wrap; align-items: center;
+    font-size: var(--fs-xs); color: var(--dim); margin: 0.15rem 0 0.4rem; }
+  .usage-legend .what { color: var(--dim); }
+  .usage-legend button { font: inherit; font-size: var(--fs-xs); background: transparent;
+    border: 0; color: var(--fg); display: inline-flex; align-items: center; gap: 0.3rem;
+    cursor: pointer; padding: 0; }
+  .usage-legend button.off { opacity: .4; text-decoration: line-through; }
+  .usage-legend .cmp i { display: inline-block; width: 14px; border-top: 1.5px dashed #8b949e;
+    vertical-align: middle; margin-right: 0.3rem; }
+  .usage-legend .kb { margin-left: auto; font-family: var(--font-mono); color: var(--dim); }
+  .usage-tip .tip-row.tot { border-top: 1px solid var(--border); margin-top: 0.15rem;
+    padding-top: 0.15rem; color: var(--bold); font-weight: 600; }
+  .usage-tip .tip-row.cmp { color: var(--dim); }
+  table.usage-board tr.pick { cursor: pointer; }
+  table.usage-board tr.pick:hover td { background: rgba(121, 192, 255, 0.04); }
+  table.usage-board tr.pick:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
+  table.usage-board td .share { display: inline-block; height: 5px; border-radius: 3px;
+    vertical-align: middle; margin-right: 0.4rem; }
+  table.tbl td.err { color: var(--red); }
+  .rtf { display: inline-block; padding: 0 0.35rem; border-radius: 999px;
+    font: 0.667rem var(--font-mono); border: 1px solid var(--border); color: var(--dim); }
+  .rtf.slow { color: var(--yellow); border-color: #4d3e1f; }
+  .badge.est { color: var(--magenta); border-color: #3d2a5a; }
+  /* --- Headline strip --- */
+  .hl-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.4rem; }
+  .hl { background: #21262d; border-radius: 4px; padding: 0.3rem 0.5rem; min-width: 0; }
+  .hl .l { font: var(--fs-xs) var(--font-mono); color: var(--dim); text-transform: uppercase;
+    letter-spacing: .03em; }
+  .hl .v { color: var(--bold); font-size: var(--fs-xl); font-weight: 600;
+    font-variant-numeric: tabular-nums; line-height: 1.15; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  .hl .v small { color: var(--dim); font-size: var(--fs-xs); font-weight: 400; margin-left: 0.25rem; }
+  .hl .v.warn { color: var(--yellow); }
+  .delta { display: block; font: var(--fs-xs) var(--font-mono); color: var(--dim); }
+  .delta.good { color: var(--green); } .delta.bad { color: var(--red); }
+  @media (max-width: 60em) { .hl-strip { grid-template-columns: repeat(3, 1fr); } }
+  /* --- Pipeline stages --- */
+  .stages-bar { display: flex; height: 12px; border-radius: 4px; overflow: hidden; gap: 2px;
+    background: #21262d; margin: 0.2rem 0 0.4rem; }
+  .stages-bar > span { min-width: 2px; }
+  table.stages td .sub { display: block; color: var(--dim); font-size: var(--fs-xs); }
+  table.stages tr.dim td { color: var(--dim); }
+  table.stages tr.pinned td:first-child { color: var(--bold); }
+  .stage-sw { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 2px;
+    margin-right: 0.35rem; vertical-align: -1px; }
+  .meter { display: inline-block; width: 3rem; height: 5px; border-radius: 3px;
+    background: #21262d; vertical-align: middle; margin-right: 0.35rem; overflow: hidden; }
+  .meter i { display: block; height: 100%; background: var(--cyan); }
+  /* --- Busy hours grid (one blue ramp toward the accent) --- */
+  .hours { display: grid; grid-template-columns: 2rem repeat(24, 1fr); gap: 2px;
+    font: 0.62rem var(--font-mono); color: var(--dim); flex: 1; align-content: start; }
+  .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; }
+  .hours .dl { align-self: center; }
+  .hours i, .hours-legend i { display: block; aspect-ratio: 1.3; border-radius: 2px;
+    background: #161b22; }
+  .hours i { cursor: default; }
+  .hours i:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  .hours i[data-l="1"], .hours-legend i[data-l="1"] { background: #0e2a3f; }
+  .hours i[data-l="2"], .hours-legend i[data-l="2"] { background: #124b73; }
+  .hours i[data-l="3"], .hours-legend i[data-l="3"] { background: #1f6fa8; }
+  .hours i[data-l="4"], .hours-legend i[data-l="4"] { background: #58a6ff; }
+  .hours i.peak { outline: 1.5px solid var(--bold); outline-offset: -1.5px; }
+  .hours-legend { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
+    font: var(--fs-xs) var(--font-mono); color: var(--dim); margin-top: 0.3rem; }
+  .hours-legend span { display: inline-flex; align-items: center; gap: 0.25rem; }
+  .hours-legend i { width: 9px; height: 9px; aspect-ratio: auto; }
+  .hours-legend .what { margin-left: auto; }
   /* Own-scope "server" strip: stands in for the machine tiles (which are
      removed from the grid for scope=own unless STATS_OWN_SHOWS_MACHINE).
      A plain block above the grid, outside GridStack, so it never takes
@@ -599,7 +719,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .seg-ctrl button:hover { color: var(--fg); }
   .seg-ctrl button.active { background: var(--panel); color: var(--cyan);
     font-weight: 600; }
-  .usage-chart { width: 100%; flex: 1 1 auto; min-height: 9rem; min-width: 0;
+  .usage-chart { width: 100%; flex: 1 1 0; min-height: 9rem; min-width: 0; overflow: hidden;
     position: relative; }
   .usage-plot { width: 100%; height: 100%; min-width: 0; }
   .usage-note { color: var(--dim); font-size: var(--fs-xs);
@@ -715,11 +835,47 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   </div>
   <div class="subbar">
     <span class="subbar-title">Stats</span>
+    <span class="seg-label">range</span>
+    <div class="seg-ctrl" id="sb-range">
+      <button data-v="7">7d</button><button data-v="30" class="active">30d</button><button data-v="90">90d</button><button data-v="180">180d</button><button data-v="365">1y</button><button data-v="all">all</button><button data-v="custom">custom…</button>
+    </div>
+    <div id="sb-custom" class="sb-custom hidden" role="dialog" aria-label="custom range">
+      <label>from <input type="date" id="sb-from"></label>
+      <label>to <input type="date" id="sb-to"></label>
+      <span class="spans"><button type="button" data-span="month">this month</button><button type="button" data-span="lastmonth">last month</button><button type="button" data-span="quarter">this quarter</button><button type="button" data-span="year">this year</button><button type="button" data-span="lastyear">last year</button></span>
+      <span id="sb-custom-note" class="note"></span>
+      <button type="button" id="sb-custom-cancel">Cancel</button><button type="button" id="sb-custom-apply" class="primary">Apply</button>
+    </div>
+    <span class="seg-label">compare</span>
+    <div class="seg-ctrl" id="sb-compare"><button data-v="off" class="active">off</button><button data-v="prev">previous</button><button data-v="yoy">last year</button></div>
     <div class="subbar-right">
       <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; machine cards replaced by a coarse server status">your usage</span>
       <button id="reset-layout-btn" title="reset stats tile layout to defaults">↺ layout</button>
       <span id="status" class="pill live">live</span>
     </div>
+  </div>
+  <!-- Usage scope, second row: kind (client-side), "ran" stage chips (server
+       narrows to jobs that ran every chosen stage), click-to-filter chips
+       from the leaderboard, and the resolved window. -->
+  <div class="subbar subbar-usage">
+    <span class="seg-label">kind</span>
+    <span class="chips" id="sb-kind">
+      <button type="button" class="chip on" data-v="all">all</button>
+      <button type="button" class="chip" data-v="dictation"><i class="sw" style="background:#2ea043"></i>dictation</button>
+      <button type="button" class="chip" data-v="file"><i class="sw" style="background:#388bfd"></i>files</button>
+      <button type="button" class="chip" data-v="url"><i class="sw" style="background:#bb8009"></i>links</button>
+      <button type="button" class="chip" data-v="text"><i class="sw" style="background:#8957e5"></i>text</button>
+    </span>
+    <span class="seg-label">ran</span>
+    <span class="chips" id="sb-with">
+      <button type="button" class="chip" data-v="translating">translated</button>
+      <button type="button" class="chip" data-v="diarizing">diarized</button>
+      <button type="button" class="chip" data-v="separating">music separated</button>
+      <button type="button" class="chip" data-v="vad">silence skipped</button>
+    </span>
+    <span class="seg-label">filters</span>
+    <span class="chips" id="sb-filters"></span>
+    <span class="sb-summary" id="sb-summary"></span>
   </div>
 </header>
 
@@ -858,10 +1014,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Loaded models -->
   <div class="grid-stack-item" gs-id="models" gs-x="0" gs-y="17" gs-w="12" gs-h="4">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>Loaded models</h3>
+    <h3>Loaded models <span class="tag">· audio and RTF over the usage window</span></h3>
     <table class="tbl rcards"><thead><tr>
       <th>name</th><th>device</th><th>compute</th>
-      <th class="num">VRAM (MB)</th><th>state</th>
+      <th class="num">audio</th><th class="num">RTF</th>
+      <th class="num">VRAM (MB)</th><th class="num">disk</th><th>state</th>
       <th class="num">age</th><th class="num">idle</th>
       <th class="num">cold-load</th>
     </tr></thead><tbody id="models-rows"></tbody></table>
@@ -869,58 +1026,96 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
    </div></div>
   </div>
 
-  <!-- Usage over time -->
-  <div class="grid-stack-item" gs-id="usage" gs-x="0" gs-y="21" gs-w="12" gs-h="9">
-   <div class="grid-stack-item-content"><div class="card usage-card">
+  <!-- Usage headline: five numbers for the scope bar's window, deltas vs
+       the compare window. Fed by the usage document (static/stats.js). -->
+  <div class="grid-stack-item" gs-id="headline" gs-x="0" gs-y="21" gs-w="12" gs-h="2">
+   <div class="grid-stack-item-content"><div class="card usage-fed">
+    <h3>Usage <span class="tag" id="headline-tag"></span></h3>
+    <div class="hl-strip" id="headline-strip"><span class="empty">— loading —</span></div>
+   </div></div>
+  </div>
+
+  <!-- Usage over time: stacked bars by kind (lines for user/key/model/
+       stage), dashed compare line, legend, table twin, leaderboard. -->
+  <div class="grid-stack-item" gs-id="usage" gs-x="0" gs-y="23" gs-w="12" gs-h="10">
+   <div class="grid-stack-item-content"><div class="card usage-card usage-fed">
     <div class="usage-toolbar">
       <h3>Usage over time</h3>
+      <span id="usage-error" class="usage-error hidden"></span>
       <span class="spacer"></span>
-      <div class="usage-seg"><span class="seg-label">range</span>
-        <div class="seg-ctrl" id="usage-range">
-          <button data-v="7">7d</button>
-          <button data-v="30" class="active">30d</button>
-          <button data-v="90">90d</button>
-          <button data-v="0">all</button>
-        </div>
-      </div>
       <div class="usage-seg"><span class="seg-label">bucket</span>
         <div class="seg-ctrl" id="usage-bucket">
-          <button data-v="day" class="active">day</button>
+          <button data-v="auto" class="active">auto</button>
+          <button data-v="day">day</button>
           <button data-v="week">week</button>
+          <button data-v="month">month</button>
         </div>
       </div>
       <div class="usage-seg"><span class="seg-label">metric</span>
         <div class="seg-ctrl" id="usage-metric">
           <button data-v="audio_s" class="active">audio</button>
           <button data-v="words">words</button>
+          <button data-v="sessions">sessions</button>
           <button data-v="requests">requests</button>
           <button data-v="errors">errors</button>
+          <button data-v="proc_s">GPU s</button>
         </div>
       </div>
       <div class="usage-seg"><span class="seg-label">by</span>
         <div class="seg-ctrl" id="usage-by">
-          <button data-v="user" class="active">user</button>
+          <button data-v="kind" class="active">kind</button>
+          <button data-v="user">user</button>
           <button data-v="key">key</button>
+          <button data-v="model">model</button>
+          <button data-v="stage">stage</button>
         </div>
       </div>
+      <div class="usage-seg">
+        <div class="seg-ctrl"><button id="usage-table-btn" data-v="table" title="show the chart's numbers as a table (T)">table</button></div>
+      </div>
     </div>
-    <div class="usage-chart">
+    <div class="usage-chart" id="usage-chart-wrap" tabindex="0" aria-label="usage chart — arrow keys scrub the buckets, T toggles the table">
       <div id="usage-plot" class="usage-plot"></div>
       <div id="usage-tip" class="usage-tip"></div>
+      <div id="usage-empty" class="usage-empty hidden"></div>
     </div>
-    <div class="usage-note">Buckets are local days. Showing the top 8 by the selected metric; the rest are folded into “others”.</div>
-    <table class="tbl usage-board rcards"><thead><tr>
+    <div id="usage-table" class="usage-table hidden"></div>
+    <span id="usage-live" class="sr-only" aria-live="polite"></span>
+    <div class="usage-legend" id="usage-legend"></div>
+    <table class="tbl usage-board rcards"><thead id="usage-board-head"><tr>
       <th class="rank">#</th><th>name</th>
-      <th class="num">requests</th><th class="num">words</th>
-      <th class="num">audio</th><th class="num">err</th>
+      <th class="num">audio</th><th class="num">sessions</th><th class="num">requests</th>
+      <th class="num">audio</th><th class="num">GPU s</th><th class="num">RTF</th><th class="num">err</th>
     </tr></thead><tbody id="usage-board-rows">
-      <tr><td colspan="6" class="empty">— loading —</td></tr>
+      <tr><td colspan="9" class="empty">— loading —</td></tr>
     </tbody></table>
    </div></div>
   </div>
+
+  <!-- Pipeline stages: share of eligible runs + speed per optional stage. -->
+  <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="33" gs-w="6" gs-h="6">
+   <div class="grid-stack-item-content"><div class="card usage-fed">
+    <h3>Pipeline stages <span class="tag" id="stages-tag"></span></h3>
+    <div class="stages-bar" id="stages-bar"></div>
+    <table class="tbl stages"><thead><tr>
+      <th>stage</th><th class="num">runs</th><th class="num">of eligible</th>
+      <th class="num">audio</th><th class="num">GPU s</th><th class="num">RTF</th>
+    </tr></thead><tbody id="stages-rows"><tr><td colspan="6" class="empty">— loading —</td></tr></tbody></table>
+   </div></div>
+  </div>
+
+  <!-- Busy hours: weekday × hour of GPU seconds, quartile-levelled. -->
+  <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="6">
+   <div class="grid-stack-item-content"><div class="card usage-fed">
+    <h3>Busy hours <span class="tag" id="hours-tag"></span></h3>
+    <div class="hours" id="hours-grid"></div>
+    <div class="hours-legend" id="hours-legend"></div>
+   </div></div>
+  </div>
+
   <!-- Recent jobs (unified: transcribe / dictate / translate / download;
        running jobs from snap.jobs pinned on top) -->
-  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="30" gs-w="12" gs-h="6">
+  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="39" gs-w="12" gs-h="6">
    <div class="grid-stack-item-content"><div class="card">
     <div class="usage-toolbar">
       <h3>Recent jobs (<span id="rt-n">0</span> shown)</h3>
@@ -1133,11 +1328,8 @@ function applyScope(snap) {
     const userSel = $('rj-user');
     if (userSel) { userSel.value = ''; userSel.classList.add('hidden'); }
     const byUser = document.querySelector('#usage-by button[data-v="user"]');
-    const byKey = document.querySelector('#usage-by button[data-v="key"]');
-    if (byUser && byKey) {
-      byUser.classList.add('hidden');
-      if (byUser.classList.contains('active')) byKey.click();
-    }
+    if (byUser) byUser.classList.add('hidden');
+    if (typeof window._fwUsageReload === 'function') window._fwUsageReload();
   }
   if (snap.machine === false) {
     GS_LAYOUT_KEY += '-own';
@@ -1170,6 +1362,48 @@ function renderServer(server) {
     ? `${fmtBytes(g.mem_used_mb)} / ${fmtBytes(g.mem_total_mb)}` : '—';
   $('own-models').textContent = s.models_loaded ?? '—';
 }
+
+// Loaded-models table. Joins the usage document's per-model totals
+// (window.__statsUsage, published by static/stats.js after every usage load)
+// for the audio / RTF columns, and the snapshot's size provenance
+// (size_bytes / size_src / disk_bytes) for VRAM + disk.
+let lastModelsSnap = null;
+function renderModels(snap) {
+  lastModelsSnap = snap;
+  const modelLoads = snap.model_loads || {};
+  const usage = (window.__statsUsage && window.__statsUsage.models) || {};
+  const mrows = (snap.models || []).map(m => {
+    const warm = m.idle_sec < 60;
+    const cold = modelLoads[m.name];
+    const coldStr = cold
+      ? `${cold.first}s / ~${cold.last5_avg}s avg (${cold.count})`
+      : '—';
+    const u = usage[m.name];
+    const audio = u ? fmtSec(u.audio_s) : '—';
+    const rtf = u && u.rtf != null
+      ? `<span class="rtf${u.rtf > 0.35 ? ' slow' : ''}">${u.rtf.toFixed(2)}×</span>` : '—';
+    const srcBadge = m.size_src && m.size_src !== 'measured'
+      ? ` <span class="badge est" title="${m.size_src === 'disk' ? 'on-disk prior, never measured on this placement' : 'measured on another device / compute type'}">est</span>`
+      : '';
+    const disk = m.disk_bytes != null ? fmtBytes(m.disk_bytes / 1048576) : '—';
+    return `<tr>
+      <td data-label="name">${esc(m.name)}</td>
+      <td data-label="device">${esc(m.device || '—')}</td>
+      <td data-label="compute">${esc(m.compute_type || '—')}</td>
+      <td class="num" data-label="audio">${audio}</td>
+      <td class="num" data-label="RTF">${rtf}</td>
+      <td class="num" data-label="VRAM (MB)">${m.vram_mb != null ? m.vram_mb.toFixed(0) : '—'}${srcBadge}</td>
+      <td class="num" data-label="disk">${disk}</td>
+      <td data-label="state"><span class="badge ${warm ? 'warm' : 'cold'}">${warm ? 'warm' : 'cold'}</span></td>
+      <td class="num" data-label="age">${fmtSec(m.age_sec)}</td>
+      <td class="num" data-label="idle">${fmtSec(m.idle_sec)}</td>
+      <td class="num" data-label="cold-load">${coldStr}</td>
+    </tr>`;
+  });
+  $('models-rows').innerHTML = mrows.length
+    ? mrows.join('') : '<tr><td colspan="11" class="empty">— no models loaded —</td></tr>';
+}
+window._fwRerenderModels = () => { if (lastModelsSnap) renderModels(lastModelsSnap); };
 
 function render(snap) {
   applyScope(snap);
@@ -1300,26 +1534,7 @@ function render(snap) {
     ? rows.join('') : '<tr><td colspan="3" class="empty">— none yet —</td></tr>';
 
   // --- Loaded models ---
-  const modelLoads = snap.model_loads || {};
-  const mrows = (snap.models || []).map(m => {
-    const warm = m.idle_sec < 60;
-    const cold = modelLoads[m.name];
-    const coldStr = cold
-      ? `${cold.first}s / ~${cold.last5_avg}s avg (${cold.count})`
-      : '—';
-    return `<tr>
-      <td data-label="name">${esc(m.name)}</td>
-      <td data-label="device">${esc(m.device || '—')}</td>
-      <td data-label="compute">${esc(m.compute_type || '—')}</td>
-      <td class="num" data-label="VRAM (MB)">${m.vram_mb != null ? m.vram_mb.toFixed(0) : '—'}</td>
-      <td data-label="state"><span class="badge ${warm ? 'warm' : 'cold'}">${warm ? 'warm' : 'cold'}</span></td>
-      <td class="num" data-label="age">${fmtSec(m.age_sec)}</td>
-      <td class="num" data-label="idle">${fmtSec(m.idle_sec)}</td>
-      <td class="num" data-label="cold-load">${coldStr}</td>
-    </tr>`;
-  });
-  $('models-rows').innerHTML = mrows.length
-    ? mrows.join('') : '<tr><td colspan="8" class="empty">— no models loaded —</td></tr>';
+  renderModels(snap);
   // Preload diagnostics: the most likely failure of preloading is silence,
   // and "enabled but no worker" is exactly that — so it gets the red badge.
   const pl = snap.preload;

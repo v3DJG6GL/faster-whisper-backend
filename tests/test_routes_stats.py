@@ -680,9 +680,47 @@ def test_stats_page_loads_static_stats_js(client):
     r = client.get("/static/stats.js")
     assert r.status_code == 200
     js = r.text
-    assert "let GS_LAYOUT_KEY = 'whisper-stats-layout-v5'" in js
+    assert "let GS_LAYOUT_KEY = 'whisper-stats-layout-v6'" in js
     assert "const grid = GridStack.init({" in js
-    assert "function loadUsage()" in js
+    assert "function load()" in js
     # Nothing moved twice: the inline page no longer carries either block.
     assert "GridStack.init({" not in html
-    assert "function loadUsage()" not in html
+    assert "function load()" not in html
+
+
+def test_stats_page_usage_cards_and_scope_bar(client):
+    """The usage half: scope bar rows in the header, the three new tiles,
+    the usage card's v2 controls, and the models table's usage columns."""
+    html = client.get("/stats").text
+    for el in ('id="sb-range"', 'id="sb-compare"', 'id="sb-custom"', 'id="sb-kind"',
+               'id="sb-with"', 'id="sb-filters"', 'id="sb-summary"'):
+        assert el in html, el
+    for gs_id in ("headline", "usage", "stages", "hours", "recent"):
+        assert f'gs-id="{gs_id}"' in html, gs_id
+    assert 'id="usage-table-btn"' in html and 'id="usage-legend"' in html
+    assert 'aria-live="polite"' in html
+    for v in ("kind", "user", "key", "model", "stage"):
+        assert f'<button data-v="{v}"' in html.split('id="usage-by"')[1].split("</div>")[0], v
+    for v in ("proc_s", "sessions"):
+        assert f'data-v="{v}"' in html, v
+    assert "renderModels(snap)" in html and "colspan=\"11\"" in html
+    assert "window._fwRerenderModels" in html
+
+
+def test_stats_js_contract(client):
+    """static/stats.js has no unit harness; pin the behaviours the design
+    promises: URL-mirrored state, stacked bars via uPlot's bars path, a
+    keyboard-scrubbable chart with an aria-live readout, quartile levels for
+    the hour grid, the v6 layout key, and the own-scope reload hook."""
+    js = open("static/stats.js", encoding="utf-8").read()
+    for s in ("history.replaceState", "uPlot.paths.bars(", "function quantileBreaks",
+              "function parsePageQuery", "function pageQueryParams",
+              "'ArrowLeft', 'ArrowRight', 'Home', 'End'", "usage-live",
+              "window.__statsUsage", "window._fwUsageReload",
+              "whisper-stats-layout-v6", "compare", "renderStages", "renderHours",
+              "not available for your scope"):
+        assert s in js, s
+    # The stacked series draw top-of-stack first so lower segments paint over.
+    assert "series = rows.slice().reverse()" in js
+    # Colours follow the entity, never its rank.
+    assert "KIND_COLOR = { file:" in js

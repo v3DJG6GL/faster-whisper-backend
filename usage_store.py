@@ -1371,6 +1371,9 @@ def overview(
                 add(ent(k, label=k), day, cell)
                 for m in rest:
                     rest[m] -= cell[m]
+            # Float subtraction leaves dust; only a real remainder is an
+            # "unknown" kind (rows recorded before kinds existed).
+            rest = {m: (v if v > 1e-6 else 0) for m, v in rest.items()}
             if any(v > 0 for v in rest.values()):
                 add(ent(UNKNOWN_KIND, label=UNKNOWN_KIND), day, rest)
     elif by in ("user", "key"):
