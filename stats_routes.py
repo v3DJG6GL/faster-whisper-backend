@@ -1054,8 +1054,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     /* rows grow with the tile up to ~1.8rem so cells stay wider than tall */
     max-height: calc(2rem + 7 * 1.8rem + 9 * 2px); }
   .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; white-space: nowrap; overflow: visible; }
-  .hours.dense { gap: 1px; }
-  .hours.dense i { min-height: 0.3rem; border-radius: 1px; }
+  /* Dense rhythms (24 hour rows, 31 day columns): rows share whatever
+     height the tile has instead of insisting on a minimum, so the grid
+     never runs over the legend. */
+  .hours.dense { gap: 1px; grid-auto-rows: minmax(0, 1fr); overflow: hidden; }
+  .hours.dense i { min-height: 0; border-radius: 1px; }
   .hours.dense .dl { font-size: 0.55rem; }
   /* The rhythm switch floats right beside the window chip, so it stays
      put while the title phrase changes length. */
@@ -1070,7 +1073,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours .hb::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--base, 0);
     border-top: 1px dashed #4b5563; pointer-events: none; }
   .hours .rb { display: flex; align-items: center; position: relative; }
-  .hours .rb i { height: 55%; min-height: 4px; width: 0; background: #3a4757; border-radius: 0 1px 1px 0; }
+  .hours .rb i { height: 100%; min-height: 4px; width: 0; background: #3a4757; border-radius: 0 1px 1px 0; }
   .hours .rb::after { content: ""; position: absolute; top: 15%; bottom: 15%; left: var(--base, 0);
     border-left: 1px dashed #4b5563; pointer-events: none; }
   .hours .hb.hi i, .hours .rb.hi i { background: #4f6a8a; }
