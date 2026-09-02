@@ -1522,19 +1522,20 @@ function renderHours() {
   cells.forEach((v, i) => { hourTot[i % 24] += v; dayTot[Math.floor(i / 24)] += v; });
   const rg = lastDoc.range || {};
   const occ = weekdayCounts(rg.from, rg.to);
-  // One scale for both marginals: a bar is the hour's (weekday's) total
-  // over what a flat week would give it — 1× is average, and 2h reads the
-  // same length on both tracks. `base` is where 1× sits.
+  // Each marginal fills its own track (the longest bar is the full
+  // 2.4rem on both), so the two read alike at a glance; the dashed tick
+  // sits where a flat week's average (1×) falls on that track, so the
+  // lift above or below average is still visible.
   const winSum = cells.reduce((a, v) => a + v, 0);
   const hourIdx = hourTot.map(v => winSum > 0 ? v / (winSum / 24) : 0);
   const dayIdx = dayTot.map(v => winSum > 0 ? v / (winSum / 7) : 0);
-  const maxIdx = Math.max(1, ...hourIdx, ...dayIdx);
-  const base = (100 / maxIdx).toFixed(1) + '%';
-  const barLen = idx => (idx > 0 ? Math.max(4, idx / maxIdx * 100) : 0).toFixed(1) + '%';
+  const hMax = Math.max(1, ...hourIdx), dMax = Math.max(1, ...dayIdx);
+  const baseH = (100 / hMax).toFixed(1) + '%', baseD = (100 / dMax).toFixed(1) + '%';
+  const barLen = (idx, max) => (idx > 0 ? Math.max(4, idx / max * 100) : 0).toFixed(1) + '%';
   const slot = i => DOW[Math.floor(i / 24)] + ' ' + ('0' + (i % 24)).slice(-2) + '–' + ('0' + (i % 24 + 1)).slice(-2);
   // marginal row: the measure per hour of day (summed over the weekdays)
   let html = '<span></span>' + hourTot.map((v, h) =>
-    '<span class="hb' + (hourIdx[h] > 1 ? ' hi' : '') + '" data-h="' + h + '" data-tip="h" tabindex="0" role="img" style="--base:' + base + '" aria-label="' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' every weekday: ' + fmtM(v) + ' ' + ML + ', ' + hourIdx[h].toFixed(1) + '× an average hour"><i style="height:' + barLen(hourIdx[h]) + '"></i></span>').join('') + '<span></span>';
+    '<span class="hb' + (hourIdx[h] > 1 ? ' hi' : '') + '" data-h="' + h + '" data-tip="h" tabindex="0" role="img" style="--base:' + baseH + '" aria-label="' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' every weekday: ' + fmtM(v) + ' ' + ML + ', ' + hourIdx[h].toFixed(1) + '× an average hour"><i style="height:' + barLen(hourIdx[h], hMax) + '"></i></span>').join('') + '<span></span>';
   html += '<span></span>' + Array.from({ length: 24 }, (_, h) =>
     '<span class="hl" data-h="' + h + '">' + (h % 6 === 0 ? ('0' + h).slice(-2) : '') + '</span>').join('') + '<span></span>';
   for (let d = 0; d < 7; d++) {
@@ -1545,7 +1546,7 @@ function renderHours() {
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
         + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + '></i>';
     }
-    html += '<span class="rb' + (dayIdx[d] > 1 ? ' hi' : '') + '" data-d="' + d + '" data-tip="d" tabindex="0" role="img" style="--base:' + base + '" aria-label="' + DOW_LONG[d] + 's: ' + fmtM(dayTot[d]) + ' ' + ML + ', ' + dayIdx[d].toFixed(1) + '× an average weekday"><i style="width:' + barLen(dayIdx[d]) + '"></i></span>';
+    html += '<span class="rb' + (dayIdx[d] > 1 ? ' hi' : '') + '" data-d="' + d + '" data-tip="d" tabindex="0" role="img" style="--base:' + baseD + '" aria-label="' + DOW_LONG[d] + 's: ' + fmtM(dayTot[d]) + ' ' + ML + ', ' + dayIdx[d].toFixed(1) + '× an average weekday"><i style="width:' + barLen(dayIdx[d], dMax) + '"></i></span>';
   }
   el.innerHTML = html;
   // Hovering (or focusing) a cell lights its weekday and hour labels and
