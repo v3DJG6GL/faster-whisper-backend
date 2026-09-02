@@ -63,7 +63,7 @@
       "enabled": false
     },
     {
-      "description": "crane (mirror-ghcr.yml) is version+hash coupled: CRANE_SHA256 must be updated in the same commit as CRANE_VERSION, and the new release tarball must be uploaded to the instance's 'tools' generic package registry BEFORE the bump lands. Renovate can do neither, so never automerge — surface as a Dependency Dashboard checkbox handled by hand.",
+      "description": "crane (mirror-ghcr.yml) is version+hash coupled: CRANE_SHA256 must be updated in the same commit as CRANE_VERSION, and the new release tarball must be uploaded to the instance's 'tools' generic package registry BEFORE the bump lands. Renovate can do neither, so never automerge \u2014 surface as a Dependency Dashboard checkbox handled by hand.",
       "matchPackageNames": [
         "google/go-containerregistry"
       ],
@@ -77,6 +77,13 @@
       ],
       "automerge": false,
       "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Docker digest bumps: Renovate ages a digest by the tag's Docker Hub tag_last_pushed, not the digest's own date (renovatebot/renovate#38659), and rolling tags like python:3.14-slim are re-pushed every few days, so the 3-day release age restarts on every rebuild and a digest PR never clears renovate/stability-days. The tag itself was already vetted and its rebuilds are Debian security fixes we want quickly, so no release age for digest-only updates. Automerge still waits for all-ci.",
+      "matchUpdateTypes": [
+        "digest"
+      ],
+      "minimumReleaseAge": "0 days"
     },
     {
       "description": "yt-dlp chases YouTube's breaking changes \u2014 extractor fixes must land within a CI cycle, not after the 3-day release age. Own PR (ungrouped), no minimumReleaseAge, automerge. MUST STAY LAST IN THIS ARRAY: yt-dlp is date-versioned (requirements.txt pins yt-dlp>=2026.x), so the annual year rollover is a pep440 *major* and the blanket major rule above also matches it. Renovate merges every matching rule in array order with later keys winning, so from this position the fast lane survives the rollover; from its old position the January bump would have waited for a Dependency Dashboard checkbox \u2014 exactly the stale-extractor state this rule exists to prevent. dependencyDashboardApproval is spelled out for the same reason (last-wins is per property, so omitting it would leave the major rule's approval gate in force).",
