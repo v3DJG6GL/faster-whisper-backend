@@ -24,7 +24,7 @@ const GS_PRESET_KEY = 'whisper-stats-preset';
 const GS_PRESETS = {
   ops:   ['gpu', 'cpu', 'ram', 'process', 'activity', 'errors', 'latency',
           'endpoints', 'models', 'recent'],
-  usage: ['headline', 'usage', 'stages', 'hours', 'models', 'recent'],
+  usage: ['headline', 'usage', 'stages', 'hours', 'turnaround', 'failures', 'models', 'recent'],
   both:  null,      // every tile
 };
 let GS_LAYOUT_KEY = GS_KEY_BASE + ':both';
@@ -447,6 +447,7 @@ function validateCustom() {
 
 // ---------------------------------------------------------------- fetch
 let lastDoc = null;
+let lastTail = null;
 let _seq = 0;
 const usageCards = () => document.querySelectorAll('.usage-fed');
 
@@ -465,10 +466,35 @@ function queryString() {
   try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
   return '?' + p.toString();
 }
+function tailQuery() {
+  const p = new URLSearchParams();
+  if (Q.range === 'custom') { p.set('from', Q.from); p.set('to', Q.to); }
+  else if (Q.range === 'all') p.set('all', '1');
+  else p.set('days', Q.range);
+  if (Q.kind !== 'all') p.set('kind', Q.kind);
+  if (Q.key) p.set('key', Q.key);
+  if (Q.user) p.set('user', Q.user);
+  try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
+  return '?' + p.toString();
+}
+function loadTail(seq) {
+  fetch('/stats/tail' + tailQuery(), { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      if (seq !== _seq || !j) return;
+      lastTail = j;
+      // The usage document may still be in flight: its arrival renders
+      // everything (renderAll), so only refresh the tail-fed cards when it
+      // is already here.
+      if (lastDoc) { renderHeadline(); renderTurnaround(); renderFailures(); }
+    })
+    .catch(err => console.warn('[stats] tail fetch failed', err));
+}
 function load() {
   renderChips(); syncUrl();
   usageCards().forEach(el => el.classList.add('updating'));
   const mine = ++_seq;
+  loadTail(mine);
   fetch('/stats/usage' + queryString(), { cache: 'no-store' })
     .then(r => {
       if (r.status === 403) {
@@ -523,9 +549,92 @@ function renderAll() {
   renderBoard();
   renderStages();
   renderHours();
+  renderTurnaround();
+  renderFailures();
   publishModels();
   renderChart();
   renderTable();
+}
+
+// ---- turnaround: fixed-edge histogram of end-to-end time (proc + wait),
+// the queue-wait share hatched inside each bar, p50 / p95 marked; wait
+// p50 / p95 by day as a small line beneath.
+function fmtEdge(s) { return s >= 60 ? (s / 60) + 'm' : s + 's'; }
+function renderTurnaround() {
+  const el = $('turnaround-hist'); if (!el) return;
+  const t = lastTail && lastTail.turnaround;
+  const tag = $('turnaround-tag'); const note = $('turnaround-note'); const wv = $('turnaround-wait');
+  if (!t || !t.n) {
+    el.innerHTML = '<div class="usage-empty" style="position:static">No finished jobs in this window.</div>';
+    if (tag) tag.textContent = ''; if (note) note.textContent = ''; if (wv) wv.innerHTML = '';
+    return;
+  }
+  if (tag) tag.textContent = 'p50 ' + fmtDur(t.p50) + ' · p95 ' + fmtDur(t.p95) + ' · ' + fmtCount(t.n) + ' jobs';
+  const W = 420, H = 110, pl = 6, pb = 16, pt = 10, iw = W - pl * 2, ih = H - pb - pt;
+  const n = t.edges_s.length, bw = iw / n, mx = Math.max(1, ...t.counts);
+  let s = '<defs><pattern id="ta-hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+    + '<line x1="0" y1="0" x2="0" y2="4" stroke="#f0f6fc" stroke-width="1.2" opacity=".55"/></pattern></defs>';
+  t.counts.forEach((c, i) => {
+    const h = c / mx * ih, y = pt + ih - h, x = pl + i * bw + 1;
+    const share = t.wait_share[i] || 0;
+    const lbl = fmtEdge(t.edges_s[i]) + (i + 1 < n ? '–' + fmtEdge(t.edges_s[i + 1]) : '+');
+    s += '<rect x="' + x + '" y="' + y + '" width="' + (bw - 2) + '" height="' + h + '" fill="#388bfd" rx="1"><title>'
+      + esc(lbl) + ': ' + c + ' jobs · ' + Math.round(share * 100) + ' % of that time was queue wait</title></rect>';
+    if (share > 0) s += '<rect x="' + x + '" y="' + (pt + ih - h * share) + '" width="' + (bw - 2) + '" height="' + (h * share) + '" fill="url(#ta-hatch)" rx="1"/>';
+    if (i % 2 === 0) s += '<text x="' + (x + bw / 2 - 1) + '" y="' + (H - 3) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
+  });
+  const xOf = (v) => {
+    // position within the bucket that contains v (linear inside the bucket)
+    let i = 0; for (let j = 0; j < n; j++) if (v >= t.edges_s[j]) i = j;
+    const lo = t.edges_s[i], hi = i + 1 < n ? t.edges_s[i + 1] : lo * 2 || 1;
+    return pl + i * bw + Math.min(1, Math.max(0, (v - lo) / Math.max(1e-9, hi - lo))) * bw;
+  };
+  [['p50', t.p50], ['p95', t.p95]].forEach(([k, v]) => {
+    const x = xOf(v);
+    s += '<line class="q" x1="' + x + '" x2="' + x + '" y1="' + pt + '" y2="' + (pt + ih) + '"/>'
+      + '<text class="q" x="' + (x + 3) + '" y="' + (pt + 8) + '">' + k + ' ' + esc(fmtDur(v)) + '</text>';
+  });
+  el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' + s + '</svg>';
+  const w = lastTail.wait || {};
+  if (wv) {
+    const days = w.by_day || [];
+    const maxW = Math.max(0.001, ...days.map(d => d.p95));
+    const pts = (key) => days.map((d, i) => (days.length > 1 ? i / (days.length - 1) * 100 : 50).toFixed(1) + ',' + (20 - d[key] / maxW * 18).toFixed(1)).join(' ');
+    wv.innerHTML = '<span>queue wait p50 <b>' + esc(fmtDur(w.p50 || 0)) + '</b> · p95 <b>' + esc(fmtDur(w.p95 || 0)) + '</b> · max ' + esc(fmtDur(w.max || 0)) + '</span>'
+      + (days.length > 1 ? '<svg viewBox="0 0 100 22" preserveAspectRatio="none"><polyline points="' + pts('p95') + '" fill="none" stroke="#bb8009" stroke-width="1" vector-effect="non-scaling-stroke"/><polyline points="' + pts('p50') + '" fill="none" stroke="#388bfd" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg><span>p50 / p95 by day</span>' : '');
+  }
+  if (note) {
+    const r = lastTail.range || {};
+    note.textContent = 'Hatched = time spent waiting for a GPU slot. Turnaround = processing + wait.'
+      + (r.truncated_to_days ? ' Per-job rows cover the last ' + r.truncated_to_days + ' days only.' : '');
+  }
+}
+
+// ---- failures: by stage · class, terminal + soft-failed, with counts.
+function renderFailures() {
+  const el = $('failures-list'); if (!el) return;
+  const f = lastTail && lastTail.failures;
+  const tag = $('failures-tag');
+  if (!f) { el.innerHTML = '<span class="empty">— loading —</span>'; return; }
+  if (tag) tag.textContent = f.failed + ' of ' + fmtCount(f.jobs) + ' jobs failed'
+    + (f.jobs ? ' · ' + (f.failed / f.jobs * 100).toFixed(1) + ' %' : '');
+  const rows = [];
+  Object.entries(f.by_stage || {}).forEach(([stage, classes]) => {
+    Object.entries(classes).forEach(([cls, n]) => rows.push({ stage, cls, n }));
+  });
+  if (!rows.length) {
+    el.innerHTML = '<span class="empty">No failures in this window' + (Q.kind !== 'all' ? ' for ' + KIND_LABEL[Q.kind] : '') + '.</span>';
+    return;
+  }
+  rows.sort((a, b) => b.n - a.n || a.stage.localeCompare(b.stage));
+  const total = rows.reduce((a, r) => a + r.n, 0);
+  const cmp = lastTail.compare && lastTail.compare.errors;
+  el.innerHTML = rows.map(r =>
+    '<div><span><span class="stage-sw" style="background:' + (STAGE_COLOR[r.stage] || '#6e7681') + '"></span>'
+    + esc(r.stage === '(job)' ? 'job' : r.stage) + ' · <span class="cls">' + esc(r.cls) + '</span></span>'
+    + '<span class="n"><b>' + r.n + '</b> · ' + Math.round(r.n / total * 100) + ' %</span>'
+    + '<div class="m"><i style="width:' + (r.n / total * 100).toFixed(0) + '%"></i></div></div>').join('')
+    + (cmp && lastDoc && lastDoc.compare ? '<div class="meta">' + cmp.cur + ' failed jobs vs ' + cmp.prev + ' ' + esc(cmpWord()) + '</div>' : '');
 }
 
 // Headline strip: five numbers for the window (+ deltas vs the compare
@@ -549,11 +658,20 @@ function renderHeadline() {
     return '<span class="delta ' + (good ? 'good' : bad ? 'bad' : 'flat') + '">'
       + arrow + ' ' + Math.abs(d).toFixed(0) + ' % vs ' + cmpWord() + '</span>';
   };
+  const ta = lastTail && lastTail.turnaround;
+  const tc = lastTail && lastTail.compare;
+  const taDelta = (ta && tc && lastDoc.compare)
+    ? '<span class="delta ' + (tc.turnaround_p50.delta < -0.05 ? 'good' : tc.turnaround_p50.delta > 0.05 ? 'bad' : 'flat') + '">'
+      + (tc.turnaround_p50.delta > 0.05 ? '▲' : tc.turnaround_p50.delta < -0.05 ? '▼' : '—') + ' '
+      + fmtDur(Math.abs(tc.turnaround_p50.delta)) + ' vs ' + cmpWord() + '</span>'
+    : '';
   const cells = [
     ['audio', fmtDur(tot.audio_s), '', delta(tot.audio_s, cmp && cmp.audio_s)],
     ['sessions', fmtCount(tot.sessions), '· ' + fmtCount(tot.requests) + ' requests',
      delta(tot.sessions, cmp && cmp.sessions)],
     ['failed', (failed * 100).toFixed(1), '%', delta(failed, cfailed, true)],
+    ['turnaround p50', ta && ta.n ? fmtDur(ta.p50) : '—',
+     ta && ta.n ? '· p95 ' + fmtDur(ta.p95) : '', taDelta],
     ['RTF', rtf == null ? '—' : rtf.toFixed(2), rtf == null ? '' : '× · ' + (1 / rtf).toFixed(0) + '× live',
      delta(rtf, crtf, true)],
     ['GPU seconds', fmtDur(tot.proc_s), '', delta(tot.proc_s, cmp && cmp.proc_s)],

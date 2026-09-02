@@ -961,6 +961,27 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .rj-stage-row .det .badge.err { margin-left: 0.3rem; }
   .rj-tl-axis { font: var(--fs-xs) var(--font-mono); color: var(--dim);
     margin: 0.15rem 0 0 7rem; }
+  /* --- Live rings: scrubber + range mode --- */
+  header #ring-scrub { width: 7rem; accent-color: var(--cyan); vertical-align: middle; }
+  header #ring-scrub.off { opacity: .35; }
+  .spark-head .win { color: var(--cyan); margin-left: 0.4rem; text-transform: none; letter-spacing: 0; }
+  /* --- Turnaround histogram (inline SVG) --- */
+  .ta-hist { flex: 1 1 auto; min-height: 5rem; position: relative; }
+  .ta-hist svg { width: 100%; height: 100%; display: block; overflow: visible; }
+  .ta-hist text { font-family: var(--font-mono); font-size: 10px; fill: var(--dim); }
+  .ta-hist text.q { fill: var(--bold); }
+  .ta-hist line.q { stroke: var(--bold); stroke-dasharray: 2 2; }
+  .ta-wait { display: flex; gap: 0.6rem; align-items: center; font: var(--fs-xs) var(--font-mono);
+    color: var(--dim); margin-top: 0.2rem; }
+  .ta-wait svg { width: 9rem; height: 1.4rem; display: block; }
+  /* --- Failures list --- */
+  .fl { display: flex; flex-direction: column; gap: 0.3rem; font-size: var(--fs-sm); overflow: auto; }
+  .fl > div { display: grid; grid-template-columns: 1fr auto; gap: 0 0.6rem; align-items: center; }
+  .fl .n { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--dim); }
+  .fl .n b { color: var(--bold); }
+  .fl .m { grid-column: 1 / -1; height: 4px; background: #21262d; border-radius: 2px; overflow: hidden; }
+  .fl .m i { display: block; height: 100%; background: var(--red); }
+  .fl .cls { font-family: var(--font-mono); font-size: var(--fs-xs); }
   .rj-stages { padding: 0.25rem 0.25rem 0.35rem; }
   .rj-stage-row { display: flex; align-items: center; gap: 0.5rem;
     font-size: var(--fs-xs); margin: 0.15rem 0; }
@@ -1041,6 +1062,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button id="edit-layout-btn" aria-pressed="false" title="drag tile titles and resize corners (E); Alt+arrows move, Alt+Shift+arrows resize the focused tile">✎ edit layout</button>
       <span id="layout-live" class="sr-only" aria-live="polite"></span>
       <button id="reset-layout-btn" title="reset this preset's tile layout to defaults">↺ layout</button>
+      <span class="seg-label">rings</span>
+      <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_HISTORY_SAMPLE_S)">
+        <button data-v="live" class="active">live</button><button data-v="3600">1h</button><button data-v="86400">24h</button><button data-v="604800">7d</button>
+      </div>
+      <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the 2-minute ring (Space pauses, L returns to live)" aria-label="scrub the live rings">
       <span id="status" class="pill live">live</span>
     </div>
   </div>
@@ -1304,9 +1330,30 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
    </div></div>
   </div>
 
+  <!-- Turnaround: end-to-end time per job bucketed on fixed edges, the
+       queue-wait share hatched inside each bar, p50 / p95 marked, and the
+       wait p50/p95 by day beneath. Fed by /stats/tail (static/stats.js). -->
+  <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="39" gs-w="6" gs-h="5">
+   <div class="grid-stack-item-content"><div class="card usage-fed">
+    <h3>Turnaround <span class="tag" id="turnaround-tag"></span></h3>
+    <div class="ta-hist" id="turnaround-hist"></div>
+    <div class="ta-wait" id="turnaround-wait"></div>
+    <div class="meta" id="turnaround-note"></div>
+   </div></div>
+  </div>
+
+  <!-- Failures by stage and class: terminal failures from the job rows plus
+       soft-failed stages (the job went on without them). -->
+  <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="39" gs-w="6" gs-h="5">
+   <div class="grid-stack-item-content"><div class="card usage-fed">
+    <h3>Failures <span class="tag" id="failures-tag"></span></h3>
+    <div class="fl" id="failures-list"><span class="empty">— loading —</span></div>
+   </div></div>
+  </div>
+
   <!-- Recent jobs (unified: transcribe / dictate / translate / download;
        running jobs from snap.jobs pinned on top) -->
-  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="39" gs-w="12" gs-h="6">
+  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="44" gs-w="12" gs-h="6">
    <div class="grid-stack-item-content"><div class="card">
     <div class="usage-toolbar">
       <h3>Recent jobs (<span id="rt-n">0</span> shown)</h3>
@@ -1415,12 +1462,137 @@ const READOUTS = [
   ['lat-now', 'lat_p50', v => v.toFixed(0) + ' ms'],
 ];
 function onSparkHover(u) {
+  if (liveMode !== 'live') return;
   const idx = u.cursor.idx;
   const ts = (idx == null || idx < 0 || idx >= histX.length) ? null : histX[idx];
   if (ts === frozenTs) return;
   frozenTs = ts;
   applyFreeze();
 }
+// --- ring scrubber + live/range mode --------------------------------------
+// The scrubber drags the shared crosshair across the 2-minute ring (every
+// spark follows through the sync key) and freezes the readouts there; Space
+// pauses at the newest sample, L returns to live. In range mode the sparks
+// show the sampled history from /stats/history instead of the ring
+// (refreshed each minute) and the scrubber is off.
+let liveMode = 'live';          // 'live' | seconds of history window
+let rangeTimer = null;
+const SPARK_METRIC = { gpu_util: 'gpu_util', gpu_mem: 'gpu_mem_mb', gpu_temp: 'gpu_temp',
+                       cpu: 'cpu_pct', ram: 'ram_pct' };
+const SPARK_HEAD = { gpu_util: 'gpu-util-now', gpu_mem: 'gpu-mem-now', gpu_temp: 'gpu-temp-now',
+                     cpu: 'cpu-now', ram: 'ram-now' };
+// spark name → the ring in `hist` that feeds it in live mode
+const SPARK_RING = { gpu_util: 'gpu_util', gpu_mem: 'gpu_mem_pct', gpu_temp: 'gpu_temp',
+                     cpu: 'cpu', ram: 'ram_pct' };
+function scrubTo(idx) {
+  if (liveMode !== 'live' || !histX.length) return;
+  const i = Math.max(0, Math.min(histX.length - 1, idx));
+  frozenTs = histX[i];
+  applyFreeze();
+  const any = Object.values(sparks).find(Boolean);
+  if (any) { try { any.setCursor({ left: any.valToPos(histX[i], 'x'), top: 8 }); } catch (_) {} }
+  const sc = $('ring-scrub'); if (sc) sc.value = String(Math.round(i / Math.max(1, histX.length - 1) * 119));
+  refreshStatusPill();
+}
+function backToLive() {
+  frozenTs = null;
+  applyFreeze();
+  // Park the shared crosshair off-plot too: a cursor left on a sample is
+  // re-resolved on every setData and would freeze the readouts again.
+  const any = Object.values(sparks).find(Boolean);
+  if (any) { try { any.setCursor({ left: -10, top: -10 }); } catch (_) {} }
+  const sc = $('ring-scrub'); if (sc) sc.value = '119';
+  refreshStatusPill();
+}
+function refreshStatusPill() {
+  if (!statusEl) return;
+  if (frozenTs != null && histX.length) {
+    const behind = Math.max(0, histX[histX.length - 1] - frozenTs);
+    statusEl.className = 'pill paused';
+    statusEl.innerHTML = 'paused · ' + behind + ' s behind · <u style="cursor:pointer">back to live</u>';
+    return;
+  }
+  statusEl.className = 'pill live';
+  statusEl.textContent = liveMode !== 'live' ? 'live · rings show ' + rangeLabel(liveMode) : 'live';
+}
+// Range mode: the readouts show the window's last / max from
+// /stats/history; render() re-applies them after its live writes.
+const rangeHeads = {};
+function applyRangeHeads() {
+  for (const [key, id] of Object.entries(SPARK_HEAD)) {
+    const el = $(id); if (el && rangeHeads[key] != null) el.textContent = rangeHeads[key];
+  }
+}
+function rangeLabel(secs) {
+  return secs === '3600' ? '1h' : secs === '86400' ? '24h' : secs === '604800' ? '7d' : 'live';
+}
+function loadRangeSparks() {
+  if (liveMode === 'live') return;
+  const to = Math.floor(Date.now() / 1000), from = to - Number(liveMode);
+  Object.entries(SPARK_METRIC).forEach(([key, metric]) => {
+    const u = sparks[key]; if (!u) return;
+    fetch('/stats/history?metric=' + encodeURIComponent(metric) + '&from=' + from + '&to=' + to,
+          { cache: 'no-store' })
+      .then(r => r.ok ? r.json() : null)
+      .then(j => {
+        if (!j || liveMode === 'live') return;
+        u.setData([j.t, j.avg], true);
+        const last = j.avg.length ? j.avg[j.avg.length - 1] : null;
+        const mx = j.max.length ? Math.max(...j.max) : null;
+        rangeHeads[key] = (last == null ? '—' : Math.round(last)) + ' · max ' + (mx == null ? '—' : Math.round(mx));
+        const head = $(SPARK_HEAD[key]);
+        if (head) head.textContent = rangeHeads[key];
+      })
+      .catch(() => {});
+  });
+}
+function setLiveMode(v) {
+  liveMode = v;
+  const seg = $('live-range');
+  if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
+  const sc = $('ring-scrub'); if (sc) { sc.disabled = v !== 'live'; sc.classList.toggle('off', v !== 'live'); }
+  document.querySelectorAll('.spark-head .win').forEach(el => el.remove());
+  if (rangeTimer) { clearInterval(rangeTimer); rangeTimer = null; }
+  if (v === 'live') {
+    for (const k in rangeHeads) delete rangeHeads[k];
+    backToLive();
+    Object.entries(SPARK_RING).forEach(([k, ring]) => setData(sparks[k], hist[ring]));
+    if (statusEl) { statusEl.className = 'pill live'; statusEl.textContent = 'live'; }
+    return;
+  }
+  frozenTs = null; applyFreeze();
+  document.querySelectorAll('.spark-head .spark-label').forEach(el => {
+    const w = document.createElement('span'); w.className = 'win'; w.textContent = rangeLabel(v);
+    el.appendChild(w);
+  });
+  loadRangeSparks();
+  rangeTimer = setInterval(loadRangeSparks, 60000);
+  refreshStatusPill();
+}
+// Wired from the SSE section, once `$` and statusEl exist (this block
+// sits above their declarations in the file).
+function wireRingControls() {
+  const seg = $('live-range');
+  if (seg) seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button'); if (b && seg.contains(b)) setLiveMode(b.dataset.v);
+  });
+  const sc = $('ring-scrub');
+  if (sc) {
+    sc.addEventListener('input', () => scrubTo(Math.round(Number(sc.value) / 119 * Math.max(0, histX.length - 1))));
+    sc.addEventListener('change', () => { if (Number(sc.value) >= 119) backToLive(); });
+  }
+  if (statusEl) statusEl.addEventListener('click', (e) => { if (e.target.tagName === 'U') backToLive(); });
+  document.addEventListener('keydown', (e) => {
+    if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+    if (e.key === ' ' && liveMode === 'live') {
+      e.preventDefault();
+      if (frozenTs == null) scrubTo(histX.length - 1); else backToLive();
+    } else if (e.key === 'l' || e.key === 'L') {
+      if (liveMode !== 'live') setLiveMode('live'); else backToLive();
+    }
+  });
+}
+
 function applyFreeze() {
   const idx = frozenTs == null ? -1 : histX.indexOf(frozenTs);
   if (idx < 0) {
@@ -1521,7 +1693,7 @@ function ensureSparks() {
 }
 
 function setData(u, ys) {
-  if (!u) return;
+  if (!u || liveMode !== 'live') return;   // range mode: /stats/history owns the sparks
   // uPlot wants nulls preserved for spanGaps; convert undefined -> null.
   const xs = histX.slice();
   const yClean = ys.map(v => (v == null ? null : v));
@@ -1749,10 +1921,12 @@ function render(snap) {
       gateEl.innerHTML = '<span class="empty">GPU gate not built yet — no inference so far</span>';
     } else {
       const q = gate.queue_depth || 0;
+      const busy = snap.slot_busy || {};
       gateEl.innerHTML =
         `<b>GPU slots</b> ${gate.held} / ${gate.capacity} held &nbsp; ` +
         `<b>queue</b> <span class="${q ? 'warn' : ''}">${q}</span>` +
-        (q ? ` &nbsp; <b>oldest wait</b> ${fmtSec(gate.oldest_wait_s)}` : '');
+        (q ? ` &nbsp; <b>oldest wait</b> ${fmtSec(gate.oldest_wait_s)}` : '') +
+        (busy.samples ? ` &nbsp; <b>busy</b> ${busy.pct_15m}% of 15 min` : '');
     }
   }
   const totalReq = Object.values(snap.requests || {}).reduce((a, b) => a + b, 0);
@@ -1814,8 +1988,10 @@ function render(snap) {
       `plans <b>${pl.plans}</b> · warm <b>${pl.warm}</b> · queue <b>${pl.queue_depth}</b>`;
   }
 
-  // Frozen readouts win over the live values just written.
-  if (frozenTs != null) applyFreeze();
+  // Frozen readouts win over the live values just written; so do the
+  // range-mode readouts.
+  if (frozenTs != null) { applyFreeze(); refreshStatusPill(); }
+  if (liveMode !== 'live') applyRangeHeads();
 
   // --- Recent jobs (unified) ---
   renderJobs(snap);
@@ -2126,6 +2302,7 @@ function renderJobs(snap) {
 let es = null;
 let recoveryTimer = null;
 const statusEl = $('status');
+wireRingControls();
 
 function setStatus(text, cls) {
   statusEl.textContent = text;
@@ -2141,7 +2318,8 @@ function openStream() {
       const snap = JSON.parse(e.data);
       pushHistory(snap);
       render(snap);
-      setStatus('live', 'live');
+      if (frozenTs == null && liveMode === 'live') setStatus('live', 'live');
+      else refreshStatusPill();
     } catch (err) {
       console.warn('[stats] parse error', err);
     }

@@ -751,7 +751,7 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
     assert "sync: { key: 'live'" in html
     assert "hooks: { setCursor: [onSparkHover] }" in html
     assert "histX.indexOf(frozenTs)" in html
-    assert "if (frozenTs != null) applyFreeze();" in html
+    assert "if (frozenTs != null) { applyFreeze(); refreshStatusPill(); }" in html
 
 
 def test_lite_payload_and_activity_card_carry_the_gpu_gate(client):
@@ -916,3 +916,23 @@ def test_stats_page_jobs_table_v2(client):
     import web_common
     js = web_common.ACTIVITY_CLUSTER_JS
     assert "window._fwCancelJob = function(pid, c)" in js
+
+
+def test_stats_page_ring_scrubber_range_mode_and_tail_cards(client):
+    """Phase 3.2: the ring scrubber and live/range seg in the header, the
+    sparks fed from /stats/history in range mode, the turnaround and
+    failures tiles fed from /stats/tail, turnaround in the headline."""
+    html = client.get("/stats").text
+    js = open("static/stats.js", encoding="utf-8").read()
+    assert 'id="live-range"' in html and 'id="ring-scrub"' in html
+    assert "fetch('/stats/history?metric='" in html
+    assert "if (!u || liveMode !== 'live') return;" in html
+    assert "function scrubTo(" in html and "function backToLive(" in html
+    assert "paused · ' + behind + ' s behind" in html
+    assert "busy.pct_15m" in html
+    for gs_id in ("turnaround", "failures"):
+        assert f'gs-id="{gs_id}"' in html, gs_id
+    for s in ("fetch('/stats/tail' + tailQuery()", "function renderTurnaround",
+              "function renderFailures", "'turnaround', 'failures'", "wait_share",
+              "turnaround p50"):
+        assert s in js, s
