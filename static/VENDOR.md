@@ -119,3 +119,7 @@ re-download is reproducible and the recorded digests stay meaningful.
 
 Then bump the version in this file. Do not hand-edit the JS or CSS — keep
 them byte-identical to the upstream release so `git blame` stays meaningful.
+
+## Not vendored
+
+`stats.js` is first-party — the /stats page script (GridStack layout + usage section); it lives here only to share the cacheable `/static` mount.

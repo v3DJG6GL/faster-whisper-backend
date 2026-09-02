@@ -578,7 +578,8 @@ def test_stats_page_ships_own_scope_chrome(client):
     assert 'id="scope-pill"' in html and 'your usage' in html
     assert "GS_LAYOUT_KEY += '-own'" in html
     assert "if (snap.machine === false) {" in html
-    assert "not available for your scope" in html
+    js = open("static/stats.js", encoding="utf-8").read()
+    assert "not available for your scope" in js
 
 
 def test_stats_page_removes_machine_tiles_for_own(client):
@@ -663,3 +664,25 @@ def test_snapshot_models_carry_size_meta(client, monkeypatch):
     finally:
         system_stats.unregister_loaded_model("large-v3")
         stats_routes._size_meta_cache.clear()
+
+
+def test_stats_page_loads_static_stats_js(client):
+    """The GridStack layout and the usage section live in static/stats.js,
+    linked with the build version so the cacheable /static mount serves a
+    fresh copy per build, and placed BEFORE the inline dashboard IIFE that
+    reads its globals."""
+    import build_info
+    html = client.get("/stats").text
+    tag = f'<script src="/static/stats.js?v={build_info.APP_VERSION.replace("+", ".")}"></script>'
+    assert tag in html
+    assert "__ASSET_V__" not in html
+    assert html.index(tag) < html.index("function applyScope(")
+    r = client.get("/static/stats.js")
+    assert r.status_code == 200
+    js = r.text
+    assert "let GS_LAYOUT_KEY = 'whisper-stats-layout-v5'" in js
+    assert "const grid = GridStack.init({" in js
+    assert "function loadUsage()" in js
+    # Nothing moved twice: the inline page no longer carries either block.
+    assert "GridStack.init({" not in html
+    assert "function loadUsage()" not in html
