@@ -570,6 +570,22 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .err-strip .seg.hot b { color: var(--red); }
   .empty { color: var(--dim); font-style: italic; }
   .hidden { display: none !important; }
+  /* Own-scope "server" strip: stands in for the machine tiles (which are
+     removed from the grid for scope=own unless STATS_OWN_SHOWS_MACHINE).
+     A plain block above the grid, outside GridStack, so it never takes
+     part in the saved layout. */
+  .own-server { max-width: 68.75rem; margin: 0.875rem auto 0; padding: 0 0.875rem;
+    box-sizing: border-box; }
+  .own-server .card { flex-direction: row; flex-wrap: wrap; align-items: baseline;
+    gap: 0.4rem 1.4rem; height: auto; }
+  .own-server .card h3 { margin: 0; cursor: default; flex-basis: 100%; }
+  .own-server .stat { display: inline-flex; align-items: baseline; gap: 0.4rem;
+    font-size: var(--fs-sm); color: var(--dim); }
+  .own-server .stat b { color: var(--bold); font-size: var(--fs-lg);
+    font-variant-numeric: tabular-nums; }
+  .own-server .stat .badge.warm { color: var(--green); border-color: #1f4d2a; }
+  .own-server .stat .badge.busy { color: var(--yellow); border-color: #4d3e1f; }
+  header .pill.scope { color: #fff; background: #1f6feb; border: 1px solid #1f6feb; }
   /* Usage-over-time tile — a full-width GridStack item. The card fills the
      whole tile (height:100%) and the chart flexes to absorb any slack, so the
      tile is never taller than the card (no dead clickable space below) and
@@ -709,11 +725,25 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <div class="subbar">
     <span class="subbar-title">Stats</span>
     <div class="subbar-right">
+      <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; machine cards replaced by a coarse server status">your usage</span>
       <button id="reset-layout-btn" title="reset stats tile layout to defaults">↺ layout</button>
       <span id="status" class="pill live">live</span>
     </div>
   </div>
 </header>
+
+<!-- Own-scope server strip (scope=own without STATS_OWN_SHOWS_MACHINE): the
+     coarse block the payload's `server` key carries. Hidden until the first
+     snapshot says machine=false. -->
+<div id="own-server" class="own-server hidden">
+  <div class="card">
+    <h3>Server</h3>
+    <span class="stat">GPU <b id="own-gpu">—</b></span>
+    <span class="stat">VRAM <b id="own-vram">—</b></span>
+    <span class="stat">models loaded <b id="own-models">—</b></span>
+    <span class="stat" style="color:var(--dim)">machine cards are hidden for your scope — an admin can enable “Own-scope users see machine cards” in /settings</span>
+  </div>
+</div>
 
 <div id="grid" class="grid">
  <div class="grid-stack">
@@ -934,7 +964,10 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 // --- GridStack init: drag-to-reorder + click-to-resize tiles ---------------
 // Layout state persists in localStorage; [↺ layout] in the header clears it.
 // uPlot sparklines re-fit on resizestop via setSize().
-const GS_LAYOUT_KEY = 'whisper-stats-layout-v5';
+// `let`: applyScope() appends '-own' before the machine tiles are removed
+// for scope=own, so an own-scope layout never restores tiles it lacks and an
+// admin's layout in the same browser is left alone.
+let GS_LAYOUT_KEY = 'whisper-stats-layout-v5';
 const grid = GridStack.init({
   column: 12,
   // Responsive: collapse to a single stacked column on phones/narrow tablets.
@@ -1147,7 +1180,79 @@ function setBar(barEl, pct) {
 }
 
 // --- Render ----------------------------------------------------------------
+// --- Scope-aware chrome (first snapshot only) --------------------------------
+// The payload's `scope` ("own"|"all") and `machine` (bool) are decided
+// server-side (StatsScope). scope=own hides the per-user controls — the only
+// user is the viewer — and machine=false swaps the machine tiles for the
+// #own-server strip. Applied once: the scope cannot change mid-stream
+// without the server re-resolving it, and a re-resolve that narrows the
+// scope reloads the page (below).
+const MACHINE_TILES = ['gpu', 'cpu', 'ram', 'process', 'activity', 'errors',
+                       'latency', 'endpoints', 'models'];
+let scopeApplied = null;
+function applyScope(snap) {
+  const sig = (snap.scope || 'all') + ':' + (snap.machine === false ? 0 : 1);
+  if (scopeApplied === sig) return;
+  if (scopeApplied !== null) { location.reload(); return; }   // scope moved
+  scopeApplied = sig;
+  if (snap.scope === 'own') {
+    document.body.classList.add('scope-own');
+    $('scope-pill').classList.remove('hidden');
+    // The per-user filter and the by-user leaderboard would list exactly
+    // one person; the server refuses by=user for own scope anyway.
+    const userSel = $('rj-user');
+    if (userSel) { userSel.value = ''; userSel.classList.add('hidden'); }
+    const byUser = document.querySelector('#usage-by button[data-v="user"]');
+    const byKey = document.querySelector('#usage-by button[data-v="key"]');
+    if (byUser && byKey) {
+      byUser.classList.add('hidden');
+      if (byUser.classList.contains('active')) byKey.click();
+    }
+  }
+  if (snap.machine === false) {
+    GS_LAYOUT_KEY += '-own';
+    grid.batchUpdate();
+    MACHINE_TILES.forEach(id => {
+      const el = document.querySelector(`.grid-stack-item[gs-id="${id}"]`);
+      if (el) grid.removeWidget(el, true);
+    });
+    grid.batchUpdate(false);
+    try {
+      const saved = localStorage.getItem(GS_LAYOUT_KEY);
+      if (saved) grid.load(JSON.parse(saved), false);
+    } catch (_) {}
+    $('own-server').classList.remove('hidden');
+  }
+}
+
+function renderServer(server) {
+  const s = server || {};
+  const g = s.gpu || {};
+  const gpuEl = $('own-gpu');
+  if (!g.present) {
+    gpuEl.innerHTML = '<span class="badge">none</span>';
+  } else {
+    gpuEl.innerHTML = g.busy
+      ? '<span class="badge busy">busy</span>'
+      : '<span class="badge warm">idle</span>';
+  }
+  $('own-vram').textContent = g.mem_total_mb
+    ? `${fmtBytes(g.mem_used_mb)} / ${fmtBytes(g.mem_total_mb)}` : '—';
+  $('own-models').textContent = s.models_loaded ?? '—';
+}
+
 function render(snap) {
+  applyScope(snap);
+  if (snap.machine === false) {
+    // Own scope without the machine cards: the strip, the jobs table and
+    // the header cluster are all there is to draw.
+    renderServer(snap.server);
+    renderJobs(snap);
+    if (typeof window._fwFeedActivity === 'function') {
+      try { window._fwFeedActivity(snap); } catch (_) {}
+    }
+    return;
+  }
   ensureSparks();
 
   // --- GPU ---
@@ -1833,7 +1938,17 @@ function loadUsage() {
           + '&by=' + encodeURIComponent(by);
   const mine = ++_seq;
   fetch('/stats/usage' + q, { cache: 'no-store' })
-    .then(r => r.ok ? r.json() : null)
+    .then(r => {
+      if (r.status === 403) {
+        // Own scope asked for the per-user board (the only row would be
+        // the viewer). The page switches the control to `key` on its own;
+        // say so instead of "unavailable".
+        $('usage-board-rows').innerHTML =
+          '<tr><td colspan="6" class="empty">— not available for your scope —</td></tr>';
+        return null;
+      }
+      return r.ok ? r.json() : null;
+    })
     .then(j => {
       if (!j || mine !== _seq) return;   // stale response — a newer change won
       curMetric = j.metric || metric;

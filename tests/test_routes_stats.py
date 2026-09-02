@@ -132,6 +132,9 @@ def test_header_activity_cluster_js_contract():
     # The 1 Hz popover rebuild wipes DOM state, so the cancel button's
     # disabled flag must live in the module-scope `cancelling` map.
     assert "cancelling[" in js
+    # Own-scope lite payloads carry a coarse gpu dict {busy, mem_*} with no
+    # util_pct; the cluster must read busy/idle instead of printing "–".
+    assert "gpu.busy" in js
 
 
 def test_nav_css_defines_the_magenta_token():
@@ -550,3 +553,28 @@ def test_usage_admin_sees_names_and_can_preview_user(client, app_module,
     assert prev["scope"] == "own"
     assert [r["id"] for r in prev["leaderboard"]] == [keys[alice]]
     assert prev["leaderboard"][0]["label"]   # named: the admin is looking
+
+
+# ---------------------------------------------------------------------------
+# Page chrome for the own scope (string pins: the inline JS has no harness)
+# ---------------------------------------------------------------------------
+
+def test_stats_page_ships_own_scope_chrome(client):
+    html = client.get("/stats").text
+    assert 'id="own-server"' in html
+    assert 'id="scope-pill"' in html and 'your usage' in html
+    assert "GS_LAYOUT_KEY += '-own'" in html
+    assert "if (snap.machine === false) {" in html
+    assert "not available for your scope" in html
+
+
+def test_stats_page_removes_machine_tiles_for_own(client):
+    """Every machine tile id must be in the removal list, or an own-scope
+    viewer keeps an empty card the payload no longer feeds."""
+    html = client.get("/stats").text
+    assert "grid.removeWidget(el, true)" in html
+    lst = html.split("const MACHINE_TILES = [")[1].split("];")[0]
+    for gs_id in ("gpu", "cpu", "ram", "process", "activity", "errors",
+                  "latency", "endpoints", "models"):
+        assert f"'{gs_id}'" in lst, gs_id
+        assert f'gs-id="{gs_id}"' in html, gs_id

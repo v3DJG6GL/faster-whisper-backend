@@ -1019,7 +1019,10 @@ _API_KEYS_HTML = r"""<!doctype html>
       Per-user access to each admin page. <strong>none</strong> hides
       the page entirely (403 on its API). <strong>own</strong> shows
       the page but filters records to the user's own; <strong>all</strong>
-      shows every user's data. <code>/settings</code> and <code>/settings/api-keys</code>
+      shows every user's data. On <code>/stats</code>, <strong>own</strong>
+      also replaces the machine cards with a coarse server status unless
+      “Own-scope users see machine cards” is on in <code>/settings</code>.
+      <code>/settings</code> and <code>/settings/api-keys</code>
       are always admin-only and never appear here.
     </p>
     <div id="perm-matrix-wrap"></div>

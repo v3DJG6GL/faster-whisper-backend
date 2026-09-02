@@ -469,7 +469,7 @@ WHISPER_TRUSTED_ORIGINS=https://whisper.example.com  # only if the proxy rewrite
 
 - `GET  /` — landing hub: the sign-in screen when signed out, a launcher listing the pages the caller's key can reach when signed in.
 - `GET  /logs` — live log viewer; `GET /logs/stream` (SSE feed), `GET /logs/older` (pagination).
-- `GET  /stats` — system overview dashboard; `GET /stats/snapshot` + `GET /stats/stream` (JSON one-shot + ~1 Hz SSE), `GET /stats/usage` (per-user/key usage chart data).
+- `GET  /stats` — system overview dashboard; `GET /stats/snapshot` + `GET /stats/stream` (JSON one-shot + ~1 Hz SSE), `GET /stats/usage` (per-user/key usage chart data). Page scope `own` shows a user only their own jobs and usage plus a coarse server status (the machine cards return with `STATS_OWN_SHOWS_MACHINE`); `all` shows every user's numbers with identities scrubbed for non-admins.
 - `GET  /quick-config` — end-user rule editor (state/recent/stream/usage/reapply-rules sub-endpoints, incl. error-report submission).
 - `GET  /captures` — training-data curation UI (`/captures/api/*`: list/export, per-capture CRUD + audio, samples + merge/preview, reprocess jobs).
 - `GET  /reports` — error-report triage UI (`/reports/api/*`).

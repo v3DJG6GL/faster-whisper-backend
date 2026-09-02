@@ -2085,8 +2085,11 @@ ACTIVITY_CLUSTER_JS = """
     setBar(gpuEl, gpu ? (gpu.util_pct != null ? gpu.util_pct : null) : null);
     setBar(vramEl, gpu && gpu.mem_total_mb
       ? gpu.mem_used_mb / gpu.mem_total_mb * 100 : null);
+    // Own-scope viewers get a coarse gpu dict {busy, mem_*}: no util_pct,
+    // so the readout says busy/idle instead of a percentage.
     gpuvEl.textContent = gpu && gpu.util_pct != null
-      ? Math.round(gpu.util_pct) + '%' : '\\u2013';
+      ? Math.round(gpu.util_pct) + '%'
+      : (gpu && gpu.busy != null ? (gpu.busy ? 'busy' : 'idle') : '\\u2013');
     vramvEl.textContent = gpu && gpu.mem_used_mb != null
       ? gb(gpu.mem_used_mb) + 'G' : '\\u2013';
     if (!pop.hidden) renderPop();
@@ -2140,7 +2143,12 @@ ACTIVITY_CLUSTER_JS = """
         + '<span class="rv">' + val + '</span></div>';
     }
     var gpu = s.gpu, host = s.host || {};
-    if (gpu) {
+    if (gpu && gpu.util_pct == null && gpu.busy != null) {
+      row('GPU', gpu.busy ? 100 : 0, 'c-cyan', gpu.busy ? 'busy' : 'idle');
+      if (gpu.mem_total_mb)
+        row('VRAM', gpu.mem_used_mb / gpu.mem_total_mb * 100, 'c-mag',
+            gb(gpu.mem_used_mb) + ' / ' + gb(gpu.mem_total_mb) + ' G');
+    } else if (gpu) {
       row('GPU', gpu.util_pct || 0, 'c-cyan',
           (gpu.util_pct != null ? Math.round(gpu.util_pct) : '—') + '%'
           + (gpu.temp_c != null ? ' · ' + Math.round(gpu.temp_c) + '°C' : ''));
