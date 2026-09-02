@@ -676,6 +676,10 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     transition: width .3s ease; }
   .bar.warn > i { background: var(--yellow); }
   .bar.crit > i { background: var(--red); }
+  /* #gpu-content wraps three spark-wraps; without being a flex column of
+     its own, their flex: 1 1 0 has no effect and the card's lower third
+     stays empty. */
+  #gpu-content { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
   .spark-wrap  { margin-top: 0.625rem; min-width: 0;
                  flex: 1 1 0; min-height: 0;
                  display: flex; flex-direction: column; }
@@ -802,7 +806,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .rtf.slow { color: var(--yellow); border-color: #4d3e1f; }
   .badge.est { color: var(--magenta); border-color: #3d2a5a; }
   /* --- Headline strip --- */
-  .hl-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 0.4rem; }
+  .hl-strip { display: grid; grid-template-columns: repeat(6, 1fr); gap: 0.4rem; }
   .hl { background: #21262d; border-radius: 4px; padding: 0.3rem 0.5rem; min-width: 0; }
   .hl .l { font: var(--fs-xs) var(--font-mono); color: var(--dim); text-transform: uppercase;
     letter-spacing: .03em; }
@@ -813,7 +817,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hl .v.warn { color: var(--yellow); }
   .delta { display: block; font: var(--fs-xs) var(--font-mono); color: var(--dim); }
   .delta.good { color: var(--green); } .delta.bad { color: var(--red); }
-  @media (max-width: 60em) { .hl-strip { grid-template-columns: repeat(3, 1fr); } }
+  @media (max-width: 70em) { .hl-strip { grid-template-columns: repeat(3, 1fr); } }
   /* --- Pipeline stages --- */
   .stages-bar { display: flex; height: 12px; border-radius: 4px; overflow: hidden; gap: 2px;
     background: #21262d; margin: 0.2rem 0 0.4rem; }
@@ -964,16 +968,19 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* --- Live rings: scrubber + range mode --- */
   header #ring-scrub { width: 7rem; accent-color: var(--cyan); vertical-align: middle; }
   header #ring-scrub.off { opacity: .35; }
+  header #status.pill { display: inline-block; min-width: 13.5rem; text-align: center;
+    box-sizing: border-box; }
   .spark-head .win { color: var(--cyan); margin-left: 0.4rem; text-transform: none; letter-spacing: 0; }
   /* --- Turnaround histogram (inline SVG) --- */
-  .ta-hist { flex: 1 1 auto; min-height: 5rem; position: relative; }
+  .ta-hist { flex: 1 1 0; min-height: 4rem; position: relative; overflow: hidden; }
   .ta-hist svg { width: 100%; height: 100%; display: block; overflow: visible; }
   .ta-hist text { font-family: var(--font-mono); font-size: 10px; fill: var(--dim); }
   .ta-hist text.q { fill: var(--bold); }
   .ta-hist line.q { stroke: var(--bold); stroke-dasharray: 2 2; }
   .ta-wait { display: flex; gap: 0.6rem; align-items: center; font: var(--fs-xs) var(--font-mono);
     color: var(--dim); margin-top: 0.2rem; }
-  .ta-wait svg { width: 9rem; height: 1.4rem; display: block; }
+  .ta-wait span { white-space: nowrap; }
+  .ta-wait svg { width: 9rem; height: 1.4rem; display: block; flex: 0 0 auto; }
   /* --- Failures list --- */
   .fl { display: flex; flex-direction: column; gap: 0.3rem; font-size: var(--fs-sm); overflow: auto; }
   .fl > div { display: grid; grid-template-columns: 1fr auto; gap: 0 0.6rem; align-items: center; }
@@ -1632,7 +1639,7 @@ function makeSpark(elId, color, opts={}) {
     // edge — half the glyph extends past the edge, so padding must
     // exceed font-size/2). Left padding plus axis size gives uPlot room
     // to draw "100%" without GridStack's overflow-x clipping the "1".
-    padding: [_remPx(0.55), 6, _remPx(0.4), _remPx(0.25)],
+    padding: [_remPx(0.55), 6, _remPx(0.4), 0],
     // One crosshair for every live ring: the sparks share histX, so a
     // cursor on one lands on the same second in all of them (sync key
     // 'live'; the usage chart is a different key and never follows).
@@ -1646,7 +1653,9 @@ function makeSpark(elId, color, opts={}) {
     scales: { x: { time: false }, y: yScale },
     axes: [
       { show: false },
-      { show: true, size: _remPx(2.6), gap: 4,
+      // Four mono glyphs ("100%") at ~0.6 em each + tick + gap: the axis
+      // takes the width its labels need and nothing more.
+      { show: true, size: Math.ceil(axisFontPx * 2.4) + 6, gap: 2,
         font: axisFontPx + 'px ' + _MONO_STACK,
         stroke: '#6e7681',
         grid:  { stroke: '#21262d', width: 1 },

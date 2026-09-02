@@ -570,18 +570,23 @@ function renderTurnaround() {
     return;
   }
   if (tag) tag.textContent = 'p50 ' + fmtDur(t.p50) + ' · p95 ' + fmtDur(t.p95) + ' · ' + fmtCount(t.n) + ' jobs';
-  const W = 420, H = 110, pl = 6, pb = 16, pt = 10, iw = W - pl * 2, ih = H - pb - pt;
+  // Drawn at the box's pixel size (no preserveAspectRatio stretch, which
+  // distorted glyphs and dashes); a ResizeObserver redraws on tile resize.
+  const W = Math.max(120, Math.floor(el.clientWidth || 420));
+  const H = Math.max(56, Math.floor(el.clientHeight || 110));
+  const pl = 4, pb = 16, pt = 14, iw = W - pl * 2, ih = H - pb - pt;
   const n = t.edges_s.length, bw = iw / n, mx = Math.max(1, ...t.counts);
+  const labelEvery = bw >= 34 ? 1 : 2;
   let s = '<defs><pattern id="ta-hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
     + '<line x1="0" y1="0" x2="0" y2="4" stroke="#f0f6fc" stroke-width="1.2" opacity=".55"/></pattern></defs>';
   t.counts.forEach((c, i) => {
     const h = c / mx * ih, y = pt + ih - h, x = pl + i * bw + 1;
     const share = t.wait_share[i] || 0;
     const lbl = fmtEdge(t.edges_s[i]) + (i + 1 < n ? '–' + fmtEdge(t.edges_s[i + 1]) : '+');
-    s += '<rect x="' + x + '" y="' + y + '" width="' + (bw - 2) + '" height="' + h + '" fill="#388bfd" rx="1"><title>'
+    s += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + h.toFixed(1) + '" fill="#388bfd" rx="2"><title>'
       + esc(lbl) + ': ' + c + ' jobs · ' + Math.round(share * 100) + ' % of that time was queue wait</title></rect>';
-    if (share > 0) s += '<rect x="' + x + '" y="' + (pt + ih - h * share) + '" width="' + (bw - 2) + '" height="' + (h * share) + '" fill="url(#ta-hatch)" rx="1"/>';
-    if (i % 2 === 0) s += '<text x="' + (x + bw / 2 - 1) + '" y="' + (H - 3) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
+    if (share > 0) s += '<rect x="' + x.toFixed(1) + '" y="' + (pt + ih - h * share).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + (h * share).toFixed(1) + '" fill="url(#ta-hatch)" rx="2"/>';
+    if (i % labelEvery === 0) s += '<text x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
   });
   const xOf = (v) => {
     // position within the bucket that contains v (linear inside the bucket)
@@ -589,12 +594,31 @@ function renderTurnaround() {
     const lo = t.edges_s[i], hi = i + 1 < n ? t.edges_s[i + 1] : lo * 2 || 1;
     return pl + i * bw + Math.min(1, Math.max(0, (v - lo) / Math.max(1e-9, hi - lo))) * bw;
   };
+  // p50 / p95 markers: the label sits above the plot so it never lands on
+  // a bar; when the two are close, p95's label is nudged right of p50's.
+  let lastLabelEnd = -1e9;
   [['p50', t.p50], ['p95', t.p95]].forEach(([k, v]) => {
     const x = xOf(v);
-    s += '<line class="q" x1="' + x + '" x2="' + x + '" y1="' + pt + '" y2="' + (pt + ih) + '"/>'
-      + '<text class="q" x="' + (x + 3) + '" y="' + (pt + 8) + '">' + k + ' ' + esc(fmtDur(v)) + '</text>';
+    const text = k + ' ' + fmtDur(v);
+    const tw = text.length * 6.2;
+    const lx = Math.min(W - tw, Math.max(x + 3, lastLabelEnd + 6));
+    lastLabelEnd = lx + tw;
+    s += '<line class="q" x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + (pt - 2) + '" y2="' + (pt + ih) + '"/>'
+      + '<text class="q" x="' + lx.toFixed(1) + '" y="' + (pt - 4) + '">' + esc(text) + '</text>';
   });
-  el.innerHTML = '<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none">' + s + '</svg>';
+  el.innerHTML = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + s + '</svg>';
+  if (!el._ro && typeof ResizeObserver !== 'undefined') {
+    let raf = 0;
+    el._ro = new ResizeObserver(() => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const svg = el.querySelector('svg');
+        if (svg && (Math.abs(el.clientWidth - svg.width.baseVal.value) > 1 || Math.abs(el.clientHeight - svg.height.baseVal.value) > 1)) renderTurnaround();
+      });
+    });
+    el._ro.observe(el);
+  }
   const w = lastTail.wait || {};
   if (wv) {
     const days = w.by_day || [];
