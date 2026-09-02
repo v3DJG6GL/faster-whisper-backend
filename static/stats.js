@@ -332,7 +332,7 @@ function levelOf(v, br) {
 const Q = {
   range: '30', from: null, to: null, compare: 'off',
   kinds: [], with: [], users: [], keys: [], model: null,
-  bucket: 'auto', metric: 'audio_s', by: 'kind',
+  bucket: 'auto', metric: 'audio_s', by: 'kind', rhythm: 'hours',
 };
 // Display names for picked user / key ids (from the picker or the
 // leaderboard), so the filter sentences and the recent-jobs table can say
@@ -361,6 +361,7 @@ function parsePageQuery(search) {
   Q.keys = Array.from(new Set(csv('keys').concat(csv('key'))));
   Q.model = p.get('model') || null;
   const b = p.get('bucket'); if (['auto', 'day', 'week', 'month'].includes(b)) Q.bucket = b;
+  const rh = p.get('rhythm'); if (['hours', 'days', 'months'].includes(rh)) Q.rhythm = rh;
   const m = p.get('metric'); if (m && METRIC_LABEL[m]) Q.metric = m;
   const by = p.get('by'); if (['kind', 'user', 'key', 'model', 'stage'].includes(by)) Q.by = by;
 }
@@ -368,7 +369,7 @@ function pageQueryParams() {
   const p = new URLSearchParams();
   if (Q.range === 'custom') { p.set('range', 'custom'); p.set('from', Q.from); p.set('to', Q.to); }
   else if (Q.range !== DEFAULTS.range) p.set('range', Q.range);
-  for (const k of ['compare', 'bucket', 'metric', 'by']) {
+  for (const k of ['compare', 'bucket', 'metric', 'by', 'rhythm']) {
     if (Q[k] !== DEFAULTS[k]) p.set(k, Q[k]);
   }
   for (const k of ['kinds', 'with', 'users', 'keys']) if (Q[k].length) p.set(k, Q[k].join(','));
@@ -1488,91 +1489,145 @@ function hoursPhrase(cells) {
   for (const [label, days, a, b] of groups) if (sum(days, a, b) / total >= 0.6) return label;
   return 'no clear pattern';
 }
+// Three rhythms share one renderer: a grid of rows × columns with a
+// measure per cell, marginal bars on top (per column) and right (per
+// row) each relative to a flat distribution, quantile shading, a peak
+// line, a phrase in the title, tooltips split by kind, and compare rows.
+//   hours  — weekday × hour of day, from the document's hour slots
+//   days   — weekday × week of the window, from the per-day series
+//   months — year × month, from the per-day series
+const RHYTHMS = ['hours', 'days', 'months'];
+const MON_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+                  'August', 'September', 'October', 'November', 'December'];
+const dowOfDay = day => (day + 3) % 7;                    // epoch day 0 was a Thursday
+const ymOfDay = day => { const d = new Date(day * DAY_MS); return [d.getUTCFullYear(), d.getUTCMonth()]; };
+
+// The layout of one rhythm for the current window: how many rows and
+// columns, what each is called, and where a source record lands.
+function rhythmLayout(mode, rg) {
+  const from = rg.from, to = rg.to;
+  if (mode === 'days') {
+    const first = from - dowOfDay(from);                  // the Monday on or before `from`
+    const weeks = Math.floor((to - first) / 7) + 1;
+    const colLabel = c => {                               // month name where a month starts
+      const d0 = first + c * 7, ym = ymOfDay(d0), ymPrev = ymOfDay(d0 - 7);
+      return (c === 0 || ym[1] !== ymPrev[1]) ? MON[ym[1]] : '';
+    };
+    const dayOf = i => first + (i % weeks) * 7 + Math.floor(i / weeks);
+    return { rows: 7, cols: weeks, rowLabel: r => DOW[r], rowLong: r => DOW_LONG[r] + 's',
+      colLabel, colLong: c => 'week of ' + fmtDayShort(first + c * 7, false),
+      cellName: i => DOW[Math.floor(i / weeks)] + ' ' + fmtDayShort(dayOf(i), true),
+      dayCell: day => (day < from || day > to) ? -1 : dowOfDay(day) * weeks + Math.floor((day - first) / 7),
+      colUnit: 'week', rowUnit: 'weekday', per: 'per day', maxRows: 7, dayOf };
+  }
+  if (mode === 'months') {
+    const [y0] = ymOfDay(from), [y1] = ymOfDay(to);
+    const years = y1 - y0 + 1;
+    return { rows: years, cols: 12, rowLabel: r => String(y0 + r), rowLong: r => String(y0 + r),
+      colLabel: c => MON[c], colLong: c => MON_LONG[c],
+      cellName: i => MON[i % 12] + ' ' + (y0 + Math.floor(i / 12)),
+      dayCell: day => { if (day < from || day > to) return -1; const [y, m] = ymOfDay(day); return (y - y0) * 12 + m; },
+      colUnit: 'month of year', rowUnit: 'year', per: 'per month', maxRows: years };
+  }
+  return { rows: 7, cols: 24, rowLabel: r => DOW[r], rowLong: r => DOW_LONG[r] + 's',
+    colLabel: c => (c % 6 === 0 ? ('0' + c).slice(-2) : ''), colLong: c => ('0' + c).slice(-2) + '–' + ('0' + (c + 1)).slice(-2),
+    cellName: i => DOW[Math.floor(i / 24)] + ' ' + ('0' + (i % 24)).slice(-2) + '–' + ('0' + (i % 24 + 1)).slice(-2),
+    colUnit: 'hour of day', rowUnit: 'weekday', per: 'per slot', maxRows: 7 };
+}
+
 function renderHours() {
   const el = $('hours-grid'); if (!el) return;
+  const mode = RHYTHMS.includes(Q.rhythm) ? Q.rhythm : 'hours';
   const M = Q.metric, ML = METRIC_LABEL[M];
   const fmtM = v => fmtMetric(M, v);
-  // Per-occurrence averages of a count are fractional (4 sessions over 13
-  // Tuesdays); durations already carry decimals.
   const fmtAvg = v => (M === 'audio_s' || M === 'proc_s' || v >= 10) ? fmtM(v) : v.toFixed(1);
-  // The companion shown beside the measure in tips: sessions, or
-  // processing time when sessions is the measure itself.
   const C = M === 'sessions' ? 'proc_s' : 'sessions', CL = METRIC_LABEL[C];
   const fmtC = v => fmtMetric(C, v);
-  const cells = new Array(7 * 24).fill(0);
-  const sess = new Array(7 * 24).fill(0);
-  const byKind = {};   // kind → [measure per cell, companion per cell]
-  const kindOf = (h, m, k) => m === 'words' ? Number(h[k] || 0) : Number((h[m] || {})[k] || 0);
-  (lastDoc.hours || []).forEach(h => {
-    const i = h.dow * 24 + h.hour;
-    cells[i] += slotMeasure(h, M);
-    sess[i] += slotMeasure(h, C);
-    KINDS.forEach(k => {
-      if (Q.kinds.length && !Q.kinds.includes(k)) return;
-      const pv = kindOf(h, M, k), sv = kindOf(h, C, k);
-      if (!pv && !sv) return;
-      const b = byKind[k] || (byKind[k] = [new Array(7 * 24).fill(0), new Array(7 * 24).fill(0)]);
-      b[0][i] += pv; b[1][i] += sv;
+  const rg = lastDoc.range || {};
+  const L = rhythmLayout(mode, rg);
+  const N = L.rows * L.cols;
+  const cells = new Array(N).fill(0), sess = new Array(N).fill(0);
+  const byKind = {};
+  const addKind = (k, i, pv, sv) => {
+    if (!pv && !sv) return;
+    const b = byKind[k] || (byKind[k] = [new Array(N).fill(0), new Array(N).fill(0)]);
+    b[0][i] += pv; b[1][i] += sv;
+  };
+  const kindOn = k => !Q.kinds.length || Q.kinds.includes(k);
+  // Fill from the source the rhythm reads; `cellOf` maps a compare-window
+  // record onto this grid too (days shifted by the window offset).
+  const fill = (target, doc, offsetDays) => {
+    if (mode === 'hours') {
+      (doc.hours || []).forEach(h => {
+        const i = h.dow * 24 + h.hour;
+        target.c[i] += slotMeasure(h, M); target.s[i] += slotMeasure(h, C);
+        if (target.k) KINDS.forEach(k => { if (kindOn(k)) addKind(k, i, Number(M === 'words' ? h[k] || 0 : (h[M] || {})[k] || 0), Number(C === 'words' ? h[k] || 0 : (h[C] || {})[k] || 0)); });
+      });
+      return;
+    }
+    (doc.series || []).forEach(p => {
+      const i = L.dayCell(p.day + offsetDays); if (i < 0) return;
+      const all = kindScoped(p) || {};
+      target.c[i] += Number(all[M] || 0); target.s[i] += Number(all[C] || 0);
+      if (target.k) KINDS.forEach(k => { if (kindOn(k) && p[k]) addKind(k, i, Number(p[k][M] || 0), Number(p[k][C] || 0)); });
     });
-  });
+  };
+  fill({ c: cells, s: sess, k: true }, lastDoc, 0);
+  const cmp = lastDoc.compare && (mode === 'hours' ? lastDoc.compare.hours : lastDoc.compare.series) ? lastDoc.compare : null;
+  const cmpCells = new Array(N).fill(0);
+  if (cmp) fill({ c: cmpCells, s: new Array(N).fill(0), k: false }, cmp, mode === 'hours' ? 0 : (rg.from - cmp.range.from));
   const br = quantileBreaks(cells);
   let peak = -1, peakV = 0;
   cells.forEach((v, i) => { if (v > peakV) { peakV = v; peak = i; } });
-  const hourTot = new Array(24).fill(0), dayTot = new Array(7).fill(0);
-  cells.forEach((v, i) => { hourTot[i % 24] += v; dayTot[Math.floor(i / 24)] += v; });
-  const rg = lastDoc.range || {};
-  const occ = weekdayCounts(rg.from, rg.to);
-  // Each marginal fills its own track (the longest bar is the full
-  // 2.4rem on both), so the two read alike at a glance; the dashed tick
-  // sits where a flat week's average (1×) falls on that track, so the
-  // lift above or below average is still visible.
-  const winSum = cells.reduce((a, v) => a + v, 0);
-  // The compare window's grid (previous / last year), same measure and
-  // kinds, for "vs previous" rows in the tips and the legend.
-  const cmp = lastDoc.compare && lastDoc.compare.hours ? lastDoc.compare : null;
-  const cmpCells = new Array(7 * 24).fill(0);
-  if (cmp) cmp.hours.forEach(h => { cmpCells[h.dow * 24 + h.hour] += slotMeasure(h, M); });
-  const cmpSum = cmpCells.reduce((a, v) => a + v, 0);
+  const colTot = new Array(L.cols).fill(0), rowTot = new Array(L.rows).fill(0);
+  cells.forEach((v, i) => { colTot[i % L.cols] += v; rowTot[Math.floor(i / L.cols)] += v; });
+  const winSum = cells.reduce((a, v) => a + v, 0), cmpSum = cmpCells.reduce((a, v) => a + v, 0);
   const cmpDelta = (cur, prev) => {
     if (!cmp) return '';
     if (!(prev > 0)) return cur > 0 ? 'new vs ' + cmpWord() : '— vs ' + cmpWord();
     const d = (cur - prev) / prev * 100;
     return (d > 0.5 ? '▲ ' : d < -0.5 ? '▼ ' : '— ') + Math.abs(d).toFixed(0) + ' % vs ' + cmpWord();
   };
-  const hourIdx = hourTot.map(v => winSum > 0 ? v / (winSum / 24) : 0);
-  const dayIdx = dayTot.map(v => winSum > 0 ? v / (winSum / 7) : 0);
-  const hMax = Math.max(1, ...hourIdx), dMax = Math.max(1, ...dayIdx);
-  const baseH = (100 / hMax).toFixed(1) + '%', baseD = (100 / dMax).toFixed(1) + '%';
+  // Occurrences per row in the window (hours: how many Tuesdays; days and
+  // months: each cell is its own occurrence).
+  const occ = mode === 'hours' ? weekdayCounts(rg.from, rg.to) : new Array(L.rows).fill(1);
+  // Marginals: each fills its own track; the dashed tick is where a flat
+  // distribution's average falls on that track.
+  const colIdx = colTot.map(v => winSum > 0 ? v / (winSum / L.cols) : 0);
+  const rowIdx = rowTot.map(v => winSum > 0 ? v / (winSum / L.rows) : 0);
+  const cMax = Math.max(1, ...colIdx), rMax = Math.max(1, ...rowIdx);
+  const baseC = (100 / cMax).toFixed(1) + '%', baseR = (100 / rMax).toFixed(1) + '%';
   const barLen = (idx, max) => (idx > 0 ? Math.max(4, idx / max * 100) : 0).toFixed(1) + '%';
-  const slot = i => DOW[Math.floor(i / 24)] + ' ' + ('0' + (i % 24)).slice(-2) + '–' + ('0' + (i % 24 + 1)).slice(-2);
-  // marginal row: the measure per hour of day (summed over the weekdays)
-  let html = '<span></span>' + hourTot.map((v, h) =>
-    '<span class="hb' + (hourIdx[h] > 1 ? ' hi' : '') + '" data-h="' + h + '" data-tip="h" tabindex="0" role="img" style="--base:' + baseH + '" aria-label="' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' every weekday: ' + fmtM(v) + ' ' + ML + ', ' + hourIdx[h].toFixed(1) + '× an average hour"><i style="height:' + barLen(hourIdx[h], hMax) + '"></i></span>').join('') + '<span></span>';
-  html += '<span></span>' + Array.from({ length: 24 }, (_, h) =>
-    '<span class="hl" data-h="' + h + '">' + (h % 6 === 0 ? ('0' + h).slice(-2) : '') + '</span>').join('') + '<span></span>';
-  for (let d = 0; d < 7; d++) {
-    html += '<span class="dl" data-d="' + d + '">' + DOW[d] + '</span>';
-    for (let h = 0; h < 24; h++) {
-      const i = d * 24 + h, v = cells[i];
-      const title = slot(i) + ' · ' + fmtM(v) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL;
+  const share = v => winSum > 0 ? (v / winSum * 100).toFixed(0) + ' % of the window' : '';
+
+  el.style.gridTemplateColumns = '2rem repeat(' + L.cols + ', 1fr) 2.4rem';
+  el.style.maxHeight = 'calc(2rem + ' + L.rows + ' * ' + (mode === 'months' ? 2.6 : 1.8) + 'rem + ' + (L.rows + 2) + ' * 2px)';
+  el.classList.toggle('dense', L.cols > 30);
+  let html = '<span></span>' + colTot.map((v, c) =>
+    '<span class="hb' + (colIdx[c] > 1 ? ' hi' : '') + '" data-h="' + c + '" data-tip="h" tabindex="0" role="img" style="--base:' + baseC + '" aria-label="'
+    + esc(L.colLong(c)) + ': ' + fmtM(v) + ' ' + ML + ', ' + colIdx[c].toFixed(1) + '× an average ' + L.colUnit + '"><i style="height:' + barLen(colIdx[c], cMax) + '"></i></span>').join('') + '<span></span>';
+  html += '<span></span>' + Array.from({ length: L.cols }, (_, c) => '<span class="hl" data-h="' + c + '">' + esc(L.colLabel(c)) + '</span>').join('') + '<span></span>';
+  for (let r = 0; r < L.rows; r++) {
+    html += '<span class="dl" data-d="' + r + '">' + esc(L.rowLabel(r)) + '</span>';
+    for (let c = 0; c < L.cols; c++) {
+      const i = r * L.cols + c, v = cells[i];
+      const inWin = mode === 'hours' || (mode === 'days' ? (L.dayOf(i) >= rg.from && L.dayOf(i) <= rg.to) : true);
+      const title = L.cellName(i) + ' · ' + fmtM(v) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL;
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
-        + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + '></i>';
+        + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + (inWin ? '' : ' style="visibility:hidden"') + '></i>';
     }
-    html += '<span class="rb' + (dayIdx[d] > 1 ? ' hi' : '') + '" data-d="' + d + '" data-tip="d" tabindex="0" role="img" style="--base:' + baseD + '" aria-label="' + DOW_LONG[d] + 's: ' + fmtM(dayTot[d]) + ' ' + ML + ', ' + dayIdx[d].toFixed(1) + '× an average weekday"><i style="width:' + barLen(dayIdx[d], dMax) + '"></i></span>';
+    html += '<span class="rb' + (rowIdx[r] > 1 ? ' hi' : '') + '" data-d="' + r + '" data-tip="d" tabindex="0" role="img" style="--base:' + baseR + '" aria-label="'
+      + esc(L.rowLong(r)) + ': ' + fmtM(rowTot[r]) + ' ' + ML + ', ' + rowIdx[r].toFixed(1) + '× an average ' + L.rowUnit + '"><i style="width:' + barLen(rowIdx[r], rMax) + '"></i></span>';
   }
   el.innerHTML = html;
-  // Hovering (or focusing) a cell lights its weekday and hour labels and
-  // the two marginal bars, so the tooltip's slot can be read off the axes.
   if (!el._hl) {
     el._hl = true;
-    // A cell lights its row and column; a marginal bar lights its whole
-    // column (hour) or row (weekday).
     const light = (t, on) => {
       if (!t) return;
       let sel;
       if (t.hasAttribute('data-i')) {
-        const i = Number(t.getAttribute('data-i'));
-        sel = '[data-d="' + Math.floor(i / 24) + '"], [data-h="' + (i % 24) + '"]';
+        const i = Number(t.getAttribute('data-i')), cols = Number(el.dataset.cols) || 24;
+        sel = '[data-d="' + Math.floor(i / cols) + '"], [data-h="' + (i % cols) + '"]';
       } else if (t.hasAttribute('data-h')) sel = '[data-h="' + t.getAttribute('data-h') + '"]';
       else sel = '[data-d="' + t.getAttribute('data-d') + '"]';
       el.querySelectorAll(sel).forEach(x => x.classList.toggle('on', on));
@@ -1585,79 +1640,88 @@ function renderHours() {
     el.addEventListener('focusin', e => move(e.target.closest('[data-tip]')));
     el.addEventListener('focusout', () => move(null));
   }
-  const winTot = cells.reduce((a, v) => a + v, 0);
-  const share = v => winTot > 0 ? ' · ' + (v / winTot * 100).toFixed(0) + ' % of the window' : '';
-  // Per-kind rows for a marginal: the kind's cells summed over the hour
-  // column or the weekday row, in the kind order the chips use.
+  el.dataset.cols = L.cols;
+  // Tooltip rows shared by cells and marginals: per kind, then total
+  // (bold, ruled), then the readings, then the compare window (dimmed).
   const kindRows = (pick) => Object.keys(byKind).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b))
     .map(k => [k, pick(byKind[k][0]), pick(byKind[k][1])]).filter(r => r[1] || r[2])
     .map(r => tipRow(KIND_COLOR[r[0]], KIND_LABEL[r[0]] || r[0], fmtM(r[1]) + ' ' + ML + ' · ' + fmtC(r[2]) + ' ' + CL)).join('');
+  const body = (head, v, c, rows, extra, pv) => {
+    let out = '<div class="tip-date">' + head + '</div>' + rows;
+    out += tipRow(null, rows ? 'total' : 'idle', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—', rows ? 'tot' : '');
+    if (v > 0) out += extra;
+    if (cmp) out += tipRow(null, cmpWord(), fmtM(pv) + ' · ' + cmpDelta(v, pv), 'cmp');
+    return out;
+  };
+  const sumCol = (arr, c) => arr.reduce((a, x, i) => a + (i % L.cols === c ? x : 0), 0);
+  const sumRow = (arr, r) => arr.slice(r * L.cols, r * L.cols + L.cols).reduce((a, x) => a + x, 0);
   wireTips(el, '[data-tip]', (target) => {
     const kind = target.getAttribute('data-tip');
-    if (kind === 'h') {      // top marginal: one hour of day, every weekday summed
-      const h = Number(target.getAttribute('data-h'));
-      const v = hourTot[h], c = sess.reduce((a, x, i) => a + (i % 24 === h ? x : 0), 0);
-      const days = occ.reduce((a, x) => a + x, 0);
-      let out = '<div class="tip-date">' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' · every weekday</div>';
-      const rows = kindRows(arr => arr.reduce((a, x, i) => a + (i % 24 === h ? x : 0), 0));
-      out += rows;
-      out += tipRow(null, rows ? 'total' : 'idle', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—', rows ? 'tot' : '');
-      if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
-      if (v > 0) out += tipRow(null, 'vs average', hourIdx[h].toFixed(1) + '× an average hour of day');
-      if (v > 0 && days > 1) out += tipRow(null, 'per day', '≈ ' + fmtAvg(v / days) + ' ' + ML + ' over ' + days + ' days');
-      if (cmp) { const pv = cmpCells.reduce((a, x, i) => a + (i % 24 === h ? x : 0), 0); out += tipRow(null, cmpWord(), fmtM(pv) + ' · ' + cmpDelta(v, pv)); }
-      return out;
+    if (kind === 'h') {
+      const c = Number(target.getAttribute('data-h')), v = colTot[c];
+      const n = mode === 'hours' ? occ.reduce((a, x) => a + x, 0) : L.rows;
+      let extra = tipRow(null, 'share', share(v)) + tipRow(null, 'vs average', colIdx[c].toFixed(1) + '× an average ' + L.colUnit);
+      if (mode === 'hours' && n > 1) extra += tipRow(null, 'per day', '≈ ' + fmtAvg(v / n) + ' ' + ML + ' over ' + n + ' days');
+      return body(esc(L.colLong(c)) + ' · every ' + L.rowUnit, v, sumCol(sess, c), kindRows(arr => sumCol(arr, c)), extra, sumCol(cmpCells, c));
     }
-    if (kind === 'd') {      // right marginal: one weekday, all 24 hours summed
-      const d = Number(target.getAttribute('data-d'));
-      const v = dayTot[d], c = sess.slice(d * 24, d * 24 + 24).reduce((a, x) => a + x, 0);
-      let out = '<div class="tip-date">' + DOW[d] + ' · all hours</div>';
-      const rows = kindRows(arr => arr.slice(d * 24, d * 24 + 24).reduce((a, x) => a + x, 0));
-      out += rows;
-      out += tipRow(null, rows ? 'total' : 'idle', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—', rows ? 'tot' : '');
-      if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
-      if (v > 0) out += tipRow(null, 'vs average', dayIdx[d].toFixed(1) + '× an average weekday');
-      if (v > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW[d], '≈ ' + fmtAvg(v / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW[d]);
-      if (cmp) { const pv = cmpCells.slice(d * 24, d * 24 + 24).reduce((a, x) => a + x, 0); out += tipRow(null, cmpWord(), fmtM(pv) + ' · ' + cmpDelta(v, pv)); }
-      return out;
+    if (kind === 'd') {
+      const r = Number(target.getAttribute('data-d')), v = rowTot[r];
+      let extra = tipRow(null, 'share', share(v)) + tipRow(null, 'vs average', rowIdx[r].toFixed(1) + '× an average ' + L.rowUnit);
+      if (mode === 'hours' && occ[r] > 1) extra += tipRow(null, 'per ' + DOW[r], '≈ ' + fmtAvg(v / occ[r]) + ' ' + ML + ' over ' + occ[r] + ' ' + DOW[r]);
+      return body(esc(L.rowLong(r)) + ' · all ' + L.colUnit + 's', v, sumRow(sess, r), kindRows(arr => sumRow(arr, r)), extra, sumRow(cmpCells, r));
     }
-    const i = Number(target.getAttribute('data-i')), d = Math.floor(i / 24);
-    let out = '<div class="tip-date">' + slot(i) + '</div>';
-    const ks = Object.keys(byKind).filter(k => byKind[k][0][i] || byKind[k][1][i]).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));
-    ks.forEach(k => out += tipRow(KIND_COLOR[k], KIND_LABEL[k] || k, fmtM(byKind[k][0][i]) + ' ' + ML + ' · ' + fmtC(byKind[k][1][i]) + ' ' + CL));
-    out += tipRow(null, ks.length ? 'total' : 'idle', cells[i] ? fmtM(cells[i]) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL : '—', ks.length > 1 ? 'tot' : '');
-    if (cells[i] > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW[d], '≈ ' + fmtAvg(cells[i] / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW[d]);
-    if (cmp) out += tipRow(null, cmpWord(), fmtM(cmpCells[i]) + ' · ' + cmpDelta(cells[i], cmpCells[i]));
-    return out;
+    const i = Number(target.getAttribute('data-i')), r = Math.floor(i / L.cols);
+    let extra = '';
+    if (mode === 'hours' && occ[r] > 1) extra = tipRow(null, 'per ' + DOW[r], '≈ ' + fmtAvg(cells[i] / occ[r]) + ' ' + ML + ' over ' + occ[r] + ' ' + DOW[r]);
+    return body(esc(L.cellName(i)), cells[i], sess[i], kindRows(arr => arr[i]), extra, cmpCells[i]);
   });
   const kindNote = Q.kinds.length ? kindsLabel() + ' only · ' : '';
   const lg = $('hours-legend');
-  // Two legend keys, each a glyph + its reading: the cell ramp (quiet →
-  // busy, the busiest slot's value), and the side bars (a bar with the
-  // 1× tick). The measure and time zone sit at the right.
-  // Two lines: the cells (ramp, peak value, measure, time zone), then the
-  // side bars in plain words (what they total, what the dashed line is).
-  // Two lines: the cell ramp with the peak value; then the side-bars key
-  // with the measure and time zone at the right.
   const cmpNote = cmp ? '<span class="sub">' + cmpDelta(winSum, cmpSum) + '</span>' : '';
+  const unitWord = { hours: 'weekday-hour', days: 'day', months: 'month' }[mode];
   if (lg) lg.innerHTML = br
-    ? '<div class="row"><span class="ramp">quiet <i></i> busy</span><span class="sub">peak slot ' + fmtM(peakV) + '</span>' + cmpNote + '</div>'
-      + '<div class="row"><span title="the bars beside the grid: each hour of day (top) and weekday (right) relative to a flat week; the dashed tick is the average"><span class="mg"><i class="b"></i><i class="t"></i></span>side bars vs average</span>'
-      + '<span class="what">' + kindNote + esc(ML) + ' per weekday-hour · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span></div>'
+    ? '<div class="row"><span class="ramp">quiet <i></i> busy</span><span class="sub">peak ' + fmtM(peakV) + ' ' + L.per + '</span>' + cmpNote + '</div>'
+      + '<div class="row"><span title="the bars beside the grid: each ' + L.colUnit + ' (top) and ' + L.rowUnit + ' (right) relative to a flat distribution; the dashed tick is the average"><span class="mg"><i class="b"></i><i class="t"></i></span>side bars vs average</span>'
+      + '<span class="what">' + kindNote + esc(ML) + ' per ' + unitWord + ' · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span></div>'
     : '<span class="what">' + kindNote + 'no ' + esc(ML) + ' in this window</span>';
   const sub = $('hours-sub');
   if (sub) {
-    const pd = Math.floor(peak / 24);
+    const pr = Math.floor(peak / L.cols);
     sub.innerHTML = peakV > 0
-      ? 'Peak ' + slot(peak) + ' · <b>' + fmtM(peakV) + '</b>'
-        + (occ[pd] > 1 ? ' · ≈ ' + fmtAvg(peakV / occ[pd]) + ' per ' + DOW[pd] : '')
+      ? 'Peak ' + esc(L.cellName(peak)) + ' · <b>' + fmtM(peakV) + '</b>'
+        + (mode === 'hours' && occ[pr] > 1 ? ' · ≈ ' + fmtAvg(peakV / occ[pr]) + ' per ' + DOW[pr] : '')
         + ' · ' + fmtC(sess[peak]) + ' ' + esc(CL)
       : 'No ' + esc(ML) + ' in this window';
-    sub.title = peakV > 0 ? fmtM(peakV) + ' ' + ML + ' in the busiest slot, ' + slot(peak)
-      + (occ[pd] > 1 ? ', summed over ' + occ[pd] + ' ' + DOW_LONG[pd] + 's in the window' : '') : '';
+    sub.title = peakV > 0 ? fmtM(peakV) + ' ' + ML + ' in the busiest ' + (mode === 'hours' ? 'slot' : mode.slice(0, -1)) + ', ' + L.cellName(peak)
+      + (mode === 'hours' && occ[pr] > 1 ? ', summed over ' + occ[pr] + ' ' + DOW_LONG[pr] + 's in the window' : '') : '';
   }
   const tag = $('hours-tag');
-  if (tag) tag.textContent = hoursPhrase(cells);
+  if (tag) {
+    if (mode === 'hours') tag.textContent = hoursPhrase(cells);
+    else if (mode === 'days') tag.textContent = winSum > 0 ? dayPhrase(rowTot) : 'quiet';
+    else tag.textContent = winSum > 0 ? monthPhrase(colTot) : 'quiet';
+  }
+  const title = $('hours-title'); if (title) title.textContent = 'Busy ' + mode;
+  setSeg('hours-mode', mode);
+}
+// Days: the weekday group holding most of the measure (weekdays /
+// weekends / one weekday), like hoursPhrase; months: the top month when
+// it carries 40 %+, else the top two.
+function dayPhrase(rowTot) {
+  const total = rowTot.reduce((a, v) => a + v, 0);
+  const wk = rowTot.slice(0, 5).reduce((a, v) => a + v, 0), we = total - wk;
+  let top = 0; rowTot.forEach((v, i) => { if (v > rowTot[top]) top = i; });
+  if (rowTot[top] / total >= 0.5) return DOW_LONG[top] + 's';
+  if (wk / total >= 0.85) return 'weekdays';
+  if (we / total >= 0.6) return 'weekends';
+  return 'no clear pattern';
+}
+function monthPhrase(colTot) {
+  const total = colTot.reduce((a, v) => a + v, 0);
+  const order = colTot.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
+  if (order[0][0] / total >= 0.4) return MON_LONG[order[0][1]];
+  if ((order[0][0] + order[1][0]) / total >= 0.5) return MON[order[0][1]] + ' + ' + MON[order[1][1]];
+  return 'spread out';
 }
 
 // ---- models: audio / RTF per decode model over the window, joined by the
@@ -1695,6 +1759,7 @@ if (hlStrip) {
   hlStrip.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(e); } });
 }
 onSeg('usage-by', (v) => { Q.by = v; setSeg('usage-by', v); hidden.clear(); load(); });
+onSeg('hours-mode', (v) => { Q.rhythm = v; syncUrl(); if (lastDoc) renderHours(); });
 const tableBtn = $('usage-table-btn');
 if (tableBtn) tableBtn.addEventListener('click', () => { tableMode = !tableMode; renderTable(); if (!tableMode && chart) chart.setSize({ width: chartEl.clientWidth, height: chartEl.clientHeight }); });
 document.addEventListener('keydown', (e) => {

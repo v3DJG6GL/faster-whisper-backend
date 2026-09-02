@@ -1602,6 +1602,7 @@ def overview(
         "today": doc["today"],
         "stages": doc["stages"],
         "hours": doc["hours"],
+        "series": doc["series"],
         "lines": lines,
         "leaderboard": board,
         "breakdown": {"source": source, "key_scoped": key_scoped},
@@ -1628,7 +1629,7 @@ def overview(
         out["compare"] = {"mode": compare,
                           "range": {"from": pf, "to": pt, "days": pt - pf + 1},
                           "totals": prev["totals"], "lines": cmp_lines,
-                          "hours": prev["hours"]}
+                          "hours": prev["hours"], "series": prev["series"]}
     return out
 
 

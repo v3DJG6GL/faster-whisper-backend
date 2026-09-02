@@ -1053,7 +1053,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     align-content: stretch; margin-bottom: 0.4rem;
     /* rows grow with the tile up to ~1.8rem so cells stay wider than tall */
     max-height: calc(2rem + 7 * 1.8rem + 9 * 2px); }
-  .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; }
+  .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; white-space: nowrap; overflow: visible; }
+  .hours.dense { gap: 1px; }
+  .hours.dense i { min-height: 0.35rem; border-radius: 1px; }
+  .card h3 .seg-ctrl.mini { display: inline-flex; vertical-align: middle; margin-left: 0.4rem; }
+  .card h3 .seg-ctrl.mini button { font-size: var(--fs-xs); padding: 0 0.45rem; line-height: 1.4; text-transform: none; letter-spacing: 0; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
   /* Marginals share one scale: each bar is its hour's / weekday's total
      relative to a flat week (1× = average), both tracks 2.4rem long, a
@@ -1626,7 +1630,10 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Busy hours: weekday × hour of the chosen measure with marginals. -->
   <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3>Busy hours <span class="tag" id="hours-tag"></span> <span class="win" data-win="usage"></span></h3>
+    <h3><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span>
+      <span class="seg-ctrl mini" id="hours-mode" title="the rhythm: weekday × hour of day, weekday × week, or year × month">
+        <button data-v="hours" class="active">hours</button><button data-v="days">days</button><button data-v="months">months</button>
+      </span> <span class="win" data-win="usage"></span></h3>
     <div class="hours-sub" id="hours-sub"></div>
     <div class="hours" id="hours-grid"></div>
     <div class="hours-legend" id="hours-legend"></div>
