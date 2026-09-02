@@ -1060,10 +1060,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours.dense { gap: 1px; grid-auto-rows: minmax(0, 1fr); overflow: hidden; }
   .hours.dense i { min-height: 0; border-radius: 1px; }
   .hours.dense .dl { font-size: 0.55rem; }
-  /* The rhythm switch floats right beside the window chip, so it stays
-     put while the title phrase changes length. */
-  .card h3 .seg-ctrl.mini { display: inline-flex; vertical-align: middle; float: right; margin-right: 0.5rem; }
-  .card h3 .seg-ctrl.mini button { font-size: var(--fs-xs); padding: 0 0.45rem; line-height: 1.4; text-transform: none; letter-spacing: 0; }
+  /* The peak line and the rhythm switch share one row under the title,
+     the switch pinned right, so neither the title phrase nor the peak
+     text can push it around. */
+  .hours-head { display: flex; align-items: center; gap: 0.6rem; margin: -0.15rem 0 0.4rem; }
+  .hours-head .hours-sub { flex: 1 1 auto; min-width: 0; margin: 0; }
+  .hours-head .seg-ctrl.mini { flex: none; display: inline-flex; }
+  .seg-ctrl.mini button { font-size: var(--fs-xs); padding: 0 0.45rem; line-height: 1.4; text-transform: none; letter-spacing: 0; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
   /* Marginals share one scale: each bar is its hour's / weekday's total
      relative to a flat week (1× = average), both tracks 2.4rem long, a
@@ -1099,8 +1102,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours .hb.on i, .hours .rb.on i { background: var(--bold); }
   .hours .hb, .hours .rb { cursor: default; }
   .hours .hb:focus-visible, .hours .rb:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  /* The legend is its own surface under the grid: a ruled, slightly
+     inset strip, so the key reads as a key and not as more chart. */
   .hours-legend { display: flex; gap: 0.25rem 0.6rem; align-items: center; flex-wrap: wrap;
-    font: var(--fs-xs) var(--font-mono); color: var(--dim); margin-top: 0.3rem; }
+    font: var(--fs-xs) var(--font-mono); color: var(--dim); margin-top: 0.45rem;
+    padding: 0.35rem 0.5rem; background: #11161d; border: 1px solid #1f242c; border-radius: 4px; }
   .hours-legend span { display: inline-flex; align-items: center; gap: 0.25rem; }
   .hours-legend i { width: 9px; height: 9px; }
   .hours-legend .what { margin-left: auto; }
@@ -1638,12 +1644,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Busy hours: weekday × hour of the chosen measure with marginals. -->
   <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span>
-      <span class="win" data-win="usage"></span>
+    <h3><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span> <span class="win" data-win="usage"></span></h3>
+    <div class="hours-head">
+      <div class="hours-sub" id="hours-sub"></div>
       <span class="seg-ctrl mini" id="hours-mode" title="the rhythm: weekday × hour of day, day of month × hour of day, or year × month">
         <button data-v="hours" class="active">hours</button><button data-v="days">days</button><button data-v="months">months</button>
-      </span></h3>
-    <div class="hours-sub" id="hours-sub"></div>
+      </span>
+    </div>
     <div class="hours" id="hours-grid"></div>
     <div class="hours-legend" id="hours-legend"></div>
    </div></div>
