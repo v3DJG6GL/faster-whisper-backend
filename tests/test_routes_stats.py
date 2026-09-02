@@ -173,7 +173,7 @@ def test_stage_hues_have_one_definition():
     assert web_common.STAGE_COLORS["transcribing"] == "#93b76f"
     assert web_common.STAGE_COLORS["diarizing"] == "#c68fb4"
     assert web_common.STAGE_COLORS["translating"] == "#4dd0c4"
-    js = pathlib.Path(stats_routes.__file__).with_name("static").joinpath("stats.js").read_text()
+    js = pathlib.Path(stats_routes.__file__).with_name("static").joinpath("stats.js").read_text(encoding="utf-8")
     for stage in web_common.STAGE_COLORS:
         assert f"var(--stage-{stage})" in stats_routes._STATS_VIEWER_HTML
         assert f"var(--stage-{stage})" in quick_config_routes._QUICK_CONFIG_HTML
