@@ -446,3 +446,64 @@ def test_upload_spool_carries_the_reclaim_prefix(client, app_module,
     monkeypatch.setattr(app_module.tempfile, "NamedTemporaryFile", _spy)
     assert _post(client, response_format="json").status_code == 200
     assert seen == ["whisperup-"]
+
+
+def _ledger_row(request_id=None):
+    import transcriptions_store
+    rows = transcriptions_store.list_recent(limit=5)
+    return rows[0]
+
+
+def test_cuda_oom_is_classified_on_the_ledger(client, app_module, monkeypatch):
+    class OomModel(FakeModel):
+        def transcribe(self, path, **kwargs):
+            raise RuntimeError("CUDA failed with error out of memory")
+
+    async def _loader(name, *, lease=False):
+        return OomModel()
+
+    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    r = _post(client, response_format="json")
+    assert r.status_code == 500
+    row = _ledger_row()
+    assert row["status"] == "error"
+    assert (row["error_class"], row["error_stage"]) == ("cuda_oom", "transcribing")
+    import usage_store
+    job = usage_store._require_conn().execute(
+        "SELECT error_class, error_stage, status FROM usage_jobs"
+        " ORDER BY created_ts DESC LIMIT 1").fetchone()
+    assert tuple(job) == ("cuda_oom", "transcribing", "error")
+
+
+def test_unknown_failure_is_other_and_success_has_no_class(client, app_module,
+                                                          monkeypatch):
+    r = _post(client, response_format="json")
+    assert r.status_code == 200
+    ok = _ledger_row()
+    assert ok["error_class"] is None and ok["error_stage"] is None
+
+    class BoomModel(FakeModel):
+        def transcribe(self, path, **kwargs):
+            raise RuntimeError("decode blew up")
+
+    async def _loader(name, *, lease=False):
+        return BoomModel()
+
+    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    assert _post(client, response_format="json").status_code == 500
+    row = _ledger_row()
+    assert (row["error_class"], row["error_stage"]) == ("other", "transcribing")
+
+
+def test_curated_4xx_is_rejected_not_a_server_failure(client, app_module, monkeypatch):
+    """A caller error that the handler turns into a 4xx must not count as a
+    server failure class."""
+    from fastapi import HTTPException
+
+    async def _loader(name, *, lease=False):
+        raise HTTPException(status_code=400, detail="model not allowed")
+
+    monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    assert _post(client, response_format="json").status_code == 400
+    row = _ledger_row()
+    assert row["status"] == "error" and row["error_class"] == "rejected"

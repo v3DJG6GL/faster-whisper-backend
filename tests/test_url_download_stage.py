@@ -51,3 +51,41 @@ def test_url_download_appears_in_response_stages(client, url_enabled):
     assert dl[0]["detail"] == "Youtube"
     assert isinstance(dl[0]["secs"], float)
     assert stages[0]["name"] == "downloading"
+
+
+def test_url_policy_rejection_lands_policy_blocked_on_the_ledger(client, url_enabled,
+                                                                  monkeypatch):
+    """The policy refusal becomes a 400 for the caller; the ledger keeps WHY
+    (policy_blocked in the downloading stage), not just "error"."""
+    import transcriptions_store
+    import usage_store
+
+    async def _refuse(url, *, timeout):
+        raise url_download.UrlPolicyError(
+            "this site isn't allowed by the server's URL policy")
+    monkeypatch.setattr(url_download, "probe", _refuse)
+    r = client.post("/v1/audio/transcriptions",
+                    data={"source_url": _URL, "model": "whisper-1"})
+    assert r.status_code == 400, r.text
+    row = transcriptions_store.list_recent(limit=1)[0]
+    assert (row["error_class"], row["error_stage"]) == ("policy_blocked", "downloading")
+    job = usage_store._require_conn().execute(
+        "SELECT error_class, error_stage FROM usage_jobs ORDER BY created_ts DESC LIMIT 1"
+    ).fetchone()
+    assert tuple(job) == ("policy_blocked", "downloading")
+
+
+def test_failed_stage_row_carries_its_error_class(url_enabled):
+    """A soft-failed stage (the job goes on without it) gets a receipt row
+    with the failure class the usage ledger counts; without it a failed
+    stage left no row anywhere."""
+    import time
+    app_module = url_enabled
+    row = app_module._failed_stage(
+        "diarizing", time.perf_counter() - 1.0, "pyannote/x",
+        RuntimeError("CUDA failed with error out of memory"))
+    assert row["name"] == "diarizing" and row["model"] == "pyannote/x"
+    assert row["error"] == "cuda_oom" and row["detail"] == "failed"
+    assert 0.9 <= row["secs"] <= 5.0
+    assert app_module._failed_stage("translating", time.perf_counter(), None,
+                                    TimeoutError())["error"] == "timeout"

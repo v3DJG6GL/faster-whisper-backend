@@ -14,6 +14,7 @@ trace panel) — see metrics_snapshot() below. Survives restart.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections import Counter, deque
 from typing import Any
@@ -147,6 +148,63 @@ class GpuGate(asyncio.Semaphore):
 # Set by main.get_inference_semaphore() once the gate exists; None before
 # the first inference (and on a box that never transcribes).
 gpu_gate: "GpuGate | None" = None
+
+
+# --- Error classes -------------------------------------------------------------
+# Why a job failed, in six words the failures card can group by. Message-
+# based where the libraries give nothing better (CTranslate2 and onnxruntime
+# raise bare RuntimeErrors for an OOM), so `other` is the honest fallback
+# and the tests pin the exact strings matched. Classification is server-
+# side only; str(exc) never travels with it.
+ERROR_CLASSES: tuple[str, ...] = (
+    "policy_blocked",   # the server's URL / size policy refused the input
+    "cuda_oom",         # the GPU ran out of memory
+    "timeout",          # a stage or fetch timed out
+    "cancelled",        # the client cancelled (or dropped the connection)
+    "decode_failed",    # the media could not be decoded (av / ffmpeg)
+    "rejected",         # a 4xx: the caller's request, not the server, failed
+    "other",
+)
+_OOM_RE = re.compile(
+    r"out of memory|CUDA_ERROR_OUT_OF_MEMORY|cudaErrorMemoryAllocation"
+    r"|CUBLAS_STATUS_ALLOC_FAILED|Failed to allocate memory", re.I)
+_DECODE_STAGES = frozenset(("analyzing", "transcoding"))
+
+
+def classify_error(exc: "BaseException | None", *, status: str,
+                   stage: str | None = None) -> tuple[str | None, str | None]:
+    """`(error_class, error_stage)` for a finished job: (None, None) when it
+    succeeded, else one of ERROR_CLASSES and the stage it was in. An
+    exception may pre-classify itself via an `error_class` attribute
+    (url_download.UrlPolicyError does)."""
+    if status == "ok":
+        return None, None
+    if status == "cancelled" or isinstance(exc, asyncio.CancelledError):
+        return "cancelled", stage
+    pre = getattr(exc, "error_class", None)
+    if isinstance(pre, str) and pre in ERROR_CLASSES:
+        return pre, stage
+    name = type(exc).__name__ if exc is not None else ""
+    module = getattr(type(exc), "__module__", "") or ""
+    msg = str(exc) if exc is not None else ""
+    if name == "OutOfMemoryError" or (
+            isinstance(exc, (RuntimeError, MemoryError)) and _OOM_RE.search(msg)):
+        return "cuda_oom", stage
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "timeout", stage
+    if module.startswith("av") or name in ("InvalidDataError", "FFmpegError"):
+        return "decode_failed", stage
+    if isinstance(exc, RuntimeError) and "timed out" in msg.lower():
+        return "timeout", stage
+    code = getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        if code == 499:
+            return "cancelled", stage
+        if 400 <= code < 500:
+            return "rejected", stage
+    if stage in _DECODE_STAGES and exc is not None:
+        return "decode_failed", stage
+    return "other", stage
 
 
 def gpu_gate_snapshot() -> dict[str, Any]:

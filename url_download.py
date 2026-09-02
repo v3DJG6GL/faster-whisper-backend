@@ -62,6 +62,17 @@ class UrlDownloadError(RuntimeError):
     """str() is CLIENT-SAFE by contract (our wording, never tool output)."""
 
 
+class UrlPolicyError(UrlDownloadError):
+    """The operator's URL / size policy refused the input (not a fetch
+    failure). Pre-classified for the failures card."""
+    error_class = "policy_blocked"
+
+
+class UrlTimeoutError(UrlDownloadError):
+    """A probe or download ran past its timeout."""
+    error_class = "timeout"
+
+
 class UrlCancelled(Exception):
     """Cooperative cancel: the caller's cancel_check returned True."""
 
@@ -302,13 +313,13 @@ async def check_url_policy(url: str) -> str:
             raise UrlDownloadError(
                 "this link is neither a supported site nor a direct "
                 "audio/video file")
-        raise UrlDownloadError(
+        raise UrlPolicyError(
             "this site isn't allowed by the server's URL policy")
     allowed = [a.strip().lower()
                for a in (getattr(cfg, "URL_ALLOWED_EXTRACTORS", []) or [])
                if a and a.strip()]
     if allowed and key.lower() not in allowed:
-        raise UrlDownloadError("this site isn't on the server's allowed list")
+        raise UrlPolicyError("this site isn't on the server's allowed list")
     return key
 
 
@@ -673,7 +684,7 @@ async def download(
         while True:
             if time.monotonic() - t0 > timeout:
                 await _kill()
-                raise UrlDownloadError("the download timed out")
+                raise UrlTimeoutError("the download timed out")
             if cancel_check is not None and cancel_check():
                 await _kill()
                 raise UrlCancelled()

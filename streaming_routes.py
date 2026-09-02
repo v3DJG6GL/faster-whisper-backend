@@ -1463,6 +1463,23 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # screen it too before it hits the line-oriented rotating log.
         logger.exception("[stream %s] error: %s",
                          session_id[:8], store_common.log_safe(str(exc)))
+        # The ledger otherwise never hears of a failed session (utterances
+        # record only on success): one error row under the session's job id,
+        # classified like a batch failure. Best effort — locals bound only
+        # after the handshake may be missing.
+        try:
+            _ec, _es = metrics.classify_error(exc, status="error",
+                                              stage="transcribing")
+            _loc = locals()
+            metrics.record_transcription(
+                model=str(_loc.get("final_model") or ""), audio_dur=0.0,
+                proc_dur=0.0, status="error", words=0, kind="dictate",
+                request_id=session_id, user_id=user.get("user_id"),
+                key_id=user.get("key_id"), key_label=user.get("key_label"),
+                job_id=_loc.get("usage_job_id") or session_id,
+                error_class=_ec, error_stage=_es)
+        except Exception:  # noqa: BLE001 — never mask the real error
+            pass
         try:
             # Lock like every other send: on a setup-window failure the consumer
             # task may still be mid-emit (it is cancelled later, in the finally),

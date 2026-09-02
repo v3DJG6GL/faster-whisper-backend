@@ -1992,6 +1992,20 @@ def get_inference_semaphore() -> "asyncio.Semaphore":
     return _inference_semaphore
 
 
+def _failed_stage(name: str, t0: float, model: "str | None",
+                  exc: BaseException) -> dict:
+    """A receipt row for a stage that soft-failed (the job went on without
+    it): its wall time, and an `error` class the usage ledger counts —
+    without it a failed stage left no row anywhere."""
+    return {
+        "name": name,
+        "secs": round(time.perf_counter() - t0, 2),
+        "model": model or None,
+        "detail": "failed",
+        "error": metrics.classify_error(exc, status="error", stage=name)[0],
+    }
+
+
 # Separate limiter for transcribe-from-URL downloads: network-bound work that
 # must NOT occupy a GPU slot (a slow site would starve inference otherwise).
 # Same lazy-build/restart-required contract as the inference semaphore.
@@ -3673,6 +3687,14 @@ async def transcribe(
     metrics.seed_wait()
     _t0 = time.perf_counter()
     _status = "ok"
+    # Failure classification for the ledger (metrics.classify_error in the
+    # finally): the stage the request was in when it failed and the
+    # exception the arms saw. A stage that pre-classifies (the URL policy)
+    # sets _error_class directly and the finally keeps it.
+    _cur_stage: "str | None" = None
+    _exc: "BaseException | None" = None
+    _error_class: "str | None" = None
+    _error_stage: "str | None" = None
     _audio_dur: float = 0.0
     _words: int = 0
     # Detected (or requested) language for the usage job row; None until the
@@ -3791,6 +3813,7 @@ async def transcribe(
                 logger.info("[url-dl] transcribe-from-url requested (host %s)",
                             _url_host_for_log(source_url))
                 _dl_t0 = time.perf_counter()
+                _cur_stage = "downloading"
                 try:
                     _check_cancelled(_pid)
                     _url = _udl.validate_url(source_url)
@@ -3836,6 +3859,9 @@ async def transcribe(
                     logger.info("[url-dl] rejected (host %s): %s",
                                 _url_host_for_log(source_url),
                                 _log_safe(str(_ue)))
+                    # Classify HERE: below, the 400 is all the arms see.
+                    _error_class, _error_stage = metrics.classify_error(
+                        _ue, status="error", stage="downloading")
                     raise HTTPException(status_code=400, detail=str(_ue))
                 audio_bytes = os.path.getsize(_dl_path)
                 # Pipeline copy FIRST (hardlink where possible), THEN move
@@ -4228,6 +4254,7 @@ async def transcribe(
                     import bgm_separation as _bgm
                     try:
                         _sep_t0 = time.perf_counter()
+                        _cur_stage = "separating"
                         _progress_set(
                             _pid, stage="separating", progress=None,
                             position=None, last_text=None,
@@ -4333,12 +4360,16 @@ async def transcribe(
                     except _bgm.BgmSeparationError as _se:
                         # str(_se) is client-safe by the module's contract.
                         _warnings.append(str(_se))
+                        _stage_timings.append(_failed_stage(
+                            "separating", _sep_t0, _separation_model, _se))
                     except Exception as _se:  # noqa: BLE001 — soft-fail
                         logger.error("[bgm] unexpected failure: %s",
                                      _log_safe(str(_se)))
                         _warnings.append(
                             "music separation failed; transcribing the "
                             "original audio")
+                        _stage_timings.append(_failed_stage(
+                            "separating", _sep_t0, _separation_model, _se))
 
             # Run the synchronous CTranslate2 inference in a thread executor
             # so the event loop stays responsive. CT2 releases the GIL
@@ -4455,6 +4486,9 @@ async def transcribe(
             async with get_inference_semaphore():
                 _check_cancelled(_pid)
                 _dec_t0 = time.perf_counter()
+                # The executor decodes (av) then transcribes; an av error is
+                # told apart by its module, not by this marker.
+                _cur_stage = "transcribing"
                 segments_iter, info, _pad_applied = await loop.run_in_executor(
                     None, _do_transcribe)
                 _total_secs = time.perf_counter() - _dec_t0
@@ -4598,6 +4632,7 @@ async def transcribe(
                     import diarization as _diar
                     try:
                         _diar_t0 = time.perf_counter()
+                        _cur_stage = "diarizing"
                         _progress_set(
                             _pid, stage="diarizing", progress=None,
                             position=None, last_text=None, step=None,
@@ -4644,12 +4679,16 @@ async def transcribe(
                     except _diar.DiarizationError as _de:
                         # str(_de) is client-safe by the module's contract.
                         _warnings.append(str(_de))
+                        _stage_timings.append(_failed_stage(
+                            "diarizing", _diar_t0, _diarization_model, _de))
                     except Exception as _de:  # noqa: BLE001 — soft-fail
                         logger.error("[diarize] unexpected failure: %s",
                                      _log_safe(str(_de)))
                         _warnings.append(
                             "diarization failed; the transcript has no "
                             "speaker labels")
+                        _stage_timings.append(_failed_stage(
+                            "diarizing", _diar_t0, _diarization_model, _de))
             elif _diarize:
                 _warnings.append("diarization skipped: no speech segments")
 
@@ -4685,6 +4724,7 @@ async def transcribe(
                     else:
                         try:
                             _tr_t0 = time.perf_counter()
+                            _cur_stage = "translating"
                             _check_cancelled(_pid)
                             _progress_set(
                                 _pid, stage="translating", progress=0.0,
@@ -4799,12 +4839,16 @@ async def transcribe(
                         except _tr.TranslationError as _te:
                             # str(_te) is client-safe by the module's contract.
                             _warnings.append(str(_te))
+                            _stage_timings.append(_failed_stage(
+                                "translating", _tr_t0, None, _te))
                         except Exception as _te:  # noqa: BLE001 — soft-fail
                             logger.error("[translate] unexpected failure: %s",
                                          _log_safe(str(_te)))
                             _warnings.append(
                                 "translation failed; the transcript is "
                                 "untranslated")
+                            _stage_timings.append(_failed_stage(
+                                "translating", _tr_t0, None, _te))
             elif _translate_to:
                 _warnings.append("translation skipped: no speech segments")
 
@@ -5213,14 +5257,16 @@ async def transcribe(
             logger.info("[batch] transcription cancelled by client")
             raise HTTPException(status_code=499,
                                 detail="cancelled by the client")
-        except HTTPException:
+        except HTTPException as _he:
             # Preserve curated HTTP errors (e.g. an allowed-models 400) with
             # their status + message intact — only unexpected errors below are
             # genericised.
             _status = "error"
+            _exc = _he
             raise
         except Exception as e:
             _status = "error"
+            _exc = e
             # Log the raw exception server-side, but return a GENERIC detail to
             # the client: str(e) here can carry model-dir / filesystem (temp)
             # paths (av/ffmpeg decode + model-load errors). Mirrors the
@@ -5256,7 +5302,7 @@ async def transcribe(
         if _status != "cancelled":
             _status = "cancelled"
         raise
-    except Exception:
+    except Exception as _oe:
         # Catches failures BEFORE the inner try (e.g. _get_or_load_model
         # raising HTTPException, await request.form() blowing up), which
         # previously bypassed `_status = "error"` and inflated the success
@@ -5265,6 +5311,8 @@ async def transcribe(
         # NOT an error, so "cancelled" must survive into the recorded row.
         if _status != "cancelled":
             _status = "error"
+        if _exc is None:
+            _exc = _oe
         raise
     finally:
         if _leased_model is not None:
@@ -5277,12 +5325,17 @@ async def transcribe(
             # the TTL retires them on its own.
             _PLAN_BY_PID.pop(_pid, None)
         jobs.job_end(request_id)
+        if _status != "ok" and _error_class is None:
+            _error_class, _error_stage = metrics.classify_error(
+                _exc, status=_status, stage=_cur_stage)
         metrics.record_transcription(
             model=resolved_model,
             audio_dur=_audio_dur,
             proc_dur=time.perf_counter() - _t0,
             status=_status,
             words=_words,
+            error_class=_error_class,
+            error_stage=_error_stage,
             request_id=request_id,
             user_id=_user_id,
             key_id=_key_id,
@@ -5667,12 +5720,16 @@ async def translate_text(request: Request,
             _progress_set(_pid, stage="downloading", progress=frac,
                           total_bytes=total or None)
 
-        def _record_run(status: str) -> None:
+        def _record_run(status: str, exc: "BaseException | None" = None) -> None:
             """Persist this run as a recent-jobs row (kind='translate') on every
             terminal path. No audio duration; segment count lives in the stage
             detail (words_count=0 — a segment count is not a word count)."""
             secs = round(time.perf_counter() - _t0, 3)
+            _ec, _es = metrics.classify_error(exc, status=status,
+                                              stage="translating")
             metrics.record_transcription(
+                error_class=_ec,
+                error_stage=_es,
                 model=(_tr_model or ""),
                 audio_dur=0.0,
                 proc_dur=secs,
@@ -5740,7 +5797,7 @@ async def translate_text(request: Request,
         _release_held_receipt(
             _held_key,
             f"failed after {time.perf_counter() - _t0:.1f}s — {_log_safe(str(e))}")
-        _record_run("error")
+        _record_run("error", e)
         raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         _release_held_receipt(_held_key, "request rejected")
@@ -5752,7 +5809,7 @@ async def translate_text(request: Request,
         _release_held_receipt(
             _held_key,
             f"failed after {time.perf_counter() - _t0:.1f}s")
-        _record_run("error")
+        _record_run("error", e)
         raise HTTPException(status_code=500, detail="translation failed")
     finally:
         # Release FIRST — before any await and before job_end. A client
