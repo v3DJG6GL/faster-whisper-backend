@@ -218,6 +218,7 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
                      ("cpu_pct", "ram_used_mb", "ram_total_mb", "ram_pct")},
             "models": sysnap.get("models"),
             "in_flight_transcriptions": metrics.in_flight_transcriptions,
+            "gpu_gate": metrics.gpu_gate_snapshot(),
         }
     models = [
         {**m, **_model_size_meta(m.get("name"), m.get("device"),
@@ -517,6 +518,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .card .val .sub { color: var(--dim); font-size: var(--fs-sm); font-weight: normal; margin-left: 0.375rem; }
   .card .meta { color: var(--dim); font-size: var(--fs-xs); margin-top: 0.25rem; }
   .card .meta b { color: var(--fg); font-weight: 500; }
+  .card .meta .warn { color: var(--yellow); font-weight: 600; }
   .bar { height: 6px; background: #21262d; border-radius: 3px; margin-top: 0.375rem; overflow: hidden; }
   .bar > i { display: block; height: 100%; background: var(--cyan);
     transition: width .3s ease; }
@@ -987,6 +989,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
    <div class="grid-stack-item-content"><div class="card">
     <h3>Activity</h3>
     <div id="inflight-val" class="val">0<span class="sub">in flight</span></div>
+    <div id="gate-meta" class="meta"></div>
     <div id="activity-meta" class="meta"></div>
    </div></div>
   </div>
@@ -1555,6 +1558,19 @@ function render(snap) {
   // --- Activity / in-flight ---
   $('inflight-val').innerHTML = `${snap.in_flight_transcriptions}` +
     `<span class="sub">in flight</span>`;
+  const gate = snap.gpu_gate || {};
+  const gateEl = $('gate-meta');
+  if (gateEl) {
+    if (gate.capacity == null) {
+      gateEl.innerHTML = '<span class="empty">GPU gate not built yet — no inference so far</span>';
+    } else {
+      const q = gate.queue_depth || 0;
+      gateEl.innerHTML =
+        `<b>GPU slots</b> ${gate.held} / ${gate.capacity} held &nbsp; ` +
+        `<b>queue</b> <span class="${q ? 'warn' : ''}">${q}</span>` +
+        (q ? ` &nbsp; <b>oldest wait</b> ${fmtSec(gate.oldest_wait_s)}` : '');
+    }
+  }
   const totalReq = Object.values(snap.requests || {}).reduce((a, b) => a + b, 0);
   $('activity-meta').innerHTML =
     `<b>uptime</b> ${fmtSec(snap.uptime_sec)} &nbsp; ` +

@@ -752,3 +752,29 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
     assert "hooks: { setCursor: [onSparkHover] }" in html
     assert "histX.indexOf(frozenTs)" in html
     assert "if (frozenTs != null) applyFreeze();" in html
+
+
+def test_lite_payload_and_activity_card_carry_the_gpu_gate(client):
+    import stats_routes
+    lite = stats_routes._build_payload(stats_routes.ADMIN_SCOPE, lite=True)
+    assert set(lite["gpu_gate"]) == {"capacity", "held", "queue_depth", "oldest_wait_s"}
+    html = client.get("/stats").text
+    assert 'id="gate-meta"' in html and "snap.gpu_gate" in html
+
+
+def test_transcription_records_the_gate_wait(client):
+    """A real request through the handler goes through the timed gate and
+    lands a wait_s on its ledger rows (0 with a free slot, never None)."""
+    import transcriptions_store
+    import usage_store
+    r = client.post("/v1/audio/transcriptions",
+                    files={"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")},
+                    data={"model": "whisper-1"})
+    assert r.status_code == 200, r.text
+    row = transcriptions_store.list_recent(limit=1)[0]
+    assert row["wait_s"] is not None and row["wait_s"] >= 0.0
+    job = usage_store._require_conn().execute(
+        "SELECT wait_s FROM usage_jobs ORDER BY created_ts DESC LIMIT 1").fetchone()
+    assert job is not None and job["wait_s"] >= 0.0
+    import metrics
+    assert metrics.gpu_gate is not None and metrics.gpu_gate.held == 0

@@ -477,6 +477,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
     # Set only now: from here every exit runs the finally that releases it.
     _stream_held: "str | None" = _stream_key
     metrics.in_flight_transcriptions += 1
+    # Per-utterance GPU-gate wait: the session's tasks share this context's
+    # accumulator; each recorded utterance takes (and zeroes) it.
+    metrics.seed_wait()
     # Central running-jobs registry: one "dictate" entry per live session
     # (no progress — a dictation has no defined end until the client stops).
     # `user` is the display name so the running row in /stats reads the same
@@ -1066,7 +1069,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 request_id=rid, user_id=user.get("user_id"), key_id=user.get("key_id"),
                 key_label=user.get("key_label"),
                 job_id=usage_job_id,
-                language=(getattr(fw_info, "language", None) or req_language or None))
+                language=(getattr(fw_info, "language", None) or req_language or None),
+                wait_s=metrics.take_wait())
 
         session = StreamSession(
             config=_stream_config(cfg, ident),

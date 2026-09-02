@@ -67,6 +67,93 @@ err_count: Counter[str] = Counter()         # path -> 5xx total
 # Bumped/dec'd by the transcribe handler with try/finally.
 in_flight_transcriptions: int = 0
 
+
+# --- GPU gate: the inference semaphore, timed ----------------------------------
+# main.get_inference_semaphore() builds one of these. `async with` calls
+# exactly acquire()/release(), so the seven call sites are untouched; what
+# is added is the queue: how many tasks are waiting, for how long, and how
+# much of each REQUEST's time went to waiting. The per-request sum rides a
+# ContextVar so no acquire site has to know which request it serves — the
+# handler seeds WAIT_ACC once and reads it in its outer finally (a dictation
+# session reads and zeroes it per utterance).
+import asyncio
+import contextvars
+
+WAIT_ACC: "contextvars.ContextVar[dict | None]" = contextvars.ContextVar(
+    "gpu_wait_acc", default=None)
+
+
+def seed_wait() -> "contextvars.Token":
+    """Start accumulating GPU-gate wait for the current request context."""
+    return WAIT_ACC.set({"s": 0.0, "n": 0})
+
+
+def take_wait() -> float:
+    """Seconds this context spent queued since the seed (or the last take);
+    resets the accumulator. 0.0 when nothing was seeded."""
+    acc = WAIT_ACC.get()
+    if acc is None:
+        return 0.0
+    s = float(acc["s"])
+    acc["s"] = 0.0
+    acc["n"] = 0
+    return round(s, 3)
+
+
+class GpuGate(asyncio.Semaphore):
+    """asyncio.Semaphore that knows its capacity, how many slots are held,
+    who is waiting (and since when), and charges each wait to the
+    request's WAIT_ACC. Everything /stats needs for "queue depth", "oldest
+    wait" and per-job wait_s without a real queue object."""
+
+    def __init__(self, value: int = 1) -> None:
+        super().__init__(value)
+        self.capacity = int(value)
+        self.held = 0
+        self._waiting: dict[int, float] = {}
+        self._seq = 0
+
+    async def acquire(self) -> bool:  # type: ignore[override]
+        self._seq += 1
+        key = self._seq
+        t0 = time.monotonic()
+        self._waiting[key] = t0
+        try:
+            await super().acquire()
+        finally:
+            self._waiting.pop(key, None)
+        self.held += 1
+        acc = WAIT_ACC.get()
+        if acc is not None:
+            acc["s"] += time.monotonic() - t0
+            acc["n"] += 1
+        return True
+
+    def release(self) -> None:
+        self.held = max(0, self.held - 1)
+        super().release()
+
+    def snapshot(self) -> dict[str, Any]:
+        now = time.monotonic()
+        oldest = min(self._waiting.values()) if self._waiting else None
+        return {
+            "capacity": self.capacity,
+            "held": self.held,
+            "queue_depth": len(self._waiting),
+            "oldest_wait_s": round(now - oldest, 1) if oldest is not None else 0.0,
+        }
+
+
+# Set by main.get_inference_semaphore() once the gate exists; None before
+# the first inference (and on a box that never transcribes).
+gpu_gate: "GpuGate | None" = None
+
+
+def gpu_gate_snapshot() -> dict[str, Any]:
+    if gpu_gate is None:
+        return {"capacity": None, "held": 0, "queue_depth": 0, "oldest_wait_s": 0.0}
+    return gpu_gate.snapshot()
+
 # Global latency ring (ms) used for p50/p95/p99.
 _latency: deque[float] = deque(maxlen=_LATENCY_MAX)
 
@@ -324,6 +411,7 @@ def metrics_snapshot(*, include_identity: bool = False,
     return {
         "uptime_sec": round(time.time() - START_TS, 1),
         "in_flight_transcriptions": in_flight_transcriptions,
+        "gpu_gate": gpu_gate_snapshot(),
         "requests": dict(req_count),
         "errors_total": dict(err_count),
         "errors_window": {

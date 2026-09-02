@@ -307,3 +307,85 @@ def test_record_transcription_fans_out_wait_and_error_class(tx_store, usage_stor
         "SELECT wait_s, error_class, error_stage, status FROM usage_jobs"
         " WHERE job_id = 'e1'").fetchone()
     assert tuple(job) == (1.25, "cuda_oom", "transcribing", "error")
+
+
+# ---------------------------------------------------------------------------
+# GpuGate: the timed inference semaphore
+# ---------------------------------------------------------------------------
+
+def test_gpu_gate_counts_held_queue_and_charges_the_wait():
+    """Capacity 1: the second task waits, the snapshot shows it queued, and
+    the wait is charged to THAT task's WAIT_ACC (seeded per request);
+    releasing brings held back to 0."""
+    import asyncio
+
+    async def scenario():
+        gate = metrics.GpuGate(1)
+        seen = {}
+
+        async def first():
+            metrics.seed_wait()
+            async with gate:
+                seen["first_snap"] = gate.snapshot()
+                await asyncio.sleep(0.05)
+            seen["first_wait"] = metrics.take_wait()
+
+        async def second():
+            metrics.seed_wait()
+            await asyncio.sleep(0.01)          # let `first` hold the slot
+            async with gate:
+                seen["second_snap"] = gate.snapshot()
+            seen["second_wait"] = metrics.take_wait()
+
+        await asyncio.gather(first(), second())
+        seen["end"] = gate.snapshot()
+        return seen
+
+    seen = asyncio.run(scenario())
+    assert seen["first_snap"]["held"] == 1 and seen["first_snap"]["capacity"] == 1
+    assert seen["first_wait"] == 0.0
+    assert seen["second_wait"] >= 0.03
+    assert seen["second_snap"]["queue_depth"] == 0
+    assert seen["end"] == {"capacity": 1, "held": 0, "queue_depth": 0,
+                           "oldest_wait_s": 0.0}
+
+
+def test_gpu_gate_snapshot_reports_the_oldest_waiter():
+    import asyncio
+
+    async def scenario():
+        gate = metrics.GpuGate(1)
+        await gate.acquire()
+        waiter = asyncio.create_task(gate.acquire())
+        await asyncio.sleep(0.05)
+        snap = gate.snapshot()
+        gate.release()
+        await waiter
+        gate.release()
+        return snap, gate.snapshot()
+
+    snap, after = asyncio.run(scenario())
+    assert snap["queue_depth"] == 1 and snap["oldest_wait_s"] >= 0.0
+    assert after["queue_depth"] == 0 and after["held"] == 0
+
+
+def test_take_wait_without_a_seed_is_zero_and_take_resets():
+    import asyncio
+    assert metrics.take_wait() == 0.0
+
+    async def scenario():
+        gate = metrics.GpuGate(2)
+        metrics.seed_wait()
+        async with gate:
+            pass
+        first = metrics.take_wait()
+        second = metrics.take_wait()
+        return first, second
+
+    first, second = asyncio.run(scenario())
+    assert first >= 0.0 and second == 0.0
+
+
+def test_metrics_snapshot_carries_the_gate(tx_store):
+    snap = metrics.metrics_snapshot()
+    assert set(snap["gpu_gate"]) == {"capacity", "held", "queue_depth", "oldest_wait_s"}

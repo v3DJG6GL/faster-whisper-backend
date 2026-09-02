@@ -1985,7 +1985,10 @@ def get_inference_semaphore() -> "asyncio.Semaphore":
     global _inference_semaphore
     if _inference_semaphore is None:
         n = max(1, int(getattr(cfg, "INFERENCE_CONCURRENCY", 2)))
-        _inference_semaphore = asyncio.Semaphore(n)
+        # A timed semaphore: same `async with` contract, plus queue depth /
+        # oldest wait for /stats and the per-request wait_s on the ledger.
+        _inference_semaphore = metrics.GpuGate(n)
+        metrics.gpu_gate = _inference_semaphore
     return _inference_semaphore
 
 
@@ -3665,6 +3668,9 @@ async def transcribe(
     # the outer finally can correlate timing-only writes to the SQLite store
     # on the error path too.
     metrics.in_flight_transcriptions += 1
+    # GPU-gate wait for this request accumulates here (every acquire in
+    # this task, and in tasks it spawns, charges it); read in the finally.
+    metrics.seed_wait()
     _t0 = time.perf_counter()
     _status = "ok"
     _audio_dur: float = 0.0
@@ -5287,6 +5293,7 @@ async def transcribe(
             job_id=_pid or request_id,
             usage_kind="url" if source_url is not None else "file",
             language=_language,
+            wait_s=metrics.take_wait(),
         )
 
 
@@ -5597,6 +5604,7 @@ async def translate_text(request: Request,
     # the two, and each one would have to remember to release a slot it
     # never actually used. From this line to the finally there is exactly
     # one path out.
+    metrics.seed_wait()
     try:
         _translate_inflight.acquire(_inflight_key)
     except HTTPException:
@@ -5680,6 +5688,7 @@ async def translate_text(request: Request,
                          "detail": f"{len(seg_in)} segs → {','.join(targets)}",
                          "targets": list(targets)}],
                 job_id=_pid or request_id,
+                wait_s=metrics.take_wait(),
             )
 
         # `owner` binds the entry to this caller, exactly like the batch
