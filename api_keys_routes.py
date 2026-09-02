@@ -1235,7 +1235,7 @@ _API_KEYS_HTML = r"""<!doctype html>
     quick_config: 'own = this user’s submitted chips + their own recent traces',
     captures:     'own = only audio + transcripts dictated under this user’s key',
     reports:      'own = only reports this user submitted',
-    stats:        'system aggregates — no per-user view (none|all only)',
+    stats:        'own = only this user’s running/recent jobs + usage; machine cards hidden unless “Own-scope users see machine cards” is on in /settings · all = every user’s jobs, volumes and the live machine',
     logs:         'server-wide log stream — no per-user view (none|all only)'
   };
 

@@ -18,6 +18,14 @@ def test_list_users_open_mode(client):
     assert "pages" in body
 
 
+def test_list_users_scope_lists_put_stats_in_scoped(client):
+    """The permission matrix derives its none/own/all segments from these two
+    lists; stats must render the Own segment, logs must not."""
+    body = client.get("/settings/api-keys/api/users").json()
+    assert body["access_only_pages"] == ["logs"]
+    assert "stats" in body["scoped_pages"]
+
+
 def test_list_users_surfaces_activity_fields(client):
     # The user-card header reads both batched fields straight off /api/users:
     # active_key_count and (server-computed) last_used_ts. An unused key yields

@@ -939,6 +939,14 @@ RECENT_TRANSCRIPTIONS_PRUNE_EVERY = _D("RECENT_TRANSCRIPTIONS_PRUNE_EVERY")
 # scroll badly without adding value.
 STATS_RECENT_TRANSCRIPTIONS_COUNT = _D("STATS_RECENT_TRANSCRIPTIONS_COUNT")
 
+# /stats for users whose page scope is "own": False (default) replaces the
+# machine cards (GPU/CPU/RAM/process/latency/endpoints/5xx/models) with a
+# coarse server block — a busy/idle GPU and VRAM headroom — because
+# utilisation curves and totals reveal when OTHER people run jobs. True
+# shows them the full cards (a trusted household box). Admins and "all"
+# scope always see everything. Read at request time, hot-applied.
+STATS_OWN_SHOWS_MACHINE = _D("STATS_OWN_SHOWS_MACHINE")
+
 
 # =============================================================================
 # Per-key / per-user usage rollup

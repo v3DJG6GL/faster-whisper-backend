@@ -92,13 +92,15 @@ _KEY_BYTES = 32   # secrets.token_urlsafe(32) → 43-char base64url, 256-bit ent
 PAGES: tuple[str, ...] = ("quick_config", "captures", "reports", "stats", "logs")
 
 # Per-user data pages — support the full none|own|all triple.
+# (stats joined in v2: "own" = the caller's own jobs + usage, machine cards
+# replaced by a coarse server block unless STATS_OWN_SHOWS_MACHINE is on.)
 SCOPED_PAGES: frozenset[str] = frozenset(
-    ("logs", "quick_config", "reports", "captures")
+    ("logs", "quick_config", "reports", "captures", "stats")
 )
 
 # Pages without a per-user notion — only none|all is meaningful.
-# (stats is server-wide aggregate metrics; "own" would be nonsensical.)
-ACCESS_ONLY_PAGES: frozenset[str] = frozenset(("stats", "logs"))
+# (logs is one server-wide stream; nothing in it is user-partitionable.)
+ACCESS_ONLY_PAGES: frozenset[str] = frozenset(("logs",))
 
 # Allowed scope values per page, used by set_user_permissions() validation.
 _ALLOWED_SCOPES: dict[str, tuple[str, ...]] = {
@@ -106,15 +108,16 @@ _ALLOWED_SCOPES: dict[str, tuple[str, ...]] = {
     for p in PAGES
 }
 
-# Safe-by-default for new + existing non-admin users:
-#   per-data pages → "own" (see their own records),
-#   stats / logs   → "none" (server-wide views, not user-partitionable).
+# Safe-by-default for NEW non-admin users (existing rows keep whatever they
+# have — set_user_permissions() merges, it never re-reads this):
+#   per-data pages → "own" (see their own records, stats included),
+#   logs           → "none" (server-wide stream, not user-partitionable).
 DEFAULT_NONADMIN_PERMS: dict[str, Any] = {
     "pages": {
         "quick_config": "own",
         "captures":     "own",
         "reports":      "own",
-        "stats":        "none",
+        "stats":        "own",
         "logs":         "none",
     },
 }
@@ -386,7 +389,7 @@ def create_user(username: str, is_admin: bool) -> str:
     now = time.time()
     # Admin users get '{}' — they bypass the policy anyway. Non-admins
     # get the safe default so they can immediately review their own data
-    # on /captures, /reports, /quick-config, /logs (stats stays off).
+    # on /captures, /reports, /quick-config and /stats (logs stays off).
     perms_json = "{}" if is_admin else json.dumps(DEFAULT_NONADMIN_PERMS)
     conn = _require_conn()
     try:

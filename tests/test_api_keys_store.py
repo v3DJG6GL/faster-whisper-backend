@@ -338,10 +338,39 @@ def test_set_permissions_validates_page_and_scope(api_keys_db):
 def test_set_permissions_access_only_rejects_own(api_keys_db):
     ak = api_keys_db
     uid = ak.create_user("u", is_admin=False)
-    # stats is access-only: none|all, not own.
+    # logs is access-only: none|all, not own.
     with pytest.raises(ValueError):
-        ak.set_user_permissions(uid, {"pages": {"stats": "own"}})
+        ak.set_user_permissions(uid, {"pages": {"logs": "own"}})
+    ak.set_user_permissions(uid, {"pages": {"logs": "all"}})
+
+
+def test_stats_accepts_own_scope(api_keys_db):
+    """stats left ACCESS_ONLY_PAGES in v2: "own" is a legal stored value."""
+    ak = api_keys_db
+    uid = ak.create_user("u", is_admin=False)
+    ak.set_user_permissions(uid, {"pages": {"stats": "own"}})
+    assert ak.get_user_permissions(uid)["pages"]["stats"] == "own"
+    assert "stats" in ak.SCOPED_PAGES
+    assert "stats" not in ak.ACCESS_ONLY_PAGES
+
+
+def test_default_nonadmin_perms_stats_own(api_keys_db):
+    """A freshly created non-admin gets stats="own" (logs stays "none")."""
+    ak = api_keys_db
+    uid = ak.create_user("fresh", is_admin=False)
+    pages = ak.get_user_permissions(uid)["pages"]
+    assert pages["stats"] == "own"
+    assert pages["logs"] == "none"
+
+
+def test_existing_stats_all_survives_merge(api_keys_db):
+    """Widening the allowed scopes must not touch rows that already hold
+    "all": a later edit to another page merges around it."""
+    ak = api_keys_db
+    uid = ak.create_user("u", is_admin=False)
     ak.set_user_permissions(uid, {"pages": {"stats": "all"}})
+    ak.set_user_permissions(uid, {"pages": {"captures": "none"}})
+    assert ak.get_user_permissions(uid)["pages"]["stats"] == "all"
 
 
 def test_set_permissions_merge_preserves_untouched(api_keys_db):

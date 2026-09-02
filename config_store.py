@@ -775,6 +775,13 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "/stats dashboard \"Recent transcriptions\" widget row count. "
         "The widget is intentionally a small ticker — bumping this "
         "past ~50 makes it scroll awkwardly without adding signal.",
+    "STATS_OWN_SHOWS_MACHINE":
+        "Own-scope users see machine cards. Users whose /stats page scope is "
+        "\"own\" normally get only their own jobs and usage plus a coarse "
+        "server block (GPU busy/idle, VRAM headroom). On = they also see the "
+        "full machine cards (GPU/CPU/RAM/process/latency/endpoints/5xx/"
+        "models), which reveal when other people run jobs — fine for a "
+        "trusted household box. Admins and \"all\" scope are unaffected.",
 
     # --- Captures (fine-tuning data store) ---
     "CAPTURE_RECORDINGS_ENABLED":
@@ -1875,6 +1882,9 @@ class AdminConfig(BaseModel):
     ALLOW_REQUEST_DECODE_OVERRIDES: bool | None = _F(
         "ALLOW_REQUEST_DECODE_OVERRIDES", scope="server",
         group="Access & sessions", order=6)
+    STATS_OWN_SHOWS_MACHINE: bool | None = _F(
+        "STATS_OWN_SHOWS_MACHINE", scope="server",
+        group="Access & sessions", order=7)
 
     # --- Pipeline ---
     PIPELINE_RULES: Annotated[list[PipelineRule], Field(max_length=200)] | None = _F(
