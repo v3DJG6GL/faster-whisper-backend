@@ -5,6 +5,8 @@ import json
 from starlette.testclient import TestClient
 
 import jobs
+import metrics
+import pytest
 import translation
 
 
@@ -159,7 +161,7 @@ def test_stats_stream_frame_is_built_off_the_loop(client):
     assert "_build_payload" in src.split("await asyncio.to_thread(")[1][:80]
 
     snap = asyncio.run(asyncio.to_thread(
-        stats_routes._build_payload, lite=True, include_identity=False))
+        stats_routes._build_payload, stats_routes.ADMIN_SCOPE, lite=True))
     assert set(snap) >= {"ts", "jobs", "gpu", "host", "models",
                          "in_flight_transcriptions", "severity"}
 
@@ -286,3 +288,173 @@ def test_snapshot_running_row_carries_the_username(client, app_module,
         assert next(j for j in snap["jobs"] if j["id"] == jid)["user"] == "root"
     finally:
         jobs.job_end(jid)
+
+
+# ---------------------------------------------------------------------------
+# StatsScope: the "own" page scope (decisions 1-3, 2026-09-02)
+# ---------------------------------------------------------------------------
+
+_MACHINE_KEYS = {"gpu", "gpu_error", "host", "process", "models", "model_loads",
+                 "preload", "uptime_sec", "requests", "errors_total",
+                 "errors_window", "latency_ms", "in_flight_transcriptions"}
+
+
+def _user(scope, uid="ua", is_admin=False):
+    import auth
+    return {"user_id": uid, "username": "alice", "key_id": "ka",
+            "is_admin": is_admin,
+            "permissions": auth.Permissions({"pages": {"stats": scope}},
+                                            is_admin)}
+
+
+def _seed_jobs():
+    a = jobs.job_start("transcribe", model="m", user="alice", user_id="ua",
+                       detail="alice.wav")
+    b = jobs.job_start("transcribe", model="m", user="bob", user_id="ub",
+                       detail="bob.wav")
+    return a, b
+
+
+def test_stats_scope_rules(client, app_module, monkeypatch):
+    import stats_routes
+    admin = stats_routes.stats_scope_for(_user("all", is_admin=True))
+    assert admin == stats_routes.ADMIN_SCOPE
+    preview = stats_routes.stats_scope_for(_user("all", is_admin=True),
+                                           preview_user_id="ub")
+    assert (preview.scope, preview.user_id, preview.include_identity,
+            preview.sees_machine) == ("own", "ub", True, True)
+    all_ = stats_routes.stats_scope_for(_user("all"))
+    assert (all_.scope, all_.user_id, all_.include_identity,
+            all_.sees_machine) == ("all", None, False, True)
+    assert all_.viewer_user_id == "ua"
+    own = stats_routes.stats_scope_for(_user("own"))
+    assert (own.scope, own.user_id, own.include_identity,
+            own.sees_machine) == ("own", "ua", True, False)
+    monkeypatch.setattr(app_module.cfg, "STATS_OWN_SHOWS_MACHINE", True)
+    assert stats_routes.stats_scope_for(_user("own")).sees_machine is True
+
+
+def test_own_scope_full_payload_is_coarse(client, tx_store):
+    """Own scope: only the caller's jobs and recent rows, identities on
+    (they are all theirs), the machine keys replaced by the `server`
+    block."""
+    import stats_routes
+    metrics.record_transcription("m", 1.0, 0.5, "ok", 3, request_id="a1",
+                                 user_id="ua")
+    metrics.record_transcription("m", 2.0, 0.5, "ok", 3, request_id="b1",
+                                 user_id="ub")
+    a, b = _seed_jobs()
+    try:
+        snap = stats_routes._build_payload(
+            stats_routes.stats_scope_for(_user("own")))
+    finally:
+        jobs.job_end(a); jobs.job_end(b)
+    assert snap["scope"] == "own" and snap["machine"] is False
+    assert not (_MACHINE_KEYS & set(snap))
+    assert set(snap["server"]) == {"gpu", "models_loaded"}
+    assert set(snap["server"]["gpu"]) == {"present", "busy", "mem_used_mb",
+                                          "mem_total_mb"}
+    assert snap["server"]["gpu"]["busy"] is True      # a job was running
+    assert [j["id"] for j in snap["jobs"]] == [a]
+    assert snap["jobs"][0]["user"] == "alice"          # own rows keep identity
+    assert [r["audio_dur"] for r in snap["recent_transcriptions"]] == [1.0]
+
+
+def test_own_scope_lite_payload_scoped(client):
+    import stats_routes
+    a, b = _seed_jobs()
+    try:
+        snap = stats_routes._build_payload(
+            stats_routes.stats_scope_for(_user("own")), lite=True)
+    finally:
+        jobs.job_end(a); jobs.job_end(b)
+    assert set(snap) == {"ts", "scope", "machine", "jobs", "severity", "gpu",
+                         "models", "server"}
+    assert set(snap["gpu"]) == {"busy", "mem_used_mb", "mem_total_mb"}
+    assert snap["models"] == []
+    assert [j["id"] for j in snap["jobs"]] == [a]
+
+
+def test_own_scope_toggle_restores_machine(client, app_module, monkeypatch):
+    """The /settings switch: machine keys come back for own-scope viewers,
+    the job filter stays."""
+    import stats_routes
+    monkeypatch.setattr(app_module.cfg, "STATS_OWN_SHOWS_MACHINE", True)
+    a, b = _seed_jobs()
+    try:
+        snap = stats_routes._build_payload(
+            stats_routes.stats_scope_for(_user("own")))
+    finally:
+        jobs.job_end(a); jobs.job_end(b)
+    assert snap["machine"] is True and "server" not in snap
+    assert {"gpu", "host", "process", "latency_ms", "preload"} <= set(snap)
+    assert [j["id"] for j in snap["jobs"]] == [a]
+
+
+def test_nonadmin_all_scope_unchanged(client):
+    """stats="all" for a non-admin is today's behaviour: every job, machine
+    visible, identities scrubbed — plus the cancel handle on their own row."""
+    import stats_routes
+    a, b = _seed_jobs()
+    jobs.job_update(a, progress_id="pid-a")
+    jobs.job_update(b, progress_id="pid-b")
+    try:
+        snap = stats_routes._build_payload(
+            stats_routes.stats_scope_for(_user("all")))
+    finally:
+        jobs.job_end(a); jobs.job_end(b)
+    assert snap["scope"] == "all" and snap["machine"] is True
+    assert {"gpu", "host", "latency_ms"} <= set(snap)
+    rows = {j["id"]: j for j in snap["jobs"]}
+    assert set(rows) == {a, b}
+    assert "user" not in rows[a] and "detail" not in rows[b]
+    assert rows[a]["progress_id"] == "pid-a"
+    assert "progress_id" not in rows[b]
+
+
+def test_snapshot_route_own_user_over_http(client, make_user_key):
+    from conftest import bearer
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"stats": "own"})
+    a = jobs.job_start("transcribe", model="m", user="alice", user_id=uid)
+    b = jobs.job_start("transcribe", model="m", user="bob", user_id="other")
+    try:
+        snap = client.get("/stats/snapshot", headers=bearer(raw)).json()
+    finally:
+        jobs.job_end(a); jobs.job_end(b)
+    assert snap["scope"] == "own" and snap["machine"] is False
+    assert [j["id"] for j in snap["jobs"]] == [a]
+    assert "gpu" not in snap and "server" in snap
+    lite = client.get("/stats/snapshot?lite=1", headers=bearer(raw)).json()
+    assert set(lite["gpu"]) == {"busy", "mem_used_mb", "mem_total_mb"}
+
+
+def test_stream_rechecks_version(client, make_user_key, app_module):
+    """The stream re-resolves its StatsScope when the config version moves
+    (a permission edit) and ends only when the caller lost access."""
+    import inspect
+    import config_store
+    import stats_routes
+    from fastapi import HTTPException
+    from test_sse_auth_shared import _fake_request
+    from conftest import bearer
+
+    src = inspect.getsource(stats_routes.stats_stream)
+    assert "_rescope_on_version_change(" in src
+    assert "config_store.config_version()" in src
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"stats": "all"})
+    req = _fake_request(headers=bearer(raw))
+    seen = config_store.config_version()
+    assert stats_routes._rescope_on_version_change(req, seen) is None
+    import api_keys_store
+    api_keys_store.set_user_permissions(uid, {"pages": {"stats": "own"}})
+    res = stats_routes._rescope_on_version_change(req, seen)
+    assert res is not None
+    scope, seen2 = res
+    assert scope.scope == "own" and scope.user_id == uid
+    assert seen2 != seen
+    api_keys_store.set_user_permissions(uid, {"pages": {"stats": "none"}})
+    with pytest.raises(HTTPException):
+        stats_routes._rescope_on_version_change(req, seen2)

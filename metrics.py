@@ -247,11 +247,14 @@ def _errors_in(seconds: float) -> int:
     return n
 
 
-def metrics_snapshot(*, include_identity: bool = False) -> dict[str, Any]:
+def metrics_snapshot(*, include_identity: bool = False,
+                     user_id: "str | None" = None) -> dict[str, Any]:
     """Build the JSON payload returned by /stats/snapshot and /stats/stream.
 
-    ``include_identity`` follows jobs.jobs_snapshot's admin gate: only an
-    admin viewer gets the username / key_label of the recent jobs."""
+    ``include_identity`` follows jobs.jobs_snapshot's gate: admins (and
+    own-scope viewers, whose rows are all their own) get the username /
+    key_label of the recent jobs. ``user_id`` narrows the recent rows to
+    that owner (the /stats "own" page scope); None = every user."""
     durations = sorted(_latency)
     loads_summary = {}
     for m, v in model_loads.items():
@@ -267,13 +270,14 @@ def metrics_snapshot(*, include_identity: bool = False) -> dict[str, Any]:
         import config as cfg
         import transcriptions_store
         limit = int(getattr(cfg, "STATS_RECENT_TRANSCRIPTIONS_COUNT", 20))
-        rows = transcriptions_store.list_recent(limit=max(1, limit))
+        rows = transcriptions_store.list_recent(limit=max(1, limit),
+                                                user_id_filter=user_id)
     except Exception as e:
         logger.warning("[metrics] list_recent failed: %s", e)
         rows = []
-    # /stats is page-scoped {none, all} (no scope='own'); a non-admin
-    # holder of pages.stats='all' must not be able to read other users'
-    # transcripts via this widget. Project to the timing-only shape the
+    # A non-admin holder of pages.stats='all' sees every user's rows and
+    # must not be able to read other users' transcripts (or identities)
+    # via this widget. Project to the timing-only shape the
     # /stats JS actually renders and coerce nulls to numeric defaults so
     # `r.audio_dur.toFixed(1)` on error-path rows doesn't freeze the
     # live view.

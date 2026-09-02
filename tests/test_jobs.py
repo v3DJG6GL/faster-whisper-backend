@@ -71,3 +71,44 @@ def test_update_clear_sentinel_writes_none():
     assert row["step"] == "s"
     assert row["stage"] == "diarizing"
     jobs.job_end(jid)
+
+
+def test_snapshot_filters_by_user_id():
+    """Own-scope viewers get only rows they own; rows started without an
+    owner (model downloads, standalone stage runs) never show for them."""
+    a = jobs.job_start("transcribe", model="m", user="alice", user_id="ua")
+    b = jobs.job_start("dictate", model="m", user="bob", user_id="ub")
+    d = jobs.job_start("download", model="gguf:org/m")
+    try:
+        ids = {r["id"] for r in jobs.jobs_snapshot(user_id="ua")}
+        assert ids == {a}
+        assert {r["id"] for r in jobs.jobs_snapshot()} == {a, b, d}
+        assert jobs.jobs_snapshot(user_id="nobody") == []
+    finally:
+        for j in (a, b, d):
+            jobs.job_end(j)
+
+
+def test_user_id_is_never_emitted():
+    jid = jobs.job_start("transcribe", model="m", user="alice", user_id="ua")
+    try:
+        for row in (jobs.jobs_snapshot()[0],
+                    jobs.jobs_snapshot(include_identity=True)[0],
+                    jobs.jobs_snapshot(user_id="ua")[0]):
+            assert "user_id" not in row
+    finally:
+        jobs.job_end(jid)
+
+
+def test_progress_id_visible_to_owner_and_admin_only():
+    """The cancel handle rides the row for admins (include_identity) and for
+    the row's own owner (viewer_user_id) — never for another non-admin."""
+    jid = jobs.job_start("transcribe", model="m", user="alice", user_id="ua")
+    jobs.job_update(jid, progress_id="pid-1")
+    try:
+        assert jobs.jobs_snapshot(include_identity=True)[0]["progress_id"] == "pid-1"
+        assert jobs.jobs_snapshot(viewer_user_id="ua")[0]["progress_id"] == "pid-1"
+        assert "progress_id" not in jobs.jobs_snapshot(viewer_user_id="ub")[0]
+        assert "progress_id" not in jobs.jobs_snapshot()[0]
+    finally:
+        jobs.job_end(jid)

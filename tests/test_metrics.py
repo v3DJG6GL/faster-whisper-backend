@@ -222,8 +222,9 @@ def test_record_download_persists_a_download_row(tx_store):
 
 
 def test_snapshot_scrubs_identity_for_non_admin_viewers(tx_store):
-    """/stats has no scope=own: a non-admin holder of pages.stats must not
-    read other users' username / key_label (same gate as jobs_snapshot)."""
+    """A non-admin holder of pages.stats="all" sees every user's rows and
+    must not read other users' username / key_label (same gate as
+    jobs_snapshot); admins and own-scope viewers get them."""
     stages = [{"name": "transcribing", "secs": 1.5, "model": "large-v3"}]
     metrics.record_transcription(
         "large-v3", 3.0, 1.5, "ok", 5, request_id="rj1", user_id="u1",
@@ -275,3 +276,18 @@ def test_cancelled_run_is_not_a_usage_error(usage_store_db):
     r = us.totals_by_key()[0]
     assert r["requests"] == 2
     assert r["errors"] == 1        # the error, not the client cancel
+
+
+def test_snapshot_user_filter_returns_only_that_users_rows(tx_store):
+    """The /stats "own" page scope: `user_id=` narrows the recent rows to
+    one owner (list_recent's indexed user_id_filter); None keeps them all."""
+    metrics.record_transcription("m", 1.0, 0.5, "ok", 3, request_id="a1",
+                                 user_id="alice")
+    metrics.record_transcription("m", 2.0, 0.5, "ok", 3, request_id="b1",
+                                 user_id="bob")
+    metrics.record_transcription("m", 3.0, 0.5, "ok", 3, request_id="a2",
+                                 user_id="alice")
+    own = metrics.metrics_snapshot(user_id="alice")["recent_transcriptions"]
+    assert sorted(r["audio_dur"] for r in own) == [1.0, 3.0]
+    assert len(metrics.metrics_snapshot()["recent_transcriptions"]) == 3
+    assert metrics.metrics_snapshot(user_id="nobody")["recent_transcriptions"] == []

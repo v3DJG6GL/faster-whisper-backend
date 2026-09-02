@@ -641,7 +641,7 @@ def _register_plan(user_id, entries, *, plan_id, denied, stage_ahead,
                 # Visible in /stats: warming is real GPU work and an operator
                 # watching the activity cluster must be able to see it happen.
                 plan.job_id = jobs.job_start(
-                    "preload", user=user_id,
+                    "preload", user=user_id, user_id=user_id,
                     model=", ".join(stats_key(f, m)
                                     for f, m in plan.entries)[:200],
                     detail=f"plan {pid[:8]}")

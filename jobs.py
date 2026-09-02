@@ -11,10 +11,17 @@ of times, merging only non-None fields) → `job_end(job_id)` in the owning
 code path's finally. `jobs_snapshot()` feeds /stats (payload key "jobs")
 and the WebUI header activity cluster.
 
-Identity scrubbing: the snapshot's non-admin variant omits `user`, `key`
-and `detail` — mirroring the recent-transcriptions projection philosophy
-(/stats has no 'own' scope, so a non-admin holder of pages.stats must not
-read other users' identities). No transcript text ever enters a job entry
+Identity: every entry may carry `user_id` (the opaque owner id, used ONLY
+for filtering — never emitted) beside the display fields `user` (a username,
+or whatever the caller had) and `key` (a key id). `jobs_snapshot(user_id=…)`
+returns just that owner's rows, which is what the /stats "own" page scope
+renders; jobs started without an owner (model downloads, standalone
+diarize/separate runs) are therefore invisible to own-scope viewers — they
+see such work only as the parent job's `stage`. The non-admin "all" variant
+omits `user`, `key` and `detail`, mirroring the recent-transcriptions
+projection: a non-admin holder of pages.stats="all" must not read other
+users' identities. `progress_id` (the cancel handle) is emitted for admins
+and for the row's own owner. No transcript text ever enters a job entry
 (last_text stays in _BATCH_PROGRESS only).
 
 Bounded: a job leak (a code path that misses its job_end) is capped at
@@ -59,10 +66,12 @@ def job_start(
     key: "str | None" = None,
     detail: "str | None" = None,
     total_bytes: "int | None" = None,
+    user_id: "str | None" = None,
 ) -> str:
     """Register a running job; returns its id (a fresh uuid4 hex unless the
     caller passes its own request/session id). Auto-stamps monotonic +
-    wall-clock start times."""
+    wall-clock start times. `user_id` is the owner's opaque id (filter key
+    for own-scope viewers); `user` stays the display name."""
     job_id = id or uuid.uuid4().hex
     entry = {
         "id": job_id,
@@ -70,6 +79,7 @@ def job_start(
         "model": model,
         "user": user,
         "key": key,
+        "user_id": user_id,
         "detail": detail,
         "total_bytes": total_bytes,
         "progress": None,
@@ -115,16 +125,25 @@ def job_end(job_id: "str | None") -> None:
         _jobs.pop(job_id, None)
 
 
-def jobs_snapshot(include_identity: bool = False) -> list[dict[str, Any]]:
+def jobs_snapshot(include_identity: bool = False, *,
+                  user_id: "str | None" = None,
+                  viewer_user_id: "str | None" = None) -> list[dict[str, Any]]:
     """List of running jobs, oldest first, ready for JSON. Each row carries
     kind/model/progress/stage/step/total_bytes plus elapsed seconds; the
-    identity fields (user, key, detail) only when `include_identity` (admin
-    viewers)."""
+    identity fields (user, key, detail) only when `include_identity`.
+    `user_id` keeps only that owner's rows (own-scope viewers; rows without
+    an owner are dropped). `progress_id` — the cancel handle — is emitted
+    when `include_identity` or when the row belongs to `viewer_user_id`, so
+    a non-admin can still cancel their own job. `user_id` itself is never
+    emitted."""
     now = time.monotonic()
     with _lock:
         entries = sorted(_jobs.values(), key=lambda e: e["started_mono"])
         out = []
         for e in entries:
+            owner = e.get("user_id")
+            if user_id is not None and owner != user_id:
+                continue
             row = {
                 "id": e["id"],
                 "kind": e["kind"],
@@ -140,8 +159,12 @@ def jobs_snapshot(include_identity: bool = False) -> list[dict[str, Any]]:
                 row["user"] = e["user"]
                 row["key"] = e["key"]
                 row["detail"] = e["detail"]
-                # Cancel handle (admin viewers only): the id the cancel
-                # endpoint accepts, when the job's client registered one.
+            if include_identity or (viewer_user_id is not None
+                                    and owner == viewer_user_id):
+                # Cancel handle: the id the cancel endpoint accepts, when the
+                # job's client registered one. Admins get it on every row;
+                # anyone else only on rows they own (the endpoint re-checks
+                # ownership anyway).
                 row["progress_id"] = e.get("progress_id")
             out.append(row)
         return out

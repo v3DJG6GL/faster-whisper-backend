@@ -89,3 +89,18 @@ def test_existing_sse_gates_confine_open_mode_to_the_admin_hosts(client):
     for dep in (stats_routes._require_stats_page_sse,
                 quick_config_routes.require_user_or_admin_sse):
         assert _status_of(dep, _fake_request(client=_REMOTE)) == 401, dep
+
+
+def test_own_scope_user_is_admitted_to_the_stats_stream(client, make_user_key):
+    """stats="own" is a real page grant (v2): the SSE gate admits the
+    caller; what they then see is the StatsScope's business."""
+    import auth
+    import stats_routes
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("carol", pages={"stats": "own"})
+    rec = auth.resolve_user_for_page_sse(_fake_request(headers=bearer(raw)),
+                                         "stats")
+    assert rec["permissions"].scope("stats") == "own"
+    scope = stats_routes.stats_scope_for(rec)
+    assert scope.scope == "own" and scope.user_id == uid
+    assert scope.include_identity is True and scope.sees_machine is False

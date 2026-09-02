@@ -3693,7 +3693,8 @@ async def transcribe(
     # `user` is the display name so the running row in /stats reads the same
     # as the finished rows beneath it ("alice", not an opaque row id).
     jobs.job_start("transcribe", id=request_id, model=resolved_model,
-                   user=user.get("username") or _user_id, key=_key_id)
+                   user=user.get("username") or _user_id, key=_key_id,
+                   user_id=_user_id)
     if _pid:
         _JOB_BY_PID[_pid] = request_id
         jobs.job_update(request_id, progress_id=_pid)
@@ -5619,7 +5620,7 @@ async def translate_text(request: Request,
         # _on_progress below (works whether or not the client sent a progress_id).
         jobs.job_start("translate", id=request_id, model=(_tr_model or None),
                        user=(user.get("username") or _uid or None),
-                       key=user.get("key_id"),
+                       key=user.get("key_id"), user_id=_uid,
                        detail=f"{len(seg_in)} segs → {','.join(targets)}",
                        )
         jobs.job_update(request_id, stage="translating", progress_id=_pid)

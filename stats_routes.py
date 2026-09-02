@@ -22,12 +22,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, StreamingResponse
 
 import config as cfg
+import config_store
 import jobs
 import metrics
 import preload
@@ -49,9 +51,88 @@ def _require_stats_page_sse(request: Request) -> dict[str, Any]:
     return auth.resolve_user_for_page_sse(request, "stats")
 
 
-def _build_payload(*, lite: bool = False,
-                   include_identity: bool = False) -> dict[str, Any]:
-    """Combine request metrics + system snapshot into one payload.
+@dataclass(frozen=True)
+class StatsScope:
+    """What one viewer of /stats may see — resolved ONCE per request (or per
+    stream connection) from the authenticated record and handed to every
+    builder, so the snapshot, the stream and the usage endpoint can never
+    disagree about a caller's scope.
+
+      scope            "own" (the caller's own jobs + usage) or "all"
+      user_id          owner filter for jobs / recent rows / usage; None = no filter
+      viewer_user_id   the caller's own id (cancel handles on their rows)
+      include_identity user/key/detail on job rows, names on recent rows —
+                       admins, and own-scope viewers (every row is theirs)
+      sees_machine     the machine cards (gpu/host/process/latency/endpoints/
+                       5xx/models/preload); False replaces them with a
+                       coarse `server` block (decision 2, 2026-09-02)
+    """
+    scope: str
+    user_id: str | None
+    viewer_user_id: str | None
+    include_identity: bool
+    sees_machine: bool
+
+
+ADMIN_SCOPE = StatsScope("all", None, None, True, True)
+
+
+def stats_scope_for(user: dict[str, Any], *,
+                    preview_user_id: str | None = None) -> StatsScope:
+    """Resolve a viewer's StatsScope from the record auth._resolve_user
+    returns (`user_id`, `is_admin`, `permissions`).
+
+    admin                       → all, every identity, machine visible
+    admin + preview_user_id     → "own" for THAT user (the api-keys page's
+                                  preview link); still sees the machine —
+                                  it is the admin looking, by design
+    non-admin, stats="all"      → all, identities scrubbed, machine visible
+                                  (today's behaviour)
+    non-admin, stats="own"      → own rows only, identities on (they are
+                                  all the caller's), machine only when
+                                  cfg.STATS_OWN_SHOWS_MACHINE (read at call
+                                  time: the /settings switch hot-applies)
+    A client-supplied user/scope is never trusted; only the admin preview
+    reaches this function as `preview_user_id`."""
+    is_admin = bool(user.get("is_admin"))
+    caller_uid = user.get("user_id") or None
+    if is_admin:
+        if preview_user_id:
+            return StatsScope("own", preview_user_id, caller_uid, True, True)
+        return ADMIN_SCOPE
+    perms = user.get("permissions")
+    effective = (perms.effective_user_id_for("stats", caller_uid or "")
+                 if perms is not None else None)
+    if effective:
+        return StatsScope(
+            "own", effective, caller_uid, True,
+            bool(getattr(cfg, "STATS_OWN_SHOWS_MACHINE", False)))
+    return StatsScope("all", None, caller_uid, False, True)
+
+
+def _coarse_server(sysnap: dict[str, Any], any_job_running: bool
+                   ) -> dict[str, Any]:
+    """The own-scope replacement for the machine cards: enough to act on
+    ("is the GPU busy, is there VRAM headroom, is a model loaded"), nothing
+    that lets a viewer reconstruct other people's activity — no utilisation
+    curve, no per-model list, no request counters."""
+    gpu = sysnap.get("gpu") or None
+    if gpu:
+        util = gpu.get("util_pct")
+        busy = any_job_running or (util is not None and util >= 5)
+        g = {"present": True, "busy": bool(busy),
+             "mem_used_mb": gpu.get("mem_used_mb"),
+             "mem_total_mb": gpu.get("mem_total_mb")}
+    else:
+        g = {"present": False, "busy": bool(any_job_running),
+             "mem_used_mb": None, "mem_total_mb": None}
+    return {"gpu": g, "models_loaded": len(sysnap.get("models") or [])}
+
+
+def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
+                   lite: bool = False) -> dict[str, Any]:
+    """Combine request metrics + system snapshot into one payload for the
+    given viewer scope.
 
     `lite=True` is the header activity cluster's diet: ts, running jobs,
     gpu, host, loaded models, in-flight count and severity — skipping
@@ -59,20 +140,43 @@ def _build_payload(*, lite: bool = False,
     (the cluster polls/streams from EVERY WebUI page, so the full payload
     would multiply that query by the open-tab count).
 
-    `include_identity` gates the job rows' user/key/detail fields — admin
-    viewers only (jobs.jobs_snapshot scrubs them otherwise)."""
+    Every payload carries `scope` ("own"|"all") and `machine` (bool) so the
+    page can shape itself on the first frame. When `scope.sees_machine` is
+    False the machine keys are absent and a `server` block (see
+    _coarse_server) stands in; the lite variant keeps a coarse `gpu` dict
+    {busy, mem_used_mb, mem_total_mb} so the header cluster keeps working."""
     sysnap = system_stats.system_snapshot()
     base = {
         "ts": time.time(),
-        "jobs": jobs.jobs_snapshot(include_identity=include_identity),
+        "scope": scope.scope,
+        "machine": scope.sees_machine,
+        "jobs": jobs.jobs_snapshot(include_identity=scope.include_identity,
+                                   user_id=scope.user_id,
+                                   viewer_user_id=scope.viewer_user_id),
         "severity": web_common.severity_counts(),
-        # Beside the loaded-model list, and in the lite payload too: the most
-        # likely failure of model preloading is SILENCE (no worker, no plans,
-        # no loads), which is invisible everywhere else. Five cheap scalars,
-        # no identities — assembled here rather than in system_stats so that
-        # import-light module needn't reach preload.
-        "preload": preload.diagnostics(),
     }
+    if not scope.sees_machine:
+        any_running = bool(jobs.jobs_snapshot())
+        server = _coarse_server(sysnap, any_running)
+        if lite:
+            g = server["gpu"]
+            return {
+                **base,
+                "gpu": {"busy": g["busy"], "mem_used_mb": g["mem_used_mb"],
+                        "mem_total_mb": g["mem_total_mb"]},
+                "models": [],
+                "server": server,
+            }
+        recent = metrics.metrics_snapshot(
+            include_identity=scope.include_identity,
+            user_id=scope.user_id)["recent_transcriptions"]
+        return {**base, "server": server, "recent_transcriptions": recent}
+    # Beside the loaded-model list, and in the lite payload too: the most
+    # likely failure of model preloading is SILENCE (no worker, no plans,
+    # no loads), which is invisible everywhere else. Five cheap scalars,
+    # no identities — assembled here rather than in system_stats so that
+    # import-light module needn't reach preload.
+    base["preload"] = preload.diagnostics()
     if lite:
         host = sysnap.get("host") or {}
         return {
@@ -85,9 +189,29 @@ def _build_payload(*, lite: bool = False,
         }
     return {
         **base,
-        **metrics.metrics_snapshot(include_identity=include_identity),
+        **metrics.metrics_snapshot(include_identity=scope.include_identity,
+                                   user_id=scope.user_id),
         **sysnap,
     }
+
+
+def _rescope_on_version_change(request: Request, seen_version: int
+                               ) -> tuple[StatsScope, int] | None:
+    """Stream helper: when config_store.config_version() moved since
+    `seen_version` (a permission edit bumps it), re-resolve the caller and
+    return the fresh (scope, version); None when nothing changed. Raises
+    HTTPException when the caller lost access, which ends the stream (the
+    page reconnects and gets the 401/403).
+
+    Re-resolving rather than ending the stream matters with several workers:
+    every sibling commit — including a key's debounced last_used_ts touch —
+    bumps the version, and an ended stream makes the page discard its
+    two-minute sparkline history on reconnect."""
+    current = config_store.config_version()
+    if current == seen_version:
+        return None
+    fresh = auth.resolve_user_for_page_sse(request, "stats")
+    return stats_scope_for(fresh), current
 
 
 @router.get(
@@ -121,8 +245,7 @@ async def stats_snapshot(
 ) -> dict[str, Any]:
     """One-shot JSON. Useful for scripts and for the page's initial render.
     `?lite=1` returns the header activity cluster's diet payload."""
-    return _build_payload(lite=bool(lite),
-                          include_identity=bool(user.get("is_admin")))
+    return _build_payload(stats_scope_for(user), lite=bool(lite))
 
 
 @router.get(
@@ -145,7 +268,8 @@ async def stats_usage(
     `days<=0` is lifetime (no lower bound). `bucket` ∈ {day, week}. `by` ∈
     {user, key}. `metric` ranks the leaderboard. Gated by the page's
     `stats` access (which has no 'own' scope — see api_keys_store
-    ACCESS_ONLY_PAGES), so the data returned here is global."""
+    ACCESS_ONLY_PAGES until v2). Scoping to the caller lands in the next
+    commit; until then the data returned here is global."""
     import api_keys_store
     import usage_store
 
@@ -256,22 +380,36 @@ async def stats_usage(
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_stream(
+    request: Request,
     lite: int = 0,
     user: dict[str, Any] = Depends(_require_stats_page_sse),
 ) -> StreamingResponse:
     """1 Hz SSE stream of the snapshot payload. The 1-second data cadence
     already counts as traffic for idle-proxy timeout purposes — no separate
     keepalive frame needed. `?lite=1` streams the activity-cluster diet
-    payload (see _build_payload)."""
+    payload (see _build_payload).
+
+    The viewer's StatsScope is resolved once here and re-resolved whenever
+    the config version moves (a permission edit), so an admin narrowing a
+    user's stats scope takes effect on that user's open tab within a tick —
+    without the reconnect churn of ending the stream on every bump."""
     _lite = bool(lite)
-    _admin = bool(user.get("is_admin"))
+    scope = stats_scope_for(user)
+    seen = config_store.config_version()
 
     async def gen():
+        nonlocal scope, seen
         while True:
             payload = await asyncio.to_thread(
-                _build_payload, lite=_lite, include_identity=_admin)
+                _build_payload, scope, lite=_lite)
             yield f"data: {json.dumps(payload)}\n\n"
             await asyncio.sleep(1.0)
+            try:
+                fresh = _rescope_on_version_change(request, seen)
+            except HTTPException:
+                return
+            if fresh is not None:
+                scope, seen = fresh
 
     return web_common.sse_response(gen())
 

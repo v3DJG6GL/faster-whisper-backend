@@ -483,7 +483,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
     # as the finished rows beneath it.
     jobs.job_start("dictate", id=session_id, detail="live",
                    user=user.get("username") or user.get("user_id"),
-                   key=user.get("key_id"))
+                   key=user.get("key_id"), user_id=user.get("user_id"))
     session: "StreamSession | None" = None
     # One entry per lease taken by _load_with_keepalive. The final and partial
     # model are often the SAME name — that leases it twice and releases it
