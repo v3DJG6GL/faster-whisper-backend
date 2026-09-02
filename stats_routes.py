@@ -529,6 +529,16 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
                  font: var(--fs-xs) var(--font-mono);
                  color: var(--dim); margin-bottom: 2px; flex: 0 0 auto; }
   .spark-label { letter-spacing: .03em; text-transform: uppercase; }
+  .spark-now.frozen { color: var(--yellow); }
+  .u-cursor-x { border-right: 1px dashed var(--yellow) !important; }
+  /* Edit-layout mode: dashed tile borders, grab cursor on titles, corners
+     visible. Off = tiles are static (see staticGrid) and titles are text. */
+  body.layout-edit .grid-stack-item .card { border-style: dashed; border-color: var(--cyan); }
+  body.layout-edit .grid-stack-item .card h3 { cursor: grab; }
+  body.layout-edit .grid-stack-item .card h3:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  body.layout-edit .grid-stack > .grid-stack-item > .ui-resizable-handle { opacity: 0.6; }
+  body:not(.layout-edit) .grid-stack-item .card h3 { cursor: default; }
+  header #edit-layout-btn.active { color: var(--cyan); border-color: #1f3a5a; background: var(--hover, #1f2630); }
   .spark-now   { color: var(--bold); font-weight: 600;
                  font-variant-numeric: tabular-nums; }
   .spark       { flex: 1 1 0; min-height: 4rem; width: 100%; }
@@ -850,7 +860,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <div class="seg-ctrl" id="sb-compare"><button data-v="off" class="active">off</button><button data-v="prev">previous</button><button data-v="yoy">last year</button></div>
     <div class="subbar-right">
       <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; machine cards replaced by a coarse server status">your usage</span>
-      <button id="reset-layout-btn" title="reset stats tile layout to defaults">↺ layout</button>
+      <span class="seg-label">layout</span>
+      <div class="seg-ctrl" id="layout-preset" title="which tiles are on the grid; positions are remembered per preset">
+        <button data-v="ops">ops</button><button data-v="usage">usage</button><button data-v="both" class="active">both</button>
+      </div>
+      <button id="edit-layout-btn" aria-pressed="false" title="drag tile titles and resize corners (E); Alt+arrows move, Alt+Shift+arrows resize the focused tile">✎ edit layout</button>
+      <span id="layout-live" class="sr-only" aria-live="polite"></span>
+      <button id="reset-layout-btn" title="reset this preset's tile layout to defaults">↺ layout</button>
       <span id="status" class="pill live">live</span>
     </div>
   </div>
@@ -1197,6 +1213,45 @@ function _remPx(n) {
 function _axisFontPx() { return _remPx(0.733); }   // matches --fs-xs
 const _MONO_STACK = 'Consolas, "Cascadia Code", "JetBrains Mono", Menlo, ui-monospace, monospace';
 const sparks = {};   // name -> uPlot instance
+// --- hover freeze -----------------------------------------------------------
+// While the pointer is on a ring the readouts show THAT sample with its
+// clock time, in yellow, so a frozen number cannot be mistaken for live.
+// The ring shifts left every second, so the frozen TIMESTAMP is kept (not
+// the index) and re-found each tick; when it falls off the ring, unfreeze.
+let frozenTs = null;
+const READOUTS = [
+  ['gpu-util-now', 'gpu_util', v => v.toFixed(0) + '%'],
+  ['gpu-mem-now', 'gpu_mem_pct', v => v.toFixed(0) + '%'],
+  ['gpu-temp-now', 'gpu_temp', v => v.toFixed(0) + '°C'],
+  ['cpu-now', 'cpu', v => v.toFixed(0) + '%'],
+  ['ram-now', 'ram_pct', v => v.toFixed(0) + '%'],
+  ['lat-now', 'lat_p50', v => v.toFixed(0) + ' ms'],
+];
+function onSparkHover(u) {
+  const idx = u.cursor.idx;
+  const ts = (idx == null || idx < 0 || idx >= histX.length) ? null : histX[idx];
+  if (ts === frozenTs) return;
+  frozenTs = ts;
+  applyFreeze();
+}
+function applyFreeze() {
+  const idx = frozenTs == null ? -1 : histX.indexOf(frozenTs);
+  if (idx < 0) {
+    frozenTs = null;
+    for (const [id] of READOUTS) { const el = $(id); if (el) el.classList.remove('frozen'); }
+    return;   // render() has just written the live values
+  }
+  const t = new Date(frozenTs * 1000);
+  const p2 = n => ('0' + n).slice(-2);
+  const clock = p2(t.getHours()) + ':' + p2(t.getMinutes()) + ':' + p2(t.getSeconds());
+  for (const [id, key, fmt] of READOUTS) {
+    const el = $(id); if (!el) continue;
+    const v = hist[key][idx];
+    el.textContent = (v == null ? '—' : fmt(v)) + ' @ ' + clock;
+    el.classList.add('frozen');
+  }
+}
+
 function makeSpark(elId, color, opts={}) {
   const el = document.getElementById(elId);
   if (!el) return null;
@@ -1219,7 +1274,14 @@ function makeSpark(elId, color, opts={}) {
     // exceed font-size/2). Left padding plus axis size gives uPlot room
     // to draw "100%" without GridStack's overflow-x clipping the "1".
     padding: [_remPx(0.55), 6, _remPx(0.4), _remPx(0.25)],
-    cursor: { show: false },
+    // One crosshair for every live ring: the sparks share histX, so a
+    // cursor on one lands on the same second in all of them (sync key
+    // 'live'; the usage chart is a different key and never follows).
+    // Hovering freezes the card readouts at that sample (onSparkHover).
+    cursor: { show: true, x: true, y: false, points: { show: false },
+              drag: { x: false, y: false },
+              sync: { key: 'live', setSeries: false, scales: ['x', null] } },
+    hooks: { setCursor: [onSparkHover] },
     legend: { show: false },
     select: { show: false },
     scales: { x: { time: false }, y: yScale },
@@ -1332,6 +1394,12 @@ function applyScope(snap) {
     if (typeof window._fwUsageReload === 'function') window._fwUsageReload();
   }
   if (snap.machine === false) {
+    // Presets pick machine tiles that are gone for this scope: force the
+    // full set (without overwriting the remembered choice) and hide the
+    // control; the '-own' key keeps this layout apart from an admin's.
+    if (typeof window._fwSetPreset === 'function') window._fwSetPreset('both', false);
+    const presetSeg = document.getElementById('layout-preset');
+    if (presetSeg) { presetSeg.classList.add('hidden'); if (presetSeg.previousElementSibling) presetSeg.previousElementSibling.classList.add('hidden'); }
     GS_LAYOUT_KEY += '-own';
     grid.batchUpdate();
     MACHINE_TILES.forEach(id => {
@@ -1545,6 +1613,9 @@ function render(snap) {
       `worker <span class="badge ${dead ? 'err' : (pl.worker_alive ? 'ok' : 'cold')}">${pl.worker_alive ? 'ok' : 'down'}</span> · ` +
       `plans <b>${pl.plans}</b> · warm <b>${pl.warm}</b> · queue <b>${pl.queue_depth}</b>`;
   }
+
+  // Frozen readouts win over the live values just written.
+  if (frozenTs != null) applyFreeze();
 
   // --- Recent jobs (unified) ---
   renderJobs(snap);

@@ -680,7 +680,7 @@ def test_stats_page_loads_static_stats_js(client):
     r = client.get("/static/stats.js")
     assert r.status_code == 200
     js = r.text
-    assert "let GS_LAYOUT_KEY = 'whisper-stats-layout-v6'" in js
+    assert "const GS_KEY_BASE = 'whisper-stats-layout-v6'" in js
     assert "const grid = GridStack.init({" in js
     assert "function load()" in js
     # Nothing moved twice: the inline page no longer carries either block.
@@ -724,3 +724,31 @@ def test_stats_js_contract(client):
     assert "series = rows.slice().reverse()" in js
     # Colours follow the entity, never its rank.
     assert "KIND_COLOR = { file:" in js
+
+
+def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
+    """Layout presets (positions saved per preset), an explicit edit mode
+    with keyboard move/resize (GridStack has none), and the live rings'
+    shared crosshair that freezes the readouts at the hovered second."""
+    html = client.get("/stats").text
+    js = open("static/stats.js", encoding="utf-8").read()
+    assert 'id="layout-preset"' in html and 'id="edit-layout-btn"' in html
+    assert 'id="layout-live"' in html
+    for s in ("const GS_PRESETS = {", "staticGrid: true", "function setPreset(",
+              "window._fwSetPreset", "'whisper-stats-preset'", "grid.setStatic(!layoutEditing)",
+              "grid.update(item, { x, y })", "grid.update(item, { w, h })",
+              "GS_KEY_BASE + ':' + name"):
+        assert s in js, s
+    # Every preset names real tiles.
+    lst = js.split("const GS_PRESETS = {")[1].split("};")[0]
+    for gs_id in ("gpu", "cpu", "ram", "process", "activity", "errors", "latency",
+                  "endpoints", "models", "recent", "headline", "usage", "stages", "hours"):
+        assert f"'{gs_id}'" in lst, gs_id
+        assert f'gs-id="{gs_id}"' in html, gs_id
+    # Own scope forces the full preset before the machine tiles leave.
+    assert "window._fwSetPreset('both', false)" in html
+    # Rings: one sync key, a freeze hook, timestamp-based re-find each tick.
+    assert "sync: { key: 'live'" in html
+    assert "hooks: { setCursor: [onSparkHover] }" in html
+    assert "histX.indexOf(frozenTs)" in html
+    assert "if (frozenTs != null) applyFreeze();" in html

@@ -10,15 +10,25 @@
 // /static answers with ETag/Last-Modified and no no-store, so a new build
 // is what fetches a new copy.
 
-// --- GridStack init: drag-to-reorder + click-to-resize tiles ---------------
-// Layout state persists in localStorage; [↺ layout] in the header clears it.
-// uPlot sparklines re-fit on resizestop via setSize().
-// `let`: applyScope() appends '-own' before the machine tiles are removed
-// for scope=own, so an own-scope layout never restores tiles it lacks and an
-// admin's layout in the same browser is left alone.
+// --- GridStack: layout presets, explicit edit mode, keyboard move/resize ---
+// Layout state persists in localStorage PER PRESET (ops / usage / both); the
+// active preset is remembered too. Tiles never move unless "edit layout" is
+// on — a hover-paused chart must not turn into an accidental drag. GridStack
+// ships no keyboard reorder, so edit mode adds Alt+arrows (move) and
+// Alt+Shift+arrows (resize) on the focused tile title.
+// uPlot sparklines re-fit on size changes via their own ResizeObservers.
 // v6: the usage half gained tiles (headline, stages, hours); a v5 layout
 // would remove them on load, so the key moved and v5 layouts are ignored.
-let GS_LAYOUT_KEY = 'whisper-stats-layout-v6';
+const GS_KEY_BASE = 'whisper-stats-layout-v6';
+const GS_PRESET_KEY = 'whisper-stats-preset';
+const GS_PRESETS = {
+  ops:   ['gpu', 'cpu', 'ram', 'process', 'activity', 'errors', 'latency',
+          'endpoints', 'models', 'recent'],
+  usage: ['headline', 'usage', 'stages', 'hours', 'models', 'recent'],
+  both:  null,      // every tile
+};
+let GS_LAYOUT_KEY = GS_KEY_BASE + ':both';
+let gsPreset = 'both';
 const grid = GridStack.init({
   column: 12,
   // Responsive: collapse to a single stacked column on phones/narrow tablets.
@@ -39,20 +49,9 @@ const grid = GridStack.init({
   resizable: { handles: 'se,s,e' },
   draggable: { handle: '.card h3' },
   alwaysShowResizeHandle: false,
+  // Read-mostly by default; [✎ edit layout] lifts this.
+  staticGrid: true,
 });
-// On touch devices, freeze drag/resize (the layout stays, but reordering tiles
-// by dragging is fiddly on a phone and the dashboard is read-mostly there).
-try {
-  if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) {
-    grid.setStatic(true);
-  }
-} catch (_) {}
-// Restore saved layout if present (best-effort — schema mismatches are
-// silently ignored; user can hit [↺ layout] to recover defaults).
-try {
-  const saved = localStorage.getItem(GS_LAYOUT_KEY);
-  if (saved) grid.load(JSON.parse(saved));
-} catch (_) {}
 // Persist on every change (debounced via setTimeout to coalesce rapid drags).
 let _saveTimer = null;
 function _saveLayout() {
@@ -62,15 +61,105 @@ function _saveLayout() {
   }, 200);
 }
 grid.on('change added removed', _saveLayout);
-// Resize is handled by per-spark ResizeObserver inside makeSpark() — fires on
-// GridStack drag-resize, window resize, scale-picker rem changes, and any
-// other reflow uniformly. Listening on `resizestop` here would only catch
-// GridStack-initiated resizes and would miss the rest.
-// Header reset-layout button.
+
+// Show the preset's tiles (re-attaching hidden ones), hide the rest, then
+// restore that preset's saved positions. `persist=false` for the own-scope
+// path, which forces "both" without overwriting the remembered choice.
+function setPreset(name, persist = true) {
+  if (!(name in GS_PRESETS)) name = 'both';
+  gsPreset = name;
+  GS_LAYOUT_KEY = GS_KEY_BASE + ':' + name;
+  const allowed = GS_PRESETS[name];
+  grid.batchUpdate();
+  document.querySelectorAll('.grid-stack > .grid-stack-item[gs-id]').forEach(el => {
+    const id = el.getAttribute('gs-id');
+    const show = !allowed || allowed.includes(id);
+    const managed = !!el.gridstackNode;
+    if (show && !managed) {
+      el.hidden = false;
+      grid.makeWidget(el);
+    } else if (!show && managed) {
+      grid.removeWidget(el, false);
+      delete el.gridstackNode;
+      el.hidden = true;
+    }
+  });
+  grid.batchUpdate(false);
+  try {
+    const saved = localStorage.getItem(GS_LAYOUT_KEY);
+    if (saved) grid.load(JSON.parse(saved), false);
+  } catch (_) {}
+  if (persist) { try { localStorage.setItem(GS_PRESET_KEY, name); } catch (_) {} }
+  const seg = document.getElementById('layout-preset');
+  if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === name));
+}
+window._fwSetPreset = setPreset;
+(() => {
+  let initial = 'both';
+  try { initial = localStorage.getItem(GS_PRESET_KEY) || 'both'; } catch (_) {}
+  setPreset(initial, false);
+  const seg = document.getElementById('layout-preset');
+  if (seg) seg.addEventListener('click', (e) => {
+    const b = e.target.closest('button');
+    if (b && seg.contains(b)) setPreset(b.dataset.v);
+  });
+})();
+
+// Edit mode: drag handles + resize corners live, tile titles focusable for
+// the keyboard, the header button reads "done".
+let layoutEditing = false;
+const editLayoutBtn = document.getElementById('edit-layout-btn');
+function setLayoutEditing(on) {
+  layoutEditing = !!on;
+  grid.setStatic(!layoutEditing);
+  document.body.classList.toggle('layout-edit', layoutEditing);
+  document.querySelectorAll('.grid-stack-item .card > h3, .grid-stack-item .card .usage-toolbar > h3, .grid-stack-item .card .rj-toolbar > h3')
+    .forEach(h => { if (layoutEditing) h.setAttribute('tabindex', '0'); else h.removeAttribute('tabindex'); });
+  if (editLayoutBtn) {
+    editLayoutBtn.textContent = layoutEditing ? '✓ done' : '✎ edit layout';
+    editLayoutBtn.classList.toggle('active', layoutEditing);
+    editLayoutBtn.setAttribute('aria-pressed', layoutEditing ? 'true' : 'false');
+  }
+  announceLayout(layoutEditing
+    ? 'Layout editing on. Drag a tile title, or focus one and use Alt with the arrow keys to move, Alt Shift arrows to resize.'
+    : 'Layout saved.');
+}
+if (editLayoutBtn) editLayoutBtn.addEventListener('click', () => setLayoutEditing(!layoutEditing));
+function announceLayout(text) {
+  const el = document.getElementById('layout-live');
+  if (el) el.textContent = text;
+}
+document.addEventListener('keydown', (e) => {
+  if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if ((e.key === 'e' || e.key === 'E') && !e.altKey && !e.ctrlKey && !e.metaKey) {
+    setLayoutEditing(!layoutEditing); return;
+  }
+  if (!layoutEditing || !e.altKey) return;
+  const dir = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+  if (!dir) return;
+  const item = e.target && e.target.closest && e.target.closest('.grid-stack-item');
+  const node = item && item.gridstackNode;
+  if (!node) return;
+  e.preventDefault();
+  const cols = grid.getColumn();
+  if (e.shiftKey) {
+    const w = Math.max(2, Math.min(cols, (node.w || 1) + dir[0]));
+    const h = Math.max(2, (node.h || 1) + dir[1]);
+    grid.update(item, { w, h });
+    announceLayout(item.getAttribute('gs-id') + ' resized to ' + w + ' by ' + h);
+  } else {
+    const x = Math.max(0, Math.min(cols - (node.w || 1), (node.x || 0) + dir[0]));
+    const y = Math.max(0, (node.y || 0) + dir[1]);
+    grid.update(item, { x, y });
+    announceLayout(item.getAttribute('gs-id') + ' moved to column ' + (x + 1) + ', row ' + (y + 1));
+  }
+});
+
+// Header reset-layout button: clears the ACTIVE preset's saved positions.
 const resetLayoutBtn = document.getElementById('reset-layout-btn');
 if (resetLayoutBtn) {
   resetLayoutBtn.addEventListener('click', () => {
-    if (!confirm('Reset stats tile layout to defaults?')) return;
+    if (!confirm('Reset the "' + gsPreset + '" tile layout to its defaults?')) return;
     localStorage.removeItem(GS_LAYOUT_KEY);
     location.reload();
   });
