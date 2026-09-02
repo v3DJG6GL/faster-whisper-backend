@@ -975,6 +975,7 @@ def empty_document(
             "activation": {a: 0 for a in ACTIVATIONS},
             "delivery": {d: 0 for d in DELIVERIES},
             "translation": {t: 0 for t in TRANSLATIONS},
+            "targets": [],
         },
         "apps": [],
         "calendar": [],
@@ -1173,6 +1174,8 @@ def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
     doc["stages"] = _stages(conn, user_id, start_hour, end_hour, window)
     doc["dictation"] = _dictation(conn, user_id, start_hour, end_hour,
                                   window["dictation"])
+    doc["dictation"]["targets"] = _dictation_targets(
+        conn, user_id, start_hour * 3600, end_hour * 3600)
     doc["apps"] = [
         {"app_id": r["app_id"], "sessions": int(r["sessions"] or 0),
          "words": int(r["words"] or 0)}
@@ -1272,6 +1275,7 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
         "activation": activation,
         "delivery": delivery,
         "translation": translation,
+        "targets": _dictation_targets(conn, user_id, start_ts, end_ts, with_stages),
     }
     doc["apps"] = [
         {"app_id": a, **v} for a, v in sorted(
@@ -1417,6 +1421,38 @@ def _dictation(conn: sqlite3.Connection, user_id: str, start_hour: int,
         "delivery": delivery,
         "translation": translation,
     }
+
+
+def _dictation_targets(conn: sqlite3.Connection, user_id: str, start_ts: float,
+                       end_ts: float, with_stages: tuple[str, ...] = ()
+                       ) -> list[dict[str, Any]]:
+    """Which languages dictations were translated into, over the window:
+    `[{code, runs, kept_original}]`, busiest first, at most 16. Read from
+    the per-job stage rows (a dictation that translated carries a
+    translating stage with its target codes) joined to the job's reported
+    outcome, so `kept_original` says how many of those runs reverted to
+    the original. Per-job rows keep USAGE_JOBS_RETENTION_DAYS, so a window
+    beyond that shows fewer runs here than the outcome buckets do."""
+    by_code: dict[str, dict[str, int]] = {}
+    for r in conn.execute(
+        "SELECT s.targets, usage_jobs.translation FROM usage_jobs"
+        " JOIN usage_job_stages s ON s.job_id = usage_jobs.job_id"
+        " WHERE usage_jobs.user_id = ? AND usage_jobs.kind = 'dictation'"
+        " AND s.stage = 'translating' AND usage_jobs.created_ts >= ?"
+        " AND usage_jobs.created_ts < ?" + _with_clause(with_stages),
+        (user_id, float(start_ts), float(end_ts), *with_stages),
+    ):
+        kept = r["translation"] == "kept_original"
+        for code in (r["targets"] or "").split(","):
+            code = code.strip()
+            if not code:
+                continue
+            t = by_code.setdefault(code, {"runs": 0, "kept_original": 0})
+            t["runs"] += 1
+            if kept:
+                t["kept_original"] += 1
+    return [{"code": c, **v} for c, v in sorted(
+        by_code.items(), key=lambda kv: (-kv[1]["runs"], kv[0]))][:16]
 
 
 def _streak(words_by_day: dict[datetime.date, int],

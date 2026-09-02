@@ -61,7 +61,8 @@ def test_v1_usage_shape(client):
                               for k in ("all", *_KINDS)}
     d = body["dictation"]
     assert set(d) == {"sessions", "words", "audio_s", "wpm", "activation",
-                      "delivery", "translation"}
+                      "delivery", "translation", "targets"}
+    assert d["targets"] == []
     assert set(d["delivery"]) == {"typed", "clipboard", "none", "unreported"}
     assert set(d["translation"]) == {"translated", "kept_original", "not_asked",
                                      "aborted", "unreported"}

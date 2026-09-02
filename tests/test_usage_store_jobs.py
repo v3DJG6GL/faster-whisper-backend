@@ -6,6 +6,7 @@ counting, the outcome + sweep write paths, and the document() read path
 
 import datetime
 import sqlite3
+import time
 import zoneinfo
 
 
@@ -163,6 +164,40 @@ def test_kind_totals_and_unknown_folds_into_all_only(usage_store_db):
     assert [total[k]["words"] for k in ("dictation", "file", "url", "text")] == [1, 2, 4, 8]
     assert total["all"]["words"] == 63
     assert total["all"]["requests"] == 6
+
+
+def test_dictation_targets_per_language_with_kept_count(usage_store_db):
+    """`dictation.targets` lists the languages dictations translated into,
+    busiest first, with how many of those runs kept the original; file runs
+    and jobs outside the window do not count; the `with=` path agrees."""
+    us = usage_store_db
+    now = time.time()
+    tr = lambda *codes: [{"name": "translating", "secs": 1.0, "targets": list(codes)}]
+    for jid, codes in (("a", ("de",)), ("b", ("de", "en")), ("c", ("de",))):
+        us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
+                        kind="dictation", job_id=jid * 32, stages=tr(*codes))
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
+                    kind="file", job_id="f" * 32, stages=tr("de"))
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
+                    kind="dictation", job_id="n" * 32)
+    us.record_outcome(user_id="u", job_id="a" * 32, activation="hold",
+                      delivery="typed", translation="translated")
+    us.record_outcome(user_id="u", job_id="b" * 32, activation="hold",
+                      delivery="typed", translation="kept_original")
+    # An old translated dictation, outside a one-day window.
+    us._require_conn().execute(
+        "UPDATE usage_jobs SET created_ts = ? WHERE job_id = ?",
+        (now - 10 * 86400, "c" * 32))
+    us._require_conn().commit()
+    doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
+    assert doc["dictation"]["targets"] == [
+        {"code": "de", "runs": 2, "kept_original": 1},
+        {"code": "en", "runs": 1, "kept_original": 1}]
+    wide = us.document("u", days=30, tz=_UTC, tz_name="UTC")
+    assert wide["dictation"]["targets"][0] == {"code": "de", "runs": 3, "kept_original": 1}
+    narrowed = us.document("u", days=1, tz=_UTC, tz_name="UTC",
+                           with_stages=("translating",))
+    assert narrowed["dictation"]["targets"] == doc["dictation"]["targets"]
 
 
 def test_stage_and_target_rollups(usage_store_db):
