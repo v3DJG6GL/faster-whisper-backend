@@ -930,7 +930,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     margin-top: 0.3rem; border-top: 1px solid var(--border); font-size: var(--fs-xs); color: var(--dim); }
   .pick-foot button { background: transparent; border: 1px solid var(--border); border-radius: 4px;
     color: var(--fg); font: inherit; font-size: var(--fs-xs); padding: 0.05rem 0.5rem; cursor: pointer; }
-  .card h3 .win .fn { color: var(--cyan); }
+  .card .win .fn { color: var(--cyan); }
   .sb-summary { margin-left: auto; font: var(--fs-xs) var(--font-mono); color: var(--dim);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
   .sb-custom { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
@@ -957,22 +957,26 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
      scope bar's range for usage cards, the rings control for the machine
      sparks), right-aligned in the title row like Grafana's time-override
      note. Filled by renderWindowChips (stats.js) and refreshRingChips. --- */
-  .card h3 .win { float: right; margin-left: 0.5rem; font-family: var(--font-mono);
+  .card .win { float: right; margin-left: 0.5rem; font-family: var(--font-mono);
     font-size: var(--fs-xs); text-transform: none; letter-spacing: 0; font-weight: 400;
     line-height: 1.5; color: var(--dim); background: var(--bg); border: 1px solid var(--border);
     border-radius: 999px; padding: 0 0.55em; white-space: nowrap; cursor: pointer; }
-  .card h3 .win:empty { display: none; }
-  .usage-toolbar h3 .win { float: none; }
-  .card h3 .win b { color: var(--fg); font-weight: 500; }
-  .card h3 .win em { color: var(--yellow); font-style: normal; }
-  .card h3 .win.live { color: var(--green); border-color: #1f4d2a; }
-  .card h3 .win.live::before { content: ""; display: inline-block; width: 0.45em; height: 0.45em;
+  .card .win:empty { display: none; }
+  /* In toolbar cards the chip is the toolbar's last item, so it sits at
+     the top-right corner like every other card's; inline-block + its own
+     line-height keeps every chip the same height whatever the row's font. */
+  .card .win { display: inline-block; }
+  .usage-toolbar .win { float: none; margin-left: 0.5rem; align-self: center; }
+  .card .win b { color: var(--fg); font-weight: 500; }
+  .card .win em { color: var(--yellow); font-style: normal; }
+  .card .win.live { color: var(--green); border-color: #1f4d2a; }
+  .card .win.live::before { content: ""; display: inline-block; width: 0.45em; height: 0.45em;
     border-radius: 50%; background: var(--green); margin-right: 0.45em; vertical-align: middle; }
-  .card h3 .win.paused { color: var(--yellow); border-color: #4d3e1f; }
+  .card .win.paused { color: var(--yellow); border-color: #4d3e1f; }
   @keyframes win-pulse { 0% { box-shadow: 0 0 0 0 rgba(57, 210, 192, .7); }
     100% { box-shadow: 0 0 0 6px rgba(57, 210, 192, 0); } }
-  .card h3 .win.pulse, .seg-ctrl.flash { animation: win-pulse .7s ease-out 1; }
-  @media (prefers-reduced-motion: reduce) { .card h3 .win.pulse, .seg-ctrl.flash { animation: none; } }
+  .card .win.pulse, .seg-ctrl.flash { animation: win-pulse .7s ease-out 1; }
+  @media (prefers-reduced-motion: reduce) { .card .win.pulse, .seg-ctrl.flash { animation: none; } }
   .usage-error { font-size: var(--fs-xs); color: var(--yellow); }
   .usage-error button { font: inherit; font-size: var(--fs-xs); color: var(--fg);
     background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
@@ -1588,7 +1592,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <div class="grid-stack-item" gs-id="usage" gs-x="0" gs-y="23" gs-w="12" gs-h="10">
    <div class="grid-stack-item-content"><div class="card usage-card usage-fed">
     <div class="usage-toolbar">
-      <h3>Usage over time <span class="win" data-win="usage"></span></h3>
+      <h3>Usage over time</h3>
       <span id="usage-error" class="usage-error hidden"></span>
       <span class="spacer"></span>
       <div class="usage-seg"><span class="seg-label">bucket</span>
@@ -1611,6 +1615,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <div class="usage-seg">
         <div class="seg-ctrl"><button id="usage-table-btn" data-v="table" title="show the chart's numbers as a table (T)">table</button></div>
       </div>
+      <span class="win" data-win="usage"></span>
     </div>
     <div class="usage-chart" id="usage-chart-wrap" tabindex="0" aria-label="usage chart — arrow keys scrub the buckets, T toggles the table">
       <div id="usage-plot" class="usage-plot"></div>
@@ -1631,7 +1636,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   </div>
 
   <!-- Pipeline stages: the whole pipeline in run order, share of eligible runs + speed. -->
-  <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="33" gs-w="6" gs-h="7">
+  <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="40" gs-w="12" gs-h="8">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Pipeline stages <span class="tag" id="stages-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="stages-bar" id="stages-bar"></div>
@@ -1644,16 +1649,17 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   </div>
 
   <!-- Busy hours: weekday × hour of the chosen measure with marginals. -->
-  <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="7">
+  <div class="grid-stack-item" gs-id="hours" gs-x="0" gs-y="33" gs-w="12" gs-h="7">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <div class="usage-toolbar hours-toolbar">
-      <h3 class="hours-h3"><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span> <span class="win" data-win="usage"></span></h3>
+      <h3 class="hours-h3"><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span></h3>
       <span class="spacer"></span>
       <div class="usage-seg"><span class="seg-label">rhythm</span>
         <div class="seg-ctrl" id="hours-mode" title="weekday × hour of day, day of month × hour of day, or year × month">
           <button data-v="hours" class="active">hours</button><button data-v="days">days</button><button data-v="months">months</button>
         </div>
       </div>
+      <span class="win" data-win="usage"></span>
     </div>
     <div class="hours-sub" id="hours-sub"></div>
     <div class="hours" id="hours-grid"></div>
@@ -1664,7 +1670,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Turnaround: end-to-end time per job bucketed on fixed edges, the
        queue-wait share hatched inside each bar, p50 / p95 marked, and the
        wait p50/p95 by day beneath. Fed by /stats/tail (static/stats.js). -->
-  <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="40" gs-w="6" gs-h="5">
+  <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="48" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Turnaround <span class="tag" id="turnaround-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="ta-hist" id="turnaround-hist"></div>
@@ -1675,7 +1681,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 
   <!-- Failures by stage and class: terminal failures from the job rows plus
        soft-failed stages (the job went on without them). -->
-  <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="40" gs-w="6" gs-h="5">
+  <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="48" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Failures <span class="tag" id="failures-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="fl" id="failures-list"><span class="empty">— loading —</span></div>
@@ -1684,7 +1690,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 
   <!-- Recent jobs (unified: transcribe / dictate / translate / download;
        running jobs from snap.jobs pinned on top) -->
-  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="45" gs-w="12" gs-h="12">
+  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="53" gs-w="12" gs-h="12">
    <div class="grid-stack-item-content"><div class="card">
     <div class="usage-toolbar">
       <h3>Recent jobs (<span id="rt-n">0</span> shown)</h3>
@@ -1896,7 +1902,7 @@ function refreshStatusPill() {
   statusEl.className = 'pill live';
   statusEl.textContent = liveMode !== 'live' ? 'live · rings show ' + rangeLabel(liveMode) : 'live';
 }
-// The ring cards' window chips (see .card h3 .win): live / paused at a
+// The ring cards' window chips (see .card .win): live / paused at a
 // clock time / the history window. Clicking a paused chip returns to live;
 // otherwise it flashes the rings control so the reader finds it.
 let rangeTo = null;    // epoch seconds the last /stats/history fetch ended at
@@ -1920,7 +1926,7 @@ function refreshRingChips() {
   } else {
     cls = 'win live'; html = '<b>live</b> · last 2 min';
   }
-  document.querySelectorAll('.card h3 .win[data-win="ring"]').forEach(el => {
+  document.querySelectorAll('.card .win[data-win="ring"]').forEach(el => {
     el.className = cls; el.innerHTML = html;
     el.title = liveMode !== 'live' ? 'sampled history (rings control)' : frozenTs != null
       ? 'readouts frozen at this sample — click to go back to live' : 'the 2-minute live ring at 1 Hz';
@@ -2001,7 +2007,7 @@ function wireRingControls() {
   }
   if (statusEl) statusEl.addEventListener('click', (e) => { if (e.target.tagName === 'U') backToLive(); });
   document.addEventListener('click', (e) => {
-    const chip = e.target.closest('.card h3 .win[data-win="ring"]'); if (!chip) return;
+    const chip = e.target.closest('.card .win[data-win="ring"]'); if (!chip) return;
     e.preventDefault(); e.stopPropagation();
     if (frozenTs != null) backToLive(); else flashCtl('live-range');
   });
@@ -2447,7 +2453,7 @@ function render(snap) {
     `<b>uptime</b> ${fmtSec(snap.uptime_sec)} &nbsp; ` +
     `<b>total req</b> ${totalReq}`;
   // Counters since the process started: say so on their cards.
-  document.querySelectorAll('.card h3 .win[data-win="boot"]').forEach(el => {
+  document.querySelectorAll('.card .win[data-win="boot"]').forEach(el => {
     el.innerHTML = '<b>since start</b> · ' + fmtSec(snap.uptime_sec);
     el.title = 'counted since the server process started';
   });

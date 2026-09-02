@@ -19,7 +19,7 @@
 // uPlot sparklines re-fit on size changes via their own ResizeObservers.
 // v6: the usage half gained tiles (headline, stages, hours); a v5 layout
 // would remove them on load, so the key moved and v5 layouts are ignored.
-const GS_KEY_BASE = 'whisper-stats-layout-v10';
+const GS_KEY_BASE = 'whisper-stats-layout-v11';
 const GS_PRESET_KEY = 'whisper-stats-preset';
 const GS_PRESETS = {
   ops:   ['gpu', 'cpu', 'ram', 'process', 'activity', 'errors', 'latency',
@@ -989,7 +989,7 @@ function renderWindowChips() {
   const pulse = _winSig != null && sig !== _winSig;
   _winSig = sig;
   const html = windowChipHtml(), title = ($('sb-summary') || {}).textContent || '';
-  document.querySelectorAll('.card h3 .win[data-win="usage"]').forEach(el => {
+  document.querySelectorAll('.card .win[data-win="usage"]').forEach(el => {
     el.innerHTML = html; el.title = title + ' — click to jump to the range control';
     if (pulse) { el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); }
   });
@@ -1000,7 +1000,7 @@ function flashCtl(id) {
   el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
 }
 document.addEventListener('click', (e) => {
-  const chip = e.target.closest('.card h3 .win[data-win="usage"]'); if (!chip) return;
+  const chip = e.target.closest('.card .win[data-win="usage"]'); if (!chip) return;
   e.preventDefault(); e.stopPropagation();
   if (Q.range === 'custom') { flashCtl('sb-range'); openCustom(); } else flashCtl('sb-range');
 });
