@@ -1709,6 +1709,10 @@ function renderHours() {
       + '<div class="row"><span title="the bars beside the grid: each ' + L.colUnit + ' (top) and ' + L.rowUnit + ' (right) relative to a flat distribution; the dashed tick is the average"><span class="mg"><i class="b"></i><i class="t"></i></span>side bars vs average</span>'
       + '<span class="what" title="' + esc(ML) + ' per ' + unitWord + '">' + kindNote + esc(ML) + ' · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span></div>'
     : '<span class="what">' + kindNote + 'no ' + esc(ML) + ' in this window</span>';
+  let phrase = '–';
+  if (mode === 'hours') phrase = hoursPhrase(cells);
+  else if (mode === 'days') phrase = winSum > 0 ? domPhrase(colTot, rowTot) : 'quiet';
+  else phrase = winSum > 0 ? monthPhrase(colTot) : 'quiet';
   const sub = $('hours-sub');
   if (sub) {
     const pr = Math.floor(peak / L.cols);
@@ -1716,15 +1720,10 @@ function renderHours() {
       ? 'Peak ' + esc(L.cellName(peak)) + ' · <b>' + fmtM(peakV) + '</b>'
         + (mode === 'hours' && occ[pr] > 1 ? ' · ≈ ' + fmtAvg(peakV / occ[pr]) + ' per ' + DOW[pr] : '')
         + ' · ' + fmtC(sess[peak]) + ' ' + esc(CL)
+        + (phrase !== '–' && !/^quiet$/.test(phrase) ? ' · <span class="mostly" title="the smallest day / hour group holding 60 %+ of the ' + esc(ML) + '">' + esc(phrase) + '</span>' : '')
       : 'No ' + esc(ML) + ' in this window';
     sub.title = peakV > 0 ? fmtM(peakV) + ' ' + ML + ' in the busiest ' + (mode === 'hours' ? 'slot' : mode.slice(0, -1)) + ', ' + L.cellName(peak)
       + (mode === 'hours' && occ[pr] > 1 ? ', summed over ' + occ[pr] + ' ' + DOW_LONG[pr] + 's in the window' : '') : '';
-  }
-  const tag = $('hours-tag');
-  if (tag) {
-    if (mode === 'hours') tag.textContent = hoursPhrase(cells);
-    else if (mode === 'days') tag.textContent = winSum > 0 ? domPhrase(colTot, rowTot) : 'quiet';
-    else tag.textContent = winSum > 0 ? monthPhrase(colTot) : 'quiet';
   }
   const title = $('hours-title'); if (title) title.textContent = 'Busy ' + mode;
   setSeg('hours-mode', mode);

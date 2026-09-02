@@ -1071,9 +1071,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
      / by controls (same label, same size); the title keeps its phrase
      on one line with an ellipsis. */
   .hours-toolbar { flex-wrap: nowrap; }
-  /* The title reserves the width of its widest phrase ("Busy hours ·
-     mostly Mon–Fri 12–18" measures 14.3rem), so the controls never move. */
-  .hours-toolbar h3 { flex: 0 0 auto; width: 14.6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The title is just the rhythm's name (Busy hours / days / months), the
+     same width each time, so the controls after it never move; the
+     "mostly …" phrase lives on the peak line. */
+  .hours-toolbar h3 { flex: 0 0 auto; white-space: nowrap; }
+  .hours-sub .mostly { color: var(--cyan); }
   .hours-toolbar .spacer { flex: 1 1 0; min-width: 0.5rem; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
   /* Marginals share one scale: each bar is its hour's / weekday's total
@@ -1656,7 +1658,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <div class="grid-stack-item" gs-id="hours" gs-x="0" gs-y="33" gs-w="12" gs-h="7">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <div class="usage-toolbar hours-toolbar">
-      <h3 class="hours-h3"><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span></h3>
+      <h3 class="hours-h3"><span id="hours-title">Busy hours</span></h3>
       <div class="usage-seg"><span class="seg-label">rhythm</span>
         <div class="seg-ctrl" id="hours-mode" title="weekday × hour of day, day of month × hour of day, or year × month">
           <button data-v="hours" class="active">hours</button><button data-v="days">days</button><button data-v="months">months</button>
