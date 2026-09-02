@@ -983,10 +983,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .ta-hist text { font-family: var(--font-mono); font-size: 10px; fill: var(--dim); }
   .ta-hist text.q { fill: var(--bold); }
   .ta-hist line.q { stroke: var(--bold); stroke-dasharray: 2 2; }
-  .ta-wait { display: flex; gap: 0.6rem; align-items: center; font: var(--fs-xs) var(--font-mono);
-    color: var(--dim); margin-top: 0.2rem; }
+  .ta-wait { display: flex; flex-wrap: wrap; gap: 0.2rem 0.6rem; align-items: center;
+    font: var(--fs-xs) var(--font-mono); color: var(--dim); margin-top: 0.2rem;
+    min-width: 0; overflow: hidden; }
   .ta-wait span { white-space: nowrap; }
-  .ta-wait svg { width: 9rem; height: 1.4rem; display: block; flex: 0 0 auto; }
+  .ta-wait svg { flex: 0 1 9rem; min-width: 3rem; height: 1.4rem; display: block; }
   /* --- Failures list --- */
   .fl { display: flex; flex-direction: column; gap: 0.3rem; font-size: var(--fs-sm); overflow: auto; }
   .fl > div { display: grid; grid-template-columns: 1fr auto; gap: 0 0.6rem; align-items: center; }
