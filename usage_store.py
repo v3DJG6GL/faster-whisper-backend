@@ -1210,6 +1210,325 @@ def document(
     return doc
 
 
+# ---------------------------------------------------------------------------
+# overview(): the /stats/usage v2 gather — document() plus a breakdown
+# ---------------------------------------------------------------------------
+
+BREAKDOWNS: tuple[str, ...] = ("kind", "user", "key", "model", "stage")
+BUCKETS: tuple[str, ...] = ("auto", "day", "week", "month")
+COMPARES: tuple[str, ...] = ("off", "prev", "yoy")
+# Past this many buckets the auto rule steps up a size regardless of span
+# (ten years of days is 3 650 points × K lines — nothing a chart can show).
+MAX_BUCKETS = 1500
+
+
+def bucket_mode(days: int) -> str:
+    """The frontend's bucketMode(): day up to 120 days, ISO week up to two
+    years, month beyond."""
+    if days <= 120:
+        return "day"
+    if days <= 730:
+        return "week"
+    return "month"
+
+
+def _bucket_start(day: int, mode: str) -> int:
+    """Days-since-epoch of the bucket containing `day`: the day itself, its
+    Monday, or the first of its month."""
+    if mode == "week":
+        # Day 0 (1970-01-01) was a Thursday: (day + 3) % 7 is 0 on Mondays.
+        return day - ((day + 3) % 7)
+    if mode == "month":
+        d = _from_epoch_day(day)
+        return _epoch_day(d.replace(day=1))
+    return day
+
+
+def _axis(from_day: int, to_day: int, mode: str) -> list[int]:
+    """Every bucket start from `from_day` to `to_day`, dense and ascending —
+    the shared x-axis every line and the compare series align to."""
+    out: list[int] = []
+    d = _bucket_start(from_day, mode)
+    while d <= to_day:
+        out.append(d)
+        if mode == "day":
+            d += 1
+        elif mode == "week":
+            d += 7
+        else:
+            first = _from_epoch_day(d)
+            nxt = (first.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+            d = _epoch_day(nxt)
+    return out
+
+
+def _stage_metric(metric: str, r: sqlite3.Row) -> float:
+    """usage_stage_hourly has runs / audio_s / secs. Sessions and requests
+    read as runs, proc_s as secs; words has no stage meaning (0) and errors
+    per stage only arrive with the phase-2 ledger columns (0 until then)."""
+    if metric in ("sessions", "requests"):
+        return float(r["runs"] or 0)
+    if metric == "audio_s":
+        return float(r["audio_s"] or 0.0)
+    if metric == "proc_s":
+        return float(r["secs"] or 0.0)
+    return 0.0
+
+
+def _year_back(day: int) -> int:
+    d = _from_epoch_day(day)
+    try:
+        return _epoch_day(d.replace(year=d.year - 1))
+    except ValueError:          # Feb 29 → Feb 28
+        return _epoch_day(d.replace(year=d.year - 1, day=28))
+
+
+def overview(
+    *,
+    user_id: str | None,
+    key_id: str | None = None,
+    tz: zoneinfo.ZoneInfo | None,
+    tz_name: str,
+    days: int | None = None,
+    from_day: int | None = None,
+    to_day: int | None = None,
+    all_time: bool = False,
+    with_stages: tuple[str, ...] = (),
+    by: str = "kind",
+    metric: str = "audio_s",
+    bucket: str = "auto",
+    compare: str = "off",
+    top_k: int = 8,
+    limit: int = 50,
+    jobs_retention_days: int = 365,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """The /stats/usage v2 document: document() for the window (totals,
+    today, stages, hours, range) plus a dense-axis breakdown of `metric` by
+    `by` (kind | user | key | model | stage), a leaderboard over the same
+    entities, an optional comparison window and a per-model table.
+
+    `user_id=None` is the whole server; `key_id` narrows the key-bearing
+    tables (see document()). `bucket` auto-resolves from the span. The
+    breakdown source: kind/user/key/stage read the hourly rollups, model
+    reads the per-job rows (retention-limited, `breakdown.source="jobs"`);
+    `with_stages` narrows the document and the model breakdown only.
+    `compare` = prev (the window shifted back by its own span) or yoy (the
+    same calendar dates a year earlier, Feb 29 clamped) returns the other
+    window's totals and lines, index-aligned to this axis."""
+    if by not in BREAKDOWNS:
+        by = "kind"
+    if metric not in _METRICS:
+        metric = "audio_s"
+    if bucket not in BUCKETS:
+        bucket = "auto"
+    if compare not in COMPARES:
+        compare = "off"
+    doc = document(user_id, tz=tz, tz_name=tz_name, days=days, from_day=from_day,
+                   to_day=to_day, all_time=all_time, with_stages=with_stages,
+                   jobs_retention_days=jobs_retention_days, now=now, key_id=key_id)
+    f, t = int(doc["range"]["from"]), int(doc["range"]["to"])
+    span = t - f + 1
+    mode = bucket_mode(span) if bucket == "auto" else bucket
+    while mode != "month" and len(_axis(f, t, mode)) > MAX_BUCKETS:
+        mode = "week" if mode == "day" else "month"
+    axis = _axis(f, t, mode)
+    index = {d: i for i, d in enumerate(axis)}
+    n = len(axis)
+
+    def slot(day: int) -> int | None:
+        return index.get(_bucket_start(day, mode))
+
+    conn = _require_conn()
+    start_hour = _midnight_hour(_from_epoch_day(f), tz)
+    end_hour = _midnight_hour(_from_epoch_day(t) + datetime.timedelta(days=1), tz)
+
+    # entity id → {"label", "user_id"?, "values": [...], "totals": cell}
+    ents: dict[str, dict[str, Any]] = {}
+
+    def ent(eid: str, **meta: Any) -> dict[str, Any]:
+        e = ents.get(eid)
+        if e is None:
+            e = ents[eid] = {"id": eid, "values": [0.0] * n,
+                             "totals": _zero_cell(), **meta}
+        return e
+
+    def add(e: dict[str, Any], day: int, cell: dict[str, Any]) -> None:
+        i = slot(day)
+        for k, v in cell.items():
+            e["totals"][k] += v
+        if i is not None:
+            e["values"][i] += float(cell.get(metric, 0.0) or 0.0)
+
+    source = "rollups"
+    key_scoped = True
+    if by == "kind":
+        for p in doc["series"]:
+            day = int(p["day"])
+            rest = dict(p["all"])
+            for k in KINDS:
+                cell = p[k]
+                add(ent(k, label=k), day, cell)
+                for m in rest:
+                    rest[m] -= cell[m]
+            if any(v > 0 for v in rest.values()):
+                add(ent(UNKNOWN_KIND, label=UNKNOWN_KIND), day, rest)
+    elif by in ("user", "key"):
+        where, params = _scope_where(user_id, key_id)
+        for r in conn.execute(
+            "SELECT hour, user_id, key_id, SUM(requests) AS requests,"
+            " SUM(errors) AS errors, SUM(words) AS words, SUM(audio_s) AS audio_s,"
+            " SUM(proc_s) AS proc_s, SUM(sessions) AS sessions FROM usage_hourly"
+            + where + " AND hour >= ? AND hour < ? GROUP BY hour, user_id, key_id",
+            (*params, start_hour, end_hour),
+        ):
+            day = _epoch_day(_date_of(int(r["hour"]) * 3600, tz))
+            cell = {"sessions": int(r["sessions"] or 0),
+                    "requests": int(r["requests"] or 0),
+                    "errors": int(r["errors"] or 0),
+                    "words": int(r["words"] or 0),
+                    "audio_s": float(r["audio_s"] or 0.0),
+                    "proc_s": float(r["proc_s"] or 0.0)}
+            if by == "user":
+                add(ent(r["user_id"], label=r["user_id"], user_id=r["user_id"]),
+                    day, cell)
+            else:
+                add(ent(r["key_id"], label=r["key_id"], user_id=r["user_id"],
+                        key_id=r["key_id"]), day, cell)
+    elif by == "model":
+        source = "jobs"
+        where, params = _scope_where(user_id, key_id)
+        start_ts = start_hour * 3600
+        end_ts = end_hour * 3600
+        for job in conn.execute(
+            "SELECT model, created_ts, status, audio_s, words, proc_s, utterances"
+            " FROM usage_jobs" + where + _with_clause(with_stages)
+            + " AND created_ts >= ? AND created_ts < ?",
+            (*params, *with_stages, float(start_ts), float(end_ts)),
+        ):
+            name = job["model"] or "(unknown)"
+            add(ent(name, label=name),
+                _epoch_day(_date_of(float(job["created_ts"]), tz)), _job_cell(job))
+    else:  # stage
+        key_scoped = False
+        where, params = _scope_where(user_id)
+        for r in conn.execute(
+            "SELECT hour, stage, SUM(runs) AS runs, SUM(audio_s) AS audio_s,"
+            " SUM(secs) AS secs FROM usage_stage_hourly" + where
+            + " AND hour >= ? AND hour < ? GROUP BY hour, stage",
+            (*params, start_hour, end_hour),
+        ):
+            day = _epoch_day(_date_of(int(r["hour"]) * 3600, tz))
+            runs = int(r["runs"] or 0)
+            cell = {"sessions": runs, "requests": runs, "errors": 0, "words": 0,
+                    "audio_s": float(r["audio_s"] or 0.0),
+                    "proc_s": float(r["secs"] or 0.0)}
+            add(ent(r["stage"], label=r["stage"]), day, cell)
+
+    ranked = sorted(ents.values(),
+                    key=lambda e: (-float(e["totals"].get(metric, 0) or 0), e["id"]))
+    for e in ranked:
+        tot = e["totals"]
+        tot["audio_s"] = round(tot["audio_s"], 3)
+        tot["proc_s"] = round(tot["proc_s"], 3)
+        e["rtf"] = round(tot["proc_s"] / tot["audio_s"], 3) if tot["audio_s"] > 0 else None
+        e["values"] = [round(v, 3) for v in e["values"]]
+
+    lines: list[dict[str, Any]] = []
+    for e in ranked[:max(1, int(top_k))]:
+        line = {k: v for k, v in e.items() if k not in ("totals", "rtf")}
+        lines.append(line)
+    tail = ranked[max(1, int(top_k)):]
+    if tail:
+        others = [0.0] * n
+        for e in tail:
+            for i, v in enumerate(e["values"]):
+                others[i] += v
+        if any(v > 0 for v in others):
+            lines.append({"id": "__others__", "label": f"others ({len(tail)})",
+                          "values": [round(v, 3) for v in others], "others": True})
+
+    board = [
+        {k: v for k, v in e.items() if k != "values"}
+        for e in ranked[:max(1, int(limit))]
+    ]
+
+    models = _models_in_window(conn, user_id, key_id, with_stages,
+                               start_hour * 3600, end_hour * 3600)
+
+    out: dict[str, Any] = {
+        "v": 2,
+        "days": axis,
+        "bucket": mode,
+        "metric": metric,
+        "by": by,
+        "tz": tz_name,
+        "range": doc["range"],
+        "scope": {"user_id": user_id, "key_id": key_id,
+                  "key_scoped": key_scoped if key_id is not None else True},
+        "totals": doc["total"],
+        "today": doc["today"],
+        "stages": doc["stages"],
+        "hours": doc["hours"],
+        "lines": lines,
+        "leaderboard": board,
+        "breakdown": {"source": source, "key_scoped": key_scoped},
+        "models": models,
+        "compare": None,
+        "time_saved_s": doc["time_saved_s"],
+    }
+    if compare != "off":
+        if compare == "prev":
+            pf, pt = f - span, f - 1
+        else:
+            pf, pt = _year_back(f), _year_back(t)
+        prev = overview(user_id=user_id, key_id=key_id, tz=tz, tz_name=tz_name,
+                        from_day=pf, to_day=pt, with_stages=with_stages, by=by,
+                        metric=metric, bucket=mode, compare="off", top_k=top_k,
+                        limit=limit, jobs_retention_days=jobs_retention_days,
+                        now=now)
+        by_id = {ln["id"]: ln["values"] for ln in prev["lines"]}
+        cmp_lines = []
+        for ln in lines:
+            vals = list(by_id.get(ln["id"], []))[:n]
+            vals += [0.0] * (n - len(vals))
+            cmp_lines.append({"id": ln["id"], "values": vals})
+        out["compare"] = {"mode": compare,
+                          "range": {"from": pf, "to": pt, "days": pt - pf + 1},
+                          "totals": prev["totals"], "lines": cmp_lines}
+    return out
+
+
+def _models_in_window(conn: sqlite3.Connection, user_id: str | None,
+                      key_id: str | None, with_stages: tuple[str, ...],
+                      start_ts: float, end_ts: float) -> list[dict[str, Any]]:
+    """Per-model totals over the window from the per-job rows (the decode
+    model of each job; stage models live in usage_job_stages and are not
+    folded in). Feeds the loaded-models table's audio/RTF columns."""
+    where, params = _scope_where(user_id, key_id)
+    out = []
+    for r in conn.execute(
+        "SELECT COALESCE(model, '(unknown)') AS model, COUNT(*) AS sessions,"
+        " SUM(MAX(1, COALESCE(utterances, 0))) AS requests,"
+        " SUM(status <> 'ok') AS errors, SUM(words) AS words,"
+        " SUM(audio_s) AS audio_s, SUM(proc_s) AS proc_s"
+        " FROM usage_jobs" + where + _with_clause(with_stages)
+        + " AND created_ts >= ? AND created_ts < ? GROUP BY model"
+        " ORDER BY audio_s DESC, model",
+        (*params, *with_stages, float(start_ts), float(end_ts)),
+    ):
+        audio = float(r["audio_s"] or 0.0)
+        proc = float(r["proc_s"] or 0.0)
+        out.append({
+            "model": r["model"], "sessions": int(r["sessions"] or 0),
+            "requests": int(r["requests"] or 0), "errors": int(r["errors"] or 0),
+            "words": int(r["words"] or 0), "audio_s": round(audio, 3),
+            "proc_s": round(proc, 3),
+            "rtf": round(proc / audio, 3) if audio > 0 else None,
+        })
+    return out
+
+
 def _slot_of(ts: float, tz: zoneinfo.ZoneInfo | None) -> tuple[int, int]:
     """(weekday 0=Mon, hour 0..23) of `ts` in `tz`."""
     dt = datetime.datetime.fromtimestamp(ts, tz)
