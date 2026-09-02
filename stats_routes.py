@@ -1063,9 +1063,9 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* The peak line and the rhythm switch share one row under the title,
      the switch pinned right, so neither the title phrase nor the peak
      text can push it around. */
-  .hours-head { display: flex; align-items: center; gap: 0.6rem; margin: -0.15rem 0 0.4rem; }
-  .hours-head .hours-sub { flex: 1 1 auto; min-width: 0; margin: 0; }
-  .hours-head .seg-ctrl.mini { flex: none; display: inline-flex; }
+  .hours-h3 { white-space: nowrap; overflow: hidden; }
+  .hours-h3 .tag { overflow: hidden; text-overflow: ellipsis; }
+  .hours-h3 .seg-ctrl.mini { float: right; display: inline-flex; margin-right: 0.5rem; }
   .seg-ctrl.mini button { font-size: var(--fs-xs); padding: 0 0.45rem; line-height: 1.4; text-transform: none; letter-spacing: 0; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
   /* Marginals share one scale: each bar is its hour's / weekday's total
@@ -1644,13 +1644,12 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Busy hours: weekday × hour of the chosen measure with marginals. -->
   <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span> <span class="win" data-win="usage"></span></h3>
-    <div class="hours-head">
-      <div class="hours-sub" id="hours-sub"></div>
+    <h3 class="hours-h3"><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span>
+      <span class="win" data-win="usage"></span>
       <span class="seg-ctrl mini" id="hours-mode" title="the rhythm: weekday × hour of day, day of month × hour of day, or year × month">
         <button data-v="hours" class="active">hours</button><button data-v="days">days</button><button data-v="months">months</button>
-      </span>
-    </div>
+      </span></h3>
+    <div class="hours-sub" id="hours-sub"></div>
     <div class="hours" id="hours-grid"></div>
     <div class="hours-legend" id="hours-legend"></div>
    </div></div>

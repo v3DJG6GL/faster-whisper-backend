@@ -1496,7 +1496,7 @@ function hoursPhrase(cells) {
   DAY_PARTS.forEach(([p, a, b]) => groups.push([p, [0, 1, 2, 3, 4, 5, 6], a, b]));
   groups.push(['weekdays', wk, 0, 24]); groups.push(['weekends', we, 0, 24]);
   for (const [label, days, a, b] of groups) if (sum(days, a, b) / total >= 0.6) return label;
-  return 'no clear pattern';
+  return '–';
 }
 // Three rhythms share one renderer: a grid of rows × columns with a
 // measure per cell, marginal bars on top (per column) and right (per
@@ -1700,9 +1700,9 @@ function renderHours() {
   const steps = br ? legendRanges(br, v => M === 'audio_s' || M === 'proc_s' ? fmtDur(v) : fmtCount(v)).map((txt, l) =>
     '<span class="lv" title="' + counts[l] + ' slot' + (counts[l] === 1 ? '' : 's') + '"><i data-l="' + l + '"></i>' + esc(txt) + '</span>').join('') : '';
   if (lg) lg.innerHTML = br
-    ? '<div class="row">' + steps + '<span class="sub">quarters of the active slots · peak ' + fmtM(peakV) + ' ' + L.per + '</span>' + cmpNote + '</div>'
+    ? '<div class="row">' + steps + '<span class="sub" title="the four shades are quarters of the active slots">quartiles · peak ' + fmtM(peakV) + '</span>' + cmpNote + '</div>'
       + '<div class="row"><span title="the bars beside the grid: each ' + L.colUnit + ' (top) and ' + L.rowUnit + ' (right) relative to a flat distribution; the dashed tick is the average"><span class="mg"><i class="b"></i><i class="t"></i></span>side bars vs average</span>'
-      + '<span class="what">' + kindNote + esc(ML) + ' per ' + unitWord + ' · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span></div>'
+      + '<span class="what" title="' + esc(ML) + ' per ' + unitWord + '">' + kindNote + esc(ML) + ' · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span></div>'
     : '<span class="what">' + kindNote + 'no ' + esc(ML) + ' in this window</span>';
   const sub = $('hours-sub');
   if (sub) {
@@ -1734,14 +1734,14 @@ function domPhrase(colTot, rowTot) {
   const thirds = [['month start', third(0)], ['mid-month', third(1)], ['month end', third(2)]];
   for (const [label, v] of thirds) if (v / total >= 0.6) return label;
   for (const [label, a, b] of DAY_PARTS) if (rowTot.slice(a, b).reduce((x, v) => x + v, 0) / total >= 0.6) return label;
-  return 'no clear pattern';
+  return '–';
 }
 function monthPhrase(colTot) {
   const total = colTot.reduce((a, v) => a + v, 0);
   const order = colTot.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
   if (order[0][0] / total >= 0.4) return MON_LONG[order[0][1]];
   if ((order[0][0] + order[1][0]) / total >= 0.5) return MON[order[0][1]] + ' + ' + MON[order[1][1]];
-  return 'spread out';
+  return '–';
 }
 
 // ---- models: audio / RTF per decode model over the window, joined by the
