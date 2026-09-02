@@ -1322,7 +1322,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   </div>
 
   <!-- Pipeline stages: share of eligible runs + speed per optional stage. -->
-  <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="33" gs-w="6" gs-h="6">
+  <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="33" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Pipeline stages <span class="tag" id="stages-tag"></span></h3>
     <div class="stages-bar" id="stages-bar"></div>
@@ -1334,7 +1334,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   </div>
 
   <!-- Busy hours: weekday × hour of GPU seconds, quartile-levelled. -->
-  <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="6">
+  <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Busy hours <span class="tag" id="hours-tag"></span></h3>
     <div class="hours" id="hours-grid"></div>
@@ -1345,7 +1345,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Turnaround: end-to-end time per job bucketed on fixed edges, the
        queue-wait share hatched inside each bar, p50 / p95 marked, and the
        wait p50/p95 by day beneath. Fed by /stats/tail (static/stats.js). -->
-  <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="39" gs-w="6" gs-h="5">
+  <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="38" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Turnaround <span class="tag" id="turnaround-tag"></span></h3>
     <div class="ta-hist" id="turnaround-hist"></div>
@@ -1356,7 +1356,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 
   <!-- Failures by stage and class: terminal failures from the job rows plus
        soft-failed stages (the job went on without them). -->
-  <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="39" gs-w="6" gs-h="5">
+  <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="38" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Failures <span class="tag" id="failures-tag"></span></h3>
     <div class="fl" id="failures-list"><span class="empty">— loading —</span></div>
@@ -1365,7 +1365,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 
   <!-- Recent jobs (unified: transcribe / dictate / translate / download;
        running jobs from snap.jobs pinned on top) -->
-  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="44" gs-w="12" gs-h="6">
+  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="43" gs-w="12" gs-h="6">
    <div class="grid-stack-item-content"><div class="card">
     <div class="usage-toolbar">
       <h3>Recent jobs (<span id="rt-n">0</span> shown)</h3>

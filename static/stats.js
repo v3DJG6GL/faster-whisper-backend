@@ -19,7 +19,7 @@
 // uPlot sparklines re-fit on size changes via their own ResizeObservers.
 // v6: the usage half gained tiles (headline, stages, hours); a v5 layout
 // would remove them on load, so the key moved and v5 layouts are ignored.
-const GS_KEY_BASE = 'whisper-stats-layout-v6';
+const GS_KEY_BASE = 'whisper-stats-layout-v7';
 const GS_PRESET_KEY = 'whisper-stats-preset';
 const GS_PRESETS = {
   ops:   ['gpu', 'cpu', 'ram', 'process', 'activity', 'errors', 'latency',
