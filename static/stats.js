@@ -1105,15 +1105,34 @@ function renderTable() {
 
 // ---- leaderboard: the same entities ranked by the metric; rows are
 // click-to-filter (user / key / model), kinds toggle the kind chip.
+// Column sort for the leaderboard: click a header (again to flip); the
+// server's metric order is the default and the rank column follows.
+let boardSort = { key: null, dir: -1 };
 function renderBoard() {
   const tb = $('usage-board-rows'); if (!tb) return;
-  const board = lastDoc.leaderboard || [];
+  let board = (lastDoc.leaderboard || []).slice();
   const by = lastDoc.by;
   const head = $('usage-board-head');
-  if (head) head.innerHTML = '<tr><th class="rank">#</th><th>' + esc(by) + '</th>'
-    + '<th class="num">' + esc(METRIC_LABEL[Q.metric]) + '</th><th class="num">sessions</th>'
-    + '<th class="num">requests</th><th class="num">audio</th><th class="num">GPU s</th>'
-    + '<th class="num">RTF</th><th class="num">err</th></tr>';
+  const cols = [['label', esc(by), ''], [Q.metric, esc(METRIC_LABEL[Q.metric]), 'num'], ['sessions', 'sessions', 'num'],
+    ['requests', 'requests', 'num'], ['audio_s', 'audio', 'num'], ['proc_s', 'GPU s', 'num'],
+    ['rtf', 'RTF', 'num'], ['errors', 'err', 'num']];
+  if (head) head.innerHTML = '<tr><th class="rank">#</th>' + cols.map(([k, lab, cls]) =>
+    '<th class="' + cls + ' sortable' + (boardSort.key === k ? ' on' : '') + '" data-k="' + k + '" title="sort by ' + lab + '">'
+    + lab + (boardSort.key === k ? (boardSort.dir < 0 ? ' ▾' : ' ▴') : '') + '</th>').join('') + '</tr>';
+  if (head && !head._sortWired) {
+    head._sortWired = true;
+    head.addEventListener('click', (e) => {
+      const th = e.target.closest('th[data-k]'); if (!th) return;
+      const k = th.getAttribute('data-k');
+      boardSort = boardSort.key === k ? { key: k, dir: -boardSort.dir } : { key: k, dir: k === 'label' ? 1 : -1 };
+      renderBoard();
+    });
+  }
+  if (boardSort.key) {
+    const val = r => boardSort.key === 'label' ? String(by === 'kind' ? (KIND_LABEL[r.id] || r.label) : (r.label || '')).toLowerCase()
+      : boardSort.key === 'rtf' ? (r.rtf == null ? -Infinity : r.rtf) : Number((r.totals || r)[boardSort.key] || 0);
+    board.sort((a, b) => { const x = val(a), y = val(b); return (x < y ? -1 : x > y ? 1 : 0) * boardSort.dir; });
+  }
   if (!board.length) {
     tb.innerHTML = '<tr><td colspan="9" class="empty">— no usage in this window —</td></tr>';
     return;

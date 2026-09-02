@@ -822,6 +822,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .usage-tip .tip-row.tot { border-top: 1px solid var(--border); margin-top: 0.15rem;
     padding-top: 0.15rem; color: var(--bold); font-weight: 600; }
   .usage-tip .tip-row.cmp { color: var(--dim); }
+  table.usage-board th.sortable { cursor: pointer; user-select: none; }
+  table.usage-board th.sortable:hover, table.usage-board th.sortable.on { color: var(--fg); }
   table.usage-board tr.pick { cursor: pointer; }
   table.usage-board tr.pick:hover td { background: rgba(121, 192, 255, 0.04); }
   table.usage-board tr.pick:focus-visible { outline: 2px solid var(--cyan); outline-offset: -2px; }
@@ -1013,6 +1015,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* --- Live rings: scrubber + range mode --- */
   header #ring-scrub { width: 7rem; accent-color: var(--cyan); vertical-align: middle; }
   header #ring-scrub.off { opacity: .35; }
+  header .subbar-gap { width: 0.6rem; }
   header #status.pill { display: inline-block; min-width: 13.5rem; text-align: center;
     box-sizing: border-box; }
   /* --- Turnaround histogram (inline SVG) --- */
@@ -1109,6 +1112,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <div class="seg-ctrl" id="sb-compare"><button data-v="off" class="active">off</button><button data-v="prev">previous</button><button data-v="yoy">last year</button></div>
     <div class="subbar-right">
       <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; machine cards replaced by a coarse server status">your usage</span>
+      <span class="seg-label">rings</span>
+      <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_HISTORY_SAMPLE_S)">
+        <button data-v="live" class="active">live</button><button data-v="3600">1h</button><button data-v="86400">24h</button><button data-v="604800">7d</button>
+      </div>
+      <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
+      <span id="status" class="pill live">live</span>
+      <span class="subbar-gap"></span>
       <span class="seg-label">layout</span>
       <div class="seg-ctrl" id="layout-preset" title="which tiles are on the grid; positions are remembered per preset">
         <button data-v="ops">ops</button><button data-v="usage">usage</button><button data-v="both" class="active">both</button>
@@ -1116,12 +1126,6 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button id="edit-layout-btn" aria-pressed="false" title="drag tile titles and resize corners (E); Alt+arrows move, Alt+Shift+arrows resize the focused tile">✎ edit layout</button>
       <span id="layout-live" class="sr-only" aria-live="polite"></span>
       <button id="reset-layout-btn" title="reset this preset's tile layout to defaults">↺ layout</button>
-      <span class="seg-label">rings</span>
-      <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_HISTORY_SAMPLE_S)">
-        <button data-v="live" class="active">live</button><button data-v="3600">1h</button><button data-v="86400">24h</button><button data-v="604800">7d</button>
-      </div>
-      <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
-      <span id="status" class="pill live">live</span>
     </div>
   </div>
   <!-- Usage scope, second row: kind (client-side), "ran" stage chips (server
@@ -1248,7 +1252,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Errors window -->
   <div class="grid-stack-item" gs-id="errors" gs-x="8" gs-y="9" gs-w="4" gs-h="3">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>Errors (5xx)</h3>
+    <h3>Errors (5xx) <span class="win" data-win="boot"></span></h3>
     <div class="err-strip">
       <div id="err-1m" class="seg"><b>0</b>1 min</div>
       <div id="err-5m" class="seg"><b>0</b>5 min</div>
@@ -1275,7 +1279,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Endpoint counters -->
   <div class="grid-stack-item" gs-id="endpoints" gs-x="6" gs-y="12" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>Endpoint counters</h3>
+    <h3>Endpoint counters <span class="win" data-win="boot"></span></h3>
     <table class="tbl rcards"><thead><tr><th>path</th><th class="num">requests</th><th class="num">5xx</th></tr></thead>
     <tbody id="endpoints-rows"></tbody></table>
    </div></div>
@@ -2167,6 +2171,11 @@ function render(snap) {
   $('activity-meta').innerHTML =
     `<b>uptime</b> ${fmtSec(snap.uptime_sec)} &nbsp; ` +
     `<b>total req</b> ${totalReq}`;
+  // Counters since the process started: say so on their cards.
+  document.querySelectorAll('.card h3 .win[data-win="boot"]').forEach(el => {
+    el.innerHTML = '<b>since start</b> · ' + fmtSec(snap.uptime_sec);
+    el.title = 'counted since the server process started';
+  });
 
   // --- Latency ---
   const lat = snap.latency_ms || { n: 0, p50: 0, p95: 0, p99: 0 };
