@@ -212,6 +212,25 @@ def gpu_gate_snapshot() -> dict[str, Any]:
         return {"capacity": None, "held": 0, "queue_depth": 0, "oldest_wait_s": 0.0}
     return gpu_gate.snapshot()
 
+
+# One entry per second, 1 = an inference slot was held, appended by
+# stats_sampler.tick(). 900 s = the 15-minute window of the busy share.
+busy_ring: deque[int] = deque(maxlen=900)
+
+
+def slot_busy_snapshot() -> dict[str, Any]:
+    """Share of the last 1 / 5 / 15 minutes with an inference slot held,
+    from busy_ring; `samples` says how much of the 15-minute window has
+    been observed (the ring fills after a restart)."""
+    ring = list(busy_ring)
+    n = len(ring)
+
+    def pct(win: int) -> float:
+        tail = ring[-win:] if n else []
+        return round(100.0 * sum(tail) / len(tail), 1) if tail else 0.0
+    return {"pct_1m": pct(60), "pct_5m": pct(300), "pct_15m": pct(900),
+            "samples": n}
+
 # Global latency ring (ms) used for p50/p95/p99.
 _latency: deque[float] = deque(maxlen=_LATENCY_MAX)
 
@@ -470,6 +489,7 @@ def metrics_snapshot(*, include_identity: bool = False,
         "uptime_sec": round(time.time() - START_TS, 1),
         "in_flight_transcriptions": in_flight_transcriptions,
         "gpu_gate": gpu_gate_snapshot(),
+        "slot_busy": slot_busy_snapshot(),
         "requests": dict(req_count),
         "errors_total": dict(err_count),
         "errors_window": {

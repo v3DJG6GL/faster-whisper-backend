@@ -2836,6 +2836,10 @@ async def lifespan(app: FastAPI):
 
     usage_sweep_task = (asyncio.create_task(_usage_retention_loop())
                         if usage_store_ready else None)
+    # 1 Hz machine sampler: the GPU-busy share and the /stats history charts.
+    # Needs the recent-transcriptions store (its sys_samples table).
+    import stats_sampler as _stats_sampler
+    stats_sampler_task = asyncio.create_task(_stats_sampler.loop())
 
     # Open the reports SQLite store (durable, plaintext dictation content
     # on disk) and run an immediate retention sweep before serving traffic.
@@ -2929,6 +2933,12 @@ async def lifespan(app: FastAPI):
     await _cancel(reports_sweep_task)
     await _cancel(captures_sweep_task)
     await _cancel(usage_sweep_task)
+    await _cancel(stats_sampler_task)
+    # Whatever the sampler queued in its last minute.
+    try:
+        await asyncio.to_thread(_stats_sampler.flush)
+    except Exception:  # noqa: BLE001 — shutdown must not care
+        pass
     await _cancel(sessions_purge_task)
     await _cancel(open_mode_task)
 

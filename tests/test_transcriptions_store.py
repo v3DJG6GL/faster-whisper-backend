@@ -2,6 +2,8 @@
 prune, step truncation, and the row-to-dict derivations."""
 
 import sqlite3
+
+import pytest
 import time
 
 
@@ -349,3 +351,30 @@ def test_record_timing_keeps_wait_and_error_class(tx_store):
     tx_store.record_timing(request_id="w2", model="m", audio_dur_s=1.0,
                            proc_dur_s=1.0, status="ok", words_count=3, wait_s=-1)
     assert tx_store.list_recent(limit=1)[0]["wait_s"] == 0.0
+
+
+def test_sys_samples_round_trip_downsample_and_prune(tx_store):
+    import time
+    now = int(time.time()) // 10 * 10
+    rows = [{"ts": now - 60 + i * 10, "gpu_util": 10.0 * i, "gpu_mem_mb": 100.0,
+             "gpu_temp": None, "cpu_pct": 5.0, "ram_pct": 50.0, "slot_busy": 0.5}
+            for i in range(6)]
+    assert tx_store.record_sys_samples(rows) == 6
+    tx_store.record_sys_samples([{"ts": now - 60, "gpu_util": 99.0}])   # replace
+    fine = tx_store.list_sys_samples(metric="gpu_util", from_ts=now - 60,
+                                     to_ts=now + 1, step_s=10)
+    assert fine["t"] == [now - 60 + i * 10 for i in range(6)]
+    assert fine["avg"][0] == 99.0 and fine["max"][-1] == 50.0
+    coarse = tx_store.list_sys_samples(metric="gpu_util", from_ts=now - 60,
+                                       to_ts=now + 1, step_s=30)
+    assert len(coarse["t"]) == 2
+    assert coarse["max"][0] == 99.0 and coarse["avg"][1] == pytest.approx(40.0)
+    # NULL samples (no NVML) are skipped, not zeroed.
+    assert tx_store.list_sys_samples(metric="gpu_temp", from_ts=now - 60,
+                                     to_ts=now + 1, step_s=10)["t"] == []
+    with pytest.raises(ValueError):
+        tx_store.list_sys_samples(metric="ts; DROP TABLE x", from_ts=0,
+                                  to_ts=now, step_s=10)
+    tx_store.record_sys_samples([{"ts": now - 40 * 86400, "gpu_util": 1.0}])
+    assert tx_store.prune_sys_samples(30) == 1
+    assert tx_store.prune_sys_samples(0) == 0

@@ -103,6 +103,20 @@ CREATE TABLE IF NOT EXISTS recent_transcriptions (
 );
 CREATE INDEX IF NOT EXISTS idx_rt_created      ON recent_transcriptions(created_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_rt_user_created ON recent_transcriptions(user_id, created_ts DESC);
+
+-- Machine samples on the STATS_HISTORY_SAMPLE_S grid (stats_sampler): the
+-- source of /stats/history. Lives here, in the rolling operational DB,
+-- because it has that DB's lifecycle (30 days, pruned), not the usage
+-- ledger's (kept for years).
+CREATE TABLE IF NOT EXISTS sys_samples (
+  ts         INTEGER PRIMARY KEY,
+  gpu_util   REAL,
+  gpu_mem_mb REAL,
+  gpu_temp   REAL,
+  cpu_pct    REAL,
+  ram_pct    REAL,
+  slot_busy  REAL
+);
 """
 
 
@@ -240,6 +254,68 @@ def _lazy_prune_if_due(prune_every: int, max_rows: int, ttl_days: float) -> None
         prune(max_rows=max_rows, ttl_days=ttl_days)
     except Exception as e:
         logger.warning("[recent-tx] prune failed: %s", e)
+
+
+# Column names are interpolated into the history query; only these.
+SYS_SAMPLE_METRICS: frozenset[str] = frozenset(
+    ("gpu_util", "gpu_mem_mb", "gpu_temp", "cpu_pct", "ram_pct", "slot_busy"))
+
+
+def record_sys_samples(rows: list[dict[str, Any]]) -> int:
+    """Insert (or replace on the same grid second) a batch of samples in
+    one transaction. Returns the row count."""
+    if not rows:
+        return 0
+    conn = _require_conn()
+    with _lock:
+        conn.executemany(
+            "INSERT OR REPLACE INTO sys_samples"
+            " (ts, gpu_util, gpu_mem_mb, gpu_temp, cpu_pct, ram_pct, slot_busy)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(int(r["ts"]), r.get("gpu_util"), r.get("gpu_mem_mb"),
+              r.get("gpu_temp"), r.get("cpu_pct"), r.get("ram_pct"),
+              r.get("slot_busy")) for r in rows],
+        )
+        conn.commit()
+    return len(rows)
+
+
+def list_sys_samples(*, metric: str, from_ts: float, to_ts: float,
+                     step_s: int) -> dict[str, list]:
+    """`{t, avg, max}` of one metric between from_ts and to_ts, downsampled
+    onto a `step_s` grid (AVG and MAX per bucket) so a week is ~2 000 points.
+    Unknown metrics raise ValueError (the name is interpolated)."""
+    if metric not in SYS_SAMPLE_METRICS:
+        raise ValueError(f"unknown metric: {metric!r}")
+    step = max(1, int(step_s))
+    conn = _require_conn()
+    cur = conn.execute(
+        f"SELECT (ts / ?) * ? AS t, AVG({metric}) AS a, MAX({metric}) AS m"
+        f" FROM sys_samples WHERE ts >= ? AND ts < ? AND {metric} IS NOT NULL"
+        " GROUP BY t ORDER BY t",
+        (step, step, int(from_ts), int(to_ts)),
+    )
+    t: list[int] = []
+    avg: list[float] = []
+    mx: list[float] = []
+    for r in cur.fetchall():
+        t.append(int(r["t"]))
+        avg.append(round(float(r["a"]), 2))
+        mx.append(round(float(r["m"]), 2))
+    return {"t": t, "avg": avg, "max": mx}
+
+
+def prune_sys_samples(ttl_days: float) -> int:
+    """Delete samples older than ttl_days; returns the count."""
+    if not ttl_days or ttl_days <= 0:
+        return 0
+    conn = _require_conn()
+    cutoff = int(time.time() - float(ttl_days) * 86400)
+    with _lock:
+        cur = conn.execute("DELETE FROM sys_samples WHERE ts < ?", (cutoff,))
+        conn.commit()
+    return int(cur.rowcount or 0)
+
 
 
 def record_trace(

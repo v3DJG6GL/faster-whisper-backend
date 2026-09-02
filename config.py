@@ -947,6 +947,14 @@ STATS_RECENT_TRANSCRIPTIONS_COUNT = _D("STATS_RECENT_TRANSCRIPTIONS_COUNT")
 # scope always see everything. Read at request time, hot-applied.
 STATS_OWN_SHOWS_MACHINE = _D("STATS_OWN_SHOWS_MACHINE")
 
+# Machine history behind /stats "history ↗" and the GPU-busy share: the
+# sampler (stats_sampler.py) takes one NVML/psutil sample every
+# STATS_HISTORY_SAMPLE_S seconds into the recent-transcriptions DB and
+# drops rows older than STATS_HISTORY_RETENTION_DAYS (0 = keep forever).
+# At 10 s / 30 d that is ~260k small rows. Both read at use time.
+STATS_HISTORY_SAMPLE_S = _D("STATS_HISTORY_SAMPLE_S")
+STATS_HISTORY_RETENTION_DAYS = _D("STATS_HISTORY_RETENTION_DAYS")
+
 
 # =============================================================================
 # Per-key / per-user usage rollup

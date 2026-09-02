@@ -782,6 +782,13 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "full machine cards (GPU/CPU/RAM/process/latency/endpoints/5xx/"
         "models), which reveal when other people run jobs — fine for a "
         "trusted household box. Admins and \"all\" scope are unaffected.",
+    "STATS_HISTORY_SAMPLE_S":
+        "Seconds between machine samples (GPU utilisation / VRAM / temperature, "
+        "CPU, RAM, GPU-busy share) kept for the /stats history charts. 10 s "
+        "keeps a week at ~60k rows; larger values thin the curves.",
+    "STATS_HISTORY_RETENTION_DAYS":
+        "Days of machine samples to keep for the /stats history charts "
+        "(pruned hourly). 0 keeps them forever.",
 
     # --- Captures (fine-tuning data store) ---
     "CAPTURE_RECORDINGS_ENABLED":
@@ -2058,6 +2065,12 @@ class AdminConfig(BaseModel):
         group="Recent transcriptions")
     STATS_RECENT_TRANSCRIPTIONS_COUNT: Annotated[int, Field(ge=1, le=100)] | None = _F(
         "STATS_RECENT_TRANSCRIPTIONS_COUNT", scope="server",
+        group="Recent transcriptions")
+    STATS_HISTORY_SAMPLE_S: Annotated[int, Field(ge=1, le=3600)] | None = _F(
+        "STATS_HISTORY_SAMPLE_S", scope="server",
+        group="Recent transcriptions")
+    STATS_HISTORY_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
+        "STATS_HISTORY_RETENTION_DAYS", scope="server",
         group="Recent transcriptions")
 
     # --- Usage statistics (the desktop app's /v1/usage + admin /stats) ---

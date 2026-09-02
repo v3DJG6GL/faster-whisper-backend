@@ -778,3 +778,33 @@ def test_transcription_records_the_gate_wait(client):
     assert job is not None and job["wait_s"] >= 0.0
     import metrics
     assert metrics.gpu_gate is not None and metrics.gpu_gate.held == 0
+
+
+def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
+    import time
+    import transcriptions_store
+    from conftest import bearer
+    now = int(time.time()) // 10 * 10
+    transcriptions_store.record_sys_samples(
+        [{"ts": now - 600 + i * 10, "gpu_util": float(i), "slot_busy": 0.25}
+         for i in range(60)])
+    body = client.get(f"/stats/history?metric=gpu_util&from={now - 600}&to={now}").json()
+    assert set(body) == {"metric", "from", "to", "step", "t", "avg", "max"}
+    assert body["step"] == 10 and len(body["t"]) == 60
+    week = client.get(f"/stats/history?metric=slot_busy&from={now - 7 * 86400}&to={now}").json()
+    assert week["step"] >= 7 * 86400 // 2000          # ~2 000 points at most
+    assert client.get("/stats/history?metric=nope").status_code == 422
+    assert client.get(f"/stats/history?metric=gpu_util&from={now}&to={now - 1}").status_code == 422
+    # Own scope without the machine cards: no curves.
+    make_user_key("root", is_admin=True)
+    _, raw = make_user_key("alice", pages={"stats": "own"})
+    assert client.get("/stats/history?metric=gpu_util",
+                      headers=bearer(raw)).status_code == 403
+    _, raw_all = make_user_key("bob", pages={"stats": "all"})
+    assert client.get("/stats/history?metric=gpu_util",
+                      headers=bearer(raw_all)).status_code == 200
+
+
+def test_snapshot_carries_slot_busy(client):
+    snap = client.get("/stats/snapshot").json()
+    assert set(snap["slot_busy"]) == {"pct_1m", "pct_5m", "pct_15m", "samples"}

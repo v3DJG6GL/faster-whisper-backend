@@ -374,7 +374,7 @@ async def stats_usage(
             days=days, from_day=from_, to_day=to, all_time=all, with_=with_,
             tz=tz)
     except ValueError as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
+        raise HTTPException(422, detail=str(e))
     jobs_retention = int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365) or 0)
 
     # Everything below is store work — a handful of aggregate scans over the
@@ -429,6 +429,51 @@ async def stats_usage(
         return out
 
     return await asyncio.to_thread(_gather)
+
+
+@router.get(
+    "/stats/history",
+    dependencies=[Depends(_require_stats_host)],
+)
+async def stats_history(
+    metric: str = "gpu_util",
+    from_: float | None = Query(default=None, alias="from"),
+    to: float | None = None,
+    step: int | None = None,
+    user: dict[str, Any] = Depends(require_page("stats")),
+) -> dict[str, Any]:
+    """Range-mode machine history for a live card's "history ↗": one metric
+    (gpu_util | gpu_mem_mb | gpu_temp | cpu_pct | ram_pct | slot_busy) from
+    the sampler's sys_samples, downsampled to `step` seconds (default: the
+    smallest step that keeps the window under ~2 000 points, never below the
+    sample cadence). `from`/`to` are epoch seconds; default the last hour.
+    Own-scope viewers get it only when they see the machine cards (the
+    same rule as the live payload: utilisation curves reveal other
+    people's jobs)."""
+    import transcriptions_store
+
+    scope = stats_scope_for(user)
+    if not scope.sees_machine:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            detail="machine history needs the machine cards")
+    if metric not in transcriptions_store.SYS_SAMPLE_METRICS:
+        raise HTTPException(422,
+                            detail=f"unknown metric: {metric!r}")
+    now = time.time()
+    t1 = float(to) if to is not None else now
+    t0 = float(from_) if from_ is not None else t1 - 3600
+    if t0 >= t1:
+        raise HTTPException(422,
+                            detail="'from' is not before 'to'")
+    t0 = max(t0, t1 - 3650 * 86400)
+    cadence = max(1, int(getattr(cfg, "STATS_HISTORY_SAMPLE_S", 10) or 10))
+    auto = max(cadence, int(-(-(t1 - t0) // 2000)))
+    step_s = max(cadence, int(step)) if step else auto
+    series = await asyncio.to_thread(
+        transcriptions_store.list_sys_samples, metric=metric, from_ts=t0,
+        to_ts=t1, step_s=step_s)
+    return {"metric": metric, "from": int(t0), "to": int(t1), "step": step_s,
+            **series}
 
 
 @router.get(
