@@ -167,9 +167,13 @@ CREATE TABLE IF NOT EXISTS usage_jobs (
   delivery    TEXT,
   app_id      TEXT,
   translation TEXT,
-  reported_ts REAL
+  reported_ts REAL,
+  wait_s      REAL    NOT NULL DEFAULT 0,
+  error_class TEXT,
+  error_stage TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_usage_jobs_created ON usage_jobs(created_ts);
+CREATE INDEX IF NOT EXISTS idx_usage_jobs_user_created ON usage_jobs(user_id, created_ts);
 
 CREATE TABLE IF NOT EXISTS usage_job_stages (
   job_id   TEXT NOT NULL,
@@ -179,6 +183,7 @@ CREATE TABLE IF NOT EXISTS usage_job_stages (
   targets  TEXT,
   speakers INTEGER,
   retained REAL,
+  error    TEXT,
   PRIMARY KEY (job_id, stage)
 );
 
@@ -192,6 +197,7 @@ CREATE TABLE IF NOT EXISTS usage_stage_hourly (
   speakers      INTEGER NOT NULL DEFAULT 0,
   retained_sum  REAL    NOT NULL DEFAULT 0,
   kept_original INTEGER NOT NULL DEFAULT 0,
+  errors        INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (hour, user_id, stage)
 );
 
@@ -236,9 +242,38 @@ def init_db(path: str) -> None:
     _conn.execute("PRAGMA temp_store=MEMORY;")
     _park_legacy_hourly(_conn)
     _conn.executescript(_SCHEMA)
+    _migrate_columns(_conn)
     _fold_legacy_hourly(_conn)
     _reclassify_unknown_hourly(_conn)
     store_common.secure_db_file(path)
+
+
+# Additive columns for DBs created before them. CREATE TABLE IF NOT EXISTS is
+# a no-op against an existing table, so a column that joins the schema must
+# also be listed here or it never reaches a live database. Same pattern as
+# transcriptions_store.init_db; idempotent (PRAGMA table_info first).
+_COLUMN_MIGRATIONS: dict[str, tuple[tuple[str, str], ...]] = {
+    "usage_jobs": (
+        ("wait_s", "ADD COLUMN wait_s REAL NOT NULL DEFAULT 0"),
+        ("error_class", "ADD COLUMN error_class TEXT"),
+        ("error_stage", "ADD COLUMN error_stage TEXT"),
+    ),
+    "usage_job_stages": (
+        ("error", "ADD COLUMN error TEXT"),
+    ),
+    "usage_stage_hourly": (
+        ("errors", "ADD COLUMN errors INTEGER NOT NULL DEFAULT 0"),
+    ),
+}
+
+
+def _migrate_columns(conn: sqlite3.Connection) -> None:
+    for table, cols in _COLUMN_MIGRATIONS.items():
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for col, ddl in cols:
+            if col not in have:
+                conn.execute(f"ALTER TABLE {table} {ddl}")
+    conn.commit()
 
 
 def _park_legacy_hourly(conn: sqlite3.Connection) -> None:
@@ -415,10 +450,14 @@ def _stage_rows(stages: list | None) -> list[dict[str, Any]]:
         speakers = s.get("speakers")
         retained = s.get("retained")
         kept = s.get("kept_original")
+        error = s.get("error")
         out.append({
             "stage": _STAGE_ALIASES.get(name, name),
             "secs": float(s.get("secs") or 0.0),
             "model": s.get("model") if isinstance(s.get("model"), str) else None,
+            # A soft-failed stage (the job went on without it) carries its
+            # error class here; the job's own status stays ok.
+            "error": (error[:32] if isinstance(error, str) and error else None),
             "targets": ([str(t) for t in targets if t]
                         if isinstance(targets, (list, tuple)) else []),
             "speakers": int(speakers) if isinstance(speakers, (int, float)) else None,
@@ -442,12 +481,20 @@ def record_usage(
     model: str | None = None,
     language: str | None = None,
     proc_s: float | None = None,
+    wait_s: float | None = None,
+    error_class: str | None = None,
+    error_stage: str | None = None,
 ) -> None:
     """Record one transcription request (a batch run, a text translation, or
     ONE dictation utterance) into the rollups. Best-effort: any failure is
     logged, never raised — a usage write must not break a transcription.
     Falsy ids fall back to the open-mode sentinel so the NOT NULL columns
     stay valid.
+
+    `wait_s` is the time this request spent queued for a GPU slot (summed
+    per job like proc_s); `error_class` / `error_stage` classify a failed
+    job (metrics.ERROR_CLASSES) and are kept once set — a later utterance
+    of the same session never blanks them.
 
     `job_id` groups utterances into a session: the first record under an id
     creates the job row and counts the session; later ones only add to its
@@ -462,6 +509,9 @@ def record_usage(
         w = int(words or 0)
         a = float(audio_s or 0.0)
         p = float(proc_s or 0.0)
+        wt = max(0.0, float(wait_s or 0.0))
+        ecls = (error_class[:32] if isinstance(error_class, str) and error_class else None)
+        estg = (error_stage[:32] if isinstance(error_stage, str) and error_stage else None)
         k = _norm_kind(kind)
         jid = job_id[:64] if isinstance(job_id, str) and job_id else None
         stage_rows = _stage_rows(stages)
@@ -484,18 +534,22 @@ def record_usage(
                         conn.execute(
                             "INSERT INTO usage_jobs"
                             " (job_id, user_id, key_id, kind, created_ts, status,"
-                            "  audio_s, words, proc_s, utterances, model, language)"
-                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)"
+                            "  audio_s, words, proc_s, utterances, model, language,"
+                            "  wait_s, error_class, error_stage)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
                             " ON CONFLICT(job_id) DO UPDATE SET"
-                            "  utterances = utterances + 1,"
-                            "  audio_s    = audio_s + excluded.audio_s,"
-                            "  words      = words + excluded.words,"
-                            "  proc_s     = proc_s + excluded.proc_s,"
-                            "  status     = excluded.status,"
-                            "  model      = COALESCE(excluded.model, model),"
-                            "  language   = COALESCE(excluded.language, language)",
+                            "  utterances  = utterances + 1,"
+                            "  audio_s     = audio_s + excluded.audio_s,"
+                            "  words       = words + excluded.words,"
+                            "  proc_s      = proc_s + excluded.proc_s,"
+                            "  status      = excluded.status,"
+                            "  model       = COALESCE(excluded.model, model),"
+                            "  language    = COALESCE(excluded.language, language),"
+                            "  wait_s      = wait_s + excluded.wait_s,"
+                            "  error_class = COALESCE(error_class, excluded.error_class),"
+                            "  error_stage = COALESCE(error_stage, excluded.error_stage)",
                             (jid, uid, kid, k, created_ts, status, a, w, p,
-                             model or None, language or None),
+                             model or None, language or None, wt, ecls, estg),
                         )
                 conn.execute(
                     "INSERT INTO usage_hourly"
@@ -527,34 +581,37 @@ def _record_stage(conn: sqlite3.Connection, hour: int, uid: str,
     """One stage of one request into the per-job detail row and the hourly
     stage/target rollups. A dictation's stage repeats per utterance, so the
     per-job row accumulates seconds instead of failing on the key."""
+    err = st.get("error")
     if jid is not None:
         conn.execute(
             "INSERT INTO usage_job_stages"
-            " (job_id, stage, secs, model, targets, speakers, retained)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)"
+            " (job_id, stage, secs, model, targets, speakers, retained, error)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(job_id, stage) DO UPDATE SET"
             "  secs     = secs + excluded.secs,"
             "  model    = COALESCE(excluded.model, model),"
             "  targets  = COALESCE(excluded.targets, targets),"
             "  speakers = COALESCE(excluded.speakers, speakers),"
-            "  retained = COALESCE(excluded.retained, retained)",
+            "  retained = COALESCE(excluded.retained, retained),"
+            "  error    = COALESCE(error, excluded.error)",
             (jid, st["stage"], st["secs"], st["model"],
-             ",".join(st["targets"]) or None, st["speakers"], st["retained"]),
+             ",".join(st["targets"]) or None, st["speakers"], st["retained"], err),
         )
     conn.execute(
         "INSERT INTO usage_stage_hourly"
         " (hour, user_id, stage, runs, audio_s, secs, speakers, retained_sum,"
-        "  kept_original)"
-        " VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)"
+        "  kept_original, errors)"
+        " VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)"
         " ON CONFLICT(hour, user_id, stage) DO UPDATE SET"
         "  runs          = runs + 1,"
         "  audio_s       = audio_s + excluded.audio_s,"
         "  secs          = secs + excluded.secs,"
         "  speakers      = speakers + excluded.speakers,"
         "  retained_sum  = retained_sum + excluded.retained_sum,"
-        "  kept_original = kept_original + excluded.kept_original",
+        "  kept_original = kept_original + excluded.kept_original,"
+        "  errors        = errors + excluded.errors",
         (hour, uid, st["stage"], audio_s, st["secs"], st["speakers"] or 0,
-         st["retained"] or 0.0, st["kept_original"]),
+         st["retained"] or 0.0, st["kept_original"], 1 if err else 0),
     )
     for target in st["targets"]:
         conn.execute(

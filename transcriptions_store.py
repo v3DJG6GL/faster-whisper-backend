@@ -96,7 +96,10 @@ CREATE TABLE IF NOT EXISTS recent_transcriptions (
   bigrams_json  TEXT,
   kind          TEXT,
   stages_json   TEXT,
-  key_label     TEXT
+  key_label     TEXT,
+  wait_s        REAL,
+  error_class   TEXT,
+  error_stage   TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_rt_created      ON recent_transcriptions(created_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_rt_user_created ON recent_transcriptions(user_id, created_ts DESC);
@@ -124,10 +127,16 @@ def init_db(path: str) -> None:
     # ([{name, secs, model?, detail?}, …]) and `key_label` snapshots the API
     # key's display label at record time (labels are mutable/deletable in
     # api_keys, so resolving at read time would lie about history).
+    # v2 stats columns (nullable, additive): `wait_s` = seconds the request
+    # queued for a GPU slot, `error_class` / `error_stage` = why and where
+    # a failed job failed (metrics.ERROR_CLASSES).
     for col, ddl in (
         ("kind", "ADD COLUMN kind TEXT"),
         ("stages_json", "ADD COLUMN stages_json TEXT"),
         ("key_label", "ADD COLUMN key_label TEXT"),
+        ("wait_s", "ADD COLUMN wait_s REAL"),
+        ("error_class", "ADD COLUMN error_class TEXT"),
+        ("error_stage", "ADD COLUMN error_stage TEXT"),
     ):
         if col not in cols:
             _conn.execute(f"ALTER TABLE recent_transcriptions {ddl}")
@@ -213,6 +222,9 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     # `d.pop(col, "[]")` default in the loop above covers `stages` there).
     d["kind"] = d.get("kind") or None
     d["key_label"] = d.get("key_label") or ""
+    d["wait_s"] = d.get("wait_s")
+    d["error_class"] = d.get("error_class") or None
+    d["error_stage"] = d.get("error_stage") or None
     return d
 
 
@@ -308,6 +320,9 @@ def record_timing(
     prune_every: int = 50,
     max_rows: int = 500,
     ttl_days: float = 30.0,
+    wait_s: float | None = None,
+    error_class: str | None = None,
+    error_stage: str | None = None,
 ) -> None:
     """Insert or update the timing half. Called in the outer finally so
     it runs on BOTH success (after record_trace) and error paths. UPSERT
@@ -325,6 +340,9 @@ def record_timing(
     model = (model or "")[:_CAP_MODEL]
     kind = (kind or "")[:_CAP_KIND] or None
     key_label = (key_label or "")[:_CAP_KEY_LABEL] or None
+    error_class = (error_class or "")[:32] or None
+    error_stage = (error_stage or "")[:32] or None
+    wait_s = None if wait_s is None else round(max(0.0, float(wait_s)), 3)
     stages_blob = None
     if stages:
         try:
@@ -340,8 +358,8 @@ def record_timing(
             "INSERT INTO recent_transcriptions ("
             "  request_id, created_ts, user_id, model, status,"
             "  audio_dur_s, proc_dur_s, words_count,"
-            "  kind, stages_json, key_label"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            "  kind, stages_json, key_label, wait_s, error_class, error_stage"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(request_id) DO UPDATE SET"
             "  status      = excluded.status,"
             "  audio_dur_s = excluded.audio_dur_s,"
@@ -350,10 +368,13 @@ def record_timing(
             "  model       = excluded.model,"
             "  kind        = COALESCE(excluded.kind, recent_transcriptions.kind),"
             "  stages_json = COALESCE(excluded.stages_json, recent_transcriptions.stages_json),"
-            "  key_label   = COALESCE(excluded.key_label, recent_transcriptions.key_label)",
+            "  key_label   = COALESCE(excluded.key_label, recent_transcriptions.key_label),"
+            "  wait_s      = COALESCE(excluded.wait_s, recent_transcriptions.wait_s),"
+            "  error_class = COALESCE(excluded.error_class, recent_transcriptions.error_class),"
+            "  error_stage = COALESCE(excluded.error_stage, recent_transcriptions.error_stage)",
             (request_id, ts, user_id, model, status,
              audio_dur_s, proc_dur_s, words_count,
-             kind, stages_blob, key_label),
+             kind, stages_blob, key_label, wait_s, error_class, error_stage),
         )
         _lazy_prune_if_due(prune_every, max_rows, ttl_days)
 

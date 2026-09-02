@@ -680,3 +680,121 @@ def test_parse_window_params_matches_v1_route(usage_store_db):
         us.parse_window_params(with_="decoding")
     with pytest.raises(ValueError, match="from"):
         us.parse_window_params(from_day=20007, to_day=20006)
+
+
+# --------------------------------------------------------------------------
+# v2 ledger columns: wait_s, error_class / error_stage, per-stage errors
+# --------------------------------------------------------------------------
+
+def test_wait_s_accumulates_and_error_class_is_kept(usage_store_db):
+    us = usage_store_db
+    h = _hour(2025, 6, 10, 9, 0, _UTC)
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="error",
+                    kind="dictation", job_id="d1", hour=h, wait_s=1.5,
+                    error_class="timeout", error_stage="transcribing")
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok",
+                    kind="dictation", job_id="d1", hour=h, wait_s=0.5)
+    row = us._require_conn().execute(
+        "SELECT wait_s, error_class, error_stage, utterances FROM usage_jobs"
+        " WHERE job_id = 'd1'").fetchone()
+    assert (row["wait_s"], row["error_class"], row["error_stage"],
+            row["utterances"]) == (2.0, "timeout", "transcribing", 2)
+    # A negative wait is a clock artefact, stored as 0; a job without an
+    # error keeps NULLs.
+    us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok",
+                    kind="file", job_id="f1", hour=h, wait_s=-2)
+    row = us._require_conn().execute(
+        "SELECT wait_s, error_class FROM usage_jobs WHERE job_id = 'f1'").fetchone()
+    assert (row["wait_s"], row["error_class"]) == (0.0, None)
+
+
+def test_stage_error_lands_on_the_stage_row_and_bumps_hourly_errors(usage_store_db):
+    """A soft-failed stage (the job went on without it) carries `error` on
+    the per-job stage row and counts in usage_stage_hourly.errors while
+    the job's own status stays ok."""
+    us = usage_store_db
+    h = _hour(2025, 6, 10, 9, 0, _UTC)
+    us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=5, status="ok",
+                    kind="file", job_id="f1", hour=h,
+                    stages=[{"name": "diarizing", "secs": 2.0, "error": "timeout"},
+                            {"name": "translating", "secs": 1.0, "targets": ["de"]}])
+    us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=5, status="ok",
+                    kind="file", job_id="f2", hour=h,
+                    stages=[{"name": "diarizing", "secs": 2.0, "speakers": 2}])
+    conn = us._require_conn()
+    rows = {r["stage"]: r for r in conn.execute(
+        "SELECT stage, error FROM usage_job_stages WHERE job_id = 'f1'")}
+    assert rows["diarizing"]["error"] == "timeout"
+    assert rows["translating"]["error"] is None
+    hourly = {r["stage"]: r for r in conn.execute(
+        "SELECT stage, runs, errors FROM usage_stage_hourly WHERE user_id = 'u'")}
+    assert (hourly["diarizing"]["runs"], hourly["diarizing"]["errors"]) == (2, 1)
+    assert hourly["translating"]["errors"] == 0
+    assert conn.execute("SELECT status FROM usage_jobs WHERE job_id = 'f1'"
+                        ).fetchone()["status"] == "ok"
+
+
+_PRE_V2_JOBS_SCHEMA = """
+CREATE TABLE usage_jobs (
+  job_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, key_id TEXT NOT NULL,
+  kind TEXT NOT NULL, created_ts REAL NOT NULL, status TEXT NOT NULL,
+  audio_s REAL NOT NULL DEFAULT 0, words INTEGER NOT NULL DEFAULT 0,
+  proc_s REAL NOT NULL DEFAULT 0, utterances INTEGER NOT NULL DEFAULT 0,
+  model TEXT, language TEXT, activation TEXT, delivery TEXT, app_id TEXT,
+  translation TEXT, reported_ts REAL
+);
+CREATE TABLE usage_job_stages (
+  job_id TEXT NOT NULL, stage TEXT NOT NULL, secs REAL NOT NULL DEFAULT 0,
+  model TEXT, targets TEXT, speakers INTEGER, retained REAL,
+  PRIMARY KEY (job_id, stage)
+);
+CREATE TABLE usage_stage_hourly (
+  hour INTEGER NOT NULL, user_id TEXT NOT NULL, stage TEXT NOT NULL,
+  runs INTEGER NOT NULL DEFAULT 0, audio_s REAL NOT NULL DEFAULT 0,
+  secs REAL NOT NULL DEFAULT 0, speakers INTEGER NOT NULL DEFAULT 0,
+  retained_sum REAL NOT NULL DEFAULT 0, kept_original INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (hour, user_id, stage)
+);
+"""
+
+
+def test_init_adds_v2_ledger_columns_to_a_pre_v2_db(tmp_path):
+    """A DB whose ledger tables predate wait_s / error_class / stage errors
+    gains the columns on init_db; old rows read with the defaults; a
+    second init is a no-op; a fresh DB needs no ALTER at all."""
+    import usage_store
+    path = str(tmp_path / "prev2.sqlite3")
+    raw = sqlite3.connect(path)
+    raw.executescript(_PRE_V2_JOBS_SCHEMA)
+    raw.execute("INSERT INTO usage_jobs (job_id, user_id, key_id, kind, created_ts,"
+                " status, audio_s, words, proc_s, utterances)"
+                " VALUES ('old', 'u', 'k', 'file', 1000.0, 'ok', 5, 2, 1, 1)")
+    raw.execute("INSERT INTO usage_job_stages (job_id, stage, secs)"
+                " VALUES ('old', 'diarizing', 1.0)")
+    raw.execute("INSERT INTO usage_stage_hourly (hour, user_id, stage, runs)"
+                " VALUES (0, 'u', 'diarizing', 1)")
+    raw.commit(); raw.close()
+    usage_store.init_db(path)
+    try:
+        conn = usage_store._require_conn()
+        cols = lambda t: {r["name"] for r in conn.execute(f"PRAGMA table_info({t})")}
+        assert {"wait_s", "error_class", "error_stage"} <= cols("usage_jobs")
+        assert "error" in cols("usage_job_stages")
+        assert "errors" in cols("usage_stage_hourly")
+        row = conn.execute("SELECT wait_s, error_class FROM usage_jobs").fetchone()
+        assert (row["wait_s"], row["error_class"]) == (0.0, None)
+        assert conn.execute("SELECT errors FROM usage_stage_hourly").fetchone()["errors"] == 0
+        idx = {r["name"] for r in conn.execute("PRAGMA index_list(usage_jobs)")}
+        assert "idx_usage_jobs_user_created" in idx
+        usage_store._migrate_columns(conn)          # idempotent
+        conn.close()
+    finally:
+        usage_store._conn = None
+    usage_store.init_db(str(tmp_path / "fresh.sqlite3"))
+    try:
+        conn = usage_store._require_conn()
+        assert {"wait_s", "error_class", "error_stage"} <= {
+            r["name"] for r in conn.execute("PRAGMA table_info(usage_jobs)")}
+        conn.close()
+    finally:
+        usage_store._conn = None

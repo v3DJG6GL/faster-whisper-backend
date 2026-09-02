@@ -291,3 +291,19 @@ def test_snapshot_user_filter_returns_only_that_users_rows(tx_store):
     assert sorted(r["audio_dur"] for r in own) == [1.0, 3.0]
     assert len(metrics.metrics_snapshot()["recent_transcriptions"]) == 3
     assert metrics.metrics_snapshot(user_id="nobody")["recent_transcriptions"] == []
+
+
+def test_record_transcription_fans_out_wait_and_error_class(tx_store, usage_store_db):
+    """The v2 ledger columns reach both stores through the one call the
+    handler makes, and the recent-jobs projection carries them."""
+    metrics.record_transcription(
+        "large-v3", 4.0, 2.0, "error", 0, request_id="e1", user_id="u1",
+        key_id="k1", kind="transcribe", wait_s=1.25, error_class="cuda_oom",
+        error_stage="transcribing")
+    row = metrics.metrics_snapshot(include_identity=True)["recent_transcriptions"][0]
+    assert (row["wait_s"], row["error_class"], row["error_stage"]) == (
+        1.25, "cuda_oom", "transcribing")
+    job = usage_store_db._require_conn().execute(
+        "SELECT wait_s, error_class, error_stage, status FROM usage_jobs"
+        " WHERE job_id = 'e1'").fetchone()
+    assert tuple(job) == (1.25, "cuda_oom", "transcribing", "error")

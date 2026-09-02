@@ -113,7 +113,10 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
                          key_label: str | None = None,
                          job_id: str | None = None,
                          usage_kind: str | None = None,
-                         language: str | None = None) -> None:
+                         language: str | None = None,
+                         wait_s: float | None = None,
+                         error_class: str | None = None,
+                         error_stage: str | None = None) -> None:
     """Called from the transcribe handler's outer finally on every
     /transcribe request (both success and error paths). UPSERTs the
     timing half of the recent-transcriptions row keyed by request_id;
@@ -136,7 +139,11 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
     own kind word (dictation/file/url/text) when the recent-jobs ``kind``
     does not map to one. Structured stage keys (``targets``, ``speakers``,
     ``retained``, ``kept_original``) on the ``stages`` dicts feed the
-    per-stage statistics; their ``detail`` strings never do."""
+    per-stage statistics; their ``detail`` strings never do.
+
+    ``wait_s`` is the time the request spent queued for a GPU slot;
+    ``error_class`` / ``error_stage`` say why and where a failed job
+    failed (see ERROR_CLASSES). All three land in both stores."""
     if not request_id:
         return
     try:
@@ -156,6 +163,9 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
             prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
             max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
             ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_TTL_DAYS", 30)),
+            wait_s=wait_s,
+            error_class=error_class,
+            error_stage=error_stage,
         )
     except Exception as e:
         logger.warning("[metrics] record_transcription persist failed: %s", e)
@@ -173,6 +183,9 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
             model=model or None,
             language=language,
             proc_s=proc_dur,
+            wait_s=wait_s,
+            error_class=error_class,
+            error_stage=error_stage,
         )
     except Exception as e:
         logger.warning("[metrics] usage rollup failed: %s", e)
@@ -302,6 +315,9 @@ def metrics_snapshot(*, include_identity: bool = False,
             "username": (r.get("username") or "") if include_identity else "",
             "key_label": (r.get("key_label") or "") if include_identity else "",
             "stages": r.get("stages") or [],
+            "wait_s": r.get("wait_s"),
+            "error_class": r.get("error_class"),
+            "error_stage": r.get("error_stage"),
         }
         for r in rows
     ]

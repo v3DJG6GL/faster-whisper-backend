@@ -67,13 +67,16 @@ def test_migration_adds_columns_to_old_db(tmp_path):
     try:
         cols = {r["name"] for r in mod._require_conn().execute(
             "PRAGMA table_info(recent_transcriptions)")}
-        assert {"source", "kind", "stages_json", "key_label"} <= cols
+        assert {"source", "kind", "stages_json", "key_label",
+                "wait_s", "error_class", "error_stage"} <= cols
         row = mod.list_recent(limit=10)[0]
         assert row["request_id"] == "old1"
         assert row["kind"] is None
         assert row["stages"] == []
         assert row["key_label"] == ""
         assert row["source"] == "file"
+        assert row["wait_s"] is None and row["error_class"] is None
+        assert row["error_stage"] is None
     finally:
         mod._require_conn().close()
         mod._conn = None
@@ -325,3 +328,24 @@ def test_row_to_dict_json_columns_normalised_to_list(tx_store):
     for rid in ("null", "obj", "bad"):
         assert rows[rid]["stages"] == [], rid
         assert rows[rid]["steps"] == [], rid
+
+
+def test_record_timing_keeps_wait_and_error_class(tx_store):
+    """wait_s / error_class / error_stage ride the timing UPSERT and are
+    COALESCEd on conflict, so a later write without them never blanks
+    what an earlier one recorded."""
+    tx_store.record_timing(request_id="w1", model="m", audio_dur_s=2.0,
+                           proc_dur_s=1.0, status="error", words_count=0,
+                           wait_s=3.25, error_class="cuda_oom",
+                           error_stage="transcribing")
+    row = tx_store.list_recent(limit=1)[0]
+    assert (row["wait_s"], row["error_class"], row["error_stage"]) == (
+        3.25, "cuda_oom", "transcribing")
+    tx_store.record_timing(request_id="w1", model="m", audio_dur_s=2.0,
+                           proc_dur_s=1.5, status="error", words_count=0)
+    row = tx_store.list_recent(limit=1)[0]
+    assert row["proc_dur"] == 1.5
+    assert (row["wait_s"], row["error_class"]) == (3.25, "cuda_oom")
+    tx_store.record_timing(request_id="w2", model="m", audio_dur_s=1.0,
+                           proc_dur_s=1.0, status="ok", words_count=3, wait_s=-1)
+    assert tx_store.list_recent(limit=1)[0]["wait_s"] == 0.0
