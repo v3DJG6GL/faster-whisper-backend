@@ -1074,7 +1074,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* The title is just the rhythm's name (Busy hours / days / months), the
      same width each time, so the controls after it never move; the
      "mostly …" phrase lives on the peak line. */
-  .hours-toolbar h3 { flex: 0 0 auto; white-space: nowrap; }
+  .hours-toolbar h3 { flex: 0 0 auto; white-space: nowrap; min-width: 5.7rem; }  /* "Busy months", the widest name */
   .hours-sub .mostly { color: var(--cyan); }
   .hours-toolbar .spacer { flex: 1 1 0; min-width: 0.5rem; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
