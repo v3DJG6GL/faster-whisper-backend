@@ -432,6 +432,55 @@ async def stats_usage(
 
 
 @router.get(
+    "/stats/tail",
+    dependencies=[Depends(_require_stats_host)],
+)
+async def stats_tail(
+    days: int | None = None,
+    tz: str | None = None,
+    from_: int | None = Query(default=None, alias="from"),
+    to: int | None = None,
+    all: bool = False,
+    kind: str | None = None,
+    key: str | None = None,
+    user_q: str | None = Query(None, alias="user"),
+    user: dict[str, Any] = Depends(require_page("stats")),
+) -> dict[str, Any]:
+    """The tail of the distribution, from the per-job rows: queue wait
+    (p50 / p95 / max, by day), the turnaround histogram with the queue-wait
+    share per bucket, failures by stage and class, per-model runs / RTF /
+    wait, and deltas against the immediately preceding window. Same window
+    vocabulary as /stats/usage (days | from/to | all, tz); `kind` narrows to
+    one job kind, `key` to one API key. Scoped like /stats/usage: own rows
+    for "own", every user for "all", `?user=` preview for admins (403 for
+    anyone else). The per-job rows keep USAGE_JOBS_RETENTION_DAYS; a window
+    that starts earlier says so in range.truncated_to_days."""
+    import usage_store
+
+    is_admin = bool(user.get("is_admin"))
+    if user_q and not is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user= is admin-only")
+    scope = stats_scope_for(user, preview_user_id=(user_q or None) if is_admin else None)
+    if days is not None and days <= 0:
+        days, all = None, True
+    try:
+        w = usage_store.parse_window_params(days=days, from_day=from_, to_day=to,
+                                            all_time=all, tz=tz)
+    except ValueError as e:
+        raise HTTPException(422, detail=str(e))
+    if kind and kind not in usage_store.KINDS:
+        raise HTTPException(422, detail=f"unknown kind: {kind!r}")
+    jobs_retention = int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365) or 0)
+    doc = await asyncio.to_thread(
+        usage_store.tail, user_id=scope.user_id, key_id=key or None,
+        kind=kind or None, tz=w.tz, tz_name=w.tz_name, days=w.days,
+        from_day=w.from_day, to_day=w.to_day, all_time=w.all_time,
+        jobs_retention_days=jobs_retention)
+    doc["scope"] = scope.scope
+    return doc
+
+
+@router.get(
     "/stats/history",
     dependencies=[Depends(_require_stats_host)],
 )

@@ -1589,6 +1589,277 @@ def _models_in_window(conn: sqlite3.Connection, user_id: str | None,
     return out
 
 
+# ---------------------------------------------------------------------------
+# tail(): the /stats/tail document — queue wait, turnaround, failures,
+# per-model, compare — from the per-job rows within retention
+# ---------------------------------------------------------------------------
+
+# Fixed log-spaced edges for the turnaround histogram (seconds): the last
+# bucket is open-ended. Fixed so two windows (and the compare) share bins.
+TURNAROUND_EDGES_S: tuple[int, ...] = (0, 1, 2, 5, 10, 30, 60, 120, 300, 900)
+
+
+def _jobs_where(user_id: str | None, key_id: str | None, kind: str | None,
+                start_ts: float, end_ts: float, alias: str = ""
+                ) -> tuple[str, list[Any]]:
+    """`(" WHERE …", params)` over usage_jobs for a window, an optional
+    owner / key / kind. `alias` prefixes the columns for joined queries."""
+    p = alias + "." if alias else ""
+    where, params = _scope_where(user_id, key_id, col=p + "user_id",
+                                 key_col=p + "key_id")
+    where += f" AND {p}created_ts >= ? AND {p}created_ts < ?"
+    params += [float(start_ts), float(end_ts)]
+    if kind:
+        where += f" AND {p}kind = ?"
+        params.append(_norm_kind(kind))
+    return where, params
+
+
+def _nearest_rank(sorted_vals: list[float], q: float) -> float:
+    if not sorted_vals:
+        return 0.0
+    k = max(0, min(len(sorted_vals) - 1, int(round(q * (len(sorted_vals) - 1)))))
+    return sorted_vals[k]
+
+
+def truncated_to_days(start_ts: float, retention_days: int,
+                      now: float | None = None) -> int | None:
+    """The per-job rows keep USAGE_JOBS_RETENTION_DAYS: a window that starts
+    earlier answers with fewer jobs than the rollups know about. Returns the
+    retention when that is the case, else None (the caller discloses it)."""
+    days = int(retention_days or 0)
+    if days <= 0:
+        return None
+    now = time.time() if now is None else float(now)
+    return days if float(start_ts) < now - days * 86400 else None
+
+
+def wait_quantiles(*, start_ts: float, end_ts: float, user_id: str | None = None,
+                   key_id: str | None = None, kind: str | None = None,
+                   model: str | None = None) -> dict[str, Any]:
+    """`{n, p50, p95, max}` of wait_s over the window's jobs. Nearest-rank
+    via ORDER BY … LIMIT 1 OFFSET k, so a year of jobs costs two indexed
+    reads, not a Python sort."""
+    conn = _require_conn()
+    where, params = _jobs_where(user_id, key_id, kind, start_ts, end_ts)
+    if model is not None:
+        where += " AND model = ?"
+        params.append(model)
+    row = conn.execute(
+        "SELECT COUNT(*) AS n, MAX(wait_s) AS mx FROM usage_jobs" + where, params,
+    ).fetchone()
+    n = int(row["n"] or 0)
+    if n == 0:
+        return {"n": 0, "p50": 0.0, "p95": 0.0, "max": 0.0}
+
+    def q(frac: float) -> float:
+        k = max(0, min(n - 1, int(round(frac * (n - 1)))))
+        r = conn.execute(
+            "SELECT wait_s FROM usage_jobs" + where
+            + " ORDER BY wait_s LIMIT 1 OFFSET ?", params + [k]).fetchone()
+        return round(float(r["wait_s"] or 0.0), 3) if r else 0.0
+    return {"n": n, "p50": q(0.5), "p95": q(0.95),
+            "max": round(float(row["mx"] or 0.0), 3)}
+
+
+def wait_series_by_day(*, start_ts: float, end_ts: float,
+                       tz: zoneinfo.ZoneInfo | None, user_id: str | None = None,
+                       key_id: str | None = None, kind: str | None = None
+                       ) -> list[dict[str, Any]]:
+    """`[{day, n, p50, p95}]` of wait_s per caller-local day, ascending."""
+    conn = _require_conn()
+    where, params = _jobs_where(user_id, key_id, kind, start_ts, end_ts)
+    by_day: dict[int, list[float]] = {}
+    for r in conn.execute("SELECT created_ts, wait_s FROM usage_jobs" + where, params):
+        d = _epoch_day(_date_of(float(r["created_ts"]), tz))
+        by_day.setdefault(d, []).append(float(r["wait_s"] or 0.0))
+    out = []
+    for d in sorted(by_day):
+        vals = sorted(by_day[d])
+        out.append({"day": d, "n": len(vals), "p50": round(_nearest_rank(vals, 0.5), 3),
+                    "p95": round(_nearest_rank(vals, 0.95), 3)})
+    return out
+
+
+def turnaround_histogram(*, start_ts: float, end_ts: float,
+                         user_id: str | None = None, key_id: str | None = None,
+                         kind: str | None = None,
+                         edges: tuple[int, ...] = TURNAROUND_EDGES_S) -> dict[str, Any]:
+    """Jobs bucketed by end-to-end time (proc_s + wait_s) into fixed edges;
+    `wait_share` per bucket is the fraction of that bucket's turnaround that
+    was queue wait (what the chart hatches). Also p50/p95 of turnaround."""
+    conn = _require_conn()
+    where, params = _jobs_where(user_id, key_id, kind, start_ts, end_ts)
+    counts = [0] * len(edges)
+    total = [0.0] * len(edges)
+    waited = [0.0] * len(edges)
+    turns: list[float] = []
+    for r in conn.execute("SELECT proc_s, wait_s FROM usage_jobs" + where, params):
+        w = float(r["wait_s"] or 0.0)
+        t = float(r["proc_s"] or 0.0) + w
+        turns.append(t)
+        i = 0
+        for j, e in enumerate(edges):
+            if t >= e:
+                i = j
+        counts[i] += 1
+        total[i] += t
+        waited[i] += w
+    turns.sort()
+    return {
+        "edges_s": list(edges),
+        "counts": counts,
+        "wait_share": [round(waited[i] / total[i], 3) if total[i] > 0 else 0.0
+                       for i in range(len(edges))],
+        "n": len(turns),
+        "p50": round(_nearest_rank(turns, 0.5), 3),
+        "p95": round(_nearest_rank(turns, 0.95), 3),
+        "max": round(turns[-1], 3) if turns else 0.0,
+    }
+
+
+def failures(*, start_ts: float, end_ts: float, user_id: str | None = None,
+             key_id: str | None = None, kind: str | None = None) -> dict[str, Any]:
+    """Failures grouped by stage and class: the terminal ones from the job
+    rows (status ≠ ok; class/stage as classified, `other` / `(job)` when a
+    pre-v2 row has none) unioned with the soft-failed stage rows (the job
+    went on without the stage). `jobs` and `failed` count job rows."""
+    conn = _require_conn()
+    where, params = _jobs_where(user_id, key_id, kind, start_ts, end_ts)
+    by_stage: dict[str, dict[str, int]] = {}
+    by_class: dict[str, int] = {}
+
+    def bump(stage: str, cls: str, n: int) -> None:
+        by_stage.setdefault(stage, {})
+        by_stage[stage][cls] = by_stage[stage].get(cls, 0) + n
+        by_class[cls] = by_class.get(cls, 0) + n
+
+    row = conn.execute(
+        "SELECT COUNT(*) AS n, SUM(status <> 'ok') AS failed FROM usage_jobs" + where,
+        params).fetchone()
+    for r in conn.execute(
+        "SELECT COALESCE(error_stage, '(job)') AS stage,"
+        " COALESCE(error_class, 'other') AS cls, COUNT(*) AS n FROM usage_jobs"
+        + where + " AND status <> 'ok' GROUP BY 1, 2", params,
+    ):
+        bump(r["stage"], r["cls"], int(r["n"] or 0))
+    jw, jp = _jobs_where(user_id, key_id, kind, start_ts, end_ts, alias="j")
+    for r in conn.execute(
+        "SELECT s.stage AS stage, s.error AS cls, COUNT(*) AS n"
+        " FROM usage_job_stages s JOIN usage_jobs j ON j.job_id = s.job_id"
+        + jw + " AND s.error IS NOT NULL GROUP BY 1, 2", jp,
+    ):
+        bump(r["stage"], r["cls"], int(r["n"] or 0))
+    return {
+        "jobs": int(row["n"] or 0),
+        "failed": int(row["failed"] or 0),
+        "by_stage": by_stage,
+        "by_class": dict(sorted(by_class.items(), key=lambda kv: (-kv[1], kv[0]))),
+    }
+
+
+def by_model(*, start_ts: float, end_ts: float, user_id: str | None = None,
+             key_id: str | None = None, kind: str | None = None,
+             top: int = 8) -> list[dict[str, Any]]:
+    """Per decode model over the window: runs, audio, GPU seconds, RTF,
+    errors, and the wait p50 for the busiest `top` models."""
+    conn = _require_conn()
+    where, params = _jobs_where(user_id, key_id, kind, start_ts, end_ts)
+    out = []
+    for r in conn.execute(
+        "SELECT COALESCE(model, '(unknown)') AS model, COUNT(*) AS runs,"
+        " SUM(status <> 'ok') AS errors, SUM(audio_s) AS audio_s,"
+        " SUM(proc_s) AS proc_s FROM usage_jobs" + where
+        + " GROUP BY model ORDER BY audio_s DESC, model", params,
+    ):
+        audio = float(r["audio_s"] or 0.0)
+        proc = float(r["proc_s"] or 0.0)
+        out.append({"model": r["model"], "runs": int(r["runs"] or 0),
+                    "errors": int(r["errors"] or 0), "audio_s": round(audio, 3),
+                    "proc_s": round(proc, 3),
+                    "rtf": round(proc / audio, 3) if audio > 0 else None,
+                    "wait_p50": None})
+    for m in out[:max(0, int(top))]:
+        mid = None if m["model"] == "(unknown)" else m["model"]
+        if mid is None:
+            continue
+        m["wait_p50"] = wait_quantiles(start_ts=start_ts, end_ts=end_ts,
+                                       user_id=user_id, key_id=key_id, kind=kind,
+                                       model=mid)["p50"]
+    return out
+
+
+def tail(
+    *,
+    user_id: str | None,
+    key_id: str | None = None,
+    kind: str | None = None,
+    tz: zoneinfo.ZoneInfo | None,
+    tz_name: str,
+    days: int | None = None,
+    from_day: int | None = None,
+    to_day: int | None = None,
+    all_time: bool = False,
+    jobs_retention_days: int = 365,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """The /stats/tail document over one window plus the same figures for
+    the immediately preceding window of equal length: queue wait
+    (quantiles + by day), turnaround histogram, failures by stage / class,
+    per-model table, and compare deltas."""
+    now = time.time() if now is None else float(now)
+    today = _date_of(now, tz)
+    first_day = _first_day(_require_conn(), user_id, tz, (), key_id) if all_time else None
+    f, t = resolve_window(today=today, days=days, from_day=from_day,
+                          to_day=to_day, all_time=all_time, first_day=first_day)
+    span = t - f + 1
+
+    def bounds(fd: int, td: int) -> tuple[float, float]:
+        return (_midnight_hour(_from_epoch_day(fd), tz) * 3600.0,
+                _midnight_hour(_from_epoch_day(td) + datetime.timedelta(days=1), tz) * 3600.0)
+
+    start_ts, end_ts = bounds(f, t)
+    pstart, pend = bounds(f - span, f - 1)
+    scope = dict(user_id=user_id, key_id=key_id, kind=kind)
+    wait = wait_quantiles(start_ts=start_ts, end_ts=end_ts, **scope)
+    wait["by_day"] = wait_series_by_day(start_ts=start_ts, end_ts=end_ts, tz=tz, **scope)
+    turn = turnaround_histogram(start_ts=start_ts, end_ts=end_ts, **scope)
+    fails = failures(start_ts=start_ts, end_ts=end_ts, **scope)
+    models = by_model(start_ts=start_ts, end_ts=end_ts, **scope)
+    pwait = wait_quantiles(start_ts=pstart, end_ts=pend, **scope)
+    pturn = turnaround_histogram(start_ts=pstart, end_ts=pend, **scope)
+    pfails = failures(start_ts=pstart, end_ts=pend, **scope)
+    conn = _require_conn()
+
+    def audio(s: float, e: float) -> float:
+        w, p = _jobs_where(user_id, key_id, kind, s, e)
+        r = conn.execute("SELECT SUM(audio_s) AS a FROM usage_jobs" + w, p).fetchone()
+        return round(float(r["a"] or 0.0), 3)
+
+    def cmp(cur: float, prev: float) -> dict[str, Any]:
+        return {"cur": cur, "prev": prev, "delta": round(cur - prev, 3)}
+
+    return {
+        "from": f, "to": t, "days": span, "tz": tz_name,
+        "range": {"from": f, "to": t, "days": span,
+                  "truncated_to_days": truncated_to_days(start_ts, jobs_retention_days, now)},
+        "wait": wait,
+        "turnaround": turn,
+        "failures": fails,
+        "models": models,
+        "compare": {
+            "from": f - span, "to": f - 1,
+            "wait_p50": cmp(wait["p50"], pwait["p50"]),
+            "wait_p95": cmp(wait["p95"], pwait["p95"]),
+            "turnaround_p50": cmp(turn["p50"], pturn["p50"]),
+            "turnaround_p95": cmp(turn["p95"], pturn["p95"]),
+            "runs": cmp(fails["jobs"], pfails["jobs"]),
+            "errors": cmp(fails["failed"], pfails["failed"]),
+            "audio_s": cmp(audio(start_ts, end_ts), audio(pstart, pend)),
+        },
+    }
+
+
 def _slot_of(ts: float, tz: zoneinfo.ZoneInfo | None) -> tuple[int, int]:
     """(weekday 0=Mon, hour 0..23) of `ts` in `tz`."""
     dt = datetime.datetime.fromtimestamp(ts, tz)

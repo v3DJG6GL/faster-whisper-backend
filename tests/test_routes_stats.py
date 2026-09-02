@@ -808,3 +808,33 @@ def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
 def test_snapshot_carries_slot_busy(client):
     snap = client.get("/stats/snapshot").json()
     assert set(snap["slot_busy"]) == {"pct_1m", "pct_5m", "pct_15m", "samples"}
+
+
+def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
+    import usage_store as us
+    from conftest import bearer
+    import api_keys_store
+    _, raw_admin = make_user_key("root", is_admin=True)
+    alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
+    bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
+    ka = api_keys_store.list_keys(alice)[0]["id"]
+    h = us.now_hour()
+    us.record_usage(key_id=ka, user_id=alice, audio_s=10.0, words=5, status="error",
+                    hour=h, proc_s=2.0, job_id="a1", kind="file", wait_s=3.0,
+                    error_class="cuda_oom", error_stage="transcribing")
+    us.record_usage(key_id="kb", user_id=bob, audio_s=4.0, words=5, status="ok",
+                    hour=h, proc_s=1.0, job_id="b1", kind="dictation", wait_s=0.5)
+    body = client.get("/stats/tail", headers=bearer(raw_admin)).json()
+    assert set(body) >= {"range", "wait", "turnaround", "failures", "models", "compare", "scope"}
+    assert body["scope"] == "all" and body["wait"]["n"] == 2
+    assert body["failures"]["by_class"] == {"cuda_oom": 1}
+    own = client.get("/stats/tail", headers=bearer(raw_alice)).json()
+    assert own["scope"] == "own" and own["wait"]["n"] == 1 and own["wait"]["max"] == 3.0
+    assert client.get("/stats/tail?kind=dictation",
+                      headers=bearer(raw_bob)).json()["wait"]["n"] == 1
+    assert client.get("/stats/tail?kind=zzz", headers=bearer(raw_bob)).status_code == 422
+    assert client.get(f"/stats/tail?user={alice}", headers=bearer(raw_bob)).status_code == 403
+    prev = client.get(f"/stats/tail?user={alice}", headers=bearer(raw_admin)).json()
+    assert prev["scope"] == "own" and prev["wait"]["n"] == 1
+    assert client.get("/stats/tail?from=20007&to=20006",
+                      headers=bearer(raw_admin)).status_code == 422
