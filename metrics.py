@@ -424,6 +424,70 @@ def _errors_in(seconds: float) -> int:
     return n
 
 
+def project_recent_row(r: dict[str, Any], *, include_identity: bool = False
+                       ) -> dict[str, Any]:
+    """One recent-transcriptions row in the timing-only shape /stats
+    renders (the snapshot's recent_transcriptions and the paged
+    /stats/jobs). A non-admin holder of pages.stats='all' sees every user's
+    rows and must not read other users' transcripts (or identities): the
+    projection carries no raw/final text, and username / key_label are
+    blanked unless `include_identity`. Nulls become numeric defaults so
+    `r.audio_dur.toFixed(1)` on error-path rows cannot freeze the view."""
+    return {
+        "ts": r.get("ts"),
+        "request_id": r.get("request_id") or "",
+        "model": r.get("model") or "",
+        "language": r.get("language") or "",
+        "audio_dur": r.get("audio_dur") or 0.0,
+        "proc_dur": r.get("proc_dur") or 0.0,
+        "rtf": r.get("rtf"),
+        "words": r.get("words") or 0,
+        "status": r.get("status") or "error",
+        # kind: explicit column wins; legacy rows resolve via source
+        # ('stream' = live dictation).
+        "kind": r.get("kind")
+                or ("dictate" if r.get("source") == "stream" else "transcribe"),
+        "username": (r.get("username") or "") if include_identity else "",
+        "key_label": (r.get("key_label") or "") if include_identity else "",
+        "stages": r.get("stages") or [],
+        "wait_s": r.get("wait_s"),
+        "error_class": r.get("error_class"),
+        "error_stage": r.get("error_stage"),
+    }
+
+
+def project_recent_row(r: dict[str, Any], *, include_identity: bool = False
+                       ) -> dict[str, Any]:
+    """One recent-transcriptions row in the timing-only shape /stats
+    renders (the snapshot's recent_transcriptions and the paged
+    /stats/jobs). A non-admin holder of pages.stats='all' sees every user's
+    rows and must not read other users' transcripts (or identities): the
+    projection carries no raw/final text, and username / key_label are
+    blanked unless `include_identity`. Nulls become numeric defaults so
+    `r.audio_dur.toFixed(1)` on error-path rows cannot freeze the view."""
+    return {
+        "ts": r.get("ts"),
+        "request_id": r.get("request_id") or "",
+        "model": r.get("model") or "",
+        "language": r.get("language") or "",
+        "audio_dur": r.get("audio_dur") or 0.0,
+        "proc_dur": r.get("proc_dur") or 0.0,
+        "rtf": r.get("rtf"),
+        "words": r.get("words") or 0,
+        "status": r.get("status") or "error",
+        # kind: explicit column wins; legacy rows resolve via source
+        # ('stream' = live dictation).
+        "kind": r.get("kind")
+                or ("dictate" if r.get("source") == "stream" else "transcribe"),
+        "username": (r.get("username") or "") if include_identity else "",
+        "key_label": (r.get("key_label") or "") if include_identity else "",
+        "stages": r.get("stages") or [],
+        "wait_s": r.get("wait_s"),
+        "error_class": r.get("error_class"),
+        "error_stage": r.get("error_stage"),
+    }
+
+
 def metrics_snapshot(*, include_identity: bool = False,
                      user_id: "str | None" = None) -> dict[str, Any]:
     """Build the JSON payload returned by /stats/snapshot and /stats/stream.
@@ -452,39 +516,8 @@ def metrics_snapshot(*, include_identity: bool = False,
     except Exception as e:
         logger.warning("[metrics] list_recent failed: %s", e)
         rows = []
-    # A non-admin holder of pages.stats='all' sees every user's rows and
-    # must not be able to read other users' transcripts (or identities)
-    # via this widget. Project to the timing-only shape the
-    # /stats JS actually renders and coerce nulls to numeric defaults so
-    # `r.audio_dur.toFixed(1)` on error-path rows doesn't freeze the
-    # live view.
-    recent = [
-        {
-            "ts": r.get("ts"),
-            "model": r.get("model") or "",
-            "audio_dur": r.get("audio_dur") or 0.0,
-            "proc_dur": r.get("proc_dur") or 0.0,
-            "rtf": r.get("rtf"),
-            "words": r.get("words") or 0,
-            "status": r.get("status") or "error",
-            # Recent-jobs fields. kind: explicit column wins; legacy rows
-            # resolve via source ('stream' = live dictation). username and
-            # key_label are display identities, not transcript content —
-            # the projection still carries no raw/final text — but they
-            # are OTHER users' identities, so like jobs_snapshot they are
-            # scrubbed unless the viewer is an admin (include_identity).
-            "kind": r.get("kind")
-                    or ("dictate" if r.get("source") == "stream"
-                        else "transcribe"),
-            "username": (r.get("username") or "") if include_identity else "",
-            "key_label": (r.get("key_label") or "") if include_identity else "",
-            "stages": r.get("stages") or [],
-            "wait_s": r.get("wait_s"),
-            "error_class": r.get("error_class"),
-            "error_stage": r.get("error_stage"),
-        }
-        for r in rows
-    ]
+    recent = [project_recent_row(r, include_identity=include_identity)
+              for r in rows]
     return {
         "uptime_sec": round(time.time() - START_TS, 1),
         "in_flight_transcriptions": in_flight_transcriptions,

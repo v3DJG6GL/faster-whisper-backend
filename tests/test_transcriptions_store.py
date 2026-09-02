@@ -355,7 +355,8 @@ def test_record_timing_keeps_wait_and_error_class(tx_store):
 
 def test_sys_samples_round_trip_downsample_and_prune(tx_store):
     import time
-    now = int(time.time()) // 10 * 10
+    # Minute-aligned so the six 10-s samples fall into exactly two 30-s buckets.
+    now = int(time.time()) // 60 * 60
     rows = [{"ts": now - 60 + i * 10, "gpu_util": 10.0 * i, "gpu_mem_mb": 100.0,
              "gpu_temp": None, "cpu_pct": 5.0, "ram_pct": 50.0, "slot_busy": 0.5}
             for i in range(6)]
@@ -378,3 +379,23 @@ def test_sys_samples_round_trip_downsample_and_prune(tx_store):
     tx_store.record_sys_samples([{"ts": now - 40 * 86400, "gpu_util": 1.0}])
     assert tx_store.prune_sys_samples(30) == 1
     assert tx_store.prune_sys_samples(0) == 0
+
+
+def test_list_recent_filters_compose_with_the_cursor(tx_store):
+    """kind / status / slow_rtf narrow the page and keep the cursor walk."""
+    for i in range(6):
+        tx_store.record_timing(
+            request_id=f"r{i}", model="m", audio_dur_s=10.0,
+            proc_dur_s=(8.0 if i % 3 == 0 else 1.0),
+            status=("error" if i == 1 else "cancelled" if i == 4 else "ok"),
+            words_count=1, kind=("dictate" if i % 2 else "transcribe"),
+            created_ts=1000.0 + i)
+    ids = lambda rows: [r["request_id"] for r in rows]
+    assert ids(tx_store.list_recent(limit=10, kind="dictate")) == ["r5", "r3", "r1"]
+    assert ids(tx_store.list_recent(limit=10, status="failed")) == ["r4", "r1"]
+    assert ids(tx_store.list_recent(limit=10, status="cancelled")) == ["r4"]
+    assert ids(tx_store.list_recent(limit=10, slow_rtf=0.5)) == ["r3", "r0"]
+    page = tx_store.list_recent(limit=2, kind="dictate")
+    assert ids(page) == ["r5", "r3"]
+    assert ids(tx_store.list_recent(limit=2, kind="dictate",
+                                    before_ts=page[-1]["ts"])) == ["r1"]

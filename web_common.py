@@ -2214,18 +2214,24 @@ ACTIVITY_CLUSTER_JS = """
       pop.hidden = true; btn.setAttribute('aria-expanded', 'false');
     }
   });
-  pop.addEventListener('click', function(e){
-    var c = e.target.closest('.hact-cancel');
-    if (!c) return;
-    // Cookie-authenticated pages go through _csrf_mw, which 403s any
-    // unsafe-method request without the token (same as _signOut).
-    var pid = c.dataset.pid;
-    c.disabled = true; cancelling[pid] = 1;
+  // One cancel path for the popover and the /stats jobs table. Cookie-
+  // authenticated pages go through _csrf_mw, which 403s any unsafe-method
+  // request without the token (same as _signOut). The endpoint re-checks
+  // that the caller owns the job (or is an admin).
+  window._fwCancelJob = function(pid, c){
+    if (!pid) return;
+    if (c) c.disabled = true;
+    cancelling[pid] = 1;
     fetch('/v1/audio/transcriptions/cancel/' + pid,
           { method: 'POST',
             headers: { 'X-CSRF-Token': window._csrfToken() } })
-      .then(function(r){ if (!r.ok) { c.disabled = false; delete cancelling[pid]; } },
-            function(){ c.disabled = false; delete cancelling[pid]; });
+      .then(function(r){ if (!r.ok) { if (c) c.disabled = false; delete cancelling[pid]; } },
+            function(){ if (c) c.disabled = false; delete cancelling[pid]; });
+  };
+  pop.addEventListener('click', function(e){
+    var c = e.target.closest('.hact-cancel');
+    if (!c) return;
+    window._fwCancelJob(c.dataset.pid, c);
   });
 
   function openStream(){

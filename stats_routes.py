@@ -431,6 +431,64 @@ async def stats_usage(
     return await asyncio.to_thread(_gather)
 
 
+JOB_KINDS: frozenset[str] = frozenset(jobs.KINDS)
+JOB_STATUSES: frozenset[str] = frozenset(("ok", "error", "cancelled", "failed"))
+
+
+@router.get(
+    "/stats/jobs",
+    dependencies=[Depends(_require_stats_host)],
+)
+async def stats_jobs(
+    cursor: float | None = None,
+    limit: int = 50,
+    kind: str | None = None,
+    status_q: str | None = Query(default=None, alias="status"),
+    slow_rtf: float | None = None,
+    user_q: str | None = Query(None, alias="user"),
+    user: dict[str, Any] = Depends(require_page("stats")),
+) -> dict[str, Any]:
+    """The jobs table beyond the snapshot's last few rows: finished jobs
+    newest-first, `limit` (1..200) per page, paged with `cursor` = the
+    previous page's `next_cursor` (a created_ts; null when exhausted).
+    Filters: `kind` (one recent-jobs kind), `status` (ok | error |
+    cancelled | failed), `slow_rtf` (processing longer than that fraction
+    of the audio). `running` — the live registry rows with their cancel
+    handles for the caller's own jobs (admins: all) — comes only with the
+    first page. Scoped like the snapshot: own rows for "own", every user
+    with identities scrubbed for non-admin "all", `?user=` preview for
+    admins (403 for anyone else)."""
+    import transcriptions_store
+
+    is_admin = bool(user.get("is_admin"))
+    if user_q and not is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user= is admin-only")
+    scope = stats_scope_for(user, preview_user_id=(user_q or None) if is_admin else None)
+    if kind and kind not in JOB_KINDS:
+        raise HTTPException(422, detail=f"unknown kind: {kind!r}")
+    if status_q and status_q not in JOB_STATUSES:
+        raise HTTPException(422, detail=f"unknown status: {status_q!r}")
+    n = max(1, min(int(limit), 200))
+
+    def _page() -> dict[str, Any]:
+        rows = transcriptions_store.list_recent(
+            before_ts=cursor, limit=n, user_id_filter=scope.user_id,
+            kind=kind or None, status=status_q or None, slow_rtf=slow_rtf)
+        out = {
+            "jobs": [metrics.project_recent_row(
+                r, include_identity=scope.include_identity) for r in rows],
+            "next_cursor": rows[-1]["ts"] if len(rows) >= n else None,
+            "scope": scope.scope,
+        }
+        if not cursor:
+            out["running"] = jobs.jobs_snapshot(
+                include_identity=scope.include_identity, user_id=scope.user_id,
+                viewer_user_id=scope.viewer_user_id)
+        return out
+
+    return await asyncio.to_thread(_page)
+
+
 @router.get(
     "/stats/tail",
     dependencies=[Depends(_require_stats_host)],
@@ -883,6 +941,26 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .pipe i.downloading  { background: var(--cyan); }
   .pipe i.preload      { background: var(--help); }
   tr.rj-expand td { background: rgba(110, 118, 129, 0.06); }
+  .rj-foot { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.3rem; }
+  .rj-foot button { font: inherit; font-size: var(--fs-xs); color: var(--fg);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.1rem 0.5rem; cursor: pointer; }
+  .rj-foot button:hover { border-color: var(--dim); }
+  .rj-cancel { font: inherit; font-size: 0.667rem; border: 1px solid var(--border);
+    background: transparent; color: var(--dim); border-radius: 4px;
+    padding: 0 0.4rem; cursor: pointer; font-family: var(--font-mono); }
+  .rj-cancel:hover:not(:disabled) { color: var(--red); border-color: #5a2424; }
+  .rj-cancel:disabled { opacity: .5; cursor: default; }
+  /* Expanded row as a timeline: hatched queue wait first, then each stage
+     positioned by its start, so gaps and overlaps read at a glance. */
+  .rj-stage-row .stage-bar { position: relative; }
+  .rj-stage-row .stage-bar i.tl { position: absolute; top: 0; bottom: 0; }
+  .rj-stage-row.wait .stage-bar i.tl {
+    background: repeating-linear-gradient(45deg, var(--dim) 0 3px, transparent 3px 6px); }
+  .rj-stage-row .stage-bar i.tl.failed { outline: 1px solid var(--red); outline-offset: -1px; }
+  .rj-stage-row .det .badge.err { margin-left: 0.3rem; }
+  .rj-tl-axis { font: var(--fs-xs) var(--font-mono); color: var(--dim);
+    margin: 0.15rem 0 0 7rem; }
   .rj-stages { padding: 0.25rem 0.25rem 0.35rem; }
   .rj-stage-row { display: flex; align-items: center; gap: 0.5rem;
     font-size: var(--fs-xs); margin: 0.15rem 0; }
@@ -1233,6 +1311,14 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <div class="usage-toolbar">
       <h3>Recent jobs (<span id="rt-n">0</span> shown)</h3>
       <span class="spacer"></span>
+      <div class="usage-seg"><span class="seg-label">view</span>
+        <div class="seg-ctrl" id="rj-view">
+          <button data-v="" class="active">all</button>
+          <button data-v="failed">failed</button>
+          <button data-v="running">running</button>
+          <button data-v="slow" title="processing took more than half the audio's length (RTF &gt; 0.5)">slow</button>
+        </div>
+      </div>
       <div class="usage-seg"><span class="seg-label">kind</span>
         <div class="seg-ctrl" id="rj-kind">
           <button data-v="" class="active">all</button>
@@ -1248,9 +1334,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     </div>
     <table class="tbl rcards rj-tbl"><thead><tr>
       <th class="rj-x"></th><th>when</th><th>type</th><th>pipeline</th><th>model</th>
-      <th>user·key</th><th class="num">input</th><th class="num">wall</th>
-      <th class="num">speed</th><th>status</th>
-    </tr></thead><tbody id="rt-rows"><tr><td colspan="10" class="empty">— no jobs yet —</td></tr></tbody></table>
+      <th>user·key</th><th class="num">input</th><th class="num" title="seconds queued for a GPU slot">wait</th>
+      <th class="num">wall</th><th class="num">speed</th><th>status</th>
+    </tr></thead><tbody id="rt-rows"><tr><td colspan="11" class="empty">— no jobs yet —</td></tr></tbody></table>
+    <div class="rj-foot">
+      <span class="meta" id="rj-foot-note"></span>
+      <button type="button" id="rj-more" class="hidden">load older jobs</button>
+    </div>
    </div></div>
   </div>
  </div>
@@ -1791,21 +1881,41 @@ function pipeGlyph(r) {
   ).join('') + '</span>';
 }
 
+// Expanded job row: a timeline. The queue wait (hatched) comes first, then
+// each stage at its start position — the receipt records durations in
+// pipeline order, so the start of stage k is the sum of what came before.
 function stageRows(r) {
   const stages = r.stages || [];
-  if (!stages.length) {
+  const wait = Number(r.wait_s || 0);
+  if (!stages.length && !wait) {
     return '<div class="rj-stages"><span class="empty">no per-stage timings recorded</span></div>';
   }
-  const max = Math.max(...stages.map(s => s.secs || 0), 0.001);
-  return '<div class="rj-stages">' + stages.map(s => `
+  const total = wait + stages.reduce((a, s) => a + (s.secs || 0), 0);
+  const scale = Math.max(total, 0.001);
+  let at = 0;
+  const bar = (name, secs, extra) => {
+    const left = at / scale * 100, width = Math.max(1, (secs || 0) / scale * 100);
+    at += secs || 0;
+    return `<span class="stage-bar"><i class="tl${extra.failed ? ' failed' : ''}"
+      style="left:${left.toFixed(1)}%;width:${width.toFixed(1)}%;background:${extra.color}"></i></span>`;
+  };
+  let html = '<div class="rj-stages">';
+  if (wait > 0) {
+    html += `<div class="rj-stage-row wait"><span class="nm">wait</span>`
+      + bar('wait', wait, { color: 'transparent' })
+      + `<span class="secs">${wait.toFixed(2)} s</span><span class="det">queued for a GPU slot</span></div>`;
+  }
+  html += stages.map(s => `
     <div class="rj-stage-row">
       <span class="nm">${esc(s.name)}</span>
-      <span class="stage-bar"><i class="pipe-fill ${esc(s.name)}"
-        style="width:${Math.max(2, (s.secs || 0) / max * 100).toFixed(1)}%;
-               background:${stageColor(s.name)}"></i></span>
+      ${bar(s.name, s.secs, { color: stageColor(s.name), failed: !!s.error })}
       <span class="secs">${(s.secs || 0).toFixed(2)} s</span>
-      <span class="det">${esc([s.model, s.detail].filter(Boolean).join(' · '))}</span>
-    </div>`).join('') + '</div>';
+      <span class="det">${esc([s.model, s.detail].filter(Boolean).join(' · '))}${s.error ? ` <span class="badge err">${esc(s.error)}</span>` : ''}</span>
+    </div>`).join('');
+  html += `<div class="rj-tl-axis">0 s ───── ${total.toFixed(2)} s end to end`
+    + (r.error_class ? ` · <span class="badge err">${esc(r.error_class)}</span>${r.error_stage ? ' in ' + esc(r.error_stage) : ''}` : '')
+    + (r.request_id ? ` · request ${esc(String(r.request_id).slice(0, 8))}…` : '') + '</div>';
+  return html + '</div>';
 }
 
 function stageColor(name) {
@@ -1819,15 +1929,64 @@ function stageColor(name) {
     || 'var(--dim)';
 }
 
+// Older pages fetched from /stats/jobs (load older jobs), appended under
+// the snapshot's rows; the cursor is the oldest row's ts. Reset whenever a
+// filter changes, since the server applies kind/status/slow itself.
+let rjExtra = [];
+let rjCursor = null;
+let rjExhausted = false;
+
+function rjView() {
+  const b = document.querySelector('#rj-view button.active');
+  return b ? b.dataset.v : '';
+}
+function rjResetPages() {
+  rjExtra = []; rjCursor = null; rjExhausted = false;
+  const btn = $('rj-more'); if (btn) { btn.disabled = false; btn.textContent = 'load older jobs'; }
+}
+function rjServerParams() {
+  const p = new URLSearchParams();
+  p.set('limit', '50');
+  const kindF = segValRJ(); if (kindF) p.set('kind', kindF);
+  const view = rjView();
+  if (view === 'failed' || $('rj-warnonly').checked) p.set('status', 'failed');
+  if (view === 'slow') p.set('slow_rtf', '0.5');
+  return p;
+}
+function rjLoadMore() {
+  const btn = $('rj-more'); if (!btn || rjExhausted) return;
+  const rt = (lastJobsSnap && lastJobsSnap.recent_transcriptions) || [];
+  const oldest = rjExtra.length ? rjExtra[rjExtra.length - 1].ts
+    : rt.reduce((m, r) => (r.ts && (m == null || r.ts < m)) ? r.ts : m, null);
+  const p = rjServerParams();
+  if (rjCursor != null) p.set('cursor', String(rjCursor));
+  else if (oldest != null) p.set('cursor', String(oldest));
+  btn.disabled = true; btn.textContent = 'loading…';
+  fetch('/stats/jobs?' + p.toString(), { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      btn.disabled = false; btn.textContent = 'load older jobs';
+      if (!j) return;
+      rjExtra = rjExtra.concat(j.jobs || []);
+      rjCursor = j.next_cursor;
+      rjExhausted = j.next_cursor == null;
+      if (lastJobsSnap) renderJobs(lastJobsSnap);
+    })
+    .catch(() => { btn.disabled = false; btn.textContent = 'load older jobs'; });
+}
+
 function renderJobs(snap) {
   lastJobsSnap = snap;
   const kindF = segValRJ();
-  const warnOnly = $('rj-warnonly').checked;
+  const view = rjView();
+  const warnOnly = $('rj-warnonly').checked || view === 'failed';
   const userSel = $('rj-user');
   const userF = userSel.value;
 
-  const rt = (snap.recent_transcriptions || []);
-  const running = (snap.jobs || []);
+  const seen = new Set((snap.recent_transcriptions || []).map(r => r.request_id || String(r.ts)));
+  const rt = (snap.recent_transcriptions || []).concat(
+    rjExtra.filter(r => !seen.has(r.request_id || String(r.ts))));
+  const running = view === 'slow' ? [] : (snap.jobs || []);
 
   // Keep the user select populated (preserving the current choice).
   const users = Array.from(new Set(rt.map(r => r.username).filter(Boolean))).sort();
@@ -1845,6 +2004,11 @@ function renderJobs(snap) {
     .filter(() => !warnOnly)
     .map(j => {
       const pct = j.progress != null ? Math.round(j.progress * 100) : null;
+      // The cancel handle rides the row for admins and for the job's own
+      // owner; the endpoint re-checks ownership either way.
+      const cancel = j.progress_id
+        ? `<button type="button" class="rj-cancel" data-pid="${esc(j.progress_id)}" title="cancel this job">cancel</button>`
+        : '';
       return `<tr class="rj-run">
       <td><span class="rj-spin" title="running"></span></td>
       <td class="ts">running · ${fmtSec(j.elapsed_s)}</td>
@@ -1854,16 +2018,18 @@ function renderJobs(snap) {
       <td>${esc(j.user || '')}</td>
       <td class="num">${esc(j.detail || '—')}</td>
       <td class="num">—</td>
+      <td class="num">—</td>
       <td class="num">${pct != null
         ? `<span class="rj-runbar"><i style="width:${pct}%"></i></span> ${pct}%`
         : (esc(j.step || '') || '—')}</td>
-      <td><span class="badge warm">running</span></td>
+      <td><span class="badge warm">running</span> ${cancel}</td>
     </tr>`;
     });
 
-  const doneRows = rt
+  const doneRows = (view === 'running' ? [] : rt)
     .filter(r => !kindF || r.kind === kindF)
     .filter(r => !warnOnly || r.status !== 'ok')
+    .filter(r => view !== 'slow' || (r.audio_dur > 0 && r.proc_dur > 0.5 * r.audio_dur))
     .filter(r => !userF || r.username === userF)
     .map(r => {
       const key = String(r.ts || 0);
@@ -1877,12 +2043,13 @@ function renderJobs(snap) {
       <td data-label="model">${esc(r.model)}</td>
       <td data-label="user·key">${esc(who || '—')}</td>
       <td class="num" data-label="input">${jobInput(r)}</td>
+      <td class="num${r.wait_s > 0 ? ' warn' : ''}" data-label="wait">${r.wait_s != null ? r.wait_s.toFixed(1) + ' s' : '—'}</td>
       <td class="num" data-label="wall">${r.proc_dur.toFixed(2)} s</td>
       <td class="num" data-label="speed">${jobSpeed(r)}</td>
-      <td data-label="status"><span class="badge ${r.status === 'ok' ? 'ok' : 'err'}">${esc(r.status)}</span></td>
+      <td data-label="status"><span class="badge ${r.status === 'ok' ? 'ok' : 'err'}" title="${esc(r.error_class ? r.error_class + (r.error_stage ? ' in ' + r.error_stage : '') : r.status)}">${esc(r.status === 'ok' ? 'ok' : (r.error_class || r.status))}</span></td>
     </tr>`;
       const detail = open
-        ? `<tr class="rj-expand"><td colspan="10">${stageRows(r)}</td></tr>`
+        ? `<tr class="rj-expand"><td colspan="11">${stageRows(r)}</td></tr>`
         : '';
       return main + detail;
     });
@@ -1893,7 +2060,13 @@ function renderJobs(snap) {
   $('rt-n').textContent = all.length;
   $('rt-rows').innerHTML = all.length
     ? all.join('')
-    : '<tr><td colspan="10" class="empty">— no jobs yet —</td></tr>';
+    : '<tr><td colspan="11" class="empty">— no jobs yet —</td></tr>';
+  const more = $('rj-more');
+  if (more) more.classList.toggle('hidden', view === 'running' || rjExhausted || !rt.length);
+  const note = $('rj-foot-note');
+  if (note) note.textContent = rjExtra.length
+    ? `${rjExtra.length} older job${rjExtra.length === 1 ? '' : 's'} loaded` + (rjExhausted ? ' · that is all' : '')
+    : (rt.length ? 'newest jobs from the live snapshot' : '');
 }
 
 // Filter wiring: kind segments, warnings-only, user select — all re-render
@@ -1906,11 +2079,26 @@ function renderJobs(snap) {
       if (!b || b.classList.contains('active')) return;
       kindCtl.querySelectorAll('button').forEach(x => x.classList.remove('active'));
       b.classList.add('active');
+      rjResetPages();
       if (lastJobsSnap) renderJobs(lastJobsSnap);
     });
   }
+  const viewCtl = $('rj-view');
+  if (viewCtl) {
+    viewCtl.addEventListener('click', (e) => {
+      const b = e.target.closest('button');
+      if (!b || b.classList.contains('active')) return;
+      viewCtl.querySelectorAll('button').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      rjResetPages();
+      if (lastJobsSnap) renderJobs(lastJobsSnap);
+    });
+  }
+  const moreBtn = $('rj-more');
+  if (moreBtn) moreBtn.addEventListener('click', rjLoadMore);
   const warnCtl = $('rj-warnonly');
   if (warnCtl) warnCtl.addEventListener('change', () => {
+    rjResetPages();
     if (lastJobsSnap) renderJobs(lastJobsSnap);
   });
   const userCtl = $('rj-user');
@@ -1920,6 +2108,12 @@ function renderJobs(snap) {
   // Row expansion (event delegation — rows are re-rendered every tick).
   const body = $('rt-rows');
   if (body) body.addEventListener('click', (e) => {
+    const c = e.target.closest('button.rj-cancel');
+    if (c) {
+      e.stopPropagation();
+      if (typeof window._fwCancelJob === 'function') window._fwCancelJob(c.dataset.pid, c);
+      return;
+    }
     const tr = e.target.closest('tr.rj-main');
     if (!tr) return;
     const key = tr.dataset.key;

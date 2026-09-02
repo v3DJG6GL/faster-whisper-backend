@@ -838,3 +838,81 @@ def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
     assert prev["scope"] == "own" and prev["wait"]["n"] == 1
     assert client.get("/stats/tail?from=20007&to=20006",
                       headers=bearer(raw_admin)).status_code == 422
+
+
+def _seed_jobs_pages(n, user_id="ua", **kw):
+    import transcriptions_store
+    for i in range(n):
+        transcriptions_store.record_timing(
+            request_id=f"{user_id}-{i}", model="m", audio_dur_s=10.0,
+            proc_dur_s=(9.0 if i % 5 == 0 else 1.0), user_id=user_id,
+            status=("error" if i % 4 == 0 else "ok"), words_count=1,
+            kind="transcribe", created_ts=2000.0 + i, key_label="lbl", **kw)
+
+
+def test_stats_jobs_pages_with_cursor_and_filters(client):
+    _seed_jobs_pages(7)
+    first = client.get("/stats/jobs?limit=3").json()
+    assert set(first) == {"jobs", "next_cursor", "scope", "running"}
+    assert [j["request_id"] for j in first["jobs"]] == ["ua-6", "ua-5", "ua-4"]
+    assert first["next_cursor"] == 2004.0
+    second = client.get(f"/stats/jobs?limit=3&cursor={first['next_cursor']}").json()
+    assert "running" not in second
+    assert [j["request_id"] for j in second["jobs"]] == ["ua-3", "ua-2", "ua-1"]
+    third = client.get(f"/stats/jobs?limit=3&cursor={second['next_cursor']}").json()
+    assert [j["request_id"] for j in third["jobs"]] == ["ua-0"]
+    assert third["next_cursor"] is None
+    failed = client.get("/stats/jobs?status=failed").json()["jobs"]
+    assert [j["request_id"] for j in failed] == ["ua-4", "ua-0"]
+    slow = client.get("/stats/jobs?slow_rtf=0.5").json()["jobs"]
+    assert [j["request_id"] for j in slow] == ["ua-5", "ua-0"]
+    assert client.get("/stats/jobs?kind=zzz").status_code == 422
+    assert client.get("/stats/jobs?status=zzz").status_code == 422
+    assert client.get("/stats/jobs?limit=999").json()["jobs"].__len__() == 7
+    row = first["jobs"][0]
+    assert {"request_id", "language", "wait_s", "error_class", "username", "key_label"} <= set(row)
+    assert row["username"] == "" and row["key_label"] == "lbl"     # open mode = admin
+
+
+def test_stats_jobs_scope_rules(client, make_user_key):
+    from conftest import bearer
+    _, raw_admin = make_user_key("root", is_admin=True)
+    alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
+    bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
+    _seed_jobs_pages(2, user_id=alice)
+    _seed_jobs_pages(3, user_id=bob)
+    a = jobs.job_start("transcribe", model="m", user="alice", user_id=alice)
+    jobs.job_update(a, progress_id="pid-a")
+    try:
+        own = client.get("/stats/jobs", headers=bearer(raw_alice)).json()
+        assert own["scope"] == "own"
+        assert {j["request_id"][:len(alice)] for j in own["jobs"]} == {alice}
+        assert own["jobs"][0]["key_label"] == "lbl"                # own rows keep identity
+        assert [r["id"] for r in own["running"]] == [a]
+        assert own["running"][0]["progress_id"] == "pid-a"       # own cancel handle
+        all_ = client.get("/stats/jobs", headers=bearer(raw_bob)).json()
+        assert all_["scope"] == "all" and len(all_["jobs"]) == 5
+        assert all(j["key_label"] == "" for j in all_["jobs"])   # scrubbed
+        assert "progress_id" not in all_["running"][0]           # not bob's job
+        assert client.get(f"/stats/jobs?user={alice}",
+                          headers=bearer(raw_bob)).status_code == 403
+        prev = client.get(f"/stats/jobs?user={alice}", headers=bearer(raw_admin)).json()
+        assert prev["scope"] == "own" and len(prev["jobs"]) == 2
+    finally:
+        jobs.job_end(a)
+
+
+def test_stats_page_jobs_table_v2(client):
+    """Quick views, the wait column, the cancel cell on running rows, the
+    load-older button and the timeline expansion; the popover and the
+    table share one cancel path."""
+    html = client.get("/stats").text
+    assert 'id="rj-view"' in html and 'id="rj-more"' in html
+    assert 'data-label="wait"' in html
+    assert "window._fwCancelJob(c.dataset.pid, c)" in html
+    assert "fetch('/stats/jobs?' + p.toString()" in html
+    assert "rj-stage-row wait" in html and "end to end" in html
+    assert "colspan=\"11\"" in html
+    import web_common
+    js = web_common.ACTIVITY_CLUSTER_JS
+    assert "window._fwCancelJob = function(pid, c)" in js

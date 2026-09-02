@@ -461,6 +461,9 @@ def list_recent(
     limit: int = 100,
     user_id_filter: str | None = None,
     query: str | None = None,
+    kind: str | None = None,
+    status: str | None = None,
+    slow_rtf: float | None = None,
 ) -> list[dict[str, Any]]:
     """Return up to `limit` rows newer than `before_ts` (or the newest
     `limit` rows when before_ts is None / 0), newest-first. When
@@ -473,7 +476,13 @@ def list_recent(
     composes with both the before_ts cursor and user_id_filter, so the
     "Load older" pagination walks back through matches only. Note: SQLite
     LIKE is ASCII case-insensitive — non-ASCII (e.g. German umlauts) is
-    matched case-sensitively; acceptable for this free-text search."""
+    matched case-sensitively; acceptable for this free-text search.
+
+    The /stats jobs table adds `kind` (one recent-jobs kind), `status`
+    ('ok' | 'error' | 'cancelled', or 'failed' = anything but ok) and
+    `slow_rtf` (only jobs whose processing took more than that fraction of
+    their audio: RTF = proc / audio > slow_rtf). All compose with the
+    cursor and the user filter."""
     conn = _require_conn()
     where: list[str] = []
     params: list[Any] = []
@@ -483,6 +492,17 @@ def list_recent(
     if user_id_filter is not None:
         where.append("user_id = ?")
         params.append(user_id_filter)
+    if kind:
+        where.append("kind = ?")
+        params.append(kind)
+    if status == "failed":
+        where.append("status <> 'ok'")
+    elif status:
+        where.append("status = ?")
+        params.append(status)
+    if slow_rtf is not None and slow_rtf > 0:
+        where.append("audio_dur_s > 0 AND proc_dur_s > ? * audio_dur_s")
+        params.append(float(slow_rtf))
     if query:
         # Escape LIKE wildcards so a literal % or _ in the search text is
         # matched literally rather than as a wildcard.
