@@ -376,7 +376,10 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
     live mic (which streams PCM continuously, even through silence) is never cut
     short even though the session runs far longer than one idle timeout."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 0.5, raising=False)
+    # 2 s timeout with a frame every 0.25 s: 1.75 s of slack per frame, so a
+    # loaded CI runner (three interpreters share one box) cannot turn a stalled
+    # sleep into a spurious idle close — 0.5 s / 0.25 s flaked on py3.13 in CI.
+    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 2.0, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             ws.send_json({
@@ -384,7 +387,7 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
                 "audio": {"format": "pcm_s16le", "sample_rate": 16000},
             })
             assert ws.receive_json()["type"] == "ready"
-            for _ in range(5):            # 1.25 s of audio: 2.5x the idle timeout
+            for _ in range(12):           # 3 s of audio: 1.5x the idle timeout
                 time.sleep(0.25)
                 ws.send_bytes(_pcm(0, 100))   # silent PCM is still AUDIO
             ws.send_json({"type": "stop"})
