@@ -680,7 +680,7 @@ def test_stats_page_loads_static_stats_js(client):
     r = client.get("/static/stats.js")
     assert r.status_code == 200
     js = r.text
-    assert "const GS_KEY_BASE = 'whisper-stats-layout-v8'" in js
+    assert "const GS_KEY_BASE = 'whisper-stats-layout-v9'" in js
     assert "const grid = GridStack.init({" in js
     assert "function load()" in js
     # Nothing moved twice: the inline page no longer carries either block.
@@ -717,7 +717,7 @@ def test_stats_js_contract(client):
               "function parsePageQuery", "function pageQueryParams",
               "'ArrowLeft', 'ArrowRight', 'Home', 'End'", "usage-live",
               "window.__statsUsage", "window._fwUsageReload",
-              "whisper-stats-layout-v8", "compare", "renderStages", "renderHours",
+              "whisper-stats-layout-v9", "compare", "renderStages", "renderHours",
               "not available for your scope"):
         assert s in js, s
     # The stacked series draw top-of-stack first so lower segments paint over.

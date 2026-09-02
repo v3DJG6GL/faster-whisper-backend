@@ -798,3 +798,24 @@ def test_init_adds_v2_ledger_columns_to_a_pre_v2_db(tmp_path):
         conn.close()
     finally:
         usage_store._conn = None
+
+
+def test_document_lists_every_stage_only_when_asked(usage_store_db):
+    """The rollup records the decode and the download too; document() keeps
+    the desktop app's optional-stage list unless all_stages=True (the /stats
+    console shows the whole pipeline with transcription as the reference row)."""
+    us = usage_store_db
+    us.record_usage(key_id="k", user_id="u", audio_s=60.0, words=10, status="ok",
+                    kind="url", job_id="d" * 32, proc_s=6.0, stages=[
+                        {"name": "downloading", "secs": 2.0},
+                        {"name": "transcribing", "secs": 4.0, "model": "large-v3"},
+                        {"name": "translate", "secs": 1.0, "targets": ["de"]}])
+    plain = us.document("u", days=1, tz=_UTC, tz_name="UTC")
+    assert [s["stage"] for s in plain["stages"]] == ["translating"]
+    full = us.document("u", days=1, tz=_UTC, tz_name="UTC", all_stages=True)
+    assert [s["stage"] for s in full["stages"]] == ["downloading", "transcribing", "translating"]
+    tr = {s["stage"]: s for s in full["stages"]}
+    assert tr["transcribing"]["runs"] == 1 and tr["transcribing"]["of_runs"] == 1
+    assert tr["downloading"]["of_runs"] == 1          # a URL job: eligible
+    over = us.overview(user_id="u", days=1, tz=_UTC, tz_name="UTC")
+    assert "transcribing" in {s["stage"] for s in over["stages"]}

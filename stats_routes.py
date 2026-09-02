@@ -851,6 +851,9 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .stages-bar > span { min-width: 2px; }
   table.stages td .sub { display: block; color: var(--dim); font-size: var(--fs-xs); }
   table.stages tr.dim td { color: var(--dim); }
+  table.stages tr.grp td { color: var(--dim); font-size: 0.62rem; letter-spacing: .1em;
+    text-transform: uppercase; padding-top: 0.4rem; padding-bottom: 0.05rem; border-bottom: 0; }
+  table.stages tr.grp:first-child td { padding-top: 0.1rem; }
   table.stages tr.pinned td:first-child { color: var(--bold); }
   .stage-sw { display: inline-block; width: 0.55rem; height: 0.55rem; border-radius: 2px;
     margin-right: 0.35rem; vertical-align: -1px; }
@@ -860,13 +863,22 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* --- Busy hours grid (one blue ramp toward the accent) --- */
   /* Rows stretch to the tile: the hour-label row is auto, the seven day
      rows share what is left, so the grid fills the card at any height. */
-  .hours { display: grid; grid-template-columns: 2rem repeat(24, 1fr);
-    grid-template-rows: auto; grid-auto-rows: minmax(0.5rem, 1fr); gap: 2px;
+  .hours { display: grid; grid-template-columns: 2rem repeat(24, 1fr) 2.4rem;
+    grid-template-rows: 0.8rem auto; grid-auto-rows: minmax(0.5rem, 1fr); gap: 2px;
     font: 0.62rem var(--font-mono); color: var(--dim); flex: 1 1 0; min-height: 0;
     align-content: stretch; margin-bottom: 0.4rem;
     /* rows grow with the tile up to ~1.8rem so cells stay wider than tall */
-    max-height: calc(1.2rem + 7 * 1.8rem + 8 * 2px); }
+    max-height: calc(2rem + 7 * 1.8rem + 9 * 2px); }
   .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; }
+  /* marginals: GPU seconds per hour of day (top) and per weekday (right) */
+  .hours .hb { display: flex; align-items: flex-end; }
+  .hours .hb i { width: 100%; height: 0; min-height: 0; background: #3a4757; border-radius: 1px 1px 0 0; }
+  .hours .rb { display: flex; align-items: center; }
+  .hours .rb i { height: 55%; min-height: 4px; width: 0; background: #3a4757; border-radius: 0 1px 1px 0; }
+  .hours-sub { font: var(--fs-xs) var(--font-mono); color: var(--dim); margin: -0.15rem 0 0.4rem; }
+  .hours-sub b { color: var(--fg); font-weight: 500; }
+  .hours-legend .ramp i { width: 3.2rem; height: 0.55rem;
+    background: linear-gradient(90deg, #161b22, #0e2a3f, #124b73, #1f6fa8, #58a6ff); }
   .hours .dl { align-self: center; }
   .hours i, .hours-legend i { display: block; border-radius: 2px; background: #161b22; }
   .hours i { height: 100%; min-height: 0.5rem; box-sizing: border-box; }
@@ -1350,8 +1362,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
    </div></div>
   </div>
 
-  <!-- Pipeline stages: share of eligible runs + speed per optional stage. -->
-  <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="33" gs-w="6" gs-h="4">
+  <!-- Pipeline stages: the whole pipeline in run order, share of eligible runs + speed. -->
+  <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="33" gs-w="6" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Pipeline stages <span class="tag" id="stages-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="stages-bar" id="stages-bar"></div>
@@ -1359,13 +1371,15 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <th>stage</th><th class="num">runs</th><th class="num">of eligible</th>
       <th class="num">audio</th><th class="num">GPU s</th><th class="num">RTF</th>
     </tr></thead><tbody id="stages-rows"><tr><td colspan="6" class="empty">— loading —</td></tr></tbody></table>
+    <div class="meta">GPU s = wall time inside the stage · RTF = GPU s ÷ audio · eligible = jobs the stage could have run on</div>
    </div></div>
   </div>
 
-  <!-- Busy hours: weekday × hour of GPU seconds, quartile-levelled. -->
-  <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="4">
+  <!-- Busy hours: weekday × hour of GPU seconds with marginals. -->
+  <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Busy hours <span class="tag" id="hours-tag"></span> <span class="win" data-win="usage"></span></h3>
+    <div class="hours-sub" id="hours-sub"></div>
     <div class="hours" id="hours-grid"></div>
     <div class="hours-legend" id="hours-legend"></div>
    </div></div>
@@ -1374,7 +1388,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Turnaround: end-to-end time per job bucketed on fixed edges, the
        queue-wait share hatched inside each bar, p50 / p95 marked, and the
        wait p50/p95 by day beneath. Fed by /stats/tail (static/stats.js). -->
-  <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="37" gs-w="6" gs-h="5">
+  <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="39" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Turnaround <span class="tag" id="turnaround-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="ta-hist" id="turnaround-hist"></div>
@@ -1385,7 +1399,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 
   <!-- Failures by stage and class: terminal failures from the job rows plus
        soft-failed stages (the job went on without them). -->
-  <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="37" gs-w="6" gs-h="5">
+  <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="39" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Failures <span class="tag" id="failures-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="fl" id="failures-list"><span class="empty">— loading —</span></div>
@@ -1394,7 +1408,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 
   <!-- Recent jobs (unified: transcribe / dictate / translate / download;
        running jobs from snap.jobs pinned on top) -->
-  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="42" gs-w="12" gs-h="12">
+  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="44" gs-w="12" gs-h="12">
    <div class="grid-stack-item-content"><div class="card">
     <div class="usage-toolbar">
       <h3>Recent jobs (<span id="rt-n">0</span> shown)</h3>

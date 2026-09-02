@@ -119,6 +119,18 @@ STAGE_APPLIES_TO: dict[str, tuple[str, ...]] = {
     "separating": ("file", "url"),
     "vad": ("file", "url"),
 }
+# Every stage the rollup records, in pipeline order, with the kinds it can
+# run on: the decode itself and the URL download included. document()
+# lists only the optional stages (the desktop app's Statistics screen);
+# document(all_stages=True) — the /stats console — lists all of them.
+STAGE_ELIGIBLE: dict[str, tuple[str, ...]] = {
+    "downloading": ("url",),
+    "separating": ("file", "url"),
+    "vad": ("file", "url"),
+    "transcribing": ("file", "url", "dictation"),
+    "diarizing": ("file", "url"),
+    "translating": KINDS,
+}
 
 # The desktop app's outcome vocabulary. Validated at the route (pydantic
 # enums); repeated here so the sweep's 'unreported' marker and the document's
@@ -1213,6 +1225,7 @@ def document(
     jobs_retention_days: int = 365,
     now: float | None = None,
     key_id: str | None = None,
+    all_stages: bool = False,
 ) -> dict[str, Any]:
     """One user's statistics document (everything /v1/usage returns except
     the username), reckoned in `tz` (None = server-local; `tz_name` is only
@@ -1261,6 +1274,10 @@ def document(
     else:
         _fill_from_rollups(conn, doc, user_id, tz, today,
                            start_hour, end_hour, today_start, today_end, key_id)
+    if not all_stages:
+        # the desktop app's order: the optional stages as it lists them
+        keep = {st["stage"]: st for st in doc["stages"] if st["stage"] in STAGE_APPLIES_TO}
+        doc["stages"] = [keep[k] for k in STAGE_APPLIES_TO if k in keep]
     dictation = doc["total"]["dictation"]
     doc["time_saved_s"] = round(max(
         0.0, dictation["words"] / TYPING_WPM * 60.0 - dictation["audio_s"]), 1)
@@ -1383,7 +1400,7 @@ def overview(
         compare = "off"
     doc = document(user_id, tz=tz, tz_name=tz_name, days=days, from_day=from_day,
                    to_day=to_day, all_time=all_time, with_stages=with_stages,
-                   jobs_retention_days=jobs_retention_days, now=now, key_id=key_id)
+                   jobs_retention_days=jobs_retention_days, now=now, key_id=key_id, all_stages=True)
     f, t = int(doc["range"]["from"]), int(doc["range"]["to"])
     span = t - f + 1
     mode = bucket_mode(span) if bucket == "auto" else bucket
@@ -2092,7 +2109,7 @@ def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
             " ON j.job_id = s.job_id WHERE s.job_id IN (" + marks + ")", chunk,
         ):
             stage = r["stage"]
-            if stage not in STAGE_APPLIES_TO:
+            if stage not in STAGE_ELIGIBLE:
                 continue
             a = agg.setdefault(stage, {"runs": 0, "audio_s": 0.0, "secs": 0.0,
                                        "speakers": 0, "retained_sum": 0.0})
@@ -2111,7 +2128,7 @@ def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
         row: dict[str, Any] = {
             "stage": stage,
             "runs": runs,
-            "of_runs": sum(window[k]["sessions"] for k in STAGE_APPLIES_TO[stage]),
+            "of_runs": sum(window[k]["sessions"] for k in STAGE_ELIGIBLE[stage]),
             "audio_s": round(a["audio_s"], 3),
             "secs": round(a["secs"], 3),
             "targets": [{"code": c, "runs": n} for c, n in sorted(
@@ -2124,16 +2141,16 @@ def _stages_from_jobs(conn: sqlite3.Connection, job_ids: list[str],
         elif stage == "translating":
             row["kept_original"] = int(translation.get("kept_original", 0))
         out.append(row)
-    order = {s: i for i, s in enumerate(STAGE_APPLIES_TO)}
+    order = {s: i for i, s in enumerate(STAGE_ELIGIBLE)}
     out.sort(key=lambda s: order[s["stage"]])
     return out
 
 
 def _stages(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
             end_hour: int, window: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
-    """Stage rows for the window. Only the OPTIONAL stages are listed (the
-    ones a user can switch on and wonder about); the decode itself and a URL
-    download are the job, not a stage of it. The per-stage extras are
+    """Stage rows for the window, every recorded stage in pipeline order
+    (document() drops the decode and the download again unless asked for
+    all_stages — the desktop app lists the optional ones). The per-stage extras are
     emitted only where they mean something: a speaker average for
     diarization, a retained-audio average for silence skipping, a
     kept-original count for translation."""
@@ -2155,7 +2172,7 @@ def _stages(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
         " GROUP BY stage", (*params, start_hour, end_hour),
     ):
         stage = r["stage"]
-        applies = STAGE_APPLIES_TO.get(stage)
+        applies = STAGE_ELIGIBLE.get(stage)
         if applies is None:
             continue
         runs = int(r["runs"] or 0)
@@ -2176,7 +2193,7 @@ def _stages(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
         elif stage == "translating":
             row["kept_original"] = int(r["kept_original"] or 0)
         out.append(row)
-    order = {s: i for i, s in enumerate(STAGE_APPLIES_TO)}
+    order = {s: i for i, s in enumerate(STAGE_ELIGIBLE)}
     out.sort(key=lambda s: order[s["stage"]])
     return out
 

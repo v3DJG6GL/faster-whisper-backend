@@ -19,7 +19,7 @@
 // uPlot sparklines re-fit on size changes via their own ResizeObservers.
 // v6: the usage half gained tiles (headline, stages, hours); a v5 layout
 // would remove them on load, so the key moved and v5 layouts are ignored.
-const GS_KEY_BASE = 'whisper-stats-layout-v8';
+const GS_KEY_BASE = 'whisper-stats-layout-v9';
 const GS_PRESET_KEY = 'whisper-stats-preset';
 const GS_PRESETS = {
   ops:   ['gpu', 'cpu', 'ram', 'process', 'activity', 'errors', 'latency',
@@ -208,7 +208,19 @@ const STAGE_COLOR = { downloading: '#db61a2', separating: '#bb8009',
                       transcribing: '#388bfd', diarizing: '#2ea043',
                       translating: '#8957e5', vad: '#93b76f' };
 const STAGE_LABEL = { translating: 'Translation', diarizing: 'Speaker diarization',
-                      vad: 'Silence skipping', separating: 'Music separation' };
+                      vad: 'Silence skipping', separating: 'Music separation',
+                      transcribing: 'Transcription', downloading: 'Download' };
+// The whole pipeline in run order, grouped by what the stage is for. The
+// meter denominator per stage = sessions of the kinds it can run on
+// (mirrors usage_store.STAGE_ELIGIBLE).
+const STAGE_GROUPS = [
+  ['Core', ['transcribing']],
+  ['Preparation · before the model', ['downloading', 'separating', 'vad']],
+  ['Enrichment · after the model', ['diarizing', 'translating']],
+];
+const STAGE_KINDS = { downloading: ['url'], separating: ['file', 'url'], vad: ['file', 'url'],
+                      transcribing: ['file', 'url', 'dictation'], diarizing: ['file', 'url'],
+                      translating: ['dictation', 'file', 'url', 'text'] };
 const WITH_CHIPS = [['translating', 'translated'], ['diarizing', 'diarized'],
                     ['separating', 'music separated'], ['vad', 'silence skipped']];
 const PALETTE = ['#388bfd', '#bb8009', '#2ea043', '#8957e5', '#db61a2',
@@ -273,7 +285,12 @@ function quantileBreaks(values) {
   const act = values.filter(v => v > 0).sort((a, b) => a - b);
   if (!act.length) return null;
   const q = k => act[Math.min(act.length - 1, Math.floor(act.length * k))];
-  return [q(0.25), q(0.5), q(0.75)];
+  const br = [q(0.25), q(0.5), q(0.75)];
+  // Quartiles of a handful of cells are noise, and equal breaks would map
+  // two legend steps to one threshold: fall back to a linear 0..max scale.
+  const max = act[act.length - 1];
+  if (act.length < 8 || br[0] === br[1] || br[1] === br[2]) return [max / 4, max / 2, max * 3 / 4];
+  return br;
 }
 function levelOf(v, br) {
   if (!br || !(v > 0)) return 0;
@@ -1140,55 +1157,105 @@ function renderBoard() {
   });
 }
 
-// ---- pipeline stages: share of eligible runs + speed per optional stage.
-const STAGE_ROWS = ['translating', 'diarizing', 'vad', 'separating'];
+// ---- pipeline stages: the whole pipeline in run order, transcription as
+// the reference row; unused stages keep their row and say '0 of N'.
 function renderStages() {
   const el = $('stages-rows'); if (!el) return;
   const rows = {};
   (lastDoc.stages || []).forEach(s => { rows[s.stage] = s; });
-  const ordered = STAGE_ROWS.slice().sort((a, b) =>
-    (Q.with.includes(b) ? 1 : 0) - (Q.with.includes(a) ? 1 : 0));
-  const totalSecs = ordered.reduce((a, s) => a + ((rows[s] && rows[s].secs) || 0), 0);
+  const tot = lastDoc.totals || {};
+  const eligible = s => (STAGE_KINDS[s] || []).reduce((a, k) => a + Number(((tot[k] || {}).sessions) || 0), 0);
+  const order = STAGE_GROUPS.flatMap(g => g[1]);
+  const totalSecs = order.reduce((a, s) => a + ((rows[s] && rows[s].secs) || 0), 0);
   const bar = $('stages-bar');
-  if (bar) bar.innerHTML = totalSecs > 0 ? ordered.map(s => {
+  if (bar) bar.innerHTML = totalSecs > 0 ? order.map(s => {
     const secs = (rows[s] && rows[s].secs) || 0;
     return secs > 0 ? '<span style="flex:' + (secs / totalSecs) + ';background:' + STAGE_COLOR[s]
       + '" title="' + esc(STAGE_LABEL[s]) + ' ' + (secs / totalSecs * 100).toFixed(0) + ' %"></span>' : '';
   }).join('') : '';
-  el.innerHTML = ordered.map(s => {
-    const r = rows[s];
-    if (!r || !r.runs) {
-      return '<tr class="dim"><td><span class="stage-sw" style="background:' + STAGE_COLOR[s] + '"></span>'
-        + esc(STAGE_LABEL[s]) + '</td><td colspan="5" class="empty">not used in this window</td></tr>';
-    }
-    const pct = r.of_runs > 0 ? Math.round(r.runs / r.of_runs * 100) : 0;
-    const rtf = r.audio_s > 0 ? r.secs / r.audio_s : null;
-    let extra = '';
-    if (s === 'diarizing' && r.speakers_avg != null) extra = r.speakers_avg + ' speakers avg';
-    if (s === 'vad' && r.retained_avg != null) extra = ((1 - r.retained_avg) * 100).toFixed(0) + ' % skipped';
-    if (s === 'translating') {
-      extra = (r.targets || []).slice(0, 4).map(t => esc(t.code.toUpperCase()) + ' '
-        + Math.round(t.runs / r.runs * 100) + ' %').join(' · ');
-      if (r.kept_original) extra += (extra ? ' · ' : '') + r.kept_original + ' kept original';
-    }
-    return '<tr' + (Q.with.includes(s) ? ' class="pinned"' : '') + '>'
-      + '<td><span class="stage-sw" style="background:' + STAGE_COLOR[s] + '"></span>' + esc(STAGE_LABEL[s])
-      + (Q.with.includes(s) ? ' <span class="badge">filter</span>' : '')
-      + (extra ? '<span class="sub">' + extra + '</span>' : '') + '</td>'
-      + '<td class="num">' + fmtCount(r.runs) + '</td>'
-      + '<td class="num"><span class="meter"><i style="width:' + pct + '%"></i></span>' + pct + ' %</td>'
-      + '<td class="num">' + fmtDur(r.audio_s) + '</td>'
-      + '<td class="num">' + fmtDur(r.secs) + '</td>'
-      + '<td class="num"><span class="rtf' + (rtf > 0.35 ? ' slow' : '') + '">' + (rtf == null ? '—' : rtf.toFixed(2) + '×') + '</span></td>'
-      + '</tr>';
-  }).join('');
+  const models = (lastDoc.models || []).slice().sort((a, b) => b.sessions - a.sessions);
+  let html = '';
+  STAGE_GROUPS.forEach(([title, stages]) => {
+    html += '<tr class="grp"><td colspan="6">' + esc(title) + '</td></tr>';
+    stages.forEach(s => {
+      const r = rows[s], n = eligible(s);
+      const sw = '<span class="stage-sw" style="background:' + STAGE_COLOR[s] + '"></span>';
+      if (!r || !r.runs) {
+        html += '<tr class="dim"><td>' + sw + esc(STAGE_LABEL[s]) + '</td><td class="num">0</td>'
+          + '<td class="num"><span class="meter"><i style="width:0"></i></span>0 of ' + fmtCount(n) + '</td>'
+          + '<td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>';
+        return;
+      }
+      const of = r.of_runs > 0 ? r.of_runs : n;
+      const pct = of > 0 ? Math.round(r.runs / of * 100) : 0;
+      const rtf = r.audio_s > 0 ? r.secs / r.audio_s : null;
+      let extra = '';
+      if (s === 'transcribing' && models.length) {
+        extra = models.slice(0, 2).map(m => esc(m.model) + ' · ' + fmtCount(m.sessions) + ' jobs').join(', ')
+          + (models.length > 2 ? ', +' + (models.length - 2) + ' more' : '');
+      }
+      if (s === 'diarizing' && r.speakers_avg != null) extra = r.speakers_avg + ' speakers avg';
+      if (s === 'vad' && r.retained_avg != null) extra = ((1 - r.retained_avg) * 100).toFixed(0) + ' % skipped';
+      if (s === 'translating') {
+        extra = (r.targets || []).slice(0, 4).map(t => esc(t.code.toUpperCase()) + ' '
+          + Math.round(t.runs / r.runs * 100) + ' %').join(' · ');
+        if (r.kept_original) extra += (extra ? ' · ' : '') + r.kept_original + ' kept original';
+      }
+      html += '<tr' + (Q.with.includes(s) ? ' class="pinned"' : '') + '>'
+        + '<td>' + sw + esc(STAGE_LABEL[s])
+        + (Q.with.includes(s) ? ' <span class="badge">filter</span>' : '')
+        + (extra ? '<span class="sub">' + extra + '</span>' : '') + '</td>'
+        + '<td class="num">' + fmtCount(r.runs) + '</td>'
+        + '<td class="num"><span class="meter"><i style="width:' + pct + '%"></i></span>' + pct + ' %</td>'
+        + '<td class="num">' + fmtDur(r.audio_s) + '</td>'
+        + '<td class="num">' + fmtDur(r.secs) + '</td>'
+        + '<td class="num"><span class="rtf' + (rtf > 0.35 ? ' slow' : '') + '">' + (rtf == null ? '—' : rtf.toFixed(2) + '×') + '</span></td>'
+        + '</tr>';
+    });
+  });
+  el.innerHTML = html;
   const tag = $('stages-tag');
-  if (tag) tag.textContent = fmtDur(totalSecs) + ' GPU in optional stages';
+  if (tag) {
+    const tr = (rows.transcribing && rows.transcribing.secs) || 0;
+    tag.textContent = totalSecs > 0
+      ? fmtDur(totalSecs) + ' GPU' + (tr > 0 ? ' · ' + Math.round(tr / totalSecs * 100) + ' % transcribing' : '')
+      : 'no GPU time in this window';
+  }
 }
 
-// ---- busy hours: weekday × hour of GPU seconds, quartile-levelled over the
-// active cells, peak ringed; cells are focusable and describe themselves.
+// ---- busy hours: weekday × hour of GPU seconds summed over the window,
+// linear- or quartile-levelled (quantileBreaks), the busiest cell ringed,
+// hour-of-day and weekday marginal bars, a phrase for the pattern.
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const DOW_LONG = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const DAY_PARTS = [['mornings', 6, 12], ['afternoons', 12, 18], ['evenings', 18, 24], ['nights', 0, 6]];
+// How many times each weekday occurs in the window (epoch day 0 was a
+// Thursday), so a cell's sum can be said per occurrence.
+function weekdayCounts(from, to) {
+  const out = [0, 0, 0, 0, 0, 0, 0];
+  if (!(from <= to)) return out;
+  for (let d = from; d <= to; d++) out[(d + 3) % 7]++;
+  return out;
+}
+// The phrase in the title: the smallest day/part group holding most of the
+// GPU time, most specific first; 'no clear pattern' when nothing does.
+function hoursPhrase(cells) {
+  const total = cells.reduce((a, v) => a + v, 0);
+  if (!(total > 0)) return 'quiet';
+  const sum = (days, h0, h1) => days.reduce((a, d) => {
+    for (let h = h0; h < h1; h++) a += cells[d * 24 + h]; return a; }, 0);
+  let peak = 0; cells.forEach((v, i) => { if (v > cells[peak]) peak = i; });
+  if (cells[peak] / total >= 0.5) return DOW[Math.floor(peak / 24)] + ' ' + ('0' + (peak % 24)).slice(-2) + '–' + ('0' + (peak % 24 + 1)).slice(-2);
+  const groups = [];
+  for (let d = 0; d < 7; d++) DAY_PARTS.forEach(([p, a, b]) => groups.push([DOW_LONG[d] + ' ' + p, [d], a, b]));
+  for (let d = 0; d < 7; d++) groups.push([DOW_LONG[d] + 's', [d], 0, 24]);
+  const wk = [0, 1, 2, 3, 4], we = [5, 6];
+  DAY_PARTS.forEach(([p, a, b]) => { groups.push(['weekday ' + p, wk, a, b]); groups.push(['weekend ' + p, we, a, b]); });
+  DAY_PARTS.forEach(([p, a, b]) => groups.push([p, [0, 1, 2, 3, 4, 5, 6], a, b]));
+  groups.push(['weekdays', wk, 0, 24]); groups.push(['weekends', we, 0, 24]);
+  for (const [label, days, a, b] of groups) if (sum(days, a, b) / total >= 0.6) return label;
+  return 'no clear pattern';
+}
 function renderHours() {
   const el = $('hours-grid'); if (!el) return;
   const cells = new Array(7 * 24).fill(0);
@@ -1211,39 +1278,52 @@ function renderHours() {
   const br = quantileBreaks(cells);
   let peak = -1, peakV = 0;
   cells.forEach((v, i) => { if (v > peakV) { peakV = v; peak = i; } });
-  let html = '<span></span>' + Array.from({ length: 24 }, (_, h) =>
-    '<span class="hl">' + (h % 6 === 0 ? ('0' + h).slice(-2) : '') + '</span>').join('');
+  const hourTot = new Array(24).fill(0), dayTot = new Array(7).fill(0);
+  cells.forEach((v, i) => { hourTot[i % 24] += v; dayTot[Math.floor(i / 24)] += v; });
+  const hm = Math.max(...hourTot), dm = Math.max(...dayTot);
+  const rg = lastDoc.range || {};
+  const occ = weekdayCounts(rg.from, rg.to);
+  const slot = i => DOW[Math.floor(i / 24)] + ' ' + ('0' + (i % 24)).slice(-2) + '–' + ('0' + (i % 24 + 1)).slice(-2);
+  // marginal row: GPU seconds per hour of day (summed over the weekdays)
+  let html = '<span></span>' + hourTot.map(v =>
+    '<span class="hb"><i style="height:' + (v > 0 ? Math.max(12, v / hm * 100) : 0) + '%"></i></span>').join('') + '<span></span>';
+  html += '<span></span>' + Array.from({ length: 24 }, (_, h) =>
+    '<span class="hl">' + (h % 6 === 0 ? ('0' + h).slice(-2) : '') + '</span>').join('') + '<span></span>';
   for (let d = 0; d < 7; d++) {
     html += '<span class="dl">' + DOW[d] + '</span>';
     for (let h = 0; h < 24; h++) {
       const i = d * 24 + h, v = cells[i];
-      const title = DOW[d] + ' ' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' · '
-        + fmtDur(v) + ' GPU · ' + fmtCount(sess[i]) + ' sessions';
+      const title = slot(i) + ' · ' + fmtDur(v) + ' GPU · ' + fmtCount(sess[i]) + ' sessions';
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
         + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + '></i>';
     }
+    html += '<span class="rb"><i style="width:' + (dayTot[d] > 0 ? Math.max(8, dayTot[d] / dm * 100) : 0) + '%"></i></span>';
   }
   el.innerHTML = html;
   wireTips(el, '[data-tip]', (target) => {
-    const i = Number(target.getAttribute('data-i')), d = Math.floor(i / 24), h = i % 24;
-    let out = '<div class="tip-date">' + DOW[d] + ' ' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + '</div>';
+    const i = Number(target.getAttribute('data-i')), d = Math.floor(i / 24);
+    let out = '<div class="tip-date">' + slot(i) + '</div>';
     const ks = Object.keys(byKind).filter(k => byKind[k][0][i] || byKind[k][1][i]).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));
     ks.forEach(k => out += tipRow(KIND_COLOR[k], KIND_LABEL[k] || k, fmtDur(byKind[k][0][i]) + ' GPU · ' + fmtCount(byKind[k][1][i]) + ' sessions'));
     out += tipRow(null, ks.length ? 'total' : 'idle', cells[i] ? fmtDur(cells[i]) + ' GPU · ' + fmtCount(sess[i]) + ' sessions' : '—', ks.length > 1 ? 'tot' : '');
+    if (cells[i] > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW_LONG[d], '≈ ' + fmtDur(cells[i] / occ[d]) + ' GPU over ' + occ[d] + ' ' + DOW_LONG[d] + 's');
     return out;
   });
+  const kindNote = Q.kind !== 'all' ? (KIND_LABEL[Q.kind] || Q.kind) + ' only · ' : '';
   const lg = $('hours-legend');
   if (lg) lg.innerHTML = br
-    ? '<span><i data-l="0"></i>idle</span><span><i data-l="1"></i>≤ ' + fmtDur(br[0]) + '</span>'
-      + '<span><i data-l="2"></i>≤ ' + fmtDur(br[1]) + '</span><span><i data-l="3"></i>≤ ' + fmtDur(br[2])
-      + '</span><span><i data-l="4"></i>&gt; ' + fmtDur(br[2]) + '</span>'
-      + '<span class="what">GPU seconds · quartiles of active hours · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span>'
-    : '<span class="what">no GPU seconds in this window</span>';
+    ? '<span class="ramp">quiet <i></i> busy</span><span>max ' + fmtDur(peakV) + ' per slot</span>'
+      + '<span class="what">' + kindNote + 'GPU seconds per weekday-hour · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span>'
+    : '<span class="what">' + kindNote + 'no GPU time in this window</span>';
+  const sub = $('hours-sub');
+  if (sub) sub.innerHTML = peakV > 0
+    ? 'Busiest slot: ' + slot(peak) + ' · <b>' + fmtDur(peakV) + ' GPU</b>'
+      + (occ[Math.floor(peak / 24)] > 1 ? ' over ' + occ[Math.floor(peak / 24)] + ' ' + DOW_LONG[Math.floor(peak / 24)] + 's, ≈ '
+        + fmtDur(peakV / occ[Math.floor(peak / 24)]) + ' each' : '')
+      + ' · ' + fmtCount(sess[peak]) + ' sessions'
+    : 'No GPU time in this window';
   const tag = $('hours-tag');
-  if (tag) tag.textContent = peak >= 0 && peakV > 0
-    ? 'peak ' + DOW[Math.floor(peak / 24)] + ' ' + ('0' + (peak % 24)).slice(-2) + '–'
-      + ('0' + (peak % 24 + 1)).slice(-2) + ' · ' + fmtDur(peakV) + ' GPU'
-    : '';
+  if (tag) tag.textContent = hoursPhrase(cells);
 }
 
 // ---- models: audio / RTF per decode model over the window, joined by the
