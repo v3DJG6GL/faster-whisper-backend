@@ -217,15 +217,41 @@ def is_warm(name: str) -> bool:
         return False
 
 
+# What a loaded model is for, told apart by the registration prefix each
+# family uses (diarization._STATS_PREFIX, bgm_separation._STATS_PREFIX,
+# translation._STATS_PREFIX); an unprefixed name is a faster-whisper decode
+# model. The role names match the pipeline-stage vocabulary the stats page
+# colours (transcribing / diarizing / separating / translating).
+MODEL_ROLE_PREFIXES: tuple[tuple[str, str], ...] = (
+    ("pyannote:", "diarizing"),
+    ("uvr:", "separating"),
+    ("gguf:", "translating"),
+)
+
+
+def model_role(name: str) -> tuple[str, str]:
+    """(role, display label) for a registry name: the prefix picks the role
+    and is stripped from the label."""
+    for prefix, role in MODEL_ROLE_PREFIXES:
+        if name.startswith(prefix):
+            return role, name[len(prefix):]
+    return "transcribing", name
+
+
 def loaded_models_snapshot() -> list[dict[str, Any]]:
-    """Returned in /stats/snapshot. Sorted by load order (oldest first)."""
+    """Returned in /stats/snapshot. Sorted by load order (oldest first).
+    Each entry carries `role` (transcribing / diarizing / separating /
+    translating) and `label` (the name without the family prefix)."""
     with _loaded_models_lock:
         out = []
         now = time.time()
         for info in _loaded_models.values():
             mb = (info["vram_bytes"] / (1024 * 1024)) if info["vram_bytes"] is not None else None
+            role, label = model_role(info["name"])
             out.append({
                 "name": info["name"],
+                "role": role,
+                "label": label,
                 "device": info["device"],
                 "compute_type": info["compute_type"],
                 "vram_mb": round(mb, 1) if mb is not None else None,

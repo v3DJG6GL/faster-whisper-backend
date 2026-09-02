@@ -89,6 +89,22 @@ def test_register_and_snapshot():
     assert e["idle_sec"] >= 0
 
 
+def test_snapshot_tells_the_model_role_apart_by_prefix():
+    """The stats page's loaded-models table shows what each model is for:
+    the registration prefix of each family decides, and the label drops it."""
+    system_stats.register_loaded_model("large-v3", None, "cuda", "float16")
+    system_stats.register_loaded_model("pyannote:speaker-diarization-3.1", None, "cuda", "float32")
+    system_stats.register_loaded_model("uvr:UVR-MDX-NET-Inst_HQ_3", None, "cuda", "float32")
+    system_stats.register_loaded_model("gguf:org/gemma", None, "cpu", "q4")
+    roles = {e["name"]: (e["role"], e["label"]) for e in system_stats.loaded_models_snapshot()}
+    assert roles == {
+        "large-v3": ("transcribing", "large-v3"),
+        "pyannote:speaker-diarization-3.1": ("diarizing", "speaker-diarization-3.1"),
+        "uvr:UVR-MDX-NET-Inst_HQ_3": ("separating", "UVR-MDX-NET-Inst_HQ_3"),
+        "gguf:org/gemma": ("translating", "org/gemma"),
+    }
+
+
 def test_register_none_vram():
     system_stats.register_loaded_model("m2", None, "cpu", "int8")
     e = system_stats.loaded_models_snapshot()[0]

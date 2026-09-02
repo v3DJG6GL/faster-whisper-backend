@@ -723,6 +723,10 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .badge.cold { color: var(--yellow); border-color: #4d3e1f; }
   .badge.ok { color: var(--green); border-color: #1f4d2a; }
   .badge.err { color: var(--red); border-color: #5a2424; }
+  /* Loaded models: the role swatch matches the Pipeline stages card. */
+  table.models .role { display: inline-flex; align-items: center; gap: 0.4rem; white-space: nowrap; }
+  table.models .role i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+  table.models td small.dim { color: var(--dim); font-size: var(--fs-xs); margin-left: 0.3rem; }
   .ts { color: var(--dim); font-variant-numeric: tabular-nums; }
   .core-strip { display: flex; gap: 2px; margin-top: 0.375rem; height: 1.5rem;
     align-items: flex-end; }
@@ -1325,8 +1329,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <div class="grid-stack-item" gs-id="models" gs-x="0" gs-y="17" gs-w="12" gs-h="4">
    <div class="grid-stack-item-content"><div class="card">
     <h3>Loaded models <span class="tag">· audio duration and RTF over the usage window</span> <span class="win" data-win="usage"></span></h3>
-    <table class="tbl rcards"><thead><tr>
-      <th>name</th><th>device</th><th>compute</th>
+    <table class="tbl rcards models"><thead><tr>
+      <th>role</th><th>name</th><th>device</th><th>compute</th>
       <th class="num">audio duration</th><th class="num">RTF</th>
       <th class="num">VRAM (MB)</th><th class="num">disk</th><th>state</th>
       <th class="num">age</th><th class="num">idle</th>
@@ -2058,12 +2062,26 @@ function renderServer(server) {
 // (window.__statsUsage, published by static/stats.js after every usage load)
 // for the audio / RTF columns, and the snapshot's size provenance
 // (size_bytes / size_src / disk_bytes) for VRAM + disk.
+// Rows are grouped by role in pipeline order (decode first, then the
+// enrichment models) and keep load order within a role; the role badge
+// uses the same hue as that stage on the Pipeline stages card.
+const MODEL_ROLES = {
+  transcribing: ['transcription', '#388bfd'], diarizing: ['diarization', '#2ea043'],
+  separating: ['music separation', '#bb8009'], translating: ['translation', '#8957e5'],
+};
+const MODEL_ROLE_ORDER = ['transcribing', 'diarizing', 'separating', 'translating'];
 let lastModelsSnap = null;
 function renderModels(snap) {
   lastModelsSnap = snap;
   const modelLoads = snap.model_loads || {};
   const usage = (window.__statsUsage && window.__statsUsage.models) || {};
-  const mrows = (snap.models || []).map(m => {
+  const roleRank = m => { const i = MODEL_ROLE_ORDER.indexOf(m.role); return i < 0 ? 99 : i; };
+  const models = (snap.models || []).map((m, i) => [m, i])
+    .sort((a, b) => roleRank(a[0]) - roleRank(b[0]) || a[1] - b[1]).map(p => p[0]);
+  const mrows = models.map(m => {
+    const role = MODEL_ROLES[m.role] || [m.role || 'model', '#6e7681'];
+    const label = m.label || m.name;
+    const prefix = m.name !== label ? m.name.slice(0, m.name.length - label.length) : '';
     const warm = m.idle_sec < 60;
     const cold = modelLoads[m.name];
     const coldStr = cold
@@ -2078,7 +2096,8 @@ function renderModels(snap) {
       : '';
     const disk = m.disk_bytes != null ? fmtBytes(m.disk_bytes / 1048576) : '—';
     return `<tr>
-      <td data-label="name">${esc(m.name)}</td>
+      <td data-label="role"><span class="role"><i style="background:${role[1]}"></i>${esc(role[0])}</span></td>
+      <td data-label="name">${esc(label)}${prefix ? ` <small class="dim" title="registered as ${esc(m.name)}">${esc(prefix.replace(/:$/, ''))}</small>` : ''}</td>
       <td data-label="device">${esc(m.device || '—')}</td>
       <td data-label="compute">${esc(m.compute_type || '—')}</td>
       <td class="num" data-label="audio">${audio}</td>
@@ -2092,7 +2111,7 @@ function renderModels(snap) {
     </tr>`;
   });
   $('models-rows').innerHTML = mrows.length
-    ? mrows.join('') : '<tr><td colspan="11" class="empty">— no models loaded —</td></tr>';
+    ? mrows.join('') : '<tr><td colspan="12" class="empty">— no models loaded —</td></tr>';
 }
 window._fwRerenderModels = () => { if (lastModelsSnap) renderModels(lastModelsSnap); };
 
