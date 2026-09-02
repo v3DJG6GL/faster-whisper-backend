@@ -1059,7 +1059,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours .hb i { width: 100%; height: 0; min-height: 0; background: #3a4757; border-radius: 1px 1px 0 0; }
   .hours .rb { display: flex; align-items: center; }
   .hours .rb i { height: 55%; min-height: 4px; width: 0; background: #3a4757; border-radius: 0 1px 1px 0; }
-  .hours-sub { font: var(--fs-xs) var(--font-mono); color: var(--dim); margin: -0.15rem 0 0.4rem; }
+  .hours-sub { font: var(--fs-xs) var(--font-mono); color: var(--dim); margin: -0.15rem 0 0.4rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .hours-sub b { color: var(--fg); font-weight: 500; }
   .hours-legend .ramp i { width: 3.2rem; height: 0.55rem;
     background: linear-gradient(90deg, #161b22, #0e2a3f, #124b73, #1f6fa8, #58a6ff); }
@@ -1073,6 +1074,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours i[data-l="3"], .hours-legend i[data-l="3"] { background: #1f6fa8; }
   .hours i[data-l="4"], .hours-legend i[data-l="4"] { background: #58a6ff; }
   .hours i.peak { outline: 1.5px solid var(--bold); outline-offset: -1.5px; }
+  /* Hover / focus: the cell gets a ring, its weekday + hour labels and
+     both marginal bars light up (the tooltip's slot, read off the axes). */
+  .hours i:hover, .hours i.on { outline: 2px solid var(--bold); outline-offset: 1px; position: relative; z-index: 2; }
+  .hours .dl.on, .hours .hl.on { color: var(--bold); }
+  .hours .hb.on i, .hours .rb.on i { background: var(--bold); }
   .hours-legend { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
     font: var(--fs-xs) var(--font-mono); color: var(--dim); margin-top: 0.3rem; }
   .hours-legend span { display: inline-flex; align-items: center; gap: 0.25rem; }

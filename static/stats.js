@@ -456,7 +456,11 @@ function renderPickerButtons() {
   [['sb-who', 'users', 'user'], ['sb-keys', 'keys', 'key']].forEach(([id, list, word]) => {
     const n = Q[list].length, btn = document.querySelector('#' + id + ' > button');
     if (!btn) return;
-    btn.innerHTML = word + 's <span class="n">' + (n ? n + ' picked' : 'any') + '</span> ▾';
+    // Update the count span in place: replacing the button's HTML while a
+    // click on it is still bubbling detaches the click's target, and the
+    // outside-click handler then reads it as "outside" and closes the pop.
+    const span = btn.querySelector('.n');
+    if (span) span.textContent = n ? n + ' picked' : 'any';
     btn.setAttribute('aria-expanded', _pickOpen === id ? 'true' : 'false');
   });
 }
@@ -534,7 +538,9 @@ function wirePickers() {
       renderPickerButtons(); load();
     });
   });
-  document.addEventListener('click', (e) => { if (_pickOpen && !e.target.closest('.picker')) closePickers(); });
+  document.addEventListener('click', (e) => {
+    if (_pickOpen && e.target.isConnected && !e.target.closest('.picker')) closePickers();
+  });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && _pickOpen) closePickers(); });
 }
 // The recent-jobs table (inline dashboard) follows the kind and user
@@ -1121,10 +1127,14 @@ function tipRow(color, label, val, cls) {
 }
 // Delegated hover + keyboard focus for a card's [data-tip] targets; `build(el)` returns the tooltip html.
 function wireTips(host, selector, build) {
-  if (!host || host._tips) return;
+  if (!host) return;
+  // The builder closes over the current render (measure, kinds…): swap it
+  // on every call, wire the listeners once.
+  host._tipBuild = build;
+  if (host._tips) return;
   host._tips = true;
   const at = (target, e) => {
-    const html = build(target); if (!html) { hideTip(); return; }
+    const html = host._tipBuild(target); if (!html) { hideTip(); return; }
     if (e && e.clientX != null) showTipAt(html, e.clientX, e.clientY);
     else { const r = target.getBoundingClientRect(); showTipAt(html, r.left + r.width / 2, r.bottom); }
   };
@@ -1515,21 +1525,38 @@ function renderHours() {
   const occ = weekdayCounts(rg.from, rg.to);
   const slot = i => DOW[Math.floor(i / 24)] + ' ' + ('0' + (i % 24)).slice(-2) + '–' + ('0' + (i % 24 + 1)).slice(-2);
   // marginal row: the measure per hour of day (summed over the weekdays)
-  let html = '<span></span>' + hourTot.map(v =>
-    '<span class="hb"><i style="height:' + (v > 0 ? Math.max(12, v / hm * 100) : 0) + '%"></i></span>').join('') + '<span></span>';
+  let html = '<span></span>' + hourTot.map((v, h) =>
+    '<span class="hb" data-h="' + h + '"><i style="height:' + (v > 0 ? Math.max(12, v / hm * 100) : 0) + '%"></i></span>').join('') + '<span></span>';
   html += '<span></span>' + Array.from({ length: 24 }, (_, h) =>
-    '<span class="hl">' + (h % 6 === 0 ? ('0' + h).slice(-2) : '') + '</span>').join('') + '<span></span>';
+    '<span class="hl" data-h="' + h + '">' + (h % 6 === 0 ? ('0' + h).slice(-2) : '') + '</span>').join('') + '<span></span>';
   for (let d = 0; d < 7; d++) {
-    html += '<span class="dl">' + DOW[d] + '</span>';
+    html += '<span class="dl" data-d="' + d + '">' + DOW[d] + '</span>';
     for (let h = 0; h < 24; h++) {
       const i = d * 24 + h, v = cells[i];
       const title = slot(i) + ' · ' + fmtM(v) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL;
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
         + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + '></i>';
     }
-    html += '<span class="rb"><i style="width:' + (dayTot[d] > 0 ? Math.max(8, dayTot[d] / dm * 100) : 0) + '%"></i></span>';
+    html += '<span class="rb" data-d="' + d + '"><i style="width:' + (dayTot[d] > 0 ? Math.max(8, dayTot[d] / dm * 100) : 0) + '%"></i></span>';
   }
   el.innerHTML = html;
+  // Hovering (or focusing) a cell lights its weekday and hour labels and
+  // the two marginal bars, so the tooltip's slot can be read off the axes.
+  if (!el._hl) {
+    el._hl = true;
+    const light = (t, on) => {
+      if (!t) return;
+      const i = Number(t.getAttribute('data-i')), d = Math.floor(i / 24), h = i % 24;
+      el.querySelectorAll('[data-d="' + d + '"], [data-h="' + h + '"]').forEach(x => x.classList.toggle('on', on));
+      t.classList.toggle('on', on);
+    };
+    let cur = null;
+    const move = (t) => { if (t === cur) return; light(cur, false); cur = t; light(cur, true); };
+    el.addEventListener('mouseover', e => move(e.target.closest('[data-i]')));
+    el.addEventListener('mouseleave', () => move(null));
+    el.addEventListener('focusin', e => move(e.target.closest('[data-i]')));
+    el.addEventListener('focusout', () => move(null));
+  }
   wireTips(el, '[data-tip]', (target) => {
     const i = Number(target.getAttribute('data-i')), d = Math.floor(i / 24);
     let out = '<div class="tip-date">' + slot(i) + '</div>';
@@ -1546,12 +1573,16 @@ function renderHours() {
       + '<span class="what">' + kindNote + esc(ML) + ' per weekday-hour · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span>'
     : '<span class="what">' + kindNote + 'no ' + esc(ML) + ' in this window</span>';
   const sub = $('hours-sub');
-  if (sub) sub.innerHTML = peakV > 0
-    ? 'Busiest slot: ' + slot(peak) + ' · <b>' + fmtM(peakV) + ' ' + esc(ML) + '</b>'
-      + (occ[Math.floor(peak / 24)] > 1 ? ' over ' + occ[Math.floor(peak / 24)] + ' ' + DOW_LONG[Math.floor(peak / 24)] + 's, ≈ '
-        + fmtAvg(peakV / occ[Math.floor(peak / 24)]) + ' each' : '')
-      + ' · ' + fmtC(sess[peak]) + ' ' + esc(CL)
-    : 'No ' + esc(ML) + ' in this window';
+  if (sub) {
+    const pd = Math.floor(peak / 24);
+    sub.innerHTML = peakV > 0
+      ? 'Peak ' + slot(peak) + ' · <b>' + fmtM(peakV) + '</b>'
+        + (occ[pd] > 1 ? ' · ≈ ' + fmtAvg(peakV / occ[pd]) + ' per ' + DOW_LONG[pd] : '')
+        + ' · ' + fmtC(sess[peak]) + ' ' + esc(CL)
+      : 'No ' + esc(ML) + ' in this window';
+    sub.title = peakV > 0 ? fmtM(peakV) + ' ' + ML + ' in the busiest slot, ' + slot(peak)
+      + (occ[pd] > 1 ? ', summed over ' + occ[pd] + ' ' + DOW_LONG[pd] + 's in the window' : '') : '';
+  }
   const tag = $('hours-tag');
   if (tag) tag.textContent = hoursPhrase(cells);
 }
