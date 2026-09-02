@@ -74,6 +74,7 @@ function setPreset(name, persist = true) {
   if (!(name in GS_PRESETS)) name = 'both';
   gsPreset = name;
   GS_LAYOUT_KEY = GS_KEY_BASE + ':' + name;
+  document.body.classList.toggle('preset-usage', name === 'usage');
   const allowed = GS_PRESETS[name];
   grid.batchUpdate();
   document.querySelectorAll('.grid-stack > .grid-stack-item[gs-id]').forEach(el => {

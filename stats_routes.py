@@ -1020,7 +1020,12 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   header .subbar-tools { display: inline-flex; gap: 0.35rem; margin-left: auto; }
   header .subbar-tools button { min-width: 2rem; padding-left: 0.45rem; padding-right: 0.45rem;
     font-size: var(--fs-md); line-height: 1.2; }
-  header .subbar-tools ~ .subbar-right { flex-basis: 100%; margin-left: 0; }
+  header .subbar-break { flex-basis: 100%; height: 0; }
+  header .subbar-row2 { flex: 1 1 auto; }
+  /* The 'usage' preset has no ring cards: the rings cluster does nothing,
+     so it is dimmed and inert until another preset is picked. */
+  body.preset-usage .rings-label, body.preset-usage #live-range, body.preset-usage #ring-scrub,
+  body.preset-usage #status { opacity: .35; pointer-events: none; }
   header #status.pill { display: inline-block; min-width: 13.5rem; text-align: center;
     box-sizing: border-box; }
   /* --- Turnaround histogram (inline SVG) --- */
@@ -1121,16 +1126,19 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <span id="layout-live" class="sr-only" aria-live="polite"></span>
       <button id="reset-layout-btn" aria-label="reset layout" title="reset this preset's tile layout to defaults">↺</button>
     </div>
-    <div class="subbar-right">
+    <span class="subbar-break"></span>
+    <div class="subbar-left subbar-row2">
       <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; machine cards replaced by a coarse server status">your usage</span>
       <span class="seg-label">layout</span>
       <div class="seg-ctrl" id="layout-preset" title="which tiles are on the grid; positions are remembered per preset">
         <button data-v="ops">ops</button><button data-v="usage">usage</button><button data-v="both" class="active">both</button>
       </div>
-      <span class="seg-label">rings</span>
+      <span class="seg-label rings-label">rings</span>
       <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_HISTORY_SAMPLE_S)">
         <button data-v="live" class="active">live</button><button data-v="3600">1h</button><button data-v="86400">24h</button><button data-v="604800">7d</button>
       </div>
+    </div>
+    <div class="subbar-right">
       <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
       <span id="status" class="pill live">live</span>
     </div>
