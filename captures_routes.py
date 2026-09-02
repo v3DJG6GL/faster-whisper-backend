@@ -3272,9 +3272,9 @@ _CAPTURES_HTML = r"""<!doctype html>
     gap: 0.5rem; align-items: start; margin-top: 0.4rem; }
   .cc-tr-lang { font-family: var(--font-mono); font-size: var(--fs-xs);
     letter-spacing: 0.06em; color: var(--dim); padding-top: 0.7rem; }
-  .cc-tr-lang.cc-tr-eligible { color: #4dd0c4; }
+  .cc-tr-lang.cc-tr-eligible { color: var(--stage-translating); }
   .cc-tr-text { min-height: 0; margin-top: 0; }
-  .pill-mt { color: #4dd0c4; border-color: #4dd0c4; }
+  .pill-mt { color: var(--stage-translating); border-color: var(--stage-translating); }
   /* Final-result karaoke: words render inline (natural text flow); the active
      word lights up in sync with the Corrections strip as audio plays. */
   .cc-ground .word { display: inline; border-radius: 3px; }

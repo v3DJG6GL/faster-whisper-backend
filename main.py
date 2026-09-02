@@ -6573,17 +6573,17 @@ _LOG_VIEWER_HTML = """<!doctype html>
      disabled (SKIPPED). Mirrors the /quick-config skipped-step treatment;
      opacity (not a color) so the label/before/after keep their hue, just faded. */
   .line.dim     { opacity: 0.55; }
-  /* Per-stage hues for the request receipt. These are the SAME values the
-     desktop app's stage rail uses (STAGE_COLORS in Transcribe.tsx), so a
+  /* Per-stage hues for the request receipt: the shared --stage-* tokens
+     (web_common.STAGE_COLORS, the desktop app's stage-rail values), so a
      stage reads the same color in the log as it did while the user watched
      it run. Before this, every receipt line that described the job fell
      through classify()'s last branch to .line.info and the whole block read
      as one monochrome wall. */
-  .line.st-sep  { color: #6faed9; }   /* music source separation */
-  .line.st-whi  { color: #93b76f; }   /* transcribe (+ its audio/params) */
-  .line.st-dia  { color: #c68fb4; }   /* diarization */
-  .line.st-tra  { color: #4dd0c4; }   /* translation */
-  .line.st-dl   { color: #d9a45b; }   /* download */
+  .line.st-sep  { color: var(--stage-separating); }
+  .line.st-whi  { color: var(--stage-transcribing); }
+  .line.st-dia  { color: var(--stage-diarizing); }
+  .line.st-tra  { color: var(--stage-translating); }
+  .line.st-dl   { color: var(--stage-downloading); }
   /* F2: on a stage PARAM row only the key column takes the hue; the value
      stays --fg. Ten rows of solid pink drowns the numbers you opened the
      log to read, and a row scrolled away from its section header still

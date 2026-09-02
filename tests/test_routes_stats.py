@@ -117,10 +117,11 @@ def test_header_activity_cluster_inert_on_headerless_hub(client):
 def test_stats_page_colours_the_vad_stage(client):
     """main.py emits a "vad" row into stage timings; both /stats renderers of
     the stage vocabulary (the .pipe glyph CSS and stageColor's map) must know
-    it, with the same hue /quick-config assigns (.seg-vad #93b76f)."""
+    it, through the shared --stage-vad token /quick-config's .seg-vad also
+    uses."""
     html = client.get("/stats").text
-    assert ".pipe i.vad" in html
-    assert "vad: '#93b76f'" in html
+    assert re.search(r"\.pipe i\.vad\s+\{ background: var\(--stage-vad\); \}", html)
+    assert "'vad'" in html and "'var(--stage-' + key + ')'" in html
 
 
 def test_header_activity_cluster_js_contract():
@@ -148,6 +149,46 @@ def test_header_activity_cluster_js_contract():
     # Own-scope lite payloads carry a coarse gpu dict {busy, mem_*} with no
     # util_pct; the cluster must read busy/idle instead of printing "–".
     assert "gpu.busy" in js
+
+
+def test_stage_hues_have_one_definition():
+    """A pipeline stage is the same colour on every backend page and in the
+    desktop app: NAV_CSS emits web_common.STAGE_COLORS as --stage-* tokens
+    (the app.css values), and the consumers (stats page + stats.js, the
+    /logs receipt, /quick-config traces, captures) reference the tokens
+    rather than carrying their own hexes."""
+    import pathlib
+    import main as app_main
+    import quick_config_routes
+    import stats_routes
+    import web_common
+
+    assert set(web_common.STAGE_COLORS) == {
+        "downloading", "separating", "vad", "transcribing", "diarizing", "translating"}
+    for stage, hexv in web_common.STAGE_COLORS.items():
+        assert f"--stage-{stage}: {hexv};" in web_common.NAV_CSS
+    # The desktop app's tokens (faster-whisper-frontend/src/app.css, dark).
+    assert web_common.STAGE_COLORS["downloading"] == "#d9a45b"
+    assert web_common.STAGE_COLORS["separating"] == "#6faed9"
+    assert web_common.STAGE_COLORS["transcribing"] == "#93b76f"
+    assert web_common.STAGE_COLORS["diarizing"] == "#c68fb4"
+    assert web_common.STAGE_COLORS["translating"] == "#4dd0c4"
+    js = pathlib.Path(stats_routes.__file__).with_name("static").joinpath("stats.js").read_text()
+    for stage in web_common.STAGE_COLORS:
+        assert f"var(--stage-{stage})" in stats_routes._STATS_VIEWER_HTML
+        assert f"var(--stage-{stage})" in quick_config_routes._QUICK_CONFIG_HTML
+    assert "getPropertyValue('--stage-' + k)" in js
+    # Job kinds likewise: the desktop app's --c-chart-* palette as --kind-*.
+    assert web_common.KIND_COLORS == {"dictation": "#cf7b00", "file": "#3e96ea",
+                                      "url": "#d76797", "text": "#6f675c"}
+    for kind, hexv in web_common.KIND_COLORS.items():
+        assert f"--kind-{kind}: {hexv};" in web_common.NAV_CSS
+        assert f"var(--kind-{kind})" in stats_routes._STATS_VIEWER_HTML
+    assert "getPropertyValue('--kind-' + k)" in js
+    hexes = set(web_common.STAGE_COLORS.values())
+    for src in (stats_routes._STATS_VIEWER_HTML, quick_config_routes._QUICK_CONFIG_HTML,
+                app_main._LOG_VIEWER_HTML):
+        assert not any(h in src for h in hexes), "stage hex copied instead of var(--stage-*)"
 
 
 def test_nav_css_defines_the_magenta_token():
@@ -189,15 +230,13 @@ def test_stats_stage_vocabulary_is_covered_by_both_renderers(client):
     `.pipe i.<name>` CSS rule and a stageColor() map entry, or one of the two
     renderers falls back to unstyled grey."""
     html = client.get("/stats").text
-    expect = {
-        "vad": "'#93b76f'", "separating": "'var(--magenta)'",
-        "transcribing": "'var(--cyan)'", "diarizing": "'var(--yellow)'",
-        "translating": "'var(--green)'", "downloading": "'var(--cyan)'",
-        "preload": "'var(--help)'",
-    }
-    for name, colour in expect.items():
+    for name in ("vad", "separating", "transcribing", "diarizing", "translating", "downloading"):
         assert f".pipe i.{name}" in html, name
-        assert f"{name}: {colour}" in html, name
+        assert f"var(--stage-{name})" in html, name
+    assert ".pipe i.preload" in html and "'preload' ? 'var(--help)'" in html
+    # stageColor() resolves every stage to its shared token, aliases included.
+    assert "['vad', 'separating', 'transcribing', 'diarizing', 'translating', 'downloading'].includes(key)" in html
+    assert "translate: 'translating', download: 'downloading'" in html
 
 
 def test_recent_jobs_counter_counts_rendered_rows(client):
@@ -723,7 +762,7 @@ def test_stats_js_contract(client):
     # The stacked series draw top-of-stack first so lower segments paint over.
     assert "series = rows.slice().reverse()" in js
     # Colours follow the entity, never its rank.
-    assert "KIND_COLOR = { file:" in js
+    assert "getPropertyValue('--kind-' + k)" in js
 
 
 def test_stats_layout_presets_edit_mode_and_ring_freeze(client):

@@ -197,6 +197,36 @@ def sse_response(generator):
 # `<span class="spacer"></span>` between the nav block and the action cluster
 # so the right side stays right-aligned regardless of how many actions a page
 # has.
+# Pipeline-stage and job-kind hues — ONE definition for every backend page (/stats
+# cards and rings, /logs receipts, /quick-config traces) and the same values
+# the desktop app's app.css declares (--c-download, --c-separate, --c-ok for
+# transcribing, --c-diarize, --c-translate), so a stage is the same colour
+# wherever it appears. `vad` (silence skipping) has no desktop counterpart;
+# its lavender is unclaimed by any other stage or state hue. Consumers use
+# `var(--stage-<name>)` in CSS; canvas/SVG code resolves the token through
+# getComputedStyle (static/stats.js STAGE_COLOR) rather than copying hexes.
+STAGE_COLORS: dict[str, str] = {
+    "downloading": "#d9a45b",
+    "separating": "#6faed9",
+    "vad": "#a493e8",
+    "transcribing": "#93b76f",
+    "diarizing": "#c68fb4",
+    "translating": "#4dd0c4",
+}
+# Job-kind hues (the usage charts' categorical palette): the desktop app's
+# --c-chart-dict / -file / -link / -text, validated there for colour-vision
+# separation against each other and the surface. Text imports are the faint
+# neutral on purpose — they are rare and never a volume story.
+KIND_COLORS: dict[str, str] = {
+    "dictation": "#cf7b00",
+    "file": "#3e96ea",
+    "url": "#d76797",
+    "text": "#6f675c",
+}
+_STAGE_TOKENS = "\n".join(
+    [f"  --stage-{k}: {v};" for k, v in STAGE_COLORS.items()]
+    + [f"  --kind-{k}: {v};" for k, v in KIND_COLORS.items()])
+
 NAV_CSS = """
 /* Brand fonts (vendored, see static/VENDOR.md) — the family wordmark grammar
    shared with faster-whisper-frontend renders the name in Hubot Sans and the
@@ -242,6 +272,7 @@ NAV_CSS = """
                ui-monospace, monospace;
   --help: #8b949e;
   --magenta: #d2a8ff;
+{{STAGE_TOKENS}}
 }
 html { font-size: var(--fs-base); color-scheme: dark; }
 /* Boundary marker for transcription values: dim brackets around the EXACT
@@ -1019,7 +1050,7 @@ input[type="checkbox"].switch:focus-visible {
 .rule-editor .rl-enote textarea::placeholder { color: var(--dim, #6e7681); font-style: italic; }
 .rule-editor .rl-enote textarea { min-height: 2.4rem; }
 .rule-editor textarea.rule-note { min-height: 3rem; }
-"""
+""".replace("{{STAGE_TOKENS}}", _STAGE_TOKENS)
 
 
 # Injected at the top of every page's <head>:

@@ -1336,10 +1336,10 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .trace-meta .kind-chip { font-family: var(--font-mono);
     text-transform: uppercase; letter-spacing: 0.04em;
     background: transparent; color: var(--dim); border-style: dashed; }
-  .trace-meta .kind-chip.kind-translate { color: #4dd0c4;
-    border-color: rgba(77,208,196,0.5); }
-  .trace-meta .kind-chip.kind-download { color: #d9a45b;
-    border-color: rgba(217,164,91,0.5); }
+  .trace-meta .kind-chip.kind-translate { color: var(--stage-translating);
+    border-color: color-mix(in srgb, var(--stage-translating) 50%, transparent); }
+  .trace-meta .kind-chip.kind-download { color: var(--stage-downloading);
+    border-color: color-mix(in srgb, var(--stage-downloading) 50%, transparent); }
   /* Model gets a pill like every other attribute — it was a bare <span>, the
      one unstyled item in a row of chips. */
   .trace-meta .model-chip { font-family: var(--font-mono); }
@@ -1376,27 +1376,28 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   .trace-rail .rail-mark .tick::after { content: "1\00d7"; position: absolute;
     top: 4px; left: -0.55rem; font-family: var(--font-mono); font-size: 9px;
     color: var(--dim); letter-spacing: 0.04em; }
-  .seg-separating  { background: #6faed9; }
-  .seg-vad         { background: #93b76f; }
-  .seg-transcribing{ background: #93b76f; }
-  .seg-diarizing   { background: #c68fb4; }
-  .seg-translating { background: #4dd0c4; }
-  .seg-translate   { background: #4dd0c4; }
-  .seg-downloading { background: #d9a45b; }
-  .seg-download    { background: #d9a45b; }
-  /* Per-stage chips. Same hues the /logs receipt and the desktop app's
-     stage rail use, so a stage is one colour everywhere it appears. */
+  /* Stage hues: the shared --stage-* tokens (web_common.STAGE_COLORS). */
+  .seg-separating  { background: var(--stage-separating); }
+  .seg-vad         { background: var(--stage-vad); }
+  .seg-transcribing{ background: var(--stage-transcribing); }
+  .seg-diarizing   { background: var(--stage-diarizing); }
+  .seg-translating { background: var(--stage-translating); }
+  .seg-translate   { background: var(--stage-translating); }
+  .seg-downloading { background: var(--stage-downloading); }
+  .seg-download    { background: var(--stage-downloading); }
+  /* Per-stage chips: the shared --stage-* tokens, same as the /logs receipt
+     and the desktop app's stage rail. */
   .trace-stages { margin-top: 0.25rem; }
   .trace-meta .stage-chip { font-family: var(--font-mono);
     text-transform: none; letter-spacing: 0; }
-  .trace-meta .stage-separating  { color: #6faed9; border-color: #6faed9; }
-  .trace-meta .stage-vad         { color: #93b76f; border-color: #93b76f; }
-  .trace-meta .stage-transcribing{ color: #93b76f; border-color: #93b76f; }
-  .trace-meta .stage-diarizing   { color: #c68fb4; border-color: #c68fb4; }
-  .trace-meta .stage-translating { color: #4dd0c4; border-color: #4dd0c4; }
-  .trace-meta .stage-translate   { color: #4dd0c4; border-color: #4dd0c4; }
-  .trace-meta .stage-downloading { color: #d9a45b; border-color: #d9a45b; }
-  .trace-meta .stage-download    { color: #d9a45b; border-color: #d9a45b; }
+  .trace-meta .stage-separating  { color: var(--stage-separating); border-color: var(--stage-separating); }
+  .trace-meta .stage-vad         { color: var(--stage-vad); border-color: var(--stage-vad); }
+  .trace-meta .stage-transcribing{ color: var(--stage-transcribing); border-color: var(--stage-transcribing); }
+  .trace-meta .stage-diarizing   { color: var(--stage-diarizing); border-color: var(--stage-diarizing); }
+  .trace-meta .stage-translating { color: var(--stage-translating); border-color: var(--stage-translating); }
+  .trace-meta .stage-translate   { color: var(--stage-translating); border-color: var(--stage-translating); }
+  .trace-meta .stage-downloading { color: var(--stage-downloading); border-color: var(--stage-downloading); }
+  .trace-meta .stage-download    { color: var(--stage-downloading); border-color: var(--stage-downloading); }
   .trace-text { font-family: var(--font-mono); font-size: var(--fs-sm);
     word-wrap: break-word; }
   .trace-raw { color: var(--dim); margin-bottom: 0.25rem; }

@@ -202,14 +202,27 @@ if (!chartEl || typeof uPlot === 'undefined') return;
 const KINDS = ['dictation', 'file', 'url', 'text'];
 const KIND_LABEL = { dictation: 'dictation', file: 'files', url: 'links', text: 'text' };
 // Chart steps of the page's own hues (deeper than the pastel UI tokens so
-// stacked segments pass the colour-vision checks): file = transcribe cyan,
-// url = download yellow, text = translate magenta, dictation = dictate green.
-const KIND_COLOR = { file: '#388bfd', url: '#bb8009', text: '#8957e5',
-                     dictation: '#2ea043', unknown: '#6e7681' };
+// stacked segments pass the colour-vision checks). The values are the
+// shared --kind-* tokens (web_common.KIND_COLORS = the desktop app's
+// --c-chart-* palette), resolved once for canvas/SVG use.
+const KIND_FALLBACK = { dictation: '#cf7b00', file: '#3e96ea', url: '#d76797', text: '#6f675c' };
+const KIND_COLOR = (() => {
+  const cs = getComputedStyle(document.documentElement), out = { unknown: '#6e7681' };
+  for (const k in KIND_FALLBACK) out[k] = (cs.getPropertyValue('--kind-' + k) || '').trim() || KIND_FALLBACK[k];
+  return out;
+})();
 // Pipeline stages, in pipeline order, sharing the glyph strip's hues.
-const STAGE_COLOR = { downloading: '#db61a2', separating: '#bb8009',
-                      transcribing: '#388bfd', diarizing: '#2ea043',
-                      translating: '#8957e5', vad: '#93b76f' };
+// Stage hues are the shared --stage-* tokens (web_common.STAGE_COLORS, the
+// desktop app's app.css values), resolved once because uPlot strokes and
+// SVG fills need literal colours. The fallbacks only matter if the tokens
+// are missing, i.e. never on a served page.
+const STAGE_FALLBACK = { downloading: '#d9a45b', separating: '#6faed9', vad: '#a493e8',
+                         transcribing: '#93b76f', diarizing: '#c68fb4', translating: '#4dd0c4' };
+const STAGE_COLOR = (() => {
+  const cs = getComputedStyle(document.documentElement), out = {};
+  for (const k in STAGE_FALLBACK) out[k] = (cs.getPropertyValue('--stage-' + k) || '').trim() || STAGE_FALLBACK[k];
+  return out;
+})();
 const STAGE_LABEL = { translating: 'Translation', diarizing: 'Speaker diarization',
                       vad: 'Silence skipping', separating: 'Music separation',
                       transcribing: 'Transcription', downloading: 'Download' };

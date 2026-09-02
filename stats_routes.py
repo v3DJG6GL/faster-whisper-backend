@@ -993,14 +993,15 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .pipe { display: inline-flex; gap: 2px; }
   .pipe i { display: inline-block; width: 0.55rem; height: 0.55rem;
     border-radius: 2px; background: #21262d; }
-  .pipe i.vad          { background: #93b76f; }  /* matches /quick-config's .seg-vad */
-  .pipe i.separating   { background: var(--magenta); }
-  .pipe i.transcribing { background: var(--cyan); }
-  .pipe i.diarizing    { background: var(--yellow); }
+  /* Stage hues come from NAV_CSS's --stage-* tokens (web_common.STAGE_COLORS). */
+  .pipe i.vad          { background: var(--stage-vad); }
+  .pipe i.separating   { background: var(--stage-separating); }
+  .pipe i.transcribing { background: var(--stage-transcribing); }
+  .pipe i.diarizing    { background: var(--stage-diarizing); }
   .pipe i.translating,
-  .pipe i.translate    { background: var(--green); }
+  .pipe i.translate    { background: var(--stage-translating); }
   .pipe i.download,
-  .pipe i.downloading  { background: var(--cyan); }
+  .pipe i.downloading  { background: var(--stage-downloading); }
   .pipe i.preload      { background: var(--help); }
   tr.rj-expand td { background: rgba(110, 118, 129, 0.06); }
   .rj-foot { display: flex; align-items: center; gap: 0.6rem; margin-top: 0.3rem; }
@@ -1172,10 +1173,10 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <span class="seg-label">kind</span>
     <span class="chips" id="sb-kind">
       <button type="button" class="chip on" data-v="all">all</button>
-      <button type="button" class="chip" data-v="dictation"><i class="sw" style="background:#2ea043"></i>dictation</button>
-      <button type="button" class="chip" data-v="file"><i class="sw" style="background:#388bfd"></i>files</button>
-      <button type="button" class="chip" data-v="url"><i class="sw" style="background:#bb8009"></i>links</button>
-      <button type="button" class="chip" data-v="text"><i class="sw" style="background:#8957e5"></i>text</button>
+      <button type="button" class="chip" data-v="dictation"><i class="sw" style="background:var(--kind-dictation)"></i>dictation</button>
+      <button type="button" class="chip" data-v="file"><i class="sw" style="background:var(--kind-file)"></i>files</button>
+      <button type="button" class="chip" data-v="url"><i class="sw" style="background:var(--kind-url)"></i>links</button>
+      <button type="button" class="chip" data-v="text"><i class="sw" style="background:var(--kind-text)"></i>text</button>
     </span>
     <span class="sb-filters-group">
       <span class="seg-label">filters</span>
@@ -2066,8 +2067,8 @@ function renderServer(server) {
 // enrichment models) and keep load order within a role; the role badge
 // uses the same hue as that stage on the Pipeline stages card.
 const MODEL_ROLES = {
-  transcribing: ['transcription', '#388bfd'], diarizing: ['diarization', '#2ea043'],
-  separating: ['music separation', '#bb8009'], translating: ['translation', '#8957e5'],
+  transcribing: ['transcription', 'var(--stage-transcribing)'], diarizing: ['diarization', 'var(--stage-diarizing)'],
+  separating: ['music separation', 'var(--stage-separating)'], translating: ['translation', 'var(--stage-translating)'],
 };
 const MODEL_ROLE_ORDER = ['transcribing', 'diarizing', 'separating', 'translating'];
 let lastModelsSnap = null;
@@ -2383,14 +2384,14 @@ function stageRows(r) {
 }
 
 function stageColor(name) {
-  // Keep in step with the .pipe i.<name> CSS rules above and with the
-  // stage vocabulary main.py emits (vad hue matches /quick-config's .seg-vad).
-  return ({ vad: '#93b76f', separating: 'var(--magenta)',
-            transcribing: 'var(--cyan)',
-            diarizing: 'var(--yellow)', translating: 'var(--green)',
-            translate: 'var(--green)', download: 'var(--cyan)',
-            downloading: 'var(--cyan)', preload: 'var(--help)' })[name]
-    || 'var(--dim)';
+  // The shared --stage-* tokens (web_common.STAGE_COLORS); main.py's stage
+  // vocabulary has two spellings for download and translate.
+  const alias = { translate: 'translating', download: 'downloading' };
+  const key = alias[name] || name;
+  if (['vad', 'separating', 'transcribing', 'diarizing', 'translating', 'downloading'].includes(key)) {
+    return 'var(--stage-' + key + ')';
+  }
+  return name === 'preload' ? 'var(--help)' : 'var(--dim)';
 }
 
 // Older pages fetched from /stats/jobs (load older jobs), appended under
