@@ -121,7 +121,8 @@ function setLayoutEditing(on) {
   document.querySelectorAll('.grid-stack-item .card > h3, .grid-stack-item .card .usage-toolbar > h3, .grid-stack-item .card .rj-toolbar > h3')
     .forEach(h => { if (layoutEditing) h.setAttribute('tabindex', '0'); else h.removeAttribute('tabindex'); });
   if (editLayoutBtn) {
-    editLayoutBtn.textContent = layoutEditing ? '✓ done' : '✎ edit layout';
+    editLayoutBtn.textContent = layoutEditing ? '✓' : '✎';
+    editLayoutBtn.setAttribute('aria-label', layoutEditing ? 'done editing layout' : 'edit layout');
     editLayoutBtn.classList.toggle('active', layoutEditing);
     editLayoutBtn.setAttribute('aria-pressed', layoutEditing ? 'true' : 'false');
   }

@@ -1015,7 +1015,12 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* --- Live rings: scrubber + range mode --- */
   header #ring-scrub { width: 7rem; accent-color: var(--cyan); vertical-align: middle; }
   header #ring-scrub.off { opacity: .35; }
-  header .subbar-gap { width: 0.6rem; }
+  /* Layout tools end the first sub-bar row; the rings/preset cluster always
+     takes the second row. */
+  header .subbar-tools { display: inline-flex; gap: 0.35rem; margin-left: auto; }
+  header .subbar-tools button { min-width: 2rem; padding-left: 0.45rem; padding-right: 0.45rem;
+    font-size: var(--fs-md); line-height: 1.2; }
+  header .subbar-tools ~ .subbar-right { flex-basis: 100%; margin-left: 0; }
   header #status.pill { display: inline-block; min-width: 13.5rem; text-align: center;
     box-sizing: border-box; }
   /* --- Turnaround histogram (inline SVG) --- */
@@ -1110,22 +1115,24 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     </div>
     <span class="seg-label">compare</span>
     <div class="seg-ctrl" id="sb-compare"><button data-v="off" class="active">off</button><button data-v="prev">previous</button><button data-v="yoy">last year</button></div>
+    <!-- Layout tools: icon-only, top right of the first row. -->
+    <div class="subbar-tools" id="layout-tools">
+      <button id="edit-layout-btn" aria-pressed="false" aria-label="edit layout" title="edit layout (E): drag tile titles and resize corners; Alt+arrows move, Alt+Shift+arrows resize the focused tile">✎</button>
+      <span id="layout-live" class="sr-only" aria-live="polite"></span>
+      <button id="reset-layout-btn" aria-label="reset layout" title="reset this preset's tile layout to defaults">↺</button>
+    </div>
     <div class="subbar-right">
       <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; machine cards replaced by a coarse server status">your usage</span>
+      <span class="seg-label">layout</span>
+      <div class="seg-ctrl" id="layout-preset" title="which tiles are on the grid; positions are remembered per preset">
+        <button data-v="ops">ops</button><button data-v="usage">usage</button><button data-v="both" class="active">both</button>
+      </div>
       <span class="seg-label">rings</span>
       <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_HISTORY_SAMPLE_S)">
         <button data-v="live" class="active">live</button><button data-v="3600">1h</button><button data-v="86400">24h</button><button data-v="604800">7d</button>
       </div>
       <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
       <span id="status" class="pill live">live</span>
-      <span class="subbar-gap"></span>
-      <span class="seg-label">layout</span>
-      <div class="seg-ctrl" id="layout-preset" title="which tiles are on the grid; positions are remembered per preset">
-        <button data-v="ops">ops</button><button data-v="usage">usage</button><button data-v="both" class="active">both</button>
-      </div>
-      <button id="edit-layout-btn" aria-pressed="false" title="drag tile titles and resize corners (E); Alt+arrows move, Alt+Shift+arrows resize the focused tile">✎ edit layout</button>
-      <span id="layout-live" class="sr-only" aria-live="polite"></span>
-      <button id="reset-layout-btn" title="reset this preset's tile layout to defaults">↺ layout</button>
     </div>
   </div>
   <!-- Usage scope, second row: kind (client-side), "ran" stage chips (server
