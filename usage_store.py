@@ -1113,6 +1113,7 @@ def empty_document(
         "apps": [],
         "calendar": [],
         "hours": [],
+        "dom_hours": [],
         "streak": {"all": {"current": 0, "best": 0},
                    **{k: {"current": 0, "best": 0} for k in KINDS}},
         "time_saved_s": 0.0,
@@ -1602,6 +1603,7 @@ def overview(
         "today": doc["today"],
         "stages": doc["stages"],
         "hours": doc["hours"],
+        "dom_hours": doc["dom_hours"],
         "series": doc["series"],
         "lines": lines,
         "leaderboard": board,
@@ -1629,7 +1631,8 @@ def overview(
         out["compare"] = {"mode": compare,
                           "range": {"from": pf, "to": pt, "days": pt - pf + 1},
                           "totals": prev["totals"], "lines": cmp_lines,
-                          "hours": prev["hours"], "series": prev["series"]}
+                          "hours": prev["hours"], "dom_hours": prev["dom_hours"],
+                          "series": prev["series"]}
     return out
 
 
@@ -1941,10 +1944,29 @@ def tail(
     }
 
 
-def _slot_of(ts: float, tz: zoneinfo.ZoneInfo | None) -> tuple[int, int]:
-    """(weekday 0=Mon, hour 0..23) of `ts` in `tz`."""
+def _slot_of(ts: float, tz: zoneinfo.ZoneInfo | None) -> tuple[int, int, int]:
+    """(weekday 0=Mon, day of month 1..31, hour 0..23) of `ts` in `tz`.
+    _finish folds these into the weekday × hour `hours` grid and the
+    day-of-month × hour `dom_hours` grid."""
     dt = datetime.datetime.fromtimestamp(ts, tz)
-    return dt.weekday(), dt.hour
+    return dt.weekday(), dt.day, dt.hour
+
+
+def _fold_slots(words_by_slot, extra_by_slot, key):
+    """Sum the (dow, dom, hour) slots into coarser ones chosen by `key`
+    (a function of the slot tuple), returning (words, extras) maps."""
+    words_out: dict[Any, dict[str, int]] = {}
+    extra_out: dict[Any, dict[str, dict[str, Any]]] = {}
+    for slot, words in words_by_slot.items():
+        dst = words_out.setdefault(key(slot), _words_split())
+        for k, v in words.items():
+            dst[k] += v
+    for slot, extra in extra_by_slot.items():
+        dst = extra_out.setdefault(key(slot), _slot_extra())
+        for name, split in extra.items():
+            for k, v in split.items():
+                dst[name][k] += v
+    return words_out, extra_out
 
 
 # The per-slot measures beside words: every measure the stats console can
@@ -1984,22 +2006,28 @@ def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
                      for d in sorted(by_day)]
     doc["calendar"] = [{"day": _epoch_day(d), **words_by_day[d]}
                        for d in sorted(words_by_day) if words_by_day[d]["all"] > 0]
-    hours = []
-    for slot in sorted(set(words_by_slot) | set(extra_by_slot)):
-        words = words_by_slot.get(slot) or _words_split()
-        extra = extra_by_slot.get(slot) or _slot_extra()
-        if (words["all"] <= 0 and extra["proc_s"]["all"] <= 0
-                and extra["requests"]["all"] <= 0):
-            continue
-        hours.append({
-            "dow": slot[0], "hour": slot[1], **words,
-            "proc_s": {k: round(v, 3) for k, v in extra["proc_s"].items()},
-            "audio_s": {k: round(v, 3) for k, v in extra["audio_s"].items()},
-            "sessions": dict(extra["sessions"]),
-            "requests": dict(extra["requests"]),
-            "errors": dict(extra["errors"]),
-        })
-    doc["hours"] = hours
+    def grid(first: str, key) -> list[dict[str, Any]]:
+        w_map, e_map = _fold_slots(words_by_slot, extra_by_slot, key)
+        out = []
+        for slot in sorted(set(w_map) | set(e_map)):
+            words = w_map.get(slot) or _words_split()
+            extra = e_map.get(slot) or _slot_extra()
+            if (words["all"] <= 0 and extra["proc_s"]["all"] <= 0
+                    and extra["requests"]["all"] <= 0):
+                continue
+            out.append({
+                first: slot[0], "hour": slot[1], **words,
+                "proc_s": {k: round(v, 3) for k, v in extra["proc_s"].items()},
+                "audio_s": {k: round(v, 3) for k, v in extra["audio_s"].items()},
+                "sessions": dict(extra["sessions"]),
+                "requests": dict(extra["requests"]),
+                "errors": dict(extra["errors"]),
+            })
+        return out
+    doc["hours"] = grid("dow", lambda s: (s[0], s[2]))
+    # The same slots by day of month (1..31) × hour: the stats console's
+    # "busy days" rhythm. Not read by the desktop app.
+    doc["dom_hours"] = grid("dom", lambda s: (s[1], s[2]))
     doc["streak"] = {
         k: _streak({d: w[k] for d, w in words_all_days.items()}, today)
         for k in ("all", *KINDS)}

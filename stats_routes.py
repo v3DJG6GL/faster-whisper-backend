@@ -1055,8 +1055,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     max-height: calc(2rem + 7 * 1.8rem + 9 * 2px); }
   .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; white-space: nowrap; overflow: visible; }
   .hours.dense { gap: 1px; }
-  .hours.dense i { min-height: 0.35rem; border-radius: 1px; }
-  .card h3 .seg-ctrl.mini { display: inline-flex; vertical-align: middle; margin-left: 0.4rem; }
+  .hours.dense i { min-height: 0.3rem; border-radius: 1px; }
+  .hours.dense .dl { font-size: 0.55rem; }
+  /* The rhythm switch floats right beside the window chip, so it stays
+     put while the title phrase changes length. */
+  .card h3 .seg-ctrl.mini { display: inline-flex; vertical-align: middle; float: right; margin-right: 0.5rem; }
   .card h3 .seg-ctrl.mini button { font-size: var(--fs-xs); padding: 0 0.45rem; line-height: 1.4; text-transform: none; letter-spacing: 0; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
   /* Marginals share one scale: each bar is its hour's / weekday's total
@@ -1631,9 +1634,10 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span>
-      <span class="seg-ctrl mini" id="hours-mode" title="the rhythm: weekday × hour of day, weekday × week, or year × month">
+      <span class="win" data-win="usage"></span>
+      <span class="seg-ctrl mini" id="hours-mode" title="the rhythm: weekday × hour of day, day of month × hour of day, or year × month">
         <button data-v="hours" class="active">hours</button><button data-v="days">days</button><button data-v="months">months</button>
-      </span> <span class="win" data-win="usage"></span></h3>
+      </span></h3>
     <div class="hours-sub" id="hours-sub"></div>
     <div class="hours" id="hours-grid"></div>
     <div class="hours-legend" id="hours-legend"></div>

@@ -1500,25 +1500,27 @@ const RHYTHMS = ['hours', 'days', 'months'];
 const MON_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
                   'August', 'September', 'October', 'November', 'December'];
 const dowOfDay = day => (day + 3) % 7;                    // epoch day 0 was a Thursday
-const ymOfDay = day => { const d = new Date(day * DAY_MS); return [d.getUTCFullYear(), d.getUTCMonth()]; };
+const ymOfDay = day => { const d = new Date(day * DAY_MS); return [d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()]; };
+const ordinal = n => n + (n % 10 === 1 && n !== 11 ? 'st' : n % 10 === 2 && n !== 12 ? 'nd' : n % 10 === 3 && n !== 13 ? 'rd' : 'th');
 
 // The layout of one rhythm for the current window: how many rows and
 // columns, what each is called, and where a source record lands.
 function rhythmLayout(mode, rg) {
   const from = rg.from, to = rg.to;
   if (mode === 'days') {
-    const first = from - dowOfDay(from);                  // the Monday on or before `from`
-    const weeks = Math.floor((to - first) / 7) + 1;
-    const colLabel = c => {                               // month name where a month starts
-      const d0 = first + c * 7, ym = ymOfDay(d0), ymPrev = ymOfDay(d0 - 7);
-      return (c === 0 || ym[1] !== ymPrev[1]) ? MON[ym[1]] : '';
-    };
-    const dayOf = i => first + (i % weeks) * 7 + Math.floor(i / weeks);
-    return { rows: 7, cols: weeks, rowLabel: r => DOW[r], rowLong: r => DOW_LONG[r] + 's',
-      colLabel, colLong: c => 'week of ' + fmtDayShort(first + c * 7, false),
-      cellName: i => DOW[Math.floor(i / weeks)] + ' ' + fmtDayShort(dayOf(i), true),
-      dayCell: day => (day < from || day > to) ? -1 : dowOfDay(day) * weeks + Math.floor((day - first) / 7),
-      colUnit: 'week', rowUnit: 'weekday', per: 'per day', maxRows: 7, dayOf };
+    // Day of month across, hour of day down: the month's shape. A window
+    // inside one month shows that month's days; longer windows sum every
+    // occurrence of each day of month (31 columns).
+    const [fy, fm] = ymOfDay(from), [ty, tm] = ymOfDay(to);
+    const oneMonth = fy === ty && fm === tm;
+    const cols = oneMonth ? new Date(Date.UTC(fy, fm + 1, 0)).getUTCDate() : 31;
+    const occ = new Array(cols).fill(0);
+    for (let d = from; d <= to; d++) occ[ymOfDay(d)[2] - 1]++;
+    return { rows: 24, cols, rowLabel: r => (r % 3 === 0 ? ('0' + r).slice(-2) : ''), rowLong: r => ('0' + r).slice(-2) + '–' + ('0' + (r + 1)).slice(-2),
+      colLabel: c => ((c + 1) % 5 === 0 || c === 0 ? String(c + 1) : ''), colLong: c => 'the ' + ordinal(c + 1) + (oneMonth ? ' of ' + MON[fm] : ' of each month'),
+      cellName: i => 'the ' + ordinal(i % cols + 1) + (oneMonth ? ' ' + MON[fm] : '') + ' ' + ('0' + Math.floor(i / cols)).slice(-2) + '–' + ('0' + (Math.floor(i / cols) + 1)).slice(-2),
+      slotCell: h => (h.dom > cols ? -1 : h.hour * cols + (h.dom - 1)),
+      colUnit: 'day of month', rowUnit: 'hour of day', per: 'per slot', colOcc: occ, oneMonth };
   }
   if (mode === 'months') {
     const [y0] = ymOfDay(from), [y1] = ymOfDay(to);
@@ -1557,9 +1559,10 @@ function renderHours() {
   // Fill from the source the rhythm reads; `cellOf` maps a compare-window
   // record onto this grid too (days shifted by the window offset).
   const fill = (target, doc, offsetDays) => {
-    if (mode === 'hours') {
-      (doc.hours || []).forEach(h => {
-        const i = h.dow * 24 + h.hour;
+    if (mode === 'hours' || mode === 'days') {
+      (mode === 'hours' ? doc.hours : doc.dom_hours || []).forEach(h => {
+        const i = mode === 'hours' ? h.dow * 24 + h.hour : L.slotCell(h);
+        if (i < 0) return;
         target.c[i] += slotMeasure(h, M); target.s[i] += slotMeasure(h, C);
         if (target.k) KINDS.forEach(k => { if (kindOn(k)) addKind(k, i, Number(M === 'words' ? h[k] || 0 : (h[M] || {})[k] || 0), Number(C === 'words' ? h[k] || 0 : (h[C] || {})[k] || 0)); });
       });
@@ -1573,9 +1576,10 @@ function renderHours() {
     });
   };
   fill({ c: cells, s: sess, k: true }, lastDoc, 0);
-  const cmp = lastDoc.compare && (mode === 'hours' ? lastDoc.compare.hours : lastDoc.compare.series) ? lastDoc.compare : null;
+  const cmpSrc = { hours: 'hours', days: 'dom_hours', months: 'series' }[mode];
+  const cmp = lastDoc.compare && lastDoc.compare[cmpSrc] ? lastDoc.compare : null;
   const cmpCells = new Array(N).fill(0);
-  if (cmp) fill({ c: cmpCells, s: new Array(N).fill(0), k: false }, cmp, mode === 'hours' ? 0 : (rg.from - cmp.range.from));
+  if (cmp) fill({ c: cmpCells, s: new Array(N).fill(0), k: false }, cmp, mode === 'months' ? (rg.from - cmp.range.from) : 0);
   const br = quantileBreaks(cells);
   let peak = -1, peakV = 0;
   cells.forEach((v, i) => { if (v > peakV) { peakV = v; peak = i; } });
@@ -1591,6 +1595,7 @@ function renderHours() {
   // Occurrences per row in the window (hours: how many Tuesdays; days and
   // months: each cell is its own occurrence).
   const occ = mode === 'hours' ? weekdayCounts(rg.from, rg.to) : new Array(L.rows).fill(1);
+  const colOcc = L.colOcc || null;           // days: how often each day of month occurs
   // Marginals: each fills its own track; the dashed tick is where a flat
   // distribution's average falls on that track.
   const colIdx = colTot.map(v => winSum > 0 ? v / (winSum / L.cols) : 0);
@@ -1601,8 +1606,8 @@ function renderHours() {
   const share = v => winSum > 0 ? (v / winSum * 100).toFixed(0) + ' % of the window' : '';
 
   el.style.gridTemplateColumns = '2rem repeat(' + L.cols + ', 1fr) 2.4rem';
-  el.style.maxHeight = 'calc(2rem + ' + L.rows + ' * ' + (mode === 'months' ? 2.6 : 1.8) + 'rem + ' + (L.rows + 2) + ' * 2px)';
-  el.classList.toggle('dense', L.cols > 30);
+  el.style.maxHeight = 'calc(2rem + ' + L.rows + ' * ' + ({ hours: 1.8, days: 0.7, months: 2.6 }[mode]) + 'rem + ' + (L.rows + 2) + ' * 2px)';
+  el.classList.toggle('dense', L.cols > 30 || L.rows > 12);
   let html = '<span></span>' + colTot.map((v, c) =>
     '<span class="hb' + (colIdx[c] > 1 ? ' hi' : '') + '" data-h="' + c + '" data-tip="h" tabindex="0" role="img" style="--base:' + baseC + '" aria-label="'
     + esc(L.colLong(c)) + ': ' + fmtM(v) + ' ' + ML + ', ' + colIdx[c].toFixed(1) + '× an average ' + L.colUnit + '"><i style="height:' + barLen(colIdx[c], cMax) + '"></i></span>').join('') + '<span></span>';
@@ -1611,7 +1616,7 @@ function renderHours() {
     html += '<span class="dl" data-d="' + r + '">' + esc(L.rowLabel(r)) + '</span>';
     for (let c = 0; c < L.cols; c++) {
       const i = r * L.cols + c, v = cells[i];
-      const inWin = mode === 'hours' || (mode === 'days' ? (L.dayOf(i) >= rg.from && L.dayOf(i) <= rg.to) : true);
+      const inWin = mode === 'days' ? colOcc[c] > 0 : true;
       const title = L.cellName(i) + ' · ' + fmtM(v) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL;
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
         + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + (inWin ? '' : ' style="visibility:hidden"') + '></i>';
@@ -1662,6 +1667,7 @@ function renderHours() {
       const n = mode === 'hours' ? occ.reduce((a, x) => a + x, 0) : L.rows;
       let extra = tipRow(null, 'share', share(v)) + tipRow(null, 'vs average', colIdx[c].toFixed(1) + '× an average ' + L.colUnit);
       if (mode === 'hours' && n > 1) extra += tipRow(null, 'per day', '≈ ' + fmtAvg(v / n) + ' ' + ML + ' over ' + n + ' days');
+      if (mode === 'days' && colOcc[c] > 1) extra += tipRow(null, 'per month', '≈ ' + fmtAvg(v / colOcc[c]) + ' ' + ML + ' over ' + colOcc[c] + ' months');
       return body(esc(L.colLong(c)) + ' · every ' + L.rowUnit, v, sumCol(sess, c), kindRows(arr => sumCol(arr, c)), extra, sumCol(cmpCells, c));
     }
     if (kind === 'd') {
@@ -1673,12 +1679,13 @@ function renderHours() {
     const i = Number(target.getAttribute('data-i')), r = Math.floor(i / L.cols);
     let extra = '';
     if (mode === 'hours' && occ[r] > 1) extra = tipRow(null, 'per ' + DOW[r], '≈ ' + fmtAvg(cells[i] / occ[r]) + ' ' + ML + ' over ' + occ[r] + ' ' + DOW[r]);
+    if (mode === 'days' && colOcc[i % L.cols] > 1) extra = tipRow(null, 'per month', '≈ ' + fmtAvg(cells[i] / colOcc[i % L.cols]) + ' ' + ML + ' over ' + colOcc[i % L.cols] + ' months');
     return body(esc(L.cellName(i)), cells[i], sess[i], kindRows(arr => arr[i]), extra, cmpCells[i]);
   });
   const kindNote = Q.kinds.length ? kindsLabel() + ' only · ' : '';
   const lg = $('hours-legend');
   const cmpNote = cmp ? '<span class="sub">' + cmpDelta(winSum, cmpSum) + '</span>' : '';
-  const unitWord = { hours: 'weekday-hour', days: 'day', months: 'month' }[mode];
+  const unitWord = { hours: 'weekday-hour', days: 'day-of-month hour', months: 'month' }[mode];
   if (lg) lg.innerHTML = br
     ? '<div class="row"><span class="ramp">quiet <i></i> busy</span><span class="sub">peak ' + fmtM(peakV) + ' ' + L.per + '</span>' + cmpNote + '</div>'
       + '<div class="row"><span title="the bars beside the grid: each ' + L.colUnit + ' (top) and ' + L.rowUnit + ' (right) relative to a flat distribution; the dashed tick is the average"><span class="mg"><i class="b"></i><i class="t"></i></span>side bars vs average</span>'
@@ -1698,7 +1705,7 @@ function renderHours() {
   const tag = $('hours-tag');
   if (tag) {
     if (mode === 'hours') tag.textContent = hoursPhrase(cells);
-    else if (mode === 'days') tag.textContent = winSum > 0 ? dayPhrase(rowTot) : 'quiet';
+    else if (mode === 'days') tag.textContent = winSum > 0 ? domPhrase(colTot, rowTot) : 'quiet';
     else tag.textContent = winSum > 0 ? monthPhrase(colTot) : 'quiet';
   }
   const title = $('hours-title'); if (title) title.textContent = 'Busy ' + mode;
@@ -1707,13 +1714,13 @@ function renderHours() {
 // Days: the weekday group holding most of the measure (weekdays /
 // weekends / one weekday), like hoursPhrase; months: the top month when
 // it carries 40 %+, else the top two.
-function dayPhrase(rowTot) {
-  const total = rowTot.reduce((a, v) => a + v, 0);
-  const wk = rowTot.slice(0, 5).reduce((a, v) => a + v, 0), we = total - wk;
-  let top = 0; rowTot.forEach((v, i) => { if (v > rowTot[top]) top = i; });
-  if (rowTot[top] / total >= 0.5) return DOW_LONG[top] + 's';
-  if (wk / total >= 0.85) return 'weekdays';
-  if (we / total >= 0.6) return 'weekends';
+function domPhrase(colTot, rowTot) {
+  // Which third of the month, or which part of the day, holds most.
+  const total = colTot.reduce((a, v) => a + v, 0);
+  const third = n => colTot.slice(n * 10, n === 2 ? 31 : n * 10 + 10).reduce((a, v) => a + v, 0);
+  const thirds = [['month start', third(0)], ['mid-month', third(1)], ['month end', third(2)]];
+  for (const [label, v] of thirds) if (v / total >= 0.6) return label;
+  for (const [label, a, b] of DAY_PARTS) if (rowTot.slice(a, b).reduce((x, v) => x + v, 0) / total >= 0.6) return label;
   return 'no clear pattern';
 }
 function monthPhrase(colTot) {

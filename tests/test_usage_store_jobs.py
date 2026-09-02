@@ -823,3 +823,22 @@ def test_document_lists_every_stage_only_when_asked(usage_store_db):
     assert tr["downloading"]["of_runs"] == 1          # a URL job: eligible
     over = us.overview(user_id="u", days=1, tz=_UTC, tz_name="UTC")
     assert "transcribing" in {s["stage"] for s in over["stages"]}
+
+
+def test_dom_hours_is_the_same_slots_by_day_of_month(usage_store_db):
+    """`dom_hours` folds the hourly slots by day of month × hour (the
+    console's busy-days rhythm) with the same per-kind splits as `hours`;
+    the two grids sum to the same totals."""
+    us = usage_store_db
+    us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=10, status="ok",
+                    kind="file", hour=_hour(2025, 10, 25, 9, 30, _UTC), proc_s=2.0)
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=5, status="ok",
+                    kind="dictation", hour=_hour(2025, 10, 27, 9, 30, _UTC), proc_s=1.0)
+    now = _ts(2025, 10, 27, 12, 0, _UTC)
+    doc = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now)
+    dom = {(h["dom"], h["hour"]): h for h in doc["dom_hours"]}
+    assert set(dom) == {(25, 9), (27, 9)}
+    assert dom[(25, 9)]["file"] == 10 and dom[(25, 9)]["proc_s"]["all"] == 2.0
+    assert dom[(27, 9)]["dictation"] == 5 and dom[(27, 9)]["sessions"]["all"] == 1
+    assert set(dom[(25, 9)]) == set(doc["hours"][0]) - {"dow"} | {"dom"}
+    assert sum(h["all"] for h in doc["hours"]) == sum(h["all"] for h in doc["dom_hours"]) == 15

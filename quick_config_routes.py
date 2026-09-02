@@ -748,6 +748,9 @@ async def v1_get_my_usage(
                     jobs_retention_days=jobs_retention))
         except Exception as _e:
             logger.warning("[usage] document failed: %s", _e)
+    # `dom_hours` is the stats console's day-of-month grid; the desktop
+    # app's v1 shape stays as it was.
+    doc.pop("dom_hours", None)
     return {"username": user.get("username") or "", **doc}
 
 
