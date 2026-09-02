@@ -1159,7 +1159,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <span class="chips" id="sb-filters"></span>
     </span>
     <span class="subbar-break"></span>
-    <span class="seg-label" title="only jobs that ran every chosen stage (translation, speaker diarization, music separation, silence skipping)">with stage</span>
+    <span class="seg-label" title="only jobs that ran every chosen stage (translation, speaker diarization, music separation, silence skipping)">stage</span>
     <span class="chips" id="sb-with" title="only jobs that ran every chosen stage">
       <button type="button" class="chip" data-v="translating">translated</button>
       <button type="button" class="chip" data-v="diarizing">diarized</button>
