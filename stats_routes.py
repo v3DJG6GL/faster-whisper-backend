@@ -831,12 +831,18 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     background: #21262d; vertical-align: middle; margin-right: 0.35rem; overflow: hidden; }
   .meter i { display: block; height: 100%; background: var(--cyan); }
   /* --- Busy hours grid (one blue ramp toward the accent) --- */
-  .hours { display: grid; grid-template-columns: 2rem repeat(24, 1fr); gap: 2px;
-    font: 0.62rem var(--font-mono); color: var(--dim); flex: 1; align-content: start; }
+  /* Rows stretch to the tile: the hour-label row is auto, the seven day
+     rows share what is left, so the grid fills the card at any height. */
+  .hours { display: grid; grid-template-columns: 2rem repeat(24, 1fr);
+    grid-template-rows: auto; grid-auto-rows: minmax(0.5rem, 1fr); gap: 2px;
+    font: 0.62rem var(--font-mono); color: var(--dim); flex: 1 1 0; min-height: 0;
+    align-content: stretch; margin-bottom: 0.4rem;
+    /* rows grow with the tile up to ~1.8rem so cells stay wider than tall */
+    max-height: calc(1.2rem + 7 * 1.8rem + 8 * 2px); }
   .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; }
   .hours .dl { align-self: center; }
-  .hours i, .hours-legend i { display: block; aspect-ratio: 1.3; border-radius: 2px;
-    background: #161b22; }
+  .hours i, .hours-legend i { display: block; border-radius: 2px; background: #161b22; }
+  .hours i { height: 100%; min-height: 0.5rem; box-sizing: border-box; }
   .hours i { cursor: default; }
   .hours i:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   .hours i[data-l="1"], .hours-legend i[data-l="1"] { background: #0e2a3f; }
@@ -847,7 +853,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours-legend { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
     font: var(--fs-xs) var(--font-mono); color: var(--dim); margin-top: 0.3rem; }
   .hours-legend span { display: inline-flex; align-items: center; gap: 0.25rem; }
-  .hours-legend i { width: 9px; height: 9px; aspect-ratio: auto; }
+  .hours-legend i { width: 9px; height: 9px; }
   .hours-legend .what { margin-left: auto; }
   /* Own-scope "server" strip: stands in for the machine tiles (which are
      removed from the grid for scope=own unless STATS_OWN_SHOWS_MACHINE).
@@ -1639,7 +1645,7 @@ function makeSpark(elId, color, opts={}) {
     // edge — half the glyph extends past the edge, so padding must
     // exceed font-size/2). Left padding plus axis size gives uPlot room
     // to draw "100%" without GridStack's overflow-x clipping the "1".
-    padding: [_remPx(0.55), 6, _remPx(0.4), 0],
+    padding: [_remPx(0.55), 4, _remPx(0.4), 4],
     // One crosshair for every live ring: the sparks share histX, so a
     // cursor on one lands on the same second in all of them (sync key
     // 'live'; the usage chart is a different key and never follows).
@@ -1647,21 +1653,22 @@ function makeSpark(elId, color, opts={}) {
     cursor: { show: true, x: true, y: false, points: { show: false },
               drag: { x: false, y: false },
               sync: { key: 'live', setSeries: false, scales: ['x', null] } },
-    hooks: { setCursor: [onSparkHover] },
+    hooks: { setCursor: [onSparkHover], draw: [drawInsetLabels] },
     legend: { show: false },
     select: { show: false },
     scales: { x: { time: false }, y: yScale },
     axes: [
       { show: false },
-      // Four mono glyphs ("100%") at ~0.6 em each + tick + gap: the axis
-      // takes the width its labels need and nothing more.
-      { show: true, size: Math.ceil(axisFontPx * 2.4) + 6, gap: 2,
+      // Zero-width axis: it only contributes the grid lines. The split
+      // labels are painted inside the plot by drawInsetLabels so the
+      // series runs edge to edge (the mockup's sparks had no gutter).
+      { show: true, size: 0, gap: 0,
         font: axisFontPx + 'px ' + _MONO_STACK,
         stroke: '#6e7681',
         grid:  { stroke: '#21262d', width: 1 },
-        ticks: { stroke: '#30363d', width: 1, size: 3 },
+        ticks: { show: false },
         splits: opts.splits,
-        values: opts.splits ? (u, splits) => splits.map(v => v + (opts.unit || '')) : null,
+        values: () => [],
       },
     ],
     series: [
@@ -1670,6 +1677,29 @@ function makeSpark(elId, color, opts={}) {
         points: { show: false } },
     ],
   }, [[], []], el);
+  // y-split labels inside the plot: left-aligned, sitting just above their
+  // grid line (the top split sits below its line so it is never clipped).
+  function drawInsetLabels(u) {
+    const splits = opts.splits || (u.axes[1] && u.axes[1]._splits) || [];
+    if (!splits.length) return;
+    const ctx = u.ctx, dpr = devicePixelRatio || 1;
+    const top = u.bbox.top, bottom = u.bbox.top + u.bbox.height;
+    ctx.save();
+    ctx.font = (axisFontPx * dpr) + 'px ' + _MONO_STACK;
+    ctx.fillStyle = '#6e7681';
+    ctx.textAlign = 'left';
+    splits.forEach(v => {
+      const y = u.valToPos(v, 'y', true);
+      if (y < top - 1 || y > bottom + 1) return;
+      const below = y - top < axisFontPx * dpr;
+      ctx.textBaseline = below ? 'top' : 'bottom';
+      const label = String(v) + (opts.unit || ''), lx = u.bbox.left + 3 * dpr, ly = below ? y + 2 * dpr : y - 2 * dpr;
+      // panel-coloured halo keeps the label legible over the series fill
+      ctx.lineWidth = 3 * dpr; ctx.strokeStyle = '#161b22'; ctx.strokeText(label, lx, ly);
+      ctx.fillText(label, lx, ly);
+    });
+    ctx.restore();
+  }
   // Responsive sizing. ResizeObserver on the spark element fires for any
   // size source — GridStack drag-resize, window resize, scale-picker rem
   // changes, .hidden toggle reflow. rAF coalescing avoids thrashing

@@ -749,7 +749,7 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
     assert "window._fwSetPreset('both', false)" in html
     # Rings: one sync key, a freeze hook, timestamp-based re-find each tick.
     assert "sync: { key: 'live'" in html
-    assert "hooks: { setCursor: [onSparkHover] }" in html
+    assert "hooks: { setCursor: [onSparkHover], draw: [drawInsetLabels] }" in html
     assert "histX.indexOf(frozenTs)" in html
     assert "if (frozenTs != null) { applyFreeze(); refreshStatusPill(); }" in html
 
