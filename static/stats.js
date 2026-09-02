@@ -597,12 +597,10 @@ function renderTurnaround() {
     const h = c / mx * ih, y = pt + ih - h, x = pl + i * bw + 1;
     const share = t.wait_share[i] || 0;
     const lbl = fmtEdge(t.edges_s[i]) + (i + 1 < n ? '–' + fmtEdge(t.edges_s[i + 1]) : '+');
-    const split = kinds.map(k => k + ' ' + (t.by_kind[k][i] || 0)).filter(x => !/ 0$/.test(x)).join(' · ');
-    const title = '<title>' + esc(lbl) + ': ' + c + ' jobs' + (split ? ' (' + esc(split) + ')' : '')
-      + ' · ' + Math.round(share * 100) + ' % of that time was queue wait</title>';
+    const attrs = ' data-i="' + i + '" data-tip="1"';
     if (kinds.length > 1 && c > 0) {
       let yTop = pt + ih;
-      s += '<g>' + title;
+      s += '<g' + attrs + '>';
       kinds.forEach(k => {
         const kc = t.by_kind[k][i] || 0; if (!kc) return;
         const kh = kc / c * h; yTop -= kh;
@@ -610,8 +608,10 @@ function renderTurnaround() {
       });
       s += '</g>';
     } else {
-      s += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + h.toFixed(1) + '" fill="' + (KIND_COLOR[kinds[0]] || '#388bfd') + '" rx="3">' + title + '</rect>';
+      s += '<rect' + attrs + ' x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + h.toFixed(1) + '" fill="' + (KIND_COLOR[kinds[0]] || '#388bfd') + '" rx="3"/>';
     }
+    // an invisible full-height hit target so thin bars and empty buckets still answer hover
+    s += '<rect' + attrs + ' x="' + (pl + i * bw).toFixed(1) + '" y="' + pt + '" width="' + bw.toFixed(1) + '" height="' + ih + '" fill="transparent"/>';
     if (share > 0) s += '<rect x="' + x.toFixed(1) + '" y="' + (pt + ih - h * share).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + (h * share).toFixed(1) + '" fill="url(#ta-hatch)" rx="2"/>';
     if (i % labelEvery === 0) s += '<text x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
     // job count: inside the bar when it is tall enough, else just above it
@@ -640,6 +640,17 @@ function renderTurnaround() {
       + '<text class="q" x="' + lx.toFixed(1) + '" y="' + (pt - 4) + '">' + esc(text) + '</text>';
   });
   el.innerHTML = '<svg width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + ' ' + H + '">' + s + '</svg>';
+  wireTips(el, '[data-tip]', (target) => {
+    const i = Number(target.getAttribute('data-i')); const tt = lastTail && lastTail.turnaround; if (!tt) return '';
+    const c = tt.counts[i] || 0;
+    const lbl = fmtEdge(tt.edges_s[i]) + (i + 1 < tt.edges_s.length ? '–' + fmtEdge(tt.edges_s[i + 1]) : '+');
+    let html = '<div class="tip-date">turnaround ' + esc(lbl) + '</div>';
+    const ks = Object.keys(tt.by_kind || {}).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));
+    ks.forEach(k => { const kc = tt.by_kind[k][i] || 0; if (kc) html += tipRow(KIND_COLOR[k] || KIND_COLOR.unknown, KIND_LABEL[k] || k, kc + ' jobs'); });
+    html += tipRow(null, 'total', c + ' jobs', ks.length > 1 ? 'tot' : '');
+    html += tipRow(null, 'queue wait', Math.round((tt.wait_share[i] || 0) * 100) + ' % of the time', 'cmp');
+    return html;
+  });
   if (!el._ro && typeof ResizeObserver !== 'undefined') {
     let raf = 0;
     el._ro = new ResizeObserver(() => {
@@ -844,18 +855,44 @@ function updateTip(u) {
     html += '<div class="tip-row cmp"><span>' + cmpWord() + '</span><span class="tip-val">'
       + fmtMetric(Q.metric, c) + (c > 0 ? ' · ' + ((total - c) / c * 100).toFixed(0) + ' %' : '') + '</span></div>';
   }
+  const orect = u.over.getBoundingClientRect();
+  showTipAt(html, orect.left + u.cursor.left, orect.top + u.cursor.top);
+  announce(fmtDate(xs[idx]) + ': ' + rows.map(ln => ln.label + ' ' + fmtMetric(Q.metric, ln.values[idx] || 0)).join(', '));
+}
+// One tooltip element for every card (usage chart, turnaround bars, busy
+// hours cells): fixed-positioned beside the pointer, flipped when it would
+// leave the viewport.
+function showTipAt(html, cx, cy) {
   tipEl.innerHTML = html;
   tipEl.style.display = 'block';
-  const orect = u.over.getBoundingClientRect();
   const vw = document.documentElement.clientWidth, vh = document.documentElement.clientHeight;
   const tw = tipEl.offsetWidth, th = tipEl.offsetHeight;
-  let left = orect.left + u.cursor.left + 14;
-  if (left + tw + 4 > vw) left = orect.left + u.cursor.left - tw - 14;
-  let top = orect.top + u.cursor.top + 14;
-  if (top + th + 4 > vh) top = orect.top + u.cursor.top - th - 14;
+  let left = cx + 14;
+  if (left + tw + 4 > vw) left = cx - tw - 14;
+  let top = cy + 14;
+  if (top + th + 4 > vh) top = cy - th - 14;
   tipEl.style.left = Math.max(4, left) + 'px';
   tipEl.style.top = Math.max(4, top) + 'px';
-  announce(fmtDate(xs[idx]) + ': ' + rows.map(ln => ln.label + ' ' + fmtMetric(Q.metric, ln.values[idx] || 0)).join(', '));
+}
+function hideTip() { tipEl.style.display = 'none'; }
+function tipRow(color, label, val, cls) {
+  return '<div class="tip-row' + (cls ? ' ' + cls : '') + '">'
+    + (color ? '<span class="usage-swatch" style="background:' + color + '"></span>' : '')
+    + '<span>' + esc(label) + '</span><span class="tip-val">' + val + '</span></div>';
+}
+// Delegated hover + keyboard focus for a card's [data-tip] targets; `build(el)` returns the tooltip html.
+function wireTips(host, selector, build) {
+  if (!host || host._tips) return;
+  host._tips = true;
+  const at = (target, e) => {
+    const html = build(target); if (!html) { hideTip(); return; }
+    if (e && e.clientX != null) showTipAt(html, e.clientX, e.clientY);
+    else { const r = target.getBoundingClientRect(); showTipAt(html, r.left + r.width / 2, r.bottom); }
+  };
+  host.addEventListener('mousemove', (e) => { const t = e.target.closest(selector); if (t && host.contains(t)) at(t, e); else hideTip(); });
+  host.addEventListener('mouseleave', hideTip);
+  host.addEventListener('focusin', (e) => { const t = e.target.closest(selector); if (t) at(t, null); });
+  host.addEventListener('focusout', hideTip);
 }
 function snapToDataX(u, mLeft, mTop) {
   if (mLeft < 0) return [mLeft, mTop];
@@ -1113,11 +1150,20 @@ function renderHours() {
   const el = $('hours-grid'); if (!el) return;
   const cells = new Array(7 * 24).fill(0);
   const sess = new Array(7 * 24).fill(0);
+  const byKind = {};   // kind → [proc_s per cell, sessions per cell]
   (lastDoc.hours || []).forEach(h => {
     const v = h.proc_s ? kindScoped(h.proc_s) : 0;
     const s = h.sessions ? kindScoped(h.sessions) : 0;
-    cells[h.dow * 24 + h.hour] += Number(v || 0);
-    sess[h.dow * 24 + h.hour] += Number(s || 0);
+    const i = h.dow * 24 + h.hour;
+    cells[i] += Number(v || 0);
+    sess[i] += Number(s || 0);
+    KINDS.forEach(k => {
+      if (Q.kind !== 'all' && Q.kind !== k) return;
+      const pv = Number((h.proc_s || {})[k] || 0), sv = Number((h.sessions || {})[k] || 0);
+      if (!pv && !sv) return;
+      const b = byKind[k] || (byKind[k] = [new Array(7 * 24).fill(0), new Array(7 * 24).fill(0)]);
+      b[0][i] += pv; b[1][i] += sv;
+    });
   });
   const br = quantileBreaks(cells);
   let peak = -1, peakV = 0;
@@ -1130,11 +1176,19 @@ function renderHours() {
       const i = d * 24 + h, v = cells[i];
       const title = DOW[d] + ' ' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' · '
         + fmtDur(v) + ' GPU · ' + fmtCount(sess[i]) + ' sessions';
-      html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" title="' + esc(title)
-        + '" data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + '></i>';
+      html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
+        + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + '></i>';
     }
   }
   el.innerHTML = html;
+  wireTips(el, '[data-tip]', (target) => {
+    const i = Number(target.getAttribute('data-i')), d = Math.floor(i / 24), h = i % 24;
+    let out = '<div class="tip-date">' + DOW[d] + ' ' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + '</div>';
+    const ks = Object.keys(byKind).filter(k => byKind[k][0][i] || byKind[k][1][i]).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));
+    ks.forEach(k => out += tipRow(KIND_COLOR[k], KIND_LABEL[k] || k, fmtDur(byKind[k][0][i]) + ' GPU · ' + fmtCount(byKind[k][1][i]) + ' sessions'));
+    out += tipRow(null, ks.length ? 'total' : 'idle', cells[i] ? fmtDur(cells[i]) + ' GPU · ' + fmtCount(sess[i]) + ' sessions' : '—', ks.length > 1 ? 'tot' : '');
+    return out;
+  });
   const lg = $('hours-legend');
   if (lg) lg.innerHTML = br
     ? '<span><i data-l="0"></i>idle</span><span><i data-l="1"></i>≤ ' + fmtDur(br[0]) + '</span>'
