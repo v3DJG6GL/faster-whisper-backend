@@ -1089,13 +1089,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours .hb.on i, .hours .rb.on i { background: var(--bold); }
   .hours .hb, .hours .rb { cursor: default; }
   .hours .hb:focus-visible, .hours .rb:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
-  .hours-legend { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
+  .hours-legend { display: flex; gap: 0.25rem 0.6rem; align-items: center; flex-wrap: wrap;
     font: var(--fs-xs) var(--font-mono); color: var(--dim); margin-top: 0.3rem; }
   .hours-legend span { display: inline-flex; align-items: center; gap: 0.25rem; }
   .hours-legend i { width: 9px; height: 9px; }
   .hours-legend .what { margin-left: auto; }
-  .hours-legend .key { gap: 0.4rem; padding-right: 0.6rem; border-right: 1px solid var(--border); }
-  .hours-legend .key .sub { color: #4b5563; }
+  .hours-legend .row { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; width: 100%; }
+  .hours-legend .row .sub { color: #4b5563; }
   .hours-legend .mg { position: relative; width: 1.4rem; height: 0.55rem; display: inline-block; }
   .hours-legend .mg .b { position: absolute; left: 0; top: 0; bottom: 0; width: 60%; height: auto;
     background: #3a4757; border-radius: 1px; }
