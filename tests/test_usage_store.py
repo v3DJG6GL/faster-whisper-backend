@@ -187,3 +187,22 @@ def test_leaderboard_user_filter(usage_store_db):
     assert [r["key_id"] for r in rows] == ["k2", "k1"]
     assert [r["user_id"] for r in us.leaderboard(by="user", user_id="bob")] == ["bob"]
     assert len(us.leaderboard(by="user")) == 2
+
+
+def test_series_and_leaderboard_carry_proc_s_and_sessions(usage_store_db):
+    """proc_s and sessions were written on every request and read by nobody
+    on /stats; both readers now sum them and the leaderboard can rank by
+    them."""
+    us = usage_store_db
+    us.record_usage(key_id="k1", user_id="a", audio_s=10.0, words=1, status="ok",
+                    hour=1, proc_s=2.0, job_id="j1", kind="file")
+    us.record_usage(key_id="k1", user_id="a", audio_s=10.0, words=1, status="ok",
+                    hour=1, proc_s=3.0, job_id="j2", kind="file")
+    us.record_usage(key_id="k2", user_id="b", audio_s=1.0, words=1, status="ok",
+                    hour=1, proc_s=9.0, job_id="j3", kind="file")
+    day = us.series()[0]
+    assert day["proc_s"] == 14.0 and day["sessions"] == 3
+    board = us.leaderboard(by="user", metric="proc_s")
+    assert [r["user_id"] for r in board] == ["b", "a"]
+    assert board[1]["proc_s"] == 5.0 and board[1]["sessions"] == 2
+    assert us.leaderboard(by="user", metric="sessions")[0]["user_id"] == "a"

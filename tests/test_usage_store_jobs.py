@@ -364,7 +364,9 @@ def test_hours_grid_is_local_weekday_by_hour_per_kind(usage_store_db):
                     kind="dictation", hour=_hour(2025, 10, 27, 9, 45, _ZH))
     now = _ts(2025, 10, 27, 12, 0, _UTC)
     zh = us.document("u", days=7, tz=_ZH, tz_name="Europe/Zurich", now=now)
-    assert zh["hours"] == [
+    flat = [{k: v for k, v in h.items() if k not in ("proc_s", "sessions")}
+            for h in zh["hours"]]
+    assert flat == [
         {"dow": 0, "hour": 9, "all": 25, "dictation": 5, "file": 20, "url": 0, "text": 0},
         {"dow": 5, "hour": 9, "all": 10, "dictation": 10, "file": 0, "url": 0, "text": 0},
     ]
@@ -417,7 +419,9 @@ def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
     assert doc["apps"] == [{"app_id": "vim", "sessions": 1, "words": 60}]
     assert [c["all"] for c in doc["calendar"]] == [460]
     assert doc["calendar"][0]["file"] == 400
-    assert sorted(h["all"] for h in doc["hours"]) == [60, 400]  # 10:00 and 11:00 slots
+    # 10:00 and 11:00 slots; the text job's slot has neither words nor
+    # processing time (proc_s was not recorded) and stays absent.
+    assert sorted(h["all"] for h in doc["hours"]) == [60, 400]
     assert doc["streak"]["all"] == {"current": 1, "best": 1}
     assert doc["time_saved_s"] == 60 / 40 * 60 - 20
 
@@ -576,7 +580,8 @@ def test_empty_document_shape_matches_populated(usage_store_db):
     assert set(empty["range"]) == set(full["range"])
     assert set(empty["streak"]) == set(full["streak"]) == {"all", "dictation", "file", "url", "text"}
     assert set(full["calendar"][0]) == {"day", "all", "dictation", "file", "url", "text"}
-    assert set(full["hours"][0]) == {"dow", "hour", "all", "dictation", "file", "url", "text"}
+    assert set(full["hours"][0]) == {"dow", "hour", "all", "dictation", "file",
+                                     "url", "text", "proc_s", "sessions"}
 
 
 def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(usage_store_db):
@@ -592,3 +597,86 @@ def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(usage_store_db):
     assert us.totals_for_user("u")["requests"] == 2
     assert conn.execute(
         "SELECT 1 FROM sqlite_master WHERE name='usage_hourly_legacy'").fetchone() is None
+
+
+def test_hours_carry_proc_s_and_sessions(usage_store_db):
+    """Each hour slot also carries nested proc_s / sessions splits (the
+    backend's busy-hours grid measures GPU seconds); the flat words keys
+    the desktop app reads are unchanged. Both fill paths agree."""
+    us = usage_store_db
+    h = _hour(2025, 10, 27, 9, 30, _UTC)          # Monday 09:xx UTC
+    us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=10, status="ok",
+                    kind="file", hour=h, proc_s=2.5, job_id="f1",
+                    stages=[{"name": "diarizing", "secs": 1.0}])
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=4, status="ok",
+                    kind="dictation", hour=h, proc_s=0.5, job_id="d1")
+    now = _ts(2025, 10, 27, 12, 0, _UTC)
+    doc = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now)
+    slot = doc["hours"][0]
+    assert (slot["dow"], slot["hour"], slot["all"]) == (0, 9, 14)
+    assert slot["proc_s"] == {"all": 3.0, "dictation": 0.5, "file": 2.5,
+                              "url": 0.0, "text": 0.0}
+    assert slot["sessions"] == {"all": 2, "dictation": 1, "file": 1,
+                                "url": 0, "text": 0}
+    narrowed = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now,
+                           with_stages=("diarizing",))
+    assert narrowed["range"]["source"] == "jobs"
+    assert narrowed["hours"][0]["proc_s"]["all"] == 2.5
+    assert narrowed["hours"][0]["sessions"] == {"all": 1, "dictation": 0,
+                                                "file": 1, "url": 0, "text": 0}
+
+
+def test_document_user_id_none_aggregates_all_users(usage_store_db):
+    """user_id=None is the whole server: totals, series, stages and hours
+    sum over every user; key_id narrows the key-bearing tables only and
+    says so in range.key_scoped."""
+    us = usage_store_db
+    h = _hour(2025, 6, 10, 9, 0, _UTC)
+    us.record_usage(key_id="ka", user_id="alice", audio_s=10.0, words=10,
+                    status="ok", kind="file", hour=h, proc_s=1.0, job_id="a1",
+                    stages=[{"name": "diarizing", "secs": 1.0, "speakers": 2}])
+    us.record_usage(key_id="ka2", user_id="alice", audio_s=5.0, words=5,
+                    status="ok", kind="file", hour=h, proc_s=1.0, job_id="a2")
+    us.record_usage(key_id="kb", user_id="bob", audio_s=20.0, words=20,
+                    status="ok", kind="dictation", hour=h, proc_s=2.0, job_id="b1")
+    now = _ts(2025, 6, 10, 12, 0, _UTC)
+    everyone = us.document(None, days=7, tz=_UTC, tz_name="UTC", now=now)
+    alice = us.document("alice", days=7, tz=_UTC, tz_name="UTC", now=now)
+    bob = us.document("bob", days=7, tz=_UTC, tz_name="UTC", now=now)
+    assert everyone["total"]["all"]["audio_s"] == 35.0
+    assert everyone["total"]["all"]["sessions"] == 3
+    assert (everyone["total"]["file"]["words"], everyone["total"]["dictation"]["words"]) == (15, 20)
+    assert everyone["series"][0]["all"]["proc_s"] == 4.0
+    assert everyone["hours"][0]["sessions"]["all"] == 3
+    assert everyone["stages"][0]["stage"] == "diarizing"
+    assert everyone["stages"][0]["runs"] == 1 and everyone["stages"][0]["of_runs"] == 2
+    assert alice["total"]["all"]["audio_s"] + bob["total"]["all"]["audio_s"] == 35.0
+    assert "key_scoped" not in everyone["range"]
+    one_key = us.document("alice", days=7, tz=_UTC, tz_name="UTC", now=now,
+                          key_id="ka")
+    assert one_key["total"]["all"]["audio_s"] == 10.0
+    assert one_key["range"]["key_scoped"] is False
+    # The stage tables carry no key: `runs` stays at user scope while the
+    # denominator follows the key-scoped window — hence key_scoped=False.
+    assert one_key["stages"][0]["runs"] == 1 and one_key["stages"][0]["of_runs"] == 1
+    # with= over everyone: the jobs path scopes the same way.
+    narrowed = us.document(None, days=7, tz=_UTC, tz_name="UTC", now=now,
+                           with_stages=("diarizing",))
+    assert narrowed["total"]["all"]["sessions"] == 1
+    assert narrowed["range"]["first_day"] == everyone["range"]["first_day"]
+
+
+def test_parse_window_params_matches_v1_route(usage_store_db):
+    us = usage_store_db
+    w = us.parse_window_params(days=9999, tz="Europe/Zurich")
+    assert w.days == 3650 and w.tz_name == "Europe/Zurich" and w.tz is not None
+    w = us.parse_window_params(days=-3, tz="Mars/Olympus")
+    assert w.days == 1 and w.tz is None and w.tz_name == "local"
+    w = us.parse_window_params(with_="translating, diarizing,translating")
+    assert w.with_stages == ("translating", "diarizing") and w.source == "jobs"
+    assert us.parse_window_params().source == "rollups"
+    import pytest
+    with pytest.raises(ValueError, match="decoding"):
+        us.parse_window_params(with_="decoding")
+    with pytest.raises(ValueError, match="from"):
+        us.parse_window_params(from_day=20007, to_day=20006)

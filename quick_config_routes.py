@@ -719,33 +719,21 @@ async def v1_get_my_usage(
     reckoned in it, and in the server's local zone when it is absent or
     unknown. See usage_store.document for the shape."""
     import usage_store
-    zone = usage_store.resolve_tz(tz)
-    tz_name = str(tz) if zone is not None else "local"
-    eff_days = None
-    if days is not None:
-        eff_days = max(1, min(int(days), usage_store.MAX_WINDOW_DAYS))
-    stages: tuple[str, ...] = ()
-    if with_:
-        stages = tuple(dict.fromkeys(
-            s.strip() for s in with_.split(",") if s.strip()))
-        unknown = [s for s in stages if s not in usage_store.WITH_STAGES]
-        if unknown:
-            raise HTTPException(
-                status_code=422,
-                detail=f"unknown stage: {unknown[0]!r} (one of "
-                       f"{', '.join(usage_store.WITH_STAGES)})")
-    if from_ is not None and to is not None and from_ > to:
-        raise HTTPException(status_code=422, detail="'from' is after 'to'")
+    try:
+        w = usage_store.parse_window_params(
+            days=days, from_day=from_, to_day=to, all_time=all, with_=with_,
+            tz=tz)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
     jobs_retention = int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365) or 0)
-    today = datetime.datetime.now(zone).date()
+    today = datetime.datetime.now(w.tz).date()
     # The zeroed fallback reckons the same window the store would, minus
     # the first-day lookup it cannot make.
     f0, t0 = usage_store.resolve_window(
-        today=today, days=eff_days, from_day=from_, to_day=to,
-        all_time=all, first_day=None)
+        today=today, days=w.days, from_day=w.from_day, to_day=w.to_day,
+        all_time=w.all_time, first_day=None)
     doc = usage_store.empty_document(
-        from_day=f0, to_day=t0, tz=tz_name,
-        source="jobs" if stages else "rollups",
+        from_day=f0, to_day=t0, tz=w.tz_name, source=w.source,
         jobs_retention_days=jobs_retention)
     uid = user.get("user_id") or ""
     if uid:
@@ -754,9 +742,10 @@ async def v1_get_my_usage(
             # per-job rows under `with`), like the /stats gather.
             doc = await asyncio.to_thread(
                 functools.partial(
-                    usage_store.document, uid, tz=zone, tz_name=tz_name,
-                    days=eff_days, from_day=from_, to_day=to, all_time=all,
-                    with_stages=stages, jobs_retention_days=jobs_retention))
+                    usage_store.document, uid, tz=w.tz, tz_name=w.tz_name,
+                    days=w.days, from_day=w.from_day, to_day=w.to_day,
+                    all_time=w.all_time, with_stages=w.with_stages,
+                    jobs_retention_days=jobs_retention))
         except Exception as _e:
             logger.warning("[usage] document failed: %s", _e)
     return {"username": user.get("username") or "", **doc}
