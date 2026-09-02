@@ -1106,6 +1106,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours-legend .what { margin-left: auto; }
   .hours-legend .row { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; width: 100%; }
   .hours-legend .row .sub { color: #4b5563; }
+  .hours-legend .lv { gap: 0.3rem; cursor: default; }
+  .hours-legend .lv i { width: 0.8rem; height: 0.55rem; }
   .hours-legend .mg { position: relative; width: 1.4rem; height: 0.55rem; display: inline-block; }
   .hours-legend .mg .b { position: absolute; left: 0; top: 0; bottom: 0; width: 60%; height: auto;
     background: #3a4757; border-radius: 1px; }

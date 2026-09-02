@@ -307,16 +307,25 @@ function dayOfIso(iso) {
 }
 // Quartile levels over the ACTIVE cells (the frontend's quantileBreaks): a
 // quiet week still gets a full ramp, and one giant day cannot flatten it.
+// The desktop app's levelling (usageDerive.ts quantileBreaks): the active
+// slots ranked into four equal-count groups, each break the top of its
+// group; a duplicate break is clamped up so the steps stay ordered. Same
+// algorithm here so a slot is the same shade on both.
 function quantileBreaks(values) {
-  const act = values.filter(v => v > 0).sort((a, b) => a - b);
-  if (!act.length) return null;
-  const q = k => act[Math.min(act.length - 1, Math.floor(act.length * k))];
-  const br = [q(0.25), q(0.5), q(0.75)];
-  // Quartiles of a handful of cells are noise, and equal breaks would map
-  // two legend steps to one threshold: fall back to a linear 0..max scale.
-  const max = act[act.length - 1];
-  if (act.length < 8 || br[0] === br[1] || br[1] === br[2]) return [max / 4, max / 2, max * 3 / 4];
-  return br;
+  const a = values.filter(v => Number.isFinite(v) && v > 0).sort((x, y) => x - y);
+  const n = a.length;
+  if (!n) return null;
+  const b = [0, 0, 0];
+  for (let i = 0; i < n; i++) {
+    const level = 4 - Math.floor(((n - 1 - i) * 4) / n);
+    if (level <= 3) b[level - 1] = a[i];
+  }
+  for (let k = 1; k < 3; k++) if (b[k] < b[k - 1]) b[k] = b[k - 1];
+  return b;
+}
+// Legend copy for the five steps, as the app prints it: 0 · 1–b1 · b1–b2 · b2–b3 · b3+.
+function legendRanges(b, fmt) {
+  return ['0', fmt(1) + '–' + fmt(b[0]), fmt(b[0]) + '–' + fmt(b[1]), fmt(b[1]) + '–' + fmt(b[2]), fmt(b[2]) + '+'];
 }
 function levelOf(v, br) {
   if (!br || !(v > 0)) return 0;
@@ -1686,8 +1695,12 @@ function renderHours() {
   const lg = $('hours-legend');
   const cmpNote = cmp ? '<span class="sub">' + cmpDelta(winSum, cmpSum) + '</span>' : '';
   const unitWord = { hours: 'weekday-hour', days: 'day-of-month hour', months: 'month' }[mode];
+  const counts = [0, 0, 0, 0, 0];
+  if (br) cells.forEach((v, i) => { if (mode !== 'days' || colOcc[i % L.cols] > 0) counts[levelOf(v, br)]++; });
+  const steps = br ? legendRanges(br, v => M === 'audio_s' || M === 'proc_s' ? fmtDur(v) : fmtCount(v)).map((txt, l) =>
+    '<span class="lv" title="' + counts[l] + ' slot' + (counts[l] === 1 ? '' : 's') + '"><i data-l="' + l + '"></i>' + esc(txt) + '</span>').join('') : '';
   if (lg) lg.innerHTML = br
-    ? '<div class="row"><span class="ramp">quiet <i></i> busy</span><span class="sub">peak ' + fmtM(peakV) + ' ' + L.per + '</span>' + cmpNote + '</div>'
+    ? '<div class="row">' + steps + '<span class="sub">quarters of the active slots · peak ' + fmtM(peakV) + ' ' + L.per + '</span>' + cmpNote + '</div>'
       + '<div class="row"><span title="the bars beside the grid: each ' + L.colUnit + ' (top) and ' + L.rowUnit + ' (right) relative to a flat distribution; the dashed tick is the average"><span class="mg"><i class="b"></i><i class="t"></i></span>side bars vs average</span>'
       + '<span class="what">' + kindNote + esc(ML) + ' per ' + unitWord + ' · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span></div>'
     : '<span class="what">' + kindNote + 'no ' + esc(ML) + ' in this window</span>';
