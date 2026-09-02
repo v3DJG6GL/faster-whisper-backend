@@ -1566,6 +1566,11 @@ function renderHours() {
   }
   const winTot = cells.reduce((a, v) => a + v, 0);
   const share = v => winTot > 0 ? ' · ' + (v / winTot * 100).toFixed(0) + ' % of the window' : '';
+  // Per-kind rows for a marginal: the kind's cells summed over the hour
+  // column or the weekday row, in the kind order the chips use.
+  const kindRows = (pick) => Object.keys(byKind).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b))
+    .map(k => [k, pick(byKind[k][0]), pick(byKind[k][1])]).filter(r => r[1] || r[2])
+    .map(r => tipRow(KIND_COLOR[r[0]], KIND_LABEL[r[0]] || r[0], fmtM(r[1]) + ' ' + ML + ' · ' + fmtC(r[2]) + ' ' + CL)).join('');
   wireTips(el, '[data-tip]', (target) => {
     const kind = target.getAttribute('data-tip');
     if (kind === 'h') {      // top marginal: one hour of day, every weekday summed
@@ -1573,7 +1578,9 @@ function renderHours() {
       const v = hourTot[h], c = sess.reduce((a, x, i) => a + (i % 24 === h ? x : 0), 0);
       const days = occ.reduce((a, x) => a + x, 0);
       let out = '<div class="tip-date">' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' · every weekday</div>';
-      out += tipRow(null, 'total', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—');
+      const rows = kindRows(arr => arr.reduce((a, x, i) => a + (i % 24 === h ? x : 0), 0));
+      out += rows;
+      out += tipRow(null, rows ? 'total' : 'idle', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—', rows ? 'tot' : '');
       if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
       if (v > 0 && days > 1) out += tipRow(null, 'per day', '≈ ' + fmtAvg(v / days) + ' ' + ML + ' over ' + days + ' days');
       return out;
@@ -1582,7 +1589,9 @@ function renderHours() {
       const d = Number(target.getAttribute('data-d'));
       const v = dayTot[d], c = sess.slice(d * 24, d * 24 + 24).reduce((a, x) => a + x, 0);
       let out = '<div class="tip-date">' + DOW_LONG[d] + 's · all hours</div>';
-      out += tipRow(null, 'total', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—');
+      const rows = kindRows(arr => arr.slice(d * 24, d * 24 + 24).reduce((a, x) => a + x, 0));
+      out += rows;
+      out += tipRow(null, rows ? 'total' : 'idle', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—', rows ? 'tot' : '');
       if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
       if (v > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW_LONG[d], '≈ ' + fmtAvg(v / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW_LONG[d] + 's');
       return out;
