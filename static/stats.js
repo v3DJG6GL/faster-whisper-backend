@@ -1526,7 +1526,7 @@ function renderHours() {
   const slot = i => DOW[Math.floor(i / 24)] + ' ' + ('0' + (i % 24)).slice(-2) + '–' + ('0' + (i % 24 + 1)).slice(-2);
   // marginal row: the measure per hour of day (summed over the weekdays)
   let html = '<span></span>' + hourTot.map((v, h) =>
-    '<span class="hb" data-h="' + h + '"><i style="height:' + (v > 0 ? Math.max(12, v / hm * 100) : 0) + '%"></i></span>').join('') + '<span></span>';
+    '<span class="hb" data-h="' + h + '" data-tip="h" tabindex="0" role="img" aria-label="' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' every weekday: ' + fmtM(v) + ' ' + ML + '"><i style="height:' + (v > 0 ? Math.max(12, v / hm * 100) : 0) + '%"></i></span>').join('') + '<span></span>';
   html += '<span></span>' + Array.from({ length: 24 }, (_, h) =>
     '<span class="hl" data-h="' + h + '">' + (h % 6 === 0 ? ('0' + h).slice(-2) : '') + '</span>').join('') + '<span></span>';
   for (let d = 0; d < 7; d++) {
@@ -1537,27 +1537,56 @@ function renderHours() {
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
         + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + '></i>';
     }
-    html += '<span class="rb" data-d="' + d + '"><i style="width:' + (dayTot[d] > 0 ? Math.max(8, dayTot[d] / dm * 100) : 0) + '%"></i></span>';
+    html += '<span class="rb" data-d="' + d + '" data-tip="d" tabindex="0" role="img" aria-label="' + DOW_LONG[d] + 's: ' + fmtM(dayTot[d]) + ' ' + ML + '"><i style="width:' + (dayTot[d] > 0 ? Math.max(8, dayTot[d] / dm * 100) : 0) + '%"></i></span>';
   }
   el.innerHTML = html;
   // Hovering (or focusing) a cell lights its weekday and hour labels and
   // the two marginal bars, so the tooltip's slot can be read off the axes.
   if (!el._hl) {
     el._hl = true;
+    // A cell lights its row and column; a marginal bar lights its whole
+    // column (hour) or row (weekday).
     const light = (t, on) => {
       if (!t) return;
-      const i = Number(t.getAttribute('data-i')), d = Math.floor(i / 24), h = i % 24;
-      el.querySelectorAll('[data-d="' + d + '"], [data-h="' + h + '"]').forEach(x => x.classList.toggle('on', on));
+      let sel;
+      if (t.hasAttribute('data-i')) {
+        const i = Number(t.getAttribute('data-i'));
+        sel = '[data-d="' + Math.floor(i / 24) + '"], [data-h="' + (i % 24) + '"]';
+      } else if (t.hasAttribute('data-h')) sel = '[data-h="' + t.getAttribute('data-h') + '"]';
+      else sel = '[data-d="' + t.getAttribute('data-d') + '"]';
+      el.querySelectorAll(sel).forEach(x => x.classList.toggle('on', on));
       t.classList.toggle('on', on);
     };
     let cur = null;
     const move = (t) => { if (t === cur) return; light(cur, false); cur = t; light(cur, true); };
-    el.addEventListener('mouseover', e => move(e.target.closest('[data-i]')));
+    el.addEventListener('mouseover', e => move(e.target.closest('[data-tip]')));
     el.addEventListener('mouseleave', () => move(null));
-    el.addEventListener('focusin', e => move(e.target.closest('[data-i]')));
+    el.addEventListener('focusin', e => move(e.target.closest('[data-tip]')));
     el.addEventListener('focusout', () => move(null));
   }
+  const winTot = cells.reduce((a, v) => a + v, 0);
+  const share = v => winTot > 0 ? ' · ' + (v / winTot * 100).toFixed(0) + ' % of the window' : '';
   wireTips(el, '[data-tip]', (target) => {
+    const kind = target.getAttribute('data-tip');
+    if (kind === 'h') {      // top marginal: one hour of day, every weekday summed
+      const h = Number(target.getAttribute('data-h'));
+      const v = hourTot[h], c = sess.reduce((a, x, i) => a + (i % 24 === h ? x : 0), 0);
+      const days = occ.reduce((a, x) => a + x, 0);
+      let out = '<div class="tip-date">' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' · every weekday</div>';
+      out += tipRow(null, 'total', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—');
+      if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
+      if (v > 0 && days > 1) out += tipRow(null, 'per day', '≈ ' + fmtAvg(v / days) + ' ' + ML + ' over ' + days + ' days');
+      return out;
+    }
+    if (kind === 'd') {      // right marginal: one weekday, all 24 hours summed
+      const d = Number(target.getAttribute('data-d'));
+      const v = dayTot[d], c = sess.slice(d * 24, d * 24 + 24).reduce((a, x) => a + x, 0);
+      let out = '<div class="tip-date">' + DOW_LONG[d] + 's · all hours</div>';
+      out += tipRow(null, 'total', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—');
+      if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
+      if (v > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW_LONG[d], '≈ ' + fmtAvg(v / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW_LONG[d] + 's');
+      return out;
+    }
     const i = Number(target.getAttribute('data-i')), d = Math.floor(i / 24);
     let out = '<div class="tip-date">' + slot(i) + '</div>';
     const ks = Object.keys(byKind).filter(k => byKind[k][0][i] || byKind[k][1][i]).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));

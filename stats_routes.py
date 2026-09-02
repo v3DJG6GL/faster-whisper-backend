@@ -1079,6 +1079,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours i:hover, .hours i.on { outline: 2px solid var(--bold); outline-offset: 1px; position: relative; z-index: 2; }
   .hours .dl.on, .hours .hl.on { color: var(--bold); }
   .hours .hb.on i, .hours .rb.on i { background: var(--bold); }
+  .hours .hb, .hours .rb { cursor: default; }
+  .hours .hb:focus-visible, .hours .rb:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   .hours-legend { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap;
     font: var(--fs-xs) var(--font-mono); color: var(--dim); margin-top: 0.3rem; }
   .hours-legend span { display: inline-flex; align-items: center; gap: 0.25rem; }
