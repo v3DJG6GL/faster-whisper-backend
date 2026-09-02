@@ -849,15 +849,20 @@ def leaderboard(
     by: str = "user",
     metric: str = "audio_s",
     limit: int = 50,
+    user_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Top entities for a window, ranked by `metric`. by='user' groups by
     user_id; by='key' groups by key_id (carrying user_id). `metric` is
     validated against the column whitelist (it is interpolated into the
-    ORDER BY)."""
+    ORDER BY). `user_id` narrows to one owner's rows (the /stats "own"
+    scope ranks that user's keys); None = every user."""
     if metric not in _METRICS:
         metric = "audio_s"
     conn = _require_conn()
     where, params = _window_clause(start_hour, end_hour)
+    if user_id is not None:
+        where += (" AND" if where else " WHERE") + " user_id = ?"
+        params = params + [user_id]
     if by == "key":
         group, cols = "key_id", "key_id, user_id"
     else:

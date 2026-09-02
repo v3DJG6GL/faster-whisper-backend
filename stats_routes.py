@@ -25,8 +25,12 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, StreamingResponse
+
+import hmac
+import hashlib
+import secrets
 
 import config as cfg
 import config_store
@@ -248,35 +252,71 @@ async def stats_snapshot(
     return _build_payload(stats_scope_for(user), lite=bool(lite))
 
 
+# Per-process salt for the opaque labels a non-admin "all" viewer sees on the
+# leaderboard: stable within a process (a chart line keeps its name across
+# refreshes), meaningless across restarts, and never a plain hash of the id
+# (usernames/ids would otherwise be recoverable by table lookup).
+_SCRUB_SALT = secrets.token_bytes(16)
+
+
+def _opaque_user_label(user_id: str) -> str:
+    return "user-" + hmac.new(_SCRUB_SALT, (user_id or "").encode(),
+                              hashlib.sha256).hexdigest()[:8]
+
+
+def _opaque_key_label(key_id: str) -> str:
+    return "key-" + hmac.new(_SCRUB_SALT, ("k:" + (key_id or "")).encode(),
+                             hashlib.sha256).hexdigest()[:8]
+
+
 @router.get(
     "/stats/usage",
-    dependencies=[
-        Depends(_require_stats_host),
-        Depends(require_page("stats")),
-    ],
+    dependencies=[Depends(_require_stats_host)],
 )
 async def stats_usage(
     days: int = 30,
     bucket: str = "day",
     by: str = "user",
     metric: str = "audio_s",
+    user_q: str | None = Query(None, alias="user"),
+    user: dict[str, Any] = Depends(require_page("stats")),
 ) -> dict[str, Any]:
     """Historical usage: a total-throughput-over-time series plus a
     per-user (or per-key) leaderboard for the window. Served once per page
     load / selector change — NOT part of the 1 Hz SSE payload.
 
     `days<=0` is lifetime (no lower bound). `bucket` ∈ {day, week}. `by` ∈
-    {user, key}. `metric` ranks the leaderboard. Gated by the page's
-    `stats` access (which has no 'own' scope — see api_keys_store
-    ACCESS_ONLY_PAGES until v2). Scoping to the caller lands in the next
-    commit; until then the data returned here is global."""
+    {user, key}. `metric` ranks the leaderboard.
+
+    Scope (see StatsScope): an admin sees every user, named, and may pass
+    `?user=<id>` to preview exactly what that user's own scope shows. A
+    non-admin with stats="all" sees every user's numbers but opaque
+    `user-xxxxxxxx` / `key-xxxxxxxx` labels — except their own row, which
+    keeps its name and carries `me: true`. A non-admin with stats="own"
+    gets only their own rows; `by=user` is refused (403) because the only
+    row would be themselves and the page ranks their keys instead. A
+    non-admin passing `?user=` gets 403 — it is never trusted."""
     import api_keys_store
     import usage_store
 
     bucket = "week" if bucket == "week" else "day"
+    # Normalise BEFORE the scope check: an unknown `by` collapses to "user"
+    # and must not slip past the own-scope refusal below.
     by = "key" if by == "key" else "user"
     if metric not in ("requests", "errors", "words", "audio_s"):
         metric = "audio_s"
+    is_admin = bool(user.get("is_admin"))
+    if user_q and not is_admin:
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            detail="user= is admin-only")
+    scope = stats_scope_for(user, preview_user_id=(user_q or None)
+                            if is_admin else None)
+    if scope.scope == "own" and by == "user":
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            detail="per-user leaderboard needs stats scope 'all'")
+    caller_uid = user.get("user_id") or None
+    scrub = not scope.include_identity
     # 10 years is past any real retention window, and date arithmetic on an
     # unbounded value overflows inside local_day_start_hour(). 0 stays 0 so
     # the lifetime branch below is preserved.
@@ -287,7 +327,7 @@ async def stats_usage(
     if days and days > 0:
         start_hour = usage_store.local_day_start_hour(days_ago=int(days) - 1)
 
-    # Everything below is store work: one global series() aggregate, a
+    # Everything below is store work: one series() aggregate, a
     # leaderboard(limit=50), a get_usernames, up to 50 get_key() point reads in
     # the by=key branch, and up to K=8 further series() aggregates — ~10
     # aggregate scans over `usage_hourly`, which is an append-only rollup that
@@ -295,33 +335,49 @@ async def stats_usage(
     # the whole gather off the event loop, like the reports/quick-config
     # siblings do with their equivalents.
     def _gather() -> dict[str, Any]:
-        # Global series gives the shared x-axis (every bucket with any usage)
+        # Scoped series gives the shared x-axis (every bucket with any usage)
         # and the per-bucket totals used to derive the "others" line.
-        series_global = usage_store.series(start_hour=start_hour, bucket=bucket)
+        series_global = usage_store.series(start_hour=start_hour, bucket=bucket,
+                                           user_id=scope.user_id)
         day_axis = [int(p["day"]) for p in series_global]
         axis_index = {d: i for i, d in enumerate(day_axis)}
         n = len(day_axis)
 
         board = usage_store.leaderboard(
             start_hour=start_hour, by=by, metric=metric, limit=50,
+            user_id=scope.user_id,
         )
 
         # Resolve display names + a stable `id` server-side (the /stats client has
-        # no api-keys data). Revoked users/keys still resolve; sentinels stay literal.
+        # no api-keys data). Revoked users/keys still resolve; sentinels stay
+        # literal. Non-admin "all" viewers get opaque labels instead — only
+        # their own row keeps its name (and is flagged `me`).
         names = api_keys_store.get_usernames([r["user_id"] for r in board])
+
+        def _user_label(uid: str) -> str:
+            if scrub and uid != caller_uid:
+                return _opaque_user_label(uid)
+            return names.get(uid) or uid
+
         for r in board:
+            mine = bool(caller_uid) and r.get("user_id") == caller_uid
             if by == "user":
                 r["id"] = r["user_id"]
-                r["label"] = names.get(r["user_id"]) or r["user_id"]
+                r["label"] = _user_label(r["user_id"])
             else:
                 kid = r["key_id"]
                 r["id"] = kid
-                key = (api_keys_store.get_key(kid)
-                       if kid and not kid.startswith("(") else None)
-                lbl = (key or {}).get("label") or ""
-                disp = (key or {}).get("key_prefix")
-                r["label"] = (lbl or (disp + "…" if disp else kid))
-                r["user_label"] = names.get(r["user_id"]) or r["user_id"]
+                if scrub and not mine:
+                    r["label"] = _opaque_key_label(kid)
+                else:
+                    key = (api_keys_store.get_key(kid)
+                           if kid and not kid.startswith("(") else None)
+                    lbl = (key or {}).get("label") or ""
+                    disp = (key or {}).get("key_prefix")
+                    r["label"] = (lbl or (disp + "…" if disp else kid))
+                r["user_label"] = _user_label(r["user_id"])
+            if mine:
+                r["me"] = True
 
         # One chart line per top-K entity (by the selected metric), aligned to the
         # shared x-axis with 0-fill for buckets where the entity had no usage.
@@ -329,7 +385,12 @@ async def stats_usage(
         lines: list[dict[str, Any]] = []
         sum_top = [0.0] * n
         for r in board[:K]:
-            kwargs = {"user_id": r["id"]} if by == "user" else {"key_id": r["id"]}
+            if by == "user":
+                kwargs = {"user_id": r["id"]}
+            else:
+                # Belt and braces for own scope: a key row already belongs
+                # to the caller, but pin the owner on the per-line query too.
+                kwargs = {"key_id": r["id"], "user_id": scope.user_id}
             s = usage_store.series(start_hour=start_hour, bucket=bucket, **kwargs)
             vals: list[float] = [0] * n
             for p in s:
@@ -341,6 +402,8 @@ async def stats_usage(
             line = {"id": r["id"], "label": r["label"], "values": vals}
             if by == "key":
                 line["user_label"] = r.get("user_label")
+            if r.get("me"):
+                line["me"] = True
             lines.append(line)
 
         # Fold the long tail (entities beyond top-K) into one "others" line =
@@ -368,6 +431,7 @@ async def stats_usage(
             "metric": metric,
             "by": by,
             "bucket": bucket,
+            "scope": scope.scope,
             "lines": lines,
             "leaderboard": board,
         }

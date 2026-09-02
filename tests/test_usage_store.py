@@ -175,3 +175,15 @@ def test_epoch_day_and_local_midnight_utc(set_tz):
     assert us.epoch_day_for(86400) == 1
     # local-midnight today, expressed as UTC epoch-hour, is a multiple of 24.
     assert us.local_day_start_hour(0) % 24 == 0
+
+
+def test_leaderboard_user_filter(usage_store_db):
+    """`user_id=` narrows the board to one owner (own-scope key ranking)."""
+    us = usage_store_db
+    us.record_usage(key_id="k1", user_id="alice", audio_s=1.0, words=1, status="ok", hour=1)
+    us.record_usage(key_id="k2", user_id="alice", audio_s=2.0, words=1, status="ok", hour=1)
+    us.record_usage(key_id="k3", user_id="bob", audio_s=9.0, words=1, status="ok", hour=1)
+    rows = us.leaderboard(by="key", user_id="alice")
+    assert [r["key_id"] for r in rows] == ["k2", "k1"]
+    assert [r["user_id"] for r in us.leaderboard(by="user", user_id="bob")] == ["bob"]
+    assert len(us.leaderboard(by="user")) == 2

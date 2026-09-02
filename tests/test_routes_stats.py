@@ -5,6 +5,7 @@ import json
 from starlette.testclient import TestClient
 
 import jobs
+import re
 import metrics
 import pytest
 import translation
@@ -458,3 +459,94 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     api_keys_store.set_user_permissions(uid, {"pages": {"stats": "none"}})
     with pytest.raises(HTTPException):
         stats_routes._rescope_on_version_change(req, seen2)
+
+
+# ---------------------------------------------------------------------------
+# /stats/usage under StatsScope (own → own rows; all → scrubbed; admin → named)
+# ---------------------------------------------------------------------------
+
+def _seed_usage(app_module, alice, bob, alice_key, bob_key):
+    import usage_store as us
+    h = us.now_hour()
+    us.record_usage(key_id=alice_key, user_id=alice, audio_s=10.0, words=5,
+                    status="ok", hour=h)
+    us.record_usage(key_id=bob_key, user_id=bob, audio_s=90.0, words=5,
+                    status="ok", hour=h)
+
+
+def _two_users(client, make_user_key):
+    import api_keys_store
+    _, raw_admin = make_user_key("root", is_admin=True)
+    alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
+    bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
+    keys = {}
+    for uid in (alice, bob):
+        keys[uid] = api_keys_store.list_keys(uid)[0]["id"]
+    return raw_admin, alice, raw_alice, bob, raw_bob, keys
+
+
+def test_usage_own_scope_by_user_is_403(client, app_module, make_user_key):
+    from conftest import bearer
+    _, alice, raw_alice, bob, _, keys = _two_users(client, make_user_key)
+    _seed_usage(app_module, alice, bob, keys[alice], keys[bob])
+    r = client.get("/stats/usage?by=user", headers=bearer(raw_alice))
+    assert r.status_code == 403
+    # An unknown `by` normalises to "user" BEFORE the scope check.
+    assert client.get("/stats/usage?by=zzz",
+                      headers=bearer(raw_alice)).status_code == 403
+    # ?user= is never honoured for a non-admin.
+    assert client.get(f"/stats/usage?by=key&user={bob}",
+                      headers=bearer(raw_alice)).status_code == 403
+
+
+def test_usage_own_scope_by_key_only_own_keys(client, app_module,
+                                               make_user_key):
+    from conftest import bearer
+    _, alice, raw_alice, bob, _, keys = _two_users(client, make_user_key)
+    _seed_usage(app_module, alice, bob, keys[alice], keys[bob])
+    body = client.get("/stats/usage?by=key", headers=bearer(raw_alice)).json()
+    assert body["scope"] == "own"
+    assert [r["id"] for r in body["leaderboard"]] == [keys[alice]]
+    assert body["leaderboard"][0]["me"] is True
+    assert body["leaderboard"][0]["user_label"] == "alice"
+    # The axis/series is the caller's own total, not the server's.
+    assert sum(v for line in body["lines"] for v in line["values"]) == 10.0
+
+
+def test_usage_all_scope_nonadmin_scrubs_names_and_marks_me(
+        client, app_module, make_user_key):
+    from conftest import bearer
+    _, alice, _, bob, raw_bob, keys = _two_users(client, make_user_key)
+    _seed_usage(app_module, alice, bob, keys[alice], keys[bob])
+    body = client.get("/stats/usage?by=user", headers=bearer(raw_bob)).json()
+    assert body["scope"] == "all"
+    rows = {r["id"]: r for r in body["leaderboard"]}
+    assert set(rows) == {alice, bob}
+    assert rows[bob]["label"] == "bob" and rows[bob]["me"] is True
+    assert re.fullmatch(r"user-[0-9a-f]{8}", rows[alice]["label"])
+    assert "me" not in rows[alice]
+    again = client.get("/stats/usage?by=user", headers=bearer(raw_bob)).json()
+    assert {r["id"]: r["label"] for r in again["leaderboard"]}[alice] == \
+        rows[alice]["label"]
+    by_key = client.get("/stats/usage?by=key", headers=bearer(raw_bob)).json()
+    krows = {r["id"]: r for r in by_key["leaderboard"]}
+    assert re.fullmatch(r"key-[0-9a-f]{8}", krows[keys[alice]]["label"])
+    assert re.fullmatch(r"user-[0-9a-f]{8}", krows[keys[alice]]["user_label"])
+    assert krows[keys[bob]]["user_label"] == "bob"
+    me_lines = [ln for ln in by_key["lines"] if ln.get("me")]
+    assert [ln["id"] for ln in me_lines] == [keys[bob]]
+
+
+def test_usage_admin_sees_names_and_can_preview_user(client, app_module,
+                                                      make_user_key):
+    from conftest import bearer
+    raw_admin, alice, _, bob, _, keys = _two_users(client, make_user_key)
+    _seed_usage(app_module, alice, bob, keys[alice], keys[bob])
+    body = client.get("/stats/usage?by=user", headers=bearer(raw_admin)).json()
+    assert {r["label"] for r in body["leaderboard"]} == {"alice", "bob"}
+    assert body["scope"] == "all"
+    prev = client.get(f"/stats/usage?by=key&user={alice}",
+                      headers=bearer(raw_admin)).json()
+    assert prev["scope"] == "own"
+    assert [r["id"] for r in prev["leaderboard"]] == [keys[alice]]
+    assert prev["leaderboard"][0]["label"]   # named: the admin is looking
