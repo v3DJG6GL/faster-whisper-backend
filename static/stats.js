@@ -588,7 +588,7 @@ function renderTurnaround() {
     const h = c / mx * ih, y = pt + ih - h, x = pl + i * bw + 1;
     const share = t.wait_share[i] || 0;
     const lbl = fmtEdge(t.edges_s[i]) + (i + 1 < n ? '–' + fmtEdge(t.edges_s[i + 1]) : '+');
-    s += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + h.toFixed(1) + '" fill="#388bfd" rx="2"><title>'
+    s += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + h.toFixed(1) + '" fill="#388bfd" rx="3"><title>'
       + esc(lbl) + ': ' + c + ' jobs · ' + Math.round(share * 100) + ' % of that time was queue wait</title></rect>';
     if (share > 0) s += '<rect x="' + x.toFixed(1) + '" y="' + (pt + ih - h * share).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + (h * share).toFixed(1) + '" fill="url(#ta-hatch)" rx="2"/>';
     if (i % labelEvery === 0) s += '<text x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
@@ -604,8 +604,9 @@ function renderTurnaround() {
   let lastLabelEnd = -1e9;
   [['p50', t.p50], ['p95', t.p95]].forEach(([k, v]) => {
     const x = xOf(v);
-    const text = k + ' ' + fmtDur(v);
-    const tw = text.length * 6.2;
+    // label is the quantile name only — the values sit in the card title
+    const text = k;
+    const tw = text.length * 6.6;
     const lx = Math.min(W - tw, Math.max(x + 3, lastLabelEnd + 6));
     lastLabelEnd = lx + tw;
     s += '<line class="q" x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + (pt - 2) + '" y2="' + (pt + ih) + '"/>'
@@ -625,16 +626,13 @@ function renderTurnaround() {
     el._ro.observe(el);
   }
   const w = lastTail.wait || {};
-  if (wv) {
-    const days = w.by_day || [];
-    const maxW = Math.max(0.001, ...days.map(d => d.p95));
-    const pts = (key) => days.map((d, i) => (days.length > 1 ? i / (days.length - 1) * 100 : 50).toFixed(1) + ',' + (20 - d[key] / maxW * 18).toFixed(1)).join(' ');
-    wv.innerHTML = '<span>queue wait p50 <b>' + esc(fmtDur(w.p50 || 0)) + '</b> · p95 <b>' + esc(fmtDur(w.p95 || 0)) + '</b> · max ' + esc(fmtDur(w.max || 0)) + '</span>'
-      + (days.length > 1 ? '<svg viewBox="0 0 100 22" preserveAspectRatio="none"><polyline points="' + pts('p95') + '" fill="none" stroke="#bb8009" stroke-width="1" vector-effect="non-scaling-stroke"/><polyline points="' + pts('p50') + '" fill="none" stroke="#388bfd" stroke-width="1.2" vector-effect="non-scaling-stroke"/></svg><span>p50 / p95 by day</span>' : '');
-  }
+  if (wv) wv.innerHTML = '';
   if (note) {
     const r = lastTail.range || {};
-    note.textContent = 'Hatched = time spent waiting for a GPU slot. Turnaround = processing + wait.'
+    const anyWait = (w.max || 0) > 0;
+    note.innerHTML = 'Hatched = waiting for a GPU slot'
+      + (anyWait ? ' (queue wait p50 <b>' + esc(fmtDur(w.p50 || 0)) + '</b> · p95 <b>' + esc(fmtDur(w.p95 || 0)) + '</b> · max ' + esc(fmtDur(w.max || 0)) + ')' : ' (no queueing in this window)')
+      + '. Turnaround = processing + wait.'
       + (r.truncated_to_days ? ' Per-job rows cover the last ' + r.truncated_to_days + ' days only.' : '');
   }
 }
