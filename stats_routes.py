@@ -1071,9 +1071,9 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
      / by controls (same label, same size); the title keeps its phrase
      on one line with an ellipsis. */
   .hours-toolbar { flex-wrap: nowrap; }
-  /* The title reserves the width of its widest phrase ("Busy months ·
-     Wednesday afternoons" measures 15rem), so the controls never move. */
-  .hours-toolbar h3 { flex: 0 0 auto; width: 15.5rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The title reserves the width of its widest phrase ("Busy hours ·
+     mostly Mon–Fri 12–18" measures 14.3rem), so the controls never move. */
+  .hours-toolbar h3 { flex: 0 0 auto; width: 14.6rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .hours-toolbar .spacer { flex: 1 1 0; min-width: 0.5rem; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
   /* Marginals share one scale: each bar is its hour's / weekday's total

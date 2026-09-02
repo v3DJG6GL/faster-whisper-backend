@@ -1470,7 +1470,9 @@ function renderStages() {
 // hour-of-day and weekday marginal bars, a phrase for the pattern.
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const DOW_LONG = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-const DAY_PARTS = [['mornings', 6, 12], ['afternoons', 12, 18], ['evenings', 18, 24], ['nights', 0, 6]];
+// Parts of the day as hour ranges (the title phrase says "Wed 12–18",
+// not "Wednesday afternoons").
+const DAY_PARTS = [['06–12', 6, 12], ['12–18', 12, 18], ['18–24', 18, 24], ['00–06', 0, 6]];
 // How many times each weekday occurs in the window (epoch day 0 was a
 // Thursday), so a cell's sum can be said per occurrence.
 function weekdayCounts(from, to) {
@@ -1487,15 +1489,18 @@ function hoursPhrase(cells) {
   const sum = (days, h0, h1) => days.reduce((a, d) => {
     for (let h = h0; h < h1; h++) a += cells[d * 24 + h]; return a; }, 0);
   let peak = 0; cells.forEach((v, i) => { if (v > cells[peak]) peak = i; });
+  // One slot holding half of everything is named as that slot; otherwise
+  // the smallest day / hour-range group holding 60 %+ is named, prefixed
+  // "mostly" so it reads as a share, not as the peak.
   if (cells[peak] / total >= 0.5) return DOW[Math.floor(peak / 24)] + ' ' + ('0' + (peak % 24)).slice(-2) + '–' + ('0' + (peak % 24 + 1)).slice(-2);
   const groups = [];
-  for (let d = 0; d < 7; d++) DAY_PARTS.forEach(([p, a, b]) => groups.push([DOW_LONG[d] + ' ' + p, [d], a, b]));
-  for (let d = 0; d < 7; d++) groups.push([DOW_LONG[d] + 's', [d], 0, 24]);
+  for (let d = 0; d < 7; d++) DAY_PARTS.forEach(([p, a, b]) => groups.push([DOW[d] + ' ' + p, [d], a, b]));
+  for (let d = 0; d < 7; d++) groups.push([DOW[d], [d], 0, 24]);
   const wk = [0, 1, 2, 3, 4], we = [5, 6];
-  DAY_PARTS.forEach(([p, a, b]) => { groups.push(['weekday ' + p, wk, a, b]); groups.push(['weekend ' + p, we, a, b]); });
+  DAY_PARTS.forEach(([p, a, b]) => { groups.push(['Mon–Fri ' + p, wk, a, b]); groups.push(['Sat–Sun ' + p, we, a, b]); });
   DAY_PARTS.forEach(([p, a, b]) => groups.push([p, [0, 1, 2, 3, 4, 5, 6], a, b]));
-  groups.push(['weekdays', wk, 0, 24]); groups.push(['weekends', we, 0, 24]);
-  for (const [label, days, a, b] of groups) if (sum(days, a, b) / total >= 0.6) return label;
+  groups.push(['Mon–Fri', wk, 0, 24]); groups.push(['Sat–Sun', we, 0, 24]);
+  for (const [label, days, a, b] of groups) if (sum(days, a, b) / total >= 0.6) return 'mostly ' + label;
   return '–';
 }
 // Three rhythms share one renderer: a grid of rows × columns with a
@@ -1731,16 +1736,16 @@ function domPhrase(colTot, rowTot) {
   // Which third of the month, or which part of the day, holds most.
   const total = colTot.reduce((a, v) => a + v, 0);
   const third = n => colTot.slice(n * 10, n === 2 ? 31 : n * 10 + 10).reduce((a, v) => a + v, 0);
-  const thirds = [['month start', third(0)], ['mid-month', third(1)], ['month end', third(2)]];
-  for (const [label, v] of thirds) if (v / total >= 0.6) return label;
-  for (const [label, a, b] of DAY_PARTS) if (rowTot.slice(a, b).reduce((x, v) => x + v, 0) / total >= 0.6) return label;
+  const thirds = [['1st–10th', third(0)], ['11th–20th', third(1)], ['21st–31st', third(2)]];
+  for (const [label, v] of thirds) if (v / total >= 0.6) return 'mostly ' + label;
+  for (const [label, a, b] of DAY_PARTS) if (rowTot.slice(a, b).reduce((x, v) => x + v, 0) / total >= 0.6) return 'mostly ' + label;
   return '–';
 }
 function monthPhrase(colTot) {
   const total = colTot.reduce((a, v) => a + v, 0);
   const order = colTot.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
-  if (order[0][0] / total >= 0.4) return MON_LONG[order[0][1]];
-  if ((order[0][0] + order[1][0]) / total >= 0.5) return MON[order[0][1]] + ' + ' + MON[order[1][1]];
+  if (order[0][0] / total >= 0.4) return 'mostly ' + MON[order[0][1]];
+  if ((order[0][0] + order[1][0]) / total >= 0.5) return 'mostly ' + MON[order[0][1]] + ' + ' + MON[order[1][1]];
   return '–';
 }
 
