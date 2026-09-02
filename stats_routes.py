@@ -1124,8 +1124,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 <div id="grid" class="grid">
  <div class="grid-stack">
   <!-- GPU (one GridStack item; inner content swaps between "live" and "no NVML"
-       — a second hidden grid-stack-item would still occupy a cell and, under
-       float: true, shift to a free slot that overlaps the row below.) -->
+       — a second hidden grid-stack-item would still occupy a cell.) -->
   <div class="grid-stack-item" gs-id="gpu" gs-x="0" gs-y="0" gs-w="6" gs-h="9">
    <div class="grid-stack-item-content"><div id="card-gpu" class="card">
     <h3>GPU</h3>

@@ -45,7 +45,12 @@ const grid = GridStack.init({
   // Saved layouts (column units) preserve unchanged across scale changes.
   cellHeight: '4rem',
   margin: 6,
-  float: true,
+  // Gravity on: tiles pack upward, so a gap left by a shrunk or removed
+  // tile closes by itself and a full-width tile (recent jobs) can be
+  // dragged above its neighbours, which move down to make room. The GPU
+  // card is one item with swapped inner content, so the old float:true
+  // workaround for a hidden second item is no longer needed.
+  float: false,
   resizable: { handles: 'se,s,e' },
   draggable: { handle: '.card h3' },
   alwaysShowResizeHandle: false,
