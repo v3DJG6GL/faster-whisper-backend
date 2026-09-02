@@ -75,6 +75,7 @@ function setPreset(name, persist = true) {
   gsPreset = name;
   GS_LAYOUT_KEY = GS_KEY_BASE + ':' + name;
   document.body.classList.toggle('preset-usage', name === 'usage');
+  document.body.classList.toggle('preset-ops', name === 'ops');
   const allowed = GS_PRESETS[name];
   grid.batchUpdate();
   document.querySelectorAll('.grid-stack > .grid-stack-item[gs-id]').forEach(el => {
@@ -229,8 +230,18 @@ const PALETTE = ['#388bfd', '#bb8009', '#2ea043', '#8957e5', '#db61a2',
                  '#56d4dd', '#e3b341', '#ff9bce'];
 const OTHERS_COLOR = '#6e7681';
 const RANGE_PRESETS = ['7', '30', '90', '180', '365', 'all'];
-const METRIC_LABEL = { audio_s: 'audio', words: 'words', requests: 'requests',
-                       errors: 'errors', proc_s: 'GPU s', sessions: 'sessions' };
+// The global measure (scope bar `#sb-metric`, Q.metric): every usage card
+// counts the same thing. proc_s is "processing", not "GPU": it is wall
+// time inside the pipeline on whatever device ran it.
+const METRIC_LABEL = { audio_s: 'audio duration', words: 'words', requests: 'requests',
+                       errors: 'errors', proc_s: 'processing time', sessions: 'sessions' };
+const METRIC_ORDER = ['audio_s', 'words', 'sessions', 'requests', 'proc_s', 'errors'];
+// Reading a measure off one busy-hours slot: words sit flat on the slot
+// (the desktop app's shape), the others are nested per-kind splits.
+function slotMeasure(h, metric) {
+  if (metric === 'words') return Number(kindScoped(h) || 0);
+  return Number(kindScoped(h[metric]) || 0);
+}
 const DAY_MS = 86400000;
 
 function remPx(n) {
@@ -755,19 +766,23 @@ function renderHeadline() {
       + (tc.turnaround_p50.delta > 0.05 ? '▲' : tc.turnaround_p50.delta < -0.05 ? '▼' : '—') + ' '
       + fmtDur(Math.abs(tc.turnaround_p50.delta)) + ' vs ' + cmpWord() + '</span>'
     : '';
+  // [label, value, sub, delta, measure the tile stands for (click picks it)]
   const cells = [
-    ['audio', fmtDur(tot.audio_s), '', delta(tot.audio_s, cmp && cmp.audio_s)],
+    ['audio duration', fmtDur(tot.audio_s), '· ' + fmtCount(tot.words) + ' words',
+     delta(tot.audio_s, cmp && cmp.audio_s), Q.metric === 'words' ? 'words' : 'audio_s'],
     ['sessions', fmtCount(tot.sessions), '· ' + fmtCount(tot.requests) + ' requests',
-     delta(tot.sessions, cmp && cmp.sessions)],
-    ['failed', (failed * 100).toFixed(1), '%', delta(failed, cfailed, true)],
+     delta(tot.sessions, cmp && cmp.sessions), Q.metric === 'requests' ? 'requests' : 'sessions'],
+    ['failed', (failed * 100).toFixed(1), '% · ' + fmtCount(tot.errors) + ' errors', delta(failed, cfailed, true), 'errors'],
     ['turnaround p50', ta && ta.n ? fmtDur(ta.p50) : '—',
-     ta && ta.n ? '· p95 ' + fmtDur(ta.p95) : '', taDelta],
+     ta && ta.n ? '· p95 ' + fmtDur(ta.p95) : '', taDelta, null],
     ['RTF', rtf == null ? '—' : rtf.toFixed(2), rtf == null ? '' : '× · ' + (1 / rtf).toFixed(0) + '× live',
-     delta(rtf, crtf, true)],
-    ['GPU seconds', fmtDur(tot.proc_s), '', delta(tot.proc_s, cmp && cmp.proc_s)],
+     delta(rtf, crtf, true), null],
+    ['processing time', fmtDur(tot.proc_s), '', delta(tot.proc_s, cmp && cmp.proc_s), 'proc_s'],
   ];
   el.innerHTML = cells.map(c =>
-    '<div class="hl"><div class="l">' + esc(c[0]) + '</div><div class="v'
+    '<div class="hl' + (c[4] && c[4] === Q.metric ? ' active' : '') + '"'
+    + (c[4] ? ' data-m="' + c[4] + '" tabindex="0" role="button" title="show ' + METRIC_LABEL[c[4]] + ' on every usage card"' : '')
+    + '><div class="l">' + esc(c[0]) + '</div><div class="v'
     + (c[0] === 'failed' && failed > 0.02 ? ' warn' : '') + '">' + esc(c[1])
     + '<small>' + esc(c[2]) + '</small></div>' + c[3] + '</div>').join('');
   const tag = $('headline-tag');
@@ -1115,9 +1130,11 @@ function renderBoard() {
   let board = (lastDoc.leaderboard || []).slice();
   const by = lastDoc.by;
   const head = $('usage-board-head');
-  const cols = [['label', esc(by), ''], [Q.metric, esc(METRIC_LABEL[Q.metric]), 'num'], ['sessions', 'sessions', 'num'],
-    ['requests', 'requests', 'num'], ['audio_s', 'audio', 'num'], ['proc_s', 'GPU s', 'num'],
-    ['rtf', 'RTF', 'num'], ['errors', 'err', 'num']];
+  // The measure leads; the fixed columns skip it so nothing is listed twice.
+  const cols = [['label', esc(by), ''], [Q.metric, esc(METRIC_LABEL[Q.metric]), 'num'],
+    ...[['sessions', 'sessions', 'num'], ['requests', 'requests', 'num'], ['audio_s', 'audio duration', 'num'],
+        ['proc_s', 'processing time', 'num'], ['rtf', 'RTF', 'num'], ['errors', 'err', 'num']]
+      .filter(c => c[0] !== Q.metric)];
   if (head) head.innerHTML = '<tr><th class="rank">#</th>' + cols.map(([k, lab, cls]) =>
     '<th class="' + cls + ' sortable' + (boardSort.key === k ? ' on' : '') + '" data-k="' + k + '" title="sort by ' + lab + '">'
     + lab + (boardSort.key === k ? (boardSort.dir < 0 ? ' ▾' : ' ▴') : '') + '</th>').join('') + '</tr>';
@@ -1157,12 +1174,12 @@ function renderBoard() {
       + '<td class="rank" data-label="#">' + (i + 1) + '</td>'
       + '<td class="name" data-label="name">' + share + sw + esc(label) + me + sub + '</td>'
       + '<td class="num" data-label="' + esc(METRIC_LABEL[Q.metric]) + '">' + fmtMetric(Q.metric, t[Q.metric]) + '</td>'
-      + '<td class="num" data-label="sessions">' + fmtCount(t.sessions) + '</td>'
-      + '<td class="num" data-label="requests">' + fmtCount(t.requests) + '</td>'
-      + '<td class="num" data-label="audio">' + fmtDur(t.audio_s) + '</td>'
-      + '<td class="num" data-label="GPU s">' + fmtDur(t.proc_s) + '</td>'
+      + (Q.metric === 'sessions' ? '' : '<td class="num" data-label="sessions">' + fmtCount(t.sessions) + '</td>')
+      + (Q.metric === 'requests' ? '' : '<td class="num" data-label="requests">' + fmtCount(t.requests) + '</td>')
+      + (Q.metric === 'audio_s' ? '' : '<td class="num" data-label="audio duration">' + fmtDur(t.audio_s) + '</td>')
+      + (Q.metric === 'proc_s' ? '' : '<td class="num" data-label="processing time">' + fmtDur(t.proc_s) + '</td>')
       + '<td class="num" data-label="RTF"><span class="rtf' + (r.rtf > 0.35 ? ' slow' : '') + '">' + rtf + '</span></td>'
-      + '<td class="num' + (t.errors ? ' err' : '') + '" data-label="err">' + (t.errors ? fmtCount(t.errors) : '—') + '</td>'
+      + (Q.metric === 'errors' ? '' : '<td class="num' + (t.errors ? ' err' : '') + '" data-label="err">' + (t.errors ? fmtCount(t.errors) : '—') + '</td>')
       + '</tr>';
   }).join('');
   tb.querySelectorAll('tr.pick').forEach(tr => {
@@ -1188,12 +1205,23 @@ function renderStages() {
   const eligible = s => (STAGE_KINDS[s] || []).reduce((a, k) => a + Number(((tot[k] || {}).sessions) || 0), 0);
   const order = STAGE_GROUPS.flatMap(g => g[1]);
   const totalSecs = order.reduce((a, s) => a + ((rows[s] && rows[s].secs) || 0), 0);
+  // The share bar splits the measure across stages: processing → stage
+  // seconds, audio → audio the stage saw, sessions/requests → runs; words
+  // and errors are not tracked per stage, so those fall back to seconds.
+  const shareKey = Q.metric === 'audio_s' ? 'audio_s'
+    : (Q.metric === 'sessions' || Q.metric === 'requests') ? 'runs' : 'secs';
+  const shareOf = s => Number((rows[s] && rows[s][shareKey]) || 0);
+  const shareTot = order.reduce((a, s) => a + shareOf(s), 0);
+  const shareFmt = shareKey === 'runs' ? fmtCount : fmtDur;
   const bar = $('stages-bar');
-  if (bar) bar.innerHTML = totalSecs > 0 ? order.map(s => {
-    const secs = (rows[s] && rows[s].secs) || 0;
-    return secs > 0 ? '<span style="flex:' + (secs / totalSecs) + ';background:' + STAGE_COLOR[s]
-      + '" title="' + esc(STAGE_LABEL[s]) + ' ' + (secs / totalSecs * 100).toFixed(0) + ' %"></span>' : '';
-  }).join('') : '';
+  if (bar) {
+    bar.innerHTML = shareTot > 0 ? order.map(s => {
+      const v = shareOf(s);
+      return v > 0 ? '<span style="flex:' + (v / shareTot) + ';background:' + STAGE_COLOR[s]
+        + '" title="' + esc(STAGE_LABEL[s]) + ' ' + (v / shareTot * 100).toFixed(0) + ' % · ' + shareFmt(v) + '"></span>' : '';
+    }).join('') : '';
+    bar.title = 'share of ' + (shareKey === 'runs' ? 'runs' : shareKey === 'audio_s' ? 'audio duration' : 'processing time') + ' per stage';
+  }
   const models = (lastDoc.models || []).slice().sort((a, b) => b.sessions - a.sessions);
   let html = '';
   STAGE_GROUPS.forEach(([title, stages]) => {
@@ -1239,12 +1267,12 @@ function renderStages() {
   if (tag) {
     const tr = (rows.transcribing && rows.transcribing.secs) || 0;
     tag.textContent = totalSecs > 0
-      ? fmtDur(totalSecs) + ' GPU' + (tr > 0 ? ' · ' + Math.round(tr / totalSecs * 100) + ' % transcribing' : '')
-      : 'no GPU time in this window';
+      ? fmtDur(totalSecs) + ' processing time' + (tr > 0 ? ' · ' + Math.round(tr / totalSecs * 100) + ' % transcribing' : '')
+      : 'no processing time in this window';
   }
 }
 
-// ---- busy hours: weekday × hour of GPU seconds summed over the window,
+// ---- busy hours: weekday × hour of the measure summed over the window,
 // linear- or quartile-levelled (quantileBreaks), the busiest cell ringed,
 // hour-of-day and weekday marginal bars, a phrase for the pattern.
 const DOW = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
@@ -1259,7 +1287,7 @@ function weekdayCounts(from, to) {
   return out;
 }
 // The phrase in the title: the smallest day/part group holding most of the
-// GPU time, most specific first; 'no clear pattern' when nothing does.
+// measure, most specific first; 'no clear pattern' when nothing does.
 function hoursPhrase(cells) {
   const total = cells.reduce((a, v) => a + v, 0);
   if (!(total > 0)) return 'quiet';
@@ -1279,18 +1307,26 @@ function hoursPhrase(cells) {
 }
 function renderHours() {
   const el = $('hours-grid'); if (!el) return;
+  const M = Q.metric, ML = METRIC_LABEL[M];
+  const fmtM = v => fmtMetric(M, v);
+  // Per-occurrence averages of a count are fractional (4 sessions over 13
+  // Tuesdays); durations already carry decimals.
+  const fmtAvg = v => (M === 'audio_s' || M === 'proc_s' || v >= 10) ? fmtM(v) : v.toFixed(1);
+  // The companion shown beside the measure in tips: sessions, or
+  // processing time when sessions is the measure itself.
+  const C = M === 'sessions' ? 'proc_s' : 'sessions', CL = METRIC_LABEL[C];
+  const fmtC = v => fmtMetric(C, v);
   const cells = new Array(7 * 24).fill(0);
   const sess = new Array(7 * 24).fill(0);
-  const byKind = {};   // kind → [proc_s per cell, sessions per cell]
+  const byKind = {};   // kind → [measure per cell, companion per cell]
+  const kindOf = (h, m, k) => m === 'words' ? Number(h[k] || 0) : Number((h[m] || {})[k] || 0);
   (lastDoc.hours || []).forEach(h => {
-    const v = h.proc_s ? kindScoped(h.proc_s) : 0;
-    const s = h.sessions ? kindScoped(h.sessions) : 0;
     const i = h.dow * 24 + h.hour;
-    cells[i] += Number(v || 0);
-    sess[i] += Number(s || 0);
+    cells[i] += slotMeasure(h, M);
+    sess[i] += slotMeasure(h, C);
     KINDS.forEach(k => {
       if (Q.kind !== 'all' && Q.kind !== k) return;
-      const pv = Number((h.proc_s || {})[k] || 0), sv = Number((h.sessions || {})[k] || 0);
+      const pv = kindOf(h, M, k), sv = kindOf(h, C, k);
       if (!pv && !sv) return;
       const b = byKind[k] || (byKind[k] = [new Array(7 * 24).fill(0), new Array(7 * 24).fill(0)]);
       b[0][i] += pv; b[1][i] += sv;
@@ -1305,7 +1341,7 @@ function renderHours() {
   const rg = lastDoc.range || {};
   const occ = weekdayCounts(rg.from, rg.to);
   const slot = i => DOW[Math.floor(i / 24)] + ' ' + ('0' + (i % 24)).slice(-2) + '–' + ('0' + (i % 24 + 1)).slice(-2);
-  // marginal row: GPU seconds per hour of day (summed over the weekdays)
+  // marginal row: the measure per hour of day (summed over the weekdays)
   let html = '<span></span>' + hourTot.map(v =>
     '<span class="hb"><i style="height:' + (v > 0 ? Math.max(12, v / hm * 100) : 0) + '%"></i></span>').join('') + '<span></span>';
   html += '<span></span>' + Array.from({ length: 24 }, (_, h) =>
@@ -1314,7 +1350,7 @@ function renderHours() {
     html += '<span class="dl">' + DOW[d] + '</span>';
     for (let h = 0; h < 24; h++) {
       const i = d * 24 + h, v = cells[i];
-      const title = slot(i) + ' · ' + fmtDur(v) + ' GPU · ' + fmtCount(sess[i]) + ' sessions';
+      const title = slot(i) + ' · ' + fmtM(v) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL;
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
         + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + '></i>';
     }
@@ -1325,24 +1361,24 @@ function renderHours() {
     const i = Number(target.getAttribute('data-i')), d = Math.floor(i / 24);
     let out = '<div class="tip-date">' + slot(i) + '</div>';
     const ks = Object.keys(byKind).filter(k => byKind[k][0][i] || byKind[k][1][i]).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));
-    ks.forEach(k => out += tipRow(KIND_COLOR[k], KIND_LABEL[k] || k, fmtDur(byKind[k][0][i]) + ' GPU · ' + fmtCount(byKind[k][1][i]) + ' sessions'));
-    out += tipRow(null, ks.length ? 'total' : 'idle', cells[i] ? fmtDur(cells[i]) + ' GPU · ' + fmtCount(sess[i]) + ' sessions' : '—', ks.length > 1 ? 'tot' : '');
-    if (cells[i] > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW_LONG[d], '≈ ' + fmtDur(cells[i] / occ[d]) + ' GPU over ' + occ[d] + ' ' + DOW_LONG[d] + 's');
+    ks.forEach(k => out += tipRow(KIND_COLOR[k], KIND_LABEL[k] || k, fmtM(byKind[k][0][i]) + ' ' + ML + ' · ' + fmtC(byKind[k][1][i]) + ' ' + CL));
+    out += tipRow(null, ks.length ? 'total' : 'idle', cells[i] ? fmtM(cells[i]) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL : '—', ks.length > 1 ? 'tot' : '');
+    if (cells[i] > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW_LONG[d], '≈ ' + fmtAvg(cells[i] / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW_LONG[d] + 's');
     return out;
   });
   const kindNote = Q.kind !== 'all' ? (KIND_LABEL[Q.kind] || Q.kind) + ' only · ' : '';
   const lg = $('hours-legend');
   if (lg) lg.innerHTML = br
-    ? '<span class="ramp">quiet <i></i> busy</span><span>max ' + fmtDur(peakV) + ' per slot</span>'
-      + '<span class="what">' + kindNote + 'GPU seconds per weekday-hour · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span>'
-    : '<span class="what">' + kindNote + 'no GPU time in this window</span>';
+    ? '<span class="ramp">quiet <i></i> busy</span><span>max ' + fmtM(peakV) + ' per slot</span>'
+      + '<span class="what">' + kindNote + esc(ML) + ' per weekday-hour · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span>'
+    : '<span class="what">' + kindNote + 'no ' + esc(ML) + ' in this window</span>';
   const sub = $('hours-sub');
   if (sub) sub.innerHTML = peakV > 0
-    ? 'Busiest slot: ' + slot(peak) + ' · <b>' + fmtDur(peakV) + ' GPU</b>'
+    ? 'Busiest slot: ' + slot(peak) + ' · <b>' + fmtM(peakV) + ' ' + esc(ML) + '</b>'
       + (occ[Math.floor(peak / 24)] > 1 ? ' over ' + occ[Math.floor(peak / 24)] + ' ' + DOW_LONG[Math.floor(peak / 24)] + 's, ≈ '
-        + fmtDur(peakV / occ[Math.floor(peak / 24)]) + ' each' : '')
-      + ' · ' + fmtCount(sess[peak]) + ' sessions'
-    : 'No GPU time in this window';
+        + fmtAvg(peakV / occ[Math.floor(peak / 24)]) + ' each' : '')
+      + ' · ' + fmtC(sess[peak]) + ' ' + esc(CL)
+    : 'No ' + esc(ML) + ' in this window';
   const tag = $('hours-tag');
   if (tag) tag.textContent = hoursPhrase(cells);
 }
@@ -1360,19 +1396,40 @@ function publishModels() {
 
 // ---------------------------------------------------------------- wiring
 onSeg('usage-bucket', (v) => { Q.bucket = v; setSeg('usage-bucket', v); load(); });
-onSeg('usage-metric', (v) => { Q.metric = v; setSeg('usage-metric', v); load(); });
+// The measure is global: the scope bar's control, a headline tile, or the
+// M key set it, and every usage card re-renders from the same document.
+// The document only needs refetching when its ranking (leaderboard) or
+// series depend on it, which they do, so load() it is.
+function setMetric(v) {
+  if (!METRIC_LABEL[v] || v === Q.metric) return;
+  Q.metric = v; setSeg('sb-metric', v);
+  flashCtl('sb-metric');
+  load();
+}
+onSeg('sb-metric', setMetric);
+const hlStrip = $('headline-strip');
+if (hlStrip) {
+  const pick = (e) => {
+    const t = e.target.closest('.hl[data-m]');
+    if (!t || !hlStrip.contains(t)) return;
+    setMetric(t.dataset.m);
+  };
+  hlStrip.addEventListener('click', pick);
+  hlStrip.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(e); } });
+}
 onSeg('usage-by', (v) => { Q.by = v; setSeg('usage-by', v); hidden.clear(); load(); });
 const tableBtn = $('usage-table-btn');
 if (tableBtn) tableBtn.addEventListener('click', () => { tableMode = !tableMode; renderTable(); if (!tableMode && chart) chart.setSize({ width: chartEl.clientWidth, height: chartEl.clientHeight }); });
 document.addEventListener('keydown', (e) => {
   if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
   if (e.key === 't' || e.key === 'T') { tableMode = !tableMode; renderTable(); }
+  if (e.key === 'm' || e.key === 'M') setMetric(METRIC_ORDER[(METRIC_ORDER.indexOf(Q.metric) + 1) % METRIC_ORDER.length]);
 });
 
 parsePageQuery(location.search);
 if (ownScope() && Q.by === 'user') Q.by = 'key';
 setSeg('sb-range', Q.range); setSeg('sb-compare', Q.compare);
-setSeg('usage-bucket', Q.bucket); setSeg('usage-metric', Q.metric); setSeg('usage-by', Q.by);
+setSeg('usage-bucket', Q.bucket); setSeg('sb-metric', Q.metric); setSeg('usage-by', Q.by);
 wireScopeBar();
 renderChips();
 load();

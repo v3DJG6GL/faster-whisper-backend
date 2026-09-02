@@ -364,7 +364,7 @@ def test_hours_grid_is_local_weekday_by_hour_per_kind(usage_store_db):
                     kind="dictation", hour=_hour(2025, 10, 27, 9, 45, _ZH))
     now = _ts(2025, 10, 27, 12, 0, _UTC)
     zh = us.document("u", days=7, tz=_ZH, tz_name="Europe/Zurich", now=now)
-    flat = [{k: v for k, v in h.items() if k not in ("proc_s", "sessions")}
+    flat = [{k: v for k, v in h.items() if k not in us.SLOT_MEASURES}
             for h in zh["hours"]]
     assert flat == [
         {"dow": 0, "hour": 9, "all": 25, "dictation": 5, "file": 20, "url": 0, "text": 0},
@@ -419,9 +419,12 @@ def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
     assert doc["apps"] == [{"app_id": "vim", "sessions": 1, "words": 60}]
     assert [c["all"] for c in doc["calendar"]] == [460]
     assert doc["calendar"][0]["file"] == 400
-    # 10:00 and 11:00 slots; the text job's slot has neither words nor
-    # processing time (proc_s was not recorded) and stays absent.
-    assert sorted(h["all"] for h in doc["hours"]) == [60, 400]
+    # 10:00 and 11:00 slots carry the words; the text job's slot has no
+    # words and no processing time (proc_s was not recorded) but is still
+    # a session, so the busy-hours grid can count it under that measure.
+    assert sorted(h["all"] for h in doc["hours"]) == [0, 60, 400]
+    assert sorted(h["sessions"]["all"] for h in doc["hours"]) == [1, 1, 1]
+    assert sum(h["sessions"]["text"] for h in doc["hours"]) == 1
     assert doc["streak"]["all"] == {"current": 1, "best": 1}
     assert doc["time_saved_s"] == 60 / 40 * 60 - 20
 
@@ -581,7 +584,8 @@ def test_empty_document_shape_matches_populated(usage_store_db):
     assert set(empty["streak"]) == set(full["streak"]) == {"all", "dictation", "file", "url", "text"}
     assert set(full["calendar"][0]) == {"day", "all", "dictation", "file", "url", "text"}
     assert set(full["hours"][0]) == {"dow", "hour", "all", "dictation", "file",
-                                     "url", "text", "proc_s", "sessions"}
+                                     "url", "text", "proc_s", "audio_s", "sessions",
+                                     "requests", "errors"}
 
 
 def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(usage_store_db):

@@ -844,6 +844,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     overflow: hidden; text-overflow: ellipsis; }
   .hl .v small { color: var(--dim); font-size: var(--fs-xs); font-weight: 400; margin-left: 0.25rem; }
   .hl .v.warn { color: var(--yellow); }
+  /* Headline tiles that carry a measure double as its picker: the active
+     one is underlined in the accent, the rest lift on hover. */
+  .hl[data-m] { cursor: pointer; border-bottom: 2px solid transparent; }
+  .hl[data-m]:hover { background: #262c34; }
+  .hl[data-m]:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+  .hl.active { border-bottom-color: var(--cyan); }
+  .hl.active .l { color: var(--cyan); }
   .delta { display: block; font: var(--fs-xs) var(--font-mono); color: var(--dim); }
   .delta.good { color: var(--green); } .delta.bad { color: var(--red); }
   @media (max-width: 70em) { .hl-strip { grid-template-columns: repeat(3, 1fr); } }
@@ -872,7 +879,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     /* rows grow with the tile up to ~1.8rem so cells stay wider than tall */
     max-height: calc(2rem + 7 * 1.8rem + 9 * 2px); }
   .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; }
-  /* marginals: GPU seconds per hour of day (top) and per weekday (right) */
+  /* marginals: the measure per hour of day (top) and per weekday (right) */
   .hours .hb { display: flex; align-items: flex-end; }
   .hours .hb i { width: 100%; height: 0; min-height: 0; background: #3a4757; border-radius: 1px 1px 0 0; }
   .hours .rb { display: flex; align-items: center; }
@@ -1027,6 +1034,9 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
      so it is dimmed and inert until another preset is picked. */
   body.preset-usage .rings-label, body.preset-usage #live-range, body.preset-usage #ring-scrub,
   body.preset-usage #status { opacity: .35; pointer-events: none; }
+  /* ...and the 'ops' preset has no usage cards, so the measure control
+     (and the usage sub-bar) is dimmed the same way. */
+  body.preset-ops .subbar-usage { opacity: .35; pointer-events: none; }
   header #status.pill { display: inline-block; min-width: 13.5rem; text-align: center;
     box-sizing: border-box; }
   /* --- Turnaround histogram (inline SVG) --- */
@@ -1142,10 +1152,19 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <span id="status" class="pill live">live</span>
     </div>
   </div>
-  <!-- Usage scope, second row: kind (client-side), "with stage" chips (server
+  <!-- Usage scope rows: the measure every usage card shows, kind (client-side), "with stage" chips (server
        narrows to jobs that ran every chosen stage), click-to-filter chips
        from the leaderboard, and the resolved window. -->
   <div class="subbar subbar-usage">
+    <span class="seg-label measure-label" title="the number every usage card shows: the chart, its table and leaderboard, the busy-hours grid, the stages share bar and the highlighted headline tile">measure</span>
+    <div class="seg-ctrl" id="sb-metric" title="what the usage cards count (M cycles)">
+      <button data-v="audio_s" class="active" title="length of the audio received">audio duration</button>
+      <button data-v="words" title="words in the transcripts">words</button>
+      <button data-v="sessions" title="jobs: one per file, link, text or dictation session">sessions</button>
+      <button data-v="requests" title="HTTP requests, dictation utterances counted one each">requests</button>
+      <button data-v="proc_s" title="processing time: wall-clock seconds inside the pipeline, on whatever device ran it (GPU or CPU)">processing time</button>
+      <button data-v="errors" title="failed requests">errors</button>
+    </div>
     <span class="seg-label">kind</span>
     <span class="chips" id="sb-kind">
       <button type="button" class="chip on" data-v="all">all</button>
@@ -1305,10 +1324,10 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Loaded models -->
   <div class="grid-stack-item" gs-id="models" gs-x="0" gs-y="17" gs-w="12" gs-h="4">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>Loaded models <span class="tag">· audio and RTF over the usage window</span> <span class="win" data-win="usage"></span></h3>
+    <h3>Loaded models <span class="tag">· audio duration and RTF over the usage window</span> <span class="win" data-win="usage"></span></h3>
     <table class="tbl rcards"><thead><tr>
       <th>name</th><th>device</th><th>compute</th>
-      <th class="num">audio</th><th class="num">RTF</th>
+      <th class="num">audio duration</th><th class="num">RTF</th>
       <th class="num">VRAM (MB)</th><th class="num">disk</th><th>state</th>
       <th class="num">age</th><th class="num">idle</th>
       <th class="num">cold-load</th>
@@ -1342,16 +1361,6 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
           <button data-v="month">month</button>
         </div>
       </div>
-      <div class="usage-seg"><span class="seg-label">metric</span>
-        <div class="seg-ctrl" id="usage-metric">
-          <button data-v="audio_s" class="active">audio</button>
-          <button data-v="words">words</button>
-          <button data-v="sessions">sessions</button>
-          <button data-v="requests">requests</button>
-          <button data-v="errors">errors</button>
-          <button data-v="proc_s">GPU s</button>
-        </div>
-      </div>
       <div class="usage-seg"><span class="seg-label">by</span>
         <div class="seg-ctrl" id="usage-by">
           <button data-v="kind" class="active">kind</button>
@@ -1376,7 +1385,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <table class="tbl usage-board rcards"><thead id="usage-board-head"><tr>
       <th class="rank">#</th><th>name</th>
       <th class="num">audio</th><th class="num">sessions</th><th class="num">requests</th>
-      <th class="num">audio</th><th class="num">GPU s</th><th class="num">RTF</th><th class="num">err</th>
+      <th class="num">audio duration</th><th class="num">processing time</th><th class="num">RTF</th><th class="num">err</th>
     </tr></thead><tbody id="usage-board-rows">
       <tr><td colspan="9" class="empty">— loading —</td></tr>
     </tbody></table>
@@ -1390,13 +1399,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <div class="stages-bar" id="stages-bar"></div>
     <table class="tbl stages"><thead><tr>
       <th>stage</th><th class="num">runs</th><th class="num">of eligible</th>
-      <th class="num">audio</th><th class="num">GPU s</th><th class="num">RTF</th>
+      <th class="num">audio duration</th><th class="num">processing time</th><th class="num">RTF</th>
     </tr></thead><tbody id="stages-rows"><tr><td colspan="6" class="empty">— loading —</td></tr></tbody></table>
-    <div class="meta">GPU s = wall time inside the stage · RTF = GPU s ÷ audio · eligible = jobs the stage could have run on</div>
+    <div class="meta">processing time = wall time inside the stage, GPU or CPU · RTF = processing time ÷ audio duration · eligible = jobs the stage could have run on</div>
    </div></div>
   </div>
 
-  <!-- Busy hours: weekday × hour of GPU seconds with marginals. -->
+  <!-- Busy hours: weekday × hour of the chosen measure with marginals. -->
   <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Busy hours <span class="tag" id="hours-tag"></span> <span class="win" data-win="usage"></span></h3>

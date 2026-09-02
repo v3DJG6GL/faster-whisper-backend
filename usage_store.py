@@ -1889,15 +1889,25 @@ def _slot_of(ts: float, tz: zoneinfo.ZoneInfo | None) -> tuple[int, int]:
     return dt.weekday(), dt.hour
 
 
+# The per-slot measures beside words: every measure the stats console can
+# put on its busy-hours grid, each split by kind like the words are.
+SLOT_MEASURES = ("proc_s", "audio_s", "sessions", "requests", "errors")
+
+
 def _slot_extra() -> dict[str, dict[str, Any]]:
     return {"proc_s": {"all": 0.0, **{k: 0.0 for k in KINDS}},
-            "sessions": {"all": 0, **{k: 0 for k in KINDS}}}
+            "audio_s": {"all": 0.0, **{k: 0.0 for k in KINDS}},
+            "sessions": {"all": 0, **{k: 0 for k in KINDS}},
+            "requests": {"all": 0, **{k: 0 for k in KINDS}},
+            "errors": {"all": 0, **{k: 0 for k in KINDS}}}
 
 
 def _add_slot_extra(extra: dict[str, dict[str, Any]], kind: str,
-                    proc_s: float, sessions: int) -> None:
-    for name, v in (("proc_s", proc_s), ("sessions", sessions)):
-        split = extra[name]
+                    cell: dict[str, Any]) -> None:
+    """Add one cell (proc_s / audio_s / sessions / requests / errors) to
+    the slot's splits: always to `all`, to its kind when known."""
+    for name in SLOT_MEASURES:
+        split, v = extra[name], cell.get(name) or 0
         split["all"] += v
         if kind in split:
             split[kind] += v
@@ -1907,9 +1917,10 @@ def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
             words_all_days, today: datetime.date, extra_by_slot=None) -> None:
     """Common tail: the sparse arrays and the per-kind streaks. A slot in
     `hours` carries its words flat (the desktop app reads `h[kind]`) plus
-    nested `proc_s` and `sessions` splits, so the backend's busy-hours grid
-    can measure GPU seconds. A slot is emitted when it saw any words or any
-    processing time."""
+    nested `proc_s`, `audio_s`, `sessions`, `requests` and `errors` splits
+    (SLOT_MEASURES), so the backend's busy-hours grid can show whichever
+    measure the console has picked. A slot is emitted when it saw any
+    words, any request or any processing time."""
     extra_by_slot = extra_by_slot or {}
     doc["series"] = [{"day": _epoch_day(d), **_rounded(by_day[d])}
                      for d in sorted(by_day)]
@@ -1919,12 +1930,16 @@ def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
     for slot in sorted(set(words_by_slot) | set(extra_by_slot)):
         words = words_by_slot.get(slot) or _words_split()
         extra = extra_by_slot.get(slot) or _slot_extra()
-        if words["all"] <= 0 and extra["proc_s"]["all"] <= 0:
+        if (words["all"] <= 0 and extra["proc_s"]["all"] <= 0
+                and extra["requests"]["all"] <= 0):
             continue
         hours.append({
             "dow": slot[0], "hour": slot[1], **words,
             "proc_s": {k: round(v, 3) for k, v in extra["proc_s"].items()},
+            "audio_s": {k: round(v, 3) for k, v in extra["audio_s"].items()},
             "sessions": dict(extra["sessions"]),
+            "requests": dict(extra["requests"]),
+            "errors": dict(extra["errors"]),
         })
     doc["hours"] = hours
     doc["streak"] = {
@@ -1965,7 +1980,11 @@ def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
             slot = _slot_of(ts, tz)
             _add_words(words_by_slot.setdefault(slot, _words_split()), kind, words)
             _add_slot_extra(extra_by_slot.setdefault(slot, _slot_extra()), kind,
-                            float(r["proc_s"] or 0.0), int(r["sessions"] or 0))
+                            {"proc_s": float(r["proc_s"] or 0.0),
+                             "audio_s": float(r["audio_s"] or 0.0),
+                             "sessions": int(r["sessions"] or 0),
+                             "requests": int(r["requests"] or 0),
+                             "errors": int(r["errors"] or 0)})
     doc["total"] = _rounded(window)
     doc["today"] = _rounded(today_split)
     doc["stages"] = _stages(conn, user_id, start_hour, end_hour, window)
@@ -2054,8 +2073,7 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
         _add_words(words_by_day.setdefault(day, _words_split()), kind, words)
         slot = _slot_of(ts, tz)
         _add_words(words_by_slot.setdefault(slot, _words_split()), kind, words)
-        _add_slot_extra(extra_by_slot.setdefault(slot, _slot_extra()), kind,
-                        cell["proc_s"], 1)
+        _add_slot_extra(extra_by_slot.setdefault(slot, _slot_extra()), kind, cell)
         if job["activation"] in activation:
             activation[job["activation"]] += 1
         if job["delivery"] in delivery:
