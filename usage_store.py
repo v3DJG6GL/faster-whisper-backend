@@ -22,9 +22,11 @@ Tables (every rollup is keyed by UTC epoch-hour, see below):
   usage_dictation_hourly  hour × user × activation × delivery × translation
   usage_app_hourly        hour × user × app_id — where dictations landed
 
-`kind` is one of dictation / file / url / text; rows written before the kind
-column existed read as 'unknown' and only ever contribute to the all-kinds
-totals.
+`kind` is one of dictation / file / url / text. Rows written before the kind
+column existed are folded into 'dictation' (nearly all of that history was
+dictation, and a per-kind chart that hid it read as lost data); a write with
+a kind the server does not know lands as 'unknown' and only ever contributes
+to the all-kinds totals.
 
 Each /transcribe request (and each dictation utterance, and each text
 translation) bumps the rollups via record_usage, called from
@@ -230,6 +232,7 @@ def init_db(path: str) -> None:
     _park_legacy_hourly(_conn)
     _conn.executescript(_SCHEMA)
     _fold_legacy_hourly(_conn)
+    _reclassify_unknown_hourly(_conn)
     store_common.secure_db_file(path)
 
 
@@ -250,10 +253,10 @@ def _park_legacy_hourly(conn: sqlite3.Connection) -> None:
 
 
 def _fold_legacy_hourly(conn: sqlite3.Connection) -> None:
-    """Second half: copy the parked rows into the new table and drop the
-    parking table. Old rows know no kind and no job, so every request
-    counts as its own session — the truest reading of history that was
-    recorded per request. Copy + drop share a transaction so a crash in
+    """Second half: copy the parked rows into the new table as 'dictation'
+    and drop the parking table. Old rows know no kind and no job, so every
+    request counts as its own session — the truest reading of history that
+    was recorded per request. Copy + drop share a transaction so a crash in
     between cannot leave the rows counted twice on the next start."""
     exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='usage_hourly_legacy'"
@@ -270,7 +273,7 @@ def _fold_legacy_hourly(conn: sqlite3.Connection) -> None:
                 " SELECT hour, key_id, user_id, ?, requests, errors, words,"
                 "  audio_s, 0, requests"
                 " FROM usage_hourly_legacy",
-                (UNKNOWN_KIND,),
+                ("dictation",),
             )
             conn.execute("DROP TABLE usage_hourly_legacy")
             conn.execute("COMMIT")
@@ -279,6 +282,45 @@ def _fold_legacy_hourly(conn: sqlite3.Connection) -> None:
             raise
     logger.info("[usage] migrated %d hourly rows to the per-kind rollup",
                 cur.rowcount or 0)
+
+
+def _reclassify_unknown_hourly(conn: sqlite3.Connection) -> None:
+    """Fold 'unknown' hourly rows into 'dictation'. Servers that ran the
+    first per-kind build folded their history as 'unknown', which the
+    per-kind chart cannot draw; the history was dictation. Sums into an
+    existing dictation row for the same hour×key (the hour of the update
+    can hold both), then drops the unknown rows. Idempotent: a clean DB
+    has nothing to fold."""
+    n = conn.execute(
+        "SELECT COUNT(*) FROM usage_hourly WHERE kind=?", (UNKNOWN_KIND,)
+    ).fetchone()[0]
+    if not n:
+        return
+    with _lock:
+        conn.execute("BEGIN")
+        try:
+            conn.execute(
+                "INSERT INTO usage_hourly"
+                " (hour, key_id, user_id, kind, requests, errors, words,"
+                "  audio_s, proc_s, sessions)"
+                " SELECT hour, key_id, user_id, 'dictation', requests, errors,"
+                "  words, audio_s, proc_s, sessions"
+                " FROM usage_hourly WHERE kind=?"
+                " ON CONFLICT(hour, key_id, kind) DO UPDATE SET"
+                "  requests = requests + excluded.requests,"
+                "  errors   = errors + excluded.errors,"
+                "  words    = words + excluded.words,"
+                "  audio_s  = audio_s + excluded.audio_s,"
+                "  proc_s   = proc_s + excluded.proc_s,"
+                "  sessions = sessions + excluded.sessions",
+                (UNKNOWN_KIND,),
+            )
+            conn.execute("DELETE FROM usage_hourly WHERE kind=?", (UNKNOWN_KIND,))
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+    logger.info("[usage] reclassified %d unknown-kind hourly rows as dictation", n)
 
 
 def _require_conn() -> sqlite3.Connection:

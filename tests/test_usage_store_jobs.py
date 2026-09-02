@@ -43,7 +43,7 @@ CREATE INDEX idx_usage_hour      ON usage_hourly(hour);
 
 def test_init_rebuilds_legacy_hourly_with_kind_and_sessions(tmp_path):
     """A pre-kind DB (PK hour×key) is rebuilt to hour×key×kind; old rows read
-    as kind='unknown' with one session per request, and the parking table
+    as kind='dictation' with one session per request, and the parking table
     is gone. A second init is a no-op."""
     import usage_store
     path = str(tmp_path / "legacy.sqlite3")
@@ -63,7 +63,7 @@ def test_init_rebuilds_legacy_hourly_with_kind_and_sessions(tmp_path):
             "SELECT hour, kind, requests, sessions, words, audio_s"
             " FROM usage_hourly ORDER BY hour").fetchall()
         assert [tuple(r) for r in rows] == [
-            (100, "unknown", 3, 3, 42, 9.5), (101, "unknown", 1, 1, 7, 1.0)]
+            (100, "dictation", 3, 3, 42, 9.5), (101, "dictation", 1, 1, 7, 1.0)]
         assert conn.execute(
             "SELECT 1 FROM sqlite_master WHERE name='usage_hourly_legacy'"
         ).fetchone() is None
@@ -119,6 +119,36 @@ def test_colliding_job_id_of_another_user_is_not_merged(usage_store_db):
     # Bob's work is still counted — as a session of its own.
     assert us.document("bob", days=1, tz=_UTC,
                        tz_name="UTC")["today"]["dictation"]["sessions"] == 1
+
+
+def test_init_reclassifies_unknown_rows_as_dictation(tmp_path):
+    """A DB migrated by the first per-kind build holds its history as
+    'unknown'; the next start folds it into 'dictation', summing into a
+    dictation row that shares the hour×key, and a further start is a no-op."""
+    import usage_store
+    path = str(tmp_path / "unknown.sqlite3")
+    usage_store.init_db(path)
+    conn = usage_store._require_conn()
+    conn.executescript(
+        "INSERT INTO usage_hourly (hour, key_id, user_id, kind, requests, errors,"
+        " words, audio_s, proc_s, sessions) VALUES"
+        " (100, 'k', 'u', 'unknown', 3, 1, 42, 9.5, 0, 3),"
+        " (101, 'k', 'u', 'unknown', 1, 0, 7, 1.0, 0, 1),"
+        " (101, 'k', 'u', 'dictation', 2, 0, 10, 2.0, 0.5, 1),"
+        " (102, 'k', 'u', 'file', 1, 0, 5, 3.0, 1.0, 1);")
+    conn.commit()
+    conn.close()
+    for _ in range(2):
+        usage_store.init_db(path)
+        conn = usage_store._require_conn()
+        rows = conn.execute(
+            "SELECT hour, kind, requests, errors, sessions, words, audio_s, proc_s"
+            " FROM usage_hourly ORDER BY hour, kind").fetchall()
+        assert [tuple(r) for r in rows] == [
+            (100, "dictation", 3, 1, 3, 42, 9.5, 0),
+            (101, "dictation", 3, 0, 2, 17, 3.0, 0.5),
+            (102, "file", 1, 0, 1, 5, 3.0, 1.0)]
+        conn.close()
 
 
 def test_kind_totals_and_unknown_folds_into_all_only(usage_store_db):
