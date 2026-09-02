@@ -189,8 +189,12 @@ def test_v1_usage_self_scoped_even_for_admin(client, make_user_key):
     utc = zoneinfo.ZoneInfo("UTC")
     _seed(alice_uid, hour=_hour_in(utc), words=1000, kind="file")
     _seed(admin_uid, hour=_hour_in(utc), words=1, kind="file")
-    assert client.get("/v1/usage", headers=bearer(admin_raw)).json()["total"]["all"]["words"] == 1
-    assert client.get("/v1/usage", headers=bearer(alice_raw)).json()["total"]["all"]["words"] == 1000
+    # The seed sits at noon UTC today; ask in UTC too, or a runner whose local
+    # clock is behind UTC (the Windows CI box around midnight UTC) files it under
+    # tomorrow and the window misses it.
+    tz = {"tz": "UTC"}
+    assert client.get("/v1/usage", params=tz, headers=bearer(admin_raw)).json()["total"]["all"]["words"] == 1
+    assert client.get("/v1/usage", params=tz, headers=bearer(alice_raw)).json()["total"]["all"]["words"] == 1000
 
 
 def test_v1_usage_requires_bearer_when_locked_down(client, make_user_key):
