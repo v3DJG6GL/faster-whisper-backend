@@ -671,9 +671,9 @@ def test_stats_page_loads_static_stats_js(client):
     linked with the build version so the cacheable /static mount serves a
     fresh copy per build, and placed BEFORE the inline dashboard IIFE that
     reads its globals."""
-    import build_info
+    import stats_routes
     html = client.get("/stats").text
-    tag = f'<script src="/static/stats.js?v={build_info.APP_VERSION.replace("+", ".")}"></script>'
+    tag = f'<script src="/static/stats.js?v={stats_routes.ASSET_VERSION}"></script>'
     assert tag in html
     assert "__ASSET_V__" not in html
     assert html.index(tag) < html.index("function applyScope(")

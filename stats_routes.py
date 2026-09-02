@@ -2434,9 +2434,20 @@ timeTick('#rt-rows [data-ts]');
 </script>
 </body></html>"""
 # /static is cacheable (ETag), the page is not: the version in the query
-# string is what makes a new build fetch a new stats.js. Substituted once
-# at import — render_page() has a fixed placeholder list and caches by
-# template string.
-_STATS_VIEWER_HTML = _STATS_VIEWER_HTML.replace(
-    "__ASSET_V__", build_info.APP_VERSION.replace("+", "."))
+# string is what makes a new build fetch a new stats.js. It is a content
+# hash of the file (APP_VERSION alone is unchanged between dev restarts,
+# so browsers kept serving a stale copy). Substituted once at import —
+# render_page() has a fixed placeholder list and caches by template string.
+def _asset_version() -> str:
+    import hashlib
+    from pathlib import Path
+    try:
+        digest = hashlib.sha1((Path(__file__).parent / "static" / "stats.js").read_bytes()).hexdigest()[:10]
+    except OSError:
+        return build_info.APP_VERSION.replace("+", ".")
+    return digest
+
+
+ASSET_VERSION = _asset_version()
+_STATS_VIEWER_HTML = _STATS_VIEWER_HTML.replace("__ASSET_V__", ASSET_VERSION)
 
