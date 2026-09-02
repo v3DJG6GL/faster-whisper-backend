@@ -72,6 +72,7 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
+from collections.abc import Sequence
 import logging
 import sqlite3
 import threading
@@ -1166,28 +1167,62 @@ def _add_words(split: dict[str, int], kind: str, words: int) -> None:
         split[kind] += words
 
 
-def _scope_where(user_id: str | None, key_id: str | None = None, *,
-                 col: str = "user_id", key_col: str = "key_id"
+Ids = str | Sequence[str] | None
+
+
+def _in_clause(col: str, ids: Ids, clauses: list[str], params: list[Any]) -> None:
+    """Append `col = ?` for one id or `col IN (?, …)` for several; None or
+    an empty sequence adds nothing. An empty sequence is "no filter", not
+    "nothing" — the /stats filter chips send nothing when cleared."""
+    if ids is None:
+        return
+    if isinstance(ids, str):
+        clauses.append(f"{col} = ?")
+        params.append(ids)
+        return
+    vals = list(dict.fromkeys(ids))
+    if not vals:
+        return
+    clauses.append(f"{col} IN ({', '.join('?' * len(vals))})")
+    params.extend(vals)
+
+
+def _scope_where(user_id: Ids, key_id: Ids = None, *,
+                 col: str = "user_id", key_col: str = "key_id",
+                 kinds: Sequence[str] | None = None, kind_col: str | None = None,
                  ) -> tuple[str, list[Any]]:
-    """`(" WHERE …", params)` narrowing a table to one owner and/or one key;
-    None = no filter (the admin's whole-server document). Always yields a
-    WHERE so callers can append " AND …" tails unconditionally."""
+    """`(" WHERE …", params)` narrowing a table to an owner / owners and
+    a key / keys (str = one, a sequence = any of them, None = no filter:
+    the admin's whole-server document), plus `kinds` when the table has a
+    kind column (`kind_col`; the stage / dictation / app rollups do not and
+    stay unfiltered by kind). Always yields a WHERE so callers can append
+    " AND …" tails unconditionally."""
     clauses: list[str] = ["1=1"]
     params: list[Any] = []
-    if user_id is not None:
-        clauses.append(f"{col} = ?")
-        params.append(user_id)
-    if key_id is not None:
-        clauses.append(f"{key_col} = ?")
-        params.append(key_id)
+    _in_clause(col, user_id, clauses, params)
+    _in_clause(key_col, key_id, clauses, params)
+    if kind_col and kinds:
+        _in_clause(kind_col, [_norm_kind(k) for k in kinds], clauses, params)
     return " WHERE " + " AND ".join(clauses), params
 
 
-def _first_day(conn: sqlite3.Connection, user_id: str | None,
+def distinct_ids(col: str) -> list[str]:
+    """Every distinct user_id / key_id the hourly rollups have seen; the
+    /stats route maps a non-admin viewer's opaque labels back to ids with
+    it. `col` is validated (it is interpolated)."""
+    if col not in ("user_id", "key_id"):
+        raise ValueError(col)
+    conn = _require_conn()
+    return [r[0] for r in conn.execute(
+        f"SELECT DISTINCT {col} FROM usage_hourly ORDER BY 1")]
+
+
+def _first_day(conn: sqlite3.Connection, user_id: Ids,
                tz: zoneinfo.ZoneInfo | None,
                with_stages: tuple[str, ...],
-               key_id: str | None = None) -> int | None:
-    where, params = _scope_where(user_id, key_id)
+               key_id: Ids = None,
+               kinds: Sequence[str] | None = None) -> int | None:
+    where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
     if with_stages:
         row = conn.execute(
             "SELECT MIN(created_ts) AS ts FROM usage_jobs" + where
@@ -1224,8 +1259,9 @@ def document(
     with_stages: tuple[str, ...] = (),
     jobs_retention_days: int = 365,
     now: float | None = None,
-    key_id: str | None = None,
+    key_id: Ids = None,
     all_stages: bool = False,
+    kinds: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """One user's statistics document (everything /v1/usage returns except
     the username), reckoned in `tz` (None = server-local; `tz_name` is only
@@ -1245,15 +1281,25 @@ def document(
 
     `with_stages` (non-empty) recomputes the whole document from the per-job
     rows restricted to jobs that ran every listed stage — `range.source`
-    says "jobs" and the client discloses `jobs_retention_days`."""
+    says "jobs" and the client discloses `jobs_retention_days`.
+
+    `user_id` / `key_id` may also be sequences (any of those owners /
+    keys: the /stats filter chips). `kinds` keeps only those job kinds in
+    the tables that carry a kind (usage_hourly, usage_jobs); the stage,
+    dictation-outcome and app rollups have no kind column and stay at the
+    owner scope, which `range.kind_scoped` discloses as False."""
     conn = _require_conn()
+    kinds = tuple(dict.fromkeys(_norm_kind(k) for k in (kinds or ())))
+    for k in kinds:
+        if k not in KINDS:
+            raise ValueError(f"unknown kind: {k}")
     now = time.time() if now is None else float(now)
     today = _date_of(now, tz)
     with_stages = tuple(dict.fromkeys(with_stages))
     for st in with_stages:
         if st not in WITH_STAGES:
             raise ValueError(f"unknown stage: {st}")
-    first_day = _first_day(conn, user_id, tz, with_stages, key_id)
+    first_day = _first_day(conn, user_id, tz, with_stages, key_id, kinds)
     f, t = resolve_window(today=today, days=days, from_day=from_day,
                           to_day=to_day, all_time=all_time, first_day=first_day)
     doc = empty_document(
@@ -1263,6 +1309,8 @@ def document(
     if key_id is not None:
         # Partial by construction: see the docstring.
         doc["range"]["key_scoped"] = False
+    if kinds:
+        doc["range"]["kind_scoped"] = False
     start_hour = _midnight_hour(_from_epoch_day(f), tz)
     end_hour = _midnight_hour(_from_epoch_day(t) + datetime.timedelta(days=1), tz)
     today_start = _midnight_hour(today, tz)
@@ -1270,10 +1318,10 @@ def document(
     if with_stages:
         _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
                         start_hour * 3600, end_hour * 3600,
-                        today_start * 3600, today_end * 3600, key_id)
+                        today_start * 3600, today_end * 3600, key_id, kinds)
     else:
         _fill_from_rollups(conn, doc, user_id, tz, today,
-                           start_hour, end_hour, today_start, today_end, key_id)
+                           start_hour, end_hour, today_start, today_end, key_id, kinds)
     if not all_stages:
         # the desktop app's order: the optional stages as it lists them
         keep = {st["stage"]: st for st in doc["stages"] if st["stage"] in STAGE_APPLIES_TO}
@@ -1376,6 +1424,7 @@ def overview(
     limit: int = 50,
     jobs_retention_days: int = 365,
     now: float | None = None,
+    kinds: Sequence[str] | None = None,
 ) -> dict[str, Any]:
     """The /stats/usage v2 document: document() for the window (totals,
     today, stages, hours, range) plus a dense-axis breakdown of `metric` by
@@ -1398,9 +1447,11 @@ def overview(
         bucket = "auto"
     if compare not in COMPARES:
         compare = "off"
+    kinds = tuple(dict.fromkeys(_norm_kind(k) for k in (kinds or ())))
     doc = document(user_id, tz=tz, tz_name=tz_name, days=days, from_day=from_day,
                    to_day=to_day, all_time=all_time, with_stages=with_stages,
-                   jobs_retention_days=jobs_retention_days, now=now, key_id=key_id, all_stages=True)
+                   jobs_retention_days=jobs_retention_days, now=now, key_id=key_id,
+                   all_stages=True, kinds=kinds)
     f, t = int(doc["range"]["from"]), int(doc["range"]["to"])
     span = t - f + 1
     mode = bucket_mode(span) if bucket == "auto" else bucket
@@ -1453,7 +1504,7 @@ def overview(
             if any(v > 0 for v in rest.values()):
                 add(ent(UNKNOWN_KIND, label=UNKNOWN_KIND), day, rest)
     elif by in ("user", "key"):
-        where, params = _scope_where(user_id, key_id)
+        where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
         for r in conn.execute(
             "SELECT hour, user_id, key_id, SUM(requests) AS requests,"
             " SUM(errors) AS errors, SUM(words) AS words, SUM(audio_s) AS audio_s,"
@@ -1476,7 +1527,7 @@ def overview(
                         key_id=r["key_id"]), day, cell)
     elif by == "model":
         source = "jobs"
-        where, params = _scope_where(user_id, key_id)
+        where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
         start_ts = start_hour * 3600
         end_ts = end_hour * 3600
         for job in conn.execute(
@@ -1533,7 +1584,7 @@ def overview(
     ]
 
     models = _models_in_window(conn, user_id, key_id, with_stages,
-                               start_hour * 3600, end_hour * 3600)
+                               start_hour * 3600, end_hour * 3600, kinds)
 
     out: dict[str, Any] = {
         "v": 2,
@@ -1543,8 +1594,10 @@ def overview(
         "by": by,
         "tz": tz_name,
         "range": doc["range"],
-        "filter": {"user_id": user_id, "key_id": key_id,
-                   "key_scoped": key_scoped if key_id is not None else True},
+        "filter": {"user_id": user_id, "key_id": key_id, "kinds": list(kinds),
+                   "key_scoped": key_scoped if key_id is not None else True,
+                   "kind_scoped": (by == "kind" or by in ("user", "key", "model"))
+                                  if kinds else True},
         "totals": doc["total"],
         "today": doc["today"],
         "stages": doc["stages"],
@@ -1578,13 +1631,14 @@ def overview(
     return out
 
 
-def _models_in_window(conn: sqlite3.Connection, user_id: str | None,
-                      key_id: str | None, with_stages: tuple[str, ...],
-                      start_ts: float, end_ts: float) -> list[dict[str, Any]]:
+def _models_in_window(conn: sqlite3.Connection, user_id: Ids,
+                      key_id: Ids, with_stages: tuple[str, ...],
+                      start_ts: float, end_ts: float,
+                      kinds: Sequence[str] | None = None) -> list[dict[str, Any]]:
     """Per-model totals over the window from the per-job rows (the decode
     model of each job; stage models live in usage_job_stages and are not
     folded in). Feeds the loaded-models table's audio/RTF columns."""
-    where, params = _scope_where(user_id, key_id)
+    where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
     out = []
     for r in conn.execute(
         "SELECT COALESCE(model, '(unknown)') AS model, COUNT(*) AS sessions,"
@@ -1618,19 +1672,19 @@ def _models_in_window(conn: sqlite3.Connection, user_id: str | None,
 TURNAROUND_EDGES_S: tuple[int, ...] = (0, 1, 2, 5, 10, 30, 60, 120, 300, 900)
 
 
-def _jobs_where(user_id: str | None, key_id: str | None, kind: str | None,
+def _jobs_where(user_id: Ids, key_id: Ids, kind: Ids,
                 start_ts: float, end_ts: float, alias: str = ""
                 ) -> tuple[str, list[Any]]:
-    """`(" WHERE …", params)` over usage_jobs for a window, an optional
-    owner / key / kind. `alias` prefixes the columns for joined queries."""
+    """`(" WHERE …", params)` over usage_jobs for a window, optional
+    owner(s) / key(s) / kind(s). `alias` prefixes the columns for joined
+    queries."""
     p = alias + "." if alias else ""
+    kinds = [kind] if isinstance(kind, str) else list(kind or ())
     where, params = _scope_where(user_id, key_id, col=p + "user_id",
-                                 key_col=p + "key_id")
+                                 key_col=p + "key_id", kinds=kinds,
+                                 kind_col=p + "kind")
     where += f" AND {p}created_ts >= ? AND {p}created_ts < ?"
     params += [float(start_ts), float(end_ts)]
-    if kind:
-        where += f" AND {p}kind = ?"
-        params.append(_norm_kind(kind))
     return where, params
 
 
@@ -1832,7 +1886,9 @@ def tail(
     per-model table, and compare deltas."""
     now = time.time() if now is None else float(now)
     today = _date_of(now, tz)
-    first_day = _first_day(_require_conn(), user_id, tz, (), key_id) if all_time else None
+    first_day = (_first_day(_require_conn(), user_id, tz, (), key_id,
+                            [kind] if isinstance(kind, str) else kind)
+                 if all_time else None)
     f, t = resolve_window(today=today, days=days, from_day=from_day,
                           to_day=to_day, all_time=all_time, first_day=first_day)
     span = t - f + 1
@@ -1948,7 +2004,7 @@ def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
 
 
 def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
-                       today_start, today_end, key_id=None) -> None:
+                       today_start, today_end, key_id=None, kinds=()) -> None:
     today_split = _zero_split()
     window = _zero_split()
     by_day: dict[datetime.date, dict[str, dict[str, Any]]] = {}
@@ -1956,7 +2012,7 @@ def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
     words_by_slot: dict[tuple[int, int], dict[str, int]] = {}
     extra_by_slot: dict[tuple[int, int], dict[str, dict[str, Any]]] = {}
     words_all_days: dict[datetime.date, dict[str, int]] = {}
-    where, params = _scope_where(user_id, key_id)
+    where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
     for r in conn.execute(
         "SELECT hour, kind, sessions, requests, errors, words, audio_s, proc_s"
         " FROM usage_hourly" + where, params,
@@ -2030,7 +2086,7 @@ def _add_cell(split: dict[str, dict[str, Any]], kind: str,
 
 def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
                     start_ts, end_ts, today_start_ts, today_end_ts,
-                    key_id=None) -> None:
+                    key_id=None, kinds=()) -> None:
     """The `with=` document: every figure from the per-job rows that ran all
     of `with_stages`. Sessions are jobs, requests are utterances, an error
     is a job whose last status was not ok. The dictation buckets come from
@@ -2049,7 +2105,7 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
     translation = {t: 0 for t in TRANSLATIONS}
     apps: dict[str, dict[str, int]] = {}
     window_jobs: list[str] = []
-    where, params = _scope_where(user_id, key_id)
+    where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
     for job in conn.execute(
         "SELECT job_id, kind, created_ts, status, audio_s, words, proc_s,"
         " utterances, activation, delivery, translation, app_id"

@@ -326,11 +326,18 @@ function levelOf(v, br) {
 // ---------------------------------------------------------------- state
 // Everything the scope bar + the usage card's own controls decide. Mirrored
 // to the URL (parsePageQuery / pageQueryParams), defaults omitted.
+// Filters are lists (empty = no filter): `kinds` is OR across job kinds,
+// `with` is AND across stages, `users` / `keys` are "one of" as picked in
+// the who / keys pickers. `model` is a single click-to-filter chip.
 const Q = {
   range: '30', from: null, to: null, compare: 'off',
-  kind: 'all', with: [], user: null, key: null, model: null,
+  kinds: [], with: [], users: [], keys: [], model: null,
   bucket: 'auto', metric: 'audio_s', by: 'kind',
 };
+// Display names for picked user / key ids (from the picker or the
+// leaderboard), so the filter sentences and the recent-jobs table can say
+// who was picked without another round trip.
+const pickLabels = { user: {}, key: {} };
 const DEFAULTS = JSON.parse(JSON.stringify(Q));
 const ownScope = () => document.body.classList.contains('scope-own');
 
@@ -344,10 +351,14 @@ function parsePageQuery(search) {
     }
   } else if (r && RANGE_PRESETS.includes(r)) Q.range = r;
   const c = p.get('compare'); if (c === 'prev' || c === 'yoy') Q.compare = c;
-  const k = p.get('kind'); if (k && KINDS.includes(k)) Q.kind = k;
-  const w = (p.get('with') || '').split(',').map(s => s.trim()).filter(Boolean);
-  Q.with = w.filter(s => WITH_CHIPS.some(c => c[0] === s));
-  Q.user = p.get('user') || null; Q.key = p.get('key') || null;
+  const csv = name => (p.get(name) || '').split(',').map(s => s.trim()).filter(Boolean);
+  // `kind` / `user` / `key` are the single-valued spellings of older links.
+  Q.kinds = csv('kinds').concat(csv('kind')).filter(k => KINDS.includes(k));
+  Q.kinds = Array.from(new Set(Q.kinds));
+  if (Q.kinds.length === KINDS.length) Q.kinds = [];
+  Q.with = csv('with').filter(s => WITH_CHIPS.some(c => c[0] === s));
+  Q.users = Array.from(new Set(csv('users').concat(csv('user'))));
+  Q.keys = Array.from(new Set(csv('keys').concat(csv('key'))));
   Q.model = p.get('model') || null;
   const b = p.get('bucket'); if (['auto', 'day', 'week', 'month'].includes(b)) Q.bucket = b;
   const m = p.get('metric'); if (m && METRIC_LABEL[m]) Q.metric = m;
@@ -357,11 +368,11 @@ function pageQueryParams() {
   const p = new URLSearchParams();
   if (Q.range === 'custom') { p.set('range', 'custom'); p.set('from', Q.from); p.set('to', Q.to); }
   else if (Q.range !== DEFAULTS.range) p.set('range', Q.range);
-  for (const k of ['compare', 'kind', 'bucket', 'metric', 'by']) {
+  for (const k of ['compare', 'bucket', 'metric', 'by']) {
     if (Q[k] !== DEFAULTS[k]) p.set(k, Q[k]);
   }
-  if (Q.with.length) p.set('with', Q.with.join(','));
-  for (const k of ['user', 'key', 'model']) if (Q[k]) p.set(k, Q[k]);
+  for (const k of ['kinds', 'with', 'users', 'keys']) if (Q[k].length) p.set(k, Q[k].join(','));
+  if (Q.model) p.set('model', Q.model);
   return p;
 }
 function syncUrl() {
@@ -370,9 +381,16 @@ function syncUrl() {
   try { history.replaceState(null, '', url); } catch (_) {}
 }
 function isFiltered() {
-  return Q.range !== '30' || Q.kind !== 'all' || Q.with.length > 0
-    || !!Q.user || !!Q.key || !!Q.model || Q.compare !== 'off';
+  return Q.range !== '30' || filterCount() > 0 || Q.compare !== 'off';
 }
+// How many narrowing filters are on (kinds, stages, users, keys, model):
+// the card window chips show it so a screenshot still says "filtered".
+function filterCount() {
+  return (Q.kinds.length ? 1 : 0) + (Q.with.length ? 1 : 0) + (Q.users.length ? 1 : 0)
+    + (Q.keys.length ? 1 : 0) + (Q.model ? 1 : 0);
+}
+const kindsLabel = () => Q.kinds.map(k => KIND_LABEL[k] || k).join(' + ');
+const pickLabel = (dim, id) => pickLabels[dim][id] || id;
 
 // ---------------------------------------------------------------- scope bar
 function seg(id) { return $(id); }
@@ -391,23 +409,30 @@ function onSeg(id, fn) {
 function renderChips() {
   const kinds = $('sb-kind');
   if (kinds) kinds.querySelectorAll('.chip').forEach(c => {
-    c.classList.toggle('on', c.dataset.v === Q.kind);
+    c.classList.toggle('on', c.dataset.v === 'all' ? Q.kinds.length === 0 : Q.kinds.includes(c.dataset.v));
   });
   const w = $('sb-with');
   if (w) w.querySelectorAll('.chip').forEach(c => {
     c.classList.toggle('on', Q.with.includes(c.dataset.v));
   });
+  // Every active narrowing as a sentence: the chip groups and pickers
+  // are where you act, this row is where you read what is on.
   const f = $('sb-filters');
   if (f) {
     const chips = [];
-    for (const k of ['user', 'key', 'model']) {
-      if (Q[k]) chips.push('<button type="button" class="chip filter" data-dim="' + k + '">'
-        + k + ': ' + esc(Q[k]) + ' <span class="x">×</span></button>');
-    }
+    const chip = (dim, text, title) => chips.push('<button type="button" class="chip filter" data-dim="' + dim
+      + '" title="' + esc(title || 'remove this filter') + '">' + text + ' <span class="x">×</span></button>');
+    if (Q.kinds.length) chip('kinds', 'kind: ' + esc(kindsLabel()), 'any of these kinds · remove');
+    if (Q.with.length) chip('with', 'stage: ' + esc(Q.with.map(s => (WITH_CHIPS.find(c => c[0] === s) || [s, s])[1]).join(' + ')), 'ran every one of these stages · remove');
+    if (Q.users.length) chip('users', 'user: ' + esc(Q.users.map(u => pickLabel('user', u)).join(', ')), 'one of these users · remove');
+    if (Q.keys.length) chip('keys', 'key: ' + esc(Q.keys.map(k => pickLabel('key', k)).join(', ')), 'one of these keys · remove');
+    if (Q.model) chip('model', 'model: ' + esc(Q.model));
     if (isFiltered()) chips.push('<button type="button" class="chip clear" id="sb-clear">clear</button>');
     f.innerHTML = chips.length ? chips.join('')
       : '<span class="sb-none">none</span>';
   }
+  renderPickerButtons();
+  publishFilter();
   const summary = $('sb-summary');
   if (summary && lastDoc) {
     const rg = lastDoc.range || {};
@@ -422,16 +447,121 @@ function renderChips() {
     summary.textContent = s;
   }
 }
+// ---- who / keys pickers: a searchable checklist of the users (keys) with
+// usage in the window, ranked by the measure (/stats/pick). Changes apply
+// as they are made; "clear" empties the pick. The keys list narrows to the
+// picked users' keys.
+let _pickOpen = null;
+function renderPickerButtons() {
+  [['sb-who', 'users', 'user'], ['sb-keys', 'keys', 'key']].forEach(([id, list, word]) => {
+    const n = Q[list].length, btn = document.querySelector('#' + id + ' > button');
+    if (!btn) return;
+    btn.innerHTML = word + 's <span class="n">' + (n ? n + ' picked' : 'any') + '</span> ▾';
+    btn.setAttribute('aria-expanded', _pickOpen === id ? 'true' : 'false');
+  });
+}
+function openPicker(id, dim, list) {
+  const wrap = $(id), pop = wrap && wrap.querySelector('.pick-pop');
+  if (!pop) return;
+  if (_pickOpen === id) { closePickers(); return; }
+  closePickers();
+  _pickOpen = id;
+  pop.hidden = false;
+  renderPickerButtons();
+  const q = pop.querySelector('input[type=search]'), body = pop.querySelector('.pick-list');
+  q.value = '';
+  body.innerHTML = '<div class="pick-note">loading…</div>';
+  const p = new URLSearchParams();
+  if (Q.range === 'custom') { p.set('from', Q.from); p.set('to', Q.to); }
+  else if (Q.range === 'all') p.set('all', '1');
+  else p.set('days', Q.range);
+  p.set('dim', dim); p.set('metric', Q.metric);
+  filterParams(p, list);          // rank by the slice, minus this dimension
+  if (dim === 'key') p.delete('keys'); else p.delete('users');
+  try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
+  fetch('/stats/pick?' + p.toString(), { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(j => {
+      if (_pickOpen !== id) return;
+      const rows = j.rows || [];
+      rows.forEach(r => { pickLabels[dim][r.id] = r.label; });
+      // Picked ids that fell out of the window still show, so they can be un-picked.
+      Q[list].forEach(pid => { if (!rows.some(r => r.id === pid)) rows.push({ id: pid, label: pickLabel(dim, pid), value: 0, stale: true }); });
+      const max = Math.max(1, ...rows.map(r => Number(r.value) || 0));
+      const draw = (needle) => {
+        const vis = rows.filter(r => !needle || (r.label + ' ' + (r.user_label || '')).toLowerCase().includes(needle));
+        body.innerHTML = vis.length ? vis.map(r =>
+          '<label class="pick-opt' + (r.stale ? ' stale' : '') + '"><input type="checkbox" data-id="' + esc(r.id) + '"' + (Q[list].includes(r.id) ? ' checked' : '') + '>'
+          + '<span class="name">' + esc(r.label) + (r.me ? ' <span class="badge ok">you</span>' : '')
+          + (r.user_label ? '<span class="sub">' + esc(r.user_label) + '</span>' : '') + '</span>'
+          + '<span class="bar"><i style="width:' + ((Number(r.value) || 0) / max * 100).toFixed(0) + '%"></i></span>'
+          + '<span class="v">' + fmtMetric(j.metric, r.value) + '</span></label>').join('')
+          : '<div class="pick-note">nothing matches</div>';
+        pop.querySelector('.pick-foot span').textContent = Q[list].length + ' of ' + rows.length + ' picked';
+      };
+      draw('');
+      q.oninput = () => draw(q.value.trim().toLowerCase());
+      body.onchange = (e) => {
+        const cid = e.target && e.target.dataset.id; if (!cid) return;
+        Q[list] = e.target.checked ? Q[list].concat([cid]) : Q[list].filter(x => x !== cid);
+        pop.querySelector('.pick-foot span').textContent = Q[list].length + ' of ' + rows.length + ' picked';
+        renderPickerButtons();
+        pickerLoad();
+      };
+      q.focus();
+    })
+    .catch(() => { body.innerHTML = '<div class="pick-note">not available for your scope</div>'; });
+}
+let _pickTimer = null;
+function pickerLoad() {     // coalesce a burst of checkbox clicks into one fetch
+  clearTimeout(_pickTimer);
+  _pickTimer = setTimeout(load, 250);
+}
+function closePickers() {
+  document.querySelectorAll('.pick-pop').forEach(p => { p.hidden = true; });
+  _pickOpen = null;
+  renderPickerButtons();
+}
+function wirePickers() {
+  [['sb-who', 'user', 'users'], ['sb-keys', 'key', 'keys']].forEach(([id, dim, list]) => {
+    const wrap = $(id); if (!wrap) return;
+    wrap.querySelector('button').addEventListener('click', () => openPicker(id, dim, list));
+    const clr = wrap.querySelector('.pick-clear');
+    if (clr) clr.addEventListener('click', () => {
+      if (!Q[list].length) return;
+      Q[list] = [];
+      wrap.querySelectorAll('.pick-list input').forEach(i => { i.checked = false; });
+      renderPickerButtons(); load();
+    });
+  });
+  document.addEventListener('click', (e) => { if (_pickOpen && !e.target.closest('.picker')) closePickers(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && _pickOpen) closePickers(); });
+}
+// The recent-jobs table (inline dashboard) follows the kind and user
+// filters: it reads this and re-renders from its last snapshot.
+function publishFilter() {
+  window.__statsFilter = { kinds: Q.kinds.slice(), users: Q.users.map(u => pickLabel('user', u)) };
+  if (typeof window._fwRerenderJobs === 'function') { try { window._fwRerenderJobs(); } catch (_) {} }
+}
+
 function wireScopeBar() {
   onSeg('sb-range', (v) => {
     if (v === 'custom') { openCustom(); return; }
     Q.range = v; Q.from = Q.to = null; setSeg('sb-range', v); load();
   });
   onSeg('sb-compare', (v) => { Q.compare = v; setSeg('sb-compare', v); load(); });
+  // Kind chips: OR across the chosen kinds; "all" is the empty selection,
+  // choosing every kind collapses to it, Alt-click isolates one (like the
+  // chart legend).
   const kinds = $('sb-kind');
   if (kinds) kinds.addEventListener('click', (e) => {
     const c = e.target.closest('.chip'); if (!c) return;
-    Q.kind = c.dataset.v; setKind();
+    const v = c.dataset.v;
+    if (v === 'all') Q.kinds = [];
+    else if (e.altKey) Q.kinds = [v];
+    else Q.kinds = Q.kinds.includes(v) ? Q.kinds.filter(k => k !== v) : Q.kinds.concat([v]);
+    if (Q.kinds.length === KINDS.length) Q.kinds = [];
+    setKind();
   });
   const w = $('sb-with');
   if (w) w.addEventListener('click', (e) => {
@@ -444,11 +574,13 @@ function wireScopeBar() {
   if (f) f.addEventListener('click', (e) => {
     const c = e.target.closest('.chip'); if (!c) return;
     if (c.id === 'sb-clear') {
-      Object.assign(Q, { range: '30', from: null, to: null, compare: 'off', kind: 'all',
-                         with: [], user: null, key: null, model: null });
+      Object.assign(Q, { range: '30', from: null, to: null, compare: 'off', kinds: [],
+                         with: [], users: [], keys: [], model: null });
       setSeg('sb-range', '30'); setSeg('sb-compare', 'off');
+    } else if (c.dataset.dim === 'model') {
+      Q.model = null;
     } else if (c.dataset.dim) {
-      Q[c.dataset.dim] = null;
+      Q[c.dataset.dim] = [];
     }
     load();
   });
@@ -513,20 +645,27 @@ function queryString() {
   // Own scope has no per-user board; the server refuses by=user there.
   p.set('by', (ownScope() && Q.by === 'user') ? 'key' : Q.by);
   if (Q.compare !== 'off') p.set('compare', Q.compare);
-  if (Q.with.length) p.set('with', Q.with.join(','));
-  if (Q.key) p.set('key', Q.key);
-  if (Q.user) p.set('user', Q.user);
+  filterParams(p);
   try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
   return '?' + p.toString();
+}
+// The comma-list filters every usage endpoint understands (/stats/usage,
+// /stats/tail, /stats/pick); users are dropped for own scope (403 there).
+function filterParams(p, skip) {
+  if (Q.kinds.length) p.set('kinds', Q.kinds.join(','));
+  if (Q.with.length) p.set('with', Q.with.join(','));
+  if (Q.users.length && !ownScope() && skip !== 'users') p.set('users', Q.users.join(','));
+  if (Q.keys.length && skip !== 'keys') p.set('keys', Q.keys.join(','));
+  return p;
 }
 function tailQuery() {
   const p = new URLSearchParams();
   if (Q.range === 'custom') { p.set('from', Q.from); p.set('to', Q.to); }
   else if (Q.range === 'all') p.set('all', '1');
   else p.set('days', Q.range);
-  if (Q.kind !== 'all') p.set('kind', Q.kind);
-  if (Q.key) p.set('key', Q.key);
-  if (Q.user) p.set('user', Q.user);
+  if (Q.kinds.length) p.set('kind', Q.kinds.join(','));
+  filterParams(p);
+  p.delete('with');   // the tail has no stage filter
   try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
   return '?' + p.toString();
 }
@@ -543,12 +682,10 @@ function loadTail(seq) {
     })
     .catch(err => console.warn('[stats] tail fetch failed', err));
 }
-// Kind is a client-side split of the usage document, but the tail
-// (turnaround, failures) is computed per kind on the server: re-fetch it.
-function setKind() {
-  renderChips(); syncUrl(); renderAll();
-  loadTail(_seq);
-}
+// Kinds narrow the document's per-kind splits on the client, but the
+// by-user / key / model breakdowns, the leaderboard and the tail are
+// aggregated on the server: fetch again (cheap, and one code path).
+function setKind() { load(); }
 function load() {
   renderChips(); syncUrl();
   usageCards().forEach(el => el.classList.add('updating'));
@@ -593,9 +730,19 @@ function hideError() { const el = $('usage-error'); if (el) el.classList.add('hi
 
 // ---------------------------------------------------------------- render
 function kindScoped(split) {
-  // A per-kind split ({all, dictation, file, url, text}) narrowed to Q.kind.
+  // A per-kind split ({all, dictation, file, url, text}) narrowed to the
+  // chosen kinds: `all` when none are chosen, else the chosen ones summed
+  // (cells are numbers or {sessions, requests, …} objects).
   if (!split) return null;
-  return split[Q.kind === 'all' ? 'all' : Q.kind] || null;
+  if (!Q.kinds.length) return split.all == null ? null : split.all;
+  let out = null;
+  for (const k of Q.kinds) {
+    const v = split[k];
+    if (v == null) continue;
+    if (typeof v === 'number') out = (out || 0) + v;
+    else { out = out || {}; for (const m in v) out[m] = (out[m] || 0) + (Number(v[m]) || 0); }
+  }
+  return out;
 }
 function renderAll() {
   if (!lastDoc) return;
@@ -737,7 +884,7 @@ function renderFailures() {
     Object.entries(classes).forEach(([cls, n]) => rows.push({ stage, cls, n }));
   });
   if (!rows.length) {
-    el.innerHTML = '<span class="empty">No failures in this window' + (Q.kind !== 'all' ? ' for ' + KIND_LABEL[Q.kind] : '') + '.</span>';
+    el.innerHTML = '<span class="empty">No failures in this window' + (Q.kinds.length ? ' for ' + esc(kindsLabel()) : '') + '.</span>';
     return;
   }
   rows.sort((a, b) => b.n - a.n || a.stage.localeCompare(b.stage));
@@ -800,7 +947,7 @@ function renderHeadline() {
     + '<small>' + esc(c[2]) + '</small></div>' + c[3] + '</div>').join('');
   const tag = $('headline-tag');
   if (tag) tag.textContent = (lastDoc.range ? lastDoc.range.days + ' d' : '')
-    + (Q.kind !== 'all' ? ' · ' + KIND_LABEL[Q.kind] : '');
+    + (Q.kinds.length ? ' · ' + kindsLabel() : '');
 }
 // ---- window chips: every usage card's title row says which window it
 // shows (the scope bar's range), pulsing once when that window changes so
@@ -817,10 +964,12 @@ function windowChipHtml() {
     html = '<b>' + rg.days + ' d</b> · ' + esc(fmtDayShort(rg.from, cross)) + ' – ' + esc(fmtDayShort(rg.to, cross));
   }
   if (lastDoc.compare) html += ' <em>vs ' + (lastDoc.compare.mode === 'yoy' ? 'last year' : 'previous') + '</em>';
+  const n = filterCount();
+  if (n) html += ' <span class="fn" title="' + n + ' filter' + (n > 1 ? 's' : '') + ' on: see the FILTERS row">⏷ ' + n + '</span>';
   return html;
 }
 function renderWindowChips() {
-  const sig = [Q.range, Q.from, Q.to, Q.compare].join('|');
+  const sig = [Q.range, Q.from, Q.to, Q.compare, filterCount()].join('|');
   const pulse = _winSig != null && sig !== _winSig;
   _winSig = sig;
   const html = windowChipHtml(), title = ($('sb-summary') || {}).textContent || '';
@@ -860,7 +1009,7 @@ function prepareLines() {
     // Fixed stack order bottom → top, fixed colours (identity, not rank).
     const order = ['file', 'url', 'text', 'dictation', 'unknown'];
     lines = order.map(k => lines.find(ln => ln.id === k)).filter(Boolean)
-      .filter(ln => Q.kind === 'all' || ln.id === Q.kind);
+      .filter(ln => !Q.kinds.length || Q.kinds.includes(ln.id));
     curLines = lines.map(ln => ({
       id: ln.id, label: KIND_LABEL[ln.id] || ln.id, values: ln.values,
       color: KIND_COLOR[ln.id] || OTHERS_COLOR, others: false, me: !!ln.me,
@@ -1141,6 +1290,7 @@ let boardSort = { key: null, dir: -1 };
 function renderBoard() {
   const tb = $('usage-board-rows'); if (!tb) return;
   let board = (lastDoc.leaderboard || []).slice();
+  if (lastDoc.by === 'user' || lastDoc.by === 'key') board.forEach(r => { if (r.label) pickLabels[lastDoc.by][r.id] = r.label; });
   const by = lastDoc.by;
   const head = $('usage-board-head');
   // The measure leads; the fixed columns skip it so nothing is listed twice.
@@ -1198,9 +1348,19 @@ function renderBoard() {
   tb.querySelectorAll('tr.pick').forEach(tr => {
     const pick = () => {
       const id = tr.dataset.id;
-      if (by === 'kind') { Q.kind = Q.kind === id ? 'all' : id; setKind(); return; }
+      if (by === 'kind') {
+        Q.kinds = Q.kinds.includes(id) ? Q.kinds.filter(k => k !== id) : Q.kinds.concat([id]);
+        if (Q.kinds.length === KINDS.length) Q.kinds = [];
+        setKind(); return;
+      }
       if (by === 'user' && ownScope()) return;
-      Q[by] = Q[by] === id ? null : id;
+      if (by === 'user' || by === 'key') {
+        const list = by + 's', row = board.find(r => r.id === id);
+        if (row && row.label) pickLabels[by][id] = row.label;
+        Q[list] = Q[list].includes(id) ? Q[list].filter(x => x !== id) : Q[list].concat([id]);
+      } else {
+        Q[by] = Q[by] === id ? null : id;
+      }
       load();
     };
     tr.addEventListener('click', pick);
@@ -1338,7 +1498,7 @@ function renderHours() {
     cells[i] += slotMeasure(h, M);
     sess[i] += slotMeasure(h, C);
     KINDS.forEach(k => {
-      if (Q.kind !== 'all' && Q.kind !== k) return;
+      if (Q.kinds.length && !Q.kinds.includes(k)) return;
       const pv = kindOf(h, M, k), sv = kindOf(h, C, k);
       if (!pv && !sv) return;
       const b = byKind[k] || (byKind[k] = [new Array(7 * 24).fill(0), new Array(7 * 24).fill(0)]);
@@ -1379,7 +1539,7 @@ function renderHours() {
     if (cells[i] > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW_LONG[d], '≈ ' + fmtAvg(cells[i] / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW_LONG[d] + 's');
     return out;
   });
-  const kindNote = Q.kind !== 'all' ? (KIND_LABEL[Q.kind] || Q.kind) + ' only · ' : '';
+  const kindNote = Q.kinds.length ? kindsLabel() + ' only · ' : '';
   const lg = $('hours-legend');
   if (lg) lg.innerHTML = br
     ? '<span class="ramp">quiet <i></i> busy</span><span>max ' + fmtM(peakV) + ' per slot</span>'
@@ -1444,9 +1604,17 @@ if (ownScope() && Q.by === 'user') Q.by = 'key';
 setSeg('sb-range', Q.range); setSeg('sb-compare', Q.compare);
 setSeg('usage-bucket', Q.bucket); setSeg('sb-metric', Q.metric); setSeg('usage-by', Q.by);
 wireScopeBar();
+wirePickers();
 renderChips();
 load();
 // Own scope is applied by the inline IIFE after the first snapshot; when it
 // flips the `by` control to `key`, reload with the corrected query.
-window._fwUsageReload = () => { if (ownScope() && Q.by === 'user') { Q.by = 'key'; setSeg('usage-by', 'key'); } load(); };
+window._fwUsageReload = () => {
+  if (ownScope()) {
+    if (Q.by === 'user') { Q.by = 'key'; setSeg('usage-by', 'key'); }
+    Q.users = [];
+    const who = $('sb-who'); if (who) who.classList.add('hidden');
+  }
+  load();
+};
 })();

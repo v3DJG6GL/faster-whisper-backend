@@ -299,6 +299,71 @@ def _opaque_user_label(user_id: str) -> str:
                               hashlib.sha256).hexdigest()[:8]
 
 
+def _csv(v: str | None) -> list[str]:
+    """A comma-separated query value → de-duplicated non-empty items."""
+    return list(dict.fromkeys(x.strip() for x in (v or "").split(",") if x.strip()))
+
+
+def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -> list[str]:
+    """The ids behind the picked labels. Admin (and own) viewers send ids;
+    a non-admin "all" viewer only ever saw opaque labels (or their own name),
+    so each is matched against the opaque label of every id the rollups
+    know. Unknown labels are dropped rather than refused."""
+    import usage_store
+    if not scrub:
+        return labels
+    want = set(labels)
+    fn = _opaque_user_label if dim == "user" else _opaque_key_label
+    out = [i for i in usage_store.distinct_ids(dim + "_id") if fn(i) in want]
+    if caller_uid and dim == "user" and caller_uid in want:
+        out.append(caller_uid)
+    return list(dict.fromkeys(out))
+
+
+def _one_or_many(ids: list[str]) -> str | list[str]:
+    """One picked id keeps the v2 shape (`filter.key_id == "k1"`); several
+    go as a list (an IN clause in the store)."""
+    return ids[0] if len(ids) == 1 else ids
+
+
+def _label_rows(rows: list[dict[str, Any]], by: str, *, scrub: bool,
+                caller_uid: str | None) -> dict[str, dict[str, Any]]:
+    """Resolve display names on leaderboard / picker rows in place and
+    return {id: {label, user_label, me}} for the chart lines. Revoked
+    users/keys still resolve; sentinels stay literal. Non-admin "all"
+    viewers get opaque labels instead — only their own rows keep a name
+    (and are flagged `me`)."""
+    import api_keys_store
+    names = api_keys_store.get_usernames(
+        [r["user_id"] for r in rows if r.get("user_id")])
+
+    def _user_label(uid: str) -> str:
+        if scrub and uid != caller_uid:
+            return _opaque_user_label(uid)
+        return names.get(uid) or uid
+
+    labels: dict[str, dict[str, Any]] = {}
+    for r in rows:
+        mine = bool(caller_uid) and r.get("user_id") == caller_uid
+        if by == "user":
+            r["label"] = _user_label(r["id"])
+        elif by == "key":
+            kid = r["id"]
+            if scrub and not mine:
+                r["label"] = _opaque_key_label(kid)
+            else:
+                krec = (api_keys_store.get_key(kid)
+                        if kid and not kid.startswith("(") else None)
+                lbl = (krec or {}).get("label") or ""
+                disp = (krec or {}).get("key_prefix")
+                r["label"] = (lbl or (disp + "…" if disp else kid))
+            r["user_label"] = _user_label(r["user_id"])
+        if mine:
+            r["me"] = True
+        labels[r["id"]] = {k: r[k] for k in ("label", "user_label", "me") if k in r}
+    return labels
+
+
 def _opaque_key_label(key_id: str) -> str:
     return "key-" + hmac.new(_SCRUB_SALT, ("k:" + (key_id or "")).encode(),
                              hashlib.sha256).hexdigest()[:8]
@@ -321,6 +386,9 @@ async def stats_usage(
     compare: str = "off",
     key: str | None = None,
     user_q: str | None = Query(None, alias="user"),
+    kinds: str | None = None,
+    users: str | None = None,
+    keys: str | None = None,
     user: dict[str, Any] = Depends(require_page("stats")),
 ) -> dict[str, Any]:
     """Historical usage, v2: usage_store.overview() — totals, today, stages,
@@ -347,8 +415,13 @@ async def stats_usage(
     keeps its name and carries `me: true`. A non-admin with stats="own"
     gets only their own rows; `by=user` is refused (403) because the only
     row would be themselves and the page ranks their keys instead. A
-    non-admin passing `?user=` gets 403 — it is never trusted."""
-    import api_keys_store
+    non-admin passing `?user=` gets 403 — it is never trusted.
+
+    Filters (comma lists, echoed under `filter`): `kinds` keeps only those
+    job kinds (422 on an unknown one); `users` / `keys` keep only those
+    owners / keys — as picked in the page's who / keys pickers, so a
+    non-admin "all" viewer sends the opaque labels it was shown and they
+    are mapped back here. `users` needs the "all" scope (403 for own)."""
     import usage_store
 
     # Normalise BEFORE the scope check: an unknown `by` collapses to "user"
@@ -366,6 +439,15 @@ async def stats_usage(
             detail="per-user leaderboard needs stats scope 'all'")
     caller_uid = user.get("user_id") or None
     scrub = not scope.include_identity
+    kind_list = _csv(kinds)
+    for k in kind_list:
+        if k not in usage_store.KINDS:
+            raise HTTPException(422, detail=f"unknown kind: {k!r}")
+    user_list = _csv(users)
+    if user_list and scope.scope == "own":
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            detail="users= needs stats scope 'all'")
+    key_list = _csv(keys) or ([key] if key else [])
     # v1 spelling: days<=0 meant lifetime.
     if days is not None and days <= 0:
         days, all = None, True
@@ -381,52 +463,95 @@ async def stats_usage(
     # rollups (twice with a compare window) plus name lookups. Run the whole
     # gather off the event loop, like the reports/quick-config siblings.
     def _gather() -> dict[str, Any]:
+        uid_filter = _one_or_many(_unscrub("user", user_list, scrub, caller_uid)) if user_list else None
+        kid_filter = _one_or_many(_unscrub("key", key_list, scrub, caller_uid)) if key_list else None
         out = usage_store.overview(
-            user_id=scope.user_id, key_id=key or None, tz=w.tz,
+            user_id=uid_filter if uid_filter is not None else scope.user_id,
+            key_id=kid_filter, tz=w.tz,
             tz_name=w.tz_name, days=w.days, from_day=w.from_day,
             to_day=w.to_day, all_time=w.all_time, with_stages=w.with_stages,
             by=by, metric=metric, bucket=bucket, compare=compare,
-            jobs_retention_days=jobs_retention)
+            jobs_retention_days=jobs_retention, kinds=kind_list)
 
         # Resolve display names server-side (the /stats client has no
-        # api-keys data). Revoked users/keys still resolve; sentinels stay
-        # literal. Non-admin "all" viewers get opaque labels instead — only
-        # their own row keeps its name (and is flagged `me`).
+        # api-keys data).
         rows = out["leaderboard"]
-        names = api_keys_store.get_usernames(
-            [r["user_id"] for r in rows if r.get("user_id")])
-
-        def _user_label(uid: str) -> str:
-            if scrub and uid != caller_uid:
-                return _opaque_user_label(uid)
-            return names.get(uid) or uid
-
-        labels: dict[str, dict[str, Any]] = {}
+        labels = _label_rows(rows, by, scrub=scrub, caller_uid=caller_uid)
         for r in rows:
-            mine = bool(caller_uid) and r.get("user_id") == caller_uid
-            if by == "user":
-                r["label"] = _user_label(r["id"])
-            elif by == "key":
-                kid = r["id"]
-                if scrub and not mine:
-                    r["label"] = _opaque_key_label(kid)
-                else:
-                    krec = (api_keys_store.get_key(kid)
-                            if kid and not kid.startswith("(") else None)
-                    lbl = (krec or {}).get("label") or ""
-                    disp = (krec or {}).get("key_prefix")
-                    r["label"] = (lbl or (disp + "…" if disp else kid))
-                r["user_label"] = _user_label(r["user_id"])
-            if mine:
-                r["me"] = True
             # v1 shape: the metrics flat on the row as well.
             r.update(r["totals"])
-            labels[r["id"]] = {k: r[k] for k in ("label", "user_label", "me")
-                               if k in r}
         for ln in out["lines"]:
             ln.update(labels.get(ln["id"], {}))
         out["scope"] = scope.scope
+        # What the page asked for, as it asked (labels for scrubbed viewers).
+        out["filter"].update({"kinds": kind_list, "users": user_list, "keys": key_list})
         return out
+
+    return await asyncio.to_thread(_gather)
+
+
+@router.get(
+    "/stats/pick",
+    dependencies=[Depends(_require_stats_host)],
+)
+async def stats_pick(
+    dim: str = "user",
+    days: int | None = None,
+    tz: str | None = None,
+    from_: int | None = Query(default=None, alias="from"),
+    to: int | None = None,
+    all: bool = False,
+    with_: str | None = Query(default=None, alias="with"),
+    metric: str = "audio_s",
+    kinds: str | None = None,
+    users: str | None = None,
+    user: dict[str, Any] = Depends(require_page("stats")),
+) -> dict[str, Any]:
+    """Options for the page's who / keys pickers: every user (or key) with
+    usage in the window, ranked by `metric`, labelled like the leaderboard
+    (opaque for non-admin "all" viewers, `me` on the caller's own rows).
+    `dim=key` with `users` lists only those users' keys. Own scope may
+    list its keys but not users (403)."""
+    import usage_store
+
+    if dim not in ("user", "key"):
+        raise HTTPException(422, detail="dim must be user or key")
+    scope = stats_scope_for(user)
+    if dim == "user" and scope.scope == "own":
+        raise HTTPException(status.HTTP_403_FORBIDDEN,
+                            detail="per-user picker needs stats scope 'all'")
+    caller_uid = user.get("user_id") or None
+    scrub = not scope.include_identity
+    kind_list = _csv(kinds)
+    for k in kind_list:
+        if k not in usage_store.KINDS:
+            raise HTTPException(422, detail=f"unknown kind: {k!r}")
+    user_list = _csv(users) if scope.scope != "own" else []
+    if days is not None and days <= 0:
+        days, all = None, True
+    try:
+        w = usage_store.parse_window_params(
+            days=days, from_day=from_, to_day=to, all_time=all, with_=with_, tz=tz)
+    except ValueError as e:
+        raise HTTPException(422, detail=str(e))
+
+    def _gather() -> dict[str, Any]:
+        uid_filter = _one_or_many(_unscrub("user", user_list, scrub, caller_uid)) if user_list else None
+        out = usage_store.overview(
+            user_id=uid_filter if uid_filter is not None else scope.user_id,
+            tz=w.tz, tz_name=w.tz_name, days=w.days, from_day=w.from_day,
+            to_day=w.to_day, all_time=w.all_time, with_stages=w.with_stages,
+            by=dim, metric=metric, top_k=1, limit=500, kinds=kind_list)
+        rows = out["leaderboard"]
+        _label_rows(rows, dim, scrub=scrub, caller_uid=caller_uid)
+        return {
+            "dim": dim, "metric": out["metric"], "range": out["range"],
+            "rows": [{"id": r["id"], "label": r["label"],
+                      **({"user_label": r["user_label"]} if "user_label" in r else {}),
+                      **({"me": True} if r.get("me") else {}),
+                      "value": float(r["totals"].get(out["metric"], 0) or 0)}
+                     for r in rows],
+        }
 
     return await asyncio.to_thread(_gather)
 
@@ -502,6 +627,8 @@ async def stats_tail(
     kind: str | None = None,
     key: str | None = None,
     user_q: str | None = Query(None, alias="user"),
+    users: str | None = None,
+    keys: str | None = None,
     user: dict[str, Any] = Depends(require_page("stats")),
 ) -> dict[str, Any]:
     """The tail of the distribution, from the per-job rows: queue wait
@@ -509,7 +636,8 @@ async def stats_tail(
     share per bucket, failures by stage and class, per-model runs / RTF /
     wait, and deltas against the immediately preceding window. Same window
     vocabulary as /stats/usage (days | from/to | all, tz); `kind` narrows to
-    one job kind, `key` to one API key. Scoped like /stats/usage: own rows
+    one job kind or a comma list of them, `key` to one API key, `users` /
+    `keys` to the page's picked owners / keys (as in /stats/usage). Scoped like /stats/usage: own rows
     for "own", every user for "all", `?user=` preview for admins (403 for
     anyone else). The per-job rows keep USAGE_JOBS_RETENTION_DAYS; a window
     that starts earlier says so in range.truncated_to_days."""
@@ -526,14 +654,28 @@ async def stats_tail(
                                             all_time=all, tz=tz)
     except ValueError as e:
         raise HTTPException(422, detail=str(e))
-    if kind and kind not in usage_store.KINDS:
-        raise HTTPException(422, detail=f"unknown kind: {kind!r}")
+    kind_list = _csv(kind)
+    for k in kind_list:
+        if k not in usage_store.KINDS:
+            raise HTTPException(422, detail=f"unknown kind: {k!r}")
+    user_list = _csv(users)
+    if user_list and scope.scope == "own":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="users= needs stats scope 'all'")
+    key_list = _csv(keys) or ([key] if key else [])
+    caller_uid = user.get("user_id") or None
+    scrub = not scope.include_identity
     jobs_retention = int(getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 365) or 0)
-    doc = await asyncio.to_thread(
-        usage_store.tail, user_id=scope.user_id, key_id=key or None,
-        kind=kind or None, tz=w.tz, tz_name=w.tz_name, days=w.days,
-        from_day=w.from_day, to_day=w.to_day, all_time=w.all_time,
-        jobs_retention_days=jobs_retention)
+
+    def _gather() -> dict[str, Any]:
+        uid_filter = _one_or_many(_unscrub("user", user_list, scrub, caller_uid)) if user_list else None
+        kid_filter = _one_or_many(_unscrub("key", key_list, scrub, caller_uid)) if key_list else None
+        return usage_store.tail(
+            user_id=uid_filter if uid_filter is not None else scope.user_id,
+            key_id=kid_filter, kind=kind_list or None, tz=w.tz, tz_name=w.tz_name,
+            days=w.days, from_day=w.from_day, to_day=w.to_day, all_time=w.all_time,
+            jobs_retention_days=jobs_retention)
+
+    doc = await asyncio.to_thread(_gather)
     doc["scope"] = scope.scope
     return doc
 
@@ -760,6 +902,35 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .chip.filter .x { color: var(--dim); }
   .chip:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   .sb-none { font-size: var(--fs-xs); color: var(--dim); }
+  /* who / keys pickers: a button that opens a searchable checklist ranked
+     by the measure; the list applies as it is ticked. */
+  .picker { position: relative; display: inline-block; }
+  .picker > button { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 0.1rem 0.5rem; cursor: pointer;
+    display: inline-flex; gap: 0.35rem; align-items: center; }
+  .picker > button .n { color: var(--cyan); font: var(--fs-xs) var(--font-mono); }
+  .picker > button[aria-expanded="true"] { border-color: var(--cyan); }
+  .pick-pop { position: absolute; top: calc(100% + 0.3rem); left: 0; z-index: 30; width: 22rem;
+    max-width: 90vw; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.5rem; box-shadow: 0 8px 24px rgba(0,0,0,.5); font-size: var(--fs-sm); }
+  .pick-pop input[type=search] { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.5rem; font: inherit; margin-bottom: 0.4rem; }
+  .pick-list { max-height: 16rem; overflow-y: auto; }
+  .pick-opt { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.3rem; border-radius: 3px; cursor: pointer; }
+  .pick-opt:hover { background: #21262d; }
+  .pick-opt.stale { opacity: .6; }
+  .pick-opt input { margin: 0; }
+  .pick-opt .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pick-opt .name .sub { color: var(--dim); font-size: var(--fs-xs); margin-left: 0.35rem; }
+  .pick-opt .bar { width: 5rem; height: 4px; background: #21262d; border-radius: 2px; overflow: hidden; flex: none; }
+  .pick-opt .bar i { display: block; height: 100%; background: var(--cyan); }
+  .pick-opt .v { font: var(--fs-xs) var(--font-mono); color: var(--dim); width: 3.6rem; text-align: right; flex: none; }
+  .pick-note { color: var(--dim); font-size: var(--fs-xs); padding: 0.3rem; }
+  .pick-foot { display: flex; justify-content: space-between; align-items: center; padding-top: 0.4rem;
+    margin-top: 0.3rem; border-top: 1px solid var(--border); font-size: var(--fs-xs); color: var(--dim); }
+  .pick-foot button { background: transparent; border: 1px solid var(--border); border-radius: 4px;
+    color: var(--fg); font: inherit; font-size: var(--fs-xs); padding: 0.05rem 0.5rem; cursor: pointer; }
+  .card h3 .win .fn { color: var(--cyan); }
   .sb-summary { margin-left: auto; font: var(--fs-xs) var(--font-mono); color: var(--dim);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
   .sb-custom { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
@@ -973,9 +1144,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
      per-stage bars, pinned running rows. Colors reuse the page tokens. */
   .rj-flag { color: var(--dim); font-size: var(--fs-xs); white-space: nowrap;
     display: inline-flex; align-items: center; gap: 0.3rem; }
-  #rj-user { background: var(--bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.15rem 0.35rem; font: inherit; font-size: var(--fs-sm); }
+  #rj-follow { color: var(--dim); }
+  #rj-follow.on { color: var(--cyan); }
   .rj-x { width: 1.4rem; }
   .rj-tbl tr.rj-main { cursor: pointer; }
   .rj-tbl tr.rj-main:hover td { background: rgba(121, 192, 255, 0.04); }
@@ -1172,7 +1342,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button data-v="proc_s" title="processing time: wall-clock seconds inside the pipeline, on whatever device ran it (GPU or CPU)">processing time</button>
       <button data-v="errors" title="failed requests">errors</button>
     </div>
-    <span class="seg-label">kind</span>
+    <span class="seg-label" title="which kinds of jobs count — ANY of the chosen kinds; Alt-click isolates one">kind</span>
     <span class="chips" id="sb-kind">
       <button type="button" class="chip on" data-v="all">all</button>
       <button type="button" class="chip" data-v="dictation"><i class="sw" style="background:var(--kind-dictation)"></i>dictation</button>
@@ -1181,12 +1351,29 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button type="button" class="chip" data-v="text"><i class="sw" style="background:var(--kind-text)"></i>text</button>
     </span>
     <span class="subbar-break"></span>
-    <span class="seg-label" title="only jobs that ran every chosen stage (translation, speaker diarization, music separation, silence skipping)">stage</span>
+    <span class="seg-label" title="only jobs that ran EVERY chosen stage (translation, speaker diarization, music separation, silence skipping)">stage</span>
     <span class="chips" id="sb-with" title="only jobs that ran every chosen stage">
-      <button type="button" class="chip" data-v="translating">translated</button>
-      <button type="button" class="chip" data-v="diarizing">diarized</button>
-      <button type="button" class="chip" data-v="separating">music separated</button>
-      <button type="button" class="chip" data-v="vad">silence skipped</button>
+      <button type="button" class="chip" data-v="translating"><i class="sw" style="background:var(--stage-translating)"></i>translated</button>
+      <button type="button" class="chip" data-v="diarizing"><i class="sw" style="background:var(--stage-diarizing)"></i>diarized</button>
+      <button type="button" class="chip" data-v="separating"><i class="sw" style="background:var(--stage-separating)"></i>music separated</button>
+      <button type="button" class="chip" data-v="vad"><i class="sw" style="background:var(--stage-vad)"></i>silence skipped</button>
+    </span>
+    <span class="seg-label" title="only jobs by the picked users / keys (one of them)">who</span>
+    <span class="picker" id="sb-who">
+      <button type="button" aria-haspopup="listbox" aria-expanded="false" title="pick users · ranked by the measure in this window">users <span class="n">any</span> ▾</button>
+      <div class="pick-pop" role="dialog" aria-label="pick users" hidden>
+        <input type="search" placeholder="search users" aria-label="search users">
+        <div class="pick-list" role="listbox" aria-multiselectable="true"></div>
+        <div class="pick-foot"><span>0 picked</span><button type="button" class="pick-clear">clear</button></div>
+      </div>
+    </span>
+    <span class="picker" id="sb-keys">
+      <button type="button" aria-haspopup="listbox" aria-expanded="false" title="pick API keys · the picked users' keys when users are picked">keys <span class="n">any</span> ▾</button>
+      <div class="pick-pop" role="dialog" aria-label="pick keys" hidden>
+        <input type="search" placeholder="search keys" aria-label="search keys">
+        <div class="pick-list" role="listbox" aria-multiselectable="true"></div>
+        <div class="pick-foot"><span>0 picked</span><button type="button" class="pick-clear">clear</button></div>
+      </div>
     </span>
     <span class="subbar-break"></span>
     <span class="sb-filters-group">
@@ -1459,18 +1646,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
           <button data-v="slow" title="processing took more than half the audio's length (RTF &gt; 0.5)">slow</button>
         </div>
       </div>
-      <div class="usage-seg"><span class="seg-label">kind</span>
-        <div class="seg-ctrl" id="rj-kind">
-          <button data-v="" class="active">all</button>
-          <button data-v="transcribe">transcribe</button>
-          <button data-v="dictate">dictate</button>
-          <button data-v="translate">translate</button>
-          <button data-v="download">download</button>
-          <button data-v="preload">preload</button>
-        </div>
-      </div>
       <label class="rj-flag"><input type="checkbox" id="rj-warnonly"> warnings only</label>
-      <select id="rj-user" aria-label="filter by user"><option value="">all users</option></select>
+      <span class="rj-flag" id="rj-follow" title="the table follows the sub-bar's kind and who filters">follows kind · who</span>
     </div>
     <table class="tbl rcards rj-tbl"><thead><tr>
       <th class="rj-x"></th><th>when</th><th>type</th><th>pipeline</th><th>model</th>
@@ -2018,8 +2195,6 @@ function applyScope(snap) {
     $('scope-pill').classList.remove('hidden');
     // The per-user filter and the by-user leaderboard would list exactly
     // one person; the server refuses by=user for own scope anyway.
-    const userSel = $('rj-user');
-    if (userSel) { userSel.value = ''; userSel.classList.add('hidden'); }
     const byUser = document.querySelector('#usage-by button[data-v="user"]');
     if (byUser) byUser.classList.add('hidden');
     if (typeof window._fwUsageReload === 'function') window._fwUsageReload();
@@ -2307,9 +2482,21 @@ function render(snap) {
 let lastJobsSnap = null;
 const rjExpanded = new Set();
 
+// The sub-bar's kind / who filters (static/stats.js publishes them as
+// window.__statsFilter). Usage kinds map onto the job kinds the snapshot
+// rows carry: files and links are transcribe jobs (a link's download job
+// too), dictation is dictate, text is translate; preload jobs always show.
+const RJ_KIND_OF = { dictation: ['dictate'], file: ['transcribe'],
+                     url: ['transcribe', 'download'], text: ['translate'] };
+function rjFilter() {
+  const f = window.__statsFilter || {};
+  const kinds = (f.kinds || []).flatMap(k => RJ_KIND_OF[k] || []);
+  return { kinds: kinds.length ? Array.from(new Set(kinds)).concat(['preload']) : null,
+           users: (f.users || []).length ? f.users : null };
+}
 function segValRJ() {
-  const b = document.querySelector('#rj-kind button.active');
-  return b ? b.dataset.v : '';
+  const k = rjFilter().kinds;
+  return k && k.length === 2 ? k[0] : '';   // exactly one usage kind → one job kind for the server page
 }
 
 function jobSpeed(r) {
@@ -2445,30 +2632,20 @@ function rjLoadMore() {
 
 function renderJobs(snap) {
   lastJobsSnap = snap;
-  const kindF = segValRJ();
+  const flt = rjFilter();
   const view = rjView();
   const warnOnly = $('rj-warnonly').checked || view === 'failed';
-  const userSel = $('rj-user');
-  const userF = userSel.value;
+  const follow = $('rj-follow');
+  if (follow) follow.classList.toggle('on', !!(flt.kinds || flt.users));
 
   const seen = new Set((snap.recent_transcriptions || []).map(r => r.request_id || String(r.ts)));
   const rt = (snap.recent_transcriptions || []).concat(
     rjExtra.filter(r => !seen.has(r.request_id || String(r.ts))));
   const running = view === 'slow' ? [] : (snap.jobs || []);
 
-  // Keep the user select populated (preserving the current choice).
-  const users = Array.from(new Set(rt.map(r => r.username).filter(Boolean))).sort();
-  const want = ['', ...users];
-  const have = Array.from(userSel.options).map(o => o.value);
-  if (want.join(',') !== have.join(',')) {
-    userSel.innerHTML = '<option value="">all users</option>'
-      + users.map(u => `<option value="${esc(u)}">${esc(u)}</option>`).join('');
-    userSel.value = want.includes(userF) ? userF : '';
-  }
-
   const runRows = running
-    .filter(j => !kindF || j.kind === kindF)
-    .filter(j => !userF || j.user === userF)   // j.user is the username, like r.username
+    .filter(j => !flt.kinds || flt.kinds.includes(j.kind))
+    .filter(j => !flt.users || flt.users.includes(j.user))   // j.user is the username, like r.username
     .filter(() => !warnOnly)
     .map(j => {
       const pct = j.progress != null ? Math.round(j.progress * 100) : null;
@@ -2495,10 +2672,10 @@ function renderJobs(snap) {
     });
 
   const doneRows = (view === 'running' ? [] : rt)
-    .filter(r => !kindF || r.kind === kindF)
+    .filter(r => !flt.kinds || flt.kinds.includes(r.kind))
     .filter(r => !warnOnly || r.status !== 'ok')
     .filter(r => view !== 'slow' || (r.audio_dur > 0 && r.proc_dur > 0.5 * r.audio_dur))
-    .filter(r => !userF || r.username === userF)
+    .filter(r => !flt.users || flt.users.includes(r.username))
     .map(r => {
       const key = String(r.ts || 0);
       const open = rjExpanded.has(key);
@@ -2540,17 +2717,6 @@ function renderJobs(snap) {
 // Filter wiring: kind segments, warnings-only, user select — all re-render
 // from the last snapshot immediately.
 (() => {
-  const kindCtl = $('rj-kind');
-  if (kindCtl) {
-    kindCtl.addEventListener('click', (e) => {
-      const b = e.target.closest('button');
-      if (!b || b.classList.contains('active')) return;
-      kindCtl.querySelectorAll('button').forEach(x => x.classList.remove('active'));
-      b.classList.add('active');
-      rjResetPages();
-      if (lastJobsSnap) renderJobs(lastJobsSnap);
-    });
-  }
   const viewCtl = $('rj-view');
   if (viewCtl) {
     viewCtl.addEventListener('click', (e) => {
@@ -2569,10 +2735,9 @@ function renderJobs(snap) {
     rjResetPages();
     if (lastJobsSnap) renderJobs(lastJobsSnap);
   });
-  const userCtl = $('rj-user');
-  if (userCtl) userCtl.addEventListener('change', () => {
-    if (lastJobsSnap) renderJobs(lastJobsSnap);
-  });
+  // The sub-bar's filters changed (static/stats.js): re-render from the
+  // last snapshot and start paging from the top again.
+  window._fwRerenderJobs = () => { rjResetPages(); if (lastJobsSnap) renderJobs(lastJobsSnap); };
   // Row expansion (event delegation — rows are re-rendered every tick).
   const body = $('rt-rows');
   if (body) body.addEventListener('click', (e) => {

@@ -110,7 +110,8 @@ def test_overview_by_user_top_k_and_others(usage_store_db):
     one = _ov(us, user_id="alice", key_id="k1", from_day=_D("2025-06-02"),
               to_day=_D("2025-06-11"), by="key")
     assert [ln["id"] for ln in one["lines"]] == ["k1"]
-    assert one["filter"] == {"user_id": "alice", "key_id": "k1", "key_scoped": True}
+    assert one["filter"] == {"user_id": "alice", "key_id": "k1", "key_scoped": True,
+                             "kinds": [], "kind_scoped": True}
 
 
 def test_overview_by_model_from_jobs(usage_store_db):

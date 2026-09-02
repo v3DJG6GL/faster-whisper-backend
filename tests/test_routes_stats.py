@@ -252,12 +252,17 @@ def test_recent_jobs_counter_counts_rendered_rows(client):
 
 def test_stats_page_renders_every_job_kind(client):
     """jobs.KINDS is the single source of truth; each kind needs a kindchip
-    colour and a Recent-jobs filter button or it renders as an unstyled,
-    unfilterable grey chip."""
+    colour, and the Recent-jobs table (which follows the sub-bar's usage
+    kinds) must map every job kind from some usage kind — or preload, which
+    always shows — or it becomes unfilterable."""
     html = client.get("/stats").text
+    m = re.search(r"const RJ_KIND_OF = \{(.*?)\};", html, re.S)
+    assert m, "RJ_KIND_OF map missing"
+    mapped = set(re.findall(r"'([a-z]+)'", m.group(1)))
     for kind in jobs.KINDS:
         assert f".kindchip.{kind}" in html, kind
-        assert f'data-v="{kind}"' in html, kind
+        assert kind in mapped or kind == "preload", kind
+    assert ".concat(['preload'])" in html
 
 
 def test_log_stage_colors_flag_reaches_logs_page(client, app_module,
@@ -975,3 +980,83 @@ def test_stats_page_ring_scrubber_range_mode_and_tail_cards(client):
               "function renderFailures", "'turnaround', 'failures'", "wait_share",
               "turnaround p50"):
         assert s in js, s
+
+
+def test_stats_usage_list_filters_kinds_users_keys(client, usage_store_db):
+    """The page's filter bar sends comma lists: `kinds` keeps only those
+    job kinds (client-side splits AND the server breakdowns), `users` /
+    `keys` keep only those owners / keys (an IN clause), every filter is
+    echoed under `filter`, and /stats/pick lists the pickable users ranked
+    by the measure with the same labels the leaderboard uses."""
+    import time
+    us = usage_store_db
+    h = int(time.time() // 3600)
+    us.record_usage(key_id="ka", user_id="alice", audio_s=100.0, words=10,
+                    status="ok", hour=h, proc_s=2.0, job_id="a1", kind="file")
+    us.record_usage(key_id="ka", user_id="alice", audio_s=50.0, words=5,
+                    status="ok", hour=h, proc_s=1.0, job_id="a2", kind="dictation")
+    us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
+                    status="ok", hour=h, proc_s=1.0, job_id="b1", kind="url")
+    us.record_usage(key_id="kc", user_id="carla", audio_s=20.0, words=2,
+                    status="ok", hour=h, proc_s=1.0, job_id="c1", kind="file")
+    everything = client.get("/stats/usage?by=user").json()
+    assert everything["totals"]["all"]["audio_s"] == 200.0
+    assert everything["filter"]["kinds"] == [] and everything["filter"]["users"] == []
+
+    kinds = client.get("/stats/usage?by=user&kinds=file,url").json()
+    assert kinds["totals"]["all"]["audio_s"] == 150.0
+    assert kinds["totals"]["dictation"]["audio_s"] == 0.0
+    assert kinds["filter"]["kinds"] == ["file", "url"]
+    assert {r["id"]: r["audio_s"] for r in kinds["leaderboard"]} == {"alice": 100.0, "bob": 30.0, "carla": 20.0}
+    assert client.get("/stats/usage?kinds=file,bogus").status_code == 422
+
+    users = client.get("/stats/usage?by=kind&users=alice,carla").json()
+    assert users["totals"]["all"]["audio_s"] == 170.0
+    assert users["filter"]["users"] == ["alice", "carla"]
+    both = client.get("/stats/usage?by=kind&users=alice,carla&kinds=file").json()
+    assert both["totals"]["all"]["audio_s"] == 120.0
+    keys = client.get("/stats/usage?by=kind&keys=kb,kc").json()
+    assert keys["totals"]["all"]["audio_s"] == 50.0
+    one = client.get("/stats/usage?by=kind&keys=kb").json()
+    assert one["filter"]["key_id"] == "kb"          # v2 shape for one key
+
+    tail = client.get("/stats/tail?kind=file,url&users=alice,bob").json()
+    assert tail["turnaround"]["n"] == 2
+    assert client.get("/stats/tail?kind=nope").status_code == 422
+
+    pick = client.get("/stats/pick?dim=user&metric=audio_s&kinds=file").json()
+    assert pick["dim"] == "user"
+    assert [(r["id"], r["value"]) for r in pick["rows"]] == [("alice", 100.0), ("carla", 20.0)]
+    pk = client.get("/stats/pick?dim=key&users=alice").json()
+    assert [r["id"] for r in pk["rows"]] == ["ka"] and pk["rows"][0]["user_label"] == "alice"
+    assert client.get("/stats/pick?dim=model").status_code == 422
+
+
+def test_stats_usage_list_filters_respect_scope(client, usage_store_db, make_user_key):
+    """Own-scope users cannot widen to other users (users= is 403, and so is
+    the user picker); a non-admin 'all' viewer sends the opaque labels it
+    was shown and gets the matching rows back."""
+    import time
+    from conftest import bearer
+    us = usage_store_db
+    h = int(time.time() // 3600)
+    make_user_key("root", is_admin=True)
+    alice_uid, alice_raw = make_user_key("alice", pages={"stats": "own"})
+    _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
+    us.record_usage(key_id="ka", user_id=alice_uid, audio_s=100.0, words=10,
+                    status="ok", hour=h, proc_s=2.0, job_id="a1", kind="file")
+    us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
+                    status="ok", hour=h, proc_s=1.0, job_id="b1", kind="url")
+    hdr = bearer(alice_raw)
+    assert client.get("/stats/usage?users=bob", headers=hdr).status_code == 403
+    assert client.get("/stats/pick?dim=user", headers=hdr).status_code == 403
+    r = client.get("/stats/pick?dim=key", headers=hdr).json()
+    assert [x["id"] for x in r["rows"]] == ["ka"]
+    hdr = bearer(viewer_raw)
+    pick = client.get("/stats/pick?dim=user", headers=hdr).json()
+    labels = {x["id"]: x["label"] for x in pick["rows"]}
+    assert all(re.fullmatch(r"user-[0-9a-f]{8}", v) for v in labels.values())
+    bob_label = labels["bob"]
+    doc = client.get("/stats/usage?by=kind&users=" + bob_label, headers=hdr).json()
+    assert doc["totals"]["all"]["audio_s"] == 30.0
+    assert doc["filter"]["users"] == [bob_label]
