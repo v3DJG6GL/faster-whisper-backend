@@ -42,7 +42,7 @@ nvidia-ml-py>=13.610.43
 # IANA zone database for zoneinfo on platforms that ship none (Windows):
 # /v1/usage reckons the desktop client's days in its own timezone. A no-op
 # on Linux/macOS, where zoneinfo reads the system database.
-tzdata>=2025.2
+tzdata>=2025.3
 psutil>=7.2.2
 pydantic>=2.13.5
 
