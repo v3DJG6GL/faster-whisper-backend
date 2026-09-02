@@ -47,7 +47,8 @@ def test_v1_usage_shape(client):
     body = client.get("/v1/usage").json()
     assert set(body) == {
         "username", "tz", "range", "today", "total", "series", "stages",
-        "dictation", "apps", "calendar", "hours", "streak", "time_saved_s"}
+        "dictation", "apps", "calendar", "hours", "dom_hours", "streak",
+        "time_saved_s"}
     today = (datetime.date.today() - datetime.date(1970, 1, 1)).days
     assert body["range"] == {"from": today - 29, "to": today, "days": 30,
                              "first_day": None, "source": "rollups",
@@ -56,7 +57,7 @@ def test_v1_usage_shape(client):
         assert set(body[k]) == {"all", *_KINDS}
         assert all(set(body[k][kind]) == _CELL for kind in body[k])
     assert body["series"] == [] and body["stages"] == [] and body["apps"] == []
-    assert body["calendar"] == [] and body["hours"] == []
+    assert body["calendar"] == [] and body["hours"] == [] and body["dom_hours"] == []
     assert body["streak"] == {k: {"current": 0, "best": 0}
                               for k in ("all", *_KINDS)}
     d = body["dictation"]
