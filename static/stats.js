@@ -247,6 +247,11 @@ function fmtDate(ts) {
   return d.getUTCFullYear() + '.' + p2(d.getUTCMonth() + 1) + '.' + p2(d.getUTCDate());
 }
 function fmtDay(day) { return fmtDate(day * 86400); }
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function fmtDayShort(day, withYear) {
+  const d = new Date(day * DAY_MS);
+  return d.getUTCDate() + ' ' + MON[d.getUTCMonth()] + (withYear ? ' ' + d.getUTCFullYear() : '');
+}
 function esc(s) {
   return String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -552,6 +557,7 @@ function kindScoped(split) {
 function renderAll() {
   if (!lastDoc) return;
   renderHeadline();
+  renderWindowChips();
   // Everything that takes vertical space in the usage card renders BEFORE
   // the chart, which measures whatever height is left; drawing it first
   // would freeze a canvas sized against a one-row "loading" board.
@@ -749,6 +755,43 @@ function renderHeadline() {
   if (tag) tag.textContent = (lastDoc.range ? lastDoc.range.days + ' d' : '')
     + (Q.kind !== 'all' ? ' · ' + KIND_LABEL[Q.kind] : '');
 }
+// ---- window chips: every usage card's title row says which window it
+// shows (the scope bar's range), pulsing once when that window changes so
+// the reader sees which cards follow the control. Ring cards get theirs
+// from the inline dashboard (refreshRingChips).
+let _winSig = null;
+function windowChipHtml() {
+  const rg = lastDoc.range || {};
+  let html;
+  if (Q.range === 'all') html = '<b>all</b> · since ' + esc(fmtDayShort(rg.from, true));
+  else {
+    const fy = new Date(rg.from * DAY_MS).getUTCFullYear(), ty = new Date(rg.to * DAY_MS).getUTCFullYear();
+    const cross = fy !== ty || ty !== new Date().getUTCFullYear();
+    html = '<b>' + rg.days + ' d</b> · ' + esc(fmtDayShort(rg.from, cross)) + ' – ' + esc(fmtDayShort(rg.to, cross));
+  }
+  if (lastDoc.compare) html += ' <em>vs ' + (lastDoc.compare.mode === 'yoy' ? 'last year' : 'previous') + '</em>';
+  return html;
+}
+function renderWindowChips() {
+  const sig = [Q.range, Q.from, Q.to, Q.compare].join('|');
+  const pulse = _winSig != null && sig !== _winSig;
+  _winSig = sig;
+  const html = windowChipHtml(), title = ($('sb-summary') || {}).textContent || '';
+  document.querySelectorAll('.card h3 .win[data-win="usage"]').forEach(el => {
+    el.innerHTML = html; el.title = title + ' — click to jump to the range control';
+    if (pulse) { el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); }
+  });
+}
+function flashCtl(id) {
+  const el = $(id); if (!el) return;
+  el.scrollIntoView({ block: 'nearest' });
+  el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+}
+document.addEventListener('click', (e) => {
+  const chip = e.target.closest('.card h3 .win[data-win="usage"]'); if (!chip) return;
+  e.preventDefault(); e.stopPropagation();
+  if (Q.range === 'custom') { flashCtl('sb-range'); openCustom(); } else flashCtl('sb-range');
+});
 function cmpWord() { return lastDoc.compare && lastDoc.compare.mode === 'yoy' ? 'last year' : 'prev'; }
 
 // ---- chart

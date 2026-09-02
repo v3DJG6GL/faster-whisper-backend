@@ -771,6 +771,26 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .usage-fed.updating { opacity: .6; transition: opacity .15s ease; }
   .card h3 .tag { font-family: var(--font-mono); color: var(--cyan); text-transform: none;
     letter-spacing: 0; font-weight: 400; margin-left: 0.3rem; }
+  /* --- Window chip: every windowed card says which clock it obeys (the
+     scope bar's range for usage cards, the rings control for the machine
+     sparks), right-aligned in the title row like Grafana's time-override
+     note. Filled by renderWindowChips (stats.js) and refreshRingChips. --- */
+  .card h3 .win { float: right; margin-left: 0.5rem; font-family: var(--font-mono);
+    font-size: var(--fs-xs); text-transform: none; letter-spacing: 0; font-weight: 400;
+    line-height: 1.5; color: var(--dim); background: var(--bg); border: 1px solid var(--border);
+    border-radius: 999px; padding: 0 0.55em; white-space: nowrap; cursor: pointer; }
+  .card h3 .win:empty { display: none; }
+  .usage-toolbar h3 .win { float: none; }
+  .card h3 .win b { color: var(--fg); font-weight: 500; }
+  .card h3 .win em { color: var(--yellow); font-style: normal; }
+  .card h3 .win.live { color: var(--green); border-color: #1f4d2a; }
+  .card h3 .win.live::before { content: ""; display: inline-block; width: 0.45em; height: 0.45em;
+    border-radius: 50%; background: var(--green); margin-right: 0.45em; vertical-align: middle; }
+  .card h3 .win.paused { color: var(--yellow); border-color: #4d3e1f; }
+  @keyframes win-pulse { 0% { box-shadow: 0 0 0 0 rgba(57, 210, 192, .7); }
+    100% { box-shadow: 0 0 0 6px rgba(57, 210, 192, 0); } }
+  .card h3 .win.pulse, .seg-ctrl.flash { animation: win-pulse .7s ease-out 1; }
+  @media (prefers-reduced-motion: reduce) { .card h3 .win.pulse, .seg-ctrl.flash { animation: none; } }
   .usage-error { font-size: var(--fs-xs); color: var(--yellow); }
   .usage-error button { font: inherit; font-size: var(--fs-xs); color: var(--fg);
     background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
@@ -976,7 +996,6 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   header #ring-scrub.off { opacity: .35; }
   header #status.pill { display: inline-block; min-width: 13.5rem; text-align: center;
     box-sizing: border-box; }
-  .spark-head .win { color: var(--cyan); margin-left: 0.4rem; text-transform: none; letter-spacing: 0; }
   /* --- Turnaround histogram (inline SVG) --- */
   .ta-hist { flex: 1 1 0; min-height: 4rem; position: relative; overflow: hidden; }
   .ta-hist svg { width: 100%; height: 100%; display: block; overflow: visible; }
@@ -1130,7 +1149,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
        — a second hidden grid-stack-item would still occupy a cell.) -->
   <div class="grid-stack-item" gs-id="gpu" gs-x="0" gs-y="0" gs-w="6" gs-h="9">
    <div class="grid-stack-item-content"><div id="card-gpu" class="card">
-    <h3>GPU</h3>
+    <h3>GPU <span class="win" data-win="ring"></span></h3>
     <div id="gpu-content">
      <div id="gpu-name" class="val">—</div>
      <div id="gpu-meta" class="meta"></div>
@@ -1162,7 +1181,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Host CPU -->
   <div class="grid-stack-item" gs-id="cpu" gs-x="6" gs-y="0" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>CPU (host)</h3>
+    <h3>CPU (host) <span class="win" data-win="ring"></span></h3>
     <div id="cpu-pct" class="val">—<span class="sub">%</span></div>
     <div id="cpu-cores" class="core-strip"></div>
     <div class="spark-wrap">
@@ -1176,7 +1195,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Host RAM -->
   <div class="grid-stack-item" gs-id="ram" gs-x="6" gs-y="5" gs-w="6" gs-h="4">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>RAM</h3>
+    <h3>RAM <span class="win" data-win="ring"></span></h3>
     <div id="ram-val" class="val">— <span class="sub">/ — GB</span></div>
     <div id="ram-bar" class="bar"><i style="width:0"></i></div>
     <div id="ram-meta" class="meta"></div>
@@ -1223,7 +1242,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Latency -->
   <div class="grid-stack-item" gs-id="latency" gs-x="0" gs-y="12" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>Request latency (last <span id="lat-n">0</span>)</h3>
+    <h3>Request latency (last <span id="lat-n">0</span>) <span class="win" data-win="ring"></span></h3>
     <div id="lat-val" class="val">— <span class="sub">ms p50</span></div>
     <div id="lat-meta" class="meta"></div>
     <div class="spark-wrap">
@@ -1246,7 +1265,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Loaded models -->
   <div class="grid-stack-item" gs-id="models" gs-x="0" gs-y="17" gs-w="12" gs-h="4">
    <div class="grid-stack-item-content"><div class="card">
-    <h3>Loaded models <span class="tag">· audio and RTF over the usage window</span></h3>
+    <h3>Loaded models <span class="tag">· audio and RTF over the usage window</span> <span class="win" data-win="usage"></span></h3>
     <table class="tbl rcards"><thead><tr>
       <th>name</th><th>device</th><th>compute</th>
       <th class="num">audio</th><th class="num">RTF</th>
@@ -1262,7 +1281,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
        the compare window. Fed by the usage document (static/stats.js). -->
   <div class="grid-stack-item" gs-id="headline" gs-x="0" gs-y="21" gs-w="12" gs-h="2">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3>Usage <span class="tag" id="headline-tag"></span></h3>
+    <h3>Usage <span class="tag" id="headline-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="hl-strip" id="headline-strip"><span class="empty">— loading —</span></div>
    </div></div>
   </div>
@@ -1272,7 +1291,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <div class="grid-stack-item" gs-id="usage" gs-x="0" gs-y="23" gs-w="12" gs-h="10">
    <div class="grid-stack-item-content"><div class="card usage-card usage-fed">
     <div class="usage-toolbar">
-      <h3>Usage over time</h3>
+      <h3>Usage over time <span class="win" data-win="usage"></span></h3>
       <span id="usage-error" class="usage-error hidden"></span>
       <span class="spacer"></span>
       <div class="usage-seg"><span class="seg-label">bucket</span>
@@ -1327,7 +1346,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Pipeline stages: share of eligible runs + speed per optional stage. -->
   <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="33" gs-w="6" gs-h="4">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3>Pipeline stages <span class="tag" id="stages-tag"></span></h3>
+    <h3>Pipeline stages <span class="tag" id="stages-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="stages-bar" id="stages-bar"></div>
     <table class="tbl stages"><thead><tr>
       <th>stage</th><th class="num">runs</th><th class="num">of eligible</th>
@@ -1339,7 +1358,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Busy hours: weekday × hour of GPU seconds, quartile-levelled. -->
   <div class="grid-stack-item" gs-id="hours" gs-x="6" gs-y="33" gs-w="6" gs-h="4">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3>Busy hours <span class="tag" id="hours-tag"></span></h3>
+    <h3>Busy hours <span class="tag" id="hours-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="hours" id="hours-grid"></div>
     <div class="hours-legend" id="hours-legend"></div>
    </div></div>
@@ -1350,7 +1369,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
        wait p50/p95 by day beneath. Fed by /stats/tail (static/stats.js). -->
   <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="37" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3>Turnaround <span class="tag" id="turnaround-tag"></span></h3>
+    <h3>Turnaround <span class="tag" id="turnaround-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="ta-hist" id="turnaround-hist"></div>
     <div class="ta-wait" id="turnaround-wait"></div>
     <div class="meta" id="turnaround-note"></div>
@@ -1361,7 +1380,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
        soft-failed stages (the job went on without them). -->
   <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="37" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3>Failures <span class="tag" id="failures-tag"></span></h3>
+    <h3>Failures <span class="tag" id="failures-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="fl" id="failures-list"><span class="empty">— loading —</span></div>
    </div></div>
   </div>
@@ -1520,6 +1539,7 @@ function backToLive() {
   refreshStatusPill();
 }
 function refreshStatusPill() {
+  refreshRingChips();
   if (!statusEl) return;
   if (frozenTs != null && histX.length) {
     const behind = Math.max(0, histX[histX.length - 1] - frozenTs);
@@ -1529,6 +1549,35 @@ function refreshStatusPill() {
   }
   statusEl.className = 'pill live';
   statusEl.textContent = liveMode !== 'live' ? 'live · rings show ' + rangeLabel(liveMode) : 'live';
+}
+// The ring cards' window chips (see .card h3 .win): live / paused at a
+// clock time / the history window. Clicking a paused chip returns to live;
+// otherwise it flashes the rings control so the reader finds it.
+let rangeTo = null;    // epoch seconds the last /stats/history fetch ended at
+function _clock(ts, secs) {
+  const t = new Date(ts * 1000), p2 = n => ('0' + n).slice(-2);
+  return p2(t.getHours()) + ':' + p2(t.getMinutes()) + (secs ? ':' + p2(t.getSeconds()) : '');
+}
+function flashCtl(id) {
+  const el = $(id); if (!el) return;
+  el.scrollIntoView({ block: 'nearest' });
+  el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
+}
+function refreshRingChips() {
+  let cls = 'win', html;
+  if (liveMode !== 'live') {
+    html = '<b>' + rangeLabel(liveMode).replace(/^(\d+)/, '$1 ') + '</b> · to '
+      + (rangeTo ? _clock(rangeTo) : '—');
+  } else if (frozenTs != null) {
+    cls = 'win paused'; html = 'paused · ' + _clock(frozenTs, true);
+  } else {
+    cls = 'win live'; html = '<b>live</b> · last 2 min';
+  }
+  document.querySelectorAll('.card h3 .win[data-win="ring"]').forEach(el => {
+    el.className = cls; el.innerHTML = html;
+    el.title = liveMode !== 'live' ? 'sampled history (rings control)' : frozenTs != null
+      ? 'readouts frozen at this sample — click to go back to live' : 'the 2-minute live ring at 1 Hz';
+  });
 }
 // Range mode: the readouts show the window's last / max from
 // /stats/history; render() re-applies them after its live writes.
@@ -1544,6 +1593,7 @@ function rangeLabel(secs) {
 function loadRangeSparks() {
   if (liveMode === 'live') return;
   const to = Math.floor(Date.now() / 1000), from = to - Number(liveMode);
+  rangeTo = to; refreshRingChips();
   Object.entries(SPARK_METRIC).forEach(([key, metric]) => {
     const u = sparks[key]; if (!u) return;
     fetch('/stats/history?metric=' + encodeURIComponent(metric) + '&from=' + from + '&to=' + to,
@@ -1566,7 +1616,6 @@ function setLiveMode(v) {
   const seg = $('live-range');
   if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
   const sc = $('ring-scrub'); if (sc) { sc.disabled = v !== 'live'; sc.classList.toggle('off', v !== 'live'); }
-  document.querySelectorAll('.spark-head .win').forEach(el => el.remove());
   if (rangeTimer) { clearInterval(rangeTimer); rangeTimer = null; }
   if (v === 'live') {
     for (const k in rangeHeads) delete rangeHeads[k];
@@ -1576,10 +1625,6 @@ function setLiveMode(v) {
     return;
   }
   frozenTs = null; applyFreeze();
-  document.querySelectorAll('.spark-head .spark-label').forEach(el => {
-    const w = document.createElement('span'); w.className = 'win'; w.textContent = rangeLabel(v);
-    el.appendChild(w);
-  });
   loadRangeSparks();
   rangeTimer = setInterval(loadRangeSparks, 60000);
   refreshStatusPill();
@@ -1597,6 +1642,11 @@ function wireRingControls() {
     sc.addEventListener('change', () => { if (Number(sc.value) >= 119) backToLive(); });
   }
   if (statusEl) statusEl.addEventListener('click', (e) => { if (e.target.tagName === 'U') backToLive(); });
+  document.addEventListener('click', (e) => {
+    const chip = e.target.closest('.card h3 .win[data-win="ring"]'); if (!chip) return;
+    e.preventDefault(); e.stopPropagation();
+    if (liveMode === 'live' && frozenTs != null) backToLive(); else flashCtl('live-range');
+  });
   document.addEventListener('keydown', (e) => {
     if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
     if (e.key === ' ' && liveMode === 'live') {
