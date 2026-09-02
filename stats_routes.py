@@ -689,6 +689,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .spark-label { letter-spacing: .03em; text-transform: uppercase; }
   .spark-now.frozen { color: var(--yellow); }
   .u-cursor-x { border-right: 1px dashed var(--yellow) !important; }
+  /* Cursor readouts drawn over the plot area (u.over): the time flag on
+     the x-axis of the hovered spark, a value pill beside the crosshair on
+     every synced spark. Positioned by placeCursorFlag. */
+  .spark-flag, .spark-vp { position: absolute; font: var(--fs-xs) var(--font-mono); line-height: 1.4;
+    padding: 0 0.35em; border-radius: 2px; pointer-events: none; white-space: nowrap; z-index: 2; }
+  .spark-flag { bottom: 0; transform: translateX(-50%); background: var(--yellow); color: #1a1200; }
+  .spark-vp { top: 2px; background: rgba(22, 27, 34, .88); color: var(--bold); }
   /* Edit-layout mode: dashed tile borders, grab cursor on titles, corners
      visible. Off = tiles are static (see staticGrid) and titles are text. */
   body.layout-edit .grid-stack-item .card { border-style: dashed; border-color: var(--cyan); }
@@ -1101,7 +1108,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_HISTORY_SAMPLE_S)">
         <button data-v="live" class="active">live</button><button data-v="3600">1h</button><button data-v="86400">24h</button><button data-v="604800">7d</button>
       </div>
-      <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the 2-minute ring (Space pauses, L returns to live)" aria-label="scrub the live rings">
+      <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
       <span id="status" class="pill live">live</span>
     </div>
   </div>
@@ -1496,12 +1503,51 @@ const READOUTS = [
   ['lat-now', 'lat_p50', v => v.toFixed(0) + ' ms'],
 ];
 function onSparkHover(u) {
-  if (liveMode !== 'live') return;
-  const idx = u.cursor.idx;
-  const ts = (idx == null || idx < 0 || idx >= histX.length) ? null : histX[idx];
+  const idx = u.cursor.idx, xs = u.data[0] || [];
+  const ts = (idx == null || idx < 0 || idx >= xs.length) ? null : xs[idx];
+  placeCursorFlag(u, idx, ts);
+  // Only the spark under the pointer may clear the freeze (its pointer
+  // left); a synced or hidden spark resolving no sample must not.
+  if (ts == null && hoverU !== u) return;
   if (ts === frozenTs) return;
   frozenTs = ts;
   applyFreeze();
+  refreshStatusPill();
+}
+// The spark under the pointer shows the time flag; the others only the
+// value pill (a slider / keyboard scrub has no pointer → flags everywhere).
+let hoverU = null;
+const _DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const _MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// Clock text for a sample, as fine as the window needs: live and 1h to the
+// second, 24h with the weekday, 7d with the date.
+function flagTime(ts, short) {
+  const t = new Date(ts * 1000), p2 = n => ('0' + n).slice(-2);
+  const hm = p2(t.getHours()) + ':' + p2(t.getMinutes());
+  if (liveMode === 'live' || liveMode === '3600') return hm + (short ? '' : ':' + p2(t.getSeconds()));
+  if (liveMode === '86400') return short ? hm : _DOW[t.getDay()] + ' ' + hm;
+  return short ? _DOW[t.getDay()] + ' ' + hm : _DOW[t.getDay()] + ' ' + t.getDate() + ' ' + _MON[t.getMonth()] + ' ' + hm;
+}
+function placeCursorFlag(u, idx, ts) {
+  const flag = u._flag, vp = u._vp; if (!flag || !vp) return;
+  const left = u.cursor.left;
+  if (ts == null || left == null || left < 0) { flag.hidden = true; vp.hidden = true; return; }
+  const v = (u.data[1] || [])[idx];
+  vp.textContent = v == null ? '—' : (u._fmt ? u._fmt(v) : Math.round(v) + (u._unit || ''));
+  vp.hidden = false;
+  const w = u.over.clientWidth || 1, pw = vp.offsetWidth || 40;
+  vp.style.left = (left + 6 + pw > w ? Math.max(0, left - 6 - pw) : left + 6) + 'px';
+  flag.hidden = !(hoverU === null || hoverU === u);
+  if (!flag.hidden) {
+    flag.textContent = flagTime(ts);
+    const fw = flag.offsetWidth || 40;
+    flag.style.left = Math.max(fw / 2, Math.min(w - fw / 2, left)) + 'px';
+  }
+}
+function nearestIdx(xs, ts) {
+  let best = -1, dist = Infinity;
+  for (let i = 0; i < xs.length; i++) { const d = Math.abs(xs[i] - ts); if (d < dist) { dist = d; best = i; } }
+  return best;
 }
 // --- ring scrubber + live/range mode --------------------------------------
 // The scrubber drags the shared crosshair across the 2-minute ring (every
@@ -1518,15 +1564,30 @@ const SPARK_HEAD = { gpu_util: 'gpu-util-now', gpu_mem: 'gpu-mem-now', gpu_temp:
 // spark name → the ring in `hist` that feeds it in live mode
 const SPARK_RING = { gpu_util: 'gpu_util', gpu_mem: 'gpu_mem_pct', gpu_temp: 'gpu_temp',
                      cpu: 'cpu', ram: 'ram_pct' };
+// The x series the sparks currently show: the ring in live mode, the
+// sampled history in range mode (every metric shares one step, so any
+// loaded series is the axis).
+function scrubAxis() {
+  if (liveMode === 'live') return histX;
+  const d = Object.values(rangeData).find(j => j && j.t && j.t.length);
+  return d ? d.t : [];
+}
 function scrubTo(idx) {
-  if (liveMode !== 'live' || !histX.length) return;
-  const i = Math.max(0, Math.min(histX.length - 1, idx));
-  frozenTs = histX[i];
+  const xs = scrubAxis(); if (!xs.length) return;
+  const i = Math.max(0, Math.min(xs.length - 1, idx));
+  frozenTs = xs[i];
+  hoverU = null;
   applyFreeze();
-  const any = Object.values(sparks).find(Boolean);
-  if (any) { try { any.setCursor({ left: any.valToPos(histX[i], 'x'), top: 8 }); } catch (_) {} }
-  const sc = $('ring-scrub'); if (sc) sc.value = String(Math.round(i / Math.max(1, histX.length - 1) * 119));
+  // A programmatic setCursor is not published to the sync group, so place
+  // it on every spark (each one's value pill reads its own cursor).
+  Object.values(sparks).forEach(u => { if (u) { try { u.setCursor({ left: u.valToPos(xs[i], 'x'), top: 8 }); } catch (_) {} } });
+  const sc = $('ring-scrub'); if (sc) sc.value = String(Math.round(i / Math.max(1, xs.length - 1) * 119));
   refreshStatusPill();
+}
+function scrubStep(delta) {
+  const xs = scrubAxis(); if (!xs.length) return;
+  const cur = frozenTs == null ? xs.length - 1 : nearestIdx(xs, frozenTs);
+  scrubTo(cur + delta);
 }
 function backToLive() {
   frozenTs = null;
@@ -1541,6 +1602,11 @@ function backToLive() {
 function refreshStatusPill() {
   refreshRingChips();
   if (!statusEl) return;
+  if (frozenTs != null && liveMode !== 'live') {
+    statusEl.className = 'pill paused';
+    statusEl.innerHTML = 'paused · ' + flagTime(frozenTs) + ' · <u style="cursor:pointer">back to now</u>';
+    return;
+  }
   if (frozenTs != null && histX.length) {
     const behind = Math.max(0, histX[histX.length - 1] - frozenTs);
     statusEl.className = 'pill paused';
@@ -1566,8 +1632,9 @@ function flashCtl(id) {
 function refreshRingChips() {
   let cls = 'win', html;
   if (liveMode !== 'live') {
-    html = '<b>' + rangeLabel(liveMode).replace(/^(\d+)/, '$1 ') + '</b> · to '
-      + (rangeTo ? _clock(rangeTo) : '—');
+    const win = '<b>' + rangeLabel(liveMode).replace(/^(\d+)/, '$1 ') + '</b> · ';
+    if (frozenTs != null) { cls = 'win paused'; html = win + flagTime(frozenTs); }
+    else html = win + 'to ' + (rangeTo ? _clock(rangeTo) : '—');
   } else if (frozenTs != null) {
     cls = 'win paused'; html = 'paused · ' + _clock(frozenTs, true);
   } else {
@@ -1582,7 +1649,9 @@ function refreshRingChips() {
 // Range mode: the readouts show the window's last / max from
 // /stats/history; render() re-applies them after its live writes.
 const rangeHeads = {};
+const rangeData = {};    // spark key → the last /stats/history document
 function applyRangeHeads() {
+  if (frozenTs != null) return;   // the frozen readouts win
   for (const [key, id] of Object.entries(SPARK_HEAD)) {
     const el = $(id); if (el && rangeHeads[key] != null) el.textContent = rangeHeads[key];
   }
@@ -1601,7 +1670,14 @@ function loadRangeSparks() {
       .then(r => r.ok ? r.json() : null)
       .then(j => {
         if (!j || liveMode === 'live') return;
+        rangeData[key] = j;
         u.setData([j.t, j.avg], true);
+        if (frozenTs != null) {
+          // a refresh keeps the frozen TIMESTAMP; once it falls out of the
+          // window, return to now
+          if (j.t.length && frozenTs < j.t[0]) backToLive();
+          else { applyFreeze(); try { u.setCursor({ left: u.valToPos(frozenTs, 'x'), top: 8 }); } catch (_) {} refreshStatusPill(); }
+        }
         const last = j.avg.length ? j.avg[j.avg.length - 1] : null;
         const mx = j.max.length ? Math.max(...j.max) : null;
         rangeHeads[key] = (last == null ? '—' : Math.round(last)) + ' · max ' + (mx == null ? '—' : Math.round(mx));
@@ -1615,7 +1691,9 @@ function setLiveMode(v) {
   liveMode = v;
   const seg = $('live-range');
   if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
-  const sc = $('ring-scrub'); if (sc) { sc.disabled = v !== 'live'; sc.classList.toggle('off', v !== 'live'); }
+  const sc = $('ring-scrub'); if (sc) { sc.value = '119'; sc.classList.remove('off'); }
+  document.querySelectorAll('.spark-flag, .spark-vp').forEach(el => { el.hidden = true; });
+  for (const k in rangeData) delete rangeData[k];
   if (rangeTimer) { clearInterval(rangeTimer); rangeTimer = null; }
   if (v === 'live') {
     for (const k in rangeHeads) delete rangeHeads[k];
@@ -1638,20 +1716,28 @@ function wireRingControls() {
   });
   const sc = $('ring-scrub');
   if (sc) {
-    sc.addEventListener('input', () => scrubTo(Math.round(Number(sc.value) / 119 * Math.max(0, histX.length - 1))));
+    sc.addEventListener('input', () => scrubTo(Math.round(Number(sc.value) / 119 * Math.max(0, scrubAxis().length - 1))));
     sc.addEventListener('change', () => { if (Number(sc.value) >= 119) backToLive(); });
   }
   if (statusEl) statusEl.addEventListener('click', (e) => { if (e.target.tagName === 'U') backToLive(); });
   document.addEventListener('click', (e) => {
     const chip = e.target.closest('.card h3 .win[data-win="ring"]'); if (!chip) return;
     e.preventDefault(); e.stopPropagation();
-    if (liveMode === 'live' && frozenTs != null) backToLive(); else flashCtl('live-range');
+    if (frozenTs != null) backToLive(); else flashCtl('live-range');
   });
+  refreshRingChips();
   document.addEventListener('keydown', (e) => {
-    if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
-    if (e.key === ' ' && liveMode === 'live') {
+    const tgt = e.target && e.target.closest ? e.target : document.body;
+    if (/^(INPUT|SELECT|TEXTAREA)$/.test(tgt.tagName)) return;
+    if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (e.key === ' ') {
       e.preventDefault();
-      if (frozenTs == null) scrubTo(histX.length - 1); else backToLive();
+      if (frozenTs == null) scrubTo(scrubAxis().length - 1); else backToLive();
+    } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !tgt.closest('#usage-chart-wrap, .grid-stack-item')) {
+      // ← / → step the rings one sample (Shift: ten); the usage chart and
+      // the layout editor keep their own arrow keys.
+      e.preventDefault();
+      scrubStep((e.key === 'ArrowLeft' ? -1 : 1) * (e.shiftKey ? 10 : 1));
     } else if (e.key === 'l' || e.key === 'L') {
       if (liveMode !== 'live') setLiveMode('live'); else backToLive();
     }
@@ -1659,6 +1745,7 @@ function wireRingControls() {
 }
 
 function applyFreeze() {
+  if (liveMode !== 'live') { applyRangeFreeze(); return; }
   const idx = frozenTs == null ? -1 : histX.indexOf(frozenTs);
   if (idx < 0) {
     frozenTs = null;
@@ -1672,6 +1759,24 @@ function applyFreeze() {
     const el = $(id); if (!el) continue;
     const v = hist[key][idx];
     el.textContent = (v == null ? '—' : fmt(v)) + ' @ ' + clock;
+    el.classList.add('frozen');
+  }
+}
+
+// Range mode twin of applyFreeze: each readout shows its own series'
+// sample nearest the frozen timestamp, with the window's clock text.
+function applyRangeFreeze() {
+  const fmtOf = {}; READOUTS.forEach(([id, , fmt]) => { fmtOf[id] = fmt; });
+  for (const [key, id] of Object.entries(SPARK_HEAD)) {
+    const el = $(id); if (!el) continue;
+    const d = rangeData[key];
+    if (frozenTs == null || !d || !d.t.length) {
+      el.classList.remove('frozen');
+      if (rangeHeads[key] != null) el.textContent = rangeHeads[key];
+      continue;
+    }
+    const v = d.avg[nearestIdx(d.t, frozenTs)];
+    el.textContent = (v == null ? '—' : (fmtOf[id] || String)(v)) + ' @ ' + flagTime(frozenTs);
     el.classList.add('frozen');
   }
 }
@@ -1733,12 +1838,28 @@ function makeSpark(elId, color, opts={}) {
   // grid line (the top split sits below its line so it is never clipped).
   function drawInsetLabels(u) {
     const splits = opts.splits || (u.axes[1] && u.axes[1]._splits) || [];
-    if (!splits.length) return;
     const ctx = u.ctx, dpr = devicePixelRatio || 1;
     const top = u.bbox.top, bottom = u.bbox.top + u.bbox.height;
     ctx.save();
     ctx.font = (axisFontPx * dpr) + 'px ' + _MONO_STACK;
     ctx.fillStyle = '#6e7681';
+    ctx.lineWidth = 3 * dpr; ctx.strokeStyle = '#161b22';
+    // Range mode: time ticks along the bottom edge (absolute at both ends,
+    // clock-only between) — the live ring is 2 minutes and needs none.
+    const x0 = u.scales.x.min, x1 = u.scales.x.max;
+    // (the latency spark has no history and keeps its 2-minute ring)
+    if (liveMode !== 'live' && u.data[0] && u.data[0].length > 1 && x1 - x0 >= 600) {
+      const n = u.bbox.width / dpr >= 420 ? 5 : 3;
+      ctx.textBaseline = 'bottom';
+      for (let k = 0; k < n; k++) {
+        const ts = x0 + (x1 - x0) * k / (n - 1);
+        const label = flagTime(ts, k > 0 && k < n - 1);
+        ctx.textAlign = k === 0 ? 'left' : k === n - 1 ? 'right' : 'center';
+        const lx = u.bbox.left + u.bbox.width * k / (n - 1) + (k === 0 ? 3 * dpr : k === n - 1 ? -3 * dpr : 0);
+        ctx.strokeText(label, lx, bottom - 2 * dpr); ctx.fillText(label, lx, bottom - 2 * dpr);
+      }
+    }
+    if (!splits.length) { ctx.restore(); return; }
     ctx.textAlign = 'left';
     splits.forEach(v => {
       const y = u.valToPos(v, 'y', true);
@@ -1747,7 +1868,7 @@ function makeSpark(elId, color, opts={}) {
       ctx.textBaseline = below ? 'top' : 'bottom';
       const label = String(v) + (opts.unit || ''), lx = u.bbox.left + 3 * dpr, ly = below ? y + 2 * dpr : y - 2 * dpr;
       // panel-coloured halo keeps the label legible over the series fill
-      ctx.lineWidth = 3 * dpr; ctx.strokeStyle = '#161b22'; ctx.strokeText(label, lx, ly);
+      ctx.strokeText(label, lx, ly);
       ctx.fillText(label, lx, ly);
     });
     ctx.restore();
@@ -1767,6 +1888,14 @@ function makeSpark(elId, color, opts={}) {
     });
   });
   ro.observe(el);
+  // Cursor overlays (time flag, value pill) live in uPlot's own overlay so
+  // they follow the plot's box; hover tracking picks the flag's host.
+  inst._flag = document.createElement('div'); inst._flag.className = 'spark-flag'; inst._flag.hidden = true;
+  inst._vp = document.createElement('div'); inst._vp.className = 'spark-vp'; inst._vp.hidden = true;
+  inst._unit = opts.unit || ''; inst._fmt = opts.fmt || null;
+  inst.over.appendChild(inst._flag); inst.over.appendChild(inst._vp);
+  inst.over.addEventListener('mouseenter', () => { hoverU = inst; });
+  inst.over.addEventListener('mouseleave', () => { if (hoverU === inst) hoverU = null; });
   return inst;
 }
 
@@ -1780,7 +1909,7 @@ function ensureSparks() {
   // Temperature: fixed coarse splits at 30/60/90 °C cover idle through hot.
   sparks.gpu_temp = makeSpark('gpu-spark-temp', '#f2cc60', { splits: [30, 60, 90], unit: '°' });
   // Latency: unbounded, auto-range with 10% padding.
-  sparks.lat      = makeSpark('lat-spark',      '#7ee787');
+  sparks.lat      = makeSpark('lat-spark',      '#7ee787', { unit: ' ms' });
 }
 
 function setData(u, ys) {
@@ -2082,7 +2211,7 @@ function render(snap) {
   // Frozen readouts win over the live values just written; so do the
   // range-mode readouts.
   if (frozenTs != null) { applyFreeze(); refreshStatusPill(); }
-  if (liveMode !== 'live') applyRangeHeads();
+  if (liveMode !== 'live') applyRangeHeads();   // no-op while frozen
 
   // --- Recent jobs (unified) ---
   renderJobs(snap);
