@@ -590,7 +590,10 @@ JSON response notes: `text` is the post-processed joined transcript. `segments[]
 - **Loaded models** with per-model VRAM (NVML delta sample taken at construction time), warm/cold badge, and the cold-load history.
 - **Request metrics**: in-flight transcriptions, p50/p95/p99 latency, endpoint counters, 5xx counts in 1m/5m/15m windows.
 - **Recent transcriptions** ring (last 20) with model, audio length, wall-clock, real-time-factor, words emitted.
-- **Usage history** (`/stats/usage`): throughput over time plus a per-user / per-key leaderboard.
+- **Usage history** (`/stats/usage`): the v2 document — totals and a headline strip, stacked columns by kind (or lines by user / key / model / stage), a comparison window (`compare=prev|yoy`), pipeline-stage adoption and speed, a weekday × hour grid of GPU seconds, and a leaderboard with sessions, GPU seconds and RTF. The header's scope bar (range presets, custom span, kind and "ran" chips, click-to-filter chips) scopes every usage card and mirrors to the URL.
+- **The tail** (`/stats/tail`): queue wait p50 / p95 (the inference semaphore is timed), a turnaround histogram with the queue-wait share, failures by stage and class (`policy_blocked`, `cuda_oom`, `timeout`, `cancelled`, `decode_failed`, `rejected`, `other`), per-model RTF, and deltas against the preceding window.
+- **Jobs** (`/stats/jobs`): the recent-jobs table pages beyond the snapshot with kind / status / slow filters, shows the wait column and error class, expands a row into a timeline, and cancels a running job.
+- **Machine history** (`/stats/history`): a 1 Hz sampler keeps `STATS_HISTORY_SAMPLE_S` machine samples for `STATS_HISTORY_RETENTION_DAYS`; the sparklines switch between the live two-minute ring (scrubbable, hover-freeze) and 1 h / 24 h / 7 d history. Layout presets (ops / usage / both) and an explicit edit-layout mode with keyboard move / resize replace always-on dragging.
 
 Sparklines are rendered with [uPlot](https://github.com/leeoniya/uPlot), vendored under `static/` so the page works **fully offline** — no CDN fetch at page-load. To update the bundled version, see `static/VENDOR.md`.
 
