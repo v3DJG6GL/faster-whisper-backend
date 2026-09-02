@@ -1618,7 +1618,7 @@ def overview(
                         from_day=pf, to_day=pt, with_stages=with_stages, by=by,
                         metric=metric, bucket=mode, compare="off", top_k=top_k,
                         limit=limit, jobs_retention_days=jobs_retention_days,
-                        now=now)
+                        now=now, kinds=kinds)
         by_id = {ln["id"]: ln["values"] for ln in prev["lines"]}
         cmp_lines = []
         for ln in lines:
@@ -1627,7 +1627,8 @@ def overview(
             cmp_lines.append({"id": ln["id"], "values": vals})
         out["compare"] = {"mode": compare,
                           "range": {"from": pf, "to": pt, "days": pt - pf + 1},
-                          "totals": prev["totals"], "lines": cmp_lines}
+                          "totals": prev["totals"], "lines": cmp_lines,
+                          "hours": prev["hours"]}
     return out
 
 

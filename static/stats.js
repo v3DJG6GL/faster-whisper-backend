@@ -1527,6 +1527,18 @@ function renderHours() {
   // sits where a flat week's average (1×) falls on that track, so the
   // lift above or below average is still visible.
   const winSum = cells.reduce((a, v) => a + v, 0);
+  // The compare window's grid (previous / last year), same measure and
+  // kinds, for "vs previous" rows in the tips and the legend.
+  const cmp = lastDoc.compare && lastDoc.compare.hours ? lastDoc.compare : null;
+  const cmpCells = new Array(7 * 24).fill(0);
+  if (cmp) cmp.hours.forEach(h => { cmpCells[h.dow * 24 + h.hour] += slotMeasure(h, M); });
+  const cmpSum = cmpCells.reduce((a, v) => a + v, 0);
+  const cmpDelta = (cur, prev) => {
+    if (!cmp) return '';
+    if (!(prev > 0)) return cur > 0 ? 'new vs ' + cmpWord() : '— vs ' + cmpWord();
+    const d = (cur - prev) / prev * 100;
+    return (d > 0.5 ? '▲ ' : d < -0.5 ? '▼ ' : '— ') + Math.abs(d).toFixed(0) + ' % vs ' + cmpWord();
+  };
   const hourIdx = hourTot.map(v => winSum > 0 ? v / (winSum / 24) : 0);
   const dayIdx = dayTot.map(v => winSum > 0 ? v / (winSum / 7) : 0);
   const hMax = Math.max(1, ...hourIdx), dMax = Math.max(1, ...dayIdx);
@@ -1593,18 +1605,20 @@ function renderHours() {
       if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
       if (v > 0) out += tipRow(null, 'vs average', hourIdx[h].toFixed(1) + '× an average hour of day');
       if (v > 0 && days > 1) out += tipRow(null, 'per day', '≈ ' + fmtAvg(v / days) + ' ' + ML + ' over ' + days + ' days');
+      if (cmp) { const pv = cmpCells.reduce((a, x, i) => a + (i % 24 === h ? x : 0), 0); out += tipRow(null, cmpWord(), fmtM(pv) + ' · ' + cmpDelta(v, pv)); }
       return out;
     }
     if (kind === 'd') {      // right marginal: one weekday, all 24 hours summed
       const d = Number(target.getAttribute('data-d'));
       const v = dayTot[d], c = sess.slice(d * 24, d * 24 + 24).reduce((a, x) => a + x, 0);
-      let out = '<div class="tip-date">' + DOW_LONG[d] + 's · all hours</div>';
+      let out = '<div class="tip-date">' + DOW[d] + ' · all hours</div>';
       const rows = kindRows(arr => arr.slice(d * 24, d * 24 + 24).reduce((a, x) => a + x, 0));
       out += rows;
       out += tipRow(null, rows ? 'total' : 'idle', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—', rows ? 'tot' : '');
       if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
       if (v > 0) out += tipRow(null, 'vs average', dayIdx[d].toFixed(1) + '× an average weekday');
-      if (v > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW_LONG[d], '≈ ' + fmtAvg(v / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW_LONG[d] + 's');
+      if (v > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW[d], '≈ ' + fmtAvg(v / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW[d]);
+      if (cmp) { const pv = cmpCells.slice(d * 24, d * 24 + 24).reduce((a, x) => a + x, 0); out += tipRow(null, cmpWord(), fmtM(pv) + ' · ' + cmpDelta(v, pv)); }
       return out;
     }
     const i = Number(target.getAttribute('data-i')), d = Math.floor(i / 24);
@@ -1612,7 +1626,8 @@ function renderHours() {
     const ks = Object.keys(byKind).filter(k => byKind[k][0][i] || byKind[k][1][i]).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));
     ks.forEach(k => out += tipRow(KIND_COLOR[k], KIND_LABEL[k] || k, fmtM(byKind[k][0][i]) + ' ' + ML + ' · ' + fmtC(byKind[k][1][i]) + ' ' + CL));
     out += tipRow(null, ks.length ? 'total' : 'idle', cells[i] ? fmtM(cells[i]) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL : '—', ks.length > 1 ? 'tot' : '');
-    if (cells[i] > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW_LONG[d], '≈ ' + fmtAvg(cells[i] / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW_LONG[d] + 's');
+    if (cells[i] > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW[d], '≈ ' + fmtAvg(cells[i] / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW[d]);
+    if (cmp) out += tipRow(null, cmpWord(), fmtM(cmpCells[i]) + ' · ' + cmpDelta(cells[i], cmpCells[i]));
     return out;
   });
   const kindNote = Q.kinds.length ? kindsLabel() + ' only · ' : '';
@@ -1622,18 +1637,20 @@ function renderHours() {
   // 1× tick). The measure and time zone sit at the right.
   // Two lines: the cells (ramp, peak value, measure, time zone), then the
   // side bars in plain words (what they total, what the dashed line is).
+  // Two lines: the cell ramp with the peak value; then the side-bars key
+  // with the measure and time zone at the right.
+  const cmpNote = cmp ? '<span class="sub">' + cmpDelta(winSum, cmpSum) + '</span>' : '';
   if (lg) lg.innerHTML = br
-    ? '<div class="row"><span class="ramp">quiet <i></i> busy</span><span class="sub">peak slot ' + fmtM(peakV) + '</span>'
+    ? '<div class="row"><span class="ramp">quiet <i></i> busy</span><span class="sub">peak slot ' + fmtM(peakV) + '</span>' + cmpNote + '</div>'
+      + '<div class="row"><span title="the bars beside the grid: each hour of day (top) and weekday (right) relative to a flat week; the dashed tick is the average"><span class="mg"><i class="b"></i><i class="t"></i></span>side bars vs average</span>'
       + '<span class="what">' + kindNote + esc(ML) + ' per weekday-hour · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span></div>'
-      + '<div class="row"><span class="mg"><i class="b"></i><i class="t"></i></span>'
-      + '<span>side bars: totals per hour of day (top) and per weekday (right) · dashed line = average</span></div>'
     : '<span class="what">' + kindNote + 'no ' + esc(ML) + ' in this window</span>';
   const sub = $('hours-sub');
   if (sub) {
     const pd = Math.floor(peak / 24);
     sub.innerHTML = peakV > 0
       ? 'Peak ' + slot(peak) + ' · <b>' + fmtM(peakV) + '</b>'
-        + (occ[pd] > 1 ? ' · ≈ ' + fmtAvg(peakV / occ[pd]) + ' per ' + DOW_LONG[pd] : '')
+        + (occ[pd] > 1 ? ' · ≈ ' + fmtAvg(peakV / occ[pd]) + ' per ' + DOW[pd] : '')
         + ' · ' + fmtC(sess[peak]) + ' ' + esc(CL)
       : 'No ' + esc(ML) + ' in this window';
     sub.title = peakV > 0 ? fmtM(peakV) + ' ' + ML + ' in the busiest slot, ' + slot(peak)
