@@ -1520,13 +1520,21 @@ function renderHours() {
   cells.forEach((v, i) => { if (v > peakV) { peakV = v; peak = i; } });
   const hourTot = new Array(24).fill(0), dayTot = new Array(7).fill(0);
   cells.forEach((v, i) => { hourTot[i % 24] += v; dayTot[Math.floor(i / 24)] += v; });
-  const hm = Math.max(...hourTot), dm = Math.max(...dayTot);
   const rg = lastDoc.range || {};
   const occ = weekdayCounts(rg.from, rg.to);
+  // One scale for both marginals: a bar is the hour's (weekday's) total
+  // over what a flat week would give it — 1× is average, and 2h reads the
+  // same length on both tracks. `base` is where 1× sits.
+  const winSum = cells.reduce((a, v) => a + v, 0);
+  const hourIdx = hourTot.map(v => winSum > 0 ? v / (winSum / 24) : 0);
+  const dayIdx = dayTot.map(v => winSum > 0 ? v / (winSum / 7) : 0);
+  const maxIdx = Math.max(1, ...hourIdx, ...dayIdx);
+  const base = (100 / maxIdx).toFixed(1) + '%';
+  const barLen = idx => (idx > 0 ? Math.max(4, idx / maxIdx * 100) : 0).toFixed(1) + '%';
   const slot = i => DOW[Math.floor(i / 24)] + ' ' + ('0' + (i % 24)).slice(-2) + '–' + ('0' + (i % 24 + 1)).slice(-2);
   // marginal row: the measure per hour of day (summed over the weekdays)
   let html = '<span></span>' + hourTot.map((v, h) =>
-    '<span class="hb" data-h="' + h + '" data-tip="h" tabindex="0" role="img" aria-label="' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' every weekday: ' + fmtM(v) + ' ' + ML + '"><i style="height:' + (v > 0 ? Math.max(12, v / hm * 100) : 0) + '%"></i></span>').join('') + '<span></span>';
+    '<span class="hb' + (hourIdx[h] > 1 ? ' hi' : '') + '" data-h="' + h + '" data-tip="h" tabindex="0" role="img" style="--base:' + base + '" aria-label="' + ('0' + h).slice(-2) + '–' + ('0' + (h + 1)).slice(-2) + ' every weekday: ' + fmtM(v) + ' ' + ML + ', ' + hourIdx[h].toFixed(1) + '× an average hour"><i style="height:' + barLen(hourIdx[h]) + '"></i></span>').join('') + '<span></span>';
   html += '<span></span>' + Array.from({ length: 24 }, (_, h) =>
     '<span class="hl" data-h="' + h + '">' + (h % 6 === 0 ? ('0' + h).slice(-2) : '') + '</span>').join('') + '<span></span>';
   for (let d = 0; d < 7; d++) {
@@ -1537,7 +1545,7 @@ function renderHours() {
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
         + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + '></i>';
     }
-    html += '<span class="rb" data-d="' + d + '" data-tip="d" tabindex="0" role="img" aria-label="' + DOW_LONG[d] + 's: ' + fmtM(dayTot[d]) + ' ' + ML + '"><i style="width:' + (dayTot[d] > 0 ? Math.max(8, dayTot[d] / dm * 100) : 0) + '%"></i></span>';
+    html += '<span class="rb' + (dayIdx[d] > 1 ? ' hi' : '') + '" data-d="' + d + '" data-tip="d" tabindex="0" role="img" style="--base:' + base + '" aria-label="' + DOW_LONG[d] + 's: ' + fmtM(dayTot[d]) + ' ' + ML + ', ' + dayIdx[d].toFixed(1) + '× an average weekday"><i style="width:' + barLen(dayIdx[d]) + '"></i></span>';
   }
   el.innerHTML = html;
   // Hovering (or focusing) a cell lights its weekday and hour labels and
@@ -1582,6 +1590,7 @@ function renderHours() {
       out += rows;
       out += tipRow(null, rows ? 'total' : 'idle', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—', rows ? 'tot' : '');
       if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
+      if (v > 0) out += tipRow(null, 'vs average', hourIdx[h].toFixed(1) + '× an average hour of day');
       if (v > 0 && days > 1) out += tipRow(null, 'per day', '≈ ' + fmtAvg(v / days) + ' ' + ML + ' over ' + days + ' days');
       return out;
     }
@@ -1593,6 +1602,7 @@ function renderHours() {
       out += rows;
       out += tipRow(null, rows ? 'total' : 'idle', v > 0 ? fmtM(v) + ' ' + ML + ' · ' + fmtC(c) + ' ' + CL : '—', rows ? 'tot' : '');
       if (v > 0) out += tipRow(null, 'share', share(v).replace(' · ', ''));
+      if (v > 0) out += tipRow(null, 'vs average', dayIdx[d].toFixed(1) + '× an average weekday');
       if (v > 0 && occ[d] > 1) out += tipRow(null, 'per ' + DOW_LONG[d], '≈ ' + fmtAvg(v / occ[d]) + ' ' + ML + ' over ' + occ[d] + ' ' + DOW_LONG[d] + 's');
       return out;
     }
@@ -1608,6 +1618,7 @@ function renderHours() {
   const lg = $('hours-legend');
   if (lg) lg.innerHTML = br
     ? '<span class="ramp">quiet <i></i> busy</span><span>max ' + fmtM(peakV) + ' per slot</span>'
+      + '<span title="the bars beside the grid: each hour of day / weekday relative to a flat week; the dashed tick is 1× (average)">bars vs average · ┊ = 1×</span>'
       + '<span class="what">' + kindNote + esc(ML) + ' per weekday-hour · ' + esc(lastDoc.tz === 'local' ? 'server time' : lastDoc.tz) + '</span>'
     : '<span class="what">' + kindNote + 'no ' + esc(ML) + ' in this window</span>';
   const sub = $('hours-sub');

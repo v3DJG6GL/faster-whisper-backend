@@ -1048,17 +1048,25 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* Rows stretch to the tile: the hour-label row is auto, the seven day
      rows share what is left, so the grid fills the card at any height. */
   .hours { display: grid; grid-template-columns: 2rem repeat(24, 1fr) 2.4rem;
-    grid-template-rows: 0.8rem auto; grid-auto-rows: minmax(0.5rem, 1fr); gap: 2px;
+    grid-template-rows: 2.4rem auto; grid-auto-rows: minmax(0.5rem, 1fr); gap: 2px;
     font: 0.62rem var(--font-mono); color: var(--dim); flex: 1 1 0; min-height: 0;
     align-content: stretch; margin-bottom: 0.4rem;
     /* rows grow with the tile up to ~1.8rem so cells stay wider than tall */
     max-height: calc(2rem + 7 * 1.8rem + 9 * 2px); }
   .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
-  .hours .hb { display: flex; align-items: flex-end; }
+  /* Marginals share one scale: each bar is its hour's / weekday's total
+     relative to a flat week (1× = average), both tracks 2.4rem long, a
+     faint tick at 1× (--base, set per render). */
+  .hours .hb { display: flex; align-items: flex-end; position: relative; }
   .hours .hb i { width: 100%; height: 0; min-height: 0; background: #3a4757; border-radius: 1px 1px 0 0; }
-  .hours .rb { display: flex; align-items: center; }
+  .hours .hb::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--base, 0);
+    border-top: 1px dashed #4b5563; pointer-events: none; }
+  .hours .rb { display: flex; align-items: center; position: relative; }
   .hours .rb i { height: 55%; min-height: 4px; width: 0; background: #3a4757; border-radius: 0 1px 1px 0; }
+  .hours .rb::after { content: ""; position: absolute; top: 15%; bottom: 15%; left: var(--base, 0);
+    border-left: 1px dashed #4b5563; pointer-events: none; }
+  .hours .hb.hi i, .hours .rb.hi i { background: #4f6a8a; }
   .hours-sub { font: var(--fs-xs) var(--font-mono); color: var(--dim); margin: -0.15rem 0 0.4rem;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .hours-sub b { color: var(--fg); font-weight: 500; }
