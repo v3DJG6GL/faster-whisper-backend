@@ -741,7 +741,7 @@ def test_stats_page_usage_cards_and_scope_bar(client):
         assert el in html, el
     for gs_id in ("headline", "usage", "stages", "hours", "recent"):
         assert f'gs-id="{gs_id}"' in html, gs_id
-    assert 'id="usage-table-btn"' in html and 'id="usage-legend"' in html
+    assert 'id="usage-view"' in html and 'id="usage-legend"' in html
     assert 'aria-live="polite"' in html
     for v in ("kind", "user", "key", "model", "stage"):
         assert f'<button data-v="{v}"' in html.split('id="usage-by"')[1].split("</div>")[0], v

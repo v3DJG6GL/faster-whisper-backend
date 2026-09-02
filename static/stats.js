@@ -1285,7 +1285,7 @@ function renderTable() {
   const el = $('usage-table'); if (!el) return;
   chartEl.parentElement.classList.toggle('hidden', tableMode);
   el.classList.toggle('hidden', !tableMode);
-  const btn = $('usage-table-btn'); if (btn) btn.classList.toggle('active', tableMode);
+  setSeg('usage-view', tableMode ? 'table' : 'chart');
   if (!tableMode) return;
   const vis = visibleLines();
   let h = '<table class="tbl usage-twin"><thead><tr><th>' + esc(lastDoc.bucket) + '</th>'
@@ -1780,8 +1780,10 @@ if (hlStrip) {
 }
 onSeg('usage-by', (v) => { Q.by = v; setSeg('usage-by', v); hidden.clear(); load(); });
 onSeg('hours-mode', (v) => { Q.rhythm = v; syncUrl(); if (lastDoc) renderHours(); });
-const tableBtn = $('usage-table-btn');
-if (tableBtn) tableBtn.addEventListener('click', () => { tableMode = !tableMode; renderTable(); if (!tableMode && chart) chart.setSize({ width: chartEl.clientWidth, height: chartEl.clientHeight }); });
+onSeg('usage-view', (v) => {
+  tableMode = v === 'table'; renderTable();
+  if (!tableMode && chart) chart.setSize({ width: chartEl.clientWidth, height: chartEl.clientHeight });
+});
 document.addEventListener('keydown', (e) => {
   if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
   if (e.key === 't' || e.key === 'T') { tableMode = !tableMode; renderTable(); }

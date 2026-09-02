@@ -1071,7 +1071,9 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
      / by controls (same label, same size); the title keeps its phrase
      on one line with an ellipsis. */
   .hours-toolbar { flex-wrap: nowrap; }
-  .hours-toolbar h3 { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The title reserves a fixed width for its phrase (weekdays / Tuesday
+     mornings / –), so the controls after it never move. */
+  .hours-toolbar h3 { flex: 0 0 auto; width: 20rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .hours-toolbar .spacer { flex: 1 1 0; min-width: 0.5rem; }
   /* marginals: the measure per hour of day (top) and per weekday (right) */
   /* Marginals share one scale: each bar is its hour's / weekday's total
@@ -1594,7 +1596,6 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <div class="usage-toolbar">
       <h3>Usage over time</h3>
       <span id="usage-error" class="usage-error hidden"></span>
-      <span class="spacer"></span>
       <div class="usage-seg"><span class="seg-label">bucket</span>
         <div class="seg-ctrl" id="usage-bucket">
           <button data-v="auto" class="active">auto</button>
@@ -1612,9 +1613,12 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
           <button data-v="stage">stage</button>
         </div>
       </div>
-      <div class="usage-seg">
-        <div class="seg-ctrl"><button id="usage-table-btn" data-v="table" title="show the chart's numbers as a table (T)">table</button></div>
+      <div class="usage-seg"><span class="seg-label">view</span>
+        <div class="seg-ctrl" id="usage-view" title="the chart, or its numbers as a table (T toggles)">
+          <button data-v="chart" class="active">chart</button><button data-v="table">table</button>
+        </div>
       </div>
+      <span class="spacer"></span>
       <span class="win" data-win="usage"></span>
     </div>
     <div class="usage-chart" id="usage-chart-wrap" tabindex="0" aria-label="usage chart — arrow keys scrub the buckets, T toggles the table">
@@ -1636,7 +1640,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   </div>
 
   <!-- Pipeline stages: the whole pipeline in run order, share of eligible runs + speed. -->
-  <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="40" gs-w="12" gs-h="8">
+  <div class="grid-stack-item" gs-id="stages" gs-x="0" gs-y="40" gs-w="12" gs-h="6">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Pipeline stages <span class="tag" id="stages-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="stages-bar" id="stages-bar"></div>
@@ -1653,12 +1657,12 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <div class="usage-toolbar hours-toolbar">
       <h3 class="hours-h3"><span id="hours-title">Busy hours</span> <span class="tag" id="hours-tag"></span></h3>
-      <span class="spacer"></span>
       <div class="usage-seg"><span class="seg-label">rhythm</span>
         <div class="seg-ctrl" id="hours-mode" title="weekday × hour of day, day of month × hour of day, or year × month">
           <button data-v="hours" class="active">hours</button><button data-v="days">days</button><button data-v="months">months</button>
         </div>
       </div>
+      <span class="spacer"></span>
       <span class="win" data-win="usage"></span>
     </div>
     <div class="hours-sub" id="hours-sub"></div>
@@ -1670,7 +1674,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   <!-- Turnaround: end-to-end time per job bucketed on fixed edges, the
        queue-wait share hatched inside each bar, p50 / p95 marked, and the
        wait p50/p95 by day beneath. Fed by /stats/tail (static/stats.js). -->
-  <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="48" gs-w="6" gs-h="5">
+  <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="46" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Turnaround <span class="tag" id="turnaround-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="ta-hist" id="turnaround-hist"></div>
@@ -1681,7 +1685,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 
   <!-- Failures by stage and class: terminal failures from the job rows plus
        soft-failed stages (the job went on without them). -->
-  <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="48" gs-w="6" gs-h="5">
+  <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="46" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
     <h3>Failures <span class="tag" id="failures-tag"></span> <span class="win" data-win="usage"></span></h3>
     <div class="fl" id="failures-list"><span class="empty">— loading —</span></div>
@@ -1690,11 +1694,10 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 
   <!-- Recent jobs (unified: transcribe / dictate / translate / download;
        running jobs from snap.jobs pinned on top) -->
-  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="53" gs-w="12" gs-h="12">
+  <div class="grid-stack-item" gs-id="recent" gs-x="0" gs-y="51" gs-w="12" gs-h="12">
    <div class="grid-stack-item-content"><div class="card">
     <div class="usage-toolbar">
       <h3>Recent jobs (<span id="rt-n">0</span> shown)</h3>
-      <span class="spacer"></span>
       <div class="usage-seg"><span class="seg-label">view</span>
         <div class="seg-ctrl" id="rj-view">
           <button data-v="" class="active">all</button>
