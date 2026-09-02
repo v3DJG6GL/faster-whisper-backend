@@ -1689,14 +1689,16 @@ def turnaround_histogram(*, start_ts: float, end_ts: float,
                          edges: tuple[int, ...] = TURNAROUND_EDGES_S) -> dict[str, Any]:
     """Jobs bucketed by end-to-end time (proc_s + wait_s) into fixed edges;
     `wait_share` per bucket is the fraction of that bucket's turnaround that
-    was queue wait (what the chart hatches). Also p50/p95 of turnaround."""
+    was queue wait (what the chart hatches); `by_kind` splits each bucket's
+    count per job kind (the chart stacks them). Also p50/p95 of turnaround."""
     conn = _require_conn()
     where, params = _jobs_where(user_id, key_id, kind, start_ts, end_ts)
     counts = [0] * len(edges)
     total = [0.0] * len(edges)
     waited = [0.0] * len(edges)
+    by_kind: dict[str, list[int]] = {}
     turns: list[float] = []
-    for r in conn.execute("SELECT proc_s, wait_s FROM usage_jobs" + where, params):
+    for r in conn.execute("SELECT proc_s, wait_s, kind FROM usage_jobs" + where, params):
         w = float(r["wait_s"] or 0.0)
         t = float(r["proc_s"] or 0.0) + w
         turns.append(t)
@@ -1707,12 +1709,14 @@ def turnaround_histogram(*, start_ts: float, end_ts: float,
         counts[i] += 1
         total[i] += t
         waited[i] += w
+        by_kind.setdefault(r["kind"] or "unknown", [0] * len(edges))[i] += 1
     turns.sort()
     return {
         "edges_s": list(edges),
         "counts": counts,
         "wait_share": [round(waited[i] / total[i], 3) if total[i] > 0 else 0.0
                        for i in range(len(edges))],
+        "by_kind": by_kind,
         "n": len(turns),
         "p50": round(_nearest_rank(turns, 0.5), 3),
         "p95": round(_nearest_rank(turns, 0.95), 3),

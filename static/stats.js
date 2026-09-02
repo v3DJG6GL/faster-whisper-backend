@@ -590,12 +590,28 @@ function renderTurnaround() {
   const labelEvery = bw >= 34 ? 1 : 2;
   let s = '<defs><pattern id="ta-hatch" width="4" height="4" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
     + '<line x1="0" y1="0" x2="0" y2="4" stroke="#f0f6fc" stroke-width="1.2" opacity=".55"/></pattern></defs>';
+  // Bars stack per job kind in the kind chips' colours (file / url /
+  // text / dictation); a kind-filtered window is a single colour.
+  const kinds = Object.keys(t.by_kind || {}).sort((a, b) => KINDS.indexOf(a) - KINDS.indexOf(b));
   t.counts.forEach((c, i) => {
     const h = c / mx * ih, y = pt + ih - h, x = pl + i * bw + 1;
     const share = t.wait_share[i] || 0;
     const lbl = fmtEdge(t.edges_s[i]) + (i + 1 < n ? '–' + fmtEdge(t.edges_s[i + 1]) : '+');
-    s += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + h.toFixed(1) + '" fill="#388bfd" rx="3"><title>'
-      + esc(lbl) + ': ' + c + ' jobs · ' + Math.round(share * 100) + ' % of that time was queue wait</title></rect>';
+    const split = kinds.map(k => k + ' ' + (t.by_kind[k][i] || 0)).filter(x => !/ 0$/.test(x)).join(' · ');
+    const title = '<title>' + esc(lbl) + ': ' + c + ' jobs' + (split ? ' (' + esc(split) + ')' : '')
+      + ' · ' + Math.round(share * 100) + ' % of that time was queue wait</title>';
+    if (kinds.length > 1 && c > 0) {
+      let yTop = pt + ih;
+      s += '<g>' + title;
+      kinds.forEach(k => {
+        const kc = t.by_kind[k][i] || 0; if (!kc) return;
+        const kh = kc / c * h; yTop -= kh;
+        s += '<rect x="' + x.toFixed(1) + '" y="' + yTop.toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + Math.max(0, kh - 1).toFixed(1) + '" fill="' + (KIND_COLOR[k] || KIND_COLOR.unknown) + '" rx="1.5"/>';
+      });
+      s += '</g>';
+    } else {
+      s += '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + h.toFixed(1) + '" fill="' + (KIND_COLOR[kinds[0]] || '#388bfd') + '" rx="3">' + title + '</rect>';
+    }
     if (share > 0) s += '<rect x="' + x.toFixed(1) + '" y="' + (pt + ih - h * share).toFixed(1) + '" width="' + (bw - 2).toFixed(1) + '" height="' + (h * share).toFixed(1) + '" fill="url(#ta-hatch)" rx="2"/>';
     if (i % labelEvery === 0) s += '<text x="' + (x + bw / 2 - 1).toFixed(1) + '" y="' + (H - 4) + '" text-anchor="middle">' + esc(fmtEdge(t.edges_s[i])) + '</text>';
     // job count: inside the bar when it is tall enough, else just above it

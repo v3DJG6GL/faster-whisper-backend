@@ -79,6 +79,9 @@ def test_turnaround_histogram_buckets_and_wait_share(usage_store_db):
     assert h["counts"][4] == 4 and h["counts"][5] == 1 and h["counts"][0] == 1
     assert h["wait_share"][5] == round(40.0 / 54.0, 3)
     assert h["p50"] == 12.0 and h["max"] == 54.0
+    # per-kind split sums to the bucket counts
+    assert set(h["by_kind"]) and all(len(v) == len(h["counts"]) for v in h["by_kind"].values())
+    assert [sum(col) for col in zip(*h["by_kind"].values())] == h["counts"]
 
 
 def test_failures_union_terminal_and_soft(usage_store_db):
