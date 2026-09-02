@@ -383,7 +383,7 @@ function wireScopeBar() {
   const kinds = $('sb-kind');
   if (kinds) kinds.addEventListener('click', (e) => {
     const c = e.target.closest('.chip'); if (!c) return;
-    Q.kind = c.dataset.v; renderChips(); syncUrl(); renderAll();   // client-side
+    Q.kind = c.dataset.v; setKind();
   });
   const w = $('sb-with');
   if (w) w.addEventListener('click', (e) => {
@@ -494,6 +494,12 @@ function loadTail(seq) {
       if (lastDoc) { renderHeadline(); renderTurnaround(); renderFailures(); }
     })
     .catch(err => console.warn('[stats] tail fetch failed', err));
+}
+// Kind is a client-side split of the usage document, but the tail
+// (turnaround, failures) is computed per kind on the server: re-fetch it.
+function setKind() {
+  renderChips(); syncUrl(); renderAll();
+  loadTail(_seq);
 }
 function load() {
   renderChips(); syncUrl();
@@ -1023,7 +1029,7 @@ function renderBoard() {
   tb.querySelectorAll('tr.pick').forEach(tr => {
     const pick = () => {
       const id = tr.dataset.id;
-      if (by === 'kind') { Q.kind = Q.kind === id ? 'all' : id; renderChips(); syncUrl(); renderAll(); return; }
+      if (by === 'kind') { Q.kind = Q.kind === id ? 'all' : id; setKind(); return; }
       if (by === 'user' && ownScope()) return;
       Q[by] = Q[by] === id ? null : id;
       load();
