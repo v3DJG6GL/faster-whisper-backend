@@ -406,7 +406,7 @@ function renderChips() {
     }
     if (isFiltered()) chips.push('<button type="button" class="chip clear" id="sb-clear">clear</button>');
     f.innerHTML = chips.length ? chips.join('')
-      : '<span class="sb-none">none · click a row in the leaderboard</span>';
+      : '<span class="sb-none">none</span>';
   }
   const summary = $('sb-summary');
   if (summary && lastDoc) {
