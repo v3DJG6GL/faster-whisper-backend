@@ -1022,6 +1022,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     font-size: var(--fs-md); line-height: 1.2; }
   header .subbar-break { flex-basis: 100%; height: 0; }
   header .subbar-row2 { flex: 1 1 auto; }
+  header .sb-filters-group { margin-left: auto; display: inline-flex; gap: 0.6rem; align-items: center; }
   /* The 'usage' preset has no ring cards: the rings cluster does nothing,
      so it is dimmed and inert until another preset is picked. */
   body.preset-usage .rings-label, body.preset-usage #live-range, body.preset-usage #ring-scrub,
@@ -1137,13 +1138,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_HISTORY_SAMPLE_S)">
         <button data-v="live" class="active">live</button><button data-v="3600">1h</button><button data-v="86400">24h</button><button data-v="604800">7d</button>
       </div>
-    </div>
-    <div class="subbar-right">
       <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
       <span id="status" class="pill live">live</span>
     </div>
   </div>
-  <!-- Usage scope, second row: kind (client-side), "ran" stage chips (server
+  <!-- Usage scope, second row: kind (client-side), "with stage" chips (server
        narrows to jobs that ran every chosen stage), click-to-filter chips
        from the leaderboard, and the resolved window. -->
   <div class="subbar subbar-usage">
@@ -1155,15 +1154,18 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button type="button" class="chip" data-v="url"><i class="sw" style="background:#bb8009"></i>links</button>
       <button type="button" class="chip" data-v="text"><i class="sw" style="background:#8957e5"></i>text</button>
     </span>
-    <span class="seg-label">ran</span>
-    <span class="chips" id="sb-with">
+    <span class="sb-filters-group">
+      <span class="seg-label">filters</span>
+      <span class="chips" id="sb-filters"></span>
+    </span>
+    <span class="subbar-break"></span>
+    <span class="seg-label" title="only jobs that ran every chosen stage (translation, speaker diarization, music separation, silence skipping)">with stage</span>
+    <span class="chips" id="sb-with" title="only jobs that ran every chosen stage">
       <button type="button" class="chip" data-v="translating">translated</button>
       <button type="button" class="chip" data-v="diarizing">diarized</button>
       <button type="button" class="chip" data-v="separating">music separated</button>
       <button type="button" class="chip" data-v="vad">silence skipped</button>
     </span>
-    <span class="seg-label">filters</span>
-    <span class="chips" id="sb-filters"></span>
     <span class="sb-summary" id="sb-summary"></span>
   </div>
 </header>

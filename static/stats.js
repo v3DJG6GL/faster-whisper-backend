@@ -179,7 +179,7 @@ if (resetLayoutBtn) {
 // stages card, the busy-hours grid, and the audio/RTF columns of the
 // loaded-models table (via window.__statsUsage for the inline renderer).
 //
-// The scope bar in the page header (range, compare, kind, "ran" stage chips,
+// The scope bar in the page header (range, compare, kind, "with stage" chips,
 // click-to-filter chips) is the single filter that scopes all of them, and
 // its state is mirrored to the URL so a view can be pasted and reopened.
 //
