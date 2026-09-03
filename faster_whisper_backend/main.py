@@ -342,6 +342,8 @@ def _upper_callback(match: "re.Match[str]") -> str:
         g1, g2 = match.group(1), match.group(2)
     except IndexError:
         return match.group(0).upper()
+    if g1 is None or g2 is None:
+        return match.group(0)
     return g1 + g2.upper()
 
 
@@ -359,6 +361,8 @@ def _make_lowercase_wordlist_replacer(wordlist: frozenset):
             ws, first, rest = m.group(1), m.group(2), m.group(3)
         except IndexError:
             return ""
+        if ws is None or first is None or rest is None:
+            return m.group(0)
         if (first + rest).lower() in wordlist:
             return ws + first.lower() + rest
         return ws + first + rest
@@ -950,10 +954,12 @@ async def _receipt_sweeper() -> None:
 
 
 def _stage_ran(stages: "list | None", name: str) -> bool:
-    """Did this stage produce a timing entry? The one honest test for "the
-    stage ran" — the request FLAGS say what was asked for, which is a
-    different question when a stage soft-fails or is disabled server-side."""
-    return any(s.get("name") == name for s in (stages or []))
+    """Did this stage produce a SUCCESSFUL timing entry? Soft-failed stages
+    (detail="failed", carries an error key) are excluded — the request FLAGS
+    say what was asked for, which is a different question when a stage
+    soft-fails or is disabled server-side."""
+    return any(s.get("name") == name and "error" not in s
+               for s in (stages or []))
 
 
 def _stage_field(stages: "list | None", name: str, key: str):
@@ -3475,8 +3481,9 @@ _BATCH_PROGRESS: "dict[str, dict]" = {}
 # executor-thread stage re-creates after a cap eviction keeps its owner stamp
 # instead of coming back owner-less and readable/cancellable by any caller.
 # Popped in the handlers' finally (alongside _BATCH_PROGRESS) and in the
-# stale sweep; deliberately NOT popped in the cap eviction — that is exactly
-# the moment an executor thread can re-create the entry and needs the stamp.
+# stale sweep.  Deliberately NOT popped in the cap eviction — that is
+# exactly the moment an executor thread can re-create the entry and needs
+# the stamp.
 _PROGRESS_OWNER: "dict[str, str]" = {}
 _BATCH_PROGRESS_MAX = 200
 _BATCH_PROGRESS_STALE_S = 2 * 3600
@@ -5331,6 +5338,7 @@ async def transcribe(
         finally:
             if _pid:
                 _BATCH_PROGRESS.pop(_pid, None)
+                _PROGRESS_OWNER.pop(_pid, None)
                 _BATCH_CANCELLED.discard(_pid)
             if tmp_path:
                 try:
@@ -5890,6 +5898,7 @@ async def translate_text(request: Request,
         jobs.job_end(request_id)
         if _pid:
             _BATCH_PROGRESS.pop(_pid, None)
+            _PROGRESS_OWNER.pop(_pid, None)
             _BATCH_CANCELLED.discard(_pid)
 
     _elapsed = time.perf_counter() - _t0

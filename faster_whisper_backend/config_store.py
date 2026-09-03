@@ -1449,7 +1449,7 @@ class AdminConfig(BaseModel):
         order=9, load_time=True)
 
     # --- Decode params (transcribe-time) ---
-    DEFAULT_LANGUAGE: Annotated[str, Field(pattern=r"^([a-z]{2})?$")] | None = _F(
+    DEFAULT_LANGUAGE: Annotated[str, Field(pattern=r"^([a-z]{2,3})?$")] | None = _F(
         "DEFAULT_LANGUAGE", scope="per_request", group="Decode params",
         order=1)
     DEFAULT_PROMPT: Annotated[str, Field(max_length=2048)] | None = _F(
@@ -2245,6 +2245,46 @@ class AdminConfig(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_recording_duration(self) -> "AdminConfig":
+        from faster_whisper_backend import config as _cfg
+        _base = getattr(_cfg, "_BASELINE", {})
+
+        def _default(name: str) -> float:
+            return float(_base[name] if name in _base else getattr(_cfg, name))
+
+        mn = self.CAPTURES_RECORDING_MIN_DURATION_S
+        mx = self.CAPTURES_RECORDING_MAX_DURATION_S
+        mn = mn if mn is not None else _default("CAPTURES_RECORDING_MIN_DURATION_S")
+        mx = mx if mx is not None else _default("CAPTURES_RECORDING_MAX_DURATION_S")
+        if mn > mx:
+            raise ValueError(
+                "require CAPTURES_RECORDING_MIN_DURATION_S <= "
+                "CAPTURES_RECORDING_MAX_DURATION_S "
+                f"(got {mn} > {mx})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_custom_template(self) -> "AdminConfig":
+        from faster_whisper_backend import config as _cfg
+        _base = getattr(_cfg, "_BASELINE", {})
+        family = (self.TRANSLATION_PROMPT_FAMILY
+                  if self.TRANSLATION_PROMPT_FAMILY is not None
+                  else _base.get("TRANSLATION_PROMPT_FAMILY",
+                                 getattr(_cfg, "TRANSLATION_PROMPT_FAMILY", "auto")))
+        tpl = (self.TRANSLATION_PROMPT_TEMPLATE
+               if self.TRANSLATION_PROMPT_TEMPLATE is not None
+               else _base.get("TRANSLATION_PROMPT_TEMPLATE",
+                              getattr(_cfg, "TRANSLATION_PROMPT_TEMPLATE", "")))
+        if family == "custom" and not (tpl or "").strip():
+            raise ValueError(
+                "TRANSLATION_PROMPT_FAMILY is 'custom' but "
+                "TRANSLATION_PROMPT_TEMPLATE is blank — translations would "
+                "be sent as empty prompts; set a template or choose another family"
+            )
+        return self
+
     @field_validator("LOG_FILE")
     @classmethod
     def _safe_log_path(cls, v: str | None) -> str | None:
@@ -2495,6 +2535,24 @@ class AdminConfig(BaseModel):
                         f"references unknown rule slugs: {unknown}. "
                         f"Valid: {sorted(canonical)}."
                     )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_captures_pipeline_slugs(self) -> "AdminConfig":
+        """Same silent-typo guard as the per-model and per-profile checks,
+        applied to CAPTURES_PIPELINE_RULES_EXCLUDE."""
+        if self.PIPELINE_RULES is None or self.CAPTURES_PIPELINE_RULES_EXCLUDE is None:
+            return self
+        canonical = {r.name for r in self.PIPELINE_RULES}
+        if not canonical:
+            return self
+        unknown = [s for s in self.CAPTURES_PIPELINE_RULES_EXCLUDE
+                   if s not in canonical]
+        if unknown:
+            raise ValueError(
+                f"CAPTURES_PIPELINE_RULES_EXCLUDE references unknown "
+                f"rule slugs: {unknown}. Valid: {sorted(canonical)}."
+            )
         return self
 
     @field_validator("CONVERT_QUANTIZATION", mode="before")
@@ -3040,6 +3098,17 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     make every write raise ValidationError forever (and no save could ever
     clean the file)."""
     _renames.migrate_keys(raw)
+    for profiles_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
+        profiles = raw.get(profiles_key)
+        if isinstance(profiles, dict):
+            for bundle in profiles.values():
+                if isinstance(bundle, dict):
+                    _renames.migrate_keys(bundle)
+                    locks = bundle.get("locks")
+                    if isinstance(locks, list):
+                        bundle["locks"] = [
+                            _renames.RENAMED_KEYS.get(lk, lk) for lk in locks
+                        ]
     # Wildcard-host origins ('https://*.example.com') used to pass the origin
     # validators but never matched anything (both the CORS middleware and the
     # trusted-origin guard compare the Origin header by exact string). They

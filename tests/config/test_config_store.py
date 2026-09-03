@@ -91,7 +91,7 @@ def test_int_bounds(field, lo, hi):
     ("LANGUAGE_DETECTION_THRESHOLD", 0.0, 1.0),
     ("HALLUCINATION_SILENCE_THRESHOLD", 0.0, 60.0),
     ("CAPTURES_RECORDING_SAMPLE_RATE", 0.0, 1.0),
-    ("CAPTURES_RECORDING_MIN_DURATION_S", 0.0, 3600.0),
+    ("CAPTURES_RECORDING_MIN_DURATION_S", 0.0, 600.0),
 ])
 def test_float_bounds(field, lo, hi):
     _ok(**{field: lo})
@@ -102,8 +102,17 @@ def test_float_bounds(field, lo, hi):
 
 def test_capture_max_duration_min_is_0_1():
     # Asymmetric: MIN allows 0.0 but MAX requires ge=0.1.
-    _ok(CAPTURES_RECORDING_MAX_DURATION_S=0.1)
+    # Pair with MIN=0 so the cross-field validator passes.
+    _ok(CAPTURES_RECORDING_MAX_DURATION_S=0.1,
+        CAPTURES_RECORDING_MIN_DURATION_S=0.0)
     _bad(CAPTURES_RECORDING_MAX_DURATION_S=0.0)
+
+
+def test_recording_duration_min_le_max():
+    _ok(CAPTURES_RECORDING_MIN_DURATION_S=1.0,
+        CAPTURES_RECORDING_MAX_DURATION_S=600.0)
+    _bad(CAPTURES_RECORDING_MIN_DURATION_S=60.0,
+         CAPTURES_RECORDING_MAX_DURATION_S=30.0)
 
 
 # ---------------------------------------------------------------------------
@@ -120,12 +129,12 @@ def test_model_id_invalid(val):
     _bad(DEFAULT_MODEL=val)
 
 
-@pytest.mark.parametrize("val", ["", "de", "en"])
+@pytest.mark.parametrize("val", ["", "de", "en", "yue"])
 def test_default_language_valid(val):
     assert _ok(DEFAULT_LANGUAGE=val).DEFAULT_LANGUAGE == val
 
 
-@pytest.mark.parametrize("val", ["deu", "DE", "d", "d1"])
+@pytest.mark.parametrize("val", ["DE", "d", "d1", "abcd"])
 def test_default_language_invalid(val):
     _bad(DEFAULT_LANGUAGE=val)
 

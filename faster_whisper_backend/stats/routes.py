@@ -113,7 +113,7 @@ def stats_scope_for(user: dict[str, Any], *,
     perms = user.get("permissions")
     effective = (perms.effective_user_id_for("stats", caller_uid or "")
                  if perms is not None else None)
-    if effective:
+    if effective is not None:
         return StatsScope(
             "own", effective, caller_uid, True,
             bool(getattr(cfg, "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS", False)))
@@ -2382,7 +2382,7 @@ function renderModels(snap) {
       <td data-label="compute">${esc(m.compute_type || '—')}</td>
       <td class="num" data-label="audio">${audio}</td>
       <td class="num" data-label="RTF">${rtf}</td>
-      <td class="num" data-label="VRAM (MB)">${m.vram_mb != null ? m.vram_mb.toFixed(0) : '—'}${srcBadge}</td>
+      <td class="num" data-label="VRAM (MB)">${m.vram_mb != null ? m.vram_mb.toFixed(0) : (m.size_bytes != null ? (m.size_bytes / 1048576).toFixed(0) : '—')}${srcBadge}</td>
       <td class="num" data-label="disk">${disk}</td>
       <td data-label="state"><span class="badge ${warm ? 'warm' : 'cold'}">${warm ? 'warm' : 'cold'}</span></td>
       <td class="num" data-label="age">${fmtSec(m.age_sec)}</td>

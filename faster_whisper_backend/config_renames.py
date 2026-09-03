@@ -63,7 +63,7 @@ def alias_env(environ: MutableMapping[str, str]) -> list[str]:
     for old, new in RENAMED_KEYS.items():
         for sfx in ("", "_FILE"):
             o, n = ENV_PREFIX + old + sfx, ENV_PREFIX + new + sfx
-            if environ.get(o) and not environ.get(n):
+            if environ.get(o) and n not in environ:
                 environ[n] = environ[o]
                 warnings.append(f"{o} was renamed to {n}; the old name still "
                                 f"works but will be removed in a later release.")
