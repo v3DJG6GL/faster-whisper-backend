@@ -1464,12 +1464,10 @@ for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
 
 
 # --- Non-AdminConfig constants (no WebUI row → not in ENV_VAR_MAPPING) -------
+# The eight *_DB paths are AdminConfig fields (restart-required) and reach
+# their env vars through the generic loop below, like every other field.
 ADMIN_UI_ENABLED = _env_bool("WHISPER_ADMIN_UI", ADMIN_UI_ENABLED)
-API_KEYS_DB = _env_str("WHISPER_API_KEYS_DB", API_KEYS_DB)
-SESSIONS_DB = _env_str("WHISPER_SESSIONS_DB", SESSIONS_DB)
 BOOTSTRAP_ADMIN_KEY = _env_str("WHISPER_BOOTSTRAP_ADMIN_KEY", BOOTSTRAP_ADMIN_KEY)
-USAGE_DB = _env_str("WHISPER_USAGE_DB", USAGE_DB)
-CLIENT_SETTINGS_DB = _env_str("WHISPER_CLIENT_SETTINGS_DB", CLIENT_SETTINGS_DB)
 # CAPTURES_PROPOSER_CACHE_TTL_S only: it is genuinely absent from
 # ENV_VAR_MAPPING, so the generic loop below never reaches it.
 #

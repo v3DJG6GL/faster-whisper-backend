@@ -666,6 +666,13 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Mark the WebUI session/CSRF cookies 'Secure' (sent only over HTTPS). "
         "Leave OFF for plain-HTTP LAN/VPN access; turn ON when serving over "
         "HTTPS (e.g. behind a TLS reverse proxy), else login silently fails.",
+    "API_KEYS_DB":
+        "Path to the SQLite file holding user accounts and hashed API keys. "
+        "Read at startup; a change takes effect after a restart.",
+    "SESSIONS_DB":
+        "Path to the SQLite file holding browser login sessions (hashed "
+        "tokens, expiry). Safe to delete: everyone signs in again. Read at "
+        "startup.",
     "SESSION_TTL_S":
         "Sliding browser-session lifetime in seconds; refreshed on each "
         "authenticated request. Idle longer than this requires re-login. "
@@ -738,6 +745,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "disabled (count-cap only). Combined with the row cap: "
         "whichever bound is tighter wins.",
     # --- Usage statistics ---
+    "USAGE_DB":
+        "Path to the SQLite file holding the usage ledger (per-job numbers "
+        "and hourly rollups, no transcript text). Read at startup.",
+    "CLIENT_SETTINGS_DB":
+        "Path to the SQLite file holding the desktop app's synced settings "
+        "blobs, one per user and profile. Read at startup.",
     "USAGE_RETENTION_DAYS":
         "Auto-delete hourly usage rollup rows (requests, words, audio, "
         "stages, dictation outcomes) older than this many days. 0 = keep "
@@ -836,7 +849,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "CAPTURES_RECORDING_MAX_DURATION_S":
         "Skip capture for clips longer than this. Whisper fine-tuning "
         "prefers ≤30s samples; long clips can still be captured for "
-        "later segmentation via the stored segments_json metadata, but "
+        "later segmentation via the stored segments metadata, but "
         "very long clips are usually not worth the disk cost.",
     "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT":
         "Pre-transcribe upload-size guard. Captures eligibility roll is "
@@ -1975,7 +1988,13 @@ class AdminConfig(BaseModel):
     ] | None = _F(
         "TRUSTED_ORIGINS", scope="server", group="Access & sessions",
         order=4, restart=True)
+    API_KEYS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "API_KEYS_DB", scope="server", group="Access & sessions",
+        order=8, restart=True)
     # --- Browser sessions ---
+    SESSIONS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "SESSIONS_DB", scope="server", group="Access & sessions",
+        subgroup="Browser sessions (cookie auth)", restart=True)
     SESSION_COOKIE_SECURE: bool | None = _F(
         "SESSION_COOKIE_SECURE", scope="server", group="Access & sessions",
         subgroup="Browser sessions (cookie auth)")
@@ -2037,7 +2056,7 @@ class AdminConfig(BaseModel):
 
     # --- Reports store ---
     REPORTS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
-        "REPORTS_DB", scope="server", group="Reports")
+        "REPORTS_DB", scope="server", group="Reports", restart=True)
     REPORTS_MAX: Annotated[int, Field(ge=10, le=100_000)] | None = _F(
         "REPORTS_MAX", scope="server", group="Reports")
     REPORTS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
@@ -2050,7 +2069,7 @@ class AdminConfig(BaseModel):
     # "tighter of MAX and TTL wins."
     RECENT_TRANSCRIPTIONS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "RECENT_TRANSCRIPTIONS_DB", scope="server",
-        group="Recent transcriptions")
+        group="Recent transcriptions", restart=True)
     RECENT_TRANSCRIPTIONS_MAX: Annotated[int, Field(ge=0, le=100_000)] | None = _F(
         "RECENT_TRANSCRIPTIONS_MAX", scope="server",
         group="Recent transcriptions")
@@ -2074,7 +2093,7 @@ class AdminConfig(BaseModel):
         group="Recent transcriptions")
     STATS_SYSTEM_METRICS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "STATS_SYSTEM_METRICS_DB", scope="server",
-        group="System metrics")
+        group="System metrics", restart=True)
     STATS_SYSTEM_METRICS_SAMPLE_S: Annotated[int, Field(ge=1, le=3600)] | None = _F(
         "STATS_SYSTEM_METRICS_SAMPLE_S", scope="server",
         group="System metrics")
@@ -2083,6 +2102,8 @@ class AdminConfig(BaseModel):
         group="System metrics")
 
     # --- Usage statistics (the desktop app's /v1/usage + admin /stats) ---
+    USAGE_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "USAGE_DB", scope="server", group="Usage statistics", restart=True)
     USAGE_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
         "USAGE_RETENTION_DAYS", scope="server", group="Usage statistics")
     USAGE_JOBS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
@@ -2092,12 +2113,18 @@ class AdminConfig(BaseModel):
     USAGE_UNREPORTED_AFTER_H: Annotated[int, Field(ge=1, le=720)] | None = _F(
         "USAGE_UNREPORTED_AFTER_H", scope="server", group="Usage statistics")
 
+    # --- Client settings sync (the desktop app's /v1/client-settings) ---
+    CLIENT_SETTINGS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "CLIENT_SETTINGS_DB", scope="server", group="Client settings sync",
+        restart=True)
+
     # --- Captures (fine-tuning data store) ---
     CAPTURES_RECORDING_ENABLED: bool | None = _F(
         "CAPTURES_RECORDING_ENABLED", scope="server", group="Captures",
         order=1)
     CAPTURES_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
-        "CAPTURES_DB", scope="server", group="Captures", subgroup="Storage")
+        "CAPTURES_DB", scope="server", group="Captures", subgroup="Storage",
+        restart=True)
     CAPTURES_DIR: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "CAPTURES_DIR", scope="server", group="Captures", subgroup="Storage")
     CAPTURES_MAX: Annotated[int, Field(ge=10, le=1_000_000)] | None = _F(
@@ -2711,6 +2738,7 @@ _GROUP_ORDER: list[tuple[str, list[str | None]]] = [
     ("Recent transcriptions", [None]),
     ("System metrics", [None]),
     ("Usage statistics", [None]),
+    ("Client settings sync", [None]),
     ("Captures", [
         None,
         "Storage",

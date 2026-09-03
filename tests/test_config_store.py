@@ -836,11 +836,11 @@ def test_env_pinned_fields(monkeypatch):
     monkeypatch.setenv("WHISPER_DEFAULT_MODEL", "large-v3")
     monkeypatch.setenv("WHISPER_BEAM_SIZE", "5")
     # ...but a WHISPER_* var with no AdminConfig field (not in the mapping) is not.
-    monkeypatch.setenv("WHISPER_USAGE_DB", "/tmp/u.sqlite3")
+    monkeypatch.setenv("WHISPER_BOOTSTRAP_ADMIN_KEY", "wk_x")
     pinned = cs.env_pinned_fields()
     assert pinned.get("DEFAULT_MODEL") == "WHISPER_DEFAULT_MODEL"
     assert pinned.get("BEAM_SIZE") == "WHISPER_BEAM_SIZE"
-    assert "USAGE_DB" not in pinned  # USAGE_DB is not an editable AdminConfig field
+    assert "BOOTSTRAP_ADMIN_KEY" not in pinned  # a secret constant, not an AdminConfig field
 
 
 def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
