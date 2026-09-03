@@ -244,11 +244,11 @@ const PALETTE = ['#388bfd', '#bb8009', '#2ea043', '#8957e5', '#db61a2',
 const OTHERS_COLOR = '#6e7681';
 const RANGE_PRESETS = ['7', '30', '90', '180', '365', 'all'];
 // The global measure (scope bar `#sb-metric`, Q.metric): every usage card
-// counts the same thing. proc_s is "processing", not "GPU": it is wall
+// counts the same thing. processing_s is "processing", not "GPU": it is wall
 // time inside the pipeline on whatever device ran it.
 const METRIC_LABEL = { audio_s: 'audio duration', words: 'words', requests: 'requests',
-                       errors: 'errors', proc_s: 'processing time', sessions: 'sessions' };
-const METRIC_ORDER = ['audio_s', 'words', 'sessions', 'requests', 'proc_s', 'errors'];
+                       errors: 'errors', processing_s: 'processing time', sessions: 'sessions' };
+const METRIC_ORDER = ['audio_s', 'words', 'sessions', 'requests', 'processing_s', 'errors'];
 // Reading a measure off one busy-hours slot: words sit flat on the slot
 // (the desktop app's shape), the others are nested per-kind splits.
 function slotMeasure(h, metric) {
@@ -278,7 +278,7 @@ function fmtDur(sec) {
   return (sec / 86400).toFixed(1).replace(/\.0$/, '') + 'd';
 }
 function fmtMetric(metric, v) {
-  return (metric === 'audio_s' || metric === 'proc_s') ? fmtDur(v) : fmtCount(v);
+  return (metric === 'audio_s' || metric === 'processing_s') ? fmtDur(v) : fmtCount(v);
 }
 function fmtDate(ts) {
   const d = new Date(ts * 1000), p2 = n => ('0' + n).slice(-2);
@@ -921,8 +921,8 @@ function renderHeadline() {
   const el = $('headline-strip'); if (!el) return;
   const tot = kindScoped(lastDoc.totals) || {};
   const cmp = lastDoc.compare ? kindScoped(lastDoc.compare.totals) : null;
-  const rtf = tot.audio_s > 0 ? tot.proc_s / tot.audio_s : null;
-  const crtf = cmp && cmp.audio_s > 0 ? cmp.proc_s / cmp.audio_s : null;
+  const rtf = tot.audio_s > 0 ? tot.processing_s / tot.audio_s : null;
+  const crtf = cmp && cmp.audio_s > 0 ? cmp.processing_s / cmp.audio_s : null;
   const failed = tot.requests > 0 ? tot.errors / tot.requests : 0;
   const cfailed = cmp && cmp.requests > 0 ? cmp.errors / cmp.requests : null;
   const delta = (a, b, inverse) => {
@@ -953,7 +953,7 @@ function renderHeadline() {
      ta && ta.n ? '· p95 ' + fmtDur(ta.p95) : '', taDelta, null],
     ['RTF', rtf == null ? '—' : rtf.toFixed(2), rtf == null ? '' : '× · ' + (1 / rtf).toFixed(0) + '× live',
      delta(rtf, crtf, true), null],
-    ['processing time', fmtDur(tot.proc_s), '', delta(tot.proc_s, cmp && cmp.proc_s), 'proc_s'],
+    ['processing time', fmtDur(tot.processing_s), '', delta(tot.processing_s, cmp && cmp.processing_s), 'processing_s'],
   ];
   el.innerHTML = cells.map(c =>
     '<div class="hl' + (c[4] && c[4] === Q.metric ? ' active' : '') + '"'
@@ -1316,7 +1316,7 @@ function renderBoard() {
   // The measure leads; the fixed columns skip it so nothing is listed twice.
   const cols = [['label', esc(by), ''], [Q.metric, esc(METRIC_LABEL[Q.metric]), 'num'],
     ...[['sessions', 'sessions', 'num'], ['requests', 'requests', 'num'], ['audio_s', 'audio duration', 'num'],
-        ['proc_s', 'processing time', 'num'], ['rtf', 'RTF', 'num'], ['errors', 'err', 'num']]
+        ['processing_s', 'processing time', 'num'], ['rtf', 'RTF', 'num'], ['errors', 'err', 'num']]
       .filter(c => c[0] !== Q.metric)];
   if (head) head.innerHTML = '<tr><th class="rank">#</th>' + cols.map(([k, lab, cls]) =>
     '<th class="' + cls + ' sortable' + (boardSort.key === k ? ' on' : '') + '" data-k="' + k + '" title="sort by ' + lab + '">'
@@ -1360,7 +1360,7 @@ function renderBoard() {
       + (Q.metric === 'sessions' ? '' : '<td class="num" data-label="sessions">' + fmtCount(t.sessions) + '</td>')
       + (Q.metric === 'requests' ? '' : '<td class="num" data-label="requests">' + fmtCount(t.requests) + '</td>')
       + (Q.metric === 'audio_s' ? '' : '<td class="num" data-label="audio duration">' + fmtDur(t.audio_s) + '</td>')
-      + (Q.metric === 'proc_s' ? '' : '<td class="num" data-label="processing time">' + fmtDur(t.proc_s) + '</td>')
+      + (Q.metric === 'processing_s' ? '' : '<td class="num" data-label="processing time">' + fmtDur(t.processing_s) + '</td>')
       + '<td class="num" data-label="RTF"><span class="rtf' + (r.rtf > 0.35 ? ' slow' : '') + '">' + rtf + '</span></td>'
       + (Q.metric === 'errors' ? '' : '<td class="num' + (t.errors ? ' err' : '') + '" data-label="err">' + (t.errors ? fmtCount(t.errors) : '—') + '</td>')
       + '</tr>';
@@ -1581,8 +1581,8 @@ function renderHours() {
   const mode = RHYTHMS.includes(Q.rhythm) ? Q.rhythm : 'hours';
   const M = Q.metric, ML = METRIC_LABEL[M];
   const fmtM = v => fmtMetric(M, v);
-  const fmtAvg = v => (M === 'audio_s' || M === 'proc_s' || v >= 10) ? fmtM(v) : v.toFixed(1);
-  const C = M === 'sessions' ? 'proc_s' : 'sessions', CL = METRIC_LABEL[C];
+  const fmtAvg = v => (M === 'audio_s' || M === 'processing_s' || v >= 10) ? fmtM(v) : v.toFixed(1);
+  const C = M === 'sessions' ? 'processing_s' : 'sessions', CL = METRIC_LABEL[C];
   const fmtC = v => fmtMetric(C, v);
   const rg = lastDoc.range || {};
   const L = rhythmLayout(mode, rg);
@@ -1744,7 +1744,7 @@ function renderHours() {
   const unitWord = { hours: 'weekday-hour', days: 'day-of-month hour', months: 'month' }[mode];
   const counts = [0, 0, 0, 0, 0];
   if (br) cells.forEach((v, i) => { if (mode !== 'days' || colOcc[i % L.cols] > 0) counts[levelOf(v, br)]++; });
-  const steps = br ? legendRanges(br, v => M === 'audio_s' || M === 'proc_s' ? fmtDur(v) : fmtCount(v)).map((txt, l) =>
+  const steps = br ? legendRanges(br, v => M === 'audio_s' || M === 'processing_s' ? fmtDur(v) : fmtCount(v)).map((txt, l) =>
     '<span class="lv" title="' + counts[l] + ' slot' + (counts[l] === 1 ? '' : 's') + '"><i data-l="' + l + '"></i>' + esc(txt) + '</span>').join('') : '';
   if (lg) lg.innerHTML = br
     ? '<div class="row">' + steps + '<span class="sub" title="the four shades are quarters of the active slots">quartiles · peak ' + fmtM(peakV) + '</span>' + cmpNote + '</div>'

@@ -59,7 +59,7 @@ def test_init_rebuilds_legacy_hourly_with_kind_and_sessions(tmp_path):
     try:
         conn = usage_store._require_conn()
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(usage_hourly)")}
-        assert {"kind", "sessions", "proc_s"} <= cols
+        assert {"kind", "sessions", "processing_s"} <= cols
         rows = conn.execute(
             "SELECT hour, kind, requests, sessions, words, audio_s"
             " FROM usage_hourly ORDER BY hour").fetchall()
@@ -89,9 +89,9 @@ def test_sessions_counted_once_per_job_across_utterances(usage_store_db):
     for words in (5, 7, 9):
         us.record_usage(key_id="k", user_id="u", audio_s=2.0, words=words,
                         status="ok", kind="dictation", job_id="a" * 32,
-                        proc_s=0.5)
+                        processing_s=0.5)
     row = us._require_conn().execute(
-        "SELECT requests, sessions, words, proc_s FROM usage_hourly").fetchone()
+        "SELECT requests, sessions, words, processing_s FROM usage_hourly").fetchone()
     assert tuple(row) == (3, 1, 21, 1.5)
     job = us._require_conn().execute(
         "SELECT utterances, words, audio_s, kind FROM usage_jobs").fetchone()
@@ -132,7 +132,7 @@ def test_init_reclassifies_unknown_rows_as_dictation(tmp_path):
     conn = usage_store._require_conn()
     conn.executescript(
         "INSERT INTO usage_hourly (hour, key_id, user_id, kind, requests, errors,"
-        " words, audio_s, proc_s, sessions) VALUES"
+        " words, audio_s, processing_s, sessions) VALUES"
         " (100, 'k', 'u', 'unknown', 3, 1, 42, 9.5, 0, 3),"
         " (101, 'k', 'u', 'unknown', 1, 0, 7, 1.0, 0, 1),"
         " (101, 'k', 'u', 'dictation', 2, 0, 10, 2.0, 0.5, 1),"
@@ -143,7 +143,7 @@ def test_init_reclassifies_unknown_rows_as_dictation(tmp_path):
         usage_store.init_db(path)
         conn = usage_store._require_conn()
         rows = conn.execute(
-            "SELECT hour, kind, requests, errors, sessions, words, audio_s, proc_s"
+            "SELECT hour, kind, requests, errors, sessions, words, audio_s, processing_s"
             " FROM usage_hourly ORDER BY hour, kind").fetchall()
         assert [tuple(r) for r in rows] == [
             (100, "dictation", 3, 1, 3, 42, 9.5, 0),
@@ -420,7 +420,7 @@ def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
     assert [c["all"] for c in doc["calendar"]] == [460]
     assert doc["calendar"][0]["file"] == 400
     # 10:00 and 11:00 slots carry the words; the text job's slot has no
-    # words and no processing time (proc_s was not recorded) but is still
+    # words and no processing time (processing_s was not recorded) but is still
     # a session, so the busy-hours grid can count it under that measure.
     assert sorted(h["all"] for h in doc["hours"]) == [0, 60, 400]
     assert sorted(h["sessions"]["all"] for h in doc["hours"]) == [1, 1, 1]
@@ -439,7 +439,7 @@ def test_with_stages_narrows_to_jobs_that_ran_all_of_them(usage_store_db):
     dia = us.document("u", from_day=_D("2025-06-08"), to_day=_D("2025-06-09"),
                       with_stages=("diarizing",), tz=_UTC, tz_name="UTC", now=now)
     assert dia["total"]["all"] == {"sessions": 1, "requests": 1, "errors": 1,
-                                   "words": 200, "audio_s": 50.0, "proc_s": 0.0}
+                                   "words": 200, "audio_s": 50.0, "processing_s": 0.0}
     assert dia["today"]["all"]["sessions"] == 1  # f1 is today, whatever the window
     assert dia["range"]["first_day"] == _D("2025-06-09")
 
@@ -584,7 +584,7 @@ def test_empty_document_shape_matches_populated(usage_store_db):
     assert set(empty["streak"]) == set(full["streak"]) == {"all", "dictation", "file", "url", "text"}
     assert set(full["calendar"][0]) == {"day", "all", "dictation", "file", "url", "text"}
     assert set(full["hours"][0]) == {"dow", "hour", "all", "dictation", "file",
-                                     "url", "text", "proc_s", "audio_s", "sessions",
+                                     "url", "text", "processing_s", "audio_s", "sessions",
                                      "requests", "errors"}
 
 
@@ -604,28 +604,28 @@ def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(usage_store_db):
 
 
 def test_hours_carry_proc_s_and_sessions(usage_store_db):
-    """Each hour slot also carries nested proc_s / sessions splits (the
+    """Each hour slot also carries nested processing_s / sessions splits (the
     backend's busy-hours grid measures GPU seconds); the flat words keys
     the desktop app reads are unchanged. Both fill paths agree."""
     us = usage_store_db
     h = _hour(2025, 10, 27, 9, 30, _UTC)          # Monday 09:xx UTC
     us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=10, status="ok",
-                    kind="file", hour=h, proc_s=2.5, job_id="f1",
+                    kind="file", hour=h, processing_s=2.5, job_id="f1",
                     stages=[{"name": "diarizing", "secs": 1.0}])
     us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=4, status="ok",
-                    kind="dictation", hour=h, proc_s=0.5, job_id="d1")
+                    kind="dictation", hour=h, processing_s=0.5, job_id="d1")
     now = _ts(2025, 10, 27, 12, 0, _UTC)
     doc = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now)
     slot = doc["hours"][0]
     assert (slot["dow"], slot["hour"], slot["all"]) == (0, 9, 14)
-    assert slot["proc_s"] == {"all": 3.0, "dictation": 0.5, "file": 2.5,
+    assert slot["processing_s"] == {"all": 3.0, "dictation": 0.5, "file": 2.5,
                               "url": 0.0, "text": 0.0}
     assert slot["sessions"] == {"all": 2, "dictation": 1, "file": 1,
                                 "url": 0, "text": 0}
     narrowed = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now,
                            with_stages=("diarizing",))
     assert narrowed["range"]["source"] == "jobs"
-    assert narrowed["hours"][0]["proc_s"]["all"] == 2.5
+    assert narrowed["hours"][0]["processing_s"]["all"] == 2.5
     assert narrowed["hours"][0]["sessions"] == {"all": 1, "dictation": 0,
                                                 "file": 1, "url": 0, "text": 0}
 
@@ -637,12 +637,12 @@ def test_document_user_id_none_aggregates_all_users(usage_store_db):
     us = usage_store_db
     h = _hour(2025, 6, 10, 9, 0, _UTC)
     us.record_usage(key_id="ka", user_id="alice", audio_s=10.0, words=10,
-                    status="ok", kind="file", hour=h, proc_s=1.0, job_id="a1",
+                    status="ok", kind="file", hour=h, processing_s=1.0, job_id="a1",
                     stages=[{"name": "diarizing", "secs": 1.0, "speakers": 2}])
     us.record_usage(key_id="ka2", user_id="alice", audio_s=5.0, words=5,
-                    status="ok", kind="file", hour=h, proc_s=1.0, job_id="a2")
+                    status="ok", kind="file", hour=h, processing_s=1.0, job_id="a2")
     us.record_usage(key_id="kb", user_id="bob", audio_s=20.0, words=20,
-                    status="ok", kind="dictation", hour=h, proc_s=2.0, job_id="b1")
+                    status="ok", kind="dictation", hour=h, processing_s=2.0, job_id="b1")
     now = _ts(2025, 6, 10, 12, 0, _UTC)
     everyone = us.document(None, days=7, tz=_UTC, tz_name="UTC", now=now)
     alice = us.document("alice", days=7, tz=_UTC, tz_name="UTC", now=now)
@@ -650,7 +650,7 @@ def test_document_user_id_none_aggregates_all_users(usage_store_db):
     assert everyone["total"]["all"]["audio_s"] == 35.0
     assert everyone["total"]["all"]["sessions"] == 3
     assert (everyone["total"]["file"]["words"], everyone["total"]["dictation"]["words"]) == (15, 20)
-    assert everyone["series"][0]["all"]["proc_s"] == 4.0
+    assert everyone["series"][0]["all"]["processing_s"] == 4.0
     assert everyone["hours"][0]["sessions"]["all"] == 3
     assert everyone["stages"][0]["stage"] == "diarizing"
     assert everyone["stages"][0]["runs"] == 1 and everyone["stages"][0]["of_runs"] == 2
@@ -810,7 +810,7 @@ def test_document_lists_every_stage_only_when_asked(usage_store_db):
     console shows the whole pipeline with transcription as the reference row)."""
     us = usage_store_db
     us.record_usage(key_id="k", user_id="u", audio_s=60.0, words=10, status="ok",
-                    kind="url", job_id="d" * 32, proc_s=6.0, stages=[
+                    kind="url", job_id="d" * 32, processing_s=6.0, stages=[
                         {"name": "downloading", "secs": 2.0},
                         {"name": "transcribing", "secs": 4.0, "model": "large-v3"},
                         {"name": "translate", "secs": 1.0, "targets": ["de"]}])
@@ -831,14 +831,14 @@ def test_dom_hours_is_the_same_slots_by_day_of_month(usage_store_db):
     the two grids sum to the same totals."""
     us = usage_store_db
     us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=10, status="ok",
-                    kind="file", hour=_hour(2025, 10, 25, 9, 30, _UTC), proc_s=2.0)
+                    kind="file", hour=_hour(2025, 10, 25, 9, 30, _UTC), processing_s=2.0)
     us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=5, status="ok",
-                    kind="dictation", hour=_hour(2025, 10, 27, 9, 30, _UTC), proc_s=1.0)
+                    kind="dictation", hour=_hour(2025, 10, 27, 9, 30, _UTC), processing_s=1.0)
     now = _ts(2025, 10, 27, 12, 0, _UTC)
     doc = us.document("u", days=7, tz=_UTC, tz_name="UTC", now=now)
     dom = {(h["dom"], h["hour"]): h for h in doc["dom_hours"]}
     assert set(dom) == {(25, 9), (27, 9)}
-    assert dom[(25, 9)]["file"] == 10 and dom[(25, 9)]["proc_s"]["all"] == 2.0
+    assert dom[(25, 9)]["file"] == 10 and dom[(25, 9)]["processing_s"]["all"] == 2.0
     assert dom[(27, 9)]["dictation"] == 5 and dom[(27, 9)]["sessions"]["all"] == 1
     assert set(dom[(25, 9)]) == set(doc["hours"][0]) - {"dow"} | {"dom"}
     assert sum(h["all"] for h in doc["hours"]) == sum(h["all"] for h in doc["dom_hours"]) == 15

@@ -28,23 +28,23 @@ def _seed(us):
     # one diarized file from carol on 06-05, one text job from alice.
     us.record_usage(key_id="k1", user_id="alice", audio_s=60.0, words=100,
                     status="ok", kind="file", hour=_hour("2025-06-02"),
-                    proc_s=6.0, job_id="a1", model="large-v3")
+                    processing_s=6.0, job_id="a1", model="large-v3")
     us.record_usage(key_id="k2", user_id="alice", audio_s=30.0, words=50,
                     status="ok", kind="file", hour=_hour("2025-06-04"),
-                    proc_s=9.0, job_id="a2", model="medium")
+                    processing_s=9.0, job_id="a2", model="medium")
     us.record_usage(key_id="k3", user_id="bob", audio_s=10.0, words=40,
                     status="ok", kind="dictation", hour=_hour("2025-06-04"),
-                    proc_s=1.0, job_id="b1", model="large-v3")
+                    processing_s=1.0, job_id="b1", model="large-v3")
     us.record_usage(key_id="k3", user_id="bob", audio_s=10.0, words=40,
                     status="error", kind="dictation", hour=_hour("2025-06-10"),
-                    proc_s=1.0, job_id="b2", model="large-v3")
+                    processing_s=1.0, job_id="b2", model="large-v3")
     us.record_usage(key_id="k4", user_id="carol", audio_s=120.0, words=300,
                     status="ok", kind="url", hour=_hour("2025-06-05"),
-                    proc_s=30.0, job_id="c1", model="large-v3",
+                    processing_s=30.0, job_id="c1", model="large-v3",
                     stages=[{"name": "diarizing", "secs": 12.0, "speakers": 3}])
     us.record_usage(key_id="k1", user_id="alice", audio_s=0.0, words=0,
                     status="ok", kind="text", hour=_hour("2025-06-06"),
-                    proc_s=0.5, job_id="a3", model=None)
+                    processing_s=0.5, job_id="a3", model=None)
 
 
 NOW = _ts("2025-06-11", 15)
@@ -133,14 +133,14 @@ def test_overview_by_model_from_jobs(usage_store_db):
     assert [ln["id"] for ln in narrowed["lines"]] == ["large-v3"]
     assert narrowed["models"] == [{"model": "large-v3", "sessions": 1, "requests": 1,
                                    "errors": 0, "words": 300, "audio_s": 120.0,
-                                   "proc_s": 30.0, "rtf": 0.25}]
+                                   "processing_s": 30.0, "rtf": 0.25}]
 
 
 def test_overview_by_stage_from_stage_hourly(usage_store_db):
     us = usage_store_db
     _seed(us)
     o = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="stage",
-            metric="proc_s")
+            metric="processing_s")
     assert [ln["id"] for ln in o["lines"]] == ["diarizing"]
     assert sum(o["lines"][0]["values"]) == 12.0
     assert o["leaderboard"][0]["totals"]["audio_s"] == 120.0
@@ -158,10 +158,10 @@ def test_overview_compare_prev_and_yoy_aligned(usage_store_db):
     # year before with a dictation for bob.
     us.record_usage(key_id="k1", user_id="alice", audio_s=15.0, words=1,
                     status="ok", kind="file", hour=_hour("2025-05-24"),
-                    proc_s=1.0, job_id="p1")
+                    processing_s=1.0, job_id="p1")
     us.record_usage(key_id="k3", user_id="bob", audio_s=7.0, words=1,
                     status="ok", kind="dictation", hour=_hour("2024-06-03"),
-                    proc_s=1.0, job_id="y1")
+                    processing_s=1.0, job_id="y1")
     o = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="kind",
             compare="prev")
     c = o["compare"]

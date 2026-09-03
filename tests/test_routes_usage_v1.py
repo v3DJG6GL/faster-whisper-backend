@@ -18,7 +18,7 @@ import zoneinfo
 from conftest import bearer
 
 _KINDS = ("dictation", "file", "url", "text")
-_CELL = {"sessions", "requests", "errors", "words", "audio_s", "proc_s"}
+_CELL = {"sessions", "requests", "errors", "words", "audio_s", "processing_s"}
 
 
 def _seed(uid, *, hour, words=0, audio_s=0.0, status="ok", kind="dictation",
@@ -120,7 +120,7 @@ def test_v1_usage_per_kind_totals_series_and_today(client, make_user_key):
     assert body["username"] == "alice"
     today = body["today"]
     assert today["dictation"] == {"sessions": 1, "requests": 2, "errors": 0,
-                                  "words": 100, "audio_s": 60.0, "proc_s": 0.0}
+                                  "words": 100, "audio_s": 60.0, "processing_s": 0.0}
     assert today["all"]["words"] == 100 and today["file"]["words"] == 0
     # `total` is the window: the text translation eight days ago is outside.
     total = body["total"]

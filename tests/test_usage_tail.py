@@ -34,7 +34,7 @@ def _seed(us):
     for i, w in enumerate(waits):
         us.record_usage(key_id="k1", user_id="alice", audio_s=100.0, words=10,
                         status="error" if i in (1, 4) else "ok", kind="file",
-                        hour=_hour("2025-06-03") + i * 24, proc_s=10.0 + i,
+                        hour=_hour("2025-06-03") + i * 24, processing_s=10.0 + i,
                         job_id=f"a{i}", model="large-v3" if i < 3 else "medium",
                         wait_s=w,
                         error_class=("cuda_oom" if i == 4 else "policy_blocked" if i == 1 else None),
@@ -42,12 +42,12 @@ def _seed(us):
                         stages=([{"name": "diarizing", "secs": 3.0, "error": "timeout"}]
                                 if i == 2 else None))
     us.record_usage(key_id="k2", user_id="bob", audio_s=5.0, words=5, status="ok",
-                    kind="dictation", hour=_hour("2025-06-05"), proc_s=0.5,
+                    kind="dictation", hour=_hour("2025-06-05"), processing_s=0.5,
                     job_id="b1", model="large-v3", wait_s=0.2)
     for i in range(2):
         us.record_usage(key_id="k1", user_id="alice", audio_s=50.0, words=10,
                         status="ok", kind="file", hour=_hour("2025-05-25") + i * 24,
-                        proc_s=5.0, job_id=f"p{i}", model="large-v3", wait_s=10.0)
+                        processing_s=5.0, job_id=f"p{i}", model="large-v3", wait_s=10.0)
 
 
 def test_wait_quantiles_nearest_rank(usage_store_db):

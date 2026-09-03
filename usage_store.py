@@ -12,7 +12,7 @@ hours.
 Tables (every rollup is keyed by UTC epoch-hour, see below):
 
   usage_hourly            hour × key_id × kind — requests/errors/words/audio_s/
-                          proc_s and `sessions` (jobs, counted once per job_id)
+                          processing_s and `sessions` (jobs, counted once per job_id)
   usage_jobs              one row per job_id (client-minted): the per-job sums
                           plus the dictation OUTCOME the desktop app reports
                           afterwards (activation / delivery / app / translation)
@@ -95,11 +95,11 @@ _conn: sqlite3.Connection | None = None
 OPEN_MODE_ID = "(open-mode)"
 
 # ORDER BY column names are interpolated, so they MUST come from this set.
-# proc_s (server processing seconds) and sessions (distinct dictation sessions
+# processing_s (server processing seconds) and sessions (distinct dictation sessions
 # / file runs, as opposed to HTTP requests) were written from day one and
 # only read by document(); /stats reads them too since v2.
 _METRICS: frozenset[str] = frozenset(
-    ("requests", "errors", "words", "audio_s", "proc_s", "sessions"))
+    ("requests", "errors", "words", "audio_s", "processing_s", "sessions"))
 
 # Job kinds the per-kind breakdown knows. Anything else is folded into
 # 'unknown' rather than rejected: a usage write must never fail a request.
@@ -156,7 +156,7 @@ CREATE TABLE IF NOT EXISTS usage_hourly (
   errors   INTEGER NOT NULL DEFAULT 0,
   words    INTEGER NOT NULL DEFAULT 0,
   audio_s  REAL    NOT NULL DEFAULT 0,
-  proc_s   REAL    NOT NULL DEFAULT 0,
+  processing_s   REAL    NOT NULL DEFAULT 0,
   sessions INTEGER NOT NULL DEFAULT 0,
   PRIMARY KEY (hour, key_id, kind)
 );
@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS usage_jobs (
   status      TEXT    NOT NULL,
   audio_s     REAL    NOT NULL DEFAULT 0,
   words       INTEGER NOT NULL DEFAULT 0,
-  proc_s      REAL    NOT NULL DEFAULT 0,
+  processing_s      REAL    NOT NULL DEFAULT 0,
   utterances  INTEGER NOT NULL DEFAULT 0,
   model       TEXT,
   language    TEXT,
@@ -254,6 +254,7 @@ def init_db(path: str) -> None:
     _conn = store_common.open_wal_db(path)
     _conn.execute("PRAGMA temp_store=MEMORY;")
     _park_legacy_hourly(_conn)
+    _rename_columns(_conn)
     _conn.executescript(_SCHEMA)
     _migrate_columns(_conn)
     _fold_legacy_hourly(_conn)
@@ -286,6 +287,18 @@ def _migrate_columns(conn: sqlite3.Connection) -> None:
         for col, ddl in cols:
             if col not in have:
                 conn.execute(f"ALTER TABLE {table} {ddl}")
+    conn.commit()
+
+
+def _rename_columns(conn: sqlite3.Connection) -> None:
+    """Column renames (2026-09): processing_s spells its unit the way
+    audio_s does and is what every other store now calls the same
+    measurement. Runs before _SCHEMA (CREATE TABLE IF NOT EXISTS would
+    otherwise leave the old name in place); RENAME COLUMN keeps the data."""
+    for table in ("usage_hourly", "usage_jobs"):
+        have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+        if "proc_s" in have and "processing_s" not in have:
+            conn.execute(f"ALTER TABLE {table} RENAME COLUMN proc_s TO processing_s")
     conn.commit()
 
 
@@ -322,7 +335,7 @@ def _fold_legacy_hourly(conn: sqlite3.Connection) -> None:
             cur = conn.execute(
                 "INSERT INTO usage_hourly"
                 " (hour, key_id, user_id, kind, requests, errors, words,"
-                "  audio_s, proc_s, sessions)"
+                "  audio_s, processing_s, sessions)"
                 " SELECT hour, key_id, user_id, ?, requests, errors, words,"
                 "  audio_s, 0, requests"
                 " FROM usage_hourly_legacy",
@@ -355,16 +368,16 @@ def _reclassify_unknown_hourly(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "INSERT INTO usage_hourly"
                 " (hour, key_id, user_id, kind, requests, errors, words,"
-                "  audio_s, proc_s, sessions)"
+                "  audio_s, processing_s, sessions)"
                 " SELECT hour, key_id, user_id, 'dictation', requests, errors,"
-                "  words, audio_s, proc_s, sessions"
+                "  words, audio_s, processing_s, sessions"
                 " FROM usage_hourly WHERE kind=?"
                 " ON CONFLICT(hour, key_id, kind) DO UPDATE SET"
                 "  requests = requests + excluded.requests,"
                 "  errors   = errors + excluded.errors,"
                 "  words    = words + excluded.words,"
                 "  audio_s  = audio_s + excluded.audio_s,"
-                "  proc_s   = proc_s + excluded.proc_s,"
+                "  processing_s   = processing_s + excluded.processing_s,"
                 "  sessions = sessions + excluded.sessions",
                 (UNKNOWN_KIND,),
             )
@@ -493,7 +506,7 @@ def record_usage(
     stages: list | None = None,
     model: str | None = None,
     language: str | None = None,
-    proc_s: float | None = None,
+    processing_s: float | None = None,
     wait_s: float | None = None,
     error_class: str | None = None,
     error_stage: str | None = None,
@@ -505,7 +518,7 @@ def record_usage(
     stay valid.
 
     `wait_s` is the time this request spent queued for a GPU slot (summed
-    per job like proc_s); `error_class` / `error_stage` classify a failed
+    per job like processing_s); `error_class` / `error_stage` classify a failed
     job (metrics.ERROR_CLASSES) and are kept once set — a later utterance
     of the same session never blanks them.
 
@@ -521,7 +534,7 @@ def record_usage(
         err = 0 if status == "ok" else 1
         w = int(words or 0)
         a = float(audio_s or 0.0)
-        p = float(proc_s or 0.0)
+        p = float(processing_s or 0.0)
         wt = max(0.0, float(wait_s or 0.0))
         ecls = (error_class[:32] if isinstance(error_class, str) and error_class else None)
         estg = (error_stage[:32] if isinstance(error_stage, str) and error_stage else None)
@@ -547,14 +560,14 @@ def record_usage(
                         conn.execute(
                             "INSERT INTO usage_jobs"
                             " (job_id, user_id, key_id, kind, created_ts, status,"
-                            "  audio_s, words, proc_s, utterances, model, language,"
+                            "  audio_s, words, processing_s, utterances, model, language,"
                             "  wait_s, error_class, error_stage)"
                             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
                             " ON CONFLICT(job_id) DO UPDATE SET"
                             "  utterances  = utterances + 1,"
                             "  audio_s     = audio_s + excluded.audio_s,"
                             "  words       = words + excluded.words,"
-                            "  proc_s      = proc_s + excluded.proc_s,"
+                            "  processing_s      = processing_s + excluded.processing_s,"
                             "  status      = excluded.status,"
                             "  model       = COALESCE(excluded.model, model),"
                             "  language    = COALESCE(excluded.language, language),"
@@ -567,14 +580,14 @@ def record_usage(
                 conn.execute(
                     "INSERT INTO usage_hourly"
                     " (hour, key_id, user_id, kind, requests, errors, words,"
-                    "  audio_s, proc_s, sessions)"
+                    "  audio_s, processing_s, sessions)"
                     " VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
                     " ON CONFLICT(hour, key_id, kind) DO UPDATE SET"
                     "  requests = requests + 1,"
                     "  errors   = errors + excluded.errors,"
                     "  words    = words  + excluded.words,"
                     "  audio_s  = audio_s + excluded.audio_s,"
-                    "  proc_s   = proc_s + excluded.proc_s,"
+                    "  processing_s   = processing_s + excluded.processing_s,"
                     "  sessions = sessions + excluded.sessions,"
                     "  user_id  = excluded.user_id",
                     (h, kid, uid, k, err, w, a, p, 1 if new_session else 0),
@@ -897,7 +910,7 @@ def series(
         where = (where + " AND key_id = ?") if where else " WHERE key_id = ?"
         params.append(key_id)
     cur = conn.execute(
-        "SELECT hour, requests, errors, words, audio_s, proc_s, sessions"
+        "SELECT hour, requests, errors, words, audio_s, processing_s, sessions"
         " FROM usage_hourly" + where,
         params,
     )
@@ -909,13 +922,13 @@ def series(
         cell = agg.get(day)
         if cell is None:
             cell = agg[day] = {"day": day, "requests": 0, "errors": 0,
-                               "words": 0, "audio_s": 0.0, "proc_s": 0.0,
+                               "words": 0, "audio_s": 0.0, "processing_s": 0.0,
                                "sessions": 0}
         cell["requests"] += int(r["requests"] or 0)
         cell["errors"] += int(r["errors"] or 0)
         cell["words"] += int(r["words"] or 0)
         cell["audio_s"] += float(r["audio_s"] or 0.0)
-        cell["proc_s"] += float(r["proc_s"] or 0.0)
+        cell["processing_s"] += float(r["processing_s"] or 0.0)
         cell["sessions"] += int(r["sessions"] or 0)
     return [agg[d] for d in sorted(agg)]
 
@@ -949,7 +962,7 @@ def leaderboard(
         f"SELECT {cols},"
         " SUM(requests) AS requests, SUM(errors) AS errors,"
         " SUM(words) AS words, SUM(audio_s) AS audio_s,"
-        " SUM(proc_s) AS proc_s, SUM(sessions) AS sessions"
+        " SUM(processing_s) AS processing_s, SUM(sessions) AS sessions"
         " FROM usage_hourly" + where +
         f" GROUP BY {group}"
         f" ORDER BY {metric} DESC"
@@ -992,7 +1005,7 @@ def prune(*, retention_days: int) -> int:
 
 def _zero_cell() -> dict[str, Any]:
     return {"sessions": 0, "requests": 0, "errors": 0, "words": 0,
-            "audio_s": 0.0, "proc_s": 0.0}
+            "audio_s": 0.0, "processing_s": 0.0}
 
 
 def _zero_split() -> dict[str, dict[str, Any]]:
@@ -1010,13 +1023,13 @@ def _add_row(split: dict[str, dict[str, Any]], r: sqlite3.Row) -> None:
         cell["errors"] += int(r["errors"] or 0)
         cell["words"] += int(r["words"] or 0)
         cell["audio_s"] += float(r["audio_s"] or 0.0)
-        cell["proc_s"] += float(r["proc_s"] or 0.0)
+        cell["processing_s"] += float(r["processing_s"] or 0.0)
 
 
 def _rounded(split: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
     for cell in split.values():
         cell["audio_s"] = round(cell["audio_s"], 3)
-        cell["proc_s"] = round(cell["proc_s"], 3)
+        cell["processing_s"] = round(cell["processing_s"], 3)
     return split
 
 
@@ -1387,13 +1400,13 @@ def _axis(from_day: int, to_day: int, mode: str) -> list[int]:
 
 def _stage_metric(metric: str, r: sqlite3.Row) -> float:
     """usage_stage_hourly has runs / audio_s / secs. Sessions and requests
-    read as runs, proc_s as secs; words has no stage meaning (0) and errors
+    read as runs, processing_s as secs; words has no stage meaning (0) and errors
     per stage only arrive with the phase-2 ledger columns (0 until then)."""
     if metric in ("sessions", "requests"):
         return float(r["runs"] or 0)
     if metric == "audio_s":
         return float(r["audio_s"] or 0.0)
-    if metric == "proc_s":
+    if metric == "processing_s":
         return float(r["secs"] or 0.0)
     return 0.0
 
@@ -1509,7 +1522,7 @@ def overview(
         for r in conn.execute(
             "SELECT hour, user_id, key_id, SUM(requests) AS requests,"
             " SUM(errors) AS errors, SUM(words) AS words, SUM(audio_s) AS audio_s,"
-            " SUM(proc_s) AS proc_s, SUM(sessions) AS sessions FROM usage_hourly"
+            " SUM(processing_s) AS processing_s, SUM(sessions) AS sessions FROM usage_hourly"
             + where + " AND hour >= ? AND hour < ? GROUP BY hour, user_id, key_id",
             (*params, start_hour, end_hour),
         ):
@@ -1519,7 +1532,7 @@ def overview(
                     "errors": int(r["errors"] or 0),
                     "words": int(r["words"] or 0),
                     "audio_s": float(r["audio_s"] or 0.0),
-                    "proc_s": float(r["proc_s"] or 0.0)}
+                    "processing_s": float(r["processing_s"] or 0.0)}
             if by == "user":
                 add(ent(r["user_id"], label=r["user_id"], user_id=r["user_id"]),
                     day, cell)
@@ -1532,7 +1545,7 @@ def overview(
         start_ts = start_hour * 3600
         end_ts = end_hour * 3600
         for job in conn.execute(
-            "SELECT model, created_ts, status, audio_s, words, proc_s, utterances"
+            "SELECT model, created_ts, status, audio_s, words, processing_s, utterances"
             " FROM usage_jobs" + where + _with_clause(with_stages)
             + " AND created_ts >= ? AND created_ts < ?",
             (*params, *with_stages, float(start_ts), float(end_ts)),
@@ -1553,7 +1566,7 @@ def overview(
             runs = int(r["runs"] or 0)
             cell = {"sessions": runs, "requests": runs, "errors": 0, "words": 0,
                     "audio_s": float(r["audio_s"] or 0.0),
-                    "proc_s": float(r["secs"] or 0.0)}
+                    "processing_s": float(r["secs"] or 0.0)}
             add(ent(r["stage"], label=r["stage"]), day, cell)
 
     ranked = sorted(ents.values(),
@@ -1561,8 +1574,8 @@ def overview(
     for e in ranked:
         tot = e["totals"]
         tot["audio_s"] = round(tot["audio_s"], 3)
-        tot["proc_s"] = round(tot["proc_s"], 3)
-        e["rtf"] = round(tot["proc_s"] / tot["audio_s"], 3) if tot["audio_s"] > 0 else None
+        tot["processing_s"] = round(tot["processing_s"], 3)
+        e["rtf"] = round(tot["processing_s"] / tot["audio_s"], 3) if tot["audio_s"] > 0 else None
         e["values"] = [round(v, 3) for v in e["values"]]
 
     lines: list[dict[str, Any]] = []
@@ -1649,19 +1662,19 @@ def _models_in_window(conn: sqlite3.Connection, user_id: Ids,
         "SELECT COALESCE(model, '(unknown)') AS model, COUNT(*) AS sessions,"
         " SUM(MAX(1, COALESCE(utterances, 0))) AS requests,"
         " SUM(status <> 'ok') AS errors, SUM(words) AS words,"
-        " SUM(audio_s) AS audio_s, SUM(proc_s) AS proc_s"
+        " SUM(audio_s) AS audio_s, SUM(processing_s) AS processing_s"
         " FROM usage_jobs" + where + _with_clause(with_stages)
         + " AND created_ts >= ? AND created_ts < ? GROUP BY model"
         " ORDER BY audio_s DESC, model",
         (*params, *with_stages, float(start_ts), float(end_ts)),
     ):
         audio = float(r["audio_s"] or 0.0)
-        proc = float(r["proc_s"] or 0.0)
+        proc = float(r["processing_s"] or 0.0)
         out.append({
             "model": r["model"], "sessions": int(r["sessions"] or 0),
             "requests": int(r["requests"] or 0), "errors": int(r["errors"] or 0),
             "words": int(r["words"] or 0), "audio_s": round(audio, 3),
-            "proc_s": round(proc, 3),
+            "processing_s": round(proc, 3),
             "rtf": round(proc / audio, 3) if audio > 0 else None,
         })
     return out
@@ -1763,7 +1776,7 @@ def turnaround_histogram(*, start_ts: float, end_ts: float,
                          user_id: str | None = None, key_id: str | None = None,
                          kind: str | None = None,
                          edges: tuple[int, ...] = TURNAROUND_EDGES_S) -> dict[str, Any]:
-    """Jobs bucketed by end-to-end time (proc_s + wait_s) into fixed edges;
+    """Jobs bucketed by end-to-end time (processing_s + wait_s) into fixed edges;
     `wait_share` per bucket is the fraction of that bucket's turnaround that
     was queue wait (what the chart hatches); `by_kind` splits each bucket's
     count per job kind (the chart stacks them). Also p50/p95 of turnaround."""
@@ -1774,9 +1787,9 @@ def turnaround_histogram(*, start_ts: float, end_ts: float,
     waited = [0.0] * len(edges)
     by_kind: dict[str, list[int]] = {}
     turns: list[float] = []
-    for r in conn.execute("SELECT proc_s, wait_s, kind FROM usage_jobs" + where, params):
+    for r in conn.execute("SELECT processing_s, wait_s, kind FROM usage_jobs" + where, params):
         w = float(r["wait_s"] or 0.0)
-        t = float(r["proc_s"] or 0.0) + w
+        t = float(r["processing_s"] or 0.0) + w
         turns.append(t)
         i = 0
         for j, e in enumerate(edges):
@@ -1851,14 +1864,14 @@ def by_model(*, start_ts: float, end_ts: float, user_id: str | None = None,
     for r in conn.execute(
         "SELECT COALESCE(model, '(unknown)') AS model, COUNT(*) AS runs,"
         " SUM(status <> 'ok') AS errors, SUM(audio_s) AS audio_s,"
-        " SUM(proc_s) AS proc_s FROM usage_jobs" + where
+        " SUM(processing_s) AS processing_s FROM usage_jobs" + where
         + " GROUP BY model ORDER BY audio_s DESC, model", params,
     ):
         audio = float(r["audio_s"] or 0.0)
-        proc = float(r["proc_s"] or 0.0)
+        proc = float(r["processing_s"] or 0.0)
         out.append({"model": r["model"], "runs": int(r["runs"] or 0),
                     "errors": int(r["errors"] or 0), "audio_s": round(audio, 3),
-                    "proc_s": round(proc, 3),
+                    "processing_s": round(proc, 3),
                     "rtf": round(proc / audio, 3) if audio > 0 else None,
                     "wait_p50": None})
     for m in out[:max(0, int(top))]:
@@ -1971,11 +1984,11 @@ def _fold_slots(words_by_slot, extra_by_slot, key):
 
 # The per-slot measures beside words: every measure the stats console can
 # put on its busy-hours grid, each split by kind like the words are.
-SLOT_MEASURES = ("proc_s", "audio_s", "sessions", "requests", "errors")
+SLOT_MEASURES = ("processing_s", "audio_s", "sessions", "requests", "errors")
 
 
 def _slot_extra() -> dict[str, dict[str, Any]]:
-    return {"proc_s": {"all": 0.0, **{k: 0.0 for k in KINDS}},
+    return {"processing_s": {"all": 0.0, **{k: 0.0 for k in KINDS}},
             "audio_s": {"all": 0.0, **{k: 0.0 for k in KINDS}},
             "sessions": {"all": 0, **{k: 0 for k in KINDS}},
             "requests": {"all": 0, **{k: 0 for k in KINDS}},
@@ -1984,7 +1997,7 @@ def _slot_extra() -> dict[str, dict[str, Any]]:
 
 def _add_slot_extra(extra: dict[str, dict[str, Any]], kind: str,
                     cell: dict[str, Any]) -> None:
-    """Add one cell (proc_s / audio_s / sessions / requests / errors) to
+    """Add one cell (processing_s / audio_s / sessions / requests / errors) to
     the slot's splits: always to `all`, to its kind when known."""
     for name in SLOT_MEASURES:
         split, v = extra[name], cell.get(name) or 0
@@ -1997,7 +2010,7 @@ def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
             words_all_days, today: datetime.date, extra_by_slot=None) -> None:
     """Common tail: the sparse arrays and the per-kind streaks. A slot in
     `hours` carries its words flat (the desktop app reads `h[kind]`) plus
-    nested `proc_s`, `audio_s`, `sessions`, `requests` and `errors` splits
+    nested `processing_s`, `audio_s`, `sessions`, `requests` and `errors` splits
     (SLOT_MEASURES), so the backend's busy-hours grid can show whichever
     measure the console has picked. A slot is emitted when it saw any
     words, any request or any processing time."""
@@ -2012,12 +2025,12 @@ def _finish(doc: dict[str, Any], *, by_day, words_by_day, words_by_slot,
         for slot in sorted(set(w_map) | set(e_map)):
             words = w_map.get(slot) or _words_split()
             extra = e_map.get(slot) or _slot_extra()
-            if (words["all"] <= 0 and extra["proc_s"]["all"] <= 0
+            if (words["all"] <= 0 and extra["processing_s"]["all"] <= 0
                     and extra["requests"]["all"] <= 0):
                 continue
             out.append({
                 first: slot[0], "hour": slot[1], **words,
-                "proc_s": {k: round(v, 3) for k, v in extra["proc_s"].items()},
+                "processing_s": {k: round(v, 3) for k, v in extra["processing_s"].items()},
                 "audio_s": {k: round(v, 3) for k, v in extra["audio_s"].items()},
                 "sessions": dict(extra["sessions"]),
                 "requests": dict(extra["requests"]),
@@ -2044,7 +2057,7 @@ def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
     words_all_days: dict[datetime.date, dict[str, int]] = {}
     where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
     for r in conn.execute(
-        "SELECT hour, kind, sessions, requests, errors, words, audio_s, proc_s"
+        "SELECT hour, kind, sessions, requests, errors, words, audio_s, processing_s"
         " FROM usage_hourly" + where, params,
     ):
         h = int(r["hour"])
@@ -2066,7 +2079,7 @@ def _fill_from_rollups(conn, doc, user_id, tz, today, start_hour, end_hour,
             slot = _slot_of(ts, tz)
             _add_words(words_by_slot.setdefault(slot, _words_split()), kind, words)
             _add_slot_extra(extra_by_slot.setdefault(slot, _slot_extra()), kind,
-                            {"proc_s": float(r["proc_s"] or 0.0),
+                            {"processing_s": float(r["processing_s"] or 0.0),
                              "audio_s": float(r["audio_s"] or 0.0),
                              "sessions": int(r["sessions"] or 0),
                              "requests": int(r["requests"] or 0),
@@ -2101,7 +2114,7 @@ def _job_cell(job: sqlite3.Row) -> dict[str, Any]:
         "errors": 0 if job["status"] == "ok" else 1,
         "words": int(job["words"] or 0),
         "audio_s": float(job["audio_s"] or 0.0),
-        "proc_s": float(job["proc_s"] or 0.0),
+        "processing_s": float(job["processing_s"] or 0.0),
     }
 
 
@@ -2137,7 +2150,7 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
     window_jobs: list[str] = []
     where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
     for job in conn.execute(
-        "SELECT job_id, kind, created_ts, status, audio_s, words, proc_s,"
+        "SELECT job_id, kind, created_ts, status, audio_s, words, processing_s,"
         " utterances, activation, delivery, translation, app_id"
         " FROM usage_jobs" + where + _with_clause(with_stages)
         + " ORDER BY created_ts", (*params, *with_stages),

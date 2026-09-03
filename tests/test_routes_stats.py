@@ -642,19 +642,19 @@ def test_stats_usage_v2_params(client, app_module):
     import usage_store as us
     h = us.now_hour()
     us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5,
-                    status="ok", hour=h, proc_s=2.0, job_id="j1", kind="file",
+                    status="ok", hour=h, processing_s=2.0, job_id="j1", kind="file",
                     stages=[{"name": "diarizing", "secs": 1.0, "speakers": 2}],
                     model="large-v3")
     us.record_usage(key_id="k2", user_id="bob", audio_s=4.0, words=5,
-                    status="ok", hour=h, proc_s=1.0, job_id="j2", kind="dictation")
-    kinds = client.get("/stats/usage?by=kind&metric=proc_s&compare=prev").json()
-    assert kinds["by"] == "kind" and kinds["metric"] == "proc_s"
+                    status="ok", hour=h, processing_s=1.0, job_id="j2", kind="dictation")
+    kinds = client.get("/stats/usage?by=kind&metric=processing_s&compare=prev").json()
+    assert kinds["by"] == "kind" and kinds["metric"] == "processing_s"
     # Every kind is a line (stable series identity); only two carry data.
     assert {ln["id"] for ln in kinds["lines"]} == {"dictation", "file", "url", "text"}
     assert {ln["id"] for ln in kinds["lines"] if sum(ln["values"])} == {"file", "dictation"}
     assert kinds["compare"]["mode"] == "prev" and kinds["compare"]["range"]["days"] == 30
-    assert kinds["totals"]["all"]["proc_s"] == 3.0
-    assert kinds["leaderboard"][0]["proc_s"] == 2.0     # flat v1 metrics too
+    assert kinds["totals"]["all"]["processing_s"] == 3.0
+    assert kinds["leaderboard"][0]["processing_s"] == 2.0     # flat v1 metrics too
     sessions = client.get("/stats/usage?by=model&metric=sessions").json()
     assert sessions["breakdown"]["source"] == "jobs"
     assert {r["id"] for r in sessions["leaderboard"]} == {"large-v3", "(unknown)"}
@@ -745,7 +745,7 @@ def test_stats_page_usage_cards_and_scope_bar(client):
     assert 'aria-live="polite"' in html
     for v in ("kind", "user", "key", "model", "stage"):
         assert f'<button data-v="{v}"' in html.split('id="usage-by"')[1].split("</div>")[0], v
-    for v in ("proc_s", "sessions"):
+    for v in ("processing_s", "sessions"):
         assert f'data-v="{v}"' in html, v
     assert "renderModels(snap)" in html and "colspan=\"11\"" in html
     assert "window._fwRerenderModels" in html
@@ -864,10 +864,10 @@ def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
     ka = api_keys_store.list_keys(alice)[0]["id"]
     h = us.now_hour()
     us.record_usage(key_id=ka, user_id=alice, audio_s=10.0, words=5, status="error",
-                    hour=h, proc_s=2.0, job_id="a1", kind="file", wait_s=3.0,
+                    hour=h, processing_s=2.0, job_id="a1", kind="file", wait_s=3.0,
                     error_class="cuda_oom", error_stage="transcribing")
     us.record_usage(key_id="kb", user_id=bob, audio_s=4.0, words=5, status="ok",
-                    hour=h, proc_s=1.0, job_id="b1", kind="dictation", wait_s=0.5)
+                    hour=h, processing_s=1.0, job_id="b1", kind="dictation", wait_s=0.5)
     body = client.get("/stats/tail", headers=bearer(raw_admin)).json()
     assert set(body) >= {"range", "wait", "turnaround", "failures", "models", "compare", "scope"}
     assert body["scope"] == "all" and body["wait"]["n"] == 2
@@ -992,13 +992,13 @@ def test_stats_usage_list_filters_kinds_users_keys(client, usage_store_db):
     us = usage_store_db
     h = int(time.time() // 3600)
     us.record_usage(key_id="ka", user_id="alice", audio_s=100.0, words=10,
-                    status="ok", hour=h, proc_s=2.0, job_id="a1", kind="file")
+                    status="ok", hour=h, processing_s=2.0, job_id="a1", kind="file")
     us.record_usage(key_id="ka", user_id="alice", audio_s=50.0, words=5,
-                    status="ok", hour=h, proc_s=1.0, job_id="a2", kind="dictation")
+                    status="ok", hour=h, processing_s=1.0, job_id="a2", kind="dictation")
     us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
-                    status="ok", hour=h, proc_s=1.0, job_id="b1", kind="url")
+                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="url")
     us.record_usage(key_id="kc", user_id="carla", audio_s=20.0, words=2,
-                    status="ok", hour=h, proc_s=1.0, job_id="c1", kind="file")
+                    status="ok", hour=h, processing_s=1.0, job_id="c1", kind="file")
     everything = client.get("/stats/usage?by=user").json()
     assert everything["totals"]["all"]["audio_s"] == 200.0
     assert everything["filter"]["kinds"] == [] and everything["filter"]["users"] == []
@@ -1044,9 +1044,9 @@ def test_stats_usage_list_filters_respect_scope(client, usage_store_db, make_use
     alice_uid, alice_raw = make_user_key("alice", pages={"stats": "own"})
     _, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
     us.record_usage(key_id="ka", user_id=alice_uid, audio_s=100.0, words=10,
-                    status="ok", hour=h, proc_s=2.0, job_id="a1", kind="file")
+                    status="ok", hour=h, processing_s=2.0, job_id="a1", kind="file")
     us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
-                    status="ok", hour=h, proc_s=1.0, job_id="b1", kind="url")
+                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="url")
     hdr = bearer(alice_raw)
     assert client.get("/stats/usage?users=bob", headers=hdr).status_code == 403
     assert client.get("/stats/pick?dim=user", headers=hdr).status_code == 403

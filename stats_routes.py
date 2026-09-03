@@ -402,7 +402,7 @@ async def stats_usage(
     or an explicit inclusive `from`/`to` (days-since-epoch in `tz`), or
     `all=1`; `tz` is an IANA name (server-local when absent). `bucket` ∈
     {auto, day, week, month}; `by` ∈ {user, key, kind, model, stage};
-    `metric` ∈ {audio_s, words, requests, errors, proc_s, sessions};
+    `metric` ∈ {audio_s, words, requests, errors, processing_s, sessions};
     `compare` ∈ {off, prev, yoy}; `with` narrows to jobs that ran every
     listed stage; `key` narrows the key-bearing tables to one API key.
     422 on an unknown stage or from > to. v1 queries keep working: the v1
@@ -1410,7 +1410,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button data-v="words" title="words in the transcripts">words</button>
       <button data-v="sessions" title="jobs: one per file, link, text or dictation session">sessions</button>
       <button data-v="requests" title="HTTP requests, dictation utterances counted one each">requests</button>
-      <button data-v="proc_s" title="processing time: wall-clock seconds inside the pipeline, on whatever device ran it (GPU or CPU)">processing time</button>
+      <button data-v="processing_s" title="processing time: wall-clock seconds inside the pipeline, on whatever device ran it (GPU or CPU)">processing time</button>
       <button data-v="errors" title="failed requests">errors</button>
     </div>
     <span class="seg-label" title="which kinds of jobs count — ANY of the chosen kinds; Alt-click isolates one">kind</span>
