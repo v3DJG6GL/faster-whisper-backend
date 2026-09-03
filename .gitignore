@@ -48,7 +48,7 @@ reports.local.sqlite3-wal
 captures.local.sqlite3
 captures.local.sqlite3-shm
 captures.local.sqlite3-wal
-captures/
+/captures/
 
 # Capture-export manifest — carries transcript text out of the capture store
 manifest.jsonl

@@ -7,7 +7,7 @@ samples that respect the configurable duration cap
 captures_routes.create_sample_api (mirrors its raw-`audio_s`
 arithmetic).
 
-Heuristic rationale (see captures-finetune-findings.md + research notes):
+Heuristic rationale (see docs/captures-finetune-findings.md + research notes):
   - Whisper's encoder window is 30 s; ~25-30 s merged samples preserve
     timestamp-prediction (HF, SwissText 2024, ivrit.ai 2025). Short padded
     clips erode it.

@@ -14,9 +14,8 @@ __pycache__/
 data/
 models/
 logs/
-captures/
+/captures/
 **/logs/
-**/captures/
 *.local.*
 *.sqlite3
 *.sqlite3-wal

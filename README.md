@@ -744,7 +744,6 @@ text_corrections.py        Shared schema for word-correction chips
 config.local.json          Runtime overrides written by the admin UI (gitignored, optional)
 config.local.example.json  Example overrides file
 .env.example               Documented list of every WHISPER_* env var + defaults (copy to .env)
-test.py                    Manual test client (OpenAI SDK compatibility)
 install-service.ps1        Windows Service installer (WinSW-based, self-elevating, auto-bootstraps venv)
 uninstall-service.ps1      Windows Service uninstaller
 install-service.sh         Linux systemd installer (self-elevating, auto-bootstraps venv); --gpu adds CUDA wheels

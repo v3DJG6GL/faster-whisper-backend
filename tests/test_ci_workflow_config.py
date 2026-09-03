@@ -144,3 +144,17 @@ def test_vulnerability_alert_automerge_records_the_major_override():
     alerts = json.loads(_read("renovate.json"))["vulnerabilityAlerts"]
     assert alerts["automerge"] is True
     assert "major" in alerts["description"].lower()
+
+
+# --- .gitignore / .dockerignore -----------------------------------------------
+
+def test_ignore_files_do_not_swallow_package_dirs():
+    """`captures/` is the Windows raw-WAV dir at the repo ROOT. Unanchored,
+    the same pattern would also drop faster_whisper_backend/captures/ and
+    tests/captures/ from git and from the Docker build context — silently,
+    because main wraps the router import in try/except."""
+    for fname in (".gitignore", ".dockerignore"):
+        lines = [ln.strip() for ln in _read(fname).splitlines()]
+        assert "/captures/" in lines, f"{fname}: anchor the captures/ ignore to the root"
+        for bad in ("captures/", "**/captures/"):
+            assert bad not in lines, f"{fname}: {bad!r} also matches package dirs"
