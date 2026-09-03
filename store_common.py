@@ -39,11 +39,20 @@ def log_safe(s) -> str:
     genuine records, including their severity styling."""
     return _LOG_UNSAFE_RE.sub("?", s or "")[:LOG_FIELD_MAX]
 
+# How long a statement waits for another connection's write lock before
+# raising "database is locked". Within one process each store's _lock already
+# serialises its writers; the wait matters when SERVER_WORKERS > 1 (sibling
+# processes on the same file) and during WAL checkpoints. 5 s is the value
+# Litestream and the SQLite docs recommend; pysqlite's own default happens to
+# be the same, but the contract is spelled out here rather than inherited.
+BUSY_TIMEOUT_S = 5.0
+
+
 def open_wal_db(path: str) -> sqlite3.Connection:
     """THE connection contract for the SQLite stores: create the parent dir,
-    open `path` with a Row factory, and switch it to WAL. Every store's
-    init_db goes through here so a change to the contract (say, adding
-    busy_timeout) lands in one place instead of seven.
+    open `path` with a Row factory, a busy timeout, and switch it to WAL.
+    Every store's init_db goes through here so a change to the contract lands
+    in one place instead of eight.
 
     isolation_level=None puts pysqlite in autocommit mode; every statement
     commits independently (each store's _lock serialises its writers). WAL
@@ -51,10 +60,12 @@ def open_wal_db(path: str) -> sqlite3.Connection:
     recommendation (full durability against power loss is FULL, but NORMAL is
     fine against process crash and ~10x faster on small writes)."""
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
-    conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
+    conn = sqlite3.connect(path, check_same_thread=False, isolation_level=None,
+                           timeout=BUSY_TIMEOUT_S)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL;")
     conn.execute("PRAGMA synchronous=NORMAL;")
+    conn.execute(f"PRAGMA busy_timeout={int(BUSY_TIMEOUT_S * 1000)};")
     return conn
 
 
