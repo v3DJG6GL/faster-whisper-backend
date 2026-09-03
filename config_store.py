@@ -2074,13 +2074,13 @@ class AdminConfig(BaseModel):
         group="Recent transcriptions")
     STATS_SYSTEM_METRICS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "STATS_SYSTEM_METRICS_DB", scope="server",
-        group="Recent transcriptions")
+        group="System metrics")
     STATS_SYSTEM_METRICS_SAMPLE_S: Annotated[int, Field(ge=1, le=3600)] | None = _F(
         "STATS_SYSTEM_METRICS_SAMPLE_S", scope="server",
-        group="Recent transcriptions")
+        group="System metrics")
     STATS_SYSTEM_METRICS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
         "STATS_SYSTEM_METRICS_RETENTION_DAYS", scope="server",
-        group="Recent transcriptions")
+        group="System metrics")
 
     # --- Usage statistics (the desktop app's /v1/usage + admin /stats) ---
     USAGE_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
@@ -2709,6 +2709,7 @@ _GROUP_ORDER: list[tuple[str, list[str | None]]] = [
     ("Concurrency & Request Limits", [None]),
     ("Reports", [None]),
     ("Recent transcriptions", [None]),
+    ("System metrics", [None]),
     ("Usage statistics", [None]),
     ("Captures", [
         None,
