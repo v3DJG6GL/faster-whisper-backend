@@ -118,13 +118,13 @@ def test_device_truncated(client_settings_store_db):
 def test_updated_at_moves_forward(client_settings_store_db, monkeypatch):
     store = client_settings_store_db
     store.put("u1", {"n": 1}, 0)
-    t1 = store.get("u1")["updated_at"]
+    t1 = store.get("u1")["updated_ts"]
     # Freeze the clock ahead: a `>=` on two wall-clock reads passes even if
-    # the CAS UPDATE stops writing updated_at, and a bare `>` can flake on a
+    # the CAS UPDATE stops writing updated_ts, and a bare `>` can flake on a
     # coarse clock — pinning the value catches the regression loudly.
     monkeypatch.setattr(store.time, "time", lambda: t1 + 10.0)
     store.put("u1", {"n": 2}, 1)
-    t2 = store.get("u1")["updated_at"]
+    t2 = store.get("u1")["updated_ts"]
     assert t2 == pytest.approx(t1 + 10.0)
 
 
@@ -184,7 +184,7 @@ def test_list_meta_rows_without_blob(client_settings_store_db):
     r1 = by_key[("u1", "")]
     assert r1["version"] == 1
     assert r1["device"] == "laptop"
-    assert r1["updated_at"] is not None
+    assert r1["updated_ts"] is not None
     assert r1["bytes"] == len('{"a":"ä"}'.encode("utf-8"))
     assert "blob" not in r1
     assert by_key[("u2", "work")]["profile"] == "work"

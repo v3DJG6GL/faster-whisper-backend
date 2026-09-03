@@ -69,11 +69,11 @@ def _state_body(row: dict[str, Any] | None) -> dict[str, Any]:
     """The one wire shape shared by GET, PUT-200, and PUT-409 (so a client
     parses a single schema everywhere): absent row = the version-0 zero-state."""
     if row is None:
-        return {"version": 0, "blob": None, "updated_at": None, "device": None}
+        return {"version": 0, "blob": None, "updated_ts": None, "device": None}
     return {
         "version": row["version"],
         "blob": row["blob"],
-        "updated_at": row["updated_at"],
+        "updated_ts": row["updated_ts"],
         "device": row["device"],
     }
 

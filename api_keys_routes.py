@@ -458,7 +458,7 @@ async def client_settings_meta_api() -> JSONResponse:
         r["user_id"]: {
             "version": r["version"],
             "bytes": r["bytes"],
-            "updated_at": r["updated_at"],
+            "updated_ts": r["updated_ts"],
             "device": r["device"],
         }
         for r in rows
@@ -534,7 +534,7 @@ async def import_client_settings_api(
     return JSONResponse({
         "ok": True,
         "version": state["version"],
-        "updated_at": state["updated_at"],
+        "updated_ts": state["updated_ts"],
     })
 
 
@@ -1583,7 +1583,7 @@ _API_KEYS_HTML = r"""<!doctype html>
       syncPill.title = 'synced settings v' + csm.version
         + ' · ' + fmtBytes(csm.bytes)
         + (csm.device ? ' · from ' + csm.device : '')
-        + (csm.updated_at ? ' · updated ' + fmtWhen(csm.updated_at) : '');
+        + (csm.updated_ts ? ' · updated ' + fmtWhen(csm.updated_ts) : '');
       head.appendChild(syncPill);
     }
     // Lifetime usage strip, pushed right (margin-left:auto) so it fills the
@@ -2443,7 +2443,7 @@ _API_KEYS_HTML = r"""<!doctype html>
       grid.appendChild(cell('size', escapeHtml(fmtBytes(meta.bytes))));
       grid.appendChild(cell('last device',
         meta.device ? escapeHtml(meta.device) : '—'));
-      grid.appendChild(cell('updated', metaWhen(meta.updated_at)));
+      grid.appendChild(cell('updated', metaWhen(meta.updated_ts)));
       card.appendChild(grid);
       var hint = document.createElement('div');
       hint.className = 'ohint';

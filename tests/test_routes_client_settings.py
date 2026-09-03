@@ -15,7 +15,7 @@ def _put(client, blob, base_version, device=None, headers=None):
 def test_get_empty_zero_state(client):
     r = client.get(_URL)
     assert r.status_code == 200
-    assert r.json() == {"version": 0, "blob": None, "updated_at": None, "device": None}
+    assert r.json() == {"version": 0, "blob": None, "updated_ts": None, "device": None}
 
 
 def test_put_create_then_get_echo(client):
@@ -31,7 +31,7 @@ def test_put_create_then_get_echo(client):
     got = r.json()
     assert got["version"] == 1
     assert got["blob"] == {"theme": "dark", "backends": []}
-    assert got["updated_at"] is not None
+    assert got["updated_ts"] is not None
 
 
 def test_stale_put_409_carries_current_then_force_put(client):

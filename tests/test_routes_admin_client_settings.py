@@ -43,7 +43,7 @@ def test_meta_map_after_open_mode_push(client):
     assert m["version"] == 1
     assert m["device"] == "mars-tower"
     assert m["bytes"] > 0
-    assert m["updated_at"] is not None
+    assert m["updated_ts"] is not None
     assert "blob" not in m  # metadata only — blob contents never listed
 
 

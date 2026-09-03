@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS client_settings (
   profile    TEXT    NOT NULL DEFAULT '',
   blob       TEXT    NOT NULL,
   version    INTEGER NOT NULL,
-  updated_at REAL    NOT NULL,
+  updated_ts REAL    NOT NULL,
   device     TEXT,
   PRIMARY KEY (user_id, profile)
 );
@@ -89,6 +89,11 @@ def init_db(path: str) -> None:
     global _conn, _DB_READY
     _DB_READY = False
     _conn = store_common.open_wal_db(path)
+    # Column rename (2026-09): every other store stamps its times *_ts.
+    have = {r["name"] for r in _conn.execute("PRAGMA table_info(client_settings)")}
+    if "updated_at" in have and "updated_ts" not in have:
+        _conn.execute("ALTER TABLE client_settings RENAME COLUMN updated_at TO updated_ts")
+        _conn.commit()
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
     store_common.secure_db_file(path)
@@ -143,7 +148,7 @@ def _row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 
 def get(user_id: str, profile: str = "") -> dict[str, Any] | None:
     """Return the row dict {user_id, profile, blob(parsed), version,
-    updated_at, device} or None when nothing is stored."""
+    updated_ts, device} or None when nothing is stored."""
     conn = _require_conn()
     row = conn.execute(
         "SELECT * FROM client_settings WHERE user_id = ? AND profile = ?",
@@ -153,7 +158,7 @@ def get(user_id: str, profile: str = "") -> dict[str, Any] | None:
 
 
 def list_meta() -> list[dict[str, Any]]:
-    """Every row's METADATA — {user_id, profile, version, updated_at,
+    """Every row's METADATA — {user_id, profile, version, updated_ts,
     device, bytes} — deliberately WITHOUT the blob, so admin surfaces
     (the keys page's per-account chip/drawer) can list what's stored
     without the sensitive contents ever leaving this module in bulk.
@@ -161,7 +166,7 @@ def list_meta() -> list[dict[str, Any]]:
     count characters)."""
     conn = _require_conn()
     rows = conn.execute(
-        "SELECT user_id, profile, version, updated_at, device,"
+        "SELECT user_id, profile, version, updated_ts, device,"
         " length(CAST(blob AS BLOB)) AS bytes FROM client_settings"
     ).fetchall()
     return [dict(r) for r in rows]
@@ -207,7 +212,7 @@ def put(
             try:
                 conn.execute(
                     "INSERT INTO client_settings"
-                    " (user_id, profile, blob, version, updated_at, device)"
+                    " (user_id, profile, blob, version, updated_ts, device)"
                     " VALUES (?,?,?,1,?,?)",
                     (user_id, profile, blob_json, now, dev),
                 )
@@ -221,7 +226,7 @@ def put(
 
         cur = conn.execute(
             "UPDATE client_settings"
-            " SET blob = ?, version = version + 1, updated_at = ?, device = ?"
+            " SET blob = ?, version = version + 1, updated_ts = ?, device = ?"
             " WHERE user_id = ? AND profile = ? AND version = ?",
             (blob_json, now, dev, user_id, profile, int(base_version)),
         )
@@ -269,12 +274,12 @@ def force_put(
     with _lock:
         conn.execute(
             "INSERT INTO client_settings"
-            " (user_id, profile, blob, version, updated_at, device)"
+            " (user_id, profile, blob, version, updated_ts, device)"
             " VALUES (?,?,?,1,?,?)"
             " ON CONFLICT(user_id, profile) DO UPDATE SET"
             " blob = excluded.blob,"
             " version = client_settings.version + 1,"
-            " updated_at = excluded.updated_at,"
+            " updated_ts = excluded.updated_ts,"
             " device = excluded.device",
             (user_id, profile, blob_json, now, dev),
         )
