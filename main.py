@@ -656,7 +656,7 @@ _KWARG_TO_CFG = {
     "append_punctuations": "APPEND_PUNCTUATIONS",
     # Post-decode guards (pseudo-kwargs: rendered in the log block's guards
     # section, never passed to model.transcribe)
-    "segment_max_words_per_sec": "SEGMENT_MAX_WORDS_PER_SEC",
+    "segment_max_words_per_sec": "SEGMENT_MAX_WORDS_PER_S",
     "tail_trim_pad_ms": "STREAMING_TAIL_TRIM_PAD_MS",
     "final_drop_min_avg_logprob": "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
     "final_drop_temperature": "STREAMING_FINAL_DROP_TEMPERATURE",
@@ -1634,7 +1634,7 @@ _WORD_RATE_MIN_WORDS = 3
 
 
 def segment_exceeds_word_rate(seg, max_wps: float) -> bool:
-    """Post-decode anti-hallucination guard (SEGMENT_MAX_WORDS_PER_SEC), shared
+    """Post-decode anti-hallucination guard (SEGMENT_MAX_WORDS_PER_S), shared
     by the batch route and the streaming FINAL decode.
 
     When trailing non-speech audio survives the VAD into a decode, Whisper
@@ -2876,7 +2876,7 @@ async def lifespan(app: FastAPI):
         )
 
     # Open the captures store. Audio + word-timestamps for Whisper
-    # fine-tuning, gated by CAPTURE_RECORDINGS_ENABLED. Reconcile drift
+    # fine-tuning, gated by CAPTURES_RECORDING_ENABLED. Reconcile drift
     # before serving (row says audio exists / disk says it doesn't, or
     # vice versa).
     captures_sweep_task = None
@@ -2894,7 +2894,7 @@ async def lifespan(app: FastAPI):
         logger.info(
             "Captures store initialized at %s (audio dir: %s, enabled=%s)",
             cfg.CAPTURES_DB, cfg.CAPTURES_DIR,
-            getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False),
+            getattr(cfg, "CAPTURES_RECORDING_ENABLED", False),
         )
         captures_sweep_task = asyncio.create_task(
             _captures_retention_loop()
@@ -3829,7 +3829,7 @@ async def transcribe(
                     _url = _udl.validate_url(source_url)
                     _uinfo = await _udl.probe(
                         _url,
-                        timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_SEC", 20)))
+                        timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
                     logger.info(
                         "[url-dl] resolved (host %s): extractor=%s duration=%s"
                         " — starting download",
@@ -3847,7 +3847,7 @@ async def transcribe(
                             dest_dir=_url_job_dir,
                             max_bytes=_url_max,
                             timeout=float(getattr(
-                                cfg, "URL_DOWNLOAD_TIMEOUT_SEC", 900)),
+                                cfg, "URL_DOWNLOAD_TIMEOUT_S", 900)),
                             progress_cb=lambda f, tot: _progress_set(
                                 _pid, stage="downloading", progress=f,
                                 total_bytes=tot),
@@ -3931,17 +3931,17 @@ async def transcribe(
             # the duration yet).
             will_capture = False
             captured_id: str | None = None
-            if (getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False)
+            if (getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
                     and gate_word_ts):
                 try:
                     import captures_store as _cap_store
                     cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
                     hard_lim = int(getattr(
-                        cfg, "CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT",
+                        cfg, "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT",
                         100_000_000,
                     ))
                     sample_rate = float(getattr(
-                        cfg, "CAPTURE_RECORDINGS_SAMPLE_RATE", 1.0,
+                        cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
                     ))
                     if (_cap_store.count_evictable() < cap_max
                             and audio_bytes < hard_lim
@@ -4555,9 +4555,9 @@ async def transcribe(
             # together.
             raw_full_text_parts = []
 
-            # Post-decode word-rate guard (SEGMENT_MAX_WORDS_PER_SEC): drops
+            # Post-decode word-rate guard (SEGMENT_MAX_WORDS_PER_S): drops
             # hallucinated echo segments — see segment_exceeds_word_rate.
-            _max_wps = float(cfg_for(resolved_model, "SEGMENT_MAX_WORDS_PER_SEC", ident) or 0)
+            _max_wps = float(cfg_for(resolved_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
 
             for i, segment in enumerate(segments_iter):
                 # segment.temperature reflects CT2's actual after-fallback
@@ -4951,8 +4951,8 @@ async def transcribe(
                 try:
                     import captures_store as _cap_store
                     audio_dur_s = float(getattr(info, "duration", 0.0) or 0.0)
-                    min_s = float(getattr(cfg, "CAPTURE_RECORDINGS_MIN_DURATION_SEC", 0.5))
-                    max_s = float(getattr(cfg, "CAPTURE_RECORDINGS_MAX_DURATION_SEC", 600.0))
+                    min_s = float(getattr(cfg, "CAPTURES_RECORDING_MIN_DURATION_S", 0.5))
+                    max_s = float(getattr(cfg, "CAPTURES_RECORDING_MAX_DURATION_S", 600.0))
                     if not raw_full_text.strip():
                         # Pure-silence clip: Whisper returned no speech, so the
                         # capture would store as "(empty)" with zero training
@@ -6051,7 +6051,7 @@ async def url_preview(request: Request,
     logger.info("[url-dl] preview requested (host %s)", _uhost)
     try:
         info = await _udl.probe(
-            url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_SEC", 20)))
+            url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
     except _udl.UrlDownloadError as e:
         # str() is client-safe by the module's contract.
         logger.info("[url-dl] preview rejected (host %s): %s",
@@ -6088,8 +6088,8 @@ _URL_MEDIA_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
 async def url_media(media_id: str,
                     user: dict = Depends(_get_current_user_dep)):
     """The retained audio of a finished transcribe-from-URL run, so the
-    client can pull ONE local copy for playback. Short-lived (URL_MEDIA_TTL
-    _SEC, wiped on restart); unknown, expired and foreign-owner ids all
+    client can pull ONE local copy for playback. Short-lived (URL_MEDIA_TTL_S,
+    wiped on restart); unknown, expired and foreign-owner ids all
     answer the same 404 — no oracle. FileResponse handles Range, so the
     client player can seek without re-downloading."""
     from fastapi.responses import FileResponse
@@ -7210,9 +7210,9 @@ async def login(request: Request, response: Response):
     # credential that was in fact correct.
     _login_failures.reset(host)
     raw_token, csrf_token = sessions_store.create_session(
-        rec["user_id"], cfg.SESSION_TTL_SECONDS, key_id=rec.get("key_id"),
+        rec["user_id"], cfg.SESSION_TTL_S, key_id=rec.get("key_id"),
     )
-    ttl = int(cfg.SESSION_TTL_SECONDS)
+    ttl = int(cfg.SESSION_TTL_S)
     secure = bool(cfg.SESSION_COOKIE_SECURE)
     response.set_cookie(
         cfg.SESSION_COOKIE_NAME, raw_token, max_age=ttl,
@@ -7427,7 +7427,7 @@ if cfg.ADMIN_UI_ENABLED:
             else "disabled",
         )
         # /captures: admin-only Whisper fine-tuning data capture + review.
-        # Master switch is cfg.CAPTURE_RECORDINGS_ENABLED — the page is
+        # Master switch is cfg.CAPTURES_RECORDING_ENABLED — the page is
         # always registered so the admin can browse existing rows even
         # after disabling new capture.
         from captures_routes import router as _captures_router
@@ -7435,7 +7435,7 @@ if cfg.ADMIN_UI_ENABLED:
         logger.info(
             "Captures UI enabled at /captures (admin token required; "
             "new capture %s)",
-            "enabled" if getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False)
+            "enabled" if getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
             else "disabled",
         )
     except Exception as _e:
@@ -7452,8 +7452,8 @@ if __name__ == "__main__":
                 # WS keepalive: a live decode no longer blocks the receive loop, so
                 # pings stay answered; a generous timeout tolerates a momentary
                 # stall. `or None` lets an admin disable either knob with 0.
-                ws_ping_interval=getattr(cfg, "STREAMING_WS_PING_INTERVAL_SEC", 20.0) or None,
-                ws_ping_timeout=getattr(cfg, "STREAMING_WS_PING_TIMEOUT_SEC", 60.0) or None,
+                ws_ping_interval=getattr(cfg, "STREAMING_WS_PING_INTERVAL_S", 20.0) or None,
+                ws_ping_timeout=getattr(cfg, "STREAMING_WS_PING_TIMEOUT_S", 60.0) or None,
                 # Per-message ceiling on the streaming socket. MAX_REQUEST_BYTES
                 # covers HTTP only — its middleware is registered http-only and
                 # never sees a websocket scope — so without this the effective

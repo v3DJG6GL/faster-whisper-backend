@@ -90,8 +90,8 @@ def test_int_bounds(field, lo, hi):
     ("PROMPT_RESET_ON_TEMPERATURE", 0.0, 1.0),
     ("LANGUAGE_DETECTION_THRESHOLD", 0.0, 1.0),
     ("HALLUCINATION_SILENCE_THRESHOLD", 0.0, 60.0),
-    ("CAPTURE_RECORDINGS_SAMPLE_RATE", 0.0, 1.0),
-    ("CAPTURE_RECORDINGS_MIN_DURATION_SEC", 0.0, 3600.0),
+    ("CAPTURES_RECORDING_SAMPLE_RATE", 0.0, 1.0),
+    ("CAPTURES_RECORDING_MIN_DURATION_S", 0.0, 3600.0),
 ])
 def test_float_bounds(field, lo, hi):
     _ok(**{field: lo})
@@ -102,8 +102,8 @@ def test_float_bounds(field, lo, hi):
 
 def test_capture_max_duration_min_is_0_1():
     # Asymmetric: MIN allows 0.0 but MAX requires ge=0.1.
-    _ok(CAPTURE_RECORDINGS_MAX_DURATION_SEC=0.1)
-    _bad(CAPTURE_RECORDINGS_MAX_DURATION_SEC=0.0)
+    _ok(CAPTURES_RECORDING_MAX_DURATION_S=0.1)
+    _bad(CAPTURES_RECORDING_MAX_DURATION_S=0.0)
 
 
 # ---------------------------------------------------------------------------

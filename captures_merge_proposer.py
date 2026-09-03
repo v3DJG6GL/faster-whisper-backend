@@ -426,7 +426,7 @@ def _propose_merges_locked(
     session_gap_s = max(1, int(cfg.CAPTURES_PROPOSER_SESSION_GAP_S))
     # Per-capture floor is the (raw) ingestion minimum; every stored capture
     # already clears it, so this is mostly a belt-and-braces guard.
-    min_clip_s = float(cfg.CAPTURE_RECORDINGS_MIN_DURATION_SEC)
+    min_clip_s = float(cfg.CAPTURES_RECORDING_MIN_DURATION_S)
     dup_threshold = float(cfg.CAPTURES_PROPOSER_DUP_THRESHOLD)
     max_proposals = max(1, int(cfg.CAPTURES_PROPOSER_MAX_PROPOSALS))
     target_s = float(cfg.CAPTURES_PROPOSER_TARGET_S)

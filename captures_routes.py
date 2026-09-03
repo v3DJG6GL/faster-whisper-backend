@@ -253,7 +253,7 @@ async def list_captures_api(
         return json.dumps({
             "captures": rows,
             "counts": captures_store.counts_by_status(user_id=effective_user),
-            "enabled": bool(getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False)),
+            "enabled": bool(getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)),
             "retention_days": int(getattr(cfg, "CAPTURES_RETENTION_DAYS", 0)),
             "total_count": captures_store.count(user_id=effective_user),
             "is_admin": bool(user.get("is_admin")),
@@ -7628,7 +7628,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       var empty = document.createElement('div');
       empty.className = 'empty-state';
       empty.innerHTML = _allCaptures.length === 0
-        ? '<strong>No captures yet.</strong> Enable <em>CAPTURE_RECORDINGS_ENABLED</em> in /settings and send a transcription request.'
+        ? '<strong>No captures yet.</strong> Enable <em>CAPTURES_RECORDING_ENABLED</em> in /settings and send a transcription request.'
         : 'No captures match the current filters.';
       list.appendChild(empty);
       // A client-side status filter can empty this page while more group

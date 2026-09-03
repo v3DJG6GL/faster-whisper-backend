@@ -588,7 +588,7 @@ async def _apply_rules_patch_locked(
     # red "Re-apply failed: HTTP 403" strip. Reporting 0 keeps that branch shut
     # and takes the blocking SQLite COUNT(*) off the non-admin path entirely.
     captures_count = 0
-    if user.get("is_admin") and getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False):
+    if user.get("is_admin") and getattr(cfg, "CAPTURES_RECORDING_ENABLED", False):
         try:
             import captures_store
             captures_count = await asyncio.to_thread(captures_store.count)
@@ -938,7 +938,7 @@ async def post_reapply_rules(
 ) -> JSONResponse:
     if not user.get("is_admin"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "admin only")
-    if not getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False):
+    if not getattr(cfg, "CAPTURES_RECORDING_ENABLED", False):
         return JSONResponse({"status": "idle", "note": "captures disabled"})
     import captures_reapply
     return JSONResponse(captures_reapply.start())

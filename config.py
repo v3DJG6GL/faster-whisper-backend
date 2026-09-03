@@ -321,7 +321,7 @@ SERVER_LOG_LEVEL = _D("SERVER_LOG_LEVEL")
 # Hard ceiling on one /v1/audio/transcriptions upload. Oversized requests are
 # rejected with 413 before the part is read, so a client can't make the handler
 # hold an arbitrary blob. 200 MB is ~3 h of 128 kbps audio — far above any
-# dictation clip, and well above CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT.
+# dictation clip, and well above CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT.
 MAX_UPLOAD_BYTES = _D("MAX_UPLOAD_BYTES")
 
 # Service-wide ceiling on any request body, checked against Content-Length
@@ -466,7 +466,7 @@ HALLUCINATION_SILENCE_THRESHOLD: "float | None" = _D("HALLUCINATION_SILENCE_THRE
 # (high avg_logprob, T=0.0, nsp can sit below NO_SPEECH_THRESHOLD) — the
 # physically impossible word density is their only reliable signature. Segments
 # with fewer than 3 words are never dropped. 0 = disabled.
-SEGMENT_MAX_WORDS_PER_SEC: float = _D("SEGMENT_MAX_WORDS_PER_SEC")
+SEGMENT_MAX_WORDS_PER_S: float = _D("SEGMENT_MAX_WORDS_PER_S")
 
 # Suppress blank token at start of decoder sampling. Default True. Almost
 # never disable; only useful when debugging tokenizer behavior.
@@ -699,18 +699,18 @@ URL_ALLOW_GENERIC: bool = _D("URL_ALLOW_GENERIC")
 
 # Resource ceilings for one download. URL_MAX_BYTES=0 inherits
 # MAX_UPLOAD_BYTES so the URL path can never admit more than an upload could.
-URL_MAX_DURATION_SEC: int = _D("URL_MAX_DURATION_SEC")
+URL_MAX_DURATION_S: int = _D("URL_MAX_DURATION_S")
 URL_MAX_BYTES: int = _D("URL_MAX_BYTES")
-URL_DOWNLOAD_TIMEOUT_SEC: int = _D("URL_DOWNLOAD_TIMEOUT_SEC")
-URL_PREVIEW_TIMEOUT_SEC: int = _D("URL_PREVIEW_TIMEOUT_SEC")
-URL_SOCKET_TIMEOUT_SEC: int = _D("URL_SOCKET_TIMEOUT_SEC")
+URL_DOWNLOAD_TIMEOUT_S: int = _D("URL_DOWNLOAD_TIMEOUT_S")
+URL_PREVIEW_TIMEOUT_S: int = _D("URL_PREVIEW_TIMEOUT_S")
+URL_SOCKET_TIMEOUT_S: int = _D("URL_SOCKET_TIMEOUT_S")
 URL_DOWNLOAD_CONCURRENCY: int = _D("URL_DOWNLOAD_CONCURRENCY")
 
 # Retention of the downloaded audio so the client can fetch it once for local
 # playback (GET /v1/audio/url-media/{id}): TTL + byte-capped LRU under
 # URL_MEDIA_DIR; the directory is wiped on startup (ids die with the process).
 URL_MEDIA_DIR: str = _D("URL_MEDIA_DIR")
-URL_MEDIA_TTL_SEC: int = _D("URL_MEDIA_TTL_SEC")
+URL_MEDIA_TTL_S: int = _D("URL_MEDIA_TTL_S")
 URL_MEDIA_MAX_BYTES: int = _D("URL_MEDIA_MAX_BYTES")
 
 
@@ -812,7 +812,7 @@ SESSION_COOKIE_SECURE = _D("SESSION_COOKIE_SECURE")
 
 # Sliding session lifetime in seconds. Each authenticated request refreshes
 # the expiry (debounced). Idle longer than this → re-login. Default 30 days.
-SESSION_TTL_SECONDS = _D("SESSION_TTL_SECONDS")
+SESSION_TTL_S = _D("SESSION_TTL_S")
 
 # Cookie names. Session cookie is HttpOnly (JS cannot read it); the CSRF
 # cookie is readable by JS so the client can echo it back as X-CSRF-Token.
@@ -1050,7 +1050,7 @@ CLIENT_SETTINGS_DB = _D("CLIENT_SETTINGS_DB")
 # Master switch — when False, the transcribe handler never copies audio
 # and never inserts a capture row. Browsing /captures still works
 # (existing rows visible).
-CAPTURE_RECORDINGS_ENABLED = _D("CAPTURE_RECORDINGS_ENABLED")
+CAPTURES_RECORDING_ENABLED = _D("CAPTURES_RECORDING_ENABLED")
 
 CAPTURES_DB = _D("CAPTURES_DB")
 CAPTURES_DIR = _D("CAPTURES_DIR")
@@ -1067,7 +1067,7 @@ CAPTURES_RETENTION_DAYS = _D("CAPTURES_RETENTION_DAYS")
 
 # Sampling: 1.0 captures every eligible request, 0.1 captures ~10% etc.
 # Decision is made per-request before transcribe runs.
-CAPTURE_RECORDINGS_SAMPLE_RATE = _D("CAPTURE_RECORDINGS_SAMPLE_RATE")
+CAPTURES_RECORDING_SAMPLE_RATE = _D("CAPTURES_RECORDING_SAMPLE_RATE")
 
 # Duration filter — too-short clips are usually false starts, too-long
 # ones strain memory and need re-segmentation before fine-tuning anyway.
@@ -1075,13 +1075,13 @@ CAPTURE_RECORDINGS_SAMPLE_RATE = _D("CAPTURE_RECORDINGS_SAMPLE_RATE")
 # Whisper applies, carrying little training signal (the conventional ASR
 # floor; LibriSpeech bottoms out near 1 s). This is the RAW ingestion gate;
 # the finished-sample floor is CAPTURES_SAMPLE_MIN_DURATION_S below.
-CAPTURE_RECORDINGS_MIN_DURATION_SEC = _D("CAPTURE_RECORDINGS_MIN_DURATION_SEC")
-CAPTURE_RECORDINGS_MAX_DURATION_SEC = _D("CAPTURE_RECORDINGS_MAX_DURATION_SEC")
+CAPTURES_RECORDING_MIN_DURATION_S = _D("CAPTURES_RECORDING_MIN_DURATION_S")
+CAPTURES_RECORDING_MAX_DURATION_S = _D("CAPTURES_RECORDING_MAX_DURATION_S")
 
 # Pre-transcribe size guard: skip eligibility roll for uploads larger
 # than this many bytes. Keeps a misbehaving client from filling the
 # captures dir with multi-100MB blobs.
-CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT = _D("CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT")
+CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT = _D("CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT")
 
 
 # Sample sizing — global bounds on a finished training sample (a packed
@@ -1166,7 +1166,7 @@ CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS = _D("CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL
 #   TARGET_S         — fill-score peak; should sit 1+ s below the sample-max
 #                      cliff so the proposer doesn't camp at the rejection edge.
 #   CACHE_TTL_S      — proposer result TTL; invalidated on capture writes.
-# (Per-capture min length is governed by CAPTURE_RECORDINGS_MIN_DURATION_SEC;
+# (Per-capture min length is governed by CAPTURES_RECORDING_MIN_DURATION_S;
 # the finished-sample floor by CAPTURES_SAMPLE_MIN_DURATION_S.)
 CAPTURES_PROPOSER_SESSION_GAP_S = _D("CAPTURES_PROPOSER_SESSION_GAP_S")
 CAPTURES_PROPOSER_DUP_THRESHOLD = _D("CAPTURES_PROPOSER_DUP_THRESHOLD")
@@ -1200,7 +1200,7 @@ INFERENCE_CONCURRENCY: int = _D("INFERENCE_CONCURRENCY")
 # forever. 0 = no idle timeout. The live client streams PCM continuously, so this
 # only fires on a genuinely stalled connection, never on a normal speaking pause.
 # Per-identity overridable (a trusted profile can be given a longer grace).
-STREAMING_IDLE_TIMEOUT_SEC: float = _D("STREAMING_IDLE_TIMEOUT_SEC")
+STREAMING_IDLE_TIMEOUT_S: float = _D("STREAMING_IDLE_TIMEOUT_S")
 # WebSocket keepalive, passed to uvicorn. The server pings the client every
 # _INTERVAL_ s and drops the socket if no pong returns within _TIMEOUT_ s. The
 # decode now runs off the receive loop (streaming_routes producer/consumer), so
@@ -1208,8 +1208,8 @@ STREAMING_IDLE_TIMEOUT_SEC: float = _D("STREAMING_IDLE_TIMEOUT_SEC")
 # against a momentary stall. Keep the interval non-zero so a genuinely dead client
 # is still detected (0 on either → that knob disabled). Read once at uvicorn.run
 # (restart to change).
-STREAMING_WS_PING_INTERVAL_SEC: float = _D("STREAMING_WS_PING_INTERVAL_SEC")
-STREAMING_WS_PING_TIMEOUT_SEC: float = _D("STREAMING_WS_PING_TIMEOUT_SEC")
+STREAMING_WS_PING_INTERVAL_S: float = _D("STREAMING_WS_PING_INTERVAL_S")
+STREAMING_WS_PING_TIMEOUT_S: float = _D("STREAMING_WS_PING_TIMEOUT_S")
 
 # (2) Partial decoding — the live-preview loop's model, decode params + cadence.
 # Optional fast model for the live partial loop (e.g. a turbo-German CT2 id).
@@ -1267,24 +1267,24 @@ STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT: bool = _D("STREAMING_FINAL_CONDITION
 # beyond it, absorbing VAD-vs-word-timestamp jitter. 0 = no tail trim.
 STREAMING_TAIL_TRIM_PAD_MS: int = _D("STREAMING_TAIL_TRIM_PAD_MS")
 
-# (4) Finalize & document breaks. FORCED_COMMIT_SEC hard-caps continuous speech
+# (4) Finalize & document breaks. FORCED_COMMIT_S hard-caps continuous speech
 # before a forced finalize (keeps the buffer inside Whisper's 30 s field). The
 # long-silence "hard break" ends the whole grouping and starts a fresh document
 # mid-connection (paragraph boundary); 0 = off. PROMPT_WORDS are the confirmed
 # words carried across utterances as initial_prompt (reset on a hard break).
-STREAMING_FORCED_COMMIT_SEC: float = _D("STREAMING_FORCED_COMMIT_SEC")
+STREAMING_FORCED_COMMIT_S: float = _D("STREAMING_FORCED_COMMIT_S")
 STREAMING_HARD_BREAK_SILENCE_MS: int = _D("STREAMING_HARD_BREAK_SILENCE_MS")
 STREAMING_HARD_BREAK_SEPARATOR: str = _D("STREAMING_HARD_BREAK_SEPARATOR")
 STREAMING_PROMPT_WORDS: int = _D("STREAMING_PROMPT_WORDS")
 
 # (5) Buffer management (kept well inside Whisper's 30 s receptive field).
-# MAX_BUFFER_SEC is the decode-independent backstop: the trim above runs only
+# MAX_BUFFER_S is the decode-independent backstop: the trim above runs only
 # from a partial decode, so a buffer being filled by silence (VAD flicker, no
 # committed word to anchor a cut) has nothing else bounding it. Generous by
 # design — it must never fire during real dictation.
-STREAMING_BUFFER_TRIM_SEC: float = _D("STREAMING_BUFFER_TRIM_SEC")
-STREAMING_BUFFER_TRIM_KEEP_SEC: float = _D("STREAMING_BUFFER_TRIM_KEEP_SEC")
-STREAMING_MAX_BUFFER_SEC: float = _D("STREAMING_MAX_BUFFER_SEC")
+STREAMING_BUFFER_TRIM_S: float = _D("STREAMING_BUFFER_TRIM_S")
+STREAMING_BUFFER_TRIM_KEEP_S: float = _D("STREAMING_BUFFER_TRIM_KEEP_S")
+STREAMING_MAX_BUFFER_S: float = _D("STREAMING_MAX_BUFFER_S")
 
 
 import copy as _copy
@@ -1648,7 +1648,7 @@ _OVERRIDE_FLOAT_FIELDS = frozenset({
     "COMPRESSION_RATIO_THRESHOLD", "PATIENCE", "LENGTH_PENALTY",
     "REPETITION_PENALTY", "PROMPT_RESET_ON_TEMPERATURE",
     "LANGUAGE_DETECTION_THRESHOLD", "HALLUCINATION_SILENCE_THRESHOLD",
-    "SEGMENT_MAX_WORDS_PER_SEC",
+    "SEGMENT_MAX_WORDS_PER_S",
 })
 _OVERRIDE_LIST_FIELDS = frozenset({
     "PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE",

@@ -304,7 +304,7 @@ async def check_url_policy(url: str) -> str:
         if getattr(cfg, "URL_ALLOW_GENERIC", False):
             return key
         if getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", True):
-            probe_timeout = float(getattr(cfg, "URL_SOCKET_TIMEOUT_SEC", 15))
+            probe_timeout = float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15))
             ok = await loop.run_in_executor(
                 _PROBE_POOL,
                 lambda: _direct_media_probe_sync(url, timeout=probe_timeout))
@@ -331,7 +331,7 @@ def _policy_check_info(info: dict) -> None:
     if info.get("is_live") or info.get("live_status") == "is_live":
         raise UrlDownloadError(
             "live streams aren't supported — try again after the stream ends")
-    max_dur = int(getattr(cfg, "URL_MAX_DURATION_SEC", 14400))
+    max_dur = int(getattr(cfg, "URL_MAX_DURATION_S", 14400))
     dur = info.get("duration")
     if dur is not None and float(dur) > max_dur:
         raise UrlDownloadError(
@@ -378,7 +378,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
             # supported". Flat entries keep the top-level _type intact and
             # resolve in one fetch; single videos are unaffected.
             "extract_flat": "in_playlist",
-            "socket_timeout": float(getattr(cfg, "URL_SOCKET_TIMEOUT_SEC", 15)),
+            "socket_timeout": float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
         }
         with yt_dlp.YoutubeDL(opts) as ydl:
             return ydl.sanitize_info(ydl.extract_info(url, download=False))
@@ -587,7 +587,7 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str
         "--playlist-items", "1",  # belt+braces: never more than one item
         "--restrict-filenames",
         "--max-filesize", str(max_bytes),
-        "--socket-timeout", str(int(getattr(cfg, "URL_SOCKET_TIMEOUT_SEC", 15))),
+        "--socket-timeout", str(int(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15))),
         "--retries", "3",
         "--no-mtime",
         "--ffmpeg-location", ffmpeg_exe(),
@@ -621,7 +621,7 @@ async def download(
     url = validate_url(url)
     guard_self_check()  # fail closed: never spawn an unguarded downloader
     max_bytes = int(max_bytes or _effective_max_bytes())
-    timeout = float(timeout or getattr(cfg, "URL_DOWNLOAD_TIMEOUT_SEC", 900))
+    timeout = float(timeout or getattr(cfg, "URL_DOWNLOAD_TIMEOUT_S", 900))
     argv = build_download_argv(url, dest_dir=dest_dir, max_bytes=max_bytes)
 
     # YTDLP_NO_PLUGINS makes yt-dlp skip plugin loading entirely; the launcher

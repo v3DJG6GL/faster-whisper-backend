@@ -226,7 +226,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "than this many seconds when a possible hallucination is detected. "
         "Default disabled. Try 2.0 if Whisper invents 'thanks for watching' "
         "filler in long silences.",
-    "SEGMENT_MAX_WORDS_PER_SEC":
+    "SEGMENT_MAX_WORDS_PER_S":
         "Drop a decoded segment (batch + streaming final) whose word rate "
         "exceeds this many words per second — hallucinated echo segments "
         "cram 20+ words into sub-second windows while real speech stays "
@@ -493,19 +493,19 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "private/loopback/metadata ranges with the resolved IP pinned), but "
         "this still widens how much of the public web one caller can aim "
         "the server at. Leave off unless you need it.",
-    "URL_MAX_DURATION_SEC":
+    "URL_MAX_DURATION_S":
         "Reject linked media longer than this many seconds (checked from "
         "metadata before downloading). Default 14400 (4 h).",
     "URL_MAX_BYTES":
         "Byte ceiling for one URL download. 0 = inherit MAX_UPLOAD_BYTES, "
         "so a link can never admit more than an upload could.",
-    "URL_DOWNLOAD_TIMEOUT_SEC":
+    "URL_DOWNLOAD_TIMEOUT_S":
         "Wall-clock ceiling for one download subprocess; the download is "
         "killed and the request fails past it. Default 900 (15 min).",
-    "URL_PREVIEW_TIMEOUT_SEC":
+    "URL_PREVIEW_TIMEOUT_S":
         "Wall-clock ceiling for a metadata probe (/v1/audio/url-preview and "
         "the pre-download policy check). Default 20 s.",
-    "URL_SOCKET_TIMEOUT_SEC":
+    "URL_SOCKET_TIMEOUT_S":
         "Per-connection socket timeout passed to yt-dlp, so a stalled "
         "remote server fails fast instead of pinning a slot.",
     "URL_DOWNLOAD_CONCURRENCY":
@@ -515,7 +515,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "URL_MEDIA_DIR":
         "Directory where downloaded audio is retained briefly so the "
         "client can fetch it for local playback. Wiped on startup.",
-    "URL_MEDIA_TTL_SEC":
+    "URL_MEDIA_TTL_S":
         "How long a downloaded file stays fetchable via "
         "/v1/audio/url-media/{id}. The window starts when the download "
         "finishes (before transcription), so keep it comfortably longer "
@@ -666,7 +666,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Mark the WebUI session/CSRF cookies 'Secure' (sent only over HTTPS). "
         "Leave OFF for plain-HTTP LAN/VPN access; turn ON when serving over "
         "HTTPS (e.g. behind a TLS reverse proxy), else login silently fails.",
-    "SESSION_TTL_SECONDS":
+    "SESSION_TTL_S":
         "Sliding browser-session lifetime in seconds; refreshed on each "
         "authenticated request. Idle longer than this requires re-login. "
         "Default 2592000 (30 days).",
@@ -793,7 +793,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "(pruned hourly). 0 keeps them forever.",
 
     # --- Captures (fine-tuning data store) ---
-    "CAPTURE_RECORDINGS_ENABLED":
+    "CAPTURES_RECORDING_ENABLED":
         "Master switch for capturing audio + word-timestamps next to each "
         "transcription, for use as Whisper fine-tuning training data. "
         "Default OFF — voice recordings are biometric-grade personal data "
@@ -821,20 +821,20 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Auto-delete captures older than this many days. 0 = retention "
         "disabled (admin must clear manually). Sweep runs on startup and "
         "hourly thereafter.",
-    "CAPTURE_RECORDINGS_SAMPLE_RATE":
+    "CAPTURES_RECORDING_SAMPLE_RATE":
         "Fraction of eligible transcription requests to capture, in "
         "[0.0, 1.0]. 1.0 captures every eligible request; lower values "
         "are useful when you have a lot of traffic and only need a "
         "representative sample for fine-tuning.",
-    "CAPTURE_RECORDINGS_MIN_DURATION_SEC":
+    "CAPTURES_RECORDING_MIN_DURATION_S":
         "Skip capture for clips shorter than this. Filters out false "
         "starts and silence pings that VAD almost fully suppresses.",
-    "CAPTURE_RECORDINGS_MAX_DURATION_SEC":
+    "CAPTURES_RECORDING_MAX_DURATION_S":
         "Skip capture for clips longer than this. Whisper fine-tuning "
         "prefers ≤30s samples; long clips can still be captured for "
         "later segmentation via the stored segments_json metadata, but "
         "very long clips are usually not worth the disk cost.",
-    "CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT":
+    "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT":
         "Pre-transcribe upload-size guard. Captures eligibility roll is "
         "skipped for uploads larger than this many bytes, even when "
         "sampling would otherwise pass.",
@@ -904,15 +904,15 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Bound to your GPU's real concurrent capacity. A single client is "
         "additionally capped by STREAMING_MAX_SESSIONS_PER_USER, which is "
         "checked first.",
-    "STREAMING_IDLE_TIMEOUT_SEC":
+    "STREAMING_IDLE_TIMEOUT_S":
         "Close a live-dictation connection that sends no audio for this many "
         "seconds, freeing its slot (bounds idle/abandoned connections). 0 = off. "
         "Won't cut a normal session (the client streams continuously).",
-    "STREAMING_WS_PING_INTERVAL_SEC":
+    "STREAMING_WS_PING_INTERVAL_S":
         "WebSocket keepalive ping interval (s), passed to uvicorn — the server "
         "pings clients this often so a dead connection is detected. 0 = no "
         "keepalive pings (restart to change).",
-    "STREAMING_WS_PING_TIMEOUT_SEC":
+    "STREAMING_WS_PING_TIMEOUT_S":
         "WebSocket keepalive timeout (s): drop the socket if a ping gets no pong "
         "within this long. Generous, since the decode runs off the receive loop. "
         "0 = disable (restart to change).",
@@ -980,15 +980,15 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "STREAMING_HARD_BREAK_SEPARATOR":
         "Text the client types between documents at a hard break: '' = nothing, "
         "' ' = space, '\\n' = newline.",
-    "STREAMING_FORCED_COMMIT_SEC":
+    "STREAMING_FORCED_COMMIT_S":
         "Hard cap (s) on continuous speech before a forced finalize — keeps the "
         "buffer inside Whisper's 30 s receptive field. Must be < 30.",
-    "STREAMING_BUFFER_TRIM_SEC":
+    "STREAMING_BUFFER_TRIM_S":
         "Trim the audio buffer once it grows past this (s), at a committed "
         "word boundary, to bound decode cost.",
-    "STREAMING_BUFFER_TRIM_KEEP_SEC":
+    "STREAMING_BUFFER_TRIM_KEEP_S":
         "Audio retained (s) after a trim, as left-context for the next decode.",
-    "STREAMING_MAX_BUFFER_SEC":
+    "STREAMING_MAX_BUFFER_S":
         "Last-resort ceiling (s) on one utterance's audio buffer: past it the "
         "utterance is force-finalized. Deliberately generous (24x the forced "
         "commit) so real dictation never reaches it — it only catches a buffer "
@@ -1523,8 +1523,8 @@ class AdminConfig(BaseModel):
         "HALLUCINATION_SILENCE_THRESHOLD", scope="per_request",
         group="Decode params",
         subgroup="Advanced — anti-hallucination & token control")
-    SEGMENT_MAX_WORDS_PER_SEC: Annotated[float, Field(ge=0.0, le=100.0)] | None = _F(
-        "SEGMENT_MAX_WORDS_PER_SEC", scope="per_request",
+    SEGMENT_MAX_WORDS_PER_S: Annotated[float, Field(ge=0.0, le=100.0)] | None = _F(
+        "SEGMENT_MAX_WORDS_PER_S", scope="per_request",
         group="Decode params",
         subgroup="Advanced — anti-hallucination & token control")
     SUPPRESS_BLANK: bool | None = _F(
@@ -1559,14 +1559,14 @@ class AdminConfig(BaseModel):
     STREAMING_MAX_SESSIONS: Annotated[int, Field(ge=1, le=256)] | None = _F(
         "STREAMING_MAX_SESSIONS", scope="server", group="Live streaming",
         order=2)
-    STREAMING_IDLE_TIMEOUT_SEC: Annotated[float, Field(ge=0.0, le=3600.0)] | None = _F(
-        "STREAMING_IDLE_TIMEOUT_SEC", scope="per_request",
+    STREAMING_IDLE_TIMEOUT_S: Annotated[float, Field(ge=0.0, le=3600.0)] | None = _F(
+        "STREAMING_IDLE_TIMEOUT_S", scope="per_request",
         group="Live streaming", order=4, model_override=False)
-    STREAMING_WS_PING_INTERVAL_SEC: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F(
-        "STREAMING_WS_PING_INTERVAL_SEC", scope="server",
+    STREAMING_WS_PING_INTERVAL_S: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F(
+        "STREAMING_WS_PING_INTERVAL_S", scope="server",
         group="Live streaming", order=5, restart=True)
-    STREAMING_WS_PING_TIMEOUT_SEC: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F(
-        "STREAMING_WS_PING_TIMEOUT_SEC", scope="server",
+    STREAMING_WS_PING_TIMEOUT_S: Annotated[float, Field(ge=0.0, le=300.0)] | None = _F(
+        "STREAMING_WS_PING_TIMEOUT_S", scope="server",
         group="Live streaming", order=6, restart=True)
     INFERENCE_CONCURRENCY: Annotated[int, Field(ge=1, le=64)] | None = _F(
         "INFERENCE_CONCURRENCY", scope="server", group="Live streaming",
@@ -1638,22 +1638,22 @@ class AdminConfig(BaseModel):
         "STREAMING_HARD_BREAK_SEPARATOR", scope="per_request",
         group="Live streaming", subgroup="Finalize & document breaks",
         order=3, model_override=False)
-    STREAMING_FORCED_COMMIT_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F(
-        "STREAMING_FORCED_COMMIT_SEC", scope="per_request",
+    STREAMING_FORCED_COMMIT_S: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F(
+        "STREAMING_FORCED_COMMIT_S", scope="per_request",
         group="Live streaming", subgroup="Finalize & document breaks",
         order=1, model_override=False)
-    STREAMING_BUFFER_TRIM_SEC: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F(
-        "STREAMING_BUFFER_TRIM_SEC", scope="per_request",
+    STREAMING_BUFFER_TRIM_S: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F(
+        "STREAMING_BUFFER_TRIM_S", scope="per_request",
         group="Live streaming", subgroup="Buffer management",
         model_override=False)
-    STREAMING_BUFFER_TRIM_KEEP_SEC: Annotated[float, Field(ge=2.0, le=29.0)] | None = _F(
-        "STREAMING_BUFFER_TRIM_KEEP_SEC", scope="per_request",
+    STREAMING_BUFFER_TRIM_KEEP_S: Annotated[float, Field(ge=2.0, le=29.0)] | None = _F(
+        "STREAMING_BUFFER_TRIM_KEEP_S", scope="per_request",
         group="Live streaming", subgroup="Buffer management",
         model_override=False)
-    # Lower bound sits above the FORCED_COMMIT_SEC ceiling (29) so this can never
+    # Lower bound sits above the FORCED_COMMIT_S ceiling (29) so this can never
     # be tuned down into the range where it would fire during real dictation.
-    STREAMING_MAX_BUFFER_SEC: Annotated[float, Field(ge=60.0, le=3600.0)] | None = _F(
-        "STREAMING_MAX_BUFFER_SEC", scope="server", group="Live streaming",
+    STREAMING_MAX_BUFFER_S: Annotated[float, Field(ge=60.0, le=3600.0)] | None = _F(
+        "STREAMING_MAX_BUFFER_S", scope="server", group="Live streaming",
         subgroup="Buffer management")
     STREAMING_PROMPT_WORDS: Annotated[int, Field(ge=0, le=400)] | None = _F(
         "STREAMING_PROMPT_WORDS", scope="per_request",
@@ -1846,20 +1846,20 @@ class AdminConfig(BaseModel):
         group="Transcribe from URL")
     URL_ALLOW_GENERIC: bool | None = _F(
         "URL_ALLOW_GENERIC", scope="server", group="Transcribe from URL")
-    URL_MAX_DURATION_SEC: Annotated[int, Field(ge=1, le=86400 * 7)] | None = _F(
-        "URL_MAX_DURATION_SEC", scope="server", group="Transcribe from URL")
+    URL_MAX_DURATION_S: Annotated[int, Field(ge=1, le=86400 * 7)] | None = _F(
+        "URL_MAX_DURATION_S", scope="server", group="Transcribe from URL")
     URL_MAX_BYTES: Annotated[int, Field(ge=0, le=10_000_000_000)] | None = _F(
         "URL_MAX_BYTES", scope="server", group="Transcribe from URL")
-    URL_DOWNLOAD_TIMEOUT_SEC: Annotated[int, Field(ge=10, le=86400)] | None = _F(
-        "URL_DOWNLOAD_TIMEOUT_SEC", scope="server",
+    URL_DOWNLOAD_TIMEOUT_S: Annotated[int, Field(ge=10, le=86400)] | None = _F(
+        "URL_DOWNLOAD_TIMEOUT_S", scope="server",
         group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention")
-    URL_PREVIEW_TIMEOUT_SEC: Annotated[int, Field(ge=1, le=300)] | None = _F(
-        "URL_PREVIEW_TIMEOUT_SEC", scope="server",
+    URL_PREVIEW_TIMEOUT_S: Annotated[int, Field(ge=1, le=300)] | None = _F(
+        "URL_PREVIEW_TIMEOUT_S", scope="server",
         group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention")
-    URL_SOCKET_TIMEOUT_SEC: Annotated[int, Field(ge=1, le=600)] | None = _F(
-        "URL_SOCKET_TIMEOUT_SEC", scope="server",
+    URL_SOCKET_TIMEOUT_S: Annotated[int, Field(ge=1, le=600)] | None = _F(
+        "URL_SOCKET_TIMEOUT_S", scope="server",
         group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention")
     URL_DOWNLOAD_CONCURRENCY: Annotated[int, Field(ge=1, le=16)] | None = _F(
@@ -1871,8 +1871,8 @@ class AdminConfig(BaseModel):
         "URL_MEDIA_DIR", scope="server", group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention",
         restart=True)
-    URL_MEDIA_TTL_SEC: Annotated[int, Field(ge=10, le=86400 * 7)] | None = _F(
-        "URL_MEDIA_TTL_SEC", scope="server", group="Transcribe from URL",
+    URL_MEDIA_TTL_S: Annotated[int, Field(ge=10, le=86400 * 7)] | None = _F(
+        "URL_MEDIA_TTL_S", scope="server", group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention")
     URL_MEDIA_MAX_BYTES: Annotated[int, Field(ge=0, le=100_000_000_000)] | None = _F(
         "URL_MEDIA_MAX_BYTES", scope="server", group="Transcribe from URL",
@@ -1975,10 +1975,10 @@ class AdminConfig(BaseModel):
     SESSION_COOKIE_SECURE: bool | None = _F(
         "SESSION_COOKIE_SECURE", scope="server", group="Access & sessions",
         subgroup="Browser sessions (cookie auth)")
-    SESSION_TTL_SECONDS: Annotated[
+    SESSION_TTL_S: Annotated[
         int, Field(ge=300, le=31_536_000)
     ] | None = _F(
-        "SESSION_TTL_SECONDS", scope="server", group="Access & sessions",
+        "SESSION_TTL_S", scope="server", group="Access & sessions",
         subgroup="Browser sessions (cookie auth)")
     SESSION_COOKIE_NAME: Annotated[
         str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
@@ -2086,8 +2086,8 @@ class AdminConfig(BaseModel):
         "USAGE_UNREPORTED_AFTER_H", scope="server", group="Usage statistics")
 
     # --- Captures (fine-tuning data store) ---
-    CAPTURE_RECORDINGS_ENABLED: bool | None = _F(
-        "CAPTURE_RECORDINGS_ENABLED", scope="server", group="Captures",
+    CAPTURES_RECORDING_ENABLED: bool | None = _F(
+        "CAPTURES_RECORDING_ENABLED", scope="server", group="Captures",
         order=1)
     CAPTURES_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "CAPTURES_DB", scope="server", group="Captures", subgroup="Storage")
@@ -2100,17 +2100,17 @@ class AdminConfig(BaseModel):
         subgroup="Storage")
     CAPTURES_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
         "CAPTURES_RETENTION_DAYS", scope="server", group="Captures", order=3)
-    CAPTURE_RECORDINGS_SAMPLE_RATE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
-        "CAPTURE_RECORDINGS_SAMPLE_RATE", scope="server", group="Captures",
+    CAPTURES_RECORDING_SAMPLE_RATE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
+        "CAPTURES_RECORDING_SAMPLE_RATE", scope="server", group="Captures",
         order=2)
-    CAPTURE_RECORDINGS_MIN_DURATION_SEC: Annotated[float, Field(ge=0.0, le=3600.0)] | None = _F(
-        "CAPTURE_RECORDINGS_MIN_DURATION_SEC", scope="server",
+    CAPTURES_RECORDING_MIN_DURATION_S: Annotated[float, Field(ge=0.0, le=3600.0)] | None = _F(
+        "CAPTURES_RECORDING_MIN_DURATION_S", scope="server",
         group="Captures", subgroup="Duration & size guards")
-    CAPTURE_RECORDINGS_MAX_DURATION_SEC: Annotated[float, Field(ge=0.1, le=86400.0)] | None = _F(
-        "CAPTURE_RECORDINGS_MAX_DURATION_SEC", scope="server",
+    CAPTURES_RECORDING_MAX_DURATION_S: Annotated[float, Field(ge=0.1, le=86400.0)] | None = _F(
+        "CAPTURES_RECORDING_MAX_DURATION_S", scope="server",
         group="Captures", subgroup="Duration & size guards")
-    CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
-        "CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT", scope="server",
+    CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
+        "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT", scope="server",
         group="Captures", subgroup="Duration & size guards")
     # Captures-specific pipeline-rule exclusion (set of rule slugs).
     # Stored as a list in JSON; coerced back to set at use time. The

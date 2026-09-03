@@ -252,7 +252,7 @@ def test_captures_never_store_translated_text(client, app_module, monkeypatch):
     import captures_store
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURE_RECORDINGS_ENABLED", True,
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,
                         raising=False)
     _stub_translate(monkeypatch)
     stored = {}

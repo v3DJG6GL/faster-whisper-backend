@@ -11,7 +11,7 @@ Deliberately tiny and in-process:
     wipes the directory — every file on disk without a registry entry is an
     orphan by definition. Multi-worker deployments are already documented as
     unsupported (SERVER_WORKERS: "keep at 1").
-  - Bounded twice: per-entry TTL (URL_MEDIA_TTL_SEC) and a byte cap over the
+  - Bounded twice: per-entry TTL (URL_MEDIA_TTL_S) and a byte cap over the
     whole dir (URL_MEDIA_MAX_BYTES, oldest download evicted first). sweep()
     runs from a lifespan task; register() also evicts inline so a burst
     can't overshoot until the next tick.
@@ -136,7 +136,7 @@ def resolve(media_id: str, *, user_id: "str | None") -> "tuple[str, str] | None"
     entry = _REG.get(media_id)
     if entry is None:
         return None
-    ttl = float(getattr(cfg, "URL_MEDIA_TTL_SEC", 3600))
+    ttl = float(getattr(cfg, "URL_MEDIA_TTL_S", 3600))
     if time.monotonic() - entry["created"] > ttl:
         _drop(media_id)
         return None
@@ -156,7 +156,7 @@ def expires_at_unix(media_id: str) -> "int | None":
     entry = _REG.get(media_id)
     if entry is None:
         return None
-    ttl = float(getattr(cfg, "URL_MEDIA_TTL_SEC", 3600))
+    ttl = float(getattr(cfg, "URL_MEDIA_TTL_S", 3600))
     remaining = ttl - (time.monotonic() - entry["created"])
     return int(time.time() + max(0.0, remaining))
 
@@ -174,7 +174,7 @@ _ORPHAN_MIN_AGE_SEC = 60.0
 def sweep() -> None:
     """TTL expiry + oldest-first (FIFO) byte cap + orphan scan. Called by
     the lifespan janitor task."""
-    ttl = float(getattr(cfg, "URL_MEDIA_TTL_SEC", 3600))
+    ttl = float(getattr(cfg, "URL_MEDIA_TTL_S", 3600))
     now = time.monotonic()
     for mid in [m for m, e in list(_REG.items()) if now - e["created"] > ttl]:
         _drop(mid)

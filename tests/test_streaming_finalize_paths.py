@@ -290,7 +290,7 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", False, raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURE_RECORDINGS_ENABLED", True, raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
 
     with client.websocket_connect(_STREAM_URL) as ws:
@@ -313,7 +313,7 @@ def test_translate_expect_parks_when_translation_is_enabled(
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
-    monkeypatch.setattr(app_module.cfg, "CAPTURE_RECORDINGS_ENABLED", True, raising=False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True, raising=False)
     monkeypatch.setattr(captures_store, "create_capture", lambda **kw: "cap-test-id")
 
     with client.websocket_connect(_STREAM_URL) as ws:

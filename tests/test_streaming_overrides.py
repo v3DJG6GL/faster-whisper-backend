@@ -211,7 +211,7 @@ def test_setup_window_error_delivers_internal_error_and_closes(
     def boom(model_id, field, ident=None):
         # The per-identity idle-timeout read happens AFTER the consumer task is
         # created — i.e. squarely inside the setup window this path guards.
-        if field == "STREAMING_IDLE_TIMEOUT_SEC":
+        if field == "STREAMING_IDLE_TIMEOUT_S":
             raise RuntimeError("kaboom in setup window")
         return real_cfg_for(model_id, field, ident)
 

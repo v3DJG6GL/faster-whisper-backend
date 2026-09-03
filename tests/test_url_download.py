@@ -67,7 +67,7 @@ def test_policy_rejects_live(monkeypatch):
 
 
 def test_policy_rejects_over_duration(monkeypatch):
-    monkeypatch.setattr(udl.cfg, "URL_MAX_DURATION_SEC", 60, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_MAX_DURATION_S", 60, raising=False)
     with pytest.raises(udl.UrlDownloadError, match="limit"):
         udl._policy_check_info({"duration": 61})
     udl._policy_check_info({"duration": 59})  # under: no raise
@@ -506,7 +506,7 @@ time.sleep(60)
 def test_real_argv_shape(monkeypatch):
     # Pin the security-relevant properties of the real argv: URL last, after
     # a literal "--"; no %(title)s anywhere; the size cap present.
-    monkeypatch.setattr(udl.cfg, "URL_SOCKET_TIMEOUT_SEC", 15, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_SOCKET_TIMEOUT_S", 15, raising=False)
     argv = udl.build_download_argv("https://example.com/watch?v=-startswithdash",
                                    dest_dir="/tmp/x", max_bytes=123)
     assert argv[-1] == "https://example.com/watch?v=-startswithdash"

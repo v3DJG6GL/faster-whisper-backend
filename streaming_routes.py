@@ -125,7 +125,7 @@ _WS_UNAUTH = 4401
 _WS_DISABLED = 4503
 _WS_TOO_MANY = 4429
 _WS_BAD_ORIGIN = 4403
-_WS_IDLE_TIMEOUT = 4408  # client sent no audio for STREAMING_IDLE_TIMEOUT_SEC
+_WS_IDLE_TIMEOUT = 4408  # client sent no audio for STREAMING_IDLE_TIMEOUT_S
 
 # The client decode_override keys the server actually honors (main._apply_decode_
 # overrides consumes exactly this set; every other key is discarded there). Bound
@@ -234,10 +234,10 @@ def _stream_config(cfg, ident=None) -> StreamConfig:
         commit_silence_ms=int(g("VAD_OUTER_SILENCE_MS", 1200)),
         hard_break_silence_ms=int(g("HARD_BREAK_SILENCE_MS", 5000)),
         hard_break_separator=str(g("HARD_BREAK_SEPARATOR", "")),
-        forced_commit_sec=float(g("FORCED_COMMIT_SEC", 25.0)),
-        buffer_trim_sec=float(g("BUFFER_TRIM_SEC", 15.0)),
-        buffer_trim_keep_sec=float(g("BUFFER_TRIM_KEEP_SEC", 10.0)),
-        max_buffer_sec=float(g("MAX_BUFFER_SEC", 600.0)),
+        forced_commit_sec=float(g("FORCED_COMMIT_S", 25.0)),
+        buffer_trim_sec=float(g("BUFFER_TRIM_S", 15.0)),
+        buffer_trim_keep_sec=float(g("BUFFER_TRIM_KEEP_S", 10.0)),
+        max_buffer_sec=float(g("MAX_BUFFER_S", 600.0)),
         rms_gate_dbfs=float(g("GATE_RMS_DBFS", -42.0)),
         prompt_words=int(g("PROMPT_WORDS", 200)),
     )
@@ -504,7 +504,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # An idle/abandoned/dead connection must not hold a session slot, so bound
         # the wait for the client's first frame by the global idle timeout (the
         # per-identity value is resolved once we know the model + identity, below).
-        idle_timeout = float(getattr(cfg, "STREAMING_IDLE_TIMEOUT_SEC", 0.0) or 0.0)
+        idle_timeout = float(getattr(cfg, "STREAMING_IDLE_TIMEOUT_S", 0.0) or 0.0)
         try:
             first = await _receive_idle(ws, idle_timeout)
         except asyncio.TimeoutError:
@@ -745,7 +745,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
         # Captures are eligible only when the model allows the DTW word path
         # (per-model WORD_TIMESTAMPS_ENABLED) — same gate as the batch route.
-        cap_enabled = bool(getattr(cfg, "CAPTURE_RECORDINGS_ENABLED", False)) and gate_final_words
+        cap_enabled = bool(getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)) and gate_final_words
         # The final decode stashes its faster-whisper info / segment diagnostics /
         # word list here so on_final (serialized right after, under the session
         # lock) can build the rich log block + the capture row without re-decoding.
@@ -791,7 +791,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 want_words=gate_final_words, language=req_language,
                 model_obj=final_model_obj, overrides=req_overrides, ident=ident)
             segs, info = await _transcribe(final_model_obj, audio, kwargs)
-            max_wps = float(main.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_SEC", ident) or 0)
+            max_wps = float(main.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
             words_out: list[dict] = []
             seg_diag: list[dict] = []
             kept: list[str] = []
@@ -882,14 +882,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 audio = info["audio"]
                 pcm_bytes = int(getattr(audio, "size", 0)) * 2
                 cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
-                hard_lim = int(getattr(cfg, "CAPTURE_RECORDINGS_AUDIO_BYTES_HARD_LIMIT", 100_000_000))
-                sample = float(getattr(cfg, "CAPTURE_RECORDINGS_SAMPLE_RATE", 1.0))
+                hard_lim = int(getattr(cfg, "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT", 100_000_000))
+                sample = float(getattr(cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0))
                 if not (_cap_store.count_evictable() < cap_max and pcm_bytes < hard_lim
                         and random.random() < sample):
                     return None
                 dur = float(info["audio_dur"])
-                min_s = float(getattr(cfg, "CAPTURE_RECORDINGS_MIN_DURATION_SEC", 0.5))
-                max_s = float(getattr(cfg, "CAPTURE_RECORDINGS_MAX_DURATION_SEC", 600.0))
+                min_s = float(getattr(cfg, "CAPTURES_RECORDING_MIN_DURATION_S", 0.5))
+                max_s = float(getattr(cfg, "CAPTURES_RECORDING_MAX_DURATION_S", 600.0))
                 if not (min_s <= dur <= max_s):
                     logger.info("[stream %s] capture skipped duration %.1fs (window %.1f-%.1f)",
                                 session_id[:8], dur, min_s, max_s)
@@ -1360,7 +1360,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # It must never await a decode (that wedged the socket) — enqueue and move on.
         # Per-identity idle timeout (a trusted profile may allow a longer silence
         # grace); resolved now that the model + identity are known.
-        idle_timeout = float(main.cfg_for(final_model, "STREAMING_IDLE_TIMEOUT_SEC", ident) or 0.0)
+        idle_timeout = float(main.cfg_for(final_model, "STREAMING_IDLE_TIMEOUT_S", ident) or 0.0)
         # The deadline is anchored to the last AUDIO byte, not the last frame.
         # Wrapping each receive() in the FULL timeout made the control defeatable
         # by any inbound frame — an empty binary frame (a no-op sink write) or an

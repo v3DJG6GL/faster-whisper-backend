@@ -6,7 +6,7 @@ self-repetition). Observed signature: 20+ words crammed into ~0.5 s at the
 buffer tail, high avg_logprob, T=0.0, nsp possibly below NO_SPEECH_THRESHOLD.
 
 Covers:
-  * main.segment_exceeds_word_rate (SEGMENT_MAX_WORDS_PER_SEC) — unit
+  * main.segment_exceeds_word_rate (SEGMENT_MAX_WORDS_PER_S) — unit
   * batch POST /v1/audio/transcriptions drops word-rate-anomalous segments
   * streaming_routes._trim_trailing_nonspeech (STREAMING_TAIL_TRIM_PAD_MS)
   * streaming FINAL decode's condition_on_previous_text override
@@ -96,7 +96,7 @@ def test_batch_drops_echo_segment(client, fake_model):
 
 
 def test_batch_guard_disabled_keeps_everything(client, app_module, fake_model):
-    app_module.cfg.SEGMENT_MAX_WORDS_PER_SEC = 0
+    app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0
     real = FakeSegment("hallo welt", 0.0, 1.0,
                        words=_words("hallo welt", 0.0, 1.0))
     fake_model._segments = [real, _echo_segment()]
@@ -201,11 +201,11 @@ def test_streaming_partial_conditioning_unaffected(app_module, fake_model):
 def test_admin_config_accepts_new_fields():
     import config_store
     m = config_store.AdminConfig(
-        SEGMENT_MAX_WORDS_PER_SEC=8.0,
+        SEGMENT_MAX_WORDS_PER_S=8.0,
         STREAMING_TAIL_TRIM_PAD_MS=500,
         STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT=True,
     )
-    assert m.SEGMENT_MAX_WORDS_PER_SEC == 8.0
+    assert m.SEGMENT_MAX_WORDS_PER_S == 8.0
     assert m.STREAMING_TAIL_TRIM_PAD_MS == 500
     assert m.STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT is True
 
@@ -214,13 +214,13 @@ def test_admin_config_rejects_out_of_range():
     import pytest as _pytest
     import config_store
     with _pytest.raises(Exception):
-        config_store.AdminConfig(SEGMENT_MAX_WORDS_PER_SEC=-1.0)
+        config_store.AdminConfig(SEGMENT_MAX_WORDS_PER_S=-1.0)
     with _pytest.raises(Exception):
         config_store.AdminConfig(STREAMING_TAIL_TRIM_PAD_MS=999999)
 
 
 def test_defaults_present_in_config(app_module):
-    assert app_module.cfg.SEGMENT_MAX_WORDS_PER_SEC == 10.0
+    assert app_module.cfg.SEGMENT_MAX_WORDS_PER_S == 10.0
     assert app_module.cfg.STREAMING_TAIL_TRIM_PAD_MS == 300
     assert app_module.cfg.STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT is False
 
@@ -278,18 +278,18 @@ def test_batch_request_logs_guard_setting(client, caplog):
 # /overrides: new settings are per-identity overridable + lockable
 # ---------------------------------------------------------------------------
 
-_NEW_FIELDS = ("SEGMENT_MAX_WORDS_PER_SEC", "STREAMING_TAIL_TRIM_PAD_MS",
+_NEW_FIELDS = ("SEGMENT_MAX_WORDS_PER_S", "STREAMING_TAIL_TRIM_PAD_MS",
                "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT")
 
 
 def test_new_fields_in_override_profile_and_lockable(app_module):
     import config_store
     p = config_store.OverrideProfile(
-        SEGMENT_MAX_WORDS_PER_SEC=8.0,
+        SEGMENT_MAX_WORDS_PER_S=8.0,
         STREAMING_TAIL_TRIM_PAD_MS=500,
         STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT=True,
     )
-    assert p.SEGMENT_MAX_WORDS_PER_SEC == 8.0
+    assert p.SEGMENT_MAX_WORDS_PER_S == 8.0
     for f in _NEW_FIELDS:
         assert f in config_store.LOCKABLE_FIELDS
 
@@ -299,7 +299,7 @@ def test_new_fields_on_overrides_page(app_module):
     meta = overrides_routes._build_field_meta()
     for f in _NEW_FIELDS:
         assert f in meta
-    assert meta["SEGMENT_MAX_WORDS_PER_SEC"] == {
+    assert meta["SEGMENT_MAX_WORDS_PER_S"] == {
         "kind": "float", "min": 0.0, "max": 100.0}
     groups = overrides_routes._build_groups()
     listed = [f for g in groups for sg in g["subgroups"] for f in sg["fields"]]

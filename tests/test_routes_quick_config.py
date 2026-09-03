@@ -197,8 +197,8 @@ def test_reapply_rules_status(client):
 
 
 def test_reapply_rules_start_captures_disabled(client, app_module):
-    # CAPTURE_RECORDINGS_ENABLED defaults False -> idle, no-op note.
-    app_module.cfg.CAPTURE_RECORDINGS_ENABLED = False
+    # CAPTURES_RECORDING_ENABLED defaults False -> idle, no-op note.
+    app_module.cfg.CAPTURES_RECORDING_ENABLED = False
     r = client.post("/quick-config/reapply-rules")
     assert r.status_code == 200
     assert r.json().get("status") == "idle"
@@ -271,7 +271,7 @@ def test_patch_response_hides_global_capture_count_from_nonadmin(
     from tests.conftest import bearer
 
     slug = _expose_first_regex_list_rule(app_module)
-    app_module.cfg.CAPTURE_RECORDINGS_ENABLED = True
+    app_module.cfg.CAPTURES_RECORDING_ENABLED = True
 
     calls = []
 

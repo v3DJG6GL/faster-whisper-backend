@@ -292,9 +292,9 @@ def test_safe_ws_send_swallows_dead_socket():
 def test_stream_handshake_idle_timeout_frees_slot(app_module, monkeypatch):
     # A client that connects + passes auth but never sends its config handshake
     # must not hold a session slot forever: the server abandons the wait after
-    # STREAMING_IDLE_TIMEOUT_SEC and closes with the idle close code (4408).
+    # STREAMING_IDLE_TIMEOUT_S and closes with the idle close code (4408).
     from streaming_routes import _WS_IDLE_TIMEOUT
-    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 0.3, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             with pytest.raises(WebSocketDisconnect) as ei:
@@ -306,7 +306,7 @@ def test_stream_session_idle_timeout_closes_and_notifies(app_module, monkeypatch
     # After a successful handshake, a connection that goes silent mid-session is
     # closed once the idle timeout elapses, with an idle_timeout notice first.
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 0.3, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             ws.send_json({
@@ -322,7 +322,7 @@ def test_stream_idle_timeout_zero_disables(app_module, monkeypatch):
     # 0 disables the idle timeout: the normal stop/close flow still works and no
     # idle_timeout notice is emitted (the receive falls through to a plain await).
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 0.0, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.0, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             ws.send_json({
@@ -348,7 +348,7 @@ def test_stream_idle_timeout_not_re_armed_by_non_audio_frames(app_module, monkey
     Here the socket must already be closed by the time we stop sending.
     """
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 0.5, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.5, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             ws.send_json({
@@ -379,7 +379,7 @@ def test_stream_idle_timeout_not_tripped_while_audio_flows(app_module, monkeypat
     # 2 s timeout with a frame every 0.25 s: 1.75 s of slack per frame, so a
     # loaded CI runner (three interpreters share one box) cannot turn a stalled
     # sleep into a spurious idle close — 0.5 s / 0.25 s flaked on py3.13 in CI.
-    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_SEC", 2.0, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 2.0, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             ws.send_json({

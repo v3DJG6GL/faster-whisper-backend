@@ -34,7 +34,7 @@ def test_lockable_excludes_pipeline_lists():
     assert "BEAM_SIZE" in cs.LOCKABLE_FIELDS
     assert "STREAMING_PARTIAL_BEAM" in cs.LOCKABLE_FIELDS
     # the idle timeout is a per-caller policy → per-identity overridable + lockable
-    assert "STREAMING_IDLE_TIMEOUT_SEC" in cs.LOCKABLE_FIELDS
+    assert "STREAMING_IDLE_TIMEOUT_S" in cs.LOCKABLE_FIELDS
     assert "PIPELINE_RULES_EXCLUDE" not in cs.LOCKABLE_FIELDS
     assert "PIPELINE_RULES_INCLUDE" not in cs.LOCKABLE_FIELDS
     # load-time model fields are never per-identity overridable

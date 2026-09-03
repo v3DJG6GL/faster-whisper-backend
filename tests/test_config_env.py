@@ -715,3 +715,13 @@ def test_local_overrides_migrate_renamed_keys(tmp_path):
     assert out.get("RECENT_TRANSCRIPTIONS_RETENTION_DAYS") == 5
     assert "RECENT_TRANSCRIPTIONS_TTL_DAYS" not in out
     assert out.get("HF_TOKEN") == "hf_new"
+
+
+def test_every_renamed_key_targets_a_live_field():
+    """Each RENAMED_KEYS value must be a real config attribute, and no old
+    spelling may still be one — otherwise the alias points into the void or
+    the two names silently coexist."""
+    import config_renames
+    for old, new in config_renames.RENAMED_KEYS.items():
+        assert hasattr(config, new), new
+        assert not hasattr(config, old), old

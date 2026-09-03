@@ -145,7 +145,7 @@ def test_url_plain_json_carries_media_id(client, url_enabled):
 
 def test_media_expired_is_404(client, url_enabled, monkeypatch):
     mid = _post_url(client).json()["source_media_id"]
-    monkeypatch.setattr(url_enabled.cfg, "URL_MEDIA_TTL_SEC", 0, raising=False)
+    monkeypatch.setattr(url_enabled.cfg, "URL_MEDIA_TTL_S", 0, raising=False)
     assert client.get(f"/v1/audio/url-media/{mid}").status_code == 404
 
 

@@ -1,6 +1,6 @@
 """_csrf_mw and a session cookie that no longer resolves.
 
-The cookie's max_age is SESSION_TTL_SECONDS (30 d) while the server-side row
+The cookie's max_age is SESSION_TTL_S (30 d) while the server-side row
 can vanish sooner (sessions DB wiped/moved, row expired). auth._resolve_user
 gives the bearer header priority over the cookie, so a request authenticating
 purely by `Authorization: Bearer` must not be 403'd just because a dead cookie

@@ -13,7 +13,7 @@ import url_media_store as ums
 def _fresh_store(tmp_path, monkeypatch):
     monkeypatch.setattr(ums.cfg, "URL_MEDIA_DIR", str(tmp_path / "url_media"),
                         raising=False)
-    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_SEC", 3600, raising=False)
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_S", 3600, raising=False)
     monkeypatch.setattr(ums.cfg, "URL_MEDIA_MAX_BYTES", 10_000, raising=False)
     ums.startup_reset()
     yield
@@ -52,14 +52,14 @@ def test_owner_mismatch_hidden(tmp_path):
 def test_ttl_expiry(tmp_path, monkeypatch):
     mid = ums.register(_make_src(tmp_path), user_id=None)
     entry_path = ums._REG[mid]["path"]
-    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_SEC", 0, raising=False)
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_S", 0, raising=False)
     assert ums.resolve(mid, user_id=None) is None
     assert not os.path.exists(entry_path)  # expiry deletes the file
 
 
 def test_sweep_ttl_and_unknown_id(tmp_path, monkeypatch):
     mid = ums.register(_make_src(tmp_path), user_id=None)
-    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_SEC", 0, raising=False)
+    monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_S", 0, raising=False)
     ums.sweep()
     assert mid not in ums._REG
     assert ums.resolve("f" * 32, user_id=None) is None
