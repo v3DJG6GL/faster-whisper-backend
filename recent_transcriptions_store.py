@@ -79,27 +79,19 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS recent_transcriptions (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   request_id    TEXT NOT NULL UNIQUE,
-  created_ts    REAL NOT NULL,
-  user_id       TEXT,
+""" + store_common.job_columns_ddl({
+    "created_ts": "NOT NULL", "model": "NOT NULL",
+    "status": "NOT NULL DEFAULT 'ok'",
+}) + """
   username      TEXT,
-  model         TEXT NOT NULL,
-  language      TEXT,
   source        TEXT NOT NULL DEFAULT 'file',
-  status        TEXT NOT NULL DEFAULT 'ok',
-  audio_s       REAL,
-  processing_s  REAL,
-  words         INTEGER,
   raw_text      TEXT,
   final_text    TEXT,
   steps         TEXT,
   tokens        TEXT,
   bigrams       TEXT,
-  kind          TEXT,
   stages        TEXT,
-  key_label     TEXT,
-  wait_s        REAL,
-  error_class   TEXT,
-  error_stage   TEXT
+  key_label     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_rt_created      ON recent_transcriptions(created_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_rt_user_created ON recent_transcriptions(user_id, created_ts DESC);

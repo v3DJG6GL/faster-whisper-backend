@@ -48,6 +48,65 @@ def log_safe(s) -> str:
 BUSY_TIMEOUT_S = 5.0
 
 
+# Columns that describe ONE job and are written to BOTH per-job tables by the
+# same call in metrics.record_transcription: usage_jobs (the long-lived
+# numeric ledger, no text) and recent_transcriptions (the 30-day detail with
+# the transcript). The labels are deliberately repeated in both — each table
+# must answer "which model / how long / did it fail" on its own after the
+# other has been pruned — so they are declared ONCE here and each schema
+# renders them through job_columns_ddl(). A field added to one table and
+# forgotten in the other fails tests/test_job_columns.py.
+#
+# (name, SQLite type). Constraints (NOT NULL / DEFAULT) are per table: the
+# ledger insists on values, the detail row tolerates NULL for an error-path
+# insert that never reached the timing half.
+JOB_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("user_id", "TEXT"),
+    ("created_ts", "REAL"),
+    ("kind", "TEXT"),
+    ("status", "TEXT"),
+    ("model", "TEXT"),
+    ("language", "TEXT"),
+    ("audio_s", "REAL"),
+    ("processing_s", "REAL"),
+    ("words", "INTEGER"),
+    ("wait_s", "REAL"),
+    ("error_class", "TEXT"),
+    ("error_stage", "TEXT"),
+)
+JOB_COLUMN_NAMES: tuple[str, ...] = tuple(n for n, _ in JOB_COLUMNS)
+
+
+def job_columns_ddl(constraints: dict[str, str] | None = None) -> str:
+    """Render JOB_COLUMNS as CREATE TABLE lines, each ending in a comma, with
+    the table's own constraint appended per column (e.g.
+    {"user_id": "NOT NULL", "audio_s": "NOT NULL DEFAULT 0"}). Unknown keys
+    in `constraints` raise: a typo there would silently drop a constraint."""
+    constraints = dict(constraints or {})
+    unknown = set(constraints) - set(JOB_COLUMN_NAMES)
+    if unknown:
+        raise ValueError(f"job_columns_ddl: not job columns: {sorted(unknown)}")
+    lines = []
+    for name, typ in JOB_COLUMNS:
+        extra = constraints.get(name, "")
+        lines.append(f"  {name:<13} {typ}{(' ' + extra) if extra else ''},")
+    return "\n".join(lines)
+
+
+def missing_job_columns(conn: sqlite3.Connection, table: str) -> dict[str, str]:
+    """{column: reason} for every JOB_COLUMN the live table lacks or types
+    differently. Empty means the table carries the full shared set."""
+    have = {r["name"]: (r["type"] or "").upper()
+            for r in conn.execute(f"PRAGMA table_info({table})")}
+    out: dict[str, str] = {}
+    for name, typ in JOB_COLUMNS:
+        if name not in have:
+            out[name] = "missing"
+        elif have[name] != typ:
+            out[name] = f"type {have[name]!r} != {typ!r}"
+    return out
+
+
 def open_wal_db(path: str) -> sqlite3.Connection:
     """THE connection contract for the SQLite stores: create the parent dir,
     open `path` with a Row factory, a busy timeout, and switch it to WAL.

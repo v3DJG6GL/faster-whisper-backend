@@ -165,25 +165,19 @@ CREATE INDEX IF NOT EXISTS idx_usage_hour      ON usage_hourly(hour);
 
 CREATE TABLE IF NOT EXISTS usage_jobs (
   job_id      TEXT    PRIMARY KEY,
-  user_id     TEXT    NOT NULL,
   key_id      TEXT    NOT NULL,
-  kind        TEXT    NOT NULL,
-  created_ts  REAL    NOT NULL,
-  status      TEXT    NOT NULL,
-  audio_s     REAL    NOT NULL DEFAULT 0,
-  words       INTEGER NOT NULL DEFAULT 0,
-  processing_s      REAL    NOT NULL DEFAULT 0,
+""" + store_common.job_columns_ddl({
+    "user_id": "NOT NULL", "created_ts": "NOT NULL", "kind": "NOT NULL",
+    "status": "NOT NULL", "audio_s": "NOT NULL DEFAULT 0",
+    "words": "NOT NULL DEFAULT 0", "processing_s": "NOT NULL DEFAULT 0",
+    "wait_s": "NOT NULL DEFAULT 0",
+}) + """
   utterances  INTEGER NOT NULL DEFAULT 0,
-  model       TEXT,
-  language    TEXT,
   activation  TEXT,
   delivery    TEXT,
   app_id      TEXT,
   translation TEXT,
-  reported_ts REAL,
-  wait_s      REAL    NOT NULL DEFAULT 0,
-  error_class TEXT,
-  error_stage TEXT
+  reported_ts REAL
 );
 CREATE INDEX IF NOT EXISTS idx_usage_jobs_created ON usage_jobs(created_ts);
 CREATE INDEX IF NOT EXISTS idx_usage_jobs_user_created ON usage_jobs(user_id, created_ts);
