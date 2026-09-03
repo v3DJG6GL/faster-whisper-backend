@@ -76,6 +76,7 @@ def _reload_main(tmp_path, monkeypatch, cors_env, trusted_env=""):
         ("WHISPER_SESSIONS_DB", "sessions.sqlite3"),
         ("WHISPER_REPORTS_DB", "reports.sqlite3"),
         ("WHISPER_RECENT_TRANSCRIPTIONS_DB", "recent.sqlite3"),
+        ("WHISPER_STATS_SYSTEM_METRICS_DB", "system_metrics.sqlite3"),
         ("WHISPER_USAGE_DB", "usage.sqlite3"),
         ("WHISPER_CAPTURES_DB", "captures.sqlite3"),
         ("WHISPER_CAPTURES_DIR", "captures_audio"),

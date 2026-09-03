@@ -391,7 +391,7 @@ def test_stats_scope_rules(client, app_module, monkeypatch):
     own = stats_routes.stats_scope_for(_user("own"))
     assert (own.scope, own.user_id, own.include_identity,
             own.sees_machine) == ("own", "ua", True, False)
-    monkeypatch.setattr(app_module.cfg, "STATS_OWN_SHOWS_MACHINE", True)
+    monkeypatch.setattr(app_module.cfg, "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS", True)
     assert stats_routes.stats_scope_for(_user("own")).sees_machine is True
 
 
@@ -440,7 +440,7 @@ def test_own_scope_toggle_restores_machine(client, app_module, monkeypatch):
     """The /settings switch: machine keys come back for own-scope viewers,
     the job filter stays."""
     import stats_routes
-    monkeypatch.setattr(app_module.cfg, "STATS_OWN_SHOWS_MACHINE", True)
+    monkeypatch.setattr(app_module.cfg, "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS", True)
     a, b = _seed_jobs()
     try:
         snap = stats_routes._build_payload(
@@ -826,10 +826,10 @@ def test_transcription_records_the_gate_wait(client):
 
 def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
     import time
-    import transcriptions_store
+    import system_metrics_store
     from conftest import bearer
     now = int(time.time()) // 10 * 10
-    transcriptions_store.record_sys_samples(
+    system_metrics_store.record(
         [{"ts": now - 600 + i * 10, "gpu_util": float(i), "slot_busy": 0.25}
          for i in range(60)])
     body = client.get(f"/stats/history?metric=gpu_util&from={now - 600}&to={now}").json()

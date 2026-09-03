@@ -273,6 +273,18 @@ def tx_store(tmp_path):
 
 
 @pytest.fixture
+def sm_store(tmp_path):
+    import system_metrics_store
+    system_metrics_store.init_db(str(tmp_path / "system_metrics.sqlite3"))
+    yield system_metrics_store
+    try:
+        system_metrics_store._require_conn().close()
+    except Exception:
+        pass
+    system_metrics_store._conn = None
+
+
+@pytest.fixture
 def usage_store_db(tmp_path):
     import usage_store
     usage_store.init_db(str(tmp_path / "usage.sqlite3"))
@@ -503,6 +515,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     monkeypatch.setenv("WHISPER_SESSIONS_DB", str(tmp_path / "sessions.sqlite3"))
     monkeypatch.setenv("WHISPER_REPORTS_DB", str(tmp_path / "reports.sqlite3"))
     monkeypatch.setenv("WHISPER_RECENT_TRANSCRIPTIONS_DB", str(tmp_path / "recent.sqlite3"))
+    monkeypatch.setenv("WHISPER_STATS_SYSTEM_METRICS_DB", str(tmp_path / "system_metrics.sqlite3"))
     monkeypatch.setenv("WHISPER_USAGE_DB", str(tmp_path / "usage.sqlite3"))
     monkeypatch.setenv("WHISPER_CAPTURES_DB", str(tmp_path / "captures.sqlite3"))
     monkeypatch.setenv("WHISPER_CAPTURES_DIR", str(tmp_path / "captures_audio"))

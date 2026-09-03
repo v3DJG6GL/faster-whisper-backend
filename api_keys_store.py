@@ -93,7 +93,7 @@ PAGES: tuple[str, ...] = ("quick_config", "captures", "reports", "stats", "logs"
 
 # Per-user data pages — support the full none|own|all triple.
 # (stats joined in v2: "own" = the caller's own jobs + usage, machine cards
-# replaced by a coarse server block unless STATS_OWN_SHOWS_MACHINE is on.)
+# replaced by a coarse server block unless STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS is on.)
 SCOPED_PAGES: frozenset[str] = frozenset(
     ("logs", "quick_config", "reports", "captures", "stats")
 )

@@ -5,11 +5,11 @@ Nothing on the server ticked without a client before this: /stats/stream
 builds a payload only while an EventSource is open, so "how busy was the
 GPU this afternoon" had no source. The lifespan runs loop(); each second
 tick() appends 1/0 ("an inference slot is held") to metrics.busy_ring, and
-every STATS_HISTORY_SAMPLE_S seconds it takes one machine sample (NVML +
+every STATS_SYSTEM_METRICS_SAMPLE_S seconds it takes one machine sample (NVML +
 psutil, blocking — hence to_thread) into a small queue that flush() writes
-once a minute in one transaction to transcriptions_store.sys_samples (the
+once a minute in one transaction to system_metrics_store (the
 rolling operational DB, not the accounting one). prune() runs hourly with
-STATS_HISTORY_RETENTION_DAYS.
+STATS_SYSTEM_METRICS_RETENTION_DAYS.
 
 Never per-tick writes: the ring is memory, samples are ~6 rows a minute.
 """
@@ -24,7 +24,7 @@ from typing import Any
 import config as cfg
 import metrics
 import system_stats
-import transcriptions_store
+import system_metrics_store
 
 logger = logging.getLogger("whisper-api")
 
@@ -38,7 +38,7 @@ PRUNE_EVERY_S = 3600.0
 
 
 def sample_every() -> int:
-    return max(1, int(getattr(cfg, "STATS_HISTORY_SAMPLE_S", 10) or 10))
+    return max(1, int(getattr(cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 10) or 10))
 
 
 def slot_busy_now() -> int:
@@ -67,7 +67,7 @@ def tick(now: float | None = None) -> dict[str, Any] | None:
 
 
 def sample(now: float) -> dict[str, Any]:
-    """One machine sample on the STATS_HISTORY_SAMPLE_S grid. NVML absent →
+    """One machine sample on the STATS_SYSTEM_METRICS_SAMPLE_S grid. NVML absent →
     the gpu fields are None; slot_busy is the busy share of the last
     sample window."""
     every = sample_every()
@@ -105,7 +105,7 @@ def flush() -> int:
         return 0
     rows = _pending[:]
     try:
-        transcriptions_store.record_sys_samples(rows)
+        system_metrics_store.record(rows)
     except Exception as e:  # noqa: BLE001
         _warn("[stats-sampler] flush failed: %s", e)
         # Keep at most ten minutes of samples on a persistent failure.
@@ -118,10 +118,10 @@ def flush() -> int:
 def prune() -> int:
     global _last_prune
     _last_prune = time.time()
-    days = int(getattr(cfg, "STATS_HISTORY_RETENTION_DAYS", 30) or 0)
+    days = int(getattr(cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 30) or 0)
     if days <= 0:
         return 0
-    return transcriptions_store.prune_sys_samples(days)
+    return system_metrics_store.prune(days)
 
 
 def _warn(msg: str, *args: Any) -> None:

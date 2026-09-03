@@ -32,17 +32,17 @@ def test_stats_own_shows_machine_round_trip(client, app_module):
     """The /settings switch behind decision 2 (own-scope users see machine
     cards) saves, hot-applies onto cfg and resets back to the default."""
     cfg = app_module.cfg
-    assert cfg.STATS_OWN_SHOWS_MACHINE is False
-    r = client.post("/settings/state", json={"STATS_OWN_SHOWS_MACHINE": True})
+    assert cfg.STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS is False
+    r = client.post("/settings/state", json={"STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS": True})
     assert r.status_code == 200
     body = r.json()
-    assert "STATS_OWN_SHOWS_MACHINE" in body["saved"]
-    assert cfg.STATS_OWN_SHOWS_MACHINE is True
-    state = client.get("/settings/state").json()["fields"]["STATS_OWN_SHOWS_MACHINE"]
+    assert "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS" in body["saved"]
+    assert cfg.STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS is True
+    state = client.get("/settings/state").json()["fields"]["STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS"]
     assert state["value"] is True and state["provenance"] == "local.json"
-    r = client.post("/settings/state", json={"STATS_OWN_SHOWS_MACHINE": False})
+    r = client.post("/settings/state", json={"STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS": False})
     assert r.status_code == 200
-    assert cfg.STATS_OWN_SHOWS_MACHINE is False
+    assert cfg.STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS is False
 
 
 def test_post_state_invalid_value_422(client):

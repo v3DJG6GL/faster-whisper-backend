@@ -39,6 +39,7 @@ import jobs
 import metrics
 import model_sizes
 import preload
+import system_metrics_store
 import system_stats
 import web_common
 import auth
@@ -96,7 +97,7 @@ def stats_scope_for(user: dict[str, Any], *,
                                   (today's behaviour)
     non-admin, stats="own"      → own rows only, identities on (they are
                                   all the caller's), machine only when
-                                  cfg.STATS_OWN_SHOWS_MACHINE (read at call
+                                  cfg.STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS (read at call
                                   time: the /settings switch hot-applies)
     A client-supplied user/scope is never trusted; only the admin preview
     reaches this function as `preview_user_id`."""
@@ -112,7 +113,7 @@ def stats_scope_for(user: dict[str, Any], *,
     if effective:
         return StatsScope(
             "own", effective, caller_uid, True,
-            bool(getattr(cfg, "STATS_OWN_SHOWS_MACHINE", False)))
+            bool(getattr(cfg, "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS", False)))
     return StatsScope("all", None, caller_uid, False, True)
 
 
@@ -693,19 +694,18 @@ async def stats_history(
 ) -> dict[str, Any]:
     """Range-mode machine history for a live card's "history ↗": one metric
     (gpu_util | gpu_mem_mb | gpu_temp | cpu_pct | ram_pct | slot_busy) from
-    the sampler's sys_samples, downsampled to `step` seconds (default: the
+    the sampler's system_metrics rows, downsampled to `step` seconds (default: the
     smallest step that keeps the window under ~2 000 points, never below the
     sample cadence). `from`/`to` are epoch seconds; default the last hour.
     Own-scope viewers get it only when they see the machine cards (the
     same rule as the live payload: utilisation curves reveal other
     people's jobs)."""
-    import transcriptions_store
 
     scope = stats_scope_for(user)
     if not scope.sees_machine:
         raise HTTPException(status.HTTP_403_FORBIDDEN,
-                            detail="machine history needs the machine cards")
-    if metric not in transcriptions_store.SYS_SAMPLE_METRICS:
+                            detail="system metrics history needs the system metrics cards")
+    if metric not in system_metrics_store.METRICS:
         raise HTTPException(422,
                             detail=f"unknown metric: {metric!r}")
     now = time.time()
@@ -715,11 +715,11 @@ async def stats_history(
         raise HTTPException(422,
                             detail="'from' is not before 'to'")
     t0 = max(t0, t1 - 3650 * 86400)
-    cadence = max(1, int(getattr(cfg, "STATS_HISTORY_SAMPLE_S", 10) or 10))
+    cadence = max(1, int(getattr(cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 10) or 10))
     auto = max(cadence, int(-(-(t1 - t0) // 2000)))
     step_s = max(cadence, int(step)) if step else auto
     series = await asyncio.to_thread(
-        transcriptions_store.list_sys_samples, metric=metric, from_ts=t0,
+        system_metrics_store.list_series, metric=metric, from_ts=t0,
         to_ts=t1, step_s=step_s)
     return {"metric": metric, "from": int(t0), "to": int(t1), "step": step_s,
             **series}
@@ -1150,7 +1150,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours-legend .mg .t { position: absolute; left: 45%; top: -2px; bottom: -2px; width: 0; height: auto;
     border-left: 1px dashed #6e7681; background: none; }
   /* Own-scope "server" strip: stands in for the machine tiles (which are
-     removed from the grid for scope=own unless STATS_OWN_SHOWS_MACHINE).
+     removed from the grid for scope=own unless STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS).
      A plain block above the grid, outside GridStack, so it never takes
      part in the saved layout. */
   .own-server { max-width: 68.75rem; margin: 0.875rem auto 0; padding: 0 0.875rem;
@@ -1387,13 +1387,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     </div>
     <span class="subbar-break"></span>
     <div class="subbar-left subbar-row2">
-      <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; machine cards replaced by a coarse server status">your usage</span>
+      <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; system metrics cards replaced by a coarse server status">your usage</span>
       <span class="seg-label">layout</span>
       <div class="seg-ctrl" id="layout-preset" title="which tiles are on the grid; positions are remembered per preset">
         <button data-v="ops">ops</button><button data-v="usage">usage</button><button data-v="both" class="active">both</button>
       </div>
       <span class="seg-label rings-label">rings</span>
-      <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_HISTORY_SAMPLE_S)">
+      <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_SYSTEM_METRICS_SAMPLE_S)">
         <button data-v="live" class="active">live</button><button data-v="3600">1h</button><button data-v="86400">24h</button><button data-v="604800">7d</button>
       </div>
       <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
@@ -1455,7 +1455,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   </div>
 </header>
 
-<!-- Own-scope server strip (scope=own without STATS_OWN_SHOWS_MACHINE): the
+<!-- Own-scope server strip (scope=own without STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS): the
      coarse block the payload's `server` key carries. Hidden until the first
      snapshot says machine=false. -->
 <div id="own-server" class="own-server hidden">
@@ -1464,7 +1464,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <span class="stat">GPU <b id="own-gpu">—</b></span>
     <span class="stat">VRAM <b id="own-vram">—</b></span>
     <span class="stat">models loaded <b id="own-models">—</b></span>
-    <span class="stat" style="color:var(--dim)">machine cards are hidden for your scope — an admin can enable “Own-scope users see machine cards” in /settings</span>
+    <span class="stat" style="color:var(--dim)">system metrics cards are hidden for your scope — an admin can enable “Own-scope users see machine cards” in /settings</span>
   </div>
 </div>
 

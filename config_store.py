@@ -777,18 +777,22 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "/stats dashboard \"Recent transcriptions\" widget row count. "
         "The widget is intentionally a small ticker — bumping this "
         "past ~50 makes it scroll awkwardly without adding signal.",
-    "STATS_OWN_SHOWS_MACHINE":
+    "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS":
         "Own-scope users see machine cards. Users whose /stats page scope is "
         "\"own\" normally get only their own jobs and usage plus a coarse "
         "server block (GPU busy/idle, VRAM headroom). On = they also see the "
         "full machine cards (GPU/CPU/RAM/process/latency/endpoints/5xx/"
         "models), which reveal when other people run jobs — fine for a "
         "trusted household box. Admins and \"all\" scope are unaffected.",
-    "STATS_HISTORY_SAMPLE_S":
-        "Seconds between machine samples (GPU utilisation / VRAM / temperature, "
+    "STATS_SYSTEM_METRICS_DB":
+        "Path to the SQLite file holding the system-metrics history (GPU / "
+        "CPU / RAM readings for the /stats charts). Rolling telemetry, no "
+        "dictation content.",
+    "STATS_SYSTEM_METRICS_SAMPLE_S":
+        "Seconds between system-metrics readings (GPU utilisation / VRAM / temperature, "
         "CPU, RAM, GPU-busy share) kept for the /stats history charts. 10 s "
         "keeps a week at ~60k rows; larger values thin the curves.",
-    "STATS_HISTORY_RETENTION_DAYS":
+    "STATS_SYSTEM_METRICS_RETENTION_DAYS":
         "Days of machine samples to keep for the /stats history charts "
         "(pruned hourly). 0 keeps them forever.",
 
@@ -1891,8 +1895,8 @@ class AdminConfig(BaseModel):
     ALLOW_REQUEST_DECODE_OVERRIDES: bool | None = _F(
         "ALLOW_REQUEST_DECODE_OVERRIDES", scope="server",
         group="Access & sessions", order=6)
-    STATS_OWN_SHOWS_MACHINE: bool | None = _F(
-        "STATS_OWN_SHOWS_MACHINE", scope="server",
+    STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS: bool | None = _F(
+        "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS", scope="server",
         group="Access & sessions", order=7)
 
     # --- Pipeline ---
@@ -2068,11 +2072,14 @@ class AdminConfig(BaseModel):
     STATS_RECENT_TRANSCRIPTIONS_COUNT: Annotated[int, Field(ge=1, le=100)] | None = _F(
         "STATS_RECENT_TRANSCRIPTIONS_COUNT", scope="server",
         group="Recent transcriptions")
-    STATS_HISTORY_SAMPLE_S: Annotated[int, Field(ge=1, le=3600)] | None = _F(
-        "STATS_HISTORY_SAMPLE_S", scope="server",
+    STATS_SYSTEM_METRICS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "STATS_SYSTEM_METRICS_DB", scope="server",
         group="Recent transcriptions")
-    STATS_HISTORY_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
-        "STATS_HISTORY_RETENTION_DAYS", scope="server",
+    STATS_SYSTEM_METRICS_SAMPLE_S: Annotated[int, Field(ge=1, le=3600)] | None = _F(
+        "STATS_SYSTEM_METRICS_SAMPLE_S", scope="server",
+        group="Recent transcriptions")
+    STATS_SYSTEM_METRICS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
+        "STATS_SYSTEM_METRICS_RETENTION_DAYS", scope="server",
         group="Recent transcriptions")
 
     # --- Usage statistics (the desktop app's /v1/usage + admin /stats) ---

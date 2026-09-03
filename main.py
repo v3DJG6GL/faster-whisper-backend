@@ -2678,6 +2678,22 @@ async def lifespan(app: FastAPI):
     except Exception as _te:
         logger.error("Failed to initialize recent-transcriptions store: %s", _te)
 
+    # Open the system-metrics store (the /stats history charts and the
+    # GPU-busy share). Rolling telemetry, its own file. Adopts the
+    # pre-split sys_samples rows out of the recent-transcriptions DB once.
+    try:
+        import system_metrics_store
+        system_metrics_store.init_db(cfg.STATS_SYSTEM_METRICS_DB)
+        _moved = system_metrics_store.adopt_legacy(
+            transcriptions_store._require_conn())
+        if _moved:
+            logger.info("Moved %d legacy sys_samples rows into %s",
+                        _moved, cfg.STATS_SYSTEM_METRICS_DB)
+        logger.info("System-metrics store initialized at %s",
+                    cfg.STATS_SYSTEM_METRICS_DB)
+    except Exception as _se:
+        logger.error("Failed to initialize system-metrics store: %s", _se)
+
     # Open the durable usage-rollup store. Backs the per-key/per-user usage
     # numbers on /api-keys, the usage-over-time section on /stats and the
     # desktop app's statistics (/v1/usage). Non-fatal. Its sweep task is
@@ -2837,7 +2853,7 @@ async def lifespan(app: FastAPI):
     usage_sweep_task = (asyncio.create_task(_usage_retention_loop())
                         if usage_store_ready else None)
     # 1 Hz machine sampler: the GPU-busy share and the /stats history charts.
-    # Needs the recent-transcriptions store (its sys_samples table).
+    # Needs the system-metrics store.
     import stats_sampler as _stats_sampler
     stats_sampler_task = asyncio.create_task(_stats_sampler.loop())
 

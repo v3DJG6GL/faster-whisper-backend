@@ -49,7 +49,7 @@ def test_gate_absent_falls_back_to_in_flight(sampler, monkeypatch):
 
 
 def test_every_nth_tick_takes_a_sample_on_the_grid(sampler, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STATS_HISTORY_SAMPLE_S", 10, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 10, raising=False)
     taken = [sampler.tick(2_000_003 + i) for i in range(25)]
     samples = [s for s in taken if s]
     assert len(samples) == 2
@@ -59,21 +59,21 @@ def test_every_nth_tick_takes_a_sample_on_the_grid(sampler, app_module, monkeypa
     assert len(sampler._pending) == 2
 
 
-def test_flush_writes_once_and_prune_drops_old(sampler, tx_store, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STATS_HISTORY_SAMPLE_S", 10, raising=False)
-    monkeypatch.setattr(app_module.cfg, "STATS_HISTORY_RETENTION_DAYS", 30, raising=False)
+def test_flush_writes_once_and_prune_drops_old(sampler, sm_store, app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 10, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 30, raising=False)
     import time
     now = int(time.time())
     for i in range(30):
         sampler.tick(now - 300 + i)
     assert sampler.flush() == 3
     assert sampler.flush() == 0
-    series = tx_store.list_sys_samples(metric="gpu_util", from_ts=now - 400,
-                                       to_ts=now + 1, step_s=10)
+    series = sm_store.list_series(metric="gpu_util", from_ts=now - 400,
+                                  to_ts=now + 1, step_s=10)
     assert len(series["t"]) == 3 and series["avg"][0] == 42.0
-    tx_store.record_sys_samples([{"ts": now - 40 * 86400, "gpu_util": 1.0}])
+    sm_store.record([{"ts": now - 40 * 86400, "gpu_util": 1.0}])
     assert sampler.prune() == 1
-    monkeypatch.setattr(app_module.cfg, "STATS_HISTORY_RETENTION_DAYS", 0, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 0, raising=False)
     assert sampler.prune() == 0
 
 
