@@ -68,12 +68,17 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
     has time to flush over loopback before the process restarts.
     """
     if sys.platform != "win32":
-        # Re-exec the current interpreter with the same argv. Sockets carry
-        # O_CLOEXEC so the port frees on exec; the new process re-binds it.
+        # Re-exec the current interpreter with the ORIGINAL command line
+        # (sys.orig_argv keeps `-m faster_whisper_backend` and interpreter
+        # flags; sys.argv[0] under -m is the __main__.py FILE path, and
+        # re-running that as a script puts the package dir, not the repo
+        # root, on sys.path[0] — ModuleNotFoundError after the exec, with
+        # no process left to report it). Sockets carry O_CLOEXEC so the
+        # port frees on exec; the new process re-binds it.
         def do_reexec() -> None:
             _flush_before_exit()
             try:
-                os.execv(sys.executable, [sys.executable, *sys.argv])
+                os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])
             except Exception:
                 # If exec fails, exit and let a supervisor (systemd
                 # Restart=, Docker restart policy) bring us back.

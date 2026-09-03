@@ -37,7 +37,7 @@ RUN pip install --upgrade pip \
 # nvidia-cublas-cu12 / nvidia-cudnn-cu12 than requirements-gpu.txt's floors,
 # so pip uninstalls the 12.9/9.24 libs from the previous layer and installs
 # torch's 12.6/9.5 pins (~2 min churn + the old copies linger as whiteouts).
-# Still cublas 12.x / cudnn 9.x, which is all ctranslate2 (and main.py's
+# Still cublas 12.x / cudnn 9.x, which is all ctranslate2 (and faster_whisper_backend/main.py's
 # Windows DLL preloader majors) require — accepted until the -full build
 # is restructured into a single pip resolution. audio-separator's [gpu]
 # extra swaps onnxruntime for onnxruntime-gpu. ffmpeg from apt for

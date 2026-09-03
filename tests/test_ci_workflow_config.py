@@ -149,10 +149,13 @@ def test_vulnerability_alert_automerge_records_the_major_override():
 # --- .gitignore / .dockerignore -----------------------------------------------
 
 def test_ignore_files_do_not_swallow_package_dirs():
-    """`captures/` is the Windows raw-WAV dir at the repo ROOT. Unanchored,
-    the same pattern would also drop faster_whisper_backend/captures/ and
-    tests/captures/ from git and from the Docker build context — silently,
-    because main wraps the router import in try/except."""
+    """`captures/` is the Windows raw-WAV dir at the repo ROOT. In .gitignore
+    an unanchored `captures/` also matches faster_whisper_backend/captures/
+    and tests/captures/ (git would refuse their __init__.py); in
+    .dockerignore the dangerous form was `**/captures/` (a bare `captures/`
+    is already root-relative there, and a leading slash is disregarded —
+    kept for symmetry). Either would drop the package silently, because
+    main wraps the router import in try/except."""
     for fname in (".gitignore", ".dockerignore"):
         lines = [ln.strip() for ln in _read(fname).splitlines()]
         assert "/captures/" in lines, f"{fname}: anchor the captures/ ignore to the root"

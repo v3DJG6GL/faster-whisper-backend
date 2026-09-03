@@ -37,7 +37,7 @@ accepted residual risk for a rule surface that is user-editable by design.
 
 Two roles, one file:
   * parent  ->  ``import regex_guard; regex_guard.validate(checks)``
-  * child   ->  ``python regex_guard.py``   (reads a JSON list of ``[pattern,
+  * child   ->  ``python core/regex_guard.py``   (reads a JSON list of ``[pattern,
                 replacement]`` pairs on stdin, writes a JSON verdict on stdout)
 """
 from __future__ import annotations
@@ -58,7 +58,7 @@ _GUARD_TIMEOUT = 2.0
 # ~10x the measured per-entry cost: generous headroom for richer patterns.
 _PER_CHECK_BUDGET = 5e-3
 # Hard ceiling so a save can never block the admin thread indefinitely
-# (quick_config_routes.py documents the wait around the save call).
+# (quick_config/routes.py documents the wait around the save call).
 _GUARD_TIMEOUT_MAX = 10.0
 
 # Max output/input length ratio for ONE substitution against the fixture. A

@@ -786,7 +786,7 @@ async def get_state(
     `quick_config_tags` must intersect `rule.tags` (or `rule.tags` must
     be empty = visible-to-all). Admins bypass (b)+(c).
 
-    All three checks live behind `perms.can_see_rule()` (auth.py) so the
+    All three checks live behind `perms.can_see_rule()` (auth/dependencies.py) so the
     policy lives in exactly one place — same pattern as the existing
     page-permission gates."""
     # Visibility + fingerprinting lives in build_visible_rules (shared with
@@ -2404,7 +2404,7 @@ function syncReportedBadges() {
 // clickable" behaviour. Punctuation runs are emitted as plain-text
 // nodes between word spans.
 //
-// We deliberately diverge from quick_config_state.py:_TOKEN_RE here.
+// We deliberately diverge from quick_config/state.py _TOKEN_RE here.
 // That server-side regex extracts autocomplete candidates and
 // intentionally rejects digit-only tokens (rule candidates shouldn't
 // be raw numbers). The clickable-chip layer has a different purpose:

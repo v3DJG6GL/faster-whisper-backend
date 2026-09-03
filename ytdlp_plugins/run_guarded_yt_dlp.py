@@ -1,6 +1,6 @@
 """Entry point for the yt-dlp download subprocess: guard first, then yt-dlp.
 
-url_download.download() runs `python <this file> <yt-dlp args…>` instead of
+faster_whisper_backend/url/download.py download() runs `python <this file> <yt-dlp args…>` instead of
 `python -m yt_dlp` for two reasons, both about failing CLOSED:
 
   1. yt-dlp's plugin loader SWALLOWS a plugin's import error — it prints a

@@ -1978,7 +1978,7 @@ async def _ensure_ct2_model(name: str) -> str:
 # BOTH the streaming WebSocket and the batch /transcribe route so they don't
 # oversubscribe the GPU under the ~10-concurrent target. Built lazily on first
 # use (binds to the running loop); width = cfg.INFERENCE_CONCURRENCY (restart-
-# required). streaming_routes.py acquires the same object via this getter.
+# required). streaming/routes.py acquires the same object via this getter.
 _inference_semaphore: "asyncio.Semaphore | None" = None
 
 
@@ -3105,7 +3105,7 @@ _CSRF_EXEMPT_PATHS = frozenset({"/auth/login"})
 
 # A rejected Origin is logged at most this often: the check runs before any
 # credential, so an unauthenticated caller could otherwise drive the log at
-# request rate (same reasoning as auth.py's open-mode nag interval).
+# request rate (same reasoning as auth/dependencies.py's open-mode nag interval).
 _ORIGIN_REJECT_LOG_INTERVAL_S = 60.0
 _origin_reject_logged_at = 0.0
 
@@ -5844,7 +5844,7 @@ async def translate_text(request: Request,
         # `except Exception` arm above is skipped and only `finally` runs; a
         # release sitting after an await in here would in turn be skipped if
         # the cancellation landed on that await. That is exactly the bug class
-        # the streaming teardown documents (streaming_routes.py, the `finally`
+        # the streaming teardown documents (streaming/routes.py, the `finally`
         # of the websocket handler that releases _stream_sessions / model
         # leases before any await), where it permanently burned one of
         # STREAMING_MAX_SESSIONS. Nullable local: only a
@@ -7326,7 +7326,7 @@ except Exception as _e:
 # =============================================================================
 # Always registered; the handler self-gates on cfg.STREAMING_ENABLED (toggleable
 # at runtime) and resolves auth per connection (same user records as the batch
-# route). Reuses the model cache + _postprocess_text; see streaming_routes.py.
+# route). Reuses the model cache + _postprocess_text; see streaming/routes.py.
 try:
     from faster_whisper_backend.streaming.routes import router as _streaming_router
     app.include_router(_streaming_router)
@@ -7364,7 +7364,7 @@ except Exception as _e:
 # old for sync"). User-tier bearer auth only — deliberately NO page gate and
 # NO host allowlist: settings sync is account infrastructure for remote
 # desktop clients (same rationale as /v1/usage). One opaque blob per account
-# with optimistic versioning; see client_settings_routes.py.
+# with optimistic versioning; see client_settings/routes.py.
 try:
     from faster_whisper_backend.client_settings.routes import router as _client_settings_router
     app.include_router(_client_settings_router)

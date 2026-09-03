@@ -1529,7 +1529,7 @@ async def preview_save_chips_api(
     global-indexed chips out to each member capture's local indices via
     _split_corrections_to_members, then REPLACES each member's
     `corrections` field. Same fan-out semantics as the group-level chip
-    save (captures_routes.py:1643+ patch_sample_api path).
+    save (patch_sample_api below).
 
     Re-fetches every touched member and returns the canonical chips so
     the client can reproject (via _project_member_corrections) to refresh

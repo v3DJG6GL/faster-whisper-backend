@@ -576,7 +576,7 @@ $xml = @"
   </log>
 
   <env name="WHISPER_LOG_FILE" value="%BASE%\logs\whisper.log"/>
-  <!-- To enable the admin WebUI via env (alternative: set ADMIN_UI_ENABLED in config.py),
+  <!-- To enable the admin WebUI via env (alternative: set ADMIN_UI_ENABLED in config.json),
        uncomment the line below, then re-run this install script.
   <env name="WHISPER_ADMIN_UI" value="1"/>
   -->
@@ -648,7 +648,7 @@ Write-Host "Done. Service is running." -ForegroundColor Green
 Write-Host "  API:        http://localhost:8000/v1/audio/transcriptions"
 Write-Host "  Live logs:  http://localhost:8000/logs"
 Write-Host "  Stats:      http://localhost:8000/stats"
-Write-Host "  Admin UI:   http://localhost:8000/settings  (only when ADMIN_UI_ENABLED=True in config.py, or WHISPER_ADMIN_UI=1)"
+Write-Host "  Admin UI:   http://localhost:8000/settings  (only when ADMIN_UI_ENABLED=true in config.json, or WHISPER_ADMIN_UI=1)"
 Write-Host "  App log:    $LogsDir\whisper.log"
 Write-Host "  Stdout/err: $LogsDir\$ServiceName.out.log  /  $LogsDir\$ServiceName.err.log"
 Write-Host ""

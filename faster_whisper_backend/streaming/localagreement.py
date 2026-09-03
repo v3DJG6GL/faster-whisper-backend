@@ -16,7 +16,7 @@ This module is intentionally **pure**: it knows nothing about audio, numpy, or
 faster-whisper. It operates on word triples ``(start, end, text)`` where the
 timestamps are buffer-relative seconds and ``text`` is the raw Whisper word
 (faster-whisper words carry their own leading space, e.g. ``" Patient"``). The
-audio buffer, VAD, and model orchestration live in ``streaming_session.py``.
+audio buffer, VAD, and model orchestration live in ``streaming/session.py``.
 
 Load-bearing invariants (each verified against the upstream source — getting any
 of these wrong silently corrupts the stream):

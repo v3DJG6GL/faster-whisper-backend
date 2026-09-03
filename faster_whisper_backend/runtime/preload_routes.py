@@ -10,7 +10,7 @@ Security model:
   - User-tier bearer auth ONLY: Depends(get_current_user), the same tier as
     /v1/models and /v1/me, both of which already publish `loaded` flags for
     every family this endpoint can warm. Deliberately NO require_page gate and
-    NO host allowlist, for the reason client_settings_routes.py states: a key
+    NO host allowlist, for the reason client_settings/routes.py states: a key
     that may transcribe must be able to prepare the server for its own
     transcription, and remote desktop clients must reach it.
   - The endpoint cannot load anything a transcribe request could not: the

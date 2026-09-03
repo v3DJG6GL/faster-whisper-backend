@@ -449,7 +449,7 @@ async def client_settings_meta_api() -> JSONResponse:
     from faster_whisper_backend.client_settings import store as client_settings_store
     unavailable = False
     try:
-        # Off the loop like the /v1 siblings (client_settings_routes.py).
+        # Off the loop like the /v1 siblings (client_settings/routes.py).
         rows = await asyncio.to_thread(client_settings_store.list_meta)
     except client_settings_store.StoreUnavailable:
         rows = []

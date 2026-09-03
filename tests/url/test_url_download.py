@@ -1,4 +1,4 @@
-"""Unit tests for url_download.py — no network, no real yt-dlp subprocess.
+"""Unit tests for url/download.py — no network, no real yt-dlp subprocess.
 
 The download() tests monkeypatch build_download_argv to run a tiny inline
 Python script that mimics yt-dlp's observable behavior (progress lines on

@@ -11,7 +11,7 @@ between segments to preserve the encoder's noise-floor model at the
 joins; butt-splicing degrades transition quality.
 
 Because every input is already 16 kHz mono signed-16-bit PCM (produced by
-`audio_transcode.py` at capture time), we don't need PyAV here — pure
+`audio/transcode.py` at capture time), we don't need PyAV here — pure
 stdlib `wave` byte splicing is faster, smaller, and lossless. The
 output is a valid RIFF/WAVE file every browser plays and `datasets.Audio()`
 loads natively.

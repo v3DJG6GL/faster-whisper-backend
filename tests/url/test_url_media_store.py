@@ -1,4 +1,4 @@
-"""Unit tests for url_media_store.py (retention of URL-downloaded audio)."""
+"""Unit tests for url/media_store.py (retention of URL-downloaded audio)."""
 
 from __future__ import annotations
 

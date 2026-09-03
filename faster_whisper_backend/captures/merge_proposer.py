@@ -483,7 +483,7 @@ def _propose_merges_locked(
         sessions.append(cur)
 
     # Per session × user × language → candidates. user_id partition matters
-    # because create_sample_api enforces same-user (captures_routes.py:878-882);
+    # because create_sample_api enforces same-user (captures/routes.py create_sample_api);
     # without it, the admin "all users" view could emit proposals that the
     # merge endpoint rejects.
     all_candidates: list[tuple[float, list[dict[str, Any]], str, str]] = []

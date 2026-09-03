@@ -67,7 +67,7 @@ FACTORY_PATH = os.path.join(_REPO_DIR, "config.json")
 # =============================================================================
 # Surfaced everywhere a description is shown:
 #   - Pydantic Field(description=…) — see _F() helper below
-#   - /settings/state payload — admin_routes.py adds .description from the
+#   - /settings/state payload — admin/routes.py adds .description from the
 #     Pydantic model_fields
 #   - /settings admin WebUI — fieldRow() renders it as a <div class="help">
 #     line under each editor
@@ -1241,7 +1241,7 @@ class _RuleBase(BaseModel):
     seeded: bool = False
     # When True, the rule is shown on /quick-config so end-users (non-admin
     # session) can edit its body fields. Toggle is admin-only — see the
-    # per-type allow-list enforcement in quick_config_routes.py.
+    # per-type allow-list enforcement in quick_config/routes.py.
     exposed: bool = False
     # Tag list for per-user visibility. Asymmetric semantics: an empty
     # list means "visible to every authenticated user" (zero-config

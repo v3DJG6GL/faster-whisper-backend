@@ -40,7 +40,7 @@ from typing import Any
 # in the /stats activity cluster as somebody transcribing. "preload" earns its
 # place for exactly that reason: warming a model is not a transcription.
 # Adding a kind here needs matching render entries: the /stats `.kindchip.<k>`
-# CSS + `#rj-kind` filter button (stats_routes.py) and the header activity
+# CSS + `#rj-kind` filter button (stats/routes.py) and the header activity
 # cluster's `kindCls` map (web_common.py) — otherwise it renders as an
 # unstyled, unfilterable grey chip.
 KINDS = ("transcribe", "dictate", "translate", "download", "preload")

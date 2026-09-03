@@ -3,7 +3,7 @@
 Why this is its own module: the SSRF policy has to be enforced in two places
 that cannot reach each other through a normal import.
 
-  * url_download.py enforces it IN-PROCESS — the direct-media probe, the
+  * url/download.py enforces it IN-PROCESS — the direct-media probe, the
     thumbnail fetch and their shared redirect handler.
   * ytdlp_plugins/ enforces it INSIDE `python -m yt_dlp`, a separate process
     that must not have the repo root on its sys.path (repo-root directories

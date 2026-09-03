@@ -77,7 +77,7 @@ class RateLimited(HTTPException):
         config field an admin would raise, plus a `detail` sibling.
 
         `detail` is NOT redundant. Several toast handlers in this tree
-        (reports_routes.py, captures_routes.py, quick_config_routes.py) read
+        (admin/reports_routes.py, captures/routes.py, quick_config/routes.py) read
         `j.detail` off a failed response — they are written against
         FastAPI's default error shape, and without the sibling every one of
         them would degrade to showing a bare status code instead of the

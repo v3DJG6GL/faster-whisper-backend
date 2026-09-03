@@ -1,3 +1,7 @@
+"""Manual smoke check: transcribe one local file through the OpenAI SDK
+against a running server (http://localhost:8000/v1). Not part of the test
+suite; the audio path below is a hard-coded Windows share — edit it first.
+"""
 import time
 
 from openai import OpenAI

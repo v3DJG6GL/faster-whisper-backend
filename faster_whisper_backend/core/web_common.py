@@ -937,7 +937,7 @@ input[type="checkbox"].switch:focus-visible {
    role="radiogroup" and each button role="radio" + aria-checked. The selected
    segment shows BOTH a fill AND font-weight (never colour alone — WCAG 1.4.1).
    NAV_CSS is injected AFTER each page's own <style>, so this wins ties; the
-   base block is the former local copy from captures_routes.py verbatim. */
+   base block is the former local copy from captures/routes.py verbatim. */
 .status-btn-group {
   display: inline-flex; gap: 0;
   border: 1px solid var(--border); border-radius: 0.375rem;
@@ -2800,7 +2800,7 @@ function renderTypeEditor(rule, commitData, opts) {
 
   // Rule rationale / documentation. Only the admin /settings editor passes
   // `showNote` — /quick-config omits it (non-admin users cannot patch the
-  // `note` field, see _PATCH_ALLOWED_FIELDS in quick_config_routes.py).
+  // `note` field, see _PATCH_ALLOWED_FIELDS in quick_config/routes.py).
   if (opts.showNote) {
     const noteLbl = document.createElement('div');
     noteLbl.className = 'help';

@@ -86,6 +86,26 @@ def test_reexec_callback_invokes_execv(monkeypatch):
     assert captured["argv"][0] == restart_service.sys.executable
 
 
+def test_reexec_replays_the_original_command_line_not_sys_argv(monkeypatch):
+    """Under `python -m faster_whisper_backend`, sys.argv[0] is the path of
+    the package's __main__.py; re-running THAT as a script puts the package
+    dir on sys.path[0] and the exec'd process dies with ModuleNotFoundError.
+    The re-exec must replay sys.orig_argv (module flag + interpreter flags)."""
+    monkeypatch.setattr(restart_service.sys, "platform", "linux")
+    monkeypatch.setattr(restart_service.sys, "orig_argv",
+                        ["/usr/bin/python3", "-X", "dev", "-m", "faster_whisper_backend"])
+    monkeypatch.setattr(restart_service.sys, "argv",
+                        ["/repo/faster_whisper_backend/__main__.py"])
+    captured = {}
+    monkeypatch.setattr(restart_service.os, "execv",
+                        lambda path, argv: captured.update(path=path, argv=argv))
+    restart_service.trigger_self_restart(delay_sec=0.1)
+    _FakeTimer.instances[0].function()
+    assert captured["argv"] == [restart_service.sys.executable,
+                                "-X", "dev", "-m", "faster_whisper_backend"]
+    assert "__main__.py" not in " ".join(captured["argv"])
+
+
 def test_reexec_callback_falls_back_to_exit_on_execv_failure(monkeypatch):
     monkeypatch.setattr(restart_service.sys, "platform", "linux")
 

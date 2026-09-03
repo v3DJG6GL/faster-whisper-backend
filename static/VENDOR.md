@@ -48,13 +48,13 @@ fully offline — no CDN fetch at page-load.
   - `swagger-ui-bundle.js`  (~1.5 MB) — exposes the global `SwaggerUIBundle`.
   - `swagger-ui.css`        (~152 KB) — self-contained (all images are data: URIs).
   - `redoc.standalone.js`   (~890 KB) — exposes the global `Redoc`.
-- **Used by**: `/docs` and `/redoc` in `main.py`.
+- **Used by**: `/docs` and `/redoc` in `faster_whisper_backend/main.py`.
 - **Why vendored**: FastAPI's `get_swagger_ui_html` / `get_redoc_html` default
   to `cdn.jsdelivr.net` (and `fastapi.tiangolo.com` for the favicon). Both
   pages render in the app's own origin and are opened by an admin carrying a
   session cookie, so whoever controls that CDN response executes code with
   admin rights against this backend. Same reasoning as uPlot/GridStack above.
-  `main.py` passes explicit `/static/...` URLs for the JS, the CSS and the
+  `faster_whisper_backend/main.py` passes explicit `/static/...` URLs for the JS, the CSS and the
   favicon — if you ever drop those arguments, the CDN defaults come back.
 - **Known residue**: `redoc.standalone.js` renders a Redocly logo from
   `https://cdn.redoc.ly/redoc/logo-mini.svg` behind an `onError` fallback. It

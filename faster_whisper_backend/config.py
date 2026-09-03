@@ -669,7 +669,7 @@ TRANSLATION_GLOSSARY: str = _D("TRANSLATION_GLOSSARY")
 # `source_url` field (and whether /v1/audio/url-preview answers at all).
 URL_DOWNLOAD_ENABLED: bool = _D("URL_DOWNLOAD_ENABLED")
 
-# Site policy (all three combine; see url_download._policy_check):
+# Site policy (all three combine; see url/download.py _policy_check):
 #   URL_ALLOWED_EXTRACTORS  non-empty → only these yt-dlp extractor keys
 #                           (case-insensitive, e.g. "Youtube") are accepted;
 #                           empty → every dedicated extractor is accepted.
@@ -950,7 +950,7 @@ STATS_RECENT_TRANSCRIPTIONS_COUNT = _D("STATS_RECENT_TRANSCRIPTIONS_COUNT")
 STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS = _D("STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS")
 
 # System-metrics history behind /stats "history ↗" and the GPU-busy share:
-# the sampler (stats_sampler.py) takes one NVML/psutil reading every
+# the sampler (stats/sampler.py) takes one NVML/psutil reading every
 # STATS_SYSTEM_METRICS_SAMPLE_S seconds into STATS_SYSTEM_METRICS_DB and
 # drops rows older than STATS_SYSTEM_METRICS_RETENTION_DAYS (0 = keep
 # forever). At 10 s / 30 d that is ~260k small rows. All read at use time.
@@ -1029,7 +1029,7 @@ BOOTSTRAP_ADMIN_KEY: "str | None" = _D("BOOTSTRAP_ADMIN_KEY")
 # machine authenticating as the same account shares one configuration. The
 # blob may contain the client's own backend API keys — sensitive; never
 # logged. SQLite (WAL) next to config.local.json; three runtime files
-# (.sqlite3, -wal, -shm), all gitignored. See client_settings_store.py.
+# (.sqlite3, -wal, -shm), all gitignored. See client_settings/store.py.
 CLIENT_SETTINGS_DB = _D("CLIENT_SETTINGS_DB")
 
 
@@ -1187,7 +1187,7 @@ CAPTURES_PROPOSER_CACHE_TTL_S = _D("CAPTURES_PROPOSER_CACHE_TTL_S")
 # =============================================================================
 # Live streaming (WebSocket dictation) + shared inference concurrency
 # =============================================================================
-# Powers /v1/audio/transcriptions/stream (streaming_routes.py / streaming_session
+# Powers /v1/audio/transcriptions/stream (streaming/routes.py / streaming/session
 # .py). Defaults are the validated German-dictation / 12-16 GB-GPU set; every
 # value is WHISPER_STREAMING_*-overridable and editable in /settings.
 

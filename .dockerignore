@@ -1,8 +1,8 @@
 # Keep the build context small and never bake local state / secrets into the image.
 venv/
 .venv/
-__pycache__/
-*.pyc
+**/__pycache__/
+**/*.pyc
 .git/
 .github/
 # Runtime state roots. The bare-metal layout puts every store under ./data

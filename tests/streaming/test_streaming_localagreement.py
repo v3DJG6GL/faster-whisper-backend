@@ -1,4 +1,4 @@
-"""Unit tests for the pure LocalAgreement-2 engine (streaming_localagreement.py).
+"""Unit tests for the pure LocalAgreement-2 engine (streaming/localagreement.py).
 
 No audio, no model — these feed hand-built hypothesis sequences and assert the
 commit/provisional split, the load-bearing invariants (pop-from-both, empty first
