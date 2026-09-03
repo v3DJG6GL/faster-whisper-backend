@@ -24,7 +24,7 @@ import time
 import wave
 from hashlib import sha256
 
-import store_common
+from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger("whisper-api")
 
@@ -46,7 +46,7 @@ MAX_MERGED_SAMPLES = 448_000  # 28 s × 16 kHz (fallback default)
 def _max_merged_samples() -> int:
     """Live merged-WAV sample cap from config (samples = seconds × 16 kHz)."""
     try:
-        import config as cfg
+        from faster_whisper_backend import config as cfg
         cap_s = float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9))
         return int(cap_s * _REQ_RATE)
     except Exception:
@@ -145,7 +145,7 @@ def merge_wavs(
     trimmer = None
     if trim:
         try:
-            import audio_vad_trim
+            from faster_whisper_backend.audio import vad_trim as audio_vad_trim
             trimmer = audio_vad_trim.trim_pcm_for_merge
         except Exception as _e:  # pragma: no cover - import guard
             logger.warning("[merge] per-member trim unavailable: %s", _e)

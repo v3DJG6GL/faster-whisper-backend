@@ -1,6 +1,6 @@
 """Unit tests for jobs.py — the central running-jobs registry."""
 
-import jobs
+from faster_whisper_backend.core import jobs
 
 
 def test_start_update_end_roundtrip():

@@ -29,7 +29,8 @@ import time
 from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
-import config_renames as _renames
+from faster_whisper_backend import config_renames as _renames
+from faster_whisper_backend.paths import REPO_ROOT
 
 from pydantic import (
     BaseModel, Field, ValidationError, ValidationInfo, create_model,
@@ -37,7 +38,7 @@ from pydantic import (
 )
 
 
-_REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_DIR = REPO_ROOT  # the checkout, not this package — see paths.py
 # Admin-edited overrides file. Defaults into the data dir like every other
 # runtime-state path (mirrors config._DATA_DIR — computed locally, the rule is
 # two lines): WHISPER_CONFIG_LOCAL > WHISPER_DATA_DIR/config.local.json >
@@ -2200,7 +2201,7 @@ class AdminConfig(BaseModel):
         # That asymmetry let a save pass validation, then the next restart's
         # load fail it and silently drop EVERY override on disk. _BASELINE is
         # identical at both times, so the two validations always agree.
-        import config as _cfg
+        from faster_whisper_backend import config as _cfg
         _base = getattr(_cfg, "_BASELINE", {})
 
         def _default(name: str) -> float:
@@ -2229,7 +2230,7 @@ class AdminConfig(BaseModel):
         # audio POST hits the upload-specific 413 that names the right setting.
         # Enforce it on the EFFECTIVE values with the same _BASELINE fallback
         # as _validate_sample_sizing (see the rationale there).
-        import config as _cfg
+        from faster_whisper_backend import config as _cfg
         _base = getattr(_cfg, "_BASELINE", {})
 
         def _default(name: str) -> int:
@@ -2401,7 +2402,7 @@ class AdminConfig(BaseModel):
             to_guard = (checks if guard_slugs is None
                         else [c for c in checks if c[3] in guard_slugs])
             if to_guard:
-                import regex_guard
+                from faster_whisper_backend.core import regex_guard
                 regex_guard.validate([c[:3] for c in to_guard])
         return v
 
@@ -3311,7 +3312,7 @@ def _bump_if_sibling_committed() -> None:
             and now - _KEYS_LAST_PROBE < _KEYS_PROBE_MIN_INTERVAL_S):
         return
     _KEYS_LAST_PROBE = now
-    import api_keys_store   # local import keeps module import order flexible
+    from faster_whisper_backend.auth import api_keys_store   # local import keeps module import order flexible
     v = api_keys_store.data_version()
     if v == _KEYS_DATA_VERSION:
         return
@@ -3409,7 +3410,7 @@ def save_overrides(
         _atomic_write_json(to_write, path, sort_keys=True, tmp_prefix=".config.local.")
         # Enforce the documented 0600 guarantee rather than inheriting it from
         # mkstemp's default mode on the replaced tempfile.
-        import store_common
+        from faster_whisper_backend.core import store_common
         store_common.secure_file(path)
     bump_config_version()   # let live consumers (streaming idents) re-resolve
 
@@ -3455,7 +3456,7 @@ def env_pinned_fields() -> dict[str, str]:
     apply path skips pinned names, so a stale badge would also stop an
     admin's edit from ever reaching the live cfg.
     """
-    import config as _cfg  # deferred — config imports this module at import
+    from faster_whisper_backend import config as _cfg  # deferred — config imports this module at import
     _rejected = getattr(_cfg, "_ENV_REJECTED", ())
     return {
         field: env
@@ -3489,7 +3490,7 @@ def format_validation_errors(err: ValidationError) -> list[dict[str, str]]:
 def _canonical_rule_slugs() -> set[str]:
     """The set of rule slugs in the live PIPELINE_RULES list (post-load dicts
     or rule objects), for cross-checking per-identity include/exclude."""
-    import config as _cfg
+    from faster_whisper_backend import config as _cfg
     out: set[str] = set()
     for r in (getattr(_cfg, "PIPELINE_RULES", None) or []):
         name = r.get("name") if isinstance(r, dict) else getattr(r, "name", None)
@@ -3508,7 +3509,7 @@ def validate_profile_refs(names: Any) -> list[str]:
         return []
     if not isinstance(names, list):
         raise ValueError("profiles must be a list of strings")
-    import config as _cfg
+    from faster_whisper_backend import config as _cfg
     available = set((getattr(_cfg, "OVERRIDE_PROFILES", None) or {}).keys())
     out: list[str] = []
     seen: set[str] = set()

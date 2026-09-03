@@ -350,7 +350,7 @@ def test_get_members_carries_task_and_group_manifest_row_says_translate(
     import io
     import tarfile
 
-    import captures_routes
+    from faster_whisper_backend.captures import routes as captures_routes
 
     cs = captures_store_db
     gs = groups_store_db

@@ -10,7 +10,7 @@ import wave
 
 import pytest
 
-import audio_vad_trim
+from faster_whisper_backend.audio import vad_trim as audio_vad_trim
 
 RATE = 16000
 

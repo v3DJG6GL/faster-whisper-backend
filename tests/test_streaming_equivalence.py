@@ -10,8 +10,8 @@ Uses the REAL pipeline (main._postprocess_text) via the app_module fixture.
 
 import asyncio
 
-from streaming_session import StreamConfig, StreamSession
-from streaming_vad import EnergyEndpointer
+from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
+from faster_whisper_backend.streaming.vad import EnergyEndpointer
 
 
 def _run_stream(pp, utterances):

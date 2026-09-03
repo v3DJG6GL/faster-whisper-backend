@@ -22,8 +22,8 @@ import threading
 import time
 import uuid
 
-import config as cfg
-import system_stats
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.runtime import system_stats
 
 logger = logging.getLogger("whisper-server")
 
@@ -546,7 +546,7 @@ async def _get_separator(model_filename: "str | None" = None, *,
         # audio-separator downloads through its own requests+tqdm stack, so
         # the hub shim can't see the bytes — the entry still tells /stats
         # and the header cluster that a model fetch/load is in flight.
-        import jobs
+        from faster_whisper_backend.core import jobs
         _dl_job = jobs.job_start("download", model=_STATS_PREFIX + model,
                                  detail="download-or-load")
         try:
@@ -567,7 +567,7 @@ async def _get_separator(model_filename: "str | None" = None, *,
         logger.info("[bgm] separation model %s loaded on %s in %.1fs",
                     model, actual, load_secs)
         try:
-            import metrics
+            from faster_whisper_backend.stats import metrics
             metrics.record_model_load(_STATS_PREFIX + model, load_secs)
         except Exception:  # noqa: BLE001 — stats only
             pass

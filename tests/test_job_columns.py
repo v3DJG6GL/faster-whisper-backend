@@ -3,7 +3,7 @@ and both write paths fill them. A field added to one store and forgotten in
 the other used to go unnoticed; here it fails."""
 import time
 
-import store_common
+from faster_whisper_backend.core import store_common
 
 
 def test_job_columns_ddl_rejects_unknown_constraint_keys():

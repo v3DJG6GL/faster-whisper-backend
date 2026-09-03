@@ -25,8 +25,8 @@ import wave
 import numpy as np
 import pytest
 
-import audio_merge
-import audio_vad_trim
+from faster_whisper_backend.audio import merge as audio_merge
+from faster_whisper_backend.audio import vad_trim as audio_vad_trim
 
 RATE = 16000
 
@@ -215,7 +215,7 @@ def test_merge_trim_false_is_identity(monkeypatch):
 
 def _routes():
     pytest.importorskip("fastapi")
-    import captures_routes
+    from faster_whisper_backend.captures import routes as captures_routes
     return captures_routes
 
 
@@ -352,8 +352,8 @@ def test_build_merged_words_legacy(monkeypatch):
 
 def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path):
     _install_fake_vad(monkeypatch)
-    import captures_merge_proposer as P
-    import captures_store
+    from faster_whisper_backend.captures import merge_proposer as P
+    from faster_whisper_backend.captures import store as captures_store
 
     # 200ms sil | 600ms speech | 200ms sil → trimmed to speech ± 50ms pad.
     pcm, _ = _pcm([("sil", 200), ("speech", 600), ("sil", 200)])
@@ -380,7 +380,7 @@ def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path):
 
 
 def test_proposer_trim_disabled_returns_raw(monkeypatch):
-    import captures_merge_proposer as P
+    from faster_whisper_backend.captures import merge_proposer as P
     monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False,
                         raising=False)
     P._TRIM_DUR_CACHE.clear()
@@ -389,7 +389,7 @@ def test_proposer_trim_disabled_returns_raw(monkeypatch):
 
 
 def test_build_proposal_uses_trimmed_durations():
-    import captures_merge_proposer as P
+    from faster_whisper_backend.captures import merge_proposer as P
     members = [
         {"id": "a", "created_ts": 1000.0, "audio_s": 2.0,
          "_trim_dur_s": 1.2, "status": "", "text_for_training": "hello"},

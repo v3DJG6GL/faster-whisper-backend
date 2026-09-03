@@ -6,7 +6,7 @@ which drops ALL overrides on any validation error (the lockout failure mode)."""
 
 import pytest
 
-import config_store as cs
+from faster_whisper_backend import config_store as cs
 
 
 def _rule(**kw):

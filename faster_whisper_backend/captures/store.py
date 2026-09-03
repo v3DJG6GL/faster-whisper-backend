@@ -37,8 +37,8 @@ import time
 import uuid
 from typing import Any
 
-import store_common
-import text_corrections
+from faster_whisper_backend.core import store_common
+from faster_whisper_backend.core import text_corrections
 
 logger = logging.getLogger("whisper-api")
 
@@ -329,7 +329,7 @@ def create_capture(
     Every internal file is RIFF/WAVE — universal browser playback
     (Firefox on Linux ships no AAC decoder, so we can't store .m4a)
     and Whisper's native input rate, so fine-tuning loses no quality."""
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
 
     cid = uuid.uuid4().hex
     relpath = _relpath_for(cid, "wav")
@@ -416,7 +416,7 @@ def create_capture(
     # Drop the proposer cache so the freshly-recorded clip is eligible on
     # the next Auto-propose-merges call instead of waiting up to TTL_S.
     try:
-        import captures_merge_proposer
+        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
         captures_merge_proposer.invalidate(user_id)
     except Exception:
         pass
@@ -492,7 +492,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
     audio bytes). Drops rows + their audio files in _EVICTION_ORDER
     priority. _lock is already held by the caller."""
     try:
-        import config as cfg
+        from faster_whisper_backend import config as cfg
         row_cap = int(getattr(cfg, "CAPTURES_MAX", 5000))
         mb_cap = int(getattr(cfg, "CAPTURES_MAX_MB", 5000))
     except Exception:
@@ -873,7 +873,7 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     # Lazy import — captures_merge_proposer imports this module; a top-
     # level import would loop. Safe to call with None on a missing row.
     try:
-        import captures_merge_proposer
+        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
         captures_merge_proposer.invalidate(row.get("user_id") if row else None)
     except Exception:
         pass
@@ -915,7 +915,7 @@ def delete_capture(cid: str) -> bool:
             pass
     if sid:
         try:
-            import capture_samples_store
+            from faster_whisper_backend.captures import samples_store as capture_samples_store
             capture_samples_store.dissolve_sample(sid)
             logger.info(
                 "[captures] auto-dissolved sid=%s after member %s delete",
@@ -927,7 +927,7 @@ def delete_capture(cid: str) -> bool:
                 sid[:8], _e,
             )
     try:
-        import captures_merge_proposer
+        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
         captures_merge_proposer.invalidate(uid)
     except Exception:
         pass
@@ -948,7 +948,7 @@ def clear_all(reporter_host: str = "") -> int:
     audio_dir = _require_audio_dir()
     n_groups = 0
     try:
-        import capture_samples_store
+        from faster_whisper_backend.captures import samples_store as capture_samples_store
         n_groups = capture_samples_store.clear_all_samples()
     except Exception as _e:
         logger.warning(
@@ -1061,7 +1061,7 @@ def sweep_retention() -> int:
     the members, which the ordinary sweep below then applies the same age rule
     to. The size and count caps still spare grouped rows; retention does not."""
     try:
-        import config as cfg
+        from faster_whisper_backend import config as cfg
         days = int(getattr(cfg, "CAPTURES_RETENTION_DAYS", 0))
     except Exception:
         return 0
@@ -1072,7 +1072,7 @@ def sweep_retention() -> int:
     # lock, and holding both in a fixed order here would invert the order used
     # on the write paths.
     try:
-        import capture_samples_store
+        from faster_whisper_backend.captures import samples_store as capture_samples_store
         capture_samples_store.expire_samples_older_than(cutoff)
     except Exception as e:  # noqa: BLE001 - retention must not die on this
         logger.warning("[captures] sample retention pass failed: %s", e)

@@ -9,6 +9,7 @@ follow-up requests — exactly like a browser."""
 from starlette.testclient import TestClient
 
 from conftest import bearer
+from faster_whisper_backend.paths import REPO_ROOT
 
 
 def _set_cookie_lines(resp):
@@ -34,7 +35,7 @@ def test_login_open_mode_off_admin_allowlist_issues_a_session(app_module):
     # no-op, or a valid key loops the gate forever with no cookie.
     from starlette.testclient import TestClient
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
-        import api_keys_store
+        from faster_whisper_backend.auth import api_keys_store
         uid = api_keys_store.create_user("alice", is_admin=False)
         api_keys_store.set_user_permissions(uid, {"pages": {"stats": "all"}})
         raw, _rec = api_keys_store.create_key(uid)
@@ -102,7 +103,7 @@ def test_logout_clears_session(client, make_user_key):
 # --- sliding TTL / expiry ---------------------------------------------------
 
 def test_expired_session_is_rejected(client, make_user_key):
-    import sessions_store
+    from faster_whisper_backend.auth import sessions_store
     _uid, raw = make_user_key("root", is_admin=True)
     client.post("/auth/login", json={"key": raw})
     assert client.get("/settings/state").status_code == 200
@@ -116,7 +117,7 @@ def test_expired_session_is_rejected(client, make_user_key):
 
 def test_active_session_slides_expiry(client, make_user_key):
     import time
-    import sessions_store
+    from faster_whisper_backend.auth import sessions_store
     _uid, raw = make_user_key("root", is_admin=True)
     client.post("/auth/login", json={"key": raw})
     # Read the stored expiry, then force a slide by clearing the debounce.
@@ -135,7 +136,7 @@ def test_active_session_slides_expiry(client, make_user_key):
 # --- user revocation kills live sessions ------------------------------------
 
 def test_revoked_user_session_dies(client, make_user_key):
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     client.post("/auth/login", json={"key": raw})
@@ -150,7 +151,7 @@ def test_revoked_key_session_dies(client, make_user_key):
     """Revoking the LOGIN KEY must cut its sessions, not widen them: a revoked
     key_id resolves to the empty key binding (default-allow gates), so a
     surviving session would shed the key's per-key restrictions."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     client.post("/auth/login", json={"key": raw})
@@ -167,8 +168,8 @@ def test_revoked_key_session_dies(client, make_user_key):
 def test_pre_migration_session_without_key_still_works(client, make_user_key):
     """A session created before login stamped key_id (key_id NULL in the DB)
     keeps authenticating with the old no-key-layer behaviour."""
-    import config
-    import sessions_store
+    from faster_whisper_backend import config
+    from faster_whisper_backend.auth import sessions_store
     make_user_key("root", is_admin=True)
     uid, _raw = make_user_key("alice", pages={"quick_config": "own"})
     raw_token, _csrf = sessions_store.create_session(uid, 3600.0)  # no key_id
@@ -181,7 +182,7 @@ def test_session_use_touches_key_last_used(client, make_user_key):
     already attribute to the stamped key, so last_used_ts must move too —
     otherwise the key looks dormant on /settings/api-keys while its usage
     numbers grow."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     kid = api_keys_store.list_keys(uid)[0]["id"]
@@ -201,7 +202,7 @@ def test_session_use_touches_key_last_used(client, make_user_key):
 # --- Secure flag ------------------------------------------------------------
 
 def test_secure_flag_marks_cookies(client, make_user_key, monkeypatch):
-    import config
+    from faster_whisper_backend import config
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", True)
     _uid, raw = make_user_key("root", is_admin=True)
     r = client.post("/auth/login", json={"key": raw})
@@ -254,7 +255,7 @@ def test_cookie_mutation_resolves_the_session_once(client, make_user_key,
     # The CSRF middleware already looked the cookie up; it hands the row to
     # auth.user_from_session_cookie via request.state.session_record so the
     # dependency does not hit the sessions store a second time.
-    import sessions_store
+    from faster_whisper_backend.auth import sessions_store
     _uid, raw = make_user_key("root", is_admin=True)
     tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
     calls = []
@@ -340,8 +341,7 @@ def _worker(name, db_path):
     import importlib.util
     import os
     spec = importlib.util.spec_from_file_location(
-        name, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                           "sessions_store.py"))
+        name, os.path.join(REPO_ROOT, "faster_whisper_backend", "auth", "sessions_store.py"))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     mod.init_db(db_path)

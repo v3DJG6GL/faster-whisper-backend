@@ -32,18 +32,19 @@ import hmac
 import hashlib
 import secrets
 
-import build_info
-import config as cfg
-import config_store
-import jobs
-import metrics
-import model_sizes
-import preload
-import system_metrics_store
-import system_stats
-import web_common
-import auth
-from auth import require_page
+from faster_whisper_backend import build_info
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_store
+from faster_whisper_backend.core import jobs
+from faster_whisper_backend.stats import metrics
+from faster_whisper_backend.runtime import model_sizes
+from faster_whisper_backend.runtime import preload
+from faster_whisper_backend.stats import system_metrics_store
+from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.core import web_common
+from faster_whisper_backend.auth import dependencies as auth
+from faster_whisper_backend.auth.dependencies import require_page
+from faster_whisper_backend.paths import REPO_ROOT
 
 router = APIRouter()
 
@@ -310,7 +311,7 @@ def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -
     a non-admin "all" viewer only ever saw opaque labels (or their own name),
     so each is matched against the opaque label of every id the rollups
     know. Unknown labels are dropped rather than refused."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     if not scrub:
         return labels
     want = set(labels)
@@ -334,7 +335,7 @@ def _label_rows(rows: list[dict[str, Any]], by: str, *, scrub: bool,
     users/keys still resolve; sentinels stay literal. Non-admin "all"
     viewers get opaque labels instead — only their own rows keep a name
     (and are flagged `me`)."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     names = api_keys_store.get_usernames(
         [r["user_id"] for r in rows if r.get("user_id")])
 
@@ -423,7 +424,7 @@ async def stats_usage(
     owners / keys — as picked in the page's who / keys pickers, so a
     non-admin "all" viewer sends the opaque labels it was shown and they
     are mapped back here. `users` needs the "all" scope (403 for own)."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
 
     # Normalise BEFORE the scope check: an unknown `by` collapses to "user"
     # and must not slip past the own-scope refusal below.
@@ -513,7 +514,7 @@ async def stats_pick(
     (opaque for non-admin "all" viewers, `me` on the caller's own rows).
     `dim=key` with `users` lists only those users' keys. Own scope may
     list its keys but not users (403)."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
 
     if dim not in ("user", "key"):
         raise HTTPException(422, detail="dim must be user or key")
@@ -584,7 +585,7 @@ async def stats_jobs(
     first page. Scoped like the snapshot: own rows for "own", every user
     with identities scrubbed for non-admin "all", `?user=` preview for
     admins (403 for anyone else)."""
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
 
     is_admin = bool(user.get("is_admin"))
     if user_q and not is_admin:
@@ -642,7 +643,7 @@ async def stats_tail(
     for "own", every user for "all", `?user=` preview for admins (403 for
     anyone else). The per-job rows keep USAGE_JOBS_RETENTION_DAYS; a window
     that starts earlier says so in range.truncated_to_days."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
 
     is_admin = bool(user.get("is_admin"))
     if user_q and not is_admin:
@@ -2943,7 +2944,7 @@ def _asset_version() -> str:
     import hashlib
     from pathlib import Path
     try:
-        digest = hashlib.sha1((Path(__file__).parent / "static" / "stats.js").read_bytes()).hexdigest()[:10]
+        digest = hashlib.sha1((Path(REPO_ROOT) / "static" / "stats.js").read_bytes()).hexdigest()[:10]
     except OSError:
         return build_info.APP_VERSION.replace("+", ".")
     return digest

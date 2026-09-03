@@ -17,7 +17,7 @@ from starlette.testclient import TestClient
 # ---- origin validation ----------------------------------------------------
 
 def test_cors_origin_validator_accepts_origins_and_star():
-    from config_store import AdminConfig
+    from faster_whisper_backend.config_store import AdminConfig
     m = AdminConfig.model_validate({
         "CORS_ALLOW_ORIGINS": ["https://app.example.com", "http://192.168.1.50:8000", "*"]})
     assert m.CORS_ALLOW_ORIGINS == ["https://app.example.com", "http://192.168.1.50:8000", "*"]
@@ -32,13 +32,13 @@ def test_cors_origin_validator_accepts_origins_and_star():
 ])
 def test_cors_origin_validator_rejects_bad(bad):
     from pydantic import ValidationError
-    from config_store import AdminConfig
+    from faster_whisper_backend.config_store import AdminConfig
     with pytest.raises(ValidationError):
         AdminConfig.model_validate({"CORS_ALLOW_ORIGINS": [bad]})
 
 
 def test_trusted_origins_validator_accepts_origins():
-    from config_store import AdminConfig
+    from faster_whisper_backend.config_store import AdminConfig
     m = AdminConfig.model_validate({
         "TRUSTED_ORIGINS": ["https://whisper.example.com", "http://192.168.1.50:8000"]})
     assert m.TRUSTED_ORIGINS == ["https://whisper.example.com",
@@ -54,7 +54,7 @@ def test_trusted_origins_validator_accepts_origins():
 ])
 def test_trusted_origins_validator_rejects_bad(bad):
     from pydantic import ValidationError
-    from config_store import AdminConfig
+    from faster_whisper_backend.config_store import AdminConfig
     with pytest.raises(ValidationError):
         AdminConfig.model_validate({"TRUSTED_ORIGINS": [bad]})
 
@@ -86,11 +86,11 @@ def _reload_main(tmp_path, monkeypatch, cors_env, trusted_env=""):
     monkeypatch.setenv("WHISPER_CORS_ALLOW_ORIGINS", cors_env)
     monkeypatch.setenv("WHISPER_TRUSTED_ORIGINS", trusted_env)
 
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     importlib.reload(cfg)
     monkeypatch.setattr(cfg, "PRELOAD_MODELS", [], raising=False)
     monkeypatch.setattr(cfg, "DEFAULT_MODEL", "", raising=False)
-    import config_store
+    from faster_whisper_backend import config_store
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(tmp_path / "config.local.json"),
                         raising=False)
     for _fn in (config_store.load_overrides, config_store.save_overrides):
@@ -98,7 +98,7 @@ def _reload_main(tmp_path, monkeypatch, cors_env, trusted_env=""):
         if d:
             d[-1] = str(tmp_path / "config.local.json")
             monkeypatch.setattr(_fn, "__defaults__", tuple(d), raising=False)
-    import main
+    from faster_whisper_backend import main
     importlib.reload(main)
     return main, cfg
 
@@ -122,7 +122,7 @@ def test_cors_preflight_allows_configured_origin(tmp_path, monkeypatch):
         assert "POST" in (r.headers.get("access-control-allow-methods") or "")
     finally:
         monkeypatch.delenv("WHISPER_CORS_ALLOW_ORIGINS", raising=False)
-        importlib.reload(__import__("config"))
+        importlib.reload(importlib.import_module("faster_whisper_backend.config"))
         importlib.reload(main)
 
 
@@ -143,7 +143,7 @@ def test_trusted_origin_passes_guard_without_enabling_cors(tmp_path, monkeypatch
                 "access-control-allow-origin") is None
     finally:
         monkeypatch.delenv("WHISPER_TRUSTED_ORIGINS", raising=False)
-        importlib.reload(__import__("config"))
+        importlib.reload(importlib.import_module("faster_whisper_backend.config"))
         importlib.reload(main)
 
 
@@ -159,7 +159,7 @@ def test_cross_site_origin_still_rejected_with_trusted_origins_set(tmp_path, mon
         assert r.json()["detail"] == "Origin not allowed for this host"
     finally:
         monkeypatch.delenv("WHISPER_TRUSTED_ORIGINS", raising=False)
-        importlib.reload(__import__("config"))
+        importlib.reload(importlib.import_module("faster_whisper_backend.config"))
         importlib.reload(main)
 
 
@@ -174,5 +174,5 @@ def test_cors_star_allows_any_origin(tmp_path, monkeypatch):
         assert r.headers.get("access-control-allow-origin") == "*"
     finally:
         monkeypatch.delenv("WHISPER_CORS_ALLOW_ORIGINS", raising=False)
-        importlib.reload(__import__("config"))
+        importlib.reload(importlib.import_module("faster_whisper_backend.config"))
         importlib.reload(main)

@@ -13,8 +13,8 @@ import types
 import pytest
 from fastapi import HTTPException
 
-import main
-import system_stats
+from faster_whisper_backend import main
+from faster_whisper_backend.runtime import system_stats
 from conftest import FakeModel
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}

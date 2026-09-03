@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-import system_stats
+from faster_whisper_backend.runtime import system_stats
 
 
 @pytest.fixture(autouse=True)

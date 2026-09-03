@@ -1,4 +1,4 @@
-# Coverage configuration. Measures the application modules at the repo root;
+# Coverage configuration. Measures the faster_whisper_backend package;
 # excludes the tests themselves, the manual scripts (scripts/), the
 # virtualenvs, the docs tooling (docs/), and code that cannot run on a
 # CPU-only CI box (the uvicorn __main__ launcher and the Windows CUDA DLL

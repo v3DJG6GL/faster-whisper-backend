@@ -36,7 +36,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
-import config as cfg
+from faster_whisper_backend import config as cfg
 
 
 # Every limiter instance registers here so reset_all() below can clear the

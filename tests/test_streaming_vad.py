@@ -7,8 +7,8 @@ these deterministic on every platform.
 import numpy as np
 import pytest
 
-import streaming_vad
-from streaming_vad import (
+from faster_whisper_backend.streaming import vad as streaming_vad
+from faster_whisper_backend.streaming.vad import (
     FRAME_SAMPLES,
     EnergyEndpointer,
     iter_frames,

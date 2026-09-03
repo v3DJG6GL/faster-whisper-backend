@@ -34,15 +34,15 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
-import bgm_separation
-import build_info
-import config as cfg
-import config_store
-import diarization
-import system_stats
-import translation
-import web_common
-from auth import require_admin
+from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend import build_info
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_store
+from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.audio import translation
+from faster_whisper_backend.core import web_common
+from faster_whisper_backend.auth.dependencies import require_admin
 
 logger = logging.getLogger("whisper-api")
 
@@ -494,7 +494,7 @@ def _pipeline_rules_lock() -> asyncio.Lock:
     cross-endpoint half of that lost update (the intra-endpoint half is
     quick_config_routes._PATCH_LOCKS' original job). Lazy import:
     quick_config_routes imports this module at startup."""
-    from quick_config_routes import _patch_lock
+    from faster_whisper_backend.quick_config.routes import _patch_lock
     return _patch_lock()
 
 
@@ -568,7 +568,7 @@ async def _rebuild_caches(reason: str) -> None:
     concurrent requests were already able to interleave at the
     save_overrides await."""
     try:
-        import main as _main
+        from faster_whisper_backend import main as _main
         await asyncio.to_thread(_main.rebuild_caches)
         logger.info("[config] rebuilt pipeline caches after %s", reason)
     except Exception as e:
@@ -633,7 +633,7 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
     # old WhisperModel instance via Python ref-counting (drain-then-evict).
     evicted: list[str] = []
     try:
-        import main as _main
+        from faster_whisper_backend import main as _main
         load_time_changed_globally = bool(
             set(written.keys()) & config_store.LOAD_TIME_FIELDS
         )
@@ -884,7 +884,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     """
     import threading
 
-    import regex_guard
+    from faster_whisper_backend.core import regex_guard
 
     # Advisory shown instead of starting a thread on an exponential shape: a
     # timed-out guard thread here is ABANDONED, not killed (CPython cannot
@@ -925,7 +925,7 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
         """Apply one rule to `text`. Returns the step dict for the response."""
         # Dry-run contract is parity with main.py's engine — use its replacer
         # factories rather than a second copy that could drift.
-        import main as _main
+        from faster_whisper_backend import main as _main
         rtype = rule.get("type", "?")
         label = rule.get("label", rule.get("name", "?"))
         common = {"label": label, "type": rtype, "before": text, "matches": 0,
@@ -1144,7 +1144,7 @@ async def translation_test(
     # is the one home for the allowlist semantics (an empty allowlist admits
     # any well-formed ref; a non-empty one admits members + the configured
     # default). Lazy main import — main imports this module at startup.
-    import main as _main
+    from faster_whisper_backend import main as _main
     ref = (body.model or "").strip()
     default = (getattr(cfg, "TRANSLATION_DEFAULT_MODEL", "") or "").strip()
     if ref and not _main._translation_model_allowed(ref, requested=ref):
@@ -1229,7 +1229,7 @@ async def post_restart(request: Request) -> JSONResponse:
     uses WinSW's explicit `restart!` rather than <onfailure>).
     """
     try:
-        from restart_service import trigger_self_restart
+        from faster_whisper_backend.admin.restart_service import trigger_self_restart
     except ImportError as e:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                             f"restart_service module unavailable: {e}")

@@ -10,8 +10,8 @@ from fastapi.testclient import TestClient
 def test_recent_store_is_open_when_the_preload_loop_runs(app_module,
                                                          monkeypatch,
                                                          fake_model):
-    import recent_transcriptions_store
-    import usage_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    from faster_whisper_backend.stats import usage_store
 
     monkeypatch.setattr(app_module.cfg, "PRELOAD_MODELS", ["tiny"],
                         raising=False)

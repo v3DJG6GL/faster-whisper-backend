@@ -5,7 +5,7 @@ commit/provisional split, the load-bearing invariants (pop-from-both, empty firs
 iteration, boundary dedup), and that finish() does not reset.
 """
 
-from streaming_localagreement import HypothesisBuffer, LocalAgreementProcessor, TSWord
+from faster_whisper_backend.streaming.localagreement import HypothesisBuffer, LocalAgreementProcessor, TSWord
 
 
 def _texts(words):

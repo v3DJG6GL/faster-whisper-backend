@@ -7,7 +7,7 @@ import tempfile
 
 import pytest
 
-import bgm_separation
+from faster_whisper_backend.audio import bgm_separation
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -58,7 +58,7 @@ def test_separate_transcodes_non_libsndfile_container(
         client, app_module, monkeypatch, fake_model):
     """An .m4a input is pre-transcoded to 44.1 kHz stereo WAV for the
     separator (libsndfile can't read AAC/MP4 → slow audioread fallback)."""
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
 
     app_module.cfg.BGM_SEPARATION_ENABLED = True
     try:
@@ -95,7 +95,7 @@ def test_separate_transcodes_non_libsndfile_container(
 
 def test_separate_transcode_failure_falls_back_to_original(
         client, app_module, monkeypatch, fake_model):
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
 
     app_module.cfg.BGM_SEPARATION_ENABLED = True
     try:
@@ -120,7 +120,7 @@ def test_separate_transcode_failure_falls_back_to_original(
 
 def test_separate_wav_input_skips_transcode(
         client, app_module, monkeypatch, fake_model):
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
 
     app_module.cfg.BGM_SEPARATION_ENABLED = True
     try:
@@ -241,7 +241,7 @@ def test_register_records_the_actual_session_device(monkeypatch):
     """ORT can silently fall back to CPU at session creation — the stats/
     ledger row must carry the session's real placement, not the request."""
     import asyncio
-    import system_stats
+    from faster_whisper_backend.runtime import system_stats
 
     cfg = bgm_separation.cfg
     monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
@@ -327,7 +327,7 @@ def test_separate_does_not_touch_a_model_it_never_leased(monkeypatch):
     run ended — a concurrent load of another model mid-run then got its idle
     clock / stats 'last used' refreshed by a job that never touched it."""
     import asyncio
-    import system_stats
+    from faster_whisper_backend.runtime import system_stats
     cfg = bgm_separation.cfg
     monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
     monkeypatch.setattr(cfg, "BGM_SEPARATION_DEVICE", "cpu", raising=False)
@@ -431,7 +431,7 @@ def test_idle_drop_defers_the_free_while_a_same_name_orphan_drains(monkeypatch):
     """Force-drop orphans S1, a later job loads S2 under the same key and
     releases it, the idle evictor drops S2 — that must not unregister the
     stats row / wipe the session device while the S1 job still runs."""
-    import system_stats
+    from faster_whisper_backend.runtime import system_stats
     monkeypatch.setattr(bgm_separation, "_separator", object())
     monkeypatch.setattr(bgm_separation, "_separator_key", ("m.onnx", "cpu"))
     monkeypatch.setattr(bgm_separation, "_leases", {})

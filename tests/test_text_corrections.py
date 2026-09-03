@@ -5,7 +5,7 @@ malformed tolerance) and three_way_merge_corrections (anchored delta rules,
 anchorless union/dedup, ordering).
 """
 
-import text_corrections as tc
+from faster_whisper_backend.core import text_corrections as tc
 
 
 # ---------------------------------------------------------------------------

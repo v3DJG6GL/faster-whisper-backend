@@ -20,7 +20,8 @@ Conventions:
 import json
 import os
 
-import config_renames as _renames
+from faster_whisper_backend import config_renames as _renames
+from faster_whisper_backend import paths as _paths  # underscore: not a setting
 
 # Load a local .env file (if present) before any os.environ reads below, so a
 # `cp .env.example .env` works for bare `python main.py` as well as Docker.
@@ -35,10 +36,10 @@ except ImportError:
     pass
 
 
-# Directory holding this config file — used by _load_defaults() to locate the
-# committed config.json. Underscore-prefixed so it's excluded from _BASELINE /
-# the admin UI. (Path DEFAULTS no longer live here — see _DATA_DIR/_DB_DIR.)
-_REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+# The checkout root — where the committed config.json lives (see paths.py).
+# Underscore-prefixed so it's excluded from _BASELINE / the admin UI; tests
+# monkeypatch it. (Path DEFAULTS no longer live here — see _DATA_DIR/_DB_DIR.)
+_REPO_DIR = _paths.REPO_ROOT
 
 # Data layout. Three layered knobs re-root every runtime-state DEFAULT (the
 # {DATA_DIR}/{DB_DIR}/{MODELS_DIR}-templated paths in config.json plus
@@ -1303,7 +1304,7 @@ del _copy
 #     ENV var  >  config.local.json  >  in-file default (above)
 # Failure to load NEVER raises — see config_store.load_overrides for details.
 try:
-    from config_store import load_overrides as _load_overrides
+    from faster_whisper_backend.config_store import load_overrides as _load_overrides
 
     for _k, _v in _load_overrides().items():
         globals()[_k] = _v
@@ -1556,8 +1557,8 @@ def _env_reader_kind(field: str, current) -> str:
 
 
 try:
-    from config_store import AdminConfig as _AdminConfig
-    from config_store import ENV_VAR_MAPPING as _ENV_VAR_MAPPING
+    from faster_whisper_backend.config_store import AdminConfig as _AdminConfig
+    from faster_whisper_backend.config_store import ENV_VAR_MAPPING as _ENV_VAR_MAPPING
 
     # Snapshot every env-mapped field BEFORE the env layer touches it, so the
     # validation pass at the bottom of this module can put a rejected value
@@ -1926,7 +1927,7 @@ def _legacy_state_warnings(
 # The loader's own constant, so the warning can never name a path the app
 # does not read (the fallback keeps the pydantic-less import path working).
 try:
-    from config_store import OVERRIDES_PATH as _overrides_path
+    from faster_whisper_backend.config_store import OVERRIDES_PATH as _overrides_path
 except ImportError:
     _overrides_path = (os.environ.get("WHISPER_CONFIG_LOCAL")
                        or os.path.normpath(

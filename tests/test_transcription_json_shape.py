@@ -3,8 +3,8 @@ carry the same additive keys as verbose_json: an ignored (locked) client
 override, the applied request profile, and the translation guard's kept
 map — none of them should require verbose_json to be seen."""
 
-import config as cfg
-import translation
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.audio import translation
 from tests.conftest import bearer
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}

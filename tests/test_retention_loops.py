@@ -36,14 +36,14 @@ def _drive(app_module, monkeypatch, loop_fn, store_mod):
 
 
 def test_captures_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
-    import captures_store
+    from faster_whisper_backend.captures import store as captures_store
     calls = _drive(app_module, monkeypatch,
                    app_module._captures_retention_loop, captures_store)
     assert calls == [False]
 
 
 def test_reports_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
-    import reports_store
+    from faster_whisper_backend.admin import reports_store
     calls = _drive(app_module, monkeypatch,
                    app_module._reports_retention_loop, reports_store)
     assert calls == [False]

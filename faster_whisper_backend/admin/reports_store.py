@@ -27,8 +27,8 @@ import time
 import uuid
 from typing import Any
 
-import store_common
-import text_corrections
+from faster_whisper_backend.core import store_common
+from faster_whisper_backend.core import text_corrections
 
 logger = logging.getLogger("whisper-api")
 
@@ -392,7 +392,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
     sees a stable total even though the DELETEs are not transactionally
     atomic with the caller's INSERT."""
     try:
-        import config as cfg
+        from faster_whisper_backend import config as cfg
         cap = int(getattr(cfg, "REPORTS_MAX", 1000))
     except Exception:
         cap = 1000
@@ -610,7 +610,7 @@ def sweep_retention() -> int:
     deleted (0 when retention is disabled or nothing's old enough).
     Lazy-imports cfg so admin /settings edits take effect on next sweep."""
     try:
-        import config as cfg
+        from faster_whisper_backend import config as cfg
         days = int(getattr(cfg, "REPORTS_RETENTION_DAYS", 0))
     except Exception:
         return 0

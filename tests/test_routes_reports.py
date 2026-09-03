@@ -80,7 +80,7 @@ def test_list_with_legacy_nonfinite_trace_ts_raises_not_nan(client):
     list serializer raise (allow_nan=False, mirroring JSONResponse.render)
     instead of emitting bare `NaN` — invalid JSON the browser chokes on."""
     import pytest
-    import reports_store
+    from faster_whisper_backend.admin import reports_store
     client.post(_SUBMIT, json=_payload(request_id="nan-1"))
     # inf, not nan: Python's sqlite3 binds nan as NULL (NOT NULL constraint),
     # but inf round-trips through the REAL column and is equally non-finite.
@@ -148,7 +148,7 @@ def test_export_with_legacy_nonfinite_trace_ts_raises_not_infinity(client):
     instead of returning 200 with bare `Infinity` — a "backup" JSON.parse,
     jq and every strict parser reject."""
     import pytest
-    import reports_store
+    from faster_whisper_backend.admin import reports_store
     client.post(_SUBMIT, json=_payload(request_id="nan-exp"))
     reports_store._require_conn().execute(
         "UPDATE reports SET trace_ts = ?", (float("inf"),))
@@ -160,7 +160,7 @@ def test_list_signals_truncation_with_uncapped_counts(client, monkeypatch):
     """`reports` stops at LIST_LIMIT while `counts` states the scope total,
     so the payload must say the ceiling was hit — otherwise the toolbar
     claims rows the page cannot show."""
-    import reports_store
+    from faster_whisper_backend.admin import reports_store
     monkeypatch.setattr(reports_store, "LIST_LIMIT", 3)
     for i in range(4):
         # Direct store writes: the submit route is rate-limited per identity.

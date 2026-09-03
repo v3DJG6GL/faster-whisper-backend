@@ -5,7 +5,7 @@ monkeypatched at the exact boundary the handler uses (the test_diarization
 
 import json
 
-import translation
+from faster_whisper_backend.audio import translation
 from tests.conftest import bearer
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -249,7 +249,7 @@ def test_captures_never_store_translated_text(client, app_module, monkeypatch):
     # Regression guard for the stage's CRITICAL invariant: the capture row
     # (raw/final/training text + segment diag) must carry only the
     # source-language transcript, never the stage's translations.
-    import captures_store
+    from faster_whisper_backend.captures import store as captures_store
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True,

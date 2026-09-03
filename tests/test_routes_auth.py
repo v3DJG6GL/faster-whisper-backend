@@ -76,7 +76,7 @@ def test_host_gate_allows_loopback(client):
 def test_cross_user_report_read_is_404(client, make_user_key):
     # Two non-admin users with reports scope=own; one cannot read the other's
     # report by id -> 404 (anti-IDOR), not 403.
-    import reports_store
+    from faster_whisper_backend.admin import reports_store
 
     make_user_key("root", is_admin=True)
     uid_a, _raw_a = make_user_key("alice", pages={"reports": "own"})
@@ -124,7 +124,7 @@ def _fake_request(headers=None, query=b""):
 def test_sse_bearer_header_admits(client, make_user_key):
     # The bearer header is the carrier for non-browser SSE clients; browsers
     # ride the session cookie EventSource sends same-origin.
-    import quick_config_routes
+    from faster_whisper_backend.quick_config import routes as quick_config_routes
 
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
@@ -136,7 +136,7 @@ def test_sse_bearer_header_admits(client, make_user_key):
 def test_sse_key_query_param_rejected(client, make_user_key):
     # ?key= is no longer a credential carrier: the raw key would land in every
     # access log that records the request line.
-    import quick_config_routes
+    from faster_whisper_backend.quick_config import routes as quick_config_routes
     from fastapi import HTTPException
 
     make_user_key("root", is_admin=True)
@@ -151,7 +151,7 @@ def test_sse_key_query_param_rejected(client, make_user_key):
 
 
 def test_sse_missing_key_rejected_when_locked(client, make_user_key):
-    import quick_config_routes
+    from faster_whisper_backend.quick_config import routes as quick_config_routes
     from fastapi import HTTPException
 
     make_user_key("root", is_admin=True)
@@ -254,7 +254,7 @@ def test_open_mode_remote_admits_from_widened_admin_allowlist(
     # Widening ADMIN_WEBUI_ALLOWED_HOSTS (what an operator administering a
     # container from the LAN must already do to reach /settings/api-keys) also
     # extends the open-mode synthetic admin to that host — and no further.
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     monkeypatch.setattr(
         cfg, "ADMIN_WEBUI_ALLOWED_HOSTS", ["203.0.113.0/24"], raising=False,
     )
@@ -297,7 +297,7 @@ def test_logs_data_locked_no_key_401(client, make_user_key):
 def test_user_host_narrowing_blocks_shell(client, make_user_key, monkeypatch):
     # Narrowing USER_WEBUI_ALLOWED_HOSTS to loopback blocks a remote host from
     # even the user-page shell (the host gate fires before the in-page login).
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     make_user_key("root", is_admin=True)
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False

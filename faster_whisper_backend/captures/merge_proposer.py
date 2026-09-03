@@ -33,9 +33,9 @@ import threading
 import time
 from typing import Any
 
-import config as cfg
-import captures_store
-import store_common
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.captures import store as captures_store
+from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger(__name__)
 
@@ -110,8 +110,8 @@ def trimmed_duration_s(row: dict[str, Any]) -> float:
     max_gap = int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
     try:
         import os
-        import audio_merge
-        import audio_vad_trim
+        from faster_whisper_backend.audio import merge as audio_merge
+        from faster_whisper_backend.audio import vad_trim as audio_vad_trim
         abs_p = captures_store.abs_audio_path(relpath)
         mtime = os.path.getmtime(abs_p)
         hit = _TRIM_DUR_CACHE.get(cid)
@@ -404,7 +404,7 @@ def _propose_merges_locked(
         # effort on purpose — this module must not start failing because the
         # key store is uninitialised (it is not a dependency of a sweep), and
         # _CACHE_MAX bounds the dict either way.
-        import api_keys_store
+        from faster_whisper_backend.auth import api_keys_store
         try:
             _known = api_keys_store.get_user(user_id_filter) is not None
         except Exception:  # noqa: BLE001 - store not ready / unavailable

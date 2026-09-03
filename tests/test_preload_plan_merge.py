@@ -9,10 +9,10 @@ test_preload_registry (registry dicts and loader coroutines, no heavy deps).
 
 import asyncio
 
-import diarization
-import model_sizes
-import preload
-import system_stats
+from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.runtime import model_sizes
+from faster_whisper_backend.runtime import preload
+from faster_whisper_backend.runtime import system_stats
 
 from conftest import bearer
 
@@ -23,7 +23,7 @@ def _fits(monkeypatch, verdict=(True, None)):
 
 
 def _enable(monkeypatch, **over):
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     defaults = {
         "MODEL_PRELOAD_ENABLED": True,
         "MODEL_PRELOAD_WARM_TTL_S": 180,
@@ -239,7 +239,7 @@ def test_a_job_binding_rewinds_the_cursor_a_client_post_does_not(monkeypatch):
 def test_whisper_full_cache_with_only_a_warm_peer_is_family_busy(monkeypatch):
     _enable(monkeypatch, MAX_LOADED_MODELS=1)
     _fits(monkeypatch, (True, None))
-    import main
+    from faster_whisper_backend import main
     monkeypatch.setattr(main, "_loaded_models", {"peer": object()})
     monkeypatch.setattr(main, "_model_leases", {})
     system_stats.set_warm_predicate(lambda k: k == "peer")
@@ -261,7 +261,7 @@ def test_worker_evicts_the_cold_whisper_peer_it_chose_even_when_it_fits(
         monkeypatch):
     _enable(monkeypatch, MAX_LOADED_MODELS=1)
     _fits(monkeypatch, (True, None))
-    import main
+    from faster_whisper_backend import main
     monkeypatch.setattr(main, "_loaded_models", {"peer": object()})
     monkeypatch.setattr(main, "_model_leases", {})
     evicted = []
@@ -301,7 +301,7 @@ def test_resident_entry_is_warm_through_its_plan_only(monkeypatch):
 
 def test_whisper_1_alias_resolves_to_the_default_model(monkeypatch):
     _enable(monkeypatch, DEFAULT_MODEL="large-v3")
-    import main
+    from faster_whisper_backend import main
     assert preload.normalize_id("whisper", "whisper-1") == "large-v3"
     assert preload.stats_key("whisper", "whisper-1") == "large-v3"
     assert preload.stats_key("whisper", "small") == "small"
@@ -324,7 +324,7 @@ def test_route_judges_the_resolved_whisper_id(client, app_module, monkeypatch):
     """`whisper-1` is admitted exactly when DEFAULT_MODEL is, and a non-empty
     ALLOWED_MODELS that omits the default rejects both — as the transcribe
     gate does, instead of queueing a load that 400s there."""
-    import preload_routes
+    from faster_whisper_backend.runtime import preload_routes
     cfg = _enable(monkeypatch, DEFAULT_MODEL="large-v3",
                   ALLOWED_MODELS={"small"})
     assert preload_routes._allowed("whisper", "whisper-1") is False
@@ -351,7 +351,7 @@ def test_route_judges_the_resolved_whisper_id(client, app_module, monkeypatch):
 # --- PC6: the translation allowlist rule is main's --------------------------
 
 def test_translation_allowlist_is_mains_rule(monkeypatch):
-    import preload_routes
+    from faster_whisper_backend.runtime import preload_routes
     cfg = _enable(monkeypatch, TRANSLATION_ALLOWED_MODELS=set(),
                   TRANSLATION_DEFAULT_MODEL="")
     assert preload_routes._allowed("translation", "any/ref:Q4") is True

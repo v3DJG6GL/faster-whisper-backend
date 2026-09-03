@@ -16,7 +16,7 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def test_hash_key_deterministic_hex():
-    import api_keys_store as ak
+    from faster_whisper_backend.auth import api_keys_store as ak
     h1 = ak.hash_key("wk_abc")
     h2 = ak.hash_key("wk_abc")
     assert h1 == h2 and len(h1) == 64
@@ -25,12 +25,12 @@ def test_hash_key_deterministic_hex():
 
 
 def test_hash_key_unicode_safe():
-    import api_keys_store as ak
+    from faster_whisper_backend.auth import api_keys_store as ak
     assert len(ak.hash_key("schlüssel-Ω")) == 64
 
 
 def test_generate_raw_key_shape_and_uniqueness():
-    import api_keys_store as ak
+    from faster_whisper_backend.auth import api_keys_store as ak
     keys = {ak.generate_raw_key() for _ in range(200)}
     assert len(keys) == 200  # all unique
     for k in list(keys)[:5]:
@@ -39,7 +39,7 @@ def test_generate_raw_key_shape_and_uniqueness():
 
 
 def test_split_display_parts():
-    import api_keys_store as ak
+    from faster_whisper_backend.auth import api_keys_store as ak
     prefix, last4 = ak._split_display_parts("wk_abcdef1234567890wxyz")
     assert prefix == "wk_abcde" and last4 == "wxyz"
 
@@ -424,7 +424,7 @@ def test_get_user_permissions_sentinel(api_keys_db):
 
 
 def test_open_mode_user_is_admin():
-    import api_keys_store as ak
+    from faster_whisper_backend.auth import api_keys_store as ak
     assert ak.OPEN_MODE_USER["is_admin"] is True
 
 
@@ -467,7 +467,7 @@ _BOOTSTRAP_KEY = "bootstrap-key-with-enough-entropy-1234"
 
 
 def test_bootstrap_admin_from_env_is_idempotent(api_keys_db):
-    import main
+    from faster_whisper_backend import main
     main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
     assert api_keys_db.is_locked_down() is True
     # Re-running with the same live key is a no-op, not a duplicate insert.
@@ -483,7 +483,7 @@ def test_bootstrap_admin_from_env_refuses_a_revoked_key(api_keys_db):
     # to the idempotence check: the insert then hit the UNIQUE on key_hash and
     # the IntegrityError was swallowed, booting the server without the admin
     # key the operator had configured — silently.
-    import main
+    from faster_whisper_backend import main
     main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
     h = api_keys_db.hash_key(_BOOTSTRAP_KEY)
     uid2 = api_keys_db.create_user("second-admin", is_admin=True)

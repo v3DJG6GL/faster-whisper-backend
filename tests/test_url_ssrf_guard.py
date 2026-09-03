@@ -35,13 +35,13 @@ import threading
 
 import pytest
 
-import net_policy
-import url_download as udl
+from faster_whisper_backend.core import net_policy
+from faster_whisper_backend.url import download as udl
 
 SECRET = b"INTERNAL-SECRET-" * 64
 PUBLIC_BODY = b"\xff\xfb\x90\x44" + b"\x00" * 4092  # plausible MPEG audio head
 
-REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from faster_whisper_backend.paths import REPO_ROOT
 
 
 def _run(coro):
@@ -142,8 +142,11 @@ def guard_tree(tmp_path, monkeypatch):
     root.mkdir()
     shutil.copytree(os.path.join(REPO_ROOT, "ytdlp_plugins"),
                     root / "ytdlp_plugins")
-    (root / "net_policy.py").write_text(
-        (open(os.path.join(REPO_ROOT, "net_policy.py"), encoding="utf-8").read())
+    policy_dir = root / "faster_whisper_backend" / "core"
+    policy_dir.mkdir(parents=True)
+    (policy_dir / "net_policy.py").write_text(
+        (open(os.path.join(REPO_ROOT, "faster_whisper_backend", "core", "net_policy.py"),
+              encoding="utf-8").read())
         + '\n_real = address_is_forbidden\n'
           'def address_is_forbidden(addr):\n'
           '    return False if addr == "127.0.0.2" else _real(addr)\n',
@@ -332,7 +335,7 @@ def test_guard_copy_agrees_with_net_policy_address_by_address(guard_tree):
     child = subprocess.run(
         [sys.executable, "-c",
          "import importlib.util,sys,json\n"
-         f"spec=importlib.util.spec_from_file_location('np', {os.path.join(os.path.dirname(guard_tree), 'net_policy.py')!r})\n"
+         f"spec=importlib.util.spec_from_file_location('np', {os.path.join(os.path.dirname(guard_tree), 'faster_whisper_backend', 'core', 'net_policy.py')!r})\n"
          "m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
          "addrs=json.loads(sys.argv[1])\n"
          "print(json.dumps([m.address_is_forbidden(a) for a in addrs]))",

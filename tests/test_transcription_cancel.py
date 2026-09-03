@@ -2,8 +2,8 @@
 endpoint flags a progress id, and the handler's stage checks abort the
 request with 499 instead of soft-failing onward."""
 
-import bgm_separation
-import diarization
+from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import diarization
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "cafe" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
@@ -157,7 +157,7 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
 # --- job mirror stage transitions --------------------------------------------
 
 def test_stage_transition_clears_mirrored_progress(app_module):
-    import jobs
+    from faster_whisper_backend.core import jobs
     pid = "feedf00d" * 4
     jid = jobs.job_start("transcribe", id="job-mirror-test", model="m")
     app_module._JOB_BY_PID[pid] = "job-mirror-test"
@@ -241,7 +241,7 @@ def test_cancel_inside_diarization_stage_is_not_a_soft_fail(
 
 def test_cancel_inside_translation_stage_is_not_a_soft_fail(
         client, app_module, monkeypatch):
-    import translation
+    from faster_whisper_backend.audio import translation
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     # The decode loop's own check runs BEFORE each segment's progress tick,
@@ -283,7 +283,7 @@ def test_in_flight_progress_id_is_treated_as_absent(client, app_module):
 
 def test_text_translations_in_flight_progress_id_is_treated_as_absent(
         client, app_module, monkeypatch):
-    import translation
+    from faster_whisper_backend.audio import translation
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
@@ -350,7 +350,7 @@ def test_owner_map_is_pruned_with_the_stale_sweep(app_module):
 # --- the first seed is not a stage transition --------------------------------
 
 def test_first_seed_keeps_job_start_model(app_module):
-    import jobs
+    from faster_whisper_backend.core import jobs
     pid = "f00dfeed" * 4
     jobs.job_start("transcribe", id="job-seed-test", model="large-v3")
     app_module._JOB_BY_PID[pid] = "job-seed-test"
@@ -375,7 +375,7 @@ def test_first_seed_keeps_job_start_model(app_module):
 
 
 def test_stage_transition_clears_mirrored_total_bytes(app_module):
-    import jobs
+    from faster_whisper_backend.core import jobs
     pid = "ba5eba11" * 4
     jobs.job_start("transcribe", id="job-bytes-test", model="m")
     app_module._JOB_BY_PID[pid] = "job-bytes-test"
@@ -420,7 +420,7 @@ def test_task_cancellation_records_status_cancelled(client, app_module,
 
 
 def test_cancelled_request_is_classified_cancelled(client, app_module):
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
     app_module._BATCH_CANCELLED.add(_PID)
     try:
         r = _post(client, progress_id=_PID)

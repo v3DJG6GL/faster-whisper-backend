@@ -42,7 +42,7 @@ def test_timing_without_kind_keeps_earlier_values(tx_store):
 def test_migration_adds_columns_to_old_db(tmp_path):
     """A DB created before the recent-jobs columns migrates on init_db and
     its old rows still render (kind None, stages [], key_label '')."""
-    import recent_transcriptions_store as mod
+    from faster_whisper_backend.stats import recent_transcriptions_store as mod
 
     path = str(tmp_path / "old.sqlite3")
     conn = sqlite3.connect(path)
@@ -264,14 +264,14 @@ def test_clear_all(tx_store):
 # ---------------------------------------------------------------------------
 
 def test_truncate_steps_drops_malformed():
-    import recent_transcriptions_store as ts
+    from faster_whisper_backend.stats import recent_transcriptions_store as ts
     steps = [("ok", "a", "b"), "bad", ("short",), [1, 2], ("x", "y", "z")]
     out = ts._truncate_steps(steps)
     assert out == [["ok", "a", "b"], ["x", "y", "z"]]
 
 
 def test_truncate_steps_front_trim(monkeypatch):
-    import recent_transcriptions_store as ts
+    from faster_whisper_backend.stats import recent_transcriptions_store as ts
     monkeypatch.setattr(ts, "_CAP_STEPS_JSON", 80)
     steps = [(f"label{i}", "x" * 20, "y" * 20) for i in range(10)]
     out = ts._truncate_steps(steps)

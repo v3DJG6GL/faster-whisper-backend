@@ -15,7 +15,7 @@ import threading
 
 import pytest
 
-import captures_reapply
+from faster_whisper_backend.captures import reapply as captures_reapply
 
 # The module's canonical idle state (start() reads _state["status"]).
 _IDLE = {

@@ -7,14 +7,14 @@ import logging
 
 import pytest
 
-import system_stats
+from faster_whisper_backend.runtime import system_stats
 
 _KEY = "bootstrap-key-with-enough-entropy-1234"
 
 
 def test_existing_key_below_todays_floor_is_silently_accepted(
         api_keys_db, monkeypatch, caplog):
-    import main
+    from faster_whisper_backend import main
     main._bootstrap_admin_from_env(_KEY)
     h = api_keys_db.hash_key(_KEY)
     assert api_keys_db._KEY_INDEX.get(h) is not None
@@ -29,7 +29,7 @@ def test_existing_key_below_todays_floor_is_silently_accepted(
 
 
 def test_new_weak_key_is_still_refused(api_keys_db, monkeypatch, caplog):
-    import main
+    from faster_whisper_backend import main
     with caplog.at_level(logging.ERROR, logger="whisper-server"):
         main._bootstrap_admin_from_env("short")
     assert any("too weak" in r.getMessage() for r in caplog.records)
@@ -37,7 +37,7 @@ def test_new_weak_key_is_still_refused(api_keys_db, monkeypatch, caplog):
 
 
 def test_revoked_key_raises_bootstrap_admin_error(api_keys_db):
-    import main
+    from faster_whisper_backend import main
     main._bootstrap_admin_from_env(_KEY)
     h = api_keys_db.hash_key(_KEY)
     uid2 = api_keys_db.create_user("second-admin", is_admin=True)
@@ -73,7 +73,7 @@ def test_lifespan_passes_bootstrap_errors_through_unwrapped(
 
 
 def test_fatal_api_keys_init_leaves_no_tasks_behind(app_module, monkeypatch):
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
 
     def _boom(_path):
         raise OSError("read-only")

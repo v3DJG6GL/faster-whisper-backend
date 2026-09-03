@@ -132,7 +132,7 @@ fi
 
 # GPU: ctranslate2 (and, with --full, onnxruntime-gpu's CUDA provider) dlopen
 # the pip-installed NVIDIA .so libs but do not search site-packages, and
-# main.py's CUDA-lib preloader is Windows-only — put the lib dirs on the
+# faster_whisper_backend/main.py's CUDA-lib preloader is Windows-only — put the lib dirs on the
 # loader path via the unit, mirroring Dockerfile.gpu's LD_LIBRARY_PATH.
 # Dirs that don't exist (lean GPU install ships only cublas+cudnn) are
 # skipped by the loader.
@@ -165,7 +165,7 @@ Environment=WHISPER_DATA_DIR=${REPO_DIR}/data
 Environment=WHISPER_MODELS_DIR=${REPO_DIR}/models
 Environment=WHISPER_LOG_FILE=${REPO_DIR}/logs/whisper.log
 ${NVIDIA_ENV_LINE}
-# 'python main.py' runs uvicorn via main's __main__; matches what the
+# 'python main.py' is the shim over faster_whisper_backend/main.py; matches what the
 # cross-platform self-restart (os.execv) re-execs.
 ExecStart=${PY} ${REPO_DIR}/main.py
 Restart=always
@@ -176,7 +176,7 @@ WantedBy=multi-user.target
 EOF
 
 # Pre-create the state dirs the unit pins above, owned by the service user
-# (api_keys_store refuses to start when it cannot create its db dir; main.py
+# (api_keys_store refuses to start when it cannot create its db dir; faster_whisper_backend/main.py
 # soft-fails to stderr-only logging when logs/ cannot be created).
 mkdir -p "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/logs"
 chown -R "$RUN_USER" "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/logs"

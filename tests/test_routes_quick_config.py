@@ -149,7 +149,7 @@ def test_recent_open_mode(client):
 
 
 def test_recent_query_filters_raw_and_final(client):
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
     recent_transcriptions_store.record_trace(
         request_id="q1", model="m", raw="patient hat Fieber",
         final="Patient hat Fieber", created_ts=1.0)
@@ -177,7 +177,7 @@ def test_recent_query_filters_raw_and_final(client):
 def test_recent_get_no_longer_filters_by_query_string(client):
     """A dictation term must not be accepted in the URL — that is the whole
     point of the POST endpoint. A stray ?q= is ignored, not honoured."""
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
     recent_transcriptions_store.record_trace(
         request_id="q1", model="m", raw="patient hat Fieber",
         final="Patient hat Fieber", created_ts=1.0)
@@ -222,11 +222,11 @@ def test_post_patch_oversized_map_400(client, app_module):
     the stamping loop walks the caller's dict twice on the event loop. It was
     already doomed (Pydantic 422s it inside save_overrides) — this only moves
     the rejection earlier and makes it a 400 like the sibling map guards."""
-    import quick_config_routes
+    from faster_whisper_backend.quick_config import routes as quick_config_routes
 
     slug = _expose_first_map_rule(app_module)
     assert slug is not None, "fixture config has no callback:map rule"
-    import config_store
+    from faster_whisper_backend import config_store
 
     cap = quick_config_routes._MAP_MAX_ENTRIES
     # Track the schema rather than re-pinning the literal: this still catches
@@ -250,7 +250,7 @@ def test_post_patch_oversized_map_400(client, app_module):
 
 def test_post_patch_map_at_cap_is_not_rejected_by_the_guard(client, app_module):
     """Exactly at the cap must still pass the ingress guard (off-by-one)."""
-    import quick_config_routes
+    from faster_whisper_backend.quick_config import routes as quick_config_routes
 
     slug = _expose_first_map_rule(app_module)
     assert slug is not None
@@ -275,7 +275,7 @@ def test_patch_response_hides_global_capture_count_from_nonadmin(
 
     calls = []
 
-    import captures_store
+    from faster_whisper_backend.captures import store as captures_store
     orig = captures_store.count
 
     def _counting(*a, **kw):
@@ -378,7 +378,7 @@ def test_post_patch_map_total_over_cap_400(client, app_module, monkeypatch):
     valid on their own must save together (the page always posts every dirty
     map in one request), which the old guard — reusing the per-map cap for
     the sum — made impossible."""
-    import quick_config_routes
+    from faster_whisper_backend.quick_config import routes as quick_config_routes
 
     slug_a, slug_b = _expose_two_map_rules(app_module)
     assert slug_a and slug_b, "fixture config has no callback:map rule"
@@ -477,7 +477,7 @@ def test_redact_collapses_hidden_rule_ordinals():
     """config_store's guard messages read `rule {idx} ({slug!r}) entry {e}:`
     — after the slug swap the ordinal still gave away the hidden rule's list
     position and entry count."""
-    import quick_config_routes as q
+    from faster_whisper_backend.quick_config import routes as q
 
     class _Perms:
         def can_see_rule(self, rule):
@@ -520,7 +520,7 @@ def test_concurrent_patches_do_not_lose_an_update(client, app_module,
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
-    import config_store
+    from faster_whisper_backend import config_store
 
     slug_a = _expose_first_regex_list_rule(app_module)
     slug_b = _expose_first_map_rule(app_module)

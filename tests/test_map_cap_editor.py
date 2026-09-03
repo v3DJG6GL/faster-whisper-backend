@@ -5,8 +5,8 @@ bare count with a never-disabled add button, so RULE_EDITOR_JS now bakes a
 schema-derived default into the editor itself.
 """
 
-import config_store
-import web_common
+from faster_whisper_backend import config_store
+from faster_whisper_backend.core import web_common
 
 
 def test_settings_ships_map_entry_cap(client):

@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 
-import quick_config_state as q
+from faster_whisper_backend.quick_config import state as q
 
 
 # ---------------------------------------------------------------------------

@@ -16,8 +16,8 @@ import time
 
 import pytest
 
-import config as cfg
-import translation
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.audio import translation
 
 
 # ---------------------------------------------------------------------------
@@ -875,8 +875,8 @@ def _install_fake_progress(monkeypatch):
     rec["cb"])."""
     import contextlib
 
-    import download_progress
-    import jobs
+    from faster_whisper_backend.runtime import download_progress
+    from faster_whisper_backend.core import jobs
 
     rec = {"cb": None, "jobs": []}
 

@@ -33,10 +33,10 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
-import api_keys_store
-import web_common
-from web_common import require_admin_webui_host
-from auth import require_admin
+from faster_whisper_backend.auth import api_keys_store
+from faster_whisper_backend.core import web_common
+from faster_whisper_backend.core.web_common import require_admin_webui_host
+from faster_whisper_backend.auth.dependencies import require_admin
 
 logger = logging.getLogger("whisper-api")
 
@@ -157,8 +157,8 @@ async def api_keys_page() -> HTMLResponse:
     dependencies=[Depends(require_admin)],
 )
 async def list_users_api() -> JSONResponse:
-    import config as cfg
-    import config_store
+    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend import config_store
     # Snapshot of every exposed (non-terminal) rule's tag list. Lets
     # the matrix UI render the "Will see: N of M rules" preview live
     # as the admin edits a user's tags — no extra roundtrip.
@@ -265,7 +265,7 @@ async def usage_api(days: int = 0) -> JSONResponse:
     (no server-side name resolution needed). Per-user totals include every
     one of that user's keys plus any pre-feature backfilled usage; per-key
     totals cover only real keys (backfill has no key id)."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     # Window in UTC epoch-hours; the N-day window is reckoned in the server's
     # local timezone (admin/operator perspective). days=0 => lifetime.
     start_hour = None
@@ -446,7 +446,7 @@ async def client_settings_meta_api() -> JSONResponse:
     a 503 (the page must still render its users), with `unavailable: true`
     so the drawers say "store down" instead of the falsehood "nothing
     stored" — the flag, not the drawer endpoints, is what tells the admin."""
-    import client_settings_store
+    from faster_whisper_backend.client_settings import store as client_settings_store
     unavailable = False
     try:
         # Off the loop like the /v1 siblings (client_settings_routes.py).
@@ -479,7 +479,7 @@ async def export_client_settings_api(uid: str) -> Response:
     include the account's saved API keys; the WebUI's two-press guard warns
     before this endpoint is ever hit."""
     user = await _cs_user_or_404(uid)
-    import client_settings_store
+    from faster_whisper_backend.client_settings import store as client_settings_store
     try:
         row = await asyncio.to_thread(client_settings_store.get, uid)
     except client_settings_store.StoreUnavailable as e:
@@ -511,7 +511,7 @@ async def import_client_settings_api(
     server copy and applies it through its normal merge path — no
     device-side changes needed."""
     await _cs_user_or_404(uid)
-    import client_settings_store
+    from faster_whisper_backend.client_settings import store as client_settings_store
     try:
         # Off the loop: force_put json.dumps + encodes the whole blob BEFORE
         # the 512 KB cap can reject it (see client_settings_routes.put).
@@ -547,7 +547,7 @@ async def delete_client_settings_api(uid: str) -> JSONResponse:
     a device still holding version N gets a 409 on its next push, correctly
     surfacing the deletion (see client_settings_store.delete)."""
     await _cs_user_or_404(uid)
-    import client_settings_store
+    from faster_whisper_backend.client_settings import store as client_settings_store
     try:
         deleted = await asyncio.to_thread(client_settings_store.delete, uid)
     except client_settings_store.StoreUnavailable as e:

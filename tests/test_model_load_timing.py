@@ -11,8 +11,8 @@ import sys
 import time
 import types
 
-import main
-import system_stats
+from faster_whisper_backend import main
+from faster_whisper_backend.runtime import system_stats
 from conftest import FakeModel
 
 

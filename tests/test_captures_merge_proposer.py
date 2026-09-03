@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-import captures_merge_proposer as P
+from faster_whisper_backend.captures import merge_proposer as P
 
 
 # ---------------------------------------------------------------------------

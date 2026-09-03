@@ -13,7 +13,7 @@ import threading
 
 import pytest
 
-import restart_service
+from faster_whisper_backend.admin import restart_service
 
 
 class _FakeTimer:
@@ -217,7 +217,7 @@ def test_winsw_restart_bang_flushes_before_exit(monkeypatch):
 
 def test_flush_before_exit_swallows_failures(monkeypatch):
     """A broken flush must never block the restart itself."""
-    import system_stats
+    from faster_whisper_backend.runtime import system_stats
 
     def _boom():
         raise RuntimeError("nvml exploded")

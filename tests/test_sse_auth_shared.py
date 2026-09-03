@@ -38,7 +38,7 @@ def _status_of(fn, *args, **kwargs):
 
 
 def test_bearer_header_admits_with_page_access(client, make_user_key):
-    import auth
+    from faster_whisper_backend.auth import dependencies as auth
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"stats": "all"})
     rec = auth.resolve_user_for_page_sse(_fake_request(headers=bearer(raw)),
@@ -48,14 +48,14 @@ def test_bearer_header_admits_with_page_access(client, make_user_key):
 
 
 def test_no_credential_is_401(client, make_user_key):
-    import auth
+    from faster_whisper_backend.auth import dependencies as auth
     make_user_key("root", is_admin=True)
     assert _status_of(auth.resolve_user_for_page_sse,
                       _fake_request(), "stats") == 401
 
 
 def test_no_page_access_is_403_with_the_page_named(client, make_user_key):
-    import auth
+    from faster_whisper_backend.auth import dependencies as auth
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"stats": "all"})
     try:
@@ -70,13 +70,13 @@ def test_no_page_access_is_403_with_the_page_named(client, make_user_key):
 
 
 def test_open_mode_loopback_gets_the_synthetic_admin(client):
-    import auth
+    from faster_whisper_backend.auth import dependencies as auth
     rec = auth.resolve_user_for_page_sse(_fake_request(), "stats")
     assert rec["is_admin"] is True
 
 
 def test_open_mode_off_allowlist_is_401(client):
-    import auth
+    from faster_whisper_backend.auth import dependencies as auth
     assert _status_of(auth.resolve_user_for_page_sse,
                       _fake_request(client=_REMOTE), "stats") == 401
 
@@ -84,8 +84,8 @@ def test_open_mode_off_allowlist_is_401(client):
 def test_existing_sse_gates_confine_open_mode_to_the_admin_hosts(client):
     # The per-module SSE gates must agree with the shared core: an
     # off-allowlist open-mode caller gets 401 from both stream endpoints.
-    import quick_config_routes
-    import stats_routes
+    from faster_whisper_backend.quick_config import routes as quick_config_routes
+    from faster_whisper_backend.stats import routes as stats_routes
     for dep in (stats_routes._require_stats_page_sse,
                 quick_config_routes.require_user_or_admin_sse):
         assert _status_of(dep, _fake_request(client=_REMOTE)) == 401, dep
@@ -94,8 +94,8 @@ def test_existing_sse_gates_confine_open_mode_to_the_admin_hosts(client):
 def test_own_scope_user_is_admitted_to_the_stats_stream(client, make_user_key):
     """stats="own" is a real page grant (v2): the SSE gate admits the
     caller; what they then see is the StatsScope's business."""
-    import auth
-    import stats_routes
+    from faster_whisper_backend.auth import dependencies as auth
+    from faster_whisper_backend.stats import routes as stats_routes
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("carol", pages={"stats": "own"})
     rec = auth.resolve_user_for_page_sse(_fake_request(headers=bearer(raw)),

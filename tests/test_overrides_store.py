@@ -5,8 +5,8 @@ import sqlite3
 
 import pytest
 
-import config as cfg
-import api_keys_store as ak
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.auth import api_keys_store as ak
 
 
 @pytest.fixture

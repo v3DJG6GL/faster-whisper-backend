@@ -74,9 +74,9 @@ def start() -> dict[str, Any]:
 
 def _run() -> None:
     try:
-        import capture_samples_store
-        import config as cfg
-        from captures_routes import (
+        from faster_whisper_backend.captures import samples_store as capture_samples_store
+        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.captures.routes import (
             _build_merged_wav, _merged_wav_patch, _global_silence_ms,
             _rebuild_lock,
         )

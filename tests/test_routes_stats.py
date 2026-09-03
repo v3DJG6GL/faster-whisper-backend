@@ -1,14 +1,16 @@
 """Integration tests for the /stats router (host-gated dashboard)."""
 
 import json
+import pathlib
 
 from starlette.testclient import TestClient
 
-import jobs
+from faster_whisper_backend.core import jobs
 import re
-import metrics
+from faster_whisper_backend.stats import metrics
 import pytest
-import translation
+from faster_whisper_backend.audio import translation
+from faster_whisper_backend.paths import REPO_ROOT
 
 
 def test_stats_page_loopback_ok(client):
@@ -48,7 +50,7 @@ def test_stats_usage_ok(client):
 # list to loopback so a non-loopback host exercises the host gate (403 before
 # the page-permission check).
 def test_stats_snapshot_host_gate_rejects_non_loopback(app_module, monkeypatch):
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
     )
@@ -86,7 +88,7 @@ def test_header_activity_cluster_shell_on_every_page(client):
     """The cluster shell rides {{SEV_PILLS}}, so every template gets it;
     it renders as an empty, default-hidden shell (no live values baked into
     the cached page shell) and the JS that fills it ships alongside."""
-    import web_common
+    from faster_whisper_backend.core import web_common
 
     frag = web_common.sev_pills_html()
     assert frag.index('id="hact"') < frag.index('class="sevpills"')
@@ -105,7 +107,7 @@ def test_header_activity_cluster_inert_on_headerless_hub(client):
     syncAllowed()'s header-scoped selector can never reveal the button. The
     JS must bail before installing its timer/listeners, and the hub CSS hides
     the empty flex item the shared fragment still ships."""
-    import web_common
+    from faster_whisper_backend.core import web_common
 
     assert "document.querySelector('header')" in web_common.ACTIVITY_CLUSTER_JS
     html = client.get("/").text
@@ -131,7 +133,7 @@ def test_header_activity_cluster_js_contract():
     field the lite stream actually emits, a fatal EventSource close must be
     retried, and staleness is signalled via `title` (the data-tip CSS
     tooltip is scoped to the .vtag chip)."""
-    import web_common
+    from faster_whisper_backend.core import web_common
 
     js = web_common.ACTIVITY_CLUSTER_JS
     cancel = js[js.index("transcriptions/cancel/"):]
@@ -158,10 +160,10 @@ def test_stage_hues_have_one_definition():
     /logs receipt, /quick-config traces, captures) reference the tokens
     rather than carrying their own hexes."""
     import pathlib
-    import main as app_main
-    import quick_config_routes
-    import stats_routes
-    import web_common
+    from faster_whisper_backend import main as app_main
+    from faster_whisper_backend.quick_config import routes as quick_config_routes
+    from faster_whisper_backend.stats import routes as stats_routes
+    from faster_whisper_backend.core import web_common
 
     assert set(web_common.STAGE_COLORS) == {
         "downloading", "separating", "vad", "transcribing", "diarizing", "translating"}
@@ -173,7 +175,7 @@ def test_stage_hues_have_one_definition():
     assert web_common.STAGE_COLORS["transcribing"] == "#93b76f"
     assert web_common.STAGE_COLORS["diarizing"] == "#c68fb4"
     assert web_common.STAGE_COLORS["translating"] == "#4dd0c4"
-    js = pathlib.Path(stats_routes.__file__).with_name("static").joinpath("stats.js").read_text(encoding="utf-8")
+    js = pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
     for stage in web_common.STAGE_COLORS:
         assert f"var(--stage-{stage})" in stats_routes._STATS_VIEWER_HTML
         assert f"var(--stage-{stage})" in quick_config_routes._QUICK_CONFIG_HTML
@@ -196,7 +198,7 @@ def test_nav_css_defines_the_magenta_token():
     border, .hact-bar.vram fill). Pages that define no --magenta of their own
     (/dictate, /settings/api-keys) rely on NAV_CSS's :root carrying it --
     without it the ring is invisible and the VRAM bar always reads empty."""
-    import web_common
+    from faster_whisper_backend.core import web_common
 
     assert "--magenta: #d2a8ff;" in web_common.NAV_CSS
 
@@ -212,7 +214,7 @@ def test_stats_stream_frame_is_built_off_the_loop(client):
     import asyncio
     import inspect
 
-    import stats_routes
+    from faster_whisper_backend.stats import routes as stats_routes
 
     src = inspect.getsource(stats_routes.stats_stream)
     assert "await asyncio.to_thread(" in src
@@ -269,7 +271,7 @@ def test_log_stage_colors_flag_reaches_logs_page(client, app_module,
                                                 monkeypatch):
     """LOG_STAGE_COLORS is hot-mutable via the settings save path, so it
     must enter the render_page memo key and land in the viewer JS."""
-    import web_common
+    from faster_whisper_backend.core import web_common
 
     monkeypatch.setattr(app_module.cfg, "LOG_STAGE_COLORS", True,
                         raising=False)
@@ -309,7 +311,7 @@ def test_translate_run_registers_a_job(client, app_module, monkeypatch):
 
 
 def test_stats_page_host_gate_rejects_non_loopback(app_module, monkeypatch):
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
     )
@@ -361,7 +363,7 @@ _MACHINE_KEYS = {"gpu", "gpu_error", "host", "process", "models", "model_loads",
 
 
 def _user(scope, uid="ua", is_admin=False):
-    import auth
+    from faster_whisper_backend.auth import dependencies as auth
     return {"user_id": uid, "username": "alice", "key_id": "ka",
             "is_admin": is_admin,
             "permissions": auth.Permissions({"pages": {"stats": scope}},
@@ -377,7 +379,7 @@ def _seed_jobs():
 
 
 def test_stats_scope_rules(client, app_module, monkeypatch):
-    import stats_routes
+    from faster_whisper_backend.stats import routes as stats_routes
     admin = stats_routes.stats_scope_for(_user("all", is_admin=True))
     assert admin == stats_routes.ADMIN_SCOPE
     preview = stats_routes.stats_scope_for(_user("all", is_admin=True),
@@ -399,7 +401,7 @@ def test_own_scope_full_payload_is_coarse(client, tx_store):
     """Own scope: only the caller's jobs and recent rows, identities on
     (they are all theirs), the machine keys replaced by the `server`
     block."""
-    import stats_routes
+    from faster_whisper_backend.stats import routes as stats_routes
     metrics.record_transcription("m", 1.0, 0.5, "ok", 3, request_id="a1",
                                  user_id="ua")
     metrics.record_transcription("m", 2.0, 0.5, "ok", 3, request_id="b1",
@@ -422,7 +424,7 @@ def test_own_scope_full_payload_is_coarse(client, tx_store):
 
 
 def test_own_scope_lite_payload_scoped(client):
-    import stats_routes
+    from faster_whisper_backend.stats import routes as stats_routes
     a, b = _seed_jobs()
     try:
         snap = stats_routes._build_payload(
@@ -439,7 +441,7 @@ def test_own_scope_lite_payload_scoped(client):
 def test_own_scope_toggle_restores_machine(client, app_module, monkeypatch):
     """The /settings switch: machine keys come back for own-scope viewers,
     the job filter stays."""
-    import stats_routes
+    from faster_whisper_backend.stats import routes as stats_routes
     monkeypatch.setattr(app_module.cfg, "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS", True)
     a, b = _seed_jobs()
     try:
@@ -455,7 +457,7 @@ def test_own_scope_toggle_restores_machine(client, app_module, monkeypatch):
 def test_nonadmin_all_scope_unchanged(client):
     """stats="all" for a non-admin is today's behaviour: every job, machine
     visible, identities scrubbed — plus the cancel handle on their own row."""
-    import stats_routes
+    from faster_whisper_backend.stats import routes as stats_routes
     a, b = _seed_jobs()
     jobs.job_update(a, progress_id="pid-a")
     jobs.job_update(b, progress_id="pid-b")
@@ -494,8 +496,8 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     """The stream re-resolves its StatsScope when the config version moves
     (a permission edit) and ends only when the caller lost access."""
     import inspect
-    import config_store
-    import stats_routes
+    from faster_whisper_backend import config_store
+    from faster_whisper_backend.stats import routes as stats_routes
     from fastapi import HTTPException
     from test_sse_auth_shared import _fake_request
     from conftest import bearer
@@ -509,7 +511,7 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     req = _fake_request(headers=bearer(raw))
     seen = config_store.config_version()
     assert stats_routes._rescope_on_version_change(req, seen) is None
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     api_keys_store.set_user_permissions(uid, {"pages": {"stats": "own"}})
     res = stats_routes._rescope_on_version_change(req, seen)
     assert res is not None
@@ -526,7 +528,7 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
 # ---------------------------------------------------------------------------
 
 def _seed_usage(app_module, alice, bob, alice_key, bob_key):
-    import usage_store as us
+    from faster_whisper_backend.stats import usage_store as us
     h = us.now_hour()
     us.record_usage(key_id=alice_key, user_id=alice, audio_s=10.0, words=5,
                     status="ok", hour=h)
@@ -535,7 +537,7 @@ def _seed_usage(app_module, alice, bob, alice_key, bob_key):
 
 
 def _two_users(client, make_user_key):
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     _, raw_admin = make_user_key("root", is_admin=True)
     alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
     bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
@@ -622,7 +624,7 @@ def test_stats_page_ships_own_scope_chrome(client):
     assert 'id="scope-pill"' in html and 'your usage' in html
     assert "GS_LAYOUT_KEY += '-own'" in html
     assert "if (snap.machine === false) {" in html
-    js = open("static/stats.js", encoding="utf-8").read()
+    js = pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8").read()
     assert "not available for your scope" in js
 
 
@@ -639,7 +641,7 @@ def test_stats_page_removes_machine_tiles_for_own(client):
 
 
 def test_stats_usage_v2_params(client, app_module):
-    import usage_store as us
+    from faster_whisper_backend.stats import usage_store as us
     h = us.now_hour()
     us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5,
                     status="ok", hour=h, processing_s=2.0, job_id="j1", kind="file",
@@ -681,9 +683,9 @@ def test_snapshot_models_carry_size_meta(client, monkeypatch):
     """Loaded-model rows gain the ledger size with its provenance and the
     on-disk weight; the lookup is held for a minute because the stream
     rebuilds the payload every second and disk_size walks a directory."""
-    import model_sizes
-    import stats_routes
-    import system_stats
+    from faster_whisper_backend.runtime import model_sizes
+    from faster_whisper_backend.stats import routes as stats_routes
+    from faster_whisper_backend.runtime import system_stats
     calls = {"lookup": 0, "disk": 0}
 
     def _lookup(name, device, compute_type):
@@ -715,7 +717,7 @@ def test_stats_page_loads_static_stats_js(client):
     linked with the build version so the cacheable /static mount serves a
     fresh copy per build, and placed BEFORE the inline dashboard IIFE that
     reads its globals."""
-    import stats_routes
+    from faster_whisper_backend.stats import routes as stats_routes
     html = client.get("/stats").text
     tag = f'<script src="/static/stats.js?v={stats_routes.ASSET_VERSION}"></script>'
     assert tag in html
@@ -756,7 +758,7 @@ def test_stats_js_contract(client):
     promises: URL-mirrored state, stacked bars via uPlot's bars path, a
     keyboard-scrubbable chart with an aria-live readout, quartile levels for
     the hour grid, the v6 layout key, and the own-scope reload hook."""
-    js = open("static/stats.js", encoding="utf-8").read()
+    js = pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8").read()
     for s in ("history.replaceState", "uPlot.paths.bars(", "function quantileBreaks",
               "function parsePageQuery", "function pageQueryParams",
               "'ArrowLeft', 'ArrowRight', 'Home', 'End'", "usage-live",
@@ -775,7 +777,7 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
     with keyboard move/resize (GridStack has none), and the live rings'
     shared crosshair that freezes the readouts at the hovered second."""
     html = client.get("/stats").text
-    js = open("static/stats.js", encoding="utf-8").read()
+    js = pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8").read()
     assert 'id="layout-preset"' in html and 'id="edit-layout-btn"' in html
     assert 'id="layout-live"' in html
     for s in ("const GS_PRESETS = {", "staticGrid: true", "function setPreset(",
@@ -799,7 +801,7 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
 
 
 def test_lite_payload_and_activity_card_carry_the_gpu_gate(client):
-    import stats_routes
+    from faster_whisper_backend.stats import routes as stats_routes
     lite = stats_routes._build_payload(stats_routes.ADMIN_SCOPE, lite=True)
     assert set(lite["gpu_gate"]) == {"capacity", "held", "queue_depth", "oldest_wait_s"}
     html = client.get("/stats").text
@@ -809,8 +811,8 @@ def test_lite_payload_and_activity_card_carry_the_gpu_gate(client):
 def test_transcription_records_the_gate_wait(client):
     """A real request through the handler goes through the timed gate and
     lands a wait_s on its ledger rows (0 with a free slot, never None)."""
-    import recent_transcriptions_store
-    import usage_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    from faster_whisper_backend.stats import usage_store
     r = client.post("/v1/audio/transcriptions",
                     files={"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")},
                     data={"model": "whisper-1"})
@@ -820,13 +822,13 @@ def test_transcription_records_the_gate_wait(client):
     job = usage_store._require_conn().execute(
         "SELECT wait_s FROM usage_jobs ORDER BY created_ts DESC LIMIT 1").fetchone()
     assert job is not None and job["wait_s"] >= 0.0
-    import metrics
+    from faster_whisper_backend.stats import metrics
     assert metrics.gpu_gate is not None and metrics.gpu_gate.held == 0
 
 
 def test_stats_history_shape_step_cap_and_gate(client, make_user_key):
     import time
-    import system_metrics_store
+    from faster_whisper_backend.stats import system_metrics_store
     from conftest import bearer
     now = int(time.time()) // 10 * 10
     system_metrics_store.record(
@@ -855,9 +857,9 @@ def test_snapshot_carries_slot_busy(client):
 
 
 def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
-    import usage_store as us
+    from faster_whisper_backend.stats import usage_store as us
     from conftest import bearer
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     _, raw_admin = make_user_key("root", is_admin=True)
     alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
     bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
@@ -885,7 +887,7 @@ def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
 
 
 def _seed_jobs_pages(n, user_id="ua", **kw):
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
     for i in range(n):
         recent_transcriptions_store.record_timing(
             request_id=f"{user_id}-{i}", model="m", audio_s=10.0,
@@ -957,7 +959,7 @@ def test_stats_page_jobs_table_v2(client):
     assert "fetch('/stats/jobs?' + p.toString()" in html
     assert "rj-stage-row wait" in html and "end to end" in html
     assert "colspan=\"11\"" in html
-    import web_common
+    from faster_whisper_backend.core import web_common
     js = web_common.ACTIVITY_CLUSTER_JS
     assert "window._fwCancelJob = function(pid, c)" in js
 
@@ -967,7 +969,7 @@ def test_stats_page_ring_scrubber_range_mode_and_tail_cards(client):
     sparks fed from /stats/history in range mode, the turnaround and
     failures tiles fed from /stats/tail, turnaround in the headline."""
     html = client.get("/stats").text
-    js = open("static/stats.js", encoding="utf-8").read()
+    js = pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8").read()
     assert 'id="live-range"' in html and 'id="ring-scrub"' in html
     assert "fetch('/stats/history?metric='" in html
     assert "if (!u || liveMode !== 'live') return;" in html

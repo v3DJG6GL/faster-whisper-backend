@@ -52,7 +52,7 @@ def test_state_includes_inherited_defaults(client, make_user_key, app_module):
     """The /state payload ships the live global value for every overridable field
     so the editor can render `inherits <value>` (and seed `+ override` from it).
     The source must match the /settings per-model page byte-for-byte."""
-    import admin_routes
+    from faster_whisper_backend.admin import routes as admin_routes
     _, _, h = _admin(make_user_key)
     j = client.get(f"{OV}/state", headers=h).json()
 
@@ -219,7 +219,7 @@ def test_per_key_config_unknown_profile_400(client, make_user_key):
 # --- profile rename (key migration + reference cascade) --------------------
 
 def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de", BEAM_SIZE=8)
     uid, _ = make_user_key("alice", is_admin=False)
@@ -288,7 +288,7 @@ def test_rename_profile_old_name_case_insensitive(client, make_user_key):
     before both the lookup and the binding cascade. A direct API caller passing
     `old` in mixed case must still match (200, not a spurious 404) and the same
     lowercased name must flow to the reference cascade."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     _, _, h = _admin(make_user_key)
     _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
     uid, _ = make_user_key("alice", is_admin=False)

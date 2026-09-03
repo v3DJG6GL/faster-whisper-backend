@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-import diarization
+from faster_whisper_backend.audio import diarization
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -362,7 +362,7 @@ def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
     run ended — after a mid-job re-key to another model, that model's idle
     clock / stats 'last used' moved for a job that never touched it."""
     import asyncio
-    import system_stats
+    from faster_whisper_backend.runtime import system_stats
     cfg = diarization.cfg
     monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
     monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)

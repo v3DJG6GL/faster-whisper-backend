@@ -44,8 +44,8 @@ import time
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 
-import config as cfg
-import system_stats
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.runtime import system_stats
 
 logger = logging.getLogger("whisper-server")
 
@@ -523,8 +523,8 @@ def _predownload_gguf(repo: str, quant: "str | None",
 
     from huggingface_hub import HfApi, hf_hub_download
 
-    import download_progress
-    import jobs
+    from faster_whisper_backend.runtime import download_progress
+    from faster_whisper_backend.core import jobs
 
     pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
     files = [s.rfilename
@@ -680,7 +680,7 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
         logger.info("[translate] model %s loaded on %s in %.1fs",
                     ref, device, load_secs)
         try:
-            import metrics
+            from faster_whisper_backend.stats import metrics
             metrics.record_model_load(_STATS_PREFIX + ref, load_secs)
         except Exception:  # noqa: BLE001 — stats only
             pass

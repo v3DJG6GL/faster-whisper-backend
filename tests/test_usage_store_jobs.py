@@ -46,7 +46,7 @@ def test_init_rebuilds_legacy_hourly_with_kind_and_sessions(tmp_path):
     """A pre-kind DB (PK hour×key) is rebuilt to hour×key×kind; old rows read
     as kind='dictation' with one session per request, and the parking table
     is gone. A second init is a no-op."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     path = str(tmp_path / "legacy.sqlite3")
     raw = sqlite3.connect(path)
     raw.executescript(_LEGACY_SCHEMA)
@@ -126,7 +126,7 @@ def test_init_reclassifies_unknown_rows_as_dictation(tmp_path):
     """A DB migrated by the first per-kind build holds its history as
     'unknown'; the next start folds it into 'dictation', summing into a
     dictation row that shares the hour×key, and a further start is a no-op."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     path = str(tmp_path / "unknown.sqlite3")
     usage_store.init_db(path)
     conn = usage_store._require_conn()
@@ -766,7 +766,7 @@ def test_init_adds_v2_ledger_columns_to_a_pre_v2_db(tmp_path):
     """A DB whose ledger tables predate wait_s / error_class / stage errors
     gains the columns on init_db; old rows read with the defaults; a
     second init is a no-op; a fresh DB needs no ALTER at all."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     path = str(tmp_path / "prev2.sqlite3")
     raw = sqlite3.connect(path)
     raw.executescript(_PRE_V2_JOBS_SCHEMA)

@@ -212,7 +212,7 @@ def test_clear_all(reports_store_db):
 # ---------------------------------------------------------------------------
 
 def test_evict_closed_before_open(reports_store_db, monkeypatch):
-    import config
+    from faster_whisper_backend import config
     monkeypatch.setattr(config, "REPORTS_MAX", 2, raising=False)
     rs = reports_store_db
     r1, _ = _submit(rs, request_id="r1")
@@ -225,7 +225,7 @@ def test_evict_closed_before_open(reports_store_db, monkeypatch):
 
 
 def test_evict_cap_disabled(reports_store_db, monkeypatch):
-    import config
+    from faster_whisper_backend import config
     monkeypatch.setattr(config, "REPORTS_MAX", 0, raising=False)
     rs = reports_store_db
     for i in range(5):
@@ -238,14 +238,14 @@ def test_evict_cap_disabled(reports_store_db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_sweep_retention_disabled(reports_store_db, monkeypatch):
-    import config
+    from faster_whisper_backend import config
     monkeypatch.setattr(config, "REPORTS_RETENTION_DAYS", 0, raising=False)
     _submit(reports_store_db)
     assert reports_store_db.sweep_retention() == 0
 
 
 def test_sweep_retention_deletes_old(reports_store_db, monkeypatch):
-    import config, time
+    from faster_whisper_backend import config; import time
     monkeypatch.setattr(config, "REPORTS_RETENTION_DAYS", 30, raising=False)
     rs = reports_store_db
     rid, _ = _submit(rs, request_id="old", trace_ts=1.0)
@@ -263,7 +263,7 @@ def test_sweep_retention_deletes_old(reports_store_db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_truncate_steps_front_trim(reports_store_db, monkeypatch):
-    import reports_store as rs
+    from faster_whisper_backend.admin import reports_store as rs
     monkeypatch.setattr(rs, "_CAP_STEPS_JSON", 80)
     steps = [(f"l{i}", "x" * 20, "y" * 20) for i in range(10)] + [("bad",), 5]
     out = rs._truncate_steps(steps)
@@ -334,7 +334,7 @@ def test_request_id_is_truncated(reports_store_db):
 def test_merged_corrections_are_re_capped(reports_store_db):
     """three_way_merge_corrections returns an uncapped union, so resubmitting
     the same request_id with fresh keys grew one row without bound."""
-    import text_corrections
+    from faster_whisper_backend.core import text_corrections
     rs = reports_store_db
     for batch in range(4):
         _submit(rs, request_id="grow", corrections=[

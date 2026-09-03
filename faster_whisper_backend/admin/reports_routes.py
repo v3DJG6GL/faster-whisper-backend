@@ -39,13 +39,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from pydantic import BaseModel, Field, field_validator
 
-import api_keys_store
-import config as cfg
-import rate_limit
-import reports_store
-import web_common
-from web_common import require_user_webui_host
-from auth import get_current_user, require_admin, require_page
+from faster_whisper_backend.auth import api_keys_store
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.auth import rate_limit
+from faster_whisper_backend.admin import reports_store
+from faster_whisper_backend.core import web_common
+from faster_whisper_backend.core.web_common import require_user_webui_host
+from faster_whisper_backend.auth.dependencies import get_current_user, require_admin, require_page
 
 router = APIRouter()
 

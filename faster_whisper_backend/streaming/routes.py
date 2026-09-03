@@ -47,17 +47,18 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
-import auth
-import config_store
-import jobs
-import metrics
-import rate_limit
-import receipt_hold
-import store_common
-import web_common
-from streaming_session import StreamConfig, StreamSession
-from streaming_transport import ENCODED_FORMATS, RAW_FORMATS, make_transport
-from streaming_vad import SAMPLE_RATE, make_endpointer
+from faster_whisper_backend.auth import dependencies as auth
+from faster_whisper_backend import config_store
+from faster_whisper_backend.core import jobs
+from faster_whisper_backend.stats import metrics
+from faster_whisper_backend.auth import rate_limit
+from faster_whisper_backend.core import receipt_hold
+from faster_whisper_backend.core import store_common
+from faster_whisper_backend.core import web_common
+from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
+from faster_whisper_backend.streaming.transport import ENCODED_FORMATS, RAW_FORMATS, make_transport
+from faster_whisper_backend.streaming.vad import SAMPLE_RATE, make_endpointer
+from faster_whisper_backend.paths import REPO_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -411,7 +412,7 @@ def _parse_translate_expect(conf: dict) -> "dict | None":
 
 @router.websocket("/v1/audio/transcriptions/stream")
 async def transcribe_stream(ws: WebSocket) -> None:
-    import main  # lazy — avoids the import cycle and is loaded by connect time
+    from faster_whisper_backend import main  # lazy — avoids the import cycle and is loaded by connect time
 
     cfg = main.cfg
     if not getattr(cfg, "STREAMING_ENABLED", True):
@@ -878,7 +879,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             """Persist a fine-tuning capture for this utterance, mirroring the batch
             route's eligibility gate (sampling / count cap / size / duration / disk)."""
             try:
-                import captures_store as _cap_store
+                from faster_whisper_backend.captures import store as _cap_store
                 audio = info["audio"]
                 pcm_bytes = int(getattr(audio, "size", 0)) * 2
                 cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
@@ -1045,7 +1046,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # source='stream' tags the row so /quick-config can chip it as live
             # dictation vs a file-upload (batch) transcription.
             try:
-                import quick_config_state
+                from faster_whisper_backend.quick_config import state as quick_config_state
                 quick_config_state.record_trace(
                     request_id=rid, model=final_model, raw=raw_text,
                     steps=steps if steps is not None else [], final=final_text,
@@ -1537,7 +1538,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
 
 # --- Dictation page -----------------------------------------------------------
-_DICTATE_HTML_PATH = os.path.join(os.path.dirname(__file__), "static", "dictate.html")
+_DICTATE_HTML_PATH = os.path.join(REPO_ROOT, "static", "dictate.html")
 
 
 @router.get("/dictate", response_class=HTMLResponse,

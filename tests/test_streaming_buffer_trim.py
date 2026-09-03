@@ -16,8 +16,8 @@ import asyncio
 import numpy as np
 
 from _streaming_helpers import const_pcm
-from streaming_session import StreamConfig, StreamSession
-from streaming_vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
+from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
+from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
 
 SR = 16000
 WORD_SEC = 0.2  # deterministic word grid: word i spans [i*0.2, (i+1)*0.2)

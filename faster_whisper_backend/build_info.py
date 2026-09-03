@@ -20,6 +20,7 @@ import platform
 import subprocess
 import time
 import uuid
+from faster_whisper_backend.paths import REPO_ROOT
 
 SERVER_NAME = "faster-whisper-backend"
 
@@ -40,7 +41,7 @@ def _resolve() -> str:
     try:
         out = subprocess.run(
             ["git", "describe", "--tags", "--always", "--dirty"],
-            cwd=os.path.dirname(os.path.abspath(__file__)),
+            cwd=REPO_ROOT,
             capture_output=True,
             text=True,
             timeout=5,

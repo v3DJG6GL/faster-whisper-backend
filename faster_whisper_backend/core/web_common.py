@@ -19,8 +19,8 @@ from typing import Callable
 from fastapi import HTTPException, Request, status
 from starlette.requests import HTTPConnection
 
-import config as cfg
-import config_store
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_store
 
 
 # IPv4-mapped-in-IPv6 prefix surfaces on Windows dual-stack `::` binds when a

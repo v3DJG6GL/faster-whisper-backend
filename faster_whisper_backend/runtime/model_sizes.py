@@ -28,9 +28,10 @@ import time
 # behind gpu_mem_free_bytes() returning None.
 import psutil
 
-import system_stats
+from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.paths import REPO_ROOT
 
-_REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_DIR = REPO_ROOT  # the checkout, not this package — see paths.py
 # Same two-line precedence rule config_store states for config.local.json:
 # WHISPER_MODEL_SIZES_PATH > WHISPER_DATA_DIR/model_sizes.json >
 # /data/model_sizes.json (Windows: <repo>\data — bare metal by definition, and
@@ -97,7 +98,7 @@ def _read(path: str = PATH) -> dict[str, dict]:
 def _write(models: dict[str, dict], path: str = PATH) -> None:
     # Lazy: config_store drags in pydantic and the whole AdminConfig schema,
     # which this module's importers (system_stats) must not pay for.
-    from config_store import _save_lock
+    from faster_whisper_backend.config_store import _save_lock
     with _save_lock(path):
         _write_locked(models, path)
 
@@ -106,10 +107,10 @@ def _write_locked(models: dict[str, dict], path: str = PATH) -> None:
     """The write itself; the caller holds config_store._save_lock(path)
     (a plain threading.Lock per path, NOT reentrant — never nest)."""
     global _cache, _cache_mtime
-    from config_store import _atomic_write_json
+    from faster_whisper_backend.config_store import _atomic_write_json
     doc = {"version": SCHEMA_VERSION, "models": models}
     _atomic_write_json(doc, path, sort_keys=True, tmp_prefix=".model_sizes")
-    import store_common
+    from faster_whisper_backend.core import store_common
     store_common.secure_file(path)
     _cache = models
     try:
@@ -142,7 +143,7 @@ def record(name: str, device: str, compute_type: str, vram_bytes: int, *,
         # never break a load.
         with contextlib.ExitStack() as stack:
             try:
-                from config_store import _save_lock
+                from faster_whisper_backend.config_store import _save_lock
                 stack.enter_context(_save_lock(PATH))
                 write = _write_locked
             except OSError:
@@ -258,7 +259,7 @@ def _model_path(name: str) -> "str | None":
 
     The prefixes are the ones preload.stats_key mints: `uvr:`, `gguf:`,
     `pyannote:`, and a bare id for whisper."""
-    import config as _cfg
+    from faster_whisper_backend import config as _cfg
     root = (getattr(_cfg, "DOWNLOAD_ROOT", "") or "").strip()
     if name.startswith("uvr:"):
         model = name[4:]

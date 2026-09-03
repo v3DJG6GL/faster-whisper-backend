@@ -7,7 +7,7 @@ import logging
 
 import pytest
 
-import translation
+from faster_whisper_backend.audio import translation
 from tests.conftest import bearer
 
 URL = "/v1/text/translations"
@@ -159,7 +159,7 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
     bracket: over the ceiling the request 429s with the config field named,
     and a parked dictation receipt is handed back instead of left to the
     sweeper."""
-    import receipt_hold
+    from faster_whisper_backend.core import receipt_hold
 
     _enable(app_module, monkeypatch, TRANSLATE_RATE_PER_MIN=2)
     _stub_translate(monkeypatch)
@@ -190,7 +190,7 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
 def _open_key():
     """The identity a request from the open-mode `client` fixture resolves to
     — the synthetic admin's user_id."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     return api_keys_store.OPEN_MODE_USER["user_id"]
 
 
@@ -510,7 +510,7 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
     """The in-flight acquire sits OUTSIDE the handler's try, so its 429 never
     reached the `except HTTPException` release. The parked dictation receipt
     must still be released — not left for the sweeper to log 90 s later."""
-    import receipt_hold
+    from faster_whisper_backend.core import receipt_hold
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
@@ -534,7 +534,7 @@ def test_validation_reject_releases_the_held_receipt(client, app_module,
     """Every validation exit (422 shape, 413 size) runs inside the same
     release-on-reject bracket as the rate hit: a parked receipt must be
     handed back on a malformed request, not left for the 90 s sweeper."""
-    import receipt_hold
+    from faster_whisper_backend.core import receipt_hold
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
@@ -624,7 +624,7 @@ def test_translation_error_records_status_error(client, app_module,
     assert recorded and recorded[-1]["status"] == "error"
     assert recorded[-1]["kind"] == "translate"
     assert "key_label" in recorded[-1]
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
     rows = recent_transcriptions_store.list_recent(limit=5)
     assert rows and rows[0]["status"] == "error"
 

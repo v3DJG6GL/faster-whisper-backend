@@ -7,7 +7,7 @@ that drops one of them reintroduces the reviewed bug.
 import os
 import re
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from faster_whisper_backend.paths import REPO_ROOT as REPO
 
 
 def _read(*rel):

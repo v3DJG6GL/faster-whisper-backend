@@ -10,9 +10,9 @@ import os
 
 import pytest
 
-import url_download
-import url_media_store
-from url_download import UrlDownloadError, UrlMediaInfo
+from faster_whisper_backend.url import download as url_download
+from faster_whisper_backend.url import media_store as url_media_store
+from faster_whisper_backend.url.download import UrlDownloadError, UrlMediaInfo
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "beef" * 8
@@ -310,7 +310,7 @@ def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
     so TestClient startups never touch the real tempdir.)"""
     import time as _time
 
-    import main as app_module
+    from faster_whisper_backend import main as app_module
 
     fake_tmp = tmp_path / "faketmp"
     fake_tmp.mkdir()
@@ -349,7 +349,7 @@ def test_reclaim_hard_restart_orphans_covers_pipeline_copies_and_uploads(
     ever see them — under the same 60 s age guard."""
     import time as _time
 
-    import main as app_module
+    from faster_whisper_backend import main as app_module
 
     fake_tmp = tmp_path / "faketmp"
     fake_tmp.mkdir()

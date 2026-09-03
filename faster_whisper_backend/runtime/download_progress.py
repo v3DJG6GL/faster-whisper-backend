@@ -293,7 +293,7 @@ def _record_download(label: str, done_bytes: int, secs: float, *,
     cycle; every failure is swallowed — recording is bookkeeping, not
     control flow."""
     try:
-        import metrics
+        from faster_whisper_backend.stats import metrics
         metrics.record_download(model=label, seconds=secs,
                                 bytes_done=done_bytes,
                                 status="ok" if ok else "error")

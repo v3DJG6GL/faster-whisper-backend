@@ -45,19 +45,19 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
-import config as cfg
-import config_store
-import store_common
-import quick_config_state
-import recent_transcriptions_store
-import web_common
-from admin_routes import (
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_store
+from faster_whisper_backend.core import store_common
+from faster_whisper_backend.quick_config import state as quick_config_state
+from faster_whisper_backend.stats import recent_transcriptions_store
+from faster_whisper_backend.core import web_common
+from faster_whisper_backend.admin.routes import (
     _apply_hot_changes,
     _canon_rules,
 )
-from web_common import require_user_webui_host
-import auth
-from auth import Permissions, get_current_user, require_page
+from faster_whisper_backend.core.web_common import require_user_webui_host
+from faster_whisper_backend.auth import dependencies as auth
+from faster_whisper_backend.auth.dependencies import Permissions, get_current_user, require_page
 
 logger = logging.getLogger("whisper-api")
 
@@ -590,7 +590,7 @@ async def _apply_rules_patch_locked(
     captures_count = 0
     if user.get("is_admin") and getattr(cfg, "CAPTURES_RECORDING_ENABLED", False):
         try:
-            import captures_store
+            from faster_whisper_backend.captures import store as captures_store
             captures_count = await asyncio.to_thread(captures_store.count)
         except Exception as _e:
             logger.warning("[pipeline-rules] capture count lookup failed: %s", _e)
@@ -718,7 +718,7 @@ async def v1_get_my_usage(
     `tz` is the caller's IANA zone name; days — including 'today' — are
     reckoned in it, and in the server's local zone when it is absent or
     unknown. See usage_store.document for the shape."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     try:
         w = usage_store.parse_window_params(
             days=days, from_day=from_, to_day=to, all_time=all, with_=with_,
@@ -802,7 +802,7 @@ async def get_state(
     # an empty chip map.
     reported_chips: dict[str, dict[str, Any]] = {}
     try:
-        import reports_store
+        from faster_whisper_backend.admin import reports_store
         uid = user.get("user_id") or ""
         if uid:
             # Off the loop like every sibling read in this file (_recent_page,
@@ -868,7 +868,7 @@ async def get_my_usage(
     total = dict(zero)
     if uid:
         try:
-            import usage_store
+            from faster_whisper_backend.stats import usage_store
             if tz_midnight and tz_midnight > 0:
                 start_hour = usage_store.hour_for_ts(float(tz_midnight))
             else:
@@ -940,7 +940,7 @@ async def post_reapply_rules(
         raise HTTPException(status.HTTP_403_FORBIDDEN, "admin only")
     if not getattr(cfg, "CAPTURES_RECORDING_ENABLED", False):
         return JSONResponse({"status": "idle", "note": "captures disabled"})
-    import captures_reapply
+    from faster_whisper_backend.captures import reapply as captures_reapply
     return JSONResponse(captures_reapply.start())
 
 
@@ -956,7 +956,7 @@ async def get_reapply_rules_status(
 ) -> JSONResponse:
     if not user.get("is_admin"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "admin only")
-    import captures_reapply
+    from faster_whisper_backend.captures import reapply as captures_reapply
     return JSONResponse(captures_reapply.status())
 
 

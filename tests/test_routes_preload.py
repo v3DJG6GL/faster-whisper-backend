@@ -9,11 +9,11 @@ boundary as test_stage_models — nothing here imports pyannote or onnxruntime.
 
 import asyncio
 
-import bgm_separation
-import diarization
-import model_sizes
-import preload
-import translation
+from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.runtime import model_sizes
+from faster_whisper_backend.runtime import preload
+from faster_whisper_backend.audio import translation
 
 from conftest import bearer
 

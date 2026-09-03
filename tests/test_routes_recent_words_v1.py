@@ -17,7 +17,7 @@ def _seed(uid, tokens, *, request_id, bigrams=None):
     """Insert a recent-transcription row with verbatim tokens/bigrams for `uid`.
     record_trace stores them as-is (the tokenizer runs upstream), so the test
     controls the suggestion pool directly."""
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
     recent_transcriptions_store.record_trace(
         request_id=request_id, model="m", raw="raw", final="final",
         tokens=tokens, bigrams=bigrams or [], user_id=uid,
@@ -86,7 +86,7 @@ def test_v1_recent_words_limit_param_clamps(client, app_module):
 # --------------------------------------------------------------------------
 
 def test_v1_recent_words_scoped_per_user(client, make_user_key):
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     make_user_key("root", is_admin=True)  # flips lockdown
     uid_a = api_keys_store.create_user("alice", is_admin=False)
     api_keys_store.set_user_permissions(uid_a, {"pages": {"quick_config": "own"}})
@@ -106,7 +106,7 @@ def test_v1_recent_words_scoped_per_user(client, make_user_key):
 
 
 def test_v1_recent_words_admin_sees_all(client, make_user_key):
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     _uid_root, raw_root = make_user_key("root", is_admin=True)
     uid_a = api_keys_store.create_user("alice", is_admin=False)
     _seed(uid_a, ["alpha-word"], request_id="ra")

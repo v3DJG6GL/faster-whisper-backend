@@ -19,7 +19,7 @@ def _reset_vad_reprocess_state():
     """captures_vad_reprocess is the one worker conftest never resets; pin
     it to the module's idle shape so a finished run cannot leak into the
     next test's status read."""
-    import captures_vad_reprocess as vr
+    from faster_whisper_backend.captures import vad_reprocess as vr
 
     def _reset():
         vr._worker = None
@@ -118,7 +118,7 @@ def test_host_gate_rejects_non_loopback(app_module, monkeypatch):
     # /captures is user-tier (require_user_webui_host / USER_WEBUI_ALLOWED_HOSTS).
     # The list defaults OPEN, so narrow it to loopback to exercise the host gate:
     # a non-loopback host is then 403 before the page-permission check.
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
     )
@@ -150,9 +150,9 @@ def test_merge_member_scope_guard_precedes_state_checks(
     checks."""
     import wave
 
-    import audio_transcode
-    import auth
-    import captures_routes
+    from faster_whisper_backend.audio import transcode as audio_transcode
+    from faster_whisper_backend.auth import dependencies as auth
+    from faster_whisper_backend.captures import routes as captures_routes
     from fastapi import HTTPException
 
     cs = captures_store_db
@@ -234,8 +234,8 @@ def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
     sample — deleting it would auto-dissolve (and destroy the merged WAV of) an
     admin-locked sample, bypassing the same guard dissolve_sample_api enforces.
     Regression guard for _assert_member_sample_not_locked."""
-    import auth
-    import captures_routes
+    from faster_whisper_backend.auth import dependencies as auth
+    from faster_whisper_backend.captures import routes as captures_routes
     from fastapi import HTTPException
 
     cs = captures_store_db
@@ -274,7 +274,7 @@ def _fake_wav_transcode(monkeypatch):
     """Route audio_transcode to a stub that writes a tiny valid WAV."""
     import wave
 
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
 
     def _fake(src_path, dst_path):
         with wave.open(dst_path, "wb") as w:
@@ -294,8 +294,8 @@ def test_merge_member_404_body_uniform_missing_vs_foreign(
     the merge surface. The guard's uniform 404 STATUS is pointless if the
     body still says "capture X not found" for missing ids but "not found"
     for foreign ones — the body becomes the existence oracle."""
-    import auth
-    import captures_routes
+    from faster_whisper_backend.auth import dependencies as auth
+    from faster_whisper_backend.captures import routes as captures_routes
     from fastapi import HTTPException
 
     cs = captures_store_db
@@ -327,7 +327,7 @@ def test_capture_404_body_uniform_missing_vs_foreign(
         client, make_user_key, monkeypatch, tmp_path):
     """GET /captures/api/{cid}: a scope=own caller gets byte-identical 404
     bodies for a nonexistent id and for another user's id."""
-    import captures_store as cs
+    from faster_whisper_backend.captures import store as cs
 
     make_user_key("root", is_admin=True)
     owner_uid, _raw_owner = make_user_key("alice", pages={"captures": "own"})
@@ -354,8 +354,8 @@ def test_locked_member_mutations_blocked_at_endpoints(client, make_user_key):
     PATCH, DELETE and reprocess on a locked sample's member all 409 for the
     non-admin owner. (Removing the _assert_member_sample_not_locked call
     sites would pass the helper test but fail this one.)"""
-    import capture_samples_store as gs
-    import captures_store as cs
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
@@ -382,8 +382,8 @@ def test_nonadmin_can_unlock_but_not_edit_a_locked_sample(client, make_user_key)
     """`is_locked` is writable by any captures-scoped caller, so it must also
     be RELEASABLE by them — otherwise it is a one-way switch only an admin can
     undo. A non-admin may send the unlock and nothing else while locked."""
-    import capture_samples_store as gs
-    import captures_store as cs
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
@@ -422,8 +422,8 @@ def test_locked_member_view_does_not_rewrite_text(
     """Viewing a locked sample's member — or the sample itself — must not
     self-heal-rewrite the member's stored text: the lock freezes what was
     curated. An UNLOCKED member still self-heals on view (contrast case)."""
-    import capture_samples_store as gs
-    import captures_store as cs
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
@@ -456,7 +456,7 @@ def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
     only their OWN rows (the global cross-user breakdown must not leak);
     an admin keeps the global numbers. Pins the user_id= plumbing from the
     route into captures_store.count/counts_by_status."""
-    import captures_store as cs
+    from faster_whisper_backend.captures import store as cs
 
     _uid_root, raw_root = make_user_key("root", is_admin=True)
     uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
@@ -493,8 +493,8 @@ def _insert_sample_at(conn, gs, sid, *, ts, user_id="alice"):
 
 
 def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key):
-    import capture_samples_store as gs
-    import captures_store as cs
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
@@ -529,8 +529,8 @@ def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key)
 
 
 def test_last_page_reports_no_cursor(client, make_user_key):
-    import capture_samples_store as gs
-    import captures_store as cs
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
@@ -569,7 +569,7 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     cross-user read-by-key path with no log line — DSARs are answered from
     this log stream."""
     import logging
-    import captures_store as cs
+    from faster_whisper_backend.captures import store as cs
 
     make_user_key("root", is_admin=True)
     uid_owner, _raw_owner = make_user_key("alice", pages={"captures": "own"})
@@ -599,7 +599,7 @@ def test_propose_merges_audits_cross_user_read(client, make_user_key,
     """Proposals carry other users' capture previews + resolved usernames to a
     scope=all non-admin; that read is audited like the read-by-id siblings."""
     import logging
-    import captures_routes
+    from faster_whisper_backend.captures import routes as captures_routes
 
     make_user_key("root", is_admin=True)
     uid_owner, _raw_owner = make_user_key("alice", pages={"captures": "own"})
@@ -631,8 +631,8 @@ def test_preview_merge_audio_is_not_cacheable(client, make_user_key,
     cacheable by any shared cache in front of the app — the two sibling audio
     routes both send Cache-Control: no-store."""
     import wave
-    import audio_merge
-    import captures_routes
+    from faster_whisper_backend.audio import merge as audio_merge
+    from faster_whisper_backend.captures import routes as captures_routes
 
     _uid, raw = make_user_key("root", is_admin=True)
 
@@ -690,7 +690,7 @@ def _export_manifest(only_status="ready"):
     import io
     import tarfile
 
-    import captures_routes
+    from faster_whisper_backend.captures import routes as captures_routes
 
     blob = b"".join(captures_routes._build_export_stream(only_status, False))
     with tarfile.open(fileobj=io.BytesIO(blob), mode="r:gz") as tar:
@@ -758,7 +758,7 @@ def test_rebuild_lock_survives_prune_while_in_flight():
     _get_rebuild_lock skips sids pinned in _rebuild_inflight, so a second
     caller for the same sid gets the SAME object instead of minting a new one
     (which would let two rebuilds run concurrently)."""
-    import captures_routes as cr
+    from faster_whisper_backend.captures import routes as cr
 
     saved_locks = dict(cr._rebuild_locks)
     saved_inflight = dict(cr._rebuild_inflight)
@@ -789,7 +789,7 @@ def test_rebuild_lock_survives_prune_while_in_flight():
 def test_rebuild_lock_contextmanager_pins_and_unpins():
     """_rebuild_lock registers the sid in _rebuild_inflight for the whole
     handout-to-release span and cleans up after itself."""
-    import captures_routes as cr
+    from faster_whisper_backend.captures import routes as cr
 
     sid = "sid-ctx-pin"
     with cr._rebuild_lock(sid):
@@ -803,7 +803,7 @@ def test_rebuild_lock_contextmanager_pins_and_unpins():
 
 def _grouped_capture(cs, monkeypatch, tmp_path, sid):
     """One ready capture packed into sample `sid`; returns the capture id."""
-    import captures_routes as cr
+    from faster_whisper_backend.captures import routes as cr
 
     cid = _ready_capture(cs, monkeypatch, tmp_path, language="de",
                          translations=None)
@@ -823,8 +823,8 @@ def test_reprocess_vad_worker_uses_pinned_rebuild_lock(
     acquire and mint a SECOND Lock for a concurrent regenerate."""
     import inspect
 
-    import captures_routes as cr
-    import captures_vad_reprocess as vr
+    from faster_whisper_backend.captures import routes as cr
+    from faster_whisper_backend.captures import vad_reprocess as vr
 
     assert "_get_rebuild_lock" not in inspect.getsource(vr)
 
@@ -854,7 +854,7 @@ def test_create_sample_rejects_member_already_grouped(
     back instead of persisting member-less."""
     from fastapi import HTTPException
 
-    import captures_routes as cr
+    from faster_whisper_backend.captures import routes as cr
 
     cs = captures_store_db
     cid = _grouped_capture(cs, monkeypatch, tmp_path, "b" * 32)

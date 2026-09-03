@@ -113,7 +113,7 @@ services:
     # SERVER fetches it, so it can be aimed at addresses the client cannot
     # reach (a LAN service, the cloud metadata endpoint 169.254.169.254).
     # The app already refuses those on every hop — probe, redirect and
-    # yt-dlp alike, with the resolved IP pinned (net_policy.py +
+    # yt-dlp alike, with the resolved IP pinned (faster_whisper_backend/core/net_policy.py +
     # ytdlp_plugins/). This is the defence-in-depth half: deny the private
     # ranges at the network layer too, on the HOST, so a bug in the guard is
     # not the only thing in the way. Give the service its own subnet first

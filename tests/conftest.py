@@ -60,10 +60,10 @@ def _reset_singletons():
 
     Store connections themselves are reset by re-`init`/`init_db` in the
     per-store fixtures (each reassigns the module `_conn` global)."""
-    import metrics
-    import captures_merge_proposer as proposer
-    import captures_reapply
-    import api_keys_store
+    from faster_whisper_backend.stats import metrics
+    from faster_whisper_backend.captures import merge_proposer as proposer
+    from faster_whisper_backend.captures import reapply as captures_reapply
+    from faster_whisper_backend.auth import api_keys_store
 
     # metrics ring buffers / counters
     metrics.req_count.clear()
@@ -95,7 +95,7 @@ def _reset_singletons():
 
     # central running-jobs registry
     try:
-        import jobs
+        from faster_whisper_backend.core import jobs
         jobs._reset_for_tests()
     except Exception:
         pass
@@ -103,7 +103,7 @@ def _reset_singletons():
     # held dictation receipts — a leftover would be swept into a later test's
     # log output, and would count against the pending cap.
     try:
-        import receipt_hold
+        from faster_whisper_backend.core import receipt_hold
         receipt_hold._reset_for_tests()
     except Exception:
         pass
@@ -113,19 +113,19 @@ def _reset_singletons():
     # would keep a later eviction test's model pinned by a plan this test
     # owned, and the failure would look like a broken evictor.
     try:
-        import preload
+        from faster_whisper_backend.runtime import preload
         preload._reset_for_tests()
     except Exception:
         pass
     try:
-        import system_stats as _ss
+        from faster_whisper_backend.runtime import system_stats as _ss
         _ss.set_warm_predicate(None)
     except Exception:
         pass
 
     # session-store caches (the index is rebuilt by init_db)
     try:
-        import sessions_store
+        from faster_whisper_backend.auth import sessions_store
         sessions_store._reset_for_tests()
     except Exception:
         pass
@@ -136,7 +136,7 @@ def _reset_singletons():
     # reports_routes._rate is a rate_limit.FixedWindow, which registers
     # itself in rate_limit._ALL on construction.
     try:
-        import rate_limit
+        from faster_whisper_backend.auth import rate_limit
         rate_limit.reset_all()
     except Exception:
         pass
@@ -145,7 +145,7 @@ def _reset_singletons():
     # finally would strand an id and make the cap tests' exact-count pins
     # order-dependent.
     try:
-        import streaming_routes
+        from faster_whisper_backend.streaming import routes as streaming_routes
         streaming_routes._active_sessions.clear()
     except Exception:
         pass
@@ -153,7 +153,7 @@ def _reset_singletons():
     # translation model LRU (module-global cache of loaded GGUF models —
     # tests only ever put stubs in it, but they must not leak across tests).
     try:
-        import translation
+        from faster_whisper_backend.audio import translation
         translation._models.clear()
         translation._last_used.clear()
         # A leaked lease makes every later eviction test see a refusal.
@@ -165,7 +165,7 @@ def _reset_singletons():
     # ever put stubs in them, but a leaked pipeline/lease would change what a
     # later eviction or cache-hit test observes.
     try:
-        import diarization
+        from faster_whisper_backend.audio import diarization
         diarization._pipeline = None
         diarization._pipeline_key = None
         diarization._leases.clear()
@@ -173,7 +173,7 @@ def _reset_singletons():
     except Exception:
         pass
     try:
-        import bgm_separation
+        from faster_whisper_backend.audio import bgm_separation
         bgm_separation._separator = None
         bgm_separation._separator_key = None
         bgm_separation._leases.clear()
@@ -183,7 +183,7 @@ def _reset_singletons():
 
     # Loaded-model registry behind /stats: stage tests register stubs in it.
     try:
-        import system_stats
+        from faster_whisper_backend.runtime import system_stats
         system_stats._loaded_models.clear()
     except Exception:
         pass
@@ -191,7 +191,7 @@ def _reset_singletons():
     # Persisted measured-size ledger: drop the in-memory read cache so a test
     # that repoints PATH doesn't inherit the previous test's file contents.
     try:
-        import model_sizes
+        from faster_whisper_backend.runtime import model_sizes
         model_sizes._reset_for_tests()
     except Exception:
         pass
@@ -199,7 +199,7 @@ def _reset_singletons():
     # /v1/text/translations rate limiter (module-global fixed-window counter):
     # clear so a rate-limit test can't 429 a later translate test. Guarded on
     # sys.modules — don't force the heavy main import on pure-unit tests.
-    _main = sys.modules.get("main")
+    _main = sys.modules.get("faster_whisper_backend.main")
     if _main is not None:
         try:
             _main._text_translate_rate.clear()
@@ -230,8 +230,8 @@ def _reset_singletons():
 @pytest.fixture
 def captures_store_db(tmp_path):
     """captures_store initialised on a temp DB + temp audio dir."""
-    import captures_store
-    import captures_merge_proposer as proposer
+    from faster_whisper_backend.captures import store as captures_store
+    from faster_whisper_backend.captures import merge_proposer as proposer
 
     db = str(tmp_path / "captures.sqlite3")
     audio = str(tmp_path / "captures_audio")
@@ -250,7 +250,7 @@ def captures_store_db(tmp_path):
 @pytest.fixture
 def groups_store_db(captures_store_db):
     """capture_samples_store sharing the captures connection (as in main)."""
-    import capture_samples_store
+    from faster_whisper_backend.captures import samples_store as capture_samples_store
     capture_samples_store.init_db(
         captures_store_db._require_conn(), captures_store_db._require_audio_dir()
     )
@@ -261,7 +261,7 @@ def groups_store_db(captures_store_db):
 
 @pytest.fixture
 def tx_store(tmp_path):
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
     recent_transcriptions_store.init_db(str(tmp_path / "recent.sqlite3"))
     recent_transcriptions_store._insert_counter = 0
     yield recent_transcriptions_store
@@ -274,7 +274,7 @@ def tx_store(tmp_path):
 
 @pytest.fixture
 def sm_store(tmp_path):
-    import system_metrics_store
+    from faster_whisper_backend.stats import system_metrics_store
     system_metrics_store.init_db(str(tmp_path / "system_metrics.sqlite3"))
     yield system_metrics_store
     try:
@@ -286,7 +286,7 @@ def sm_store(tmp_path):
 
 @pytest.fixture
 def usage_store_db(tmp_path):
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     usage_store.init_db(str(tmp_path / "usage.sqlite3"))
     yield usage_store
     try:
@@ -298,7 +298,7 @@ def usage_store_db(tmp_path):
 
 @pytest.fixture
 def reports_store_db(tmp_path):
-    import reports_store
+    from faster_whisper_backend.admin import reports_store
     reports_store.init_db(str(tmp_path / "reports.sqlite3"))
     yield reports_store
     try:
@@ -310,7 +310,7 @@ def reports_store_db(tmp_path):
 
 @pytest.fixture
 def client_settings_store_db(tmp_path):
-    import client_settings_store
+    from faster_whisper_backend.client_settings import store as client_settings_store
     client_settings_store.init_db(str(tmp_path / "client_settings.sqlite3"))
     yield client_settings_store
     try:
@@ -323,7 +323,7 @@ def client_settings_store_db(tmp_path):
 
 @pytest.fixture
 def api_keys_db(tmp_path):
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     api_keys_store.init_db(str(tmp_path / "api_keys.sqlite3"))
     api_keys_store._LAST_USED_CACHE.clear()
     yield api_keys_store
@@ -525,7 +525,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # unconditionally — without this it would wipe the REAL /data/url_media.
     monkeypatch.setenv("WHISPER_URL_MEDIA_DIR", str(tmp_path / "url_media"))
 
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     # Re-apply env onto the already-imported config singleton.
     importlib.reload(cfg)
     monkeypatch.setattr(cfg, "PRELOAD_MODELS", [], raising=False)
@@ -537,7 +537,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # state between tests. Repoint both at a per-test temp file. The path is a
     # default ARG (bound at def time), so we rewrite each function's defaults
     # in addition to the module-level constant.
-    import config_store
+    from faster_whisper_backend import config_store
     _tmp_overrides = str(tmp_path / "config.local.json")
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", _tmp_overrides, raising=False)
     for _fn in (config_store.load_overrides, config_store.save_overrides):
@@ -549,7 +549,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # model_sizes has the same default-ARG trap: _read/_write bind path=PATH at
     # def time, so a route test that loads a model would otherwise write the
     # measured-size ledger into the REAL /data (or <repo>\data).
-    import model_sizes
+    from faster_whisper_backend.runtime import model_sizes
     _tmp_sizes = str(tmp_path / "model_sizes.json")
     monkeypatch.setattr(model_sizes, "PATH", _tmp_sizes, raising=False)
     for _fn in (model_sizes._read, model_sizes._write):
@@ -558,7 +558,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
             _defaults[-1] = _tmp_sizes
             monkeypatch.setattr(_fn, "__defaults__", tuple(_defaults), raising=False)
 
-    import main
+    from faster_whisper_backend import main
     importlib.reload(main)
 
     async def _fake_loader(name: str, *, lease: bool = False):
@@ -577,9 +577,9 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # GC'd-without-close() sqlite3.Connection doesn't emit ResourceWarning noise
     # (one per store × every route test). capture_samples_store shares the
     # captures connection, so just drop its reference.
-    import api_keys_store, reports_store, recent_transcriptions_store
-    import usage_store, captures_store, capture_samples_store
-    import sessions_store, client_settings_store
+    from faster_whisper_backend.auth import api_keys_store; from faster_whisper_backend.admin import reports_store; from faster_whisper_backend.stats import recent_transcriptions_store
+    from faster_whisper_backend.stats import usage_store; from faster_whisper_backend.captures import store as captures_store; from faster_whisper_backend.captures import samples_store as capture_samples_store
+    from faster_whisper_backend.auth import sessions_store; from faster_whisper_backend.client_settings import store as client_settings_store
     for _mod in (api_keys_store, sessions_store, reports_store,
                  recent_transcriptions_store, usage_store, captures_store,
                  client_settings_store):
@@ -621,7 +621,7 @@ def make_user_key(app_module):
     Uses the SAME api_keys_store module instance the running app uses (the
     lifespan re-inits it onto the temp DB), so the lockdown index stays in
     sync with what the auth dependency reads."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
 
     def _create(username, is_admin=False, pages=None):
         uid = api_keys_store.create_user(username, is_admin=is_admin)

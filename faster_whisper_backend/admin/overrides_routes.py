@@ -24,12 +24,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-import api_keys_store
-import config as cfg
-import config_store
-import effective_config
-import web_common
-from auth import require_admin
+from faster_whisper_backend.auth import api_keys_store
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_store
+from faster_whisper_backend import effective_config
+from faster_whisper_backend.core import web_common
+from faster_whisper_backend.auth.dependencies import require_admin
 
 logger = logging.getLogger("whisper.overrides")
 
@@ -55,7 +55,7 @@ def _build_defaults() -> dict[str, Any]:
     the field. Reuses the per-model page's serializer (admin_routes._resolved_value),
     so the overrides page's `inherits <value>` hint matches /settings byte-for-byte.
     Rulelist fields resolve to None and are never read by the scalar field rows."""
-    import admin_routes
+    from faster_whisper_backend.admin import routes as admin_routes
     return {name: admin_routes._resolved_value(name) for name in _build_field_meta()}
 
 
@@ -64,7 +64,7 @@ def _build_groups() -> list[dict[str, Any]]:
     filtered to the per-identity overridable scalars, so section names + order
     match the rest of the admin UI (Decode / Advanced / VAD / Live streaming /
     Output …). Load-time + server sections drop out entirely."""
-    import admin_routes
+    from faster_whisper_backend.admin import routes as admin_routes
     target = config_store.LOCKABLE_FIELDS
     out: list[dict[str, Any]] = []
     for section, subs in admin_routes._FIELD_GROUPS:
@@ -234,7 +234,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                             f"could not write config.local.json: {e}")
 
-    import admin_routes
+    from faster_whisper_backend.admin import routes as admin_routes
     applied = await admin_routes._apply_hot_changes(written)
     client_host = request.client.host if request.client else "?"
     logger.info("[overrides] profiles update from=%s saved=%s",
@@ -305,7 +305,7 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     #    scan with per-row UPDATEs under the store lock.
     affected = await asyncio.to_thread(api_keys_store.rename_profile_refs, old, new)
 
-    import admin_routes
+    from faster_whisper_backend.admin import routes as admin_routes
     applied = await admin_routes._apply_hot_changes(written)
     client_host = request.client.host if request.client else "?"
     logger.info("[overrides] profile renamed %r->%r from=%s bindings=%d",

@@ -41,9 +41,10 @@ import time
 import urllib.parse
 import urllib.request
 
-import config as cfg
-import net_policy
-from store_common import log_safe
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.core import net_policy
+from faster_whisper_backend.core.store_common import log_safe
+from faster_whisper_backend.paths import REPO_ROOT
 
 logger = logging.getLogger("whisper-api")
 
@@ -233,8 +234,7 @@ _PROBE_POOL = concurrent.futures.ThreadPoolExecutor(
 # nothing can fall through to an unguarded opener. It is installed here for
 # the in-process probe and by ytdlp_plugins/run_guarded_yt_dlp.py for the
 # download subprocess.
-GUARD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                         "ytdlp_plugins")
+GUARD_DIR = os.path.join(REPO_ROOT, "ytdlp_plugins")
 GUARD_LAUNCHER = os.path.join(GUARD_DIR, "run_guarded_yt_dlp.py")
 GUARD_MODULE = os.path.join(GUARD_DIR, "fwb_ssrf_guard", "yt_dlp_plugins",
                             "extractor", "fwb_ssrf_guard.py")
@@ -569,7 +569,7 @@ def _parse_progress_line(line: str) -> "tuple[int | None, int | None] | None":
 def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str]":
     """The exact yt-dlp CLI invocation (separate function so tests can pin
     it). The URL is the only client-supplied element and follows '--'."""
-    from streaming_transport import ffmpeg_exe
+    from faster_whisper_backend.streaming.transport import ffmpeg_exe
 
     return [
         # NOT `-m yt_dlp`: the launcher installs the SSRF guard first and

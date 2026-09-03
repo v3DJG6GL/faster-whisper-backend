@@ -151,7 +151,7 @@ def record_trace(
         # SSE broadcast still fires below.
         pass
     try:
-        import api_keys_store
+        from faster_whisper_backend.auth import api_keys_store
         username = api_keys_store.get_username(user_id)
     except Exception:
         username = None
@@ -180,8 +180,8 @@ def record_trace(
     }
     if request_id:
         try:
-            import config as cfg
-            import recent_transcriptions_store
+            from faster_whisper_backend import config as cfg
+            from faster_whisper_backend.stats import recent_transcriptions_store
             recent_transcriptions_store.record_trace(
                 request_id=request_id,
                 model=model,

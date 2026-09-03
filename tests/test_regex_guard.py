@@ -20,7 +20,7 @@ accepted before.
 
 import pytest
 
-import regex_guard as g
+from faster_whisper_backend.core import regex_guard as g
 
 
 # The exact reproduction: entry 0 manufactures the run, entry 1 detonates on it.
@@ -133,7 +133,7 @@ def test_ordinary_rules_are_still_accepted():
 def test_shipped_factory_rules_still_validate():
     """The committed config.json must keep passing the SAVE-path guard — a
     regression here breaks the product on the first admin save."""
-    import config_store as cs
+    from faster_whisper_backend import config_store as cs
     checks = []
     for idx, rule in enumerate(cs.load_factory_rules()):
         for eidx, entry in enumerate(rule.get("entries") or []):
@@ -149,7 +149,7 @@ def test_shipped_factory_rules_still_validate():
 def test_shipped_factory_rules_validate_through_the_save_path():
     """Same, through the real AdminConfig save validator (guard_regex context),
     which is what the admin UI and /v1/pipeline-rules actually call."""
-    import config_store as cs
+    from faster_whisper_backend import config_store as cs
     cs.AdminConfig.model_validate(
         {"PIPELINE_RULES": cs.load_factory_rules()},
         context={"guard_regex": True})

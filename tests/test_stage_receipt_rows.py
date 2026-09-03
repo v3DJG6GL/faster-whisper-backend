@@ -10,9 +10,9 @@ import wave
 
 import numpy as np
 
-import bgm_separation
-import diarization
-import translation
+from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.audio import translation
 from conftest import FakeModel
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -121,7 +121,7 @@ def test_separation_row_has_no_transcode_detail_for_wav_input(
 
 def test_separation_row_keeps_transcode_detail_when_transcode_ran(
         client, app_module, monkeypatch):
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
     app_module.cfg.BGM_SEPARATION_ENABLED = True
     _stub_separate(monkeypatch)
 
@@ -143,7 +143,7 @@ def test_separation_row_keeps_transcode_detail_when_transcode_ran(
 
 def test_separation_row_drops_transcode_detail_when_transcode_failed(
         client, app_module, monkeypatch):
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
     app_module.cfg.BGM_SEPARATION_ENABLED = True
     _stub_separate(monkeypatch)
 

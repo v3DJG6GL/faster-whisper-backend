@@ -13,7 +13,7 @@ from hashlib import sha256
 import numpy as np
 import pytest
 
-import audio_merge
+from faster_whisper_backend.audio import merge as audio_merge
 
 RATE = 16000
 
@@ -211,7 +211,7 @@ def test_trim_wav_output_is_owner_only(tmp_path, monkeypatch):
     """audio_vad_trim.trim_wav has the byte-identical tmp+replace block."""
     import sys
     import types
-    import audio_vad_trim
+    from faster_whisper_backend.audio import vad_trim as audio_vad_trim
 
     # Fake Silero: every contiguous non-zero run is speech. Same shape as
     # test_group_trim.py's stub, kept local so this file stays standalone.

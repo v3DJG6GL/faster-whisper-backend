@@ -11,9 +11,9 @@ import types
 
 import pytest
 
-import bgm_separation
-import diarization
-import system_stats
+from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.runtime import system_stats
 
 
 class _RaisingLock:

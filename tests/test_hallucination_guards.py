@@ -129,35 +129,35 @@ def _speech_then_silence(speech_sec: float, silence_sec: float) -> np.ndarray:
 
 
 def test_tail_trim_cuts_trailing_silence(fake_vad):
-    import streaming_routes as sr
+    from faster_whisper_backend.streaming import routes as sr
     audio = _speech_then_silence(1.0, 2.0)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=300, threshold=0.5)
     assert out.shape[0] == RATE + (300 * RATE) // 1000
 
 
 def test_tail_trim_no_speech_returns_unchanged(fake_vad):
-    import streaming_routes as sr
+    from faster_whisper_backend.streaming import routes as sr
     audio = np.zeros(2 * RATE, dtype=np.float32)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=300, threshold=0.5)
     assert out.shape[0] == audio.shape[0]
 
 
 def test_tail_trim_disabled_by_zero_pad(fake_vad):
-    import streaming_routes as sr
+    from faster_whisper_backend.streaming import routes as sr
     audio = _speech_then_silence(1.0, 2.0)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=0, threshold=0.5)
     assert out is audio
 
 
 def test_tail_trim_speech_to_the_end_untouched(fake_vad):
-    import streaming_routes as sr
+    from faster_whisper_backend.streaming import routes as sr
     audio = np.full(2 * RATE, 0.1, dtype=np.float32)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=300, threshold=0.5)
     assert out.shape[0] == audio.shape[0]
 
 
 def test_tail_trim_vad_unavailable_returns_unchanged(no_vad):
-    import streaming_routes as sr
+    from faster_whisper_backend.streaming import routes as sr
     audio = _speech_then_silence(1.0, 2.0)
     out = sr._trim_trailing_nonspeech(audio, pad_ms=300, threshold=0.5)
     assert out is audio
@@ -168,7 +168,7 @@ def test_tail_trim_vad_unavailable_returns_unchanged(no_vad):
 # ---------------------------------------------------------------------------
 
 def test_streaming_final_conditioning_off_by_default(app_module, fake_model):
-    import streaming_routes as sr
+    from faster_whisper_backend.streaming import routes as sr
     kw = sr._build_transcribe_kwargs(
         app_module, "some-model", final=True, prompt="",
         want_words=False, model_obj=fake_model)
@@ -177,7 +177,7 @@ def test_streaming_final_conditioning_off_by_default(app_module, fake_model):
 
 def test_streaming_final_conditioning_config_on(app_module, fake_model):
     app_module.cfg.STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT = True
-    import streaming_routes as sr
+    from faster_whisper_backend.streaming import routes as sr
     kw = sr._build_transcribe_kwargs(
         app_module, "some-model", final=True, prompt="",
         want_words=False, model_obj=fake_model)
@@ -185,7 +185,7 @@ def test_streaming_final_conditioning_config_on(app_module, fake_model):
 
 
 def test_streaming_partial_conditioning_unaffected(app_module, fake_model):
-    import streaming_routes as sr
+    from faster_whisper_backend.streaming import routes as sr
     kw = sr._build_transcribe_kwargs(
         app_module, "some-model", final=False, prompt="",
         want_words=False, model_obj=fake_model)
@@ -199,7 +199,7 @@ def test_streaming_partial_conditioning_unaffected(app_module, fake_model):
 # ---------------------------------------------------------------------------
 
 def test_admin_config_accepts_new_fields():
-    import config_store
+    from faster_whisper_backend import config_store
     m = config_store.AdminConfig(
         SEGMENT_MAX_WORDS_PER_S=8.0,
         STREAMING_TAIL_TRIM_PAD_MS=500,
@@ -212,7 +212,7 @@ def test_admin_config_accepts_new_fields():
 
 def test_admin_config_rejects_out_of_range():
     import pytest as _pytest
-    import config_store
+    from faster_whisper_backend import config_store
     with _pytest.raises(Exception):
         config_store.AdminConfig(SEGMENT_MAX_WORDS_PER_S=-1.0)
     with _pytest.raises(Exception):
@@ -283,7 +283,7 @@ _NEW_FIELDS = ("SEGMENT_MAX_WORDS_PER_S", "STREAMING_TAIL_TRIM_PAD_MS",
 
 
 def test_new_fields_in_override_profile_and_lockable(app_module):
-    import config_store
+    from faster_whisper_backend import config_store
     p = config_store.OverrideProfile(
         SEGMENT_MAX_WORDS_PER_S=8.0,
         STREAMING_TAIL_TRIM_PAD_MS=500,
@@ -295,7 +295,7 @@ def test_new_fields_in_override_profile_and_lockable(app_module):
 
 
 def test_new_fields_on_overrides_page(app_module):
-    import overrides_routes
+    from faster_whisper_backend.admin import overrides_routes
     meta = overrides_routes._build_field_meta()
     for f in _NEW_FIELDS:
         assert f in meta

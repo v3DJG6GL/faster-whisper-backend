@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-import receipt_hold
+from faster_whisper_backend.core import receipt_hold
 
 
 @pytest.fixture(autouse=True)

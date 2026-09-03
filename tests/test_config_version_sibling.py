@@ -3,8 +3,8 @@ throttled so config_version() — called synchronously on the event loop once
 per partial-decode interval per live streaming session — cannot queue behind
 api_keys_store._lock more than ~4×/s."""
 
-import api_keys_store
-import config_store as cs
+from faster_whisper_backend.auth import api_keys_store
+from faster_whisper_backend import config_store as cs
 
 
 def _install(monkeypatch, versions):

@@ -9,7 +9,7 @@ release that can never be repaired. The CI itself cannot be executed here.
 import json
 import os
 
-REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from faster_whisper_backend.paths import REPO_ROOT as REPO
 
 INSTANCE_HOST = "forgejo.informethic.ch"
 

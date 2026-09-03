@@ -8,8 +8,8 @@ plugin is required.
 import asyncio
 
 from _streaming_helpers import const_pcm
-from streaming_session import StreamConfig, StreamSession
-from streaming_vad import EnergyEndpointer
+from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
+from faster_whisper_backend.streaming.vad import EnergyEndpointer
 
 
 def _make_session(*, postprocess, decode_partial=None, decode_final=None, cfg=None):

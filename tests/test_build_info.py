@@ -5,7 +5,7 @@ import subprocess
 
 import pytest
 
-import build_info
+from faster_whisper_backend import build_info
 
 
 @pytest.fixture(autouse=True)
@@ -97,5 +97,5 @@ def test_reload_does_not_leak_a_new_boot_id(monkeypatch):
 def test_process_identity_survives_the_reload_tests():
     # Runs after the reload tests above (file order): the identity main.py
     # bound by value must still be the one build_info serves.
-    import main
+    from faster_whisper_backend import main
     assert main.BOOT_ID == build_info.BOOT_ID

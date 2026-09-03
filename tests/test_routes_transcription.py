@@ -159,7 +159,7 @@ def test_deeply_nested_decode_overrides_is_ignored_not_500(client, fake_model):
     deeply nested value. Without it in the guard's tuple the malformed value
     escaped to the handler's generic `except Exception` and became a 500 plus a
     permanent err_count bump, breaking the "malformed → ignored" contract."""
-    import metrics
+    from faster_whisper_backend.stats import metrics
 
     before = metrics.err_count["/v1/audio/transcriptions"]
     r = _post(client, response_format="json", decode_overrides="[" * 200_000)
@@ -449,7 +449,7 @@ def test_upload_spool_carries_the_reclaim_prefix(client, app_module,
 
 
 def _ledger_row(request_id=None):
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
     rows = recent_transcriptions_store.list_recent(limit=5)
     return rows[0]
 
@@ -468,7 +468,7 @@ def test_cuda_oom_is_classified_on_the_ledger(client, app_module, monkeypatch):
     row = _ledger_row()
     assert row["status"] == "error"
     assert (row["error_class"], row["error_stage"]) == ("cuda_oom", "transcribing")
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     job = usage_store._require_conn().execute(
         "SELECT error_class, error_stage, status FROM usage_jobs"
         " ORDER BY created_ts DESC LIMIT 1").fetchone()

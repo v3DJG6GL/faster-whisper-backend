@@ -43,9 +43,9 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-import rate_limit as _rl
-import usage_store
-from auth import get_current_user
+from faster_whisper_backend.auth import rate_limit as _rl
+from faster_whisper_backend.stats import usage_store
+from faster_whisper_backend.auth.dependencies import get_current_user
 
 router = APIRouter(prefix="/v1")
 

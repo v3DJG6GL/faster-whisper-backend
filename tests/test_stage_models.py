@@ -7,9 +7,9 @@ import asyncio
 import os
 import tempfile
 
-import bgm_separation
-import diarization
-import translation
+from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.audio import translation
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -261,7 +261,7 @@ def test_translation_device_edit_dispatches_eviction(client, monkeypatch):
     """Editing a field in the 'translation' EXTRAS_EVICTION bucket awaits
     translation's evictor via the generic post_state loop (the e5167ba
     dispatch — same template as the diarization/bgm buckets)."""
-    import admin_routes
+    from faster_whisper_backend.admin import routes as admin_routes
 
     calls = []
 
@@ -327,8 +327,8 @@ def test_allowlist_never_blocks_the_config_inherited_default(
 def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
     """Register a plan bound to `pid` with the enqueue path stubbed, so the
     test observes exactly what the cursor decided to warm."""
-    import preload
-    import model_sizes
+    from faster_whisper_backend.runtime import preload
+    from faster_whisper_backend.runtime import model_sizes
     # REGISTRATION must admit nothing, so the plan starts with an empty queue
     # and what the CURSOR does next is unambiguous. on_stage_start
     # deliberately does not consult the ladder; the worker re-admits at
@@ -408,7 +408,7 @@ def test_waiting_and_analyzing_map_to_the_transcribing_index(app_module,
 
 
 def test_stage_ahead_is_a_no_op_without_a_bound_plan(app_module, monkeypatch):
-    import preload
+    from faster_whisper_backend.runtime import preload
     calls = []
     monkeypatch.setattr(preload, "on_stage_start",
                         lambda *a: calls.append(a))

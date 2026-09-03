@@ -7,7 +7,7 @@ waits out the idle sweep before it is logged; don't hold when a claim is coming,
 and the receipt and its translation are logged as unrelated blocks.
 """
 
-from streaming_routes import _parse_translate_expect as parse
+from faster_whisper_backend.streaming.routes import _parse_translate_expect as parse
 
 
 def test_absent_or_malformed_is_no_declaration():

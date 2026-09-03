@@ -12,9 +12,9 @@ reviewed edit of the matching snapshot — never as silent drift from a
 metadata typo. Update a snapshot only when the change is intentional.
 """
 
-import config
-import config_store as cs
-import effective_config
+from faster_whisper_backend import config
+from faster_whisper_backend import config_store as cs
+from faster_whisper_backend import effective_config
 
 
 ENV_VAR_MAPPING_SNAPSHOT = (

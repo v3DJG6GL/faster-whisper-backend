@@ -143,7 +143,7 @@ def register_loaded_model(name: str, vram_bytes: int | None,
     # made beats no row at all, and a real measurement supersedes it (record
     # replaces a disk-sourced row outright — the disk walk can over-count).
     try:
-        import model_sizes
+        from faster_whisper_backend.runtime import model_sizes
         size = vram_bytes or model_sizes.disk_size(name)
         if size:
             model_sizes.record(name, device, compute_type, size,

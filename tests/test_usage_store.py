@@ -14,7 +14,7 @@ import time
 # ---------------------------------------------------------------------------
 
 def test_now_hour_and_hour_for_ts():
-    import usage_store as us
+    from faster_whisper_backend.stats import usage_store as us
     assert us.hour_for_ts(7200) == 2
     assert us.hour_for_ts(7199.9) == 1
     assert abs(us.now_hour() - int(time.time() // 3600)) <= 1
@@ -52,7 +52,7 @@ def test_record_usage_open_mode_sentinel(usage_store_db):
 
 def test_record_usage_never_raises_uninitialised():
     # No init_db here; _require_conn raises internally but record_usage swallows.
-    import usage_store as us
+    from faster_whisper_backend.stats import usage_store as us
     us._conn = None
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok")
 
@@ -170,7 +170,7 @@ def test_series_week_buckets_utc(usage_store_db, set_tz):
 
 def test_epoch_day_and_local_midnight_utc(set_tz):
     set_tz("UTC")
-    import usage_store as us
+    from faster_whisper_backend.stats import usage_store as us
     assert us.epoch_day_for(0) == 0
     assert us.epoch_day_for(86400) == 1
     # local-midnight today, expressed as UTC epoch-hour, is a multiple of 24.

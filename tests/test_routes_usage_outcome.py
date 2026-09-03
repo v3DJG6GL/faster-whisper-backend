@@ -21,7 +21,7 @@ def _outcome(job_id="a" * 32, **over):
 
 
 def _dictate(uid, job_id, *, words=10, audio_s=6.0, key_id=None):
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     usage_store.record_usage(key_id=key_id or f"k-{uid}", user_id=uid,
                              audio_s=audio_s, words=words, status="ok",
                              kind="dictation", job_id=job_id)
@@ -155,7 +155,7 @@ def test_outcome_rate_limited_per_identity(client, make_user_key):
 
 
 def test_outcome_503_when_store_unavailable(client, monkeypatch):
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     monkeypatch.setattr(usage_store, "_conn", None)
     r = client.post(_URL, json={"outcomes": [_outcome()]})
     assert r.status_code == 503

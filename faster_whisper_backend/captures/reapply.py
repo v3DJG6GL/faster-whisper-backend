@@ -74,10 +74,10 @@ def start() -> dict[str, Any]:
 
 def _run() -> None:
     try:
-        import main
-        import captures_store
-        import capture_samples_store
-        import config as cfg
+        from faster_whisper_backend import main
+        from faster_whisper_backend.captures import store as captures_store
+        from faster_whisper_backend.captures import samples_store as capture_samples_store
+        from faster_whisper_backend import config as cfg
 
         captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
 
@@ -163,7 +163,7 @@ def _run() -> None:
                 _state["processed"] += 1
 
         if affected_sample_ids:
-            from captures_routes import _build_default_transcript
+            from faster_whisper_backend.captures.routes import _build_default_transcript
             for sid in affected_sample_ids:
                 g = capture_samples_store.get_sample(sid)
                 if g is None or g.get("is_locked"):

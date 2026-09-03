@@ -38,7 +38,7 @@ def test_root_renders_every_tile_when_admin_ui_enabled(client):
 
 
 def test_root_drops_gated_tiles_when_admin_ui_disabled(app_module, monkeypatch):
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     monkeypatch.setattr(cfg, "ADMIN_UI_ENABLED", False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as c:
         r = c.get("/")
@@ -54,7 +54,7 @@ def test_root_drops_gated_tiles_when_admin_ui_disabled(app_module, monkeypatch):
 
 
 def test_root_host_gate(app_module, monkeypatch):
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     monkeypatch.setattr(cfg, "USER_WEBUI_ALLOWED_HOSTS", [])
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
         assert c.get("/").status_code == 403
@@ -80,7 +80,7 @@ _TPL = (
 
 
 def test_render_page_is_memoized_per_key():
-    import web_common
+    from faster_whisper_backend.core import web_common
     a = web_common.render_page(_TPL, "logs")
     b = web_common.render_page(_TPL, "logs")
     # Same key -> the identical (immutable) str object, i.e. no rebuild.
@@ -94,8 +94,8 @@ def test_render_page_key_tracks_hot_mutable_cfg(monkeypatch):
     """ADMIN_UI_ENABLED and the two LOG_VIEWER_* values are mutated at runtime
     by the settings save path, so they are part of the key rather than read at
     import."""
-    import config as cfg
-    import web_common
+    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.core import web_common
 
     monkeypatch.setattr(cfg, "ADMIN_UI_ENABLED", True, raising=False)
     monkeypatch.setattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000, raising=False)
@@ -120,7 +120,7 @@ def test_render_page_substitutes_no_per_user_value():
     automatically instead of leaving a 4-placeholder stub green."""
     import inspect
     import re
-    import web_common
+    from faster_whisper_backend.core import web_common
     names = sorted(set(re.findall(
         r"\{\{[A-Z_]+\}\}", inspect.getsource(web_common._render_page_cached))))
     assert len(names) >= 20, names

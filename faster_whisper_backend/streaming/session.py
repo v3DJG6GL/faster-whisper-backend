@@ -31,8 +31,8 @@ from typing import Awaitable, Callable, Optional
 
 import numpy as np
 
-from streaming_localagreement import LocalAgreementProcessor
-from streaming_vad import FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE, iter_frames, rms_dbfs
+from faster_whisper_backend.streaming.localagreement import LocalAgreementProcessor
+from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE, iter_frames, rms_dbfs
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ the request profile, the gate disables it, and the names endpoint behaves.
 
 import json
 
-import config as cfg
+from faster_whisper_backend import config as cfg
 from tests.conftest import bearer
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -119,7 +119,7 @@ def test_override_profiles_endpoint_requires_auth_when_locked(client, make_user_
 def test_none_sentinel_suppresses_bound_profile(client, make_user_key, fake_model):
     # A profile bound to a user normally applies; sending the reserved "__none__"
     # request name suppresses it, falling back to plain server defaults.
-    from config_store import NO_PROFILE_SENTINEL
+    from faster_whisper_backend.config_store import NO_PROFILE_SENTINEL
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)
     r = client.post(f"{OV}/state", headers=admin_h,
@@ -151,7 +151,7 @@ def test_none_sentinel_suppresses_bound_profile(client, make_user_key, fake_mode
 
 
 def test_none_sentinel_never_listed(client, monkeypatch):
-    from config_store import NO_PROFILE_SENTINEL
+    from faster_whisper_backend.config_store import NO_PROFILE_SENTINEL
     monkeypatch.setattr(cfg, "OVERRIDE_PROFILES", {"fast": {"BEAM_SIZE": 3}}, raising=False)
     monkeypatch.setattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True, raising=False)
     r = client.get("/v1/override-profiles")

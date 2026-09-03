@@ -79,7 +79,7 @@ def test_me_translation_flag_present_details_gated(client, app_module):
 
 def test_me_translation_models_default_first_with_loaded_flags(
         client, app_module):
-    import translation
+    from faster_whisper_backend.audio import translation
     app_module.cfg.TRANSLATION_ENABLED = True
     app_module.cfg.TRANSLATION_DEFAULT_MODEL = "org/default-GGUF:Q4"
     app_module.cfg.TRANSLATION_ALLOWED_MODELS = {
@@ -138,8 +138,8 @@ def test_me_translate_to_default_respects_identity_override(
 
 
 def test_me_stage_model_lists_with_loaded_flags(client, app_module):
-    import bgm_separation
-    import diarization
+    from faster_whisper_backend.audio import bgm_separation
+    from faster_whisper_backend.audio import diarization
     # Always present (independent of the enabled switches) — the client's
     # model pickers pre-flight on the allowlists.
     j = client.get("/v1/me").json()

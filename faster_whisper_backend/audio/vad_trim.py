@@ -24,8 +24,8 @@ import os
 import time
 import wave
 
-import audio_merge
-import store_common
+from faster_whisper_backend.audio import merge as audio_merge
+from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger("whisper-api")
 

@@ -150,7 +150,7 @@ def test_import_creates_when_nothing_stored(client, make_user_key):
 
 
 def test_import_oversize_413(client, make_user_key):
-    import client_settings_store as store
+    from faster_whisper_backend.client_settings import store
     uid, key = make_user_key("big", is_admin=True)
     big = {"x": "a" * (store._CAP_BLOB + 100)}
     r = client.post(
@@ -251,7 +251,7 @@ def test_admin_endpoints_when_store_unavailable(client, make_user_key, monkeypat
     still render its users) but flags `unavailable: true` so the drawers say
     "store down" rather than the falsehood "nothing stored"; export/import/
     delete surface a 503 instead of a bare 500."""
-    import client_settings_store
+    from faster_whisper_backend.client_settings import store as client_settings_store
 
     uid, key = make_user_key("sadmin", is_admin=True)
     monkeypatch.setattr(client_settings_store, "_conn", None)

@@ -58,7 +58,7 @@ def test_reset_to_default_clears_local_override(client):
     running value. Regression: the WebUI '↺ Reset to default' button submits the
     default *value* (not a removal), which previously rewrote the key and left
     the badge stuck on 'local.json' (and the running cfg on the stale value)."""
-    import config_store
+    from faster_whisper_backend import config_store
 
     default_val = client.get("/settings/state").json()["fields"]["BEST_OF"]["default_value"]
     assert default_val is not None
@@ -85,7 +85,7 @@ def test_reset_to_default_clears_local_override(client):
 def test_post_default_value_creates_no_override(client):
     """Submitting a value equal to the baseline when nothing was overridden is a
     no-op: prune-on-default keeps the key out of config.local.json entirely."""
-    import config_store
+    from faster_whisper_backend import config_store
 
     default_val = client.get("/settings/state").json()["fields"]["BEST_OF"]["default_value"]
     body = client.post("/settings/state", json={"BEST_OF": default_val}).json()
@@ -99,7 +99,7 @@ def test_reset_float_field_default_sent_as_int_clears_override(client):
     server receives int 1. Prune-on-default must treat int 1 == float 1.0 as the
     default and drop the override — a json.dumps comparison ('1' != '1.0') would
     miss it and leave the 'local.json' badge stuck."""
-    import config_store
+    from faster_whisper_backend import config_store
 
     default_val = client.get("/settings/state").json()["fields"]["REPETITION_PENALTY"]["default_value"]
     assert default_val == 1.0
@@ -137,8 +137,8 @@ def test_every_field_reset_to_default_is_pruned(client):
     the browser sends it) must be recognized as 'not an override' and leave
     config.local.json untouched. Guards against type-specific prune gaps like
     the int/float REPETITION_PENALTY bug for any current or future field."""
-    import admin_routes
-    import config_store
+    from faster_whisper_backend.admin import routes as admin_routes
+    from faster_whisper_backend import config_store
 
     fields = client.get("/settings/state").json()["fields"]
     checked = 0
@@ -175,7 +175,7 @@ def test_pipeline_rules_not_auto_pruned(client):
     page's dedicated 'clear local override' action), so saving rules equal to the
     factory default must KEEP the override, not silently drop it. Locks in the
     _PRUNE_EXEMPT carve-out so a future change can't start auto-pruning it."""
-    import config_store
+    from faster_whisper_backend import config_store
 
     rules = client.get("/settings/state").json()["fields"]["PIPELINE_RULES"]["default_value"]
     body = client.post("/settings/state", json={"PIPELINE_RULES": rules}).json()
@@ -189,7 +189,7 @@ def test_enum_choices_match_schema(client):
     every enum field, and None for non-enum fields — so the UI <select> and the
     server-side validation can never disagree. Guards the _field_choices dedup."""
     import typing
-    import config_store
+    from faster_whisper_backend import config_store
 
     def literal_args(field):
         ann = config_store.AdminConfig.model_fields[field].annotation
@@ -255,7 +255,7 @@ def _seed_factory(monkeypatch, tmp_path, rules):
     FACTORY_PATH is a default ARG bound at def time, so each function's
     __defaults__ is rewritten in addition to the module constant."""
     import json
-    import config_store
+    from faster_whisper_backend import config_store
 
     tmp_factory = str(tmp_path / "factory_config.json")
     with open(tmp_factory, "w", encoding="utf-8") as f:
@@ -298,7 +298,7 @@ def test_post_factory_rules_preserves_order(client, tmp_path, monkeypatch):
 def test_post_factory_rules_reports_shadowed_by_local(client, tmp_path, monkeypatch):
     """shadowed_by_local is False with no local PIPELINE_RULES override and True
     once one exists — the flag the post-promote "clear local override" UX keys on."""
-    import config_store
+    from faster_whisper_backend import config_store
 
     _seed_factory(monkeypatch, tmp_path, _rules("alpha", "beta"))
     r = client.post("/settings/factory-rules", json={"PIPELINE_RULES": _rules("beta", "alpha")})
@@ -416,7 +416,7 @@ def test_admin_rules_save_survives_concurrent_quick_config_patch(
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
-    import config_store
+    from faster_whisper_backend import config_store
 
     rules = copy.deepcopy(list(app_module.cfg.PIPELINE_RULES))
     slug = None
@@ -471,8 +471,8 @@ def test_test_pipeline_rule_cap_tracks_schema():
     max_length; a metadata-layout change must not silently fall back."""
     from typing import get_args
 
-    import admin_routes
-    import config_store
+    from faster_whisper_backend.admin import routes as admin_routes
+    from faster_whisper_backend import config_store
 
     ann = config_store.AdminConfig.model_fields["PIPELINE_RULES"].annotation
     fi = get_args(ann)[0].__metadata__[0]
@@ -553,8 +553,8 @@ def test_settings_page_injects_mo_constants(client):
 
     # Every FIELD_META key is a real ModelOverride field — the payload once
     # shipped seven CAPTURES_* rows no renderer could ever read.
-    import admin_routes
-    import config_store
+    from faster_whisper_backend.admin import routes as admin_routes
+    from faster_whisper_backend import config_store
     assert (set(json.loads(admin_routes._MO_FIELD_META_JSON))
             <= set(config_store.ModelOverride.model_fields))
 
@@ -566,7 +566,7 @@ def test_model_sections_cover_every_model_override_field(client):
     Mirrors test_field_groups_cover_every_setting for the per-model pane."""
     import re
 
-    import config_store
+    from faster_whisper_backend import config_store
 
     text = client.get("/settings").text
     m = re.search(r"const SECTIONS = \[(.*?)\n  \];", text, re.S)
@@ -586,7 +586,7 @@ def test_server_ident_report_never_prints_none(app_module, monkeypatch):
     """DOWNLOAD_ROOT is `str | None` (None = standard HF cache); the copy
     report and the card fields must resolve the same fallback string rather
     than f-stringing a literal 'models None'."""
-    import admin_routes
+    from faster_whisper_backend.admin import routes as admin_routes
 
     monkeypatch.setattr(admin_routes.cfg, "DOWNLOAD_ROOT", None)
     ident = admin_routes._server_ident_fields()
@@ -599,7 +599,7 @@ def test_save_dispatches_extras_eviction(client, monkeypatch):
     """Editing a field in an EXTRAS_EVICTION bucket awaits that bucket's
     evictor; untouched buckets stay quiet; an evictor failure never breaks
     the save (error-swallowing semantics)."""
-    import admin_routes
+    from faster_whisper_backend.admin import routes as admin_routes
 
     calls = []
 
@@ -632,8 +632,8 @@ def test_field_groups_cover_every_setting():
     fields: no setting silently missing from the form, no stale/typo'd entry.
     Regression guard — adding a config field without wiring its WebUI group (as
     happened with STREAMING_HARD_BREAK_*) should fail here, not ship invisible."""
-    import admin_routes
-    import config_store
+    from faster_whisper_backend.admin import routes as admin_routes
+    from faster_whisper_backend import config_store
 
     displayed = admin_routes._all_fields()
     assert len(displayed) == len(set(displayed)), "duplicate field in _FIELD_GROUPS"
@@ -689,7 +689,7 @@ _GUARD_WARNING = "segment 1: guard rejected the model output; kept the source te
 
 def test_translation_test_endpoint_threads_template_override(
         client, app_module, monkeypatch):
-    import translation
+    from faster_whisper_backend.audio import translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     seen = {}
@@ -730,7 +730,7 @@ def test_translation_test_family_auto_drops_template_for_builtin_family(
     textarea value. translate_segments treats any non-None template as the
     custom family, so a hunyuan model would have been tested — and its chip
     reported — as "custom". The effective family must decide."""
-    import translation
+    from faster_whisper_backend.audio import translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()
@@ -794,7 +794,7 @@ def test_translation_test_422_bad_shape(client, app_module):
 
 def test_translation_test_translation_error_is_400(
         client, app_module, monkeypatch):
-    import translation
+    from faster_whisper_backend.audio import translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     pid = "deadbeef"
@@ -822,7 +822,7 @@ def test_translation_test_translation_error_is_400(
 def test_translation_test_preview_renders_without_model(
         client, app_module, monkeypatch):
     """preview=True returns the rendered prompt and NEVER calls the model."""
-    import translation
+    from faster_whisper_backend.audio import translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
 
@@ -860,7 +860,7 @@ def test_translation_test_progress_id_seeds_registry(
     'starting' before the run, 'downloading'/'translating' as the hooks
     fire) and the endpoint's finally pops it. Malformed ids are ignored,
     not 422."""
-    import translation
+    from faster_whisper_backend.audio import translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     pid = "beef" * 8
@@ -898,7 +898,7 @@ def test_translation_test_progress_entry_is_owner_stamped(
     """The lab's seed joins _BATCH_PROGRESS with an owner, like the batch and
     stage-ahead seeds in main — an owner-less entry would be readable (and
     cancellable) by ANY authenticated caller holding the id."""
-    import translation
+    from faster_whisper_backend.audio import translation
     from conftest import bearer
 
     app_module.cfg.TRANSLATION_ENABLED = True
@@ -945,7 +945,7 @@ def test_translation_test_unknown_family_400(client, app_module):
 
 def test_translation_test_threads_model_family_glossary(
         client, app_module, monkeypatch):
-    import translation
+    from faster_whisper_backend.audio import translation
 
     app_module.cfg.TRANSLATION_ENABLED = True
     app_module.cfg.TRANSLATION_ALLOWED_MODELS = set()

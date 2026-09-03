@@ -14,7 +14,7 @@ import sys
 
 import pytest
 
-import url_download as udl
+from faster_whisper_backend.url import download as udl
 
 
 # ---------------------------------------------------------------------------

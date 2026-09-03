@@ -6,7 +6,7 @@ fixture in conftest.
 
 import time
 
-import metrics
+from faster_whisper_backend.stats import metrics
 
 
 # ---------------------------------------------------------------------------
@@ -244,7 +244,7 @@ def test_snapshot_scrubs_identity_for_non_admin_viewers(tx_store):
 def test_record_transcription_takes_the_key_label_from_the_caller(
         tx_store, monkeypatch):
     # The auth record already holds the label; no per-request key lookup.
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
 
     def _no_lookup(*_a, **_k):
         raise AssertionError("get_key was queried")

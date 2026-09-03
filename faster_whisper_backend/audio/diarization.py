@@ -21,8 +21,8 @@ import os
 import threading
 import time
 
-import config as cfg
-import system_stats
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.runtime import system_stats
 
 logger = logging.getLogger("whisper-server")
 
@@ -143,8 +143,8 @@ def _load_blocking_inner(model_id: str, device: str, batch_size: int):
         # huggingface_hub internally — the capture's hub-tqdm shim surfaces
         # any actual download in the log / jobs registry; a warm cache stays
         # silent. Coarse by design (no per-byte client progress needed here).
-        import download_progress
-        import jobs
+        from faster_whisper_backend.runtime import download_progress
+        from faster_whisper_backend.core import jobs
         _dl_job = jobs.job_start("download", model=_STATS_PREFIX + model_id)
         try:
             with download_progress.capture(_STATS_PREFIX + model_id):
@@ -333,7 +333,7 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
         logger.info("[diarize] pipeline %s loaded on %s in %.1fs",
                     model_id, device, load_secs)
         try:
-            import metrics
+            from faster_whisper_backend.stats import metrics
             metrics.record_model_load(_STATS_PREFIX + model_id, load_secs)
         except Exception:  # noqa: BLE001 — stats only
             pass

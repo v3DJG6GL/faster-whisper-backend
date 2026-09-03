@@ -9,9 +9,9 @@ of its life. The trailing bump in _apply_hot_changes closes that gap."""
 
 import asyncio
 
-import config as cfg
-import config_store
-import admin_routes
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_store
+from faster_whisper_backend.admin import routes as admin_routes
 
 
 def test_apply_hot_changes_bumps_version_after_cfg_is_current(monkeypatch):

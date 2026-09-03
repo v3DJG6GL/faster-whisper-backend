@@ -311,8 +311,8 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
     if not request_id:
         return
     try:
-        import config as cfg
-        import recent_transcriptions_store
+        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.stats import recent_transcriptions_store
         recent_transcriptions_store.record_timing(
             request_id=request_id,
             model=model,
@@ -334,7 +334,7 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
     except Exception as e:
         logger.warning("[metrics] record_transcription persist failed: %s", e)
     try:
-        import usage_store
+        from faster_whisper_backend.stats import usage_store
         usage_store.record_usage(
             key_id=key_id,
             user_id=user_id,
@@ -367,8 +367,8 @@ def record_download(model: str, seconds: float, bytes_done: int, *,
     try:
         import uuid
 
-        import config as cfg
-        import recent_transcriptions_store
+        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.stats import recent_transcriptions_store
         mb_s = (bytes_done / (1 << 20)) / seconds if seconds > 0 else 0.0
         detail = f"{bytes_done / (1 << 30):.2f} GB · {mb_s:.1f} MB/s"
         if status != "ok":
@@ -508,8 +508,8 @@ def metrics_snapshot(*, include_identity: bool = False,
             "count": len(v),
         }
     try:
-        import config as cfg
-        import recent_transcriptions_store
+        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.stats import recent_transcriptions_store
         limit = int(getattr(cfg, "STATS_RECENT_TRANSCRIPTIONS_COUNT", 20))
         rows = recent_transcriptions_store.list_recent(limit=max(1, limit),
                                                 user_id_filter=user_id)

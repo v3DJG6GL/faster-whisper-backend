@@ -81,7 +81,7 @@ _SUPERSEDED_RH_KEYS = ("Urllib", "Requests", "CurlCFFI")
 # stdlib modules for yt-dlp's extractors). Either way there is one file.
 def _load_net_policy():
     try:
-        import net_policy  # noqa: PLC0415 — optional fast path
+        from faster_whisper_backend.core import net_policy  # noqa: PLC0415 — optional fast path
         return net_policy
     except ImportError:
         pass
@@ -89,7 +89,7 @@ def _load_net_policy():
     #   parents:            4          3              2          1      0
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__),
                                              *([os.pardir] * 4)))
-    path = os.path.join(repo_root, "net_policy.py")
+    path = os.path.join(repo_root, "faster_whisper_backend", "core", "net_policy.py")
     spec = importlib.util.spec_from_file_location("fwb_net_policy", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"{MARKER}: net_policy.py not found at {path}")

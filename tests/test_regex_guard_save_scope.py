@@ -13,7 +13,7 @@ import json
 
 import pytest
 
-import config_store as cs
+from faster_whisper_backend import config_store as cs
 
 
 _LEGACY_RULES = [

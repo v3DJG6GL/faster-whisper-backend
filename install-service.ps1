@@ -208,7 +208,7 @@ if (Test-Path $reqFile) {
 }
 
 # -Gpu: the NVIDIA CUDA 12 / cuDNN 9 runtime wheels ctranslate2 loads for GPU
-# inference. main.py's Windows DLL preloader finds them in the venv at startup.
+# inference. faster_whisper_backend/main.py's Windows DLL preloader finds them in the venv at startup.
 if ($Gpu) {
     $gpuReq = Join-Path $RepoDir "requirements-gpu.txt"
     Write-Host "Installing/refreshing GPU wheels (CUDA 12 / cuDNN 9, ~1 GB)..." -ForegroundColor Cyan
@@ -233,7 +233,7 @@ if ($Full) {
     # files"), so on Python 3.14+ its install always fails. diffq is imported
     # only by audio-separator's quantized-Demucs modules
     # (uvr_lib_v5/demucs/{states,pretrained,utils}.py); the MDX models
-    # bgm_separation.py loads never touch it. Try the real wheel first; if
+    # faster_whisper_backend/audio/bgm_separation.py loads never touch it. Try the real wheel first; if
     # none exists for this Python, install a local stub that satisfies pip and
     # raises a clear error if quantized Demucs is ever actually used. (Linux
     # depends on plain `diffq`, whose sdist compiles — the .sh handles that

@@ -34,7 +34,7 @@
       "groupName": "python deps"
     },
     {
-      "description": "NVIDIA CUDA wheels: never cross the pinned major. main.py's Windows DLL preloader hardcodes cublas64_12 / cudnn64_9, so a major bump (cublas 13.x, cudnn 10.x) would silently break GPU inference. The <13 / <10 caps in requirements-gpu.txt already block this; this makes the intent explicit.",
+      "description": "NVIDIA CUDA wheels: never cross the pinned major. faster_whisper_backend/main.py's Windows DLL preloader hardcodes cublas64_12 / cudnn64_9, so a major bump (cublas 13.x, cudnn 10.x) would silently break GPU inference. The <13 / <10 caps in requirements-gpu.txt already block this; this makes the intent explicit.",
       "matchManagers": [
         "pip_requirements"
       ],

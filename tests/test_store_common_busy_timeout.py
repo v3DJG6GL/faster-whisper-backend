@@ -1,5 +1,5 @@
 """open_wal_db: the connection contract spells out its busy timeout."""
-import store_common
+from faster_whisper_backend.core import store_common
 
 
 def test_open_wal_db_sets_busy_timeout(tmp_path):

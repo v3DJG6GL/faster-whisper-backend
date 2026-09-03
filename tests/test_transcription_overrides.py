@@ -77,7 +77,7 @@ def test_decode_overrides_drop_non_finite_floats():
     (ignored) rather than clamped to the field's bound, matching the integer path.
     Shared by the batch route and the streaming FINAL decode via
     _apply_decode_overrides."""
-    import main
+    from faster_whisper_backend import main
     # a valid float still applies
     assert main._apply_decode_overrides({}, "whisper-1", {"temperature": 0.7})["temperature"] == 0.7
     # NaN / +inf / -inf each dropped, never clamped to the field's max/min
@@ -93,7 +93,7 @@ def test_decode_overrides_drop_overflowing_suppress_tokens():
     raises OverflowError. Sibling of the non-finite-float and integer-clamp
     drops; covers the batch route and the streaming FINAL decode via the shared
     _apply_decode_overrides."""
-    import main
+    from faster_whisper_backend import main
     # a valid list still applies (float members truncate through int())
     assert main._apply_decode_overrides({}, "whisper-1",
         {"suppress_tokens": [1, 2]})["suppress_tokens"] == [1, 2]
@@ -108,7 +108,7 @@ def test_decode_overrides_drop_overflowing_suppress_tokens():
 
 def test_request_block_identity_section():
     from types import SimpleNamespace
-    import main
+    from faster_whisper_backend import main
     ident = SimpleNamespace(layers=["user.profile:clinic-de"], locked={"BEAM_SIZE"},
                             profiles_applied=["clinic-de"])
     info = SimpleNamespace(language="de", language_probability=0.99,
@@ -138,7 +138,7 @@ def test_request_block_pipeline_header_counts_only_changed_steps():
     row "changed", overcounting skips (the user-reported /logs vs /quick-config
     discrepancy)."""
     from types import SimpleNamespace
-    import main
+    from faster_whisper_backend import main
     info = SimpleNamespace(language="en", language_probability=1.0,
                            duration=1.0, duration_after_vad=1.0)
     seg = [{"id": 0, "start": 0.0, "end": 1.0, "alp": -0.1, "nsp": 0.01,
@@ -173,7 +173,7 @@ def test_request_block_identity_always_shows_user_even_without_layers():
     Identity block naming them + an explicit 'inherits' note — so a missing
     binding (the classic 'my override didn't apply') is visible in the log."""
     from types import SimpleNamespace
-    import main
+    from faster_whisper_backend import main
     empty = SimpleNamespace(layers=[], locked=set(), profiles_applied=[])
     info = SimpleNamespace(language="de", language_probability=0.99,
                            duration=1.0, duration_after_vad=1.0)
@@ -193,7 +193,7 @@ def test_config_version_bumps_on_binding_and_profile_changes(client, make_user_k
     """Saving a profile or a per-user / per-key binding bumps config_store's
     version counter — the signal a live streaming connection polls to know it
     must re-resolve its ident (so edits apply without a reconnect)."""
-    import config_store
+    from faster_whisper_backend import config_store
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)
     v0 = config_store.config_version()
@@ -298,7 +298,7 @@ def test_locked_diarize_ignores_client_param(client, app_module, make_user_key,
                                              fake_model, monkeypatch):
     # A profile locking DIARIZE (value-less lock pins the inherited global,
     # default false) forbids the client's `diarize` form field.
-    import diarization
+    from faster_whisper_backend.audio import diarization
     called = []
 
     async def _fake_diarize(path, **kw):

@@ -6,7 +6,7 @@ import os
 
 import pytest
 
-import url_media_store as ums
+from faster_whisper_backend.url import media_store as ums
 
 
 @pytest.fixture(autouse=True)

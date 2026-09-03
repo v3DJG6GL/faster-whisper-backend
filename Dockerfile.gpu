@@ -4,7 +4,7 @@
 # HOST requirements: an NVIDIA driver (CUDA 12.x-capable) + the NVIDIA Container
 # Toolkit, and the container must be started with GPU access — see
 # docker-compose.gpu.yml. With no GPU visible at runtime, model load
-# auto-falls back to CPU/int8 (config.py MODEL_DEVICE_FALLBACK), still functional.
+# auto-falls back to CPU/int8 (faster_whisper_backend/config.py MODEL_DEVICE_FALLBACK), still functional.
 #
 # Build/run:
 #   docker compose -f docker-compose.gpu.yml up -d   (standalone GPU compose file)
@@ -97,7 +97,7 @@ COPY requirements.txt ./
 RUN pip install -r requirements.txt
 
 # ctranslate2 dlopens libcublas / libcudnn at runtime but does not search
-# site-packages, and main.py's CUDA-lib preloader is Windows-only — so put the
+# site-packages, and faster_whisper_backend/main.py's CUDA-lib preloader is Windows-only — so put the
 # pip-installed NVIDIA .so dirs on the loader path here. The path is fixed by the
 # python:3.14-slim base; update the "python3.14" segment if you bump the base.
 #

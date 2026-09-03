@@ -7,9 +7,9 @@ box with `pytest -o addopts="" tests/test_effective_config.py`.
 
 import pytest
 
-import config as cfg
-import config_store as cs
-import effective_config as ec
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_store as cs
+from faster_whisper_backend import effective_config as ec
 
 
 # --- layer builders -------------------------------------------------------
@@ -346,7 +346,7 @@ def test_request_profile_is_least_specific(monkeypatch):
 def _bindings(monkeypatch, *, key=None, user=None):
     """Monkeypatch the per-identity binding fetch — no DB. Pass partial binding
     dicts (e.g. {"allow_request_override_profile": False})."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     monkeypatch.setattr(api_keys_store, "get_key_config",
                         lambda kid: key or {"direct": {}, "profiles": []}, raising=False)
     monkeypatch.setattr(api_keys_store, "get_user_config",
@@ -444,7 +444,7 @@ def test_request_profile_cant_escape_lock_via_resolve(monkeypatch):
 def _broken_bindings(monkeypatch, *, key=True, user=True):
     """Make the per-identity binding fetch raise, as a live store fault would.
     Whichever scope is not broken returns an unrestricted binding."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
 
     def _boom(_ident_id):
         raise RuntimeError("database is locked")

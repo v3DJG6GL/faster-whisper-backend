@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-import metrics
-import url_download
+from faster_whisper_backend.stats import metrics
+from faster_whisper_backend.url import download as url_download
 
 
 class _TorchOOM(Exception):

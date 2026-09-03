@@ -15,8 +15,8 @@ main._postprocess_text(); we monkeypatch it to a deterministic per-word map so
 the cases are hermetic (no real pipeline / config needed).
 """
 
-import main
-import captures_routes as cr
+from faster_whisper_backend import main
+from faster_whisper_backend.captures import routes as cr
 
 
 def _words(*pairs):

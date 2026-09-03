@@ -44,9 +44,9 @@ from typing import Literal
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 
-import config as cfg
-import preload
-from auth import get_current_user
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.runtime import preload
+from faster_whisper_backend.auth.dependencies import get_current_user
 
 # Same logger name the rest of the model machinery uses, so a preload and the
 # load it causes sit under one name in the log. This module had no logging at
@@ -104,7 +104,7 @@ def _allowed(family: str, model_id: str) -> bool:
     "anything". translation: `main._translation_model_allowed`, the rule the
     batch stage and the job plan share."""
     if family == "whisper":
-        import main  # lazy: main imports this module
+        from faster_whisper_backend import main  # lazy: main imports this module
         model_id = preload.normalize_id(family, model_id)
         if not model_id:
             return False
@@ -122,7 +122,7 @@ def _allowed(family: str, model_id: str) -> bool:
         allow = set(getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None) or ())
         allow.add(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "")
         return model_id in allow
-    import main  # lazy: main imports this module
+    from faster_whisper_backend import main  # lazy: main imports this module
     # requested=model_id makes it the CLIENT-value rule: a bare call would
     # let any ref through as admin policy.
     return main._translation_model_allowed(model_id, requested=model_id)

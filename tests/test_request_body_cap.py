@@ -41,7 +41,7 @@ def test_oversize_json_is_rejected_before_the_route_runs(client, app_module):
     # A body this size would otherwise be json.loads-expanded (~24x RSS) before
     # any dependency — including auth — got to run. The spy proves the
     # ordering the name claims: the 413 lands with auth never invoked.
-    import auth
+    from faster_whisper_backend.auth import dependencies as auth
     seen = []
 
     def _spy():

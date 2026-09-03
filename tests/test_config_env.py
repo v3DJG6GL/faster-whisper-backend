@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-import config
+from faster_whisper_backend import config
 
 
 # ---------------------------------------------------------------------------
@@ -263,7 +263,7 @@ def test_every_admin_field_is_env_mapped():
     # the WebUI "env-pinned" badge, and env > GUI precedence. Every editable
     # AdminConfig field MUST be present (and vice-versa) or it silently loses
     # env-configurability / badging. This guards against future drift.
-    import config_store as cs
+    from faster_whisper_backend import config_store as cs
     fields = set(cs.AdminConfig.model_fields)
     mapped = set(cs.ENV_VAR_MAPPING)
     assert fields == mapped, (
@@ -272,7 +272,7 @@ def test_every_admin_field_is_env_mapped():
 
 
 def test_env_var_names_are_unique():
-    import config_store as cs
+    from faster_whisper_backend import config_store as cs
     names = list(cs.ENV_VAR_MAPPING.values())
     assert len(names) == len(set(names)), "duplicate WHISPER_* env var names"
 
@@ -455,7 +455,7 @@ def test_local_overrides_migrate_use_auth_token(tmp_path):
     """A config.local.json from before the rename still carries USE_AUTH_TOKEN;
     load_overrides must migrate the key instead of failing validation (which
     would silently drop EVERY stored override)."""
-    import config_store
+    from faster_whisper_backend import config_store
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7}),
                  encoding="utf-8")
@@ -539,7 +539,7 @@ def test_reader_level_env_rejection_clears_the_pin(monkeypatch):
     """A value the reader could not parse controls nothing, exactly like one
     the schema pass reverted — so it must land in _ENV_REJECTED and drop out
     of env_pinned_fields(), or the admin's /settings edit never applies."""
-    import config_store
+    from faster_whisper_backend import config_store
     try:
         _reload_with_env(
             monkeypatch,
@@ -562,7 +562,7 @@ def test_save_overrides_migrates_use_auth_token(tmp_path):
     surviving pre-rename USE_AUTH_TOKEN key would make AdminConfig
     (extra=forbid) reject EVERY save forever. The first successful write must
     migrate the key and self-heal the file."""
-    import config_store
+    from faster_whisper_backend import config_store
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7}),
                  encoding="utf-8")
@@ -663,13 +663,13 @@ def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
 def test_legacy_state_mapping_uses_the_loader_overrides_path():
     """The startup call feeds config_store.OVERRIDES_PATH (the file the loader
     actually reads) into the mapping — not a re-derived copy of the rule."""
-    import config_store
+    from faster_whisper_backend import config_store
     assert config._overrides_path == config_store.OVERRIDES_PATH
 
 def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
     """Pre-db-layout compose installs kept SQLite stores at the data-dir
     ROOT; the upgrade note relies on this probe catching them too."""
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     legacy = tmp_path / "api_keys.local.sqlite3"
     legacy.write_bytes(b"")
     warns = cfg._legacy_state_warnings(
@@ -690,7 +690,7 @@ def test_renamed_keys_env_alias_is_table_driven(monkeypatch):
     """Every entry in config_renames.RENAMED_KEYS is honoured as an env alias
     (not only the hand-written HF_TOKEN shim it replaced), and each applied
     alias leaves one startup warning naming both spellings."""
-    import config_renames
+    from faster_whisper_backend import config_renames
     old, new = "RECENT_TRANSCRIPTIONS_TTL_DAYS", "RECENT_TRANSCRIPTIONS_RETENTION_DAYS"
     assert config_renames.RENAMED_KEYS[old] == new
     try:
@@ -706,7 +706,7 @@ def test_renamed_keys_env_alias_is_table_driven(monkeypatch):
 def test_local_overrides_migrate_renamed_keys(tmp_path):
     """A stored config.local.json still carrying a renamed key is migrated
     for every RENAMED_KEYS entry; a present new key wins over the old one."""
-    import config_store
+    from faster_whisper_backend import config_store
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"RECENT_TRANSCRIPTIONS_TTL_DAYS": 5,
                              "USE_AUTH_TOKEN": "hf_old", "HF_TOKEN": "hf_new"}),
@@ -721,7 +721,7 @@ def test_every_renamed_key_targets_a_live_field():
     """Each RENAMED_KEYS value must be a real config attribute, and no old
     spelling may still be one — otherwise the alias points into the void or
     the two names silently coexist."""
-    import config_renames
+    from faster_whisper_backend import config_renames
     for old, new in config_renames.RENAMED_KEYS.items():
         assert hasattr(config, new), new
         assert not hasattr(config, old), old

@@ -5,14 +5,14 @@ system_stats' loaded-model registry is shared by every model family
 whisper registers bare names), so the card must not read the device off
 whichever family happened to load first."""
 
-import config as cfg
+from faster_whisper_backend import config as cfg
 
 
 def test_identity_device_ignores_cuda_non_decode_model(client, monkeypatch):
     """A cuda pyannote pipeline loaded before any whisper model must not make
     a MODEL_DEVICE=cpu box claim "gpu — …" in the card / copy-report."""
-    import admin_routes
-    import system_stats
+    from faster_whisper_backend.admin import routes as admin_routes
+    from faster_whisper_backend.runtime import system_stats
 
     monkeypatch.setattr(system_stats, "gpu_name",
                         lambda: "NVIDIA GeForce RTX 3080")
@@ -32,8 +32,8 @@ def test_identity_device_prefers_decode_model_over_earlier_family(
         client, monkeypatch):
     """The reverse misreport: a cpu gguf translator loaded first must not hide
     that the decode model actually runs on cuda."""
-    import admin_routes
-    import system_stats
+    from faster_whisper_backend.admin import routes as admin_routes
+    from faster_whisper_backend.runtime import system_stats
 
     monkeypatch.setattr(system_stats, "gpu_name",
                         lambda: "NVIDIA GeForce RTX 3080")

@@ -10,8 +10,8 @@ USER_WEBUI_ALLOWED_HOSTS, unlike the browser /quick-config page).
 
 import copy
 
-import config_store
-import quick_config_routes
+from faster_whisper_backend import config_store
+from faster_whisper_backend.quick_config import routes as quick_config_routes
 from conftest import bearer
 
 
@@ -184,7 +184,7 @@ def test_v1_patch_fingerprint_conflict_then_match(client, app_module):
 # --------------------------------------------------------------------------
 
 def test_v1_tag_filtering_for_nonadmin(client, app_module, make_user_key):
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     alpha, beta, untagged = _expose_tagged(app_module)
     make_user_key("root", is_admin=True)  # flips lockdown
     uid = api_keys_store.create_user("alice", is_admin=False)
@@ -206,7 +206,7 @@ def test_v1_patch_rule_not_visible_is_indistinguishable_from_unknown(
     """A rule alice can't see must answer exactly like a rule that does not
     exist. Answering 403 for one and 400 for the other let her enumerate the
     slugs the admin curated out of her view, one guess per request."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     _alpha, beta, _untagged = _expose_tagged(app_module)
     make_user_key("root", is_admin=True)
     uid = api_keys_store.create_user("alice", is_admin=False)
@@ -234,7 +234,7 @@ def test_v1_patch_rule_not_visible_is_indistinguishable_from_unknown(
 def test_v1_patch_visible_rule_still_works(client, app_module, make_user_key):
     """The counterpart: a rule that IS exposed to the caller keeps resolving
     normally — the collapse above must not hide their own rules from them."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     alpha, _beta, _untagged = _expose_tagged(app_module)
     make_user_key("root", is_admin=True)
     uid = api_keys_store.create_user("alice", is_admin=False)

@@ -52,7 +52,7 @@ def test_stale_put_409_carries_current_then_force_put(client):
 
 
 def test_oversize_blob_413(client):
-    import client_settings_store as store
+    from faster_whisper_backend.client_settings import store
     big = {"x": "a" * (store._CAP_BLOB + 100)}
     r = _put(client, big, 0)
     assert r.status_code == 413
@@ -62,7 +62,7 @@ def test_oversize_body_413_before_the_body_is_read(client, monkeypatch):
     # The app-wide Content-Length gate (MAX_REQUEST_BYTES) answers before
     # Starlette buffers the body and json.loads expands it — the store's own
     # blob cap only runs once the dict already exists in memory.
-    import config
+    from faster_whisper_backend import config
     monkeypatch.setattr(config, "MAX_REQUEST_BYTES", 200)
     r = _put(client, {"x": "a" * 5000}, 0)
     assert r.status_code == 413
@@ -138,7 +138,7 @@ def test_locked_down_requires_bearer_and_isolates_users(client, make_user_key):
 def test_two_keys_same_user_share_one_blob(client, make_user_key):
     """The sync-scope decision: the store keys on user_id, so a second key
     belonging to the SAME account reads/writes the same settings set."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     uid, key1 = make_user_key("carol", is_admin=True)
     key2, _rec = api_keys_store.create_key(uid, label="second machine")
 
@@ -153,7 +153,7 @@ def test_store_unavailable_maps_to_503_not_500(client, monkeypatch):
     """init_db failing at startup (e.g. an unwritable CLIENT_SETTINGS_DB in a
     containerized deployment) must surface as an actionable 503 pointing at
     the config knob — not the bare 500 it used to be."""
-    import client_settings_store
+    from faster_whisper_backend.client_settings import store as client_settings_store
 
     monkeypatch.setattr(client_settings_store, "_conn", None)
     r = client.get(_URL)
@@ -167,7 +167,7 @@ def test_partial_init_maps_to_503_not_500(client, monkeypatch):
     """init_db raising AFTER it assigned _conn (WAL pragma / schema script /
     secure_db_file on a corrupt or read-only DB) must also answer the
     advertised 503 — not a bare 500 from the half-open connection."""
-    import client_settings_store
+    from faster_whisper_backend.client_settings import store as client_settings_store
 
     monkeypatch.setattr(client_settings_store, "_DB_READY", False)
     r = client.get(_URL)

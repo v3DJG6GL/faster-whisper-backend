@@ -112,7 +112,7 @@ def test_stream_picks_up_binding_change_without_reconnect(
     uid, raw_alice = make_user_key("alice")
     _bind(client, h, uid, profiles=["p7"])
 
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         ws.send_json({"type": "config", "model": "whisper-1",
@@ -310,8 +310,8 @@ def test_stream_closes_when_key_is_revoked_mid_session(
     version, which is the signal _refresh_ident already consumes."""
     import time
 
-    import api_keys_store
-    from streaming_routes import _WS_UNAUTH
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)      # lock down, so open mode is off
@@ -352,8 +352,8 @@ def test_revoked_session_closes_without_a_further_client_frame(
     _auth_revoked branch is only the backstop."""
     import time
 
-    import api_keys_store
-    from streaming_routes import _WS_UNAUTH
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)      # lock down, so open mode is off
@@ -414,7 +414,7 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
     """The re-auth hangs off the SAME version-bump branch as the ident refresh,
     so the steady state costs exactly nothing: one authenticate_ws call, at the
     handshake, no matter how many partial/final decodes run."""
-    import streaming_routes
+    from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)

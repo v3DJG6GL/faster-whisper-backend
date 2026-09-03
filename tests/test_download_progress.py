@@ -7,7 +7,7 @@ import logging
 
 import pytest
 
-import download_progress as dp
+from faster_whisper_backend.runtime import download_progress as dp
 
 pytest.importorskip("huggingface_hub")
 
@@ -168,7 +168,7 @@ def test_failed_download_gets_no_done_receipt(monkeypatch, caplog):
 
 
 def test_failed_download_is_recorded_as_not_ok(monkeypatch):
-    import metrics
+    from faster_whisper_backend.stats import metrics
     seen = []
     monkeypatch.setattr(metrics, "record_download",
                         lambda **kw: seen.append(kw))
@@ -183,7 +183,7 @@ def test_failed_download_is_recorded_as_not_ok(monkeypatch):
 
 
 def test_finished_download_is_recorded_as_ok(monkeypatch):
-    import metrics
+    from faster_whisper_backend.stats import metrics
     seen = []
     monkeypatch.setattr(metrics, "record_download",
                         lambda **kw: seen.append(kw))

@@ -14,7 +14,7 @@ import time
 import pytest
 from pydantic import ValidationError
 
-import config_store as cs
+from faster_whisper_backend import config_store as cs
 
 
 def _ok(**fields):
@@ -376,7 +376,7 @@ def test_pipeline_bad_backref_reported():
 def test_pipeline_catastrophic_regex_rejected_on_save(monkeypatch):
     # A catastrophic-backtracking pattern is rejected on save WITHOUT hanging:
     # the out-of-process guard is killed on timeout (shortened here).
-    import regex_guard
+    from faster_whisper_backend.core import regex_guard
     monkeypatch.setattr(regex_guard, "_GUARD_TIMEOUT", 0.5)
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[
@@ -443,7 +443,7 @@ def test_pipeline_regex_guard_skipped_without_save_context(monkeypatch):
     # so a normal config load never spawns the helper and never hangs on a
     # stored pattern. A pattern that only the BACKTRACKING probe would flag
     # (compiles fine; pathological only against real input) validates cleanly.
-    import regex_guard
+    from faster_whisper_backend.core import regex_guard
     calls = {"n": 0}
 
     def _spy(*a, **k):
@@ -522,7 +522,7 @@ def test_pipeline_bad_backref_rejected_on_load_without_subprocess(monkeypatch):
     # against one group has to fail-safe at LOAD, not load cleanly and then
     # raise re.error on every request at match time. And detecting it must
     # not need the subprocess helper.
-    import regex_guard
+    from faster_whisper_backend.core import regex_guard
 
     def _boom(*a, **k):
         raise AssertionError("subprocess guard must not run on load")
@@ -744,7 +744,7 @@ def test_sample_sizing_absent_field_uses_baseline_not_live_override(monkeypatch)
     # time (config import) it is the bare default — that asymmetry let a save
     # pass validation, then the next restart's load fail it and silently drop
     # EVERY override on disk.
-    import config as _cfg
+    from faster_whisper_backend import config as _cfg
 
     # Simulate a server running with a previously-applied TARGET override of 5.
     monkeypatch.setattr(_cfg, "CAPTURES_PROPOSER_TARGET_S", 5.0, raising=False)
@@ -850,7 +850,7 @@ def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
     would stop an admin's edit from ever reaching the live cfg."""
     import importlib
 
-    import config
+    from faster_whisper_backend import config
     try:
         monkeypatch.setenv("WHISPER_BEAM_SIZE", "9999")   # fails Field(le=...)
         importlib.reload(config)

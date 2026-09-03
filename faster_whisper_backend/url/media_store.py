@@ -26,8 +26,8 @@ import tempfile
 import time
 import uuid
 
-import config as cfg
-from store_common import secure_dir, secure_file
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.core.store_common import secure_dir, secure_file
 
 logger = logging.getLogger("whisper-api")
 

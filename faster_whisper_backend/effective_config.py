@@ -28,8 +28,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-import config as cfg
-import config_store
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_store
 
 logger = logging.getLogger("whisper-api")
 
@@ -514,7 +514,7 @@ def resolve(model_id: str | None, *, user_id: str | None = None,
     identity's own ``direct`` values and profile layers are unavailable too, so
     the decode falls back to the per-model / global defaults.
     """
-    import api_keys_store  # local import keeps module import order flexible
+    from faster_whisper_backend.auth import api_keys_store  # local import keeps module import order flexible
     key_binding = _safe_binding(api_keys_store.get_key_config, key_id)
     user_binding = _safe_binding(api_keys_store.get_user_config, user_id)
     faulted = _fetch_failed(key_binding, user_binding)
@@ -562,7 +562,7 @@ def _caller_gates(user_id: str | None,
                   key_id: str | None) -> tuple[bool, bool, list[str] | None]:
     """The caller's effective (override-profile gate, decode-override gate,
     override-profile allowlist). Shared by the capabilities + names endpoints."""
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     kb = _safe_binding(api_keys_store.get_key_config, key_id)
     ub = _safe_binding(api_keys_store.get_user_config, user_id)
     op = _effective_flag(kb, ub, "allow_request_override_profile",

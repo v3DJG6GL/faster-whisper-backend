@@ -7,9 +7,9 @@ import os
 
 import pytest
 
-import url_download
-import url_media_store
-from url_download import UrlMediaInfo
+from faster_whisper_backend.url import download as url_download
+from faster_whisper_backend.url import media_store as url_media_store
+from faster_whisper_backend.url.download import UrlMediaInfo
 
 _URL = "https://www.youtube.com/watch?v=abc123xyz"
 
@@ -57,8 +57,8 @@ def test_url_policy_rejection_lands_policy_blocked_on_the_ledger(client, url_ena
                                                                   monkeypatch):
     """The policy refusal becomes a 400 for the caller; the ledger keeps WHY
     (policy_blocked in the downloading stage), not just "error"."""
-    import recent_transcriptions_store
-    import usage_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    from faster_whisper_backend.stats import usage_store
 
     async def _refuse(url, *, timeout):
         raise url_download.UrlPolicyError(

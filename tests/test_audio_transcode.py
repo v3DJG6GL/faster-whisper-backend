@@ -11,7 +11,7 @@ import wave
 import numpy as np
 import pytest
 
-import audio_transcode
+from faster_whisper_backend.audio import transcode as audio_transcode
 
 RATE = 16000
 

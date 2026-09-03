@@ -137,7 +137,7 @@ def test_ws_authorization_header_admits(client, make_user_key):
 
 
 def test_ws_bearer_subprotocol_admits(client, make_user_key):
-    from streaming_routes import _WS_BEARER_SUBPROTOCOL
+    from faster_whisper_backend.streaming.routes import _WS_BEARER_SUBPROTOCOL
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice")
     with client.websocket_connect(
@@ -147,7 +147,7 @@ def test_ws_bearer_subprotocol_admits(client, make_user_key):
 
 
 def test_ws_key_query_param_rejected(client, make_user_key):
-    from streaming_routes import _WS_UNAUTH
+    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice")
     with pytest.raises(WebSocketDisconnect) as ei:
@@ -161,7 +161,7 @@ def test_ws_open_mode_remote_rejected(app_module):
     # /v1 has no host allowlist, but the open-mode synthetic admin is confined
     # to ADMIN_WEBUI_ALLOWED_HOSTS — so a remote peer on an unbootstrapped
     # server gets the unauth close, not a free session.
-    from streaming_routes import _WS_UNAUTH
+    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
         with pytest.raises(WebSocketDisconnect) as ei:
             with c.websocket_connect("/v1/audio/transcriptions/stream") as ws:
@@ -185,7 +185,7 @@ def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
     """Each finalized utterance writes a recent-transcriptions row with non-empty
     raw/final text (drives /quick-config + /reports), not just numeric metrics."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         before = recent_transcriptions_store.count()
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
@@ -210,8 +210,8 @@ def test_stream_records_the_key_label_on_the_trace_row(
         client, app_module, make_user_key, monkeypatch):
     """The recent-transcriptions row snapshots the API key's label straight
     from the auth record (user["key_label"]), the same way /transcribe does."""
-    import api_keys_store
-    import metrics
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.stats import metrics
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("root", is_admin=True)   # locks the server down
     uid = api_keys_store.create_user("alice", is_admin=False)
@@ -234,7 +234,7 @@ def test_flush_after_new_audio_is_not_coalesced(app_module, monkeypatch):
     degrading to flush A and leaving utterance B waiting for the silence gate."""
     import asyncio
 
-    import streaming_session
+    from faster_whisper_backend.streaming import session as streaming_session
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     flushes = []
@@ -269,7 +269,7 @@ def test_safe_ws_send_swallows_dead_socket():
     message ... after ... close'); the send must be swallowed, not surface as an
     error traceback."""
     import asyncio
-    import streaming_routes
+    from faster_whisper_backend.streaming import routes as streaming_routes
 
     class DeadWS:
         async def send_json(self, _m):
@@ -293,7 +293,7 @@ def test_stream_handshake_idle_timeout_frees_slot(app_module, monkeypatch):
     # A client that connects + passes auth but never sends its config handshake
     # must not hold a session slot forever: the server abandons the wait after
     # STREAMING_IDLE_TIMEOUT_S and closes with the idle close code (4408).
-    from streaming_routes import _WS_IDLE_TIMEOUT
+    from faster_whisper_backend.streaming.routes import _WS_IDLE_TIMEOUT
     monkeypatch.setattr(app_module.cfg, "STREAMING_IDLE_TIMEOUT_S", 0.3, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
@@ -405,7 +405,7 @@ def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
     """One client must not be able to fill the pool. The global cap is left
     wide open, so a refusal here can only come from the per-user one."""
     import logging
-    import streaming_routes
+    from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 10,
                         raising=False)
@@ -424,7 +424,7 @@ def test_per_user_cap_refuses_while_the_global_cap_has_headroom(
 
 
 def test_per_user_cap_zero_is_unlimited(client, app_module, monkeypatch):
-    import streaming_routes
+    from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0,
                         raising=False)
@@ -442,7 +442,7 @@ def test_serial_sessions_never_leak_a_slot(client, app_module, monkeypatch):
     """The leak guard: open and close cap+2 sessions one at a time. Each must
     succeed, and the gauge must be empty afterwards — a release skipped on any
     teardown path would strand a slot and refuse the next connection."""
-    import streaming_routes
+    from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 2,
                         raising=False)
@@ -456,7 +456,7 @@ def test_per_user_cap_is_per_user(client, make_user_key, app_module,
                                   monkeypatch):
     """Open mode resolves every caller to one synthetic admin, so real keys
     are what prove the cap is keyed per identity."""
-    import streaming_routes
+    from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
@@ -482,7 +482,7 @@ def test_aborted_handshake_releases_the_per_user_slot(client, app_module,
     is taken BEFORE accept and the releasing finally only starts after it, so
     every aborted handshake used to burn one slot for the life of the process."""
     import starlette.websockets
-    import streaming_routes
+    from faster_whisper_backend.streaming import routes as streaming_routes
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 1,
                         raising=False)
@@ -510,7 +510,7 @@ def test_cancel_during_a_completed_load_still_releases_the_lease(
     has ALREADY returned: the lease was taken, the record of it never made.
     The teardown must still find and release it."""
     import asyncio
-    import streaming_routes
+    from faster_whisper_backend.streaming import routes as streaming_routes
 
     _real = app_module._get_or_load_model
 
@@ -557,7 +557,7 @@ def test_stream_client_job_names_the_usage_job(app_module, monkeypatch):
     """The handshake's `client_job` becomes the usage job id, so the outcome
     the client posts afterwards lands on the session's own utterances."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         _dictate_one_utterance(client, {"client_job": "ab" * 16})
         rows = usage_store._require_conn().execute(
@@ -567,7 +567,7 @@ def test_stream_client_job_names_the_usage_job(app_module, monkeypatch):
 
 def test_stream_malformed_client_job_falls_back_to_session_id(app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         _dictate_one_utterance(client, {"client_job": "../not-hex"})
         rows = usage_store._require_conn().execute(

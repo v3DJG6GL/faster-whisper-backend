@@ -36,6 +36,7 @@ import subprocess
 import sys
 import threading
 import time
+from faster_whisper_backend.paths import REPO_ROOT
 
 
 def _flush_before_exit() -> None:
@@ -47,13 +48,13 @@ def _flush_before_exit() -> None:
     that NOTHING is silently lost) and NVML would leak driver handles.
     Best-effort — a restart must never fail because a flush did."""
     try:
-        import main as _main
-        import receipt_hold as _receipt_hold
+        from faster_whisper_backend import main as _main
+        from faster_whisper_backend.core import receipt_hold as _receipt_hold
         _main._log_held_receipts(_receipt_hold.flush_all())
     except Exception:  # noqa: BLE001 — flushing must not block the restart
         pass
     try:
-        import system_stats as _system_stats
+        from faster_whisper_backend.runtime import system_stats as _system_stats
         _system_stats.shutdown()
     except Exception:  # noqa: BLE001
         pass
@@ -81,7 +82,7 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         threading.Timer(delay_sec, do_reexec).start()
         return "execv-reexec"
 
-    repo_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_dir = REPO_ROOT
     winsw = os.path.join(repo_dir, "WhisperAPI.exe")
 
     if not os.path.isfile(winsw):

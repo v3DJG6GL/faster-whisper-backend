@@ -35,7 +35,7 @@ import uuid
 from hashlib import sha256
 from typing import Any
 
-import store_common
+from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger("whisper-api")
 
@@ -510,7 +510,7 @@ def revoke_user(user_id: str) -> None:
             (now, user_id),
         )
         _rebuild_index_locked()
-    import config_store
+    from faster_whisper_backend import config_store
     config_store.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] user revoked id=%s", user_id[:8])
 
@@ -668,7 +668,7 @@ def revoke_key(key_id: str) -> None:
             (now, key_id),
         )
         _rebuild_index_locked()
-    import config_store
+    from faster_whisper_backend import config_store
     config_store.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] key revoked kid=%s", key_id[:8])
 
@@ -834,7 +834,7 @@ def set_key_config(user_id: str, key_id: str, body: dict[str, Any]) -> dict[str,
     {"direct": {...}, "profiles": [...]}. Raises ValueError on bad input or if
     the key doesn't belong to `user_id` / is revoked. No index rebuild — config
     is resolved per-request, not carried in the auth index."""
-    import config_store
+    from faster_whisper_backend import config_store
     binding = config_store.validate_binding(body)  # raises ValueError
     conn = _require_conn()
     with _lock:
@@ -894,7 +894,7 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
 
     # Reuse config_store validators so rule tags / user tags / bindings share
     # one normalisation contract.
-    import config_store
+    from faster_whisper_backend import config_store
 
     # Tags: present → validate + normalise; absent → preserve stored.
     incoming_tags = perms.get("quick_config_tags")
@@ -985,7 +985,7 @@ def rename_profile_refs(old: str, new: str) -> int:
     everywhere, never widening access."""
     if old == new:
         return 0
-    import config_store
+    from faster_whisper_backend import config_store
     conn = _require_conn()
     touched = 0
     with _lock:

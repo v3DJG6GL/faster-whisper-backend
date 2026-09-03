@@ -13,6 +13,7 @@ each route is wired through it.
 import pathlib
 
 import pytest
+from faster_whisper_backend.paths import REPO_ROOT
 
 
 async def _agen():  # finite async generator — never actually iterated here
@@ -20,7 +21,7 @@ async def _agen():  # finite async generator — never actually iterated here
 
 
 def test_sse_response_sets_proxy_safe_headers():
-    import web_common
+    from faster_whisper_backend.core import web_common
     resp = web_common.sse_response(_agen())
     assert resp.media_type == "text/event-stream"
     assert resp.headers.get("x-accel-buffering") == "no"
@@ -34,8 +35,10 @@ def test_sse_response_sets_proxy_safe_headers():
 
 
 # (source file, snippet proving the stream endpoint is wired to the helper)
-_ROUTE_FILES = ["stats_routes.py", "quick_config_routes.py", "main.py"]
-_REPO = pathlib.Path(__file__).resolve().parent.parent
+_ROUTE_FILES = ["faster_whisper_backend/stats/routes.py",
+                "faster_whisper_backend/quick_config/routes.py",
+                "faster_whisper_backend/main.py"]
+_REPO = pathlib.Path(REPO_ROOT)
 
 
 @pytest.mark.parametrize("fname", _ROUTE_FILES)
@@ -53,10 +56,10 @@ def test_sse_routes_use_helper_not_bare_streamingresponse(fname):
 def test_no_module_builds_a_bare_event_stream_response():
     """Repo-wide half of the invariant: a NEW SSE route in a module nobody
     listed in _ROUTE_FILES must still go through web_common.sse_response.
-    Top level only (where the route modules live) — tests/ holds the literal
-    itself. web_common.py is the one legitimate site."""
+    The whole package (tests/ holds the literal itself, so it is excluded).
+    web_common.py is the one legitimate site."""
     offenders = [
-        p.name for p in sorted(_REPO.glob("*.py"))
+        p.name for p in sorted((_REPO / "faster_whisper_backend").rglob("*.py"))
         if p.name != "web_common.py"
         and 'media_type="text/event-stream"' in p.read_text(encoding="utf-8")
     ]

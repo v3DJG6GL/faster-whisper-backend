@@ -26,7 +26,7 @@ def _seed(uid, *, hour, words=0, audio_s=0.0, status="ok", kind="dictation",
     """Insert one request into the rollups directly (the app lifespan has
     already init'd usage_store onto the temp DB). key_id is per-uid because
     usage_hourly's key is (hour, key_id, kind)."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     usage_store.record_usage(
         key_id=f"k-{uid}", user_id=uid, audio_s=audio_s, words=words,
         status=status, hour=hour, kind=kind, job_id=job_id, stages=stages,
@@ -223,7 +223,7 @@ def test_v1_usage_not_host_gated(app_module, make_user_key):
 def test_v1_usage_zeroed_when_store_unavailable(client, make_user_key, monkeypatch):
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     monkeypatch.setattr(usage_store, "_conn", None)
     r = client.get("/v1/usage", params={"days": 5}, headers=bearer(raw))
     assert r.status_code == 200

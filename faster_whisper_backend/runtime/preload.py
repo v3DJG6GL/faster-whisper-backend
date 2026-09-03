@@ -44,10 +44,10 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-import config as cfg
-import jobs
-import model_sizes
-import system_stats
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.core import jobs
+from faster_whisper_backend.runtime import model_sizes
+from faster_whisper_backend.runtime import system_stats
 
 logger = logging.getLogger("whisper-server")
 
@@ -147,7 +147,7 @@ def normalize_id(family: str, model_id: str) -> str:
         return ""
     if family == "whisper":
         try:
-            import main  # lazy: main imports this module
+            from faster_whisper_backend import main  # lazy: main imports this module
             # `or ""`: with DEFAULT_MODEL unset the alias resolves to "" and
             # _admit's emptiness guard must still fire.
             return (main._resolve_model_name(model_id) or "").strip()
@@ -182,17 +182,17 @@ def is_resident(family: str, model_id: str) -> bool:
         return False
     try:
         if family == "whisper":
-            import main
+            from faster_whisper_backend import main
             return mid in main._loaded_models
         if family == "translation":
-            import translation
+            from faster_whisper_backend.audio import translation
             return mid in translation._models
         if family == "diarization":
-            import diarization
+            from faster_whisper_backend.audio import diarization
             key = diarization._pipeline_key
             return bool(key) and key[0] == mid
         if family == "separation":
-            import bgm_separation
+            from faster_whisper_backend.audio import bgm_separation
             key = bgm_separation._separator_key
             return bool(key) and key[0] == mid
     except Exception:  # noqa: BLE001 — a residency probe must never raise
@@ -270,7 +270,7 @@ def _placement(family: str, model_id: str = "") -> "tuple[str, str]":
     (MODEL_OVERRIDES > global), not from the global fields alone."""
     if family == "whisper":
         try:
-            import main  # lazy: main imports this module
+            from faster_whisper_backend import main  # lazy: main imports this module
             mid = normalize_id(family, model_id) or None
             return ((main.cfg_for(mid, "MODEL_DEVICE") or "cpu"),
                     (main.cfg_for(mid, "MODEL_COMPUTE_TYPE") or ""))
@@ -278,15 +278,15 @@ def _placement(family: str, model_id: str = "") -> "tuple[str, str]":
             return ((getattr(cfg, "MODEL_DEVICE", "cpu") or "cpu"),
                     (getattr(cfg, "MODEL_COMPUTE_TYPE", "") or ""))
     if family == "diarization":
-        import diarization
+        from faster_whisper_backend.audio import diarization
         return (diarization._resolve_device(), "torch")
     if family == "separation":
-        import bgm_separation
+        from faster_whisper_backend.audio import bgm_separation
         # The ledger row is written under the device the session actually
         # landed on (a cuda request may have fallen back to cpu).
         return (bgm_separation.actual_device()
                 or bgm_separation._resolve_device(), "onnx")
-    import translation
+    from faster_whisper_backend.audio import translation
     return (translation._resolve_device(), "gguf")
 
 
@@ -309,7 +309,7 @@ def _family_busy(family: str, model_id: str) -> bool:
     mid = normalize_id(family, model_id)
     try:
         if family == "whisper":
-            import main
+            from faster_whisper_backend import main
             # Held across a whisper load. A preload must never be the reason a
             # job waits on it, so a busy lock is a refusal, not a queue.
             if main._model_load_lock.locked():
@@ -324,21 +324,21 @@ def _family_busy(family: str, model_id: str) -> bool:
                 return True
             return False
         if family == "diarization":
-            import diarization
+            from faster_whisper_backend.audio import diarization
             key = diarization._pipeline_key
             if not key or key[0] == mid:
                 return False
             return bool(diarization._leases.get(key[0], 0)
                         or diarization._orphans.get(key[0], 0))
         if family == "separation":
-            import bgm_separation
+            from faster_whisper_backend.audio import bgm_separation
             key = bgm_separation._separator_key
             if not key or key[0] == mid:
                 return False
             return bool(bgm_separation._leases.get(key[0], 0)
                         or bgm_separation._orphans.get(key[0], 0))
         if family == "translation":
-            import translation
+            from faster_whisper_backend.audio import translation
             cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
             if len(translation._models) < cap:
                 return False
@@ -350,7 +350,7 @@ def _family_busy(family: str, model_id: str) -> bool:
 
 
 def _whisper_cache_full() -> bool:
-    import main
+    from faster_whisper_backend import main
     cap = max(1, int(getattr(cfg, "MAX_LOADED_MODELS", 1) or 1))
     return len(main._loaded_models) >= cap
 
@@ -361,7 +361,7 @@ def _idle_peer(family: str, model_id: str) -> "str | None":
     mid = normalize_id(family, model_id)
     try:
         if family == "whisper":
-            import main
+            from faster_whisper_backend import main
             for name in main._loaded_models:
                 if name == mid or main._model_leases.get(name, 0):
                     continue
@@ -369,7 +369,7 @@ def _idle_peer(family: str, model_id: str) -> "str | None":
                     return name
             return None
         if family == "translation":
-            import translation
+            from faster_whisper_backend.audio import translation
             for ref in translation._models:
                 if ref == mid or translation._active.get(ref, 0):
                     continue
@@ -377,10 +377,10 @@ def _idle_peer(family: str, model_id: str) -> "str | None":
                     return ref
             return None
         if family == "diarization":
-            import diarization
+            from faster_whisper_backend.audio import diarization
             key = diarization._pipeline_key
         else:
-            import bgm_separation
+            from faster_whisper_backend.audio import bgm_separation
             key = bgm_separation._separator_key
         if not key or key[0] == mid:
             return None
@@ -871,16 +871,16 @@ async def _load(family: str, model_id: str) -> None:
     model must stay evictable the moment a real request needs the memory."""
     mid = normalize_id(family, model_id)
     if family == "whisper":
-        import main
+        from faster_whisper_backend import main
         await main._get_or_load_model(mid)
     elif family == "diarization":
-        import diarization
+        from faster_whisper_backend.audio import diarization
         await diarization._get_pipeline(mid)
     elif family == "separation":
-        import bgm_separation
+        from faster_whisper_backend.audio import bgm_separation
         await bgm_separation._get_separator(mid)
     elif family == "translation":
-        import translation
+        from faster_whisper_backend.audio import translation
         await translation._get_model(mid)
 
 
@@ -890,18 +890,18 @@ async def _evict(family: str, peer_id: str) -> None:
     logger.info("[preload] evicting idle %s to make room",
                 stats_key(family, peer_id))
     if family == "whisper":
-        import main
+        from faster_whisper_backend import main
         async with main._model_load_lock:
             main._drop_loaded_model(peer_id)
     elif family == "translation":
-        import translation
+        from faster_whisper_backend.audio import translation
         async with translation._lock:
             translation._drop_locked(peer_id)
     elif family == "diarization":
-        import diarization
+        from faster_whisper_backend.audio import diarization
         await diarization.drop_pipeline(force=False)
     elif family == "separation":
-        import bgm_separation
+        from faster_whisper_backend.audio import bgm_separation
         await bgm_separation.drop_separator(force=False)
 
 

@@ -21,10 +21,10 @@ import logging
 import time
 from typing import Any
 
-import config as cfg
-import metrics
-import system_stats
-import system_metrics_store
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.stats import metrics
+from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.stats import system_metrics_store
 
 logger = logging.getLogger("whisper-api")
 

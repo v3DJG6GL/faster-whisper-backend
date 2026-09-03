@@ -26,7 +26,7 @@ import sqlite3
 import threading
 from typing import Any
 
-import store_common
+from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger("whisper-api")
 
@@ -120,7 +120,7 @@ def abs_path_for(relpath: str) -> str:
     rooted at CAPTURES_DIR. Path-traversal defense — anything that
     escapes returns ValueError."""
     # Imported lazily to avoid an import cycle at module load.
-    import captures_store
+    from faster_whisper_backend.captures import store as captures_store
     root = os.path.abspath(captures_store._require_audio_dir())
     abs_p = os.path.abspath(os.path.join(root, relpath))
     try:
@@ -308,7 +308,7 @@ def dissolve_sample(sid: str) -> None:
         logger.warning("[groups] failed to unlink %s: %s",
                        g["merged_wav_relpath"], e)
     try:
-        import captures_merge_proposer
+        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
         captures_merge_proposer.invalidate(g.get("user_id"))
     except Exception:
         pass

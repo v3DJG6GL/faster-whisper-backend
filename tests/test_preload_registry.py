@@ -11,12 +11,12 @@ import asyncio
 import concurrent.futures
 import time
 
-import bgm_separation
-import diarization
-import model_sizes
-import preload
-import system_stats
-import translation
+from faster_whisper_backend.audio import bgm_separation
+from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.runtime import model_sizes
+from faster_whisper_backend.runtime import preload
+from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.audio import translation
 
 _GB = 1024 * 1024 * 1024
 
@@ -28,7 +28,7 @@ def _fits(monkeypatch, verdict=(True, None)):
 
 
 def _enable(monkeypatch, **over):
-    import config as cfg
+    from faster_whisper_backend import config as cfg
     defaults = {
         "MODEL_PRELOAD_ENABLED": True,
         "MODEL_PRELOAD_WARM_TTL_S": 180,
@@ -183,7 +183,7 @@ def test_whisper_defers_while_the_model_load_lock_is_held(monkeypatch):
         def locked(self):
             return True
 
-    import main
+    from faster_whisper_backend import main
     monkeypatch.setattr(main, "_model_load_lock", _Locked())
     assert preload._admit("whisper", "large-v3") == ("deferred", "family_busy")
 
@@ -412,7 +412,7 @@ def test_sync_entry_points_are_thread_safe_against_the_sweeper(monkeypatch):
     # And no /stats "preload" row outlived its plan: a plan evicted as
     # "registry full" between another thread's lock windows must not have
     # had a job row stamped onto the detached object afterwards.
-    import jobs
+    from faster_whisper_backend.core import jobs
     live = {f"plan {pid[:8]}" for pid in preload._plans}
     orphans = [j for j in jobs.jobs_snapshot(include_identity=True)
                if j["kind"] == "preload" and j["detail"] not in live]

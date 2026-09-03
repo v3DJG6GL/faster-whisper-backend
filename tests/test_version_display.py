@@ -1,8 +1,8 @@
 """The three WebUI version surfaces render the build version:
 header vtag (every shared-header page) / hub build line / settings card."""
 
-import build_info
-import config as cfg
+from faster_whisper_backend import build_info
+from faster_whisper_backend import config as cfg
 
 
 def test_header_vtag_shell_carries_no_facts(client):
@@ -81,8 +81,8 @@ def test_identity_card_reports_configured_device_not_nvml(client, monkeypatch):
     """A box with an NVIDIA card but MODEL_DEVICE=cpu must not claim "gpu — …"
     in the card / copy-report: the device word follows what the server decodes
     on, not NVML merely finding a device."""
-    import admin_routes
-    import system_stats
+    from faster_whisper_backend.admin import routes as admin_routes
+    from faster_whisper_backend.runtime import system_stats
     monkeypatch.setattr(system_stats, "gpu_name",
                         lambda: "NVIDIA GeForce RTX 3080")
     monkeypatch.setattr(system_stats, "loaded_models_snapshot", lambda: [])

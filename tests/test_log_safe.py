@@ -1,7 +1,7 @@
 """store_common.log_safe: the control-character screen for caller-supplied
 labels that end up in a log line the /logs viewer renders."""
 
-import store_common
+from faster_whisper_backend.core import store_common
 
 
 def test_cr_lf_and_c0_are_collapsed():
@@ -47,7 +47,7 @@ def test_secure_log_dir_only_tightens_a_directory_we_created(monkeypatch):
     # LOG_FILE is operator-chosen: chmod-ing a pre-existing /var/log to 0700
     # would lock every other daemon out of it, so only a freshly created
     # directory is ours to secure.
-    import main
+    from faster_whisper_backend import main
     seen = []
     monkeypatch.setattr(store_common, "secure_dir", seen.append)
     main._secure_log_dir("/some/dir", created=False)

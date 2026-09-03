@@ -50,7 +50,7 @@ def _fake_wav_transcode(src_path, dst_path):
 # ---------------------------------------------------------------------------
 
 def test_reports_migration_adds_columns_and_is_idempotent(tmp_path):
-    import reports_store
+    from faster_whisper_backend.admin import reports_store
     db = str(tmp_path / "reports.db")
 
     with _own_db(reports_store):
@@ -67,7 +67,7 @@ def test_reports_migration_adds_columns_and_is_idempotent(tmp_path):
 
 def test_reports_migration_upgrades_a_pre_existing_table(tmp_path):
     """The real case: a database created before the columns existed."""
-    import reports_store
+    from faster_whisper_backend.admin import reports_store
     db = str(tmp_path / "old.db")
     old = sqlite3.connect(db)
     old.executescript("""
@@ -143,7 +143,7 @@ def test_reports_resubmission_without_provenance_keeps_it(reports_store_db):
 # ---------------------------------------------------------------------------
 
 def test_captures_migration_adds_columns_and_is_idempotent(tmp_path):
-    import captures_store
+    from faster_whisper_backend.captures import store as captures_store
     db = str(tmp_path / "cap.db")
     audio = str(tmp_path / "audio")
 
@@ -160,7 +160,7 @@ def test_captures_migration_adds_columns_and_is_idempotent(tmp_path):
 
 
 def test_captures_migration_upgrades_a_pre_existing_table(tmp_path):
-    import captures_store
+    from faster_whisper_backend.captures import store as captures_store
     db = str(tmp_path / "old.db")
     audio = str(tmp_path / "audio")
     old = sqlite3.connect(db)
@@ -207,7 +207,7 @@ def test_captures_translations_round_trip_as_a_keyed_map(
     """The point of the column: the exporter must be able to pick ONE
     language out. Whisper's translate task targets English only, so a joined
     blob would be unusable."""
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
 
     captures_store = captures_store_db
     monkeypatch.setattr(audio_transcode, "transcode_to_wav_16k_mono",
@@ -236,7 +236,7 @@ def test_captures_list_projection_carries_the_new_columns(
     """_LIST_COLUMNS is a hand-maintained projection whose own comment exists
     to stop exactly this drift: a column missing from it vanishes from
     /captures/api/list while still being present in the table."""
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
 
     captures_store = captures_store_db
     # _LIST_COLUMNS is one comma-separated string; parse it into real column

@@ -20,8 +20,9 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from conftest import bearer
-from streaming_session import StreamConfig, StreamSession
-from streaming_vad import FRAME_MS, SAMPLE_RATE as SR
+from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
+from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR
+import importlib
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
 
@@ -170,7 +171,7 @@ def test_decoded_path_flags_decode_and_rebases_words():
                 False)
 
     s = StreamSession(
-        config=cfg, endpointer=__import__("streaming_vad").EnergyEndpointer(),
+        config=cfg, endpointer=importlib.import_module("faster_whisper_backend.streaming.vad").EnergyEndpointer(),
         decode_partial=decode_partial, decode_final=decode_final,
         postprocess=lambda raw: raw, emit=emit, on_final=on_final,
     )
@@ -198,7 +199,7 @@ def _gate_second_utterance(client, app_module, monkeypatch, ws, *, before_second
     """Utterance 1 decodes normally; utterance 2 commits text through the
     partials and is then finalized with the RMS gate forced shut, so on_final
     runs for it without a decode."""
-    import streaming_session
+    from faster_whisper_backend.streaming import session as streaming_session
 
     ws.send_bytes(_pcm(8000, 2500))
     ws.send_bytes(_pcm(0, 1500))          # utterance 1 → decoded final
@@ -216,7 +217,7 @@ def _gate_second_utterance(client, app_module, monkeypatch, ws, *, before_second
 
 def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
         client, app_module, monkeypatch, caplog):
-    import recent_transcriptions_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with caplog.at_level(logging.INFO, logger="whisper-api"):
@@ -250,9 +251,9 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
     """decode_final's pre-model raise used to be the only revocation guard;
     the gate path reaches on_final with no decode at all, so on_final has to
     check for itself. A revoked identity must write no trace/usage row."""
-    import api_keys_store
-    import recent_transcriptions_store
-    from streaming_routes import _WS_UNAUTH
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.stats import recent_transcriptions_store
+    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     make_user_key("admin", is_admin=True)
@@ -285,8 +286,8 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
     """/v1/text/translations refuses before it can claim a receipt, so a
     declaration on a TRANSLATION_ENABLED=0 server must park nothing: the
     receipt is logged inline and no `captured` frame invites a claim."""
-    import captures_store
-    import receipt_hold
+    from faster_whisper_backend.captures import store as captures_store
+    from faster_whisper_backend.core import receipt_hold
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", False, raising=False)
@@ -308,8 +309,8 @@ def test_translate_expect_is_ignored_when_translation_is_disabled(
 def test_translate_expect_parks_when_translation_is_enabled(
         client, app_module, monkeypatch):
     """The other direction, so the gate above is not just disabling the hold."""
-    import captures_store
-    import receipt_hold
+    from faster_whisper_backend.captures import store as captures_store
+    from faster_whisper_backend.core import receipt_hold
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
@@ -331,7 +332,7 @@ def test_translate_expect_parks_when_translation_is_enabled(
 
 
 def test_disabled_refusal_closes_after_accept_with_4503(app_module, monkeypatch):
-    from streaming_routes import _WS_DISABLED
+    from faster_whisper_backend.streaming.routes import _WS_DISABLED
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_ENABLED", False, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
@@ -345,7 +346,7 @@ def test_disabled_refusal_closes_after_accept_with_4503(app_module, monkeypatch)
 
 
 def test_unauth_refusal_closes_after_accept_with_4401(app_module):
-    from streaming_routes import _WS_UNAUTH
+    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
         with pytest.raises(WebSocketDisconnect) as ei:
@@ -355,7 +356,7 @@ def test_unauth_refusal_closes_after_accept_with_4401(app_module):
 
 
 def test_origin_refusal_closes_after_accept_with_4403(client, app_module):
-    from streaming_routes import _WS_BAD_ORIGIN
+    from faster_whisper_backend.streaming.routes import _WS_BAD_ORIGIN
 
     with pytest.raises(WebSocketDisconnect) as ei:
         with client.websocket_connect(
@@ -365,7 +366,7 @@ def test_origin_refusal_closes_after_accept_with_4403(client, app_module):
 
 
 def test_cap_refusal_closes_after_accept_with_4429(client, app_module, monkeypatch):
-    from streaming_routes import _WS_TOO_MANY
+    from faster_whisper_backend.streaming.routes import _WS_TOO_MANY
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS", 1, raising=False)
     monkeypatch.setattr(app_module.cfg, "STREAMING_MAX_SESSIONS_PER_USER", 0, raising=False)
@@ -389,7 +390,7 @@ def test_condition_on_previous_text_override_is_reported_ignored(client, app_mod
 
 
 def test_running_dictate_job_names_its_model(client, app_module):
-    import jobs
+    from faster_whisper_backend.core import jobs
 
     with client.websocket_connect(_STREAM_URL) as ws:
         assert _config(ws)["type"] == "ready"
@@ -401,8 +402,8 @@ def test_running_dictate_job_names_its_model(client, app_module):
 def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, caplog):
     """Two-byte PCM frames alternated with flushes queue two items per ~0 bytes,
     so the byte cap never trips; the item cap must shed them instead."""
-    import streaming_routes
-    import streaming_session
+    from faster_whisper_backend.streaming import routes as streaming_routes
+    from faster_whisper_backend.streaming import session as streaming_session
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     monkeypatch.setattr(streaming_routes, "_HARD_CAP_ITEMS", 32)

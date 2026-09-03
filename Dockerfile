@@ -97,6 +97,6 @@ EXPOSE 8000
 USER ${PUID}:${PGID}
 ENV HOME=/tmp
 
-# `python main.py` runs uvicorn via main's __main__; it's also what the
+# `python main.py` is the shim over faster_whisper_backend/main.py; it's also what the
 # cross-platform self-restart (os.execv) re-execs.
 CMD ["python", "main.py"]

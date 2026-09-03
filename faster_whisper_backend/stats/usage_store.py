@@ -80,7 +80,7 @@ import time
 import zoneinfo
 from typing import Any
 
-import store_common
+from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger("whisper-api")
 

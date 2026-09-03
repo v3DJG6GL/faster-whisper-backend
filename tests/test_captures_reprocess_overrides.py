@@ -7,7 +7,7 @@ from tests.conftest import RATE, bearer
 
 
 def _fake_transcode(monkeypatch):
-    import audio_transcode
+    from faster_whisper_backend.audio import transcode as audio_transcode
 
     def _fake(src_path, dst_path):
         with wave.open(dst_path, "wb") as w:
@@ -20,7 +20,7 @@ def _fake_transcode(monkeypatch):
 
 
 def _make_capture(tmp_path, user_id):
-    import captures_store
+    from faster_whisper_backend.captures import store as captures_store
     src = tmp_path / "src.bin"
     src.write_bytes(b"junk")
     return captures_store.create_capture(

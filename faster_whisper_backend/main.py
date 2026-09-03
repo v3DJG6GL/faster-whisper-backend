@@ -16,23 +16,23 @@ from contextlib import asynccontextmanager
 # BOOT_ID (the per-process restart marker surfaced via /v1/models) lives in
 # build_info with the rest of the server identity; imported this early —
 # before config — so it exists exactly as soon as it used to.
-from build_info import APP_VERSION, BOOT_ID, SERVER_NAME
+from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 
-import config as cfg
+from faster_whisper_backend import config as cfg
 # system_stats imports psutil + pynvml at module load and primes psutil's
 # non-blocking counters. Imported here (early) so the priming happens before
 # any request handler runs.
-import system_stats
+from faster_whisper_backend.runtime import system_stats
 # Imported for the log-file mode hardening below; module-level cost is nil (os).
-import store_common
+from faster_whisper_backend.core import store_common
 # Text-to-text translation stage (llama.cpp GGUF). Module-level import is
 # deliberate and cheap — like diarization/bgm_separation the module is
 # import-safe without its optional deps (llama_cpp loads lazily inside the
 # model-load path), and the stage + lifespan both need it.
-import translation as _tr
+from faster_whisper_backend.audio import translation as _tr
 # Shared per-identity limiters. Imports only stdlib + fastapi + config, so it
 # is safe this early and cannot close an import cycle back through main.
-import rate_limit as _rl
+from faster_whisper_backend.auth import rate_limit as _rl
 
 # =============================================================================
 # Logging setup: stderr (with colors when TTY) + rotating file (no colors)
@@ -117,7 +117,8 @@ if _log_dir_ok:
 
 # Tail WARNING+ records into an in-memory ring used by the nav-row severity
 # pills and the /stats page. Does no I/O — append to a deque and return.
-from web_common import SeverityCounter
+from faster_whisper_backend.core.web_common import SeverityCounter
+from faster_whisper_backend.paths import REPO_ROOT
 _root.addHandler(SeverityCounter())
 
 logger = logging.getLogger("whisper-api")
@@ -217,7 +218,7 @@ def _add_local_ffmpeg_to_path() -> None:
     imageio-ffmpeg executable does not ship). Make it visible to this process
     and its subprocesses. Prepended so its DLLs also win over a static build
     elsewhere on PATH. Idempotent — same reload concern as the CUDA preloader."""
-    ff_bin = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ffmpeg", "bin")
+    ff_bin = os.path.join(REPO_ROOT, "ffmpeg", "bin")
     if not os.path.isfile(os.path.join(ff_bin, "ffmpeg.exe")):
         return
     parts = os.environ.get("PATH", "").split(os.pathsep)
@@ -239,7 +240,7 @@ from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Res
 # (no admin key in DB) it returns the synthetic admin — but only to callers on
 # ADMIN_WEBUI_ALLOWED_HOSTS — so the operator can bootstrap; otherwise it 401s
 # on missing/invalid bearer.
-from auth import Permissions, get_current_user as _get_current_user_dep
+from faster_whisper_backend.auth.dependencies import Permissions, get_current_user as _get_current_user_dep
 
 # faster_whisper pulls the heavy native stack (ctranslate2/onnxruntime/av). It is
 # imported lazily at first model load (see _get_or_load_model) so this module
@@ -1778,7 +1779,7 @@ def build_ident(user: "dict | None", model_id: "str | None",
     kwargs / _postprocess_text. Open mode and callers with no per-identity
     config yield a Resolved with no identity layers (per-model rules still
     folded) — equivalent to threading ident=None."""
-    import effective_config
+    from faster_whisper_backend import effective_config
     user = user or {}
     return effective_config.resolve(
         model_id,
@@ -2141,7 +2142,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     # won the race honoured.
     if not load_kwargs.get("local_files_only") and not os.path.isdir(load_path):
         try:
-            import download_progress
+            from faster_whisper_backend.runtime import download_progress
             from huggingface_hub import snapshot_download
             _dl_repo = load_path
             if "/" not in _dl_repo:
@@ -2367,7 +2368,7 @@ async def _reports_retention_loop() -> None:
     cfg.REPORTS_RETENTION_DAYS each tick so admin /settings edits take
     effect on the next cycle without a service restart. Cancellation
     on shutdown is the normal exit path."""
-    import reports_store
+    from faster_whisper_backend.admin import reports_store
     while True:
         try:
             await asyncio.sleep(3600)
@@ -2383,7 +2384,7 @@ async def _reports_retention_loop() -> None:
 async def _captures_retention_loop() -> None:
     """Hourly retention sweep for the captures store. Same shape as the
     reports loop; lazy reads cfg.CAPTURES_RETENTION_DAYS each tick."""
-    import captures_store
+    from faster_whisper_backend.captures import store as captures_store
     while True:
         try:
             await asyncio.sleep(3600)
@@ -2404,7 +2405,7 @@ async def _usage_retention_loop() -> None:
     their retention. Same shape as the reports loop; the four knobs are
     read from cfg on every tick so a /settings edit applies without a
     restart."""
-    import usage_store
+    from faster_whisper_backend.stats import usage_store
     while True:
         try:
             await asyncio.sleep(3600)
@@ -2431,7 +2432,7 @@ async def _sessions_purge_loop() -> None:
     TTL a login loop grew both the sessions table and the in-memory index
     without bound. /auth/login takes any valid key and has no rate limit.
     Same shape as the retention loops above."""
-    import sessions_store
+    from faster_whisper_backend.auth import sessions_store
     while True:
         try:
             await asyncio.sleep(3600)
@@ -2485,7 +2486,7 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
     first-time creation of a weak value is refused, and the server then stays
     in its usual no-admin-key state rather than failing to boot.
     """
-    import api_keys_store
+    from faster_whisper_backend.auth import api_keys_store
     h = api_keys_store.hash_key(raw_key)
     # If this hash already maps to an active key, nothing to do — and nothing
     # to complain about, however weak the value is by today's floor.
@@ -2606,7 +2607,7 @@ async def _preload_extras() -> None:
                              ref, e)
     if getattr(cfg, "DIARIZATION_PRELOAD", False) and \
             getattr(cfg, "DIARIZATION_ENABLED", False):
-        import diarization as _diar
+        from faster_whisper_backend.audio import diarization as _diar
         try:
             logger.info("Preloading the diarization pipeline")
             await _diar._get_pipeline()
@@ -2614,7 +2615,7 @@ async def _preload_extras() -> None:
             logger.error("Failed to preload the diarization pipeline: %s", e)
     if getattr(cfg, "BGM_SEPARATION_PRELOAD", False) and \
             getattr(cfg, "BGM_SEPARATION_ENABLED", False):
-        import bgm_separation as _bgm
+        from faster_whisper_backend.audio import bgm_separation as _bgm
         try:
             logger.info("Preloading the BGM separation model")
             await _bgm._get_separator()
@@ -2669,7 +2670,7 @@ async def lifespan(app: FastAPI):
     # through this store, and with it still closed those rows were lost
     # with a "persist failed" warning. Needs only cfg + store_common.
     try:
-        import recent_transcriptions_store
+        from faster_whisper_backend.stats import recent_transcriptions_store
         recent_transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
         logger.info(
             "Recent-transcriptions store initialized at %s",
@@ -2682,7 +2683,7 @@ async def lifespan(app: FastAPI):
     # GPU-busy share). Rolling telemetry, its own file. Adopts the
     # pre-split sys_samples rows out of the recent-transcriptions DB once.
     try:
-        import system_metrics_store
+        from faster_whisper_backend.stats import system_metrics_store
         system_metrics_store.init_db(cfg.STATS_SYSTEM_METRICS_DB)
         _moved = system_metrics_store.adopt_legacy(
             recent_transcriptions_store._require_conn())
@@ -2702,7 +2703,7 @@ async def lifespan(app: FastAPI):
     # without a connection it would log the same error every hour.
     usage_store_ready = False
     try:
-        import usage_store
+        from faster_whisper_backend.stats import usage_store
         usage_store.init_db(cfg.USAGE_DB)
         logger.info("Usage rollup store initialized at %s", cfg.USAGE_DB)
         usage_store_ready = True
@@ -2730,8 +2731,8 @@ async def lifespan(app: FastAPI):
     # operator believing the env key locked it down.
     open_mode_task = None
     try:
-        import api_keys_store
-        import auth as _auth
+        from faster_whisper_backend.auth import api_keys_store
+        from faster_whisper_backend.auth import dependencies as _auth
         api_keys_store.init_db(cfg.API_KEYS_DB)
         bootstrap_key = getattr(cfg, "BOOTSTRAP_ADMIN_KEY", None)
         if bootstrap_key:
@@ -2792,10 +2793,10 @@ async def lifespan(app: FastAPI):
     # The diarization pipeline gets its own idle unloader (module-local
     # singleton, DIARIZATION_IDLE_TIMEOUT_S read live). Import is cheap and
     # dependency-free — pyannote itself loads lazily on first use.
-    import diarization as _diarization
+    from faster_whisper_backend.audio import diarization as _diarization
     diarization_evictor_task = asyncio.create_task(
         _diarization.idle_evictor_loop())
-    import bgm_separation as _bgm_separation
+    from faster_whisper_backend.audio import bgm_separation as _bgm_separation
     bgm_evictor_task = asyncio.create_task(
         _bgm_separation.idle_evictor_loop())
     # The translation LRU gets its own idle unloader too (module-level
@@ -2819,7 +2820,7 @@ async def lifespan(app: FastAPI):
     # restart badge), so the janitor must already be running when an admin
     # flips it on; with the feature off both are no-ops. The TMPDIR sweep
     # reclaims what a hard restart (restart_service) orphaned.
-    import url_media_store as _url_media_store
+    from faster_whisper_backend.url import media_store as _url_media_store
     _url_media_store.startup_reset()
     _reclaim_hard_restart_orphans()
     url_media_janitor_task = asyncio.create_task(
@@ -2831,7 +2832,7 @@ async def lifespan(app: FastAPI):
     # the first pasted link; probe()/download() re-check and refuse anyway, so
     # a failure here is logged, never fatal. Skipped when yt-dlp isn't
     # installed at all — there is then nothing to guard.
-    import url_download as _url_download
+    from faster_whisper_backend.url import download as _url_download
     if _url_download.yt_dlp_version():
         try:
             _url_download.guard_self_check(force=True)
@@ -2843,7 +2844,7 @@ async def lifespan(app: FastAPI):
     # (API clients) and open mode keep working.
     sessions_purge_task = None
     try:
-        import sessions_store
+        from faster_whisper_backend.auth import sessions_store
         sessions_store.init_db(cfg.SESSIONS_DB)
         logger.info("Session store initialized at %s", cfg.SESSIONS_DB)
         sessions_purge_task = asyncio.create_task(_sessions_purge_loop())
@@ -2854,7 +2855,7 @@ async def lifespan(app: FastAPI):
                         if usage_store_ready else None)
     # 1 Hz machine sampler: the GPU-busy share and the /stats history charts.
     # Needs the system-metrics store.
-    import stats_sampler as _stats_sampler
+    from faster_whisper_backend.stats import sampler as _stats_sampler
     stats_sampler_task = asyncio.create_task(_stats_sampler.loop())
 
     # Open the reports SQLite store (durable, plaintext dictation content
@@ -2863,7 +2864,7 @@ async def lifespan(app: FastAPI):
     # the reports surface is broken, but the /reports page will error.
     reports_sweep_task = None
     try:
-        import reports_store
+        from faster_whisper_backend.admin import reports_store
         reports_store.init_db(cfg.REPORTS_DB)
         reports_store.sweep_retention()
         logger.info("Reports store initialized at %s", cfg.REPORTS_DB)
@@ -2878,7 +2879,7 @@ async def lifespan(app: FastAPI):
     # 503s but transcription keeps working. No retention loop — bounded at
     # one row per account.
     try:
-        import client_settings_store
+        from faster_whisper_backend.client_settings import store as client_settings_store
         client_settings_store.init_db(cfg.CLIENT_SETTINGS_DB)
         logger.info(
             "Client-settings store initialized at %s", cfg.CLIENT_SETTINGS_DB
@@ -2897,12 +2898,12 @@ async def lifespan(app: FastAPI):
     # vice versa).
     captures_sweep_task = None
     try:
-        import captures_store
+        from faster_whisper_backend.captures import store as captures_store
         captures_store.init_db(cfg.CAPTURES_DB, cfg.CAPTURES_DIR)
         # capture_samples_store reuses the captures DB connection — single
         # SQLite file holds both tables. Init it before the first
         # sweep_retention(): the sweep's sample-expiry pass needs it.
-        import capture_samples_store
+        from faster_whisper_backend.captures import samples_store as capture_samples_store
         capture_samples_store.init_db(captures_store._require_conn(), cfg.CAPTURES_DIR)
         captures_store.reconcile_on_startup()
         capture_samples_store.reconcile_on_startup()
@@ -3012,7 +3013,7 @@ if _trusted_origins:
 from fastapi.staticfiles import StaticFiles
 app.mount(
     "/static",
-    StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static")),
+    StaticFiles(directory=os.path.join(REPO_ROOT, "static")),
     name="static",
 )
 
@@ -3023,8 +3024,8 @@ app.mount(
 # synthetic admin passes, so loopback docs work out of the box; once locked
 # down, /openapi.json needs an admin session/key (the swagger UI fetches it
 # same-origin with the session cookie).
-from web_common import require_user_webui_host, require_admin_webui_host
-from auth import require_admin as _require_admin
+from faster_whisper_backend.core.web_common import require_user_webui_host, require_admin_webui_host
+from faster_whisper_backend.auth.dependencies import require_admin as _require_admin
 from fastapi.openapi.docs import get_swagger_ui_html, get_redoc_html
 from fastapi.responses import JSONResponse as _JSONResponse
 
@@ -3079,20 +3080,20 @@ async def _redoc_ui():
 
 # Per-request metrics middleware. Records (path, status, duration) for every
 # HTTP request — bumps in_flight tracked separately by the transcribe handler.
-import metrics
+from faster_whisper_backend.stats import metrics
 
 # Central running-jobs registry (transcribe/dictate/translate/download/preload)
 # — feeds /stats and the WebUI header activity cluster.
-import jobs
+from faster_whisper_backend.core import jobs
 
 # Model preloading. Imported here rather than lazily because three call sites
 # below (the two `loaded` flag endpoints and _progress_set) reach it on hot
 # paths. preload itself imports main only lazily, so the cycle never closes.
-import preload
+from faster_whisper_backend.runtime import preload
 
 # Dictation receipts held open until their translation arrives on a separate
 # request. Imports nothing from the app, so no cycle.
-import receipt_hold
+from faster_whisper_backend.core import receipt_hold
 
 
 _CSRF_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
@@ -3193,7 +3194,7 @@ async def _csrf_mw(request: Request, call_next):
             cookie = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
             if cookie:
                 import hmac
-                import sessions_store
+                from faster_whisper_backend.auth import sessions_store
                 sess = sessions_store.lookup_session(cookie)
                 # Hand the resolved row to auth.user_from_session_cookie via
                 # the shared scope state so the dependency does not look the
@@ -3832,8 +3833,8 @@ async def transcribe(
                 # BGM tmp_path swap and the finally's unlink, is unchanged.
                 # The download deliberately does NOT hold the inference
                 # semaphore (network-bound); it has its own, narrower one.
-                import url_download as _udl
-                import url_media_store as _ums
+                from faster_whisper_backend.url import download as _udl
+                from faster_whisper_backend.url import media_store as _ums
                 _url_max = int(getattr(cfg, "URL_MAX_BYTES", 0) or 0) or max_upload
                 _progress_set(_pid, stage="resolving", progress=None)
                 logger.info("[url-dl] transcribe-from-url requested (host %s)",
@@ -3950,7 +3951,7 @@ async def transcribe(
             if (getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
                     and gate_word_ts):
                 try:
-                    import captures_store as _cap_store
+                    from faster_whisper_backend.captures import store as _cap_store
                     cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
                     hard_lim = int(getattr(
                         cfg, "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT",
@@ -4277,7 +4278,7 @@ async def transcribe(
                         "server (BGM_SEPARATION_ENABLED is off)")
                     _skip("separating")
                 else:
-                    import bgm_separation as _bgm
+                    from faster_whisper_backend.audio import bgm_separation as _bgm
                     try:
                         _sep_t0 = time.perf_counter()
                         _cur_stage = "separating"
@@ -4307,7 +4308,7 @@ async def transcribe(
                                     .lstrip(".").lower())
                         if _sep_ext not in ("wav", "flac"):
                             try:
-                                import audio_transcode as _atc
+                                from faster_whisper_backend.audio import transcode as _atc
                                 _tfd, _sep_wav = tempfile.mkstemp(
                                     prefix="sepsrc-", suffix=".wav")
                                 os.close(_tfd)
@@ -4655,7 +4656,7 @@ async def transcribe(
                 else:
                     # The module itself is import-safe without the optional
                     # deps (pyannote is imported inside the load path).
-                    import diarization as _diar
+                    from faster_whisper_backend.audio import diarization as _diar
                     try:
                         _diar_t0 = time.perf_counter()
                         _cur_stage = "diarizing"
@@ -4965,7 +4966,7 @@ async def transcribe(
             # path is unchanged.
             if will_capture:
                 try:
-                    import captures_store as _cap_store
+                    from faster_whisper_backend.captures import store as _cap_store
                     audio_dur_s = float(getattr(info, "duration", 0.0) or 0.0)
                     min_s = float(getattr(cfg, "CAPTURES_RECORDING_MIN_DURATION_S", 0.5))
                     max_s = float(getattr(cfg, "CAPTURES_RECORDING_MAX_DURATION_S", 600.0))
@@ -5140,7 +5141,7 @@ async def transcribe(
             # outer finally adds the timing half via UPSERT on the same
             # request_id.
             try:
-                import quick_config_state
+                from faster_whisper_backend.quick_config import state as quick_config_state
                 quick_config_state.record_trace(
                     request_id=request_id,
                     model=resolved_model,
@@ -5242,7 +5243,7 @@ async def transcribe(
                 # for local playback, and how long that offer stands.
                 # Additive keys — OpenAI-compat callers ignore them.
                 if _source_media_id is not None:
-                    import url_media_store as _ums
+                    from faster_whisper_backend.url import media_store as _ums
                     response["source_media_id"] = _source_media_id
                     response["source_media_expires_at"] = (
                         _ums.expires_at_unix(_source_media_id))
@@ -5269,7 +5270,7 @@ async def transcribe(
             if override_profile:
                 response["profile_applied"] = ident.request_profile_applied
             if _source_media_id is not None:
-                import url_media_store as _ums
+                from faster_whisper_backend.url import media_store as _ums
                 response["source_media_id"] = _source_media_id
                 response["source_media_expires_at"] = (
                     _ums.expires_at_unix(_source_media_id))
@@ -6039,7 +6040,7 @@ def _url_host_for_log(url: str) -> str:
     """Best-effort hostname for log lines — never the full URL (it can carry
     tokens/identifiers we don't want in logs). Delegates to the module that
     owns that contract."""
-    import url_download as _udl
+    from faster_whisper_backend.url import download as _udl
     return _udl.host_for_log(url)
 
 
@@ -6055,7 +6056,7 @@ async def url_preview(request: Request,
         raise HTTPException(status_code=403,
                             detail="URL download is not enabled on this server")
     _url_preview_rate.hit(_rl.identity_key(user, request))
-    import url_download as _udl
+    from faster_whisper_backend.url import download as _udl
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001 — malformed body is a caller error
@@ -6114,7 +6115,7 @@ async def url_media(media_id: str,
                             detail="URL download is not enabled on this server")
     if not _URL_MEDIA_ID_RE.match(media_id):
         raise HTTPException(status_code=422, detail="malformed media id")
-    import url_media_store as _ums
+    from faster_whisper_backend.url import media_store as _ums
     resolved = _ums.resolve(media_id, user_id=user.get("user_id"))
     if resolved is None:
         raise HTTPException(status_code=404, detail="media not found")
@@ -6205,7 +6206,7 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
 
     Returns: {can_request_override_profile, can_request_decode_overrides,
     allowed_override_profiles: ["*"] | [names…] | [], vad_filter_default}."""
-    import effective_config
+    from faster_whisper_backend import effective_config
     caps = effective_config.resolve_capabilities(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
     # Additive: the server-wide VAD default, so the client's "Default" segment
@@ -6227,7 +6228,7 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     caps["url_download_enabled"] = bool(
         getattr(cfg, "URL_DOWNLOAD_ENABLED", False))
     if caps["url_download_enabled"]:
-        import url_download as _udl
+        from faster_whisper_backend.url import download as _udl
         caps["yt_dlp_version"] = _udl.yt_dlp_version()
     # Stage-model list builder shared by all three optional stages below.
     # Configured model FIRST, then the allowlist (de-duplicated, order kept):
@@ -6308,7 +6309,7 @@ async def list_override_profiles(user: dict = Depends(_get_current_user_dep)):
     Names only — never the profile contents; empty list when the caller may not
     request any. User-tier auth: any valid key (admin not required); 401 without
     one when the server is locked down."""
-    import effective_config
+    from faster_whisper_backend import effective_config
     names = effective_config.allowed_profile_names(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
     return {"profiles": names}
@@ -6324,7 +6325,7 @@ async def get_override_profile(name: str,
     profile's OWN contribution projected to the client decode keys; admin locks
     elsewhere can still win at request time (reported then via overrides_ignored).
     User-tier auth."""
-    import effective_config
+    from faster_whisper_backend import effective_config
     allowed = effective_config.allowed_profile_names(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
     if name not in allowed:
@@ -7062,7 +7063,7 @@ async def logs_viewer():
     # /logs/stream + /logs/older endpoints stack the host gate with their own
     # require_page("logs") check (bearer header or session cookie — EventSource
     # sends the cookie), so the data layer requires a "logs" API key.
-    import web_common
+    from faster_whisper_backend.core import web_common
     return HTMLResponse(
         web_common.render_page(_LOG_VIEWER_HTML, current="logs"),
         headers={"Cache-Control": "no-store"},
@@ -7074,7 +7075,7 @@ async def logs_viewer():
     dependencies=[Depends(require_user_webui_host), Depends(_require_logs_page_sse)],
 )
 async def logs_stream():
-    import web_common
+    from faster_whisper_backend.core import web_common
     return web_common.sse_response(_stream_log_lines())
 
 
@@ -7132,8 +7133,8 @@ async def whoami(
     user_from_session_cookie on request.state) so the client can attach
     X-CSRF-Token without parsing the cookie. A 401 means no valid
     credential AND the server is locked down — the WebUI re-prompts."""
-    import api_keys_store as _ak
-    import build_info
+    from faster_whisper_backend.auth import api_keys_store as _ak
+    from faster_whisper_backend import build_info
     perms = user.get("permissions")
     out = {
         "open_mode": not _ak.is_locked_down(),
@@ -7196,9 +7197,9 @@ async def login(request: Request, response: Response):
     route to turn one into a cookie, or its login gate loops forever.
     Returns the same shape as /auth/whoami so the client can populate chrome
     without a second round-trip. CSRF-exempt (no session exists yet)."""
-    import api_keys_store as _ak
-    import auth as _auth
-    import sessions_store
+    from faster_whisper_backend.auth import api_keys_store as _ak
+    from faster_whisper_backend.auth import dependencies as _auth
+    from faster_whisper_backend.auth import sessions_store
     if not _ak.is_locked_down() and _auth.open_mode_host_ok(request):
         return {"open_mode": True}
     # Below the open-mode short-circuit on purpose: open mode checks no
@@ -7254,7 +7255,7 @@ async def logout(request: Request, response: Response):
     """Revoke the current session and clear its cookies. CSRF-protected
     like any other cookie-authenticated mutation (the WebUI sends the
     X-CSRF-Token header)."""
-    import sessions_store
+    from faster_whisper_backend.auth import sessions_store
     raw = request.cookies.get(cfg.SESSION_COOKIE_NAME, "")
     if raw:
         sessions_store.revoke_session(raw)
@@ -7281,7 +7282,7 @@ async def severity_snapshot():
     /settings, … — so the pill keeps live-updating wherever it's shown. A
     403/401 here fails the poller silently; the nav still shows the
     server-rendered count."""
-    import web_common
+    from faster_whisper_backend.core import web_common
     return web_common.severity_counts()
 
 
@@ -7292,7 +7293,7 @@ async def severity_snapshot():
 # at request time, so the admin UI can broaden/narrow access without a service
 # restart. Loopback is always allowed; the data endpoints require a "stats" key.
 try:
-    from stats_routes import router as _stats_router
+    from faster_whisper_backend.stats.routes import router as _stats_router
     app.include_router(_stats_router)
     logger.info(
         "Stats dashboard at /stats (allowlist=%s; loopback always permitted)",
@@ -7310,7 +7311,7 @@ except Exception as _e:
 # the admin section for admins). Same host tier as the other user page
 # shells; nothing sensitive is rendered server-side. See home_routes.py.
 try:
-    from home_routes import router as _home_router
+    from faster_whisper_backend.admin.home_routes import router as _home_router
     app.include_router(_home_router)
     logger.info(
         "Landing hub at / (allowlist=%s; loopback always permitted)",
@@ -7327,7 +7328,7 @@ except Exception as _e:
 # at runtime) and resolves auth per connection (same user records as the batch
 # route). Reuses the model cache + _postprocess_text; see streaming_routes.py.
 try:
-    from streaming_routes import router as _streaming_router
+    from faster_whisper_backend.streaming.routes import router as _streaming_router
     app.include_router(_streaming_router)
     logger.info(
         "Streaming transcription at /v1/audio/transcriptions/stream "
@@ -7349,7 +7350,7 @@ except Exception as _e:
 # the per-user API key (bearer) plus the quick_config page permission. Lets the
 # desktop client view + edit the post-processing rules the caller is permitted to.
 try:
-    from quick_config_routes import v1_router as _pipeline_v1_router
+    from faster_whisper_backend.quick_config.routes import v1_router as _pipeline_v1_router
     app.include_router(_pipeline_v1_router)
     logger.info("Pipeline-rules client API at GET/PATCH /v1/pipeline-rules")
 except Exception as _e:
@@ -7365,7 +7366,7 @@ except Exception as _e:
 # desktop clients (same rationale as /v1/usage). One opaque blob per account
 # with optimistic versioning; see client_settings_routes.py.
 try:
-    from client_settings_routes import router as _client_settings_router
+    from faster_whisper_backend.client_settings.routes import router as _client_settings_router
     app.include_router(_client_settings_router)
     logger.info(
         "Client-settings sync at GET/PUT/DELETE /v1/client-settings"
@@ -7377,7 +7378,7 @@ except Exception as _e:
 # translation per session). Same always-on, user-tier, no-host-gate stance
 # as the settings sync above; see usage_routes.py.
 try:
-    from usage_routes import router as _usage_router
+    from faster_whisper_backend.stats.usage_routes import router as _usage_router
     app.include_router(_usage_router)
     logger.info("Usage outcomes at POST /v1/usage/outcome")
 except Exception as _e:
@@ -7394,7 +7395,7 @@ except Exception as _e:
 # publish `loaded` flags for these exact models); no page gate, no host
 # allowlist. See preload_routes.py.
 try:
-    from preload_routes import router as _preload_router
+    from faster_whisper_backend.runtime.preload_routes import router as _preload_router
     app.include_router(_preload_router)
     logger.info("Model preloading at POST /v1/models/preload (enabled=%s)",
                 bool(getattr(cfg, "MODEL_PRELOAD_ENABLED", True)))
@@ -7412,15 +7413,15 @@ except Exception as _e:
 # operator can bootstrap.
 if cfg.ADMIN_UI_ENABLED:
     try:
-        from admin_routes import router as _admin_router
+        from faster_whisper_backend.admin.routes import router as _admin_router
         app.include_router(_admin_router)
         # /settings/api-keys — admin UI for per-user key management. Same
         # auth shape (admin host + admin key) as /settings.
-        from api_keys_routes import router as _api_keys_router
+        from faster_whisper_backend.auth.api_keys_routes import router as _api_keys_router
         app.include_router(_api_keys_router)
         # /settings/overrides — admin UI for layered per-identity config
         # profiles + the effective-config Explorer. Same auth shape as /settings.
-        from overrides_routes import router as _overrides_router
+        from faster_whisper_backend.admin.overrides_routes import router as _overrides_router
         app.include_router(_overrides_router)
         logger.info(
             "Admin UI enabled at /settings (allowlist=%s; auth=API key)",
@@ -7428,13 +7429,13 @@ if cfg.ADMIN_UI_ENABLED:
         )
         # /quick-config is a user-tier page (USER_WEBUI_ALLOWED_HOSTS) with
         # per-user API key auth; it just rides the same ADMIN_UI_ENABLED switch.
-        from quick_config_routes import router as _quick_router
+        from faster_whisper_backend.quick_config.routes import router as _quick_router
         app.include_router(_quick_router)
         logger.info("Quick-config UI enabled at /quick-config")
         # /reports: admin-only triage page for user-submitted transcription
         # error reports. The submission endpoint /quick-config/reports/api/submit
         # lives on the same router and accepts any active API key.
-        from reports_routes import router as _reports_router
+        from faster_whisper_backend.admin.reports_routes import router as _reports_router
         app.include_router(_reports_router)
         logger.info(
             "Reports UI enabled at /reports (admin key required for triage; "
@@ -7446,7 +7447,7 @@ if cfg.ADMIN_UI_ENABLED:
         # Master switch is cfg.CAPTURES_RECORDING_ENABLED — the page is
         # always registered so the admin can browse existing rows even
         # after disabling new capture.
-        from captures_routes import router as _captures_router
+        from faster_whisper_backend.captures.routes import router as _captures_router
         app.include_router(_captures_router)
         logger.info(
             "Captures UI enabled at /captures (admin token required; "
@@ -7458,9 +7459,13 @@ if cfg.ADMIN_UI_ENABLED:
         logger.error("Failed to load admin router: %s", _e)
 
 
-if __name__ == "__main__":
+def run() -> None:
+    """Serve the app. Called by the root main.py shim, by `python -m
+    faster_whisper_backend` and by nothing else; the import string names
+    the package module so uvicorn (and its worker processes) import the
+    same object this module built instead of re-running it as `main`."""
     import uvicorn
-    uvicorn.run("main:app",
+    uvicorn.run("faster_whisper_backend.main:app",
                 host=cfg.SERVER_HOST,
                 port=cfg.SERVER_PORT,
                 workers=cfg.SERVER_WORKERS,
@@ -7476,3 +7481,7 @@ if __name__ == "__main__":
                 # limit is the websocket library's 16 MiB default. Real clients
                 # send ~32 KB audio frames and a JSON handshake far under 1 MiB.
                 ws_max_size=1024 * 1024)
+
+
+if __name__ == "__main__":
+    run()

@@ -6,7 +6,7 @@ used to be swallowed as "not set".
 
 import json
 
-import effective_config as ec
+from faster_whisper_backend import effective_config as ec
 from tests.conftest import bearer
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
@@ -17,7 +17,7 @@ PERMS = "/settings/api-keys/api/users"
 # --- per-request decode_overrides -------------------------------------------
 
 def test_explicit_empty_suppress_tokens_means_suppress_nothing():
-    import main
+    from faster_whisper_backend import main
     for cleared in ([], ""):
         kw = main._apply_decode_overrides(
             {"suppress_tokens": [-1, 50256]}, "whisper-1",
@@ -33,7 +33,7 @@ def test_explicit_empty_suppress_tokens_means_suppress_nothing():
 
 
 def test_null_bool_override_inherits_instead_of_forcing_false():
-    import main
+    from faster_whisper_backend import main
     base = {"condition_on_previous_text": True, "vad_filter": True,
             "vad_parameters": {"threshold": 0.5}}
     kw = main._apply_decode_overrides(dict(base), "whisper-1",
@@ -51,7 +51,7 @@ def test_null_bool_override_inherits_instead_of_forcing_false():
 # --- profile / per-model layer ------------------------------------------------
 
 def _assemble(values):
-    import main
+    from faster_whisper_backend import main
     return main.assemble_transcribe_kwargs(
         None, None, language="", temperature=0.0, vad_filter=False,
         vad_parameters=None, want_word_ts=False, initial_prompt=None,
@@ -65,7 +65,7 @@ def test_profile_blank_punctuation_is_forwarded_not_dropped():
 
 
 def test_profile_blank_suppress_tokens_keeps_chars_without_the_default_set(monkeypatch):
-    import main
+    from faster_whisper_backend import main
     monkeypatch.setattr(main, "_resolve_suppress_chars", lambda *a: [7, 8])
     # cleared list + configured chars → only the chars, no -1 default set
     kw = _assemble({"SUPPRESS_TOKENS": "", "SUPPRESS_CHARS": "."})
@@ -105,7 +105,7 @@ def test_empty_language_form_field_is_explicit_auto_detect(client, make_user_key
 
 def test_empty_translate_to_and_glossary_form_fields_override_the_profile(
         client, app_module, make_user_key, monkeypatch):
-    import translation
+    from faster_whisper_backend.audio import translation
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
     calls = []
 
@@ -142,7 +142,7 @@ def test_empty_translate_to_and_glossary_form_fields_override_the_profile(
 
 def test_stream_handshake_language_is_tri_state(monkeypatch):
     """Absent → inherit DEFAULT_LANGUAGE; present-but-empty → auto-detect."""
-    import streaming_routes
+    from faster_whisper_backend.streaming import routes as streaming_routes
     src = __import__("inspect").getsource(streaming_routes)
     assert 'req_language = _req_language.strip() if isinstance(_req_language, str) else None' in src
     assert 'language if language is not None' in src
