@@ -235,7 +235,7 @@ def captures_store_db(tmp_path):
 
     db = str(tmp_path / "captures.sqlite3")
     audio = str(tmp_path / "captures_audio")
-    captures_store.init(db, audio)
+    captures_store.init_db(db, audio)
     proposer._CACHE.clear()
     proposer._TRIM_DUR_CACHE.clear()
     yield captures_store
@@ -251,7 +251,7 @@ def captures_store_db(tmp_path):
 def groups_store_db(captures_store_db):
     """capture_samples_store sharing the captures connection (as in main)."""
     import capture_samples_store
-    capture_samples_store.init(
+    capture_samples_store.init_db(
         captures_store_db._require_conn(), captures_store_db._require_audio_dir()
     )
     yield capture_samples_store

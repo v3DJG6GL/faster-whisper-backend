@@ -101,7 +101,7 @@ CREATE INDEX IF NOT EXISTS idx_captures_group ON captures(sample_id, sample_orde
 # Init
 # ---------------------------------------------------------------------
 
-def init(db_path: str, audio_dir: str) -> None:
+def init_db(db_path: str, audio_dir: str) -> None:
     """Open the SQLite DB (WAL) and ensure the audio dir exists. Idempotent:
     safe to call on every startup. Call once before any other function."""
     global _conn, _audio_dir
@@ -142,13 +142,13 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
 
 def _require_conn() -> sqlite3.Connection:
     if _conn is None:
-        raise RuntimeError("captures_store.init() was not called before use.")
+        raise RuntimeError("captures_store.init_db() was not called before use.")
     return _conn
 
 
 def _require_audio_dir() -> str:
     if _audio_dir is None:
-        raise RuntimeError("captures_store.init() was not called before use.")
+        raise RuntimeError("captures_store.init_db() was not called before use.")
     return _audio_dir
 
 

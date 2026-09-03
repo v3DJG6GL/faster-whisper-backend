@@ -144,13 +144,13 @@ def test_captures_migration_adds_columns_and_is_idempotent(tmp_path):
     audio = str(tmp_path / "audio")
 
     with _own_db(captures_store):
-        captures_store.init(db, audio)
+        captures_store.init_db(db, audio)
         cols = _cols(captures_store._conn, "captures")
         assert {"translations_json", "translation_model",
                 "translation_source", "task"} <= cols
 
         first_conn = captures_store._conn
-        captures_store.init(db, audio)
+        captures_store.init_db(db, audio)
         first_conn.close()
         assert _cols(captures_store._conn, "captures") == cols
 
@@ -183,7 +183,7 @@ def test_captures_migration_upgrades_a_pre_existing_table(tmp_path):
     old.close()
 
     with _own_db(captures_store):
-        captures_store.init(db, audio)
+        captures_store.init_db(db, audio)
         got = captures_store.get_capture("keep")
         assert got is not None
         assert got["final"] == "f"

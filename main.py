@@ -2882,12 +2882,12 @@ async def lifespan(app: FastAPI):
     captures_sweep_task = None
     try:
         import captures_store
-        captures_store.init(cfg.CAPTURES_DB, cfg.CAPTURES_DIR)
+        captures_store.init_db(cfg.CAPTURES_DB, cfg.CAPTURES_DIR)
         # capture_samples_store reuses the captures DB connection — single
         # SQLite file holds both tables. Init it before the first
         # sweep_retention(): the sweep's sample-expiry pass needs it.
         import capture_samples_store
-        capture_samples_store.init(captures_store._require_conn(), cfg.CAPTURES_DIR)
+        capture_samples_store.init_db(captures_store._require_conn(), cfg.CAPTURES_DIR)
         captures_store.reconcile_on_startup()
         capture_samples_store.reconcile_on_startup()
         captures_store.sweep_retention()

@@ -68,7 +68,7 @@ _CAP_ADMIN_NOTES = 8000
 # Init
 # ---------------------------------------------------------------------
 
-def init(conn: sqlite3.Connection, captures_audio_root: str) -> None:
+def init_db(conn: sqlite3.Connection, captures_audio_root: str) -> None:
     """Reuse the captures DB connection (single SQLite file). The audio
     root mirrors captures_store's fanout but under a `groups/` subtree
     so a directory listing distinguishes singles from packed groups."""
@@ -77,7 +77,7 @@ def init(conn: sqlite3.Connection, captures_audio_root: str) -> None:
     _groups_audio_dir = os.path.join(captures_audio_root, "groups")
     os.makedirs(_groups_audio_dir, exist_ok=True)
     # The merged training WAVs under here are the same plaintext dictation the
-    # raw capture root holds, and captures_store.init() already 0700s that root.
+    # raw capture root holds, and captures_store.init_db() already 0700s that root.
     # Without this the subtree lands at the process umask, so the hardening
     # depends entirely on the parent staying tight.
     store_common.secure_dir(_groups_audio_dir)
@@ -86,13 +86,13 @@ def init(conn: sqlite3.Connection, captures_audio_root: str) -> None:
 
 def _require_conn() -> sqlite3.Connection:
     if _conn is None:
-        raise RuntimeError("capture_samples_store.init() was not called before use.")
+        raise RuntimeError("capture_samples_store.init_db() was not called before use.")
     return _conn
 
 
 def _require_audio_root() -> str:
     if _groups_audio_dir is None:
-        raise RuntimeError("capture_samples_store.init() was not called before use.")
+        raise RuntimeError("capture_samples_store.init_db() was not called before use.")
     return _groups_audio_dir
 
 
