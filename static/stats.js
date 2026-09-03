@@ -1530,11 +1530,12 @@ function rhythmLayout(mode, rg) {
     const cols = oneMonth ? new Date(Date.UTC(fy, fm + 1, 0)).getUTCDate() : 31;
     const occ = new Array(cols).fill(0);
     for (let d = from; d <= to; d++) occ[ymOfDay(d)[2] - 1]++;
-    return { rows: 24, cols, rowLabel: r => (r % 3 === 0 ? ('0' + r).slice(-2) : ''), rowLong: r => ('0' + r).slice(-2) + '–' + ('0' + (r + 1)).slice(-2),
-      colLabel: c => ((c + 1) % 5 === 0 || c === 0 ? String(c + 1) : ''), colLong: c => 'the ' + ordinal(c + 1) + (oneMonth ? ' of ' + MON[fm] : ' of each month'),
+    return { rows: 24, cols, rowLabel: r => ('0' + r).slice(-2), rowLong: r => ('0' + r).slice(-2) + '–' + ('0' + (r + 1)).slice(-2),
+      colLabel: c => String(c + 1), colLong: c => 'the ' + ordinal(c + 1) + (oneMonth ? ' of ' + MON[fm] : ' of each month'),
       cellName: i => 'the ' + ordinal(i % cols + 1) + (oneMonth ? ' ' + MON[fm] : '') + ' ' + ('0' + Math.floor(i / cols)).slice(-2) + '–' + ('0' + (Math.floor(i / cols) + 1)).slice(-2),
       slotCell: h => (h.dom > cols ? -1 : h.hour * cols + (h.dom - 1)),
-      colUnit: 'day of month', rowUnit: 'hour of day', per: 'per slot', colOcc: occ, oneMonth };
+      colUnit: 'day of month', rowUnit: 'hour of day', per: 'per slot', colOcc: occ, oneMonth,
+      colSteps: [1, 2, 5], rowSteps: [1, 2, 3, 6] };
   }
   if (mode === 'months') {
     const [y0] = ymOfDay(from), [y1] = ymOfDay(to);
@@ -1546,11 +1547,35 @@ function rhythmLayout(mode, rg) {
       colUnit: 'month of year', rowUnit: 'year', per: 'per month', maxRows: years };
   }
   return { rows: 7, cols: 24, rowLabel: r => DOW[r], rowLong: r => DOW_LONG[r] + 's',
-    colLabel: c => (c % 6 === 0 ? ('0' + c).slice(-2) : ''), colLong: c => ('0' + c).slice(-2) + '–' + ('0' + (c + 1)).slice(-2),
+    colLabel: c => ('0' + c).slice(-2), colLong: c => ('0' + c).slice(-2) + '–' + ('0' + (c + 1)).slice(-2),
     cellName: i => DOW[Math.floor(i / 24)] + ' ' + ('0' + (i % 24)).slice(-2) + '–' + ('0' + (i % 24 + 1)).slice(-2),
-    colUnit: 'hour of day', rowUnit: 'weekday', per: 'per slot', maxRows: 7 };
+    colUnit: 'hour of day', rowUnit: 'weekday', per: 'per slot', maxRows: 7, colSteps: [1, 2, 3, 6] };
 }
 
+// Every column and row carries its label; only when the tile is too
+// narrow (or too short) for them all does the density drop, to the
+// coarsest step the rhythm allows (every 2nd / 3rd / 6th hour, every 5th
+// day) at which neighbouring labels no longer touch. Measured, not
+// guessed, and re-run on tile resize.
+function fitHoursLabels(el) {
+  const steps = el._labelSteps || { col: [1], row: [1] };
+  const cell = el.querySelector('i[data-i]'); if (!cell) return;
+  const cw = cell.getBoundingClientRect().width, ch = cell.getBoundingClientRect().height;
+  // Column labels are grid items stretched to the track, so the text is
+  // measured as a Range (scrollWidth never drops below the box); row
+  // labels sit centred in their row, so their box height is the text's.
+  const fit = (labels, size, allowed, measure) => {
+    let need = 0;
+    labels.forEach(l => { l.classList.remove('thin'); need = Math.max(need, measure(l)); });
+    need += 3;                                        // a hair of air between neighbours
+    let step = allowed[allowed.length - 1];
+    for (const s of allowed) if (s * size >= need) { step = s; break; }
+    labels.forEach((l, i) => l.classList.toggle('thin', i % step !== 0));
+  };
+  const textW = l => { const r = document.createRange(); r.selectNodeContents(l); return r.getBoundingClientRect().width; };
+  fit(Array.from(el.querySelectorAll('.hl')), cw, steps.col, textW);
+  fit(Array.from(el.querySelectorAll('.dl')), ch, steps.row, l => l.getBoundingClientRect().height);
+}
 function renderHours() {
   const el = $('hours-grid'); if (!el) return;
   const mode = RHYTHMS.includes(Q.rhythm) ? Q.rhythm : 'hours';
@@ -1619,8 +1644,8 @@ function renderHours() {
   const barLen = (idx, max) => (idx > 0 ? Math.max(4, idx / max * 100) : 0).toFixed(1) + '%';
   const share = v => winSum > 0 ? (v / winSum * 100).toFixed(0) + ' % of the window' : '';
 
-  el.style.gridTemplateColumns = '2rem repeat(' + L.cols + ', 1fr) 2.4rem';
-  el.style.maxHeight = 'calc(2rem + ' + L.rows + ' * ' + ({ hours: 1.8, days: 0.7, months: 2.6 }[mode]) + 'rem + ' + (L.rows + 2) + ' * 2px)';
+  el.style.gridTemplateColumns = 'auto repeat(' + L.cols + ', 1fr) 2.8rem';   // 0.4rem gap + 2.4rem bar track (.rb margin-left)
+  el.style.maxHeight = 'calc(2.8rem + ' + L.rows + ' * ' + ({ hours: 1.8, days: 0.7, months: 2.6 }[mode]) + 'rem + ' + (L.rows + 2) + ' * 2px)';
   el.classList.toggle('dense', L.cols > 30 || L.rows > 12);
   let html = '<span></span>' + colTot.map((v, c) =>
     '<span class="hb' + (colIdx[c] > 1 ? ' hi' : '') + '" data-h="' + c + '" data-tip="h" tabindex="0" role="img" style="--base:' + baseC + '" aria-label="'
@@ -1631,14 +1656,24 @@ function renderHours() {
     for (let c = 0; c < L.cols; c++) {
       const i = r * L.cols + c, v = cells[i];
       const inWin = mode === 'days' ? colOcc[c] > 0 : true;
-      const title = L.cellName(i) + ' · ' + fmtM(v) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL;
+      const title = L.cellName(i) + (inWin ? ' · ' + fmtM(v) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL : ' · not in this window');
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
-        + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + (inWin ? '' : ' style="visibility:hidden"') + '></i>';
+        + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + (inWin ? '' : ' data-out="1"') + '></i>';
     }
     html += '<span class="rb' + (rowIdx[r] > 1 ? ' hi' : '') + '" data-d="' + r + '" data-tip="d" tabindex="0" role="img" style="--base:' + baseR + '" aria-label="'
       + esc(L.rowLong(r)) + ': ' + fmtM(rowTot[r]) + ' ' + ML + ', ' + rowIdx[r].toFixed(1) + '× an average ' + L.rowUnit + '"><i style="width:' + barLen(rowIdx[r], rMax) + '"></i></span>';
   }
   el.innerHTML = html;
+  el._labelSteps = { col: L.colSteps || [1], row: L.rowSteps || [1] };
+  fitHoursLabels(el);
+  if (!el._ro && typeof ResizeObserver !== 'undefined') {
+    let raf = 0;
+    el._ro = new ResizeObserver(() => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; fitHoursLabels(el); });
+    });
+    el._ro.observe(el);
+  }
   if (!el._hl) {
     el._hl = true;
     const light = (t, on) => {
@@ -1672,12 +1707,18 @@ function renderHours() {
     if (cmp) out += tipRow(null, cmpWord(), fmtM(pv) + ' · ' + cmpDelta(v, pv), 'cmp');
     return out;
   };
+  // days: a day of month the window never contains (a 30-day window
+  // skips one date; short months have no 29th–31st) is drawn hatched and
+  // says so, instead of pretending to be a quiet slot.
+  const outOfWindow = (head, c) => '<div class="tip-date">' + head + '</div>'
+    + tipRow(null, 'not in this window', 'the ' + ordinal(c + 1) + ' does not occur between ' + fmtDay(rg.from) + ' and ' + fmtDay(rg.to));
   const sumCol = (arr, c) => arr.reduce((a, x, i) => a + (i % L.cols === c ? x : 0), 0);
   const sumRow = (arr, r) => arr.slice(r * L.cols, r * L.cols + L.cols).reduce((a, x) => a + x, 0);
   wireTips(el, '[data-tip]', (target) => {
     const kind = target.getAttribute('data-tip');
     if (kind === 'h') {
       const c = Number(target.getAttribute('data-h')), v = colTot[c];
+      if (mode === 'days' && !colOcc[c]) return outOfWindow(esc(L.colLong(c)) + ' · every ' + L.rowUnit, c);
       const n = mode === 'hours' ? occ.reduce((a, x) => a + x, 0) : L.rows;
       let extra = tipRow(null, 'share', share(v)) + tipRow(null, 'vs average', colIdx[c].toFixed(1) + '× an average ' + L.colUnit);
       if (mode === 'hours' && n > 1) extra += tipRow(null, 'per day', '≈ ' + fmtAvg(v / n) + ' ' + ML + ' over ' + n + ' days');
@@ -1691,6 +1732,7 @@ function renderHours() {
       return body(esc(L.rowLong(r)) + ' · all ' + L.colUnit + 's', v, sumRow(sess, r), kindRows(arr => sumRow(arr, r)), extra, sumRow(cmpCells, r));
     }
     const i = Number(target.getAttribute('data-i')), r = Math.floor(i / L.cols);
+    if (mode === 'days' && !colOcc[i % L.cols]) return outOfWindow(esc(L.cellName(i)), i % L.cols);
     let extra = '';
     if (mode === 'hours' && occ[r] > 1) extra = tipRow(null, 'per ' + DOW[r], '≈ ' + fmtAvg(cells[i] / occ[r]) + ' ' + ML + ' over ' + occ[r] + ' ' + DOW[r]);
     if (mode === 'days' && colOcc[i % L.cols] > 1) extra = tipRow(null, 'per month', '≈ ' + fmtAvg(cells[i] / colOcc[i % L.cols]) + ' ' + ML + ' over ' + colOcc[i % L.cols] + ' months');

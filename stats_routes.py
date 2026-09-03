@@ -1051,19 +1051,29 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* --- Busy hours grid (one blue ramp toward the accent) --- */
   /* Rows stretch to the tile: the hour-label row is auto, the seven day
      rows share what is left, so the grid fills the card at any height. */
-  .hours { display: grid; grid-template-columns: 2rem repeat(24, 1fr) 2.4rem;
+  .hours { display: grid; grid-template-columns: auto repeat(24, 1fr) 2.8rem;
     grid-template-rows: 2.4rem auto; grid-auto-rows: minmax(0.5rem, 1fr); gap: 2px;
     font: 0.62rem var(--font-mono); color: var(--dim); flex: 1 1 0; min-height: 0;
     align-content: stretch; margin-bottom: 0.4rem;
     /* rows grow with the tile up to ~1.8rem so cells stay wider than tall */
-    max-height: calc(2rem + 7 * 1.8rem + 9 * 2px); }
-  .hours .hl { text-align: center; background: none; padding: 0; border-radius: 0; white-space: nowrap; overflow: visible; }
+    max-height: calc(2.8rem + 7 * 1.8rem + 9 * 2px); }
+  /* The column labels get the same 0.4rem of air above and below as the
+     row bars get beside the cells. */
+  .hours .hl { text-align: center; background: none; padding: 0; margin: 0.4rem 0; border-radius: 0; white-space: nowrap; overflow: visible; }
   /* Dense rhythms (24 hour rows, 31 day columns): rows share whatever
      height the tile has instead of insisting on a minimum, so the grid
      never runs over the legend. */
-  .hours.dense { gap: 1px; grid-auto-rows: minmax(0, 1fr); overflow: hidden; }
-  .hours.dense i { min-height: 0; border-radius: 1px; }
+  .hours.dense { gap: 0; grid-auto-rows: minmax(0, 1fr); overflow: hidden; padding-bottom: 3px; }
+  /* Dense tracks are fractional pixels, so a 1px grid gap snaps to 1px here
+     and 2px there; the lattice is a transparent border on each cell
+     instead, which stays exactly 1px whatever the track rounds to. The
+     bottom padding leaves room for the hover ring of the last row inside
+     the overflow clip. */
+  .hours.dense i[data-i] { min-height: 0; border-radius: 1px; border: 1px solid transparent; background-clip: padding-box; }
+  .hours.dense .hb i { margin: 0 1px; }
+  .hours.dense .hb::after { left: 1px; right: 1px; }
   .hours.dense .dl { font-size: 0.55rem; }
+  .hours .hl.thin, .hours .dl.thin { visibility: hidden; }   /* thinned by fitHoursLabels() when the tile is too narrow */
   /* The peak line and the rhythm switch share one row under the title,
      the switch pinned right, so neither the title phrase nor the peak
      text can push it around. */
@@ -1085,7 +1095,10 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours .hb i { width: 100%; height: 0; min-height: 0; background: #3a4757; border-radius: 1px 1px 0 0; }
   .hours .hb::after { content: ""; position: absolute; left: 0; right: 0; bottom: var(--base, 0);
     border-top: 1px dashed #4b5563; pointer-events: none; }
-  .hours .rb { display: flex; align-items: center; position: relative; }
+  /* The right track is 2.8rem: 0.4rem of breathing room after the last
+     cell (the top bars get theirs from the hour-label row between them
+     and the cells) plus the 2.4rem bar track. */
+  .hours .rb { display: flex; align-items: center; position: relative; margin-left: 0.4rem; }
   .hours .rb i { height: 100%; min-height: 4px; width: 0; background: #3a4757; border-radius: 0 1px 1px 0; }
   .hours .rb::after { content: ""; position: absolute; top: 15%; bottom: 15%; left: var(--base, 0);
     border-left: 1px dashed #4b5563; pointer-events: none; }
@@ -1094,9 +1107,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .hours-sub b { color: var(--fg); font-weight: 500; }
   .hours-legend .ramp i { width: 3.2rem; height: 0.55rem;
-    background: linear-gradient(90deg, #161b22, #0e2a3f, #124b73, #1f6fa8, #58a6ff); }
-  .hours .dl { align-self: center; }
-  .hours i, .hours-legend i { display: block; border-radius: 2px; background: #161b22; }
+    background: linear-gradient(90deg, #1d232c, #0e2a3f, #124b73, #1f6fa8, #58a6ff); }
+  /* The row labels take just their own width plus the same 0.4rem of air
+     the column labels and the row bars get. */
+  .hours .dl { align-self: center; text-align: right; margin-right: 0.4rem; }
+  /* An empty slot is one step lighter than the panel, so the lattice of
+     slots stays readable when most of a rhythm is quiet. */
+  .hours i, .hours-legend i { display: block; border-radius: 2px; background: #1d232c; }
   .hours i { height: 100%; min-height: 0.5rem; box-sizing: border-box; }
   .hours i { cursor: default; }
   .hours i:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
@@ -1105,6 +1122,9 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hours i[data-l="3"], .hours-legend i[data-l="3"] { background: #1f6fa8; }
   .hours i[data-l="4"], .hours-legend i[data-l="4"] { background: #58a6ff; }
   .hours i.peak { outline: 1.5px solid var(--bold); outline-offset: -1.5px; }
+  /* days: a date the window never contains is hatched, not blank, so the
+     column still reads as part of the lattice (its tooltip says why). */
+  .hours i[data-out] { background: repeating-linear-gradient(135deg, #1d232c 0 3px, #161b22 3px 6px); }
   /* Hover / focus: the cell gets a ring, its weekday + hour labels and
      both marginal bars light up (the tooltip's slot, read off the axes). */
   .hours i:hover, .hours i.on { outline: 2px solid var(--bold); outline-offset: 1px; position: relative; z-index: 2; }
