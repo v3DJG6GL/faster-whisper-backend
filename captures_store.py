@@ -78,10 +78,10 @@ CREATE TABLE IF NOT EXISTS captures (
   audio_trimmed_relpath TEXT,
   audio_trim_lead_ms INTEGER,
   audio_trim_trail_ms INTEGER,
-  words_json      TEXT NOT NULL,
-  segments_json   TEXT NOT NULL DEFAULT '[]',
+  words           TEXT NOT NULL,
+  segments        TEXT NOT NULL DEFAULT '[]',
   corrected_text  TEXT NOT NULL DEFAULT '',
-  corrections_json TEXT NOT NULL DEFAULT '[]',
+  corrections     TEXT NOT NULL DEFAULT '[]',
   admin_notes     TEXT NOT NULL DEFAULT '',
   status          TEXT NOT NULL DEFAULT 'new',
   reviewed_ts     REAL,
@@ -120,10 +120,15 @@ def _rename_columns(conn: sqlite3.Connection) -> None:
     transcript columns are raw_text / final_text in every store (the wire
     keeps the short raw / final keys, see _row_to_dict).
     Runs before _SCHEMA_CORE so CREATE TABLE IF NOT EXISTS never sees the
-    old name as the live one; RENAME COLUMN keeps the data."""
+    old name as the live one; RENAME COLUMN keeps the data.
+    The JSON-bearing columns dropped their `_json` suffix the same way (the
+    wire has always emitted the bare names)."""
     have = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
     for old, new in (("duration_seconds", "audio_s"), ("raw", "raw_text"),
-                     ("final", "final_text")):
+                     ("final", "final_text"),
+                     ("words_json", "words"), ("segments_json", "segments"),
+                     ("corrections_json", "corrections"),
+                     ("translations_json", "translations")):
         if old in have and new not in have:
             conn.execute(f"ALTER TABLE captures RENAME COLUMN {old} TO {new}")
     conn.commit()
@@ -146,7 +151,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
     """
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
     for col, ddl in (
-        ("translations_json", "ADD COLUMN translations_json TEXT"),
+        ("translations", "ADD COLUMN translations TEXT"),
         ("translation_model", "ADD COLUMN translation_model TEXT"),
         ("translation_source", "ADD COLUMN translation_source TEXT"),
         ("task", "ADD COLUMN task TEXT"),
@@ -225,7 +230,7 @@ def _safe_unlink(abs_path: str) -> bool:
 
 def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]:
     """Materialize a row, decoding the JSON-bearing columns. With
-    include_words=False the heavy fields (words_json, segments_json)
+    include_words=False the heavy fields (words, segments)
     are dropped — used by /list to keep the wire payload light."""
     d = dict(row)
     # Columns are raw_text / final_text (every store agrees); the API and
@@ -235,25 +240,25 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
     if "final_text" in d:
         d["final"] = d.pop("final_text")
     try:
-        d["corrections"] = json.loads(d.pop("corrections_json", "[]") or "[]")
+        d["corrections"] = json.loads(d.get("corrections") or "[]")
     except (TypeError, ValueError):
         d["corrections"] = []
     if include_words:
         try:
-            d["words"] = json.loads(d.pop("words_json", "[]") or "[]")
+            d["words"] = json.loads(d.get("words") or "[]")
         except (TypeError, ValueError):
             d["words"] = []
         try:
-            d["segments"] = json.loads(d.pop("segments_json", "[]") or "[]")
+            d["segments"] = json.loads(d.get("segments") or "[]")
         except (TypeError, ValueError):
             d["segments"] = []
     else:
-        d.pop("words_json", None)
-        d.pop("segments_json", None)
+        d.pop("words", None)
+        d.pop("segments", None)
     # Per-language translations. A JSON column needs an explicit decode here
     # or it reaches the UI as a raw string; absent on pre-migration rows.
     try:
-        d["translations"] = json.loads(d.pop("translations_json", None) or "{}")
+        d["translations"] = json.loads(d.get("translations") or "{}")
         if not isinstance(d["translations"], dict):
             d["translations"] = {}
     except (TypeError, ValueError):
@@ -379,10 +384,10 @@ def create_capture(
                 " id, created_ts, request_id, model, language,"
                 " audio_s, audio_relpath, audio_format,"
                 " raw_text, final_text, text_for_training, audio_trimmed_relpath,"
-                " words_json, segments_json,"
-                " corrected_text, corrections_json, admin_notes,"
+                " words, segments,"
+                " corrected_text, corrections, admin_notes,"
                 " status, reviewed_ts, user_id, sample_id, sample_order,"
-                " translations_json, translation_model, translation_source,"
+                " translations, translation_model, translation_source,"
                 " task"
                 ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
                 "?,?,?,?)",
@@ -672,9 +677,9 @@ _LIST_COLUMNS = (
     " audio_s, audio_relpath, audio_format,"
     " raw_text, final_text, text_for_training, audio_trimmed_relpath,"
     " audio_trim_lead_ms, audio_trim_trail_ms,"
-    " corrected_text, corrections_json, admin_notes,"
+    " corrected_text, corrections, admin_notes,"
     " status, reviewed_ts, user_id, sample_id, sample_order,"
-    " translations_json, translation_model, translation_source, task"
+    " translations, translation_model, translation_source, task"
 )
 
 
@@ -820,7 +825,7 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         params.append(text)
     if "corrections" in patch:
         cleaned = text_corrections.clean_corrections(patch["corrections"])
-        sets.append("corrections_json = ?")
+        sets.append("corrections = ?")
         params.append(json.dumps(cleaned, ensure_ascii=False))
     if "admin_notes" in patch:
         notes = str(patch["admin_notes"] or "")[:_CAP_ADMIN_NOTES]
@@ -840,7 +845,7 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         val = patch["translations"]
         if val is not None and not isinstance(val, dict):
             raise ValueError("translations must be a {lang: text} map")
-        sets.append("translations_json = ?")
+        sets.append("translations = ?")
         params.append(_truncate_translations(val, _CAP_FINAL))
     if "audio_trimmed_relpath" in patch:
         sets.append("audio_trimmed_relpath = ?")

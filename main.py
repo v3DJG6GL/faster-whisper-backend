@@ -3728,7 +3728,7 @@ async def transcribe(
     _language: "str | None" = None
     # Per-stage wall-clock receipts ({name, secs, model?, detail?}) — the
     # durations were previously computed for log lines and discarded; now
-    # they also persist as the recent-jobs row's stages_json.
+    # they also persist as the recent-jobs row's stages.
     _stage_timings: "list[dict]" = []
     tmp_path = None
     # Transcribe-from-URL state: the private download dir (rmtree'd in the

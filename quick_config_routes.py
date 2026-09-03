@@ -1981,7 +1981,7 @@ function traceDur(secs) {
 
 // The stage list drawn to scale, in the canonical stage hues. Returns null
 // when there is nothing to draw — a live utterance records one stage and rows
-// written before the stages_json migration record none.
+// written before the stages migration record none.
 function traceRail(stages, audioDur) {
   let total = 0;
   for (const st of stages) total += Math.max(0, Number(st.secs) || 0);
@@ -2138,7 +2138,7 @@ function renderTrace(entry) {
   item.appendChild(meta);
 
   // Stage chips: what this run actually DID, and what each stage cost.
-  // stages_json has been on the row since the preload work and reaches the
+  // stages has been on the row since the preload work and reaches the
   // browser already decoded; the viewer just never looked at it. Placed
   // above `raw` so "how this run executed" precedes "what it produced".
   // Batch rows only for now — a live utterance records one stage.

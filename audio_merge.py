@@ -127,7 +127,7 @@ def merge_wavs(
       }
 
     The per-member `segments` map is what the route layer persists
-    (member_trims_json) so group word-level karaoke timestamps stay in sync
+    (member_trims) so group word-level karaoke timestamps stay in sync
     with the trimmed audio. When `trim` is False (or VAD is unavailable) each
     member carries an identity map over its full duration.
 

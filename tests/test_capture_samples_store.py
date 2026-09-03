@@ -16,34 +16,34 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _insert_group(gs, sid, *, user_id="u1", created_ts=1.0, status="new",
-                  language="de", transcript="hello", member_hashes_json="{}",
-                  admin_notes="", member_trims_json="{}"):
+                  language="de", transcript="hello", member_hashes="{}",
+                  admin_notes="", member_trims="{}"):
     relpath = gs._relpath_for(sid)
     gs._require_conn().execute(
         "INSERT INTO capture_samples (id, user_id, created_ts,"
         " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes_json,"
+        " transcript_join_strategy, member_hashes,"
         " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims_json)"
+        " admin_notes, language, member_trims)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, user_id, created_ts, relpath, 5000, transcript, "space",
-         member_hashes_json, 300, 0, 0, status, admin_notes, language,
-         member_trims_json),
+         member_hashes, 300, 0, 0, status, admin_notes, language,
+         member_trims),
     )
     return relpath
 
 
 def _insert_capture(cs, cid, *, sample_id=None, sample_order=None, language="de",
-                    user_id="u1", created_ts=1.0, corrections_json="[]"):
+                    user_id="u1", created_ts=1.0, corrections="[]"):
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
     cs._require_conn().execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
         " audio_s, audio_relpath, audio_format, raw_text, final_text,"
-        " words_json, segments_json, corrections_json, status, user_id,"
+        " words, segments, corrections, status, user_id,"
         " sample_id, sample_order)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (cid, created_ts, None, "m", language, 2.0, rel, "wav", "raw",
-         "final", "[]", "[]", corrections_json, "new", user_id,
+         "final", "[]", "[]", corrections, "new", user_id,
          sample_id, sample_order),
     )
 
@@ -82,8 +82,8 @@ def test_get_group_missing(groups_store_db):
 
 def test_row_to_dict_decodes_and_coerces(groups_store_db):
     gs = groups_store_db
-    _insert_group(gs, "g00000000000000a", member_hashes_json='{"m1": "h1"}',
-                  member_trims_json='{"m1": {"lead_ms": 5}}')
+    _insert_group(gs, "g00000000000000a", member_hashes='{"m1": "h1"}',
+                  member_trims='{"m1": {"lead_ms": 5}}')
     g = gs.get_sample("g00000000000000a")
     assert g["member_hashes"] == {"m1": "h1"}
     assert g["member_trims"] == {"m1": {"lead_ms": 5}}
@@ -138,7 +138,7 @@ def test_get_members_ordered_and_decodes_corrections(captures_store_db, groups_s
     sid = "gmembers0000000a"
     _insert_group(gs, sid)
     _insert_capture(cs, "cap0000000000001", sample_id=sid, sample_order=1,
-                    corrections_json='[{"wrong": "a", "correct": "b"}]')
+                    corrections='[{"wrong": "a", "correct": "b"}]')
     _insert_capture(cs, "cap0000000000000", sample_id=sid, sample_order=0)
     members = gs.get_members(sid)
     assert [m["sample_order"] for m in members] == [0, 1]  # ordered ASC
@@ -152,7 +152,7 @@ def test_get_members_bad_corrections_json_falls_back(captures_store_db, groups_s
     sid = "gmembersbad00000"
     _insert_group(gs, sid)
     _insert_capture(cs, "capbad0000000001", sample_id=sid, sample_order=0,
-                    corrections_json="{not json")
+                    corrections="{not json")
     members = gs.get_members(sid)
     assert members[0]["corrections"] == []
 
@@ -164,7 +164,7 @@ def test_get_members_non_list_corrections_falls_back(captures_store_db, groups_s
     _insert_group(gs, sid)
     # Valid JSON but not a list → coerced to [].
     _insert_capture(cs, "capobj0000000001", sample_id=sid, sample_order=0,
-                    corrections_json='{"a": 1}')
+                    corrections='{"a": 1}')
     members = gs.get_members(sid)
     assert members[0]["corrections"] == []
 

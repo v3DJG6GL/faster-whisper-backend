@@ -75,8 +75,8 @@ CREATE TABLE IF NOT EXISTS reports (
   model           TEXT NOT NULL,
   raw_text        TEXT NOT NULL,
   final_text      TEXT NOT NULL,
-  steps_json      TEXT NOT NULL,
-  corrections_json TEXT NOT NULL DEFAULT '[]',
+  steps           TEXT NOT NULL,
+  corrections     TEXT NOT NULL DEFAULT '[]',
   intended_text   TEXT NOT NULL DEFAULT '',
   user_comment    TEXT NOT NULL DEFAULT '',
   reporter_role   TEXT NOT NULL,
@@ -109,7 +109,11 @@ def init_db(path: str) -> None:
     # final_text in every store. Before _SCHEMA so CREATE TABLE IF NOT
     # EXISTS never sees the old names as the live ones.
     have = {r["name"] for r in _conn.execute("PRAGMA table_info(reports)")}
-    for old, new in (("raw", "raw_text"), ("final", "final_text")):
+    # The JSON-bearing columns dropped their `_json` suffix (the wire has
+    # always emitted the bare names); a pre-existing DB is renamed in place.
+    for old, new in (("raw", "raw_text"), ("final", "final_text"),
+                     ("steps_json", "steps"), ("corrections_json", "corrections"),
+                     ("stages_json", "stages")):
         if old in have and new not in have:
             _conn.execute(f"ALTER TABLE reports RENAME COLUMN {old} TO {new}")
     _conn.commit()
@@ -131,7 +135,7 @@ def _ensure_columns(conn: sqlite3.Connection) -> None:
         # translation is wrong" produced a row naming neither the language
         # nor the translation nor the model that made it.
         ("language", "ADD COLUMN language TEXT"),
-        ("stages_json", "ADD COLUMN stages_json TEXT"),
+        ("stages", "ADD COLUMN stages TEXT"),
     ):
         if col not in cols:
             conn.execute(f"ALTER TABLE reports {ddl}")
@@ -175,16 +179,16 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     if "final_text" in d:
         d["final"] = d.pop("final_text")
     try:
-        d["steps"] = json.loads(d.pop("steps_json", "[]") or "[]")
+        d["steps"] = json.loads(d.get("steps") or "[]")
     except (TypeError, ValueError):
         d["steps"] = []
     try:
-        d["corrections"] = json.loads(d.pop("corrections_json", "[]") or "[]")
+        d["corrections"] = json.loads(d.get("corrections") or "[]")
     except (TypeError, ValueError):
         d["corrections"] = []
     # Absent on rows written before the provenance migration.
     try:
-        d["stages"] = json.loads(d.pop("stages_json", None) or "[]")
+        d["stages"] = json.loads(d.get("stages") or "[]")
         if not isinstance(d["stages"], list):
             d["stages"] = []
     except (TypeError, ValueError):
@@ -302,7 +306,7 @@ def upsert_report(
 
     lang_t = (language or "")[:_CAP_LANGUAGE] or None
     # NULL, not "[]", when the blob cannot be stored: the UPDATE below
-    # COALESCEs stages_json, so an oversized resubmission must keep what the
+    # COALESCEs stages, so an oversized resubmission must keep what the
     # first submission recorded rather than blank it (recent_transcriptions_store
     # .record does the same). _row_to_dict maps NULL to [] on read.
     stages_t: str | None = None
@@ -333,13 +337,13 @@ def upsert_report(
             conn.execute(
                 "UPDATE reports SET"
                 "  created_ts = ?, trace_ts = ?, model = ?, raw_text = ?, final_text = ?,"
-                "  steps_json = ?, corrections_json = ?,"
+                "  steps = ?, corrections = ?,"
                 "  intended_text = ?, user_comment = ?,"
                 "  reporter_role = ?, reporter_host = ?,"
                 # COALESCE so a resubmission that omits the provenance never
                 # blanks what the first submission recorded.
                 "  language = COALESCE(?, language),"
-                "  stages_json = COALESCE(?, stages_json),"
+                "  stages = COALESCE(?, stages),"
                 "  status = 'open', resolved_ts = NULL"
                 " WHERE id = ?",
                 (
@@ -358,10 +362,10 @@ def upsert_report(
         conn.execute(
             "INSERT INTO reports ("
             " id, created_ts, trace_ts, request_id, model,"
-            " raw_text, final_text, steps_json, corrections_json,"
+            " raw_text, final_text, steps, corrections,"
             " intended_text, user_comment, reporter_role, reporter_host,"
             " status, admin_notes, resolved_ts,"
-            " user_id, language, stages_json"
+            " user_id, language, stages"
             ") VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 rid, now, trace_t, request_id, model,
@@ -448,7 +452,7 @@ def list_reports(user_id: str | None = None, *,
     conn = _require_conn()
     # The soft cap the docstring relies on is an EVICTION cap, not a read cap:
     # nothing here bounded the row count, and each row decodes up to ~300 KB of
-    # text plus a JSON parse of steps_json, inline in an async handler. A LIMIT
+    # text plus a JSON parse of steps, inline in an async handler. A LIMIT
     # makes the documented ceiling real. _LIST_LIMIT is the eviction cap, so a
     # store at or under its own cap returns exactly what it returns today.
     # SQLite treats a negative LIMIT as "no limit".

@@ -446,7 +446,7 @@ def test_delete_member_auto_dissolves_group(captures_store_db, groups_store_db, 
     conn.execute(
         "INSERT INTO capture_samples (id, user_id, created_ts,"
         " merged_wav_relpath, merged_duration_ms, transcript,"
-        " member_hashes_json) VALUES (?,?,?,?,?,?,?)",
+        " member_hashes) VALUES (?,?,?,?,?,?,?)",
         (sid, "u1", 1.0, gs._relpath_for(sid), 1000, "t", "{}"),
     )
     conn.execute(
@@ -513,7 +513,7 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
     conn.execute(
         "INSERT INTO capture_samples (id, user_id, created_ts,"
         " merged_wav_relpath, merged_duration_ms, transcript,"
-        " member_hashes_json) VALUES (?,?,?,?,?,?,?)",
+        " member_hashes) VALUES (?,?,?,?,?,?,?)",
         (sid, "u1", 1.0, gs._relpath_for(sid), 1000, "t", "{}"),
     )
     # member is the oldest, but it's in a group → must be protected.
@@ -613,7 +613,7 @@ def _group_one(cs, gs, sid, member, sample_ts, member_ts):
     conn.execute(
         "INSERT INTO capture_samples (id, user_id, created_ts,"
         " merged_wav_relpath, merged_duration_ms, transcript,"
-        " member_hashes_json) VALUES (?,?,?,?,?,?,?)",
+        " member_hashes) VALUES (?,?,?,?,?,?,?)",
         (sid, "u1", sample_ts, gs._relpath_for(sid), 1000, "t", "{}"),
     )
     conn.execute(
@@ -683,7 +683,7 @@ def test_sweep_retention_expires_an_over_age_sample_and_its_members(
 
 
 # ---------------------------------------------------------------------------
-# translations_json stays valid JSON at any size (create + update)
+# translations stays valid JSON at any size (create + update)
 # ---------------------------------------------------------------------------
 
 def test_create_capture_oversized_translations_stay_valid_json(
@@ -694,7 +694,7 @@ def test_create_capture_oversized_translations_stay_valid_json(
     big = {"en": "e" * cs._CAP_FINAL, "fr": "f" * cs._CAP_FINAL}
     cid = _make(cs, monkeypatch, tmp_path, translations=big)
     raw = cs._require_conn().execute(
-        "SELECT translations_json FROM captures WHERE id = ?", (cid,)
+        "SELECT translations FROM captures WHERE id = ?", (cid,)
     ).fetchone()[0]
     assert len(raw) <= cs._CAP_FINAL
     got = json.loads(raw)  # valid JSON, not a torn slice

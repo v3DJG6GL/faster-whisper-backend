@@ -20,7 +20,7 @@ import captures_routes as cr
 
 
 def _words(*pairs):
-    """Build a words_json-style list with synthetic but monotonic timings."""
+    """Build a words-style list with synthetic but monotonic timings."""
     out = []
     for i, w in enumerate(pairs):
         out.append({"word": w, "start": float(i), "end": float(i) + 0.5})

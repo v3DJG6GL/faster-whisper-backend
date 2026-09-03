@@ -206,9 +206,9 @@ def _insert_sample(conn, gs, sid, *, locked, user_id="alice"):
     conn.execute(
         "INSERT INTO capture_samples (id, user_id, created_ts,"
         " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes_json,"
+        " transcript_join_strategy, member_hashes,"
         " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims_json)"
+        " admin_notes, language, member_trims)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, user_id, 1.0, gs._relpath_for(sid), 5000, "t", "space",
          "{}", 300, 0, 1 if locked else 0, "new", "", "de", "{}"),
@@ -221,7 +221,7 @@ def _insert_member(conn, cid, sid, user_id="alice"):
     conn.execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
         " audio_s, audio_relpath, audio_format, raw_text, final_text,"
-        " words_json, segments_json, corrections_json, status, user_id,"
+        " words, segments, corrections, status, user_id,"
         " sample_id, sample_order)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (cid, 1.0, None, "m", "de", 2.0, rel, "wav", "r", "f", "[]", "[]",
@@ -483,9 +483,9 @@ def _insert_sample_at(conn, gs, sid, *, ts, user_id="alice"):
     conn.execute(
         "INSERT INTO capture_samples (id, user_id, created_ts,"
         " merged_wav_relpath, merged_duration_ms, transcript,"
-        " transcript_join_strategy, member_hashes_json,"
+        " transcript_join_strategy, member_hashes,"
         " inter_segment_silence_ms, is_stale, is_locked, status,"
-        " admin_notes, language, member_trims_json)"
+        " admin_notes, language, member_trims)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (sid, user_id, ts, gs._relpath_for(sid), 5000, "t", "space",
          "{}", 300, 0, 0, "new", "", "de", "{}"),
@@ -554,7 +554,7 @@ def _insert_capture_with_request(conn, cid, request_id, user_id):
     conn.execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
         " audio_s, audio_relpath, audio_format, raw_text, final_text,"
-        " words_json, segments_json, corrections_json, status, user_id,"
+        " words, segments, corrections, status, user_id,"
         " sample_id, sample_order)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (cid, 1.0, request_id, "m", "de", 2.0, rel, "wav", "r", "f", "[]",

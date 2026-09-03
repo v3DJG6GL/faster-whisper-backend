@@ -13,7 +13,7 @@ row + the merged WAV; members get their `sample_id` NULL'd out and
 return to the flat list.
 
 Member-content drift is recorded via per-member PCM-content hashes
-stored in `member_hashes_json` at merge time; downstream consumers
+stored in `member_hashes` at merge time; downstream consumers
 compare against the snapshot when they need to decide whether the
 merged WAV is still authoritative.
 """
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS capture_samples (
   merged_duration_ms          INTEGER NOT NULL,
   transcript                  TEXT NOT NULL,
   transcript_join_strategy    TEXT NOT NULL DEFAULT 'space',
-  member_hashes_json          TEXT NOT NULL,
+  member_hashes               TEXT NOT NULL,
   inter_segment_silence_ms    INTEGER NOT NULL DEFAULT 300,
   is_stale                    INTEGER NOT NULL DEFAULT 0,
   is_locked                   INTEGER NOT NULL DEFAULT 0,
@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS capture_samples (
   language                    TEXT,
   merged_lead_trim_ms         INTEGER NOT NULL DEFAULT 0,
   merged_trail_trim_ms        INTEGER NOT NULL DEFAULT 0,
-  member_trims_json           TEXT NOT NULL DEFAULT '{}'
+  member_trims                TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS idx_capture_samples_user
   ON capture_samples(user_id, created_ts DESC);
@@ -81,6 +81,16 @@ def init_db(conn: sqlite3.Connection, captures_audio_root: str) -> None:
     # Without this the subtree lands at the process umask, so the hardening
     # depends entirely on the parent staying tight.
     store_common.secure_dir(_groups_audio_dir)
+    # The JSON-bearing columns dropped their `_json` suffix (the wire has
+    # always emitted the bare names); a pre-existing DB is renamed in place,
+    # before _SCHEMA_CORE so CREATE TABLE IF NOT EXISTS never sees the old
+    # name as the live one.
+    have = {r["name"] for r in _conn.execute("PRAGMA table_info(capture_samples)")}
+    for old, new in (("member_hashes_json", "member_hashes"),
+                     ("member_trims_json", "member_trims")):
+        if old in have and new not in have:
+            _conn.execute(f"ALTER TABLE capture_samples RENAME COLUMN {old} TO {new}")
+    _conn.commit()
     _conn.executescript(_SCHEMA_CORE)
 
 
@@ -139,7 +149,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "merged_duration_ms":          int(row["merged_duration_ms"]),
         "transcript":                  row["transcript"] or "",
         "transcript_join_strategy":    row["transcript_join_strategy"] or "space",
-        "member_hashes":               json.loads(row["member_hashes_json"] or "{}"),
+        "member_hashes":               json.loads(row["member_hashes"] or "{}"),
         "inter_segment_silence_ms":    int(row["inter_segment_silence_ms"]),
         "is_stale":                    bool(row["is_stale"]),
         "is_locked":                   bool(row["is_locked"]),
@@ -148,7 +158,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "language":                    row["language"] or "",
         "merged_lead_trim_ms":         int(row["merged_lead_trim_ms"] or 0),
         "merged_trail_trim_ms":        int(row["merged_trail_trim_ms"] or 0),
-        "member_trims":                json.loads(row["member_trims_json"] or "{}"),
+        "member_trims":                json.loads(row["member_trims"] or "{}"),
     }
 
 
@@ -207,13 +217,13 @@ def list_samples(
 def get_members(sid: str) -> list[dict[str, Any]]:
     """Return member captures in their declared sample_order, decoded
     enough for the UI (transcript + duration; no heavy words/segments).
-    Includes corrections_json so chip-aware joiners can apply each
+    Includes corrections so chip-aware joiners can apply each
     member's corrections to its post-processing text before merging."""
     conn = _require_conn()
     rows = conn.execute(
         "SELECT id, created_ts, audio_s, raw_text AS raw, final_text AS final,"
         " text_for_training, audio_trimmed_relpath,"
-        " corrected_text, corrections_json, status, sample_order, user_id,"
+        " corrected_text, corrections, status, sample_order, user_id,"
         " language, task"
         " FROM captures WHERE sample_id = ? ORDER BY sample_order ASC",
         (sid,),
@@ -222,7 +232,7 @@ def get_members(sid: str) -> list[dict[str, Any]]:
     for r in rows:
         d = dict(r)
         try:
-            d["corrections"] = json.loads(d.pop("corrections_json", "[]") or "[]")
+            d["corrections"] = json.loads(d.get("corrections") or "[]")
             if not isinstance(d["corrections"], list):
                 d["corrections"] = []
         except (TypeError, ValueError):
@@ -237,9 +247,9 @@ def update_sample(
 ) -> dict[str, Any] | None:
     """Patch transcript / transcript_join_strategy /
     inter_segment_silence_ms / is_locked / is_stale /
-    member_hashes_json / merged_duration_ms / status / admin_notes /
+    member_hashes / merged_duration_ms / status / admin_notes /
     language / merged_lead_trim_ms / merged_trail_trim_ms /
-    member_trims_json. Returns the updated row.
+    member_trims. Returns the updated row.
 
     Chip state (the user-facing "corrections" list) is NOT on the
     group row — it's derived from members on every read. Patch chip
@@ -247,10 +257,10 @@ def update_sample(
     allowed = {
         "transcript", "transcript_join_strategy",
         "inter_segment_silence_ms", "is_locked", "is_stale",
-        "member_hashes_json", "merged_duration_ms",
+        "member_hashes", "merged_duration_ms",
         "status", "admin_notes", "language",
         "merged_lead_trim_ms", "merged_trail_trim_ms",
-        "member_trims_json",
+        "member_trims",
     }
     sets: list[str] = []
     args: list[Any] = []

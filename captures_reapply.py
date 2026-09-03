@@ -6,7 +6,7 @@ Scope:
     with the captures-specific `CAPTURES_PIPELINE_RULES_EXCLUDE` set,
     or copied from `final` when no excludes are configured).
     `corrected_text` (admin free-form ground truth) and
-    `corrections_json` (chip corrections, index-based and
+    `corrections` (chip corrections, index-based and
     rule-independent) stay untouched.
   - For each affected member that belongs to an unlocked group,
     rebuild the group's snapshot `transcript` from the current member
@@ -91,7 +91,7 @@ def _run() -> None:
         # writes back to the same connection inside the loop, and an open
         # cursor on the same connection can skip/revisit rows when the
         # underlying table is mutated mid-walk. Payload is just ids +
-        # short text columns (no words_json / segments_json), so memory
+        # short text columns (no words / segments), so memory
         # stays bounded even at tens of thousands of rows.
         rows = conn.execute(
             "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id"

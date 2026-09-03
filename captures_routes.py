@@ -464,7 +464,7 @@ async def list_samples_api(
 
     # OFF the loop, like propose_merges_api / get_sample_audio_api /
     # regenerate_sample_api above. Each group costs one full get_capture per
-    # member, words_json decode included — measured 3.0 s of frozen event loop
+    # member, words decode included — measured 3.0 s of frozen event loop
     # for 300 groups x 4 members at 234 KB of words each before this was both
     # paged and offloaded.
     groups, has_more = await asyncio.to_thread(_gather)
@@ -1221,10 +1221,10 @@ def _merged_wav_patch(
     survive only so legacy groups without member_trims keep rendering."""
     return {
         "merged_duration_ms":   int(duration_ms),
-        "member_hashes_json":   json.dumps(hashes, sort_keys=True),
+        "member_hashes":        json.dumps(hashes, sort_keys=True),
         "merged_lead_trim_ms":  0,
         "merged_trail_trim_ms": 0,
-        "member_trims_json":    json.dumps(member_trims, sort_keys=True),
+        "member_trims":         json.dumps(member_trims, sort_keys=True),
         "is_stale":             0,
     }
 
@@ -1598,10 +1598,10 @@ def _insert_sample_with_sid(
                 "INSERT INTO capture_samples"
                 " (id, user_id, created_ts, merged_wav_relpath,"
                 "  merged_duration_ms, transcript,"
-                "  transcript_join_strategy, member_hashes_json,"
+                "  transcript_join_strategy, member_hashes,"
                 "  inter_segment_silence_ms, is_stale, is_locked,"
                 "  language, merged_lead_trim_ms, merged_trail_trim_ms,"
-                "  member_trims_json)"
+                "  member_trims)"
                 " VALUES (?,?,?,?,?,?,?,?,?,0,0,?,0,0,?)",
                 (
                     sid, user_id, now, relpath, int(duration_ms),
@@ -1661,7 +1661,7 @@ async def get_sample_api(
 def _hydrate_members(members: list[dict[str, Any]]) -> None:
     """Populate `words` (decoded) and `model` on each member dict in
     place by fetching the full capture row once. `capture_samples_store.
-    get_members` drops words_json/model to keep the projection light;
+    get_members` drops words/model to keep the projection light;
     the chip/karaoke helpers below need both. Idempotent — skips members
     that already carry the fields."""
     for m in members:
@@ -1677,7 +1677,7 @@ def _project_member_corrections(
 ) -> list[dict[str, Any]]:
     """Project each member's chip corrections into a group-level chip
     list with global word indices. Member chips reference indices into
-    that member's words_json (immutable raw STT). Group chips need
+    that member's words (immutable raw STT). Group chips need
     indices into the flattened merged_words array. The offset for
     member m is Σ_{j<m} len(words_j) — silence gaps contribute no
     words, so they don't shift the index.
@@ -2056,7 +2056,7 @@ def _align_words_to_final(
 
 
 def _clone_word(w: dict[str, Any]) -> dict[str, Any]:
-    """Return a shallow copy of a words_json item with only the keys
+    """Return a shallow copy of a words item with only the keys
     we care about preserved (word / start / end). Other fields
     (probability, etc.) are dropped — the UI doesn't use them and
     they bloat the JSON payload."""

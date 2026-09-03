@@ -284,7 +284,7 @@ def _insert_eligible(cs, cid, *, ts, dur=10.0, text="some words here",
     cs._require_conn().execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
         " audio_s, audio_relpath, audio_format, raw_text, final_text,"
-        " text_for_training, words_json, segments_json, status, user_id)"
+        " text_for_training, words, segments, status, user_id)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (cid, ts, None, "m", language, dur, rel, "wav", "raw", "final",
          text, "[]", "[]", status, user_id),

@@ -8,7 +8,7 @@ import time
 
 
 # ---------------------------------------------------------------------------
-# Recent-jobs columns (kind / stages_json / key_label) + migration
+# Recent-jobs columns (kind / stages / key_label) + migration
 # ---------------------------------------------------------------------------
 
 def test_kind_stages_key_label_roundtrip(tx_store):
@@ -69,8 +69,11 @@ def test_migration_adds_columns_to_old_db(tmp_path):
     try:
         cols = {r["name"] for r in mod._require_conn().execute(
             "PRAGMA table_info(recent_transcriptions)")}
-        assert {"source", "kind", "stages_json", "key_label",
+        assert {"source", "kind", "stages", "key_label",
                 "wait_s", "error_class", "error_stage"} <= cols
+        # The legacy JSON columns were renamed in place, not duplicated.
+        assert {"steps", "tokens", "bigrams"} <= cols
+        assert not ({"steps_json", "tokens_json", "bigrams_json"} & cols)
         row = mod.list_recent(limit=10)[0]
         assert row["request_id"] == "old1"
         assert row["kind"] is None
@@ -294,7 +297,7 @@ def test_row_to_dict_rtf_guard_proc_zero(tx_store):
 # ---------------------------------------------------------------------------
 
 def test_schema_is_canonical_no_migration_on_fresh_db(tx_store):
-    """A fresh DB gets kind/stages_json/key_label from _SCHEMA itself: the
+    """A fresh DB gets kind/stages/key_label from _SCHEMA itself: the
     ALTER-TABLE migration loop adds nothing on a fresh create."""
     ts = tx_store
     live = [r["name"] for r in
@@ -305,7 +308,7 @@ def test_schema_is_canonical_no_migration_on_fresh_db(tx_store):
                    bare.execute("PRAGMA table_info(recent_transcriptions)")]
     bare.close()
     assert live == schema_only
-    for col in ("kind", "stages_json", "key_label"):
+    for col in ("kind", "stages", "key_label"):
         assert col in schema_only
 
 
@@ -323,9 +326,9 @@ def test_row_to_dict_json_columns_normalised_to_list(tx_store):
     the recent-jobs `stages` column and the legacy `steps` column: the
     isinstance-list guard now covers every JSON column, not just stages."""
     ts = tx_store
-    _raw_insert(ts, "null", stages_json=None, steps_json=None)
-    _raw_insert(ts, "obj", stages_json='{"a": 1}', steps_json='{"a": 1}')
-    _raw_insert(ts, "bad", stages_json="not json", steps_json="not json")
+    _raw_insert(ts, "null", stages=None, steps=None)
+    _raw_insert(ts, "obj", stages='{"a": 1}', steps='{"a": 1}')
+    _raw_insert(ts, "bad", stages="not json", steps="not json")
     rows = {r["request_id"]: r for r in ts.list_recent(limit=10)}
     for rid in ("null", "obj", "bad"):
         assert rows[rid]["stages"] == [], rid

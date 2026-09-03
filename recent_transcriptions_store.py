@@ -12,8 +12,8 @@ scale beyond a 20-row cap.
 Two upsert call sites per /transcribe request, both keyed by request_id:
 
   1. `record_trace(...)` (success path, inside the inner try) writes the
-     rich payload: raw_text, final_text, steps_json, tokens_json,
-     bigrams_json, model, language, user_id, username, created_ts.
+     rich payload: raw_text, final_text, steps, tokens,
+     bigrams, model, language, user_id, username, created_ts.
 
   2. `record_timing(...)` (outer finally, always) writes processing_s,
      audio_s, words, status. On the error path it inserts a
@@ -68,7 +68,7 @@ _CAP_MODEL = 96
 # then served back through /quick-config/recent and the SSE replay. 32 is far
 # above any BCP-47 tag.
 _CAP_LANGUAGE = 32
-# Recent-jobs extras. stages_json is server-built ([{name, secs, model?,
+# Recent-jobs extras. stages is server-built ([{name, secs, model?,
 # detail?}, …] — a handful of pipeline stages), so the cap is a defensive
 # bound, not a fight with an attacker. key_label mirrors api_keys' label cap.
 _CAP_KIND = 16
@@ -91,11 +91,11 @@ CREATE TABLE IF NOT EXISTS recent_transcriptions (
   words         INTEGER,
   raw_text      TEXT,
   final_text    TEXT,
-  steps_json    TEXT,
-  tokens_json   TEXT,
-  bigrams_json  TEXT,
+  steps         TEXT,
+  tokens        TEXT,
+  bigrams       TEXT,
   kind          TEXT,
-  stages_json   TEXT,
+  stages        TEXT,
   key_label     TEXT,
   wait_s        REAL,
   error_class   TEXT,
@@ -122,8 +122,12 @@ def init_db(path: str) -> None:
     # names in every store (audio_s / processing_s / words, as usage_jobs
     # already said). RENAME COLUMN keeps the data and rewrites the indexes.
     cols = {r["name"] for r in _conn.execute("PRAGMA table_info(recent_transcriptions)")}
+    # The JSON-bearing columns dropped their `_json` suffix (the wire has
+    # always emitted the bare names); a pre-existing DB is renamed in place.
     for old, new in (("audio_dur_s", "audio_s"), ("proc_dur_s", "processing_s"),
-                     ("words_count", "words")):
+                     ("words_count", "words"),
+                     ("steps_json", "steps"), ("tokens_json", "tokens"),
+                     ("bigrams_json", "bigrams"), ("stages_json", "stages")):
         if old in cols and new not in cols:
             _conn.execute(f"ALTER TABLE recent_transcriptions RENAME COLUMN {old} TO {new}")
     _conn.commit()
@@ -133,7 +137,7 @@ def init_db(path: str) -> None:
             "ALTER TABLE recent_transcriptions ADD COLUMN source TEXT NOT NULL DEFAULT 'file'")
     # "Recent jobs" columns (nullable, additive): `kind` distinguishes
     # transcribe/translate/download rows (NULL reads as a transcription and
-    # resolves via `source`), `stages_json` carries the per-stage timing list
+    # resolves via `source`), `stages` carries the per-stage timing list
     # ([{name, secs, model?, detail?}, …]) and `key_label` snapshots the API
     # key's display label at record time (labels are mutable/deletable in
     # api_keys, so resolving at read time would lie about history).
@@ -142,7 +146,7 @@ def init_db(path: str) -> None:
     # a failed job failed (metrics.ERROR_CLASSES).
     for col, ddl in (
         ("kind", "ADD COLUMN kind TEXT"),
-        ("stages_json", "ADD COLUMN stages_json TEXT"),
+        ("stages", "ADD COLUMN stages TEXT"),
         ("key_label", "ADD COLUMN key_label TEXT"),
         ("wait_s", "ADD COLUMN wait_s REAL"),
         ("error_class", "ADD COLUMN error_class TEXT"),
@@ -199,14 +203,9 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     formula. Keeps both `ts` (legacy /quick-config field name) and
     `created_ts` (the actual column) so existing JS keeps working."""
     d = dict(row)
-    for col, key in (
-        ("steps_json", "steps"),
-        ("tokens_json", "tokens"),
-        ("bigrams_json", "bigrams"),
-        ("stages_json", "stages"),
-    ):
+    for key in ("steps", "tokens", "bigrams", "stages"):
         try:
-            d[key] = json.loads(d.pop(col, "[]") or "[]")
+            d[key] = json.loads(d.get(key) or "[]")
         except (TypeError, ValueError):
             d[key] = []
         if not isinstance(d[key], list):
@@ -225,7 +224,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     d["language"] = d.get("language") or ""
     d["source"] = d.get("source") or "file"
     # Recent-jobs extras — NULL on rows written before the migration (the
-    # `d.pop(col, "[]")` default in the loop above covers `stages` there).
+    # `or "[]"` default in the loop above covers `stages` there).
     d["kind"] = d.get("kind") or None
     d["key_label"] = d.get("key_label") or ""
     d["wait_s"] = d.get("wait_s")
@@ -291,7 +290,7 @@ def record_trace(
             "INSERT INTO recent_transcriptions ("
             "  request_id, created_ts, user_id, username, model, language, source,"
             "  status, raw_text, final_text,"
-            "  steps_json, tokens_json, bigrams_json"
+            "  steps, tokens, bigrams"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, 'ok', ?, ?, ?, ?, ?)"
             " ON CONFLICT(request_id) DO UPDATE SET"
             "  model        = excluded.model,"
@@ -301,9 +300,9 @@ def record_trace(
             "  username     = COALESCE(excluded.username, recent_transcriptions.username),"
             "  raw_text     = excluded.raw_text,"
             "  final_text   = excluded.final_text,"
-            "  steps_json   = excluded.steps_json,"
-            "  tokens_json  = excluded.tokens_json,"
-            "  bigrams_json = excluded.bigrams_json",
+            "  steps        = excluded.steps,"
+            "  tokens       = excluded.tokens,"
+            "  bigrams      = excluded.bigrams",
             (request_id, ts, user_id, username, model, language, source or "file",
              raw_s, final_s, steps_blob, tokens_blob, bigrams_blob),
         )
@@ -364,7 +363,7 @@ def record_timing(
             "INSERT INTO recent_transcriptions ("
             "  request_id, created_ts, user_id, model, status,"
             "  audio_s, processing_s, words,"
-            "  kind, stages_json, key_label, wait_s, error_class, error_stage"
+            "  kind, stages, key_label, wait_s, error_class, error_stage"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(request_id) DO UPDATE SET"
             "  status      = excluded.status,"
@@ -373,7 +372,7 @@ def record_timing(
             "  words        = excluded.words,"
             "  model       = excluded.model,"
             "  kind        = COALESCE(excluded.kind, recent_transcriptions.kind),"
-            "  stages_json = COALESCE(excluded.stages_json, recent_transcriptions.stages_json),"
+            "  stages      = COALESCE(excluded.stages, recent_transcriptions.stages),"
             "  key_label   = COALESCE(excluded.key_label, recent_transcriptions.key_label),"
             "  wait_s      = COALESCE(excluded.wait_s, recent_transcriptions.wait_s),"
             "  error_class = COALESCE(excluded.error_class, recent_transcriptions.error_class),"

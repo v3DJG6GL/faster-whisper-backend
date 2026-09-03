@@ -56,7 +56,7 @@ def test_reports_migration_adds_columns_and_is_idempotent(tmp_path):
     with _own_db(reports_store):
         reports_store.init_db(db)
         cols = _cols(reports_store._conn, "reports")
-        assert {"language", "stages_json"} <= cols
+        assert {"language", "stages"} <= cols
 
         # Second init on the same file must not raise "duplicate column name".
         first_conn = reports_store._conn
@@ -92,8 +92,12 @@ def test_reports_migration_upgrades_a_pre_existing_table(tmp_path):
 
     with _own_db(reports_store):
         reports_store.init_db(db)
-        assert {"language", "stages_json"} <= _cols(reports_store._conn,
-                                                    "reports")
+        cols = _cols(reports_store._conn, "reports")
+        assert {"language", "stages"} <= cols
+        # The JSON columns were renamed in place: the bare names exist, the
+        # `_json`-suffixed ones are gone.
+        assert {"steps", "corrections", "stages"} <= cols
+        assert not ({"steps_json", "corrections_json", "stages_json"} & cols)
         # The pre-existing row survives and reads back with empty provenance.
         row = reports_store.get_report("keep")
         assert row is not None
@@ -146,7 +150,7 @@ def test_captures_migration_adds_columns_and_is_idempotent(tmp_path):
     with _own_db(captures_store):
         captures_store.init_db(db, audio)
         cols = _cols(captures_store._conn, "captures")
-        assert {"translations_json", "translation_model",
+        assert {"translations", "translation_model",
                 "translation_source", "task"} <= cols
 
         first_conn = captures_store._conn
@@ -184,8 +188,15 @@ def test_captures_migration_upgrades_a_pre_existing_table(tmp_path):
 
     with _own_db(captures_store):
         captures_store.init_db(db, audio)
+        cols = _cols(captures_store._conn, "captures")
+        # The JSON columns were renamed in place: the bare names exist, the
+        # `_json`-suffixed ones are gone.
+        assert {"words", "segments", "corrections", "translations"} <= cols
+        assert not ({"words_json", "segments_json", "corrections_json",
+                     "translations_json"} & cols)
         got = captures_store.get_capture("keep")
         assert got is not None
+        assert got["words"] == []
         assert got["final"] == "f"
         # A pre-migration row reads back with no translations, not a crash.
         assert got["translations"] == {}
@@ -231,7 +242,7 @@ def test_captures_list_projection_carries_the_new_columns(
     # _LIST_COLUMNS is one comma-separated string; parse it into real column
     # names (a substring check would pass on any renamed superstring).
     cols = {c.strip() for c in captures_store._LIST_COLUMNS.split(",")}
-    assert {"translations_json", "translation_model",
+    assert {"translations", "translation_model",
             "translation_source", "task"} <= cols
 
     # And end-to-end: a listed row actually carries the public keys.

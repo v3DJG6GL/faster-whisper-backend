@@ -289,13 +289,13 @@ def test_oversized_stages_store_a_valid_blob(reports_store_db):
     rid, _ = _submit(rs, stages=big)
     assert rs.get_report(rid)["stages"] == []
     raw = rs._require_conn().execute(
-        "SELECT stages_json FROM reports WHERE id = ?", (rid,)).fetchone()[0]
+        "SELECT stages FROM reports WHERE id = ?", (rid,)).fetchone()[0]
     # "nothing" is NULL, not "[]": the update path COALESCEs the column.
     assert raw is None or json.loads(raw) == []
 
 
 def test_oversized_stages_resubmission_keeps_first_provenance(reports_store_db):
-    """The UPDATE branch COALESCEs stages_json so a resubmission never blanks
+    """The UPDATE branch COALESCEs stages so a resubmission never blanks
     what the first submission recorded; a degraded (oversized) blob must
     therefore be NULL, not "[]", or it overwrites the stored provenance."""
     rs = reports_store_db
