@@ -80,9 +80,7 @@ def test_words_gated_by_config_disabled(client, app_module):
 
 def test_words_included_with_granularity_field(client, app_module):
     # Default config has WORD_TIMESTAMPS_ENABLED=True. Explicitly request word
-    # granularity on a json response: include_words drives the response, but
-    # the default json shape ({"text":...}) does not surface words. So assert
-    # the model was actually asked for word_timestamps=True via fake_model.
+    # granularity on a verbose_json response — verify words are present.
     r = client.post(
         "/v1/audio/transcriptions",
         files=_FILE,
@@ -448,7 +446,7 @@ def test_upload_spool_carries_the_reclaim_prefix(client, app_module,
     assert seen == ["whisperup-"]
 
 
-def _ledger_row(request_id=None):
+def _ledger_row():
     from faster_whisper_backend.stats import recent_transcriptions_store
     rows = recent_transcriptions_store.list_recent(limit=5)
     return rows[0]

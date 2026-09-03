@@ -53,7 +53,7 @@ def test_no_stage_sections_without_stages(app_module):
     for label in ("Pipeline", "Separation", "Diarization", "Translation",
                   "Notes"):
         assert f"─── {label}" not in block
-    assert "spk" not in block.splitlines()[0]
+    assert "spk" not in block.splitlines()[1]
 
 
 def test_stage_sections_appear_only_for_stages_that_ran(app_module):
@@ -97,16 +97,16 @@ def test_vad_renders_as_its_own_stage(app_module):
     row anywhere. transcribe() runs Silero eagerly before handing back the
     generator, so the cost is genuinely separable from the decode."""
     stages = [
-        {"name": "vad", "secs": 1.2, "model": "silero", "device": "cpu",
-         "detail": "audio decode + Silero · 13.24s kept of 13.56s (98 %)"},
         {"name": "transcribing", "secs": 12.4, "model": "large-v2",
          "device": "cuda", "load_secs": 0.0},
+        {"name": "vad", "secs": 1.2, "model": "silero", "device": "cpu",
+         "detail": "audio decode + Silero · 13.24s kept of 13.56s (98 %)"},
     ]
     block = _block(app_module, stages=stages)
     row = next(l for l in block.splitlines() if " vad " in l)
     assert "silero" in row and "cpu" in row and "1.2s" in row
     assert "98 %" in block
-    # VAD sorts ahead of the decode it precedes.
+    # VAD sorts ahead of the decode it precedes even when input is unordered.
     names = [l.split()[1] for l in block.splitlines()
              if l.startswith("     ") and ("vad" in l or "transcribing" in l)]
     assert names == ["vad", "transcribing"]
@@ -199,26 +199,26 @@ def test_zero_cap_means_unlimited(app_module, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_viewer_section_regex_matches_every_section(app_module):
-    import re
     block = _block(app_module, stages=_STAGES,
                    separation={"model": "UVR.onnx", "device": "cuda"},
                    diarization={"model": "pyannote/x", "min_speakers": 2},
                    translation={"model": "HY", "targets": ["en", "fr"],
                                 "mode": "fluent"},
+                   guards={"max_words_per_second": 8.0},
                    warnings=["w"], skipped=["s"])
     # Mirrors _SEC_RE in the viewer's decorate().
     sec = re.compile(r"^\s+─── ([A-Za-z][A-Za-z \-]*?)(?:\s\s|\s─)")
     found = [m.group(1) for m in
              (sec.match(l) for l in block.splitlines()) if m]
     for label in ("Pipeline", "Audio", "Separation", "Diarization",
-                  "Translation", "Decode params", "Segments", "Notes"):
+                  "Translation", "Post-decode guards", "Decode params",
+                  "Segments", "Notes"):
         assert label in found, f"{label} no longer matches the viewer regex"
 
 
 def test_viewer_segment_row_regex_skips_the_pipeline_table(app_module):
     """Both tables are indented numeric rows. If the segment-row pattern also
     matched Pipeline rows, the fold control would hide stage timings."""
-    import re
     block = _block(app_module, stages=_STAGES)
     seg = re.compile(r"^\s+\d+\s+[-\d]")
     matched = [l for l in block.splitlines() if seg.match(l)]

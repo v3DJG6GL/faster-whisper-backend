@@ -44,9 +44,9 @@ from faster_whisper_backend.auth import rate_limit as _rl
 # bare-metal box without WHISPER_DATA_DIR) must not kill the import — the
 # server degrades to stderr-only logging, the standard container posture.
 _log_dir_ok = True
-_log_dir_new = not os.path.isdir(os.path.dirname(cfg.LOG_FILE))
+_log_dir_new = not os.path.isdir(os.path.dirname(cfg.LOG_FILE) or ".")
 try:
-    os.makedirs(os.path.dirname(cfg.LOG_FILE), exist_ok=True)
+    os.makedirs(os.path.dirname(cfg.LOG_FILE) or ".", exist_ok=True)
 except OSError as _log_exc:
     _log_dir_ok = False
     print(
@@ -727,6 +727,10 @@ def _is_non_default(key: str, value) -> bool:
     baseline = baseline_dict.get(cfg_key)
     scalar = (bool, int, float, str, type(None))
     if not isinstance(value, scalar) or not isinstance(baseline, scalar):
+        return False
+    if value is None and baseline == "":
+        return False
+    if value == "" and baseline is None:
         return False
     return value != baseline
 
@@ -2342,9 +2346,13 @@ async def _idle_evictor() -> None:
             if not stale:
                 continue
             async with _model_load_lock:
+                now = time.monotonic()
                 for name in stale:
                     if name not in _loaded_models:
                         continue   # raced with another path
+                    info = system_stats._loaded_models.get(name)
+                    if info and now - info.get("last_used_monotonic", now) < timeout:
+                        continue   # used while we waited for the lock
                     # Not forced: a refusal costs nothing, the next 30 s tick
                     # picks the model up again once the request releases.
                     # Log on the result — the declined case already logs its
@@ -2561,6 +2569,18 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
             "WHISPER_BOOTSTRAP_ADMIN_KEY (user=bootstrap-admin, sha256=%s)",
             h[:8],
         )
+        other_env_keys = sum(
+            1 for k in api_keys_store.list_keys(uid)
+            if k.get("label") == "bootstrap (env)"
+            and k.get("key_hash") != h
+        )
+        if other_env_keys:
+            logger.warning(
+                "[auth] %d previous bootstrap (env) key(s) for "
+                "bootstrap-admin are still live — revoke them manually "
+                "if the old value should no longer work",
+                other_env_keys,
+            )
     except _sql.IntegrityError:
         # The live-hash check and the revoked-hash check above both passed, so
         # a UNIQUE violation here means the row appeared underneath us. Never
@@ -3449,11 +3469,11 @@ def _safe_tmp_suffix(filename: "str | None") -> str:
 # the loop thread can't blow up an executor-thread iteration.
 _BATCH_PROGRESS: "dict[str, dict]" = {}
 # progress_id → owner, remembered from the handler's seed so an entry that an
-# executor-thread stage re-creates after the handler's finally popped it (or
-# that the cap eviction below took) keeps its owner stamp instead of coming
-# back owner-less and readable/cancellable by any caller. Pruned in the same
-# stale-sweep/eviction pass as _BATCH_PROGRESS — deliberately NOT in the
-# handlers' finally, which is exactly the moment the re-create can follow.
+# executor-thread stage re-creates after a cap eviction keeps its owner stamp
+# instead of coming back owner-less and readable/cancellable by any caller.
+# Popped in the handlers' finally (alongside _BATCH_PROGRESS) and in the
+# stale sweep; deliberately NOT popped in the cap eviction — that is exactly
+# the moment an executor thread can re-create the entry and needs the stamp.
 _PROGRESS_OWNER: "dict[str, str]" = {}
 _BATCH_PROGRESS_MAX = 200
 _BATCH_PROGRESS_STALE_S = 2 * 3600
@@ -3565,7 +3585,6 @@ def _progress_set(pid: "str | None", **fields) -> None:
             if _snap:
                 oldest = min(_snap, key=lambda kv: kv[1].get("updated", 0))[0]
                 _BATCH_PROGRESS.pop(oldest, None)
-                _PROGRESS_OWNER.pop(oldest, None)
         entry = _BATCH_PROGRESS[pid] = (
             {"owner": _PROGRESS_OWNER[pid]} if pid in _PROGRESS_OWNER else {})
     entry.update(fields)
@@ -4867,7 +4886,7 @@ async def transcribe(
                             # str(_te) is client-safe by the module's contract.
                             _warnings.append(str(_te))
                             _stage_timings.append(_failed_stage(
-                                "translating", _tr_t0, None, _te))
+                                "translating", _tr_t0, _tr_model, _te))
                         except Exception as _te:  # noqa: BLE001 — soft-fail
                             logger.error("[translate] unexpected failure: %s",
                                          _log_safe(str(_te)))
@@ -4875,7 +4894,7 @@ async def transcribe(
                                 "translation failed; the transcript is "
                                 "untranslated")
                             _stage_timings.append(_failed_stage(
-                                "translating", _tr_t0, None, _te))
+                                "translating", _tr_t0, _tr_model, _te))
             elif _translate_to:
                 _warnings.append("translation skipped: no speech segments")
 
@@ -5310,6 +5329,7 @@ async def transcribe(
             if _pid:
                 _BATCH_PROGRESS.pop(_pid, None)
                 _BATCH_CANCELLED.discard(_pid)
+                _PROGRESS_OWNER.pop(_pid, None)
             if tmp_path:
                 try:
                     os.unlink(tmp_path)
@@ -5869,6 +5889,7 @@ async def translate_text(request: Request,
         if _pid:
             _BATCH_PROGRESS.pop(_pid, None)
             _BATCH_CANCELLED.discard(_pid)
+            _PROGRESS_OWNER.pop(_pid, None)
 
     _elapsed = time.perf_counter() - _t0
     # Cold model: everything up to the first progress callback is load (the
@@ -6357,25 +6378,6 @@ async def get_override_profile(name: str,
 import io
 from fastapi.responses import HTMLResponse, StreamingResponse
 
-def _read_tail(path: str, n: int) -> list[str]:
-    """Return the last n lines of `path` (or fewer if the file is shorter)."""
-    if not os.path.exists(path):
-        return []
-    # Read from the end in chunks to avoid loading huge files into memory.
-    with open(path, "rb") as f:
-        f.seek(0, io.SEEK_END)
-        size = f.tell()
-        block = 8192
-        data = b""
-        while size > 0 and data.count(b"\n") <= n:
-            read = min(block, size)
-            size -= read
-            f.seek(size)
-            data = f.read(read) + data
-    text = data.decode("utf-8", errors="replace")
-    return text.splitlines()[-n:]
-
-
 def _rotated_chain(active_path: str) -> list[str]:
     """Newest→oldest list of paths in the rotation chain: the active log
     followed by .1, .2, … up to LOG_BACKUP_COUNT. Files that don't exist
@@ -6726,7 +6728,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
       const label = sec[1].trim();
       st.stage = _STAGE_COLORS ? (_SEC_STAGE[label] || '') : '';
       st.inSeg = (label === 'Segments');
-      st.segRows = 0;
+      st.segRows = 0; st.ctl = null;
       st.dimLeft = 0;
       return 'rule' + (st.stage ? ' ' + st.stage : '');
     }
@@ -6738,7 +6740,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
     if (cls === 'rule' || cls === 'title' || cls === 'raw' || cls === 'final') {
       // Block boundary: end the dim group AND the section scope, so a stage
       // hue can never bleed past the receipt it belongs to.
-      st.dimLeft = 0; st.stage = ''; st.inSeg = false;
+      st.dimLeft = 0; st.stage = ''; st.inSeg = false; st.ctl = null;
       return cls;
     }
     if (st.dimLeft > 0) { st.dimLeft--; return cls + ' dim'; }
@@ -6880,6 +6882,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
       return;
     }
     appendLine(log, line, _liveDim);
+    _logsSkip++;
     while (log.childElementCount > _LOG_DOM_MAX) {
       // Trimming away a fold control would strand its hidden rows with no
       // way to reveal them, so unfold them on the way out.

@@ -9,6 +9,7 @@ import time
 import wave
 
 import numpy as np
+import pytest
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
@@ -44,14 +45,29 @@ def _capture_receipt(app_module, monkeypatch, seen):
     monkeypatch.setattr(app_module, "_format_request_block", _capture)
 
 
+_STUB_CREATED: list[str] = []
+
+
 def _stub_separate(monkeypatch):
     async def _fake(path, *, model_filename=None, progress_cb=None,
                     cancel_check=None):
         fd, out = tempfile.mkstemp(prefix="vocals-test-", suffix=".wav")
         with os.fdopen(fd, "wb") as f:
             f.write(b"RIFFsepWAVE")
+        _STUB_CREATED.append(out)
         return out
     monkeypatch.setattr(bgm_separation, "separate", _fake)
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_stub_files():
+    yield
+    while _STUB_CREATED:
+        p = _STUB_CREATED.pop()
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
 
 
 # --- "vad" row bills the lead-pad pre-decode ----------------------------------

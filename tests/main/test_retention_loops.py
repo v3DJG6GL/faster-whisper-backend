@@ -10,9 +10,10 @@ import threading
 import pytest
 
 
-def _drive(app_module, monkeypatch, loop_fn, store_mod):
+def _drive(monkeypatch, loop_fn, store_mod):
     calls = []
     ticks = {"n": 0}
+    intervals = []
 
     def _sweep():
         calls.append(threading.current_thread() is threading.main_thread())
@@ -22,6 +23,7 @@ def _drive(app_module, monkeypatch, loop_fn, store_mod):
     _real_sleep = asyncio.sleep
 
     async def _fake_sleep(secs):
+        intervals.append(secs)
         ticks["n"] += 1
         if ticks["n"] > 1:
             raise asyncio.CancelledError()
@@ -32,18 +34,17 @@ def _drive(app_module, monkeypatch, loop_fn, store_mod):
         with pytest.raises(asyncio.CancelledError):
             await loop_fn()
     asyncio.run(_run())
+    assert intervals and intervals[0] == 3600
     return calls
 
 
 def test_captures_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
     from faster_whisper_backend.captures import store as captures_store
-    calls = _drive(app_module, monkeypatch,
-                   app_module._captures_retention_loop, captures_store)
+    calls = _drive(monkeypatch, app_module._captures_retention_loop, captures_store)
     assert calls == [False]
 
 
 def test_reports_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
     from faster_whisper_backend.admin import reports_store
-    calls = _drive(app_module, monkeypatch,
-                   app_module._reports_retention_loop, reports_store)
+    calls = _drive(monkeypatch, app_module._reports_retention_loop, reports_store)
     assert calls == [False]

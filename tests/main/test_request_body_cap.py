@@ -84,7 +84,6 @@ def test_chunked_oversize_json_is_cut_off(client):
     # Content-Length absent → the receive-side counter is what enforces it.
     r = _put_json(client, _big_json(8 * 1024 * 1024), chunked=True)
     assert r.status_code >= 400
-    assert r.status_code != 200
 
 
 def test_json_cap_honours_a_cfg_override(client, app_module, monkeypatch):
