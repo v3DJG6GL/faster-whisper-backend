@@ -468,13 +468,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
     # accept() awaits the client's connect frame and raises when the client
     # already went away — an aborted handshake must not keep the per-user
     # slot taken above (the finally that releases it only starts below).
+    session_id = uuid.uuid4().hex
+    _active_sessions.add(session_id)
     try:
         await ws.accept(subprotocol=_ws_bearer_subprotocol(ws) or None)
     except BaseException:
+        _active_sessions.discard(session_id)
         _stream_sessions.release(_stream_key)
         raise
-    session_id = uuid.uuid4().hex
-    _active_sessions.add(session_id)
     # Set only now: from here every exit runs the finally that releases it.
     _stream_held: "str | None" = _stream_key
     metrics.in_flight_transcriptions += 1
@@ -525,6 +526,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # escape to the handler's blanket except Exception, which logs
                 # a full traceback carrying absolute paths, unthrottled, at a
                 # rate the client picks.
+                conf = {}
+            if not isinstance(conf, dict):
                 conf = {}
         elif first.get("bytes") is not None:
             pending_audio = first["bytes"]
@@ -1417,6 +1420,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         # See the handshake guard above — deep nesting raises
                         # RecursionError, which slipped past and tore down the
                         # whole dictation session instead of being ignored.
+                        continue
+                    if not isinstance(ctrl, dict):
                         continue
                     kind = ctrl.get("type")
                     if kind == "flush":

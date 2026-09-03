@@ -150,8 +150,9 @@ def _load_blocking_inner(model_id: str, device: str, batch_size: int):
             with download_progress.capture(_STATS_PREFIX + model_id):
                 try:
                     pipe = Pipeline.from_pretrained(model_id, token=token)
-                except TypeError:
-                    # pyannote 3.x spells the kwarg use_auth_token.
+                except TypeError as _te:
+                    if "token" not in str(_te):
+                        raise
                     pipe = Pipeline.from_pretrained(model_id,
                                                     use_auth_token=token)
         finally:

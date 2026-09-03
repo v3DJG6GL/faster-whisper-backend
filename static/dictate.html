@@ -233,6 +233,7 @@
   function idleLabel() { return mode() === "batch" ? "Record" : "Start dictation"; }
   function resetToggleButton() {
     toggleBtn.disabled = false;
+    $("mode").disabled = false;
     toggleBtn.textContent = idleLabel();
     toggleBtn.classList.remove("danger");
   }
@@ -387,6 +388,7 @@
     if (running) { batch ? stopBatch() : stop(); return; }
     try {
       running = true;
+      $("mode").disabled = true;
       toggleBtn.textContent = batch ? "Stop & transcribe" : "Stop";
       toggleBtn.classList.add("danger");
       await (batch ? startBatch() : start());

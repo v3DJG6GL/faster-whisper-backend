@@ -491,6 +491,9 @@ def register_plan(user_id: "str | None",
     `trigger` is a free-text label naming what asked for this plan
     (dictation / transcribe / viewer / job), echoed into the log receipt so
     an operator can tell which client path fired."""
+    kept = [(f, m) for f, m in entries if (f, m) not in (denied or {})]
+    kept.sort(key=lambda e: _FAMILY_STAGE.get(e[0], 99))
+    resolved_pid = (plan_id or "").strip() or derive_plan_id(user_id or "", kept)
     try:
         return _register_plan(user_id, entries, plan_id=plan_id,
                               denied=denied or {}, stage_ahead=stage_ahead,
@@ -501,11 +504,8 @@ def register_plan(user_id: "str | None",
         # before the failure; a "deferred" answer must not leave models
         # pinned against the evictors for the TTL.
         try:
-            kept = [(f, m) for f, m in entries if (f, m) not in (denied or {})]
-            kept.sort(key=lambda e: _FAMILY_STAGE.get(e[0], 99))
-            pid = (plan_id or "").strip() or derive_plan_id(user_id or "", kept)
             with _lock:
-                _drop_plan_locked(pid, "register failed")
+                _drop_plan_locked(resolved_pid, "register failed")
         except Exception:  # noqa: BLE001 — cleanup must not mask the fallback
             pass
         return {

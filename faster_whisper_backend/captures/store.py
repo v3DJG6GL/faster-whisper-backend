@@ -964,6 +964,11 @@ def clear_all(reporter_host: str = "") -> int:
             sub_path = os.path.join(audio_dir, sub)
             if os.path.isdir(sub_path):
                 shutil.rmtree(sub_path, ignore_errors=True)
+    try:
+        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
+        captures_merge_proposer.invalidate(None)
+    except Exception:
+        pass
     logger.warning(
         "[captures] admin from %s cleared %d captures + %d groups",
         reporter_host or "<unknown>", n, n_groups,
