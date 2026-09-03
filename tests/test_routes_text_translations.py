@@ -624,8 +624,8 @@ def test_translation_error_records_status_error(client, app_module,
     assert recorded and recorded[-1]["status"] == "error"
     assert recorded[-1]["kind"] == "translate"
     assert "key_label" in recorded[-1]
-    import transcriptions_store
-    rows = transcriptions_store.list_recent(limit=5)
+    import recent_transcriptions_store
+    rows = recent_transcriptions_store.list_recent(limit=5)
     assert rows and rows[0]["status"] == "error"
 
 

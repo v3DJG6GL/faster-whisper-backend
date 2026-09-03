@@ -17,8 +17,8 @@ def _seed(uid, tokens, *, request_id, bigrams=None):
     """Insert a recent-transcription row with verbatim tokens/bigrams for `uid`.
     record_trace stores them as-is (the tokenizer runs upstream), so the test
     controls the suggestion pool directly."""
-    import transcriptions_store
-    transcriptions_store.record_trace(
+    import recent_transcriptions_store
+    recent_transcriptions_store.record_trace(
         request_id=request_id, model="m", raw="raw", final="final",
         tokens=tokens, bigrams=bigrams or [], user_id=uid,
     )

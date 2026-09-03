@@ -449,8 +449,8 @@ def test_upload_spool_carries_the_reclaim_prefix(client, app_module,
 
 
 def _ledger_row(request_id=None):
-    import transcriptions_store
-    rows = transcriptions_store.list_recent(limit=5)
+    import recent_transcriptions_store
+    rows = recent_transcriptions_store.list_recent(limit=5)
     return rows[0]
 
 

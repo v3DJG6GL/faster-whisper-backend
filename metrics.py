@@ -7,7 +7,7 @@ SERVER_WORKERS=1) so plain `Counter[k] += 1` and `deque.append` are safe
 without explicit locking.
 
 The "Recent transcriptions" widget on /stats is sourced from the durable
-`transcriptions_store` SQLite database (same source as /quick-config's
+`recent_transcriptions_store` SQLite database (same source as /quick-config's
 trace panel) — see metrics_snapshot() below. Survives restart.
 """
 
@@ -312,8 +312,8 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
         return
     try:
         import config as cfg
-        import transcriptions_store
-        transcriptions_store.record_timing(
+        import recent_transcriptions_store
+        recent_transcriptions_store.record_timing(
             request_id=request_id,
             model=model,
             audio_s=round(audio_dur, 3) if audio_dur else None,
@@ -368,12 +368,12 @@ def record_download(model: str, seconds: float, bytes_done: int, *,
         import uuid
 
         import config as cfg
-        import transcriptions_store
+        import recent_transcriptions_store
         mb_s = (bytes_done / (1 << 20)) / seconds if seconds > 0 else 0.0
         detail = f"{bytes_done / (1 << 30):.2f} GB · {mb_s:.1f} MB/s"
         if status != "ok":
             detail += " · aborted"
-        transcriptions_store.record_timing(
+        recent_transcriptions_store.record_timing(
             request_id=uuid.uuid4().hex,
             model=model,
             audio_s=None,
@@ -509,9 +509,9 @@ def metrics_snapshot(*, include_identity: bool = False,
         }
     try:
         import config as cfg
-        import transcriptions_store
+        import recent_transcriptions_store
         limit = int(getattr(cfg, "STATS_RECENT_TRANSCRIPTIONS_COUNT", 20))
-        rows = transcriptions_store.list_recent(limit=max(1, limit),
+        rows = recent_transcriptions_store.list_recent(limit=max(1, limit),
                                                 user_id_filter=user_id)
     except Exception as e:
         logger.warning("[metrics] list_recent failed: %s", e)

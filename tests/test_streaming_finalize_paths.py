@@ -216,7 +216,7 @@ def _gate_second_utterance(client, app_module, monkeypatch, ws, *, before_second
 
 def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
         client, app_module, monkeypatch, caplog):
-    import transcriptions_store
+    import recent_transcriptions_store
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     with caplog.at_level(logging.INFO, logger="whisper-api"):
@@ -227,7 +227,7 @@ def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
             msgs, _code = _drain(ws)
     finals = [m for m in msgs if m["type"] == "final"]
     assert len(finals) >= 2, msgs
-    rows = sorted(transcriptions_store.list_recent(limit=10),
+    rows = sorted(recent_transcriptions_store.list_recent(limit=10),
                   key=lambda r: r.get("created_ts") or 0)
     rows = [r for r in rows if r.get("source") == "stream"]
     assert len(rows) >= 2, rows
@@ -251,7 +251,7 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
     the gate path reaches on_final with no decode at all, so on_final has to
     check for itself. A revoked identity must write no trace/usage row."""
     import api_keys_store
-    import transcriptions_store
+    import recent_transcriptions_store
     from streaming_routes import _WS_UNAUTH
 
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
@@ -260,7 +260,7 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
     counted = {}
 
     def revoke():
-        counted["before"] = transcriptions_store.count()
+        counted["before"] = recent_transcriptions_store.count()
         api_keys_store.revoke_user(uid)
 
     with client.websocket_connect(_STREAM_URL, headers=bearer(raw_alice)) as ws:
@@ -273,7 +273,7 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
             pass
         msgs, code = _drain(ws)
     assert code == _WS_UNAUTH, (code, msgs)
-    assert transcriptions_store.count() == counted["before"], \
+    assert recent_transcriptions_store.count() == counted["before"], \
         "the revoked identity still got a trace/usage row through the gate path"
 
 

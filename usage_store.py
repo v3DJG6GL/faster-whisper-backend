@@ -4,7 +4,7 @@ SQLite (stdlib) in WAL mode — single-file, crash-safe, indexed. Lives at
 cfg.USAGE_DB (defaults to usage.local.sqlite3 alongside config.local.json).
 
 Why a separate store: the recent-transcriptions table
-(transcriptions_store.py) is a pruned rolling window (row-cap + 30-day TTL),
+(recent_transcriptions_store.py) is a pruned rolling window (row-cap + 30-day TTL),
 so it cannot back lifetime usage totals. This store keeps compact HOURLY
 ROLLUPS that are never aggressively pruned, so lifetime totals are a SUM over
 hours.
@@ -249,7 +249,7 @@ CREATE TABLE IF NOT EXISTS usage_app_hourly (
 def init_db(path: str) -> None:
     """Open (or create) the DB at `path` in WAL mode. Idempotent — call
     once on service startup before any other function. Mirrors
-    transcriptions_store.init_db."""
+    recent_transcriptions_store.init_db."""
     global _conn
     _conn = store_common.open_wal_db(path)
     _conn.execute("PRAGMA temp_store=MEMORY;")
@@ -265,7 +265,7 @@ def init_db(path: str) -> None:
 # Additive columns for DBs created before them. CREATE TABLE IF NOT EXISTS is
 # a no-op against an existing table, so a column that joins the schema must
 # also be listed here or it never reaches a live database. Same pattern as
-# transcriptions_store.init_db; idempotent (PRAGMA table_info first).
+# recent_transcriptions_store.init_db; idempotent (PRAGMA table_info first).
 _COLUMN_MIGRATIONS: dict[str, tuple[tuple[str, str], ...]] = {
     "usage_jobs": (
         ("wait_s", "ADD COLUMN wait_s REAL NOT NULL DEFAULT 0"),

@@ -1,7 +1,7 @@
 """
 Tokenization + SSE broadcast layer for /quick-config recent transcriptions.
 
-Durable storage lives in `transcriptions_store` (SQLite, WAL). This
+Durable storage lives in `recent_transcriptions_store` (SQLite, WAL). This
 module:
   * tokenizes each transcription into single words + adjacent two-word
     phrases (bigrams) for the cb:map autocomplete datalist on
@@ -181,8 +181,8 @@ def record_trace(
     if request_id:
         try:
             import config as cfg
-            import transcriptions_store
-            transcriptions_store.record_trace(
+            import recent_transcriptions_store
+            recent_transcriptions_store.record_trace(
                 request_id=request_id,
                 model=model,
                 raw=raw or "",

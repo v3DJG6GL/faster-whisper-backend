@@ -57,7 +57,7 @@ def test_url_policy_rejection_lands_policy_blocked_on_the_ledger(client, url_ena
                                                                   monkeypatch):
     """The policy refusal becomes a 400 for the caller; the ledger keeps WHY
     (policy_blocked in the downloading stage), not just "error"."""
-    import transcriptions_store
+    import recent_transcriptions_store
     import usage_store
 
     async def _refuse(url, *, timeout):
@@ -67,7 +67,7 @@ def test_url_policy_rejection_lands_policy_blocked_on_the_ledger(client, url_ena
     r = client.post("/v1/audio/transcriptions",
                     data={"source_url": _URL, "model": "whisper-1"})
     assert r.status_code == 400, r.text
-    row = transcriptions_store.list_recent(limit=1)[0]
+    row = recent_transcriptions_store.list_recent(limit=1)[0]
     assert (row["error_class"], row["error_stage"]) == ("policy_blocked", "downloading")
     job = usage_store._require_conn().execute(
         "SELECT error_class, error_stage FROM usage_jobs ORDER BY created_ts DESC LIMIT 1"

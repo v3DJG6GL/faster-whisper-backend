@@ -584,7 +584,7 @@ async def stats_jobs(
     first page. Scoped like the snapshot: own rows for "own", every user
     with identities scrubbed for non-admin "all", `?user=` preview for
     admins (403 for anyone else)."""
-    import transcriptions_store
+    import recent_transcriptions_store
 
     is_admin = bool(user.get("is_admin"))
     if user_q and not is_admin:
@@ -597,7 +597,7 @@ async def stats_jobs(
     n = max(1, min(int(limit), 200))
 
     def _page() -> dict[str, Any]:
-        rows = transcriptions_store.list_recent(
+        rows = recent_transcriptions_store.list_recent(
             before_ts=cursor, limit=n, user_id_filter=scope.user_id,
             kind=kind or None, status=status_q or None, slow_rtf=slow_rtf)
         out = {

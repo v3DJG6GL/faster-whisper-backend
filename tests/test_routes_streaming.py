@@ -185,9 +185,9 @@ def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
     """Each finalized utterance writes a recent-transcriptions row with non-empty
     raw/final text (drives /quick-config + /reports), not just numeric metrics."""
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
-    import transcriptions_store
+    import recent_transcriptions_store
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        before = transcriptions_store.count()
+        before = recent_transcriptions_store.count()
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
             ws.send_json({"type": "config", "model": "whisper-1",
                           "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
@@ -196,8 +196,8 @@ def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
             ws.send_bytes(_pcm(0, 1500))      # silence → finalize
             ws.send_json({"type": "stop"})
             _drain(ws)
-        rows = transcriptions_store.list_recent(limit=10)
-        after = transcriptions_store.count()
+        rows = recent_transcriptions_store.list_recent(limit=10)
+        after = recent_transcriptions_store.count()
     assert after > before, "no recent-transcription row recorded for the utterance"
     assert any((r.get("raw") or "").strip() and (r.get("final") or "").strip() for r in rows), \
         "recorded trace rows have empty raw/final (the /quick-config bug)"

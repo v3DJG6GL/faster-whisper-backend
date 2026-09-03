@@ -155,7 +155,7 @@ def init_db(path: str) -> None:
 def _require_conn() -> sqlite3.Connection:
     if _conn is None:
         raise RuntimeError(
-            "transcriptions_store.init_db() was not called before use."
+            "recent_transcriptions_store.init_db() was not called before use."
         )
     return _conn
 

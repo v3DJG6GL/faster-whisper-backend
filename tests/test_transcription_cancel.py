@@ -420,13 +420,13 @@ def test_task_cancellation_records_status_cancelled(client, app_module,
 
 
 def test_cancelled_request_is_classified_cancelled(client, app_module):
-    import transcriptions_store
+    import recent_transcriptions_store
     app_module._BATCH_CANCELLED.add(_PID)
     try:
         r = _post(client, progress_id=_PID)
         assert r.status_code == 499, r.text
     finally:
         app_module._BATCH_CANCELLED.discard(_PID)
-    row = transcriptions_store.list_recent(limit=1)[0]
+    row = recent_transcriptions_store.list_recent(limit=1)[0]
     assert row["status"] == "cancelled"
     assert row["error_class"] == "cancelled"

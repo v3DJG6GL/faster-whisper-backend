@@ -146,7 +146,7 @@ def test_snapshot_shape_without_stores():
     assert set(snap["errors_window"]) == {"1m", "5m", "15m"}
     assert snap["model_loads"]["large-v2"]["first"] == 4.0
     assert snap["model_loads"]["large-v2"]["count"] == 1
-    # transcriptions_store not init -> list_recent raises -> recent=[]
+    # recent_transcriptions_store not init -> list_recent raises -> recent=[]
     assert snap["recent_transcriptions"] == []
 
 

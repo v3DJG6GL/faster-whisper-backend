@@ -261,15 +261,15 @@ def groups_store_db(captures_store_db):
 
 @pytest.fixture
 def tx_store(tmp_path):
-    import transcriptions_store
-    transcriptions_store.init_db(str(tmp_path / "recent.sqlite3"))
-    transcriptions_store._insert_counter = 0
-    yield transcriptions_store
+    import recent_transcriptions_store
+    recent_transcriptions_store.init_db(str(tmp_path / "recent.sqlite3"))
+    recent_transcriptions_store._insert_counter = 0
+    yield recent_transcriptions_store
     try:
-        transcriptions_store._require_conn().close()
+        recent_transcriptions_store._require_conn().close()
     except Exception:
         pass
-    transcriptions_store._conn = None
+    recent_transcriptions_store._conn = None
 
 
 @pytest.fixture
@@ -577,11 +577,11 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # GC'd-without-close() sqlite3.Connection doesn't emit ResourceWarning noise
     # (one per store × every route test). capture_samples_store shares the
     # captures connection, so just drop its reference.
-    import api_keys_store, reports_store, transcriptions_store
+    import api_keys_store, reports_store, recent_transcriptions_store
     import usage_store, captures_store, capture_samples_store
     import sessions_store, client_settings_store
     for _mod in (api_keys_store, sessions_store, reports_store,
-                 transcriptions_store, usage_store, captures_store,
+                 recent_transcriptions_store, usage_store, captures_store,
                  client_settings_store):
         _c = getattr(_mod, "_conn", None)
         if _c is not None:

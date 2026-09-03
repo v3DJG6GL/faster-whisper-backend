@@ -2669,8 +2669,8 @@ async def lifespan(app: FastAPI):
     # through this store, and with it still closed those rows were lost
     # with a "persist failed" warning. Needs only cfg + store_common.
     try:
-        import transcriptions_store
-        transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
+        import recent_transcriptions_store
+        recent_transcriptions_store.init_db(cfg.RECENT_TRANSCRIPTIONS_DB)
         logger.info(
             "Recent-transcriptions store initialized at %s",
             cfg.RECENT_TRANSCRIPTIONS_DB,
@@ -2685,7 +2685,7 @@ async def lifespan(app: FastAPI):
         import system_metrics_store
         system_metrics_store.init_db(cfg.STATS_SYSTEM_METRICS_DB)
         _moved = system_metrics_store.adopt_legacy(
-            transcriptions_store._require_conn())
+            recent_transcriptions_store._require_conn())
         if _moved:
             logger.info("Moved %d legacy sys_samples rows into %s",
                         _moved, cfg.STATS_SYSTEM_METRICS_DB)

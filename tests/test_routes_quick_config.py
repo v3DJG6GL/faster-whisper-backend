@@ -149,11 +149,11 @@ def test_recent_open_mode(client):
 
 
 def test_recent_query_filters_raw_and_final(client):
-    import transcriptions_store
-    transcriptions_store.record_trace(
+    import recent_transcriptions_store
+    recent_transcriptions_store.record_trace(
         request_id="q1", model="m", raw="patient hat Fieber",
         final="Patient hat Fieber", created_ts=1.0)
-    transcriptions_store.record_trace(
+    recent_transcriptions_store.record_trace(
         request_id="q2", model="m", raw="andere notiz",
         final="Aspirin verordnet", created_ts=2.0)
     # The term matches the substring across raw OR final, case-insensitively.
@@ -177,11 +177,11 @@ def test_recent_query_filters_raw_and_final(client):
 def test_recent_get_no_longer_filters_by_query_string(client):
     """A dictation term must not be accepted in the URL — that is the whole
     point of the POST endpoint. A stray ?q= is ignored, not honoured."""
-    import transcriptions_store
-    transcriptions_store.record_trace(
+    import recent_transcriptions_store
+    recent_transcriptions_store.record_trace(
         request_id="q1", model="m", raw="patient hat Fieber",
         final="Patient hat Fieber", created_ts=1.0)
-    transcriptions_store.record_trace(
+    recent_transcriptions_store.record_trace(
         request_id="q2", model="m", raw="andere notiz",
         final="Aspirin verordnet", created_ts=2.0)
     r = client.get("/quick-config/recent", params={"q": "fieber"})

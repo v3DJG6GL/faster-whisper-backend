@@ -809,13 +809,13 @@ def test_lite_payload_and_activity_card_carry_the_gpu_gate(client):
 def test_transcription_records_the_gate_wait(client):
     """A real request through the handler goes through the timed gate and
     lands a wait_s on its ledger rows (0 with a free slot, never None)."""
-    import transcriptions_store
+    import recent_transcriptions_store
     import usage_store
     r = client.post("/v1/audio/transcriptions",
                     files={"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")},
                     data={"model": "whisper-1"})
     assert r.status_code == 200, r.text
-    row = transcriptions_store.list_recent(limit=1)[0]
+    row = recent_transcriptions_store.list_recent(limit=1)[0]
     assert row["wait_s"] is not None and row["wait_s"] >= 0.0
     job = usage_store._require_conn().execute(
         "SELECT wait_s FROM usage_jobs ORDER BY created_ts DESC LIMIT 1").fetchone()
@@ -885,9 +885,9 @@ def test_stats_tail_shape_and_scope(client, app_module, make_user_key):
 
 
 def _seed_jobs_pages(n, user_id="ua", **kw):
-    import transcriptions_store
+    import recent_transcriptions_store
     for i in range(n):
-        transcriptions_store.record_timing(
+        recent_transcriptions_store.record_timing(
             request_id=f"{user_id}-{i}", model="m", audio_s=10.0,
             processing_s=(9.0 if i % 5 == 0 else 1.0), user_id=user_id,
             status=("error" if i % 4 == 0 else "ok"), words=1,

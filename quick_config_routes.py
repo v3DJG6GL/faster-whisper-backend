@@ -22,7 +22,7 @@ Security model:
                         the filter runs BEFORE the merge into PIPELINE_RULES.
 
 The recent traces hold literal dictation snippets, which can be sensitive.
-They live in transcriptions_store — a durable SQLite/WAL database at
+They live in recent_transcriptions_store — a durable SQLite/WAL database at
 `cfg.RECENT_TRANSCRIPTIONS_DB`, row-capped by RECENT_TRANSCRIPTIONS_MAX and
 aged out by RECENT_TRANSCRIPTIONS_RETENTION_DAYS — so they survive restarts.
 Never log trace contents.
@@ -49,7 +49,7 @@ import config as cfg
 import config_store
 import store_common
 import quick_config_state
-import transcriptions_store
+import recent_transcriptions_store
 import web_common
 from admin_routes import (
     _apply_hot_changes,
@@ -224,7 +224,7 @@ def build_word_suggestions(user: dict[str, Any], *, max_words: int) -> list[str]
     user_filter = None if sees_all else (user.get("user_id") or "")
     scan = int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PAGE_SIZE", 100))
     try:
-        rows = transcriptions_store.list_recent(limit=scan, user_id_filter=user_filter)
+        rows = recent_transcriptions_store.list_recent(limit=scan, user_id_filter=user_filter)
     except Exception:
         return []
     seen: dict[str, str] = {}
@@ -1040,7 +1040,7 @@ async def _recent_page(
     unthrottled, and .env.example documents 0 = unbounded."""
     traces = await asyncio.to_thread(
         functools.partial(
-            transcriptions_store.list_recent,
+            recent_transcriptions_store.list_recent,
             before_ts=before_ts if before_ts > 0 else None,
             limit=limit,
             user_id_filter=None if sees_all else caller_uid,
@@ -1127,7 +1127,7 @@ async def stream_recent(
             # Off the loop with its siblings — this runs once per SSE connect.
             replay = await asyncio.to_thread(
                 functools.partial(
-                    transcriptions_store.list_recent,
+                    recent_transcriptions_store.list_recent,
                     limit=page_size,
                     user_id_filter=None if sees_all else caller_uid,
                 )

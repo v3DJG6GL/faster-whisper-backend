@@ -289,7 +289,7 @@ def _record_download(label: str, done_bytes: int, secs: float, *,
                      ok: bool = True) -> None:
     """Persist a download that moved bytes as a recent-jobs row — status
     'ok' when it finished, 'error' when the body raised mid-transfer. Lazy
-    import keeps this module free of a metrics/transcriptions_store import
+    import keeps this module free of a metrics/recent_transcriptions_store import
     cycle; every failure is swallowed — recording is bookkeeping, not
     control flow."""
     try:

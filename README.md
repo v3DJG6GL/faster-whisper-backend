@@ -703,7 +703,7 @@ system_stats.py            GPU + host snapshot (pynvml + psutil; degrades gracef
 usage_store.py             Durable per-key / per-user usage rollup (/v1/usage, /stats/usage)
 client_settings_store.py / client_settings_routes.py
                            Per-account desktop-client settings blob + /v1/client-settings sync API
-transcriptions_store.py    Durable store for recent transcription traces (/quick-config recent)
+recent_transcriptions_store.py    Durable store for recent transcription traces (/quick-config recent)
 web_common.py              Shared helpers: allowlist gate, nav HTML + severity pills, login gate / OPEN-mode banner
 restart_service.py         Detached self-restart helper (os.execv re-exec on Linux/macOS, WinSW on Windows)
 streaming_routes.py        WebSocket /v1/audio/transcriptions/stream + /dictate demo page

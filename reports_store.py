@@ -303,7 +303,7 @@ def upsert_report(
     lang_t = (language or "")[:_CAP_LANGUAGE] or None
     # NULL, not "[]", when the blob cannot be stored: the UPDATE below
     # COALESCEs stages_json, so an oversized resubmission must keep what the
-    # first submission recorded rather than blank it (transcriptions_store
+    # first submission recorded rather than blank it (recent_transcriptions_store
     # .record does the same). _row_to_dict maps NULL to [] on read.
     stages_t: str | None = None
     if stages:
