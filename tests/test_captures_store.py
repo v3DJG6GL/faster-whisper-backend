@@ -43,7 +43,7 @@ def _make(cs, monkeypatch, tmp_path, **over):
         request_id="req-1",
         model="small",
         language="de",
-        duration_seconds=3.0,
+        audio_s=3.0,
         raw="raw text",
         final="final text",
         words=[{"word": "hi", "start": 0.0, "end": 0.5}],
@@ -200,7 +200,7 @@ def test_create_capture_transcode_failure_cleans_tmp(captures_store_db, monkeypa
     with pytest.raises(RuntimeError):
         cs.create_capture(
             audio_src_path=str(src), request_id=None, model="m",
-            language="de", duration_seconds=1.0, raw="r", final="f",
+            language="de", audio_s=1.0, raw="r", final="f",
             words=[], segments=[],
         )
     assert cs.count() == 0
@@ -229,7 +229,7 @@ def test_create_capture_insert_failure_unlinks_audio(captures_store_db, monkeypa
     with pytest.raises(RuntimeError):
         cs.create_capture(
             audio_src_path=str(src), request_id=None, model="m",
-            language="de", duration_seconds=1.0, raw="r", final="f",
+            language="de", audio_s=1.0, raw="r", final="f",
             words=[], segments=[],
         )
     # The audio blob was unlinked on insert failure (no orphans).

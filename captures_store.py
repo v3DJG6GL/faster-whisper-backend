@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS captures (
   request_id      TEXT,
   model           TEXT NOT NULL,
   language        TEXT,
-  duration_seconds REAL,
+  audio_s REAL,
   audio_relpath   TEXT NOT NULL,
   audio_format    TEXT NOT NULL,
   raw             TEXT NOT NULL,
@@ -108,10 +108,21 @@ def init_db(db_path: str, audio_dir: str) -> None:
     _audio_dir = audio_dir
     os.makedirs(audio_dir, exist_ok=True)
     _conn = store_common.open_wal_db(db_path)
+    _rename_columns(_conn)
     _conn.executescript(_SCHEMA_CORE)
     _ensure_columns(_conn)
     store_common.secure_db_file(db_path)
     store_common.secure_dir(audio_dir)   # raw dictation WAVs live under here
+
+
+def _rename_columns(conn: sqlite3.Connection) -> None:
+    """Column renames (2026-09): the audio length is audio_s in every store.
+    Runs before _SCHEMA_CORE so CREATE TABLE IF NOT EXISTS never sees the
+    old name as the live one; RENAME COLUMN keeps the data."""
+    have = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
+    if "duration_seconds" in have and "audio_s" not in have:
+        conn.execute("ALTER TABLE captures RENAME COLUMN duration_seconds TO audio_s")
+        conn.commit()
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -284,7 +295,7 @@ def create_capture(
     request_id: str | None,
     model: str,
     language: str | None,
-    duration_seconds: float | None,
+    audio_s: float | None,
     raw: str,
     final: str,
     text_for_training: str | None = None,
@@ -356,7 +367,7 @@ def create_capture(
             conn.execute(
                 "INSERT INTO captures ("
                 " id, created_ts, request_id, model, language,"
-                " duration_seconds, audio_relpath, audio_format,"
+                " audio_s, audio_relpath, audio_format,"
                 " raw, final, text_for_training, audio_trimmed_relpath,"
                 " words_json, segments_json,"
                 " corrected_text, corrections_json, admin_notes,"
@@ -367,7 +378,7 @@ def create_capture(
                 "?,?,?,?)",
                 (
                     cid, now, request_id, model or "", language or "",
-                    float(duration_seconds or 0.0), relpath, "wav",
+                    float(audio_s or 0.0), relpath, "wav",
                     raw_t, final_t, training_t, None,
                     words_t, segments_t,
                     "", "[]", "",
@@ -384,7 +395,7 @@ def create_capture(
 
     logger.info(
         "[captures] created id=%s model=%s dur=%.1fs words=%d wav_bytes=%d",
-        cid[:8], model or "?", float(duration_seconds or 0.0),
+        cid[:8], model or "?", float(audio_s or 0.0),
         len(words or []), int(wav_bytes),
     )
     # Drop the proposer cache so the freshly-recorded clip is eligible on
@@ -648,7 +659,7 @@ def _drop_oldest_by_bytes(
 # silently drift apart when a new column is added.
 _LIST_COLUMNS = (
     "id, created_ts, request_id, model, language,"
-    " duration_seconds, audio_relpath, audio_format,"
+    " audio_s, audio_relpath, audio_format,"
     " raw, final, text_for_training, audio_trimmed_relpath,"
     " audio_trim_lead_ms, audio_trim_trail_ms,"
     " corrected_text, corrections_json, admin_notes,"

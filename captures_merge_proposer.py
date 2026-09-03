@@ -4,7 +4,7 @@ Auto-merge proposer for /captures fine-tuning data curation.
 Given the user's ungrouped captures, ranks plausible merges into ~26 s
 samples that respect the configurable duration cap
 (cfg.CAPTURES_SAMPLE_MAX_DURATION_S, default 29.9 s) already enforced by
-captures_routes.create_sample_api (mirrors its raw-`duration_seconds`
+captures_routes.create_sample_api (mirrors its raw-`audio_s`
 arithmetic).
 
 Heuristic rationale (see captures-finetune-findings.md + research notes):
@@ -94,12 +94,12 @@ _DUP_COMPARE_MAX_CHARS = 2000
 def trimmed_duration_s(row: dict[str, Any]) -> float:
     """Trimmed audio duration (seconds) a capture contributes to a merged
     group. Mirrors what audio_merge.merge_wavs would cut per member. Falls back
-    to raw `duration_seconds` when group trimming is disabled, the audio can't
+    to raw `audio_s` when group trimming is disabled, the audio can't
     be read, or VAD is unavailable (matches audio_vad_trim's own fallback).
 
     Public so captures_routes (merge validation + the manual merge-estimate
     endpoint) can reuse the same cached per-capture trim as the proposer."""
-    raw = float(row.get("duration_seconds") or 0.0)
+    raw = float(row.get("audio_s") or 0.0)
     if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False):
         return raw
     cid = row.get("id") or ""
@@ -157,9 +157,9 @@ def _pick_text(row: dict[str, Any]) -> str:
 
 def _dur(m: dict[str, Any]) -> float:
     """Group-contribution duration of a member: the cached trimmed value when
-    the eligible row was annotated, else raw `duration_seconds`."""
+    the eligible row was annotated, else raw `audio_s`."""
     v = m.get("_trim_dur_s")
-    return float(v) if v is not None else float(m.get("duration_seconds") or 0.0)
+    return float(v) if v is not None else float(m.get("audio_s") or 0.0)
 
 
 def _ratio(a: str, b: str) -> float:
@@ -178,7 +178,7 @@ def _build_sample_score(members: list[dict[str, Any]], gap_s: float,
     total_dur = sum(_dur(m) for m in members) + gap_s * (n - 1) + 2.0 * edge_s
     first_ts = float(members[0]["created_ts"])
     last = members[-1]
-    last_end = float(last["created_ts"]) + float(last["duration_seconds"])
+    last_end = float(last["created_ts"]) + float(last["audio_s"])
     wall_dur = max(last_end - first_ts, total_dur)
 
     # Peak at target_s, decays linearly to 0 at 0 or 2*target_s.
@@ -327,7 +327,7 @@ def _eligible(row: dict[str, Any], min_clip_s: float, hard_cap_s: float) -> bool
     if row.get("sample_id"):
         return False
     # Min on RAW duration (the ingestion floor every stored capture clears).
-    raw = float(row.get("duration_seconds") or 0.0)
+    raw = float(row.get("audio_s") or 0.0)
     if raw < min_clip_s:
         return False
     # Cheap string guards first so blank-language / text-less rows are rejected

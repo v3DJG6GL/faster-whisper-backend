@@ -38,7 +38,7 @@ def _insert_capture(cs, cid, *, sample_id=None, sample_order=None, language="de"
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
     cs._require_conn().execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " duration_seconds, audio_relpath, audio_format, raw, final,"
+        " audio_s, audio_relpath, audio_format, raw, final,"
         " words_json, segments_json, corrections_json, status, user_id,"
         " sample_id, sample_order)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

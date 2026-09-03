@@ -206,7 +206,7 @@ def test_captures_translations_round_trip_as_a_keyed_map(
 
     cid = captures_store.create_capture(
         audio_src_path=str(src), request_id="r1", model="large-v2",
-        language="de", duration_seconds=1.0, raw="hallo", final="hallo",
+        language="de", audio_s=1.0, raw="hallo", final="hallo",
         words=[], segments=[], task="transcribe",
         translations={"en": "hello", "fr": "salut"},
         translation_model="HY-MT", translation_source="cascade-mt")
@@ -241,7 +241,7 @@ def test_captures_list_projection_carries_the_new_columns(
     src.write_bytes(b"junk")
     captures_store.create_capture(
         audio_src_path=str(src), request_id="r1", model="m", language="de",
-        duration_seconds=1.0, raw="r", final="f", words=[], segments=[],
+        audio_s=1.0, raw="r", final="f", words=[], segments=[],
         task="transcribe", translations={"en": "hello"},
         translation_model="HY-MT", translation_source="cascade-mt")
     listed = captures_store.list_captures()[0]

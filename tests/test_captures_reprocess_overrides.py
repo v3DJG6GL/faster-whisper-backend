@@ -25,7 +25,7 @@ def _make_capture(tmp_path, user_id):
     src.write_bytes(b"junk")
     return captures_store.create_capture(
         audio_src_path=str(src), request_id="r1", model="whisper-1",
-        language="de", duration_seconds=1.0, raw="hallo welt",
+        language="de", audio_s=1.0, raw="hallo welt",
         final="hallo welt", words=[], segments=[], user_id=user_id)
 
 

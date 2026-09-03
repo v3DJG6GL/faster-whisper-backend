@@ -5008,7 +5008,7 @@ async def transcribe(
                                     request_id=request_id,
                                     model=resolved_model,
                                     language=info.language,
-                                    duration_seconds=audio_dur_s,
+                                    audio_s=audio_dur_s,
                                     raw=raw_full_text,
                                     final=full_text_str,
                                     text_for_training=training_text_str,

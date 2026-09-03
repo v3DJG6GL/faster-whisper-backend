@@ -50,11 +50,11 @@ def test_pick_text_priority():
 
 
 def test_dur_prefers_trim_then_raw():
-    assert P._dur({"_trim_dur_s": 1.5, "duration_seconds": 9.0}) == 1.5
-    assert P._dur({"duration_seconds": 9.0}) == 9.0
+    assert P._dur({"_trim_dur_s": 1.5, "audio_s": 9.0}) == 1.5
+    assert P._dur({"audio_s": 9.0}) == 9.0
     assert P._dur({}) == 0.0
     # Explicit 0 trim is honored (not None).
-    assert P._dur({"_trim_dur_s": 0.0, "duration_seconds": 9.0}) == 0.0
+    assert P._dur({"_trim_dur_s": 0.0, "audio_s": 9.0}) == 0.0
 
 
 def test_ratio_bounds():
@@ -69,7 +69,7 @@ def test_ratio_bounds():
 # ---------------------------------------------------------------------------
 
 def _member(ts, dur, status="", trim=None):
-    m = {"created_ts": ts, "duration_seconds": dur, "status": status}
+    m = {"created_ts": ts, "audio_s": dur, "status": status}
     if trim is not None:
         m["_trim_dur_s"] = trim
     return m
@@ -151,7 +151,7 @@ def test_format_reason_long_session_seconds_only():
 def _bkt_member(i, dur, text, ts=None):
     return {
         "id": f"c{i}", "created_ts": float(ts if ts is not None else i),
-        "duration_seconds": dur, "_trim_dur_s": dur, "status": "",
+        "audio_s": dur, "_trim_dur_s": dur, "status": "",
         "text_for_training": text, "language": "de", "user_id": "u1",
     }
 
@@ -222,7 +222,7 @@ def test_bucket_packs_no_more_than_api_member_cap():
 def _row(**over):
     r = {
         "id": "x", "status": "new", "sample_id": None,
-        "duration_seconds": 5.0, "language": "de",
+        "audio_s": 5.0, "language": "de",
         "text_for_training": "hello", "final": "", "raw": "",
     }
     r.update(over)
@@ -243,20 +243,20 @@ def test_eligible_rejects_grouped():
 
 
 def test_eligible_rejects_too_short():
-    assert P._eligible(_row(duration_seconds=0.5), 1.0, 28.0) is False
+    assert P._eligible(_row(audio_s=0.5), 1.0, 28.0) is False
 
 
 def test_eligible_rejects_too_long():
-    assert P._eligible(_row(duration_seconds=28.0 + 1), 1.0, 28.0) is False
+    assert P._eligible(_row(audio_s=28.0 + 1), 1.0, 28.0) is False
 
 
 def test_eligible_boundary_min_clip_inclusive():
     # dur == min_clip_s passes (not < min).
-    assert P._eligible(_row(duration_seconds=1.0), 1.0, 28.0) is True
+    assert P._eligible(_row(audio_s=1.0), 1.0, 28.0) is True
 
 
 def test_eligible_boundary_hard_cap_inclusive():
-    assert P._eligible(_row(duration_seconds=28.0), 1.0, 28.0) is True
+    assert P._eligible(_row(audio_s=28.0), 1.0, 28.0) is True
 
 
 def test_eligible_rejects_missing_language():
@@ -283,7 +283,7 @@ def _insert_eligible(cs, cid, *, ts, dur=10.0, text="some words here",
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
     cs._require_conn().execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " duration_seconds, audio_relpath, audio_format, raw, final,"
+        " audio_s, audio_relpath, audio_format, raw, final,"
         " text_for_training, words_json, segments_json, status, user_id)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (cid, ts, None, "m", language, dur, rel, "wav", "raw", "final",
@@ -293,7 +293,7 @@ def _insert_eligible(cs, cid, *, ts, dur=10.0, text="some words here",
 
 @pytest.fixture
 def trim_disabled(monkeypatch):
-    # Make _dur fall back to raw duration_seconds so we don't need real audio.
+    # Make _dur fall back to raw audio_s so we don't need real audio.
     monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False,
                         raising=False)
 

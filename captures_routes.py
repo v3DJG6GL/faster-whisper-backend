@@ -966,7 +966,7 @@ def _shift_word_times(
 def _apply_trim_to_capture_row(row: dict[str, Any]) -> None:
     """In-place: if `row` carries trim offsets, shift its `words` and
     `segments` onto the trimmed-audio timeline. Always sets
-    `effective_duration_seconds` (= original `duration_seconds` when
+    `effective_audio_s` (= original `audio_s` when
     lead/trail are None or 0) so consumers can read one field
     uniformly without branching on trim presence."""
     if not row:
@@ -974,15 +974,15 @@ def _apply_trim_to_capture_row(row: dict[str, Any]) -> None:
     lead = row.get("audio_trim_lead_ms")
     trail = row.get("audio_trim_trail_ms")
     if not lead and not trail:
-        # Still expose effective_duration_seconds equal to duration_seconds
+        # Still expose effective_audio_s equal to audio_s
         # so consumers can use a single field uniformly.
-        row["effective_duration_seconds"] = float(row.get("duration_seconds") or 0.0)
+        row["effective_audio_s"] = float(row.get("audio_s") or 0.0)
         return
     lead_ms = int(lead or 0)
     trail_ms = int(trail or 0)
-    orig_s = float(row.get("duration_seconds") or 0.0)
+    orig_s = float(row.get("audio_s") or 0.0)
     eff = max(0.0, orig_s - (lead_ms + trail_ms) / 1000.0)
-    row["effective_duration_seconds"] = eff
+    row["effective_audio_s"] = eff
     if "words" in row:
         row["words"] = _shift_word_times(row.get("words"), lead_ms, eff)
     if "segments" in row:
@@ -1497,7 +1497,7 @@ async def merge_estimate_api(
         )
     )
     raw_ms = sum(
-        int(round(float(c.get("duration_seconds") or 0.0) * 1000))
+        int(round(float(c.get("audio_s") or 0.0) * 1000))
         for c in captures
     )
     n = len(payload.member_ids)
@@ -1785,13 +1785,13 @@ def _enrich_sample(g: dict[str, Any]) -> dict[str, Any]:
         m["username"] = usernames.get(m.get("user_id"))
         # Per-member trimmed duration so the expanded member list shows the
         # length each clip actually contributes to the merged WAV (mirrors the
-        # singleton effective_duration_seconds field). Falls back to raw for
+        # singleton effective_audio_s field). Falls back to raw for
         # legacy groups with no stored per-member trim map.
         info = member_trims.get(m.get("id"))
         if info and info.get("new_duration_ms") is not None:
-            m["effective_duration_seconds"] = float(info["new_duration_ms"]) / 1000.0
+            m["effective_audio_s"] = float(info["new_duration_ms"]) / 1000.0
         else:
-            m["effective_duration_seconds"] = float(m.get("duration_seconds") or 0.0)
+            m["effective_audio_s"] = float(m.get("audio_s") or 0.0)
     g["members"] = members
     g["username"] = usernames.get(g.get("user_id"))
     g["transcript"] = _build_default_transcript(
@@ -1808,7 +1808,7 @@ def _enrich_sample(g: dict[str, Any]) -> dict[str, Any]:
     # merged_duration_ms / 1000 since merged_duration_ms is already the
     # post-trim value. Exposed for a uniform display shape with
     # singletons.
-    g["effective_duration_seconds"] = float(g.get("merged_duration_ms") or 0) / 1000.0
+    g["effective_audio_s"] = float(g.get("merged_duration_ms") or 0) / 1000.0
     return g
 
 
@@ -2254,7 +2254,7 @@ def _build_merged_words(
                 if info and info.get("new_duration_ms") is not None:
                     total_new_ms += float(info["new_duration_ms"])
                 else:
-                    total_new_ms += float(m.get("duration_seconds") or 0.0) * 1000.0
+                    total_new_ms += float(m.get("audio_s") or 0.0) * 1000.0
             eff_dur_s = (total_new_ms + max(0, n - 1) * float(silence_ms)) / 1000.0
 
     if use_per_member:
@@ -2268,7 +2268,7 @@ def _build_merged_words(
                 off_ms = info.get("offset_ms")
             else:
                 # Member not in the trim map (shouldn't happen) → identity.
-                dur_ms = float(m.get("duration_seconds") or 0.0) * 1000.0
+                dur_ms = float(m.get("audio_s") or 0.0) * 1000.0
                 segments = [[0, int(dur_ms), 0]]
                 new_dur_ms = dur_ms
             if off_ms is not None:
@@ -2293,7 +2293,7 @@ def _build_merged_words(
             merged, ws, i=i, member_offset_s=member_offset_s,
             eff_dur_s=eff_dur_s, segments=None,
         )
-        cum += float(m.get("duration_seconds") or 0.0)
+        cum += float(m.get("audio_s") or 0.0)
     return merged
 
 
@@ -2828,7 +2828,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
             manifest_lines.write(json.dumps(_build_manifest_row(
                 audio_filepath=audio_name,
                 text=text,
-                duration=float(row.get("duration_seconds") or 0.0),
+                duration=float(row.get("audio_s") or 0.0),
                 language=row.get("language") or "",
                 source="singleton",
                 user_id=row.get("user_id") or "",
@@ -2866,7 +2866,7 @@ def _build_export_stream(only_status: str | None, include_audio: bool):
                 manifest_lines.write(json.dumps(_build_manifest_row(
                     audio_filepath=audio_name,
                     text=_en,
-                    duration=float(row.get("duration_seconds") or 0.0),
+                    duration=float(row.get("audio_s") or 0.0),
                     language=row.get("language") or "",
                     source="singleton",
                     user_id=row.get("user_id") or "",
@@ -4121,7 +4121,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     if (n === 0) return;
     var rows = _selectedRows();
     var totalSec = rows.reduce(function(s, r) {
-      return s + (r.duration_seconds || 0);
+      return s + (r.audio_s || 0);
     }, 0);
     var meter = document.getElementById('ab-meter');
     var gap_ms = 300;
@@ -4307,9 +4307,9 @@ _CAPTURES_HTML = r"""<!doctype html>
           + '</span>'
         : '') +
       '<span class="duration">'
-        + ((r.effective_duration_seconds !== undefined
-            ? r.effective_duration_seconds
-            : (r.duration_seconds || 0)).toFixed(1))
+        + ((r.effective_audio_s !== undefined
+            ? r.effective_audio_s
+            : (r.audio_s || 0)).toFixed(1))
         + 's</span>' +
       (r.request_id
         ? '<span class="req">req ' + escapeHtml((r.request_id||'').slice(0,8)) + '</span>'
@@ -5519,7 +5519,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       var base = r.text_for_training || r.final || r.raw || '';
       var memberText = _applyChipsToText(base, r.corrections || []);
       line.innerHTML = '<span class="seg-time">[' + (i + 1) + '] '
-        + (r.duration_seconds || 0).toFixed(1) + 's</span>'
+        + (r.audio_s || 0).toFixed(1) + 's</span>'
         + escapeHtml(memberText.slice(0, 200));
       el.appendChild(line);
     });
@@ -5544,7 +5544,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     var _summaryToken = 0;
     function refreshSummary() {
       var n = rows.length;
-      var totalAudio = rows.reduce(function(s, r) { return s + (r.duration_seconds || 0); }, 0);
+      var totalAudio = rows.reduce(function(s, r) { return s + (r.audio_s || 0); }, 0);
       var total = totalAudio + (GAP_EST_MS / 1000) * Math.max(0, n - 1);
       var el = document.getElementById('merge-summary');
       el.textContent = n + ' segments · Σ ~' + total.toFixed(2) + ' s';
@@ -5568,7 +5568,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     var previewCtl = _makeMergePreviewBtn(
       function() { return rows.map(function(r) { return r.id; }); },
       function() {
-        var totalAudio = rows.reduce(function(s, r) { return s + (r.duration_seconds || 0); }, 0);
+        var totalAudio = rows.reduce(function(s, r) { return s + (r.audio_s || 0); }, 0);
         var gap = GAP_EST_MS / 1000;
         return totalAudio + gap * Math.max(0, rows.length - 1);
       },
@@ -7436,9 +7436,9 @@ _CAPTURES_HTML = r"""<!doctype html>
             line.style.cssText = 'font-size:var(--fs-sm);color:var(--dim);padding:0.2rem 0;';
             var base = m.text_for_training || m.final || m.raw || '';
             var memberText = _applyChipsToText(base, m.corrections || []);
-            var memDur = (m.effective_duration_seconds !== undefined
-              ? m.effective_duration_seconds
-              : (m.duration_seconds || 0));
+            var memDur = (m.effective_audio_s !== undefined
+              ? m.effective_audio_s
+              : (m.audio_s || 0));
             line.innerHTML = '[' + (m.sample_order + 1) + '] '
               + memDur.toFixed(1) + 's · '
               + escapeHtml(memberText.slice(0, 120));

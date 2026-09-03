@@ -172,7 +172,7 @@ def test_merge_member_scope_guard_precedes_state_checks(
     src.write_bytes(b"junk")
     cid = cs.create_capture(
         audio_src_path=str(src), request_id="r1", model="small",
-        language="de", duration_seconds=1.0, raw="r", final="f",
+        language="de", audio_s=1.0, raw="r", final="f",
         words=[], segments=[], user_id="alice",
     )
     # Delete the audio so the OLD ordering would raise 410 ("audio is missing"),
@@ -220,7 +220,7 @@ def _insert_member(conn, cid, sid, user_id="alice"):
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
     conn.execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " duration_seconds, audio_relpath, audio_format, raw, final,"
+        " audio_s, audio_relpath, audio_format, raw, final,"
         " words_json, segments_json, corrections_json, status, user_id,"
         " sample_id, sample_order)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -304,7 +304,7 @@ def test_merge_member_404_body_uniform_missing_vs_foreign(
     src.write_bytes(b"junk")
     cid = cs.create_capture(
         audio_src_path=str(src), request_id="r1", model="small",
-        language="de", duration_seconds=1.0, raw="r", final="f",
+        language="de", audio_s=1.0, raw="r", final="f",
         words=[], segments=[], user_id="alice",
     )
 
@@ -338,7 +338,7 @@ def test_capture_404_body_uniform_missing_vs_foreign(
     src.write_bytes(b"junk")
     cid = cs.create_capture(
         audio_src_path=str(src), request_id="r1", model="small",
-        language="de", duration_seconds=1.0, raw="r", final="f",
+        language="de", audio_s=1.0, raw="r", final="f",
         words=[], segments=[], user_id=owner_uid,
     )
 
@@ -553,7 +553,7 @@ def _insert_capture_with_request(conn, cid, request_id, user_id):
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
     conn.execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " duration_seconds, audio_relpath, audio_format, raw, final,"
+        " audio_s, audio_relpath, audio_format, raw, final,"
         " words_json, segments_json, corrections_json, status, user_id,"
         " sample_id, sample_order)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -704,7 +704,7 @@ def _ready_capture(cs, monkeypatch, tmp_path, *, language, translations):
     src.write_bytes(b"junk")
     cid = cs.create_capture(
         audio_src_path=str(src), request_id="r1", model="small",
-        language=language, duration_seconds=1.0, raw="r", final="quelle",
+        language=language, audio_s=1.0, raw="r", final="quelle",
         words=[], segments=[], user_id="alice", translations=translations,
         translation_model="HY-MT", translation_source="cascade-mt",
     )

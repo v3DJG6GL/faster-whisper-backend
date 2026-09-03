@@ -242,9 +242,9 @@ def test_build_merged_words_per_member(monkeypatch):
     )
     members = [
         {"id": "a", "words": [{"word": "hi", "start": 0.2, "end": 0.5}],
-         "final": "hi", "duration_seconds": 2.0},
+         "final": "hi", "audio_s": 2.0},
         {"id": "b", "words": [{"word": "yo", "start": 0.1, "end": 0.3}],
-         "final": "yo", "duration_seconds": 1.5},
+         "final": "yo", "audio_s": 1.5},
     ]
     trims = {
         "a": {"lead_ms": 150, "new_duration_ms": 1100,
@@ -273,9 +273,9 @@ def test_build_merged_words_uniform_offset(monkeypatch):
     )
     members = [
         {"id": "a", "words": [{"word": "hi", "start": 0.25, "end": 0.45}],
-         "final": "hi", "duration_seconds": 2.0},
+         "final": "hi", "audio_s": 2.0},
         {"id": "b", "words": [{"word": "yo", "start": 1.55, "end": 1.75}],
-         "final": "yo", "duration_seconds": 2.0},
+         "final": "yo", "audio_s": 2.0},
     ]
     # edge 300 leading → m0 body at 300ms; m0 body 300ms; join 300 → m1 at 900ms.
     trims = {
@@ -335,9 +335,9 @@ def test_build_merged_words_legacy(monkeypatch):
     )
     members = [
         {"id": "a", "words": [{"word": "hi", "start": 0.2, "end": 0.5}],
-         "final": "hi", "duration_seconds": 2.0},
+         "final": "hi", "audio_s": 2.0},
         {"id": "b", "words": [{"word": "yo", "start": 0.1, "end": 0.3}],
-         "final": "yo", "duration_seconds": 1.5},
+         "final": "yo", "audio_s": 1.5},
     ]
     # Empty trims → legacy flat-offset timeline using full durations.
     out = cr._build_merged_words(members, 300, member_trims={})
@@ -367,7 +367,7 @@ def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path):
                         raising=False)
     P._TRIM_DUR_CACHE.clear()
 
-    row = {"id": "cap1", "audio_relpath": "x", "duration_seconds": 1.0}
+    row = {"id": "cap1", "audio_relpath": "x", "audio_s": 1.0}
     d1 = P.trimmed_duration_s(row)
     # Body-only: 600ms speech (outer pad removed; merge adds the margin).
     assert 0.55 <= d1 <= 0.65
@@ -384,16 +384,16 @@ def test_proposer_trim_disabled_returns_raw(monkeypatch):
     monkeypatch.setattr(P.cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False,
                         raising=False)
     P._TRIM_DUR_CACHE.clear()
-    row = {"id": "c", "audio_relpath": "x", "duration_seconds": 3.5}
+    row = {"id": "c", "audio_relpath": "x", "audio_s": 3.5}
     assert P.trimmed_duration_s(row) == 3.5
 
 
 def test_build_proposal_uses_trimmed_durations():
     import captures_merge_proposer as P
     members = [
-        {"id": "a", "created_ts": 1000.0, "duration_seconds": 2.0,
+        {"id": "a", "created_ts": 1000.0, "audio_s": 2.0,
          "_trim_dur_s": 1.2, "status": "", "text_for_training": "hello"},
-        {"id": "b", "created_ts": 1001.0, "duration_seconds": 2.0,
+        {"id": "b", "created_ts": 1001.0, "audio_s": 2.0,
          "_trim_dur_s": 1.0, "status": "", "text_for_training": "world"},
     ]
     prop = P._build_proposal(members, 0.3, 26.0, "de", "u1")

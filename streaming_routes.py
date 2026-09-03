@@ -911,7 +911,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     return _cap_store.create_capture(
                         audio_src_path=wav_path, request_id=rid, model=final_model,
                         language=(getattr(fw_info, "language", None) or req_language or ""),
-                        duration_seconds=dur, raw=raw_text, final=final_text,
+                        audio_s=dur, raw=raw_text, final=final_text,
                         text_for_training=training_text, words=words, segments=[],
                         user_id=user.get("user_id"))
                 finally:
