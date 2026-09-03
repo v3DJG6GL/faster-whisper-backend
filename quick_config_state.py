@@ -197,7 +197,7 @@ def record_trace(
                 created_ts=created_ts,
                 prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
                 max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
-                ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_TTL_DAYS", 30)),
+                ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30)),
             )
         except Exception as e:
             logger.warning("[recent-tx] persist failed: %s", e)

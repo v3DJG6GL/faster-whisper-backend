@@ -326,7 +326,7 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
             key_label=key_label,
             prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
             max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
-            ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_TTL_DAYS", 30)),
+            ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30)),
             wait_s=wait_s,
             error_class=error_class,
             error_stage=error_stage,
@@ -387,7 +387,7 @@ def record_download(model: str, seconds: float, bytes_done: int, *,
                      "bytes": int(bytes_done)}],
             prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
             max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
-            ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_TTL_DAYS", 30)),
+            ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30)),
         )
     except Exception as e:
         logger.warning("[metrics] record_download persist failed: %s", e)

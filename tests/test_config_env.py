@@ -684,3 +684,34 @@ def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
         str(tmp_path / "repo"), str(tmp_path),
         {"api_keys.local.sqlite3": str(tmp_path / "db" / "api_keys.local.sqlite3")},
     ) == []
+
+
+def test_renamed_keys_env_alias_is_table_driven(monkeypatch):
+    """Every entry in config_renames.RENAMED_KEYS is honoured as an env alias
+    (not only the hand-written HF_TOKEN shim it replaced), and each applied
+    alias leaves one startup warning naming both spellings."""
+    import config_renames
+    old, new = "RECENT_TRANSCRIPTIONS_TTL_DAYS", "RECENT_TRANSCRIPTIONS_RETENTION_DAYS"
+    assert config_renames.RENAMED_KEYS[old] == new
+    try:
+        _reload_with_env(monkeypatch, WHISPER_RECENT_TRANSCRIPTIONS_TTL_DAYS="7")
+        assert config.RECENT_TRANSCRIPTIONS_RETENTION_DAYS == 7
+        assert any(old in w and new in w for w in config._ENV_WARNINGS)
+    finally:
+        monkeypatch.undo()
+        os.environ.pop("WHISPER_" + new, None)
+        importlib.reload(config)
+
+
+def test_local_overrides_migrate_renamed_keys(tmp_path):
+    """A stored config.local.json still carrying a renamed key is migrated
+    for every RENAMED_KEYS entry; a present new key wins over the old one."""
+    import config_store
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"RECENT_TRANSCRIPTIONS_TTL_DAYS": 5,
+                             "USE_AUTH_TOKEN": "hf_old", "HF_TOKEN": "hf_new"}),
+                 encoding="utf-8")
+    out = config_store.load_overrides(str(p))
+    assert out.get("RECENT_TRANSCRIPTIONS_RETENTION_DAYS") == 5
+    assert "RECENT_TRANSCRIPTIONS_TTL_DAYS" not in out
+    assert out.get("HF_TOKEN") == "hf_new"

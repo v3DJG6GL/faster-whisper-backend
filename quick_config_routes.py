@@ -24,7 +24,7 @@ Security model:
 The recent traces hold literal dictation snippets, which can be sensitive.
 They live in transcriptions_store — a durable SQLite/WAL database at
 `cfg.RECENT_TRANSCRIPTIONS_DB`, row-capped by RECENT_TRANSCRIPTIONS_MAX and
-aged out by RECENT_TRANSCRIPTIONS_TTL_DAYS — so they survive restarts.
+aged out by RECENT_TRANSCRIPTIONS_RETENTION_DAYS — so they survive restarts.
 Never log trace contents.
 """
 

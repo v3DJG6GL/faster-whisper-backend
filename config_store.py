@@ -29,6 +29,8 @@ import time
 from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
+import config_renames as _renames
+
 from pydantic import (
     BaseModel, Field, ValidationError, ValidationInfo, create_model,
     field_validator, model_validator,
@@ -731,7 +733,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "pruning runs every RECENT_TRANSCRIPTIONS_PRUNE_EVERY inserts, "
         "so on-disk count can briefly exceed this by up to PRUNE_EVERY "
         "rows before the next sweep.",
-    "RECENT_TRANSCRIPTIONS_TTL_DAYS":
+    "RECENT_TRANSCRIPTIONS_RETENTION_DAYS":
         "Auto-delete entries older than this many days. 0 = TTL "
         "disabled (count-cap only). Combined with the row cap: "
         "whichever bound is tighter wins.",
@@ -2048,8 +2050,8 @@ class AdminConfig(BaseModel):
     RECENT_TRANSCRIPTIONS_MAX: Annotated[int, Field(ge=0, le=100_000)] | None = _F(
         "RECENT_TRANSCRIPTIONS_MAX", scope="server",
         group="Recent transcriptions")
-    RECENT_TRANSCRIPTIONS_TTL_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
-        "RECENT_TRANSCRIPTIONS_TTL_DAYS", scope="server",
+    RECENT_TRANSCRIPTIONS_RETENTION_DAYS: Annotated[int, Field(ge=0, le=3650)] | None = _F(
+        "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", scope="server",
         group="Recent transcriptions")
     RECENT_TRANSCRIPTIONS_PAGE_SIZE: Annotated[int, Field(ge=10, le=1000)] | None = _F(
         "RECENT_TRANSCRIPTIONS_PAGE_SIZE", scope="server",
@@ -2983,16 +2985,14 @@ def override_field_meta(
 
 
 def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
-    """One-time key migration: USE_AUTH_TOKEN → HF_TOKEN. AdminConfig forbids
+    """One-time key migration (config_renames.RENAMED_KEYS). AdminConfig forbids
     unknown keys and a validation failure drops ALL overrides, so a stored
     file from before the rename would otherwise silently lose every setting.
     Called on BOTH the load path and the save path's raw re-read — save
     merges the payload atop the raw file, so a surviving legacy key would
     make every write raise ValidationError forever (and no save could ever
     clean the file)."""
-    if "USE_AUTH_TOKEN" in raw:
-        raw.setdefault("HF_TOKEN", raw["USE_AUTH_TOKEN"])
-        del raw["USE_AUTH_TOKEN"]
+    _renames.migrate_keys(raw)
     # Wildcard-host origins ('https://*.example.com') used to pass the origin
     # validators but never matched anything (both the CORS middleware and the
     # trusted-origin guard compare the Origin header by exact string). They

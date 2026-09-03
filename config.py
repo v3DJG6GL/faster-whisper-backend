@@ -20,6 +20,8 @@ Conventions:
 import json
 import os
 
+import config_renames as _renames
+
 # Load a local .env file (if present) before any os.environ reads below, so a
 # `cp .env.example .env` works for bare `python main.py` as well as Docker.
 # load_dotenv does NOT override variables already set in the real environment,
@@ -512,9 +514,8 @@ DOWNLOAD_ROOT: "str | None" = _D("DOWNLOAD_ROOT")
 LOCAL_FILES_ONLY: bool = _D("LOCAL_FILES_ONLY")
 
 # HuggingFace auth token for gated/private repos. None = no token.
-# (Renamed from USE_AUTH_TOKEN — the WHISPER_USE_AUTH_TOKEN[_FILE] env
-# spellings remain accepted as silent aliases; see the shim next to
-# _SECRET_FIELDS below.)
+# (Renamed from USE_AUTH_TOKEN — the old env spellings still work, see
+# config_renames.RENAMED_KEYS.)
 HF_TOKEN: "str | None" = _D("HF_TOKEN")
 
 # Auto-convert HuggingFace transformers Whisper models to CTranslate2 format
@@ -908,7 +909,7 @@ RECENT_TRANSCRIPTIONS_MAX = _D("RECENT_TRANSCRIPTIONS_MAX")
 # Auto-delete entries older than this many days. 0 = disabled
 # (count-cap only). Combined with the row cap: whichever bound is tighter
 # wins.
-RECENT_TRANSCRIPTIONS_TTL_DAYS = _D("RECENT_TRANSCRIPTIONS_TTL_DAYS")
+RECENT_TRANSCRIPTIONS_RETENTION_DAYS = _D("RECENT_TRANSCRIPTIONS_RETENTION_DAYS")
 
 # Number of entries the browser fetches per page. The freshest page is
 # delivered via SSE on connect; "Load older" walks back through the store
@@ -1447,16 +1448,10 @@ def _env_csv_list(name: str, current: list[str]) -> list[str]:
 # secret into _ENV_WARNINGS (those are drained into the logger, and the log is
 # served by the /logs viewer and /logs/stream).
 _SECRET_FIELDS = ("BOOTSTRAP_ADMIN_KEY", "HF_TOKEN")
-# HF_TOKEN was named USE_AUTH_TOKEN before the config field matched the env
-# var huggingface_hub itself reads. Alias the old env spellings (plain and
-# _FILE) onto the new names BEFORE the _FILE indirection and the generic env
-# loop run, so existing deployments keep working unchanged. A set new-name
-# value always wins over the alias.
-for _sfx in ("", "_FILE"):
-    if os.environ.get("WHISPER_USE_AUTH_TOKEN" + _sfx) and not os.environ.get(
-        "WHISPER_HF_TOKEN" + _sfx
-    ):
-        os.environ["WHISPER_HF_TOKEN" + _sfx] = os.environ["WHISPER_USE_AUTH_TOKEN" + _sfx]
+# Renamed keys: the old WHISPER_<old>[_FILE] env spellings are aliased onto
+# the new names BEFORE the _FILE indirection and the generic env loop run, so
+# existing deployments keep working unchanged (table in config_renames.py).
+_ENV_WARNINGS.extend(_renames.alias_env(os.environ))
 for _secret in ("WHISPER_" + _f for _f in _SECRET_FIELDS):
     _path = os.environ.get(_secret + "_FILE")
     if _path and not os.environ.get(_secret):
