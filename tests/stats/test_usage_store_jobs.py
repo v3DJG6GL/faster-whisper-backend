@@ -9,6 +9,8 @@ import sqlite3
 import time
 import zoneinfo
 
+import pytest
+
 
 def _D(iso):
     """days-since-epoch of an ISO date — the wire form of `day`."""
@@ -322,7 +324,6 @@ def test_window_forms_days_from_to_and_all(usage_store_db):
     assert doc["range"] ["from"] == today - 59
     doc = us.document("u", from_day=0, to_day=today, tz=_UTC, tz_name="UTC", now=now)
     assert doc["range"]["days"] == us.MAX_WINDOW_DAYS
-    import pytest
     with pytest.raises(ValueError):
         us.document("u", from_day=today, to_day=today - 1, tz=_UTC, tz_name="UTC",
                     now=now)
@@ -479,7 +480,7 @@ def test_outcome_is_idempotent_and_rolls_once(usage_store_db):
                              app_id="thunderbird") == "duplicate"
     doc = us.document("u", days=1, tz=_UTC, tz_name="UTC")
     d = doc["dictation"]
-    assert d["activation"] == {"hold": 1, "handsfree": 0}
+    assert d["activation"] == {"hold": 1, "handsfree": 0, "unreported": 0}
     assert d["delivery"] == {"typed": 1, "clipboard": 0, "none": 0, "unreported": 0}
     assert d["translation"]["not_asked"] == 1 and d["translation"]["translated"] == 0
     assert doc["apps"] == [{"app_id": "thunderbird", "sessions": 1, "words": 50}]
@@ -679,7 +680,6 @@ def test_parse_window_params_matches_v1_route(usage_store_db):
     w = us.parse_window_params(with_="translating, diarizing,translating")
     assert w.with_stages == ("translating", "diarizing") and w.source == "jobs"
     assert us.parse_window_params().source == "rollups"
-    import pytest
     with pytest.raises(ValueError, match="decoding"):
         us.parse_window_params(with_="decoding")
     with pytest.raises(ValueError, match="from"):

@@ -28,7 +28,7 @@ _ERROR_WINDOW_SEC = 15 * 60
 _MODEL_LOAD_KEEP = 50       # bounded per-model history
 
 # Long-lived stream paths whose duration would dominate latency stats.
-SSE_PATHS = frozenset({"/logs/stream", "/stats/stream"})
+SSE_PATHS = frozenset({"/logs/stream", "/stats/stream", "/quick-config/stream"})
 
 # Cap on distinct UNMATCHED-route keys (404 / pre-routing) in req_count.
 # Matched routes carry a templated path (a small finite set) and are always
@@ -422,38 +422,6 @@ def _errors_in(seconds: float) -> int:
             break
         n += 1
     return n
-
-
-def project_recent_row(r: dict[str, Any], *, include_identity: bool = False
-                       ) -> dict[str, Any]:
-    """One recent-transcriptions row in the timing-only shape /stats
-    renders (the snapshot's recent_transcriptions and the paged
-    /stats/jobs). A non-admin holder of pages.stats='all' sees every user's
-    rows and must not read other users' transcripts (or identities): the
-    projection carries no raw/final text, and username / key_label are
-    blanked unless `include_identity`. Nulls become numeric defaults so
-    `r.audio_s.toFixed(1)` on error-path rows cannot freeze the view."""
-    return {
-        "ts": r.get("ts"),
-        "request_id": r.get("request_id") or "",
-        "model": r.get("model") or "",
-        "language": r.get("language") or "",
-        "audio_s": r.get("audio_s") or 0.0,
-        "processing_s": r.get("processing_s") or 0.0,
-        "rtf": r.get("rtf"),
-        "words": r.get("words") or 0,
-        "status": r.get("status") or "error",
-        # kind: explicit column wins; legacy rows resolve via source
-        # ('stream' = live dictation).
-        "kind": r.get("kind")
-                or ("dictate" if r.get("source") == "stream" else "transcribe"),
-        "username": (r.get("username") or "") if include_identity else "",
-        "key_label": (r.get("key_label") or "") if include_identity else "",
-        "stages": r.get("stages") or [],
-        "wait_s": r.get("wait_s"),
-        "error_class": r.get("error_class"),
-        "error_stage": r.get("error_stage"),
-    }
 
 
 def project_recent_row(r: dict[str, Any], *, include_identity: bool = False

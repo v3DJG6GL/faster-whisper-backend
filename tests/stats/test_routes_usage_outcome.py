@@ -101,7 +101,7 @@ def test_outcome_accepted_then_duplicate_and_visible_in_usage(client, make_user_
     usage = client.get("/v1/usage", headers=bearer(raw)).json()
     d = usage["dictation"]
     assert d["sessions"] == 1 and d["words"] == 40
-    assert d["activation"] == {"hold": 0, "handsfree": 1}
+    assert d["activation"] == {"hold": 0, "handsfree": 1, "unreported": 0}
     assert d["delivery"]["clipboard"] == 1
     assert d["translation"]["translated"] == 1
     assert usage["apps"] == [{"app_id": "thunderbird", "sessions": 1, "words": 40}]

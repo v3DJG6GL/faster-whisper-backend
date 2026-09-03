@@ -2,8 +2,6 @@
 prune, step truncation, and the row-to-dict derivations."""
 
 import sqlite3
-
-import pytest
 import time
 
 
@@ -276,7 +274,9 @@ def test_truncate_steps_front_trim(monkeypatch):
     steps = [(f"label{i}", "x" * 20, "y" * 20) for i in range(10)]
     out = ts._truncate_steps(steps)
     # Oldest (front) entries shed until the JSON blob fits the cap.
-    assert len(out) < 10
+    assert 0 < len(out) < 10
+    import json
+    assert len(json.dumps(out)) <= 80
     assert out[-1][0] == "label9"  # newest preserved
 
 

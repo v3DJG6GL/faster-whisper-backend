@@ -527,7 +527,7 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
 # /stats/usage under StatsScope (own → own rows; all → scrubbed; admin → named)
 # ---------------------------------------------------------------------------
 
-def _seed_usage(app_module, alice, bob, alice_key, bob_key):
+def _seed_usage(alice, bob, alice_key, bob_key):
     from faster_whisper_backend.stats import usage_store as us
     h = us.now_hour()
     us.record_usage(key_id=alice_key, user_id=alice, audio_s=10.0, words=5,
@@ -536,7 +536,7 @@ def _seed_usage(app_module, alice, bob, alice_key, bob_key):
                     status="ok", hour=h)
 
 
-def _two_users(client, make_user_key):
+def _two_users(make_user_key):
     from faster_whisper_backend.auth import api_keys_store
     _, raw_admin = make_user_key("root", is_admin=True)
     alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
@@ -549,8 +549,8 @@ def _two_users(client, make_user_key):
 
 def test_usage_own_scope_by_user_is_403(client, app_module, make_user_key):
     from tests.conftest import bearer
-    _, alice, raw_alice, bob, _, keys = _two_users(client, make_user_key)
-    _seed_usage(app_module, alice, bob, keys[alice], keys[bob])
+    _, alice, raw_alice, bob, _, keys = _two_users(make_user_key)
+    _seed_usage(alice, bob, keys[alice], keys[bob])
     r = client.get("/stats/usage?by=user", headers=bearer(raw_alice))
     assert r.status_code == 403
     # An unknown `by` normalises to "user" BEFORE the scope check.
@@ -564,8 +564,8 @@ def test_usage_own_scope_by_user_is_403(client, app_module, make_user_key):
 def test_usage_own_scope_by_key_only_own_keys(client, app_module,
                                                make_user_key):
     from tests.conftest import bearer
-    _, alice, raw_alice, bob, _, keys = _two_users(client, make_user_key)
-    _seed_usage(app_module, alice, bob, keys[alice], keys[bob])
+    _, alice, raw_alice, bob, _, keys = _two_users(make_user_key)
+    _seed_usage(alice, bob, keys[alice], keys[bob])
     body = client.get("/stats/usage?by=key", headers=bearer(raw_alice)).json()
     assert body["scope"] == "own"
     assert [r["id"] for r in body["leaderboard"]] == [keys[alice]]
@@ -578,8 +578,8 @@ def test_usage_own_scope_by_key_only_own_keys(client, app_module,
 def test_usage_all_scope_nonadmin_scrubs_names_and_marks_me(
         client, app_module, make_user_key):
     from tests.conftest import bearer
-    _, alice, _, bob, raw_bob, keys = _two_users(client, make_user_key)
-    _seed_usage(app_module, alice, bob, keys[alice], keys[bob])
+    _, alice, _, bob, raw_bob, keys = _two_users(make_user_key)
+    _seed_usage(alice, bob, keys[alice], keys[bob])
     body = client.get("/stats/usage?by=user", headers=bearer(raw_bob)).json()
     assert body["scope"] == "all"
     rows = {r["id"]: r for r in body["leaderboard"]}
@@ -602,8 +602,8 @@ def test_usage_all_scope_nonadmin_scrubs_names_and_marks_me(
 def test_usage_admin_sees_names_and_can_preview_user(client, app_module,
                                                       make_user_key):
     from tests.conftest import bearer
-    raw_admin, alice, _, bob, _, keys = _two_users(client, make_user_key)
-    _seed_usage(app_module, alice, bob, keys[alice], keys[bob])
+    raw_admin, alice, _, bob, _, keys = _two_users(make_user_key)
+    _seed_usage(alice, bob, keys[alice], keys[bob])
     body = client.get("/stats/usage?by=user", headers=bearer(raw_admin)).json()
     assert {r["label"] for r in body["leaderboard"]} == {"alice", "bob"}
     assert body["scope"] == "all"
@@ -624,7 +624,8 @@ def test_stats_page_ships_own_scope_chrome(client):
     assert 'id="scope-pill"' in html and 'your usage' in html
     assert "GS_LAYOUT_KEY += '-own'" in html
     assert "if (snap.machine === false) {" in html
-    js = pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8").read()
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
     assert "not available for your scope" in js
 
 
@@ -651,9 +652,8 @@ def test_stats_usage_v2_params(client, app_module):
                     status="ok", hour=h, processing_s=1.0, job_id="j2", kind="dictation")
     kinds = client.get("/stats/usage?by=kind&metric=processing_s&compare=prev").json()
     assert kinds["by"] == "kind" and kinds["metric"] == "processing_s"
-    # Every kind is a line (stable series identity); only two carry data.
-    assert {ln["id"] for ln in kinds["lines"]} == {"dictation", "file", "url", "text"}
-    assert {ln["id"] for ln in kinds["lines"] if sum(ln["values"])} == {"file", "dictation"}
+    # Only kinds with data are materialised as lines.
+    assert {ln["id"] for ln in kinds["lines"]} == {"dictation", "file"}
     assert kinds["compare"]["mode"] == "prev" and kinds["compare"]["range"]["days"] == 30
     assert kinds["totals"]["all"]["processing_s"] == 3.0
     assert kinds["leaderboard"][0]["processing_s"] == 2.0     # flat v1 metrics too
@@ -757,13 +757,15 @@ def test_stats_js_contract(client):
     """static/stats.js has no unit harness; pin the behaviours the design
     promises: URL-mirrored state, stacked bars via uPlot's bars path, a
     keyboard-scrubbable chart with an aria-live readout, quartile levels for
-    the hour grid, the v6 layout key, and the own-scope reload hook."""
-    js = pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8").read()
+    the hour grid, the v11 layout key, and the own-scope reload hook."""
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
     for s in ("history.replaceState", "uPlot.paths.bars(", "function quantileBreaks",
               "function parsePageQuery", "function pageQueryParams",
               "'ArrowLeft', 'ArrowRight', 'Home', 'End'", "usage-live",
               "window.__statsUsage", "window._fwUsageReload",
-              "whisper-stats-layout-v11", "compare", "renderStages", "renderHours",
+              "whisper-stats-layout-v11", "cmpWord()",
+              "renderStages", "renderHours",
               "not available for your scope"):
         assert s in js, s
     # The stacked series draw top-of-stack first so lower segments paint over.
@@ -777,7 +779,8 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
     with keyboard move/resize (GridStack has none), and the live rings'
     shared crosshair that freezes the readouts at the hovered second."""
     html = client.get("/stats").text
-    js = pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8").read()
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
     assert 'id="layout-preset"' in html and 'id="edit-layout-btn"' in html
     assert 'id="layout-live"' in html
     for s in ("const GS_PRESETS = {", "staticGrid: true", "function setPreset(",
@@ -969,10 +972,11 @@ def test_stats_page_ring_scrubber_range_mode_and_tail_cards(client):
     sparks fed from /stats/history in range mode, the turnaround and
     failures tiles fed from /stats/tail, turnaround in the headline."""
     html = client.get("/stats").text
-    js = pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8").read()
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
     assert 'id="live-range"' in html and 'id="ring-scrub"' in html
     assert "fetch('/stats/history?metric='" in html
-    assert "if (!u || liveMode !== 'live') return;" in html
+    assert "if (liveMode !== 'live')" in html
     assert "function scrubTo(" in html and "function backToLive(" in html
     assert "paused · ' + behind + ' s behind" in html
     assert "busy.pct_15m" in html

@@ -136,7 +136,7 @@ STAGE_ELIGIBLE: dict[str, tuple[str, ...]] = {
 # The desktop app's outcome vocabulary. Validated at the route (pydantic
 # enums); repeated here so the sweep's 'unreported' marker and the document's
 # fixed bucket lists come from one place.
-ACTIVATIONS: tuple[str, ...] = ("hold", "handsfree")
+ACTIVATIONS: tuple[str, ...] = ("hold", "handsfree", "unreported")
 DELIVERIES: tuple[str, ...] = ("typed", "clipboard", "none", "unreported")
 TRANSLATIONS: tuple[str, ...] = ("translated", "kept_original", "not_asked",
                                  "aborted", "unreported")
@@ -1392,19 +1392,6 @@ def _axis(from_day: int, to_day: int, mode: str) -> list[int]:
     return out
 
 
-def _stage_metric(metric: str, r: sqlite3.Row) -> float:
-    """usage_stage_hourly has runs / audio_s / secs. Sessions and requests
-    read as runs, processing_s as secs; words has no stage meaning (0) and errors
-    per stage only arrive with the phase-2 ledger columns (0 until then)."""
-    if metric in ("sessions", "requests"):
-        return float(r["runs"] or 0)
-    if metric == "audio_s":
-        return float(r["audio_s"] or 0.0)
-    if metric == "processing_s":
-        return float(r["secs"] or 0.0)
-    return 0.0
-
-
 def _year_back(day: int) -> int:
     d = _from_epoch_day(day)
     try:
@@ -1501,7 +1488,8 @@ def overview(
             rest = dict(p["all"])
             for k in KINDS:
                 cell = p[k]
-                add(ent(k, label=k), day, cell)
+                if any(cell.get(m, 0) for m in rest):
+                    add(ent(k, label=k), day, cell)
                 for m in rest:
                     rest[m] -= cell[m]
             # Each cell was rounded to 3 decimals on its own, so `all` minus
@@ -1723,8 +1711,8 @@ def wait_quantiles(*, start_ts: float, end_ts: float, user_id: str | None = None
                    key_id: str | None = None, kind: str | None = None,
                    model: str | None = None) -> dict[str, Any]:
     """`{n, p50, p95, max}` of wait_s over the window's jobs. Nearest-rank
-    via ORDER BY … LIMIT 1 OFFSET k, so a year of jobs costs two indexed
-    reads, not a Python sort."""
+    via ORDER BY … LIMIT 1 OFFSET k — unindexed, so a large window does a
+    full sort per quantile."""
     conn = _require_conn()
     where, params = _jobs_where(user_id, key_id, kind, start_ts, end_ts)
     if model is not None:
@@ -1940,6 +1928,7 @@ def tail(
         "models": models,
         "compare": {
             "from": f - span, "to": f - 1,
+            "truncated_to_days": truncated_to_days(pstart, jobs_retention_days, now),
             "wait_p50": cmp(wait["p50"], pwait["p50"]),
             "wait_p95": cmp(wait["p95"], pwait["p95"]),
             "turnaround_p50": cmp(turn["p50"], pturn["p50"]),

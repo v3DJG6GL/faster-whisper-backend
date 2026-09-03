@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -30,7 +31,6 @@ from fastapi.responses import HTMLResponse, StreamingResponse
 
 import hmac
 import hashlib
-import secrets
 
 from faster_whisper_backend import build_info
 from faster_whisper_backend import config as cfg
@@ -43,6 +43,8 @@ from faster_whisper_backend.stats import system_metrics_store
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.auth import dependencies as auth
+
+log = logging.getLogger(__name__)
 from faster_whisper_backend.auth.dependencies import require_page
 from faster_whisper_backend.paths import REPO_ROOT
 
@@ -289,11 +291,11 @@ async def stats_snapshot(
     return _build_payload(stats_scope_for(user), lite=bool(lite))
 
 
-# Per-process salt for the opaque labels a non-admin "all" viewer sees on the
-# leaderboard: stable within a process (a chart line keeps its name across
-# refreshes), meaningless across restarts, and never a plain hash of the id
-# (usernames/ids would otherwise be recoverable by table lookup).
-_SCRUB_SALT = secrets.token_bytes(16)
+# Salt for the opaque labels a non-admin "all" viewer sees on the leaderboard.
+# Derived from the data directory so every worker in a multi-process deploy
+# produces the same labels — a picker selection from one worker resolves in
+# another. Changes across installs; never a plain hash of the id.
+_SCRUB_SALT = hashlib.sha256(b"stats-scrub:" + cfg._DATA_DIR.encode()).digest()[:16]
 
 
 def _opaque_user_label(user_id: str) -> str:
@@ -319,7 +321,10 @@ def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -
     out = [i for i in usage_store.distinct_ids(dim + "_id") if fn(i) in want]
     if caller_uid and dim == "user" and caller_uid in want:
         out.append(caller_uid)
-    return list(dict.fromkeys(out))
+    resolved = list(dict.fromkeys(out))
+    if want and not resolved:
+        log.debug("_unscrub: none of %d %s labels matched a known id", len(want), dim)
+    return resolved
 
 
 def _one_or_many(ids: list[str]) -> str | list[str]:
@@ -1268,7 +1273,6 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     margin: 0.15rem 0 0 7rem; }
   /* --- Live rings: scrubber + range mode --- */
   header #ring-scrub { width: 7rem; accent-color: var(--cyan); vertical-align: middle; }
-  header #ring-scrub.off { opacity: .35; }
   /* Layout tools end the first sub-bar row; the rings/preset cluster always
      takes the second row. */
   header .subbar-tools { display: inline-flex; gap: 0.35rem; margin-left: auto; }
@@ -1932,6 +1936,7 @@ function refreshStatusPill() {
 // clock time / the history window. Clicking a paused chip returns to live;
 // otherwise it flashes the rings control so the reader finds it.
 let rangeTo = null;    // epoch seconds the last /stats/history fetch ended at
+let gpuTotalMb = null; // latest GPU total VRAM for MB→% conversion
 function _clock(ts, secs) {
   const t = new Date(ts * 1000), p2 = n => ('0' + n).slice(-2);
   return p2(t.getHours()) + ':' + p2(t.getMinutes()) + (secs ? ':' + p2(t.getSeconds()) : '');
@@ -1982,6 +1987,12 @@ function loadRangeSparks() {
       .then(r => r.ok ? r.json() : null)
       .then(j => {
         if (!j || liveMode === 'live') return;
+        // gpu_mem_mb arrives as raw MB — convert to % like the live ring
+        if (key === 'gpu_mem' && gpuTotalMb) {
+          const tot = gpuTotalMb;
+          j.avg = j.avg.map(v => v == null ? null : v / tot * 100);
+          if (j.max) j.max = j.max.map(v => v == null ? null : v / tot * 100);
+        }
         rangeData[key] = j;
         u.setData([j.t, j.avg], true);
         if (frozenTs != null) {
@@ -2003,7 +2014,7 @@ function setLiveMode(v) {
   liveMode = v;
   const seg = $('live-range');
   if (seg) seg.querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.v === v));
-  const sc = $('ring-scrub'); if (sc) { sc.value = '119'; sc.classList.remove('off'); }
+  const sc = $('ring-scrub'); if (sc) { sc.value = '119'; }
   document.querySelectorAll('.spark-flag, .spark-vp').forEach(el => { el.hidden = true; });
   for (const k in rangeData) delete rangeData[k];
   if (rangeTimer) { clearInterval(rangeTimer); rangeTimer = null; }
@@ -2040,7 +2051,7 @@ function wireRingControls() {
   refreshRingChips();
   document.addEventListener('keydown', (e) => {
     const tgt = e.target && e.target.closest ? e.target : document.body;
-    if (/^(INPUT|SELECT|TEXTAREA)$/.test(tgt.tagName)) return;
+    if (/^(INPUT|SELECT|TEXTAREA)$/.test(tgt.tagName) || tgt.isContentEditable) return;
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.key === ' ') {
       e.preventDefault();
@@ -2225,7 +2236,13 @@ function ensureSparks() {
 }
 
 function setData(u, ys) {
-  if (!u || liveMode !== 'live') return;   // range mode: /stats/history owns the sparks
+  if (!u) return;
+  // In range mode only the machine sparks are owned by /stats/history;
+  // other sparks (e.g. latency) keep receiving live SSE data.
+  if (liveMode !== 'live') {
+    const rangeOwned = Object.keys(SPARK_METRIC).map(k => sparks[k]);
+    if (rangeOwned.includes(u)) return;
+  }
   // uPlot wants nulls preserved for spanGaps; convert undefined -> null.
   const xs = histX.slice();
   const yClean = ys.map(v => (v == null ? null : v));
@@ -2404,6 +2421,7 @@ function render(snap) {
       `<b>temp</b> ${snap.gpu.temp_c ?? '—'}°C &nbsp; ` +
       `<b>power</b> ${snap.gpu.power_w ?? '—'} / ${snap.gpu.power_limit_w ?? '—'} W &nbsp; ` +
       `<b>state</b> ${snap.gpu.p_state || '—'}`;
+    if (snap.gpu.mem_total_mb) gpuTotalMb = snap.gpu.mem_total_mb;
     const memPct = snap.gpu.mem_total_mb
       ? snap.gpu.mem_used_mb / snap.gpu.mem_total_mb * 100 : 0;
     setBar($('gpu-mem-bar'), memPct);

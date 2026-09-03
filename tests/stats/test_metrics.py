@@ -122,6 +122,7 @@ def test_record_transcription_falsy_request_id_noop():
 def test_record_transcription_swallows_store_errors():
     # Stores are not initialised here; the lazy record_timing/record_usage
     # calls raise RuntimeError internally but must be swallowed.
+    # Proves the call completes without raising despite uninitialised stores.
     metrics.record_transcription(
         "m", 1.0, 0.5, "ok", 3, request_id="req-1", user_id="u", key_id="k"
     )
@@ -365,7 +366,7 @@ def test_gpu_gate_snapshot_reports_the_oldest_waiter():
         return snap, gate.snapshot()
 
     snap, after = asyncio.run(scenario())
-    assert snap["queue_depth"] == 1 and snap["oldest_wait_s"] >= 0.0
+    assert snap["queue_depth"] == 1 and snap["oldest_wait_s"] >= 0.04
     assert after["queue_depth"] == 0 and after["held"] == 0
 
 
@@ -383,7 +384,7 @@ def test_take_wait_without_a_seed_is_zero_and_take_resets():
         return first, second
 
     first, second = asyncio.run(scenario())
-    assert first >= 0.0 and second == 0.0
+    assert isinstance(first, float) and first >= 0.0 and second == 0.0
 
 
 def test_metrics_snapshot_carries_the_gate(tx_store):

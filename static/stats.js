@@ -321,6 +321,10 @@ function quantileBreaks(values) {
     if (level <= 3) b[level - 1] = a[i];
   }
   for (let k = 1; k < 3; k++) if (b[k] < b[k - 1]) b[k] = b[k - 1];
+  // With fewer than 4 active slots the lowest levels are never assigned;
+  // fill them from the first non-zero break so the steps stay meaningful.
+  const first = b.find(v => v > 0) || a[0];
+  for (let k = 0; k < 3; k++) if (!b[k]) b[k] = first;
   return b;
 }
 // Legend copy for the five steps, as the app prints it: 0 · 1–b1 · b1–b2 · b2–b3 · b3+.
@@ -618,7 +622,7 @@ function wireScopeBar() {
   }
 }
 function spanPreset(name) {
-  const d = new Date(); const y = d.getUTCFullYear(), m = d.getUTCMonth();
+  const d = new Date(); const y = d.getFullYear(), m = d.getMonth();
   const day = (yy, mm, dd) => Math.floor(Date.UTC(yy, mm, dd) / DAY_MS);
   const lastOf = (yy, mm) => day(yy, mm + 1, 0);
   const t = todayDay();
@@ -715,7 +719,7 @@ function load() {
         // hand-edited URL. Say so instead of "unavailable".
         $('usage-board-rows').innerHTML =
           '<tr><td colspan="8" class="empty">— not available for your scope —</td></tr>';
-        return null;
+        return { _scopeDenied: true };
       }
       return r.ok ? r.json() : null;
     })
@@ -723,6 +727,7 @@ function load() {
       if (mine !== _seq) return;      // stale response — a newer change won
       usageCards().forEach(el => el.classList.remove('updating'));
       if (!j) { showError(); return; }
+      if (j._scopeDenied) return;
       hideError();
       lastDoc = j;
       renderChips();
@@ -1286,7 +1291,7 @@ function renderTable() {
   chartEl.parentElement.classList.toggle('hidden', tableMode);
   el.classList.toggle('hidden', !tableMode);
   setSeg('usage-view', tableMode ? 'table' : 'chart');
-  if (!tableMode) return;
+  if (!tableMode || !lastDoc) return;
   const vis = visibleLines();
   let h = '<table class="tbl usage-twin"><thead><tr><th>' + esc(lastDoc.bucket) + '</th>'
     + vis.map(ln => '<th class="num">' + esc(ln.label) + '</th>').join('')
