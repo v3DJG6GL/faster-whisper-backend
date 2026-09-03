@@ -240,6 +240,7 @@ def capture(label: str, cb: "Callable[[int, int], None] | None" = None,
     patched: list[tuple[Any, str, Any]] = []
     failed = False
     with _capture_lock:
+        prev_current = _current
         _current = cap
     if _hub_tqdm_mod is not None:
         for mod_name, attr in _PATCH_TARGETS:
@@ -265,7 +266,7 @@ def capture(label: str, cb: "Callable[[int, int], None] | None" = None,
                 pass
         with _capture_lock:
             if _current is cap:
-                _current = None
+                _current = prev_current
         done_b, total_b = cap.totals()
         secs = max(1e-6, time.monotonic() - cap.t0)
         if done_b > 0:

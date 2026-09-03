@@ -41,8 +41,7 @@ CREATE TABLE IF NOT EXISTS system_metrics (
 # Column names are interpolated into the history query; only these.
 METRICS: frozenset[str] = frozenset(
     ("gpu_util", "gpu_mem_mb", "gpu_temp", "cpu_pct", "ram_pct", "slot_busy"))
-_COLUMNS = ("ts", "gpu_util", "gpu_mem_mb", "gpu_temp", "cpu_pct", "ram_pct",
-            "slot_busy")
+
 
 
 def init_db(path: str) -> None:

@@ -375,6 +375,7 @@
   function stop() {
     running = false;
     try { if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "stop" })); } } catch {}
+    try { if (ws) { ws.onmessage = ws.onclose = ws.onerror = null; ws.close(); } } catch {}
     if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
     if (audioCtx) audioCtx.close();
     ws = null; audioCtx = null; workletNode = null; mediaStream = null;

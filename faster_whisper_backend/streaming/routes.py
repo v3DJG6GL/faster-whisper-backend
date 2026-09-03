@@ -598,7 +598,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # mis-annotated "no result". Treat the declaration as absent.
             translate_expect = None
         include_words = response_format == "verbose_json"
-        audio_fmt = (conf.get("audio") or {}).get("format", "pcm_s16le")
+        audio_obj = conf.get("audio") or {}
+        if not isinstance(audio_obj, dict):
+            audio_obj = {}
+        audio_fmt = audio_obj.get("format", "pcm_s16le")
         if audio_fmt not in RAW_FORMATS and audio_fmt not in ENCODED_FORMATS:
             await ws.send_json({"type": "error", "code": "unsupported_format",
                                 "message": f"audio format {audio_fmt!r} not supported "

@@ -467,36 +467,35 @@ class StreamSession:
         # The gate path's words are already utterance-absolute and already
         # include the banked prefix (see above), so only a real decode's
         # buffer-relative words are re-based here.
-        if self._trimmed_audio:
-            full_audio = np.concatenate([*self._trimmed_audio, audio])
-            if decoded:
-                off = self._buffer_offset
-                words = self._trimmed_words + [
-                    {**w, "start": w["start"] + off, "end": w["end"] + off}
-                    for w in words]
-        else:
-            full_audio = audio
-        self.raw_confirmed += raw
-        self._prompt = self._make_prompt()
-        processed = self.postprocess(self.raw_confirmed)
-        await self._emit_document(processed, forced=forced, words=words)
-        if self.on_final is not None:
-            await self.on_final({
-                "utterance": self._utterance_index,
-                "audio_dur": full_audio.shape[0] / self.cfg.sample_rate,
-                "trimmed_sec": self._trimmed_sec,  # >0 → a mid-utterance trim fired
-                # False → the near-silence gate skipped the final decode: the
-                # text is the partial-committed transcript, no decoder
-                # diagnostics belong to this utterance, and proc_dur is 0.
-                "decoded": decoded,
-                "proc_dur": proc_dur,
-                "raw_text": raw,       # full utterance text (incl. trim-banked prefix)
-                "words": words,        # word-timestamp dicts (for captures / verbose)
-                "audio": full_audio,   # float32 PCM of the WHOLE utterance (for captures)
-                "forced": forced,
-            })
-        self._utterance_index += 1
-        self._reset_utterance()
+        try:
+            if self._trimmed_audio:
+                full_audio = np.concatenate([*self._trimmed_audio, audio])
+                if decoded:
+                    off = self._buffer_offset
+                    words = self._trimmed_words + [
+                        {**w, "start": w["start"] + off, "end": w["end"] + off}
+                        for w in words]
+            else:
+                full_audio = audio
+            self.raw_confirmed += raw
+            self._prompt = self._make_prompt()
+            processed = self.postprocess(self.raw_confirmed)
+            await self._emit_document(processed, forced=forced, words=words)
+            if self.on_final is not None:
+                await self.on_final({
+                    "utterance": self._utterance_index,
+                    "audio_dur": full_audio.shape[0] / self.cfg.sample_rate,
+                    "trimmed_sec": self._trimmed_sec,
+                    "decoded": decoded,
+                    "proc_dur": proc_dur,
+                    "raw_text": raw,
+                    "words": words,
+                    "audio": full_audio,
+                    "forced": forced,
+                })
+            self._utterance_index += 1
+        finally:
+            self._reset_utterance()
 
     async def _hard_break(self) -> None:
         """End the whole grouping after a long silence and start a fresh document,

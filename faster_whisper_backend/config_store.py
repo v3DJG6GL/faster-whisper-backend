@@ -3469,7 +3469,7 @@ def env_pinned_fields() -> dict[str, str]:
     return {
         field: env
         for field, env in ENV_VAR_MAPPING.items()
-        if (os.environ.get(env) or "").strip() and field not in _rejected
+        if os.environ.get(env) is not None and field not in _rejected
     }
 
 

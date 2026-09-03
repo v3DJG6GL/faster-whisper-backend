@@ -324,6 +324,7 @@ def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -
     resolved = list(dict.fromkeys(out))
     if want and not resolved:
         log.debug("_unscrub: none of %d %s labels matched a known id", len(want), dim)
+        return ["__no_match__"]
     return resolved
 
 
@@ -2895,7 +2896,7 @@ function openStream() {
         if (r.ok) {
           clearTimeout(recoveryTimer);
           recoveryTimer = null;
-          // Drop history — server uptime jumped, the gap would be misleading.
+          if (document.visibilityState === 'hidden') return;
           histX.length = 0;
           for (const k in hist) hist[k].length = 0;
           openStream();

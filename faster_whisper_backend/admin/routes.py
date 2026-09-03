@@ -536,7 +536,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
             raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
                                 f"could not write config.local.json: {e}")
 
-        applied = await _apply_hot_changes(written)
+        applied = await _apply_hot_changes(written, _prev_model_overrides)
 
     client_host = request.client.host if request.client else "?"
     logger.info(
@@ -578,7 +578,10 @@ async def _rebuild_caches(reason: str) -> None:
         logger.error("[config] cache rebuild failed after %s: %s", reason, e)
 
 
-async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
+async def _apply_hot_changes(
+    written: dict[str, Any],
+    prev_model_overrides: "dict[str, Any] | None" = None,
+) -> dict[str, Any]:
     """Apply hot edits from a config save to the running cfg module, rebuild
     caches, and evict load-time-affected models.
 
@@ -652,7 +655,7 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
             # Also evict models whose overrides were REMOVED — they may be
             # running with settings that no longer apply.
             new_overrides = coerced.get("MODEL_OVERRIDES") or {}
-            old_overrides = _prev_model_overrides or {}
+            old_overrides = prev_model_overrides or {}
             for model_id, ovr in new_overrides.items():
                 if not isinstance(ovr, dict):
                     continue

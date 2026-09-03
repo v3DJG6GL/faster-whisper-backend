@@ -411,7 +411,10 @@ def _next_atom(pat: str, i: int) -> "tuple[str | None, str | None, int]":
                     m += 1
                 if m < n and pat[m] == ")":
                     return None, None, m + 1
-                j = k
+                if m < n and pat[m] == ":":
+                    j = m + 1
+                else:
+                    j = k
             else:
                 end = pat.find(">", k)
                 close = pat.find(")", k)

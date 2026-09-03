@@ -534,7 +534,10 @@ def _propose_merges_locked(
 def invalidate(user_id: str | None) -> None:
     """Drop cached proposals for a user (and the all-users entry, which any
     write may affect). Called from captures_store + capture_samples_store
-    write paths. Safe to call with no current cache entry."""
-    if user_id:
-        _CACHE.pop(_user_cache_key(user_id), None)
+    write paths. ``user_id=None`` clears the entire cache (used by
+    ``clear_all``). Safe to call with no current cache entry."""
+    if user_id is None:
+        _CACHE.clear()
+        return
+    _CACHE.pop(_user_cache_key(user_id), None)
     _CACHE.pop(_ALL_USERS, None)

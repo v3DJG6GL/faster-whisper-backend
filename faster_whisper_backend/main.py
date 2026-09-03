@@ -2350,6 +2350,8 @@ async def _idle_evictor() -> None:
                 for name in stale:
                     if name not in _loaded_models:
                         continue   # raced with another path
+                    if system_stats.is_warm(name):
+                        continue   # warm lease appeared while we waited
                     info = system_stats._loaded_models.get(name)
                     if info and now - info.get("last_used_monotonic", now) < timeout:
                         continue   # used while we waited for the lock
@@ -2546,6 +2548,7 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
     # Insert the raw key (bypass generate path so we honour the env value).
     import sqlite3 as _sql
     kp, k4 = api_keys_store._split_display_parts(raw_key)
+    new_key_id = uuid.uuid4().hex
     try:
         with api_keys_store._lock:
             api_keys_store._require_conn().execute(
@@ -2554,7 +2557,7 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
                 "  created_ts, revoked_ts, last_used_ts)"
                 " VALUES (?,?,?,?,?,?,?,NULL,NULL)",
                 (
-                    uuid.uuid4().hex, uid, h, kp, k4,
+                    new_key_id, uid, h, kp, k4,
                     "bootstrap (env)", time.time(),
                 ),
             )
@@ -2572,7 +2575,7 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
         other_env_keys = sum(
             1 for k in api_keys_store.list_keys(uid)
             if k.get("label") == "bootstrap (env)"
-            and k.get("key_hash") != h
+            and k.get("id") != new_key_id
         )
         if other_env_keys:
             logger.warning(
@@ -5329,7 +5332,6 @@ async def transcribe(
             if _pid:
                 _BATCH_PROGRESS.pop(_pid, None)
                 _BATCH_CANCELLED.discard(_pid)
-                _PROGRESS_OWNER.pop(_pid, None)
             if tmp_path:
                 try:
                     os.unlink(tmp_path)
@@ -5889,7 +5891,6 @@ async def translate_text(request: Request,
         if _pid:
             _BATCH_PROGRESS.pop(_pid, None)
             _BATCH_CANCELLED.discard(_pid)
-            _PROGRESS_OWNER.pop(_pid, None)
 
     _elapsed = time.perf_counter() - _t0
     # Cold model: everything up to the first progress callback is load (the
@@ -6872,17 +6873,19 @@ _LOG_VIEWER_HTML = """<!doctype html>
   // Persists across append() calls so a skipped step's 3 lines (arriving as 3
   // separate SSE events) dim as one group.
   const _liveDim = { dimLeft: 0 };
+  let _liveStarted = false;
   function append(line) {
     // __LIVE_TAIL__ sentinel marks the boundary between backlog and the
     // live poll loop. After it fires we know the freshest page is in the
     // DOM and the "Load older" button can become active.
     if (line === '__LIVE_TAIL__') {
+      _liveStarted = true;
       const lo = document.getElementById('loadOlderBtn');
       if (lo) lo.style.display = '';
       return;
     }
     appendLine(log, line, _liveDim);
-    _logsSkip++;
+    if (_liveStarted) _logsSkip++;
     while (log.childElementCount > _LOG_DOM_MAX) {
       // Trimming away a fold control would strand its hidden rows with no
       // way to reveal them, so unfold them on the way out.

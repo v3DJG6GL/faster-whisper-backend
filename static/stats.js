@@ -931,7 +931,7 @@ function renderHeadline() {
   const failed = tot.requests > 0 ? tot.errors / tot.requests : 0;
   const cfailed = cmp && cmp.requests > 0 ? cmp.errors / cmp.requests : null;
   const delta = (a, b, inverse) => {
-    if (b == null || !lastDoc.compare) return '';
+    if (a == null || b == null || !lastDoc.compare) return '';
     if (!(b > 0)) return '<span class="delta flat">— vs ' + cmpWord() + '</span>';
     const d = (a - b) / b * 100;
     const arrow = d > 0.5 ? '▲' : d < -0.5 ? '▼' : '—';
@@ -1047,7 +1047,7 @@ function prepareLines() {
   if (j.compare && j.compare.lines && j.compare.lines.length) {
     const n = xs.length;
     const tot = new Array(n).fill(0);
-    const keep = new Set(curLines.map(ln => ln.id));
+    const keep = new Set(visibleLines().map(ln => ln.id));
     j.compare.lines.forEach(ln => {
       if (!keep.has(ln.id)) return;
       for (let i = 0; i < n; i++) tot[i] += Number(ln.values[i] || 0);

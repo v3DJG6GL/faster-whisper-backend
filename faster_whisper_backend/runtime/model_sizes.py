@@ -147,7 +147,7 @@ def record(name: str, device: str, compute_type: str, vram_bytes: int, *,
                 stack.enter_context(_save_lock(PATH))
                 write = _write_locked
             except OSError:
-                write = _write
+                write = _write_locked
             _record_locked(k, vram_bytes, measured, src, write)
 
 
