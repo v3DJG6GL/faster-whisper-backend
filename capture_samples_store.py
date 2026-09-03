@@ -211,7 +211,7 @@ def get_members(sid: str) -> list[dict[str, Any]]:
     member's corrections to its post-processing text before merging."""
     conn = _require_conn()
     rows = conn.execute(
-        "SELECT id, created_ts, audio_s, raw, final,"
+        "SELECT id, created_ts, audio_s, raw_text AS raw, final_text AS final,"
         " text_for_training, audio_trimmed_relpath,"
         " corrected_text, corrections_json, status, sample_order, user_id,"
         " language, task"

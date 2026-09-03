@@ -220,7 +220,7 @@ def _insert_member(conn, cid, sid, user_id="alice"):
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
     conn.execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " audio_s, audio_relpath, audio_format, raw, final,"
+        " audio_s, audio_relpath, audio_format, raw_text, final_text,"
         " words_json, segments_json, corrections_json, status, user_id,"
         " sample_id, sample_order)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -553,7 +553,7 @@ def _insert_capture_with_request(conn, cid, request_id, user_id):
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
     conn.execute(
         "INSERT INTO captures (id, created_ts, request_id, model, language,"
-        " audio_s, audio_relpath, audio_format, raw, final,"
+        " audio_s, audio_relpath, audio_format, raw_text, final_text,"
         " words_json, segments_json, corrections_json, status, user_id,"
         " sample_id, sample_order)"
         " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",

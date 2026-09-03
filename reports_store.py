@@ -73,8 +73,8 @@ CREATE TABLE IF NOT EXISTS reports (
   trace_ts        REAL NOT NULL,
   request_id      TEXT,
   model           TEXT NOT NULL,
-  raw             TEXT NOT NULL,
-  final           TEXT NOT NULL,
+  raw_text        TEXT NOT NULL,
+  final_text      TEXT NOT NULL,
   steps_json      TEXT NOT NULL,
   corrections_json TEXT NOT NULL DEFAULT '[]',
   intended_text   TEXT NOT NULL DEFAULT '',
@@ -105,6 +105,14 @@ def init_db(path: str) -> None:
     # serialises writers (so the COUNT inside _evict_to_cap sees a stable
     # total) but does not make the INSERT + DELETEs atomic vs crash.
     _conn = store_common.open_wal_db(path)
+    # Column renames (2026-09): the transcript columns are raw_text /
+    # final_text in every store. Before _SCHEMA so CREATE TABLE IF NOT
+    # EXISTS never sees the old names as the live ones.
+    have = {r["name"] for r in _conn.execute("PRAGMA table_info(reports)")}
+    for old, new in (("raw", "raw_text"), ("final", "final_text")):
+        if old in have and new not in have:
+            _conn.execute(f"ALTER TABLE reports RENAME COLUMN {old} TO {new}")
+    _conn.commit()
     _conn.executescript(_SCHEMA)
     _ensure_columns(_conn)
     store_common.secure_db_file(path)
@@ -160,6 +168,12 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     """Materialize a row, decoding the JSON-bearing columns. Returns
     plain Python types ready for JSON serialization on the wire."""
     d = dict(row)
+    # Columns are raw_text / final_text (every store agrees); the API and
+    # the pages keep the established raw / final keys.
+    if "raw_text" in d:
+        d["raw"] = d.pop("raw_text")
+    if "final_text" in d:
+        d["final"] = d.pop("final_text")
     try:
         d["steps"] = json.loads(d.pop("steps_json", "[]") or "[]")
     except (TypeError, ValueError):
@@ -318,7 +332,7 @@ def upsert_report(
             rid = existing["id"]
             conn.execute(
                 "UPDATE reports SET"
-                "  created_ts = ?, trace_ts = ?, model = ?, raw = ?, final = ?,"
+                "  created_ts = ?, trace_ts = ?, model = ?, raw_text = ?, final_text = ?,"
                 "  steps_json = ?, corrections_json = ?,"
                 "  intended_text = ?, user_comment = ?,"
                 "  reporter_role = ?, reporter_host = ?,"
@@ -344,7 +358,7 @@ def upsert_report(
         conn.execute(
             "INSERT INTO reports ("
             " id, created_ts, trace_ts, request_id, model,"
-            " raw, final, steps_json, corrections_json,"
+            " raw_text, final_text, steps_json, corrections_json,"
             " intended_text, user_comment, reporter_role, reporter_host,"
             " status, admin_notes, resolved_ts,"
             " user_id, language, stages_json"

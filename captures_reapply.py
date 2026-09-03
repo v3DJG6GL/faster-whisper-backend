@@ -94,7 +94,7 @@ def _run() -> None:
         # short text columns (no words_json / segments_json), so memory
         # stays bounded even at tens of thousands of rows.
         rows = conn.execute(
-            "SELECT id, raw, final, text_for_training, model, sample_id, user_id"
+            "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id"
             " FROM captures ORDER BY created_ts DESC"
         ).fetchall()
         # Reprocess re-runs ONLY the pipeline (no model re-decode), so it

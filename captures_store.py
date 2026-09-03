@@ -72,8 +72,8 @@ CREATE TABLE IF NOT EXISTS captures (
   audio_s REAL,
   audio_relpath   TEXT NOT NULL,
   audio_format    TEXT NOT NULL,
-  raw             TEXT NOT NULL,
-  final           TEXT NOT NULL,
+  raw_text        TEXT NOT NULL,
+  final_text      TEXT NOT NULL,
   text_for_training TEXT,
   audio_trimmed_relpath TEXT,
   audio_trim_lead_ms INTEGER,
@@ -116,13 +116,17 @@ def init_db(db_path: str, audio_dir: str) -> None:
 
 
 def _rename_columns(conn: sqlite3.Connection) -> None:
-    """Column renames (2026-09): the audio length is audio_s in every store.
+    """Column renames (2026-09): the audio length is audio_s and the two
+    transcript columns are raw_text / final_text in every store (the wire
+    keeps the short raw / final keys, see _row_to_dict).
     Runs before _SCHEMA_CORE so CREATE TABLE IF NOT EXISTS never sees the
     old name as the live one; RENAME COLUMN keeps the data."""
     have = {r["name"] for r in conn.execute("PRAGMA table_info(captures)")}
-    if "duration_seconds" in have and "audio_s" not in have:
-        conn.execute("ALTER TABLE captures RENAME COLUMN duration_seconds TO audio_s")
-        conn.commit()
+    for old, new in (("duration_seconds", "audio_s"), ("raw", "raw_text"),
+                     ("final", "final_text")):
+        if old in have and new not in have:
+            conn.execute(f"ALTER TABLE captures RENAME COLUMN {old} TO {new}")
+    conn.commit()
 
 
 def _ensure_columns(conn: sqlite3.Connection) -> None:
@@ -224,6 +228,12 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
     include_words=False the heavy fields (words_json, segments_json)
     are dropped — used by /list to keep the wire payload light."""
     d = dict(row)
+    # Columns are raw_text / final_text (every store agrees); the API and
+    # the pages keep the established raw / final keys.
+    if "raw_text" in d:
+        d["raw"] = d.pop("raw_text")
+    if "final_text" in d:
+        d["final"] = d.pop("final_text")
     try:
         d["corrections"] = json.loads(d.pop("corrections_json", "[]") or "[]")
     except (TypeError, ValueError):
@@ -368,7 +378,7 @@ def create_capture(
                 "INSERT INTO captures ("
                 " id, created_ts, request_id, model, language,"
                 " audio_s, audio_relpath, audio_format,"
-                " raw, final, text_for_training, audio_trimmed_relpath,"
+                " raw_text, final_text, text_for_training, audio_trimmed_relpath,"
                 " words_json, segments_json,"
                 " corrected_text, corrections_json, admin_notes,"
                 " status, reviewed_ts, user_id, sample_id, sample_order,"
@@ -660,7 +670,7 @@ def _drop_oldest_by_bytes(
 _LIST_COLUMNS = (
     "id, created_ts, request_id, model, language,"
     " audio_s, audio_relpath, audio_format,"
-    " raw, final, text_for_training, audio_trimmed_relpath,"
+    " raw_text, final_text, text_for_training, audio_trimmed_relpath,"
     " audio_trim_lead_ms, audio_trim_trail_ms,"
     " corrected_text, corrections_json, admin_notes,"
     " status, reviewed_ts, user_id, sample_id, sample_order,"
@@ -817,7 +827,7 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
         sets.append("admin_notes = ?")
         params.append(notes)
     if "final" in patch:
-        sets.append("final = ?")
+        sets.append("final_text = ?")
         params.append(str(patch["final"] or "")[:_CAP_FINAL])
     if "text_for_training" in patch:
         sets.append("text_for_training = ?")
