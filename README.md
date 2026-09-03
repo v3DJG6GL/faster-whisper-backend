@@ -176,7 +176,7 @@ print(r.text)
 
 ## Configuration
 
-**Every** factory default — models, default prompt, server host/port, log paths, faster-whisper transcribe defaults, **and** the post-processing pipeline rules — lives in the committed **`config.json`** at the repo root (single source of truth; `config.py` only loads it and layers the overrides below on top). Edit it directly to change a default for every deployment, then restart the service (`systemctl restart whisper-api` / `Restart-Service WhisperAPI` / the `/settings` restart button) to pick up the changes. The algorithm code in `main.py` doesn't need to be touched.
+**Every** factory default — models, default prompt, server host/port, log paths, faster-whisper transcribe defaults, **and** the post-processing pipeline rules — lives in the committed **`config.json`** at the repo root (single source of truth; `faster_whisper_backend/config.py` only loads it and layers the overrides below on top). Edit it directly to change a default for every deployment, then restart the service (`systemctl restart whisper-api` / `Restart-Service WhisperAPI` / the `/settings` restart button) to pick up the changes. The algorithm code in `faster_whisper_backend/main.py` doesn't need to be touched.
 
 Layers of overrides, **env wins over file wins over in-repo default**:
 
@@ -519,7 +519,7 @@ First-use of any new model triggers a one-time download (~600 MB to ~1.5 GB depe
 Linux (systemd):
 
 ```bash
-sudo systemctl restart whisper-api       # after editing main.py / config
+sudo systemctl restart whisper-api       # after editing the code / config
 sudo systemctl stop    whisper-api
 systemctl status       whisper-api
 ./uninstall-service.sh                   # remove the service
@@ -528,7 +528,7 @@ systemctl status       whisper-api
 Windows (service):
 
 ```powershell
-Restart-Service WhisperAPI               # after editing main.py
+Restart-Service WhisperAPI               # after editing the code
 Stop-Service    WhisperAPI
 Get-Service     WhisperAPI
 .\uninstall-service.ps1                  # remove the service
@@ -552,7 +552,7 @@ A single ordered list of rules — `cfg.PIPELINE_RULES` — is applied to each t
 - `callback:upper` — capitalize after sentence terminator
 - `terminal` — final `lstrip(" \t\r") + rstrip(" \t\r")`; always last (preserves leading/trailing `\n`)
 
-The 14 seeded defaults handle orthography normalization (`ß`→`ss`), Whisper noise stripping, dictation (`Punkt`→`.`, `neue Zeile`→`\n`, …), and tidy spacing/newlines/capitalization. They live in the committed **`config.json`** (the `PIPELINE_RULES` array, next to all the scalar defaults); `config.py` loads that file at startup. Each rule carries an optional `note` field documenting its rationale.
+The 14 seeded defaults handle orthography normalization (`ß`→`ss`), Whisper noise stripping, dictation (`Punkt`→`.`, `neue Zeile`→`\n`, …), and tidy spacing/newlines/capitalization. They live in the committed **`config.json`** (the `PIPELINE_RULES` array, next to all the scalar defaults); `faster_whisper_backend/config.py` loads that file at startup. Each rule carries an optional `note` field documenting its rationale.
 
 **Ordering invariants:** `dictation-map` multi-word phrases must precede their single-word components (the alternation regex is rebuilt longest-first, so the longest phrase wins); the `terminal` trim rule is always last.
 
@@ -684,63 +684,77 @@ Assets:
 ## Files
 
 ```
-main.py                    FastAPI app + post-processing pipeline + log viewer
-config.py                  Loads config.json factory defaults, layers config.local.json + WHISPER_* env on top
+main.py                    Launcher shim: `python main.py` / `uvicorn main:app` → faster_whisper_backend.main
+faster_whisper_backend/    The application package (run it with `python -m faster_whisper_backend` too)
+  main.py                  FastAPI app + post-processing pipeline + log viewer
+  paths.py                 REPO_ROOT — the checkout; config.json, static/, ytdlp_plugins/ and the Windows data/ + models/ defaults live there
+  config.py                Loads config.json factory defaults, layers config.local.json + WHISPER_* env on top
+  config_store.py          Admin-WebUI persistence layer (Pydantic schema, atomic writes)
+  config_renames.py        Old → new config-key table (env aliases + config.local.json migration)
+  effective_config.py      Layered per-identity config resolution (key/user/profile overrides, locks)
+  build_info.py            Build + runtime identity — the version string clients and the WebUI display
+  core/                    Shared infrastructure, no domain of its own
+    store_common.py        SQLite connection contract (WAL, busy timeout), shared job columns, 0600/0700 hardening, log_safe
+    web_common.py          Shared WebUI helpers: allowlist gate, nav HTML + severity pills, login gate, sse_response
+    jobs.py                Central registry of running jobs (transcribe / dictate / translate / download / preload)
+    net_policy.py          The one definition of which outbound addresses the server refuses (loaded by path from ytdlp_plugins/)
+    regex_guard.py         Out-of-process guard for user-authored pipeline regexes
+    text_corrections.py    Shared schema for word-correction chips
+    receipt_hold.py        Holds a dictation's request receipt open until its translation lands
+  auth/                    Who is calling
+    dependencies.py        Auth deps — get_current_user / require_admin / require_page + OPEN-mode loop
+    rate_limit.py          Shared per-identity limiters + the typed 429 envelope they raise
+    api_keys_store.py      users + api_keys SQLite store (SHA-256 hash, soft revoke, O(1) lookup)
+    api_keys_routes.py     /settings/api-keys admin UI for per-user key management
+    sessions_store.py      Durable browser-session store — the cookie layer on top of api_keys_store
+  client_settings/         routes.py + store.py: per-account desktop-client settings blob + /v1/client-settings sync API
+  captures/                Dictation captures and training samples
+    routes.py              /captures page + samples/merge/reprocess API
+    store.py               Capture rows + audio fanout, retention, eviction
+    samples_store.py       Duration-capped training samples (default ≤29.9 s) built from consecutive same-speaker captures
+    merge_proposer.py      Auto-merge proposer for /captures curation (see docs/captures-finetune-findings.md)
+    reapply.py             Background job: re-run current pipeline rules over existing captures
+    vad_reprocess.py       Background job: re-merge sample audio with current silence settings
+  streaming/               Live dictation over WebSocket
+    routes.py              WebSocket /v1/audio/transcriptions/stream + /dictate demo page
+    session.py             Per-connection streaming dictation state machine
+    transport.py           Streaming audio decoders (raw PCM passthrough, ffmpeg WebM/Opus)
+    vad.py                 Streaming endpointing (two-tier Silero/energy VAD)
+    localagreement.py      LocalAgreement-2 hypothesis stabilization
+  audio/                   Audio processing and the optional ML stages
+    transcode.py           In-process audio transcoder (PyAV — no ffmpeg-on-PATH needed)
+    vad_trim.py            Silence-trim WAVs with the bundled Silero VAD
+    merge.py               stdlib-wave PCM splicer for duration-capped training-sample packing
+    translation.py         Text-to-text translation stage: GGUF models via llama.cpp (optional: requirements-translate.txt)
+    diarization.py         Speaker diarization via pyannote.audio (optional: requirements-diarize.txt)
+    bgm_separation.py      Background-music separation via audio-separator / UVR MDX-Net (optional: requirements-bgm.txt)
+  runtime/                 Models in memory and the machine they run on
+    preload.py             Model preloading: plan registry, warm leases and the single load worker
+    preload_routes.py      POST /v1/models/preload — warm the models a job is about to need
+    model_sizes.py         Persisted ledger of measured model sizes + free-memory fit check
+    download_progress.py   Model-download progress (huggingface_hub tqdm shim + capture scope)
+    system_stats.py        GPU + host snapshot (pynvml + psutil; degrades gracefully if NVML missing)
+  stats/                   Metrics, usage and the /stats dashboard
+    routes.py              /stats dashboard endpoints + HTML page (always on, allowlist-gated)
+    sampler.py             1 Hz busy/system-metrics sampler loop
+    metrics.py             In-process request metrics (counters, latency ring) + the per-job write into both stores
+    usage_store.py         Durable per-key / per-user usage rollup (/v1/usage, /stats/usage)
+    usage_routes.py        POST /v1/usage/outcome
+    recent_transcriptions_store.py  Durable store for recent transcription traces (/quick-config recent)
+    system_metrics_store.py         Machine-load history for /stats (GPU/CPU/RAM samples)
+  quick_config/            routes.py: /quick-config end-user rule editor + /v1/pipeline-rules · state.py: tokenization + SSE broadcast
+  admin/                   Admin WebUI pages
+    routes.py              Admin /settings + /settings/pipeline pages & endpoints (disable with WHISPER_ADMIN_UI=0)
+    overrides_routes.py    /settings/overrides admin page & API (profiles, explorer/resolve)
+    reports_store.py / reports_routes.py   User-submitted transcription error reports + admin triage
+    home_routes.py         Root landing hub — GET / serves the WebUI's front door
+    restart_service.py     Detached self-restart helper (os.execv re-exec on Linux/macOS, WinSW on Windows)
+  url/                     download.py: transcribe-from-URL via yt-dlp + SSRF guard bootstrap · media_store.py: short-term retention of URL audio
+ytdlp_plugins/             SSRF guard for yt-dlp: same policy on every hop, pinned DNS, http(s) only (layout mandated by yt-dlp)
+tests/                     pytest suite, one directory per package (tests/captures/, tests/streaming/, …); tests/main/ covers main.py
+scripts/                   Manual helpers (OpenAI-SDK smoke check); not part of the app or the suite
+docs/                      Brand assets + research notes (captures-finetune-findings.md)
 config.json                Committed factory defaults for EVERY setting + the pipeline rules (single source of truth)
-config_store.py            Admin-WebUI persistence layer (Pydantic schema, atomic writes)
-effective_config.py        Layered per-identity config resolution (key/user/profile overrides, locks)
-admin_routes.py            Admin /settings + /settings/pipeline pages & endpoints (disable with WHISPER_ADMIN_UI=0)
-overrides_routes.py        /settings/overrides admin page & API (profiles, explorer/resolve)
-api_keys_store.py          users + api_keys SQLite store (SHA-256 hash, soft revoke, O(1) lookup)
-api_keys_routes.py         /settings/api-keys admin UI for per-user key management
-sessions_store.py          Durable browser-session store — the cookie layer on top of api_keys_store
-auth.py                    Auth deps — get_current_user / require_admin / require_page + OPEN-mode loop
-quick_config_routes.py     /quick-config end-user rule editor + the /v1/pipeline-rules client API
-quick_config_state.py      Tokenization + SSE broadcast layer for /quick-config recent transcriptions
-stats_routes.py            /stats dashboard endpoints + HTML page (always on, allowlist-gated)
-metrics.py                 In-process request metrics (counters, latency ring, recent transcriptions)
-system_stats.py            GPU + host snapshot (pynvml + psutil; degrades gracefully if NVML missing)
-usage_store.py             Durable per-key / per-user usage rollup (/v1/usage, /stats/usage)
-client_settings_store.py / client_settings_routes.py
-                           Per-account desktop-client settings blob + /v1/client-settings sync API
-recent_transcriptions_store.py    Durable store for recent transcription traces (/quick-config recent)
-web_common.py              Shared helpers: allowlist gate, nav HTML + severity pills, login gate / OPEN-mode banner
-restart_service.py         Detached self-restart helper (os.execv re-exec on Linux/macOS, WinSW on Windows)
-streaming_routes.py        WebSocket /v1/audio/transcriptions/stream + /dictate demo page
-streaming_session.py       Per-connection streaming dictation state machine
-streaming_transport.py     Streaming audio decoders (raw PCM passthrough, ffmpeg WebM/Opus)
-streaming_vad.py           Streaming endpointing (two-tier Silero/energy VAD)
-streaming_localagreement.py LocalAgreement-2 hypothesis stabilization
-translation.py             Text-to-text translation stage: GGUF models via llama.cpp (LRU cache, prompt families, guards)
-diarization.py             Speaker diarization via pyannote.audio (optional install: requirements-diarize.txt)
-bgm_separation.py          Background-music separation via audio-separator / UVR MDX-Net (optional: requirements-bgm.txt)
-url_download.py            Transcribe-from-URL: fetch a client-supplied media link with yt-dlp
-url_media_store.py         Short-term retention store for URL-downloaded audio
-net_policy.py              The one definition of which outbound addresses the server refuses
-ytdlp_plugins/             SSRF guard for yt-dlp: same policy on every hop, pinned DNS, http(s) only
-home_routes.py             Root landing hub — GET / serves the WebUI's front door
-preload.py                 Model preloading: plan registry, warm leases and the single load worker
-preload_routes.py          POST /v1/models/preload — warm the models a job is about to need
-jobs.py                    Central registry of running jobs (transcribe / dictate / translate / download / preload)
-download_progress.py       Model-download progress (huggingface_hub tqdm shim + capture scope)
-receipt_hold.py            Holds a dictation's request receipt open until its translation lands
-rate_limit.py              Shared per-identity limiters + the typed 429 envelope they raise
-store_common.py            Shared store hardening (0600/0700 chmod) + log_safe control-char screen
-model_sizes.py             Persisted ledger of measured model sizes + free-memory fit check
-build_info.py              Build + runtime identity — the version string clients and the WebUI display
-audio_transcode.py         In-process audio transcoder (PyAV — no ffmpeg-on-PATH needed)
-audio_vad_trim.py          Silence-trim WAVs with the bundled Silero VAD
-audio_merge.py             stdlib-wave PCM splicer for duration-capped training-sample packing (default ≤29.9 s)
-captures_store.py          Capture rows + audio fanout, retention, eviction
-capture_samples_store.py   Duration-capped training samples (default ≤29.9 s) built from consecutive same-speaker captures
-captures_routes.py         /captures page + samples/merge/reprocess API
-captures_merge_proposer.py Auto-merge proposer for /captures curation
-captures_reapply.py        Background job: re-run current pipeline rules over existing captures
-captures_vad_reprocess.py  Background job: re-merge sample audio with current silence settings
-reports_store.py / reports_routes.py
-                           User-submitted transcription error reports + admin triage
-regex_guard.py             Out-of-process guard for user-authored pipeline regexes
-text_corrections.py        Shared schema for word-correction chips
 config.local.json          Runtime overrides written by the admin UI (gitignored, optional)
 config.local.example.json  Example overrides file
 .env.example               Documented list of every WHISPER_* env var + defaults (copy to .env)
@@ -759,13 +773,14 @@ requirements-convert.txt   Deps for converting HF models to CTranslate2 (opt-in)
 requirements-translate.txt Text-to-text translation deps: llama-cpp-python (opt-in; prebuilt wheel indexes documented inside)
 requirements-diarize.txt   Speaker-diarization deps: pyannote.audio + torch (opt-in)
 requirements-bgm.txt       Background-music separation deps: audio-separator (opt-in; GPU paths swap in the [gpu] extra)
-pytest.ini                 Test discovery config (pytest -q from repo root)
+pytest.ini                 Test discovery config (pytest -q from repo root; coverage over faster_whisper_backend/)
 .coveragerc                Coverage config; CI runs pytest --cov-fail-under against it
+.git-blame-ignore-revs     The pure-move commits of the package reorganisation (git config blame.ignoreRevsFile .git-blame-ignore-revs)
 renovate.json              Renovate dependency-update policy (grouping, automerge rules)
 .forgejo/workflows/ci.yml  CI: test suite on Linux + Windows; the v* tag run builds and publishes the registry images
 .forgejo/workflows/release.yml      Tag-first release flow: mints the next v* tag off a green main push ("[skip release]" opts out)
 .forgejo/workflows/mirror-ghcr.yml  Mirrors the published images to ghcr.io; needs the GHCR_USER/GHCR_TOKEN secrets, else it no-ops
-static/                    Brand assets (logo.svg, favicon.*) + vendored uPlot/GridStack (offline /stats)
+static/                    Brand assets (logo.svg, favicon.*), dictate.html, stats.js + vendored uPlot/GridStack (offline /stats)
 .gitignore / .gitattributes
 logs/                      Created at first run; rotates at 10 MB × 10 files
 ```
