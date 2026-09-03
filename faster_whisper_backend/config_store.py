@@ -133,12 +133,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "hallucinations in quiet audio.",
     "VAD_MIN_SILENCE_MS":
         "In the end of each speech chunk, wait this long before separating "
-        "it. Default 2000 ms (faster-whisper override; tuned to avoid "
-        "splitting on short breaths).",
+        "it. Default 500 ms (tuned to avoid splitting on short breaths).",
     "VAD_SPEECH_PAD_MS":
         "Final speech chunks are padded by this much on each side. "
-        "Default 400 ms (faster-whisper override; prevents word-edge "
-        "consonants from being clipped).",
+        "Default 200 ms (prevents word-edge consonants from being clipped).",
     "VAD_THRESHOLD":
         "Speech threshold. Silero VAD outputs speech probabilities for "
         "each audio chunk; probabilities ABOVE this value are considered "
@@ -1125,7 +1123,7 @@ _MODEL_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?$"
 ModelId = Annotated[str, Field(min_length=1, max_length=96, pattern=_MODEL_ID_PATTERN)]
 
 # Config-profile name — same shape as a tag (lowercase a-z0-9-, 1-32 chars,
-# no leading/trailing hyphen), so profile names and the existing visibility
+# no leading hyphen), so profile names and the existing visibility
 # tags share one normalisation contract.
 ProfileName = Annotated[str, Field(min_length=1, max_length=32,
                                    pattern=r"^[a-z0-9][a-z0-9-]{0,31}$")]
@@ -1182,7 +1180,7 @@ RuleSlug = Annotated[str, Field(min_length=1, max_length=64,
 RuleLabel = Annotated[str, Field(min_length=1, max_length=80)]
 
 # Tag format — Kubernetes label-style: lowercase letters/digits/hyphens,
-# 1-32 chars, no leading/trailing hyphen. Tags filter which users see
+# 1-32 chars, no leading hyphen. Tags filter which users see
 # which rules on /quick-config. Re-used by api_keys_store for the
 # per-user `quick_config_tags` validator so admins can't drift the two
 # schemas apart.
@@ -1216,7 +1214,7 @@ def normalize_tags(raw: Any) -> list[str]:
         if not TAG_RE.match(norm):
             raise ValueError(
                 f"invalid tag {t!r} — lowercase a-z0-9- only, max 32 chars,"
-                " no leading/trailing hyphen"
+                " no leading hyphen"
             )
         if norm in seen:
             continue
@@ -1344,7 +1342,7 @@ class UpperRule(_RuleBase):
 
 class TerminalRule(_RuleBase):
     """Hardcoded final lstrip(' \\t\\r') + rstrip(' \\t\\r'). Always last;
-    never user-editable. Exactly one terminal row is required."""
+    never user-editable. At most one terminal row, and it must be the last entry."""
     type: Literal["terminal"]
 
 
@@ -2310,7 +2308,7 @@ class AdminConfig(BaseModel):
              only 2 groups exist; CPython parses templates eagerly, so this is
              cheap and has no backtracking risk).
           3. Slug uniqueness across the list.
-          4. Exactly one terminal rule, and it must be the last entry.
+          4. At most one terminal rule, and it must be the last entry.
 
         The load/startup/diff paths validate WITHOUT the `guard_regex` context,
         so a normal config load runs only the compile + template checks (fast)
@@ -2341,8 +2339,20 @@ class AdminConfig(BaseModel):
                 terminal_idx = idx
                 continue
             # callback:map has no pattern field (auto-built from map keys at
-            # compile time); skip it here.
+            # compile time); skip it here.  On save, reject case-collisions:
+            # the compiler lowercases all keys, so two keys differing only by
+            # case silently shadow each other.
             if rtype == "callback:map":
+                if (info.context or {}).get("guard_regex"):
+                    m = getattr(rule, "map", None) or {}
+                    lc: dict[str, list[str]] = {}
+                    for k in m:
+                        lc.setdefault(k.lower(), []).append(k)
+                    for lower, originals in lc.items():
+                        if len(originals) > 1:
+                            raise ValueError(
+                                f"rule {idx} ({slug!r}): map keys "
+                                f"{originals} collide when lowercased")
                 continue
             # regex-list: compile + guard each entry's pattern + replacement.
             if rtype == "regex-list":
@@ -2387,7 +2397,7 @@ class AdminConfig(BaseModel):
                 continue
             try:
                 re.compile(pat).sub(repl, "")
-            except re.error as e:
+            except (re.error, IndexError) as e:
                 raise ValueError(f"{where}: regex test failed: {e}")
         # Out-of-process catastrophic-backtracking guard (a real .sub run
         # against the 1 KB fixture). Runs ONLY on an explicit save of
@@ -3241,13 +3251,13 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
     with _save_lock(path):
         merged: dict[str, Any] = {}
         if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
+                try:
                     raw = json.load(f)
-                if isinstance(raw, dict):
-                    merged = raw
-            except (OSError, json.JSONDecodeError):
-                merged = {}
+                except json.JSONDecodeError:
+                    raw = None
+            if isinstance(raw, dict):
+                merged = raw
         merged.setdefault("schema_version", 1)
         merged["PIPELINE_RULES"] = out_rules
         _atomic_write_json(merged, path, sort_keys=False, tmp_prefix=".config.")
@@ -3378,15 +3388,13 @@ def save_overrides(
     with _save_lock(path):
         existing: dict[str, Any] = {}
         if os.path.exists(path):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
+                try:
                     raw = json.load(f)
-                if isinstance(raw, dict):
-                    existing = _migrate_legacy_keys(raw)
-            except (OSError, json.JSONDecodeError):
-                # Corrupted file — fall through to a clean rewrite. The new
-                # payload will be validated below, so we never write garbage.
-                existing = {}
+                except json.JSONDecodeError:
+                    raw = None
+            if isinstance(raw, dict):
+                existing = _migrate_legacy_keys(raw)
 
         # Merge: payload wins over existing. None means "remove this override."
         merged = dict(existing)
@@ -3461,7 +3469,7 @@ def env_pinned_fields() -> dict[str, str]:
     return {
         field: env
         for field, env in ENV_VAR_MAPPING.items()
-        if os.environ.get(env) is not None and field not in _rejected
+        if (os.environ.get(env) or "").strip() and field not in _rejected
     }
 
 
@@ -3522,7 +3530,7 @@ def validate_profile_refs(names: Any) -> list[str]:
         if not TAG_RE.match(nm):
             raise ValueError(
                 f"invalid profile name {n!r} — lowercase a-z0-9- only, "
-                "max 32 chars, no leading/trailing hyphen")
+                "max 32 chars, no leading hyphen")
         if nm not in available:
             raise ValueError(f"unknown profile {nm!r} — create it first")
         if nm in seen:

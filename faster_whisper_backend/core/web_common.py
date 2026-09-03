@@ -1878,7 +1878,11 @@ TAG_PICKER_JS = r"""
     }
 
     function _render() {
-      pills.innerHTML = '';
+      if (!input.parentNode || input.parentNode !== pills)
+        pills.appendChild(input);
+      while (pills.firstChild && pills.firstChild !== input)
+        pills.removeChild(pills.firstChild);
+      var frag = document.createDocumentFragment();
       tags.forEach(function(t) {
         var pill = document.createElement('span');
         pill.className = 'tag-pill';
@@ -1900,9 +1904,9 @@ TAG_PICKER_JS = r"""
           });
           pill.appendChild(x);
         }
-        pills.appendChild(pill);
+        frag.appendChild(pill);
       });
-      pills.appendChild(input);
+      pills.insertBefore(frag, input);
     }
 
     function _tryAdd(raw) {

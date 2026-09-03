@@ -190,7 +190,7 @@ def build_visible_rules(user: dict[str, Any]) -> tuple[list[dict[str, Any]], str
     the same canonical bytes) for optimistic-concurrency on the patch path."""
     perms = user["permissions"]
     canonical = [
-        r for r in _canon_rules(list(cfg.PIPELINE_RULES))
+        dict(r) for r in _canon_rules(list(cfg.PIPELINE_RULES))
         if isinstance(r, dict)
         and r.get("type") != "terminal"
         and perms.can_see_rule(r)
@@ -873,8 +873,10 @@ async def get_my_usage(
                 start_hour = usage_store.hour_for_ts(float(tz_midnight))
             else:
                 start_hour = usage_store.local_day_start_hour()
-            total = usage_store.totals_for_user(uid)
-            today = usage_store.totals_for_user(uid, start_hour=start_hour)
+            total = await asyncio.to_thread(usage_store.totals_for_user, uid)
+            today = await asyncio.to_thread(
+                usage_store.totals_for_user, uid, start_hour=start_hour,
+            )
         except Exception:
             today, total = dict(zero), dict(zero)
     return {

@@ -1807,7 +1807,12 @@ try:
     }
     if _changed:
         try:
-            _AdminConfig.model_validate(_changed)
+            _full = {
+                _f: globals()[_f]
+                for _f in _AdminConfig.model_fields
+                if _f in globals() and _f not in _ENV_VALIDATE_SKIP
+            }
+            _AdminConfig.model_validate(_full)
         except Exception as _verr:  # noqa: BLE001 — any validation failure
             # Revert ONLY the fields the error locations name. Errors with an
             # empty/unknown loc (cross-field model validators) can't be

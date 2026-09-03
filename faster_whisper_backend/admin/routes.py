@@ -516,6 +516,9 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     # scalar saves stay off the shared lock.
     _lock = (_pipeline_rules_lock() if "PIPELINE_RULES" in payload
              else contextlib.nullcontext())
+    _prev_model_overrides = (
+        getattr(cfg, "MODEL_OVERRIDES", None) or {}
+    ) if "MODEL_OVERRIDES" in payload else None
     async with _lock:
         try:
             # Off the loop: save_overrides validates PIPELINE_RULES through
@@ -646,11 +649,18 @@ async def _apply_hot_changes(written: dict[str, Any]) -> dict[str, Any]:
         if "MODEL_OVERRIDES" in written:
             # Per-model override changed for one or more model ids — figure
             # out which ones touched a load-time field and evict only those.
+            # Also evict models whose overrides were REMOVED — they may be
+            # running with settings that no longer apply.
             new_overrides = coerced.get("MODEL_OVERRIDES") or {}
+            old_overrides = _prev_model_overrides or {}
             for model_id, ovr in new_overrides.items():
                 if not isinstance(ovr, dict):
                     continue
                 if set(ovr.keys()) & config_store.LOAD_TIME_FIELDS:
+                    ev = await _main.drain_then_evict(model_id)
+                    evicted.extend(ev)
+            for model_id in old_overrides:
+                if model_id not in new_overrides:
                     ev = await _main.drain_then_evict(model_id)
                     evicted.extend(ev)
     except Exception as e:
@@ -1200,6 +1210,7 @@ async def translation_test(
         if _pid:
             _main._BATCH_PROGRESS.pop(_pid, None)
             _main._BATCH_CANCELLED.discard(_pid)
+            _main._PROGRESS_OWNER.pop(_pid, None)
     ms = int((time.perf_counter() - t0) * 1000)
     # A guard-failed test FALLS BACK to the untranslated source text — the
     # warnings are the only signal, so they MUST reach the admin (otherwise a

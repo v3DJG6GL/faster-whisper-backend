@@ -253,7 +253,7 @@ async def reports_page() -> HTMLResponse:
 class PatchReportIn(BaseModel):
     model_config = {"extra": "forbid"}
     status: Literal["open", "resolved", "dismissed"] | None = None
-    admin_notes: str | None = None
+    admin_notes: str | None = Field(default=None, max_length=8000)
 
 
 @router.get(
@@ -698,8 +698,8 @@ _REPORTS_HTML = """<!doctype html>
     </div>
     <div class="subbar-right">
       <button id="btn-refresh" title="Reload">Refresh</button>
-      <button id="btn-export" title="Download all reports as JSON">Export</button>
-      <button id="btn-clear" class="danger" title="Permanently delete every report">Clear all</button>
+      <button id="btn-export" class="admin-only" title="Download all reports as JSON">Export</button>
+      <button id="btn-clear" class="danger admin-only" title="Permanently delete every report">Clear all</button>
     </div>
     <span class="counts" id="counts"></span>
   </div>

@@ -405,6 +405,13 @@ def _next_atom(pat: str, i: int) -> "tuple[str | None, str | None, int]":
                 j = k + 1
             elif k < n and pat[k] == "<" and k + 1 < n and pat[k + 1] in "=!":
                 zero_width, j = True, k + 2
+            elif k < n and pat[k] in "aiLmsux":
+                m = k
+                while m < n and pat[m] in "aiLmsux-":
+                    m += 1
+                if m < n and pat[m] == ")":
+                    return None, None, m + 1
+                j = k
             else:
                 end = pat.find(">", k)
                 close = pat.find(")", k)
