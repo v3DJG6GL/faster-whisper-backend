@@ -2114,20 +2114,20 @@ function renderTrace(entry) {
   // duration nor its word count. Both are columns on the row — show them
   // whenever the row actually carries them.
   {
-    const secs = Number(entry.audio_dur);
+    const secs = Number(entry.audio_s);
     if (Number.isFinite(secs) && secs > 0) {
       addPill(traceDur(secs), 'num', 'audio duration');
     }
     // Prefer the stored count over re-splitting the text: it is what the
     // request actually recorded, and it survives an empty raw/final.
-    const stored = Number(entry.words_count);
+    const stored = Number(entry.words);
     const t = entry.final || entry.raw || '';
     const words = Number.isFinite(stored) && stored > 0
       ? stored
       : (t.trim() ? t.trim().split(/\s+/).length : 0);
     if (words) addPill(fmtCount(words) + ' words', 'num', 'words produced');
     // rtf is computed server-side in _row_to_dict precisely so consumers do
-    // not repeat audio_dur_s / proc_dur_s — this one never read it.
+    // not repeat audio_s / processing_s — this one never read it.
     const rtf = Number(entry.rtf);
     if (Number.isFinite(rtf) && rtf > 0) {
       addPill(rtf.toFixed(1) + '\u00d7',
@@ -2148,7 +2148,7 @@ function renderTrace(entry) {
     if (stages.length) {
       // Rail first: proportion at a glance. Chips below keep the exact
       // seconds, so nothing about a stage becomes hover-only.
-      const rail = traceRail(stages, entry.audio_dur);
+      const rail = traceRail(stages, entry.audio_s);
       if (rail) item.appendChild(rail);
       const row = document.createElement('div');
       row.className = 'trace-meta trace-stages';

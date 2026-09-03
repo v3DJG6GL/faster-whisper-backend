@@ -2582,7 +2582,7 @@ function segValRJ() {
 }
 
 function jobSpeed(r) {
-  const wall = r.proc_dur || 0;
+  const wall = r.processing_s || 0;
   if (r.kind === 'download') {
     const st = (r.stages || []).find(s => s.bytes);
     if (st && st.secs > 0) return ((st.bytes / 1048576) / st.secs).toFixed(1) + ' MB/s';
@@ -2607,7 +2607,7 @@ function jobInput(r) {
     const m = st && st.detail && String(st.detail).match(/^(\d+) segs/);
     return m ? m[1] + ' segs' : '—';
   }
-  return (r.audio_dur || 0).toFixed(1) + ' s';
+  return (r.audio_s || 0).toFixed(1) + ' s';
 }
 
 function pipeGlyph(r) {
@@ -2756,7 +2756,7 @@ function renderJobs(snap) {
   const doneRows = (view === 'running' ? [] : rt)
     .filter(r => !flt.kinds || flt.kinds.includes(r.kind))
     .filter(r => !warnOnly || r.status !== 'ok')
-    .filter(r => view !== 'slow' || (r.audio_dur > 0 && r.proc_dur > 0.5 * r.audio_dur))
+    .filter(r => view !== 'slow' || (r.audio_s > 0 && r.processing_s > 0.5 * r.audio_s))
     .filter(r => !flt.users || flt.users.includes(r.username))
     .map(r => {
       const key = String(r.ts || 0);
@@ -2771,7 +2771,7 @@ function renderJobs(snap) {
       <td data-label="user·key">${esc(who || '—')}</td>
       <td class="num" data-label="input">${jobInput(r)}</td>
       <td class="num${r.wait_s > 0 ? ' warn' : ''}" data-label="wait">${r.wait_s != null ? r.wait_s.toFixed(1) + ' s' : '—'}</td>
-      <td class="num" data-label="wall">${r.proc_dur.toFixed(2)} s</td>
+      <td class="num" data-label="wall">${r.processing_s.toFixed(2)} s</td>
       <td class="num" data-label="speed">${jobSpeed(r)}</td>
       <td data-label="status"><span class="badge ${r.status === 'ok' ? 'ok' : 'err'}" title="${esc(r.error_class ? r.error_class + (r.error_stage ? ' in ' + r.error_stage : '') : r.status)}">${esc(r.status === 'ok' ? 'ok' : (r.error_class || r.status))}</span></td>
     </tr>`;

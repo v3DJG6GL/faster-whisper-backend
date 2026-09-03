@@ -216,7 +216,7 @@ def test_record_download_persists_a_download_row(tx_store):
     recent = metrics.metrics_snapshot()["recent_transcriptions"]
     row = [r for r in recent if r["kind"] == "download"][0]
     assert row["model"] == "gguf:org/m:Q4"
-    assert row["proc_dur"] == 2.0
+    assert row["processing_s"] == 2.0
     assert row["stages"][0]["bytes"] == 4 * (1 << 30)
     assert "GB" in row["stages"][0]["detail"]
 
@@ -288,7 +288,7 @@ def test_snapshot_user_filter_returns_only_that_users_rows(tx_store):
     metrics.record_transcription("m", 3.0, 0.5, "ok", 3, request_id="a2",
                                  user_id="alice")
     own = metrics.metrics_snapshot(user_id="alice")["recent_transcriptions"]
-    assert sorted(r["audio_dur"] for r in own) == [1.0, 3.0]
+    assert sorted(r["audio_s"] for r in own) == [1.0, 3.0]
     assert len(metrics.metrics_snapshot()["recent_transcriptions"]) == 3
     assert metrics.metrics_snapshot(user_id="nobody")["recent_transcriptions"] == []
 

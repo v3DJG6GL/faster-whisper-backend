@@ -418,7 +418,7 @@ def test_own_scope_full_payload_is_coarse(client, tx_store):
     assert snap["server"]["gpu"]["busy"] is True      # a job was running
     assert [j["id"] for j in snap["jobs"]] == [a]
     assert snap["jobs"][0]["user"] == "alice"          # own rows keep identity
-    assert [r["audio_dur"] for r in snap["recent_transcriptions"]] == [1.0]
+    assert [r["audio_s"] for r in snap["recent_transcriptions"]] == [1.0]
 
 
 def test_own_scope_lite_payload_scoped(client):
@@ -888,9 +888,9 @@ def _seed_jobs_pages(n, user_id="ua", **kw):
     import transcriptions_store
     for i in range(n):
         transcriptions_store.record_timing(
-            request_id=f"{user_id}-{i}", model="m", audio_dur_s=10.0,
-            proc_dur_s=(9.0 if i % 5 == 0 else 1.0), user_id=user_id,
-            status=("error" if i % 4 == 0 else "ok"), words_count=1,
+            request_id=f"{user_id}-{i}", model="m", audio_s=10.0,
+            processing_s=(9.0 if i % 5 == 0 else 1.0), user_id=user_id,
+            status=("error" if i % 4 == 0 else "ok"), words=1,
             kind="transcribe", created_ts=2000.0 + i, key_label="lbl", **kw)
 
 

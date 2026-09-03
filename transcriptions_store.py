@@ -15,8 +15,8 @@ Two upsert call sites per /transcribe request, both keyed by request_id:
      rich payload: raw_text, final_text, steps_json, tokens_json,
      bigrams_json, model, language, user_id, username, created_ts.
 
-  2. `record_timing(...)` (outer finally, always) writes proc_dur_s,
-     audio_dur_s, words_count, status. On the error path it inserts a
+  2. `record_timing(...)` (outer finally, always) writes processing_s,
+     audio_s, words, status. On the error path it inserts a
      minimal row (no raw/final/steps) so /stats still counts the request.
 
 Lazy pruning every `cfg.RECENT_TRANSCRIPTIONS_PRUNE_EVERY` inserts: a
@@ -86,9 +86,9 @@ CREATE TABLE IF NOT EXISTS recent_transcriptions (
   language      TEXT,
   source        TEXT NOT NULL DEFAULT 'file',
   status        TEXT NOT NULL DEFAULT 'ok',
-  audio_dur_s   REAL,
-  proc_dur_s    REAL,
-  words_count   INTEGER,
+  audio_s       REAL,
+  processing_s  REAL,
+  words         INTEGER,
   raw_text      TEXT,
   final_text    TEXT,
   steps_json    TEXT,
@@ -118,6 +118,15 @@ def init_db(path: str) -> None:
     store_common.secure_db_file(path)
     # Migrate pre-existing DBs (created before the `source` column): add it with
     # the 'file' default so old rows read as batch/file-upload transcriptions.
+    # Column renames (2026-09): the same measurements now carry the same
+    # names in every store (audio_s / processing_s / words, as usage_jobs
+    # already said). RENAME COLUMN keeps the data and rewrites the indexes.
+    cols = {r["name"] for r in _conn.execute("PRAGMA table_info(recent_transcriptions)")}
+    for old, new in (("audio_dur_s", "audio_s"), ("proc_dur_s", "processing_s"),
+                     ("words_count", "words")):
+        if old in cols and new not in cols:
+            _conn.execute(f"ALTER TABLE recent_transcriptions RENAME COLUMN {old} TO {new}")
+    _conn.commit()
     cols = {r["name"] for r in _conn.execute("PRAGMA table_info(recent_transcriptions)")}
     if "source" not in cols:
         _conn.execute(
@@ -186,7 +195,7 @@ def _truncate_steps(steps: list) -> list:
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     """Materialize a row to the wire shape expected by /quick-config and
     /stats consumers. Decodes the JSON-bearing columns; computes the
-    derived `rtf` (audio_dur_s / proc_dur_s) so callers don't repeat the
+    derived `rtf` (audio_s / processing_s) so callers don't repeat the
     formula. Keeps both `ts` (legacy /quick-config field name) and
     `created_ts` (the actual column) so existing JS keeps working."""
     d = dict(row)
@@ -202,14 +211,10 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
             d[key] = []
         if not isinstance(d[key], list):
             d[key] = []
-    audio = d.get("audio_dur_s")
-    proc = d.get("proc_dur_s")
+    audio = d.get("audio_s")
+    proc = d.get("processing_s")
     d["rtf"] = round(audio / proc, 2) if (audio and proc and proc > 0) else None
     d["ts"] = d.get("created_ts")
-    # Legacy /stats widget keys — kept for the existing dashboard JS.
-    d["audio_dur"] = audio
-    d["proc_dur"] = proc
-    d["words"] = d.get("words_count")
     # /quick-config renderTrace + _buildReportForm read entry.raw / entry.final;
     # the live SSE event double-keys both names, hydrated rows must match.
     # Error-path rows (record_timing without record_trace) leave the text
@@ -309,10 +314,10 @@ def record_timing(
     *,
     request_id: str,
     model: str,
-    audio_dur_s: float | None,
-    proc_dur_s: float,
+    audio_s: float | None,
+    processing_s: float,
     status: str,
-    words_count: int,
+    words: int,
     user_id: str | None = None,
     created_ts: float | None = None,
     kind: str | None = None,
@@ -358,14 +363,14 @@ def record_timing(
         conn.execute(
             "INSERT INTO recent_transcriptions ("
             "  request_id, created_ts, user_id, model, status,"
-            "  audio_dur_s, proc_dur_s, words_count,"
+            "  audio_s, processing_s, words,"
             "  kind, stages_json, key_label, wait_s, error_class, error_stage"
             ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(request_id) DO UPDATE SET"
             "  status      = excluded.status,"
-            "  audio_dur_s = excluded.audio_dur_s,"
-            "  proc_dur_s  = excluded.proc_dur_s,"
-            "  words_count = excluded.words_count,"
+            "  audio_s      = excluded.audio_s,"
+            "  processing_s = excluded.processing_s,"
+            "  words        = excluded.words,"
             "  model       = excluded.model,"
             "  kind        = COALESCE(excluded.kind, recent_transcriptions.kind),"
             "  stages_json = COALESCE(excluded.stages_json, recent_transcriptions.stages_json),"
@@ -374,7 +379,7 @@ def record_timing(
             "  error_class = COALESCE(excluded.error_class, recent_transcriptions.error_class),"
             "  error_stage = COALESCE(excluded.error_stage, recent_transcriptions.error_stage)",
             (request_id, ts, user_id, model, status,
-             audio_dur_s, proc_dur_s, words_count,
+             audio_s, processing_s, words,
              kind, stages_blob, key_label, wait_s, error_class, error_stage),
         )
         _lazy_prune_if_due(prune_every, max_rows, ttl_days)
@@ -426,7 +431,7 @@ def list_recent(
         where.append("status = ?")
         params.append(status)
     if slow_rtf is not None and slow_rtf > 0:
-        where.append("audio_dur_s > 0 AND proc_dur_s > ? * audio_dur_s")
+        where.append("audio_s > 0 AND processing_s > ? * audio_s")
         params.append(float(slow_rtf))
     if query:
         # Escape LIKE wildcards so a literal % or _ in the search text is

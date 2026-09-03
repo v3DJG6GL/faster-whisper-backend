@@ -316,10 +316,10 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
         transcriptions_store.record_timing(
             request_id=request_id,
             model=model,
-            audio_dur_s=round(audio_dur, 3) if audio_dur else None,
-            proc_dur_s=round(proc_dur, 3),
+            audio_s=round(audio_dur, 3) if audio_dur else None,
+            processing_s=round(proc_dur, 3),
             status=status,
-            words_count=int(words or 0),
+            words=int(words or 0),
             user_id=user_id,
             kind=kind,
             stages=stages,
@@ -376,10 +376,10 @@ def record_download(model: str, seconds: float, bytes_done: int, *,
         transcriptions_store.record_timing(
             request_id=uuid.uuid4().hex,
             model=model,
-            audio_dur_s=None,
-            proc_dur_s=round(seconds, 3),
+            audio_s=None,
+            processing_s=round(seconds, 3),
             status=status,
-            words_count=0,
+            words=0,
             kind="download",
             stages=[{"name": "download", "secs": round(seconds, 3),
                      "model": model,
@@ -432,14 +432,14 @@ def project_recent_row(r: dict[str, Any], *, include_identity: bool = False
     rows and must not read other users' transcripts (or identities): the
     projection carries no raw/final text, and username / key_label are
     blanked unless `include_identity`. Nulls become numeric defaults so
-    `r.audio_dur.toFixed(1)` on error-path rows cannot freeze the view."""
+    `r.audio_s.toFixed(1)` on error-path rows cannot freeze the view."""
     return {
         "ts": r.get("ts"),
         "request_id": r.get("request_id") or "",
         "model": r.get("model") or "",
         "language": r.get("language") or "",
-        "audio_dur": r.get("audio_dur") or 0.0,
-        "proc_dur": r.get("proc_dur") or 0.0,
+        "audio_s": r.get("audio_s") or 0.0,
+        "processing_s": r.get("processing_s") or 0.0,
         "rtf": r.get("rtf"),
         "words": r.get("words") or 0,
         "status": r.get("status") or "error",
@@ -464,14 +464,14 @@ def project_recent_row(r: dict[str, Any], *, include_identity: bool = False
     rows and must not read other users' transcripts (or identities): the
     projection carries no raw/final text, and username / key_label are
     blanked unless `include_identity`. Nulls become numeric defaults so
-    `r.audio_dur.toFixed(1)` on error-path rows cannot freeze the view."""
+    `r.audio_s.toFixed(1)` on error-path rows cannot freeze the view."""
     return {
         "ts": r.get("ts"),
         "request_id": r.get("request_id") or "",
         "model": r.get("model") or "",
         "language": r.get("language") or "",
-        "audio_dur": r.get("audio_dur") or 0.0,
-        "proc_dur": r.get("proc_dur") or 0.0,
+        "audio_s": r.get("audio_s") or 0.0,
+        "processing_s": r.get("processing_s") or 0.0,
         "rtf": r.get("rtf"),
         "words": r.get("words") or 0,
         "status": r.get("status") or "error",

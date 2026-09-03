@@ -15,8 +15,8 @@ def test_kind_stages_key_label_roundtrip(tx_store):
     ts = tx_store
     stages = [{"name": "translate", "secs": 1.25, "model": "org/m:Q4",
                "detail": "3 segs → en"}]
-    ts.record_timing(request_id="t1", model="org/m:Q4", audio_dur_s=None,
-                     proc_dur_s=1.25, status="ok", words_count=0,
+    ts.record_timing(request_id="t1", model="org/m:Q4", audio_s=None,
+                     processing_s=1.25, status="ok", words=0,
                      kind="translate", stages=stages, key_label="ci-key")
     row = ts.list_recent(limit=10)[0]
     assert row["kind"] == "translate"
@@ -26,17 +26,17 @@ def test_kind_stages_key_label_roundtrip(tx_store):
 
 def test_timing_without_kind_keeps_earlier_values(tx_store):
     ts = tx_store
-    ts.record_timing(request_id="k1", model="m", audio_dur_s=None,
-                     proc_dur_s=1.0, status="ok", words_count=0,
+    ts.record_timing(request_id="k1", model="m", audio_s=None,
+                     processing_s=1.0, status="ok", words=0,
                      kind="download", stages=[{"name": "download", "secs": 1}],
                      key_label="lbl")
     # A later kwarg-less write (e.g. legacy caller) must not blank them.
-    ts.record_timing(request_id="k1", model="m", audio_dur_s=None,
-                     proc_dur_s=2.0, status="ok", words_count=0)
+    ts.record_timing(request_id="k1", model="m", audio_s=None,
+                     processing_s=2.0, status="ok", words=0)
     row = ts.list_recent(limit=10)[0]
     assert row["kind"] == "download"
     assert row["key_label"] == "lbl"
-    assert row["stages"] and row["proc_dur"] == 2.0
+    assert row["stages"] and row["processing_s"] == 2.0
 
 
 def test_migration_adds_columns_to_old_db(tmp_path):
@@ -92,20 +92,20 @@ def test_trace_then_timing_merges_one_row(tx_store):
     ts = tx_store
     ts.record_trace(request_id="r1", model="m", raw="hallo welt", final="Hallo Welt",
                     tokens=["Hallo", "Welt"], language="de", user_id="u")
-    ts.record_timing(request_id="r1", model="m", audio_dur_s=2.0, proc_dur_s=1.0,
-                     status="ok", words_count=2, user_id="u")
+    ts.record_timing(request_id="r1", model="m", audio_s=2.0, processing_s=1.0,
+                     status="ok", words=2, user_id="u")
     assert ts.count() == 1
     row = ts.list_recent(limit=10)[0]
     assert row["raw"] == "hallo welt" and row["final"] == "Hallo Welt"
-    assert row["audio_dur"] == 2.0 and row["proc_dur"] == 1.0
+    assert row["audio_s"] == 2.0 and row["processing_s"] == 1.0
     assert row["words"] == 2
     assert row["rtf"] == 2.0  # audio/proc
 
 
 def test_timing_only_inserts_minimal_row(tx_store):
     ts = tx_store
-    ts.record_timing(request_id="err1", model="m", audio_dur_s=None, proc_dur_s=0.5,
-                     status="error", words_count=0)
+    ts.record_timing(request_id="err1", model="m", audio_s=None, processing_s=0.5,
+                     status="error", words=0)
     row = ts.list_recent(limit=10)[0]
     assert row["status"] == "error"
     # NULL text coerced to empty strings.
@@ -116,8 +116,8 @@ def test_timing_only_inserts_minimal_row(tx_store):
 def test_falsy_request_id_skipped(tx_store):
     ts = tx_store
     ts.record_trace(request_id="", model="m", raw="x", final="y")
-    ts.record_timing(request_id="", model="m", audio_dur_s=1.0, proc_dur_s=1.0,
-                     status="ok", words_count=1)
+    ts.record_timing(request_id="", model="m", audio_s=1.0, processing_s=1.0,
+                     status="ok", words=1)
     assert ts.count() == 0
 
 
@@ -125,8 +125,8 @@ def test_trace_coalesce_preserves_user_on_timing(tx_store):
     ts = tx_store
     ts.record_trace(request_id="r", model="m", raw="a", final="b", user_id="alice")
     # timing with user_id None must not wipe the existing user (COALESCE).
-    ts.record_timing(request_id="r", model="m", audio_dur_s=1.0, proc_dur_s=1.0,
-                     status="ok", words_count=1, user_id=None)
+    ts.record_timing(request_id="r", model="m", audio_s=1.0, processing_s=1.0,
+                     status="ok", words=1, user_id=None)
     row = ts.list_recent(limit=1)[0]
     assert row["user_id"] == "alice"
 
@@ -283,8 +283,8 @@ def test_truncate_steps_front_trim(monkeypatch):
 
 def test_row_to_dict_rtf_guard_proc_zero(tx_store):
     ts = tx_store
-    ts.record_timing(request_id="z", model="m", audio_dur_s=5.0, proc_dur_s=0.0,
-                     status="ok", words_count=1)
+    ts.record_timing(request_id="z", model="m", audio_s=5.0, processing_s=0.0,
+                     status="ok", words=1)
     row = ts.list_recent(limit=1)[0]
     assert row["rtf"] is None  # proc 0 -> guarded
 
@@ -336,20 +336,20 @@ def test_record_timing_keeps_wait_and_error_class(tx_store):
     """wait_s / error_class / error_stage ride the timing UPSERT and are
     COALESCEd on conflict, so a later write without them never blanks
     what an earlier one recorded."""
-    tx_store.record_timing(request_id="w1", model="m", audio_dur_s=2.0,
-                           proc_dur_s=1.0, status="error", words_count=0,
+    tx_store.record_timing(request_id="w1", model="m", audio_s=2.0,
+                           processing_s=1.0, status="error", words=0,
                            wait_s=3.25, error_class="cuda_oom",
                            error_stage="transcribing")
     row = tx_store.list_recent(limit=1)[0]
     assert (row["wait_s"], row["error_class"], row["error_stage"]) == (
         3.25, "cuda_oom", "transcribing")
-    tx_store.record_timing(request_id="w1", model="m", audio_dur_s=2.0,
-                           proc_dur_s=1.5, status="error", words_count=0)
+    tx_store.record_timing(request_id="w1", model="m", audio_s=2.0,
+                           processing_s=1.5, status="error", words=0)
     row = tx_store.list_recent(limit=1)[0]
-    assert row["proc_dur"] == 1.5
+    assert row["processing_s"] == 1.5
     assert (row["wait_s"], row["error_class"]) == (3.25, "cuda_oom")
-    tx_store.record_timing(request_id="w2", model="m", audio_dur_s=1.0,
-                           proc_dur_s=1.0, status="ok", words_count=3, wait_s=-1)
+    tx_store.record_timing(request_id="w2", model="m", audio_s=1.0,
+                           processing_s=1.0, status="ok", words=3, wait_s=-1)
     assert tx_store.list_recent(limit=1)[0]["wait_s"] == 0.0
 
 
@@ -357,10 +357,10 @@ def test_list_recent_filters_compose_with_the_cursor(tx_store):
     """kind / status / slow_rtf narrow the page and keep the cursor walk."""
     for i in range(6):
         tx_store.record_timing(
-            request_id=f"r{i}", model="m", audio_dur_s=10.0,
-            proc_dur_s=(8.0 if i % 3 == 0 else 1.0),
+            request_id=f"r{i}", model="m", audio_s=10.0,
+            processing_s=(8.0 if i % 3 == 0 else 1.0),
             status=("error" if i == 1 else "cancelled" if i == 4 else "ok"),
-            words_count=1, kind=("dictate" if i % 2 else "transcribe"),
+            words=1, kind=("dictate" if i % 2 else "transcribe"),
             created_ts=1000.0 + i)
     ids = lambda rows: [r["request_id"] for r in rows]
     assert ids(tx_store.list_recent(limit=10, kind="dictate")) == ["r5", "r3", "r1"]

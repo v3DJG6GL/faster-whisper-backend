@@ -5749,7 +5749,7 @@ async def translate_text(request: Request,
         def _record_run(status: str, exc: "BaseException | None" = None) -> None:
             """Persist this run as a recent-jobs row (kind='translate') on every
             terminal path. No audio duration; segment count lives in the stage
-            detail (words_count=0 — a segment count is not a word count)."""
+            detail (words=0 — a segment count is not a word count)."""
             secs = round(time.perf_counter() - _t0, 3)
             _ec, _es = metrics.classify_error(exc, status=status,
                                               stage="translating")
