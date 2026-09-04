@@ -2213,7 +2213,7 @@ ACTIVITY_CLUSTER_JS = """
       h += '</div>';
     }
     h += '<div class="hact-foot"><a href="/stats">Open stats →</a></div>';
-    pop.innerHTML = h;
+    if (h !== pop._lastH) { pop.innerHTML = h; pop._lastH = h; }
   }
 
   // The button can wrap to the LEFT edge of a narrow header; right:0

@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -718,6 +719,8 @@ async def stats_history(
     now = time.time()
     t1 = float(to) if to is not None else now
     t0 = float(from_) if from_ is not None else t1 - 3600
+    if not (math.isfinite(t0) and math.isfinite(t1)):
+        raise HTTPException(422, detail="'from'/'to' must be finite numbers")
     if t0 >= t1:
         raise HTTPException(422,
                             detail="'from' is not before 'to'")
@@ -759,7 +762,7 @@ async def stats_stream(
         while True:
             payload = await asyncio.to_thread(
                 _build_payload, scope, lite=_lite)
-            yield f"data: {json.dumps(payload)}\n\n"
+            yield f"data: {json.dumps(payload, allow_nan=False, default=str)}\n\n"
             await asyncio.sleep(1.0)
             try:
                 fresh = _rescope_on_version_change(request, seen)
@@ -1977,8 +1980,10 @@ function applyRangeHeads() {
 function rangeLabel(secs) {
   return secs === '3600' ? '1h' : secs === '86400' ? '24h' : secs === '604800' ? '7d' : 'live';
 }
+let _rangeSeq = 0;
 function loadRangeSparks() {
   if (liveMode === 'live') return;
+  const seq = ++_rangeSeq;
   const to = Math.floor(Date.now() / 1000), from = to - Number(liveMode);
   rangeTo = to; refreshRingChips();
   Object.entries(SPARK_METRIC).forEach(([key, metric]) => {
@@ -1987,7 +1992,7 @@ function loadRangeSparks() {
           { cache: 'no-store' })
       .then(r => r.ok ? r.json() : null)
       .then(j => {
-        if (!j || liveMode === 'live') return;
+        if (!j || liveMode === 'live' || seq !== _rangeSeq) return;
         // gpu_mem_mb arrives as raw MB — convert to % like the live ring
         if (key === 'gpu_mem' && gpuTotalMb) {
           const tot = gpuTotalMb;
@@ -2708,6 +2713,8 @@ function rjServerParams() {
   const view = rjView();
   if (view === 'failed' || $('rj-warnonly').checked) p.set('status', 'failed');
   if (view === 'slow') p.set('slow_rtf', '0.5');
+  if (Q.users.length) p.set('users', Q.users.join(','));
+  if (Q.keys.length) p.set('keys', Q.keys.join(','));
   return p;
 }
 function rjLoadMore() {

@@ -577,11 +577,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Path to the rotating log file. Parent directory is auto-created "
         "at startup if missing.",
     "LOG_MAX_BYTES":
-        "Rotate the log file when it reaches this size in bytes. "
-        "0 disables rotation.",
+        "Rotate the log file when it reaches this size in bytes.",
     "LOG_BACKUP_COUNT":
         "Number of rotated log files to retain (.1, .2, …). Older files "
-        "are deleted. 0 disables rotation.",
+        "are deleted.",
     "LOG_VIEWER_INITIAL_LINES":
         "Backlog lines streamed to the /logs page on connect. When the "
         "active log has fewer lines than this (e.g. right after rotation) "
@@ -1623,13 +1622,13 @@ class AdminConfig(BaseModel):
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
         order=3, model_override=False)
     STREAMING_FINAL_DROP_MIN_AVG_LOGPROB: Annotated[float, Field(ge=-100.0, le=0.0)] | None = _F(
-        "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", scope="server",
+        "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
-        order=7)
+        order=7, model_override=False)
     STREAMING_FINAL_DROP_TEMPERATURE: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
-        "STREAMING_FINAL_DROP_TEMPERATURE", scope="server",
+        "STREAMING_FINAL_DROP_TEMPERATURE", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
-        order=8)
+        order=8, model_override=False)
     STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT: bool | None = _F(
         "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
@@ -1740,7 +1739,8 @@ class AdminConfig(BaseModel):
         "DIARIZATION_MODEL", scope="per_request", group="Diarization",
         evict="diarization")
     DIARIZATION_ALLOWED_MODELS: list[DiarizationModelLit] | None = _F(
-        "DIARIZATION_ALLOWED_MODELS", scope="server", group="Diarization")
+        "DIARIZATION_ALLOWED_MODELS", scope="server", group="Diarization",
+        evict="diarization")
     DIARIZATION_PRELOAD: bool | None = _F(
         "DIARIZATION_PRELOAD", scope="server", group="Diarization",
         restart=True)
@@ -1777,7 +1777,7 @@ class AdminConfig(BaseModel):
         Field(max_length=64),
     ] | None = _F(
         "BGM_SEPARATION_ALLOWED_MODELS", scope="server",
-        group="Music separation")
+        group="Music separation", evict="bgm")
     BGM_SEPARATION_PRELOAD: bool | None = _F(
         "BGM_SEPARATION_PRELOAD", scope="server", group="Music separation",
         restart=True)
@@ -2262,6 +2262,26 @@ class AdminConfig(BaseModel):
                 "require CAPTURES_RECORDING_MIN_DURATION_S <= "
                 "CAPTURES_RECORDING_MAX_DURATION_S "
                 f"(got {mn} > {mx})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_buffer_trim_order(self) -> "AdminConfig":
+        from faster_whisper_backend import config as _cfg
+        _base = getattr(_cfg, "_BASELINE", {})
+
+        def _default(name: str) -> float:
+            return float(_base[name] if name in _base else getattr(_cfg, name))
+
+        trim = self.STREAMING_BUFFER_TRIM_S
+        keep = self.STREAMING_BUFFER_TRIM_KEEP_S
+        trim = trim if trim is not None else _default("STREAMING_BUFFER_TRIM_S")
+        keep = keep if keep is not None else _default("STREAMING_BUFFER_TRIM_KEEP_S")
+        if keep >= trim:
+            raise ValueError(
+                "require STREAMING_BUFFER_TRIM_KEEP_S < "
+                "STREAMING_BUFFER_TRIM_S "
+                f"(got {keep} >= {trim})"
             )
         return self
 
@@ -3538,7 +3558,7 @@ def env_pinned_fields() -> dict[str, str]:
     return {
         field: env
         for field, env in ENV_VAR_MAPPING.items()
-        if os.environ.get(env) is not None and field not in _rejected
+        if (os.environ.get(env) or "").strip() and field not in _rejected
     }
 
 

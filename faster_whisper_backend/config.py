@@ -1592,6 +1592,7 @@ try:
         except Exception as _exc:  # noqa: BLE001 — never fail import over bad env
             _ENV_WARNINGS.append(
                 f"{_ENV_VAR_MAPPING[_field]} is not valid JSON for {_field}: {_exc}")
+            _ENV_UNPARSED.add(_ENV_VAR_MAPPING[_field])
 except ImportError:
     # pydantic / config_store unavailable — fall back to bare in-file defaults.
     pass
@@ -1861,7 +1862,17 @@ try:
                 break
             except Exception as _gerr:  # noqa: BLE001
                 _reason = _env_validation_reason(_gerr)
-                _named = [_f for _f in sorted(_left) if _f in str(_gerr)]
+                _named: list[str] = []
+                _errs_fn2 = getattr(_gerr, "errors", None)
+                if callable(_errs_fn2):
+                    try:
+                        for _ge in _errs_fn2():
+                            _gloc = _ge.get("loc") or ()
+                            _gf0 = str(_gloc[0]) if _gloc else ""
+                            if _gf0 and _gf0 in _left and _gf0 not in _named:
+                                _named.append(_gf0)
+                    except Exception:  # noqa: BLE001
+                        pass
                 for _f in (_named or sorted(_left)):
                     _revert_env_field(_f, _reason)
 

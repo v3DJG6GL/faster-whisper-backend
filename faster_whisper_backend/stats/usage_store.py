@@ -1298,9 +1298,6 @@ def document(
     owner scope, which `range.kind_scoped` discloses as False."""
     conn = _require_conn()
     kinds = tuple(dict.fromkeys(_norm_kind(k) for k in (kinds or ())))
-    for k in kinds:
-        if k not in KINDS:
-            raise ValueError(f"unknown kind: {k}")
     now = time.time() if now is None else float(now)
     today = _date_of(now, tz)
     with_stages = tuple(dict.fromkeys(with_stages))
@@ -1480,7 +1477,7 @@ def overview(
         if i is not None:
             e["values"][i] += float(cell.get(metric, 0.0) or 0.0)
 
-    source = "rollups"
+    source = "jobs" if with_stages else "rollups"
     key_scoped = True
     if by == "kind":
         for p in doc["series"]:
@@ -1614,7 +1611,8 @@ def overview(
             pf, pt = _year_back(f), _year_back(t)
         prev = overview(user_id=user_id, key_id=key_id, tz=tz, tz_name=tz_name,
                         from_day=pf, to_day=pt, with_stages=with_stages, by=by,
-                        metric=metric, bucket=mode, compare="off", top_k=top_k,
+                        metric=metric, bucket=mode, compare="off",
+                        top_k=max(top_k, 1000),
                         limit=limit, jobs_retention_days=jobs_retention_days,
                         now=now, kinds=kinds)
         by_id = {ln["id"]: ln["values"] for ln in prev["lines"]}

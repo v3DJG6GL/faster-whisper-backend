@@ -928,8 +928,9 @@ window._renderWaterfall = (function () {
   }
   function duplicateProfile() {
     if (!sel) return;
-    var base = sel + '-copy'; var name = base; var i = 2;
+    var base = sel.slice(0, 27) + '-copy'; var name = base; var i = 2;
     while (profiles[name]) { name = base + i; i++; }
+    if (!NAME_RE.test(name)) { setStatus('generated name "' + name + '" is invalid — rename after creating', 'err'); return; }
     profiles[name] = JSON.parse(JSON.stringify(profiles[sel]));
     sel = name; uiRenaming = false; uiConfirmDel = false; render(); refreshButtons();
   }

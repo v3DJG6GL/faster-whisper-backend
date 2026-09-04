@@ -219,6 +219,36 @@ def _skip_class(pat: str, i: int) -> "tuple[int, int, bool]":
     return start, j, negated
 
 
+def _strip_outer_group(branch: str) -> str:
+    """Strip one layer of enclosing parentheses from a branch body.
+
+    ``((a))`` → ``(a)``, ``(a)`` → ``a``, ``abc`` → ``abc``.
+    Only strips when the opening ``(`` is balanced by the LAST ``)``
+    (i.e. the parens wrap the entire branch, not just a prefix).
+    """
+    if len(branch) < 2 or branch[0] != "(":
+        return branch
+    depth, i = 1, 1
+    while i < len(branch) and depth:
+        ch = branch[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            i += 1
+            if i < len(branch) and branch[i] == "]":
+                i += 1
+            while i < len(branch) and branch[i] != "]":
+                i += 2 if branch[i] == "\\" else 1
+            i += 1
+            continue
+        depth += 1 if ch == "(" else (-1 if ch == ")" else 0)
+        i += 1
+    if depth == 0 and i == len(branch):
+        return branch[1:-1]
+    return branch
+
+
 def _nested_repetition(pat: str) -> bool:
     """True if ``pat`` contains a repeated group that itself repeats.
 
@@ -301,12 +331,13 @@ def _nested_repetition(pat: str) -> bool:
                     cuts = [frame["start"]] + [x + 1 for x in frame["alts"]]
                     ends = frame["alts"] + [frame["start"] + len(body)]
                     branches = [pat[a:b] for a, b in zip(cuts, ends)]
-                    if len(set(branches)) < len(branches):
+                    stripped = [_strip_outer_group(b) for b in branches]
+                    if len(set(stripped)) < len(stripped):
                         return True
                     if any(b != a and b.startswith(a)
-                           for a in branches for b in branches):
+                           for a in stripped for b in stripped):
                         return True
-            if frame["rep"] or variable:
+            if frame["rep"] or repeats:
                 stack[-1]["rep"] = True
             continue
         if c == "|":

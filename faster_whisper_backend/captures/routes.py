@@ -4861,6 +4861,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     }
     if (existing >= 0) {
       removeChip(state, existing);
+      applyCorrectionsToGround(state);
       return;
     }
     state.corrections.push({

@@ -603,10 +603,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             audio_obj = {}
         audio_fmt = audio_obj.get("format", "pcm_s16le")
         if audio_fmt not in RAW_FORMATS and audio_fmt not in ENCODED_FORMATS:
-            await ws.send_json({"type": "error", "code": "unsupported_format",
-                                "message": f"audio format {audio_fmt!r} not supported "
-                                           f"(raw: {sorted(RAW_FORMATS)}, "
-                                           f"encoded via ffmpeg: {sorted(ENCODED_FORMATS)})"})
+            await _safe_ws_send(ws, {"type": "error", "code": "unsupported_format",
+                                    "message": f"audio format {audio_fmt!r} not supported "
+                                               f"(raw: {sorted(RAW_FORMATS)}, "
+                                               f"encoded via ffmpeg: {sorted(ENCODED_FORMATS)})"})
             await ws.close()
             return
         # Human-readable transport label for the per-utterance log block.
@@ -676,8 +676,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                            session_id[:8], store_common.log_safe(str(exc)))
             # Generic client message — the raw exception text can carry model
             # dir/filesystem paths; the detail is already in the server log above.
-            await ws.send_json({"type": "error", "code": "model_load_failed",
-                                "message": "model could not be loaded"})
+            await _safe_ws_send(ws, {"type": "error", "code": "model_load_failed",
+                                    "message": "model could not be loaded"})
             await ws.close()
             return
 
@@ -1354,7 +1354,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         if req_override_profile:
             ready_msg["profile_applied"] = ident.request_profile_applied
         async with send_lock:
-            await ws.send_json(ready_msg)
+            await _safe_ws_send(ws, ready_msg)
 
         # Start the consumer before any audio is queued (the handshake byte, pending
         # audio, or the receive loop) so nothing waits on a not-yet-running pump.

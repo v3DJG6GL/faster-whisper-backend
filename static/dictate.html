@@ -260,12 +260,17 @@
   }
 
   function stopBatch() {
-    // Stop the mic; recorder.onstop fires sendBatch(). Lock the button until the
-    // POST resolves so the user can't re-enter mid-transcribe.
-    toggleBtn.disabled = true;
-    setStatus("transcribing…");
-    try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch {}
     if (recStream) recStream.getTracks().forEach((t) => t.stop());
+    if (recorder && recorder.state !== "inactive") {
+      toggleBtn.disabled = true;
+      setStatus("transcribing…");
+      try { recorder.stop(); } catch {}
+    } else {
+      running = false;
+      recorder = null; recStream = null; recChunks = [];
+      resetToggleButton();
+      setStatus("idle");
+    }
   }
 
   async function sendBatch() {
@@ -315,10 +320,13 @@
 
   async function start() {
     finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", "");
+    setStatus("requesting mic…");
+
+    // Acquire mic BEFORE opening the WebSocket so a denied permission
+    // never wastes a server-side streaming session.
+    mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
+
     const base = wsBase();
-    // No subprotocol and no key: same origin, so the browser attaches the
-    // HttpOnly session cookie to the handshake, and auth._resolve_user reads it
-    // exactly as it does for every other page request.
     ws = new WebSocket(base + "/v1/audio/transcriptions/stream");
     ws.binaryType = "arraybuffer";
     setStatus("connecting…");
@@ -335,11 +343,6 @@
     ws.onerror = () => setStatus("socket error", "error");
     ws.onclose = (ev) => {
       if (running) stop();
-      // 4401 is the server's "no valid credential" close code — on this page
-      // that means the session expired, so point at the fix instead of a bare
-      // "closed". 4403 is the handshake origin check. 4503 is the server's
-      // "streaming disabled" close (STREAMING_ENABLED off) — batch mode on
-      // this page still works, only the live socket is refused.
       if (ev && ev.code === 4401) setStatus("signed out — reload to sign in again", "error");
       else if (ev && ev.code === 4403) setStatus("handshake rejected (origin)", "error");
       else if (ev && ev.code === 4503) setStatus("live dictation is disabled on this server", "error");
@@ -347,7 +350,6 @@
     };
 
     try {
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true } });
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       const blobUrl = URL.createObjectURL(new Blob([workletSrc], { type: "application/javascript" }));
       await audioCtx.audioWorklet.addModule(blobUrl);
@@ -356,14 +358,8 @@
       const sr = audioCtx.sampleRate;
       workletNode.port.onmessage = (e) => { if (running) pushSamples(e.data, sr); };
       src.connect(workletNode);
-      // Keep the node pulling without routing mic to speakers (avoids feedback).
       const sink = audioCtx.createGain(); sink.gain.value = 0; workletNode.connect(sink); sink.connect(audioCtx.destination);
     } catch (err) {
-      // Mic denied / worklet load failed after the socket already opened: tear
-      // down the socket + audio graph so we don't leak a live server-side
-      // session. Detach ALL socket handlers first so neither this close nor an
-      // already-queued server "ready"/"error" message clobbers the caller's
-      // "mic/socket failed: …" status with a stale "listening"/"closed"/"error".
       try { if (ws) { ws.onmessage = ws.onclose = ws.onerror = null; ws.close(); } } catch {}
       try { if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop()); } catch {}
       try { if (audioCtx) audioCtx.close(); } catch {}

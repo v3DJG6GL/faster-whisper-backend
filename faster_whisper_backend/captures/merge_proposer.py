@@ -520,7 +520,7 @@ def _propose_merges_locked(
     # changes size raises RuntimeError.
     for k in list(_CACHE)[:max(0, len(_CACHE) - _CACHE_MAX + 1)]:
         _CACHE.pop(k, None)
-    _CACHE[cache_key] = (now, proposals)
+    _CACHE[cache_key] = (time.time(), proposals)
     logger.info(
         "[proposer] user=%s n_eligible=%d sessions=%d candidates=%d proposals=%d",
         # cache_key embeds the caller-supplied ?user_id= for an admin, which is

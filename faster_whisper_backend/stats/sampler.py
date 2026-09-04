@@ -108,8 +108,8 @@ def flush() -> int:
         system_metrics_store.record(rows)
     except Exception as e:  # noqa: BLE001
         _warn("[stats-sampler] flush failed: %s", e)
-        # Keep at most ten minutes of samples on a persistent failure.
-        del _pending[:-60]
+        cap = max(1, 600 // sample_every())
+        del _pending[:-cap]
         return 0
     del _pending[:len(rows)]
     return len(rows)

@@ -343,7 +343,10 @@ class StreamSession:
         """Keep only a short lead-in of pre-speech silence so the buffer doesn't
         grow without bound during quiet periods."""
         if self._audio_samples > self._preroll_keep_samples:
-            self._set_audio(self.audio[-self._preroll_keep_samples:])
+            if self._preroll_keep_samples == 0:
+                self._set_audio(np.zeros(0, dtype=np.float32))
+            else:
+                self._set_audio(self.audio[-self._preroll_keep_samples:])
             self._buffer_offset = 0.0
 
     # ---- decode steps -----------------------------------------------------

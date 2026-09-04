@@ -135,6 +135,10 @@ def _run() -> None:
                         continue
                 with _state_lock:
                     _state["rebuilt"] += 1
+            except Exception:
+                logger.exception("[reprocess-vad] sample %s failed", sid[:8])
+                with _state_lock:
+                    _state["stale"] += 1
             finally:
                 with _state_lock:
                     _state["processed"] += 1

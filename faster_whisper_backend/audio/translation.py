@@ -981,8 +981,13 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     max_tokens = (len(text) + len(context or "")) // 2 + 256
     loop = asyncio.get_running_loop()
     async with _infer_gate:
-        return await loop.run_in_executor(
-            None, _complete, llm, family, prompt, max_tokens)
+        try:
+            return await loop.run_in_executor(
+                None, _complete, llm, family, prompt, max_tokens)
+        except asyncio.CancelledError:
+            logger.warning("translation cancelled — executor thread will "
+                           "complete on its own (%s)", family)
+            raise
 
 
 async def translate_segments(

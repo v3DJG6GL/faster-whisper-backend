@@ -76,6 +76,7 @@ _root.setLevel(logging.INFO)
 # double-log on auto-reload.
 for _h in list(_root.handlers):
     _root.removeHandler(_h)
+    _h.close()
 
 _console_handler = logging.StreamHandler(sys.stderr)
 _console_handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
@@ -1215,11 +1216,13 @@ def _format_request_block(
                                            or overrides_ignored)
     if user_id or key_id or _ident_detail:
         lines.append(_section_rule("Identity"))
-        who = f"{username} ({_short_id(user_id)})" if username else _short_id(user_id)
+        _safe_name = _log_safe(username) if username else None
+        who = f"{_safe_name} ({_short_id(user_id)})" if _safe_name else _short_id(user_id)
         lines.append(f"    {'user':<{_NAME_COL - 4}}{who}")
         if key_id:
-            which = (f"{key_label} ({_short_id(key_id)})"
-                     if key_label else _short_id(key_id))
+            _safe_label = _log_safe(key_label) if key_label else None
+            which = (f"{_safe_label} ({_short_id(key_id)})"
+                     if _safe_label else _short_id(key_id))
             lines.append(f"    {'key':<{_NAME_COL - 4}}{which}")
         if ident is not None and ident.profiles_applied:
             lines.append(f"    {'profiles':<{_NAME_COL - 4}}{' → '.join(ident.profiles_applied)}")
@@ -1508,8 +1511,14 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
 def _temperature_ladder(s: "str | None") -> "tuple[float, ...]":
     """Parse a comma-separated TEMPERATURE ladder; () for blank, token-less
     (",") or unparseable text — i.e. for every value that yields no ladder."""
+    def _finite(tok: str) -> float:
+        v = float(tok)
+        if not math.isfinite(v):
+            raise ValueError(f"non-finite temperature: {tok!r}")
+        return v
+
     try:
-        return tuple(float(t.strip()) for t in (s or "").split(",") if t.strip())
+        return tuple(_finite(t.strip()) for t in (s or "").split(",") if t.strip())
     except ValueError:
         return ()
 
@@ -1959,18 +1968,22 @@ async def _ensure_ct2_model(name: str) -> str:
         if os.path.isfile(os.path.join(output_dir, "model.bin")):
             return output_dir
         # Cross-process file-lock so multi-worker uvicorn doesn't double-convert.
+        # Both the lock acquisition (polling, up to 600 s) and the conversion
+        # itself are blocking, so the whole section runs off the event loop.
         from filelock import FileLock, Timeout as FileLockTimeout
         os.makedirs(os.path.dirname(output_dir), exist_ok=True)
         lock_path = output_dir + ".lock"
-        try:
+
+        def _locked_convert() -> None:
             with FileLock(lock_path, timeout=600):
-                # Re-check after winning the cross-process race.
                 if os.path.isfile(os.path.join(output_dir, "model.bin")):
-                    return output_dir
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(
-                    None, _convert_blocking, name, output_dir, quantization,
-                )
+                    return
+                _convert_blocking(name, output_dir, quantization)
+
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None, _locked_convert,
+            )
         except FileLockTimeout:
             logger.warning(
                 "[convert] auto-convert of %r timed out waiting for a peer "
@@ -2329,8 +2342,8 @@ async def _idle_evictor() -> None:
     call torch.cuda.empty_cache() to release pool-cached blocks.
     """
     import gc
-    try:
-        while True:
+    while True:
+        try:
             await asyncio.sleep(30)
             timeout = getattr(cfg, "MODEL_IDLE_TIMEOUT_S", 0) or 0
             if timeout <= 0 or not _loaded_models:
@@ -2340,10 +2353,6 @@ async def _idle_evictor() -> None:
             for name, info in list(system_stats._loaded_models.items()):
                 if name not in _loaded_models:
                     continue
-                # A warm lease (some live preload plan still expects this
-                # model) outranks the idle clock but never a job lease — see
-                # preload.py's precedence note. The predicate is inverted
-                # through system_stats so this module needn't import preload.
                 if system_stats.is_warm(name):
                     continue
                 last = info.get("last_used_monotonic", now)
@@ -2355,16 +2364,12 @@ async def _idle_evictor() -> None:
                 now = time.monotonic()
                 for name in stale:
                     if name not in _loaded_models:
-                        continue   # raced with another path
+                        continue
                     if system_stats.is_warm(name):
-                        continue   # warm lease appeared while we waited
+                        continue
                     info = system_stats._loaded_models.get(name)
                     if info and now - info.get("last_used_monotonic", now) < timeout:
-                        continue   # used while we waited for the lock
-                    # Not forced: a refusal costs nothing, the next 30 s tick
-                    # picks the model up again once the request releases.
-                    # Log on the result — the declined case already logs its
-                    # own "in use — eviction deferred" line.
+                        continue
                     if _drop_loaded_model(name):
                         logger.info("[idle-evict] unloaded %s after %ds idle",
                                     name, timeout)
@@ -2375,8 +2380,10 @@ async def _idle_evictor() -> None:
                     torch.cuda.empty_cache()
             except Exception:
                 pass
-    except asyncio.CancelledError:
-        return
+        except asyncio.CancelledError:
+            return
+        except Exception:
+            logger.exception("[idle-evict] evictor loop error")
 
 
 async def _reports_retention_loop() -> None:
@@ -2507,6 +2514,7 @@ def _bootstrap_admin_from_env(raw_key: str) -> None:
     # If this hash already maps to an active key, nothing to do — and nothing
     # to complain about, however weak the value is by today's floor.
     if api_keys_store._KEY_INDEX.get(h) is not None:
+        logger.debug("[auth] bootstrap key already present — skipping")
         return
     if not _bootstrap_key_is_strong(raw_key):
         logger.error(
@@ -6976,40 +6984,40 @@ _LOG_VIEWER_HTML = """<!doctype html>
   // without the legacy ?key= fallback.
   let es = null;
   let _logRecoveryTimer = null;
+  let _logReconnectDelay = 3000;
   function openLogStream() {
     if (es) { try { es.close(); } catch (_) {} es = null; }
+    // Clear stale DOM + cursors so the replayed backlog doesn't duplicate.
+    log.innerHTML = '';
+    _logsSkip = 0;
+    _liveStarted = false;
+    const lo = document.getElementById('loadOlderBtn');
+    if (lo) lo.style.display = 'none';
     es = new EventSource('/logs/stream');
     es.onmessage = (e) => append(e.data);
     es.onerror = () => {
       statusEl.textContent = 'reconnecting…';
       statusEl.className = 'pill paused';
-      // EventSource does NOT auto-reconnect after an HTTP error (e.g. an
-      // intermittent 401 where the cookie wasn't attached to the SSE
-      // handshake). Mirror /stats: poll a cheap endpoint until it 200s,
-      // then reopen the stream.
-      // Back off on repeated failures (3s → ×1.7 → cap 30s).
       if (_logRecoveryTimer) return;
-      let delay = 3000;
       const probe = async () => {
         try {
           const r = await fetch('/v1/models', { cache: 'no-store' });
           if (r.ok) {
             clearTimeout(_logRecoveryTimer);
             _logRecoveryTimer = null;
+            _logReconnectDelay = 3000;
             openLogStream();
             return;
           }
         } catch (_) { /* keep polling */ }
-        delay = Math.min(delay * 1.7, 30000);
-        _logRecoveryTimer = setTimeout(probe, delay);
+        _logReconnectDelay = Math.min(_logReconnectDelay * 1.7, 30000);
+        _logRecoveryTimer = setTimeout(probe, _logReconnectDelay);
       };
-      _logRecoveryTimer = setTimeout(probe, delay);
+      _logRecoveryTimer = setTimeout(probe, _logReconnectDelay);
     };
     es.onopen = () => {
-      // role-admin used to be added here unconditionally — that leaked
-      // admin chrome to non-admins. OPEN_MODE_BANNER_JS is now the single
-      // source of truth (sets role-admin iff whoami.is_admin=true).
       if (_logRecoveryTimer) { clearTimeout(_logRecoveryTimer); _logRecoveryTimer = null; }
+      _logReconnectDelay = 3000;
       if (!paused) {
         statusEl.textContent = 'live';
         statusEl.className = 'pill live';

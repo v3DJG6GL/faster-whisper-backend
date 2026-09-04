@@ -74,6 +74,7 @@ class FfmpegTransport:
         self._proc: "asyncio.subprocess.Process | None" = None
         self._reader: "asyncio.Task | None" = None
         self._closed = False
+        self._reader_dead = False
 
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
@@ -105,9 +106,14 @@ class FfmpegTransport:
             pass
         except Exception as exc:  # noqa: BLE001
             logger.warning("[ffmpeg-transport] reader error: %s", exc)
+        finally:
+            self._reader_dead = True
 
     async def feed(self, data: bytes) -> None:
         if self._proc is None or self._proc.stdin is None or self._closed:
+            return
+        if self._reader_dead:
+            logger.warning("[ffmpeg-transport] ffmpeg exited; discarding audio")
             return
         try:
             self._proc.stdin.write(data)
@@ -127,9 +133,13 @@ class FfmpegTransport:
             pass
         if self._reader is not None:
             try:
-                await asyncio.wait_for(asyncio.shield(self._reader), timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+                await asyncio.wait_for(self._reader, timeout=5.0)
+            except asyncio.TimeoutError:
                 self._reader.cancel()
+                try:
+                    await self._reader
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
         try:
             await asyncio.wait_for(self._proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:

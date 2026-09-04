@@ -61,8 +61,9 @@ const grid = GridStack.init({
 let _saveTimer = null;
 function _saveLayout() {
   if (_saveTimer) clearTimeout(_saveTimer);
+  const key = GS_LAYOUT_KEY;
   _saveTimer = setTimeout(() => {
-    try { localStorage.setItem(GS_LAYOUT_KEY, JSON.stringify(grid.save(false))); } catch (_) {}
+    try { localStorage.setItem(key, JSON.stringify(grid.save(false))); } catch (_) {}
   }, 200);
 }
 grid.on('change added removed', _saveLayout);
@@ -549,6 +550,8 @@ function wirePickers() {
       if (!Q[list].length) return;
       Q[list] = [];
       wrap.querySelectorAll('.pick-list input').forEach(i => { i.checked = false; });
+      const foot = wrap.querySelector('.pick-foot span');
+      if (foot) foot.textContent = '0 of ' + wrap.querySelectorAll('.pick-list input').length + ' picked';
       renderPickerButtons(); load();
     });
   });
@@ -1174,9 +1177,13 @@ function renderChart() {
   if (!curLines.length || !xs.length) {
     if (empty) {
       empty.classList.remove('hidden');
-      empty.textContent = 'No ' + METRIC_LABEL[Q.metric] + ' between ' + fmtDay(lastDoc.range.from)
-        + ' and ' + fmtDay(lastDoc.range.to) + (Q.with.length ? ' for jobs that ran every chosen stage' : '')
-        + '. Widen the range or clear a filter.';
+      if (lastDoc && lastDoc.range) {
+        empty.textContent = 'No ' + METRIC_LABEL[Q.metric] + ' between ' + fmtDay(lastDoc.range.from)
+          + ' and ' + fmtDay(lastDoc.range.to) + (Q.with.length ? ' for jobs that ran every chosen stage' : '')
+          + '. Widen the range or clear a filter.';
+      } else {
+        empty.textContent = 'No data available. Widen the range or clear a filter.';
+      }
     }
     return;
   }
@@ -1400,7 +1407,8 @@ function renderStages() {
   const rows = {};
   (lastDoc.stages || []).forEach(s => { rows[s.stage] = s; });
   const tot = lastDoc.totals || {};
-  const eligible = s => (STAGE_KINDS[s] || []).reduce((a, k) => a + Number(((tot[k] || {}).sessions) || 0), 0);
+  const activeKinds = Q.kinds.length ? new Set(Q.kinds) : null;
+  const eligible = s => (STAGE_KINDS[s] || []).filter(k => !activeKinds || activeKinds.has(k)).reduce((a, k) => a + Number(((tot[k] || {}).sessions) || 0), 0);
   const order = STAGE_GROUPS.flatMap(g => g[1]);
   const totalSecs = order.reduce((a, s) => a + ((rows[s] && rows[s].secs) || 0), 0);
   // The share bar splits the measure across stages: processing → stage
