@@ -421,8 +421,8 @@ async def list_samples_api(
 
     Paged newest-first: pass the `next` object from the previous response
     back as `?before_ts=&before_id=` to fetch the next page. `next` is null on
-    the last page. Hydrating one group costs a full capture read per member,
-    so returning the whole table on first paint was both slow and unbounded.
+    the last page. Each group costs a member query, so returning the whole
+    table on first paint was both slow and unbounded.
 
     Declared above `/captures/api/{cid}` because GET with cid="samples"
     would otherwise resolve to the single-capture handler and 404 — the
@@ -451,10 +451,11 @@ async def list_samples_api(
         for g in groups:
             # Re-derive transcript + corrections per group so the collapsed
             # card preview reflects chip-applied final text (matches the
-            # expanded card + export). Members fetched once per group; no
-            # merged_words on the list path — that's expand-only.
+            # expanded card + export). Members fetched once per group via the
+            # light get_members projection (word_count instead of the words
+            # blob) — no per-member get_capture and no merged_words on the
+            # list path; both are expand-only.
             members = capture_samples_store.get_members(g["id"])
-            _hydrate_members(members)
             g["transcript"] = _build_default_transcript(
                 members, g.get("transcript_join_strategy") or "space",
             )
@@ -463,14 +464,14 @@ async def list_samples_api(
         return groups, has_more
 
     # OFF the loop, like propose_merges_api / get_sample_audio_api /
-    # regenerate_sample_api above. Each group costs one full get_capture per
-    # member, words decode included — measured 3.0 s of frozen event loop
-    # for 300 groups x 4 members at 234 KB of words each before this was both
-    # paged and offloaded.
+    # regenerate_sample_api above. Was one full get_capture per member
+    # (measured 3.0 s of frozen event loop for 300 groups x 4 members at
+    # 234 KB of words each); now one light query per group, still offloaded
+    # because a 200-group page is hundreds of queries.
     groups, has_more = await asyncio.to_thread(_gather)
     # Cursor for the next page, or null when this was the last one. The page
     # loads more on demand rather than rendering the whole table at once —
-    # hydrating a group costs one full capture read per member, so an
+    # each group costs a member query, so an
     # unbounded first paint was both slow and unbounded in memory.
     nxt = None
     if has_more and groups:
@@ -887,7 +888,6 @@ _JOIN_STR = {"space": " ", "period_space": ". "}
 def _global_silence_ms() -> int:
     """Inter-member silence, sourced from the global VAD-internal knob
     (was a per-merge `silence_ms` payload field)."""
-    from faster_whisper_backend import config as cfg
     try:
         return int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_INTERNAL_MS", 300))
     except (TypeError, ValueError):
@@ -898,7 +898,6 @@ def _global_edge_ms() -> int:
     """Outer-margin silence (both ends of the merged WAV), sourced from the
     global VAD edge knob. Mirrors `_global_silence_ms()` so the edge default
     lives in one place instead of being repeated at each merge/preview site."""
-    from faster_whisper_backend import config as cfg
     try:
         return int(getattr(cfg, "CAPTURES_VAD_MARGIN_SAMPLE_EDGE_MS", 300))
     except (TypeError, ValueError):
@@ -907,7 +906,6 @@ def _global_edge_ms() -> int:
 
 def _global_join_strategy() -> str:
     """Transcript join strategy, sourced from the global setting."""
-    from faster_whisper_backend import config as cfg
     j = getattr(cfg, "CAPTURES_SAMPLE_JOIN_STRATEGY", "space")
     return j if j in ("space", "period_space") else "space"
 
@@ -1118,14 +1116,12 @@ def _validate_merge_payload(
     # Cap on TRIMMED audio — what the merged WAV actually is. Reuses the
     # proposer's cached per-capture trim so the batch flow (already warm) pays
     # nothing here; a cold manual merge trims each member once (then cached).
-    from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
     total_trimmed_ms = sum(
         int(round(captures_merge_proposer.trimmed_duration_s(c) * 1000))
         for c in captures
     )
     # Real merged length under the uniform layout: 2×outer-edge +
     # Σ trimmed bodies + (N-1)×join silence.
-    from faster_whisper_backend import config as cfg
     n_members = len(member_ids)
     total_gap_ms = int(silence_ms) * max(0, n_members - 1)
     edge_ms = _global_edge_ms()
@@ -1164,7 +1160,6 @@ def _build_merged_wav(
     audio. Empty/identity when trimming is disabled or VAD is unavailable."""
     from faster_whisper_backend.audio import merge as audio_merge
     from faster_whisper_backend.captures import samples_store as capture_samples_store
-    from faster_whisper_backend import config as cfg
 
     if member_paths is None:
         member_paths = []
@@ -1238,7 +1233,6 @@ def _preview_member_trims(
     when group trimming is disabled, or when any member cannot be read/trimmed
     (then _build_merged_words uses the legacy full-duration timeline for every
     member — a partial map would mix absolute and legacy offsets per member)."""
-    from faster_whisper_backend import config as cfg
     if not getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False):
         return {}
     from faster_whisper_backend.audio import merge as audio_merge
@@ -1383,7 +1377,6 @@ async def preview_merge_audio_api(
 
     # tempfile.NamedTemporaryFile(delete=False) so FileResponse can stream
     # the closed file; background unlink fires after the response finishes.
-    from faster_whisper_backend import config as cfg
     fd, tmp_path = tempfile.mkstemp(prefix="preview_merge_", suffix=".wav")
     os.close(fd)
     try:
@@ -1488,7 +1481,6 @@ async def merge_estimate_api(
     display an over-cap value and disable Merge itself. Same ownership gates
     as the other merge endpoints; reuses the proposer's cached per-capture
     trim."""
-    from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
     # Off the loop with its siblings: a VAD pass per member, no rate limit.
     captures, _owner, _paths, trimmed_ms = await asyncio.to_thread(
         functools.partial(
@@ -1502,7 +1494,6 @@ async def merge_estimate_api(
     )
     n = len(payload.member_ids)
     gap_ms = int(_global_silence_ms()) * max(0, n - 1)
-    from faster_whisper_backend import config as cfg
     edge_ms = _global_edge_ms()
     # Mirror merge_wavs: the outer edge margin only exists on the trim path.
     trim_samples = bool(getattr(cfg, "CAPTURES_VAD_TRIM_ENABLED_FOR_SAMPLES", False))
@@ -1585,13 +1576,18 @@ def _insert_sample_with_sid(
     NULL` predicate makes the loser's UPDATE match nothing; raising here
     rolls the sample row back (explicit BEGIN/ROLLBACK — the shared
     connection is autocommit, so `with conn:` alone would not) and lets
-    the caller's except-branch unlink the merged WAV."""
+    the caller's except-branch unlink the merged WAV. Both store locks are
+    held for the BEGIN..COMMIT span: the two stores share one autocommit
+    connection, so a bare captures_store statement from another thread
+    would otherwise join (and be rolled back with) this transaction. No
+    path takes captures_store._lock before samples_store._lock (see
+    store.py sweep_retention/delete_capture), so this order is acyclic."""
     from faster_whisper_backend.captures import samples_store as capture_samples_store
 
     relpath = capture_samples_store._relpath_for(sid)
     now = time.time()
     conn = capture_samples_store._require_conn()
-    with capture_samples_store._lock:
+    with capture_samples_store._lock, captures_store._lock:
         conn.execute("BEGIN")
         try:
             conn.execute(
@@ -1682,18 +1678,20 @@ def _project_member_corrections(
     member m is Σ_{j<m} len(words_j) — silence gaps contribute no
     words, so they don't shift the index.
 
-    Callers must run `_hydrate_members(members)` first so each member
-    carries `words`."""
+    Members must either be hydrated (`_hydrate_members`, carrying `words`)
+    or come straight from `samples_store.get_members`, which carries
+    `word_count`; only the count is needed here."""
     out: list[dict[str, Any]] = []
     offset = 0
     for m in members:
-        words = m.get("words") or []
+        n = (len(m.get("words") or []) if "words" in m
+             else int(m.get("word_count") or 0))
         # A wordless member has no global anchor to project chips onto.
         # Without this skip the clamp below would collapse to `offset`,
         # which is also the first word index of the NEXT member — the
         # round-trip through _split_corrections_to_members would silently
         # re-attribute the chip to that next member.
-        if not words:
+        if n <= 0:
             continue
         for c in (m.get("corrections") or []):
             try:
@@ -1701,15 +1699,15 @@ def _project_member_corrections(
             except (TypeError, ValueError, KeyError):
                 continue
             c2 = dict(c)
-            c2["idx"] = min(idx, offset + max(0, len(words) - 1))
+            c2["idx"] = min(idx, offset + max(0, n - 1))
             if c.get("idx_end") is not None:
                 try:
                     end = int(c["idx_end"]) + offset
-                    c2["idx_end"] = min(end, offset + max(0, len(words) - 1))
+                    c2["idx_end"] = min(end, offset + max(0, n - 1))
                 except (TypeError, ValueError):
                     c2.pop("idx_end", None)
             out.append(c2)
-        offset += len(words)
+        offset += n
     return out
 
 
@@ -4603,7 +4601,7 @@ _CAPTURES_HTML = r"""<!doctype html>
         + (eligible
             ? 'The English track is exported as <code>task=translate</code> '
               + 'training data once this capture is marked <em>ready</em>.'
-            : 'No English track, so nothing here is exportable — Whisper\\u2019s '
+            : 'No English track, so nothing here is exportable — Whisper’s '
               + 'translate task targets English only.')
         + '</div>';
       trLangs.sort();
@@ -5440,7 +5438,10 @@ _CAPTURES_HTML = r"""<!doctype html>
     // member, so they arrive a page at a time instead of all at once.
     if (!_samplesNext || _samplesLoading) return;
     _samplesLoading = true;
-    render();
+    // Flip the footer button in place: a full render() here would revoke
+    // every open group card's audio and wipe the list mid-playback.
+    var b = document.getElementById('btn-load-more-samples');
+    if (b) { b.disabled = true; b.textContent = 'Loading more groups...'; }
     try {
       var q = '/captures/api/samples?limit=200'
         + '&before_ts=' + encodeURIComponent(_samplesNext.before_ts)

@@ -130,11 +130,15 @@ def test_truncate_translations_key_overhead_over_cap(captures_store_db):
     key set alone exceeds it; languages must then be dropped so the blob
     honours the cap instead of landing an oversized row."""
     cs = captures_store_db
+    # 600 keys x ~13 bytes of `"langN": ""` alone exceed a 5 KB cap, so
+    # the text trim bottoms out at n=0 and the drop loop must run — same
+    # branch as a 6000-language map against 50 KB, at a fraction of the
+    # O(n^2) re-serialisation cost.
     out = cs._truncate_translations(
-        {f"lang{i}": "x" * 10 for i in range(6000)}, 50_000)
-    assert out is not None and len(out) <= 50_000
+        {f"lang{i}": "x" * 10 for i in range(600)}, 5_000)
+    assert out is not None and len(out) <= 5_000
     kept = json.loads(out)
-    assert isinstance(kept, dict) and 0 < len(kept) < 6000
+    assert isinstance(kept, dict) and 0 < len(kept) < 600
     # Front languages survive (insertion order), tail dropped.
     assert list(kept) == [f"lang{i}" for i in range(len(kept))]
     # A single language whose key alone cannot fit yields an empty map.

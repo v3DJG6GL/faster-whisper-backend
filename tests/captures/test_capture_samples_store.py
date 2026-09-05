@@ -376,3 +376,22 @@ def test_get_members_carries_task_and_group_manifest_row_says_translate(
     assert len(rows) == 1
     assert rows[0]["source"] == "sample"
     assert rows[0]["task"] == "translate"
+
+
+def test_get_members_carries_word_count(captures_store_db, groups_store_db):
+    """get_members exposes a JSON1-derived `word_count` (0 on malformed
+    words JSON, matching store._row_to_dict's fallback) so the list path can
+    project chip offsets without hydrating the words blob."""
+    cs = captures_store_db
+    gs = groups_store_db
+    sid = "gwordcount000000"
+    _insert_group(gs, sid)
+    _insert_capture(cs, "capwc00000000001", sample_id=sid, sample_order=0)
+    _insert_capture(cs, "capwc00000000002", sample_id=sid, sample_order=1)
+    conn = cs._require_conn()
+    conn.execute("UPDATE captures SET words = ? WHERE id = ?",
+                 (json.dumps([{"w": "a"}, {"w": "b"}, {"w": "c"}]),
+                  "capwc00000000001"))
+    conn.execute("UPDATE captures SET words = ? WHERE id = ?",
+                 ("[1,", "capwc00000000002"))
+    assert [m["word_count"] for m in gs.get_members(sid)] == [3, 0]

@@ -928,9 +928,10 @@ window._renderWaterfall = (function () {
   }
   function duplicateProfile() {
     if (!sel) return;
-    var base = sel.slice(0, 27) + '-copy'; var name = base; var i = 2;
+    // 25 + '-copy' + a 2-digit collision suffix still fits NAME_RE's 32.
+    var base = sel.slice(0, 25) + '-copy'; var name = base; var i = 2;
     while (profiles[name]) { name = base + i; i++; }
-    if (!NAME_RE.test(name)) { setStatus('generated name "' + name + '" is invalid — rename after creating', 'err'); return; }
+    if (!NAME_RE.test(name)) { setStatus('cannot derive a valid copy name from "' + sel + '" — nothing created; create the copy manually with a shorter name', 'err'); return; }
     profiles[name] = JSON.parse(JSON.stringify(profiles[sel]));
     sel = name; uiRenaming = false; uiConfirmDel = false; render(); refreshButtons();
   }

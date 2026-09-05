@@ -38,6 +38,10 @@ def test_captures_page(client):
     r = client.get("/captures")
     assert r.status_code == 200
     assert "text/html" in r.headers["content-type"]
+    # The raw-string template must ship the literal glyph, not a JS escape
+    # that innerHTML would render verbatim as "Whisper\u2019s".
+    html = r.text
+    assert "Whisper’s" in html and "\\u2019" not in html
 
 
 def test_captures_page_403_landing_short_circuits_for_admin(client):
@@ -148,25 +152,12 @@ def test_merge_member_scope_guard_precedes_state_checks(
     existence + state. Regression guard for _validate_merge_payload: the
     per-member scope check must run BEFORE the already-in-sample / audio-missing
     checks."""
-    import wave
-
-    from faster_whisper_backend.audio import transcode as audio_transcode
     from faster_whisper_backend.auth import dependencies as auth
     from faster_whisper_backend.captures import routes as captures_routes
     from fastapi import HTTPException
 
     cs = captures_store_db
-
-    def _fake_transcode(src_path, dst_path):
-        with wave.open(dst_path, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(16000)
-            w.writeframes(b"\x00\x00" * 100)
-        return 1234
-
-    monkeypatch.setattr(
-        audio_transcode, "transcode_to_wav_16k_mono", _fake_transcode)
+    _fake_wav_transcode(monkeypatch)
 
     src = tmp_path / "src.bin"
     src.write_bytes(b"junk")
@@ -871,3 +862,74 @@ def test_create_sample_rejects_member_already_grouped(
         "SELECT id FROM capture_samples ORDER BY id").fetchall()]
     assert ids == ["b" * 32]
     assert cs.get_capture(cid)["sample_id"] == "b" * 32
+
+
+def test_insert_sample_with_sid_holds_captures_lock(
+        captures_store_db, groups_store_db, monkeypatch, tmp_path):
+    """The two stores share one autocommit connection, so the explicit
+    BEGIN..COMMIT in _insert_sample_with_sid must also hold
+    captures_store._lock — otherwise a bare captures_store write from
+    another thread joins the transaction and is discarded with a losing
+    merge's ROLLBACK."""
+    from faster_whisper_backend.captures import routes as cr
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
+
+    cid = _ready_capture(cs, monkeypatch, tmp_path, language="de",
+                         translations=None)
+    real_conn = gs._require_conn()
+    seen: dict[str, bool] = {}
+
+    class _Conn:
+        def execute(self, sql, *args, **kwargs):
+            if str(sql).lstrip().upper().startswith("BEGIN"):
+                seen["captures_lock_held"] = cs._lock.locked()
+            return real_conn.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name):
+            return getattr(real_conn, name)
+
+    monkeypatch.setattr(gs, "_require_conn", lambda: _Conn())
+    sid = "d" * 32
+    cr._insert_sample_with_sid(
+        sid=sid, user_id="alice", member_ids=[cid], transcript="quelle",
+        join_strategy="space", silence_ms=300, member_hash_map={cid: "h"},
+        duration_ms=1000, language="de", member_trims={},
+    )
+    assert seen == {"captures_lock_held": True}
+    assert cs.get_capture(cid)["sample_id"] == sid
+
+
+def test_list_samples_projects_chip_offsets_without_hydrating_words(
+        client, make_user_key, monkeypatch):
+    """The list path projects member chips onto global word indices from
+    get_members' word_count alone — no per-member get_capture (that was a
+    full SELECT * + words JSON decode per member per page)."""
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    conn = cs._require_conn()
+    sid = "chipsid000000001"
+    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    _insert_member(conn, "chipmember00", sid, user_id=uid)
+    _insert_member(conn, "chipmember01", sid, user_id=uid)
+    conn.execute(
+        "UPDATE captures SET words = ?, sample_order = 0 WHERE id = ?",
+        (json.dumps([{"w": "a"}, {"w": "b"}]), "chipmember00"))
+    conn.execute(
+        "UPDATE captures SET words = ?, corrections = ?, sample_order = 1"
+        " WHERE id = ?",
+        (json.dumps([{"w": "c"}, {"w": "d"}, {"w": "e"}]),
+         json.dumps([{"idx": 1, "wrong": "a", "correct": "b"}]),
+         "chipmember01"))
+
+    monkeypatch.setattr(
+        cs, "get_capture",
+        lambda cid: pytest.fail("list path must not hydrate members"))
+    body = client.get("/captures/api/samples", headers=bearer(raw)).json()
+    groups = [g for g in body["samples"] if g["id"] == sid]
+    assert len(groups) == 1
+    assert groups[0]["corrections"] == [
+        {"idx": 3, "wrong": "a", "correct": "b"}]

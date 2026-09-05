@@ -184,8 +184,9 @@ def test_list_signals_truncation_with_uncapped_counts(client, monkeypatch):
     assert len(body["reports"]) == 2 and body["truncated"] is False
 
 
-def test_submit_disabled_for_nonadmin_403(client, app_module, make_user_key):
-    app_module.cfg.REPORTS_ALLOW_USER_SUBMIT = False
+def test_submit_disabled_for_nonadmin_403(client, app_module, make_user_key,
+                                          monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "REPORTS_ALLOW_USER_SUBMIT", False)
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
     r = client.post(_SUBMIT, json=_payload(request_id="nope"), headers=bearer(raw))

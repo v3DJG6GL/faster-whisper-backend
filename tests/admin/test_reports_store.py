@@ -88,7 +88,7 @@ def test_list_reports_filter(reports_store_db):
     assert len(rs.list_reports(user_id="a")) == 1
 
 
-def test_concurrent_upsert_same_key_single_row(reports_store_db):
+def test_concurrent_upsert_same_key_single_row(reports_store_db, monkeypatch):
     # The lookup and the INSERT/UPDATE share one _lock span: two parallel
     # submits of the same (user_id, request_id) must never both see "no
     # existing row" and stack duplicates (the index is not UNIQUE).
@@ -96,6 +96,15 @@ def test_concurrent_upsert_same_key_single_row(reports_store_db):
     rs = reports_store_db
     barrier = threading.Barrier(2)
     errors = []
+    # Deterministic pin (the two-thread race alone rarely reproduces the
+    # regression): the lookup must run while _lock is held.
+    lock_held = []
+    real_find = rs.find_by_request_user
+
+    def _recording_find(*a, **kw):
+        lock_held.append(rs._lock.locked())
+        return real_find(*a, **kw)
+    monkeypatch.setattr(rs, "find_by_request_user", _recording_find)
 
     def worker(n):
         try:
@@ -111,6 +120,7 @@ def test_concurrent_upsert_same_key_single_row(reports_store_db):
         t.join()
     assert not errors
     assert len(rs.list_reports()) == 1
+    assert lock_held and all(lock_held)
 
 
 def test_list_reports_limit_and_uncapped_export_path(reports_store_db):

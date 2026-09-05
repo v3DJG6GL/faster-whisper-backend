@@ -137,6 +137,13 @@ def _run() -> None:
                     _state["rebuilt"] += 1
             except Exception:
                 logger.exception("[reprocess-vad] sample %s failed", sid[:8])
+                # Keep the counter and the flag in agreement: "stale" is
+                # reported as "flagged, excluded from export", so a failure
+                # outside the build try must still set is_stale (best effort).
+                try:
+                    capture_samples_store.update_sample(sid, {"is_stale": 1})
+                except Exception:  # noqa: BLE001 — the DB may be what failed
+                    pass
                 with _state_lock:
                     _state["stale"] += 1
             finally:

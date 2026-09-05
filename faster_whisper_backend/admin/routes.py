@@ -650,20 +650,21 @@ async def _apply_hot_changes(
             ev = await _main.drain_then_evict(None)
             evicted.extend(ev)
         if "MODEL_OVERRIDES" in written:
-            # Per-model override changed for one or more model ids — figure
-            # out which ones touched a load-time field and evict only those.
-            # Also evict models whose overrides were REMOVED — they may be
-            # running with settings that no longer apply.
+            # Per-model override changed for one or more model ids — evict
+            # only those whose LOAD-TIME subset (added, changed or removed
+            # key) differs between the pre-save snapshot and the new bundle.
+            # A removed id whose bundle held only decode-time keys needs no
+            # reload, matching the global-field rule.
             new_overrides = coerced.get("MODEL_OVERRIDES") or {}
             old_overrides = prev_model_overrides or {}
-            for model_id, ovr in new_overrides.items():
-                if not isinstance(ovr, dict):
-                    continue
-                if set(ovr.keys()) & config_store.LOAD_TIME_FIELDS:
-                    ev = await _main.drain_then_evict(model_id)
-                    evicted.extend(ev)
-            for model_id in old_overrides:
-                if model_id not in new_overrides:
+            lt = config_store.LOAD_TIME_FIELDS
+            for model_id in set(old_overrides) | set(new_overrides):
+                o = old_overrides.get(model_id)
+                n = new_overrides.get(model_id)
+                o = o if isinstance(o, dict) else {}
+                n = n if isinstance(n, dict) else {}
+                keys = lt & (set(o) | set(n))
+                if keys and any(o.get(k) != n.get(k) for k in keys):
                     ev = await _main.drain_then_evict(model_id)
                     evicted.extend(ev)
     except Exception as e:
@@ -1075,7 +1076,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
     for idx, rule in enumerate(rules):
         if not isinstance(rule, dict):
             continue
-        if time.monotonic() > deadline:
+        # `terminal` is a plain strip in _run_rule (no regex, no guard
+        # thread), so it is exempt from the skip: reporting it `slow` and
+        # suppressing the implicit final trim would misreport `final`.
+        if time.monotonic() > deadline and rule.get("type") != "terminal":
             step = {"label": rule.get("label", rule.get("name", "?")),
                     "type": rule.get("type", "?"), "before": text,
                     "after": text, "matches": 0, "skipped": False,
@@ -3028,6 +3032,7 @@ function modelOverridesEditor(name, v) {
       if (meta.max !== undefined) inp.max = meta.max;
       if (meta.step !== undefined) inp.step = meta.step;
       else if (meta.kind === 'int') inp.step = 1;
+      else if (meta.kind === 'float') inp.step = 'any';
       inp.value = currentVal == null ? '' : currentVal;
       inp.addEventListener('input', () => {
         const raw = inp.value;
@@ -3045,6 +3050,7 @@ function modelOverridesEditor(name, v) {
       if (meta.min !== undefined) inp.min = meta.min;
       if (meta.max !== undefined) inp.max = meta.max;
       if (meta.step !== undefined) inp.step = meta.step;
+      else inp.step = 'any';
       inp.value = currentVal == null ? '' : currentVal;
       inp.addEventListener('input', () => {
         const raw = inp.value;
@@ -3497,12 +3503,17 @@ function translationTemplateEditor(name, v) {
   }
 
   let previewTimer = null;
+  let previewSeq = 0;
   function schedulePreview() {
     clearTimeout(previewTimer);
+    const seq = ++previewSeq;
     previewTimer = setTimeout(async () => {
       try {
         const r = await api('POST', '/settings/translation-test', labBody(true));
         const j = await r.json().catch(() => ({}));
+        // Sequenced: a slower, older preview must not overwrite the render
+        // for the current inputs.
+        if (seq !== previewSeq) return;
         if (r.ok && j.prompt) renderPrompt(j.prompt);
         else if (r.status === 403) {
           readout.textContent = 'translation is disabled (TRANSLATION_ENABLED)';
@@ -3558,6 +3569,8 @@ function translationTemplateEditor(name, v) {
       stage.textContent = '';
       const card = document.createElement('div');
       if (r.ok) {
+        // A successful run leaves the model loaded; the next click is hot.
+        testBtn.dataset.cold = '';
         const warned = j.warnings && j.warnings.length;
         card.className = 'lab-result' + (warned ? ' warned' : '');
         const out = document.createElement('div');
@@ -4658,17 +4671,19 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
             status.textContent = rule.enabled
               ? '∅ empty pattern — rule skipped'
               : '∅ disabled';
+          } else if (step.not_run) {
+            // Screened, not executed — a warning, not a failure: an
+            // already-saved rule of this shape still runs in the engine.
+            // Tested BEFORE the regex-list advisory: a screened regex-list
+            // step carries both flags and must not claim "pattern skipped".
+            status.className = 'regex-status warn';
+            status.textContent = '⚠ ' + step.error;
           } else if (step.error && step.type === 'regex-list') {
             // Advisory: the bad entry is skipped, the valid ones still applied.
             status.className = 'regex-status warn';
             const n = step.matches || 0;
             status.textContent = '⚠ ' + n + ' match' + (n === 1 ? '' : 'es')
               + ' · bad pattern skipped: ' + step.error;
-          } else if (step.not_run) {
-            // Screened, not executed — a warning, not a failure: an
-            // already-saved rule of this shape still runs in the engine.
-            status.className = 'regex-status warn';
-            status.textContent = '⚠ ' + step.error;
           } else if (step.error) {
             status.className = 'regex-status err';
             status.textContent = '✗ ' + step.error;
@@ -5398,8 +5413,8 @@ function pipelineTestPanel() {
       // matches alongside `error`. Show the output, not just the warning.
       const advisory = step.error && step.type === 'regex-list';
       if (step.skipped) badge = testBadge('empty', 'skipped');
-      else if (advisory) badge = testBadge('warn', '⚠ ' + (step.matches || 0) + ' matches · bad pattern skipped');
       else if (step.not_run) badge = testBadge('warn', '⚠ not run');
+      else if (advisory) badge = testBadge('warn', '⚠ ' + (step.matches || 0) + ' matches · bad pattern skipped');
       else if (step.error) badge = testBadge('err', '✗');
       else if (step.slow) badge = testBadge('warn', '⚠ slow');
       else if (step.matches) badge = testBadge('ok', step.matches + ' matches');
@@ -5414,12 +5429,7 @@ function pipelineTestPanel() {
       } else {
         if (!changed) outCell.innerHTML = '<span class="nochange">(no change)</span>';
         else outCell.textContent = step.after;
-        if (step.not_run && step.error) {
-          const warn = document.createElement('span');
-          warn.className = 'err';
-          warn.textContent = ' ⚠ ' + step.error;
-          outCell.appendChild(warn);
-        } else if (advisory) {
+        if ((step.not_run && step.error) || advisory) {
           const warn = document.createElement('span');
           warn.className = 'err';
           warn.textContent = ' ⚠ ' + step.error;

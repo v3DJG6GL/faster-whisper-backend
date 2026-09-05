@@ -47,6 +47,10 @@ def _guard(monkeypatch):
 
     monkeypatch.setattr(restart_service.os, "execv", _boom_execv)
     monkeypatch.setattr(restart_service.os, "_exit", _boom_exit)
+    # The real flush imports main and calls system_stats.shutdown() (which
+    # flips the module-global NVML_OK for the rest of the session); only
+    # the tests that opt in (_order_probe / the direct-call test) run it.
+    monkeypatch.setattr(restart_service, "_flush_before_exit", lambda: None)
     monkeypatch.setattr(
         restart_service.subprocess, "Popen",
         lambda *a, **k: (_ for _ in ()).throw(

@@ -218,19 +218,25 @@ def get_members(sid: str) -> list[dict[str, Any]]:
     """Return member captures in their declared sample_order, decoded
     enough for the UI (transcript + duration; no heavy words/segments).
     Includes corrections so chip-aware joiners can apply each
-    member's corrections to its post-processing text before merging."""
+    member's corrections to its post-processing text before merging.
+    Carries `word_count` (JSON1 json_array_length of the words column, 0 on
+    malformed JSON — same fallback as store._row_to_dict) so chip projection
+    can compute global offsets without hydrating words."""
     conn = _require_conn()
     rows = conn.execute(
         "SELECT id, created_ts, audio_s, raw_text AS raw, final_text AS final,"
         " text_for_training, audio_trimmed_relpath,"
         " corrected_text, corrections, status, sample_order, user_id,"
-        " language, task"
+        " language, task,"
+        " CASE WHEN json_valid(words) THEN json_array_length(words)"
+        " ELSE 0 END AS word_count"
         " FROM captures WHERE sample_id = ? ORDER BY sample_order ASC",
         (sid,),
     ).fetchall()
     out: list[dict[str, Any]] = []
     for r in rows:
         d = dict(r)
+        d["word_count"] = int(d.get("word_count") or 0)
         try:
             d["corrections"] = json.loads(d.get("corrections") or "[]")
             if not isinstance(d["corrections"], list):
