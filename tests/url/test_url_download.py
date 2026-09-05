@@ -739,3 +739,76 @@ def test_direct_media_probe_pins_dns_against_rebinding(monkeypatch):
         srv.shutdown()
         srv.server_close()
     assert hits["n"] == 0
+
+
+def _dribbling_server(header: bytes, interval: float):
+    """A loopback server that sends `header` one byte per `interval`, i.e.
+    always under a per-socket-op timeout, never finishing in a hurry."""
+    import socket as _s
+    import threading as _th
+    import time as _t
+    srv = _s.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+
+    def serve():
+        try:
+            conn, _ = srv.accept()
+        except OSError:
+            return
+        with conn:
+            for b in header:
+                try:
+                    conn.send(bytes([b]))
+                except OSError:
+                    return
+                _t.sleep(interval)
+    _th.Thread(target=serve, daemon=True).start()
+    return srv
+
+
+def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
+    """gap-url-infra#1: http.client reads headers line by line with a fresh
+    per-op timeout per recv, so a host trickling one header byte at a time
+    never trips it — the probe thread (one of four in _PROBE_POOL) stayed
+    wedged for the whole dribble. The wall-clock cutoff must free it at
+    `timeout`, through the REAL opener and connection classes."""
+    import time as _t
+    from faster_whisper_backend.core import net_policy as np
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
+    srv = _dribbling_server(
+        b"HTTP/1.1 200 OK\r\nContent-Type: audio/mpeg\r\nContent-Length: 1\r\n\r\nx",
+        0.1)
+    try:
+        port = srv.getsockname()[1]
+        t0 = _t.monotonic()
+        out = udl._direct_media_probe_sync(
+            f"http://127.0.0.1:{port}/a.mp3", timeout=0.5)
+        assert out is False
+        assert _t.monotonic() - t0 < 2.0  # the dribble alone takes ~7 s
+    finally:
+        srv.close()
+
+
+def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
+    """Same window in fetch_thumbnail_data_uri's header phase."""
+    import time as _t
+    from faster_whisper_backend.core import net_policy as np
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(np, "address_is_forbidden", lambda a: False)
+    srv = _dribbling_server(
+        b"HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: 1\r\n\r\nx",
+        0.1)
+    try:
+        port = srv.getsockname()[1]
+
+        async def go():
+            t0 = _t.monotonic()
+            out = await udl.fetch_thumbnail_data_uri(
+                f"http://127.0.0.1:{port}/t.jpg", timeout=0.5)
+            assert out is None
+            assert _t.monotonic() - t0 < 2.0
+        _run(go())
+    finally:
+        srv.close()

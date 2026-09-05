@@ -36,7 +36,9 @@ import importlib.util
 import logging
 import os
 import re
+import socket
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -197,21 +199,81 @@ class _NoPrivateRedirects(urllib.request.HTTPRedirectHandler):
 # connection resolves once through net_policy and dials that answer (DNS
 # rebinding between the _host_is_forbidden gate and connect can't move it).
 class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def __init__(self, conn_class=net_policy.PinnedHTTPConnection):
+        super().__init__()
+        self._conn_class = conn_class
+
     def http_open(self, req):
-        return self.do_open(net_policy.PinnedHTTPConnection, req)
+        return self.do_open(self._conn_class, req)
 
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def __init__(self, conn_class=net_policy.PinnedHTTPSConnection):
+        super().__init__()
+        self._conn_class = conn_class
+
     def https_open(self, req):
-        return self.do_open(net_policy.PinnedHTTPSConnection, req,
-                            context=self._context)
+        return self.do_open(self._conn_class, req, context=self._context)
 
 
-def _guarded_opener() -> urllib.request.OpenerDirector:
+class _WallClockCutoff:
+    """A hard wall-clock limit on everything an opener does on the wire.
+
+    The opener's `timeout` is per socket op and http.client reads headers
+    line by line with a fresh timeout per recv, so a host dribbling one
+    header byte per op can hold a probe thread for as long as it likes —
+    and the outer wait_for only abandons the await, never the thread.
+    Every socket the opener dials is recorded here; when the timer fires
+    they are shut down, the blocked recv returns EOF at once and the
+    caller's except turns that into its 'no' answer."""
+
+    def __init__(self, seconds: float):
+        self._socks: list = []
+        self._lock = threading.Lock()
+        self._timer = threading.Timer(max(0.0, seconds), self.cut)
+        self._timer.daemon = True
+
+    def add(self, sock) -> None:
+        with self._lock:
+            self._socks.append(sock)
+
+    def cut(self) -> None:
+        with self._lock:
+            socks, self._socks = self._socks, []
+        for sock in socks:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+
+    def __enter__(self):
+        self._timer.start()
+        return self
+
+    def __exit__(self, *exc):
+        self._timer.cancel()
+        return False
+
+
+def _guarded_opener(cutoff: "_WallClockCutoff | None" = None,
+                    ) -> urllib.request.OpenerDirector:
     # Keeps going through urllib.request.build_opener so tests can swap the
     # whole opener there.
+    http_cls = net_policy.PinnedHTTPConnection
+    https_cls = net_policy.PinnedHTTPSConnection
+    if cutoff is not None:
+        class http_cls(net_policy.PinnedHTTPConnection):  # type: ignore[no-redef]
+            def connect(self):
+                super().connect()
+                cutoff.add(self.sock)
+
+        class https_cls(net_policy.PinnedHTTPSConnection):  # type: ignore[no-redef]
+            def connect(self):
+                super().connect()
+                cutoff.add(self.sock)
     return urllib.request.build_opener(
-        _PinnedHTTPHandler(), _PinnedHTTPSHandler(), _NoPrivateRedirects())
+        _PinnedHTTPHandler(http_cls), _PinnedHTTPSHandler(https_cls),
+        _NoPrivateRedirects())
 
 
 def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
@@ -221,7 +283,9 @@ def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
     # `timeout` is a wall-clock budget: the opener's timeout is per-socket-
     # op, so a host dribbling one header byte per op could otherwise hold
     # this worker thread far past it (the outer wait_for abandons the
-    # await, never the thread). Short per-op timeout + a monotonic deadline.
+    # await, never the thread). Short per-op timeout, a monotonic deadline
+    # for the slow-but-answering case, and _WallClockCutoff to cut the
+    # socket under a dribbler that never trips the per-op timeout.
     deadline = time.monotonic() + timeout
     op_timeout = max(1.0, min(timeout, 5.0))
     parts = urllib.parse.urlsplit(url)
@@ -230,9 +294,9 @@ def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
     req = urllib.request.Request(
         url, headers={"Range": "bytes=0-0", "User-Agent": "faster-whisper-backend"},
         method="GET")
-    opener = _guarded_opener()
     try:
-        with opener.open(req, timeout=op_timeout) as resp:
+        with _WallClockCutoff(timeout) as cutoff, \
+                _guarded_opener(cutoff).open(req, timeout=op_timeout) as resp:
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             if time.monotonic() > deadline:
                 return False
@@ -472,9 +536,11 @@ async def fetch_thumbnail_data_uri(
             return None
         req = urllib.request.Request(
             url, headers={"User-Agent": "faster-whisper-backend"})
-        opener = _guarded_opener()
         try:
-            with opener.open(req, timeout=timeout) as resp:
+            # The header phase gets the same hard cutoff as the body loop
+            # below: a dribbled status line never trips the per-op timeout.
+            with _WallClockCutoff(timeout) as cutoff, \
+                    _guarded_opener(cutoff).open(req, timeout=timeout) as resp:
                 ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                 if not ctype.startswith("image/") or "svg" in ctype:
                     return None

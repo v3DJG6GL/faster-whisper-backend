@@ -128,6 +128,7 @@ def test_sweep_reclaims_file_whose_unlink_failed(tmp_path, monkeypatch):
 @pytest.mark.skipif(os.name == "nt", reason="POSIX file modes only")
 def test_pipeline_copy_fallback_is_0600(tmp_path, monkeypatch):
     src = _make_src(tmp_path, size=64)
+    monkeypatch.setattr(ums.tempfile, "gettempdir", lambda: str(tmp_path))
 
     def _no_link(a, b, **kw):
         raise OSError("cross-device link")
@@ -178,10 +179,15 @@ def test_startup_reset_wipes(tmp_path):
     assert os.path.isdir(ums._dir())
 
 
-def test_pipeline_copy_is_independent(tmp_path):
+def test_pipeline_copy_is_independent(tmp_path, monkeypatch):
     src = _make_src(tmp_path, size=64)
+    # Pin the tempdir next to the source so the os.link branch — the only
+    # one where "unlinking the copy" is non-trivial — is the branch tested.
+    monkeypatch.setattr(ums.tempfile, "gettempdir", lambda: str(tmp_path))
     copy = ums.make_pipeline_copy(src)
     assert copy and os.path.getsize(copy) == 64
+    if os.name != "nt":
+        assert os.stat(copy).st_nlink == 2
     mid = ums.register(src, user_id=None)  # moves the original away
     # unlinking the pipeline copy must not touch the retained file
     os.unlink(copy)
