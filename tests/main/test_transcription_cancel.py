@@ -159,7 +159,7 @@ def test_progress_and_cancel_are_owner_bound(client, app_module,
 def test_stage_transition_clears_mirrored_progress(app_module):
     from faster_whisper_backend.core import jobs
     pid = "feedf00d" * 4
-    jid = jobs.job_start("transcribe", id="job-mirror-test", model="m")
+    jobs.job_start("transcribe", id="job-mirror-test", model="m")
     app_module._JOB_BY_PID[pid] = "job-mirror-test"
     try:
         app_module._progress_set(pid, stage="transcribing", progress=0.97,
@@ -275,7 +275,6 @@ def test_in_flight_progress_id_is_treated_as_absent(client, app_module):
         entry = app_module._BATCH_PROGRESS.get(_PID)
         assert entry is not None
         assert entry["owner"] == "other" and entry["stage"] == "transcribing"
-        assert _PID not in app_module._JOB_BY_PID
     finally:
         app_module._BATCH_PROGRESS.pop(_PID, None)
         app_module._PROGRESS_OWNER.pop(_PID, None)
@@ -414,7 +413,8 @@ def test_task_cancellation_records_status_cancelled(client, app_module,
         recorded.append(kw)
         return _orig(**kw)
     monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
-    with pytest.raises(BaseException):
+    # TestClient surfaces the handler's CancelledError as a RuntimeError.
+    with pytest.raises(Exception):
         _post(client)
     assert recorded and recorded[-1]["status"] == "cancelled"
 

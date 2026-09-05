@@ -212,10 +212,11 @@ def test_admin_config_accepts_new_fields():
 
 def test_admin_config_rejects_out_of_range():
     import pytest as _pytest
+    from pydantic import ValidationError
     from faster_whisper_backend import config_store
-    with _pytest.raises(Exception):
+    with _pytest.raises(ValidationError):
         config_store.AdminConfig(SEGMENT_MAX_WORDS_PER_S=-1.0)
-    with _pytest.raises(Exception):
+    with _pytest.raises(ValidationError):
         config_store.AdminConfig(STREAMING_TAIL_TRIM_PAD_MS=999999)
 
 

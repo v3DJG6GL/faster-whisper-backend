@@ -6,6 +6,7 @@ boundaries as test_diarization/test_bgm."""
 import asyncio
 import os
 import tempfile
+import time
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization
@@ -136,8 +137,9 @@ def test_per_request_separation_model_honored(client, app_module, monkeypatch):
     assert r.status_code == 200, r.text
     assert calls[0]["model_filename"] == "UVR-MDX-NET-Inst_HQ_5"
     assert "warnings" not in r.json()
-    # Absent field inherits the config default (passed as None → the module
-    # falls back to cfg.BGM_SEPARATION_UVR_MODEL).
+    # Absent field inherits the config default (the handler resolves it
+    # through _resolve_request_knob before the call, so the module sees the
+    # config string, not None).
     r = _post(client, separate_bgm="true")
     assert r.status_code == 200
     assert calls[1]["model_filename"] == "UVR-MDX-NET-Inst_HQ_4"
@@ -322,6 +324,94 @@ def test_allowlist_never_blocks_the_config_inherited_default(
     assert "warnings" not in r.json()
 
 
+def _bind_profile(client, make_user_key, name, fields):
+    from tests.conftest import bearer
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    r = client.post("/settings/overrides/state", headers=admin_h,
+                    json={"OVERRIDE_PROFILES": {name: fields}})
+    assert r.status_code == 200, r.text
+    uid, raw_alice = make_user_key("alice", is_admin=False)
+    r = client.patch(
+        f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
+        json={"pages": {}, "config": {"overrides": {},
+                                      "profiles": [name], "locks": []}})
+    assert r.status_code == 200, r.text
+    return admin_h, raw_alice
+
+
+def test_allowlist_admits_the_identity_effective_model_when_echoed(
+        client, app_module, make_user_key, monkeypatch):
+    """An identity/per-model pinned model outside the allowlist runs when the
+    client sends nothing, so echoing that exact effective value must not be
+    refused — the allowlist constrains only what the CLIENT adds."""
+    from tests.conftest import bearer
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ALLOWED_MODELS",
+                        ["pyannote/speaker-diarization-community-1"],
+                        raising=False)
+    calls = []
+    _stub_diarize(monkeypatch, calls)
+    pinned = "pyannote/speaker-diarization-3.1"
+    admin_h, raw_alice = _bind_profile(
+        client, make_user_key, "pin-diar",
+        {"DIARIZATION_MODEL": pinned, "locks": []})
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "diarize": "true", "diarization_model": pinned})
+    assert r.status_code == 200, r.text
+    assert calls[0]["model_id"] == pinned
+    assert "warnings" not in r.json()
+    # Locked knob, same echoed value: the stage still runs and nothing is
+    # reported as ignored (the request agrees with the lock).
+    r = client.post("/settings/overrides/state", headers=admin_h,
+                    json={"OVERRIDE_PROFILES": {"pin-diar": {
+                        "DIARIZATION_MODEL": pinned,
+                        "locks": ["DIARIZATION_MODEL"]}}})
+    assert r.status_code == 200, r.text
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "diarize": "true", "diarization_model": pinned})
+    assert r.status_code == 200, r.text
+    assert len(calls) == 2
+    assert calls[1]["model_id"] == pinned
+    assert "warnings" not in r.json()
+    assert "diarization_model" not in r.json().get("overrides_ignored", [])
+
+
+def test_allowlist_admits_the_identity_effective_separation_model_when_echoed(
+        client, app_module, make_user_key, monkeypatch):
+    from tests.conftest import bearer
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ALLOWED_MODELS", [],
+                        raising=False)
+    calls = []
+    _stub_separate(monkeypatch, calls)
+    _, raw_alice = _bind_profile(
+        client, make_user_key, "pin-sep",
+        {"BGM_SEPARATION_UVR_MODEL": "UVR-Pinned", "locks": []})
+    # Absent field: the identity-pinned model runs.
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "separate_bgm": "true"})
+    assert r.status_code == 200, r.text
+    assert len(calls) == 1
+    # Echoing that exact effective value must yield the same call.
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "separate_bgm": "true", "separation_model": "UVR-Pinned"})
+    assert r.status_code == 200, r.text
+    assert len(calls) == 2
+    assert calls[1]["model_filename"] == "UVR-Pinned"
+    assert not any("not allowed" in w for w in r.json().get("warnings", []))
+
+
 # --- stage-ahead (the _progress_set hook) ------------------------------------
 
 def _plan_with_stub_queue(app_module, monkeypatch, entries, pid="ab" * 8):
@@ -405,6 +495,29 @@ def test_waiting_and_analyzing_map_to_the_transcribing_index(app_module,
     # Same index — not an advance, so no second enqueue.
     assert preload._plans[pid].cursor == preload.STAGE_INDEX["transcribing"]
     assert enqueued == []
+
+
+def test_stageless_progress_tick_restamps_the_plan_ttl(app_module, monkeypatch):
+    """A per-segment decode tick carries no stage=; it must still restamp the
+    TTL, or a decode longer than MODEL_PRELOAD_WARM_TTL_S loses its plan to
+    the sweeper mid-stage."""
+    pid = "ee" * 8
+    preload, enqueued = _plan_with_stub_queue(
+        app_module, monkeypatch,
+        [("diarization", "p/x"), ("translation", "o/r:Q4")], pid=pid)
+    app_module._progress_set(pid, stage="transcribing")
+    enqueued.clear()
+    plan = preload._plans[pid]
+    plan.expires_mono = 0.0
+
+    app_module._progress_set(pid, progress=0.5, position=1.0, last_text="x")
+
+    assert plan.expires_mono > time.monotonic()
+    assert plan.cursor == preload.STAGE_INDEX["transcribing"]
+    assert enqueued == []  # a tick is not an advance
+    # The warm lease follows the restamp.
+    assert (preload._warm[preload.stats_key("translation", "o/r:Q4")]
+            == plan.expires_mono)
 
 
 def test_stage_ahead_is_a_no_op_without_a_bound_plan(app_module, monkeypatch):

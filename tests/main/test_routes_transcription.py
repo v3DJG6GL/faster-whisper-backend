@@ -371,7 +371,7 @@ def test_progress_malformed_id_is_ignored_on_post(client, app_module):
 def test_progress_registry_is_bounded(app_module):
     for i in range(app_module._BATCH_PROGRESS_MAX + 20):
         app_module._progress_set(f"{i:032x}", stage="waiting")
-    assert len(app_module._BATCH_PROGRESS) <= app_module._BATCH_PROGRESS_MAX
+    assert len(app_module._BATCH_PROGRESS) == app_module._BATCH_PROGRESS_MAX
     app_module._BATCH_PROGRESS.clear()
 
 

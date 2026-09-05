@@ -80,10 +80,27 @@ def test_small_body_with_no_content_type_is_not_413(client):
     assert r.status_code != 413
 
 
-def test_chunked_oversize_json_is_cut_off(client):
+def test_chunked_oversize_json_is_cut_off(client, app_module):
     # Content-Length absent → the receive-side counter is what enforces it.
-    r = _put_json(client, _big_json(8 * 1024 * 1024), chunked=True)
-    assert r.status_code >= 400
+    # The counter turns the stream into a ClientDisconnect, which FastAPI
+    # reports as a 400 parse error; a 413 here would mean the ROUTE
+    # (client-settings' own blob cap), not the counter, rejected the body.
+    from faster_whisper_backend.auth import dependencies as auth
+    seen = []
+
+    def _spy():
+        seen.append(1)
+        return {"user_id": "u", "is_admin": True, "permissions_raw": {},
+                "permissions": auth.Permissions({}, True)}
+
+    app_module.app.dependency_overrides[auth.get_current_user] = _spy
+    try:
+        r = _put_json(client, _big_json(8 * 1024 * 1024), chunked=True)
+    finally:
+        app_module.app.dependency_overrides.pop(auth.get_current_user, None)
+    assert r.status_code == 400, r.text
+    assert "parsing the body" in r.json()["detail"]
+    assert seen == []
 
 
 def test_json_cap_honours_a_cfg_override(client, app_module, monkeypatch):

@@ -6,6 +6,7 @@ TestClient keeps an httpx cookie jar across requests on the same instance,
 so a login() call leaves the session + CSRF cookies in place for the
 follow-up requests — exactly like a browser."""
 
+import pytest
 from starlette.testclient import TestClient
 
 from tests.conftest import bearer
@@ -33,7 +34,6 @@ def test_login_open_mode_off_admin_allowlist_issues_a_session(app_module):
     # browser 401s on /auth/whoami and shows the login gate; /auth/login must
     # therefore run the real key exchange for that host, not the open-mode
     # no-op, or a valid key loops the gate forever with no cookie.
-    from starlette.testclient import TestClient
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
         from faster_whisper_backend.auth import api_keys_store
         uid = api_keys_store.create_user("alice", is_admin=False)
@@ -68,6 +68,14 @@ def test_login_bad_key_is_401_no_cookie(client, make_user_key):
     r = client.post("/auth/login", json={"key": "wk_not_real"})
     assert r.status_code == 401
     assert not _set_cookie_lines(r)
+
+
+def test_login_non_string_key_is_401_not_500(client, make_user_key):
+    make_user_key("root", is_admin=True)
+    for bad in (123, ["x"], {"a": 1}, True):
+        r = client.post("/auth/login", json={"key": bad})
+        assert r.status_code == 401, bad
+        assert not _set_cookie_lines(r)
 
 
 # --- cookie-authenticated access to protected routes ------------------------
@@ -267,7 +275,7 @@ def test_cookie_mutation_resolves_the_session_once(client, make_user_key,
     monkeypatch.setattr(sessions_store, "lookup_session", _counted)
     r = client.post("/quick-config/state", json={"rules_patch": {}},
                     headers={"X-CSRF-Token": tok})
-    assert r.status_code != 403
+    assert r.status_code == 200
     assert len(calls) == 1
     # Safe methods never enter the middleware branch: still exactly one.
     calls.clear()
@@ -288,7 +296,7 @@ def test_csrf_covers_router_mounted_mutation(client, make_user_key):
         json={"rules_patch": {}},
         headers={"X-CSRF-Token": tok},
     )
-    assert r.status_code != 403
+    assert r.status_code == 200
 
 
 # --- Origin: checked on every unsafe method, whatever the credential --------
@@ -345,7 +353,26 @@ def _worker(name, db_path):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     mod.init_db(db_path)
+    _WORKER_MODULES.append(mod)
     return mod
+
+
+_WORKER_MODULES: list = []
+
+
+@pytest.fixture(autouse=True)
+def _close_worker_modules():
+    """Close every _worker() connection after the test (7 per run otherwise
+    leak to GC as 'unclosed database' ResourceWarnings)."""
+    yield
+    while _WORKER_MODULES:
+        mod = _WORKER_MODULES.pop()
+        try:
+            if mod._conn is not None:
+                mod._conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        mod._conn = None
 
 
 def test_revoke_in_sibling_worker_is_seen_after_local_write(tmp_path):
@@ -421,6 +448,18 @@ def test_sibling_revoke_seen_on_read_path_after_interval(tmp_path):
     b.revoke_session(raw)
     a._REFRESH_MIN_INTERVAL_S = 0.0     # "the interval has elapsed"
     assert a.lookup_session(raw) is None
+
+
+def test_fresh_sibling_login_seen_inside_throttle_window(tmp_path):
+    """SERVER_WORKERS>1: /auth/login runs on worker A, the browser's next
+    request lands on worker B. B's read-path sibling check is throttled,
+    but a MISS must force it — otherwise the brand-new cookie 401s."""
+    db = str(tmp_path / "sessions.db")
+    a = _worker("sessions_store_fresh_a", db)
+    b = _worker("sessions_store_fresh_b", db)
+    assert b.lookup_session("no-such-token") is None   # B checked just now
+    raw, _csrf = a.create_session("u", 3600.0)          # login on A
+    assert b.lookup_session(raw) is not None            # inside the 1 s window
 
 
 def test_slide_expiry_touches_slide_cache_only_under_the_lock(tmp_path):
@@ -500,3 +539,17 @@ def test_login_failure_rate_zero_is_unlimited(client, app_module,
     for _ in range(30):
         assert client.post("/auth/login",
                            json={"key": "wk_nope"}).status_code == 401
+
+
+def test_revoke_session_bumps_config_version(client, make_user_key):
+    """/auth/logout must bump the config version: a live cookie-authenticated
+    streaming socket re-authenticates only on that counter
+    (streaming.routes._refresh_ident), so without the bump it kept decoding
+    for the signed-out identity."""
+    from faster_whisper_backend import config_store
+    _uid, raw = make_user_key("root", is_admin=True)
+    tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
+    v0 = config_store.config_version()
+    r = client.post("/auth/logout", headers={"X-CSRF-Token": tok})
+    assert r.status_code == 200
+    assert config_store.config_version() > v0

@@ -114,3 +114,14 @@ def test_logs_older_past_the_page_cap_terminates_paging(client, app_module,
     assert r.json() == {"lines": [], "next_skip": None}
     r = client.get(f"/logs/older?skip={cap}")
     assert r.json() == {"lines": [], "next_skip": None}
+
+
+def test_logs_page_onerror_closes_eventsource(client):
+    # The onerror handler must close the EventSource before arming the probe:
+    # otherwise the browser's native retry reconnects behind openLogStream()
+    # and replays the backlog into an un-cleared DOM.
+    body = client.get("/logs").text
+    i = body.index("es.onerror")
+    j = body.index("es.close()", i)
+    k = body.index("setTimeout(probe", i)
+    assert j < k

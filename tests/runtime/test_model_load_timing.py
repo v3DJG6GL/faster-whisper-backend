@@ -33,6 +33,9 @@ def _stub_load(monkeypatch):
 
 def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
     _stub_load(monkeypatch)
+    # A throwaway lock: contending the production global inside this test's
+    # own asyncio.run() loop would leave it bound to a closed loop.
+    monkeypatch.setattr(main, "_model_load_lock", asyncio.Lock())
     recorded = {}
     monkeypatch.setattr(main.metrics, "record_model_load",
                         lambda name, secs: recorded.__setitem__(name, secs))
