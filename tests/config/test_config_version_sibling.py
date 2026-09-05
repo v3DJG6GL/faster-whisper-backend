@@ -3,6 +3,9 @@ throttled so config_version() — called synchronously on the event loop once
 per partial-decode interval per live streaming session — cannot queue behind
 api_keys_store._lock more than ~4×/s."""
 
+import time
+import types
+
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend import config_store as cs
 
@@ -14,7 +17,11 @@ def _install(monkeypatch, versions):
     clock = {"t": 1000.0}
     monkeypatch.setattr(cs, "_KEYS_DATA_VERSION", -1)
     monkeypatch.setattr(cs, "_KEYS_LAST_PROBE", 0.0)
-    monkeypatch.setattr(cs.time, "monotonic", lambda: clock["t"])
+    # Patch config_store's OWN clock seam, not the stdlib module attribute:
+    # cs.time IS the stdlib `time`, so patching cs.time.monotonic would freeze
+    # the clock process-wide (asyncio, other stores' throttles).
+    monkeypatch.setattr(cs, "time", types.SimpleNamespace(
+        monotonic=lambda: clock["t"], time=time.time, sleep=time.sleep))
 
     def _dv():
         calls["n"] += 1

@@ -639,8 +639,8 @@ TRANSLATION_IDLE_TIMEOUT_S: int = _D("TRANSLATION_IDLE_TIMEOUT_S")
 # reply line-count mismatch).
 TRANSLATION_BATCH_SEGMENTS: int = _D("TRANSLATION_BATCH_SEGMENTS")
 
-# Prompt family: "auto" detects from the model name (hunyuan / translategemma
-# / milmmt / seed-x, else generic chatml); "custom" renders the template below,
+# Prompt family: "auto" detects from the model name (hunyuan / gemma-translate
+# / milmmt / seedx, else generic chatml); "custom" renders the template below,
 # which must contain {text} and {target_language} (optional slots:
 # {source_language}, {context}, {glossary}).
 TRANSLATION_PROMPT_FAMILY: str = _D("TRANSLATION_PROMPT_FAMILY")
@@ -1563,14 +1563,23 @@ try:
     # Snapshot every env-mapped field BEFORE the env layer touches it, so the
     # validation pass at the bottom of this module can put a rejected value
     # back. Values here are plain scalars/containers straight out of the
-    # in-file defaults + config.local.json, hence the shallow copy.
+    # in-file defaults + config.local.json. Dicts are copied ONE level deep:
+    # the per-model WHISPER_MODEL_OVERRIDE__ loop below mutates the
+    # MODEL_OVERRIDES entry dicts in place via setdefault(), and a shallow
+    # copy would share (and poison) those nested entries.
     _ENV_PRE: "dict[str, object]" = {}
     for _f in _ENV_VAR_MAPPING:
         if _f in globals():
             _v0 = globals()[_f]
-            _ENV_PRE[_f] = (
-                type(_v0)(_v0) if isinstance(_v0, (list, set, dict)) else _v0
-            )
+            if isinstance(_v0, dict):
+                _ENV_PRE[_f] = {
+                    _k2: (dict(_e2) if isinstance(_e2, dict) else _e2)
+                    for _k2, _e2 in _v0.items()
+                }
+            elif isinstance(_v0, (list, set)):
+                _ENV_PRE[_f] = type(_v0)(_v0)
+            else:
+                _ENV_PRE[_f] = _v0
 
     for _field, _env in _ENV_VAR_MAPPING.items():
         if _field in _ENV_SPECIAL_CASES or _field in _ENV_JSON_FIELDS:
@@ -1689,6 +1698,9 @@ def _coerce_override_value(field: str, raw: str) -> object:
 
 
 _OVERRIDE_PREFIX = "WHISPER_MODEL_OVERRIDE__"
+# model id -> set of ModelOverride field names the env supplied, so the
+# validation pass below can revert just those and keep the stored entry.
+_ENV_OVERRIDE_FIELDS: "dict[str, set[str]]" = {}
 for _k, _v in os.environ.items():
     if not _k.startswith(_OVERRIDE_PREFIX):
         continue
@@ -1718,6 +1730,15 @@ for _k, _v in os.environ.items():
         continue
     _enc_id = _rest[:_idx]
     _field = _rest[_idx + 2:]
+    # Honour the same rename table as the top-level env aliases and the
+    # config.local.json migration, so an old per-model field name still works.
+    if _field in _renames.RENAMED_KEYS:
+        _new_field = _renames.RENAMED_KEYS[_field]
+        _ENV_WARNINGS.append(
+            f"{_k} uses the renamed field {_field}; use "
+            f"{_OVERRIDE_PREFIX}{_enc_id}__{_new_field} — the old name still "
+            f"works but will be removed in a later release.")
+        _field = _new_field
     _model_id = _decode_model_id(_enc_id)
     _entry = MODEL_OVERRIDES.setdefault(_model_id, {})
     _coerced = _coerce_override_value(_field, _v)
@@ -1726,6 +1747,7 @@ for _k, _v in os.environ.items():
             f"{_k}={_v!r} is not a valid boolean; ignoring it for {_model_id}")
         continue
     _entry[_field] = _coerced
+    _ENV_OVERRIDE_FIELDS.setdefault(_model_id, set()).add(_field)
 
 
 # =============================================================================
@@ -1798,9 +1820,19 @@ try:
 
     # Validate every env-changed field in ONE batch, so a cross-field model
     # validator (the MIN/TARGET/MAX sample-sizing triple) sees the whole
-    # environment together — validating one at a time filled the unset
-    # members from _BASELINE and mis-rejected a self-consistent pair like
+    # environment together — validating one at a time, or against a partial
+    # dict, fills the unset members from _BASELINE (snapshotted before
+    # config.local.json) and mis-rejected a self-consistent pair like
     # TARGET=15 + MAX=20.
+    def _effective_env_dict(**override):
+        """Full effective config (in-file defaults + config.local.json +
+        surviving env values), so cross-field model validators compare
+        against the real siblings instead of _BASELINE."""
+        _d = {_f: globals()[_f] for _f in _AdminConfig.model_fields
+              if _f in globals() and _f not in _ENV_VALIDATE_SKIP}
+        _d.update(override)
+        return _d
+
     _changed = {
         _f: globals()[_f]
         for _f in sorted(_ENV_PRE)
@@ -1808,11 +1840,7 @@ try:
     }
     if _changed:
         try:
-            _full = {
-                _f: globals()[_f]
-                for _f in _AdminConfig.model_fields
-                if _f in globals() and _f not in _ENV_VALIDATE_SKIP
-            }
+            _full = _effective_env_dict()
             _AdminConfig.model_validate(_full)
         except Exception as _verr:  # noqa: BLE001 — any validation failure
             # Revert ONLY the fields the error locations name. Errors with an
@@ -1843,22 +1871,29 @@ try:
                     if _field in _ENV_REJECTED:
                         continue
                     try:
-                        _AdminConfig.model_validate({_field: globals()[_field]})
+                        # "Does this env value fail on its own": every other
+                        # still-standing env change is put back to its pre-env
+                        # value, but the config.local.json siblings stay.
+                        _iso = _effective_env_dict(
+                            **{_o: _ENV_PRE[_o] for _o in _changed
+                               if _o != _field and _o not in _ENV_REJECTED})
+                        _AdminConfig.model_validate(_iso)
                     except Exception as _ferr:  # noqa: BLE001
                         _revert_env_field(_field, _env_validation_reason(_ferr))
         # Cross-field / empty-loc backstop. A model validator (the sample-sizing
         # triple) reports loc=() so nothing above is attributed, and each half
         # of an inconsistent pair passes in isolation — the one failure the
         # batch pass exists for would otherwise never be rejected. Re-validate
-        # whatever still stands as a group; revert the fields the error names
+        # whatever still stands as a group — as the FULL effective config,
+        # because the model validators fill absent members from _BASELINE,
+        # which predates config.local.json; revert the fields the error names
         # (or the whole remainder when it names none) until the group passes.
         for _ in range(len(_changed) + 1):
-            _left = {_f: globals()[_f] for _f in _changed
-                     if _f not in _ENV_REJECTED}
+            _left = [_f for _f in sorted(_changed) if _f not in _ENV_REJECTED]
             if not _left:
                 break
             try:
-                _AdminConfig.model_validate(_left)
+                _AdminConfig.model_validate(_effective_env_dict())
                 break
             except Exception as _gerr:  # noqa: BLE001
                 _reason = _env_validation_reason(_gerr)
@@ -1873,7 +1908,7 @@ try:
                                 _named.append(_gf0)
                     except Exception:  # noqa: BLE001
                         pass
-                for _f in (_named or sorted(_left)):
+                for _f in (_named or _left):
                     _revert_env_field(_f, _reason)
 
     # MODEL_OVERRIDES is assembled key-by-key from the
@@ -1883,6 +1918,10 @@ try:
     # Beyond defeating the bound (BEAM_SIZE=9999 would sail past Field(le=20)),
     # a bad entry also makes every later /settings save 422 forever, because
     # the page round-trips the whole dict back through AdminConfig.
+    # The drop applies to the ENV-supplied fields only: the stored fields
+    # already passed load_overrides and are kept (the entry is re-validated
+    # with the env fields reverted to their pre-env values), matching
+    # _revert_env_field's revert-to-pre-env contract for scalar fields.
     if MODEL_OVERRIDES:
         _clean_overrides = {}
         for _mid, _entry in MODEL_OVERRIDES.items():
@@ -1895,10 +1934,38 @@ try:
                     {"MODEL_OVERRIDES": {_mid: _entry}}
                 ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
             except Exception as _verr:  # noqa: BLE001
-                _ENV_WARNINGS.append(
-                    f"MODEL_OVERRIDES[{_mid!r}] is invalid and was dropped: "
-                    f"{_env_validation_reason(_verr)}"
-                )
+                _env_fields = _ENV_OVERRIDE_FIELDS.get(_mid) or set()
+                _pre_entry = (_ENV_PRE.get("MODEL_OVERRIDES") or {}).get(_mid)
+                _kept_entry = False
+                if _env_fields:
+                    _reverted = {k: v for k, v in _entry.items()
+                                 if k not in _env_fields}
+                    if isinstance(_pre_entry, dict):
+                        for _ef in _env_fields:
+                            if _ef in _pre_entry:
+                                _reverted[_ef] = _pre_entry[_ef]
+                    try:
+                        _reverted = _AdminConfig.model_validate(
+                            {"MODEL_OVERRIDES": {_mid: _reverted}}
+                        ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
+                    except Exception:  # noqa: BLE001
+                        _reverted = None
+                    if _reverted is not None:
+                        _kept_entry = True
+                        if _reverted:
+                            _clean_overrides[_mid] = _reverted
+                        _ENV_WARNINGS.append(
+                            f"WHISPER_MODEL_OVERRIDE__ value(s) for {_mid!r} "
+                            f"({', '.join(sorted(_env_fields))}) are invalid "
+                            f"and were ignored: {_env_validation_reason(_verr)}"
+                            + ("; keeping the stored entry" if _reverted
+                               else "; no stored entry to keep")
+                        )
+                if not _kept_entry:
+                    _ENV_WARNINGS.append(
+                        f"MODEL_OVERRIDES[{_mid!r}] is invalid and was dropped: "
+                        f"{_env_validation_reason(_verr)}"
+                    )
         MODEL_OVERRIDES = _clean_overrides
 except NameError:
     # config_store was unavailable above (the ImportError fallback) — there is

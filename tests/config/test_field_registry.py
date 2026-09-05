@@ -693,7 +693,7 @@ def test_cache_rebuild_matches_snapshot():
 def test_config_to_client_key_matches_snapshot():
     assert cs.CONFIG_TO_CLIENT_KEY == CONFIG_TO_CLIENT_KEY_SNAPSHOT
     # effective_config keeps its historical alias pointing at the same dict.
-    assert effective_config._CONFIG_TO_CLIENT_KEY == CONFIG_TO_CLIENT_KEY_SNAPSHOT
+    assert effective_config._CONFIG_TO_CLIENT_KEY is cs.CONFIG_TO_CLIENT_KEY
 
 
 def test_lockable_fields_match_snapshot():

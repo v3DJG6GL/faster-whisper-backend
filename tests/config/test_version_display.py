@@ -77,7 +77,7 @@ def test_settings_state_carries_identity_fields(client):
     assert build_info.APP_VERSION in ident["report"]
 
 
-def test_identity_card_reports_configured_device_not_nvml(client, monkeypatch):
+def test_identity_card_reports_configured_device_not_nvml(app_module, monkeypatch):
     """A box with an NVIDIA card but MODEL_DEVICE=cpu must not claim "gpu — …"
     in the card / copy-report: the device word follows what the server decodes
     on, not NVML merely finding a device."""
@@ -95,7 +95,7 @@ def test_identity_card_reports_configured_device_not_nvml(client, monkeypatch):
 
     # and a loaded cuda model wins over the config fallback
     monkeypatch.setattr(system_stats, "loaded_models_snapshot",
-                        lambda: [{"device": "cuda"}])
+                        lambda: [{"name": "large-v3", "device": "cuda"}])
     ident = admin_routes._server_ident_fields()
     assert "gpu — NVIDIA GeForce RTX 3080" in ident["runs_as"]
 

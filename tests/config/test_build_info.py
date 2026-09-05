@@ -31,7 +31,9 @@ def test_env_override_wins(monkeypatch):
     try:
         assert importlib.reload(build_info).APP_VERSION == "v9.9.9-test"
     finally:
-        monkeypatch.delenv("WHISPER_BUILD_VERSION")
+        # Restore the ORIGINAL env first (a baked-in WHISPER_BUILD_VERSION
+        # must come back), then reload so build_info matches it again.
+        monkeypatch.undo()
         importlib.reload(build_info)
 
 
@@ -86,9 +88,11 @@ def test_engine_versions_omits_llama_cpp_when_absent(monkeypatch):
 def test_reload_does_not_leak_a_new_boot_id(monkeypatch):
     before = build_info.BOOT_ID
     monkeypatch.setenv("WHISPER_BUILD_VERSION", "v0.0.0-reload")
-    importlib.reload(build_info)
-    monkeypatch.delenv("WHISPER_BUILD_VERSION")
-    importlib.reload(build_info)
+    try:
+        importlib.reload(build_info)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(build_info)
     # A reload mints a fresh id inside the test; the autouse fixture puts
     # the process one back afterwards (checked by the next test).
     assert build_info.BOOT_ID != before

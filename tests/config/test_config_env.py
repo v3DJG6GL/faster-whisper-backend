@@ -201,7 +201,7 @@ def test_load_defaults_resolves_data_dir_placeholders(monkeypatch, tmp_path):
     # {DATA_DIR}/{DB_DIR}/{MODELS_DIR} placeholders resolve against the data
     # layout knobs (WHISPER_DATA_DIR/WHISPER_DB_DIR/WHISPER_MODELS_DIR —
     # captured at import into _DATA_DIR/_DB_DIR/_MODELS_DIR), NOT the repo
-    # dir. See also tests/test_data_dir.py for the end-to-end env → path
+    # dir. See also tests/config/test_data_dir.py for the end-to-end env → path
     # matrix.
     _write_cfg(tmp_path,
                LOG_FILE="{DATA_DIR}/logs/whisper.log",
@@ -725,3 +725,101 @@ def test_every_renamed_key_targets_a_live_field():
     for old, new in config_renames.RENAMED_KEYS.items():
         assert hasattr(config, new), new
         assert not hasattr(config, old), old
+
+
+def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch):
+    """One bad WHISPER_MODEL_OVERRIDE__ value must revert just that field,
+    not wipe the whole stored entry from config.local.json for the process
+    lifetime (every other env field reverts to its pre-env value)."""
+    from faster_whisper_backend import config_store
+    # config.py re-imports load_overrides from config_store on reload and the
+    # path default is bound at def time, so patch the function, not the path.
+    monkeypatch.setattr(
+        config_store, "load_overrides",
+        lambda path=None: {"MODEL_OVERRIDES": {"TINY": {"BEAM_SIZE": 3, "VAD_FILTER": False}}})
+    try:
+        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="9999")
+        assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
+        # The pre-env snapshot must not share the mutated nested entry dict.
+        assert config._ENV_PRE["MODEL_OVERRIDES"]["TINY"]["BEAM_SIZE"] == 3
+        assert any("TINY" in m and "keeping the stored entry" in m
+                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+        assert not any("was dropped" in m for m in config._ENV_WARNINGS)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(monkeypatch):
+    from faster_whisper_backend import config_store
+    monkeypatch.setattr(
+        config_store, "load_overrides",
+        lambda path=None: {"MODEL_OVERRIDES": {"TINY": {"BEAM_SIZE": 3, "VAD_FILTER": False}}})
+    try:
+        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BOGUS="1")
+        assert config.MODEL_OVERRIDES["TINY"] == {"BEAM_SIZE": 3, "VAD_FILTER": False}
+        assert "BOGUS" not in config.MODEL_OVERRIDES["TINY"]
+        assert any("TINY" in m and "keeping the stored entry" in m
+                   for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+        assert not any("was dropped" in m for m in config._ENV_WARNINGS)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_per_model_env_override_invalid_without_stored_entry_is_dropped(monkeypatch):
+    """An env-only bad entry still never goes live."""
+    try:
+        _reload_with_env(monkeypatch, WHISPER_MODEL_OVERRIDE__TINY__BEAM_SIZE="9999")
+        assert "TINY" not in config.MODEL_OVERRIDES
+        assert any("TINY" in m for m in config._ENV_WARNINGS), config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def _point_overrides_at(monkeypatch, path):
+    """Repoint config_store.load_overrides at `path` the way tests/conftest.py
+    does: the module constant AND the def-time-bound default argument."""
+    from faster_whisper_backend import config_store
+    monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(path), raising=False)
+    _defaults = list(config_store.load_overrides.__defaults__ or ())
+    _defaults[-1] = str(path)
+    monkeypatch.setattr(config_store.load_overrides, "__defaults__",
+                        tuple(_defaults), raising=False)
+
+
+def test_env_cross_field_inconsistent_with_local_override_is_reverted(tmp_path, monkeypatch):
+    """env TARGET=28 + local MAX=27 is inconsistent against the EFFECTIVE
+    config; the validators used to compare against _BASELINE (MAX 29.9) and
+    let TARGET > MAX boot silently."""
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"CAPTURES_SAMPLE_MAX_DURATION_S": 27}), encoding="utf-8")
+    _point_overrides_at(monkeypatch, p)
+    try:
+        _reload_with_env(monkeypatch, WHISPER_CAPTURES_PROPOSER_TARGET_S="28")
+        assert config.CAPTURES_PROPOSER_TARGET_S == 26.0
+        assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 27
+        assert "CAPTURES_PROPOSER_TARGET_S" in config._ENV_REJECTED
+        warns = [m for m in config._ENV_WARNINGS if "CAPTURES_" in m]
+        assert warns and any("27" in m for m in warns), config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_env_cross_field_consistent_with_local_override_applies(tmp_path, monkeypatch):
+    """env TARGET=29.95 + local MAX=30 is self-consistent and must apply; the
+    stale-baseline comparison (MAX 29.9) used to mis-revert it."""
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"CAPTURES_SAMPLE_MAX_DURATION_S": 30}), encoding="utf-8")
+    _point_overrides_at(monkeypatch, p)
+    try:
+        _reload_with_env(monkeypatch, WHISPER_CAPTURES_PROPOSER_TARGET_S="29.95")
+        assert config.CAPTURES_PROPOSER_TARGET_S == 29.95
+        assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 30
+        assert "CAPTURES_PROPOSER_TARGET_S" not in config._ENV_REJECTED
+        assert not [m for m in config._ENV_WARNINGS if "CAPTURES_" in m], config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)

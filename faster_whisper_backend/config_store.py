@@ -677,10 +677,11 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Default 2592000 (30 days).",
     "SESSION_COOKIE_NAME":
         "Name of the HttpOnly session cookie. Letters, digits, '_' and '-' "
-        "only.",
+        "only. Must differ from SESSION_CSRF_COOKIE_NAME.",
     "SESSION_CSRF_COOKIE_NAME":
         "Name of the JS-readable CSRF cookie echoed back as the X-CSRF-Token "
-        "header on cookie-authenticated mutations. Letters, digits, '_', '-'.",
+        "header on cookie-authenticated mutations. Letters, digits, '_', '-'. "
+        "Must differ from SESSION_COOKIE_NAME.",
     # --- Concurrency & request limits ---
     "TRANSLATE_MAX_INFLIGHT_PER_USER":
         "Max /v1/text/translations requests one identity (user, else API key, "
@@ -1120,6 +1121,9 @@ def _F(
 # faster-whisper short name OR HuggingFace repo id (org/name).
 _MODEL_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?$"
 ModelId = Annotated[str, Field(min_length=1, max_length=96, pattern=_MODEL_ID_PATTERN)]
+# Same shape, but "" is legal ("" = no separate model, use the request's).
+OptionalModelId = Annotated[
+    str, Field(max_length=96, pattern=r"^(" + _MODEL_ID_PATTERN.strip("^$") + r")?$")]
 
 # Config-profile name — same shape as a tag (lowercase a-z0-9-, 1-32 chars,
 # no leading hyphen), so profile names and the existing visibility
@@ -1183,7 +1187,7 @@ RuleLabel = Annotated[str, Field(min_length=1, max_length=80)]
 # which rules on /quick-config. Re-used by api_keys_store for the
 # per-user `quick_config_tags` validator so admins can't drift the two
 # schemas apart.
-TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}$")
+TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}\Z")   # \Z: `$` also matches before a trailing "\n"
 
 # Reserved override-profile name meaning "apply NO profile — plain server
 # defaults". A client sends this (via override_profile / the WS handshake) to
@@ -1297,7 +1301,7 @@ class LowercaseWordlistRule(_RuleBase):
     type: Literal["callback:lowercase-wordlist"]
     pattern: Annotated[str, Field(max_length=512)]
     wordlist: Annotated[
-        list[Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[A-Za-zäöüß]+$")]],
+        list[Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[A-Za-zÄÖÜäöüß]+$")]],
         Field(max_length=2000),
     ]
 
@@ -1586,7 +1590,7 @@ class AdminConfig(BaseModel):
     INFERENCE_CONCURRENCY: Annotated[int, Field(ge=1, le=64)] | None = _F(
         "INFERENCE_CONCURRENCY", scope="server", group="Live streaming",
         order=3, restart=True)
-    STREAMING_PARTIAL_MODEL: Annotated[str, Field(max_length=96)] | None = _F(
+    STREAMING_PARTIAL_MODEL: OptionalModelId | None = _F(
         "STREAMING_PARTIAL_MODEL", scope="server", group="Live streaming",
         subgroup="Partial decoding (live preview)")
     STREAMING_PARTIAL_BEAM: Annotated[int, Field(ge=1, le=20)] | None = _F(
@@ -2305,6 +2309,29 @@ class AdminConfig(BaseModel):
             )
         return self
 
+    # Login sets the session cookie and then the CSRF cookie with the same
+    # path/samesite; the browser keeps the LAST Set-Cookie per name, so equal
+    # names make every cookie login fail (the CSRF token is read as the session).
+    @model_validator(mode="after")
+    def _validate_cookie_names_differ(self) -> "AdminConfig":
+        from faster_whisper_backend import config as _cfg
+        _base = getattr(_cfg, "_BASELINE", {})
+        sess = (self.SESSION_COOKIE_NAME
+                if self.SESSION_COOKIE_NAME is not None
+                else _base.get("SESSION_COOKIE_NAME",
+                               getattr(_cfg, "SESSION_COOKIE_NAME", "whisper_session")))
+        csrf = (self.SESSION_CSRF_COOKIE_NAME
+                if self.SESSION_CSRF_COOKIE_NAME is not None
+                else _base.get("SESSION_CSRF_COOKIE_NAME",
+                               getattr(_cfg, "SESSION_CSRF_COOKIE_NAME", "whisper_csrf")))
+        if sess == csrf:
+            raise ValueError(
+                f"SESSION_COOKIE_NAME and SESSION_CSRF_COOKIE_NAME must differ "
+                f"(both {sess!r}) — the CSRF Set-Cookie would overwrite the "
+                f"session cookie and every browser login would fail"
+            )
+        return self
+
     @field_validator("LOG_FILE")
     @classmethod
     def _safe_log_path(cls, v: str | None) -> str | None:
@@ -2327,7 +2354,7 @@ class AdminConfig(BaseModel):
             return v
         # IPv4 / IPv6 / hostname / 0.0.0.0 / ::. Loose check — the actual bind
         # error will surface on restart if the address is invalid.
-        if not re.match(r"^[A-Za-z0-9._:\-\[\]]+$", v):
+        if not re.fullmatch(r"[A-Za-z0-9._:\-\[\]]+", v):
             raise ValueError("invalid host string")
         return v
 
@@ -2504,20 +2531,22 @@ class AdminConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_pipeline_rule_slugs(self) -> "AdminConfig":
+    def _validate_pipeline_rule_slugs(self, info: ValidationInfo) -> "AdminConfig":
         """Reject any per-model EXCLUDE / INCLUDE that references a rule slug
         not present in the canonical PIPELINE_RULES list. Closes the silent-
         typo footgun where 'dictashion-map' would save cleanly and quietly do
         nothing at runtime.
 
-        Only fires when both PIPELINE_RULES *and* MODEL_OVERRIDES are present
-        in the same payload — partial saves (just MODEL_OVERRIDES) skip the
-        check. The merged-with-existing payload built by save_overrides()
-        catches it on the next full validation pass.
+        Fires when PIPELINE_RULES is in the payload, or when save_overrides()
+        supplies the live/factory slug set via the `canonical_slugs`
+        validation context; a bare partial validation with neither still skips.
         """
-        if self.PIPELINE_RULES is None or self.MODEL_OVERRIDES is None:
+        if self.MODEL_OVERRIDES is None:
             return self
-        canonical = {r.name for r in self.PIPELINE_RULES}
+        if self.PIPELINE_RULES is not None:
+            canonical = {r.name for r in self.PIPELINE_RULES}
+        else:
+            canonical = (info.context or {}).get("canonical_slugs") or set()
         if not canonical:
             return self
         for model_id, override in self.MODEL_OVERRIDES.items():
@@ -2533,16 +2562,19 @@ class AdminConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_profile_pipeline_slugs(self) -> "AdminConfig":
+    def _validate_profile_pipeline_slugs(self, info: ValidationInfo) -> "AdminConfig":
         """Reject any OVERRIDE_PROFILES EXCLUDE / INCLUDE that references a rule
         slug not present in the canonical PIPELINE_RULES list — same silent-typo
-        guard as the per-model check, applied to config profiles. Only fires
-        when both PIPELINE_RULES and OVERRIDE_PROFILES are present in the same
-        payload; partial saves are re-validated against the merged file by
-        save_overrides()."""
-        if self.PIPELINE_RULES is None or self.OVERRIDE_PROFILES is None:
+        guard as the per-model check, applied to config profiles. Fires when
+        PIPELINE_RULES is in the payload, or when save_overrides() supplies
+        the live/factory slug set via the `canonical_slugs` validation
+        context; a bare partial validation with neither still skips."""
+        if self.OVERRIDE_PROFILES is None:
             return self
-        canonical = {r.name for r in self.PIPELINE_RULES}
+        if self.PIPELINE_RULES is not None:
+            canonical = {r.name for r in self.PIPELINE_RULES}
+        else:
+            canonical = (info.context or {}).get("canonical_slugs") or set()
         if not canonical:
             return self
         for pname, prof in self.OVERRIDE_PROFILES.items():
@@ -2558,12 +2590,18 @@ class AdminConfig(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _validate_captures_pipeline_slugs(self) -> "AdminConfig":
+    def _validate_captures_pipeline_slugs(self, info: ValidationInfo) -> "AdminConfig":
         """Same silent-typo guard as the per-model and per-profile checks,
-        applied to CAPTURES_PIPELINE_RULES_EXCLUDE."""
-        if self.PIPELINE_RULES is None or self.CAPTURES_PIPELINE_RULES_EXCLUDE is None:
+        applied to CAPTURES_PIPELINE_RULES_EXCLUDE. Fires when PIPELINE_RULES
+        is in the payload, or when save_overrides() supplies the live/factory
+        slug set via the `canonical_slugs` validation context; a bare partial
+        validation with neither still skips."""
+        if self.CAPTURES_PIPELINE_RULES_EXCLUDE is None:
             return self
-        canonical = {r.name for r in self.PIPELINE_RULES}
+        if self.PIPELINE_RULES is not None:
+            canonical = {r.name for r in self.PIPELINE_RULES}
+        else:
+            canonical = (info.context or {}).get("canonical_slugs") or set()
         if not canonical:
             return self
         unknown = [s for s in self.CAPTURES_PIPELINE_RULES_EXCLUDE
@@ -2666,11 +2704,14 @@ class AdminConfig(BaseModel):
     @classmethod
     def _validate_cors_origins(cls, v: list[str] | None) -> list[str] | None:
         """Each entry must be '*' or a bare browser origin: scheme://host[:port]
-        with NO path/query (matching what the browser sends in the Origin header)."""
+        with NO path/query (matching what the browser sends in the Origin header);
+        scheme and host are lowercased to match the browser's serialisation."""
         if v is None:
             return v
+        out: list[str] = []
         for entry in v:
             if entry == "*":
+                out.append(entry)
                 continue
             m = re.fullmatch(r"https?://[^/?#\s*]+", entry)
             if not m:
@@ -2679,15 +2720,18 @@ class AdminConfig(BaseModel):
                     f"(e.g. 'https://app.example.com' or 'http://192.168.1.50:8000') "
                     f"or '*'; no trailing path/slash, and no wildcard host."
                 )
-        return v
+            out.append(entry.lower())
+        return out
 
     @field_validator("TRUSTED_ORIGINS")
     @classmethod
     def _validate_trusted_origins(cls, v: list[str] | None) -> list[str] | None:
         """Same entry shape as CORS_ALLOW_ORIGINS, minus '*': a wildcard here
-        would accept every cross-site Origin and disable the guard outright."""
+        would accept every cross-site Origin and disable the guard outright.
+        Scheme and host are lowercased to match the browser's serialisation."""
         if v is None:
             return v
+        out: list[str] = []
         for entry in v:
             if not re.fullmatch(r"https?://[^/?#\s*]+", entry):
                 raise ValueError(
@@ -2696,7 +2740,8 @@ class AdminConfig(BaseModel):
                     f"or 'http://192.168.1.50:8000'); no trailing path/slash, "
                     f"and no '*'."
                 )
-        return v
+            out.append(entry.lower())
+        return out
 
 
 # =============================================================================
@@ -3301,7 +3346,7 @@ def load_factory_rules(path: str = FACTORY_PATH) -> list[dict[str, Any]]:
             raw = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
         raise RuntimeError(f"cannot read factory rules file {path}: {e}") from e
-    if not isinstance(raw, dict) or "PIPELINE_RULES" not in raw:
+    if not isinstance(raw, dict) or not isinstance(raw.get("PIPELINE_RULES"), list):
         raise RuntimeError(
             f"{path} must be a JSON object with a 'PIPELINE_RULES' key"
         )
@@ -3501,6 +3546,15 @@ def save_overrides(
         context: dict[str, Any] = {"guard_regex": True} if "PIPELINE_RULES" in payload else {}
         if guard_slugs is not None:
             context["guard_slugs"] = frozenset(guard_slugs)
+        # The local file usually carries no PIPELINE_RULES copy (factory rules
+        # live in config.json), so the merged pass would never see the
+        # canonical slug list and a typo'd slug would persist silently. Scoped
+        # to saves that touch a slug-bearing key so a rule renamed in
+        # config.json cannot brick unrelated settings saves.
+        if "PIPELINE_RULES" not in merged and any(
+                k in payload for k in ("MODEL_OVERRIDES", "OVERRIDE_PROFILES",
+                                       "CAPTURES_PIPELINE_RULES_EXCLUDE")):
+            context["canonical_slugs"] = _save_canonical_slugs()
         validated = AdminConfig.model_validate(merged, context=context)
         to_write = validated.model_dump(exclude_none=True, mode="json")
 
@@ -3594,6 +3648,19 @@ def _canonical_rule_slugs() -> set[str]:
         if name:
             out.add(name)
     return out
+
+
+def _save_canonical_slugs() -> set[str]:
+    """Slug set for a save that does not carry PIPELINE_RULES: the live list
+    (config.json + env + any local copy), falling back to the committed
+    factory file; empty set = unknown → validators skip."""
+    live = _canonical_rule_slugs()
+    if live:
+        return live
+    try:
+        return {r["name"] for r in load_factory_rules()}
+    except Exception:
+        return set()
 
 
 def validate_profile_refs(names: Any) -> list[str]:

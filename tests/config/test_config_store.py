@@ -14,6 +14,7 @@ import time
 import pytest
 from pydantic import ValidationError
 
+from faster_whisper_backend import config as cs_config
 from faster_whisper_backend import config_store as cs
 
 
@@ -91,6 +92,8 @@ def test_int_bounds(field, lo, hi):
     ("LANGUAGE_DETECTION_THRESHOLD", 0.0, 1.0),
     ("HALLUCINATION_SILENCE_THRESHOLD", 0.0, 60.0),
     ("CAPTURES_RECORDING_SAMPLE_RATE", 0.0, 1.0),
+    # 600 is the cross-field ceiling (baseline MAX = 600), not the field's
+    # own le=3600 bound — see test_recording_duration_true_upper_bound.
     ("CAPTURES_RECORDING_MIN_DURATION_S", 0.0, 600.0),
 ])
 def test_float_bounds(field, lo, hi):
@@ -113,6 +116,32 @@ def test_recording_duration_min_le_max():
         CAPTURES_RECORDING_MAX_DURATION_S=600.0)
     _bad(CAPTURES_RECORDING_MIN_DURATION_S=60.0,
          CAPTURES_RECORDING_MAX_DURATION_S=30.0)
+
+
+def test_recording_duration_true_upper_bound():
+    _ok(CAPTURES_RECORDING_MIN_DURATION_S=3600.0,
+        CAPTURES_RECORDING_MAX_DURATION_S=3600.0)
+    _bad(CAPTURES_RECORDING_MIN_DURATION_S=3600.1,
+         CAPTURES_RECORDING_MAX_DURATION_S=3600.1)
+
+
+def test_buffer_trim_keep_lt_trim():
+    _ok(STREAMING_BUFFER_TRIM_S=20.0, STREAMING_BUFFER_TRIM_KEEP_S=5.0)
+    _bad(STREAMING_BUFFER_TRIM_S=20.0, STREAMING_BUFFER_TRIM_KEEP_S=20.0)
+    _bad(STREAMING_BUFFER_TRIM_S=20.0, STREAMING_BUFFER_TRIM_KEEP_S=25.0)
+    # KEEP-only override above the baseline TRIM.
+    base = getattr(cs_config, "_BASELINE", {})
+    trim_default = float(base.get("STREAMING_BUFFER_TRIM_S", cs_config.STREAMING_BUFFER_TRIM_S))
+    _bad(STREAMING_BUFFER_TRIM_KEEP_S=trim_default + 1.0)
+
+
+def test_session_cookie_names_must_differ():
+    _ok(SESSION_COOKIE_NAME="a_sess", SESSION_CSRF_COOKIE_NAME="a_csrf")
+    _bad(SESSION_COOKIE_NAME="same", SESSION_CSRF_COOKIE_NAME="same")
+    # Single override colliding with the effective (baseline) session name.
+    base = getattr(cs_config, "_BASELINE", {})
+    sess_default = base.get("SESSION_COOKIE_NAME", cs_config.SESSION_COOKIE_NAME)
+    _bad(SESSION_CSRF_COOKIE_NAME=sess_default)
 
 
 # ---------------------------------------------------------------------------
@@ -217,6 +246,15 @@ def test_translation_list_fields_validate_entries():
     _bad(TRANSLATION_ALLOWED_MODELS=[""])            # empty entry
     _bad(TRANSLATION_ALLOWED_MODELS=["no-slash:q4"])
     _bad(TRANSLATION_PRELOAD_MODELS=["no-slash"])
+
+
+def test_lowercase_wordlist_accepts_uppercase_umlauts():
+    r = cs.LowercaseWordlistRule(name="w", label="W", type="callback:lowercase-wordlist",
+                                 pattern="x", wordlist=["Ärger", "Österreich", "Übung", "ärger", "Und"])
+    assert r.wordlist == ["Ärger", "Österreich", "Übung", "ärger", "Und"]
+    with pytest.raises(ValidationError):
+        cs.LowercaseWordlistRule(name="w", label="W", type="callback:lowercase-wordlist",
+                                 pattern="x", wordlist=["Ärger!"])
 
 
 def test_translation_bounds_and_literals():
@@ -654,6 +692,27 @@ def test_pipeline_rule_slugs_cross_check():
     _ok(MODEL_OVERRIDES={"m": {"PIPELINE_RULES_EXCLUDE": ["bogus"]}})
 
 
+def test_pipeline_rule_slugs_from_context():
+    ctx = {"canonical_slugs": {"known"}}
+    with pytest.raises(ValidationError):
+        cs.AdminConfig.model_validate(
+            {"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["bogus"]}}}, context=ctx)
+    with pytest.raises(ValidationError):
+        cs.AdminConfig.model_validate(
+            {"OVERRIDE_PROFILES": {"p": {"PIPELINE_RULES_EXCLUDE": ["bogus"]}}}, context=ctx)
+    with pytest.raises(ValidationError):
+        cs.AdminConfig.model_validate(
+            {"CAPTURES_PIPELINE_RULES_EXCLUDE": ["bogus"]}, context=ctx)
+    cs.AdminConfig.model_validate(
+        {"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["known"]}}}, context=ctx)
+    # An explicit PIPELINE_RULES in the payload wins over the context.
+    with pytest.raises(ValidationError):
+        cs.AdminConfig.model_validate(
+            {"PIPELINE_RULES": [_regex("known"), _terminal()],
+             "MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["bogus"]}}},
+            context={"canonical_slugs": {"bogus"}})
+
+
 # ---------------------------------------------------------------------------
 # load_overrides / save_overrides
 # ---------------------------------------------------------------------------
@@ -701,6 +760,20 @@ def test_load_overrides_coerces_captures_excludes_to_set(tmp_path):
     out = cs.load_overrides(str(p))
     assert isinstance(out["CAPTURES_PIPELINE_RULES_EXCLUDE"], set)
     assert out["CAPTURES_PIPELINE_RULES_EXCLUDE"] == {"r1", "r2"}
+
+
+def test_save_overrides_rejects_unknown_slug_without_local_rules(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"known"})
+    p = str(tmp_path / "config.local.json")
+    with pytest.raises(ValidationError):
+        cs.save_overrides({"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["dictashion-map"]}}}, p)
+    assert not os.path.exists(p)
+    cs.save_overrides({"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["known"]}}}, p)
+    assert os.path.exists(p)
+    # A stale slug on disk must not brick unrelated saves.
+    monkeypatch.setattr(cs, "_canonical_rule_slugs", lambda: {"renamed"})
+    cs.save_overrides({"BEAM_SIZE": 5}, p)
+    assert json.loads(open(p, encoding="utf-8").read())["BEAM_SIZE"] == 5
 
 
 def test_save_overrides_roundtrip_and_merge(tmp_path):
@@ -1077,6 +1150,16 @@ def test_cors_origins_rejects_wildcard_host(bad):
 
 def test_cors_origins_bare_star_still_allowed():
     _ok(CORS_ALLOW_ORIGINS=["*"])
+
+
+def test_cors_origins_lowercased():
+    assert _ok(CORS_ALLOW_ORIGINS=["*", "https://Example.COM:8000"]).CORS_ALLOW_ORIGINS == [
+        "*", "https://example.com:8000"]
+
+
+def test_trusted_origins_lowercased():
+    assert _ok(TRUSTED_ORIGINS=["https://MyHost.local"]).TRUSTED_ORIGINS == [
+        "https://myhost.local"]
 
 
 def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):

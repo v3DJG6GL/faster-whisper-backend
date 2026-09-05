@@ -40,28 +40,28 @@ def test_me_open_mode_all_allowed(client):
     assert j["allowed_override_profiles"] == ["*"]
 
 
-def test_me_reports_vad_filter_default(client, app_module):
+def test_me_reports_vad_filter_default(client, app_module, monkeypatch):
     # Additive convenience for the client's Skip-silence "Default" label.
     assert client.get("/v1/me").json()["vad_filter_default"] is True
-    app_module.cfg.VAD_FILTER = False
+    monkeypatch.setattr(app_module.cfg, "VAD_FILTER", False)
     assert client.get("/v1/me").json()["vad_filter_default"] is False
 
 
-def test_me_reports_stage_availability(client, app_module):
+def test_me_reports_stage_availability(client, app_module, monkeypatch):
     # Additive pre-flight flags for the client's Separate-music / diarization
     # toggles — a disabled feature otherwise only soft-fails into a warning
     # after the run.
     j = client.get("/v1/me").json()
     assert j["bgm_separation_enabled"] is False
     assert j["diarization_enabled"] is False
-    app_module.cfg.BGM_SEPARATION_ENABLED = True
-    app_module.cfg.DIARIZATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_ENABLED", True)
     j = client.get("/v1/me").json()
     assert j["bgm_separation_enabled"] is True
     assert j["diarization_enabled"] is True
 
 
-def test_me_translation_flag_present_details_gated(client, app_module):
+def test_me_translation_flag_present_details_gated(client, app_module, monkeypatch):
     # translation_enabled is ALWAYS present; the detail keys ride only when
     # the stage is on (yt_dlp_version shape discipline).
     j = client.get("/v1/me").json()
@@ -69,7 +69,7 @@ def test_me_translation_flag_present_details_gated(client, app_module):
     for k in ("translation_models", "translation_languages",
               "translate_to_default", "llama_cpp_version"):
         assert k not in j
-    app_module.cfg.TRANSLATION_ENABLED = True
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
     j = client.get("/v1/me").json()
     assert j["translation_enabled"] is True
     for k in ("translation_models", "translation_languages",
@@ -78,12 +78,12 @@ def test_me_translation_flag_present_details_gated(client, app_module):
 
 
 def test_me_translation_models_default_first_with_loaded_flags(
-        client, app_module):
+        client, app_module, monkeypatch):
     from faster_whisper_backend.audio import translation
-    app_module.cfg.TRANSLATION_ENABLED = True
-    app_module.cfg.TRANSLATION_DEFAULT_MODEL = "org/default-GGUF:Q4"
-    app_module.cfg.TRANSLATION_ALLOWED_MODELS = {
-        "org/zeta-GGUF:Q4", "org/alpha-GGUF:Q4", "org/default-GGUF:Q4"}
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL", "org/default-GGUF:Q4")
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", {
+        "org/zeta-GGUF:Q4", "org/alpha-GGUF:Q4", "org/default-GGUF:Q4"})
     # A loaded model OUTSIDE the allowlist (loaded before the admin tightened
     # it) is NOT offered — every request naming it would be refused; the list
     # is the stage's own admission rule (allowlist ∪ configured default),
@@ -105,12 +105,12 @@ def test_me_translation_models_default_first_with_loaded_flags(
 
 
 def test_me_translation_models_empty_default_still_answers(
-        client, app_module):
+        client, app_module, monkeypatch):
     # No default configured: no crash, no phantom "" entry, and the language
     # list still answers via the chatml fallback family.
-    app_module.cfg.TRANSLATION_ENABLED = True
-    app_module.cfg.TRANSLATION_DEFAULT_MODEL = ""
-    app_module.cfg.TRANSLATION_ALLOWED_MODELS = {"org/only-GGUF:Q4"}
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL", "")
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", {"org/only-GGUF:Q4"})
     j = client.get("/v1/me").json()
     assert j["translation_models"] == [
         {"id": "org/only-GGUF:Q4", "loaded": False}]
@@ -118,9 +118,9 @@ def test_me_translation_models_empty_default_still_answers(
 
 
 def test_me_translate_to_default_respects_identity_override(
-        client, app_module, make_user_key):
-    app_module.cfg.TRANSLATION_ENABLED = True
-    app_module.cfg.TRANSLATE_TO = "en"
+        client, app_module, make_user_key, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATE_TO", "en")
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
     _profiles(client, h, {"de-fr": {"TRANSLATE_TO": "de,fr-CA"}})

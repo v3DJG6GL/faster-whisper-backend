@@ -2,7 +2,7 @@
 
 These exercise effective_config._resolve_from_layers (the pure core) and the
 config_store schema. No faster-whisper / DB needed — runnable on the web-only
-box with `pytest -o addopts="" tests/test_effective_config.py`.
+box with `pytest -o addopts="" tests/config/test_effective_config.py`.
 """
 
 import pytest

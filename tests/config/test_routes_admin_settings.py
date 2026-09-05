@@ -413,6 +413,7 @@ def test_admin_rules_save_survives_concurrent_quick_config_patch(
     patch whose cfg snapshot was taken mid-admin-save wrote the whole key
     back and silently reverted the admin's edit (both requests 200)."""
     import copy
+    import threading
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
@@ -435,9 +436,11 @@ def test_admin_rules_save_survives_concurrent_quick_config_patch(
                   if isinstance(r, dict) and r.get("name") != slug)
     edited["label"] = "ADMIN-EDIT"
 
+    started = threading.Event()
     orig_save = config_store.save_overrides
 
     def _slow_save(*a, **kw):
+        started.set()                 # the admin request reaches this first:
         _time.sleep(0.3)              # hold the offloaded-save window open
         return orig_save(*a, **kw)
 
@@ -448,7 +451,9 @@ def test_admin_rules_save_survives_concurrent_quick_config_patch(
                            json={"PIPELINE_RULES": admin_rules})
 
     def _quick():
-        _time.sleep(0.1)              # land inside the admin save's window
+        # Post only once the admin save holds the shared lock — deterministic
+        # ordering, no wall-clock assumption.
+        assert started.wait(5), "admin save never started"
         return client.post("/quick-config/state",
                            json={"rules_patch": {slug: {"enabled": False}}})
 
