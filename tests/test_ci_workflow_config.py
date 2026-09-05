@@ -77,6 +77,17 @@ def test_build_legend_names_every_extra_the_dockerfile_installs():
     assert "translation" in legend
 
 
+def test_tag_runs_bake_the_pushed_tag_not_git_describe():
+    # Two lightweight tags on one commit (manual minor after the auto patch)
+    # make `git describe` ambiguous; a tag run must bake the ref it runs for.
+    ci = _read(".forgejo", "workflows", "ci.yml")
+    step = ci[ci.index("Compute build version"):]
+    step = step[:step.index("- name:", 10)]
+    assert '$GITHUB_REF_TYPE" = tag' in step
+    assert "$GITHUB_REF_NAME" in step
+    assert "git describe --tags --always" in step
+
+
 # --- .forgejo/workflows/mirror-ghcr.yml -------------------------------------
 
 def test_mirror_skips_already_mirrored_sha_tags():
@@ -92,6 +103,17 @@ def test_mirror_skips_already_mirrored_sha_tags():
     assert 'src_digest=$(crane digest "$SRC_IMAGE:$tag")' in body
 
 
+def test_crane_renovate_marker_is_adjacent_to_its_version_key():
+    # customManagers:githubActionsVersions allows only whitespace between the
+    # `# renovate:` marker and the `_VERSION:` key — an intervening comment
+    # line silently detaches crane from Renovate (no bump PR ever appears).
+    lines = _read(".forgejo", "workflows", "mirror-ghcr.yml").splitlines()
+    marker = "# renovate: datasource=github-releases depName=google/go-containerregistry"
+    idx = [i for i, ln in enumerate(lines) if ln.strip() == marker]
+    assert len(idx) == 1
+    assert lines[idx[0] + 1].strip().startswith("CRANE_VERSION:")
+
+
 # --- .forgejo/workflows/release.yml -----------------------------------------
 
 def test_rerun_for_an_already_tagged_commit_can_repair_its_release():
@@ -100,7 +122,7 @@ def test_rerun_for_an_already_tagged_commit_can_repair_its_release():
     # emit the existing tag rather than an empty one, or the re-dispatch
     # skips the release step forever and still reports success.
     rel = _read(".forgejo", "workflows", "release.yml")
-    branch = rel[rel.index('if [ "$latest_commit" = "$target" ]; then'):]
+    branch = rel[rel.index('if [ "$latest_commit" = "$target" ] && { [ -n "$TARGET_SHA" ] || [ "$BUMP" = patch ]; }; then'):]
     branch = branch[:branch.index("# Monotonicity")]
     assert 'echo "tag=$latest" >> "$GITHUB_OUTPUT"' in branch
     assert 'echo "prev=${prev:-v0.0.0}" >> "$GITHUB_OUTPUT"' in branch
@@ -115,6 +137,19 @@ def test_release_creation_probes_before_posting():
     post = step.index('"$GITHUB_API_URL/repos/$REPO/releases"')
     assert probe < post
     assert "already exists" in step
+
+
+def test_manual_minor_bump_is_not_swallowed_by_idempotence():
+    # The continuous flow patch-tags every green main commit, so a manual
+    # minor/major on HEAD always meets the idempotence precondition; it must
+    # fall through (and not be reported "superseded" — a commit is its own
+    # ancestor for merge-base --is-ancestor).
+    rel = _read(".forgejo", "workflows", "release.yml")
+    assert ('[ "$latest_commit" = "$target" ] && { [ -n "$TARGET_SHA" ] '
+            '|| [ "$BUMP" = patch ]; }') in rel
+    assert ('[ "$latest_commit" != "$target" ] && git merge-base '
+            '--is-ancestor "$target" "$latest_commit"') in rel
+    assert 'if [ "$latest_commit" = "$target" ]; then' not in rel
 
 
 # --- renovate.json -----------------------------------------------------------

@@ -1,18 +1,24 @@
 #!/usr/bin/env python3
 """Regenerate docs/brand/logo-{dark,light}.svg — the logo with the wordmark
 text converted to paths (fontTools), so the SVGs render identically everywhere
-with zero font dependencies. Run from the repo root:
+with zero font dependencies. Paths are anchored on this file, so it runs from
+any directory:
 
     python3 docs/brand/gen-logo-svg.py
 
 Needs: fontTools + brotli (pip install fonttools brotli).
 """
 
+from pathlib import Path
+
 from fontTools.ttLib import TTFont
 from fontTools.varLib import instancer
 from fontTools.pens.svgPathPen import SVGPathPen
 
-FONT_DIR = "static"
+# Anchored on this file, not the cwd: the script works from any directory and
+# can never write into a stray static/ or docs/ tree elsewhere.
+ROOT = Path(__file__).resolve().parents[2]
+FONT_DIR = ROOT / "static"
 HUBOT = f"{FONT_DIR}/hubot-sans-latin-wght-normal.woff2"
 GEIST = f"{FONT_DIR}/geist-mono-latin-wght-normal.woff2"
 
@@ -124,4 +130,4 @@ def build(product, theme, out_path):
 
 if __name__ == "__main__":
     for theme in ("dark", "light"):
-        build("backend", theme, f"docs/brand/logo-{theme}.svg")
+        build("backend", theme, str(ROOT / "docs" / "brand" / f"logo-{theme}.svg"))

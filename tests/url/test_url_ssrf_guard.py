@@ -32,6 +32,7 @@ import socket
 import subprocess
 import sys
 import threading
+from unittest import mock
 
 import pytest
 
@@ -106,9 +107,8 @@ def _serve(handler, host):
 def servers():
     """(public_url_base, internal_url) with a clean INTERNAL hit log."""
     try:
-        probe = socket.socket()
-        probe.bind(("127.0.0.2", 0))
-        probe.close()
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.2", 0))
     except OSError:  # pragma: no cover — non-Linux loopback aliasing
         pytest.skip("this platform does not alias 127.0.0.2")
     internal = _serve(_Internal, "127.0.0.1")
@@ -121,6 +121,8 @@ def servers():
     finally:
         public.shutdown()
         internal.shutdown()
+        public.server_close()
+        internal.server_close()
 
 
 @pytest.fixture
@@ -188,6 +190,43 @@ def test_guard_prefers_over_every_builtin():
             key=lambda rh: sum(p(rh, None) for p in director.preferences),
             reverse=True)[0]
     assert chosen.RH_KEY == "FwbSsrfGuard"
+
+
+def test_https_through_a_connect_proxy_verifies_the_target_not_the_proxy():
+    """With an http(s)_proxy in the environment every HTTPS fetch tunnels via
+    CONNECT; SNI / certificate verification must then name the URL's host
+    (_tunnel_host), not the proxy the socket was dialled to."""
+    udl.guard_self_check(force=True)
+    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    seen: dict = {}
+
+    class FakeCtx:
+        def wrap_socket(self, sock, server_hostname=None):
+            seen["sni"] = server_hostname
+            return sock
+
+    conn = guard._PinnedHTTPSConnection("proxy.example", 8080, context=FakeCtx())
+    conn.set_tunnel("target.example", 443)
+    with mock.patch.object(guard, "_connect_pinned", return_value=object()), \
+            mock.patch.object(conn, "_tunnel"):
+        conn.connect()
+    assert seen["sni"] == "target.example"
+
+    # Direct path unchanged: the URL's host is conn.host itself.
+    direct = guard._PinnedHTTPSConnection("target.example", 443, context=FakeCtx())
+    with mock.patch.object(guard, "_connect_pinned", return_value=object()):
+        direct.connect()
+    assert seen["sni"] == "target.example"
+
+
+def test_net_policy_resolve_pinned_refuses_forbidden_answer(monkeypatch):
+    monkeypatch.setattr(socket, "getaddrinfo",
+                        lambda *a, **kw: [(0, 0, 0, "", ("169.254.169.254", 80))])
+    with pytest.raises(OSError):
+        net_policy.resolve_pinned("meta.example", 80)
+    public = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("93.184.216.34", 443))]
+    monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **kw: list(public))
+    assert net_policy.resolve_pinned("public.example", 443) == public
 
 
 def test_launcher_starts_yt_dlp_with_the_guard_flags():

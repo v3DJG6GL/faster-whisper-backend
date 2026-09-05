@@ -74,6 +74,24 @@ $ServiceName = "WhisperAPI"
 $WinSWExe    = Join-Path $RepoDir "$ServiceName.exe"
 $WinSWXml    = Join-Path $RepoDir "$ServiceName.xml"
 $LegacyNssm  = Join-Path $RepoDir "nssm.exe"
+# SHA-256 of each WinSW release asset at $WinSWVersion (set below). The wrapper is executed from
+# this already-elevated session and then runs as LocalSystem, so its bytes are
+# verified before they are ever run. These hashes MUST be updated together with
+# $WinSWVersion -- bumping the version alone makes every fresh install fail the
+# check (existing installs keep their already-downloaded WhisperAPI.exe).
+$WinSWHashes = @{
+    "WinSW.NET461.exe" = "B5066B7BBDFBA1293E5D15CDA3CAAEA88FBEAB35BD5B38C41C913D492AADFC4F"
+    "WinSW-x64.exe"    = "05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA"
+}
+
+function Test-WinSWTrusted {
+    if (-not (Test-Path $WinSWExe)) { return $false }
+    $hash = (Get-FileHash -Path $WinSWExe -Algorithm SHA256).Hash
+    if ($WinSWHashes.Values -contains $hash) { return $true }
+    Write-Host "WhisperAPI.exe does not match a pinned WinSW build (SHA-256 $hash)." -ForegroundColor Yellow
+    Write-Host "  Not running it. Falling back to sc.exe to remove the service." -ForegroundColor Yellow
+    return $false
+}
 
 if (-not (Test-Path $MainPy))  { throw "main.py not found: $MainPy" }
 New-Item -ItemType Directory -Force -Path $LogsDir | Out-Null
@@ -150,13 +168,12 @@ if ($svc) {
     }
 
     Write-Host "Removing existing $ServiceName service..."
-    # Prefer the right tool for whichever supervisor is currently in place.
-    if (Test-Path $WinSWExe) {
+    # Only run the wrapper if it is a hash-verified WinSW build; anything else
+    # (missing, mismatched, or a legacy nssm install) goes through sc.exe delete,
+    # which removes the registration without executing a repo-local binary elevated.
+    if (Test-WinSWTrusted) {
         & $WinSWExe uninstall 2>&1 | Out-Null
-    } elseif (Test-Path $LegacyNssm) {
-        & $LegacyNssm remove $ServiceName confirm 2>&1 | Out-Null
     } else {
-        # Bare SCM delete works regardless of which supervisor registered it.
         & sc.exe delete $ServiceName | Out-Null
     }
 
@@ -358,17 +375,20 @@ if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
 } elseif ($Full -and $repoFfmpegCurrent) {
     Write-Host "repo-local shared ffmpeg present and matches the pin: $RepoFfmpegExe" -ForegroundColor DarkGray
 } else {
+    # -Full skips winget: its PATH change never reaches this shell, so the
+    # pinned download below would run anyway and the box would end up with
+    # two shared ffmpeg builds (~150 MB each) of which the service uses one.
     $winget = Get-Command winget -ErrorAction SilentlyContinue
-    if ($winget) {
-        $ffId = if ($Full) { "Gyan.FFmpeg.Shared" } else { "Gyan.FFmpeg" }
+    if ($winget -and -not $Full) {
+        $ffId = "Gyan.FFmpeg"
         Write-Host "ffmpeg not usable; attempting 'winget install $ffId' (optional)..." -ForegroundColor Cyan
         $oldPref = $ErrorActionPreference; $ErrorActionPreference = "Continue"
         & winget install --id $ffId -e --silent --accept-source-agreements --accept-package-agreements 2>&1 | Out-Null
         $ErrorActionPreference = $oldPref
     }
     # winget's PATH change only reaches new shells, so this re-check usually
-    # still fails right after a successful winget install — for -Full the
-    # pinned download below then provisions deterministically anyway.
+    # still fails right after a successful winget install; -Full goes
+    # straight to the deterministic pinned download.
     $ff = Get-Command ffmpeg -ErrorAction SilentlyContinue
     if ($ff -and (-not $Full -or (Test-FfmpegShared $ff))) {
         Write-Host "ffmpeg installed (a new shell may be needed for PATH)." -ForegroundColor Green
@@ -478,15 +498,6 @@ if ($WithConvert) {
 # .NET461 is the right pick for our supported targets. Fall back to the
 # bundled-runtime build only if 4.6.1 isn't available.
 $WinSWVersion = "v2.12.0"
-# SHA-256 of each release asset AT $WinSWVersion. The wrapper is executed from
-# this already-elevated session and then runs as LocalSystem, so its bytes are
-# verified before they are ever run. These hashes MUST be updated together with
-# $WinSWVersion -- bumping the version alone makes every fresh install fail the
-# check (existing installs keep their already-downloaded WhisperAPI.exe).
-$WinSWHashes = @{
-    "WinSW.NET461.exe" = "B5066B7BBDFBA1293E5D15CDA3CAAEA88FBEAB35BD5B38C41C913D492AADFC4F"
-    "WinSW-x64.exe"    = "05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA"
-}
 $net4Release  = (Get-ItemProperty -Path "HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full" `
                  -Name Release -ErrorAction SilentlyContinue).Release
 if ($net4Release -ge 394254) {

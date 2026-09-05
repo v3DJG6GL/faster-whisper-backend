@@ -74,6 +74,19 @@ def test_convert_extras_reuse_cu126_index_on_gpu():
     assert "-r $convertReq --extra-index-url https://download.pytorch.org/whl/cu126" in gpu_arm
 
 
+def test_install_never_executes_unverified_wrapper():
+    # The pre-flight removal block runs elevated BEFORE the SHA-256 pin check;
+    # it must gate WinSW on Test-WinSWTrusted and never exec repo-local nssm.exe.
+    ps1 = _read("install-service.ps1")
+    assert "& $LegacyNssm" not in ps1
+    assert "if (Test-WinSWTrusted) {\n        & $WinSWExe uninstall" in ps1
+    assert "sc.exe delete $ServiceName" in ps1
+    # The hash table must be defined before the removal block uses it.
+    assert ps1.index("$WinSWHashes = @{") < ps1.index("& $WinSWExe uninstall")
+    # nssm.exe is still cleaned up as a file.
+    assert "Remove-Item -Force $LegacyNssm" in ps1
+
+
 # --- .dockerignore -----------------------------------------------------------
 
 def test_dockerignore_excludes_repo_local_ffmpeg_tree():

@@ -1,8 +1,8 @@
 # Coverage configuration. Measures the faster_whisper_backend package;
 # excludes the tests themselves, the manual scripts (scripts/), the
-# virtualenvs, the docs tooling (docs/), and code that cannot run on a
-# CPU-only CI box (the uvicorn __main__ launcher and the Windows CUDA DLL
-# preloader).
+# virtualenvs, the docs tooling (docs/), and the uvicorn launcher
+# (faster_whisper_backend/__main__.py runs the server at import, so the
+# suite can never execute it).
 [run]
 branch = True
 omit =
@@ -11,7 +11,7 @@ omit =
     scripts/*
     venv/*
     .venv/*
-    conftest.py
+    faster_whisper_backend/__main__.py
 
 [report]
 show_missing = True

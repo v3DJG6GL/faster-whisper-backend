@@ -156,7 +156,9 @@ pytest -q
 
 CI runs the suite on Linux (Python 3.12/3.13/3.14) and Windows for every pull
 request and every push to `main`, and fails the run if coverage drops below the
-gate configured in `.coveragerc` (`.forgejo/workflows/ci.yml`). A `v*` tag run
+gate set on the pytest command line in `.forgejo/workflows/ci.yml`
+(`--cov-fail-under`; coverage measurement itself is configured in
+`.coveragerc`). A `v*` tag run
 deliberately skips both suites — a tag is only minted for a commit that already
 tested green — and goes straight to building and publishing the images.
 

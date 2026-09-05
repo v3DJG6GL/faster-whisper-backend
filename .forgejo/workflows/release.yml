@@ -25,6 +25,9 @@
 #   - manual ("Run workflow" button): pick patch/minor/major; tags the
 #     current HEAD of the chosen branch. Use minor for a feature release,
 #     major for a breaking one — the automatic path never does either.
+#     A manual minor/major on the current HEAD (already patch-tagged by the
+#     continuous flow) adds the new tag on the same commit; its release
+#     notes are empty since no commits separate the two tags.
 #     Because tag runs skip the test suites, the manual path first checks
 #     the target commit's existing all-ci commit status and refuses to tag
 #     anything that isn't green.
@@ -148,7 +151,10 @@ jobs:
           # Resumable, not a hard no-op: emit the EXISTING tag so the release
           # step below still runs and can repair a missing release (it probes
           # first, so the normal case costs one GET and changes nothing).
-          if [ "$latest_commit" = "$target" ]; then
+          # Manual minor/major on an already patch-tagged commit falls through
+          # and adds a second tag on that commit (the continuous flow tags every
+          # green main commit, so HEAD is always already tagged).
+          if [ "$latest_commit" = "$target" ] && { [ -n "$TARGET_SHA" ] || [ "$BUMP" = patch ]; }; then
             echo "::notice::$target is already tagged $latest — no new tag; checking its release"
             prev=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -2 | head -1 || true)
             # Single-tag repo: tail -2 | head -1 returns $latest itself —
@@ -160,7 +166,7 @@ jobs:
           fi
           # Monotonicity: an older commit whose CI run finished late must not
           # get a tag above a newer, already-tagged commit.
-          if [ -n "$latest_commit" ] && git merge-base --is-ancestor "$target" "$latest_commit"; then
+          if [ -n "$latest_commit" ] && [ "$latest_commit" != "$target" ] && git merge-base --is-ancestor "$target" "$latest_commit"; then
             echo "::notice::$target is an ancestor of $latest ($latest_commit) — superseded, no tag"
             echo "tag=" >> "$GITHUB_OUTPUT"
             exit 0

@@ -75,9 +75,9 @@ jobs:
     steps:
       - name: Install crane
         env:
-          # renovate: datasource=github-releases depName=google/go-containerregistry
           # Fetched from this instance's `tools` generic package registry —
           # upload the new release tarball there BEFORE bumping this version.
+          # renovate: datasource=github-releases depName=google/go-containerregistry
           CRANE_VERSION: v0.21.7
           # SHA-256 of go-containerregistry_Linux_x86_64.tar.gz at
           # $CRANE_VERSION, taken from the upstream release checksums.txt. A

@@ -62,6 +62,7 @@ services:
       # WHISPER_USAGE_DB: /data/db/usage.local.sqlite3
       # WHISPER_CAPTURES_DB: /data/db/captures.local.sqlite3
       # WHISPER_CLIENT_SETTINGS_DB: /data/db/client_settings.local.sqlite3
+      # WHISPER_STATS_SYSTEM_METRICS_DB: /data/db/system_metrics.local.sqlite3
       # WHISPER_DOWNLOAD_ROOT: /models
       # WHISPER_CONVERTED_MODELS_DIR: /models/converted
       #

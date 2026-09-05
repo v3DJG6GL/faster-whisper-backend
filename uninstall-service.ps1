@@ -9,7 +9,8 @@
 #   - The Hugging Face model cache (~1.5 GB at %USERPROFILE%\.cache\huggingface)
 #   - WhisperAPI.exe / WhisperAPI.xml (left in place for re-install)
 # Use -RemoveLocal to also delete logs, WhisperAPI.exe / WhisperAPI.xml,
-# and any legacy nssm.exe.
+# any legacy nssm.exe, and the repo-local ffmpeg\ tree install-service.ps1
+# -Full downloads.
 
 param(
     [switch] $RemoveLocal
@@ -129,13 +130,18 @@ if ($RemoveLocal) {
         Write-Host "Removing legacy nssm.exe: $LegacyNssm"
         Remove-Item -Force $LegacyNssm
     }
+    $RepoFfmpegDir = Join-Path $RepoDir "ffmpeg"
+    if (Test-Path $RepoFfmpegDir) {
+        Write-Host "Removing repo-local ffmpeg tree: $RepoFfmpegDir"
+        Remove-Item -Recurse -Force $RepoFfmpegDir
+    }
 }
 
 Write-Host ""
 Write-Host "Done." -ForegroundColor Green
 if (-not $RemoveLocal) {
     Write-Host "Logs are preserved at: $LogsDir"
-    Write-Host "Run with -RemoveLocal to also delete logs, WhisperAPI.exe / .xml, and any legacy nssm.exe."
+    Write-Host "Run with -RemoveLocal to also delete logs, WhisperAPI.exe / .xml, any legacy nssm.exe, and the repo-local ffmpeg\ tree."
 }
 Write-Host ""
 Write-Host "To reinstall: .\install-service.ps1"

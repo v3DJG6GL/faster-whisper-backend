@@ -335,9 +335,12 @@ jobs:
       # The version baked into the image (build_info.py reads it from the
       # WHISPER_BUILD_VERSION env). Tag-anchored and bumps with every commit:
       # "v0.1.0" on a tagged build, "v0.1.0-3-g1a2b3c4" three commits later.
+      # On tag runs the ref name is authoritative — `git describe` is
+      # ambiguous when two lightweight tags share a commit (a manual minor
+      # after the auto patch) and would bake the older one.
       - name: Compute build version (git describe)
         id: ver
-        run: echo "version=$(git describe --tags --always)" >> "$GITHUB_OUTPUT"
+        run: echo "version=$(if [ "$GITHUB_REF_TYPE" = tag ]; then echo "$GITHUB_REF_NAME"; else git describe --tags --always; fi)" >> "$GITHUB_OUTPUT"
 
       # Buildx cache refs, per variant AND per producer.
       #

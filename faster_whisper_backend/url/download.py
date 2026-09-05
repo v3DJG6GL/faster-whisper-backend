@@ -157,7 +157,9 @@ def match_extractor(url: str) -> str:
         if key == "Generic":
             continue
         try:
-            if ie.suitable(url) and ie.working():
+            # No working() filter: yt-dlp still USES a _WORKING=False
+            # extractor (it only warns), so the offline decision must match.
+            if ie.suitable(url):
                 return key
         except Exception:  # noqa: BLE001 — one broken pattern must not veto
             continue
@@ -175,7 +177,9 @@ _CGNAT_NET = net_policy.CGNAT_NET
 
 class _NoPrivateRedirects(urllib.request.HTTPRedirectHandler):
     """Re-run the scheme + private-address gate on every redirect hop, so a
-    public URL can't 302 into the LAN or the cloud metadata service."""
+    public URL can't 302 into the LAN or the cloud metadata service. The
+    gate is a pre-check only; the pinned handlers below are what stop a
+    rebinding name from answering differently at connect time."""
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         parts = urllib.parse.urlsplit(newurl)
@@ -188,10 +192,32 @@ class _NoPrivateRedirects(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
+# build_opener() drops its default HTTPHandler/HTTPSHandler when a SUBCLASS
+# is passed, so with these in the chain no unpinned handler is left: every
+# connection resolves once through net_policy and dials that answer (DNS
+# rebinding between the _host_is_forbidden gate and connect can't move it).
+class _PinnedHTTPHandler(urllib.request.HTTPHandler):
+    def http_open(self, req):
+        return self.do_open(net_policy.PinnedHTTPConnection, req)
+
+
+class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
+    def https_open(self, req):
+        return self.do_open(net_policy.PinnedHTTPSConnection, req,
+                            context=self._context)
+
+
+def _guarded_opener() -> urllib.request.OpenerDirector:
+    # Keeps going through urllib.request.build_opener so tests can swap the
+    # whole opener there.
+    return urllib.request.build_opener(
+        _PinnedHTTPHandler(), _PinnedHTTPSHandler(), _NoPrivateRedirects())
+
+
 def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
     """Capped GET (first byte only) that answers: does this URL serve
-    audio/video directly? Host gate + redirect gate keep it off internal
-    ranges. Never raises for 'no' — only returns False."""
+    audio/video directly? Host gate + redirect gate + pinned DNS keep it
+    off internal ranges. Never raises for 'no' — only returns False."""
     # `timeout` is a wall-clock budget: the opener's timeout is per-socket-
     # op, so a host dribbling one header byte per op could otherwise hold
     # this worker thread far past it (the outer wait_for abandons the
@@ -204,7 +230,7 @@ def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
     req = urllib.request.Request(
         url, headers={"Range": "bytes=0-0", "User-Agent": "faster-whisper-backend"},
         method="GET")
-    opener = urllib.request.build_opener(_NoPrivateRedirects())
+    opener = _guarded_opener()
     try:
         with opener.open(req, timeout=op_timeout) as resp:
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -217,16 +243,18 @@ def _direct_media_probe_sync(url: str, *, timeout: float) -> bool:
 
 
 # The policy probes (extractor match, DNS in _host_is_forbidden, the capped
-# direct-media GET) run on their own small pool: a wedged probe thread must
-# only cost probe capacity, never the app-wide default executor that every
-# other asyncio.to_thread in the process shares.
+# direct-media GET, yt-dlp extract_info and the thumbnail GET) run on their
+# own small pool: a wedged probe thread must only cost probe capacity, never
+# the app-wide default executor that every other asyncio.to_thread in the
+# process shares (main.py runs transcription and model loads there).
 _PROBE_POOL = concurrent.futures.ThreadPoolExecutor(
     max_workers=4, thread_name_prefix="url-probe")
 
 
 # ── the yt-dlp SSRF guard ───────────────────────────────────────────────────
-# The probes above gate every hop THEY make, but the two fetches that actually
-# move bytes — probe()'s extract_info and download()'s subprocess — go through
+# The probes above gate every hop THEY make (and pin DNS via net_policy's
+# connection classes), but the two fetches that actually move bytes —
+# probe()'s extract_info and download()'s subprocess — go through
 # yt-dlp's own opener, which follows redirects and re-resolves DNS with no
 # policy at all. ytdlp_plugins/ ships a RequestHandler that re-applies
 # net_policy to hop 0 and to every redirect hop, pins the resolved IP, and
@@ -334,12 +362,12 @@ def _policy_check_info(info: dict) -> None:
     max_dur = int(getattr(cfg, "URL_MAX_DURATION_S", 14400))
     dur = info.get("duration")
     if dur is not None and float(dur) > max_dur:
-        raise UrlDownloadError(
+        raise UrlPolicyError(
             f"this media runs {float(dur) / 3600:.1f} h — over the server's "
             f"{max_dur / 3600:.1f} h limit for link downloads")
     approx = info.get("filesize_approx") or info.get("filesize")
     if approx is not None and int(approx) > _effective_max_bytes():
-        raise UrlDownloadError("this media exceeds the server's size limit")
+        raise UrlPolicyError("this media exceeds the server's size limit")
 
 
 async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
@@ -352,7 +380,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     try:
         key = await asyncio.wait_for(check_url_policy(url), timeout)
     except asyncio.TimeoutError:
-        raise UrlDownloadError("the site took too long to answer") from None
+        raise UrlTimeoutError("the site took too long to answer") from None
 
     # Fail closed BEFORE extract_info: the guard registers the RequestHandler
     # this process's YoutubeDL will pick, so it has to be in place (and
@@ -385,10 +413,10 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
 
     try:
         info = await asyncio.wait_for(
-            asyncio.to_thread(_extract),
+            asyncio.get_running_loop().run_in_executor(_PROBE_POOL, _extract),
             max(1.0, deadline - time.monotonic()))
     except asyncio.TimeoutError:
-        raise UrlDownloadError("the site took too long to answer") from None
+        raise UrlTimeoutError("the site took too long to answer") from None
     except Exception as e:  # noqa: BLE001 — classify, never forward raw
         _log_probe_failure(url, e)
         raise UrlDownloadError(classify_error(str(e))) from None
@@ -444,7 +472,7 @@ async def fetch_thumbnail_data_uri(
             return None
         req = urllib.request.Request(
             url, headers={"User-Agent": "faster-whisper-backend"})
-        opener = urllib.request.build_opener(_NoPrivateRedirects())
+        opener = _guarded_opener()
         try:
             with opener.open(req, timeout=timeout) as resp:
                 ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
@@ -472,7 +500,9 @@ async def fetch_thumbnail_data_uri(
         return f"data:{ctype};base64,{base64.b64encode(bytes(buf)).decode('ascii')}"
 
     try:
-        return await asyncio.wait_for(asyncio.to_thread(_fetch), timeout + 2.0)
+        return await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(_PROBE_POOL, _fetch),
+            timeout + 2.0)
     except Exception:  # noqa: BLE001
         return None
 
@@ -702,7 +732,7 @@ async def download(
             if parsed is not None and parsed[0] > max_bytes:
                 await _kill()
                 _discard_partials(dest_dir)
-                raise UrlDownloadError("this media exceeds the server's size limit")
+                raise UrlPolicyError("this media exceeds the server's size limit")
             if parsed and progress_cb is not None:
                 last_parsed = parsed
                 now = time.monotonic()
@@ -719,7 +749,7 @@ async def download(
         await asyncio.wait_for(proc.wait(), max(5.0, timeout - (time.monotonic() - t0)))
     except asyncio.TimeoutError:
         await _kill()
-        raise UrlDownloadError("the download timed out") from None
+        raise UrlTimeoutError("the download timed out") from None
     finally:
         # Reached with the child still alive only when the TASK was
         # cancelled (e.g. uvicorn shutdown) — the deliberate abort paths
@@ -751,10 +781,10 @@ async def download(
     if result is None:
         # --max-filesize skips (exit 0, no file) on some formats instead of
         # failing — a missing output after a clean exit means the cap bit.
-        raise UrlDownloadError("this media exceeds the server's size limit")
+        raise UrlPolicyError("this media exceeds the server's size limit")
     size = os.path.getsize(result)
     if size > max_bytes:
-        raise UrlDownloadError("this media exceeds the server's size limit")
+        raise UrlPolicyError("this media exceeds the server's size limit")
     if size == 0:
         raise UrlDownloadError("the downloaded file was empty")
     logger.info("[url-dl] downloaded %.1f MB in %.1fs (host %s)",

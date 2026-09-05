@@ -130,7 +130,11 @@ def _check_url(url: str) -> None:
     if parts.scheme.lower() not in ("http", "https"):
         raise RequestError(
             f"{MARKER}: refusing a non-http(s) URL (scheme {parts.scheme!r})")
-    _resolve_pinned(parts.hostname or "", parts.port or 0)
+    try:
+        port = parts.port or 0
+    except ValueError:  # out-of-range / non-numeric port passes validate_url
+        raise RequestError(f"{MARKER}: invalid port") from None
+    _resolve_pinned(parts.hostname or "", port)
 
 
 # ── pinned connections ──────────────────────────────────────────────────────
@@ -149,10 +153,15 @@ def _connect_pinned(conn) -> "socket.socket":
             if conn.source_address:
                 sock.bind(conn.source_address)
             sock.connect(sockaddr)
-            return sock
         except OSError as e:
             sock.close()
             last = e
+            continue
+        try:  # stdlib's connect() sets this too; the request write must not Nagle
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        return sock
     raise last if last is not None else OSError("connection failed")
 
 
@@ -171,8 +180,11 @@ class _PinnedHTTPSConnection(http.client.HTTPSConnection):
             self._tunnel()
             sock = self.sock
         # server_hostname = the NAME, never the pinned literal: SNI and cert
-        # verification must still be about the host the URL named.
-        self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
+        # verification must still be about the host the URL named. Behind a
+        # CONNECT proxy self.host is the proxy; the URL's host is _tunnel_host
+        # (same rule as stdlib HTTPSConnection.connect).
+        self.sock = self._context.wrap_socket(
+            sock, server_hostname=self._tunnel_host or self.host)
 
 
 class _GuardedHTTPHandler(_urllib.HTTPHandler):

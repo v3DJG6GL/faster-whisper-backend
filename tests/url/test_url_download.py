@@ -105,7 +105,7 @@ def test_extractor_allowlist_case_insensitive(monkeypatch):
     assert _run(udl.check_url_policy("https://x/")) == "Youtube"
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", ["Vimeo"],
                         raising=False)
-    with pytest.raises(udl.UrlDownloadError, match="allowed list"):
+    with pytest.raises(udl.UrlPolicyError, match="allowed list"):
         _run(udl.check_url_policy("https://x/"))
 
 
@@ -119,7 +119,7 @@ def test_generic_rejected_by_default(monkeypatch):
     monkeypatch.setattr(udl, "match_extractor", lambda u: "Generic")
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_GENERIC", False, raising=False)
     monkeypatch.setattr(udl.cfg, "URL_ALLOW_DIRECT_MEDIA", False, raising=False)
-    with pytest.raises(udl.UrlDownloadError):
+    with pytest.raises(udl.UrlPolicyError):
         _run(udl.check_url_policy("https://internal.host/x"))
 
 
@@ -422,7 +422,7 @@ def test_probe_timeout_covers_policy_check(monkeypatch):
 
     async def go():
         t0 = asyncio.get_event_loop().time()
-        with pytest.raises(udl.UrlDownloadError, match="took too long"):
+        with pytest.raises(udl.UrlTimeoutError, match="took too long"):
             await udl.probe("https://example.com/v", timeout=0.3)
         assert asyncio.get_event_loop().time() - t0 < 5
     _run(go())
@@ -458,13 +458,16 @@ def test_thumbnail_dribble_bounded_by_deadline(monkeypatch):
         out = await udl.fetch_thumbnail_data_uri(
             "https://example.com/thumb.jpg", timeout=0.5)
         assert out is None
-        assert asyncio.get_event_loop().time() - t0 < 5
+        # below the outer wait_for (timeout + 2.0) — only the in-thread
+        # deadline returns this fast
+        assert asyncio.get_event_loop().time() - t0 < 2.0
     _run(go())
 
 
 def test_direct_media_probe_bounded_by_deadline(monkeypatch):
     """A host that answers slowly (under the per-op socket timeout, over the
-    probe budget) must not pin the probe thread: give up at the deadline."""
+    probe budget) must be judged 'not direct media' once the deadline has
+    passed, whatever its Content-Type says."""
     import time as _t
 
     class _Resp:
@@ -487,10 +490,8 @@ def test_direct_media_probe_bounded_by_deadline(monkeypatch):
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
     monkeypatch.setattr(udl.urllib.request, "build_opener",
                         lambda *handlers: _Opener())
-    t0 = _t.monotonic()
     assert udl._direct_media_probe_sync("https://example.com/a.mp3",
                                         timeout=0.2) is False
-    assert _t.monotonic() - t0 < 2
 
 
 def test_download_wall_clock_timeout(tmp_path, monkeypatch):
@@ -498,7 +499,7 @@ def test_download_wall_clock_timeout(tmp_path, monkeypatch):
 import time
 time.sleep(60)
 """)
-    with pytest.raises(udl.UrlDownloadError, match="timed out"):
+    with pytest.raises(udl.UrlTimeoutError, match="timed out"):
         _run(udl.download("https://example.com/v", dest_dir=str(tmp_path),
                           max_bytes=10_000, timeout=1.0))
 
@@ -549,7 +550,7 @@ def test_probe_selects_download_format(monkeypatch):
     # The stand-in yt_dlp has no .networking, so the SSRF guard cannot install
     # into it — and probe() fails closed when it can't. Nothing here reaches
     # the network, so stub the check out along with the downloader itself.
-    # (The guard's own behaviour is covered by tests/test_url_ssrf_guard.py.)
+    # (The guard's own behaviour is covered by tests/url/test_url_ssrf_guard.py.)
     monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
     monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
@@ -592,7 +593,7 @@ def test_probe_rejects_channel_page_as_playlist(monkeypatch):
     # The stand-in yt_dlp has no .networking, so the SSRF guard cannot install
     # into it — and probe() fails closed when it can't. Nothing here reaches
     # the network, so stub the check out along with the downloader itself.
-    # (The guard's own behaviour is covered by tests/test_url_ssrf_guard.py.)
+    # (The guard's own behaviour is covered by tests/url/test_url_ssrf_guard.py.)
     monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
     monkeypatch.setattr(udl, "match_extractor", lambda u: "YoutubeTab")
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
@@ -608,3 +609,133 @@ def test_host_for_log_never_raises():
     assert udl.host_for_log("") == "?"
     assert udl.host_for_log(
         "https://Example.com/watch?v=abc&token=secret") == "example.com"
+
+
+def test_probe_extract_runs_on_probe_pool(monkeypatch):
+    """extract_info can wedge a thread past the wait_for (per-socket-op
+    timeouts, dribbling hosts); it must cost _PROBE_POOL capacity, never the
+    default executor that transcription runs on."""
+    import threading
+    seen: dict = {}
+
+    class _FakeYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            seen["thread"] = threading.current_thread().name
+            return {"title": "t", "extractor_key": "Youtube"}
+
+        def sanitize_info(self, info):
+            return info
+
+    fake = type(sys)("yt_dlp")
+    fake.YoutubeDL = _FakeYDL
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
+    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
+    monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert seen["thread"].startswith("url-probe")
+
+
+def test_thumbnail_fetch_runs_on_probe_pool(monkeypatch):
+    import threading
+    seen: dict = {}
+
+    class _Resp:
+        headers = {"Content-Type": "image/jpeg"}
+        _chunks = [b"x", b""]
+
+        def read(self, n):
+            return self._chunks.pop(0)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Opener:
+        def open(self, req, timeout=None):
+            seen["thread"] = threading.current_thread().name
+            return _Resp()
+
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(udl.urllib.request, "build_opener",
+                        lambda *handlers: _Opener())
+    out = _run(udl.fetch_thumbnail_data_uri("https://example.com/t.jpg", timeout=1.0))
+    assert isinstance(out, str) and out.startswith("data:image/jpeg;base64,")
+    assert seen["thread"].startswith("url-probe")
+
+
+def _rebinding_server(monkeypatch, content_type):
+    """Local server + a getaddrinfo stub for "rebind.test" that answers a
+    public address on the first lookup (the _host_is_forbidden gate) and
+    loopback on every later one (what an unpinned connect would dial)."""
+    import http.server
+    import socket
+    import threading
+
+    hits = {"n": 0}
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            hits["n"] += 1
+            body = b"INTERNAL-SECRET"
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass
+
+    srv = http.server.HTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    port = srv.server_port
+    real = socket.getaddrinfo
+    calls = {"n": 0}
+
+    def stub(host, *a, **kw):
+        if host != "rebind.test":
+            return real(host, *a, **kw)
+        calls["n"] += 1
+        addr = "93.184.216.34" if calls["n"] == 1 else "127.0.0.1"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addr, port))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", stub)
+    return srv, port, hits
+
+
+def test_thumbnail_fetch_pins_dns_against_rebinding(monkeypatch):
+    """README promises the resolved IP is pinned for the thumbnail fetch: a
+    name that answers public for the gate and internal at connect time must
+    not get its internal body handed to the client as a data: URI."""
+    srv, port, hits = _rebinding_server(monkeypatch, "image/png")
+    try:
+        out = _run(udl.fetch_thumbnail_data_uri(
+            f"http://rebind.test:{port}/t.png", timeout=3))
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert out is None
+    assert hits["n"] == 0
+
+
+def test_direct_media_probe_pins_dns_against_rebinding(monkeypatch):
+    srv, port, hits = _rebinding_server(monkeypatch, "audio/mpeg")
+    try:
+        assert udl._direct_media_probe_sync(
+            f"http://rebind.test:{port}/a.mp3", timeout=3) is False
+    finally:
+        srv.shutdown()
+        srv.server_close()
+    assert hits["n"] == 0
