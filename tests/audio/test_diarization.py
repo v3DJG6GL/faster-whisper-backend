@@ -431,3 +431,47 @@ def test_diarize_does_not_touch_a_model_it_never_leased(monkeypatch):
     assert asyncio.run(diarization.diarize("a.wav")) == []
     assert "pyannote:m2" not in touched
     assert diarization._leases == {}
+
+
+def test_pipeline_load_passes_the_models_volume_cache_dir(monkeypatch,
+                                                          tmp_path):
+    """huggingface_hub froze HF_HUB_CACHE at import, so the HF_HOME
+    setdefault cannot redirect the download — without an explicit cache_dir
+    the pipeline landed in ~/.cache/huggingface on bare metal, off the
+    models volume and invisible to model_sizes (size_unknown forever)."""
+    import sys
+    import types
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", str(tmp_path),
+                        raising=False)
+    monkeypatch.setattr(diarization.cfg, "HF_TOKEN", "tok", raising=False)
+    seen = {}
+
+    class _Pipe:
+        def to(self, dev):
+            pass
+
+    class _Pipeline:
+        @classmethod
+        def from_pretrained(cls, model_id, **kw):
+            seen.update(kw)
+            return _Pipe()
+
+    fake_torch = types.SimpleNamespace(
+        set_num_threads=lambda n: None, device=lambda d: d)
+    pa = types.ModuleType("pyannote.audio")
+    pa.Pipeline = _Pipeline
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pyannote", types.ModuleType("pyannote"))
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pa)
+
+    diarization._load_blocking_inner("p/m", "cpu", 4)
+    assert seen["cache_dir"] == os.path.join(str(tmp_path), "hf", "hub")
+    assert seen["token"] == "tok"
+
+    # A set HF_HOME wins; neither set falls through to the hub's default.
+    monkeypatch.setenv("HF_HOME", "/elsewhere")
+    assert diarization._hf_cache_dir() == os.path.join("/elsewhere", "hub")
+    monkeypatch.delenv("HF_HOME")
+    monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", None, raising=False)
+    assert diarization._hf_cache_dir() is None

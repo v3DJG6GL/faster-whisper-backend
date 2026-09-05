@@ -325,19 +325,33 @@ def _family_busy(family: str, model_id: str) -> bool:
             return False
         if family == "diarization":
             from faster_whisper_backend.audio import diarization
+            # A draining orphan is keyed by ITS id and _drop_locked(force)
+            # nulls the singleton key, so it is invisible to the key check
+            # below — loading beside it is exactly the two-in-memory outcome
+            # the docstring refuses.
+            if diarization._orphans:
+                return True
             key = diarization._pipeline_key
             if not key or key[0] == mid:
                 return False
-            return bool(diarization._leases.get(key[0], 0)
-                        or diarization._orphans.get(key[0], 0))
+            return bool(diarization._leases.get(key[0], 0))
         if family == "separation":
             from faster_whisper_backend.audio import bgm_separation
+            if bgm_separation._orphans:
+                return True
             key = bgm_separation._separator_key
             if not key or key[0] == mid:
                 return False
-            return bool(bgm_separation._leases.get(key[0], 0)
-                        or bgm_separation._orphans.get(key[0], 0))
+            return bool(bgm_separation._leases.get(key[0], 0))
         if family == "translation":
+            from faster_whisper_backend.audio import translation
+            # A cold load runs OUTSIDE translation._lock and is not yet in
+            # _models, so the cap check alone would admit a second multi-GB
+            # load beside it (both VRAM measurements void, and with cap 1
+            # the later insert trims the other). Same refusal as whisper's
+            # busy _model_load_lock.
+            if translation._loads_in_flight > 0:
+                return True
             # Same shape as whisper: translation._trim_locked drops the first
             # unleased ref without consulting the warm predicate.
             if _cache_full(family) and (

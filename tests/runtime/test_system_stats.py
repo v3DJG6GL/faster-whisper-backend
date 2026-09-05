@@ -170,3 +170,46 @@ def test_shutdown_safe_and_idempotent():
     assert system_stats.NVML_OK is False
     system_stats.shutdown()  # no raise on second call
     assert system_stats.NVML_OK is False
+
+
+# ---------------------------------------------------------------------------
+# register_loaded_model / _build_host regressions
+# ---------------------------------------------------------------------------
+
+def test_negative_vram_delta_is_not_displayed(monkeypatch):
+    """A concurrent free elsewhere on the GPU makes after < before; that is
+    not a measurement and must not surface as a negative vram_mb."""
+    from faster_whisper_backend.runtime import model_sizes
+    monkeypatch.setattr(model_sizes, "disk_size", lambda name: None)
+    system_stats.register_loaded_model("neg", -512 * 1024 * 1024, "cuda",
+                                       "int8")
+    snap = system_stats.loaded_models_snapshot()
+    assert snap[0]["name"] == "neg" and snap[0]["vram_mb"] is None
+    system_stats.register_loaded_model("zero", 0, "cpu", "int8")
+    assert system_stats.loaded_models_snapshot()[1]["vram_mb"] == 0
+
+
+def test_disk_free_reads_the_download_root_drive(monkeypatch, tmp_path):
+    """/stats labels it "disk free (model cache)": with HF_HOME unset the
+    cache is <DOWNLOAD_ROOT>/hf, not the OS drive's ~/.cache/huggingface —
+    and a not-yet-created hf/ dir still resolves to its parent's drive."""
+    from faster_whisper_backend import config as cfg
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
+    seen = []
+    real = system_stats.psutil.disk_usage
+
+    def _spy(path):
+        seen.append(path)
+        return real(path)
+    monkeypatch.setattr(system_stats.psutil, "disk_usage", _spy)
+    host = system_stats._build_host()
+    assert seen == [str(tmp_path)]           # hf/ absent -> its parent
+    assert host["disk_free_gb"] is not None
+    (tmp_path / "hf").mkdir()
+    system_stats._build_host()
+    assert seen[-1] == str(tmp_path / "hf")
+    monkeypatch.setenv("HF_HOME", str(tmp_path / "hf"))
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
+    system_stats._build_host()
+    assert seen[-1] == str(tmp_path / "hf")  # HF_HOME wins

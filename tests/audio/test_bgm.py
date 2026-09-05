@@ -391,11 +391,12 @@ def test_cancel_after_the_mutex_wait_skips_the_separation(monkeypatch):
 
 # --- the release survives a cancellation delivered in the finally -----------
 
-def test_cancel_while_release_waits_for_the_lock_still_drops_the_lease(
+def test_release_returns_the_lease_immediately_while_a_load_holds_the_lock(
         monkeypatch):
-    """_lock is held for a whole executor-long load; a request cancelled
-    while its finally waits there must still give the lease back, or the
-    model is pinned against idle eviction for the process lifetime."""
+    """_lock is held for a whole executor-long load; a job whose separation
+    is DONE must not sit in its finally until another user's model finishes
+    downloading — the release is lock-free and lands before the lock is
+    ever given up."""
     import asyncio
     cfg = bgm_separation.cfg
     monkeypatch.setattr(cfg, "BGM_SEPARATION_UVR_MODEL", "Foo", raising=False)
@@ -417,15 +418,9 @@ def test_cancel_while_release_waits_for_the_lock_still_drops_the_lease(
             task = asyncio.create_task(bgm_separation.separate("in.wav"))
             for _ in range(5):
                 await asyncio.sleep(0)
-            # The job ran and its release is parked on the lock.
-            assert bgm_separation._leases == {"Foo.onnx": 1}
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-            assert bgm_separation._leases == {"Foo.onnx": 1}
-        for _ in range(5):
-            await asyncio.sleep(0)
-        assert bgm_separation._leases == {}
+            # The job finished and released WITHOUT waiting on the lock.
+            assert task.done() and task.result() == "out.wav"
+            assert bgm_separation._leases == {}
 
     asyncio.run(_main())
 

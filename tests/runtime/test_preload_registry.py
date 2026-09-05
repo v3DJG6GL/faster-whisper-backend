@@ -551,3 +551,40 @@ def test_plan_receipt_never_breaks_registration(monkeypatch):
     monkeypatch.setattr(preload.logger, "info", _boom)
     out = preload.register_plan("u1", [("diarization", "p/x")])
     assert out["models"] and out["models"][0]["state"] == "resident"
+
+
+def test_translation_defers_while_a_cold_load_is_in_flight(monkeypatch):
+    """A cold GGUF load runs outside translation._lock and is not yet in
+    _models, so the cap check alone admitted a second multi-GB load beside
+    it — voiding both VRAM measurements and, with cap 1, trimming one of
+    the two the moment the other landed."""
+    _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
+    _fits(monkeypatch, (True, None))
+    monkeypatch.setattr(translation, "_models", {})
+    monkeypatch.setattr(translation, "_active", {})
+    monkeypatch.setattr(translation, "_loads_in_flight", 1)
+    assert preload._admit("translation", "o/b:Q4") == ("deferred",
+                                                       "family_busy")
+    monkeypatch.setattr(translation, "_loads_in_flight", 0)
+    assert preload._admit("translation", "o/b:Q4") in (("loading", None),
+                                                       ("queued", None))
+
+
+def test_draining_orphan_singleton_is_family_busy_after_a_force_drop(
+        monkeypatch):
+    """_drop_locked(force=True) nulls the singleton key and files the job
+    under _orphans by ITS id, so the key-based check saw "nothing loaded"
+    and admitted a third model beside the draining orphan."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (True, None))
+    monkeypatch.setattr(diarization, "_pipeline_key", None)
+    diarization._orphans["p/old"] = 1
+    assert preload._admit("diarization", "p/x") == ("deferred", "family_busy")
+    # A different model resident since the drop hides the orphan too.
+    monkeypatch.setattr(diarization, "_pipeline_key", ("p/new", "cpu", 4))
+    assert preload._admit("diarization", "p/x") == ("deferred", "family_busy")
+    assert preload._idle_peer("diarization", "p/x") is None
+
+    monkeypatch.setattr(bgm_separation, "_separator_key", None)
+    bgm_separation._orphans["o.onnx"] = 1
+    assert preload._admit("separation", "x") == ("deferred", "family_busy")

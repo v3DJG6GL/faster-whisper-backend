@@ -116,6 +116,10 @@ def register_loaded_model(name: str, vram_bytes: int | None,
     run, so a cold start reads as a cost rather than as an unexplained gap
     between two timestamps. Optional — an omitting caller just gets no
     split."""
+    # A NEGATIVE delta (a concurrent free elsewhere on the GPU during the
+    # before/after window) is not a measurement: never store or display it.
+    if vram_bytes is not None and vram_bytes < 0:
+        vram_bytes = None
     with _loaded_models_lock:
         _loaded_models[name] = {
             "name": name,
@@ -300,8 +304,23 @@ def _build_gpu() -> dict[str, Any] | None:
 
 def _build_host() -> dict[str, Any]:
     vmem = psutil.virtual_memory()
-    # Disk free on the drive containing the model cache (HF default location).
-    cache_dir = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
+    # Disk free on the drive containing the model cache — the same
+    # precedence model_sizes._model_path resolves (HF_HOME, else
+    # DOWNLOAD_ROOT/hf where every whisper / GGUF / UVR download actually
+    # lands on bare metal, else the hub's default). Walk up to the nearest
+    # existing ancestor so a not-yet-created cache dir still reads its drive.
+    cache_dir = os.environ.get("HF_HOME")
+    if not cache_dir:
+        try:
+            from faster_whisper_backend import config as _cfg
+            root = (getattr(_cfg, "DOWNLOAD_ROOT", "") or "").strip()
+        except Exception:  # noqa: BLE001 — stats only
+            root = ""
+        cache_dir = os.path.join(root, "hf") if root else \
+            os.path.expanduser("~/.cache/huggingface")
+    while not os.path.exists(cache_dir) and \
+            os.path.dirname(cache_dir) not in ("", cache_dir):
+        cache_dir = os.path.dirname(cache_dir)
     try:
         disk_free_gb = round(psutil.disk_usage(cache_dir).free / (1024 ** 3), 1)
     except (OSError, FileNotFoundError):

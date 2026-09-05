@@ -95,6 +95,25 @@ def _resolve_device() -> str:
     return "cpu"
 
 
+def _hf_cache_dir() -> "str | None":
+    """The hub cache directory to pass EXPLICITLY to ``from_pretrained``.
+    huggingface_hub freezes HF_HUB_CACHE at import (faster_whisper imports
+    the hub at startup), so the HF_HOME setdefault in _load_blocking alone
+    cannot redirect the pipeline + its segmentation/embedding sub-repos: on
+    bare metal they landed in ~/.cache/huggingface, off the models volume
+    and away from where model_sizes._model_path("pyannote:…") looks (no
+    prior → size_unknown → never preloaded). Same precedence as
+    translation._hf_cache_dir: a set HF_HOME wins, else
+    <DOWNLOAD_ROOT>/hf/hub, else None (the hub's own default)."""
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return os.path.join(hf_home, "hub")
+    download_root = getattr(cfg, "DOWNLOAD_ROOT", None)
+    if download_root:
+        return os.path.join(download_root, "hf", "hub")
+    return None
+
+
 def _load_blocking(model_id: str, device: str, batch_size: int):
     """Import pyannote and build the pipeline. Runs in the default executor."""
     # Keep HF downloads on the models volume (whisper weights already live
@@ -158,6 +177,7 @@ def _load_blocking_inner(model_id: str, device: str, batch_size: int):
         ) from e
 
     token = getattr(cfg, "HF_TOKEN", None) or None
+    cache_dir = _hf_cache_dir()
     try:
         # Download-or-load receipt: pyannote fetches its (small) files via
         # huggingface_hub internally — the capture's hub-tqdm shim surfaces
@@ -169,12 +189,14 @@ def _load_blocking_inner(model_id: str, device: str, batch_size: int):
         try:
             with download_progress.capture(_STATS_PREFIX + model_id):
                 try:
-                    pipe = Pipeline.from_pretrained(model_id, token=token)
+                    pipe = Pipeline.from_pretrained(model_id, token=token,
+                                                    cache_dir=cache_dir)
                 except TypeError as _te:
                     if "token" not in str(_te):
                         raise
                     pipe = Pipeline.from_pretrained(model_id,
-                                                    use_auth_token=token)
+                                                    use_auth_token=token,
+                                                    cache_dir=cache_dir)
         finally:
             jobs.job_end(_dl_job)
     except DiarizationError:

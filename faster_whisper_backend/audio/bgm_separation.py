@@ -511,9 +511,16 @@ def _release_locked(model: str, sep=None) -> None:
 async def _release_separator(model: str, sep=None) -> None:
     """Release a lease taken by ``_get_separator(..., lease=True)``. Pass the
     separator that call returned so a live holder is told apart from an
-    orphan of the same model (see ``_release_locked``)."""
-    async with _lock:
-        _release_locked(model, sep)
+    orphan of the same model (see ``_release_locked``).
+
+    Deliberately lock-free (it never suspends): _lock is held across a whole
+    executor-long load, so a job whose separation is DONE would otherwise
+    sit in its finally until another user's model finished downloading —
+    and a cancellation delivered while waiting there would abandon the
+    release and pin the lease. _release_locked and _free_locked are
+    synchronous, so on the one event loop they still run atomically w.r.t.
+    every drop (same shape as diarization._release_pipeline)."""
+    _release_locked(model, sep)
 
 
 async def _get_separator(model_filename: "str | None" = None, *,
@@ -615,11 +622,9 @@ async def separate(path: str, *, model_filename: "str | None" = None,
         return await _separate_with(sep, path, progress_cb=progress_cb,
                                     cancel_check=cancel_check)
     finally:
-        # _release_separator awaits _lock, which a concurrent load holds for
-        # its whole executor-long duration — a cancellation delivered while
-        # suspended there would abandon the release and pin the lease (and
-        # the model against idle eviction) for the process lifetime.
-        await asyncio.shield(_release_separator(leased, sep))
+        # Lock-free and never suspends (see _release_separator), so a
+        # cancellation cannot abandon the release and pin the lease.
+        await _release_separator(leased, sep)
 
 
 async def _separate_with(sep, path: str, *, progress_cb, cancel_check) -> str:

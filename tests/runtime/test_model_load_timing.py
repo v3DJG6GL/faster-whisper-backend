@@ -83,7 +83,7 @@ def test_evictor_does_not_claim_an_unload_it_was_refused(monkeypatch, caplog):
     _register_stale("a")
     main._model_leases["a"] = 1
     try:
-        with caplog.at_level(logging.INFO, logger="whisper-server"):
+        with caplog.at_level(logging.INFO, logger="whisper-api"):
             _run_one_evictor_tick(monkeypatch)
         assert "a" in main._loaded_models
         msgs = [r.getMessage() for r in caplog.records]
@@ -99,7 +99,7 @@ def test_evictor_logs_the_unload_it_performed(monkeypatch, caplog):
     _register_stale("b")
     main._model_leases.pop("b", None)
     try:
-        with caplog.at_level(logging.INFO, logger="whisper-server"):
+        with caplog.at_level(logging.INFO, logger="whisper-api"):
             _run_one_evictor_tick(monkeypatch)
         assert "b" not in main._loaded_models
         assert any("[idle-evict] unloaded b after 1s idle" == r.getMessage()
