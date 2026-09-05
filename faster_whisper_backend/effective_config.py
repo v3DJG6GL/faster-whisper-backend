@@ -29,6 +29,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_renames as _renames
 from faster_whisper_backend import config_store
 
 logger = logging.getLogger("whisper-api")
@@ -116,11 +117,17 @@ def _blob_to_layer(layer_id: str, label: str, profile_name: str | None,
     nothing."""
     if not isinstance(blob, dict) or not blob:
         return None
+    # Per-identity bindings are stored as JSON in the key/user stores and
+    # never pass through config_store's load-path key migration, so a
+    # binding saved before a config_renames rename would otherwise collapse
+    # (its override AND its lock silently vanish). Migrate a copy here.
+    blob = _renames.migrate_keys(dict(blob))
     fields = {
         k: v for k, v in blob.items()
         if k in SCALAR_OVERRIDE_FIELDS and v is not None
     }
-    locks = {f for f in (blob.get("locks") or []) if f in SCALAR_OVERRIDE_FIELDS}
+    locks = {_renames.RENAMED_KEYS.get(f, f) for f in (blob.get("locks") or [])}
+    locks = {f for f in locks if f in SCALAR_OVERRIDE_FIELDS}
     exclude = {s for s in (blob.get("PIPELINE_RULES_EXCLUDE") or [])}
     include = {s for s in (blob.get("PIPELINE_RULES_INCLUDE") or [])}
     if not (fields or locks or exclude or include):

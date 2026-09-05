@@ -125,3 +125,14 @@ def test_logs_page_onerror_closes_eventsource(client):
     j = body.index("es.close()", i)
     k = body.index("setTimeout(probe", i)
     assert j < k
+
+
+def test_logs_page_live_trim_steps_the_load_older_cursor_back(client):
+    # The live-tail DOM cap trims lines off the top; the "Load older" cursor
+    # counts lines from the chain head that are in the DOM, so it must step
+    # back per trimmed line or the first click skips the trimmed window.
+    html = client.get("/logs").text
+    trim = html[html.index("while (log.childElementCount > _LOG_DOM_MAX)"):]
+    trim = trim[:trim.index("if (!paused) window.scrollTo")]
+    assert "_logsSkip--" in trim
+    assert "contains('line')" in trim

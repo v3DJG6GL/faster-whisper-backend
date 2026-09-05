@@ -35,6 +35,7 @@ import uuid
 from hashlib import sha256
 from typing import Any
 
+from faster_whisper_backend import config_renames
 from faster_whisper_backend.core import store_common
 
 logger = logging.getLogger("whisper-api")
@@ -282,6 +283,14 @@ def _parse_binding(raw: "str | dict | None") -> dict[str, Any]:
     if not isinstance(v, dict):
         return dict(empty)
     direct = v.get("direct")
+    if isinstance(direct, dict):
+        # Bindings never pass through config_store's load-path key migration,
+        # so map a pre-rename field/lock spelling here (the resolver does the
+        # same) — then the admin's next re-save stores the current name.
+        direct = config_renames.migrate_keys(dict(direct))
+        if isinstance(direct.get("locks"), list):
+            direct["locks"] = [config_renames.RENAMED_KEYS.get(lk, lk)
+                               for lk in direct["locks"]]
     profiles = v.get("profiles")
     out: dict[str, Any] = {
         "direct": direct if isinstance(direct, dict) else {},

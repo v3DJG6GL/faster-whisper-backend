@@ -1537,6 +1537,17 @@ _ENV_READER_FUNCS = {
 }
 
 
+# Reader kinds for which an EXPLICITLY EMPTY env var is a real value (None /
+# "" / []) rather than "keep current". config_store.env_pinned_fields() badges
+# such a field as env-pinned on `WHISPER_X=""` too — otherwise /settings shows
+# it editable, the save hot-applies, and the empty var silently wins again at
+# the next restart. Filled by the reader loop below; the special-case readers
+# that treat "" as a value are added after they run.
+_EMPTY_IS_VALUE_KINDS = frozenset({
+    "str_or_none", "passthrough", "float_or_none", "int_or_none", "csv_list"})
+_EMPTY_IS_VALUE: "set[str]" = set()
+
+
 def _env_reader_kind(field: str, current) -> str:
     """Pick the reader for a field. Explicit overrides win; otherwise infer
     from the current (post-local.json) value's Python type so a newly added
@@ -1581,11 +1592,27 @@ try:
             else:
                 _ENV_PRE[_f] = _v0
 
+    def _env_slug_ctx() -> "dict[str, object]":
+        """Validation context for the env-time AdminConfig passes: the slug
+        set of the PIPELINE_RULES in force (config.json + local + env), so an
+        env-supplied MODEL_OVERRIDES / OVERRIDE_PROFILES / CAPTURES_
+        PIPELINE_RULES_EXCLUDE that names a typo'd rule is rejected like a
+        /settings save instead of booting silently and doing nothing."""
+        _slugs = set()
+        for _r in (globals().get("PIPELINE_RULES") or []):
+            _n = _r.get("name") if isinstance(_r, dict) else getattr(_r, "name", None)
+            if _n:
+                _slugs.add(_n)
+        return {"canonical_slugs": frozenset(_slugs)} if _slugs else {}
+
     for _field, _env in _ENV_VAR_MAPPING.items():
         if _field in _ENV_SPECIAL_CASES or _field in _ENV_JSON_FIELDS:
             continue
         _cur = globals()[_field]
-        globals()[_field] = _ENV_READER_FUNCS[_env_reader_kind(_field, _cur)](_env, _cur)
+        _kind = _env_reader_kind(_field, _cur)
+        if _kind in _EMPTY_IS_VALUE_KINDS:
+            _EMPTY_IS_VALUE.add(_field)
+        globals()[_field] = _ENV_READER_FUNCS[_kind](_env, _cur)
 
     # --- JSON-encoded structured fields (escape hatch) ----------------------
     for _field in _ENV_JSON_FIELDS:
@@ -1596,7 +1623,7 @@ try:
             _parsed = json.loads(_raw)
             # Validate then dump back to plain dicts/lists so the runtime shape
             # matches config.local.json (load_overrides uses the same dump).
-            _validated = _AdminConfig.model_validate({_field: _parsed})
+            _validated = _AdminConfig.model_validate({_field: _parsed}, context=_env_slug_ctx())
             globals()[_field] = _validated.model_dump(exclude_none=True)[_field]
         except Exception as _exc:  # noqa: BLE001 — never fail import over bad env
             _ENV_WARNINGS.append(
@@ -1615,6 +1642,10 @@ for _f in sorted(_SET_FIELDS):
     _raw = os.environ.get("WHISPER_" + _f)
     if _raw is not None:
         globals()[_f] = {s.strip() for s in _raw.split(",") if s.strip()}
+# "" is a value for the set fields (empty set) and for CONVERT_QUANTIZATION
+# (→ float16); the two ALLOWED_HOSTS lists `or current` and are NOT listed.
+_EMPTY_IS_VALUE.update(_SET_FIELDS)
+_EMPTY_IS_VALUE.add("CONVERT_QUANTIZATION")
 
 # Allowlists: empty string is treated as "no override" (keep in-file/local.json)
 # so the defaults can't be wiped by an empty env var.
@@ -1841,7 +1872,7 @@ try:
     if _changed:
         try:
             _full = _effective_env_dict()
-            _AdminConfig.model_validate(_full)
+            _AdminConfig.model_validate(_full, context=_env_slug_ctx())
         except Exception as _verr:  # noqa: BLE001 — any validation failure
             # Revert ONLY the fields the error locations name. Errors with an
             # empty/unknown loc (cross-field model validators) can't be
@@ -1877,7 +1908,7 @@ try:
                         _iso = _effective_env_dict(
                             **{_o: _ENV_PRE[_o] for _o in _changed
                                if _o != _field and _o not in _ENV_REJECTED})
-                        _AdminConfig.model_validate(_iso)
+                        _AdminConfig.model_validate(_iso, context=_env_slug_ctx())
                     except Exception as _ferr:  # noqa: BLE001
                         _revert_env_field(_field, _env_validation_reason(_ferr))
         # Cross-field / empty-loc backstop. A model validator (the sample-sizing
@@ -1893,7 +1924,8 @@ try:
             if not _left:
                 break
             try:
-                _AdminConfig.model_validate(_effective_env_dict())
+                _AdminConfig.model_validate(_effective_env_dict(),
+                                            context=_env_slug_ctx())
                 break
             except Exception as _gerr:  # noqa: BLE001
                 _reason = _env_validation_reason(_gerr)
@@ -1931,7 +1963,7 @@ try:
                 # frozenset lookup above missed, so a field newly added to
                 # ModelOverride can never stay live as a raw string.
                 _clean_overrides[_mid] = _AdminConfig.model_validate(
-                    {"MODEL_OVERRIDES": {_mid: _entry}}
+                    {"MODEL_OVERRIDES": {_mid: _entry}}, context=_env_slug_ctx()
                 ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
             except Exception as _verr:  # noqa: BLE001
                 _env_fields = _ENV_OVERRIDE_FIELDS.get(_mid) or set()
@@ -1946,7 +1978,8 @@ try:
                                 _reverted[_ef] = _pre_entry[_ef]
                     try:
                         _reverted = _AdminConfig.model_validate(
-                            {"MODEL_OVERRIDES": {_mid: _reverted}}
+                            {"MODEL_OVERRIDES": {_mid: _reverted}},
+                            context=_env_slug_ctx()
                         ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
                     except Exception:  # noqa: BLE001
                         _reverted = None

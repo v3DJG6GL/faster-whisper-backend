@@ -146,6 +146,21 @@ def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
     return auth.resolve_user_for_page_sse(request, "quick_config")
 
 
+def _reauth_on_version_change(request: Request, seen_version: int
+                              ) -> tuple[dict[str, Any], int] | None:
+    """stream_recent helper (the /stats/stream _rescope_on_version_change
+    pattern): when config_store.config_version() moved since `seen_version`
+    (revoke / permission edit / logout bump it), re-resolve the caller and
+    return the fresh (record, version); None when nothing changed. Raises
+    HTTPException when the caller lost access, which ends the stream —
+    otherwise a revoked user's open tab kept receiving every new trace in
+    its old scope until the browser closed the EventSource."""
+    current = config_store.config_version()
+    if current == seen_version:
+        return None
+    return require_user_or_admin_sse(request), current
+
+
 class QuickPatchPayload(BaseModel):
     """POST body shape:
         {"rules_patch": {slug: {field: value, ...}, ...},
@@ -1110,6 +1125,7 @@ async def stream_recent(
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
     sees_all = perms.scope("quick_config") == "all"
+    seen = config_store.config_version()
 
     def _visible(entry: dict[str, Any] | None) -> bool:
         if sees_all:
@@ -1120,6 +1136,7 @@ async def stream_recent(
         return bool(entry) and (entry.get("user_id") or "") == caller_uid
 
     async def gen():
+        nonlocal caller_uid, sees_all, seen
         q = quick_config_state.subscribe()
         try:
             # Replay the freshest page from the durable store (oldest-
@@ -1140,6 +1157,16 @@ async def stream_recent(
             while True:
                 if await request.is_disconnected():
                     break
+                try:
+                    # Off the loop: config_version() + the re-resolve hit SQLite.
+                    fresh = await asyncio.to_thread(
+                        _reauth_on_version_change, request, seen)
+                except HTTPException:
+                    break
+                if fresh is not None:
+                    rec, seen = fresh
+                    caller_uid = rec.get("user_id") or ""
+                    sees_all = rec["permissions"].scope("quick_config") == "all"
                 try:
                     item = await asyncio.wait_for(q.get(), timeout=15.0)
                     ev = item.get("event", "trace")

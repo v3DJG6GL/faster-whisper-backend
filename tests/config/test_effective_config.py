@@ -642,3 +642,17 @@ def test_apply_no_profiles_ignored_on_user_binding(monkeypatch):
     _bindings(monkeypatch, user={"direct": {}, "profiles": ["clinic"],
                                  "apply_no_profiles": True})
     assert ec.resolve("m", key_id="k", user_id="u").values["BEAM_SIZE"] == 7
+
+
+def test_pre_rename_binding_keys_and_locks_are_migrated():
+    # A per-identity binding stored before a config_renames rename never
+    # passes config_store's load-path migration; it used to collapse to no
+    # layer at all (override AND lock silently gone after the upgrade).
+    lyr = _layer("key", SEGMENT_MAX_WORDS_PER_SEC=3.0,
+                 locks=["SEGMENT_MAX_WORDS_PER_SEC", "STREAMING_IDLE_TIMEOUT_SEC"])
+    assert lyr is not None
+    assert lyr["fields"] == {"SEGMENT_MAX_WORDS_PER_S": 3.0}
+    assert lyr["locks"] == {"SEGMENT_MAX_WORDS_PER_S", "STREAMING_IDLE_TIMEOUT_S"}
+    # An already-current spelling wins over a stale duplicate.
+    lyr = _layer("key", SEGMENT_MAX_WORDS_PER_SEC=3.0, SEGMENT_MAX_WORDS_PER_S=4.0)
+    assert lyr["fields"] == {"SEGMENT_MAX_WORDS_PER_S": 4.0}

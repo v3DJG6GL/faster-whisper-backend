@@ -3609,11 +3609,19 @@ def env_pinned_fields() -> dict[str, str]:
     """
     from faster_whisper_backend import config as _cfg  # deferred — config imports this module at import
     _rejected = getattr(_cfg, "_ENV_REJECTED", ())
-    return {
-        field: env
-        for field, env in ENV_VAR_MAPPING.items()
-        if (os.environ.get(env) or "").strip() and field not in _rejected
-    }
+    # An explicitly EMPTY var pins the fields whose reader treats "" as a
+    # value (None / "" / [] / empty set — e.g. WHISPER_ALLOWED_MODELS="" is
+    # "any model", WHISPER_DEFAULT_LANGUAGE="" is auto-detect); for every
+    # other reader "" means "keep current" and controls nothing.
+    _empty_is_value = getattr(_cfg, "_EMPTY_IS_VALUE", ())
+    out: dict[str, str] = {}
+    for field, env in ENV_VAR_MAPPING.items():
+        raw = os.environ.get(env)
+        if raw is None or field in _rejected:
+            continue
+        if raw.strip() or field in _empty_is_value:
+            out[field] = env
+    return out
 
 
 def format_validation_errors(err: ValidationError) -> list[dict[str, str]]:

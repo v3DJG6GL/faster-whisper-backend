@@ -3287,6 +3287,12 @@ async def _csrf_mw(request: Request, call_next):
                 elif (
                     sess is None
                     or not header_tok
+                    # Starlette decodes header bytes as latin-1, and
+                    # compare_digest(str, str) raises TypeError on any
+                    # non-ASCII character — a one-byte `\xe9` header would
+                    # turn this 403 into an unhandled 500. Tokens are hex,
+                    # so a non-ASCII value can never match.
+                    or not header_tok.isascii()
                     or not hmac.compare_digest(header_tok, sess["csrf_token"])
                 ):
                     return JSONResponse(
@@ -3545,7 +3551,8 @@ def _translation_default_model() -> str:
 
 
 def _translation_model_allowed(ref: str,
-                               requested: "str | None" = None) -> bool:
+                               requested: "str | None" = None,
+                               inherited: "str | None" = None) -> bool:
     """The one admission rule the startup preload, the batch stage, the
     stage-ahead plan and /v1/text/translations all share: a non-empty
     TRANSLATION_ALLOWED_MODELS admits its members plus the configured
@@ -3554,8 +3561,14 @@ def _translation_model_allowed(ref: str,
     which admit allowlist ∪ {default} only). Like those gates, the allowlist
     constrains only the CLIENT-requested value: pass `requested` (the raw
     client ref, or None when the client sent none) and a config/identity-
-    inherited `ref` is admin policy and always passes."""
+    inherited `ref` is admin policy and always passes. `inherited` is the
+    config/identity-effective TRANSLATION_MODEL: a client that merely ECHOES
+    it (or is locked to it) has not chosen anything, so it passes exactly
+    like a request that sent no model — the diarization/separation gates
+    admit the effective value the same way."""
     allowed = getattr(cfg, "TRANSLATION_ALLOWED_MODELS", set()) or set()
+    if inherited and ref == inherited:
+        return True
     # "Any well-formed ref" — the client value reaches hf_hub_download /
     # Llama.from_pretrained as a repo id, so shape-check it the way the
     # whisper path does; an inherited ref is admin policy (config_store
@@ -4226,6 +4239,10 @@ async def transcribe(
             _translation_model = _resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TRANSLATION_MODEL", "translation_model", _tm_req)
+            # The identity/per-model effective model: echoing (or being
+            # locked to) it is not a client choice the allowlist gates.
+            _tm_inherited = (cfg_for(resolved_model, "TRANSLATION_MODEL",
+                                     ident) or "").strip() or None
             _translation_mode = _resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TRANSLATION_MODE", "translation_mode", translation_mode,
@@ -4267,8 +4284,9 @@ async def transcribe(
                 # ref the stage will refuse must not be pre-warmed (the plan
                 # would download/load an arbitrary GGUF the request cannot
                 # use). The stage's soft-fail warning still fires there.
-                if _tr_ref and _translation_model_allowed(_tr_ref,
-                                                          requested=_tm_req):
+                if _tr_ref and _translation_model_allowed(
+                        _tr_ref, requested=_tm_req,
+                        inherited=_tm_inherited):
                     _preload_entries.append(("translation", _tr_ref))
             if _pid and _preload_entries:
                 _plan_hint = (preload_plan or "").strip() or None
@@ -4816,8 +4834,9 @@ async def transcribe(
                     # exactly like the diarization/separation gates above.
                     _tr_model = ((_translation_model or "").strip()
                                  or _translation_default_model())
-                    if not _translation_model_allowed(_tr_model,
-                                                      requested=_tm_req):
+                    if not _translation_model_allowed(
+                            _tr_model, requested=_tm_req,
+                            inherited=_tm_inherited):
                         # Soft-fail like the enabled gate — never a 4xx after
                         # the transcript already exists.
                         _warnings.append(
@@ -5714,7 +5733,10 @@ async def translate_text(request: Request,
         # Shared allowlist gate; like the batch stage, it constrains only the
         # CLIENT-requested value — an admin-pinned per-identity/per-model
         # TRANSLATION_MODEL is policy and passes.
-        if not _translation_model_allowed(_tr_model, requested=_tm_req):
+        _tm_inherited = (cfg_for(None, "TRANSLATION_MODEL", ident)
+                         or "").strip() or None
+        if not _translation_model_allowed(_tr_model, requested=_tm_req,
+                                          inherited=_tm_inherited):
             raise HTTPException(
                 status_code=400,
                 detail="requested translation model is not in "
@@ -6522,8 +6544,32 @@ def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[st
     return list(reversed(window)), next_skip
 
 
-async def _stream_log_lines():
-    """Yield SSE events: one for each existing tail line, then live tail."""
+def _logs_stream_reauth(request: Request, seen_version: int) -> int:
+    """Live-tail helper (the /stats/stream _rescope_on_version_change
+    pattern): when config_store.config_version() moved since `seen_version`
+    — revoke_user / revoke_key / set_user_permissions / logout all bump it —
+    re-resolve the caller through the same "logs" gate the connect used.
+    Raises HTTPException when the credential no longer resolves or lost
+    scope("logs") == "all", which ends the stream; otherwise returns the
+    version to compare against on the next tick. Without this an open tab
+    kept receiving every new request block (raw + final text of every
+    user) after the admin revoked it, until the browser closed the
+    EventSource."""
+    from faster_whisper_backend import config_store
+    current = config_store.config_version()
+    if current == seen_version:
+        return seen_version
+    from faster_whisper_backend.auth.dependencies import resolve_user_for_page_sse
+    _require_logs_page_sse(resolve_user_for_page_sse(request, "logs"))
+    return current
+
+
+async def _stream_log_lines(request: Request):
+    """Yield SSE events: one for each existing tail line, then live tail.
+    Re-authenticates `request` whenever the config version moves (see
+    _logs_stream_reauth) and ends the stream once access is gone."""
+    from faster_whisper_backend import config_store
+    seen = config_store.config_version()
     initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     # Off the loop, same as /logs/older: this walks the rotation chain
     # backwards in 8 KB blocks and an async generator inside a
@@ -6545,6 +6591,11 @@ async def _stream_log_lines():
     pos = os.path.getsize(cfg.LOG_FILE) if os.path.exists(cfg.LOG_FILE) else 0
     while True:
         await asyncio.sleep(0.5)
+        try:
+            # Off the loop: config_version() and the re-resolve hit SQLite.
+            seen = await asyncio.to_thread(_logs_stream_reauth, request, seen)
+        except HTTPException:
+            return
         try:
             size = os.path.getsize(cfg.LOG_FILE)
         except OSError:
@@ -6953,6 +7004,10 @@ _LOG_VIEWER_HTML = """<!doctype html>
         _unfold(first, 1e9);
         if (first.parentNode) first.remove();
       } else {
+        // The trimmed line is no longer in the DOM, so the "Load older"
+        // cursor must step back too — else the first click skips past the
+        // trimmed window and it vanishes from the scrollback with no gap.
+        if (first && first.classList && first.classList.contains('line')) _logsSkip--;
         log.firstChild.remove();
       }
     }
@@ -7144,9 +7199,9 @@ async def logs_viewer():
     "/logs/stream",
     dependencies=[Depends(require_user_webui_host), Depends(_require_logs_page_sse)],
 )
-async def logs_stream():
+async def logs_stream(request: Request):
     from faster_whisper_backend.core import web_common
-    return web_common.sse_response(_stream_log_lines())
+    return web_common.sse_response(_stream_log_lines(request))
 
 
 @app.get(

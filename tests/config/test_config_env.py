@@ -329,10 +329,12 @@ def test_set_typed_special_cases_stay_sets(monkeypatch):
         _reload_with_env(
             monkeypatch,
             WHISPER_ALLOWED_MODELS="a,b",
-            WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="x,y",
+            WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE=
+            "strip-stray-symbols,strip-trailing-period",
         )
         assert config.ALLOWED_MODELS == {"a", "b"}
-        assert config.CAPTURES_PIPELINE_RULES_EXCLUDE == {"x", "y"}
+        assert config.CAPTURES_PIPELINE_RULES_EXCLUDE == {
+            "strip-stray-symbols", "strip-trailing-period"}
     finally:
         monkeypatch.undo()
         importlib.reload(config)
@@ -820,6 +822,64 @@ def test_env_cross_field_consistent_with_local_override_applies(tmp_path, monkey
         assert config.CAPTURES_SAMPLE_MAX_DURATION_S == 30
         assert "CAPTURES_PROPOSER_TARGET_S" not in config._ENV_REJECTED
         assert not [m for m in config._ENV_WARNINGS if "CAPTURES_" in m], config._ENV_WARNINGS
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_explicitly_empty_env_pins_fields_where_empty_is_a_value(monkeypatch):
+    """WHISPER_X="" is a real value for the readers that map "" to None / ""
+    / [] / set() — the var controls the field, so /settings must badge it
+    as env-pinned (and the hot-apply path must skip it) instead of letting
+    an edit "work" until the next restart. A reader that treats "" as
+    "keep current" (BEAM_SIZE) still does not pin."""
+    from faster_whisper_backend import config_store
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_NO_SPEECH_THRESHOLD="",
+            WHISPER_PRELOAD_MODELS="",
+            WHISPER_ALLOWED_MODELS="",
+            WHISPER_DEFAULT_LANGUAGE="",
+            WHISPER_CONVERT_QUANTIZATION="",
+            WHISPER_BEAM_SIZE="",
+        )
+        assert config.NO_SPEECH_THRESHOLD is None
+        assert config.PRELOAD_MODELS == []
+        assert config.ALLOWED_MODELS == set()
+        assert config.DEFAULT_LANGUAGE == ""
+        assert config.CONVERT_QUANTIZATION == "float16"
+        pinned = config_store.env_pinned_fields()
+        for f in ("NO_SPEECH_THRESHOLD", "PRELOAD_MODELS", "ALLOWED_MODELS",
+                  "DEFAULT_LANGUAGE", "CONVERT_QUANTIZATION"):
+            assert f in pinned, f
+        assert "BEAM_SIZE" not in pinned
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
+def test_env_supplied_override_with_unknown_rule_slug_is_rejected(monkeypatch):
+    """The env entry points validate MODEL_OVERRIDES / OVERRIDE_PROFILES /
+    CAPTURES_PIPELINE_RULES_EXCLUDE with the live slug set, like a /settings
+    save: a typo'd slug is dropped with a warning instead of booting silently
+    and doing nothing at runtime. A real slug still loads."""
+    try:
+        _reload_with_env(
+            monkeypatch,
+            WHISPER_MODEL_OVERRIDES=
+            '{"tiny": {"PIPELINE_RULES_EXCLUDE": ["dictashion-map"]}}',
+            WHISPER_OVERRIDE_PROFILES=
+            '{"ok": {"PIPELINE_RULES_EXCLUDE": ["strip-stray-symbols"]}}',
+            WHISPER_CAPTURES_PIPELINE_RULES_EXCLUDE="no-such-rule",
+        )
+        assert "tiny" not in config.MODEL_OVERRIDES
+        assert config.OVERRIDE_PROFILES["ok"]["PIPELINE_RULES_EXCLUDE"] == [
+            "strip-stray-symbols"]
+        assert "no-such-rule" not in config.CAPTURES_PIPELINE_RULES_EXCLUDE
+        assert "CAPTURES_PIPELINE_RULES_EXCLUDE" in config._ENV_REJECTED
+        assert any("dictashion-map" in m for m in config._ENV_WARNINGS)
+        assert any("no-such-rule" in m for m in config._ENV_WARNINGS)
     finally:
         monkeypatch.undo()
         importlib.reload(config)

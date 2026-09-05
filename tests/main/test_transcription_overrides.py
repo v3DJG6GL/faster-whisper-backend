@@ -325,3 +325,48 @@ def test_locked_diarize_ignores_client_param(client, app_module, make_user_key,
         assert "diarize" in r.json()["overrides_ignored"]
     finally:
         app_module.cfg.DIARIZATION_ENABLED = False
+
+
+def test_echoing_a_pinned_translation_model_passes_the_allowlist_gate(
+        client, app_module, make_user_key, monkeypatch):
+    """A client that ECHOES (or is locked to) the identity-effective
+    TRANSLATION_MODEL has not chosen anything: it must pass the allowlist
+    gate exactly like a request that sent no model. It used to be refused
+    (400 on /v1/text/translations) while sending a DIFFERENT value passed
+    with the locked model — the inverse of the intended policy."""
+    from faster_whisper_backend.audio import translation
+    calls = []
+
+    async def _fake(segments, targets, *, model_ref=None, **kw):
+        calls.append(model_ref)
+        return ([{t: f"{seg['text']}-{t}" for t in targets} for seg in segments],
+                [], {"model": model_ref or "", "source": "", "mode": "fluent"})
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True, raising=False)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
+                        {"org/public-GGUF:Q4"}, raising=False)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
+                        "org/public-GGUF:Q4", raising=False)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    _setup_profile(client, admin_h, "pinned-mt",
+                   TRANSLATION_MODEL="org/pinned-GGUF:Q4",
+                   locks=["TRANSLATION_MODEL"])
+    uid, raw_bob = make_user_key("bob", is_admin=False)
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
+                     json={"pages": {}, "config": {"overrides": {},
+                                                   "profiles": ["pinned-mt"],
+                                                   "locks": []}})
+    assert r.status_code == 200, r.text
+    body = {"segments": [{"id": 0, "text": "Hallo"}], "targets": ["en"],
+            "translation_model": "org/pinned-GGUF:Q4"}
+    r = client.post("/v1/text/translations", headers=bearer(raw_bob), json=body)
+    assert r.status_code == 200, r.text
+    assert calls == ["org/pinned-GGUF:Q4"]
+    # Unit-level: the helper admits the inherited value, still refuses a
+    # genuinely different client choice.
+    allowed = app_module._translation_model_allowed
+    assert allowed("org/pinned-GGUF:Q4", requested="org/pinned-GGUF:Q4",
+                   inherited="org/pinned-GGUF:Q4") is True
+    assert allowed("org/evil-GGUF:Q8", requested="org/evil-GGUF:Q8",
+                   inherited="org/pinned-GGUF:Q4") is False
