@@ -415,3 +415,117 @@ def test_classify_error_maps_a_guard_refusal_without_leaking():
     msg = udl.classify_error(raw)
     assert msg == "the site could not be reached from the server"
     assert "169.254" not in msg and "evil.example" not in msg
+
+
+# --- an operator-configured proxy is a trusted hop -------------------------
+
+class _FakeSock:
+    """Records the address the pinned connect dials; never touches the wire."""
+    dialled: list = []
+
+    def __init__(self, *a):
+        pass
+
+    def settimeout(self, t):
+        pass
+
+    def bind(self, a):
+        pass
+
+    def connect(self, addr):
+        _FakeSock.dialled.append(addr)
+
+    def setsockopt(self, *a):
+        pass
+
+    def close(self):
+        pass
+
+
+@pytest.fixture
+def private_proxy(monkeypatch):
+    """Every name resolves to 10.0.0.5 (a private proxy) and sockets are fake."""
+    _FakeSock.dialled = []
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, port, *a, **k: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.0.0.5", port))])
+    monkeypatch.setattr(socket, "socket", _FakeSock)
+    return _FakeSock
+
+
+def test_net_policy_trusts_the_proxy_hop_but_not_a_direct_private_host(private_proxy):
+    """With http(s)_proxy set the socket goes to the proxy, which may sit on a
+    private address (a corporate squid, a docker sidecar). That hop is the
+    operator's choice: dial it. A DIRECT connection to the same address is
+    still refused — the target policy is unchanged."""
+    direct = net_policy.PinnedHTTPConnection("proxy.example", 3128)
+    with pytest.raises(OSError):
+        direct.connect()
+    assert private_proxy.dialled == []
+
+    proxied = net_policy.proxied_conn_factory(
+        net_policy.PinnedHTTPConnection, True)("proxy.example:3128")
+    proxied.connect()
+    assert private_proxy.dialled == [("10.0.0.5", 3128)]
+
+    # HTTPS through CONNECT: the tunnel host marks the proxy hop on its own,
+    # and SNI still names the target (the earlier proxy test's invariant).
+    seen = {}
+
+    class FakeCtx:
+        def wrap_socket(self, sock, server_hostname=None):
+            seen["sni"] = server_hostname
+            return sock
+
+    tunnel = net_policy.PinnedHTTPSConnection("proxy.example", 3128, context=FakeCtx())
+    tunnel.set_tunnel("target.example", 443)
+    with mock.patch.object(tunnel, "_tunnel"):
+        tunnel.connect()
+    assert private_proxy.dialled[-1] == ("10.0.0.5", 3128)
+    assert seen["sni"] == "target.example"
+
+
+def test_guard_trusts_the_proxy_hop_but_not_a_direct_private_host(private_proxy):
+    """Same contract in yt-dlp's opener (the guard copy of the pin)."""
+    udl.guard_self_check(force=True)
+    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    from yt_dlp.networking.exceptions import RequestError
+
+    direct = guard._PinnedHTTPConnection("proxy.example", 3128)
+    with pytest.raises(RequestError, match="forbidden address"):
+        direct.connect()
+    assert private_proxy.dialled == []
+
+    proxied = guard._PinnedHTTPConnection("proxy.example", 3128)
+    proxied.via_proxy = True
+    proxied.connect()
+    assert private_proxy.dialled == [("10.0.0.5", 3128)]
+
+
+def test_pinned_handlers_stamp_via_proxy_from_the_request(monkeypatch):
+    """urllib's do_open only hands the host to the connection class, so the
+    handlers are where 'this request was rewritten to go via a proxy' is
+    known; both openers must carry it onto the connection."""
+    import urllib.request
+    built = {}
+
+    def fake_do_open(self, http_class, req, **kw):
+        built["conn"] = http_class("proxy.example:3128", timeout=1)
+        return None
+
+    monkeypatch.setattr(urllib.request.AbstractHTTPHandler, "do_open", fake_do_open)
+    plain = urllib.request.Request("http://target.example/x")
+    udl._PinnedHTTPHandler().http_open(plain)
+    assert built["conn"].via_proxy is False
+
+    proxied = urllib.request.Request("http://target.example/x")
+    proxied.set_proxy("proxy.example:3128", "http")
+    udl._PinnedHTTPHandler().http_open(proxied)
+    assert built["conn"].via_proxy is True
+
+    udl.guard_self_check(force=True)
+    guard = sys.modules["fwb_ssrf_guard_inproc"]
+    handler = guard._GuardedHTTPHandler(context=None, source_address=None)
+    handler.http_open(plain)
+    assert built["conn"].via_proxy is False
+    handler.http_open(proxied)
+    assert built["conn"].via_proxy is True

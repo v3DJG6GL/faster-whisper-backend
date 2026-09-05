@@ -66,27 +66,54 @@ def host_is_forbidden(host: str) -> bool:
     return any(address_is_forbidden(info[4][0]) for info in infos)
 
 
-def resolve_pinned(host: str, port: int) -> list:
+def resolve_pinned(host: str, port: int, *, trusted: bool = False) -> list:
     """Resolve ONCE; the returned sockaddrs ARE the pin.
 
     Refuses the whole name (OSError) when it does not resolve or when ANY
     answer is a forbidden address — same verdict as host_is_forbidden, but
     the caller dials one of exactly these addresses instead of letting
-    http.client re-resolve (a rebinding name could answer differently)."""
+    http.client re-resolve (a rebinding name could answer differently).
+
+    `trusted=True` skips the address policy (still resolves once, still
+    refuses an unresolvable name): it is for the operator's own HTTP proxy,
+    which is where the socket goes when http(s)_proxy is set. The URL's real
+    target is still policy-gated by name on every hop (host_is_forbidden /
+    the guard's _check_url); only the pin cannot reach past a proxy, because
+    the proxy does the final resolve."""
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
     except OSError:
         infos = []
-    if not infos or any(address_is_forbidden(i[4][0]) for i in infos):
+    if not infos or (not trusted
+                     and any(address_is_forbidden(i[4][0]) for i in infos)):
         raise OSError(f"{host}: forbidden or unresolvable address")
     return infos
+
+
+def dials_a_proxy(conn) -> bool:
+    """True when conn.host is an operator-configured proxy, not the URL's
+    host: an HTTPS CONNECT tunnel (stdlib sets _tunnel_host) or a plain-HTTP
+    proxied request (flagged via_proxy by the handler that built conn)."""
+    return bool(getattr(conn, "via_proxy", False)
+                or getattr(conn, "_tunnel_host", None))
+
+
+def proxied_conn_factory(conn_class, via_proxy: bool):
+    """http_class stand-in for urllib's do_open() that stamps `via_proxy` on
+    the connection it builds (do_open only ever passes the host)."""
+    def make(host, **kw):
+        conn = conn_class(host, **kw)
+        conn.via_proxy = via_proxy
+        return conn
+    return make
 
 
 def connect_pinned(conn) -> socket.socket:
     """http.client-compatible connect: dial the pinned answers for
     conn.host:conn.port, honouring conn.timeout / conn.source_address."""
     last = None
-    for family, socktype, proto, _canon, sockaddr in resolve_pinned(conn.host, conn.port):
+    infos = resolve_pinned(conn.host, conn.port, trusted=dials_a_proxy(conn))
+    for family, socktype, proto, _canon, sockaddr in infos:
         sock = socket.socket(family, socktype, proto)
         try:
             if conn.timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
@@ -109,6 +136,8 @@ def connect_pinned(conn) -> socket.socket:
 # Only connect() is overridden: the Host header, request line and certificate
 # validation still see the NAME the URL carried.
 class PinnedHTTPConnection(http.client.HTTPConnection):
+    via_proxy = False  # set by proxied_conn_factory for plain-HTTP proxying
+
     def connect(self):
         self.sock = connect_pinned(self)
         if self._tunnel_host:
@@ -116,6 +145,8 @@ class PinnedHTTPConnection(http.client.HTTPConnection):
 
 
 class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    via_proxy = False
+
     def connect(self):
         sock = connect_pinned(self)
         if self._tunnel_host:

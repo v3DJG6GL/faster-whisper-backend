@@ -204,7 +204,10 @@ class _PinnedHTTPHandler(urllib.request.HTTPHandler):
         self._conn_class = conn_class
 
     def http_open(self, req):
-        return self.do_open(self._conn_class, req)
+        # Proxied: conn.host is the operator's proxy, which the address policy
+        # must trust (the target was gated by name in _host_is_forbidden).
+        return self.do_open(net_policy.proxied_conn_factory(
+            self._conn_class, req.has_proxy()), req)
 
 
 class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
@@ -213,7 +216,8 @@ class _PinnedHTTPSHandler(urllib.request.HTTPSHandler):
         self._conn_class = conn_class
 
     def https_open(self, req):
-        return self.do_open(self._conn_class, req, context=self._context)
+        return self.do_open(net_policy.proxied_conn_factory(
+            self._conn_class, req.has_proxy()), req, context=self._context)
 
 
 class _WallClockCutoff:

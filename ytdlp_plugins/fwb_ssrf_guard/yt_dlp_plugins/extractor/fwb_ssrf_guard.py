@@ -102,12 +102,18 @@ def _load_net_policy():
 net_policy = _load_net_policy()
 
 
-def _resolve_pinned(host: str, port: int):
+def _resolve_pinned(host: str, port: int, *, trusted: bool = False):
     """Resolve `host` ONCE and return the candidate sockaddrs, having refused
     the name outright if ANY of its answers is a forbidden address.
 
     Returning the resolved list (rather than re-resolving at connect time) is
-    the pin: the socket dials one of exactly these addresses."""
+    the pin: the socket dials one of exactly these addresses.
+
+    `trusted=True` is for the operator's own http(s)_proxy: the socket goes
+    to the proxy, which may legitimately sit on a private address, so the
+    address policy is not applied to it. The URL's target is still gated by
+    name on hop 0 and every redirect (_check_url); the pin cannot reach past
+    a proxy because the proxy does the final resolve."""
     if not host:
         raise RequestError(f"{MARKER}: request has no host")
     try:
@@ -116,6 +122,8 @@ def _resolve_pinned(host: str, port: int):
         raise RequestError(f"{MARKER}: {host} did not resolve ({e})") from None
     if not infos:
         raise RequestError(f"{MARKER}: {host} did not resolve")
+    if trusted:
+        return infos
     for info in infos:
         if net_policy.address_is_forbidden(info[4][0]):
             raise RequestError(
@@ -142,8 +150,15 @@ def _check_url(url: str) -> None:
 # line, chunking) still sees the original hostname, which is what makes
 # name-based virtual hosting and certificate validation keep working.
 
+def _dials_a_proxy(conn) -> bool:
+    # HTTPS CONNECT tunnel (stdlib sets _tunnel_host) or plain-HTTP proxying
+    # (via_proxy stamped by _GuardedHTTPHandler): conn.host is the proxy.
+    return bool(getattr(conn, "via_proxy", False)
+                or getattr(conn, "_tunnel_host", None))
+
+
 def _connect_pinned(conn) -> "socket.socket":
-    infos = _resolve_pinned(conn.host, conn.port)
+    infos = _resolve_pinned(conn.host, conn.port, trusted=_dials_a_proxy(conn))
     last = None
     for family, socktype, proto, _canon, sockaddr in infos:
         sock = socket.socket(family, socktype, proto)
@@ -166,6 +181,8 @@ def _connect_pinned(conn) -> "socket.socket":
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
+    via_proxy = False
+
     def connect(self):
         self.sock = _connect_pinned(self)
         if self._tunnel_host:
@@ -173,6 +190,8 @@ class _PinnedHTTPConnection(http.client.HTTPConnection):
 
 
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    via_proxy = False
+
     def connect(self):
         sock = _connect_pinned(self)
         if self._tunnel_host:
@@ -199,18 +218,24 @@ class _GuardedHTTPHandler(_urllib.HTTPHandler):
                 f"{MARKER}: a SOCKS proxy would bypass the address policy")
         return base
 
+    def _build(self, conn_class, req, *a, **kw):
+        hc = _urllib._create_http_connection(
+            conn_class, self._source_address, *a, **kw)
+        # ProxyHandler rewrote req to point at the proxy: the address policy
+        # must trust that hop (the target was gated by name in _check_url).
+        hc.via_proxy = req.has_proxy()
+        return hc
+
     def http_open(self, req):
         conn_class = self._make_conn_class(_PinnedHTTPConnection, req)
         return self.do_open(
-            lambda *a, **kw: _urllib._create_http_connection(
-                conn_class, self._source_address, *a, **kw), req)
+            lambda *a, **kw: self._build(conn_class, req, *a, **kw), req)
 
     def https_open(self, req):
         conn_class = self._make_conn_class(_PinnedHTTPSConnection, req)
         return self.do_open(
-            lambda *a, **kw: _urllib._create_http_connection(
-                conn_class, self._source_address, *a, context=self._context,
-                **kw), req)
+            lambda *a, **kw: self._build(conn_class, req, *a,
+                                         context=self._context, **kw), req)
 
 
 class _GuardedRedirectHandler(_urllib.RedirectHandler):
