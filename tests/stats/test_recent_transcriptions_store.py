@@ -399,3 +399,22 @@ def test_list_recent_kind_filter_resolves_null_kind_like_projection(tx_store):
     assert set(ids(ts.list_recent(limit=10, kind="transcribe"))) == {"b1", "b2"}
     assert set(ids(ts.list_recent(limit=10, kind="dictate"))) == {"l1", "d1"}
     assert ids(ts.list_recent(limit=10, kind="translate")) == ["t1"]
+
+
+def test_list_recent_kind_accepts_a_sequence(tx_store):
+    """The /stats jobs page's "links" chip maps onto transcribe + download
+    (+ preload): list_recent takes the set as an IN-style OR, each member
+    resolved like the single-kind filter (NULL-kind batch rows included)."""
+    ts = tx_store
+    ts.record_trace(request_id="b1", model="m", raw="x", final="y", source="file",
+                    created_ts=1001.0)
+    ts.record_timing(request_id="b1", model="m", audio_s=10.0, processing_s=1.0,
+                     status="ok", words=1, created_ts=1001.0)
+    ts.record_timing(request_id="dl", model="m", audio_s=None, processing_s=2.0,
+                     status="ok", words=0, kind="download", created_ts=1002.0)
+    ts.record_timing(request_id="d1", model="m", audio_s=3.0, processing_s=0.3,
+                     status="ok", words=1, kind="dictate", created_ts=1003.0)
+    ids = lambda rows: [r["request_id"] for r in rows]
+    assert ids(ts.list_recent(limit=10, kind=["transcribe", "download"])) == ["dl", "b1"]
+    assert ids(ts.list_recent(limit=10, kind=("download",))) == ["dl"]
+    assert ids(ts.list_recent(limit=10, kind=[])) == ["d1", "dl", "b1"]

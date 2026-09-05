@@ -515,13 +515,16 @@ async def stats_pick(
     metric: str = "audio_s",
     kinds: str | None = None,
     users: str | None = None,
+    keys: str | None = None,
     user: dict[str, Any] = Depends(require_page("stats")),
 ) -> dict[str, Any]:
     """Options for the page's who / keys pickers: every user (or key) with
     usage in the window, ranked by `metric`, labelled like the leaderboard
     (opaque for non-admin "all" viewers, `me` on the caller's own rows).
-    `dim=key` with `users` lists only those users' keys. Own scope may
-    list its keys but not users (403)."""
+    `dim=key` with `users` lists only those users' keys; `dim=user` with
+    `keys` ranks the users by those keys only (the page sends its filter
+    slice minus the picker's own dimension). Own scope may list its keys
+    but not users (403)."""
     from faster_whisper_backend.stats import usage_store
 
     if dim not in ("user", "key"):
@@ -537,6 +540,7 @@ async def stats_pick(
         if k not in usage_store.KINDS:
             raise HTTPException(422, detail=f"unknown kind: {k!r}")
     user_list = _csv(users) if scope.scope != "own" else []
+    key_list = _csv(keys)
     if days is not None and days <= 0:
         days, all = None, True
     try:
@@ -547,8 +551,10 @@ async def stats_pick(
 
     def _gather() -> dict[str, Any]:
         uid_filter = _one_or_many(_unscrub("user", user_list, scrub, caller_uid)) if user_list else None
+        kid_filter = _one_or_many(_unscrub("key", key_list, scrub, caller_uid)) if key_list else None
         out = usage_store.overview(
             user_id=uid_filter if uid_filter is not None else scope.user_id,
+            key_id=kid_filter,
             tz=w.tz, tz_name=w.tz_name, days=w.days, from_day=w.from_day,
             to_day=w.to_day, all_time=w.all_time, with_stages=w.with_stages,
             by=dim, metric=metric, top_k=1, limit=500, kinds=kind_list)
@@ -587,7 +593,8 @@ async def stats_jobs(
     """The jobs table beyond the snapshot's last few rows: finished jobs
     newest-first, `limit` (1..200) per page, paged with `cursor` = the
     previous page's `next_cursor` (a created_ts; null when exhausted).
-    Filters: `kind` (one recent-jobs kind), `status` (ok | error |
+    Filters: `kind` (a recent-jobs kind, or a comma list: any of them —
+    the page's kind chips map onto several), `status` (ok | error |
     cancelled | failed), `slow_rtf` (processing longer than that fraction
     of the audio), `users` (comma list of ids, or the opaque labels a
     non-admin "all" viewer was shown — mapped back like /stats/usage; 403
@@ -602,8 +609,10 @@ async def stats_jobs(
     if user_q and not is_admin:
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail="user= is admin-only")
     scope = stats_scope_for(user, preview_user_id=(user_q or None) if is_admin else None)
-    if kind and kind not in JOB_KINDS:
-        raise HTTPException(422, detail=f"unknown kind: {kind!r}")
+    kind_list = _csv(kind)
+    for k in kind_list:
+        if k not in JOB_KINDS:
+            raise HTTPException(422, detail=f"unknown kind: {k!r}")
     if status_q and status_q not in JOB_STATUSES:
         raise HTTPException(422, detail=f"unknown status: {status_q!r}")
     user_list = _csv(users)
@@ -618,7 +627,7 @@ async def stats_jobs(
         rows = recent_transcriptions_store.list_recent(
             before_ts=cursor, limit=n,
             user_id_filter=uid_filter if uid_filter is not None else scope.user_id,
-            kind=kind or None, status=status_q or None, slow_rtf=slow_rtf)
+            kind=kind_list or None, status=status_q or None, slow_rtf=slow_rtf)
         out = {
             "jobs": [metrics.project_recent_row(
                 r, include_identity=scope.include_identity) for r in rows],
@@ -2618,7 +2627,7 @@ function rjFilter() {
 }
 function segValRJ() {
   const k = rjFilter().kinds;
-  return k && k.length === 2 ? k[0] : '';   // exactly one usage kind → one job kind for the server page
+  return k ? k.join(',') : '';   // every job kind the chips map to (preload included), so the server page matches the client filter
 }
 
 function jobSpeed(r) {

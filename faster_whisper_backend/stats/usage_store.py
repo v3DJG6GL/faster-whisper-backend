@@ -1434,10 +1434,14 @@ def overview(
     tables (see document()). `bucket` auto-resolves from the span. The
     breakdown source: kind/user/key/stage read the hourly rollups, model
     reads the per-job rows (retention-limited, `breakdown.source="jobs"`);
-    `with_stages` narrows the document and the model breakdown only.
+    `with_stages` narrows the document AND every breakdown, all from the
+    per-job rows then (`breakdown.source="jobs"`).
     `compare` = prev (the window shifted back by its own span) or yoy (the
     same calendar dates a year earlier, Feb 29 clamped) returns the other
-    window's totals and lines, index-aligned to this axis."""
+    window's totals and lines on THIS axis: each prev day is shifted forward
+    (by the span, or a year) into the current bucket it lands in, so a week
+    / month axis whose prev window has one bucket more or fewer still
+    compares like for like."""
     if by not in BREAKDOWNS:
         by = "kind"
     if metric not in _METRICS:
@@ -1484,7 +1488,9 @@ def overview(
         if i is not None:
             e["values"][i] += float(cell.get(metric, 0.0) or 0.0)
 
-    source = "jobs" if with_stages else "rollups"
+    # with_stages narrows every breakdown to the per-job rows (like the
+    # document above it); without it kind/user/key/stage read the rollups.
+    source = "jobs" if with_stages or by == "model" else "rollups"
     key_scoped = True
     if by == "kind":
         for p in doc["series"]:
@@ -1504,22 +1510,35 @@ def overview(
             if any(v > 0 for v in rest.values()):
                 add(ent(UNKNOWN_KIND, label=UNKNOWN_KIND), day, rest)
     elif by in ("user", "key"):
-        source = "rollups"  # usage_hourly is never narrowed by with_stages
         where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
-        for r in conn.execute(
-            "SELECT hour, user_id, key_id, SUM(requests) AS requests,"
-            " SUM(errors) AS errors, SUM(words) AS words, SUM(audio_s) AS audio_s,"
-            " SUM(processing_s) AS processing_s, SUM(sessions) AS sessions FROM usage_hourly"
-            + where + " AND hour >= ? AND hour < ? GROUP BY hour, user_id, key_id",
-            (*params, start_hour, end_hour),
-        ):
-            day = _epoch_day(_date_of(int(r["hour"]) * 3600, tz))
-            cell = {"sessions": int(r["sessions"] or 0),
-                    "requests": int(r["requests"] or 0),
-                    "errors": int(r["errors"] or 0),
-                    "words": int(r["words"] or 0),
-                    "audio_s": float(r["audio_s"] or 0.0),
-                    "processing_s": float(r["processing_s"] or 0.0)}
+        if with_stages:
+            # The document is narrowed to the jobs that ran the stages;
+            # usage_hourly cannot be, so rank the same job rows (else the
+            # board sums to more than the headline it sits under).
+            rows = [(_epoch_day(_date_of(float(j["created_ts"]), tz)), j, _job_cell(j))
+                    for j in conn.execute(
+                        "SELECT user_id, key_id, created_ts, status, audio_s, words,"
+                        " processing_s, utterances FROM usage_jobs" + where
+                        + _with_clause(with_stages)
+                        + " AND created_ts >= ? AND created_ts < ?",
+                        (*params, *with_stages, float(start_hour * 3600),
+                         float(end_hour * 3600)))]
+        else:
+            rows = [(_epoch_day(_date_of(int(r["hour"]) * 3600, tz)), r,
+                     {"sessions": int(r["sessions"] or 0),
+                      "requests": int(r["requests"] or 0),
+                      "errors": int(r["errors"] or 0),
+                      "words": int(r["words"] or 0),
+                      "audio_s": float(r["audio_s"] or 0.0),
+                      "processing_s": float(r["processing_s"] or 0.0)})
+                    for r in conn.execute(
+                        "SELECT hour, user_id, key_id, SUM(requests) AS requests,"
+                        " SUM(errors) AS errors, SUM(words) AS words, SUM(audio_s) AS audio_s,"
+                        " SUM(processing_s) AS processing_s, SUM(sessions) AS sessions"
+                        " FROM usage_hourly" + where
+                        + " AND hour >= ? AND hour < ? GROUP BY hour, user_id, key_id",
+                        (*params, start_hour, end_hour))]
+        for day, r, cell in rows:
             if by == "user":
                 add(ent(r["user_id"], label=r["user_id"], user_id=r["user_id"]),
                     day, cell)
@@ -1527,7 +1546,6 @@ def overview(
                 add(ent(r["key_id"], label=r["key_id"], user_id=r["user_id"],
                         key_id=r["key_id"]), day, cell)
     elif by == "model":
-        source = "jobs"
         where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
         start_ts = start_hour * 3600
         end_ts = end_hour * 3600
@@ -1540,9 +1558,24 @@ def overview(
             name = job["model"] or "(unknown)"
             add(ent(name, label=name),
                 _epoch_day(_date_of(float(job["created_ts"]), tz)), _job_cell(job))
+    elif with_stages:  # stage, over the narrowed jobs (see by=user above)
+        where, params = _scope_where(user_id, key_id, col="usage_jobs.user_id",
+                                     key_col="usage_jobs.key_id", kinds=kinds,
+                                     kind_col="usage_jobs.kind")
+        for r in conn.execute(
+            "SELECT s.stage, s.secs, usage_jobs.created_ts, usage_jobs.audio_s"
+            " FROM usage_job_stages s JOIN usage_jobs ON usage_jobs.job_id = s.job_id"
+            + where + _with_clause(with_stages)
+            + " AND usage_jobs.created_ts >= ? AND usage_jobs.created_ts < ?",
+            (*params, *with_stages, float(start_hour * 3600), float(end_hour * 3600)),
+        ):
+            cell = {"sessions": 1, "requests": 1, "errors": 0, "words": 0,
+                    "audio_s": float(r["audio_s"] or 0.0),
+                    "processing_s": float(r["secs"] or 0.0)}
+            add(ent(r["stage"], label=r["stage"]),
+                _epoch_day(_date_of(float(r["created_ts"]), tz)), cell)
     else:  # stage
         key_scoped = False
-        source = "rollups"  # usage_stage_hourly is never narrowed by with_stages
         where, params = _scope_where(user_id)
         for r in conn.execute(
             "SELECT hour, stage, SUM(runs) AS runs, SUM(audio_s) AS audio_s,"
@@ -1618,31 +1651,52 @@ def overview(
             pf, pt = f - span, f - 1
         else:
             pf, pt = _year_back(f), _year_back(t)
+        # Gather prev by day and re-bucket each day onto the current axis
+        # (shifted forward by the span / a year); a prev window too long
+        # for a day axis falls back to index alignment on the same mode.
+        pmode = "day" if len(_axis(pf, pt, "day")) <= MAX_BUCKETS else mode
         prev = overview(user_id=user_id, key_id=key_id, tz=tz, tz_name=tz_name,
                         from_day=pf, to_day=pt, with_stages=with_stages, by=by,
-                        metric=metric, bucket=mode, compare="off",
+                        metric=metric, bucket=pmode, compare="off",
                         top_k=max(top_k, 1000),
                         limit=limit, jobs_retention_days=jobs_retention_days,
                         now=now, kinds=kinds)
+        pdays = prev["days"]
+
+        def shift(day: int) -> int:
+            if compare == "prev":
+                return day + span
+            d = _from_epoch_day(day)
+            try:
+                return _epoch_day(d.replace(year=d.year + 1))
+            except ValueError:      # Feb 29 → Feb 28
+                return _epoch_day(d.replace(year=d.year + 1, day=28))
+
+        def rebucket(vals: list[float], acc: list[float]) -> None:
+            if prev["bucket"] == "day":
+                for d, v in zip(pdays, vals):
+                    i = slot(shift(d))
+                    if i is not None:
+                        acc[i] += float(v or 0.0)
+            else:
+                for i, v in enumerate(vals[:n]):
+                    acc[i] += float(v or 0.0)
+
         by_id = {ln["id"]: ln["values"] for ln in prev["lines"]}
         top_ids = {ln["id"] for ln in lines if not ln.get("others")}
         cmp_lines = []
         for ln in lines:
+            acc = [0.0] * n
             if ln.get("others"):
                 # The current "others" bucket compares against everything in
                 # prev that is not a current top-K entity (prev's own
                 # "__others__" line included).
-                acc = [0.0] * n
                 for pl in prev["lines"]:
-                    if pl["id"] in top_ids:
-                        continue
-                    for i, v in enumerate(pl["values"][:n]):
-                        acc[i] += float(v or 0.0)
-                vals = [round(v, 3) for v in acc]
+                    if pl["id"] not in top_ids:
+                        rebucket(pl["values"], acc)
             else:
-                vals = list(by_id.get(ln["id"], []))[:n]
-                vals += [0.0] * (n - len(vals))
-            cmp_lines.append({"id": ln["id"], "values": vals})
+                rebucket(by_id.get(ln["id"], []), acc)
+            cmp_lines.append({"id": ln["id"], "values": [round(v, 3) for v in acc]})
         out["compare"] = {"mode": compare,
                           "range": {"from": pf, "to": pt, "days": pt - pf + 1},
                           "totals": prev["totals"], "lines": cmp_lines,

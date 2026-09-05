@@ -1192,3 +1192,70 @@ def test_stats_board_unknown_kind_row_not_clickable(client):
     assert "(by !== 'kind' || KINDS.includes(r.id))" in js
     assert client.get("/stats/usage?days=30&by=kind&kinds=unknown").status_code == 422
     assert client.get("/stats/tail?days=30&kind=unknown").status_code == 422
+
+
+def test_stats_jobs_kind_accepts_the_chips_comma_list(client):
+    """The "links" chip maps onto transcribe + download (+ preload), so the
+    load-older page must take the set: `kind=a,b` keeps any of them, one
+    unknown member is a 422, and the page sends every mapped job kind."""
+    from faster_whisper_backend.stats import recent_transcriptions_store as rts
+    rts.record_timing(request_id="t1", model="m", audio_s=10.0, processing_s=1.0,
+                      status="ok", words=1, kind="transcribe", created_ts=3001.0)
+    rts.record_timing(request_id="dl", model="m", audio_s=None, processing_s=2.0,
+                      status="ok", words=0, kind="download", created_ts=3002.0)
+    rts.record_timing(request_id="d1", model="m", audio_s=3.0, processing_s=0.3,
+                      status="ok", words=1, kind="dictate", created_ts=3003.0)
+    both = client.get("/stats/jobs?kind=transcribe,download").json()["jobs"]
+    assert [j["request_id"] for j in both] == ["dl", "t1"]
+    one = client.get("/stats/jobs?kind=dictate").json()["jobs"]
+    assert [j["request_id"] for j in one] == ["d1"]
+    assert client.get("/stats/jobs?kind=transcribe,zzz").status_code == 422
+    html = client.get("/stats").text
+    assert "return k ? k.join(',') : '';" in html
+    assert "k.length === 2 ? k[0]" not in html
+
+
+def test_stats_pick_who_honours_the_keys_filter(client):
+    """The who picker sends the filter slice minus its own dimension, keys
+    included: the users' bars rank by the picked keys only."""
+    import time
+    from faster_whisper_backend.stats import usage_store as us
+    h = int(time.time() // 3600)
+    us.record_usage(key_id="ka", user_id="alice", audio_s=100.0, words=10,
+                    status="ok", hour=h, processing_s=2.0, job_id="a1", kind="file")
+    us.record_usage(key_id="kb", user_id="alice", audio_s=5.0, words=1,
+                    status="ok", hour=h, processing_s=1.0, job_id="a2", kind="file")
+    us.record_usage(key_id="kc", user_id="bob", audio_s=30.0, words=3,
+                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="file")
+    rows = client.get("/stats/pick?dim=user&metric=audio_s&keys=kb,kc").json()["rows"]
+    assert [(r["id"], r["value"]) for r in rows] == [("bob", 30.0), ("alice", 5.0)]
+    rows = client.get("/stats/pick?dim=user&metric=audio_s").json()["rows"]
+    assert [(r["id"], r["value"]) for r in rows] == [("alice", 105.0), ("bob", 30.0)]
+
+
+def test_stats_js_discloses_unscoped_stage_rollups_and_small_fixes(client):
+    """static/stats.js pins: the stage rollups carry no kind / key column,
+    so with a kinds chip or a keys pick the stages card and the by=stage
+    cards say so instead of a share meter that can read past 100 %; the
+    bucket control follows the bucket actually served; the own-scope
+    board row spans every column; hotkeys ignore chords; no "Infinity×
+    live"; a zero compare value with a current one is "new", not flat;
+    the reset-layout button drops a pending save."""
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
+    for s in ("function breakdownUnscoped()",
+              "(lastDoc.filter || {}).kind_scoped === false",
+              "const unscoped = rg.kind_scoped === false || rg.key_scoped === false;",
+              "the kind or key filter does not reach the stage rollups",
+              "lastDoc.bucket !== Q.bucket) setSeg('usage-bucket', lastDoc.bucket);",
+              '<td colspan="9" class="empty">— not available for your scope —</td>',
+              "if (e.altKey || e.ctrlKey || e.metaKey) return;   // Cmd+M",
+              "rtf > 0 ? '× · ' + (1 / rtf).toFixed(0) + '× live' : '×'",
+              "'\">new vs ' + cmpWord()",
+              "if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }",
+              "try { localStorage.removeItem(GS_LAYOUT_KEY); } catch (_) {}",
+              "Math.max(Math.min(2, cols), Math.min(cols,"):
+        assert s in js, s
+    assert "if (dim === 'key') p.delete('keys'); else p.delete('users');" not in js
+    assert "delete el.gridstackNode;" not in js
+    assert 'colspan="8"' not in js

@@ -88,7 +88,6 @@ function setPreset(name, persist = true) {
       grid.makeWidget(el);
     } else if (!show && managed) {
       grid.removeWidget(el, false);
-      delete el.gridstackNode;
       el.hidden = true;
     }
   });
@@ -152,7 +151,7 @@ document.addEventListener('keydown', (e) => {
   e.preventDefault();
   const cols = grid.getColumn();
   if (e.shiftKey) {
-    const w = Math.max(2, Math.min(cols, (node.w || 1) + dir[0]));
+    const w = Math.max(Math.min(2, cols), Math.min(cols, (node.w || 1) + dir[0]));
     const h = Math.max(2, (node.h || 1) + dir[1]);
     grid.update(item, { w, h });
     announceLayout(item.getAttribute('gs-id') + ' resized to ' + w + ' by ' + h);
@@ -169,7 +168,8 @@ const resetLayoutBtn = document.getElementById('reset-layout-btn');
 if (resetLayoutBtn) {
   resetLayoutBtn.addEventListener('click', () => {
     if (!confirm('Reset the "' + gsPreset + '" tile layout to its defaults?')) return;
-    localStorage.removeItem(GS_LAYOUT_KEY);
+    if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }   // a pending save would re-write the layout mid-reload
+    try { localStorage.removeItem(GS_LAYOUT_KEY); } catch (_) {}
     location.reload();
   });
 }
@@ -493,7 +493,6 @@ function openPicker(id, dim, list) {
   else p.set('days', Q.range);
   p.set('dim', dim); p.set('metric', Q.metric);
   filterParams(p, list);          // rank by the slice, minus this dimension
-  if (dim === 'key') p.delete('keys'); else p.delete('users');
   try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
   fetch('/stats/pick?' + p.toString(), { cache: 'no-store' })
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
@@ -716,7 +715,7 @@ function load() {
         // viewer); the page routes own scope to `key` itself, so this is a
         // hand-edited URL. Say so instead of "unavailable".
         $('usage-board-rows').innerHTML =
-          '<tr><td colspan="8" class="empty">— not available for your scope —</td></tr>';
+          '<tr><td colspan="9" class="empty">— not available for your scope —</td></tr>';
         return { _scopeDenied: true };
       }
       return r.ok ? r.json() : null;
@@ -765,6 +764,8 @@ function kindScoped(split) {
 }
 function renderAll() {
   if (!lastDoc) return;
+  // An explicit day/week bucket on a span too long for it is served one size up: show that.
+  if (Q.bucket !== 'auto' && lastDoc.bucket && lastDoc.bucket !== Q.bucket) setSeg('usage-bucket', lastDoc.bucket);
   renderHeadline();
   renderWindowChips();
   // Everything that takes vertical space in the usage card renders BEFORE
@@ -930,7 +931,9 @@ function renderHeadline() {
   const cfailed = cmp && cmp.requests > 0 ? cmp.errors / cmp.requests : null;
   const delta = (a, b, inverse) => {
     if (a == null || b == null || !lastDoc.compare) return '';
-    if (!(b > 0)) return '<span class="delta flat">— vs ' + cmpWord() + '</span>';
+    if (!(b > 0)) return a > 0
+      ? '<span class="delta ' + (inverse ? 'bad' : 'good') + '">new vs ' + cmpWord() + '</span>'
+      : '<span class="delta flat">— vs ' + cmpWord() + '</span>';
     const d = (a - b) / b * 100;
     const arrow = d > 0.5 ? '▲' : d < -0.5 ? '▼' : '—';
     const good = inverse ? d < -0.5 : d > 0.5;
@@ -955,7 +958,7 @@ function renderHeadline() {
     ['failed', (failed * 100).toFixed(1), '% · ' + fmtCount(tot.errors) + ' errors', delta(failed, cfailed, true), 'errors'],
     ['turnaround p50', ta && ta.n ? fmtDur(ta.p50) : '—',
      ta && ta.n ? '· p95 ' + fmtDur(ta.p95) : '', taDelta, null],
-    ['RTF', rtf == null ? '—' : rtf.toFixed(2), rtf == null ? '' : '× · ' + (1 / rtf).toFixed(0) + '× live',
+    ['RTF', rtf == null ? '—' : rtf.toFixed(2), rtf == null ? '' : rtf > 0 ? '× · ' + (1 / rtf).toFixed(0) + '× live' : '×',
      delta(rtf, crtf, true), null],
     ['processing time', fmtDur(tot.processing_s), '', delta(tot.processing_s, cmp && cmp.processing_s), 'processing_s'],
   ];
@@ -1271,7 +1274,8 @@ function renderLegend() {
   const el = $('usage-legend'); if (!el) return;
   const what = METRIC_LABEL[Q.metric] + ' per ' + lastDoc.bucket + ' · '
     + (stacked ? 'stacked by kind' : (lastDoc.by === 'user' || lastDoc.by === 'key')
-       ? 'top 8 by ' + lastDoc.by + ', rest folded into “others”' : 'by ' + lastDoc.by);
+       ? 'top 8 by ' + lastDoc.by + ', rest folded into “others”' : 'by ' + lastDoc.by)
+    + (breakdownUnscoped() ? ' · all kinds / keys (the stage rollups are not narrowed by the kind or key filter)' : '');
   el.innerHTML = '<span class="what">' + esc(what) + '</span>' + curLines.map(ln =>
     '<button type="button" data-id="' + esc(ln.id) + '" class="' + (hidden.has(ln.id) ? 'off' : '') + '">'
     + '<span class="usage-swatch" style="background:' + ln.color + '"></span>' + esc(ln.label)
@@ -1316,6 +1320,12 @@ function renderTable() {
 // Column sort for the leaderboard: click a header (again to flip); the
 // server's metric order is the default and the rank column follows.
 let boardSort = { key: null, dir: -1 };
+// The stage rollups carry no kind / key column: with a kinds chip or a
+// keys pick on, the server says so (filter.kind_scoped / breakdown.key_scoped
+// false) and the by=stage cards say it too, instead of wearing the filter.
+function breakdownUnscoped() {
+  return ((lastDoc.filter || {}).kind_scoped === false) || ((lastDoc.breakdown || {}).key_scoped === false);
+}
 function renderBoard() {
   const tb = $('usage-board-rows'); if (!tb) return;
   let board = (lastDoc.leaderboard || []).slice();
@@ -1424,6 +1434,11 @@ function renderStages() {
     bar.title = 'share of ' + (shareKey === 'runs' ? 'runs' : shareKey === 'audio_s' ? 'audio duration' : 'processing time') + ' per stage';
   }
   const models = (lastDoc.models || []).slice().sort((a, b) => b.sessions - a.sessions);
+  // Same rollup gap as breakdownUnscoped(): the rows count every kind / key
+  // while the eligible sessions are filtered, so the share would read past
+  // 100 % — leave it out and say why on the card.
+  const rg = lastDoc.range || {};
+  const unscoped = rg.kind_scoped === false || rg.key_scoped === false;
   let html = '';
   STAGE_GROUPS.forEach(([title, stages]) => {
     html += '<tr class="grp"><td colspan="6">' + esc(title) + '</td></tr>';
@@ -1456,7 +1471,8 @@ function renderStages() {
         + (Q.with.includes(s) ? ' <span class="badge">filter</span>' : '')
         + (extra ? '<span class="sub">' + extra + '</span>' : '') + '</td>'
         + '<td class="num">' + fmtCount(r.runs) + '</td>'
-        + '<td class="num"><span class="meter"><i style="width:' + pct + '%"></i></span>' + pct + ' %</td>'
+        + (unscoped ? '<td class="num" title="runs count every kind / key; the kind or key filter does not reach the stage rollups">—</td>'
+           : '<td class="num"><span class="meter"><i style="width:' + pct + '%"></i></span>' + pct + ' %</td>')
         + '<td class="num">' + fmtDur(r.audio_s) + '</td>'
         + '<td class="num">' + fmtDur(r.secs) + '</td>'
         + '<td class="num"><span class="rtf' + (rtf > 0.35 ? ' slow' : '') + '">' + (rtf == null ? '—' : rtf.toFixed(2) + '×') + '</span></td>'
@@ -1467,9 +1483,10 @@ function renderStages() {
   const tag = $('stages-tag');
   if (tag) {
     const tr = (rows.transcribing && rows.transcribing.secs) || 0;
-    tag.textContent = totalSecs > 0
+    tag.textContent = (totalSecs > 0
       ? fmtDur(totalSecs) + ' processing time' + (tr > 0 ? ' · ' + Math.round(tr / totalSecs * 100) + ' % transcribing' : '')
-      : 'no processing time in this window';
+      : 'no processing time in this window')
+      + (unscoped ? ' · all kinds / keys (not narrowed by the kind or key filter)' : '');
   }
 }
 
@@ -1848,6 +1865,7 @@ onSeg('usage-view', (v) => {
 });
 document.addEventListener('keydown', (e) => {
   if (e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName)) return;
+  if (e.altKey || e.ctrlKey || e.metaKey) return;   // Cmd+M / Alt+T are the browser's, not ours
   if (e.key === 't' || e.key === 'T') { tableMode = !tableMode; renderTable(); }
   if (e.key === 'm' || e.key === 'M') setMetric(METRIC_ORDER[(METRIC_ORDER.indexOf(Q.metric) + 1) % METRIC_ORDER.length]);
 });

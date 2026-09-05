@@ -206,3 +206,60 @@ def test_overview_unknown_params_fall_back(usage_store_db):
     o = _ov(us, by="zzz", metric="zzz", bucket="zzz", compare="zzz")
     assert (o["by"], o["metric"], o["bucket"], o["compare"]) == ("kind", "audio_s", "day", None)
     assert o["lines"] == [] and o["leaderboard"] == [] and o["models"] == []
+
+
+def test_overview_with_stages_narrows_every_breakdown(usage_store_db):
+    """A `with=` stage filter recomputes the document from the per-job
+    rows; the by=user / key / stage breakdowns and the leaderboard must
+    come from the same rows (breakdown.source "jobs"), or the board sums
+    to more sessions than the headline above it."""
+    us = usage_store_db
+    us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5, status="ok",
+                    kind="dictation", hour=_hour("2025-06-03"), processing_s=1.0,
+                    job_id="j1", stages=[{"name": "translating", "secs": 1.0}])
+    us.record_usage(key_id="k2", user_id="bob", audio_s=20.0, words=5, status="ok",
+                    kind="file", hour=_hour("2025-06-04"), processing_s=2.0, job_id="j2",
+                    stages=[{"name": "translating", "secs": 1.0},
+                            {"name": "diarizing", "secs": 2.0, "speakers": 2}])
+    us.record_usage(key_id="k2", user_id="bob", audio_s=30.0, words=5, status="ok",
+                    kind="file", hour=_hour("2025-06-05"), processing_s=3.0, job_id="j3")
+    win = dict(from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), with_stages=("diarizing",))
+    by_user = _ov(us, by="user", **win)
+    assert by_user["totals"]["all"]["sessions"] == 1
+    assert [(r["id"], r["totals"]["sessions"]) for r in by_user["leaderboard"]] == [("bob", 1)]
+    assert by_user["breakdown"]["source"] == "jobs"
+    assert sum(sum(ln["values"]) for ln in by_user["lines"]) == 20.0
+    by_key = _ov(us, by="key", **win)
+    assert [(r["id"], r["totals"]["audio_s"]) for r in by_key["leaderboard"]] == [("k2", 20.0)]
+    by_stage = _ov(us, by="stage", **win)
+    assert [(r["id"], r["totals"]["sessions"]) for r in by_stage["leaderboard"]] == [
+        ("diarizing", 1), ("translating", 1)]
+    assert by_stage["breakdown"] == {"source": "jobs", "key_scoped": True}
+    # Without the stage filter the rollups still feed the board (all three jobs).
+    plain = _ov(us, by="user", from_day=_D("2025-06-02"), to_day=_D("2025-06-11"))
+    assert [(r["id"], r["totals"]["sessions"]) for r in plain["leaderboard"]] == [("bob", 2), ("alice", 1)]
+    assert plain["breakdown"]["source"] == "rollups"
+
+
+def test_overview_compare_rebuckets_prev_onto_the_current_week_axis(usage_store_db):
+    """A 180-day window bucketed by week: the previous window starts on a
+    different weekday, so its own axis has one bucket more here (27 vs
+    26). The prev lines are re-bucketed onto THIS axis, so audio on the
+    last day of the previous window lands in the compare line instead of
+    being truncated away while the totals still count it."""
+    us = usage_store_db
+    t = _D("2025-06-07")
+    f, pt = t - 179, t - 180
+    us.record_usage(key_id="k1", user_id="alice", audio_s=99.0, words=1, status="ok",
+                    kind="file", hour=pt * 24 + 12, processing_s=1.0, job_id="p1")
+    us.record_usage(key_id="k1", user_id="alice", audio_s=1.0, words=1, status="ok",
+                    kind="file", hour=t * 24 + 12, processing_s=1.0, job_id="c1")
+    o = _ov(us, from_day=f, to_day=t, now=t * 86400 + 50000, compare="prev",
+            bucket="week", by="kind")
+    assert len(o["days"]) == 26 and len(us._axis(pt - 179, pt, "week")) == 27
+    c = o["compare"]
+    assert c["totals"]["all"]["audio_s"] == 99.0
+    line = {ln["id"]: ln["values"] for ln in c["lines"]}["file"]
+    assert len(line) == 26 and sum(line) == 99.0
+    # pt + span = t: the prev window's last day sits in the current last bucket.
+    assert line[-1] == 99.0

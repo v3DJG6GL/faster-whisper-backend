@@ -383,7 +383,7 @@ def list_recent(
     limit: int = 100,
     user_id_filter: str | Sequence[str] | None = None,
     query: str | None = None,
-    kind: str | None = None,
+    kind: str | Sequence[str] | None = None,
     status: str | None = None,
     slow_rtf: float | None = None,
 ) -> list[dict[str, Any]]:
@@ -400,7 +400,8 @@ def list_recent(
     LIKE is ASCII case-insensitive — non-ASCII (e.g. German umlauts) is
     matched case-sensitively; acceptable for this free-text search.
 
-    The /stats jobs table adds `kind` (one recent-jobs kind), `status`
+    The /stats jobs table adds `kind` (a recent-jobs kind, or a sequence
+    of them: any of those), `status`
     ('ok' | 'error' | 'cancelled', or 'failed' = anything but ok) and
     `slow_rtf` (only jobs whose processing took more than that fraction of
     their audio: RTF = proc / audio > slow_rtf). All compose with the
@@ -420,15 +421,19 @@ def list_recent(
         if vals:  # an empty sequence = no filter, like usage_store._in_clause
             where.append(f"user_id IN ({', '.join('?' * len(vals))})")
             params.extend(vals)
-    if kind == "transcribe":
-        # Batch rows are stored with kind NULL (resolved via source on read,
-        # see metrics.project_recent_row); mirror that rule here.
-        where.append("(kind = 'transcribe' OR (kind IS NULL AND source <> 'stream'))")
-    elif kind == "dictate":
-        where.append("(kind = 'dictate' OR (kind IS NULL AND source = 'stream'))")
-    elif kind:
-        where.append("kind = ?")
-        params.append(kind)
+    kind_clauses: list[str] = []
+    for k in ([kind] if isinstance(kind, str) else dict.fromkeys(kind or ())):
+        if k == "transcribe":
+            # Batch rows are stored with kind NULL (resolved via source on read,
+            # see metrics.project_recent_row); mirror that rule here.
+            kind_clauses.append("(kind = 'transcribe' OR (kind IS NULL AND source <> 'stream'))")
+        elif k == "dictate":
+            kind_clauses.append("(kind = 'dictate' OR (kind IS NULL AND source = 'stream'))")
+        elif k:
+            kind_clauses.append("kind = ?")
+            params.append(k)
+    if kind_clauses:
+        where.append("(" + " OR ".join(kind_clauses) + ")")
     if status == "failed":
         where.append("status <> 'ok'")
     elif status:
