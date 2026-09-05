@@ -141,17 +141,24 @@ def test_init_reclassifies_unknown_rows_as_dictation(tmp_path):
         " (102, 'k', 'u', 'file', 1, 0, 5, 3.0, 1.0, 1);")
     conn.commit()
     conn.close()
-    for _ in range(2):
-        usage_store.init_db(path)
-        conn = usage_store._require_conn()
-        rows = conn.execute(
-            "SELECT hour, kind, requests, errors, sessions, words, audio_s, processing_s"
-            " FROM usage_hourly ORDER BY hour, kind").fetchall()
-        assert [tuple(r) for r in rows] == [
-            (100, "dictation", 3, 1, 3, 42, 9.5, 0),
-            (101, "dictation", 3, 0, 2, 17, 3.0, 0.5),
-            (102, "file", 1, 0, 1, 5, 3.0, 1.0)]
-        conn.close()
+    try:
+        for _ in range(2):
+            usage_store.init_db(path)
+            conn = usage_store._require_conn()
+            rows = conn.execute(
+                "SELECT hour, kind, requests, errors, sessions, words, audio_s, processing_s"
+                " FROM usage_hourly ORDER BY hour, kind").fetchall()
+            assert [tuple(r) for r in rows] == [
+                (100, "dictation", 3, 1, 3, 42, 9.5, 0),
+                (101, "dictation", 3, 0, 2, 17, 3.0, 0.5),
+                (102, "file", 1, 0, 1, 5, 3.0, 1.0)]
+            conn.close()
+    finally:
+        try:
+            usage_store._require_conn().close()
+        except Exception:
+            pass
+        usage_store._conn = None
 
 
 def test_kind_totals_and_unknown_folds_into_all_only(usage_store_db):
@@ -684,6 +691,11 @@ def test_parse_window_params_matches_v1_route(usage_store_db):
         us.parse_window_params(with_="decoding")
     with pytest.raises(ValueError, match="from"):
         us.parse_window_params(from_day=20007, to_day=20006)
+    with pytest.raises(ValueError, match="'to' out of range"):
+        us.parse_window_params(to_day=10**9)
+    with pytest.raises(ValueError, match="'from' out of range"):
+        us.parse_window_params(from_day=-1)
+    assert us.parse_window_params(from_day=0, to_day=us._MAX_EPOCH_DAY).to_day == us._MAX_EPOCH_DAY
 
 
 # --------------------------------------------------------------------------

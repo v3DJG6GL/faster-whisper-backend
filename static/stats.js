@@ -342,10 +342,10 @@ function levelOf(v, br) {
 // to the URL (parsePageQuery / pageQueryParams), defaults omitted.
 // Filters are lists (empty = no filter): `kinds` is OR across job kinds,
 // `with` is AND across stages, `users` / `keys` are "one of" as picked in
-// the who / keys pickers. `model` is a single click-to-filter chip.
+// the who / keys pickers; user / key are the only click-to-filter dims.
 const Q = {
   range: '30', from: null, to: null, compare: 'off',
-  kinds: [], with: [], users: [], keys: [], model: null,
+  kinds: [], with: [], users: [], keys: [],
   bucket: 'auto', metric: 'audio_s', by: 'kind', rhythm: 'hours',
 };
 // Display names for picked user / key ids (from the picker or the
@@ -373,7 +373,6 @@ function parsePageQuery(search) {
   Q.with = csv('with').filter(s => WITH_CHIPS.some(c => c[0] === s));
   Q.users = Array.from(new Set(csv('users').concat(csv('user'))));
   Q.keys = Array.from(new Set(csv('keys').concat(csv('key'))));
-  Q.model = p.get('model') || null;
   const b = p.get('bucket'); if (['auto', 'day', 'week', 'month'].includes(b)) Q.bucket = b;
   const rh = p.get('rhythm'); if (['hours', 'days', 'months'].includes(rh)) Q.rhythm = rh;
   const m = p.get('metric'); if (m && METRIC_LABEL[m]) Q.metric = m;
@@ -387,7 +386,6 @@ function pageQueryParams() {
     if (Q[k] !== DEFAULTS[k]) p.set(k, Q[k]);
   }
   for (const k of ['kinds', 'with', 'users', 'keys']) if (Q[k].length) p.set(k, Q[k].join(','));
-  if (Q.model) p.set('model', Q.model);
   return p;
 }
 function syncUrl() {
@@ -398,11 +396,11 @@ function syncUrl() {
 function isFiltered() {
   return Q.range !== '30' || filterCount() > 0 || Q.compare !== 'off';
 }
-// How many narrowing filters are on (kinds, stages, users, keys, model):
+// How many narrowing filters are on (kinds, stages, users, keys):
 // the card window chips show it so a screenshot still says "filtered".
 function filterCount() {
   return (Q.kinds.length ? 1 : 0) + (Q.with.length ? 1 : 0) + (Q.users.length ? 1 : 0)
-    + (Q.keys.length ? 1 : 0) + (Q.model ? 1 : 0);
+    + (Q.keys.length ? 1 : 0);
 }
 const kindsLabel = () => Q.kinds.map(k => KIND_LABEL[k] || k).join(' + ');
 const pickLabel = (dim, id) => pickLabels[dim][id] || id;
@@ -441,7 +439,6 @@ function renderChips() {
     if (Q.with.length) chip('with', 'stage: ' + esc(Q.with.map(s => (WITH_CHIPS.find(c => c[0] === s) || [s, s])[1]).join(' + ')), 'ran every one of these stages · remove');
     if (Q.users.length) chip('users', 'user: ' + esc(Q.users.map(u => pickLabel('user', u)).join(', ')), 'one of these users · remove');
     if (Q.keys.length) chip('keys', 'key: ' + esc(Q.keys.map(k => pickLabel('key', k)).join(', ')), 'one of these keys · remove');
-    if (Q.model) chip('model', 'model: ' + esc(Q.model));
     if (isFiltered()) chips.push('<button type="button" class="chip clear" id="sb-clear">clear</button>');
     f.innerHTML = chips.length ? chips.join('')
       : '<span class="sb-none">none</span>';
@@ -560,10 +557,10 @@ function wirePickers() {
   });
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && _pickOpen) closePickers(); });
 }
-// The recent-jobs table (inline dashboard) follows the kind and user
+// The recent-jobs table (inline dashboard) follows the kind and user-id
 // filters: it reads this and re-renders from its last snapshot.
 function publishFilter() {
-  window.__statsFilter = { kinds: Q.kinds.slice(), users: Q.users.map(u => pickLabel('user', u)) };
+  window.__statsFilter = { kinds: Q.kinds.slice(), users: Q.users.slice(), userNames: Q.users.map(u => pickLabel('user', u)) };
   if (typeof window._fwRerenderJobs === 'function') { try { window._fwRerenderJobs(); } catch (_) {} }
 }
 
@@ -598,10 +595,8 @@ function wireScopeBar() {
     const c = e.target.closest('.chip'); if (!c) return;
     if (c.id === 'sb-clear') {
       Object.assign(Q, { range: '30', from: null, to: null, compare: 'off', kinds: [],
-                         with: [], users: [], keys: [], model: null });
+                         with: [], users: [], keys: [] });
       setSeg('sb-range', '30'); setSeg('sb-compare', 'off');
-    } else if (c.dataset.dim === 'model') {
-      Q.model = null;
     } else if (c.dataset.dim) {
       Q[c.dataset.dim] = [];
     }
@@ -919,7 +914,7 @@ function renderFailures() {
     + esc(r.stage === '(job)' ? 'job' : r.stage) + ' · <span class="cls">' + esc(r.cls) + '</span></span>'
     + '<span class="n"><b>' + r.n + '</b> · ' + Math.round(r.n / total * 100) + ' %</span>'
     + '<div class="m"><i style="width:' + (r.n / total * 100).toFixed(0) + '%"></i></div></div>').join('')
-    + (cmp && lastDoc && lastDoc.compare ? '<div class="meta">' + cmp.cur + ' failed jobs vs ' + cmp.prev + ' ' + esc(cmpWord()) + '</div>' : '');
+    + (cmp && lastDoc && lastDoc.compare ? '<div class="meta">' + cmp.cur + ' failed jobs vs ' + cmp.prev + ' prev</div>' : '');
 }
 
 // Headline strip: five numbers for the window (+ deltas vs the compare
@@ -945,10 +940,11 @@ function renderHeadline() {
   };
   const ta = lastTail && lastTail.turnaround;
   const tc = lastTail && lastTail.compare;
+  // /stats/tail always compares against the preceding window (no yoy mode), so the tail deltas are labelled "prev" regardless of Q.compare.
   const taDelta = (ta && tc && lastDoc.compare)
     ? '<span class="delta ' + (tc.turnaround_p50.delta < -0.05 ? 'good' : tc.turnaround_p50.delta > 0.05 ? 'bad' : 'flat') + '">'
       + (tc.turnaround_p50.delta > 0.05 ? '▲' : tc.turnaround_p50.delta < -0.05 ? '▼' : '—') + ' '
-      + fmtDur(Math.abs(tc.turnaround_p50.delta)) + ' vs ' + cmpWord() + '</span>'
+      + fmtDur(Math.abs(tc.turnaround_p50.delta)) + ' vs prev</span>'
     : '';
   // [label, value, sub, delta, measure the tile stands for (click picks it)]
   const cells = [
@@ -1171,6 +1167,7 @@ function announce(text) { const a = $('usage-live'); if (a) a.textContent = text
 function renderChart() {
   prepareLines();
   hidden = new Set([...hidden].filter(id => curLines.some(ln => ln.id === id)));
+  if (hidden.size && hidden.size === curLines.length) hidden.clear();   // a reload can never land on an all-hidden set
   if (chart) { chart.destroy(); chart = null; }
   tipEl.style.display = 'none';
   const empty = $('usage-empty');
@@ -1315,7 +1312,7 @@ function renderTable() {
 }
 
 // ---- leaderboard: the same entities ranked by the metric; rows are
-// click-to-filter (user / key / model), kinds toggle the kind chip.
+// click-to-filter (user / key), kinds toggle the kind chip.
 // Column sort for the leaderboard: click a header (again to flip); the
 // server's metric order is the default and the rank column follows.
 let boardSort = { key: null, dir: -1 };
@@ -1364,7 +1361,9 @@ function renderBoard() {
     const me = r.me ? ' <span class="badge ok">you</span>' : '';
     const label = by === 'kind' ? (KIND_LABEL[r.id] || r.label) : (r.label || '?');
     const rtf = r.rtf == null ? '—' : r.rtf.toFixed(2) + '×';
-    const clickable = ['user', 'key', 'model', 'kind'].includes(by) && !(r.id || '').startsWith('(');
+    // by=kind can carry a server-side "unknown" row (pre-kind rollups); it is not a valid kinds= filter, so keep it display-only.
+    const clickable = ['user', 'key', 'kind'].includes(by) && !(r.id || '').startsWith('(')
+      && (by !== 'kind' || KINDS.includes(r.id));
     return '<tr' + (clickable ? ' class="pick" tabindex="0" data-id="' + esc(r.id) + '"' : '') + '>'
       + '<td class="rank" data-label="#">' + (i + 1) + '</td>'
       + '<td class="name" data-label="name">' + share + sw + esc(label) + me + sub + '</td>'
@@ -1386,13 +1385,9 @@ function renderBoard() {
         setKind(); return;
       }
       if (by === 'user' && ownScope()) return;
-      if (by === 'user' || by === 'key') {
-        const list = by + 's', row = board.find(r => r.id === id);
-        if (row && row.label) pickLabels[by][id] = row.label;
-        Q[list] = Q[list].includes(id) ? Q[list].filter(x => x !== id) : Q[list].concat([id]);
-      } else {
-        Q[by] = Q[by] === id ? null : id;
-      }
+      const list = by + 's', row = board.find(r => r.id === id);
+      if (row && row.label) pickLabels[by][id] = row.label;
+      Q[list] = Q[list].includes(id) ? Q[list].filter(x => x !== id) : Q[list].concat([id]);
       load();
     };
     tr.addEventListener('click', pick);
@@ -1553,7 +1548,9 @@ function rhythmLayout(mode, rg) {
   if (mode === 'months') {
     const [y0] = ymOfDay(from), [y1] = ymOfDay(to);
     const years = y1 - y0 + 1;
-    return { rows: years, cols: 12, rowLabel: r => String(y0 + r), rowLong: r => String(y0 + r),
+    const occ = new Array(years * 12).fill(0);   // days per month; 0 = month outside the window
+    for (let d = from; d <= to; d++) { const [y, m] = ymOfDay(d); occ[(y - y0) * 12 + m]++; }
+    return { rows: years, cols: 12, cellOcc: occ, rowLabel: r => String(y0 + r), rowLong: r => String(y0 + r),
       colLabel: c => MON[c], colLong: c => MON_LONG[c],
       cellName: i => MON[i % 12] + ' ' + (y0 + Math.floor(i / 12)),
       dayCell: day => { if (day < from || day > to) return -1; const [y, m] = ymOfDay(day); return (y - y0) * 12 + m; },
@@ -1648,6 +1645,10 @@ function renderHours() {
   // months: each cell is its own occurrence).
   const occ = mode === 'hours' ? weekdayCounts(rg.from, rg.to) : new Array(L.rows).fill(1);
   const colOcc = L.colOcc || null;           // days: how often each day of month occurs
+  // Does the window contain this cell / column / row at all (days: the day of month occurs; months: the month has days; hours: the weekday occurs)?
+  const cellIn = i => mode === 'days' ? colOcc[i % L.cols] > 0 : mode === 'months' ? L.cellOcc[i] > 0 : occ[Math.floor(i / L.cols)] > 0;
+  const colIn = c => mode === 'days' ? colOcc[c] > 0 : mode === 'months' ? L.cellOcc.some((o, i) => o > 0 && i % L.cols === c) : true;
+  const rowIn = r => mode === 'hours' ? occ[r] > 0 : mode === 'months' ? L.cellOcc.slice(r * L.cols, r * L.cols + L.cols).some(o => o > 0) : true;
   // Marginals: each fills its own track; the dashed tick is where a flat
   // distribution's average falls on that track.
   const colIdx = colTot.map(v => winSum > 0 ? v / (winSum / L.cols) : 0);
@@ -1668,7 +1669,7 @@ function renderHours() {
     html += '<span class="dl" data-d="' + r + '">' + esc(L.rowLabel(r)) + '</span>';
     for (let c = 0; c < L.cols; c++) {
       const i = r * L.cols + c, v = cells[i];
-      const inWin = mode === 'days' ? colOcc[c] > 0 : true;
+      const inWin = cellIn(i);
       const title = L.cellName(i) + (inWin ? ' · ' + fmtM(v) + ' ' + ML + ' · ' + fmtC(sess[i]) + ' ' + CL : ' · not in this window');
       html += '<i tabindex="0" role="img" aria-label="' + esc(title) + '" data-i="' + i + '" data-tip="1"'
         + ' data-l="' + levelOf(v, br) + '"' + (i === peak && peakV > 0 ? ' class="peak"' : '') + (inWin ? '' : ' data-out="1"') + '></i>';
@@ -1720,18 +1721,19 @@ function renderHours() {
     if (cmp) out += tipRow(null, cmpWord(), fmtM(pv) + ' · ' + cmpDelta(v, pv), 'cmp');
     return out;
   };
-  // days: a day of month the window never contains (a 30-day window
-  // skips one date; short months have no 29th–31st) is drawn hatched and
+  // days / months / hours: a day of month, a month, or a weekday the window
+  // never contains (a 30-day window skips one date; a window from April
+  // shows no January; a 3-day window has no Monday) is drawn hatched and
   // says so, instead of pretending to be a quiet slot.
-  const outOfWindow = (head, c) => '<div class="tip-date">' + head + '</div>'
-    + tipRow(null, 'not in this window', 'the ' + ordinal(c + 1) + ' does not occur between ' + fmtDay(rg.from) + ' and ' + fmtDay(rg.to));
+  const outOfWindow = (head, subject) => '<div class="tip-date">' + head + '</div>'
+    + tipRow(null, 'not in this window', subject + ' between ' + fmtDay(rg.from) + ' and ' + fmtDay(rg.to));
   const sumCol = (arr, c) => arr.reduce((a, x, i) => a + (i % L.cols === c ? x : 0), 0);
   const sumRow = (arr, r) => arr.slice(r * L.cols, r * L.cols + L.cols).reduce((a, x) => a + x, 0);
   wireTips(el, '[data-tip]', (target) => {
     const kind = target.getAttribute('data-tip');
     if (kind === 'h') {
       const c = Number(target.getAttribute('data-h')), v = colTot[c];
-      if (mode === 'days' && !colOcc[c]) return outOfWindow(esc(L.colLong(c)) + ' · every ' + L.rowUnit, c);
+      if (!colIn(c)) return outOfWindow(esc(L.colLong(c)) + ' · every ' + L.rowUnit, mode === 'days' ? 'the ' + ordinal(c + 1) + ' does not occur' : 'no ' + esc(L.colLong(c)) + ' falls');
       const n = mode === 'hours' ? occ.reduce((a, x) => a + x, 0) : L.rows;
       let extra = tipRow(null, 'share', share(v)) + tipRow(null, 'vs average', colIdx[c].toFixed(1) + '× an average ' + L.colUnit);
       if (mode === 'hours' && n > 1) extra += tipRow(null, 'per day', '≈ ' + fmtAvg(v / n) + ' ' + ML + ' over ' + n + ' days');
@@ -1740,12 +1742,13 @@ function renderHours() {
     }
     if (kind === 'd') {
       const r = Number(target.getAttribute('data-d')), v = rowTot[r];
+      if (!rowIn(r)) return outOfWindow(esc(L.rowLong(r)) + ' · all ' + L.colUnit + 's', 'no ' + esc(L.rowLong(r)).replace(/s$/, '') + ' falls');
       let extra = tipRow(null, 'share', share(v)) + tipRow(null, 'vs average', rowIdx[r].toFixed(1) + '× an average ' + L.rowUnit);
       if (mode === 'hours' && occ[r] > 1) extra += tipRow(null, 'per ' + DOW[r], '≈ ' + fmtAvg(v / occ[r]) + ' ' + ML + ' over ' + occ[r] + ' ' + DOW[r]);
       return body(esc(L.rowLong(r)) + ' · all ' + L.colUnit + 's', v, sumRow(sess, r), kindRows(arr => sumRow(arr, r)), extra, sumRow(cmpCells, r));
     }
     const i = Number(target.getAttribute('data-i')), r = Math.floor(i / L.cols);
-    if (mode === 'days' && !colOcc[i % L.cols]) return outOfWindow(esc(L.cellName(i)), i % L.cols);
+    if (!cellIn(i)) return outOfWindow(esc(L.cellName(i)), mode === 'days' ? 'the ' + ordinal(i % L.cols + 1) + ' does not occur' : mode === 'months' ? esc(L.cellName(i)) + ' does not fall' : 'no ' + DOW_LONG[r] + ' falls');
     let extra = '';
     if (mode === 'hours' && occ[r] > 1) extra = tipRow(null, 'per ' + DOW[r], '≈ ' + fmtAvg(cells[i] / occ[r]) + ' ' + ML + ' over ' + occ[r] + ' ' + DOW[r]);
     if (mode === 'days' && colOcc[i % L.cols] > 1) extra = tipRow(null, 'per month', '≈ ' + fmtAvg(cells[i] / colOcc[i % L.cols]) + ' ' + ML + ' over ' + colOcc[i % L.cols] + ' months');
@@ -1756,7 +1759,7 @@ function renderHours() {
   const cmpNote = cmp ? '<span class="sub">' + cmpDelta(winSum, cmpSum) + '</span>' : '';
   const unitWord = { hours: 'weekday-hour', days: 'day-of-month hour', months: 'month' }[mode];
   const counts = [0, 0, 0, 0, 0];
-  if (br) cells.forEach((v, i) => { if (mode !== 'days' || colOcc[i % L.cols] > 0) counts[levelOf(v, br)]++; });
+  if (br) cells.forEach((v, i) => { if (cellIn(i)) counts[levelOf(v, br)]++; });
   const steps = br ? legendRanges(br, v => M === 'audio_s' || M === 'processing_s' ? fmtDur(v) : fmtCount(v)).map((txt, l) =>
     '<span class="lv" title="' + counts[l] + ' slot' + (counts[l] === 1 ? '' : 's') + '"><i data-l="' + l + '"></i>' + esc(txt) + '</span>').join('') : '';
   if (lg) lg.innerHTML = br

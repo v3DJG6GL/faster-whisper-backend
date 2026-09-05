@@ -50,8 +50,8 @@ def test_gate_absent_falls_back_to_in_flight(sampler, monkeypatch):
     assert sampler.slot_busy_now() == 0
 
 
-def test_every_nth_tick_takes_a_sample_on_the_grid(sampler, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 7, raising=False)
+def test_every_nth_tick_takes_a_sample_on_the_grid(sampler, monkeypatch):
+    monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 7, raising=False)
     taken = [sampler.tick(2_000_003 + i) for i in range(25)]
     samples = [s for s in taken if s]
     assert len(samples) == 3
@@ -61,9 +61,9 @@ def test_every_nth_tick_takes_a_sample_on_the_grid(sampler, app_module, monkeypa
     assert len(sampler._pending) == 3
 
 
-def test_flush_writes_once_and_prune_drops_old(sampler, sm_store, app_module, monkeypatch):
-    monkeypatch.setattr(app_module.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 7, raising=False)
-    monkeypatch.setattr(app_module.cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 14, raising=False)
+def test_flush_writes_once_and_prune_drops_old(sampler, sm_store, monkeypatch):
+    monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 7, raising=False)
+    monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 14, raising=False)
     import time
     now = int(time.time())
     for i in range(30):
@@ -75,7 +75,7 @@ def test_flush_writes_once_and_prune_drops_old(sampler, sm_store, app_module, mo
     assert len(series["t"]) == 4 and series["avg"][0] == 42.0
     sm_store.record([{"ts": now - 20 * 86400, "gpu_util": 1.0}])
     assert sampler.prune() == 1
-    monkeypatch.setattr(app_module.cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 0, raising=False)
+    monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 0, raising=False)
     assert sampler.prune() == 0
 
 

@@ -74,12 +74,19 @@ def adopt_legacy(legacy: sqlite3.Connection) -> int:
         " FROM sys_samples").fetchall()
     conn = _require_conn()
     with _lock:
-        conn.executemany(
-            "INSERT OR IGNORE INTO system_metrics"
-            " (ts, gpu_util, gpu_mem_mb, gpu_temp, cpu_pct, ram_pct, slot_busy)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [tuple(r) for r in rows])
-        conn.commit()
+        # The connection is autocommit (open_wal_db: isolation_level=None),
+        # so the transaction is explicit — one commit, not one per row.
+        conn.execute("BEGIN")
+        try:
+            conn.executemany(
+                "INSERT OR IGNORE INTO system_metrics"
+                " (ts, gpu_util, gpu_mem_mb, gpu_temp, cpu_pct, ram_pct, slot_busy)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [tuple(r) for r in rows])
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     legacy.execute("DROP TABLE sys_samples")
     legacy.commit()
     return len(rows)
@@ -92,15 +99,20 @@ def record(rows: list[dict[str, Any]]) -> int:
         return 0
     conn = _require_conn()
     with _lock:
-        conn.executemany(
-            "INSERT OR REPLACE INTO system_metrics"
-            " (ts, gpu_util, gpu_mem_mb, gpu_temp, cpu_pct, ram_pct, slot_busy)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            [(int(r["ts"]), r.get("gpu_util"), r.get("gpu_mem_mb"),
-              r.get("gpu_temp"), r.get("cpu_pct"), r.get("ram_pct"),
-              r.get("slot_busy")) for r in rows],
-        )
-        conn.commit()
+        conn.execute("BEGIN")  # autocommit connection: make the batch one transaction
+        try:
+            conn.executemany(
+                "INSERT OR REPLACE INTO system_metrics"
+                " (ts, gpu_util, gpu_mem_mb, gpu_temp, cpu_pct, ram_pct, slot_busy)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [(int(r["ts"]), r.get("gpu_util"), r.get("gpu_mem_mb"),
+                  r.get("gpu_temp"), r.get("cpu_pct"), r.get("ram_pct"),
+                  r.get("slot_busy")) for r in rows],
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
     return len(rows)
 
 

@@ -4,8 +4,6 @@ failures by stage / class, per-model table, compare window."""
 import datetime
 import zoneinfo
 
-import pytest
-
 _UTC = zoneinfo.ZoneInfo("UTC")
 _EPOCH = datetime.date(1970, 1, 1)
 
@@ -108,7 +106,7 @@ def test_by_model_with_wait_p50(usage_store_db):
     assert rows["large-v3"]["rtf"] == round(33.5 / 305.0, 3)
 
 
-def test_tail_document_and_compare(usage_store_db, app_module):
+def test_tail_document_and_compare(usage_store_db):
     us = usage_store_db
     _seed(us)
     doc = us.tail(user_id=None, tz=_UTC, tz_name="UTC", from_day=_D("2025-06-02"),

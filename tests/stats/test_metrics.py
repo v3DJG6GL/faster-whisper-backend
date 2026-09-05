@@ -23,9 +23,10 @@ def test_quantile_single_element():
 
 def test_quantile_p50_p95_p99():
     vals = [float(i) for i in range(1, 101)]  # 1..100 sorted
-    assert metrics._quantile(vals, 0.50) == vals[int(round(0.50 * 99))]
-    assert metrics._quantile(vals, 0.95) == vals[int(round(0.95 * 99))]
-    assert metrics._quantile(vals, 0.99) == vals[int(round(0.99 * 99))]
+    # Nearest rank: p50 lands on 51 (round(49.5) banker's-rounds to 50).
+    assert metrics._quantile(vals, 0.50) == 51.0
+    assert metrics._quantile(vals, 0.95) == 95.0
+    assert metrics._quantile(vals, 0.99) == 99.0
 
 
 def test_quantile_clamps_index():
@@ -203,6 +204,7 @@ def test_snapshot_projection_carries_job_fields(tx_store):
     tr = by_model["large-v3"]
     assert tr["kind"] == "transcribe"            # NULL kind + source 'file'
     assert tr["username"] == "alice"
+    assert tr["user_id"] == "u1"
     assert tr["stages"] == stages
     tl = by_model["org/m:Q4"]
     assert tl["kind"] == "translate"
@@ -233,12 +235,13 @@ def test_snapshot_scrubs_identity_for_non_admin_viewers(tx_store):
     tx_store.record_trace(request_id="rj1", model="large-v3", raw="x",
                           final="y", username="alice")
     row = metrics.metrics_snapshot()["recent_transcriptions"][0]
-    assert row["username"] == "" and row["key_label"] == ""
+    assert row["username"] == "" and row["user_id"] == "" and row["key_label"] == ""
     assert row["model"] == "large-v3" and row["kind"] == "transcribe"
     assert row["stages"] == stages
     admin = metrics.metrics_snapshot(
         include_identity=True)["recent_transcriptions"][0]
     assert admin["username"] == "alice"
+    assert admin["user_id"] == "u1"
     assert admin["key_label"] == "alice-laptop"
 
 

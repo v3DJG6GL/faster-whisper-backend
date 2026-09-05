@@ -26,6 +26,14 @@ def test_stats_snapshot_open_mode_ok(client):
     assert isinstance(r.json(), dict)
 
 
+def test_stats_usage_out_of_range_window_is_422(client):
+    """A from/to beyond datetime.date's range is a 422, not an OverflowError
+    escaping the ValueError-only handlers as a 500."""
+    assert client.get("/stats/usage?to=1000000000").status_code == 422
+    assert client.get("/stats/pick?dim=user&to=1000000000").status_code == 422
+    assert client.get("/stats/tail?to=1000000000").status_code == 422
+
+
 def test_stats_usage_ok(client):
     r = client.get("/stats/usage")
     assert r.status_code == 200
@@ -226,6 +234,20 @@ def test_stats_stream_frame_is_built_off_the_loop(client):
                          "in_flight_transcriptions", "severity"}
 
 
+def test_stats_snapshot_is_built_off_the_loop(client):
+    """The one-shot snapshot is fetched on every /stats page load and runs
+    the same blocking builder as the stream frame, so it must not block
+    the loop either."""
+    import inspect
+
+    from faster_whisper_backend.stats import routes as stats_routes
+
+    src = inspect.getsource(stats_routes.stats_snapshot)
+    assert "await asyncio.to_thread(" in src
+    assert "_build_payload" in src.split("await asyncio.to_thread(")[1][:80]
+    assert client.get("/stats/snapshot?lite=1").status_code == 200
+
+
 def test_stats_stage_vocabulary_is_covered_by_both_renderers(client):
     """Every stage name main.py emits (plus the preload job kind that reaches
     the compact glyph via pipeGlyph's kind fallback) needs both a
@@ -397,7 +419,7 @@ def test_stats_scope_rules(client, app_module, monkeypatch):
     assert stats_routes.stats_scope_for(_user("own")).sees_machine is True
 
 
-def test_own_scope_full_payload_is_coarse(client, tx_store):
+def test_own_scope_full_payload_is_coarse(client):
     """Own scope: only the caller's jobs and recent rows, identities on
     (they are all theirs), the machine keys replaced by the `server`
     block."""
@@ -503,7 +525,7 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     from tests.conftest import bearer
 
     src = inspect.getsource(stats_routes.stats_stream)
-    assert "_rescope_on_version_change(" in src
+    assert "await asyncio.to_thread(_rescope_on_version_change, " in src   # SQLite lookups off the loop
     assert "config_store.config_version()" in src
 
     make_user_key("root", is_admin=True)
@@ -611,7 +633,10 @@ def test_usage_admin_sees_names_and_can_preview_user(client, app_module,
                       headers=bearer(raw_admin)).json()
     assert prev["scope"] == "own"
     assert [r["id"] for r in prev["leaderboard"]] == [keys[alice]]
-    assert prev["leaderboard"][0]["label"]   # named: the admin is looking
+    # Named: the admin is looking — the owner resolves and the key label is
+    # the prefix form, never the opaque scrubbed one.
+    assert prev["leaderboard"][0]["user_label"] == "alice"
+    assert not re.fullmatch(r"key-[0-9a-f]{8}", prev["leaderboard"][0]["label"])
 
 
 # ---------------------------------------------------------------------------
@@ -766,8 +791,11 @@ def test_stats_js_contract(client):
               "window.__statsUsage", "window._fwUsageReload",
               "whisper-stats-layout-v11", "cmpWord()",
               "renderStages", "renderHours",
-              "not available for your scope"):
+              "not available for your scope",
+              # every rhythm hatches cells the window never contains, not only days
+              "cellOcc: occ", "const cellIn = i =>", "const inWin = cellIn(i);"):
         assert s in js, s
+    assert "Q.model" not in js  # no phantom model filter: nothing sends it to the server
     # The stacked series draw top-of-stack first so lower segments paint over.
     assert "series = rows.slice().reverse()" in js
     # Colours follow the entity, never its rank.
@@ -919,7 +947,8 @@ def test_stats_jobs_pages_with_cursor_and_filters(client):
     assert client.get("/stats/jobs?status=zzz").status_code == 422
     assert client.get("/stats/jobs?limit=999").json()["jobs"].__len__() == 7
     row = first["jobs"][0]
-    assert {"request_id", "language", "wait_s", "error_class", "username", "key_label"} <= set(row)
+    assert {"request_id", "language", "wait_s", "error_class", "username", "user_id",
+            "key_label"} <= set(row)
     assert row["username"] == "" and row["key_label"] == "lbl"     # open mode = admin
 
 
@@ -951,6 +980,32 @@ def test_stats_jobs_scope_rules(client, make_user_key):
         jobs.job_end(a)
 
 
+def test_stats_jobs_users_filter(client, make_user_key):
+    """`users=` narrows the paged jobs server-side (the page's who-filter),
+    the cursor walks inside the filter, own scope is refused, and a scrubbed
+    viewer's unknown value hits the no-match path."""
+    from tests.conftest import bearer
+    _, raw_admin = make_user_key("root", is_admin=True)
+    alice, raw_alice = make_user_key("alice", pages={"stats": "own"})
+    bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
+    _seed_jobs_pages(2, user_id=alice)
+    _seed_jobs_pages(3, user_id=bob)
+    hdr = bearer(raw_admin)
+    only_a = client.get(f"/stats/jobs?users={alice}", headers=hdr).json()["jobs"]
+    assert len(only_a) == 2 and all(j["request_id"].startswith(alice) for j in only_a)
+    assert len(client.get(f"/stats/jobs?users={alice},{bob}", headers=hdr).json()["jobs"]) == 5
+    p1 = client.get(f"/stats/jobs?users={bob}&limit=2", headers=hdr).json()
+    assert len(p1["jobs"]) == 2 and all(j["request_id"].startswith(bob) for j in p1["jobs"])
+    assert p1["next_cursor"] is not None
+    p2 = client.get(f"/stats/jobs?users={bob}&limit=2&cursor={p1['next_cursor']}",
+                    headers=hdr).json()
+    assert len(p2["jobs"]) == 1 and p2["jobs"][0]["request_id"].startswith(bob)
+    assert p2["next_cursor"] is None
+    assert client.get(f"/stats/jobs?users={bob}", headers=bearer(raw_alice)).status_code == 403
+    r = client.get("/stats/jobs?users=user-deadbeef", headers=bearer(raw_bob))
+    assert r.status_code == 200 and r.json()["jobs"] == []
+
+
 def test_stats_page_jobs_table_v2(client):
     """Quick views, the wait column, the cancel cell on running rows, the
     load-older button and the timeline expansion; the popover and the
@@ -978,24 +1033,30 @@ def test_stats_page_ring_scrubber_range_mode_and_tail_cards(client):
     assert "fetch('/stats/history?metric='" in html
     assert "if (liveMode !== 'live')" in html
     assert "function scrubTo(" in html and "function backToLive(" in html
+    # Space on a focused button/link/row must activate it, not pause the rings.
+    assert "if (e.defaultPrevented) return;" in html
+    assert "/^(INPUT|SELECT|TEXTAREA|BUTTON|A)$/.test(tgt.tagName)" in html
     assert "paused · ' + behind + ' s behind" in html
     assert "busy.pct_15m" in html
     for gs_id in ("turnaround", "failures"):
         assert f'gs-id="{gs_id}"' in html, gs_id
     for s in ("fetch('/stats/tail' + tailQuery()", "function renderTurnaround",
               "function renderFailures", "'turnaround', 'failures'", "wait_share",
-              "turnaround p50"):
+              "turnaround p50",
+              "fmtDur(Math.abs(tc.turnaround_p50.delta)) + ' vs prev</span>'", "cmp.prev + ' prev</div>'"):
         assert s in js, s
+    # /stats/tail has no yoy mode: its deltas must never borrow the overview's compare word.
+    assert "turnaround_p50.delta)) + ' vs ' + cmpWord()" not in js
 
 
-def test_stats_usage_list_filters_kinds_users_keys(client, usage_store_db):
+def test_stats_usage_list_filters_kinds_users_keys(client):
     """The page's filter bar sends comma lists: `kinds` keeps only those
     job kinds (client-side splits AND the server breakdowns), `users` /
     `keys` keep only those owners / keys (an IN clause), every filter is
     echoed under `filter`, and /stats/pick lists the pickable users ranked
     by the measure with the same labels the leaderboard uses."""
     import time
-    us = usage_store_db
+    from faster_whisper_backend.stats import usage_store as us
     h = int(time.time() // 3600)
     us.record_usage(key_id="ka", user_id="alice", audio_s=100.0, words=10,
                     status="ok", hour=h, processing_s=2.0, job_id="a1", kind="file")
@@ -1038,13 +1099,13 @@ def test_stats_usage_list_filters_kinds_users_keys(client, usage_store_db):
     assert client.get("/stats/pick?dim=model").status_code == 422
 
 
-def test_stats_usage_list_filters_respect_scope(client, usage_store_db, make_user_key):
+def test_stats_usage_list_filters_respect_scope(client, make_user_key):
     """Own-scope users cannot widen to other users (users= is 403, and so is
     the user picker); a non-admin 'all' viewer sends the opaque labels it
     was shown and gets the matching rows back."""
     import time
     from tests.conftest import bearer
-    us = usage_store_db
+    from faster_whisper_backend.stats import usage_store as us
     h = int(time.time() // 3600)
     make_user_key("root", is_admin=True)
     alice_uid, alice_raw = make_user_key("alice", pages={"stats": "own"})
@@ -1066,3 +1127,68 @@ def test_stats_usage_list_filters_respect_scope(client, usage_store_db, make_use
     doc = client.get("/stats/usage?by=kind&users=" + bob_label, headers=hdr).json()
     assert doc["totals"]["all"]["audio_s"] == 30.0
     assert doc["filter"]["users"] == [bob_label]
+
+
+def test_stats_usage_scrubbed_viewer_filters_by_picked_row_id(client, make_user_key):
+    """A non-admin 'all' viewer filters by the row `id` /stats/pick and the
+    leaderboard hand it (static/stats.js sends Q.users/Q.keys, never labels)
+    — for other users, other keys and its own key alike."""
+    import time
+    from tests.conftest import bearer
+    from faster_whisper_backend.stats import usage_store as us
+    h = int(time.time() // 3600)
+    make_user_key("root", is_admin=True)
+    alice_uid, _ = make_user_key("alice", pages={"stats": "own"})
+    viewer_uid, viewer_raw = make_user_key("viewer", pages={"stats": "all"})
+    us.record_usage(key_id="ka", user_id=alice_uid, audio_s=100.0, words=10,
+                    status="ok", hour=h, processing_s=2.0, job_id="a1", kind="file")
+    us.record_usage(key_id="kb", user_id="bob", audio_s=30.0, words=3,
+                    status="ok", hour=h, processing_s=1.0, job_id="b1", kind="url")
+    us.record_usage(key_id="kv", user_id=viewer_uid, audio_s=7.0, words=3,
+                    status="ok", hour=h, processing_s=1.0, job_id="v1", kind="url")
+    hdr = bearer(viewer_raw)
+    pick = client.get("/stats/pick?dim=user", headers=hdr).json()
+    bob_id = next(r["id"] for r in pick["rows"] if r["label"] != "viewer" and r["value"] == 30.0)
+    doc = client.get("/stats/usage?by=kind&users=" + bob_id, headers=hdr).json()
+    assert doc["totals"]["all"]["audio_s"] == 30.0
+    pk = client.get("/stats/pick?dim=key", headers=hdr).json()
+    kb_id = next(r["id"] for r in pk["rows"] if r["value"] == 30.0)
+    doc = client.get("/stats/usage?by=kind&keys=" + kb_id, headers=hdr).json()
+    assert doc["totals"]["all"]["audio_s"] == 30.0
+    own = next(r for r in pk["rows"] if r.get("me"))
+    doc = client.get("/stats/usage?by=kind&keys=" + own["id"], headers=hdr).json()
+    assert doc["totals"]["all"]["audio_s"] == 7.0
+    sub = client.get("/stats/pick?dim=key&users=" + bob_id, headers=hdr).json()
+    assert [r["id"] for r in sub["rows"]] == [kb_id]
+    doc = client.get("/stats/usage?by=kind&users=nobody", headers=hdr).json()
+    assert doc["totals"]["all"]["audio_s"] == 0.0
+
+
+def test_recent_jobs_who_filter_matches_by_user_id(client):
+    """The who filter carries raw user ids (deep links / reloads have no
+    pickLabels yet), so the finished-rows filter must compare against the
+    projection's user_id, never the display name."""
+    html = client.get("/stats").text
+    assert "flt.users.includes(r.user_id)" in html
+    assert "flt.users.includes(r.username)" not in html
+
+
+def test_stats_js_chart_never_all_hidden_after_reload(client):
+    """Hide a series in the legend, then narrow the kind filter to that very
+    kind: the reload must not draw an empty chart with the empty message
+    hidden, so renderChart mirrors the legend's never-blank guard."""
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
+    assert "if (hidden.size === curLines.length) hidden.clear();" in js
+    assert "if (hidden.size && hidden.size === curLines.length) hidden.clear();" in js
+
+
+def test_stats_board_unknown_kind_row_not_clickable(client):
+    """The by=kind board can carry a server-side "unknown" row (pre-kind
+    rollups); it is not a valid kinds= filter, so the row stays display-only
+    and the server contract it mirrors still rejects it."""
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
+    assert "(by !== 'kind' || KINDS.includes(r.id))" in js
+    assert client.get("/stats/usage?days=30&by=kind&kinds=unknown").status_code == 422
+    assert client.get("/stats/tail?days=30&kind=unknown").status_code == 422

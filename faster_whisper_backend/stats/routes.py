@@ -289,7 +289,7 @@ async def stats_snapshot(
 ) -> dict[str, Any]:
     """One-shot JSON. Useful for scripts and for the page's initial render.
     `?lite=1` returns the header activity cluster's diet payload."""
-    return _build_payload(stats_scope_for(user), lite=bool(lite))
+    return await asyncio.to_thread(_build_payload, stats_scope_for(user), lite=bool(lite))
 
 
 # Salt for the opaque labels a non-admin "all" viewer sees on the leaderboard.
@@ -310,16 +310,17 @@ def _csv(v: str | None) -> list[str]:
 
 
 def _unscrub(dim: str, labels: list[str], scrub: bool, caller_uid: str | None) -> list[str]:
-    """The ids behind the picked labels. Admin (and own) viewers send ids;
-    a non-admin "all" viewer only ever saw opaque labels (or their own name),
-    so each is matched against the opaque label of every id the rollups
-    know. Unknown labels are dropped rather than refused."""
+    """The ids behind the picked labels. Admin (and own) viewers send ids.
+    A non-admin "all" viewer sends the row `id` the picker / leaderboard
+    gave it (or, for older links, the opaque label it was shown), so each
+    value is matched against every id the rollups know and against its
+    opaque label. Unknown values are dropped rather than refused."""
     from faster_whisper_backend.stats import usage_store
     if not scrub:
         return labels
     want = set(labels)
     fn = _opaque_user_label if dim == "user" else _opaque_key_label
-    out = [i for i in usage_store.distinct_ids(dim + "_id") if fn(i) in want]
+    out = [i for i in usage_store.distinct_ids(dim + "_id") if i in want or fn(i) in want]
     if caller_uid and dim == "user" and caller_uid in want:
         out.append(caller_uid)
     resolved = list(dict.fromkeys(out))
@@ -580,6 +581,7 @@ async def stats_jobs(
     status_q: str | None = Query(default=None, alias="status"),
     slow_rtf: float | None = None,
     user_q: str | None = Query(None, alias="user"),
+    users: str | None = None,
     user: dict[str, Any] = Depends(require_page("stats")),
 ) -> dict[str, Any]:
     """The jobs table beyond the snapshot's last few rows: finished jobs
@@ -587,7 +589,9 @@ async def stats_jobs(
     previous page's `next_cursor` (a created_ts; null when exhausted).
     Filters: `kind` (one recent-jobs kind), `status` (ok | error |
     cancelled | failed), `slow_rtf` (processing longer than that fraction
-    of the audio). `running` — the live registry rows with their cancel
+    of the audio), `users` (comma list of ids, or the opaque labels a
+    non-admin "all" viewer was shown — mapped back like /stats/usage; 403
+    for own scope). `running` — the live registry rows with their cancel
     handles for the caller's own jobs (admins: all) — comes only with the
     first page. Scoped like the snapshot: own rows for "own", every user
     with identities scrubbed for non-admin "all", `?user=` preview for
@@ -602,11 +606,18 @@ async def stats_jobs(
         raise HTTPException(422, detail=f"unknown kind: {kind!r}")
     if status_q and status_q not in JOB_STATUSES:
         raise HTTPException(422, detail=f"unknown status: {status_q!r}")
+    user_list = _csv(users)
+    if user_list and scope.scope == "own":
+        raise HTTPException(status.HTTP_403_FORBIDDEN, detail="users= needs stats scope 'all'")
+    caller_uid = user.get("user_id") or None
+    scrub = not scope.include_identity
     n = max(1, min(int(limit), 200))
 
     def _page() -> dict[str, Any]:
+        uid_filter = _one_or_many(_unscrub("user", user_list, scrub, caller_uid)) if user_list else None
         rows = recent_transcriptions_store.list_recent(
-            before_ts=cursor, limit=n, user_id_filter=scope.user_id,
+            before_ts=cursor, limit=n,
+            user_id_filter=uid_filter if uid_filter is not None else scope.user_id,
             kind=kind or None, status=status_q or None, slow_rtf=slow_rtf)
         out = {
             "jobs": [metrics.project_recent_row(
@@ -765,7 +776,7 @@ async def stats_stream(
             yield f"data: {json.dumps(payload, allow_nan=False, default=str)}\n\n"
             await asyncio.sleep(1.0)
             try:
-                fresh = _rescope_on_version_change(request, seen)
+                fresh = await asyncio.to_thread(_rescope_on_version_change, request, seen)
             except HTTPException:
                 return
             if fresh is not None:
@@ -1842,9 +1853,8 @@ const _MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oc
 // Clock text for a sample, as fine as the window needs: live and 1h to the
 // second, 24h with the weekday, 7d with the date.
 function flagTime(ts, short) {
-  const t = new Date(ts * 1000), p2 = n => ('0' + n).slice(-2);
-  const hm = p2(t.getHours()) + ':' + p2(t.getMinutes());
-  if (liveMode === 'live' || liveMode === '3600') return hm + (short ? '' : ':' + p2(t.getSeconds()));
+  const t = new Date(ts * 1000), hm = _clock(ts);
+  if (liveMode === 'live' || liveMode === '3600') return short ? hm : _clock(ts, true);
   if (liveMode === '86400') return short ? hm : _DOW[t.getDay()] + ' ' + hm;
   return short ? _DOW[t.getDay()] + ' ' + hm : _DOW[t.getDay()] + ' ' + t.getDate() + ' ' + _MON[t.getMonth()] + ' ' + hm;
 }
@@ -2026,9 +2036,8 @@ function setLiveMode(v) {
   if (rangeTimer) { clearInterval(rangeTimer); rangeTimer = null; }
   if (v === 'live') {
     for (const k in rangeHeads) delete rangeHeads[k];
-    backToLive();
+    backToLive();   // ends in refreshStatusPill(): the pill is already 'live'
     Object.entries(SPARK_RING).forEach(([k, ring]) => setData(sparks[k], hist[ring]));
-    if (statusEl) { statusEl.className = 'pill live'; statusEl.textContent = 'live'; }
     return;
   }
   frozenTs = null; applyFreeze();
@@ -2057,7 +2066,10 @@ function wireRingControls() {
   refreshRingChips();
   document.addEventListener('keydown', (e) => {
     const tgt = e.target && e.target.closest ? e.target : document.body;
-    if (/^(INPUT|SELECT|TEXTAREA)$/.test(tgt.tagName) || tgt.isContentEditable) return;
+    // Widgets that own the key (buttons, links, the leaderboard rows and
+    // headline chips, which preventDefault on Space themselves) keep it.
+    if (e.defaultPrevented) return;
+    if (/^(INPUT|SELECT|TEXTAREA|BUTTON|A)$/.test(tgt.tagName) || tgt.isContentEditable) return;
     if (e.altKey || e.ctrlKey || e.metaKey) return;
     if (e.key === ' ') {
       e.preventDefault();
@@ -2081,9 +2093,7 @@ function applyFreeze() {
     for (const [id] of READOUTS) { const el = $(id); if (el) el.classList.remove('frozen'); }
     return;   // render() has just written the live values
   }
-  const t = new Date(frozenTs * 1000);
-  const p2 = n => ('0' + n).slice(-2);
-  const clock = p2(t.getHours()) + ':' + p2(t.getMinutes()) + ':' + p2(t.getSeconds());
+  const clock = _clock(frozenTs, true);
   for (const [id, key, fmt] of READOUTS) {
     const el = $(id); if (!el) continue;
     const v = hist[key][idx];
@@ -2590,16 +2600,21 @@ let lastJobsSnap = null;
 const rjExpanded = new Set();
 
 // The sub-bar's kind / who filters (static/stats.js publishes them as
-// window.__statsFilter). Usage kinds map onto the job kinds the snapshot
-// rows carry: files and links are transcribe jobs (a link's download job
-// too), dictation is dictate, text is translate; preload jobs always show.
+// window.__statsFilter). The who filter carries user ids, matched against
+// a finished row's user_id (scrubbed viewers' rows carry none, so a pick
+// shows no rows, as before); running rows carry only a username, so those
+// match the picker's display names (userNames). Usage kinds map onto the
+// job kinds the snapshot rows carry: files and links are transcribe jobs
+// (a link's download job too), dictation is dictate, text is translate;
+// preload jobs always show.
 const RJ_KIND_OF = { dictation: ['dictate'], file: ['transcribe'],
                      url: ['transcribe', 'download'], text: ['translate'] };
 function rjFilter() {
   const f = window.__statsFilter || {};
   const kinds = (f.kinds || []).flatMap(k => RJ_KIND_OF[k] || []);
   return { kinds: kinds.length ? Array.from(new Set(kinds)).concat(['preload']) : null,
-           users: (f.users || []).length ? f.users : null };
+           users: (f.users || []).length ? f.users : null,
+           userNames: (f.users || []).length ? (f.userNames || f.users) : null };
 }
 function segValRJ() {
   const k = rjFilter().kinds;
@@ -2693,7 +2708,7 @@ function stageColor(name) {
 
 // Older pages fetched from /stats/jobs (load older jobs), appended under
 // the snapshot's rows; the cursor is the oldest row's ts. Reset whenever a
-// filter changes, since the server applies kind/status/slow itself.
+// filter changes, since the server applies kind/status/slow/users itself.
 let rjExtra = [];
 let rjCursor = null;
 let rjExhausted = false;
@@ -2714,7 +2729,7 @@ function rjServerParams() {
   if (view === 'failed' || $('rj-warnonly').checked) p.set('status', 'failed');
   if (view === 'slow') p.set('slow_rtf', '0.5');
   if (Q.users.length) p.set('users', Q.users.join(','));
-  if (Q.keys.length) p.set('keys', Q.keys.join(','));
+  // No keys=: finished rows carry key_label only and the jobs table never filters by key.
   return p;
 }
 function rjLoadMore() {
@@ -2754,7 +2769,7 @@ function renderJobs(snap) {
 
   const runRows = running
     .filter(j => !flt.kinds || flt.kinds.includes(j.kind))
-    .filter(j => !flt.users || flt.users.includes(j.user))   // j.user is the username, like r.username
+    .filter(j => !flt.userNames || flt.userNames.includes(j.user))   // j.user is the username (no user_id on running rows)
     .filter(() => !warnOnly)
     .map(j => {
       const pct = j.progress != null ? Math.round(j.progress * 100) : null;
@@ -2784,7 +2799,7 @@ function renderJobs(snap) {
     .filter(r => !flt.kinds || flt.kinds.includes(r.kind))
     .filter(r => !warnOnly || r.status !== 'ok')
     .filter(r => view !== 'slow' || (r.audio_s > 0 && r.processing_s > 0.5 * r.audio_s))
-    .filter(r => !flt.users || flt.users.includes(r.username))
+    .filter(r => !flt.users || flt.users.includes(r.user_id))
     .map(r => {
       const key = String(r.ts || 0);
       const open = rjExpanded.has(key);
@@ -2925,7 +2940,7 @@ function openStream() {
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
     if (es) { try { es.close(); } catch {} es = null; }
-    if (recoveryTimer) { clearInterval(recoveryTimer); recoveryTimer = null; }
+    if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }
     setStatus('paused (hidden)', 'paused');
   } else {
     openStream();

@@ -4,8 +4,6 @@ breakdowns, leaderboard, compare window, per-model table."""
 import datetime
 import zoneinfo
 
-import pytest
-
 _UTC = zoneinfo.ZoneInfo("UTC")
 _EPOCH = datetime.date(1970, 1, 1)
 
@@ -180,6 +178,27 @@ def test_overview_compare_prev_and_yoy_aligned(usage_store_db):
     # Feb 29 clamps to Feb 28 a year earlier.
     assert us._year_back(_D("2024-02-29")) == _D("2023-02-28")
     assert _ov(us, days=3, compare="off")["compare"] is None
+
+
+def test_overview_compare_others_line_sums_prev_tail(usage_store_db):
+    """The compare line for the current "others" bucket carries every prev
+    entity outside the current top-K (not prev's own, usually absent,
+    "__others__" line), so the compare lines still sum to prev's total."""
+    us = usage_store_db
+    _seed(us)
+    for uid, key, secs, jid in (("alice", "k1", 5.0, "pa"), ("bob", "k3", 5.0, "pb"),
+                                ("carol", "k4", 40.0, "pc")):
+        us.record_usage(key_id=key, user_id=uid, audio_s=secs, words=1,
+                        status="ok", kind="file", hour=_hour("2025-05-25"),
+                        processing_s=1.0, job_id=jid)
+    o = _ov(us, from_day=_D("2025-06-02"), to_day=_D("2025-06-11"), by="user",
+            top_k=2, compare="prev")
+    assert [ln["id"] for ln in o["lines"]] == ["carol", "alice", "__others__"]
+    c = o["compare"]
+    cmp = {ln["id"]: ln["values"] for ln in c["lines"]}
+    assert sum(cmp["__others__"]) == 5.0                     # bob, outside the current top-2
+    assert all(len(v) == 10 for v in cmp.values())
+    assert sum(sum(v) for v in cmp.values()) == c["totals"]["all"]["audio_s"] == 50.0
 
 
 def test_overview_unknown_params_fall_back(usage_store_db):

@@ -292,7 +292,6 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
     ``key_label`` is the API key's display label as the auth record already
     holds it (``user["key_label"]``), snapshotted at record time because
     labels are mutable and read-time resolution would rewrite history.
-    When the caller passes none, it is looked up from ``key_id``.
 
     Also bumps the durable per-key/per-user usage rollup (usage_store),
     which — unlike recent_transcriptions — is never pruned to a rolling
@@ -430,8 +429,8 @@ def project_recent_row(r: dict[str, Any], *, include_identity: bool = False
     renders (the snapshot's recent_transcriptions and the paged
     /stats/jobs). A non-admin holder of pages.stats='all' sees every user's
     rows and must not read other users' transcripts (or identities): the
-    projection carries no raw/final text, and username / key_label are
-    blanked unless `include_identity`. Nulls become numeric defaults so
+    projection carries no raw/final text, and username / user_id /
+    key_label are blanked unless `include_identity`. Nulls become numeric defaults so
     `r.audio_s.toFixed(1)` on error-path rows cannot freeze the view."""
     return {
         "ts": r.get("ts"),
@@ -448,6 +447,7 @@ def project_recent_row(r: dict[str, Any], *, include_identity: bool = False
         "kind": r.get("kind")
                 or ("dictate" if r.get("source") == "stream" else "transcribe"),
         "username": (r.get("username") or "") if include_identity else "",
+        "user_id": (r.get("user_id") or "") if include_identity else "",
         "key_label": (r.get("key_label") or "") if include_identity else "",
         "stages": r.get("stages") or [],
         "wait_s": r.get("wait_s"),

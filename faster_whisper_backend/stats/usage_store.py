@@ -1060,7 +1060,8 @@ def parse_window_params(*, days: int | None = None, from_day: int | None = None,
     """Validate the raw query parameters of a usage window. `days` clamps to
     1..MAX_WINDOW_DAYS; `with_` is a comma list of optional stages; `tz` an
     IANA name (unknown → server-local). Raises ValueError with a message fit
-    for a 422 body when a stage is unknown or `from` is after `to`."""
+    for a 422 body when a stage is unknown, `from`/`to` is outside
+    0..MAX epoch-day, or `from` is after `to`."""
     zone = resolve_tz(tz)
     tz_name = str(tz) if zone is not None else "local"
     eff_days = None
@@ -1074,6 +1075,9 @@ def parse_window_params(*, days: int | None = None, from_day: int | None = None,
         if unknown:
             raise ValueError(f"unknown stage: {unknown[0]!r} (one of "
                              f"{', '.join(WITH_STAGES)})")
+    for name, d in (("from", from_day), ("to", to_day)):
+        if d is not None and not (0 <= int(d) <= _MAX_EPOCH_DAY):
+            raise ValueError(f"'{name}' out of range (0..{_MAX_EPOCH_DAY})")
     if from_day is not None and to_day is not None and from_day > to_day:
         raise ValueError("'from' is after 'to'")
     return WindowSpec(tz=zone, tz_name=tz_name, days=eff_days,
@@ -1133,6 +1137,9 @@ def _epoch_day(d: datetime.date) -> int:
 
 def _from_epoch_day(n: int) -> datetime.date:
     return _EPOCH + datetime.timedelta(days=int(n))
+
+
+_MAX_EPOCH_DAY = _epoch_day(datetime.date.max) - 1  # to+1 day must still be a date
 
 
 def resolve_window(
@@ -1497,6 +1504,7 @@ def overview(
             if any(v > 0 for v in rest.values()):
                 add(ent(UNKNOWN_KIND, label=UNKNOWN_KIND), day, rest)
     elif by in ("user", "key"):
+        source = "rollups"  # usage_hourly is never narrowed by with_stages
         where, params = _scope_where(user_id, key_id, kinds=kinds, kind_col="kind")
         for r in conn.execute(
             "SELECT hour, user_id, key_id, SUM(requests) AS requests,"
@@ -1534,6 +1542,7 @@ def overview(
                 _epoch_day(_date_of(float(job["created_ts"]), tz)), _job_cell(job))
     else:  # stage
         key_scoped = False
+        source = "rollups"  # usage_stage_hourly is never narrowed by with_stages
         where, params = _scope_where(user_id)
         for r in conn.execute(
             "SELECT hour, stage, SUM(runs) AS runs, SUM(audio_s) AS audio_s,"
@@ -1589,8 +1598,8 @@ def overview(
         "range": doc["range"],
         "filter": {"user_id": user_id, "key_id": key_id, "kinds": list(kinds),
                    "key_scoped": key_scoped if key_id is not None else True,
-                   "kind_scoped": (by == "kind" or by in ("user", "key", "model"))
-                                  if kinds else True},
+                   # every breakdown but stage honours the kinds filter
+                   "kind_scoped": not kinds or by != "stage"},
         "totals": doc["total"],
         "today": doc["today"],
         "stages": doc["stages"],
@@ -1616,10 +1625,23 @@ def overview(
                         limit=limit, jobs_retention_days=jobs_retention_days,
                         now=now, kinds=kinds)
         by_id = {ln["id"]: ln["values"] for ln in prev["lines"]}
+        top_ids = {ln["id"] for ln in lines if not ln.get("others")}
         cmp_lines = []
         for ln in lines:
-            vals = list(by_id.get(ln["id"], []))[:n]
-            vals += [0.0] * (n - len(vals))
+            if ln.get("others"):
+                # The current "others" bucket compares against everything in
+                # prev that is not a current top-K entity (prev's own
+                # "__others__" line included).
+                acc = [0.0] * n
+                for pl in prev["lines"]:
+                    if pl["id"] in top_ids:
+                        continue
+                    for i, v in enumerate(pl["values"][:n]):
+                        acc[i] += float(v or 0.0)
+                vals = [round(v, 3) for v in acc]
+            else:
+                vals = list(by_id.get(ln["id"], []))[:n]
+                vals += [0.0] * (n - len(vals))
             cmp_lines.append({"id": ln["id"], "values": vals})
         out["compare"] = {"mode": compare,
                           "range": {"from": pf, "to": pt, "days": pt - pf + 1},

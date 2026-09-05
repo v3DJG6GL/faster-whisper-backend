@@ -48,6 +48,8 @@ class _Http(Exception):
      "error", "downloading", ("policy_blocked", "downloading")),
     (url_download.UrlTimeoutError("the download timed out"), "error", "downloading",
      ("timeout", "downloading")),
+    (url_download.UrlTimeoutError("the site took too long to answer"), "error", "downloading",
+     ("timeout", "downloading")),
     (url_download.UrlDownloadError("the URL has no host"), "error", "downloading",
      ("other", "downloading")),
     (_AvError("Invalid data found when processing input"), "error", "transcribing",

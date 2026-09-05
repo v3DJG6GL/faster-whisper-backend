@@ -51,3 +51,4 @@ def test_adopt_legacy_moves_sys_samples_once(sm_store, tmp_path):
     assert legacy.execute("SELECT name FROM sqlite_master WHERE name='sys_samples'"
                           ).fetchone() is None
     assert sm_store.adopt_legacy(legacy) == 0
+    legacy.close()

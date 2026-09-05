@@ -37,6 +37,7 @@ import logging
 import sqlite3
 import threading
 import time
+from collections.abc import Sequence
 from typing import Any
 
 from faster_whisper_backend.core import store_common
@@ -380,7 +381,7 @@ def list_recent(
     *,
     before_ts: float | None = None,
     limit: int = 100,
-    user_id_filter: str | None = None,
+    user_id_filter: str | Sequence[str] | None = None,
     query: str | None = None,
     kind: str | None = None,
     status: str | None = None,
@@ -403,17 +404,29 @@ def list_recent(
     ('ok' | 'error' | 'cancelled', or 'failed' = anything but ok) and
     `slow_rtf` (only jobs whose processing took more than that fraction of
     their audio: RTF = proc / audio > slow_rtf). All compose with the
-    cursor and the user filter."""
+    cursor and the user filter. user_id_filter may also be a sequence of
+    ids (an IN clause) — the /stats jobs who-filter."""
     conn = _require_conn()
     where: list[str] = []
     params: list[Any] = []
     if before_ts and before_ts > 0:
         where.append("created_ts < ?")
         params.append(float(before_ts))
-    if user_id_filter is not None:
+    if isinstance(user_id_filter, str):
         where.append("user_id = ?")
         params.append(user_id_filter)
-    if kind:
+    elif user_id_filter is not None:
+        vals = list(dict.fromkeys(user_id_filter))
+        if vals:  # an empty sequence = no filter, like usage_store._in_clause
+            where.append(f"user_id IN ({', '.join('?' * len(vals))})")
+            params.extend(vals)
+    if kind == "transcribe":
+        # Batch rows are stored with kind NULL (resolved via source on read,
+        # see metrics.project_recent_row); mirror that rule here.
+        where.append("(kind = 'transcribe' OR (kind IS NULL AND source <> 'stream'))")
+    elif kind == "dictate":
+        where.append("(kind = 'dictate' OR (kind IS NULL AND source = 'stream'))")
+    elif kind:
         where.append("kind = ?")
         params.append(kind)
     if status == "failed":

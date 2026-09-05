@@ -88,6 +88,10 @@ def test_v1_usage_params_clamped_and_tz_echoed(client):
                              "jobs_retention_days": 365}
     r = client.get("/v1/usage", params={"from": 20007, "to": 20006})
     assert r.status_code == 422 and "from" in r.json()["detail"]
+    # Beyond datetime.date's range: a 422, not a zeroed document.
+    r = client.get("/v1/usage", params={"to": 1000000000})
+    assert r.status_code == 422 and "out of range" in r.json()["detail"]
+    assert client.get("/v1/usage", params={"from": -10000000, "to": -9999990}).status_code == 422
     # `all` with no usage is just today.
     body = client.get("/v1/usage", params={"all": 1}).json()
     assert body["range"]["days"] == 1 and body["range"]["first_day"] is None

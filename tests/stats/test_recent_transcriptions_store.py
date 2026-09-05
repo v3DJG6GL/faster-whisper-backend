@@ -374,3 +374,28 @@ def test_list_recent_filters_compose_with_the_cursor(tx_store):
     assert ids(page) == ["r5", "r3"]
     assert ids(tx_store.list_recent(limit=2, kind="dictate",
                                     before_ts=page[-1]["ts"])) == ["r1"]
+
+
+def test_list_recent_kind_filter_resolves_null_kind_like_projection(tx_store):
+    """Batch /transcribe rows are stored with kind NULL (resolved via source
+    on read); kind=transcribe / kind=dictate must find them the way
+    metrics.project_recent_row labels them."""
+    ts = tx_store
+    ts.record_trace(request_id="b1", model="m", raw="x", final="y", source="file",
+                    created_ts=1001.0)
+    ts.record_timing(request_id="b1", model="m", audio_s=10.0, processing_s=1.0,
+                     status="ok", words=1, created_ts=1001.0)
+    ts.record_timing(request_id="b2", model="m", audio_s=None, processing_s=0.5,
+                     status="error", words=0, created_ts=1002.0)
+    ts.record_trace(request_id="l1", model="m", raw="x", final="y", source="stream",
+                    created_ts=1003.0)
+    ts.record_timing(request_id="l1", model="m", audio_s=3.0, processing_s=0.3,
+                     status="ok", words=1, created_ts=1003.0)
+    ts.record_timing(request_id="d1", model="m", audio_s=3.0, processing_s=0.3,
+                     status="ok", words=1, kind="dictate", created_ts=1004.0)
+    ts.record_timing(request_id="t1", model="m", audio_s=None, processing_s=0.3,
+                     status="ok", words=1, kind="translate", created_ts=1005.0)
+    ids = lambda rows: [r["request_id"] for r in rows]
+    assert set(ids(ts.list_recent(limit=10, kind="transcribe"))) == {"b1", "b2"}
+    assert set(ids(ts.list_recent(limit=10, kind="dictate"))) == {"l1", "d1"}
+    assert ids(ts.list_recent(limit=10, kind="translate")) == ["t1"]
