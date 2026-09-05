@@ -305,3 +305,103 @@ def test_user_host_narrowing_blocks_shell(client, make_user_key, monkeypatch):
     with TestClient(client.app, client=_REMOTE) as c:
         assert c.get("/stats").status_code == 403
         assert c.get("/logs").status_code == 403
+
+
+# --- SSE streams re-authenticate on config-version bumps -------------------
+# Both live tails used to resolve auth ONCE at connect and then stream until
+# the browser closed the EventSource — a revoked user kept receiving every new
+# log line / trace. The generators are driven directly (no TestClient; the
+# bodies are infinite) with a request whose receive never resolves, so
+# is_disconnected() stays False and only the re-auth can end the stream.
+
+def _sse_request(path, raw_key):
+    import asyncio
+    from starlette.requests import Request
+
+    async def _receive():
+        await asyncio.Event().wait()
+
+    return Request({
+        "type": "http", "method": "GET", "path": path,
+        "headers": [(b"authorization", f"Bearer {raw_key}".encode())],
+        "query_string": b"", "client": ("127.0.0.1", 12345),
+    }, _receive)
+
+
+def test_logs_stream_ends_after_revoke(client, make_user_key, app_module,
+                                       monkeypatch, tmp_path):
+    import asyncio
+    from faster_whisper_backend.auth import api_keys_store
+
+    log = tmp_path / "live.log"
+    log.write_text("first\n", encoding="utf-8")
+    monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"logs": "all"})
+
+    async def drive():
+        gen = app_module._stream_log_lines(_sse_request("/logs/stream", raw))
+        assert await gen.__anext__() == "data: first\n\n"
+        assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
+        # One idle tick first: the tail records its file offset only when
+        # resumed past the sentinel, so a line appended before that is
+        # treated as backlog already shown.
+        assert await gen.__anext__() == ": keepalive\n\n"
+        # Still authorised: a new line is delivered on the next tick.
+        with open(log, "a", encoding="utf-8") as f:
+            f.write("second\n")
+        assert await gen.__anext__() == "data: second\n\n"
+        api_keys_store.revoke_user(uid)
+        with open(log, "a", encoding="utf-8") as f:
+            f.write("leaked\n")
+        try:
+            got = await gen.__anext__()
+        except StopAsyncIteration:
+            return
+        raise AssertionError(f"stream kept going after revoke: {got!r}")
+
+    asyncio.run(drive())
+
+
+def test_quick_config_stream_rescopes_and_ends(client, make_user_key,
+                                               app_module):
+    import asyncio
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.quick_config import routes as qc
+    from faster_whisper_backend.quick_config import state as qc_state
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"quick_config": "all"})
+    req = _sse_request("/quick-config/stream", raw)
+
+    async def drive():
+        resp = await qc.stream_recent(req, qc.require_user_or_admin_sse(req))
+        body = resp.body_iterator
+
+        async def push(user_id):
+            await asyncio.sleep(0.05)
+            qc_state._broadcast({"event": "trace",
+                                 "data": {"user_id": user_id, "final": "x"}})
+
+        # scope=all: another user's trace is delivered.
+        asyncio.create_task(push("someone-else"))
+        assert '"someone-else"' in await body.__anext__()
+        # Narrowed to own: the stream re-scopes without ending — a foreign
+        # trace is now filtered, the caller's own still arrives.
+        api_keys_store.set_user_permissions(
+            uid, {"pages": {"quick_config": "own"}})
+        asyncio.create_task(push("someone-else"))
+        asyncio.create_task(push(uid))
+        got = await body.__anext__()
+        assert '"someone-else"' not in got and uid in got
+        # Access removed: the stream ends on the next tick.
+        api_keys_store.set_user_permissions(
+            uid, {"pages": {"quick_config": "none"}})
+        asyncio.create_task(push(uid))
+        try:
+            got = await body.__anext__()
+        except StopAsyncIteration:
+            return
+        raise AssertionError(f"stream kept going after revoke: {got!r}")
+
+    asyncio.run(drive())

@@ -553,3 +553,14 @@ def test_revoke_session_bumps_config_version(client, make_user_key):
     r = client.post("/auth/logout", headers={"X-CSRF-Token": tok})
     assert r.status_code == 200
     assert config_store.config_version() > v0
+
+
+def test_csrf_non_ascii_token_is_403_not_500(client, make_user_key):
+    """Starlette decodes header bytes as latin-1 and hmac.compare_digest
+    raises TypeError on non-ASCII str input, so a single `\\xe9` byte in
+    X-CSRF-Token used to escape the middleware as an unhandled 500."""
+    _uid, raw = make_user_key("root", is_admin=True)
+    client.post("/auth/login", json={"key": raw})
+    r = client.post("/auth/logout", headers={b"X-CSRF-Token": b"\xe9"})
+    assert r.status_code == 403
+    assert r.json()["detail"] == "CSRF token missing or invalid"

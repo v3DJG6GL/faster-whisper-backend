@@ -298,7 +298,10 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
     On a hit, slides the expiry forward (debounced).
 
     Sliding window: each successful lookup extends expires_ts to
-    now + (original lifetime), so an actively-used session never lapses.
+    now + (original lifetime), so an actively-used session's ROW never
+    lapses. The browser side does not slide: /auth/login is the only
+    Set-Cookie, with max_age=SESSION_TTL_S, so the cookie itself expires
+    SESSION_TTL_S after login regardless of activity and the user re-logs in.
     """
     if not raw_token:
         return None

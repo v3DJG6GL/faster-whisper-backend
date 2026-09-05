@@ -509,3 +509,16 @@ def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):
     # its WAL/-shm handles) on every re-init.
     with pytest.raises(sqlite3.ProgrammingError):
         old.execute("SELECT 1")
+
+
+def test_parse_binding_migrates_renamed_direct_keys_and_locks():
+    # Bindings are stored as JSON and bypass config_store's key migration;
+    # a pre-rename direct blob must come back under the current names so the
+    # admin's next re-save is accepted instead of "Extra inputs are not
+    # permitted".
+    from faster_whisper_backend.auth import api_keys_store
+    raw = '{"direct": {"SEGMENT_MAX_WORDS_PER_SEC": 3.0, "BEAM_SIZE": 2,' \
+          ' "locks": ["SEGMENT_MAX_WORDS_PER_SEC", "BEAM_SIZE"]}, "profiles": []}'
+    b = api_keys_store._parse_binding(raw)
+    assert b["direct"] == {"SEGMENT_MAX_WORDS_PER_S": 3.0, "BEAM_SIZE": 2,
+                           "locks": ["SEGMENT_MAX_WORDS_PER_S", "BEAM_SIZE"]}

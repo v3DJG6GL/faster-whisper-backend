@@ -300,7 +300,9 @@ def delete(user_id: str, profile: str = "") -> bool:
     """Remove the row. Returns True if one was deleted. After a delete the
     store reads as version 0 again; a device still holding version N gets a
     409 on its next PUT (base N no longer matches), correctly surfacing the
-    deletion instead of silently resurrecting the blob."""
+    deletion instead of silently resurrecting the blob. Caveat: numbering
+    restarts at 1 on the next create, so a device holding exactly N == 1
+    CAS-matches a re-created v1 row and overwrites it."""
     conn = _require_conn()
     with _lock:
         cur = conn.execute(

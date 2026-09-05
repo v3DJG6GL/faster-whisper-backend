@@ -72,6 +72,9 @@ def _reset_singletons():
     metrics._errors_ts.clear()
     metrics.model_loads.clear()
     metrics.in_flight_transcriptions = 0
+    # main.get_inference_semaphore() publishes the gate here and nothing else
+    # resets it; a stale GpuGate is bound to a dead event loop.
+    metrics.gpu_gate = None
 
     # proposer caches
     proposer._CACHE.clear()
@@ -573,16 +576,17 @@ def app_module(tmp_path, monkeypatch, fake_model):
 
     yield main
 
-    # The lifespan opens five store connections on a temp DB; close them so a
+    # The lifespan opens eight store connections on a temp DB; close them so a
     # GC'd-without-close() sqlite3.Connection doesn't emit ResourceWarning noise
     # (one per store × every route test). capture_samples_store shares the
     # captures connection, so just drop its reference.
     from faster_whisper_backend.auth import api_keys_store; from faster_whisper_backend.admin import reports_store; from faster_whisper_backend.stats import recent_transcriptions_store
     from faster_whisper_backend.stats import usage_store; from faster_whisper_backend.captures import store as captures_store; from faster_whisper_backend.captures import samples_store as capture_samples_store
     from faster_whisper_backend.auth import sessions_store; from faster_whisper_backend.client_settings import store as client_settings_store
+    from faster_whisper_backend.stats import system_metrics_store
     for _mod in (api_keys_store, sessions_store, reports_store,
                  recent_transcriptions_store, usage_store, captures_store,
-                 client_settings_store):
+                 client_settings_store, system_metrics_store):
         _c = getattr(_mod, "_conn", None)
         if _c is not None:
             try:
