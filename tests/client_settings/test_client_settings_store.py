@@ -236,3 +236,65 @@ def test_partial_init_fails_closed(client_settings_store_db, monkeypatch):
         store.get("u1")
     with pytest.raises(store.StoreUnavailable):
         store.put("u1", {"n": 1}, 0)
+
+
+def _second_connection(store):
+    """An independent connection to the store's file — a 'sibling worker'."""
+    from faster_whisper_backend.core import store_common
+    path = store._conn.execute("PRAGMA database_list").fetchone()["file"]
+    return store_common.open_wal_db(path)
+
+
+def test_put_returns_own_write_despite_concurrent_writer(client_settings_store_db, monkeypatch):
+    """SERVER_WORKERS>1: another worker's write landing between our UPDATE
+    and a separate read-back must not be echoed as OUR 200 body (the device
+    would adopt a foreign base_version). RETURNING hands back the row this
+    statement produced; the success path must not call get() at all."""
+    store = client_settings_store_db
+    store.put("u1", {"a": 1}, 0)
+    other = _second_connection(store)
+    real_get = store.get
+    fired = []
+
+    def racing_get(user_id, profile=""):
+        if not fired:
+            fired.append(True)
+            other.execute("UPDATE client_settings SET blob='{\"b\":2}',"
+                          " version=version+1 WHERE user_id='u1'")
+        return real_get(user_id, profile)
+
+    monkeypatch.setattr(store, "get", racing_get)
+    try:
+        ok, state = store.put("u1", {"a": 2}, 1)
+        assert ok is True
+        assert state["version"] == 2
+        assert state["blob"] == {"a": 2}
+        # The first get() (this one) fires the sibling write, then reads it.
+        assert store.get("u1")["version"] == 3
+    finally:
+        other.close()
+
+
+def test_force_put_returns_own_write_despite_concurrent_writer(client_settings_store_db, monkeypatch):
+    store = client_settings_store_db
+    store.put("u1", {"a": 1}, 0)
+    other = _second_connection(store)
+    real_get = store.get
+    fired = []
+
+    def racing_get(user_id, profile=""):
+        if not fired:
+            fired.append(True)
+            other.execute("UPDATE client_settings SET blob='{\"b\":2}',"
+                          " version=version+1 WHERE user_id='u1'")
+        return real_get(user_id, profile)
+
+    monkeypatch.setattr(store, "get", racing_get)
+    try:
+        state = store.force_put("u1", {"imported": True})
+        assert state["version"] == 2
+        assert state["blob"] == {"imported": True}
+        # The first get() (this one) fires the sibling write, then reads it.
+        assert store.get("u1")["version"] == 3
+    finally:
+        other.close()

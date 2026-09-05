@@ -25,6 +25,10 @@ def test_recent_store_is_open_when_the_preload_loop_runs(app_module,
         recent_transcriptions_store._require_conn()
         return fake_model
     monkeypatch.setattr(app_module, "_get_or_load_model", _loader)
+    # An earlier test may have left the stores bound; unbind so a passing
+    # assertion proves THIS lifespan opened them before the preload ran.
+    monkeypatch.setattr(recent_transcriptions_store, "_conn", None)
+    monkeypatch.setattr(usage_store, "_conn", None)
 
     with TestClient(app_module.app, client=("127.0.0.1", 12345)):
         pass

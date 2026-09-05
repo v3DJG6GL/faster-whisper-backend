@@ -257,7 +257,7 @@ def test_post_patch_map_at_cap_is_not_rejected_by_the_guard(client, app_module):
     at_cap = {f"wort{i}": str(i)
               for i in range(quick_config_routes._MAP_MAX_ENTRIES)}
     r = client.post("/quick-config/state", json={"rules_patch": {slug: {"map": at_cap}}})
-    assert r.status_code != 400, r.text
+    assert r.status_code == 200, r.text
 
 
 def test_patch_response_hides_global_capture_count_from_nonadmin(
@@ -389,7 +389,7 @@ def test_post_patch_map_total_over_cap_400(client, app_module, monkeypatch):
     map_b = {f"bwort{i}": str(i) for i in range(half)}
     r = client.post("/quick-config/state", json={"rules_patch": {
         slug_a: {"map": map_a}, slug_b: {"map": map_b}}})
-    assert r.status_code != 400, r.text
+    assert r.status_code == 200, r.text
     # The request-wide guard still exists, and names the total cap.
     monkeypatch.setattr(quick_config_routes, "_MAP_MAX_TOTAL_ENTRIES", 10)
     small_a = {f"awort{i}": str(i) for i in range(6)}
@@ -402,7 +402,7 @@ def test_post_patch_map_total_over_cap_400(client, app_module, monkeypatch):
     # Each alone is under the (patched) request-wide cap and saves.
     r = client.post("/quick-config/state",
                     json={"rules_patch": {slug_a: {"map": small_a}}})
-    assert r.status_code != 400, r.text
+    assert r.status_code == 200, r.text
 
 
 def test_hidden_rule_validation_error_is_fully_redacted(

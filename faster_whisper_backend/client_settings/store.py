@@ -19,8 +19,9 @@ on every successful write; writers echo the version they last saw
 (INSERT-or-IntegrityError for create, UPDATE ... WHERE version=? for
 update), so it stays atomic across threads AND across uvicorn workers if an
 operator ever sets SERVER_WORKERS>1 — the module `_lock` alone would only
-serialise within one process. `_lock` still wraps write+read-back so the
-returned row reflects this write within the process.
+serialise within one process. Each write uses RETURNING so the row handed
+back is the one this statement produced, even when another worker writes in
+between.
 """
 from __future__ import annotations
 
@@ -88,22 +89,23 @@ def init_db(path: str) -> None:
     IF NOT EXISTS. Call before any other function in this module."""
     global _conn, _DB_READY
     _DB_READY = False
+    if _conn is not None:
+        # Mirrors api_keys_store: a re-init must not leak the previous
+        # connection (plus its WAL/-shm handles).
+        try:
+            _conn.close()
+        except sqlite3.Error:
+            pass
+        _conn = None
     _conn = store_common.open_wal_db(path)
     # Column rename (2026-09): every other store stamps its times *_ts.
+    # (open_wal_db is autocommit, so the ALTER is durable once execute returns.)
     have = {r["name"] for r in _conn.execute("PRAGMA table_info(client_settings)")}
     if "updated_at" in have and "updated_ts" not in have:
         _conn.execute("ALTER TABLE client_settings RENAME COLUMN updated_at TO updated_ts")
-        _conn.commit()
     _conn.executescript(_SCHEMA)
-    _ensure_columns(_conn)
     store_common.secure_db_file(path)
     _DB_READY = True
-
-
-def _ensure_columns(conn: sqlite3.Connection) -> None:
-    """Additive column migrations (PRAGMA table_info + ALTER TABLE), the
-    same convention as api_keys_store. Nothing to migrate yet — this hook
-    exists so a future column (e.g. blob_sha) lands the standard way."""
 
 
 def _require_conn() -> sqlite3.Connection:
@@ -210,36 +212,39 @@ def put(
             # Bootstrap create. A PK collision means a row already exists,
             # i.e. the caller's "nothing stored yet" view is stale → conflict.
             try:
-                conn.execute(
+                # fetchall() steps the statement to DONE, so the autocommit
+                # write has finished before the lock is released.
+                rows = conn.execute(
                     "INSERT INTO client_settings"
                     " (user_id, profile, blob, version, updated_ts, device)"
-                    " VALUES (?,?,?,1,?,?)",
+                    " VALUES (?,?,?,1,?,?) RETURNING *",
                     (user_id, profile, blob_json, now, dev),
-                )
+                ).fetchall()
             except sqlite3.IntegrityError:
                 return False, get(user_id, profile)
             logger.info(
                 "[client-settings] created user=%s profile=%r v=1 bytes=%d device=%r",
                 _uid_tag(user_id), profile, blob_bytes, dev,
             )
-            return True, get(user_id, profile)
+            return True, _row_to_dict(rows[0])
 
         cur = conn.execute(
             "UPDATE client_settings"
             " SET blob = ?, version = version + 1, updated_ts = ?, device = ?"
-            " WHERE user_id = ? AND profile = ? AND version = ?",
+            " WHERE user_id = ? AND profile = ? AND version = ?"
+            " RETURNING *",
             (blob_json, now, dev, user_id, profile, int(base_version)),
         )
-        if cur.rowcount == 0:
+        rows = cur.fetchall()
+        if not rows:
             # Stale base_version, or the row was deleted (then the caller's
             # next look shows blob=None via GET / the 409 body's state=None
             # is normalized by the route).
             return False, get(user_id, profile)
-        new_row = get(user_id, profile)
+        new_row = _row_to_dict(rows[0])
         logger.info(
             "[client-settings] updated user=%s profile=%r v=%s bytes=%d device=%r",
-            _uid_tag(user_id), profile,
-            new_row["version"] if new_row else "?", blob_bytes, dev,
+            _uid_tag(user_id), profile, new_row["version"], blob_bytes, dev,
         )
         return True, new_row
 
@@ -272,7 +277,7 @@ def force_put(
     now = time.time()
     conn = _require_conn()
     with _lock:
-        conn.execute(
+        row = _row_to_dict(conn.execute(
             "INSERT INTO client_settings"
             " (user_id, profile, blob, version, updated_ts, device)"
             " VALUES (?,?,?,1,?,?)"
@@ -280,16 +285,14 @@ def force_put(
             " blob = excluded.blob,"
             " version = client_settings.version + 1,"
             " updated_ts = excluded.updated_ts,"
-            " device = excluded.device",
+            " device = excluded.device"
+            " RETURNING *",
             (user_id, profile, blob_json, now, dev),
-        )
-        row = get(user_id, profile)
+        ).fetchall()[0])
     logger.info(
         "[client-settings] imported user=%s profile=%r v=%s bytes=%d device=%r",
-        _uid_tag(user_id), profile,
-        row["version"] if row else "?", blob_bytes, dev,
+        _uid_tag(user_id), profile, row["version"], blob_bytes, dev,
     )
-    assert row is not None  # the upsert we just did can't vanish under _lock
     return row
 
 

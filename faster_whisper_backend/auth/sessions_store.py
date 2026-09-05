@@ -74,7 +74,8 @@ _SLIDE_CACHE: dict[str, float] = {}
 # index (O(live sessions) under _lock) roughly once per slide. This caps the
 # cost at one rebuild per interval per worker while keeping a cross-worker
 # revocation visible within ~1 s. The pre-write check in create/revoke stays
-# unthrottled (correctness before a write).
+# unthrottled (correctness before a write). The throttle applies to index
+# HITS only; a miss forces the check so a sibling's fresh login is never bounced.
 _REFRESH_MIN_INTERVAL_S = 1.0
 _LAST_REFRESH_TS: float = 0.0
 
@@ -103,6 +104,15 @@ def init_db(db_path: str) -> None:
     Purges expired rows and builds the in-memory index from active ones."""
     global _conn, _DB_READY
     _DB_READY = False
+    # Close the previous handle before rebinding (mirrors api_keys_store), or
+    # every re-init leaks a connection plus its WAL/-shm handles.
+    if _conn is not None:
+        try:
+            _conn.close()
+        except sqlite3.Error:
+            pass
+        finally:
+            _conn = None
     _conn = store_common.open_wal_db(db_path)
     _conn.executescript(_SCHEMA)
     _migrate_add_key_id(_conn)
@@ -185,7 +195,7 @@ def _data_version_locked() -> int:
         return _DATA_VERSION
 
 
-def _refresh_if_sibling_committed() -> None:
+def _refresh_if_sibling_committed(force: bool = False) -> None:
     """Rebuild _SESSION_INDEX when another PROCESS committed since the last
     check — one header read on the connection we already hold. Mirrors
     api_keys_store._refresh_if_sibling_committed(); without it a logout in one
@@ -193,11 +203,15 @@ def _refresh_if_sibling_committed() -> None:
 
     Throttled to one check per _REFRESH_MIN_INTERVAL_S (see the constant's
     comment): sibling slide-UPDATE commits are frequent, and each detected one
-    costs a full O(live sessions) rebuild under _lock."""
+    costs a full O(live sessions) rebuild under _lock. `force=True` skips the
+    interval (miss path of lookup_session): a session created by a sibling
+    worker in the last second must not 401 the request that carries its
+    brand-new cookie; the PRAGMA header read is cheap and a rebuild still
+    happens only when data_version actually moved."""
     global _LAST_REFRESH_TS
     if _conn is None or not _DB_READY:
         return
-    if time.time() - _LAST_REFRESH_TS < _REFRESH_MIN_INTERVAL_S:
+    if not force and time.time() - _LAST_REFRESH_TS < _REFRESH_MIN_INTERVAL_S:
         return
     with _lock:
         _LAST_REFRESH_TS = time.time()
@@ -292,7 +306,12 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
     th = hash_token(raw_token)
     rec = _SESSION_INDEX.get(th)
     if rec is None:
-        return None
+        # A miss may be a session a sibling worker created inside the
+        # throttle window (login on worker A, next request on worker B).
+        _refresh_if_sibling_committed(force=True)
+        rec = _SESSION_INDEX.get(th)
+        if rec is None:
+            return None
     now = time.time()
     if rec["expires_ts"] <= now:
         # Lazily evict an index entry that lapsed since the last rebuild.
@@ -334,7 +353,9 @@ def _slide_expiry_debounced(token_hash: str, rec: dict[str, Any]) -> None:
 
 
 def revoke_session(raw_token: str) -> None:
-    """Soft-revoke a session (used by /auth/logout). No-op if unknown."""
+    """Soft-revoke a session (used by /auth/logout). No-op if unknown.
+    Bumps the config version so a live cookie-authenticated streaming socket
+    re-authenticates and closes (streaming.routes._refresh_ident)."""
     if not raw_token:
         return
     th = hash_token(raw_token)
@@ -362,6 +383,8 @@ def revoke_session(raw_token: str) -> None:
         # move PRAGMA data_version on this connection, and re-stamping would
         # swallow a sibling's commit that landed since the last check.
         _SESSION_INDEX.pop(th, None)
+    from faster_whisper_backend import config_store   # local import: mirrors api_keys_store
+    config_store.bump_config_version()   # signed-out identity's live streaming idents re-auth
 
 
 def purge_expired() -> None:

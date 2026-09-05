@@ -10,6 +10,7 @@ from fastapi import HTTPException
 from starlette.requests import Request
 
 from tests.conftest import bearer
+from faster_whisper_backend.auth import dependencies as auth
 
 
 def _fake_request(headers=None, client=("127.0.0.1", 12345)):
@@ -38,7 +39,6 @@ def _status_of(fn, *args, **kwargs):
 
 
 def test_bearer_header_admits_with_page_access(client, make_user_key):
-    from faster_whisper_backend.auth import dependencies as auth
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"stats": "all"})
     rec = auth.resolve_user_for_page_sse(_fake_request(headers=bearer(raw)),
@@ -48,14 +48,12 @@ def test_bearer_header_admits_with_page_access(client, make_user_key):
 
 
 def test_no_credential_is_401(client, make_user_key):
-    from faster_whisper_backend.auth import dependencies as auth
     make_user_key("root", is_admin=True)
     assert _status_of(auth.resolve_user_for_page_sse,
                       _fake_request(), "stats") == 401
 
 
 def test_no_page_access_is_403_with_the_page_named(client, make_user_key):
-    from faster_whisper_backend.auth import dependencies as auth
     make_user_key("root", is_admin=True)
     _uid, raw = make_user_key("alice", pages={"stats": "all"})
     try:
@@ -70,13 +68,11 @@ def test_no_page_access_is_403_with_the_page_named(client, make_user_key):
 
 
 def test_open_mode_loopback_gets_the_synthetic_admin(client):
-    from faster_whisper_backend.auth import dependencies as auth
     rec = auth.resolve_user_for_page_sse(_fake_request(), "stats")
     assert rec["is_admin"] is True
 
 
 def test_open_mode_off_allowlist_is_401(client):
-    from faster_whisper_backend.auth import dependencies as auth
     assert _status_of(auth.resolve_user_for_page_sse,
                       _fake_request(client=_REMOTE), "stats") == 401
 
@@ -94,7 +90,6 @@ def test_existing_sse_gates_confine_open_mode_to_the_admin_hosts(client):
 def test_own_scope_user_is_admitted_to_the_stats_stream(client, make_user_key):
     """stats="own" is a real page grant (v2): the SSE gate admits the
     caller; what they then see is the StatsScope's business."""
-    from faster_whisper_backend.auth import dependencies as auth
     from faster_whisper_backend.stats import routes as stats_routes
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("carol", pages={"stats": "own"})

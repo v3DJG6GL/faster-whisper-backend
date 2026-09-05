@@ -2139,7 +2139,8 @@ ACTIVITY_CLUSTER_JS = """
       pop.innerHTML = '<div class="sec"><div class="empty">no data yet</div></div>';
       return;
     }
-    var isAdmin = !!(window.__whoami && window.__whoami.is_admin);
+    // progress_id is emitted for admins AND the job's own owner (jobs_snapshot),
+    // and the cancel endpoint re-checks ownership — same policy as /stats.
     var jobs = s.jobs || [];
     // Prune marks whose pid left the snapshot so the map cannot grow.
     Object.keys(cancelling).forEach(function(pid){
@@ -2162,7 +2163,7 @@ ACTIVITY_CLUSTER_JS = """
               + pct + '%"></i></span>'
               + '<span class="p">' + esc(j.step || (pct + '%')) + '</span>'
             : '<span class="p">' + esc(j.step || j.stage || '…') + '</span>')
-        + (isAdmin && j.progress_id
+        + (j.progress_id
             ? '<button class="hact-cancel"'
               + (cancelling[j.progress_id] ? ' disabled' : '')
               + ' data-pid="' + esc(j.progress_id)
@@ -3446,7 +3447,8 @@ def _header_vtag_html() -> str:
         "function _fwCopyBuild (btn) {\n"
         "  var txt = btn.getAttribute('data-build') || '';\n"
         "  var done = function (ok) { if (!ok) return;\n"
-        "    var old = btn.getAttribute('data-lbl') || btn.textContent;\n"
+        "    var old = btn.classList.contains('copied')\n"
+        "      ? btn.getAttribute('data-lbl') : btn.textContent;\n"
         "    btn.setAttribute('data-lbl', old);\n"
         "    btn.classList.add('copied'); btn.textContent = 'copied';\n"
         "    setTimeout(function () { btn.textContent = old;\n"

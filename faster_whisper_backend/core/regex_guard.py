@@ -235,12 +235,7 @@ def _strip_outer_group(branch: str) -> str:
             i += 2
             continue
         if ch == "[":
-            i += 1
-            if i < len(branch) and branch[i] == "]":
-                i += 1
-            while i < len(branch) and branch[i] != "]":
-                i += 2 if branch[i] == "\\" else 1
-            i += 1
+            i = _skip_class(branch, i)[1] + 1
             continue
         depth += 1 if ch == "(" else (-1 if ch == ")" else 0)
         i += 1
@@ -288,6 +283,7 @@ def _nested_repetition(pat: str) -> bool:
             continue
         if c == "(":
             atomic = False
+            lookaround = False
             j = i + 1
             if j < n and pat[j] == "?":
                 k = j + 1
@@ -300,17 +296,22 @@ def _nested_repetition(pat: str) -> bool:
                 elif k < n and pat[k] == ":":
                     j = k + 1
                 elif k < n and pat[k] in "=!":
-                    j = k + 1
+                    lookaround, j = True, k + 1
                 elif k < n and pat[k] == "<" and k + 1 < n and pat[k + 1] in "=!":
-                    j = k + 2
+                    lookaround, j = True, k + 2
                 else:
                     # (?P<name>, (?P=name), (?<name>, inline flags (?i) / (?i:
                     end = pat.find(">", k)
                     close = pat.find(")", k)
                     colon = pat.find(":", k)
                     cand = [x for x in (end, colon) if x != -1 and (close == -1 or x < close)]
-                    j = (min(cand) + 1) if cand else (close + 1 if close != -1 else n)
-            stack.append({"rep": False, "start": j, "alts": [], "atomic": atomic})
+                    if not cand:
+                        # (?P=name) / (?i) — self-closing, opens no group
+                        i = close + 1 if close != -1 else n
+                        continue
+                    j = min(cand) + 1
+            stack.append({"rep": False, "start": j, "alts": [], "atomic": atomic,
+                          "lookaround": lookaround})
             i = j
             continue
         if c == ")" and len(stack) > 1:
@@ -337,7 +338,14 @@ def _nested_repetition(pat: str) -> bool:
                     if any(b != a and b.startswith(a)
                            for a in stripped for b in stripped):
                         return True
-            if frame["rep"] or repeats:
+            # A lookaround is matched once and never backtracked into, so a
+            # repeat inside it cannot split the enclosing group's input
+            # ambiguously: (x(?=a+)y)+ is linear. Same for the BODY of an
+            # atomic group, which never gives characters back — but a
+            # quantifier on the group itself ((?>a)+) still repeats.
+            if frame["lookaround"]:
+                continue
+            if (frame["rep"] and not frame["atomic"]) or repeats:
                 stack[-1]["rep"] = True
             continue
         if c == "|":
@@ -452,7 +460,10 @@ def _next_atom(pat: str, i: int) -> "tuple[str | None, str | None, int]":
                 colon = pat.find(":", k)
                 cand = [x for x in (end, colon)
                         if x != -1 and (close == -1 or x < close)]
-                j = (min(cand) + 1) if cand else (close + 1 if close != -1 else n)
+                if not cand:
+                    # (?P=name) — self-closing, opens no group
+                    return None, None, close + 1 if close != -1 else n
+                j = min(cand) + 1
         # Find the matching `)`, skipping classes and escapes.
         depth, k = 1, j
         while k < n and depth:
@@ -708,7 +719,7 @@ def _last_index(stderr_text: "str | bytes | None") -> int | None:
     last = None
     for line in stderr_text.splitlines():
         line = line.strip()
-        if line.isdigit():
+        if _ascii_digits(line):
             last = int(line)
     return last
 

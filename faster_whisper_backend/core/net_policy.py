@@ -20,6 +20,7 @@ resolve, or that resolves to anything we cannot parse, counts as forbidden.
 """
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import socket
 
@@ -63,3 +64,65 @@ def host_is_forbidden(host: str) -> bool:
     if not infos:
         return True
     return any(address_is_forbidden(info[4][0]) for info in infos)
+
+
+def resolve_pinned(host: str, port: int) -> list:
+    """Resolve ONCE; the returned sockaddrs ARE the pin.
+
+    Refuses the whole name (OSError) when it does not resolve or when ANY
+    answer is a forbidden address — same verdict as host_is_forbidden, but
+    the caller dials one of exactly these addresses instead of letting
+    http.client re-resolve (a rebinding name could answer differently)."""
+    try:
+        infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except OSError:
+        infos = []
+    if not infos or any(address_is_forbidden(i[4][0]) for i in infos):
+        raise OSError(f"{host}: forbidden or unresolvable address")
+    return infos
+
+
+def connect_pinned(conn) -> socket.socket:
+    """http.client-compatible connect: dial the pinned answers for
+    conn.host:conn.port, honouring conn.timeout / conn.source_address."""
+    last = None
+    for family, socktype, proto, _canon, sockaddr in resolve_pinned(conn.host, conn.port):
+        sock = socket.socket(family, socktype, proto)
+        try:
+            if conn.timeout is not socket._GLOBAL_DEFAULT_TIMEOUT:  # type: ignore[attr-defined]
+                sock.settimeout(conn.timeout)
+            if conn.source_address:
+                sock.bind(conn.source_address)
+            sock.connect(sockaddr)
+        except OSError as e:
+            sock.close()
+            last = e
+            continue
+        try:  # what stdlib's HTTPConnection.connect does after connecting
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+        return sock
+    raise last if last is not None else OSError("connection failed")
+
+
+# Only connect() is overridden: the Host header, request line and certificate
+# validation still see the NAME the URL carried.
+class PinnedHTTPConnection(http.client.HTTPConnection):
+    def connect(self):
+        self.sock = connect_pinned(self)
+        if self._tunnel_host:
+            self._tunnel()
+
+
+class PinnedHTTPSConnection(http.client.HTTPSConnection):
+    def connect(self):
+        sock = connect_pinned(self)
+        if self._tunnel_host:
+            self.sock = sock
+            self._tunnel()
+            sock = self.sock
+        # SNI / cert verification on the NAME, never the pinned literal;
+        # behind a CONNECT proxy the URL's host is _tunnel_host.
+        self.sock = self._context.wrap_socket(
+            sock, server_hostname=self._tunnel_host or self.host)

@@ -350,7 +350,7 @@ async def _apply_rules_patch_locked(
     *,
     client_host: str = "?",
 ) -> tuple[int, dict[str, Any]]:
-    """Body of apply_rules_patch — call only under _PATCH_LOCK."""
+    """Body of apply_rules_patch — call only under the per-scope `_patch_lock()`."""
     fingerprints = fingerprints or {}
     if not rules_patch:
         return 200, {
@@ -964,8 +964,8 @@ async def get_reapply_rules_status(
 
 # --- Recent transcription traces (panel + autocomplete source) -------------
 #
-# The ring buffer lives in quick_config_state. main.py's transcribe handler
-# appends an entry per completed transcription. Both endpoints below are
+# Traces live in stats.recent_transcriptions_store (SQLite); main.py's
+# transcribe handler records one row per completed transcription. Both endpoints below are
 # token-gated so end-users without a valid token can't enumerate recent
 # dictation snippets.
 
@@ -1976,8 +1976,11 @@ function diffExcerpt(A, B, region) {
 function traceDur(secs) {
   const s = Number(secs);
   if (!Number.isFinite(s) || s <= 0) return '';
-  if (s >= 3600) return Math.floor(s / 3600) + ' h ' + Math.round((s % 3600) / 60) + ' min';
-  if (s >= 60) return Math.round(s / 60) + ' min';
+  // Round to whole minutes FIRST so the carry lands in the hour
+  // (7185 s -> "2 h 0 min", not "1 h 60 min").
+  const m = Math.round(s / 60);
+  if (m >= 60) return Math.floor(m / 60) + ' h ' + (m % 60) + ' min';
+  if (s >= 60) return m + ' min';
   return Math.round(s) + ' s';
 }
 
@@ -2106,10 +2109,11 @@ function renderTrace(entry) {
     addPill(String(entry.key_label).slice(0, 24), 'key-chip', 'API key');
   }
   if (failed) {
-    // The store has no error-detail column — the status value is all there
-    // is to say, so the chip carries it in the title rather than inventing
-    // a reason.
-    addPill('error', 'err-chip', 'status: ' + String(entry.status));
+    // The row carries error_class / error_stage (recent_transcriptions_store)
+    // when the failure recorded them; the chip's title names both.
+    addPill('error', 'err-chip', 'status: ' + String(entry.status)
+      + (entry.error_stage ? ' · stage ' + String(entry.error_stage) : '')
+      + (entry.error_class ? ' · ' + String(entry.error_class) : ''));
   }
   // Size readout. Used to render only when the text was longer than
   // TRACE_CLAMP_CHARS, which meant a short dictation showed neither its

@@ -175,6 +175,20 @@ def test_variable_nested_repetition_stays_rejected(pat):
     assert g._nested_repetition(pat)
 
 
+def test_named_backref_is_not_a_group_frame():
+    """`(?P=name)` and a leading `(?i)` close themselves; they used to push
+    a phantom frame that mis-popped the enclosing group (false 422 on
+    `(?P<n>a)((?P=n)|b)+`, and the exponential `(\\w+ ?(?P=n))+#` shape
+    slipped past the structural screen)."""
+    assert not g._nested_repetition(r"(?P<n>a)((?P=n)|b)+")
+    assert not g._nested_repetition(r"(?i)(a|b)+c")
+    assert g._nested_repetition(r"(?P<n>x)(a+(?P=n))+")
+    assert g._nested_repetition(r"(?P<n>)(\w+ ?(?P=n))+#")
+    assert g._nested_repetition(r"(?i)(a+)+")
+    assert g._next_atom(r"(?P<n>x)(?P=n)(y)", 8) == (None, None, 14)
+    assert g._first_repeated_char(r"(?P<x>a)(?P=x)b+") == "b"
+
+
 def test_short_literal_expansions_are_accepted():
     """A bounded literal expansion of a short token is a normal dictation
     rule; the analytic growth bound must not refuse it."""

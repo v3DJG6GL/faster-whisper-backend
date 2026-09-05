@@ -33,7 +33,7 @@ def _kwargs(n=1):
 # Claim
 # ---------------------------------------------------------------------------
 
-def test_claim_returns_the_parked_kwargs_merged(_clean=None):
+def test_claim_returns_the_parked_kwargs_merged():
     receipt_hold.park("cap1", _kwargs(), hold_s=90)
     got = receipt_hold.claim("cap1", translation={"targets": ["en"]})
     assert got is not None

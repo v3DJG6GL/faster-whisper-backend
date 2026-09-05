@@ -502,7 +502,7 @@ def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):
     old = api_keys_db._conn
     garbage = tmp_path / "garbage.sqlite3"
     garbage.write_bytes(b"this is not a sqlite database")
-    with pytest.raises(Exception):
+    with pytest.raises(sqlite3.DatabaseError):   # "file is not a database"
         api_keys_db.init_db(str(garbage))
     assert api_keys_db._DB_READY is False
     # Re-init must close the previous connection instead of leaking it (plus

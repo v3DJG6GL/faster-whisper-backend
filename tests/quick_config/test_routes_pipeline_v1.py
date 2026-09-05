@@ -183,14 +183,21 @@ def test_v1_patch_fingerprint_conflict_then_match(client, app_module):
 # Tag / permission gating (locked-down mode, non-admin keys)
 # --------------------------------------------------------------------------
 
-def test_v1_tag_filtering_for_nonadmin(client, app_module, make_user_key):
+def _alice_alpha_key(make_user_key):
+    """A non-admin 'alice' with quick_config=own and only the alpha tag —
+    flips lockdown first. Returns her raw bearer key."""
     from faster_whisper_backend.auth import api_keys_store
-    alpha, beta, untagged = _expose_tagged(app_module)
-    make_user_key("root", is_admin=True)  # flips lockdown
+    make_user_key("root", is_admin=True)
     uid = api_keys_store.create_user("alice", is_admin=False)
     api_keys_store.set_user_permissions(
         uid, {"pages": {"quick_config": "own"}, "quick_config_tags": ["alpha"]})
     raw, _rec = api_keys_store.create_key(uid)
+    return raw
+
+
+def test_v1_tag_filtering_for_nonadmin(client, app_module, make_user_key):
+    alpha, beta, untagged = _expose_tagged(app_module)
+    raw = _alice_alpha_key(make_user_key)
 
     body = client.get("/v1/pipeline-rules", headers=bearer(raw)).json()
     names = {r["name"] for r in body["rules"]}
@@ -206,13 +213,8 @@ def test_v1_patch_rule_not_visible_is_indistinguishable_from_unknown(
     """A rule alice can't see must answer exactly like a rule that does not
     exist. Answering 403 for one and 400 for the other let her enumerate the
     slugs the admin curated out of her view, one guess per request."""
-    from faster_whisper_backend.auth import api_keys_store
     _alpha, beta, _untagged = _expose_tagged(app_module)
-    make_user_key("root", is_admin=True)
-    uid = api_keys_store.create_user("alice", is_admin=False)
-    api_keys_store.set_user_permissions(
-        uid, {"pages": {"quick_config": "own"}, "quick_config_tags": ["alpha"]})
-    raw, _rec = api_keys_store.create_key(uid)
+    raw = _alice_alpha_key(make_user_key)
 
     def _patch(slug):
         return client.patch(
@@ -234,13 +236,8 @@ def test_v1_patch_rule_not_visible_is_indistinguishable_from_unknown(
 def test_v1_patch_visible_rule_still_works(client, app_module, make_user_key):
     """The counterpart: a rule that IS exposed to the caller keeps resolving
     normally — the collapse above must not hide their own rules from them."""
-    from faster_whisper_backend.auth import api_keys_store
     alpha, _beta, _untagged = _expose_tagged(app_module)
-    make_user_key("root", is_admin=True)
-    uid = api_keys_store.create_user("alice", is_admin=False)
-    api_keys_store.set_user_permissions(
-        uid, {"pages": {"quick_config": "own"}, "quick_config_tags": ["alpha"]})
-    raw, _rec = api_keys_store.create_key(uid)
+    raw = _alice_alpha_key(make_user_key)
     r = client.patch(
         "/v1/pipeline-rules",
         json={"rules_patch": {alpha: {"enabled": False}}},
@@ -248,6 +245,8 @@ def test_v1_patch_visible_rule_still_works(client, app_module, make_user_key):
     )
     assert r.status_code == 200
     assert alpha in r.json()["saved"]
+
+
 def test_v1_requires_quick_config_page(client, make_user_key):
     make_user_key("root", is_admin=True)  # lockdown
     _uid, raw = make_user_key("bob", pages={"quick_config": "none"})

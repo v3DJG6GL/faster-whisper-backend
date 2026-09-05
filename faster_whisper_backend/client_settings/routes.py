@@ -35,7 +35,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from faster_whisper_backend.client_settings import store as client_settings_store
 from faster_whisper_backend.auth.dependencies import get_current_user
@@ -50,7 +50,9 @@ class PutClientSettings(BaseModel):
     the client last saw; 0 (or absent row semantics) means "create"."""
     model_config = {"extra": "forbid"}
     blob: dict[str, Any]
-    base_version: int
+    # Bounded: pydantic accepts arbitrary-precision JSON ints, and anything
+    # past SQLite's INTEGER would OverflowError (a 500) in the store's CAS.
+    base_version: int = Field(le=2**63 - 1)
     device: str | None = None
 
 

@@ -2396,7 +2396,16 @@ _API_KEYS_HTML = r"""<!doctype html>
       api('POST', csApiBase(u.id) + '/import', { blob: d.blob })
         .then(function (r) {
           if (r.status === 413) throw new Error('File too large for the server (over 500 KB)');
-          if (!r.ok) return r.text().then(function (t) { throw new Error(t); });
+          if (r.status === 401) {
+            close();
+            if (window._showLoginGate) window._showLoginGate();
+            throw new Error('signed out');
+          }
+          if (!r.ok) return r.text().then(function (t) {
+            var msg = t;
+            try { msg = JSON.parse(t).detail || t; } catch (_e) {}
+            throw new Error(String(msg));
+          });
           return r.json();
         })
         .then(function () {
