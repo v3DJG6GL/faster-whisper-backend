@@ -68,6 +68,10 @@ _orphans: "dict[str, int]" = {}
 # The idle loop mirrors main._idle_evictor's cadence.
 _EVICTOR_WAKE_S = 30
 
+# _resolve_device runs per request (route progress row, _get_pipeline's
+# cache-hit path) and per preload tick — warn about a missing CUDA once.
+_warned_no_cuda = False
+
 
 def _resolve_device() -> str:
     """DIARIZATION_DEVICE with "auto" following MODEL_DEVICE, downgraded to
@@ -81,7 +85,11 @@ def _resolve_device() -> str:
         import torch
         if torch.cuda.is_available():
             return "cuda"
-        logger.warning("[diarize] cuda requested but not available — using cpu")
+        global _warned_no_cuda
+        if not _warned_no_cuda:
+            _warned_no_cuda = True
+            logger.warning(
+                "[diarize] cuda requested but not available — using cpu")
     except ImportError:
         pass
     return "cpu"
@@ -94,21 +102,33 @@ def _load_blocking(model_id: str, device: str, batch_size: int):
     download_root = getattr(cfg, "DOWNLOAD_ROOT", None)
     if download_root:
         os.environ.setdefault("HF_HOME", os.path.join(download_root, "hf"))
-    # LOCAL_FILES_ONLY is a HOT setting — scope the offline env var to this
+    # LOCAL_FILES_ONLY is a HOT setting — scope the offline switch to this
     # load and restore it after (same hazard translation._load_blocking
     # documents: one offline load would otherwise poison every later
-    # huggingface_hub download until a process restart).
+    # huggingface_hub download until a process restart). The env var only
+    # reaches subprocesses / a fresh import; the hub's module constant
+    # (toggled below) is what THIS load honours.
     # Snapshot ONCE: the flag is hot and this runs for minutes in the
     # executor — re-reading it in the finally would skip the restore (or
     # clobber a value this call never set) after a mid-load admin flip.
     offline = bool(getattr(cfg, "LOCAL_FILES_ONLY", False))
     offline_prev = os.environ.get("HF_HUB_OFFLINE")
+    # The hub freezes HF_HUB_OFFLINE into huggingface_hub.constants at import
+    # (it is already imported via faster_whisper), so the env var alone never
+    # reaches THIS load; pyannote 4.x from_pretrained has no local_files_only
+    # and its sub-models download through hf_hub_download too — toggling the
+    # hub's own module flag (what constants.is_offline_mode() returns) is the
+    # one handle that gates every request the pipeline makes.
+    from huggingface_hub import constants as _hf_constants
+    const_prev = _hf_constants.HF_HUB_OFFLINE
     if offline:
         os.environ["HF_HUB_OFFLINE"] = "1"
+        _hf_constants.HF_HUB_OFFLINE = True
     try:
         return _load_blocking_inner(model_id, device, batch_size)
     finally:
         if offline:
+            _hf_constants.HF_HUB_OFFLINE = const_prev
             if offline_prev is None:
                 os.environ.pop("HF_HUB_OFFLINE", None)
             else:
@@ -172,7 +192,13 @@ def _load_blocking_inner(model_id: str, device: str, batch_size: int):
             "huggingface.co and set HF_TOKEN"
         )
 
-    pipe.to(torch.device(device))
+    try:
+        pipe.to(torch.device(device))
+    except Exception as e:  # noqa: BLE001 — CUDA OOM / driver fault
+        logger.error("[diarize] pipeline load failed (placement on %s): %s",
+                     device, e)
+        raise DiarizationError(
+            f"could not load {model_id} on {device} — {e}") from e
     try:
         # pyannote-audio#1963: the default embedding batch spikes several GB
         # of VRAM on hour-long audio; a small batch flattens the peak.
@@ -329,7 +355,8 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
         vram = (vram_after - vram_before) if (
             vram_before is not None and vram_after is not None) else None
         load_secs = time.perf_counter() - t0
-        system_stats.register_loaded_model(
+        await asyncio.to_thread(
+            system_stats.register_loaded_model,
             _STATS_PREFIX + model_id, vram, device, "torch", load_secs)
         logger.info("[diarize] pipeline %s loaded on %s in %.1fs",
                     model_id, device, load_secs)

@@ -439,7 +439,8 @@ def _load_blocking(ref: str, device: str, family: str, download_cb=None):
     # HF_HUB_OFFLINE=1) or clobber a value this call never set. The env var
     # only reaches subprocesses / a fresh import — the hub freezes
     # HF_HUB_OFFLINE at import — so the flag is ALSO threaded down
-    # explicitly as local_files_only.
+    # explicitly as ``offline`` (which resolves the GGUF from the local
+    # cache instead of calling from_pretrained).
     offline = bool(getattr(cfg, "LOCAL_FILES_ONLY", False))
     offline_prev = os.environ.get("HF_HUB_OFFLINE")
     if offline:
@@ -476,7 +477,17 @@ def _load_blocking_inner(ref: str, device: str, family: str,
     # Llama.from_pretrained downloads through hf_hub_download silently.
     # ANY pre-download failure falls back to the stock path below.
     local_path = None
-    if not offline:
+    if offline:
+        # from_pretrained ALWAYS lists the repo over the network
+        # (HfFileSystem.ls) and has no offline switch — resolve the
+        # cached file ourselves and never touch the hub.
+        local_path = _cached_gguf(repo, quant)
+        if not local_path:
+            raise TranslationError(
+                f"translation model {ref} is not in the local HF cache "
+                f"and LOCAL_FILES_ONLY is set — download it once with "
+                f"LOCAL_FILES_ONLY disabled")
+    else:
         try:
             local_path = _predownload_gguf(repo, quant, download_cb)
         except Exception as e:  # noqa: BLE001 — pre-download is best-effort
@@ -495,7 +506,6 @@ def _load_blocking_inner(ref: str, device: str, family: str,
             repo_id=repo,
             filename=(f"*{quant}.gguf" if quant else "*.gguf"),
             cache_dir=_hf_cache_dir(),
-            local_files_only=offline,
             n_gpu_layers=(-1 if device == "cuda" else 0),
             n_ctx=_ctx_for(family),
             verbose=False,
@@ -556,6 +566,34 @@ def _predownload_gguf(repo: str, quant: "str | None",
         jobs.job_end(job_id)
 
 
+def _cached_gguf(repo: str, quant: "str | None") -> "str | None":
+    """Resolve the .gguf for repo[:quant] from the local HF cache without
+    any network (LOCAL_FILES_ONLY path). Returns the path when exactly one
+    cached file matches the same glob from_pretrained applies, else None."""
+    import fnmatch
+
+    from huggingface_hub import scan_cache_dir
+    from huggingface_hub.errors import CacheNotFound
+
+    pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
+    try:
+        info = scan_cache_dir(cache_dir=_hf_cache_dir())
+    except CacheNotFound:
+        return None
+    # Keyed by file name so the same file across revisions counts once.
+    matches: "dict[str, str]" = {}
+    for r in info.repos:
+        if r.repo_type != "model" or r.repo_id != repo:
+            continue
+        for rev in r.revisions:
+            for f in rev.files:
+                if fnmatch.fnmatch(f.file_name.lower(), pattern):
+                    matches[f.file_name] = str(f.file_path)
+    if len(matches) != 1:
+        return None
+    return next(iter(matches.values()))
+
+
 def _drop_locked(ref: str) -> bool:
     """Drop one cached model. Caller holds _lock. Declines (False) while a
     job holds a lease on it — closing llama.cpp's native context under a
@@ -563,15 +601,26 @@ def _drop_locked(ref: str) -> bool:
     if _active.get(ref, 0) > 0:
         logger.info("[translate] model %s is in use — eviction deferred", ref)
         return False
-    llm = _models.pop(ref, None)
-    _last_used.pop(ref, None)
-    _params.pop(ref, None)
-    if llm is None:
-        return True
+    # A cancelled job has already released its lease while its executor
+    # thread may still be inside llm.create_chat_completion (see
+    # _run_completion): _infer_mutex is the one lock that tracks a running
+    # decode, so a busy mutex defers eviction exactly like a held lease.
+    if not _infer_mutex.acquire(blocking=False):
+        logger.info("[translate] a decode is still running — eviction of %s "
+                    "deferred", ref)
+        return False
     try:
-        llm.close()
-    except Exception:  # noqa: BLE001 — best-effort teardown
-        pass
+        llm = _models.pop(ref, None)
+        _last_used.pop(ref, None)
+        _params.pop(ref, None)
+        if llm is None:
+            return True
+        try:
+            llm.close()
+        except Exception:  # noqa: BLE001 — best-effort teardown
+            pass
+    finally:
+        _infer_mutex.release()
     system_stats.unregister_loaded_model(_STATS_PREFIX + ref)
     import gc
     gc.collect()
@@ -602,7 +651,10 @@ def _trim_locked(cap: int) -> None:
                 "temporarily exceeding TRANSLATION_MAX_LOADED_MODELS",
                 len(_models))
             break
-        _drop_locked(victim)
+        if not _drop_locked(victim):
+            # decode still draining on it — overflow the cap this round,
+            # the idle evictor retries
+            break
 
 
 def _load_cap() -> int:
@@ -650,7 +702,8 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             # n_ctx) and no lease pins the model: genuinely re-key — drop the
             # stale instance and reload with the current parameters.
             async with _lock:
-                _drop_locked(ref)
+                if not _drop_locked(ref):
+                    return _hit(llm)   # decode draining — keep serving, re-key next time
         async with _lock:
             _trim_locked(_load_cap())
         # The VRAM delta is only attributable to THIS load when no other
@@ -675,7 +728,8 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
             vram_before is not None and vram_after is not None
             and _load_overlaps == overlaps_before) else None
         load_secs = time.perf_counter() - t0
-        system_stats.register_loaded_model(
+        await asyncio.to_thread(
+            system_stats.register_loaded_model,
             _STATS_PREFIX + ref, vram, device, "gguf", load_secs)
         logger.info("[translate] model %s loaded on %s in %.1fs",
                     ref, device, load_secs)
@@ -799,10 +853,20 @@ def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
 def _redistribute(group_texts: "list[str]", translated: str) -> "list[str]":
     """Split one group's translated text back across its member segments,
     proportionally by each member's share of the group's source char length,
-    cutting at the word boundary (space) nearest each proportional cut."""
+    cutting at the word boundary (space) nearest each proportional cut.
+    Members whose source is blank get an empty piece."""
     n = len(group_texts)
     if n <= 1:
         return [translated.strip()] if n == 1 else []
+    live = [i for i, t in enumerate(group_texts) if t.strip()]
+    if len(live) < n:
+        if not live:
+            return [""] * n
+        sub = _redistribute([group_texts[i] for i in live], translated)
+        out = [""] * n
+        for i, piece in zip(live, sub):
+            out[i] = piece
+        return out
     translated = translated.strip()
     if not translated:
         return [""] * n
@@ -852,7 +916,10 @@ _NUMBERED_INSTRUCTION = (
 
 
 def _build_numbered(texts: "list[str]") -> str:
-    return "\n".join(f"{i + 1}. {t}" for i, t in enumerate(texts))
+    # One line per item is the contract the model echoes back: an embedded
+    # newline in a segment would split it into two numbered candidates.
+    return "\n".join(f"{i + 1}. {' '.join(t.split())}"
+                     for i, t in enumerate(texts))
 
 
 def _parse_numbered(reply: str, n: int) -> "list[str] | None":
@@ -1178,23 +1245,37 @@ async def translate_segments(
             while i < len(segments):
                 _check_cancel()
                 batch_idx = list(range(i, min(i + k, len(segments))))
-                texts = [(segments[j].get("text") or "") for j in batch_idx]
+                # Blank-source members never reach the model: they would
+                # cost a call and a bogus "empty output" warning.
+                live_idx = [j for j in batch_idx
+                            if (segments[j].get("text") or "").strip()]
+                for j in batch_idx:
+                    if j not in live_idx:
+                        results[j][target] = ""
+                if not live_idx:
+                    i += len(batch_idx)
+                    batch_no += 1
+                    done_units += len(batch_idx)
+                    _progress(f"{target} {min(batch_no, n_batches)}/{n_batches}",
+                              last_ok)
+                    continue
+                texts = [(segments[j].get("text") or "") for j in live_idx]
                 context = _context_lines(segments, i, ctx_n)
-                if len(batch_idx) == 1:
-                    results[batch_idx[0]][target] = await _guarded_single(
-                        texts[0], target, context, batch_idx[0])
+                if len(live_idx) == 1:
+                    results[live_idx[0]][target] = await _guarded_single(
+                        texts[0], target, context, live_idx[0])
                 else:
                     payload = (f"{_NUMBERED_INSTRUCTION}\n\n"
                                f"{_build_numbered(texts)}")
                     reply = await _translate_one(payload, target, context)
-                    parsed = _parse_numbered(reply, len(batch_idx))
+                    parsed = _parse_numbered(reply, len(live_idx))
                     if parsed is None:
                         # Line-count mismatch → halve the batch and retry the
                         # same position (down to per-segment prompts).
                         k = max(1, k // 2)
                         n_batches = max(1, -(-(len(segments) - i) // k)) + batch_no
                         continue
-                    for j, out in zip(batch_idx, parsed):
+                    for j, out in zip(live_idx, parsed):
                         src = segments[j].get("text") or ""
                         reason = _guard_reason(src, out, target=target)
                         if reason is None:
@@ -1227,6 +1308,14 @@ async def translate_segments(
                 _check_cancel()
                 src_texts = [(segments[j].get("text") or "") for j in group]
                 joined = " ".join(t.strip() for t in src_texts).strip()
+                if not joined:
+                    # Every member is blank — nothing to translate, and a
+                    # model call would only invent text for the cues.
+                    for j in group:
+                        results[j][target] = ""
+                    done_units += len(group)
+                    _progress(f"{target} {g_no}/{len(groups)}", last_ok)
+                    continue
                 context = _context_lines(segments, group[0], ctx_n)
                 translated = await _translate_one(joined, target, context)
                 reason = _guard_reason(joined, translated, target=target)
@@ -1241,7 +1330,8 @@ async def translate_segments(
                 pieces: "list[str]" = []
                 if reason is None:
                     pieces = _redistribute(src_texts, translated)
-                    if not all(p.strip() for p in pieces):
+                    if not all(p.strip() for p, s in zip(pieces, src_texts)
+                               if s.strip()):
                         # A reply shorter than the member count cannot be
                         # split without blank cues for segments that have
                         # source text — revert the group like a guard hit.

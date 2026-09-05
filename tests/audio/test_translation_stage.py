@@ -18,7 +18,7 @@ def _post(client, **data):
     return client.post("/v1/audio/transcriptions", files=_FILE, data=data)
 
 
-def _stub_translate(monkeypatch, calls=None, warnings=None):
+def _stub_translate(monkeypatch, calls=None):
     """Deterministic translate_segments stub: every segment translates to
     'XLATED-<target>'. Records the handler-side call shape in `calls`."""
     async def _fake(segments, targets, *, source_lang=None, model_ref=None,
@@ -31,7 +31,7 @@ def _stub_translate(monkeypatch, calls=None, warnings=None):
                           "mode": mode, "glossary": glossary,
                           "context_segments": context_segments})
         per_seg = [{t: f"XLATED-{t}" for t in targets} for _ in segments]
-        return per_seg, list(warnings or []), {
+        return per_seg, [], {
             "model": (model_ref or "").strip() or "org/default-GGUF:Q4",
             "source": source_lang or "", "mode": mode}
     monkeypatch.setattr(translation, "translate_segments", _fake)
@@ -246,9 +246,10 @@ def test_invalid_translation_mode_is_422(client):
 
 
 def test_captures_never_store_translated_text(client, app_module, monkeypatch):
-    # Regression guard for the stage's CRITICAL invariant: the capture row
-    # (raw/final/training text + segment diag) must carry only the
-    # source-language transcript, never the stage's translations.
+    # Regression guard for the stage's CRITICAL invariant: the capture row's
+    # TRANSCRIPT fields (raw/final/training text + segment diag) must carry
+    # only the source-language transcript — the stage's translations live
+    # exclusively in their own keyed `translations` column.
     from faster_whisper_backend.captures import store as captures_store
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)

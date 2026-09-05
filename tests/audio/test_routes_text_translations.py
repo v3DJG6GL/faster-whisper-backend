@@ -176,7 +176,7 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
 
         receipt_hold.park("cap2", {"file_label": "utt#1", "model_name": "m",
                                    "raw": "r", "final": "f", "seg_diag": [],
-                                   "kwargs": {}}, hold_s=90)
+                                   "kwargs": {}, "info": None}, hold_s=90)
         r = client.post(URL, json=_body(captured_id="cap2"))
         assert r.status_code == 429
         assert receipt_hold.pending() == 0
@@ -519,7 +519,7 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
         gauge.acquire(_open_key())
     receipt_hold.park("cap1", {"file_label": "utt#1", "model_name": "m",
                                "raw": "r", "final": "f", "seg_diag": [],
-                               "kwargs": {}}, hold_s=90)
+                               "kwargs": {}, "info": None}, hold_s=90)
     try:
         r = client.post(URL, json=_body(captured_id="cap1"))
         assert r.status_code == 429
@@ -539,7 +539,7 @@ def test_validation_reject_releases_the_held_receipt(client, app_module,
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
     payload = {"file_label": "utt#1", "model_name": "m", "raw": "r",
-               "final": "f", "seg_diag": [], "kwargs": {}}
+               "final": "f", "seg_diag": [], "kwargs": {}, "info": None}
     try:
         receipt_hold.park("cap-v", payload, hold_s=90)
         r = client.post(URL, json={"segments": [], "targets": ["en"],

@@ -319,17 +319,24 @@ def _load_blocking(model_filename: str, device: str):
     except Exception:  # noqa: BLE001 — tuning only
         pass
     models_dir = getattr(cfg, "DOWNLOAD_ROOT", None) or tempfile.gettempdir()
-    sep = Separator(
-        log_level=logging.WARNING,
-        model_file_dir=os.path.join(models_dir, "audio-separator"),
-        output_dir=tempfile.gettempdir(),
-        output_format="WAV",
-        output_single_stem="Vocals",
-        # Write stems with soundfile directly instead of the pydub default,
-        # which quantizes/interleaves in Python and pipes the whole WAV
-        # through an ffmpeg subprocess — ~20 s of dead time on long audio.
-        use_soundfile=True,
-    )
+    try:
+        sep = Separator(
+            log_level=logging.WARNING,
+            model_file_dir=os.path.join(models_dir, "audio-separator"),
+            output_dir=tempfile.gettempdir(),
+            output_format="WAV",
+            output_single_stem="Vocals",
+            # Write stems with soundfile directly instead of the pydub
+            # default, which quantizes/interleaves in Python and pipes the
+            # whole WAV through an ffmpeg subprocess — ~20 s of dead time
+            # on long audio.
+            use_soundfile=True,
+        )
+    except Exception as e:  # noqa: BLE001 — setup_torch_device / output dir
+        logger.error("[bgm] separator construction failed: %s", e)
+        raise BgmSeparationError(
+            f"could not load separation model {model_filename} — {e}"
+        ) from e
     if device == "cpu":
         # Separator autodetects CUDA in __init__ (setup_torch_device); there is
         # no constructor knob, but the chosen device/provider is only consumed
@@ -562,8 +569,9 @@ async def _get_separator(model_filename: "str | None" = None, *,
         # can silently fall back to CPU at session creation, and the ledger
         # (model_sizes) keys rows by device.
         actual = actual_device() or device
-        system_stats.register_loaded_model(_STATS_PREFIX + model, vram, actual,
-                                           "onnx", load_secs)
+        await asyncio.to_thread(
+            system_stats.register_loaded_model,
+            _STATS_PREFIX + model, vram, actual, "onnx", load_secs)
         logger.info("[bgm] separation model %s loaded on %s in %.1fs",
                     model, actual, load_secs)
         try:

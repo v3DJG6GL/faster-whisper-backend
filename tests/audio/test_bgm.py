@@ -196,9 +196,10 @@ def test_locked_separate_ignores_client_param(client, app_module, make_user_key,
                         json={"OVERRIDE_PROFILES": {"nosep": {"locks": ["SEPARATE_BGM"]}}})
         assert r.status_code == 200, r.text
         uid, raw_alice = make_user_key("alice", is_admin=False)
-        client.patch(f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
-                     json={"pages": {}, "config": {"overrides": {},
-                           "profiles": ["nosep"], "locks": []}})
+        r = client.patch(f"/settings/api-keys/api/users/{uid}/permissions", headers=admin_h,
+                         json={"pages": {}, "config": {"overrides": {},
+                               "profiles": ["nosep"], "locks": []}})
+        assert r.status_code == 200, r.text
         r = client.post(
             "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
             data={"model": "whisper-1", "response_format": "verbose_json",
@@ -377,6 +378,10 @@ def test_cancel_after_the_mutex_wait_skips_the_separation(monkeypatch):
             return ["never.wav"]
 
     sep = _Sep()
+    # _run executes in the executor thread: swap the threading.local for a
+    # plain namespace so its post-condition is observable from this thread.
+    import types
+    monkeypatch.setattr(bgm_separation, "_progress_tls", types.SimpleNamespace())
     with pytest.raises(bgm_separation.BgmCancelled):
         asyncio.run(bgm_separation._separate_with(
             sep, "in.wav", progress_cb=None, cancel_check=_cancel))

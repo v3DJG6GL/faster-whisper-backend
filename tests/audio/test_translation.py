@@ -785,21 +785,28 @@ def test_local_files_only_skips_predownload(monkeypatch):
     def never(repo, quant, cb=None):
         raise AssertionError("pre-download must not run offline")
     monkeypatch.setattr(translation, "_predownload_gguf", never)
+    monkeypatch.setattr(translation, "_cached_gguf",
+                        lambda repo, quant: "/cache/m.Q4.gguf")
     translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
-    assert record[0][0] == "from_pretrained"
-    # The hub freezes HF_HUB_OFFLINE at import, so the env var alone cannot
-    # keep the load off the network — the flag must reach the call itself.
-    assert record[0][1]["local_files_only"] is True
+    # from_pretrained ALWAYS lists the repo over the network and has no
+    # offline switch — the offline load must resolve the cached file
+    # itself and construct the model directly from that path.
+    assert record[0][0] == "direct"
+    assert record[0][1] == "/cache/m.Q4.gguf"
+    assert all("local_files_only" not in r[-1] for r in record)
 
 
-def test_online_load_passes_local_files_only_false(monkeypatch):
+def test_online_load_does_not_pass_dead_local_files_only_kwarg(monkeypatch):
+    """Llama.from_pretrained has no local_files_only parameter (it would be
+    swallowed by Llama.__init__'s **kwargs) — never pass it."""
     record = []
     _install_fake_llama(monkeypatch, record)
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", False, raising=False)
     monkeypatch.setattr(translation, "_predownload_gguf",
                         lambda repo, quant, cb=None: None)
     translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
-    assert record[0][1]["local_files_only"] is False
+    assert record[0][0] == "from_pretrained"
+    assert "local_files_only" not in record[0][1]
 
 
 def test_load_blocking_threads_offline_flag_explicitly(monkeypatch):
@@ -1234,11 +1241,13 @@ def test_warm_hit_does_not_block_on_cold_load(lru_env, monkeypatch):
         monkeypatch.setattr(translation, "_load_blocking", slow_load)
         loop = asyncio.get_running_loop()
         cold = asyncio.ensure_future(translation._get_model("o/cold"))
-        await loop.run_in_executor(None, started.wait, 5)
-        # The warm hit returns while the cold load is still parked.
-        assert await asyncio.wait_for(
-            translation._get_model("o/warm"), 1) is warm
-        release.set()
+        try:
+            await loop.run_in_executor(None, started.wait, 5)
+            # The warm hit returns while the cold load is still parked.
+            assert await asyncio.wait_for(
+                translation._get_model("o/warm"), 1) is warm
+        finally:
+            release.set()   # a failed assertion must not also time out
         assert await cold is made["o/cold"]
     asyncio.run(run())
 
@@ -1614,3 +1623,168 @@ class TestComplete:
         assert translation._complete(chat, "hunyuan", [], 8) == ""
         raw = self._Llm(raw_out={"choices": [{}]})
         assert translation._complete(raw, "seedx", "p", 8) == ""
+
+
+# ── code-review run 8 regressions ───────────────────────────────────────────
+
+def test_redistribute_blank_source_member_gets_empty_piece():
+    """A blank-source member must not steal a slice of its neighbour's
+    translation: proportional cuts run only over members with source text."""
+    assert translation._redistribute(["", "Hello world."], "Hallo Welt.") \
+        == ["", "Hallo Welt."]
+    assert translation._redistribute(["Hello world.", ""], "Welt.") \
+        == ["Welt.", ""]
+    assert translation._redistribute(["ab", "", "cd"], "xx yy") \
+        == ["xx", "", "yy"]
+    assert translation._redistribute(["", ""], "x") == ["", ""]
+
+
+def test_fluent_blank_segment_is_skipped_not_fed_from_neighbour(base_cfg,
+                                                                monkeypatch):
+    calls = []
+    _install_fake(monkeypatch, _xlate, calls)
+    segs = _segs("Hi.", "", "Hello world.")
+    res, warns, meta = _run(translation.translate_segments(
+        segs, ["de"], source_lang="en", mode="fluent"))
+    assert [r["de"] for r in res] == ["hI.", "", "hELLO WORLD."]
+    assert warns == []
+    assert meta["kept"] == {}
+    assert all(c.strip() for c in calls)
+
+
+def test_faithful_blank_segment_no_model_call_no_warning(base_cfg,
+                                                         monkeypatch):
+    calls = []
+    _install_fake(monkeypatch, _xlate, calls)
+    segs = _segs("Hi.", "", "Hello world.")
+    res, warns, meta = _run(translation.translate_segments(
+        segs, ["de"], source_lang="en", mode="faithful"))
+    assert [r["de"] for r in res] == ["hI.", "", "hELLO WORLD."]
+    assert warns == []
+    assert meta["kept"] == {}
+    assert len(calls) == 1
+    assert "2. Hello world." in calls[0]   # blank dropped from the list
+
+    n_calls = len(calls)
+    res, warns, meta = _run(translation.translate_segments(
+        _segs("", ""), ["de"], source_lang="en", mode="faithful"))
+    assert len(calls) == n_calls            # no model call at all
+    assert [r["de"] for r in res] == ["", ""]
+    assert warns == []
+
+
+def _hold_infer_mutex():
+    """Start a thread that holds translation._infer_mutex until the returned
+    release Event is set; returns (thread, held_event, release_event)."""
+    held = threading.Event()
+    release = threading.Event()
+
+    def _run_holder():
+        with translation._infer_mutex:
+            held.set()
+            release.wait(5)
+    t = threading.Thread(target=_run_holder, daemon=True)
+    t.start()
+    assert held.wait(5)
+    return t, held, release
+
+
+def test_draining_decode_blocks_eviction():
+    """A cancelled job has released its lease while its executor thread is
+    still inside create_chat_completion: the busy _infer_mutex must defer
+    eviction exactly like a held lease (closing under the decode is a
+    native use-after-free)."""
+    class _Closable:
+        closed = False
+        def close(self):
+            self.closed = True
+    llm = _Closable()
+    translation._models["org/drain:Q4"] = llm
+    translation._last_used["org/drain:Q4"] = 0.0
+    translation._params["org/drain:Q4"] = ("cpu", 1)
+    translation._active.pop("org/drain:Q4", None)
+    t, _held, release = _hold_infer_mutex()
+    try:
+        assert translation._drop_locked("org/drain:Q4") is False
+        assert "org/drain:Q4" in translation._models
+        assert not llm.closed
+        release.set()
+        t.join(5)
+        assert translation._drop_locked("org/drain:Q4") is True
+        assert llm.closed
+    finally:
+        release.set()
+        translation._models.pop("org/drain:Q4", None)
+        translation._last_used.pop("org/drain:Q4", None)
+        translation._params.pop("org/drain:Q4", None)
+        translation._active.pop("org/drain:Q4", None)
+
+
+def test_trim_stops_on_draining_decode(lru_env):
+    made, _stats = lru_env
+
+    async def load_both():
+        await translation._get_model("o/a")
+        await translation._get_model("o/b")
+    _run(load_both())
+    assert set(translation._models) == {"o/a", "o/b"}
+
+    # _trim_locked(cap) frees room for ONE incoming load (evicts while
+    # len >= cap): cap 2 with two residents targets exactly the LRU one.
+    t, _held, release = _hold_infer_mutex()
+    try:
+        translation._trim_locked(2)          # must return, not spin
+        assert set(translation._models) == {"o/a", "o/b"}
+        assert not made["o/a"].closed and not made["o/b"].closed
+    finally:
+        release.set()
+        t.join(5)
+    translation._trim_locked(2)
+    assert set(translation._models) == {"o/b"}
+    assert made["o/a"].closed
+
+
+def test_offline_load_raises_when_not_cached(monkeypatch):
+    record = []
+    _install_fake_llama(monkeypatch, record)
+    monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
+    monkeypatch.setattr(translation, "_cached_gguf", lambda repo, quant: None)
+
+    def never(repo, quant, cb=None):
+        raise AssertionError("pre-download must not run offline")
+    monkeypatch.setattr(translation, "_predownload_gguf", never)
+    with pytest.raises(translation.TranslationError, match="LOCAL_FILES_ONLY"):
+        translation._load_blocking_inner("org/repo:Q4", "cpu", "chatml")
+    assert record == []
+
+
+def _fake_cache(files_by_repo):
+    from types import SimpleNamespace as NS
+    repos = []
+    for repo_id, files in files_by_repo.items():
+        repos.append(NS(repo_type="model", repo_id=repo_id, revisions=[
+            NS(files=[NS(file_name=f, file_path=f"/c/{f}") for f in files])]))
+    return NS(repos=repos)
+
+
+def test_cached_gguf_resolves_unique_match(monkeypatch):
+    import huggingface_hub
+    monkeypatch.setattr(huggingface_hub, "scan_cache_dir",
+                        lambda cache_dir=None: _fake_cache(
+                            {"org/repo": ["m.Q4.gguf", "README.md"]}))
+    assert translation._cached_gguf("org/repo", "Q4") == "/c/m.Q4.gguf"
+
+
+def test_cached_gguf_none_on_ambiguous_or_missing(monkeypatch):
+    import huggingface_hub
+    from huggingface_hub.errors import CacheNotFound
+    monkeypatch.setattr(huggingface_hub, "scan_cache_dir",
+                        lambda cache_dir=None: _fake_cache(
+                            {"org/repo": ["a.Q4.gguf", "b.Q4.gguf"]}))
+    assert translation._cached_gguf("org/repo", "Q4") is None      # ambiguous
+    assert translation._cached_gguf("org/other", "Q4") is None     # unknown
+
+    def _boom(cache_dir=None):
+        raise CacheNotFound("x", cache_dir="/nope")
+    monkeypatch.setattr(huggingface_hub, "scan_cache_dir", _boom)
+    assert translation._cached_gguf("org/repo", "Q4") is None

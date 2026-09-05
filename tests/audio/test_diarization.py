@@ -5,6 +5,7 @@ the pure segment-assignment helper. pyannote is never imported — the module's
 import logging
 import os
 
+import huggingface_hub.constants
 import pytest
 
 from faster_whisper_backend.audio import diarization
@@ -224,20 +225,27 @@ def test_load_scopes_hf_hub_offline_to_the_load(monkeypatch):
     """LOCAL_FILES_ONLY is hot-editable: one offline pyannote load must not
     pin HF_HUB_OFFLINE process-wide (it would poison every later
     huggingface_hub download — whisper snapshots, translation weights —
-    until a restart)."""
+    until a restart). The hub freezes the env var at import, so the module
+    flag huggingface_hub.constants.HF_HUB_OFFLINE is what must flip (and
+    flip back)."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", None, raising=False)
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
     monkeypatch.setattr(diarization.cfg, "LOCAL_FILES_ONLY", True,
                         raising=False)
     seen = {}
 
     def _fake_inner(model_id, device, batch_size):
         seen["offline"] = os.environ.get("HF_HUB_OFFLINE")
+        seen["const"] = huggingface_hub.constants.HF_HUB_OFFLINE
         return object()
     monkeypatch.setattr(diarization, "_load_blocking_inner", _fake_inner)
 
     diarization._load_blocking("m1", "cpu", 4)
     assert seen["offline"] == "1"          # offline DURING the load...
+    assert seen["const"] is True
     assert "HF_HUB_OFFLINE" not in os.environ   # ...and restored after
+    assert huggingface_hub.constants.HF_HUB_OFFLINE is False
 
     # A pre-existing value is restored, not popped.
     monkeypatch.setenv("HF_HUB_OFFLINE", "0")
@@ -250,16 +258,20 @@ def test_load_snapshots_local_files_only_for_the_whole_load(monkeypatch):
     must neither skip the restore (True → False would leak HF_HUB_OFFLINE=1
     process-wide) nor clobber a value this load never set (False → True)."""
     monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", None, raising=False)
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
     cfg = diarization.cfg
     monkeypatch.setattr(cfg, "LOCAL_FILES_ONLY", True, raising=False)
 
     def _flip_off(model_id, device, batch_size):
         assert os.environ.get("HF_HUB_OFFLINE") == "1"
+        assert huggingface_hub.constants.HF_HUB_OFFLINE is True
         cfg.LOCAL_FILES_ONLY = False
         return object()
     monkeypatch.setattr(diarization, "_load_blocking_inner", _flip_off)
     diarization._load_blocking("m1", "cpu", 4)
     assert "HF_HUB_OFFLINE" not in os.environ
+    assert huggingface_hub.constants.HF_HUB_OFFLINE is False
 
     # Mirror: starts False (nothing set), flips True inside — the finally
     # must leave a pre-existing value alone.
@@ -268,11 +280,41 @@ def test_load_snapshots_local_files_only_for_the_whole_load(monkeypatch):
 
     def _flip_on(model_id, device, batch_size):
         assert os.environ.get("HF_HUB_OFFLINE") == "0"
+        assert huggingface_hub.constants.HF_HUB_OFFLINE is False
         cfg.LOCAL_FILES_ONLY = True
         return object()
     monkeypatch.setattr(diarization, "_load_blocking_inner", _flip_on)
     diarization._load_blocking("m1", "cpu", 4)
     assert os.environ["HF_HUB_OFFLINE"] == "0"
+    assert huggingface_hub.constants.HF_HUB_OFFLINE is False
+
+
+def test_load_makes_hub_offline_mode_true_for_the_load(monkeypatch):
+    """What the hub's request gates actually consult is
+    constants.is_offline_mode(), which reads the frozen module flag — the
+    offline load must make THAT report True, and only for its duration."""
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising=False)
+    monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", None, raising=False)
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_OFFLINE", False)
+    monkeypatch.setattr(diarization.cfg, "LOCAL_FILES_ONLY", True,
+                        raising=False)
+    seen = []
+
+    def _fake_inner(model_id, device, batch_size):
+        seen.append(huggingface_hub.constants.is_offline_mode())
+        return object()
+    monkeypatch.setattr(diarization, "_load_blocking_inner", _fake_inner)
+
+    diarization._load_blocking("m1", "cpu", 4)
+    assert seen == [True]
+    assert huggingface_hub.constants.is_offline_mode() is False
+
+    # An online load never touches the constant.
+    monkeypatch.setattr(diarization.cfg, "LOCAL_FILES_ONLY", False,
+                        raising=False)
+    diarization._load_blocking("m1", "cpu", 4)
+    assert seen == [True, False]
+    assert huggingface_hub.constants.is_offline_mode() is False
 
 
 # --- lease key is resolved once ---------------------------------------------

@@ -112,3 +112,41 @@ def test_transcode_unreadable_input_cleans_up(tmp_path):
     with pytest.raises(Exception):
         audio_transcode.transcode_to_wav_16k_mono(str(bad), dst)
     assert not os.path.exists(dst)
+
+
+# ---------------------------------------------------------------------------
+# The input open pins protocol_whitelist=file (concat/HLS/SDP SSRF guard)
+# ---------------------------------------------------------------------------
+
+def test_transcode_input_open_pins_file_protocol_whitelist(tmp_path, monkeypatch):
+    """A PyAV upgrade or an av.open refactor must not silently drop the
+    ``protocol_whitelist: file`` option — it is what stops a crafted
+    ffconcat/HLS/SDP input from following external file:// or http://
+    references (tests/url/test_url_ssrf_guard.py is the URL-side twin)."""
+    import av
+    src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
+    dst = str(tmp_path / "out.wav")
+    opens = []
+    real_open = av.open
+
+    def spy_open(file, *args, **kwargs):
+        opens.append((file, kwargs))
+        return real_open(file, *args, **kwargs)
+    monkeypatch.setattr(av, "open", spy_open)
+
+    audio_transcode.transcode_to_wav_16k_mono(src, dst)
+    in_opens = [kw for f, kw in opens if f == src]
+    assert len(in_opens) == 1
+    assert in_opens[0].get("options") == {"protocol_whitelist": "file"}
+
+
+def test_transcode_rejects_ffconcat_playlist_referencing_a_file(tmp_path):
+    """Real ffmpeg under the whitelist refuses the nested ``file`` protocol
+    an ffconcat playlist needs, so the playlist fails and leaves no dst."""
+    wav = _write_src_wav(str(tmp_path / "real.wav"), rate=RATE, nchannels=1)
+    playlist = tmp_path / "list.ffconcat"
+    playlist.write_text(f"ffconcat version 1.0\nfile '{wav}'\n")
+    dst = str(tmp_path / "out.wav")
+    with pytest.raises(Exception):
+        audio_transcode.transcode_to_wav_16k_mono(str(playlist), dst)
+    assert not os.path.exists(dst)
