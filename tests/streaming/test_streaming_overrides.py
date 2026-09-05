@@ -536,3 +536,39 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
 
     assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
     assert any(m.get("code") == "unauthorized" for m in msgs), msgs
+
+
+def test_revocation_during_the_closing_drain_still_closes_with_4401(
+        client, make_user_key, app_module, monkeypatch):
+    """Revoke AFTER the pump's last decode but BEFORE the client's stop, with
+    an utterance still in flight: the drain in session.close() runs
+    decode_final → _refresh_ident → _CredentialRevoked outside the pump. That
+    used to escape to the blanket handler (traceback, an error ledger row, an
+    "internal error" frame, close 1000); it must close with 4401 like every
+    other revocation path."""
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.stats import metrics
+    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
+    uid, raw_alice = make_user_key("alice")
+    rows = []
+    monkeypatch.setattr(metrics, "record_transcription",
+                        lambda **kw: rows.append(kw.get("status")))
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))        # speech, utterance stays open
+        time.sleep(0.5)                        # pump has drained the queue
+        api_keys_store.revoke_user(uid)        # bumps the config version
+        ws.send_json({"type": "stop"})         # no further decode until the drain
+        msgs, code = _drain_with_code(ws)
+
+    assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
+    assert not any(m.get("code") == "internal" for m in msgs), msgs
+    assert not any(m.get("type") == "final" and m.get("last") for m in msgs), msgs
+    assert "error" not in rows, rows

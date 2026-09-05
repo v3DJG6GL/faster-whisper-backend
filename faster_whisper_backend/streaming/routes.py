@@ -1448,6 +1448,22 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 await consumer_task
             except Exception:  # noqa: BLE001
                 pass
+        if not _auth_revoked:
+            try:
+                await session.close()
+            except _CredentialRevoked:
+                # Revoked between the pump's last decode and the stop: the
+                # drain's final decode re-auths and raises HERE, not in the
+                # pump — without this it reached the blanket handler below
+                # (traceback, an error ledger row, "internal error", close 1000)
+                # instead of the 4401 every other revocation path sends.
+                _auth_revoked = True
+                async with send_lock:
+                    try:
+                        await ws.send_json({"type": "error", "code": "unauthorized",
+                                            "message": "credential no longer valid; closing"})
+                    except Exception:  # noqa: BLE001 — peer may be gone
+                        pass
         if _auth_revoked:
             # No session.close() here: its drain finalizes the in-flight
             # utterance and emits the closing document, i.e. it would hand a
@@ -1461,7 +1477,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 except (RuntimeError, WebSocketDisconnect):
                     pass
         else:
-            await session.close()
             async with send_lock:
                 try:
                     await ws.send_json({"type": "closing"})

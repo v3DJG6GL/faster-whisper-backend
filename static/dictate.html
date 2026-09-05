@@ -139,6 +139,7 @@
   let ws = null, audioCtx = null, workletNode = null, mediaStream = null, running = false;
   let stopTimer = null;   // fallback if the server never answers "stop" with "closing"
   let resampleCarry = 0.0, resamplePos = 0.0, pcmBuf = new Int16Array(FRAME_SAMPLES), pcmLen = 0;
+  let docPrefix = "";     // finished documents (before a hard break), see "boundary"
   // Batch mode: record the whole clip with MediaRecorder, POST it in one shot.
   let recorder = null, recStream = null, recChunks = [];
 
@@ -184,13 +185,20 @@
   // Linear-resample incoming Float32 (at ctxRate) down to TARGET_SR, pack to
   // int16, and ship full frames as WS binary.
   function pushSamples(float32, srcRate) {
+    if (!float32.length) return;
     const ratio = srcRate / TARGET_SR;
+    // pos is relative to index -1 == resampleCarry (the previous block's last
+    // sample), so a seam point always interpolates between two REAL neighbours.
+    // Using the carry as the RIGHT neighbour of the last sample (an older build)
+    // reached 128 samples into the past at every block seam — inaudible at
+    // 48 kHz (ratio 3, seams land on integers) but a ~124 Hz click train at
+    // 44.1 kHz, the default capture rate on most Apple hardware.
     let pos = resamplePos;
-    while (pos < float32.length) {
+    while (pos < float32.length - 1) {
       const i = Math.floor(pos);
       const frac = pos - i;
-      const a = float32[i];
-      const b = i + 1 < float32.length ? float32[i + 1] : resampleCarry;
+      const a = i < 0 ? resampleCarry : float32[i];
+      const b = float32[i + 1];
       let s = a + (b - a) * frac;
       s = Math.max(-1, Math.min(1, s));
       pcmBuf[pcmLen++] = s < 0 ? s * 0x8000 : s * 0x7fff;
@@ -218,10 +226,21 @@
     else if (m.type === "final") {
       // committed = locked append-only prefix; tail = provisional trailing sentence.
       // Both are full strings (server re-sends them), so we replace, not append —
-      // a post-processing seam rewrite can never desync the display.
-      finalEl.textContent = m.committed || "";
+      // a post-processing seam rewrite can never desync the display. They span
+      // only the CURRENT document (since the last hard break), hence docPrefix.
+      finalEl.textContent = docPrefix + (m.committed || "");
       tailEl.textContent = m.tail || "";
       renderPartial("", "");
+    }
+    else if (m.type === "boundary") {
+      // Hard break (STREAMING_HARD_BREAK_SILENCE_MS of silence): the server
+      // starts a fresh document, so the next final's committed/tail no longer
+      // cover what is on screen — fold the finished document into a prefix the
+      // final handler keeps re-rendering, or everything before the pause would
+      // vanish the moment the user resumes speaking.
+      docPrefix = finalEl.textContent + tailEl.textContent;
+      if (docPrefix) docPrefix += m.separator || "\n";
+      finalEl.textContent = docPrefix; tailEl.textContent = "";
     }
     else if (m.type === "loading") {
       // Sent every ~3 s while a cold model load is in progress — without it the
@@ -321,7 +340,7 @@
   }
 
   async function start() {
-    finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", "");
+    finalEl.textContent = ""; tailEl.textContent = ""; renderPartial("", ""); docPrefix = "";
     setStatus("requesting mic…");
 
     // Acquire mic BEFORE opening the WebSocket so a denied permission

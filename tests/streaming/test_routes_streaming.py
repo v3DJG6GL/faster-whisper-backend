@@ -590,3 +590,28 @@ def test_stream_malformed_client_job_falls_back_to_session_id(app_module, monkey
             "SELECT job_id, kind FROM usage_jobs").fetchall()
     assert len(rows) == 1 and rows[0]["kind"] == "dictation"
     assert len(rows[0]["job_id"]) == 32 and rows[0]["job_id"] != "../not-hex"
+
+
+def test_dictate_page_keeps_earlier_documents_across_a_hard_break(app_module):
+    """StreamSession._hard_break (STREAMING_HARD_BREAK_SILENCE_MS, 5 s by
+    default) emits {"type":"boundary"} and resets the document, so the next
+    final's committed/tail cover only the NEW document. The page must fold
+    what is on screen into a prefix on that frame — an older build had no
+    boundary handler and its full-replace final handler wiped everything
+    dictated before the pause the moment the user resumed speaking."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    assert 'm.type === "boundary"' in body
+    assert "docPrefix + (m.committed" in body
+    assert 'docPrefix = ""' in body          # reset per start()
+
+
+def test_dictate_page_resampler_seam_uses_a_real_neighbour(app_module):
+    """pushSamples() must interpolate a block seam between the previous block's
+    last sample (carry, index -1) and this block's first — not use the carry as
+    the right neighbour of the LAST sample (128 samples stale). Invisible at
+    48 kHz (integer ratio) but a ~124 Hz click train at 44.1 kHz."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    assert "i < 0 ? resampleCarry : float32[i]" in body
+    assert "float32[i + 1] : resampleCarry" not in body
