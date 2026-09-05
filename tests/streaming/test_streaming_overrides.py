@@ -2,6 +2,9 @@
 overrides surfaced in the `ready` frame, and profile decode params reach the
 final decode. Driven in-process; no faster-whisper needed."""
 
+import logging
+import time
+
 from tests._streaming_helpers import const_pcm, ws_drain
 from tests.conftest import bearer
 
@@ -261,6 +264,62 @@ def test_model_load_failure_delivers_generic_error_and_closes(
     assert errors[0]["message"] == "model could not be loaded"
 
 
+def test_model_load_failure_with_peer_gone_is_not_logged_as_server_error(
+        client, make_user_key, app_module, monkeypatch, caplog):
+    """A peer that hangs up while the handshake is being refused (here: during
+    a failed model load) is a plain disconnect — not a traceback and not a
+    status="error" dictation row. Starlette raises WebSocketDisconnect on the
+    refusal send and RuntimeError on the following close; both must stay
+    inside the guarded refusal path."""
+    _, raw_alice = make_user_key("alice")
+
+    async def _boom(name, *, lease=False):
+        raise RuntimeError("/srv/models/secret-path missing")
+
+    monkeypatch.setattr(app_module, "_get_or_load_model", _boom)
+
+    from starlette.websockets import WebSocket as _WS
+    _real_send = _WS.send
+
+    async def _gone_send(self, message):
+        # Fail at the ASGI layer (below Starlette's own send()), so its state
+        # machine turns the OSError into WebSocketDisconnect and flips the
+        # socket to DISCONNECTED — the exact uvicorn peer-gone sequence.
+        if message["type"] != "websocket.accept":
+            async def _asgi_gone(_msg):
+                raise OSError("peer gone")
+            self._send = _asgi_gone
+        return await _real_send(self, message)
+
+    monkeypatch.setattr(_WS, "send", _gone_send)
+
+    from faster_whisper_backend.stats import metrics
+    rows = []
+    monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
+    caplog.set_level(logging.ERROR, logger="faster_whisper_backend.streaming.routes")
+
+    from faster_whisper_backend.streaming import routes as streaming_routes
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        # No close frame ever reaches the test session (the refusal send failed),
+        # so wait for the handler to reach its teardown — it drops the session
+        # id AFTER the error branch would have logged / recorded the row —
+        # instead of draining. Leaving the block earlier would cancel the app.
+        for _ in range(400):
+            if not streaming_routes._active_sessions:
+                break
+            time.sleep(0.025)
+        assert not streaming_routes._active_sessions, "handler did not finish"
+
+    assert not [r for r in rows if r.get("status") == "error"], rows
+    assert not [r for r in caplog.records
+                if r.levelno >= logging.ERROR and "error:" in r.getMessage()], \
+        [r.getMessage() for r in caplog.records]
+
+
 def test_handshake_drops_unknown_decode_override_keys(
         client, make_user_key, fake_model, app_module, monkeypatch):
     """Unknown `decode_overrides` keys are discarded at the handshake instead of
@@ -437,3 +496,43 @@ def test_stream_does_not_reauthenticate_without_a_version_bump(
 
     assert any(m.get("type") == "final" for m in msgs), msgs
     assert len(calls) == 1, f"re-authenticated {len(calls)}x with no version bump"
+
+
+def test_stream_closes_when_session_cookie_is_revoked_mid_session(
+        client, make_user_key, app_module, monkeypatch):
+    """The cookie-authenticated dictation page (no bearer) must lose its
+    stream on sign-out: sessions_store.revoke_session (/auth/logout) bumps the
+    config version, which is the only signal _refresh_ident consumes."""
+    import time
+
+    from faster_whisper_backend.auth import sessions_store
+    from faster_whisper_backend.streaming.routes import _WS_UNAUTH
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    make_user_key("admin", is_admin=True)      # lock down, so open mode is off
+    _uid, raw_alice = make_user_key("alice")
+    assert client.post("/auth/login", json={"key": raw_alice}).status_code == 200
+    cookie_name = app_module.cfg.SESSION_COOKIE_NAME
+    raw_cookie = client.cookies.get(cookie_name)
+    assert raw_cookie
+
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream",
+            headers={"cookie": f"{cookie_name}={raw_cookie}"}) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))        # speech → partial decodes run
+        time.sleep(0.5)
+        sessions_store.revoke_session(raw_cookie)   # what /auth/logout does
+        ws.send_bytes(_pcm(8000, 1500))        # next decode re-auths → signed out
+        time.sleep(0.5)
+        ws.send_bytes(_pcm(8000, 200))         # producer notices → closes
+        try:
+            ws.send_json({"type": "stop"})     # no-op once the socket is gone
+        except Exception:  # noqa: BLE001 — already closed, as expected
+            pass
+        msgs, code = _drain_with_code(ws)
+
+    assert code == _WS_UNAUTH, f"expected a 4401 close, got {code!r} ({msgs!r})"
+    assert any(m.get("code") == "unauthorized" for m in msgs), msgs

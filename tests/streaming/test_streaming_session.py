@@ -7,6 +7,8 @@ plugin is required.
 
 import asyncio
 
+import pytest
+
 from tests._streaming_helpers import const_pcm
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import EnergyEndpointer
@@ -113,6 +115,50 @@ def test_close_commits_unterminated_tail():
     assert finals[-1]["committed"] == "hallo welt"
     assert finals[-1]["tail"] == ""
     assert finals[-1].get("last") is True
+
+
+def test_close_survives_failed_final_decode_and_still_commits():
+    """A decode error in the in-flight utterance's final decode on close() is
+    logged, not raised: the closing document still commits the confirmed text
+    (the pump already tolerates the same error mid-session)."""
+    async def _df(audio, prompt):
+        raise RuntimeError("CUDA out of memory")
+
+    s, msgs = _make_session(postprocess=lambda raw: raw, decode_final=_df,
+                            cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
+
+    async def run():
+        s.raw_confirmed = "erster satz."
+        await s._emit_document(s.postprocess(s.raw_confirmed))
+        await s.feed_pcm(const_pcm(8000, 1000))
+        assert s._in_utterance
+        await s.close()
+
+    asyncio.run(run())
+    assert msgs[-1]["type"] == "final"
+    assert msgs[-1]["committed"] == "erster satz." and msgs[-1]["tail"] == ""
+    assert msgs[-1].get("last") is True
+
+
+def test_close_abort_still_propagates_without_closing_document():
+    """CloseAbort (the route's credential-revocation guard) keeps its contract:
+    close() re-raises and emits no closing document."""
+    from faster_whisper_backend.streaming.session import CloseAbort
+
+    async def _df(audio, prompt):
+        raise CloseAbort("credential revoked mid-session")
+
+    s, msgs = _make_session(postprocess=lambda raw: raw, decode_final=_df,
+                            cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
+
+    async def run():
+        s.raw_confirmed = "erster satz."
+        await s.feed_pcm(const_pcm(8000, 1000))
+        with pytest.raises(CloseAbort):
+            await s.close()
+
+    asyncio.run(run())
+    assert not [m for m in msgs if m.get("last")]
 
 
 # ---- full PCM loop --------------------------------------------------------

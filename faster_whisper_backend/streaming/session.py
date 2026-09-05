@@ -36,6 +36,14 @@ from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, SAMPLE
 
 logger = logging.getLogger(__name__)
 
+
+class CloseAbort(Exception):
+    """Raised out of a decode to abort ``StreamSession.close()`` WITHOUT emitting
+    the closing document (the route's credential-revocation guard subclasses
+    it). Every other decode error on close is logged and the already-confirmed
+    text is still committed, matching the pump's per-utterance tolerance."""
+
+
 # A fresh decode hypothesis: buffer-relative word triples (start_s, end_s, text).
 Hypothesis = list[tuple[float, float, str]]
 # Final decode: raw verbatim text, optional word list for verbose_json, and a
@@ -249,7 +257,18 @@ class StreamSession:
         self._closed = True
         try:
             if self._in_utterance:
-                await self._finalize(forced=True)
+                try:
+                    await self._finalize(forced=True)
+                except CloseAbort:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    # Same tolerance as the pump: a failed final decode of the
+                    # in-flight utterance must not lose the closing document
+                    # (the frame that locks everything confirmed so far as
+                    # committed). Type only — the message can carry a
+                    # client-chosen handshake string.
+                    logger.warning("final decode failed on close (%s); committing confirmed text",
+                                   type(exc).__name__)
             processed = self.postprocess(self.raw_confirmed)
             await self._emit_document(processed, flush_all=True, last=True)
         finally:

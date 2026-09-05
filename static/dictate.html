@@ -137,6 +137,7 @@
         statusEl = $("status"), toggleBtn = $("toggle");
 
   let ws = null, audioCtx = null, workletNode = null, mediaStream = null, running = false;
+  let stopTimer = null;   // fallback if the server never answers "stop" with "closing"
   let resampleCarry = 0.0, resamplePos = 0.0, pcmBuf = new Int16Array(FRAME_SAMPLES), pcmLen = 0;
   // Batch mode: record the whole clip with MediaRecorder, POST it in one shot.
   let recorder = null, recStream = null, recChunks = [];
@@ -228,6 +229,7 @@
       setStatus("loading model " + (m.model || "") + "…");
     }
     else if (m.type === "error") { setStatus("error: " + (m.message || m.code), "error"); }
+    else if (m.type === "closing") { finishStop(); }
   }
 
   function idleLabel() { return mode() === "batch" ? "Record" : "Start dictation"; }
@@ -342,10 +344,17 @@
     ws.onmessage = onMessage;
     ws.onerror = () => setStatus("socket error", "error");
     ws.onclose = (ev) => {
-      if (running) stop();
+      // Captured BEFORE stop()/finishStop(): both end in setStatus("idle"), which
+      // would wipe an {"type":"error"} frame's text that preceded this close.
+      const hadError = statusEl.className === "error";
+      const prevText = statusEl.textContent;
+      if (running) stop(); else finishStop();
       if (ev && ev.code === 4401) setStatus("signed out — reload to sign in again", "error");
       else if (ev && ev.code === 4403) setStatus("handshake rejected (origin)", "error");
       else if (ev && ev.code === 4503) setStatus("live dictation is disabled on this server", "error");
+      else if (ev && ev.code === 4429) setStatus("too many live sessions — try again later", "error");
+      else if (ev && ev.code === 4408) setStatus("closed: no audio for a while", "error");
+      else if (hadError) setStatus(prevText, "error");
       else setStatus("closed");
     };
 
@@ -368,16 +377,31 @@
     }
   }
 
-  function stop() {
-    running = false;
-    try { if (ws && ws.readyState === 1) { ws.send(JSON.stringify({ type: "stop" })); } } catch {}
+  function finishStop() {
+    if (stopTimer) { clearTimeout(stopTimer); stopTimer = null; }
     try { if (ws) { ws.onmessage = ws.onclose = ws.onerror = null; ws.close(); } } catch {}
-    if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
-    if (audioCtx) audioCtx.close();
-    ws = null; audioCtx = null; workletNode = null; mediaStream = null;
-    pcmLen = 0; resamplePos = 0; resampleCarry = 0.0;
+    ws = null; pcmLen = 0; resamplePos = 0; resampleCarry = 0.0;
     resetToggleButton();
     setStatus("idle");
+  }
+
+  function stop() {
+    running = false;
+    if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+    if (audioCtx) audioCtx.close();
+    audioCtx = null; workletNode = null; mediaStream = null;
+    // The server emits the held final + the last document AFTER "stop" and
+    // closes the socket itself after {"type":"closing"} — so keep onmessage
+    // attached and the socket open until then; the timer is only a fallback
+    // if it never answers.
+    if (ws && ws.readyState === 1) {
+      try { ws.send(JSON.stringify({ type: "stop" })); } catch { finishStop(); return; }
+      toggleBtn.disabled = true;
+      setStatus("finishing…");
+      stopTimer = setTimeout(finishStop, 10000);
+    } else {
+      finishStop();
+    }
   }
 
   toggleBtn.addEventListener("click", async () => {

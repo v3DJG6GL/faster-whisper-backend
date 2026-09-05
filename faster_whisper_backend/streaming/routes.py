@@ -55,7 +55,7 @@ from faster_whisper_backend.auth import rate_limit
 from faster_whisper_backend.core import receipt_hold
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import web_common
-from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
+from faster_whisper_backend.streaming.session import CloseAbort, StreamConfig, StreamSession
 from faster_whisper_backend.streaming.transport import ENCODED_FORMATS, RAW_FORMATS, make_transport
 from faster_whisper_backend.streaming.vad import SAMPLE_RATE, make_endpointer
 from faster_whisper_backend.paths import REPO_ROOT
@@ -75,14 +75,19 @@ _HARD_CAP_ITEMS = 4096
 router = APIRouter()
 
 
-async def _safe_ws_send(ws: WebSocket, message: dict) -> bool:
+async def _safe_ws_send(ws: WebSocket, message: dict, *, close: bool = False) -> bool:
     """Send a JSON message, swallowing the errors raised when the peer has already
     disconnected (e.g. the page was reloaded mid-dictation). Without this, the
     session-close drain's final send hits a closed socket and uvicorn raises
     ``RuntimeError: Unexpected ASGI message 'websocket.send' after ... close``,
-    surfacing as a noisy traceback. Returns False if the send was dropped."""
+    surfacing as a noisy traceback. Returns False if the send was dropped.
+    With ``close=True`` also closes the socket under the same guard (refusal
+    paths: the peer may already be gone, and Starlette raises RuntimeError on
+    close after a failed send)."""
     try:
         await ws.send_json(message)
+        if close:
+            await ws.close()
         return True
     except (RuntimeError, WebSocketDisconnect):
         return False
@@ -178,7 +183,7 @@ async def _receive_idle(ws: WebSocket, timeout_sec: float):
 _WS_BEARER_SUBPROTOCOL = "bearer."
 
 
-class _CredentialRevoked(Exception):
+class _CredentialRevoked(CloseAbort):
     """Raised out of a streaming decode when the connection's credential no
     longer resolves to the identity that opened it (key/user revoked, key
     rotated, session signed out). Aborts the decode BEFORE the model, the
@@ -198,10 +203,9 @@ def _ws_bearer_subprotocol(ws: WebSocket) -> str:
 def _ws_credentials(ws: WebSocket) -> "HTTPAuthorizationCredentials | None":
     """Build bearer credentials from the WS handshake: the Authorization header
     (native clients), else a `bearer.<key>` subprotocol (browser clients)."""
-    header = ws.headers.get("authorization")
-    if header:
-        scheme, _, token = header.partition(" ")
-        return HTTPAuthorizationCredentials(scheme=scheme or "Bearer", credentials=token)
+    creds = auth.bearer_credentials(ws)
+    if creds:
+        return creds
     sub = _ws_bearer_subprotocol(ws)
     if sub:
         return HTTPAuthorizationCredentials(
@@ -217,14 +221,12 @@ def authenticate_ws(ws: WebSocket) -> "dict | None":
     return auth._resolve_user(ws, _ws_credentials(ws))
 
 
-def _stream_config(cfg, ident=None) -> StreamConfig:
+def _stream_config(cfg_for, ident=None) -> StreamConfig:
     # Per-identity override (ident) > global. STREAMING_* are not per-model, so
-    # ident-or-global is the full resolution — no cfg_for / model_id needed.
+    # model_id=None skips cfg_for's per-model layer — one resolver for every
+    # STREAMING_* knob (the route resolves its siblings the same way).
     def g(name, default):
-        key = "STREAMING_" + name
-        if ident is not None and key in ident.values:
-            return ident.values[key]
-        return getattr(cfg, key, default)
+        return cfg_for(None, "STREAMING_" + name, ident)
     return StreamConfig(
         sample_rate=SAMPLE_RATE,
         # Public config keys (the g("…") suffix, after STREAMING_) may differ from
@@ -263,7 +265,6 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
     detecting per (short, growing) partial buffer, which is unstable — a brief
     German chunk can be mis-detected as e.g. Swedish."""
     cfg_for = main.cfg_for
-    cfg = main.cfg
     # Present-but-empty is an explicit "auto-detect" (the client's cleared
     # state); only an ABSENT field inherits DEFAULT_LANGUAGE.
     lang = ((language if language is not None
@@ -442,13 +443,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
     _stream_key = rate_limit.identity_key(user, ws)
     try:
         _stream_sessions.acquire(_stream_key)
-    except rate_limit.RateLimited:
+    except rate_limit.RateLimited as rl:
         logger.info(
             "[stream] refused: per-user cap "
             "(STREAMING_MAX_SESSIONS_PER_USER=%d) reached for %s",
             _stream_sessions.limit(), store_common.log_safe(_stream_key))
-        await _refuse(ws, _WS_TOO_MANY,
-                      f"you already have {_stream_sessions.limit()} live sessions open")
+        await _refuse(ws, _WS_TOO_MANY, rl.message)
         return
     max_sessions = int(getattr(cfg, "STREAMING_MAX_SESSIONS", 10))
     if len(_active_sessions) >= max_sessions:
@@ -606,8 +606,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             await _safe_ws_send(ws, {"type": "error", "code": "unsupported_format",
                                     "message": f"audio format {audio_fmt!r} not supported "
                                                f"(raw: {sorted(RAW_FORMATS)}, "
-                                               f"encoded via ffmpeg: {sorted(ENCODED_FORMATS)})"})
-            await ws.close()
+                                               f"encoded via ffmpeg: {sorted(ENCODED_FORMATS)})"},
+                                close=True)
             return
         # Human-readable transport label for the per-utterance log block.
         audio_source_label = (
@@ -677,8 +677,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # Generic client message — the raw exception text can carry model
             # dir/filesystem paths; the detail is already in the server log above.
             await _safe_ws_send(ws, {"type": "error", "code": "model_load_failed",
-                                    "message": "model could not be loaded"})
-            await ws.close()
+                                    "message": "model could not be loaded"}, close=True)
             return
 
         # Resolve the caller's effective per-identity config ONCE for this
@@ -881,7 +880,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             async with send_lock:
                 await _safe_ws_send(ws, message)
 
-        def _maybe_capture(rid, info, raw_text, final_text, words, fw_info):
+        def _maybe_capture(rid, info, raw_text, final_text, words, fw_info,
+                           segments=()):
             """Persist a fine-tuning capture for this utterance, mirroring the batch
             route's eligibility gate (sampling / count cap / size / duration / disk)."""
             try:
@@ -919,7 +919,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                         audio_src_path=wav_path, request_id=rid, model=final_model,
                         language=(getattr(fw_info, "language", None) or req_language or ""),
                         audio_s=dur, raw=raw_text, final=final_text,
-                        text_for_training=training_text, words=words, segments=[],
+                        text_for_training=training_text, words=words,
+                        segments=list(segments),
                         user_id=user.get("user_id"))
                 finally:
                     try:
@@ -942,7 +943,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # captures row, no trace, no usage row from this path either.
             _refresh_ident()
             if _auth_revoked:
-                return
+                # Raise (not return) so the gate path — where no decode ran and
+                # this is the only latch site — still reaches the pump's
+                # _CredentialRevoked branch that closes the socket.
+                raise _CredentialRevoked("credential revoked mid-session")
             rid = uuid.uuid4().hex
             raw_text = info["raw_text"] or ""
             words = info.get("words") or []
@@ -990,7 +994,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # fires per finalized utterance on every live session.
                 captured_id = await asyncio.to_thread(
                     _maybe_capture, rid, info, raw_text, final_text, words,
-                    fw_info)
+                    fw_info, seg_diag)
 
             # One `transcribing` stage per live utterance — but none at all when
             # the gate skipped the decode: a 0.00 s stage that never ran would
@@ -1080,7 +1084,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 wait_s=metrics.take_wait())
 
         session = StreamSession(
-            config=_stream_config(cfg, ident),
+            config=_stream_config(main.cfg_for, ident),
             endpointer=make_endpointer(
                 main.cfg_for(final_model, "STREAMING_VAD_BACKEND", ident),
                 threshold=float(main.cfg_for(final_model, "STREAMING_VAD_THRESHOLD", ident)),
@@ -1117,7 +1121,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             speaking client re-arms the audio-anchored idle deadline forever.
             api_keys_store.revoke_user / revoke_key already bump the config
             version for exactly this ("revoked identity's live idents
-            re-resolve"), and this is that bump's only consumer on this path.
+            re-resolve"), as does sessions_store.revoke_session (/auth/logout),
+            and this is that bump's only consumer on this path.
             `_ws_credentials` reads only ws.headers/ws.cookies, both of which
             outlive the handshake, so re-invoking it here is enough."""
             nonlocal ident, _ident_version, out_prefix, out_suffix

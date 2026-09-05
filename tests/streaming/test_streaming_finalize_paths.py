@@ -12,34 +12,19 @@ browser (a pre-accept close is a bare HTTP 403 on the wire).
 
 import asyncio
 import logging
+import threading
 import time
 
-import numpy as np
 import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from tests._streaming_helpers import const_pcm as _pcm, ws_drain as _drain
 from tests.conftest import bearer
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
-from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR
-import importlib
+from faster_whisper_backend.streaming.vad import FRAME_MS, SAMPLE_RATE as SR, EnergyEndpointer
 
 _STREAM_URL = "/v1/audio/transcriptions/stream"
-
-
-def _pcm(level, ms, sr=16000):
-    return np.full(sr * ms // 1000, level, dtype="<i2").tobytes()
-
-
-def _drain(ws, limit=200):
-    msgs = []
-    code = None
-    try:
-        for _ in range(limit):
-            msgs.append(ws.receive_json())
-    except WebSocketDisconnect as exc:
-        code = exc.code
-    return msgs, code
 
 
 def _config(ws, **extra):
@@ -171,7 +156,7 @@ def test_decoded_path_flags_decode_and_rebases_words():
                 False)
 
     s = StreamSession(
-        config=cfg, endpointer=importlib.import_module("faster_whisper_backend.streaming.vad").EnergyEndpointer(),
+        config=cfg, endpointer=EnergyEndpointer(),
         decode_partial=decode_partial, decode_final=decode_final,
         postprocess=lambda raw: raw, emit=emit, on_final=on_final,
     )
@@ -195,7 +180,7 @@ def test_decoded_path_flags_decode_and_rebases_words():
 # ---- route level ----------------------------------------------------------------
 
 
-def _gate_second_utterance(client, app_module, monkeypatch, ws, *, before_second=None):
+def _gate_second_utterance(monkeypatch, ws, *, before_second=None):
     """Utterance 1 decodes normally; utterance 2 commits text through the
     partials and is then finalized with the RMS gate forced shut, so on_final
     runs for it without a decode."""
@@ -223,7 +208,7 @@ def test_gate_skipped_utterance_carries_no_previous_decode_diagnostics(
     with caplog.at_level(logging.INFO, logger="whisper-api"):
         with client.websocket_connect(_STREAM_URL) as ws:
             assert _config(ws)["type"] == "ready"
-            _gate_second_utterance(client, app_module, monkeypatch, ws)
+            _gate_second_utterance(monkeypatch, ws)
             ws.send_json({"type": "stop"})
             msgs, _code = _drain(ws)
     finals = [m for m in msgs if m["type"] == "final"]
@@ -266,7 +251,7 @@ def test_revoked_identity_gets_no_rows_through_the_gate_path(
 
     with client.websocket_connect(_STREAM_URL, headers=bearer(raw_alice)) as ws:
         assert _config(ws)["type"] == "ready"
-        _gate_second_utterance(client, app_module, monkeypatch, ws, before_second=revoke)
+        _gate_second_utterance(monkeypatch, ws, before_second=revoke)
         ws.send_bytes(_pcm(0, 200))
         try:
             ws.send_json({"type": "stop"})
@@ -409,12 +394,15 @@ def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, c
     monkeypatch.setattr(streaming_routes, "_HARD_CAP_ITEMS", 32)
     orig_flush = streaming_session.StreamSession.flush_utterance
     held = []
+    released = threading.Event()
 
     async def slow_flush(self):
-        # Hold the pump on the first flush so everything after it queues.
+        # Hold the pump on the first flush so everything after it queues —
+        # until the test has seen the cap trip (no fixed sleep to race).
         if not held:
             held.append(True)
-            await asyncio.sleep(2.0)
+            while not released.is_set():
+                await asyncio.sleep(0.01)
         await orig_flush(self)
 
     monkeypatch.setattr(streaming_session.StreamSession, "flush_utterance", slow_flush)
@@ -427,6 +415,11 @@ def test_queue_item_cap_sheds_tiny_frames_and_flushes(app_module, monkeypatch, c
                 for _ in range(100):
                     ws.send_bytes(b"\x00\x00")
                     ws.send_json({"type": "flush"})
+                deadline = time.monotonic() + 10.0
+                while time.monotonic() < deadline and not any(
+                        "audio backlog over cap" in r.getMessage() for r in caplog.records):
+                    time.sleep(0.02)
+                released.set()
                 ws.send_json({"type": "stop"})
                 _drain(ws)
     assert any("audio backlog over cap" in r.getMessage() for r in caplog.records), \

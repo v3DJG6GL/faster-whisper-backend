@@ -6,6 +6,7 @@ ffmpeg (or libopus) is unavailable.
 """
 
 import asyncio
+import logging
 import subprocess
 
 import pytest
@@ -77,6 +78,31 @@ def test_ffmpeg_transport_decodes_webm_to_pcm():
     asyncio.run(run())
     # ~1 s of 16 kHz mono s16le ≈ 32000 bytes; allow generous tolerance.
     assert len(got) > 16000
+
+
+def test_ffmpeg_transport_dead_reader_warns_once(caplog):
+    """Once ffmpeg has exited, feed() is still called once per inbound frame at
+    the client's pace — it must log the dead decoder once, not per frame."""
+    caplog.set_level(logging.WARNING, logger="faster_whisper_backend.streaming.transport")
+
+    async def sink(b):
+        pass
+
+    async def run():
+        t = FfmpegTransport(sink)
+        await t.start()
+        t._proc.kill()
+        for _ in range(100):
+            if t._reader_dead:
+                break
+            await asyncio.sleep(0.05)
+        assert t._reader_dead
+        for _ in range(50):
+            await t.feed(b"\x00")
+        await t.aclose()
+
+    asyncio.run(run())
+    assert sum("ffmpeg exited" in r.getMessage() for r in caplog.records) == 1
 
 
 def test_stream_route_accepts_webm_via_ffmpeg(app_module, monkeypatch):

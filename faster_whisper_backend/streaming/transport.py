@@ -75,6 +75,7 @@ class FfmpegTransport:
         self._reader: "asyncio.Task | None" = None
         self._closed = False
         self._reader_dead = False
+        self._dead_logged = False
 
     async def start(self) -> None:
         self._proc = await asyncio.create_subprocess_exec(
@@ -113,7 +114,13 @@ class FfmpegTransport:
         if self._proc is None or self._proc.stdin is None or self._closed:
             return
         if self._reader_dead:
-            logger.warning("[ffmpeg-transport] ffmpeg exited; discarding audio")
+            # Client-paced (one call per inbound frame) — log once, not per frame,
+            # or a dead decoder lets the client roll the rotating log (same
+            # reasoning as routes._SHED_LOG_INTERVAL_S).
+            if not self._dead_logged:
+                self._dead_logged = True
+                logger.warning("[ffmpeg-transport] ffmpeg exited; discarding audio "
+                               "for the rest of this session")
             return
         try:
             self._proc.stdin.write(data)
@@ -135,11 +142,9 @@ class FfmpegTransport:
             try:
                 await asyncio.wait_for(self._reader, timeout=5.0)
             except asyncio.TimeoutError:
-                self._reader.cancel()
-                try:
-                    await self._reader
-                except (asyncio.CancelledError, Exception):  # noqa: BLE001
-                    pass
+                # wait_for (3.12+) has already cancelled AND awaited the reader
+                # (_drain_stdout swallows the CancelledError) — nothing to join.
+                pass
         try:
             await asyncio.wait_for(self._proc.wait(), timeout=5.0)
         except asyncio.TimeoutError:

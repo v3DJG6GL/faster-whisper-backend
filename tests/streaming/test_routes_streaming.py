@@ -85,9 +85,24 @@ def test_dictate_page_explains_streaming_disabled_close(app_module):
     branches) instead of falling through to a bare "closed"."""
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         body = client.get("/dictate").text
-    for code in ("4401", "4403", "4503"):
+    for code in ("4401", "4403", "4503", "4429", "4408"):
         assert code in body, code
     assert "live dictation is disabled on this server" in body
+    assert "too many live sessions" in body
+    assert "no audio for a while" in body
+
+
+def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
+    """The server emits the held final and the last document after
+    {"type":"stop"} and closes the socket itself after {"type":"closing"}, so
+    stop() must not close the socket / detach onmessage synchronously
+    (regression of fb90091): it waits for "closing" with a fallback timer."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    assert 'm.type === "closing"' in body
+    assert "finishStop" in body
+    assert "stopTimer" in body
+    assert "finishing" in body
 
 
 def test_dictate_page_uses_the_shared_shell(app_module):
@@ -170,15 +185,15 @@ def test_ws_open_mode_remote_rejected(app_module):
 
 
 def test_stream_disabled_closes_connection(app_module, monkeypatch):
+    from faster_whisper_backend.streaming.routes import _WS_DISABLED
     monkeypatch.setattr(app_module.cfg, "STREAMING_ENABLED", False, raising=False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
-        try:
-            with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
-                # If it doesn't reject pre-accept, it must close immediately.
-                with pytest.raises(WebSocketDisconnect):
-                    ws.receive_json()
-        except WebSocketDisconnect:
-            pass  # rejected during handshake — also acceptable
+        # _refuse always accepts first, so the refusal is a post-accept close
+        # carrying the application code — not a 4401 or a crash.
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            with pytest.raises(WebSocketDisconnect) as ei:
+                ws.receive_json()
+    assert ei.value.code == _WS_DISABLED
 
 
 def test_stream_records_trace_text_per_utterance(app_module, monkeypatch):
@@ -496,6 +511,7 @@ def test_aborted_handshake_releases_the_per_user_slot(client, app_module,
         with client.websocket_connect(_STREAM_URL) as ws:
             ws.receive_json()
     assert streaming_routes._stream_sessions._counts == {}
+    assert streaming_routes._active_sessions == set()
 
     # The slot is free again: the very next handshake from the same identity
     # goes through instead of being refused with 4429.
