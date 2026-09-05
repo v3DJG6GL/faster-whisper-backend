@@ -86,7 +86,7 @@ def test_diarize_drop_refuses_while_leased(diar_cfg, monkeypatch):
 
 def test_diarize_force_orphans_and_the_last_release_frees(diar_cfg, monkeypatch):
     _stub_pipes(monkeypatch, [])
-    asyncio.run(diarization._get_pipeline("m1", lease=True))
+    pipe = asyncio.run(diarization._get_pipeline("m1", lease=True))
 
     assert asyncio.run(diarization.drop_pipeline()) is True
     # Orphaned: out of the cache, but still registered — the job inside the
@@ -95,7 +95,7 @@ def test_diarize_force_orphans_and_the_last_release_frees(diar_cfg, monkeypatch)
     assert diarization._orphans == {"m1": 1}
     assert "pyannote:m1" in system_stats._loaded_models
 
-    asyncio.run(diarization._release_pipeline("m1"))
+    asyncio.run(diarization._release_pipeline("m1", pipe))
     assert diarization._orphans == {}
     assert "pyannote:m1" not in system_stats._loaded_models
 
@@ -104,7 +104,7 @@ def test_diarize_other_model_mid_job_keeps_both(diar_cfg, monkeypatch):
     made: "list[str]" = []
     _stub_pipes(monkeypatch, made)
 
-    asyncio.run(diarization._get_pipeline("m1", lease=True))
+    pipe = asyncio.run(diarization._get_pipeline("m1", lease=True))
     asyncio.run(diarization._get_pipeline("m2"))
 
     assert made == ["m1", "m2"]
@@ -112,7 +112,7 @@ def test_diarize_other_model_mid_job_keeps_both(diar_cfg, monkeypatch):
     assert "pyannote:m1" in system_stats._loaded_models
     assert "pyannote:m2" in system_stats._loaded_models
 
-    asyncio.run(diarization._release_pipeline("m1"))
+    asyncio.run(diarization._release_pipeline("m1", pipe))
     assert "pyannote:m1" not in system_stats._loaded_models
     assert "pyannote:m2" in system_stats._loaded_models
 
@@ -265,14 +265,14 @@ def test_bgm_drop_refuses_while_leased(bgm_cfg, monkeypatch):
 
 def test_bgm_force_orphans_and_the_last_release_frees(bgm_cfg, monkeypatch):
     _stub_seps(monkeypatch, [])
-    asyncio.run(bgm_separation._get_separator("Foo", lease=True))
+    sep = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
 
     assert asyncio.run(bgm_separation.drop_separator()) is True
     assert bgm_separation._separator is None
     assert bgm_separation._orphans == {"Foo.onnx": 1}
     assert "uvr:Foo.onnx" in system_stats._loaded_models
 
-    asyncio.run(bgm_separation._release_separator("Foo.onnx"))
+    asyncio.run(bgm_separation._release_separator("Foo.onnx", sep))
     assert bgm_separation._orphans == {}
     assert "uvr:Foo.onnx" not in system_stats._loaded_models
 
@@ -281,7 +281,7 @@ def test_bgm_other_model_mid_job_keeps_both(bgm_cfg, monkeypatch):
     made: "list[str]" = []
     _stub_seps(monkeypatch, made)
 
-    asyncio.run(bgm_separation._get_separator("Foo", lease=True))
+    sep = asyncio.run(bgm_separation._get_separator("Foo", lease=True))
     asyncio.run(bgm_separation._get_separator("Bar"))
 
     assert made == ["Foo.onnx", "Bar.onnx"]
@@ -289,7 +289,7 @@ def test_bgm_other_model_mid_job_keeps_both(bgm_cfg, monkeypatch):
     assert "uvr:Foo.onnx" in system_stats._loaded_models
     assert "uvr:Bar.onnx" in system_stats._loaded_models
 
-    asyncio.run(bgm_separation._release_separator("Foo.onnx"))
+    asyncio.run(bgm_separation._release_separator("Foo.onnx", sep))
     assert "uvr:Foo.onnx" not in system_stats._loaded_models
     assert "uvr:Bar.onnx" in system_stats._loaded_models
 

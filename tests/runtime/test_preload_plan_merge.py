@@ -82,12 +82,12 @@ def test_merge_restores_stage_order_so_stage_ahead_picks_the_nearer_stage(
 def test_plan_entries_are_capped_on_repeat_posts(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (None, "size_unknown"))
-    for i in range(4):
+    for i in range(preload._MAX_PLAN_ENTRIES):
         preload.register_plan(
             "u", [("diarization", f"p/{2 * i}"),
                   ("diarization", f"p/{2 * i + 1}")], plan_id="3" * 8)
     plan = preload._plans["3" * 8]
-    assert len(plan.entries) <= preload._MAX_PLAN_ENTRIES
+    assert len(plan.entries) == preload._MAX_PLAN_ENTRIES
     assert len(plan.stages) == len(plan.entries)
 
 
@@ -280,6 +280,82 @@ def test_worker_evicts_the_cold_whisper_peer_it_chose_even_when_it_fits(
     asyncio.run(preload._handle(("7" * 8, "whisper", "large-v3")))
     assert evicted == [("whisper", "peer")]
     assert loaded == [("whisper", "large-v3")]
+
+
+def test_worker_keeps_the_cold_peer_when_an_unmeasured_model_has_a_free_slot(
+        monkeypatch):
+    _enable(monkeypatch, MAX_LOADED_MODELS=2)
+    _fits(monkeypatch, (None, "size_unknown"))
+    from faster_whisper_backend import main
+    monkeypatch.setattr(main, "_loaded_models", {"peer": object()})
+    monkeypatch.setattr(main, "_model_leases", {})
+    evicted = []
+    loaded = []
+
+    async def _evict(family, peer):
+        evicted.append((family, peer))
+    monkeypatch.setattr(preload, "_evict", _evict)
+
+    async def _load(family, mid):
+        loaded.append((family, mid))
+    monkeypatch.setattr(preload, "_load", _load)
+
+    preload.register_plan("u", [("whisper", "large-v3")], plan_id="8" * 8)
+
+    asyncio.run(preload._handle(("8" * 8, "whisper", "large-v3")))
+    assert evicted == []
+    assert loaded == [("whisper", "large-v3")]
+
+
+def test_translation_full_cache_with_only_a_warm_peer_is_family_busy(
+        monkeypatch):
+    """translation._trim_locked drops the first unleased ref without
+    consulting the warm predicate — the same hazard whisper's cap loop has,
+    so the same refusal applies."""
+    _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
+    _fits(monkeypatch, (True, None))
+    from faster_whisper_backend.audio import translation
+    monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
+    monkeypatch.setattr(translation, "_active", {})
+    system_stats.set_warm_predicate(lambda k: k == "gguf:o/peer:Q4")
+    assert preload._admit("translation", "o/new:Q4") == ("deferred",
+                                                         "family_busy")
+
+    system_stats.set_warm_predicate(None)
+    assert preload._admit("translation", "o/new:Q4") in (("loading", None),
+                                                         ("queued", None))
+
+    _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1,
+            MODEL_PRELOAD_EVICT_IDLE_MODELS=False)
+    assert preload._admit("translation", "o/new:Q4") == ("deferred",
+                                                         "family_busy")
+    system_stats.set_warm_predicate(None)
+
+
+def test_worker_evicts_the_cold_translation_peer_it_chose_even_when_it_fits(
+        monkeypatch):
+    _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
+    _fits(monkeypatch, (True, None))
+    from faster_whisper_backend.audio import translation
+    monkeypatch.setattr(translation, "_models", {"o/peer:Q4": object()})
+    monkeypatch.setattr(translation, "_active", {})
+    system_stats.set_warm_predicate(None)
+    evicted = []
+    loaded = []
+
+    async def _evict(family, peer):
+        evicted.append((family, peer))
+    monkeypatch.setattr(preload, "_evict", _evict)
+
+    async def _load(family, mid):
+        loaded.append((family, mid))
+    monkeypatch.setattr(preload, "_load", _load)
+
+    preload.register_plan("u", [("translation", "o/new:Q4")], plan_id="9" * 8)
+
+    asyncio.run(preload._handle(("9" * 8, "translation", "o/new:Q4")))
+    assert evicted == [("translation", "o/peer:Q4")]
+    assert loaded == [("translation", "o/new:Q4")]
 
 
 # --- PC12: the warm lease comes from the plan, not from _admit ---------------

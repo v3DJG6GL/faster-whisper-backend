@@ -145,6 +145,35 @@ def test_size_unknown_never_displaces_a_known_model(monkeypatch):
     assert preload._admit("diarization", "p/x") == ("deferred", "size_unknown")
 
 
+def test_size_unknown_free_whisper_slot_is_not_a_displacement(monkeypatch):
+    """A multi-slot cache with a free slot has a cold peer but needs no
+    room: an unmeasured model must be tried there, or a fresh multi-slot
+    install never measures anything until the peer happens to go away."""
+    _enable(monkeypatch, MAX_LOADED_MODELS=2)
+    _fits(monkeypatch, (None, "size_unknown"))
+    from faster_whisper_backend import main
+    monkeypatch.setattr(main, "_loaded_models", {"small": object()})
+    monkeypatch.setattr(main, "_model_leases", {})
+    system_stats.set_warm_predicate(None)
+    assert preload._admit("whisper", "large-v3") in (("loading", None),
+                                                     ("queued", None))
+    # Cache full: the cold peer WOULD be displaced, so the bound holds.
+    _enable(monkeypatch, MAX_LOADED_MODELS=1)
+    assert preload._admit("whisper", "large-v3") == ("deferred", "size_unknown")
+
+
+def test_size_unknown_free_translation_slot_is_not_a_displacement(monkeypatch):
+    _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=2)
+    _fits(monkeypatch, (None, "size_unknown"))
+    monkeypatch.setattr(translation, "_models", {"o/a:Q4": object()})
+    monkeypatch.setattr(translation, "_active", {})
+    system_stats.set_warm_predicate(None)
+    assert preload._admit("translation", "o/b:Q4") in (("loading", None),
+                                                       ("queued", None))
+    _enable(monkeypatch, TRANSLATION_MAX_LOADED_MODELS=1)
+    assert preload._admit("translation", "o/b:Q4") == ("deferred", "size_unknown")
+
+
 def test_rung4_deferred_reasons(monkeypatch):
     _enable(monkeypatch)
     _fits(monkeypatch, (False, "vram_unknown"))
@@ -368,6 +397,27 @@ def test_register_plan_never_raises(monkeypatch):
     assert preload._plans == {}
     assert preload.is_warm("pyannote:p/x") is False
     assert preload._warm == {}
+
+
+def test_register_plan_failure_cleanup_never_drops_another_users_plan(
+        monkeypatch):
+    """A supplied plan_id that collides with another user's plan is re-keyed
+    by _register_plan; the wrapper's failure cleanup must follow that
+    re-keying and never reach the other user's live plan."""
+    _enable(monkeypatch)
+    _fits(monkeypatch, (None, "size_unknown"))
+    preload.register_plan("alice", [("diarization", "p/a")], plan_id="c" * 8)
+
+    def _boom(*a, **k):
+        raise RuntimeError("ledger on fire")
+    monkeypatch.setattr(model_sizes, "fits", _boom)
+    r = preload.register_plan("bob", [("diarization", "p/b")], plan_id="c" * 8)
+    assert r["models"][0]["state"] == "deferred"
+    assert "c" * 8 in preload._plans
+    assert preload._plans["c" * 8].user_id == "alice"
+    assert preload.is_warm("pyannote:p/a") is True
+    assert preload.derive_plan_id("bob", [("diarization", "p/b")]) not in preload._plans
+    assert preload.is_warm("pyannote:p/b") is False
 
 
 # --- thread safety -----------------------------------------------------------

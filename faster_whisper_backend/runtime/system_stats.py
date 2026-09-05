@@ -144,10 +144,13 @@ def register_loaded_model(name: str, vram_bytes: int | None,
     # replaces a disk-sourced row outright — the disk walk can over-count).
     try:
         from faster_whisper_backend.runtime import model_sizes
-        size = vram_bytes or model_sizes.disk_size(name)
+        # A NEGATIVE delta (a concurrent free elsewhere on the GPU) is not a
+        # measurement either: record() would refuse it and leave no row.
+        measured = bool(vram_bytes and vram_bytes > 0)
+        size = (vram_bytes if measured else None) or model_sizes.disk_size(name)
         if size:
             model_sizes.record(name, device, compute_type, size,
-                               measured=bool(vram_bytes))
+                               measured=measured)
     except Exception:
         pass
 

@@ -5,6 +5,7 @@ stubbed in sys.modules, exactly the boundary _get_or_load_model uses.
 """
 
 import asyncio
+import threading
 import logging
 import sys
 import time
@@ -254,3 +255,23 @@ def test_transcribe_releases_the_lease_on_error(client, app_module,
     assert r.status_code == 500
     assert held and model.leases_during == {held[0]: 1}
     assert app_module._model_leases == {}
+
+
+# --- persistence runs off the event loop -------------------------------------
+
+def test_register_loaded_model_runs_off_the_loop(monkeypatch):
+    """register_loaded_model persists the measurement (model_sizes.record ->
+    config_store._save_lock + fsync) and can block for the lock timeout when
+    a peer worker holds the ledger; the load path must hand it to a thread."""
+    _stub_load(monkeypatch)
+    monkeypatch.setattr(main.cfg, "MAX_LOADED_MODELS", 4, raising=False)
+    seen = {}
+
+    def fake_register(name, **kw):
+        seen[name] = threading.current_thread()
+    monkeypatch.setattr(system_stats, "register_loaded_model", fake_register)
+
+    asyncio.run(main._get_or_load_model("a"))
+
+    assert "a" in main._loaded_models
+    assert seen["a"] is not threading.main_thread()

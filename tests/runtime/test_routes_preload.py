@@ -213,7 +213,7 @@ def test_a_raising_loader_leaves_the_plan_intact(client, app_module,
     j = client.post(_URL, json=_body()).json()
     # Give the worker a moment to pick the item up and fail on it.
     for _ in range(50):
-        if preload._queue.qsize() == 0:
+        if seen and preload._queue.qsize() == 0:
             break
         client.get("/v1/models")
     assert preload._queue.qsize() == 0

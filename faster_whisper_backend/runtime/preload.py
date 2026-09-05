@@ -318,7 +318,7 @@ def _family_busy(family: str, model_id: str) -> bool:
             # main's MAX_LOADED_MODELS loop evicts the LRU unleased model and
             # never consults the warm predicate, so a preload that reached it
             # could be the thing that drops another plan's warm model.
-            if _whisper_cache_full() and (
+            if _cache_full(family) and (
                     not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
                     or _idle_peer(family, model_id) is None):
                 return True
@@ -338,21 +338,48 @@ def _family_busy(family: str, model_id: str) -> bool:
             return bool(bgm_separation._leases.get(key[0], 0)
                         or bgm_separation._orphans.get(key[0], 0))
         if family == "translation":
-            from faster_whisper_backend.audio import translation
-            cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
-            if len(translation._models) < cap:
-                return False
-            return all(translation._active.get(r, 0)
-                       for r in translation._models)
+            # Same shape as whisper: translation._trim_locked drops the first
+            # unleased ref without consulting the warm predicate.
+            if _cache_full(family) and (
+                    not bool(getattr(cfg, "MODEL_PRELOAD_EVICT_IDLE_MODELS", True))
+                    or _idle_peer(family, model_id) is None):
+                return True
+            return False
     except Exception:  # noqa: BLE001 — unknown state is not a reason to load
         return True
     return False
 
 
-def _whisper_cache_full() -> bool:
-    from faster_whisper_backend import main
-    cap = max(1, int(getattr(cfg, "MAX_LOADED_MODELS", 1) or 1))
-    return len(main._loaded_models) >= cap
+def _cache_full(family: str) -> bool:
+    """Is the family's multi-slot cache at its cap? False for singletons."""
+    if family == "whisper":
+        from faster_whisper_backend import main
+        cap = max(1, int(getattr(cfg, "MAX_LOADED_MODELS", 1) or 1))
+        return len(main._loaded_models) >= cap
+    if family == "translation":
+        from faster_whisper_backend.audio import translation
+        cap = max(1, int(getattr(cfg, "TRANSLATION_MAX_LOADED_MODELS", 1) or 1))
+        return len(translation._models) >= cap
+    return False
+
+
+def _needs_room(family: str, model_id: str) -> bool:
+    """Would loading this model force something out? Distinct from
+    "does an idle peer exist": a multi-slot cache with a free slot has
+    peers but needs no room."""
+    mid = normalize_id(family, model_id)
+    try:
+        if family in ("whisper", "translation"):
+            return _cache_full(family)
+        if family == "diarization":
+            from faster_whisper_backend.audio import diarization
+            key = diarization._pipeline_key
+        else:
+            from faster_whisper_backend.audio import bgm_separation
+            key = bgm_separation._separator_key
+        return bool(key) and key[0] != mid
+    except Exception:  # noqa: BLE001 — unknown state: assume room is needed
+        return True
 
 
 def _idle_peer(family: str, model_id: str) -> "str | None":
@@ -442,10 +469,13 @@ def _admit(family: str, model_id: str) -> "tuple[str, str | None]":
         # is every model, and it fails silently.
         #
         # Trying is how a model gets measured — but only when nothing has to
-        # be evicted for it, so an unknown model can never displace a known
-        # one. If it OOMs, the loader's own error path handles it and the job
-        # falls back to loading in-band, which is the pre-preload behaviour.
-        if _idle_peer(family, model_id) is None:
+        # be evicted for it — a free slot in a multi-slot cache is not an
+        # eviction, even if a cold peer exists — so an unknown model can never
+        # displace a known one. If it OOMs, the loader's own error path
+        # handles it and the job falls back to loading in-band, which is the
+        # pre-preload behaviour.
+        if (not _needs_room(family, model_id)
+                or _idle_peer(family, model_id) is None):
             return (_pending_state(), None)
         return ("deferred", "size_unknown")
     return ("deferred", reason or "size_unknown")
@@ -494,6 +524,7 @@ def register_plan(user_id: "str | None",
     kept = [(f, m) for f, m in entries if (f, m) not in (denied or {})]
     kept.sort(key=lambda e: _FAMILY_STAGE.get(e[0], 99))
     resolved_pid = (plan_id or "").strip() or derive_plan_id(user_id or "", kept)
+    derived_pid = derive_plan_id(user_id or "", kept)
     try:
         return _register_plan(user_id, entries, plan_id=plan_id,
                               denied=denied or {}, stage_ahead=stage_ahead,
@@ -505,14 +536,20 @@ def register_plan(user_id: "str | None",
         # pinned against the evictors for the TTL.
         try:
             with _lock:
-                _drop_plan_locked(resolved_pid, "register failed")
+                # _register_plan re-derives the id on a cross-user collision,
+                # so only a plan this caller owns may be dropped.
+                for cand in {resolved_pid, derived_pid}:
+                    p = _plans.get(cand)
+                    if p is not None and p.user_id == (user_id or ""):
+                        _drop_plan_locked(cand, "register failed")
         except Exception:  # noqa: BLE001 — cleanup must not mask the fallback
             pass
         return {
             "plan_id": plan_id or "",
             "expires_in_s": 0,
             "models": [{"family": f, "id": m, "state": "deferred",
-                        "reason": "disabled"} for f, m in entries],
+                        "reason": (denied or {}).get((f, m), "disabled")}
+                       for f, m in entries],
         }
 
 
@@ -741,9 +778,11 @@ def on_stage_start(plan_id: str, stage: str) -> None:
             plan = _plans.get(plan_id)
             if plan is None or plan.dead or not plan.stage_ahead:
                 return
-            # Restamp on every stage start, advancing or not: a long job keeps
-            # its plan alive for free, which is the whole reason the TTL can be
-            # as short as three minutes.
+            # Restamp on every progress tick of the owning job
+            # (main._progress_set replays the current stage on stage-less
+            # ticks), advancing or not: a long job keeps its plan alive for
+            # free, which is the whole reason the TTL can be as short as
+            # three minutes.
             plan.expires_mono = time.monotonic() + _ttl()
             _recompute_warm_locked()
             if idx <= plan.cursor:
@@ -847,12 +886,13 @@ async def _handle(item: "tuple[str, str, str]") -> None:
             device, compute = _placement(family, model_id)
             ok, _r = model_sizes.fits(
                 key, device, compute, reserve_bytes=_reserve_bytes(device))
-            if ok is not True:
+            if ok is False or (ok is None and _needs_room(family, model_id)):
                 peer = _idle_peer(family, model_id)
-            elif family == "whisper" and _whisper_cache_full():
-                # Even when the model fits: main's cap loop would otherwise
-                # pick the LRU unleased model without consulting the warm
-                # predicate, so preload drops the COLD peer it chose itself.
+            elif family in ("whisper", "translation") and _cache_full(family):
+                # Even when the model fits: main's cap loop (and translation's
+                # _trim_locked) would otherwise pick the LRU unleased model
+                # without consulting the warm predicate, so preload drops the
+                # COLD peer it chose itself.
                 peer = _idle_peer(family, model_id)
         if peer is not None:
             await _evict(family, peer)

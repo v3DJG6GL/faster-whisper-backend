@@ -207,7 +207,10 @@ def lookup(name: str, device: str, compute_type: str) -> dict | None:
     prefix = f"{name}|"
     for k, v in models.items():
         if k.startswith(prefix):
-            return {"bytes": int(v["bytes"]), "src": "proxy",
+            # A disk-walk peer row is still only a disk walk, not a proxy
+            # measurement.
+            return {"bytes": int(v["bytes"]),
+                    "src": "disk" if v.get("src") == "disk" else "proxy",
                     "n": int(v.get("n") or 0), "ts": v.get("ts")}
     # Never measured anywhere. Fall back to what the model WEIGHS ON DISK,
     # which for a GGUF or an ONNX file is a solid lower bound on its resident

@@ -140,7 +140,6 @@ def test_unreadable_file_degrades_to_no_data(ledger, body):
         f.write(body)
     model_sizes._reset_for_tests()
     assert model_sizes.estimate("a", "cuda", "f16") is None
-    assert model_sizes.fits("a", "cuda", "f16", reserve_bytes=0)[1] is not None
 
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,8 @@ def test_reporting_tqdm_counts_bytes_even_when_disabled(monkeypatch):
         bar.update(30)
         bar.update(70)
     assert calls[-1] == (100, 100)
-    assert calls[0][0] <= 100
+    # The disabled bar's FIRST update() was counted, not just the receipt.
+    assert calls[0] == (30, 100)
 
 
 def test_non_byte_bars_are_ignored(monkeypatch):

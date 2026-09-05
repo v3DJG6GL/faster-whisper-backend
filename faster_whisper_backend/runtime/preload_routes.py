@@ -136,7 +136,7 @@ async def preload_models(body: PreloadRequest,
     denied: "dict[tuple[str, str], str]" = {}
     for m in body.models:
         pair = (m.family, m.id.strip())
-        if pair in entries or pair in denied:
+        if pair in entries:
             continue
         if not _allowed(m.family, pair[1]):
             denied[pair] = "not_allowed"
@@ -146,10 +146,14 @@ async def preload_models(body: PreloadRequest,
     # once and the warm leases exist); it only opts out of the server
     # advancing the plan from job progress — for a client that drives its own
     # pipeline and will POST again at each step.
+    # Display-only, but it lands verbatim in a multi-line log receipt: strip
+    # newlines and other non-printables so a client cannot forge log rows.
+    trigger = "".join(ch for ch in (body.trigger or "")
+                      if ch.isprintable()) or None
     logger.debug("[preload] POST %d model(s) from=%s user=%s",
-                 len(entries), body.trigger or "-",
+                 len(entries), trigger or "-",
                  (user.get("user_id") or "-")[:8])
     return preload.register_plan(user.get("user_id"), entries,
                                  plan_id=body.plan_id, denied=denied,
                                  stage_ahead=body.stage_ahead,
-                                 trigger=body.trigger)
+                                 trigger=trigger)
