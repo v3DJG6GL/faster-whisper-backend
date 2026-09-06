@@ -529,6 +529,16 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "uploaded); oldest files are evicted first when the sum exceeds it. "
         "Size it for several videos at MEDIA_MAX_BYTES. Default 50 GB.",
 
+    # --- Media export ---
+    "MEDIA_PACKAGE_ENABLED":
+        "Let clients export a video WITH its subtitle tracks: the server "
+        "muxes the client's SRT files into the retained video (a link's, or "
+        "one uploaded for the purpose) as soft subtitle streams — a stream "
+        "copy, never a re-encode. Needs ffmpeg.",
+    "MEDIA_PACKAGE_TIMEOUT_S":
+        "Wall-clock ceiling for one packaging run (ffmpeg stream copy: "
+        "minutes for a multi-GB file on slow disks). Default 900.",
+
     # --- Pipeline ---
     "PIPELINE_RULES":
         "Ordered text-cleanup rules applied to the joined transcript. Each "
@@ -710,6 +720,15 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Ceiling on video downloads (a link run that keeps the video, or the "
         "on-demand video route) per identity per 60 seconds. Each one pulls "
         "up to MEDIA_MAX_BYTES from a third-party site. 0 = unlimited.",
+    "MEDIA_UPLOAD_RATE_PER_MIN":
+        "Ceiling on video uploads for packaging (POST /v1/audio/media) per "
+        "identity per 60 seconds — each can be MEDIA_MAX_BYTES. 0 = unlimited.",
+    "MEDIA_PACKAGE_RATE_PER_MIN":
+        "Ceiling on packaging requests per identity per 60 seconds. 0 = "
+        "unlimited.",
+    "MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER":
+        "Max simultaneous packaging runs ONE identity may hold (each is an "
+        "ffmpeg process copying a multi-GB file). 0 = unlimited.",
     "CAPTURES_AUDIO_RATE_PER_MIN":
         "Ceiling on capture-audio fetches per identity per 60 seconds. Sized "
         "for the review UI's burst pattern (scrubbing a page of captures), "
@@ -1913,6 +1932,12 @@ class AdminConfig(BaseModel):
         "RETAINED_MEDIA_MAX_BYTES", scope="server", group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention")
 
+    # --- Media export (subtitle packaging) ---
+    MEDIA_PACKAGE_ENABLED: bool | None = _F(
+        "MEDIA_PACKAGE_ENABLED", scope="server", group="Media export")
+    MEDIA_PACKAGE_TIMEOUT_S: Annotated[int, Field(ge=30, le=7200)] | None = _F(
+        "MEDIA_PACKAGE_TIMEOUT_S", scope="server", group="Media export")
+
     # --- Per-model overrides ---
     MODEL_OVERRIDES: dict[ModelId, ModelOverride] | None = _F(
         "MODEL_OVERRIDES", scope="server", group="Per-model overrides")
@@ -2060,6 +2085,21 @@ class AdminConfig(BaseModel):
         int, Field(ge=0, le=100_000)
     ] | None = _F(
         "URL_VIDEO_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=5)
+    MEDIA_UPLOAD_RATE_PER_MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "MEDIA_UPLOAD_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=5)
+    MEDIA_PACKAGE_RATE_PER_MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "MEDIA_PACKAGE_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=5)
+    MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER: Annotated[
+        int, Field(ge=0, le=64)
+    ] | None = _F(
+        "MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER", scope="server",
         group="Concurrency & Request Limits", order=5)
     CAPTURES_AUDIO_RATE_PER_MIN: Annotated[
         int, Field(ge=0, le=100_000)
@@ -2882,6 +2922,7 @@ _GROUP_ORDER: list[tuple[str, list[str | None]]] = [
         None,
         "Advanced — timeouts, concurrency & retention",
     ]),
+    ("Media export", [None]),
     ("Per-model overrides", [None]),
     ("Pipeline", [None]),
     ("Logging", [None]),

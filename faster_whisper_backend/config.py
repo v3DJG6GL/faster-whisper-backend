@@ -724,6 +724,17 @@ RETAINED_MEDIA_MAX_BYTES: int = _D("RETAINED_MEDIA_MAX_BYTES")
 
 
 # =============================================================================
+# Media export — subtitle packaging (url/package.py)
+# =============================================================================
+# The client exports a video WITH its subtitle tracks: it sends the SRT texts
+# it generated and the server muxes them into the retained video (a link's,
+# or one uploaded for the purpose) as soft subtitle streams — stream copy,
+# never a re-encode. Needs ffmpeg (the imageio-ffmpeg wheel suffices).
+MEDIA_PACKAGE_ENABLED: bool = _D("MEDIA_PACKAGE_ENABLED")
+MEDIA_PACKAGE_TIMEOUT_S: int = _D("MEDIA_PACKAGE_TIMEOUT_S")
+
+
+# =============================================================================
 # Per-model overrides (MODEL_OVERRIDES)
 # =============================================================================
 # Map of model_id -> dict of override fields. Each override may set any
@@ -856,6 +867,9 @@ STREAMING_MAX_SESSIONS_PER_USER: int = _D("STREAMING_MAX_SESSIONS_PER_USER")
 # hence the tight default.
 URL_PREVIEW_RATE_PER_MIN: int = _D("URL_PREVIEW_RATE_PER_MIN")
 URL_VIDEO_RATE_PER_MIN: int = _D("URL_VIDEO_RATE_PER_MIN")
+MEDIA_UPLOAD_RATE_PER_MIN: int = _D("MEDIA_UPLOAD_RATE_PER_MIN")
+MEDIA_PACKAGE_RATE_PER_MIN: int = _D("MEDIA_PACKAGE_RATE_PER_MIN")
+MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER: int = _D("MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER")
 
 # Capture-audio fetches per identity per 60s. Sized for the review UI's burst
 # pattern (scrubbing through a page of captures), not steady-state use.

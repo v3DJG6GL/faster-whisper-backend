@@ -235,7 +235,7 @@ if sys.platform == "win32":
     _add_local_ffmpeg_to_path()
 
 
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, Response, Depends
+from fastapi import BackgroundTasks, FastAPI, File, UploadFile, Form, HTTPException, Request, Response, Depends
 
 # Auth dep used by /v1/audio/transcriptions and /auth/whoami. In open mode
 # (no admin key in DB) it returns the synthetic admin — but only to callers on
@@ -2707,13 +2707,13 @@ def _reclaim_hard_restart_orphans() -> None:
     now = time.time()
     for name in names:
         if not name.startswith(("urldl-", "urlmedia-", "whisperup-",
-                                "sepsrc-", "vocals-")):
+                                "sepsrc-", "vocals-", "pkg-")):
             continue
         path = os.path.join(tmp, name)
         try:
             if os.path.islink(path) or now - os.path.getmtime(path) < 60.0:
                 continue
-            if name.startswith("urldl-") and os.path.isdir(path):
+            if name.startswith(("urldl-", "pkg-")) and os.path.isdir(path):
                 shutil.rmtree(path, ignore_errors=True)
             elif os.path.isfile(path):
                 os.unlink(path)
@@ -2895,6 +2895,20 @@ async def lifespan(app: FastAPI):
     _reclaim_hard_restart_orphans()
     url_media_janitor_task = asyncio.create_task(
         _url_media_store.janitor_loop())
+    # Subtitle packaging: probe ffmpeg's muxers/encoders ONCE, off the loop,
+    # so /v1/me never pays for the two subprocesses on a request.
+    try:
+        from faster_whisper_backend.url import package as _pk
+        _pk_caps = await asyncio.to_thread(_pk.ffmpeg_capabilities)
+        if _pk_caps.available:
+            logger.info("[package] ffmpeg %s: containers %s",
+                        _pk_caps.version or "?",
+                        "mkv+mp4" if _pk_caps.mp4 else "mkv")
+        else:
+            logger.warning("[package] subtitle packaging unavailable: %s",
+                           _pk_caps.reason)
+    except Exception as _pk_err:  # noqa: BLE001 — a probe never blocks startup
+        logger.warning("[package] ffmpeg probe failed: %s", _pk_err)
 
     # Install + verify the SSRF guard that every yt-dlp fetch rides on
     # (ytdlp_plugins/, see url_download.guard_self_check). Doing it here makes
@@ -3306,6 +3320,10 @@ async def _csrf_mw(request: Request, call_next):
 # Non-JSON, non-multipart bodies never legitimately approach the media cap;
 # they keep the pre-media-cap service ceiling.
 _NON_UPLOAD_BODY_BACKSTOP = 268_435_456
+# The packaging request: up to MAX_TRACKS SRT files of MAX_SRT_BYTES each,
+# JSON-escaped — 16 MiB covers the worst case with room.
+_MEDIA_PACKAGE_MAX_BODY_BYTES = 16 * 1024 * 1024
+_MEDIA_PACKAGE_PATH_RE = re.compile(r"\A/v1/audio/media/[0-9a-f]{32}/package\Z")
 
 
 @app.middleware("http")
@@ -3352,6 +3370,17 @@ async def _max_body_mw(request: Request, call_next):
         max_body = min(max_body, int(getattr(cfg, "MAX_JSON_BODY_BYTES", 4_194_304)))
     elif _ctype != "multipart/form-data":
         max_body = min(max_body, _NON_UPLOAD_BODY_BACKSTOP)
+    # Two path-exact exceptions for the media export: the raw-body video
+    # upload (the route counts its own bytes against MEDIA_MAX_BYTES, so the
+    # ceiling here just matches it) and the packaging request, whose JSON
+    # carries up to MAX_TRACKS subtitle files (bigger than any other JSON
+    # body, still tightly bounded).
+    if request.method == "POST":
+        _path = request.url.path
+        if _path == "/v1/audio/media":
+            max_body = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+        elif _MEDIA_PACKAGE_PATH_RE.match(_path):
+            max_body = _MEDIA_PACKAGE_MAX_BODY_BYTES
     _clen = request.headers.get("content-length")
     if _clen and _clen.isdigit() and int(_clen) > max_body:
         from fastapi.responses import JSONResponse
@@ -3376,6 +3405,11 @@ async def _max_body_mw(request: Request, call_next):
                     "(%d bytes) with no declared Content-Length",
                     request.method, _log_safe(request.url.path), max_body,
                 )
+                # Shared with the handler through the ASGI scope (the
+                # handler's Request is a different object over the same
+                # scope), so a route that streams its body can answer 413
+                # instead of a bare disconnect.
+                request.scope.setdefault("state", {})["body_cap_hit"] = True
                 return {"type": "http.disconnect"}
         return message
 
@@ -3789,6 +3823,7 @@ async def transcribe(
     translation_glossary: str | None = Form(None),
     keep_video: str | None = Form(None),
     video_max_height: int | None = Form(None),
+    retain_media: str | None = Form(None),
     progress_id: str | None = Form(None),
     preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
@@ -3900,6 +3935,12 @@ async def transcribe(
     _video_task: "asyncio.Task | None" = None
     _video_result: "dict | None" = None
     _run_finished = [False]
+    # retain_media: an uploaded VIDEO the client wants packaged with its
+    # subtitles right after — a hardlinked copy of the spool, registered in
+    # the media store once the run succeeds (never for a failed one).
+    _retain_media = (_form_bool(retain_media) is True and source_url is None
+                     and bool(getattr(cfg, "MEDIA_PACKAGE_ENABLED", True)))
+    _retained_upload: "str | None" = None
     # Set only AFTER the load returns, so the outer finally never releases a
     # lease that was never taken (a rejected/failed load takes none).
     _leased_model: "str | None" = None
@@ -4149,6 +4190,13 @@ async def transcribe(
                 _rplan.set_audio_seconds(
                     audio_bytes / _run_plan.BYTES_PER_AUDIO_SECOND,
                     src="bytes-prior")
+                if _retain_media:
+                    # A hardlink of the spool (same TMPDIR): the pipeline may
+                    # replace tmp_path with a vocals stem and unlinks it in
+                    # the finally; this copy survives for the media store.
+                    from faster_whisper_backend.url import media_store as _ums_r
+                    _retained_upload = await asyncio.to_thread(
+                        _ums_r.make_pipeline_copy, tmp_path)
 
             # word_timestamps: AND of the (per-model-overrideable) global
             # config knob and the per-request ask. Disabled (False) bypasses
@@ -5477,6 +5525,15 @@ async def transcribe(
                 for _lang in _translation_meta["targets"]
             } if _translation_meta is not None else None)
 
+            if _retained_upload is not None:
+                # Only a finished run retains its upload; the id rides on the
+                # same keys a link run uses (the export panel reads one).
+                from faster_whisper_backend.url import media_store as _ums_r
+                _source_media_id = await asyncio.to_thread(
+                    _ums_r.register, _retained_upload, user_id=_user_id,
+                    kind="video")
+                _retained_upload = None
+
             if response_format == "verbose_json":
                 response = {
                     "task": _task,
@@ -5620,6 +5677,11 @@ async def transcribe(
                     os.unlink(tmp_path)
                 except OSError:
                     pass
+            if _retained_upload:
+                try:
+                    os.unlink(_retained_upload)
+                except OSError:
+                    pass
             # URL flow: the private download dir (partials, fragments) goes
             # on every path — cancel, 4xx, 500 included. The retained copy
             # (url_media_store) has its own TTL lifecycle.
@@ -5715,6 +5777,7 @@ async def translate_audio(
     translation_glossary: str | None = Form(None),
     keep_video: str | None = Form(None),
     video_max_height: int | None = Form(None),
+    retain_media: str | None = Form(None),
     progress_id: str | None = Form(None),
     preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
@@ -5747,6 +5810,7 @@ async def translate_audio(
         separation_model=separation_model,
         keep_video=keep_video,
         video_max_height=video_max_height,
+        retain_media=retain_media,
         translate_to=translate_to,
         translation_model=translation_model,
         translation_mode=translation_mode,
@@ -6753,6 +6817,262 @@ async def url_media_video(request: Request,
         jobs.job_end(request_id)
 
 
+# ── Media export: upload, stream facts, subtitle packaging ──────────────────
+# The client exports a video WITH its subtitle tracks: it generates the SRTs
+# itself (edits, renames and speaker colours included), the server muxes them
+# into the retained video — a link's, or one the client uploads here for the
+# purpose — as soft subtitle streams, and streams the result back.
+_media_upload_rate = _rl.FixedWindow(
+    config_field="MEDIA_UPLOAD_RATE_PER_MIN",
+    window_s=60.0,
+    default_max=6,
+    message="too many media uploads — slow down "
+            "({limit}/min; retry in {retry_after}s)",
+)
+_media_package_rate = _rl.FixedWindow(
+    config_field="MEDIA_PACKAGE_RATE_PER_MIN",
+    window_s=60.0,
+    default_max=12,
+    message="too many video exports — slow down "
+            "({limit}/min; retry in {retry_after}s)",
+)
+_media_package_inflight = _rl.InFlight(
+    config_field="MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER",
+    default_max=1,
+    message="you already have {limit} video export running — "
+            "wait for it to finish",
+)
+_MEDIA_EXT_RE = re.compile(r"\A[a-z0-9]{1,5}\Z")
+_MEDIA_FILENAME_RE = re.compile(r"[^A-Za-z0-9 ._()\-]+")
+
+
+def _package_gate() -> None:
+    """403 when packaging is off, 503 when the server's ffmpeg cannot do it."""
+    if not getattr(cfg, "MEDIA_PACKAGE_ENABLED", True):
+        raise HTTPException(status_code=403,
+                            detail="media packaging is not enabled on this server")
+    from faster_whisper_backend.url import package as _pk
+    caps = _pk.ffmpeg_capabilities()
+    if not caps.available:
+        raise HTTPException(status_code=503, detail=caps.reason or
+                            "subtitle packaging is unavailable on this server")
+
+
+def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
+    """Cached codec facts for a retained file (probed once per id)."""
+    from faster_whisper_backend.url import media_store as _ums
+    cached = _ums.probe_cache_get(media_id)
+    if cached is not None:
+        return cached
+    from faster_whisper_backend.url import package as _pk
+    try:
+        facts = _pk.probe_streams(entry["path"]).as_dict()
+    except ImportError:
+        return None
+    except Exception as e:  # noqa: BLE001 — a hostile file must not 500 the route
+        logger.info("[package] stream probe failed for %s: %s", media_id,
+                    _log_safe(str(e)))
+        facts = _pk.MediaStreams(None, None, None, None, None, False,
+                                 "the file could not be read").as_dict()
+    _ums.probe_cache_set(media_id, facts)
+    return facts
+
+
+@app.post("/v1/audio/media")
+async def upload_media(request: Request,
+                       user: dict = Depends(_get_current_user_dep)):
+    """Raw-body upload of a local VIDEO into the media store (the client's
+    own file, for packaging with its subtitles): `?ext=mp4`, the bytes as the
+    body. Streamed to disk chunk by chunk against MEDIA_MAX_BYTES — never
+    resident, never spooled twice (this is deliberately NOT multipart: the
+    form parser spools the whole part before a handler sees a byte). Returns
+    {media_id, expires_at, bytes}; the file lives URL_MEDIA_TTL_S."""
+    _package_gate()
+    _media_upload_rate.hit(_rl.identity_key(user, request))
+    from faster_whisper_backend.url import media_store as _ums
+    ext = (request.query_params.get("ext") or "").strip().lower()
+    if not _MEDIA_EXT_RE.match(ext):
+        raise HTTPException(status_code=422, detail="expected ?ext=<container>")
+    cap = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+    _clen = request.headers.get("content-length")
+    if _clen and _clen.isdigit() and int(_clen) > cap:
+        raise HTTPException(status_code=413, detail="upload too large")
+    part = os.path.join(_ums.staging_dir(), f"upload-{uuid.uuid4().hex}.{ext}.part")
+    received = 0
+    fd = os.open(part, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0), 0o600)
+    from starlette.requests import ClientDisconnect
+    try:
+        try:
+            with os.fdopen(fd, "wb") as f:
+                async for chunk in request.stream():
+                    if not chunk:
+                        continue
+                    received += len(chunk)
+                    if received > cap:
+                        raise HTTPException(status_code=413, detail="upload too large")
+                    await asyncio.to_thread(f.write, chunk)
+        except ClientDisconnect:
+            # _max_body_mw cuts the receive channel at the same cap (a chunked
+            # body declares no length) and flags it in the scope; anything
+            # else is a client that went away mid-upload.
+            if received >= cap or request.scope.get("state", {}).get("body_cap_hit"):
+                raise HTTPException(status_code=413, detail="upload too large")
+            raise HTTPException(status_code=400, detail="upload interrupted")
+        if received == 0:
+            raise HTTPException(status_code=422, detail="empty upload")
+        final = part[:-len(".part")]
+        os.replace(part, final)
+        part = None
+        media_id = await asyncio.to_thread(
+            _ums.register, final, user_id=user.get("user_id"), kind="video")
+        if media_id is None:
+            try:
+                os.unlink(final)
+            except OSError:
+                pass
+            raise HTTPException(status_code=507,
+                                detail="the server's media store is full")
+    finally:
+        if part:
+            try:
+                os.unlink(part)
+            except OSError:
+                pass
+    logger.info("[package] upload retained (%.1f MB, %s)", received / 1e6, ext)
+    return {"media_id": media_id, "expires_at": _ums.expires_at_unix(media_id),
+            "bytes": received}
+
+
+@app.get("/v1/audio/media/{media_id}/streams")
+async def media_streams(media_id: str,
+                        user: dict = Depends(_get_current_user_dep)):
+    """Codec facts for a retained file — the export panel greys out MP4 with
+    the reason before anyone waits for a mux. Same 404 for every miss."""
+    _package_gate()
+    if not _URL_MEDIA_ID_RE.match(media_id):
+        raise HTTPException(status_code=422, detail="malformed media id")
+    from faster_whisper_backend.url import media_store as _ums
+    entry = _ums.resolve_entry(media_id, user_id=user.get("user_id"))
+    if entry is None:
+        raise HTTPException(status_code=404, detail="media not found")
+    facts = await asyncio.to_thread(_media_streams_for, entry, media_id)
+    if facts is None:
+        raise HTTPException(status_code=503,
+                            detail="stream probing is unavailable on this server (PyAV)")
+    return facts
+
+
+@app.post("/v1/audio/media/{media_id}/package")
+async def package_media(media_id: str, request: Request,
+                        background: BackgroundTasks,
+                        user: dict = Depends(_get_current_user_dep)):
+    """Mux the client's SRT tracks into a retained video as soft subtitle
+    streams and stream the file back. Body: {container: "mkv"|"mp4",
+    subtitles: [{lang, label?, srt}], default_track?, filename?}. MP4 only
+    when the streams fit it (422 with code "mp4_incompatible" otherwise, and
+    the reason). One packaging run per identity at a time."""
+    from fastapi.responses import FileResponse
+    _package_gate()
+    if not _URL_MEDIA_ID_RE.match(media_id):
+        raise HTTPException(status_code=422, detail="malformed media id")
+    _key = _rl.identity_key(user, request)
+    _media_package_rate.hit(_key)
+    from faster_whisper_backend.url import media_store as _ums
+    from faster_whisper_backend.url import package as _pk
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body is a caller error
+        raise HTTPException(status_code=422, detail="expected a JSON body")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="expected a JSON object")
+    container = body.get("container") or "mkv"
+    if container not in _pk.CONTAINERS:
+        raise HTTPException(status_code=422, detail="container must be mkv or mp4")
+    caps = _pk.ffmpeg_capabilities()
+    if container == "mp4" and not caps.mp4:
+        raise HTTPException(
+            status_code=422,
+            detail="this server's ffmpeg has no mp4 muxer or mov_text encoder")
+    raw_subs = body.get("subtitles")
+    if raw_subs is None:
+        raw_subs = []
+    if not isinstance(raw_subs, list) or len(raw_subs) > _pk.MAX_TRACKS:
+        raise HTTPException(status_code=422,
+                            detail=f"subtitles must be a list of at most {_pk.MAX_TRACKS} tracks")
+    tracks: "list[_pk.SubtitleTrack]" = []
+    for i, t in enumerate(raw_subs):
+        if not isinstance(t, dict):
+            raise HTTPException(status_code=422, detail=f"subtitles[{i}] must be an object")
+        lang = t.get("lang")
+        if not isinstance(lang, str) or not _TRANSLATE_CODE_RE.match(lang.strip()):
+            raise HTTPException(status_code=422,
+                                detail=f"subtitles[{i}].lang must be a language code")
+        lang = lang.strip()
+        srt = t.get("srt")
+        if not isinstance(srt, str) or "-->" not in srt or "\x00" in srt:
+            raise HTTPException(status_code=422,
+                                detail=f"subtitle track {i + 1} is not SRT")
+        if len(srt.encode("utf-8")) > _pk.MAX_SRT_BYTES:
+            raise HTTPException(status_code=422,
+                                detail=f"subtitle track {i + 1} is larger than "
+                                       f"{_pk.MAX_SRT_BYTES // (1024 * 1024)} MiB")
+        label = t.get("label")
+        label = (re.sub(r"[\x00-\x1f\x7f]", "", label).strip()[:64]
+                 if isinstance(label, str) else "") or _pk.lang_name(lang)
+        tracks.append(_pk.SubtitleTrack(lang=lang, label=label, srt=srt))
+    default_track = body.get("default_track")
+    if default_track is not None:
+        if (not isinstance(default_track, int) or isinstance(default_track, bool)
+                or not 0 <= default_track < len(tracks)):
+            raise HTTPException(status_code=422, detail="default_track is out of range")
+    filename = body.get("filename")
+    stem = (_MEDIA_FILENAME_RE.sub("", filename).strip()[:80]
+            if isinstance(filename, str) else "") or media_id
+    entry = _ums.resolve_entry(media_id, user_id=user.get("user_id"))
+    if entry is None:
+        raise HTTPException(status_code=404, detail="media not found")
+    facts = await asyncio.to_thread(_media_streams_for, entry, media_id)
+    if facts is None:
+        raise HTTPException(status_code=503,
+                            detail="stream probing is unavailable on this server (PyAV)")
+    if not facts.get("video_codec"):
+        raise HTTPException(status_code=422,
+                            detail={"code": "no_video",
+                                    "message": "this media has no video stream"})
+    if container == "mp4" and not facts.get("mp4_ok"):
+        raise HTTPException(status_code=422,
+                            detail={"code": "mp4_incompatible",
+                                    "message": facts.get("mp4_reason")
+                                    or "MP4 can't carry these streams — choose MKV"})
+    free = shutil.disk_usage(tempfile.gettempdir()).free
+    if free < int(entry.get("size") or 0) + 64 * 1024 * 1024:
+        raise HTTPException(status_code=507,
+                            detail="not enough temporary disk space on the server")
+    _media_package_inflight.acquire(_key)
+    try:
+        out = await _pk.package(
+            entry["path"], tracks, container=container,
+            default_track=default_track,
+            timeout=float(getattr(cfg, "MEDIA_PACKAGE_TIMEOUT_S", 900)))
+    except _pk.SubtitleParseError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except _pk.PackageTimeout as e:
+        raise HTTPException(status_code=504, detail=str(e))
+    except _pk.PackageError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _media_package_inflight.release(_key)
+    workdir = os.path.dirname(out)
+    background.add_task(shutil.rmtree, workdir, True)
+    return FileResponse(
+        path=out,
+        media_type={"mkv": "video/x-matroska", "mp4": "video/mp4"}[container],
+        filename=f"{stem}.{container}",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @app.get("/v1/models", dependencies=[Depends(_get_current_user_dep)])
 async def list_models():
     """OpenAI-style model listing — currently-loaded models plus the configured
@@ -6857,6 +7177,22 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     if caps["url_video_enabled"]:
         # No server-side height ceiling in this release: null = best available.
         caps["url_video_default_max_height"] = None
+    # Additive: subtitle packaging (POST /v1/audio/media{,/{id}/package}).
+    # The flag is always present; the detail block rides only when the
+    # feature is on — its `reason` says why ffmpeg cannot (a stripped build).
+    from faster_whisper_backend.url import package as _pk
+    _pk_on = bool(getattr(cfg, "MEDIA_PACKAGE_ENABLED", True))
+    _pk_caps = _pk.ffmpeg_capabilities() if _pk_on else None
+    caps["media_package_enabled"] = bool(_pk_on and _pk_caps and _pk_caps.available)
+    if _pk_on:
+        caps["media_package"] = {
+            "containers": [c for c, ok in (("mkv", _pk_caps.mkv), ("mp4", _pk_caps.mp4)) if ok],
+            "max_tracks": _pk.MAX_TRACKS,
+            "max_srt_bytes": _pk.MAX_SRT_BYTES,
+            "max_upload_bytes": int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
+            "reason": None if _pk_caps.available else _pk_caps.reason,
+            "ffmpeg_version": _pk_caps.version,
+        }
     # Stage-model list builder shared by all three optional stages below.
     # Configured model FIRST, then the allowlist (de-duplicated, order kept):
     # an empty allowlist means "the configured model only" for the

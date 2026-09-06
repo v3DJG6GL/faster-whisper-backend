@@ -192,6 +192,18 @@ def resolve(media_id: str, *, user_id: "str | None") -> "tuple[str, str] | None"
     return (e["path"], e["ext"]) if e else None
 
 
+def probe_cache_get(media_id: str) -> "dict | None":
+    """Cached stream facts (url/package.probe_streams) for a retained file."""
+    entry = _REG.get(media_id)
+    return entry.get("probe") if entry else None
+
+
+def probe_cache_set(media_id: str, facts: dict) -> None:
+    entry = _REG.get(media_id)
+    if entry is not None:
+        entry["probe"] = facts
+
+
 def expires_at_unix(media_id: str) -> "int | None":
     """Wall-clock expiry hint for the response payload (advisory only — the
     registry works on the monotonic clock)."""
@@ -256,9 +268,18 @@ def _reap_stale_staging(wall: float) -> None:
         return
     max_age = float(getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600)) + 600.0
     for name in names:
+        path = os.path.join(d, name)
+        if name.startswith("upload-") and name.endswith(".part"):
+            # A raw-body upload whose request died mid-stream.
+            try:
+                if (not os.path.islink(path) and os.path.isfile(path)
+                        and wall - os.path.getmtime(path) >= _ORPHAN_MIN_AGE_SEC):
+                    os.unlink(path)
+            except OSError:
+                pass
+            continue
         if not name.startswith(_STAGING_PREFIX):
             continue
-        path = os.path.join(d, name)
         try:
             if os.path.islink(path) or not os.path.isdir(path):
                 continue

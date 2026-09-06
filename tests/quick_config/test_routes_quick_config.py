@@ -149,13 +149,18 @@ def test_recent_open_mode(client):
 
 
 def test_recent_query_filters_raw_and_final(client):
+    import time as _time
     from faster_whisper_backend.stats import recent_transcriptions_store
+    # Newest rows in the store: the suite's other transcriptions record real
+    # timestamps, and a page holds only the newest N — epoch 1.0/2.0 rows
+    # dropped off it once enough tests ran ahead of this one.
+    _base = _time.time() + 1000.0
     recent_transcriptions_store.record_trace(
         request_id="q1", model="m", raw="patient hat Fieber",
-        final="Patient hat Fieber", created_ts=1.0)
+        final="Patient hat Fieber", created_ts=_base + 1.0)
     recent_transcriptions_store.record_trace(
         request_id="q2", model="m", raw="andere notiz",
-        final="Aspirin verordnet", created_ts=2.0)
+        final="Aspirin verordnet", created_ts=_base + 2.0)
     # The term matches the substring across raw OR final, case-insensitively.
     # It travels in the POST body, never the query string: it is dictation
     # text, and a query string is copied into every access log and into
