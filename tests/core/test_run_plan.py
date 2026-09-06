@@ -279,6 +279,38 @@ def test_diarizing_units_split_the_stage_and_learn_per_step(ledger, clock):
     assert stage_rates.lookup("diarizing", "community-1", "cuda")["src"] == "measured"
 
 
+def test_warmup_phases_do_not_fill_by_the_clock(ledger, clock):
+    """"skipping silence…" (analyzing) reports no fraction: the transcribe
+    segment and the overall stay put until the decoder's first tick, instead
+    of creeping with elapsed time. The plain stage tick without a fraction
+    still fills by time (the decoder reports position only later on some
+    paths), and separation's `preparing` step counts as warm-up too."""
+    p = _plan(clock, stages=["downloading", "separating", "transcribing"])
+    p.set_audio_seconds(600.0, src="decoder")
+    p.tick(stage="downloading", progress=1.0)
+    clock.advance(7)
+    p.stage_done("downloading")
+    p.tick(stage="separating", step="preparing")
+    clock.advance(20)
+    snap = p.snapshot()
+    assert _stage(snap, "separating")["phase"] == "preparing"
+    held = snap["overall"]
+    assert held == pytest.approx(7 / (7 + 600 / 8 + 600 / 6), abs=0.002)
+    p.tick(stage="separating", progress=0.5, step=None)
+    assert p.snapshot()["overall"] > held
+    clock.advance(60)
+    p.stage_done("separating")
+    p.tick(stage="analyzing")
+    base = p.snapshot()["overall"]
+    clock.advance(30)
+    assert p.snapshot()["overall"] == pytest.approx(base, abs=1e-9)
+    assert _stage(p.snapshot(), "transcribing")["phase"] == "analyzing"
+    # The decoder's first plain tick (no fraction yet) resumes the clock fill.
+    p.tick(stage="transcribing")
+    clock.advance(10)
+    assert p.snapshot()["overall"] > base
+
+
 def test_skipped_and_failed_stages(ledger, clock):
     p = _plan(clock, stages=["separating", "transcribing", "diarizing"])
     p.set_audio_seconds(600.0, src="decoder")

@@ -271,7 +271,8 @@ class RunPlan:
     def tick(self, *, stage: str | None, progress: float | None = None,
              target: str | None = None,
              target_progress: float | None = None,
-             total_bytes: float | None = None) -> None:
+             total_bytes: float | None = None,
+             step: str | None = None) -> None:
         """One progress-registry write. Advances the plan when the tick
         names a stage that has not started, labels a sub-phase otherwise,
         and moves the translation units along with `target`."""
@@ -279,6 +280,10 @@ class RunPlan:
             return
         name = SUBPHASE_OF.get(stage, stage)
         phase = stage if stage != name else None
+        # Separation's transcode-to-WAV rides as a step, not a stage: it is
+        # warm-up all the same (no fraction, nothing to fill by time).
+        if phase is None and step == "preparing":
+            phase = "preparing"
         with self._lock:
             now = self._now()
             st = self._get(name)
@@ -588,6 +593,13 @@ class RunPlan:
                 return got / tot
         if st.frac is not None:
             return st.frac
+        # A warm-up phase (resolving, waiting, analyzing, loading, a cold
+        # model fetch, preparing) reports no fraction because nothing of the
+        # stage's work has happened: the bar stays where it is rather than
+        # filling by the clock — a number that moved while the stage could
+        # not report said nothing real.
+        if st.phase is not None:
+            return 0.0
         if st.est_s:
             return min(st.elapsed(now) / st.est_s, 0.95)
         return 0.0

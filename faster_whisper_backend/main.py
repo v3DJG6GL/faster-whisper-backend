@@ -3753,7 +3753,8 @@ def _progress_set(pid: "str | None", **fields) -> None:
                      progress=fields.get("progress"),
                      target=fields.get("target"),
                      target_progress=fields.get("target_progress"),
-                     total_bytes=fields.get("total_bytes"))
+                     total_bytes=fields.get("total_bytes"),
+                     step=fields.get("step"))
         except Exception:  # noqa: BLE001
             pass
 
