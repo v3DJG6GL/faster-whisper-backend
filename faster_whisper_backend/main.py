@@ -235,7 +235,8 @@ if sys.platform == "win32":
     _add_local_ffmpeg_to_path()
 
 
-from fastapi import BackgroundTasks, FastAPI, File, UploadFile, Form, HTTPException, Request, Response, Depends
+from fastapi import BackgroundTasks, FastAPI, File, UploadFile, Form, HTTPException, Request, Response, Depends, Query
+from fastapi.encoders import jsonable_encoder as _jsonable_encoder
 
 # Auth dep used by /v1/audio/transcriptions and /auth/whoami. In open mode
 # (no admin key in DB) it returns the synthetic admin — but only to callers on
@@ -2432,6 +2433,20 @@ async def _captures_retention_loop() -> None:
             logger.error("[captures] retention loop error: %s", _ce)
 
 
+async def _jobs_retention_loop() -> None:
+    """Hourly retention sweep for the server-jobs store (TTL, row cap, byte
+    cap). Same shape as the captures loop; the store reads cfg.JOBS_* live
+    each tick."""
+    while True:
+        try:
+            await asyncio.sleep(3600)
+            await asyncio.to_thread(_jobs_store.sweep_retention)
+        except asyncio.CancelledError:
+            raise
+        except Exception as _je:
+            logger.error("[jobs] retention loop error: %s", _je)
+
+
 async def _usage_retention_loop() -> None:
     """Hourly sweep for the usage-statistics store: closes out dictation
     sessions whose outcome never arrived and prunes the job/app rows past
@@ -3003,6 +3018,20 @@ async def lifespan(app: FastAPI):
     except Exception as _ce:
         logger.error("Failed to initialize captures store: %s", _ce)
 
+    # Server jobs: the durable job resource. A row still `running` now was
+    # interrupted by the previous process's death — flip it, or it reads as
+    # in flight forever (the poller would wait out the whole TTL).
+    jobs_sweep_task = None
+    try:
+        _jobs_store.init_db(cfg.JOBS_DB)
+        _n_interrupted = _jobs_store.mark_running_as_failed("server restarted")
+        _jobs_store.sweep_retention()
+        logger.info("Jobs store initialized at %s (%d interrupted run(s) marked failed)",
+                    cfg.JOBS_DB, _n_interrupted)
+        jobs_sweep_task = asyncio.create_task(_jobs_retention_loop())
+    except Exception as _je:
+        logger.error("Failed to initialize jobs store: %s", _je)
+
     yield
 
     async def _cancel(task) -> None:
@@ -3032,6 +3061,7 @@ async def lifespan(app: FastAPI):
     await _cancel(url_media_janitor_task)
     await _cancel(reports_sweep_task)
     await _cancel(captures_sweep_task)
+    await _cancel(jobs_sweep_task)
     await _cancel(usage_sweep_task)
     await _cancel(stats_sampler_task)
     # Whatever the sampler queued in its last minute.
@@ -3168,6 +3198,7 @@ from faster_whisper_backend.stats import metrics
 # Central running-jobs registry (transcribe/dictate/translate/download/preload)
 # — feeds /stats and the WebUI header activity cluster.
 from faster_whisper_backend.core import jobs
+from faster_whisper_backend.core import jobs_store as _jobs_store
 
 # Model preloading. Imported here rather than lazily because three call sites
 # below (the two `loaded` flag endpoints and _progress_set) reach it on hot
@@ -3579,6 +3610,33 @@ _BATCH_PROGRESS: "dict[str, dict]" = {}
 _PROGRESS_OWNER: "dict[str, str]" = {}
 _BATCH_PROGRESS_MAX = 200
 _BATCH_PROGRESS_STALE_S = 2 * 3600
+# progress_id → monotonic time its run CLOSED (the handler's finally popped
+# the entry). A stage thread that outlives the handler (a decode the client
+# cancelled, a diarization step mid-flight on disconnect) keeps calling
+# _progress_set; without this it would re-create the entry — owner-less,
+# since _PROGRESS_OWNER was popped too — and leave it readable by any
+# authenticated caller until the stale sweep. A closed id is a no-op in
+# _progress_set until a fresh owner-stamped seed re-opens it. Bounded by the
+# TTL sweep in _progress_close (every run end).
+_PROGRESS_CLOSED: "dict[str, float]" = {}
+_PROGRESS_CLOSED_TTL_S = 600
+
+
+def _progress_close(pid: "str | None") -> None:
+    """Retire `pid`'s live progress entry: pop the three registries and
+    tombstone the id so a straggling stage-thread tick cannot resurrect it.
+    Every handler finally that used to pop the trio calls this instead."""
+    if not pid:
+        return
+    _BATCH_PROGRESS.pop(pid, None)
+    _PROGRESS_OWNER.pop(pid, None)
+    _BATCH_CANCELLED.discard(pid)
+    now = time.monotonic()
+    _PROGRESS_CLOSED[pid] = now
+    if len(_PROGRESS_CLOSED) > 64:
+        for k in [k for k, t in list(_PROGRESS_CLOSED.items())
+                  if now - t > _PROGRESS_CLOSED_TTL_S]:
+            _PROGRESS_CLOSED.pop(k, None)
 _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 
 # One target-language code inside the `translate_to` csv: a 2-3 letter base
@@ -3669,6 +3727,86 @@ def _plan_fields(pid: str) -> dict:
     }
 
 
+# ── Server jobs (durable job resource, core/jobs_store.py) ──────────────────
+# Every batch run posted WITH a progress_id gets a row: `running` right after
+# the progress seed, then its terminal state + the verbatim response payload
+# from the handler's outer finally, so a client that lost its connection can
+# list / re-attach to / fetch the run via GET /v1/jobs*. A ledger write never
+# fails a run: every helper here swallows and logs.
+
+def _jobs_enabled() -> bool:
+    return bool(getattr(cfg, "JOBS_ENABLED", True))
+
+
+def _jobs_ttl_s() -> float:
+    return float(getattr(cfg, "JOBS_TTL_S", 259_200))
+
+
+def _jobs_start(pid: "str | None", *, request_id: str, kind: str,
+                user_id: "str | None", key_id: "str | None",
+                model: "str | None", source_kind: str,
+                source_name: "str | None", task: "str | None" = None,
+                response_format: "str | None" = None) -> bool:
+    """Insert the `running` row for `pid`. False when no row was written
+    (no id, feature off, or the store is unavailable)."""
+    if not pid or not _jobs_enabled():
+        return False
+    try:
+        _jobs_store.start(
+            job_id=pid, request_id=request_id, kind=kind,
+            user_id=user_id, key_id=key_id, model=model,
+            source_kind=source_kind, source_name=source_name, task=task,
+            response_format=response_format, ttl_s=_jobs_ttl_s(),
+            max_rows=int(getattr(cfg, "JOBS_MAX_ROWS", 2000)),
+            max_bytes=int(getattr(cfg, "JOBS_MAX_BYTES", 2_000_000_000)))
+        return True
+    except Exception as e:  # noqa: BLE001 — never fail a run on the ledger
+        logger.warning("[jobs] could not record job start: %s", e)
+        return False
+
+
+def _job_error_text(status: str, exc: "BaseException | None",
+                    fallback: str = "transcription failed") -> "str | None":
+    """Client-safe error for a job row: a curated 4xx detail verbatim, any
+    other failure as the generic text the response carried. None when the
+    run was cancelled (not an error)."""
+    if status == "cancelled":
+        return None
+    if (isinstance(exc, HTTPException) and isinstance(exc.detail, str)
+            and exc.status_code < 500):
+        return exc.detail
+    return fallback
+
+
+def _jobs_finish_sync(pid: str, *, status: str, payload=None,
+                      error: "str | None" = None, stages=None, plan=None,
+                      model: "str | None" = None,
+                      task: "str | None" = None) -> None:
+    """Stamp the terminal state. `payload` is the response object exactly as
+    the handler returned it (dict, or the `text` format's str); it is stored
+    only for status "ok". Blocking SQLite — call off the loop for big runs."""
+    state = {"ok": "done", "cancelled": "cancelled"}.get(status, "failed")
+    result = None
+    if state == "done" and payload is not None:
+        result = _jsonable_encoder(payload)
+    try:
+        _jobs_store.finish(job_id=pid, state=state, error=error,
+                           result=result, stages=stages, plan=plan,
+                           model=model, task=task, ttl_s=_jobs_ttl_s())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[jobs] could not record job end: %s", e)
+
+
+async def _jobs_finish(pid: str, **kw) -> None:
+    """Off-loop `_jobs_finish_sync` (a verbose_json payload can be MBs).
+    shield: a handler being unwound must not abort a write already on the
+    thread — the row would stay `running` forever."""
+    try:
+        await asyncio.shield(asyncio.to_thread(_jobs_finish_sync, pid, **kw))
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[jobs] could not record job end: %s", e)
+
+
 def _provisional_stages(*, is_url: bool, separate: "bool | None",
                         diarize: "bool | None",
                         translate_to: "str | None") -> "list[str]":
@@ -3691,6 +3829,13 @@ def _provisional_stages(*, is_url: bool, separate: "bool | None",
 def _progress_set(pid: "str | None", **fields) -> None:
     """Merge `fields` into the progress entry for `pid` (no-op without one)."""
     if not pid:
+        return
+    if fields.get("owner") is not None:
+        # A fresh handler seed re-opens an id its previous run closed.
+        _PROGRESS_CLOSED.pop(pid, None)
+    elif pid in _PROGRESS_CLOSED:
+        # A stage thread of a run that already closed: nothing to update,
+        # and re-creating the entry would leave it owner-less.
         return
     _job_id = _JOB_BY_PID.get(pid)
     if _job_id:
@@ -3913,6 +4058,13 @@ async def transcribe(
     _exc: "BaseException | None" = None
     _error_class: "str | None" = None
     _error_stage: "str | None" = None
+    # Server jobs: whether this run has a row, and the response object as
+    # returned (captured right before each `return` so the outer finally can
+    # persist exactly what the client received — or would have, had it
+    # still been connected).
+    _job_row = False
+    _response_payload: "str | dict | None" = None
+    _task_now: "str | None" = task or "transcribe"
     _audio_dur: float = 0.0
     _words: int = 0
     # Detected (or requested) language for the usage job row; None until the
@@ -3996,6 +4148,16 @@ async def transcribe(
                              else "waiting"),
                       progress=None,
                       owner=(_user_id or _key_id))
+        _job_row = _jobs_start(
+            _pid, request_id=request_id, kind="transcribe",
+            user_id=_user_id, key_id=_key_id, model=resolved_model,
+            source_kind=("url" if source_url is not None else "file"),
+            # A basename or a host — never the full URL (tokens) or path.
+            source_name=(_url_host_for_log(source_url)
+                         if source_url is not None
+                         else os.path.basename(
+                             getattr(file, "filename", None) or "")),
+            task=_task_now, response_format=response_format)
         # Upload ceiling. Content-Length is advisory (absent on chunked
         # bodies), so it only buys us an early exit before the model load —
         # the chunked read below is what actually enforces the bound.
@@ -4293,8 +4455,9 @@ async def transcribe(
             # the client's `task` param the way a locked DEFAULT_LANGUAGE binds
             # `language` above.
             _task = _resolve_request_knob(
-                resolved_model, ident, ignored, "TASK", "task", task,
-                default="transcribe")
+                resolved_model, ident, ignored,
+                "TASK", "task", task, default="transcribe")
+            _task_now = _task
             # Diarization request knobs: same absent-inherits / locked-wins
             # shape as task above. The capacity gate (DIARIZATION_ENABLED)
             # is checked at the stage itself and soft-fails into `warnings`.
@@ -5514,6 +5677,7 @@ async def transcribe(
             _words = len(full_text_str.split())
 
             if response_format == "text":
+                _response_payload = full_text_str
                 return full_text_str
 
             # Joined per-language transcripts, shared by verbose_json AND the
@@ -5607,6 +5771,7 @@ async def transcribe(
                     response["source_media_id"] = _source_media_id
                     response["source_media_expires_at"] = (
                         _ums.expires_at_unix(_source_media_id))
+                _response_payload = response
                 return response
 
             # Default `json` shape. Additive keys only (OpenAI-compat callers
@@ -5635,6 +5800,7 @@ async def transcribe(
                 response["source_media_id"] = _source_media_id
                 response["source_media_expires_at"] = (
                     _ums.expires_at_unix(_source_media_id))
+            _response_payload = response
             return response
 
         except _ClientCancelled:
@@ -5675,9 +5841,7 @@ async def transcribe(
                     # the entry when it ends.
                     _run_finished[0] = True
                 else:
-                    _BATCH_PROGRESS.pop(_pid, None)
-                    _PROGRESS_OWNER.pop(_pid, None)
-                    _BATCH_CANCELLED.discard(_pid)
+                    _progress_close(_pid)
             if tmp_path:
                 try:
                     os.unlink(tmp_path)
@@ -5733,6 +5897,14 @@ async def transcribe(
         except Exception:  # noqa: BLE001 — a ledger write never fails a run
             pass
         jobs.job_end(request_id)
+        if _job_row:
+            await _jobs_finish(
+                _pid, status=_status,
+                payload=(_response_payload if _status == "ok" else None),
+                error=_job_error_text(_status, _exc),
+                stages=(_stage_timings or None),
+                plan=_rplan.snapshot()["plan"],
+                model=resolved_model, task=_task_now)
         if _status != "ok" and _error_class is None:
             _error_class, _error_stage = metrics.classify_error(
                 _exc, status=_status, stage=_cur_stage)
@@ -6096,6 +6268,10 @@ async def translate_text(request: Request,
     # claim happens after the finally, so the finally has to know not to
     # release the receipt out from under it.
     _receipt_claimed_below = False
+    # Server jobs row (kind "translate"): written after the progress seed,
+    # finished by _record_run on every non-ok exit and by the success tail.
+    _job_row = False
+    _job_finished = False
     try:
         # Central running-jobs registry entry. Progress feeds in directly from
         # _on_progress below (works whether or not the client sent a progress_id).
@@ -6146,7 +6322,17 @@ async def translate_text(request: Request,
             """Persist this run as a recent-jobs row (kind='translate') on every
             terminal path. No audio duration; segment count lives in the stage
             detail (words=0 — a segment count is not a word count)."""
+            nonlocal _job_finished
             secs = round(time.perf_counter() - _t0, 3)
+            if _job_row and status != "ok":
+                # The success tail stamps `done` with the payload itself.
+                _jobs_finish_sync(
+                    _pid, status=status,
+                    error=(str(exc) if isinstance(exc, _tr.TranslationError)
+                           else _job_error_text(status, exc,
+                                                "translation failed")),
+                    plan=_rplan.snapshot()["plan"], model=(_tr_model or None))
+                _job_finished = True
             if status == "ok":
                 _rplan.stage_done("translating")
             try:
@@ -6190,6 +6376,11 @@ async def translate_text(request: Request,
                       model=(_tr_model or None),
                       device=_tr._resolve_device(), compute="gguf",
                       owner=(user.get("user_id") or user.get("key_id")))
+        _job_row = _jobs_start(
+            _pid, request_id=request_id, kind="translate",
+            user_id=(user.get("user_id") or None), key_id=user.get("key_id"),
+            model=(_tr_model or None), source_kind="text",
+            source_name=f"{len(seg_in)} segments → {','.join(targets)}")
         try:
             _check_cancelled(_pid)
 
@@ -6276,10 +6467,15 @@ async def translate_text(request: Request,
                 f"connection closed after {time.perf_counter() - _t0:.1f}s")
         jobs.job_end(request_id)
         if _pid:
-            _BATCH_PROGRESS.pop(_pid, None)
-            _PROGRESS_OWNER.pop(_pid, None)
-            _BATCH_CANCELLED.discard(_pid)
+            _progress_close(_pid)
             _RUN_PLAN_BY_PID.pop(_pid, None)
+        # Catch-all for the paths that never reached _record_run: the
+        # HTTPException arm and a disconnect unwinding past every arm. The
+        # success path claims below, so it is excluded here.
+        if _job_row and not _job_finished and not _receipt_claimed_below:
+            _jobs_finish_sync(_pid, status="error", error="request aborted",
+                              model=(_tr_model or None))
+            _job_finished = True
 
     _elapsed = time.perf_counter() - _t0
     # Cold model: everything up to the first progress callback is load (the
@@ -6335,7 +6531,7 @@ async def translate_text(request: Request,
     # use for the same fact, so a client can read one key on both endpoints
     # (kept_original stays for existing consumers).
     _kept = meta.get("kept") or {}
-    return {
+    _result = {
         "segments": [{"id": ids[i], "translations": per_seg[i],
                       **({"kept_original": list(_kept[i]),
                           "translations_kept": list(_kept[i])}
@@ -6349,6 +6545,11 @@ async def translate_text(request: Request,
             for name in _ignored if name
         ],
     }
+    if _job_row:
+        # Text results are small (segments in, translations out) — inline.
+        _jobs_finish_sync(_pid, status="ok", payload=_result,
+                          plan=_result["plan"], model=(meta.get("model") or _tr_model or None))
+    return _result
 
 
 def _progress_entry_for(progress_id: str, user: dict) -> "dict | None":
@@ -6367,24 +6568,9 @@ def _progress_entry_for(progress_id: str, user: dict) -> "dict | None":
     return entry
 
 
-@app.get("/v1/audio/transcriptions/progress/{progress_id}")
-async def transcription_progress(progress_id: str,
-                                 user: dict = Depends(_get_current_user_dep)):
-    """Live progress of an in-flight file transcription that was posted with a
-    matching `progress_id` form field. Stages: waiting (semaphore queue) →
-    [resolving → downloading (URL flow: `progress` 0..1 when the size is
-    known, with `total_bytes`)] → separating → analyzing (audio decode +
-    VAD, inside transcribe()) → transcribing (with `progress` 0..1 and the
-    audio `duration`) → diarizing → translating. A requested-but-declined
-    stage lands in `skipped` instead ("separating" / "diarizing" /
-    "translating"). An unknown/finished id answers stage "unknown" — the
-    POST's own response is the completion signal, so the poller just
-    stops."""
-    if not _PROGRESS_ID_RE.match(progress_id):
-        raise HTTPException(status_code=422, detail="malformed progress_id")
-    entry = _progress_entry_for(progress_id, user)
-    if entry is None:
-        return {"stage": "unknown"}
+def _progress_payload(pid: str, entry: dict) -> dict:
+    """The progress route's wire shape for a live entry — also embedded
+    under `progress` by GET /v1/jobs/{id} while the run is in flight."""
     return {
         "stage": entry.get("stage"),
         "progress": entry.get("progress"),
@@ -6418,8 +6604,29 @@ async def transcription_progress(progress_id: str,
         # The server-owned plan (core/run_plan.py): per-stage expected /
         # actual seconds, per-language units, and the overall fraction +
         # ETA the client renders verbatim.
-        **_plan_fields(progress_id),
+        **_plan_fields(pid),
     }
+
+
+@app.get("/v1/audio/transcriptions/progress/{progress_id}")
+async def transcription_progress(progress_id: str,
+                                 user: dict = Depends(_get_current_user_dep)):
+    """Live progress of an in-flight file transcription that was posted with a
+    matching `progress_id` form field. Stages: waiting (semaphore queue) →
+    [resolving → downloading (URL flow: `progress` 0..1 when the size is
+    known, with `total_bytes`)] → separating → analyzing (audio decode +
+    VAD, inside transcribe()) → transcribing (with `progress` 0..1 and the
+    audio `duration`) → diarizing → translating. A requested-but-declined
+    stage lands in `skipped` instead ("separating" / "diarizing" /
+    "translating"). An unknown/finished id answers stage "unknown" — the
+    POST's own response is the completion signal, so the poller just
+    stops."""
+    if not _PROGRESS_ID_RE.match(progress_id):
+        raise HTTPException(status_code=422, detail="malformed progress_id")
+    entry = _progress_entry_for(progress_id, user)
+    if entry is None:
+        return {"stage": "unknown"}
+    return _progress_payload(progress_id, entry)
 
 
 @app.post("/v1/audio/transcriptions/cancel/{progress_id}")
@@ -6440,6 +6647,160 @@ async def transcription_cancel(progress_id: str,
     _BATCH_CANCELLED.add(progress_id)
     logger.info("[batch] cancel requested for an in-flight transcription")
     return {"cancelled": True}
+
+
+# ── Server jobs: GET/DELETE /v1/jobs* ───────────────────────────────────────
+# The durable job resource (core/jobs_store.py): every batch run posted with
+# a progress_id is a row a client can list, poll, fetch the result of and
+# cancel/delete — the connection that carried the POST is no longer the only
+# way to get the transcript. Owner-gated like the progress route: a foreign,
+# expired or unknown id is one 404 (no existence oracle); admins read all.
+
+_jobs_rate = _rl.FixedWindow(
+    config_field="JOBS_RATE_PER_MIN",
+    window_s=60.0,
+    default_max=120,
+    message="too many job requests — slow down "
+            "({limit}/min; retry in {retry_after}s)",
+)
+
+_JOB_STATES = ("running", "done", "failed", "cancelled")
+
+
+def _job_wire(row: dict) -> dict:
+    """A job row's client shape (never the result blob)."""
+    return {
+        "job_id": row["job_id"],
+        "kind": row.get("kind"),
+        "state": row.get("state"),
+        "created_at": row.get("created_ts"),
+        "finished_at": row.get("finished_ts"),
+        "expires_at": row.get("expires_ts"),
+        "model": row.get("model"),
+        "source_kind": row.get("source_kind"),
+        "source_name": row.get("source_name"),
+        "task": row.get("task"),
+        "response_format": row.get("response_format"),
+        "error": row.get("error"),
+        "result_bytes": int(row.get("result_bytes") or 0),
+        "result_available": bool(row.get("result_available")),
+    }
+
+
+def _jobs_gate(user: dict, request: Request) -> None:
+    if not _jobs_enabled():
+        raise HTTPException(status_code=403,
+                            detail="server jobs are not enabled on this server")
+    _jobs_rate.hit(_rl.identity_key(user, request))
+
+
+def _job_for_caller(job_id: str, user: dict, request: Request) -> dict:
+    """The row for `job_id` if this caller may see it, else 404 (unknown,
+    expired and foreign all read the same); 422 on a malformed id."""
+    _jobs_gate(user, request)
+    if not _PROGRESS_ID_RE.match(job_id):
+        raise HTTPException(status_code=422, detail="malformed job id")
+    row = _jobs_store.get(job_id)
+    if (row is None or float(row.get("expires_ts") or 0) < time.time()
+            or (not user.get("is_admin") and not _jobs_store.is_owner(
+                row, user_id=user.get("user_id"), key_id=user.get("key_id")))):
+        raise HTTPException(status_code=404, detail="job not found")
+    return row
+
+
+def _scrub_media_refs(payload: dict, *, user_id: "str | None") -> dict:
+    """A stored result may name retained media (source_media_id and the
+    video twin) that has since expired or died with a restart — re-validate
+    each id against the media store and refresh its expiry, or drop the pair
+    so the client never receives a dangling id. A video still pending when
+    the run finished never got its id into the payload; the flag goes too."""
+    from faster_whisper_backend.url import media_store as _ums
+    for id_key, exp_key in (("source_media_id", "source_media_expires_at"),
+                            ("source_video_media_id",
+                             "source_video_expires_at")):
+        if id_key not in payload and exp_key not in payload:
+            continue
+        mid = payload.get(id_key)
+        ok = (isinstance(mid, str) and _URL_MEDIA_ID_RE.match(mid)
+              and _ums.resolve_entry(mid, user_id=user_id) is not None)
+        if ok:
+            payload[exp_key] = _ums.expires_at_unix(mid)
+        else:
+            payload.pop(id_key, None)
+            payload.pop(exp_key, None)
+    payload.pop("source_video_pending", None)
+    return payload
+
+
+@app.get("/v1/jobs")
+async def jobs_list(request: Request,
+                    state: "str | None" = None,
+                    limit: int = 50,
+                    all_users: int = Query(0, alias="all"),
+                    user: dict = Depends(_get_current_user_dep)):
+    """The caller's job rows, newest first (`?state=` filters; admins may
+    pass `?all=1` for every user's). No result blobs, no live progress —
+    poll GET /v1/jobs/{id} for those."""
+    _jobs_gate(user, request)
+    if state is not None and state not in _JOB_STATES:
+        raise HTTPException(status_code=422, detail="unknown job state")
+    rows = _jobs_store.list_jobs(
+        user_id=user.get("user_id"), key_id=user.get("key_id"),
+        all_users=bool(all_users and user.get("is_admin")),
+        state=state, limit=max(1, min(int(limit), 200)))
+    return _JSONResponse({"jobs": [_job_wire(r) for r in rows]},
+                         headers={"Cache-Control": "no-store"})
+
+
+@app.get("/v1/jobs/{job_id}")
+async def job_get(job_id: str, request: Request,
+                  user: dict = Depends(_get_current_user_dep)):
+    """One job row plus, while its run is in flight in THIS process, the
+    live progress under `progress` (the progress route's shape) — one poll
+    serves a re-attached client. `progress` is null once the run closed, or
+    when it runs in a sibling worker process."""
+    row = _job_for_caller(job_id, user, request)
+    out = _job_wire(row)
+    entry = _progress_entry_for(job_id, user)
+    out["progress"] = (_progress_payload(job_id, entry)
+                       if entry is not None else None)
+    return _JSONResponse(out, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/v1/jobs/{job_id}/result")
+async def job_result(job_id: str, request: Request,
+                     user: dict = Depends(_get_current_user_dep)):
+    """The run's response payload, byte-for-byte what the POST returned
+    (the `text` format comes back as the JSON string it was). 409 while the
+    run is still going; 404 when there is none (failed / cancelled)."""
+    row = _job_for_caller(job_id, user, request)
+    if row.get("state") == "running":
+        raise HTTPException(status_code=409, detail="job still running")
+    if row.get("state") != "done" or not row.get("result_available"):
+        raise HTTPException(status_code=404, detail="no result for this job")
+    payload = await asyncio.to_thread(_jobs_store.get_result, job_id)
+    if payload is None:
+        raise HTTPException(status_code=404, detail="no result for this job")
+    if isinstance(payload, dict):
+        payload = _scrub_media_refs(payload, user_id=user.get("user_id"))
+    return _JSONResponse(payload, headers={"Cache-Control": "no-store"})
+
+
+@app.delete("/v1/jobs/{job_id}")
+async def job_delete(job_id: str, request: Request,
+                     user: dict = Depends(_get_current_user_dep)):
+    """Running → cooperative cancel (same flag as the cancel route; the row
+    turns `cancelled` when the handler unwinds). Finished → delete the row
+    and its stored result."""
+    row = _job_for_caller(job_id, user, request)
+    if row.get("state") == "running":
+        if _progress_entry_for(job_id, user) is None:
+            # Hosted by a sibling worker, or the entry was cap-evicted.
+            return {"cancelled": False}
+        _BATCH_CANCELLED.add(job_id)
+        logger.info("[jobs] cancel requested for an in-flight run")
+        return {"cancelled": True}
+    return {"deleted": bool(_jobs_store.delete(job_id))}
 
 
 # ── Transcribe-from-URL: preview + retained-media endpoints ─────────────────
@@ -6629,9 +6990,7 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
         if pid:
             _VIDEO_TASKS.pop(pid, None)
             if run_finished[0]:
-                _BATCH_PROGRESS.pop(pid, None)
-                _PROGRESS_OWNER.pop(pid, None)
-                _BATCH_CANCELLED.discard(pid)
+                _progress_close(pid)
     return dict(state)
 
 
@@ -6863,9 +7222,7 @@ async def url_media_video(request: Request,
         raise HTTPException(status_code=500, detail="video download failed")
     finally:
         if _pid:
-            _BATCH_PROGRESS.pop(_pid, None)
-            _PROGRESS_OWNER.pop(_pid, None)
-            _BATCH_CANCELLED.discard(_pid)
+            _progress_close(_pid)
             _JOB_BY_PID.pop(_pid, None)
         jobs.job_end(request_id)
 
@@ -7245,6 +7602,11 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     if caps["url_video_enabled"]:
         # No server-side height ceiling in this release: null = best available.
         caps["url_video_default_max_height"] = None
+    # Additive: the durable job resource (GET/DELETE /v1/jobs*). The flag is
+    # always present; the detail block rides only when on.
+    caps["jobs_enabled"] = _jobs_enabled()
+    if caps["jobs_enabled"]:
+        caps["jobs"] = {"ttl_s": int(_jobs_ttl_s())}
     # Additive: subtitle packaging (POST /v1/audio/media{,/{id}/package}).
     # The flag is always present; the detail block rides only when the
     # feature is on — its `reason` says why ffmpeg cannot (a stripped build).

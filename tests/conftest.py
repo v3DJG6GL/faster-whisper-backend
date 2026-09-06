@@ -525,6 +525,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     monkeypatch.setenv("WHISPER_CAPTURES_DB", str(tmp_path / "captures.sqlite3"))
     monkeypatch.setenv("WHISPER_CAPTURES_DIR", str(tmp_path / "captures_audio"))
     monkeypatch.setenv("WHISPER_CLIENT_SETTINGS_DB", str(tmp_path / "client_settings.sqlite3"))
+    monkeypatch.setenv("WHISPER_JOBS_DB", str(tmp_path / "jobs.sqlite3"))
     monkeypatch.setenv("WHISPER_LOG_FILE", str(tmp_path / "whisper.log"))
     # The lifespan's url_media_store.startup_reset() rmtree's URL_MEDIA_DIR
     # unconditionally — without this it would wipe the REAL /data/url_media.
@@ -598,9 +599,10 @@ def app_module(tmp_path, monkeypatch, fake_model):
     from faster_whisper_backend.stats import usage_store; from faster_whisper_backend.captures import store as captures_store; from faster_whisper_backend.captures import samples_store as capture_samples_store
     from faster_whisper_backend.auth import sessions_store; from faster_whisper_backend.client_settings import store as client_settings_store
     from faster_whisper_backend.stats import system_metrics_store
+    from faster_whisper_backend.core import jobs_store
     for _mod in (api_keys_store, sessions_store, reports_store,
                  recent_transcriptions_store, usage_store, captures_store,
-                 client_settings_store, system_metrics_store):
+                 client_settings_store, system_metrics_store, jobs_store):
         _c = getattr(_mod, "_conn", None)
         if _c is not None:
             try:

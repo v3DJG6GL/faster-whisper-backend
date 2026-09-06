@@ -773,6 +773,27 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Auto-delete entries older than this many days. 0 = TTL "
         "disabled (count-cap only). Combined with the row cap: "
         "whichever bound is tighter wins.",
+    # --- Server jobs ---
+    "JOBS_ENABLED":
+        "Keep a durable record of every batch run posted with a "
+        "progress_id — status and the verbatim result — behind "
+        "GET/DELETE /v1/jobs*, so a client that lost its connection can "
+        "re-attach and fetch the run. Off = 403 on /v1/jobs*, no rows.",
+    "JOBS_DB":
+        "Path to the SQLite file holding the job rows. Carries transcript "
+        "text — keep on an encrypted volume if sensitive. Read at startup.",
+    "JOBS_TTL_S":
+        "Seconds a job (and its stored result) stays fetchable after it "
+        "finishes. Default 259200 (72 h).",
+    "JOBS_MAX_ROWS":
+        "Row cap: the newest rows are kept, a running one is never "
+        "evicted. Swept lazily on insert and hourly.",
+    "JOBS_MAX_BYTES":
+        "Cap on the stored result bytes across all rows; the oldest "
+        "finished results are dropped first. 0 = no byte cap.",
+    "JOBS_RATE_PER_MIN":
+        "GET/DELETE /v1/jobs* requests per identity per 60 s (a "
+        "re-attached client polls once a second). 0 = unlimited.",
     # --- Usage statistics ---
     "USAGE_DB":
         "Path to the SQLite file holding the usage ledger (per-job numbers "
@@ -2101,6 +2122,11 @@ class AdminConfig(BaseModel):
     ] | None = _F(
         "MEDIA_PACKAGE_MAX_INFLIGHT_PER_USER", scope="server",
         group="Concurrency & Request Limits", order=5)
+    JOBS_RATE_PER_MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "JOBS_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=5)
     CAPTURES_AUDIO_RATE_PER_MIN: Annotated[
         int, Field(ge=0, le=100_000)
     ] | None = _F(
@@ -2154,6 +2180,18 @@ class AdminConfig(BaseModel):
     STATS_RECENT_TRANSCRIPTIONS_COUNT: Annotated[int, Field(ge=1, le=100)] | None = _F(
         "STATS_RECENT_TRANSCRIPTIONS_COUNT", scope="server",
         group="Recent transcriptions")
+
+    # --- Server jobs (durable job resource, core/jobs_store.py) ---
+    JOBS_ENABLED: bool | None = _F(
+        "JOBS_ENABLED", scope="server", group="Jobs")
+    JOBS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
+        "JOBS_DB", scope="server", group="Jobs", restart=True)
+    JOBS_TTL_S: Annotated[int, Field(ge=600, le=2_592_000)] | None = _F(
+        "JOBS_TTL_S", scope="server", group="Jobs")
+    JOBS_MAX_ROWS: Annotated[int, Field(ge=10, le=100_000)] | None = _F(
+        "JOBS_MAX_ROWS", scope="server", group="Jobs")
+    JOBS_MAX_BYTES: Annotated[int, Field(ge=0, le=500_000_000_000)] | None = _F(
+        "JOBS_MAX_BYTES", scope="server", group="Jobs")
     STATS_SYSTEM_METRICS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "STATS_SYSTEM_METRICS_DB", scope="server",
         group="System metrics", restart=True)
@@ -2931,6 +2969,7 @@ _GROUP_ORDER: list[tuple[str, list[str | None]]] = [
     ("Concurrency & Request Limits", [None]),
     ("Reports", [None]),
     ("Recent transcriptions", [None]),
+    ("Jobs", [None]),
     ("System metrics", [None]),
     ("Usage statistics", [None]),
     ("Client settings sync", [None]),

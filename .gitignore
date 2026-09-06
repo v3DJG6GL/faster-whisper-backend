@@ -79,6 +79,11 @@ client_settings.local.sqlite3
 client_settings.local.sqlite3-shm
 client_settings.local.sqlite3-wal
 
+# Durable job resource (core/jobs_store.py) — carries transcript text
+jobs.local.sqlite3
+jobs.local.sqlite3-shm
+jobs.local.sqlite3-wal
+
 # Editor / IDE
 .vscode/
 .idea/

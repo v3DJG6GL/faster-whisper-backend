@@ -964,6 +964,26 @@ RECENT_TRANSCRIPTIONS_PRUNE_EVERY = _D("RECENT_TRANSCRIPTIONS_PRUNE_EVERY")
 # scroll badly without adding value.
 STATS_RECENT_TRANSCRIPTIONS_COUNT = _D("STATS_RECENT_TRANSCRIPTIONS_COUNT")
 
+# ---------------------------------------------------------------------------
+# Server jobs (core/jobs_store.py) — the durable job resource behind
+# GET/DELETE /v1/jobs*. Every batch run posted WITH a `progress_id` gets a
+# row (status + the verbatim response payload) so a client that lost its
+# connection can list, re-attach to and fetch the run. Runs without a
+# progress_id (plain OpenAI-compatible callers) get no row.
+JOBS_ENABLED: bool = _D("JOBS_ENABLED")
+# SQLite file (three runtime files: .sqlite3, -wal, -shm). Read at startup.
+JOBS_DB = _D("JOBS_DB")
+# How long a row (and its result) stays fetchable, in seconds. Re-stamped
+# when the run finishes. 259200 = 72 h.
+JOBS_TTL_S: int = _D("JOBS_TTL_S")
+# Row cap (newest kept, a running row is never evicted) and stored-result
+# byte cap (oldest finished results dropped first). 0 = no byte cap.
+JOBS_MAX_ROWS: int = _D("JOBS_MAX_ROWS")
+JOBS_MAX_BYTES: int = _D("JOBS_MAX_BYTES")
+# Per-identity budget for the /v1/jobs* reads (a re-attached client polls
+# once a second). 0 = unlimited.
+JOBS_RATE_PER_MIN: int = _D("JOBS_RATE_PER_MIN")
+
 # /stats for users whose page scope is "own": False (default) replaces the
 # machine cards (GPU/CPU/RAM/process/latency/endpoints/5xx/models) with a
 # coarse server block — a busy/idle GPU and VRAM headroom — because

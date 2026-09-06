@@ -264,7 +264,7 @@ huggingface_hub into the models volume (`HF_HOME`).
 
 ### Rate limits & concurrency
 
-Seven request budgets, all in the **Concurrency & Request Limits** settings
+Eight request budgets, all in the **Concurrency & Request Limits** settings
 group, all with `WHISPER_*` env twins, and all **hot** — the limiters re-read
 their ceiling on every call, so raising one applies to the next request with
 no restart and no bucket reset.
@@ -276,6 +276,7 @@ no restart and no bucket reset.
 | `STREAMING_MAX_SESSIONS_PER_USER` | concurrency (default 4) | live-dictation WebSockets per caller |
 | `URL_PREVIEW_RATE_PER_MIN` | 10/min | `POST /v1/audio/url-preview` |
 | `URL_VIDEO_RATE_PER_MIN` | 6/min | a link run that keeps the video (`keep_video`) or `POST /v1/audio/url-media/video` — each pulls up to `MEDIA_MAX_BYTES` from the site |
+| `JOBS_RATE_PER_MIN` | 120/min | `GET`/`DELETE /v1/jobs*` — a re-attached client polls its job once a second |
 | `CAPTURES_AUDIO_RATE_PER_MIN` | 240/min | capture-audio fetches |
 | `REPORTS_SUBMIT_RATE_PER_10MIN` | 20/10 min | user report submissions |
 | `LOGIN_FAILURE_RATE` | 10/min | `POST /auth/login` — **failures only** |
@@ -438,6 +439,12 @@ table inet whisper {
 
 Adjust `172.20.0.0/16` to the compose network's subnet, and drop the `172.16.0.0/12` line only if that subnet overlaps it (it does for Docker's defaults — give the service its own network with an explicit subnet outside the ranges you deny). The commented block in `docker-compose.yml` shows the same idea. On a bare-metal install, the equivalent is an `output` chain matched on the service user (`meta skuid whisper`).
 
+### Server jobs
+
+A batch run is minutes to an hour of work behind one HTTP request. If the client that posted it goes away — the desktop app is quit, a laptop lid closes — the server keeps working (a dropped connection does not stop the stages) but the finished transcript had nowhere to go. With `WHISPER_JOBS_ENABLED` (on by default) every run posted **with a `progress_id`** also gets a durable row in `JOBS_DB` (SQLite, `/data/db/jobs.local.sqlite3`): `running` from the moment the progress entry is seeded, then `done` with the response payload verbatim (`json`, `text` and `verbose_json` alike), `failed` with the client-safe error the response carried, or `cancelled`. Runs without a `progress_id` — plain OpenAI-compatible callers — get no row and are unaffected.
+
+The client's `progress_id` is the job id: `GET /v1/jobs` lists the caller's rows, `GET /v1/jobs/{id}` is the one poll a re-attached client needs (the live progress rides under `progress` while the run is in flight in this process), `GET /v1/jobs/{id}/result` returns the payload (`409` while running, `404` when there is none), and `DELETE /v1/jobs/{id}` cancels a running job or deletes a finished one. A stored payload's retained-media ids (`source_media_id`, `source_video_media_id`) are re-validated against the media store on every read and dropped when the media expired or died with a restart, so the client never receives a dangling id. Rows stay for `JOBS_TTL_S` (72 h) after they finish, bounded by `JOBS_MAX_ROWS` and `JOBS_MAX_BYTES` (stored result bytes, oldest finished first); a row still `running` when the server boots is marked `failed: server restarted`. Rows are shared across `SERVER_WORKERS` through SQLite, but the live `progress` merge and the cancel flag are per process.
+
 ### Behind a reverse proxy
 
 Two things change once the app is reached through a proxy:
@@ -459,6 +466,7 @@ WHISPER_TRUSTED_ORIGINS=https://whisper.example.com  # only if the proxy rewrite
 
 - `POST /v1/audio/transcriptions` — OpenAI-compatible transcription. Pass `model=<name>` to pick a specific model (any faster-whisper short name or HF repo id).
 - `POST /v1/audio/translations` — OpenAI-compatible Whisper translate-to-English (the transcription handler with `task` pinned to `translate`; English is Whisper's only target).
+- `GET /v1/jobs`, `GET /v1/jobs/{id}`, `GET /v1/jobs/{id}/result`, `DELETE /v1/jobs/{id}` — the durable **job resource** for batch runs: every `/v1/audio/transcriptions`, `/v1/audio/translations` and `/v1/text/translations` request posted with a `progress_id` gets a row (that id is the job id) carrying its state (`running`/`done`/`failed`/`cancelled`) and, once done, the response payload exactly as the POST returned it — so a client whose connection dropped mid-run can list, re-attach to (`GET /v1/jobs/{id}` embeds the live progress under `progress` while the run is in flight) and fetch (`/result`; `409` while running) the run. `DELETE` cancels a running job (the cancel route's flag) or deletes a finished one. Own rows only; admins read any and list every user's with `?all=1`; an unknown, expired or foreign id is one `404`; `403` while `JOBS_ENABLED` is off. See [Server jobs](#server-jobs).
 - `POST /v1/text/translations` — **text-to-text** translation of caller-supplied text/segments into arbitrary target languages via local GGUF models (llama.cpp; see the Translation configuration group). Distinct from `/v1/audio/translations`: this translates finished text with a dedicated translation model, not audio with Whisper. 403 while `TRANSLATION_ENABLED` is off.
 - `WS   /v1/audio/transcriptions/stream` — live streaming dictation (raw 16 kHz PCM or browser WebM/Opus); see the Features section.
 - `GET  /v1/models` — list currently-loaded models, the configured default, and the allowlist (if set). Also carries the server's build identity — `server_name` ("faster-whisper-backend"), `server_version`, and the per-process `boot_id` — non-standard fields clients use to recognize the full backend and display its version. The version resolves via `WHISPER_BUILD_VERSION` (baked into container images by CI as `git describe`) or a runtime `git describe` on bare-metal checkouts (see `build_info.py`).
