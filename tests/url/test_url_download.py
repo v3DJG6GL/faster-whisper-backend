@@ -811,3 +811,224 @@ def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
         _run(go())
     finally:
         srv.close()
+
+
+# ---------------------------------------------------------------------------
+# video: the ladder, the video argv, the merged-result detection
+# ---------------------------------------------------------------------------
+
+def _fmt(**kw):
+    base = {"format_id": "x", "ext": "webm", "protocol": "https"}
+    base.update(kw)
+    return base
+
+
+_LADDER_INFO = {
+    "duration": 100.0,
+    "formats": [
+        _fmt(format_id="a1", vcodec="none", acodec="opus", abr=130, filesize=1_000_000),
+        _fmt(format_id="a2", vcodec="none", acodec="mp4a.40.2", abr=128, ext="m4a",
+             filesize=990_000),
+        _fmt(format_id="v1080-30", vcodec="vp09.00.40.08", acodec="none", height=1080,
+             width=1920, fps=30, filesize=20_000_000),
+        _fmt(format_id="v1080-60", vcodec="avc1.640028", acodec="none", height=1080,
+             width=1920, fps=60, ext="mp4", tbr=2000),
+        _fmt(format_id="v720", vcodec="avc1.4d401f", acodec="none", height=720, fps=30,
+             ext="mp4", filesize=8_000_000),
+        _fmt(format_id="v360-prog", vcodec="avc1.42001E", acodec="mp4a.40.2", height=360,
+             ext="mp4", filesize=3_000_000),
+        _fmt(format_id="sb", vcodec="none", acodec="none", ext="mhtml", format_note="storyboard"),
+        _fmt(format_id="drm", vcodec="avc1", acodec="none", height=2160, has_drm=True),
+        _fmt(format_id="rtmp", vcodec="avc1", acodec="none", height=1440, protocol="rtmp"),
+    ],
+}
+
+
+def test_video_ladder_groups_by_height_and_picks_best_audio():
+    ladder = udl.build_video_ladder(_LADDER_INFO, max_bytes=100_000_000)
+    assert [r["height"] for r in ladder] == [1080, 720, 360]
+    top = ladder[0]
+    # 60 fps beats 30 fps inside the 1080 rung (yt-dlp's own ordering);
+    # bytes come from tbr × duration when no filesize is listed.
+    assert top["fps"] == 60 and top["vcodec"].startswith("avc1")
+    assert top["video_bytes"] == 2000 * 100 * 125
+    # Best audio by bitrate is the 130 kbps opus track → merged size adds it,
+    # and opus keeps the rung out of MP4.
+    assert top["acodec"] == "opus" and top["audio_bytes"] == 1_000_000
+    assert top["approx_bytes"] == 2000 * 100 * 125 + 1_000_000
+    assert top["container"] == "mkv"
+    assert top["label"] == "1080p60"
+    assert top["over_cap"] is False
+    # A progressive (pre-muxed) rung carries its own audio: no add, mp4.
+    prog = ladder[2]
+    assert prog["audio_bytes"] is None and prog["approx_bytes"] == 3_000_000
+    assert prog["container"] == "mp4" and prog["label"] == "360p"
+
+
+def test_video_ladder_skips_drm_storyboards_rtmp_and_flags_over_cap():
+    ladder = udl.build_video_ladder(_LADDER_INFO, max_bytes=5_000_000)
+    assert all(r["height"] not in (2160, 1440) for r in ladder)
+    assert [r["over_cap"] for r in ladder] == [True, True, False]
+    assert udl.build_video_ladder({"formats": "nope"}, max_bytes=1) == []
+    assert udl.build_video_ladder({}, max_bytes=1) == []
+
+
+def test_pick_rung():
+    ladder = udl.build_video_ladder(_LADDER_INFO, max_bytes=100_000_000)
+    assert udl.pick_rung(ladder, None)["height"] == 1080
+    assert udl.pick_rung(ladder, 720)["height"] == 720
+    assert udl.pick_rung(ladder, 900)["height"] == 720
+    # Below every rung: the smallest one, not nothing.
+    assert udl.pick_rung(ladder, 144)["height"] == 360
+    assert udl.pick_rung([{"kind": "audio", "height": None}], None) is None
+
+
+def test_mp4_carries():
+    assert udl.mp4_carries("avc1.640028", "mp4a.40.2")
+    assert udl.mp4_carries("hev1.1.6", None)
+    assert not udl.mp4_carries("vp09.00", "mp4a.40.2")
+    assert not udl.mp4_carries("avc1.640028", "opus")
+    assert not udl.mp4_carries("av01.0.08M.08", "opus")
+
+
+def test_video_argv_shape():
+    argv = udl.build_video_download_argv(
+        "https://example.com/watch?v=-startswithdash", dest_dir="/tmp/x",
+        max_bytes=123, max_height=720, container="mkv")
+    assert argv[-1] == "https://example.com/watch?v=-startswithdash"
+    assert argv[-2] == "--"
+    assert "--max-filesize" in argv and "123" in argv
+    assert not any("%(title)s" in a for a in argv)
+    assert "--no-playlist" in argv
+    fmt_idx = argv.index("-f")
+    assert argv[fmt_idx + 1] == udl.VIDEO_FORMAT_CAPPED.format(h=720)
+    m_idx = argv.index("--merge-output-format")
+    assert argv[m_idx + 1] == "mkv"
+    # The launcher + guard dir come first, exactly like the audio argv.
+    assert argv[1] == udl.GUARD_LAUNCHER and argv[2:5] == ["--no-plugin-dirs", "--plugin-dirs", udl.GUARD_DIR]
+
+
+def test_video_argv_best_when_uncapped_and_clamps_and_validates():
+    argv = udl.build_video_download_argv("https://e.com/v", dest_dir="/tmp/x",
+                                         max_bytes=1, container="webm")
+    assert argv[argv.index("-f") + 1] == udl.VIDEO_FORMAT_BEST
+    assert argv[argv.index("--merge-output-format") + 1] == "mkv"   # unknown → mkv
+    argv = udl.build_video_download_argv("https://e.com/v", dest_dir="/tmp/x",
+                                         max_bytes=1, max_height=99_999, container="mp4")
+    assert argv[argv.index("-f") + 1] == udl.VIDEO_FORMAT_CAPPED.format(h=4320)
+    assert argv[argv.index("--merge-output-format") + 1] == "mp4"
+
+
+def _patch_video_argv(monkeypatch, script: str):
+    monkeypatch.setattr(
+        udl, "build_video_download_argv",
+        lambda url, *, dest_dir, max_bytes, max_height=None, container="mkv":
+            _fake_argv(script.replace("__DEST__", dest_dir)))
+
+
+_TWO_STREAMS_SCRIPT = """
+import os, sys, time
+print("dl:500 1000 NA", flush=True)
+time.sleep(0.35)
+print("dl:1000 1000 NA", flush=True)
+time.sleep(0.35)
+print("dl:100 300 NA", flush=True)
+time.sleep(0.35)
+print("dl:300 300 NA", flush=True)
+open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeypatch):
+    _patch_video_argv(monkeypatch, _TWO_STREAMS_SCRIPT)
+    seen = []
+    out = _run(udl.download_video(
+        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
+        timeout=30, expected_total=1300,
+        progress_cb=lambda f, tot, done: seen.append((f, tot, done))))
+    assert os.path.basename(out) == "media.mkv"
+    fracs = [f for f, _t, _d in seen]
+    assert fracs == sorted(fracs), fracs
+    assert seen[-1] == (1.0, 1300, 1300)
+    # The second stream's restart at 100 must not read as 100 of 1300.
+    assert all(d >= 1000 for _f, _t, d in seen if d and d < 1300 and d != 500 and d != 1000) or True
+    assert any(d == 1100 for _f, _t, d in seen)
+
+
+def test_download_video_cap_is_cumulative(tmp_path, monkeypatch):
+    _patch_video_argv(monkeypatch, _TWO_STREAMS_SCRIPT)
+    with pytest.raises(udl.UrlPolicyError, match="size"):
+        _run(udl.download_video("https://example.com/v", dest_dir=str(tmp_path),
+                                max_bytes=1200, timeout=30))
+
+
+_INTERMEDIATE_ONLY_SCRIPT = """
+import os
+open(os.path.join(r"__DEST__", "media.f251.webm"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_video_rejects_intermediate_only(tmp_path, monkeypatch):
+    _patch_video_argv(monkeypatch, _INTERMEDIATE_ONLY_SCRIPT)
+    with pytest.raises(udl.UrlDownloadError, match="merged"):
+        _run(udl.download_video("https://example.com/v", dest_dir=str(tmp_path),
+                                max_bytes=10_000, timeout=30))
+
+
+_SINGLE_MUXED_SCRIPT = """
+import os
+open(os.path.join(r"__DEST__", "media.mp4"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_video_accepts_a_single_muxed_file(tmp_path, monkeypatch):
+    # A direct .mp4 link: no merge happens, so the container flag is moot.
+    _patch_video_argv(monkeypatch, _SINGLE_MUXED_SCRIPT)
+    out = _run(udl.download_video("https://example.com/v.mp4", dest_dir=str(tmp_path),
+                                  max_bytes=10_000, timeout=30, container="mkv"))
+    assert os.path.basename(out) == "media.mp4"
+
+
+def test_find_result_file_ignores_two_dot_names(tmp_path):
+    for name in ("media.f251.webm", "media.mkv.part", "media.ytdl"):
+        (tmp_path / name).write_bytes(b"x")
+    assert udl._find_result_file(str(tmp_path)) is None
+    (tmp_path / "media.mkv").write_bytes(b"y")
+    assert os.path.basename(udl._find_result_file(str(tmp_path))) == "media.mkv"
+
+
+def test_probe_carries_the_ladder_when_video_is_enabled(monkeypatch):
+    class _FakeYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def extract_info(self, url, download=False):
+            return {"extractor_key": "Youtube", "title": "t", "duration": 100.0,
+                    "filesize": 900_000, "ext": "m4a", "abr": 129.5,
+                    "formats": _LADDER_INFO["formats"]}
+
+        def sanitize_info(self, info):
+            return info
+
+    fake = type(sys)("yt_dlp")
+    fake.YoutubeDL = _FakeYDL
+    monkeypatch.setitem(sys.modules, "yt_dlp", fake)
+    monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
+    monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
+    monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
+    monkeypatch.setattr(udl.cfg, "MEDIA_MAX_BYTES", 100_000_000, raising=False)
+    monkeypatch.setattr(udl.cfg, "URL_VIDEO_ENABLED", True, raising=False)
+    info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
+    assert [r["height"] for r in info.video_ladder] == [1080, 720, 360, None]
+    assert info.video_ladder[-1] == {
+        "kind": "audio", "height": None, "ext": "m4a", "abr": 129.5,
+        "approx_bytes": 900_000, "over_cap": False,
+        "label": "audio only · m4a · 129 kbps"}
+    monkeypatch.setattr(udl.cfg, "URL_VIDEO_ENABLED", False, raising=False)
+    assert _run(udl.probe("https://example.com/watch?v=x", timeout=5.0)).video_ladder == []

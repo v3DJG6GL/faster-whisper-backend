@@ -1,9 +1,12 @@
-"""Short-term retention for URL-downloaded audio (transcribe-from-URL).
+"""Short-term retention for downloaded and uploaded media.
 
 The transcription request downloads a link's audio into a private job dir,
 then hands the file to this store, which keeps it fetchable for a short
 window via GET /v1/audio/url-media/{media_id} — the client pulls it ONCE
-into its own local media store for playback and never needs it again.
+into its own local media store for playback and never needs it again. The
+optional VIDEO of a link (and a video uploaded for subtitle packaging) is
+retained the same way under `kind="video"`, so the client can export the
+picture its subtitles belong to.
 
 Deliberately tiny and in-process:
   - The registry is a plain dict (GIL-atomic single-key updates, same stance
@@ -31,19 +34,44 @@ from faster_whisper_backend.core.store_common import secure_dir, secure_file
 
 logger = logging.getLogger("whisper-api")
 
-# media_id -> {path, ext, user_id, created (time.monotonic), size}
+# media_id -> {path, ext, kind ("audio"|"video"), user_id,
+#              created (time.monotonic), size}
 _REG: "dict[str, dict]" = {}
 
 # Extensions we expect yt-dlp to produce. Anything else keeps a neutral
 # suffix — the pipeline sniffs content, and the client maps by Content-Type.
 _KNOWN_EXTS = frozenset({
     "m4a", "mp4", "webm", "opus", "ogg", "oga", "mp3", "wav", "flac", "aac",
-    "mka", "mkv",
+    "mka", "mkv", "mov",
 })
+
+KINDS = ("audio", "video")
+
+# Staging jobs (video downloads land here so register()'s move is a rename
+# on the same filesystem, not a multi-GB copy across TMPDIR → data dir).
+_STAGING_NAME = "staging"
+_STAGING_PREFIX = "vid-"
 
 
 def _dir() -> str:
     return getattr(cfg, "URL_MEDIA_DIR", "/data/url_media")
+
+
+def staging_dir() -> str:
+    """`<URL_MEDIA_DIR>/staging`, created 0700 on first use. Wiped with the
+    whole dir on startup; stale jobs are reaped by sweep()."""
+    d = os.path.join(_dir(), _STAGING_NAME)
+    os.makedirs(d, exist_ok=True)
+    secure_dir(d)
+    return d
+
+
+def new_staging_job() -> str:
+    """A fresh private job dir inside the staging area; the caller rmtree's
+    it in its finally (sweep() catches the ones that never got there)."""
+    job = tempfile.mkdtemp(prefix=_STAGING_PREFIX, dir=staging_dir())
+    secure_dir(job)
+    return job
 
 
 def startup_reset() -> None:
@@ -59,10 +87,16 @@ def startup_reset() -> None:
         logger.error("[url-dl] retention dir unusable (%s): %s", d, e)
 
 
-def register(src_path: str, *, user_id: "str | None") -> "str | None":
+def register(src_path: str, *, user_id: "str | None", kind: str = "audio",
+             protect: "tuple[str, ...] | set[str] | None" = None) -> "str | None":
     """Move `src_path` into the retention dir under a fresh opaque id and
     return the media_id — or None when retention is unavailable (the
-    transcription itself must not fail over a playback nicety)."""
+    transcription itself must not fail over a playback nicety). `protect`
+    names ids the inline eviction must keep (a run's fresh audio while its
+    video registers — the cap must never eat the copy the client is about
+    to fetch)."""
+    if kind not in KINDS:
+        kind = "audio"
     ext = os.path.splitext(src_path)[1].lstrip(".").lower()
     if ext not in _KNOWN_EXTS:
         ext = "bin"
@@ -81,13 +115,13 @@ def register(src_path: str, *, user_id: "str | None") -> "str | None":
         secure_file(dest)
         size = os.path.getsize(dest)
     except OSError as e:
-        logger.warning("[url-dl] could not retain downloaded audio: %s", e)
+        logger.warning("[url-dl] could not retain downloaded %s: %s", kind, e)
         return None
     _REG[media_id] = {
-        "path": dest, "ext": ext, "user_id": user_id,
+        "path": dest, "ext": ext, "kind": kind, "user_id": user_id,
         "created": time.monotonic(), "size": size,
     }
-    _evict_over_cap(protect=media_id)
+    _evict_over_cap(protect={media_id, *(protect or ())})
     # A file that alone busts the byte cap is dropped straight away — the
     # caller must not advertise a media_id that would 404 immediately.
     return media_id if media_id in _REG else None
@@ -129,10 +163,10 @@ def make_pipeline_copy(src: str) -> "str | None":
     return tmp
 
 
-def resolve(media_id: str, *, user_id: "str | None") -> "tuple[str, str] | None":
-    """(abs_path, ext) when `media_id` exists, is still fresh, and belongs to
-    `user_id` (None owner or None caller ⇒ open-mode, allow). None otherwise
-    — the route maps every miss to one 404, no oracle."""
+def resolve_entry(media_id: str, *, user_id: "str | None") -> "dict | None":
+    """`{path, ext, kind, size}` when `media_id` exists, is still fresh, and
+    belongs to `user_id` (None owner or None caller ⇒ open-mode, allow).
+    None otherwise — the route maps every miss to one 404, no oracle."""
     entry = _REG.get(media_id)
     if entry is None:
         return None
@@ -147,7 +181,15 @@ def resolve(media_id: str, *, user_id: "str | None") -> "tuple[str, str] | None"
     if not os.path.isfile(path):
         _REG.pop(media_id, None)
         return None
-    return path, entry["ext"]
+    return {"path": path, "ext": entry["ext"],
+            "kind": entry.get("kind", "audio"), "size": entry["size"]}
+
+
+def resolve(media_id: str, *, user_id: "str | None") -> "tuple[str, str] | None":
+    """(abs_path, ext) — the original two-field accessor, kept for callers
+    that only stream the file; see resolve_entry() for the kind."""
+    e = resolve_entry(media_id, user_id=user_id)
+    return (e["path"], e["ext"]) if e else None
 
 
 def expires_at_unix(media_id: str) -> "int | None":
@@ -200,19 +242,48 @@ def sweep() -> None:
             os.unlink(path)
         except OSError:
             pass
+    _reap_stale_staging(wall)
 
 
-def _evict_over_cap(protect: "str | None" = None) -> None:
+def _reap_stale_staging(wall: float) -> None:
+    """A video download whose task died without its finally leaves a
+    `staging/vid-*` dir behind; anything older than the video wall clock
+    (plus a margin) can only be that."""
+    d = os.path.join(_dir(), _STAGING_NAME)
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return
+    max_age = float(getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600)) + 600.0
+    for name in names:
+        if not name.startswith(_STAGING_PREFIX):
+            continue
+        path = os.path.join(d, name)
+        try:
+            if os.path.islink(path) or not os.path.isdir(path):
+                continue
+            if wall - os.path.getmtime(path) < max_age:
+                continue
+        except OSError:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _evict_over_cap(protect: "str | set[str] | None" = None) -> None:
+    """FIFO eviction down to the byte cap. `protect` — one id or a set —
+    survives eviction, EXCEPT when the newest protected file alone busts
+    the cap: then it is dropped rather than wiping every older file to no
+    avail (register() reads it back as None)."""
     cap = int(getattr(cfg, "RETAINED_MEDIA_MAX_BYTES", 50_000_000_000) or 0)
     if cap <= 0:
         return
-    if protect is not None:
-        entry = _REG.get(protect)
+    keep: "set[str]" = ({protect} if isinstance(protect, str)
+                        else set(protect or ()))
+    for mid in list(keep):
+        entry = _REG.get(mid)
         if entry is not None and entry["size"] > cap:
-            # The new file alone busts the cap: drop IT rather than first
-            # wiping every older retained file to no avail.
-            _drop(protect)
-            protect = None
+            _drop(mid)
+            keep.discard(mid)
     # Snapshot: register() runs on worker threads and the janitor on the
     # loop thread, so a concurrent insert must not trip "dict changed size
     # during iteration" here.
@@ -223,7 +294,7 @@ def _evict_over_cap(protect: "str | None" = None) -> None:
     for mid, _e in sorted(items, key=lambda kv: kv[1]["created"]):
         if total <= cap:
             break
-        if mid == protect or mid not in _REG:
+        if mid in keep or mid not in _REG:
             continue
         total -= _e["size"]
         _drop(mid)

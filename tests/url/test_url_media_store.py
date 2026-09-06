@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
@@ -200,3 +201,58 @@ def test_expires_at_unix(tmp_path):
     import time
     assert exp is not None and exp > time.time()
     assert ums.expires_at_unix("f" * 32) is None
+
+
+# --- kind, entry accessor, protect set, staging ------------------------------
+
+def test_register_kind_and_resolve_entry(tmp_path):
+    mid = ums.register(_make_src(tmp_path, name="v.mkv", size=40), user_id="u1",
+                       kind="video")
+    e = ums.resolve_entry(mid, user_id="u1")
+    assert e["kind"] == "video" and e["ext"] == "mkv" and e["size"] == 40
+    assert os.path.isfile(e["path"])
+    # The two-field accessor is unchanged for the audio route.
+    assert ums.resolve(mid, user_id="u1") == (e["path"], "mkv")
+    # An unknown kind reads as audio, never as a fourth state.
+    mid2 = ums.register(_make_src(tmp_path, name="a.m4a"), user_id=None, kind="weird")
+    assert ums.resolve_entry(mid2, user_id=None)["kind"] == "audio"
+
+
+def test_protect_set_shields_the_run_audio_while_video_registers(tmp_path, monkeypatch):
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 250, raising=False)
+    older = ums.register(_make_src(tmp_path, "old.m4a", size=100), user_id=None)
+    audio = ums.register(_make_src(tmp_path, "a.m4a", size=100), user_id=None)
+    video = ums.register(_make_src(tmp_path, "v.mkv", size=100), user_id=None,
+                         kind="video", protect={audio})
+    # 300 > 250: something had to go — the unprotected oldest, never the
+    # run's own audio.
+    assert ums.resolve(older, user_id=None) is None
+    assert ums.resolve(audio, user_id=None) is not None
+    assert ums.resolve(video, user_id=None) is not None
+
+
+def test_staging_job_is_inside_the_retention_dir_and_stale_jobs_are_reaped(
+        tmp_path, monkeypatch):
+    job = ums.new_staging_job()
+    assert job.startswith(os.path.join(str(tmp_path / "url_media"), "staging"))
+    assert os.path.isdir(job)
+    # register() from a staging job is a same-filesystem move.
+    src = os.path.join(job, "media.mkv")
+    with open(src, "wb") as f:
+        f.write(b"v" * 10)
+    mid = ums.register(src, user_id=None, kind="video")
+    assert mid and not os.path.exists(src)
+    # A fresh job survives the sweep; one older than the video wall clock
+    # (+ margin) is a dead task's leftover and goes.
+    monkeypatch.setattr(ums.cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 10, raising=False)
+    old = ums.new_staging_job()
+    stale = time.time() - 700
+    os.utime(old, (stale, stale))
+    ums.sweep()
+    assert os.path.isdir(job) and not os.path.isdir(old)
+
+
+def test_startup_reset_wipes_staging(tmp_path):
+    job = ums.new_staging_job()
+    ums.startup_reset()
+    assert not os.path.exists(job)

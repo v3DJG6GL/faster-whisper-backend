@@ -3787,6 +3787,8 @@ async def transcribe(
     translation_model: str | None = Form(None),
     translation_mode: str | None = Form(None),
     translation_glossary: str | None = Form(None),
+    keep_video: str | None = Form(None),
+    video_max_height: int | None = Form(None),
     progress_id: str | None = Form(None),
     preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
@@ -3892,6 +3894,12 @@ async def transcribe(
     # inner finally on every path) and the retention id echoed to the client.
     _url_job_dir: "str | None" = None
     _source_media_id: "str | None" = None
+    # Optional VIDEO of a link (keep_video): fetched by a task that runs
+    # alongside the pipeline and may outlive this handler — see
+    # _download_video_for_run for the progress-entry hand-over.
+    _video_task: "asyncio.Task | None" = None
+    _video_result: "dict | None" = None
+    _run_finished = [False]
     # Set only AFTER the load returns, so the outer finally never releases a
     # lease that was never taken (a rejected/failed load takes none).
     _leased_model: "str | None" = None
@@ -3921,6 +3929,18 @@ async def transcribe(
         # would paint the download as already done. `owner` binds the entry
         # to this caller: the progress/cancel endpoints treat a mismatched
         # caller exactly like an unknown id.
+        _keep_video = _form_bool(keep_video) is True
+        _video_max_height = _clamp_video_height(video_max_height)
+        if _keep_video:
+            if source_url is None:
+                raise HTTPException(
+                    status_code=422,
+                    detail="keep_video applies to a link, not an uploaded file")
+            if not getattr(cfg, "URL_VIDEO_ENABLED", False):
+                raise HTTPException(
+                    status_code=403,
+                    detail="video download is not enabled on this server")
+            _url_video_rate.hit(_rl.identity_key(user, request))
         _rplan.set_stages(_provisional_stages(
             is_url=source_url is not None,
             separate=_form_bool(separate_bgm), diarize=_form_bool(diarize),
@@ -4081,6 +4101,31 @@ async def transcribe(
                 # gets no audio copy, never a failed transcription.
                 _source_media_id = await asyncio.to_thread(
                     _ums.register, _dl_path, user_id=_user_id)
+                if _keep_video:
+                    _rung = _udl.pick_rung(_uinfo.video_ladder, _video_max_height)
+                    if _rung is None:
+                        _video_result = _video_state(
+                            state="failed", error="this link has no video track")
+                        _progress_set(_pid, video=dict(_video_result))
+                    elif _rung.get("over_cap"):
+                        _video_result = _video_state(
+                            state="failed",
+                            error="the video exceeds the server's size limit",
+                            height=_rung.get("height"),
+                            container=_rung.get("container"))
+                        _progress_set(_pid, video=dict(_video_result))
+                    else:
+                        # Network-bound and off the GPU path: it runs beside
+                        # the pipeline, never delays the transcript, and is
+                        # reported through the entry's `video` sub-object.
+                        _video_task = asyncio.create_task(
+                            _download_video_for_run(
+                                _pid, _url, _rung,
+                                capped=_video_max_height is not None,
+                                user_id=_user_id, protect=_source_media_id,
+                                run_finished=_run_finished))
+                        if _pid:
+                            _VIDEO_TASKS[_pid] = _video_task
             else:
                 # Stream the part to the temp file in chunks, counting bytes as
                 # we go: the upload is never fully resident, and an oversized
@@ -5493,6 +5538,7 @@ async def transcribe(
                 # URL flow: where the client can fetch the downloaded audio
                 # for local playback, and how long that offer stands.
                 # Additive keys — OpenAI-compat callers ignore them.
+                response.update(_video_response_keys(_video_task, _video_result))
                 if _source_media_id is not None:
                     from faster_whisper_backend.url import media_store as _ums
                     response["source_media_id"] = _source_media_id
@@ -5520,6 +5566,7 @@ async def transcribe(
                 response["overrides_ignored"] = ignored
             if override_profile:
                 response["profile_applied"] = ident.request_profile_applied
+            response.update(_video_response_keys(_video_task, _video_result))
             if _source_media_id is not None:
                 from faster_whisper_backend.url import media_store as _ums
                 response["source_media_id"] = _source_media_id
@@ -5559,9 +5606,15 @@ async def transcribe(
 
         finally:
             if _pid:
-                _BATCH_PROGRESS.pop(_pid, None)
-                _PROGRESS_OWNER.pop(_pid, None)
-                _BATCH_CANCELLED.discard(_pid)
+                if _video_task is not None and not _video_task.done():
+                    # The client keeps polling this id for `video.state`
+                    # (and may still cancel it); the task's finally pops
+                    # the entry when it ends.
+                    _run_finished[0] = True
+                else:
+                    _BATCH_PROGRESS.pop(_pid, None)
+                    _PROGRESS_OWNER.pop(_pid, None)
+                    _BATCH_CANCELLED.discard(_pid)
             if tmp_path:
                 try:
                     os.unlink(tmp_path)
@@ -5594,6 +5647,8 @@ async def transcribe(
             _exc = _oe
         raise
     finally:
+        if _video_task is not None and _status != "ok" and not _video_task.done():
+            _video_task.cancel()
         if _leased_model is not None:
             _release_model_lease(_leased_model)
         metrics.in_flight_transcriptions -= 1
@@ -5658,6 +5713,8 @@ async def translate_audio(
     translation_model: str | None = Form(None),
     translation_mode: str | None = Form(None),
     translation_glossary: str | None = Form(None),
+    keep_video: str | None = Form(None),
+    video_max_height: int | None = Form(None),
     progress_id: str | None = Form(None),
     preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
@@ -5688,6 +5745,8 @@ async def translate_audio(
         diarization_model=diarization_model,
         separate_bgm=separate_bgm,
         separation_model=separation_model,
+        keep_video=keep_video,
+        video_max_height=video_max_height,
         translate_to=translate_to,
         translation_model=translation_model,
         translation_mode=translation_mode,
@@ -6281,6 +6340,9 @@ async def transcription_progress(progress_id: str,
         # along it is (0..1 within that language).
         "target": entry.get("target"),
         "target_progress": entry.get("target_progress"),
+        # keep_video runs: the secondary video download's own state (see
+        # _video_state) — null unless a video was requested.
+        "video": entry.get("video"),
         # The server-owned plan (core/run_plan.py): per-stage expected /
         # actual seconds, per-language units, and the overall fraction +
         # ETA the client renders verbatim.
@@ -6323,6 +6385,170 @@ _url_preview_rate = _rl.FixedWindow(
     message="too many link previews — slow down "
             "({limit}/min; retry in {retry_after}s)",
 )
+
+
+# Per-identity window for VIDEO downloads (a link run that keeps the video, or
+# the on-demand route): each one pulls up to MEDIA_MAX_BYTES from a third
+# party — the preview limiter's reasoning, with a fatter payload.
+_url_video_rate = _rl.FixedWindow(
+    config_field="URL_VIDEO_RATE_PER_MIN",
+    window_s=60.0,
+    default_max=6,
+    message="too many video downloads — slow down "
+            "({limit}/min; retry in {retry_after}s)",
+)
+
+# progress_id → the keep_video task still running past its transcription
+# handler. Bounded by the number of in-flight video fetches; each task pops
+# its own key in its finally.
+_VIDEO_TASKS: "dict[str, asyncio.Task]" = {}
+
+_VIDEO_MIME = {
+    "mp4": "video/mp4", "webm": "video/webm", "mkv": "video/x-matroska",
+    "mov": "video/quicktime",
+}
+_VIDEO_MIN_HEIGHT, _VIDEO_MAX_HEIGHT = 144, 4320
+
+
+def _clamp_video_height(value) -> "int | None":
+    """A client's height cap as an int in 144..4320, else None (= best)."""
+    if value is None:
+        return None
+    try:
+        h = int(value)
+    except (TypeError, ValueError):
+        return None
+    if h <= 0:
+        return None
+    return max(_VIDEO_MIN_HEIGHT, min(_VIDEO_MAX_HEIGHT, h))
+
+
+def _video_state(**fields) -> dict:
+    """The progress entry's `video` sub-object: one dict the client renders
+    as the Download row's second bar. `state` in {done, failed, cancelled}
+    is terminal — the poller stops on it."""
+    base = {"state": "queued", "progress": None, "downloaded_bytes": None,
+            "total_bytes": None, "height": None, "container": None,
+            "media_id": None, "expires_at": None, "bytes": None,
+            "error": None}
+    base.update(fields)
+    return base
+
+
+async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
+                                  capped: bool, user_id: "str | None",
+                                  protect: "str | None",
+                                  run_finished: "list[bool]",
+                                  mirror_stage: bool = False) -> dict:
+    """Fetch the VIDEO of `url` at `rung` into the media store and report it
+    through the progress entry's `video` sub-object (and, for the on-demand
+    route, the entry's own stage/progress). Returns the terminal state dict;
+    never raises except for task cancellation.
+
+    The transcription handler may return before this finishes: its finally
+    then leaves the progress entry to us (`run_finished`), so the client can
+    keep polling for `video.state` and still cancel the fetch."""
+    from faster_whisper_backend.url import download as _udl
+    from faster_whisper_backend.url import media_store as _ums
+    state = _video_state(height=rung.get("height"),
+                         container=rung.get("container") or "mkv",
+                         total_bytes=rung.get("approx_bytes"))
+
+    def _pub(**fields) -> None:
+        state.update(fields)
+        extra: dict = {}
+        if mirror_stage and state["state"] in ("queued", "downloading"):
+            extra = {"stage": "downloading", "progress": state["progress"],
+                     "total_bytes": state["total_bytes"]}
+        _progress_set(pid, video=dict(state), **extra)
+
+    job: "str | None" = None
+    try:
+        _pub(state="queued")
+        async with _get_url_download_semaphore():
+            if _cancel_requested(pid):
+                raise _udl.UrlCancelled()
+            job = _ums.new_staging_job()
+            _pub(state="downloading")
+            path = await _udl.download_video(
+                url, dest_dir=job,
+                max_bytes=int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
+                max_height=(rung.get("height") if capped else None),
+                container=state["container"],
+                expected_total=rung.get("approx_bytes"),
+                timeout=float(getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600)),
+                progress_cb=lambda f, tot, done: _pub(
+                    state="downloading", progress=f, total_bytes=tot,
+                    downloaded_bytes=done),
+                cancel_check=lambda: _cancel_requested(pid))
+        _pub(state="registering", progress=1.0)
+        size = os.path.getsize(path)
+        mid = await asyncio.to_thread(
+            _ums.register, path, user_id=user_id, kind="video",
+            protect=({protect} if protect else None))
+        if mid is None:
+            _pub(state="failed", error="the server could not retain the video")
+        else:
+            _pub(state="done", media_id=mid, expires_at=_ums.expires_at_unix(mid),
+                 bytes=size)
+            logger.info("[url-dl] video retained (%s, %.1f MB, host %s)",
+                        state["container"], size / 1e6, _url_host_for_log(url))
+    except _udl.UrlCancelled:
+        _pub(state="cancelled")
+    except asyncio.CancelledError:
+        _pub(state="cancelled")
+        raise
+    except _udl.UrlDownloadError as e:
+        # str() is client-safe by the module's contract.
+        logger.info("[url-dl] video download failed (host %s): %s",
+                    _url_host_for_log(url), _log_safe(str(e)))
+        _pub(state="failed", error=str(e))
+    except Exception as e:  # noqa: BLE001 — never a raw error to the client
+        logger.error("[url-dl] video download error (host %s): %s",
+                     _url_host_for_log(url), _log_safe(str(e)))
+        _pub(state="failed", error="video download failed")
+    finally:
+        if job:
+            shutil.rmtree(job, ignore_errors=True)
+        if pid:
+            _VIDEO_TASKS.pop(pid, None)
+            if run_finished[0]:
+                _BATCH_PROGRESS.pop(pid, None)
+                _PROGRESS_OWNER.pop(pid, None)
+                _BATCH_CANCELLED.discard(pid)
+    return dict(state)
+
+
+def _video_response_keys(task: "asyncio.Task | None",
+                         result: "dict | None") -> dict:
+    """The transcription response's video keys: the id when the fetch already
+    finished, `source_video_pending` while it still runs (the client keeps
+    polling the progress id), or the client-safe error."""
+    if task is not None:
+        if not task.done():
+            return {"source_video_pending": True}
+        if task.cancelled():
+            st = _video_state(state="cancelled")
+        else:
+            try:
+                st = task.result()
+            except Exception:  # noqa: BLE001 — the task already logged it
+                st = _video_state(state="failed", error="video download failed")
+    elif result is not None:
+        st = result
+    else:
+        return {}
+    if st.get("state") == "done":
+        return {
+            "source_video_media_id": st.get("media_id"),
+            "source_video_expires_at": st.get("expires_at"),
+            "source_video_height": st.get("height"),
+            "source_video_container": st.get("container"),
+            "source_video_bytes": st.get("bytes"),
+        }
+    return {"source_video_error": (
+        st.get("error") or ("cancelled" if st.get("state") == "cancelled"
+                            else "video download failed"))}
 
 
 def _url_host_for_log(url: str) -> str:
@@ -6384,6 +6610,12 @@ async def url_preview(request: Request,
         # selection): container ext + bitrate, for the client's format chip.
         "ext": info.ext,
         "abr": info.abr,
+        # The video rungs the site offers (highest first, one trailing
+        # "audio only" entry), each with the container a merge would give
+        # and an over-cap flag against media_max_bytes. [] when video is
+        # off or the link has none.
+        "video_ladder": info.video_ladder,
+        "media_max_bytes": int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
     }
 
 
@@ -6405,17 +6637,20 @@ async def url_media(media_id: str,
     if not _URL_MEDIA_ID_RE.match(media_id):
         raise HTTPException(status_code=422, detail="malformed media id")
     from faster_whisper_backend.url import media_store as _ums
-    resolved = _ums.resolve(media_id, user_id=user.get("user_id"))
-    if resolved is None:
+    entry = _ums.resolve_entry(media_id, user_id=user.get("user_id"))
+    if entry is None:
         raise HTTPException(status_code=404, detail="media not found")
-    path, ext = resolved
-    mime = {
-        "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
-        "oga": "audio/ogg", "opus": "audio/ogg", "flac": "audio/flac",
-        "m4a": "audio/mp4", "mp4": "audio/mp4", "aac": "audio/aac",
-        "webm": "audio/webm", "mka": "audio/x-matroska",
-        "mkv": "video/x-matroska",
-    }.get(ext, "application/octet-stream")
+    path, ext = entry["path"], entry["ext"]
+    if entry.get("kind") == "video":
+        mime = _VIDEO_MIME.get(ext, "application/octet-stream")
+    else:
+        mime = {
+            "wav": "audio/wav", "mp3": "audio/mpeg", "ogg": "audio/ogg",
+            "oga": "audio/ogg", "opus": "audio/ogg", "flac": "audio/flac",
+            "m4a": "audio/mp4", "mp4": "audio/mp4", "aac": "audio/aac",
+            "webm": "audio/webm", "mka": "audio/x-matroska",
+            "mkv": "audio/x-matroska",
+        }.get(ext, "application/octet-stream")
     return FileResponse(
         path=path,
         media_type=mime,
@@ -6424,6 +6659,98 @@ async def url_media(media_id: str,
         # differently-authenticated caller (same stance as captures audio).
         headers={"Cache-Control": "no-store"},
     )
+
+
+@app.post("/v1/audio/url-media/video")
+async def url_media_video(request: Request,
+                          user: dict = Depends(_get_current_user_dep)):
+    """Fetch a link's VIDEO on demand (the export panel, for a run that did
+    not keep it or whose copy expired) into the media store: {media_id,
+    expires_at, height, container, bytes}. Same policy, guard and caps as
+    the transcription's download; progress/cancel through the shared
+    registry when the body carries a `progress_id` (the entry reports
+    stage "downloading" plus the `video` sub-object)."""
+    if not getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
+        raise HTTPException(status_code=403,
+                            detail="URL download is not enabled on this server")
+    if not getattr(cfg, "URL_VIDEO_ENABLED", False):
+        raise HTTPException(status_code=403,
+                            detail="video download is not enabled on this server")
+    _url_video_rate.hit(_rl.identity_key(user, request))
+    from faster_whisper_backend.url import download as _udl
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body is a caller error
+        raise HTTPException(status_code=422, detail="expected a JSON body")
+    url = body.get("url") if isinstance(body, dict) else None
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status_code=422, detail="expected {\"url\": …}")
+    max_height = _clamp_video_height(body.get("max_height"))
+    progress_id = body.get("progress_id")
+    _pid = progress_id if (isinstance(progress_id, str)
+                           and _PROGRESS_ID_RE.match(progress_id)) else None
+    if _pid and _pid in _BATCH_PROGRESS:
+        _pid = None
+    _user_id = user.get("user_id")
+    _uhost = _url_host_for_log(url)
+    request_id = uuid.uuid4().hex
+    jobs.job_start("download", id=request_id,
+                   user=user.get("username") or _user_id, key=user.get("key_id"),
+                   user_id=_user_id, detail=f"video · {_uhost}")
+    if _pid:
+        _JOB_BY_PID[_pid] = request_id
+        jobs.job_update(request_id, progress_id=_pid)
+    logger.info("[url-dl] video requested on demand (host %s)", _uhost)
+    try:
+        _progress_set(_pid, stage="resolving", progress=None,
+                      owner=(_user_id or user.get("key_id")))
+        try:
+            _url = _udl.validate_url(url)
+            _check_cancelled(_pid)
+            info = await _udl.probe(
+                _url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
+        except _udl.UrlDownloadError as e:
+            logger.info("[url-dl] video rejected (host %s): %s", _uhost,
+                        _log_safe(str(e)))
+            raise HTTPException(status_code=400, detail=str(e))
+        rung = _udl.pick_rung(info.video_ladder, max_height)
+        if rung is None:
+            raise HTTPException(status_code=400,
+                                detail="this link has no video track")
+        if rung.get("over_cap"):
+            raise HTTPException(status_code=400,
+                                detail="the video exceeds the server's size limit")
+        _progress_set(_pid, stage="downloading", progress=None,
+                      total_bytes=rung.get("approx_bytes"),
+                      step=(info.extractor_key or None))
+        state = await _download_video_for_run(
+            _pid, _url, rung, capped=max_height is not None, user_id=_user_id,
+            protect=None, run_finished=[False], mirror_stage=True)
+        if state.get("state") == "done":
+            return {"media_id": state["media_id"],
+                    "expires_at": state["expires_at"],
+                    "height": state.get("height"),
+                    "container": state.get("container"),
+                    "bytes": state.get("bytes")}
+        if state.get("state") == "cancelled":
+            raise HTTPException(status_code=499, detail="cancelled by the client")
+        raise HTTPException(status_code=400,
+                            detail=state.get("error") or "video download failed")
+    except _ClientCancelled:
+        raise HTTPException(status_code=499, detail="cancelled by the client")
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — never forward raw errors
+        logger.error("[url-dl] video download failed (host %s): %s", _uhost,
+                     _log_safe(str(e)))
+        raise HTTPException(status_code=500, detail="video download failed")
+    finally:
+        if _pid:
+            _BATCH_PROGRESS.pop(_pid, None)
+            _PROGRESS_OWNER.pop(_pid, None)
+            _BATCH_CANCELLED.discard(_pid)
+            _JOB_BY_PID.pop(_pid, None)
+        jobs.job_end(request_id)
 
 
 @app.get("/v1/models", dependencies=[Depends(_get_current_user_dep)])
@@ -6519,6 +6846,17 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     if caps["url_download_enabled"]:
         from faster_whisper_backend.url import download as _udl
         caps["yt_dlp_version"] = _udl.yt_dlp_version()
+        # The one media ceiling, so the client can label a preview's rungs
+        # over the cap and size its own local copies.
+        caps["media_max_bytes"] = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+    # Additive: whether a link's VIDEO can be kept/fetched (keep_video on the
+    # transcription form, POST /v1/audio/url-media/video). Always present;
+    # the detail key rides only when on — same discipline as yt_dlp_version.
+    caps["url_video_enabled"] = bool(
+        caps["url_download_enabled"] and getattr(cfg, "URL_VIDEO_ENABLED", False))
+    if caps["url_video_enabled"]:
+        # No server-side height ceiling in this release: null = best available.
+        caps["url_video_default_max_height"] = None
     # Stage-model list builder shared by all three optional stages below.
     # Configured model FIRST, then the allowlist (de-duplicated, order kept):
     # an empty allowlist means "the configured model only" for the
