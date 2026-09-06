@@ -7731,7 +7731,9 @@ _LOG_VIEWER_HTML = """<!doctype html>
     if (/(WARNING|WARN)/.test(line)) return 'warning';
     if (/(ERROR|CRITICAL)/.test(line)) return 'error';
     if (/file=|lang=|duration=|segments=|words=|format=/.test(line)) return 'meta';
-    if (/^\\s+'.*'$/.test(line)) return 'before';
+    // A step's "before" text is a Python repr: single-quoted, or double-quoted
+    // when the text itself contains an apostrophe ("I'm").
+    if (/^\\s+['"].*['"]$/.test(line)) return 'before';
     return 'info';
   }
   // Receipt section headers: "  ─── Diarization  (* = non-default) ─────…".
@@ -7775,7 +7777,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
   function _pipeFold(st, cls) {
     st.pipeRows = (st.pipeRows || 0) + 1;
     if (st.pipeRows === 1) st.needCtl = 'pipe';
-    return cls + ' folded';
+    return cls + ' pipe folded';
   }
   function decorate(line, st) {
     // Section scope. A bare row like "    min_speakers      2 *" carries
@@ -7814,7 +7816,10 @@ _LOG_VIEWER_HTML = """<!doctype html>
       st.dimLeft--;
       return st.pipe ? _pipeFold(st, cls + ' dim') : cls + ' dim';
     }
-    if (st.pipe && (cls === 'before' || cls === 'after')) return _pipeFold(st, cls);
+    // Everything under the PIPELINE header up to the closing rule is a step
+    // line, whatever classify() made of it — a before text that happens to
+    // contain "lang=" would otherwise surface as 'meta', unfolded.
+    if (st.pipe) return _pipeFold(st, cls);
     if (st.inSeg && _SEG_ROW.test(line)) {
       st.segRows = (st.segRows || 0) + 1;
       if (st.segRows > _SEG_SHOWN) {
@@ -7851,7 +7856,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
       el.appendChild(k); el.appendChild(v);
       return el;
     }
-    if (/\\b(raw|final|before|after)\\b/.test(cls) && txt.length > _CLIP_CHARS) {
+    if (/\\b(raw|final|before|after|pipe)\\b/.test(cls) && txt.length > _CLIP_CHARS) {
       const body = document.createElement('span');
       body.className = 'clip';
       body.textContent = txt;
