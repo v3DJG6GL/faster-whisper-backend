@@ -310,3 +310,35 @@ def test_plain_json_carries_translations_and_warnings(client, app_module,
     body = r.json()
     assert "translations" not in body
     assert any("TRANSLATION_ENABLED" in w for w in body["warnings"])
+
+
+def test_translation_progress_forwards_target_fields_into_plan_units(
+        client, app_module, monkeypatch):
+    """The stage's progress callback carries `target` / `target_progress`;
+    the handler mirrors them into the progress entry and the run plan's
+    units follow along."""
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    seen = {}
+
+    async def _fake(segments, targets, *, progress_cb=None, **kwargs):
+        progress_cb(0.5, "en 1/1", "Hallo", target="en", target_progress=1.0)
+        progress_cb(0.6, "fr 1/2", "Salut", target="fr", target_progress=0.5)
+        seen["entry"] = dict(app_module._BATCH_PROGRESS.get(_PID) or {})
+        seen["snap"] = app_module._RUN_PLAN_BY_PID[_PID].snapshot()
+        per_seg = [{t: f"XLATED-{t}" for t in targets} for _ in segments]
+        return per_seg, [], {"model": "org/m:Q4", "source": "de",
+                             "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+    r = _post(client, translate_to="en,fr", progress_id=_PID)
+    assert r.status_code == 200, r.text
+    assert seen["entry"]["target"] == "fr"
+    assert seen["entry"]["target_progress"] == 0.5
+    tr = next(s for s in seen["snap"]["plan"] if s["stage"] == "translating")
+    by = {u["target"]: u for u in tr["units"]}
+    assert by["en"]["state"] == "done"
+    assert by["fr"]["state"] == "running" and by["fr"]["progress"] == 0.5
+    # The receipt in the response has every unit done.
+    receipt = next(s for s in r.json()["plan"] if s["stage"] == "translating")
+    assert {u["state"] for u in receipt["units"]} == {"done"}
+    assert receipt["compute"] == "fluent"

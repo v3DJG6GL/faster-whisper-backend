@@ -196,6 +196,8 @@ def _reset_singletons():
     try:
         from faster_whisper_backend.runtime import model_sizes
         model_sizes._reset_for_tests()
+        from faster_whisper_backend.runtime import stage_rates
+        stage_rates._reset_for_tests()
     except Exception:
         pass
 
@@ -555,6 +557,10 @@ def app_module(tmp_path, monkeypatch, fake_model):
     from faster_whisper_backend.runtime import model_sizes
     _tmp_sizes = str(tmp_path / "model_sizes.json")
     monkeypatch.setattr(model_sizes, "PATH", _tmp_sizes, raising=False)
+    # stage_rates resolves its path at call time, so PATH alone suffices.
+    from faster_whisper_backend.runtime import stage_rates
+    monkeypatch.setattr(stage_rates, "PATH",
+                        str(tmp_path / "stage_rates.json"), raising=False)
     for _fn in (model_sizes._read, model_sizes._write):
         _defaults = list(_fn.__defaults__ or ())
         if _defaults:

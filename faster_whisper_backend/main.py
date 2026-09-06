@@ -3159,6 +3159,7 @@ from faster_whisper_backend.core import jobs
 # below (the two `loaded` flag endpoints and _progress_set) reach it on hot
 # paths. preload itself imports main only lazily, so the cycle never closes.
 from faster_whisper_backend.runtime import preload
+from faster_whisper_backend.core import run_plan as _run_plan
 
 # Dictation receipts held open until their translation arrives on a separate
 # request. Imports nothing from the app, so no cycle.
@@ -3610,6 +3611,48 @@ _JOB_MIRROR_FIELDS = ("stage", "progress", "step", "model", "total_bytes")
 # four stage entry points would drift the first time a stage moved.
 _PLAN_BY_PID: "dict[str, str]" = {}
 
+# progress_id → the run's server-owned plan (core/run_plan.py): expected and
+# actual seconds per stage, per-language translation units, and the overall
+# fraction + ETA the progress route publishes. Same shape and lifetime as
+# _JOB_BY_PID (popped in the handlers' outer finally); _progress_set feeds
+# every tick into it from whichever thread reported.
+_RUN_PLAN_BY_PID: "dict[str, _run_plan.RunPlan]" = {}
+
+
+def _plan_fields(pid: str) -> dict:
+    """`plan` / `overall` / `eta_s` for the progress route — all None when
+    the id has no plan (the admin prompt lab seeds entries without one)."""
+    rp = _RUN_PLAN_BY_PID.get(pid)
+    if rp is None:
+        return {"plan": None, "overall": None, "eta_s": None}
+    snap = rp.snapshot()
+    return {
+        "plan": snap["plan"],
+        "overall": (round(snap["overall"], 4)
+                    if snap["overall"] is not None else None),
+        "eta_s": (round(snap["eta_s"], 1)
+                  if snap["eta_s"] is not None else None),
+    }
+
+
+def _provisional_stages(*, is_url: bool, separate: "bool | None",
+                        diarize: "bool | None",
+                        translate_to: "str | None") -> "list[str]":
+    """The stage list a request implies BEFORE its knobs are resolved
+    against the caller's identity — the plan needs a denominator from the
+    first poll on; set_stages() replaces it once the verdicts are in."""
+    sep = separate if separate is not None else bool(
+        getattr(cfg, "SEPARATE_BGM", False))
+    diar = diarize if diarize is not None else bool(
+        getattr(cfg, "DIARIZE", False))
+    tt = (translate_to.strip() if translate_to is not None
+          else (getattr(cfg, "TRANSLATE_TO", "") or ""))
+    return [*(["downloading"] if is_url else []),
+            *(["separating"] if sep else []),
+            "transcribing",
+            *(["diarizing"] if diar else []),
+            *(["translating"] if tt else [])]
+
 
 def _progress_set(pid: "str | None", **fields) -> None:
     """Merge `fields` into the progress entry for `pid` (no-op without one)."""
@@ -3667,6 +3710,18 @@ def _progress_set(pid: "str | None", **fields) -> None:
             {"owner": _PROGRESS_OWNER[pid]} if pid in _PROGRESS_OWNER else {})
     entry.update(fields)
     entry["updated"] = time.monotonic()
+    _rp = _RUN_PLAN_BY_PID.get(pid)
+    if _rp is not None:
+        # Same stance as the preload hook above: runs on executor threads,
+        # and progress must never break a request.
+        try:
+            _rp.tick(stage=entry.get("stage"),
+                     progress=fields.get("progress"),
+                     target=fields.get("target"),
+                     target_progress=fields.get("target_progress"),
+                     total_bytes=fields.get("total_bytes"))
+        except Exception:  # noqa: BLE001
+            pass
 
 
 # Cooperative cancellation for in-flight batch requests: POST
@@ -3828,6 +3883,10 @@ async def transcribe(
     # durations were previously computed for log lines and discarded; now
     # they also persist as the recent-jobs row's stages.
     _stage_timings: "list[dict]" = []
+    # The server-owned plan behind the progress route (core/run_plan.py):
+    # seeded with the stages the Form args imply, refined as facts land,
+    # ticked by every _progress_set, read by every poll.
+    _rplan = _run_plan.RunPlan(kind="url" if source_url is not None else "file")
     tmp_path = None
     # Transcribe-from-URL state: the private download dir (rmtree'd in the
     # inner finally on every path) and the retention id echoed to the client.
@@ -3862,6 +3921,12 @@ async def transcribe(
         # would paint the download as already done. `owner` binds the entry
         # to this caller: the progress/cancel endpoints treat a mismatched
         # caller exactly like an unknown id.
+        _rplan.set_stages(_provisional_stages(
+            is_url=source_url is not None,
+            separate=_form_bool(separate_bgm), diarize=_form_bool(diarize),
+            translate_to=translate_to))
+        if _pid:
+            _RUN_PLAN_BY_PID[_pid] = _rplan
         _progress_set(_pid,
                       stage=("resolving" if source_url is not None
                              else "waiting"),
@@ -3881,6 +3946,9 @@ async def transcribe(
         _model_t0 = time.perf_counter()
         model = await _get_or_load_model(resolved_model, lease=True)
         _leased_model = resolved_model
+        _plan_compute, _plan_device = _model_compute_device(resolved_model)
+        _rplan.set_stage_model("transcribing", model=resolved_model,
+                               device=_plan_device, compute=_plan_compute)
 
         # Resolve the caller's effective per-identity config ONCE for this
         # request: layered decode params, pipeline include/exclude, output
@@ -3949,6 +4017,12 @@ async def transcribe(
                         _url_host_for_log(_url), _uinfo.extractor_key,
                         f"{_uinfo.duration:.0f}s"
                         if _uinfo.duration is not None else "?")
+                    _rplan.set_audio_seconds(_uinfo.duration, src="probe")
+                    _rplan.set_download_bytes(
+                        _uinfo.filesize_approx
+                        or (int(_uinfo.duration * _uinfo.abr * 125)
+                            if _uinfo.duration and _uinfo.abr else None),
+                        extractor=(_uinfo.extractor_key or None))
                     _progress_set(_pid, stage="downloading", progress=None,
                                   total_bytes=None,
                                   step=(_uinfo.extractor_key or None))
@@ -3987,6 +4061,8 @@ async def transcribe(
                         _ue, status="error", stage="downloading")
                     raise HTTPException(status_code=400, detail=str(_ue))
                 audio_bytes = os.path.getsize(_dl_path)
+                _rplan.set_download_bytes(audio_bytes)
+                _rplan.stage_done("downloading")
                 # Pipeline copy FIRST (hardlink where possible), THEN move
                 # the original into the retention store — afterwards each
                 # side owns its file outright: tmp_path follows the normal
@@ -4024,6 +4100,10 @@ async def transcribe(
                         if audio_bytes > max_upload:
                             raise HTTPException(status_code=413, detail="upload too large")
                         tmp_file.write(chunk)
+                # Until the decoder measures the audio, size it as 128 kbps.
+                _rplan.set_audio_seconds(
+                    audio_bytes / _run_plan.BYTES_PER_AUDIO_SECOND,
+                    src="bytes-prior")
 
             # word_timestamps: AND of the (per-model-overrideable) global
             # config knob and the per-request ask. Disabled (False) bypasses
@@ -4166,6 +4246,7 @@ async def transcribe(
                 entry — the second half is pure bookkeeping whose omission
                 would silently stop the client's rail from showing it."""
                 _skipped.append(stage)
+                _rplan.skip(stage)
                 _progress_set(_pid, skipped=list(_skipped))
 
             _sep_req = _form_bool(separate_bgm)
@@ -4268,6 +4349,44 @@ async def transcribe(
             _translation_glossary = (_translation_glossary or "")[:4000]
             _translation_context = int(cfg_for(
                 resolved_model, "TRANSLATION_CONTEXT_SEGMENTS", ident) or 0)
+
+            # The run plan's FINAL stage list and per-stage models, now that
+            # every enable/allowlist/soft-skip verdict has landed (a stage
+            # _skip()ped above keeps its skipped state).
+            _rplan.set_stages([
+                *(["downloading"] if source_url is not None else []),
+                *(["separating"] if _separate else []),
+                "transcribing",
+                *(["diarizing"] if _diarize else []),
+                *(["translating"] if _translate_to else [])])
+            if _separate:
+                try:
+                    from faster_whisper_backend.audio import bgm_separation as _bgm_plan
+                    _sep_dev = _bgm_plan.actual_device() or _bgm_plan._resolve_device()
+                except Exception:  # noqa: BLE001 — optional dep absent
+                    _sep_dev = None
+                _rplan.set_stage_model("separating",
+                                       model=(_separation_model or None),
+                                       device=_sep_dev)
+            if _diarize:
+                try:
+                    from faster_whisper_backend.audio import diarization as _diar_plan
+                    _diar_dev = _diar_plan._resolve_device()
+                except Exception:  # noqa: BLE001
+                    _diar_dev = None
+                _rplan.set_stage_model("diarizing",
+                                       model=(_diarization_model or None),
+                                       device=_diar_dev)
+            if _translate_to:
+                _rplan.set_translation(
+                    list(_translate_to),
+                    model=((_translation_model or "").strip()
+                           or _translation_default_model() or None),
+                    device=_tr._resolve_device(),
+                    mode=_translation_mode,
+                    # A pinned decode language already tells which targets
+                    # are verbatim copies; auto-detect learns it post-decode.
+                    source_lang=(_decode_language or None))
 
             # Stage-ahead: the stage plan is fully resolved here (every
             # enable/allowlist/soft-skip verdict above has landed), so this is
@@ -4483,6 +4602,7 @@ async def transcribe(
                                                   _separation_model or ""),
                                 _sep_t0),
                         })
+                        _rplan.stage_done("separating")
                     except _ClientCancelled:
                         raise
                     except _bgm.BgmCancelled:
@@ -4492,6 +4612,7 @@ async def transcribe(
                         _warnings.append(str(_se))
                         _stage_timings.append(_failed_stage(
                             "separating", _sep_t0, _separation_model, _se))
+                        _rplan.stage_failed("separating")
                     except Exception as _se:  # noqa: BLE001 — soft-fail
                         logger.error("[bgm] unexpected failure: %s",
                                      _log_safe(str(_se)))
@@ -4500,6 +4621,7 @@ async def transcribe(
                             "original audio")
                         _stage_timings.append(_failed_stage(
                             "separating", _sep_t0, _separation_model, _se))
+                        _rplan.stage_failed("separating")
 
             # Run the synchronous CTranslate2 inference in a thread executor
             # so the event loop stays responsive. CT2 releases the GIL
@@ -4549,6 +4671,8 @@ async def transcribe(
                                   last_text=None, model=resolved_model,
                                   device=_dev, compute=_compute,
                                   vad_retained=_retained)
+                    _rplan.set_audio_seconds(_dur, src="decoder")
+                    _rplan.set_vad_retained(_retained)
                     _out = []
                     _log_bucket = 0  # 5%-step INFO trail, like the other stages
                     for _s in _gen:
@@ -4652,6 +4776,7 @@ async def transcribe(
                 # Measured from the load's own origin (not _dec_t0) so a cold
                 # whisper load shows up as this row's `load`; it is folded into
                 # `secs` too so `run = secs - load` and the wall total both hold.
+                _rplan.stage_done("transcribing")
                 _tr_extras = _stage_extras(resolved_model, _model_t0)
                 _stage_timings.append({
                     "name": "transcribing",
@@ -4749,6 +4874,10 @@ async def transcribe(
             # file is still on disk here (the capture path below reads it too;
             # the finally unlinks it after the response is built). Runs under
             # the shared inference semaphore so GPU stages serialize.
+            # The translation estimate scales with the segment count, and
+            # the detected language decides which targets are verbatim.
+            _rplan.set_segments(len(segments_list))
+            _rplan.mark_instant(getattr(info, "language", None) or None)
             speakers_list: "list[str]" = []
             if _diarize and segments_list:
                 if not getattr(cfg, "DIARIZATION_ENABLED", False):
@@ -4802,6 +4931,7 @@ async def transcribe(
                                                   _diarization_model or ""),
                                 _diar_t0),
                         })
+                        _rplan.stage_done("diarizing")
                     except _ClientCancelled:
                         raise
                     except _diar.DiarizeCancelled:
@@ -4811,6 +4941,7 @@ async def transcribe(
                         _warnings.append(str(_de))
                         _stage_timings.append(_failed_stage(
                             "diarizing", _diar_t0, _diarization_model, _de))
+                        _rplan.stage_failed("diarizing")
                     except Exception as _de:  # noqa: BLE001 — soft-fail
                         logger.error("[diarize] unexpected failure: %s",
                                      _log_safe(str(_de)))
@@ -4819,6 +4950,7 @@ async def transcribe(
                             "speaker labels")
                         _stage_timings.append(_failed_stage(
                             "diarizing", _diar_t0, _diarization_model, _de))
+                        _rplan.stage_failed("diarizing")
             elif _diarize:
                 _warnings.append("diarization skipped: no speech segments")
                 _skip("diarizing")
@@ -4884,12 +5016,15 @@ async def transcribe(
                                     # first batch flips a cold-download's
                                     # "downloading" back to "translating".
                                     progress_cb=lambda f, step=None,
-                                        last_text=None:
+                                        last_text=None, target=None,
+                                        target_progress=None:
                                         _progress_set(
                                             _pid, stage="translating",
                                             model=(_tr_model or None),
                                             compute="gguf",
                                             progress=f, step=step,
+                                            target=target,
+                                            target_progress=target_progress,
                                             **({"last_text": last_text}
                                                if last_text else {})),
                                     cancel_check=lambda:
@@ -4944,6 +5079,7 @@ async def transcribe(
                                 "kept": {_l: sorted(_ix) for _l, _ix
                                          in _kept_by_lang.items()},
                             }
+                            _rplan.stage_done("translating")
                             logger.info(
                                 "[translate] %d segments → %s in %.1fs",
                                 len(segments_list), ",".join(_translate_to),
@@ -4975,6 +5111,7 @@ async def transcribe(
                             _warnings.append(str(_te))
                             _stage_timings.append(_failed_stage(
                                 "translating", _tr_t0, _tr_model, _te))
+                            _rplan.stage_failed("translating")
                         except Exception as _te:  # noqa: BLE001 — soft-fail
                             logger.error("[translate] unexpected failure: %s",
                                          _log_safe(str(_te)))
@@ -4983,6 +5120,7 @@ async def transcribe(
                                 "untranslated")
                             _stage_timings.append(_failed_stage(
                                 "translating", _tr_t0, _tr_model, _te))
+                            _rplan.stage_failed("translating")
             elif _translate_to:
                 _warnings.append("translation skipped: no speech segments")
                 _skip("translating")
@@ -5302,6 +5440,11 @@ async def transcribe(
                     "text": full_text_str,
                     "segments": segments_list,
                 }
+                # The run plan's receipt: every stage's took_s and the
+                # per-language units. The progress entry is popped before
+                # this response leaves, so the last poll never sees the
+                # final unit finish — the receipt is the only complete copy.
+                response["plan"] = _rplan.snapshot()["plan"]
                 # VAD receipt (additive): how much audio survived the silence
                 # filter — lets the client warn when the filter ate the file.
                 # Only when the filter actually ran (absent ⇒ off/unknown).
@@ -5460,6 +5603,12 @@ async def transcribe(
             # keep the models this job just used alive for the next one, and
             # the TTL retires them on its own.
             _PLAN_BY_PID.pop(_pid, None)
+            _RUN_PLAN_BY_PID.pop(_pid, None)
+        # Teach the rates ledger from the stages that ran clean.
+        try:
+            _rplan.finish_run(_status)
+        except Exception:  # noqa: BLE001 — a ledger write never fails a run
+            pass
         jobs.job_end(request_id)
         if _status != "ok" and _error_class is None:
             _error_class, _error_stage = metrics.classify_error(
@@ -5759,6 +5908,7 @@ async def translate_text(request: Request,
         progress_id = body.get("progress_id")
         _pid = progress_id if (isinstance(progress_id, str)
                                and _PROGRESS_ID_RE.match(progress_id)) else None
+        _rplan = _run_plan.RunPlan(kind="text")
         # An id already in flight is treated as absent too (see the batch
         # handler): it would otherwise share the other request's entry and
         # cancel flag.
@@ -5825,7 +5975,8 @@ async def translate_text(request: Request,
                        )
         jobs.job_update(request_id, stage="translating", progress_id=_pid)
 
-        def _on_progress(f, step=None, last_text=None):
+        def _on_progress(f, step=None, last_text=None, target=None,
+                         target_progress=None):
             now = time.perf_counter()
             if _hb["first_cb"] is None:
                 _hb["first_cb"] = now
@@ -5847,7 +5998,8 @@ async def translate_text(request: Request,
             # a "downloading" entry (cold model fetch) back to "translating".
             jobs.job_update(request_id, stage="translating", progress=f,
                             step=step)
-            fields = {"stage": "translating", "progress": f, "step": step}
+            fields = {"stage": "translating", "progress": f, "step": step,
+                      "target": target, "target_progress": target_progress}
             if last_text:
                 fields["last_text"] = last_text
             _progress_set(_pid, **fields)
@@ -5864,6 +6016,12 @@ async def translate_text(request: Request,
             terminal path. No audio duration; segment count lives in the stage
             detail (words=0 — a segment count is not a word count)."""
             secs = round(time.perf_counter() - _t0, 3)
+            if status == "ok":
+                _rplan.stage_done("translating")
+            try:
+                _rplan.finish_run(status)
+            except Exception:  # noqa: BLE001 — never fail on a ledger write
+                pass
             _ec, _es = metrics.classify_error(exc, status=status,
                                               stage="translating")
             metrics.record_transcription(
@@ -5889,6 +6047,14 @@ async def translate_text(request: Request,
 
         # `owner` binds the entry to this caller, exactly like the batch
         # seed — the progress/cancel endpoints treat a mismatch as unknown.
+        # A text run is a one-stage plan: its units are the targets.
+        _rplan.set_stages(["translating"])
+        _rplan.set_segments(len(seg_in))
+        _rplan.set_translation(list(targets), model=(_tr_model or None),
+                               device=_tr._resolve_device(), mode=mode,
+                               source_lang=(source or None))
+        if _pid:
+            _RUN_PLAN_BY_PID[_pid] = _rplan
         _progress_set(_pid, stage="translating", progress=0.0,
                       model=(_tr_model or None),
                       device=_tr._resolve_device(), compute="gguf",
@@ -5982,6 +6148,7 @@ async def translate_text(request: Request,
             _BATCH_PROGRESS.pop(_pid, None)
             _PROGRESS_OWNER.pop(_pid, None)
             _BATCH_CANCELLED.discard(_pid)
+            _RUN_PLAN_BY_PID.pop(_pid, None)
 
     _elapsed = time.perf_counter() - _t0
     # Cold model: everything up to the first progress callback is load (the
@@ -6045,6 +6212,7 @@ async def translate_text(request: Request,
                      for i in range(len(ids))],
         "translation": {"model": meta.get("model"), "targets": targets,
                         "source": meta.get("source"), "mode": meta.get("mode")},
+        "plan": _rplan.snapshot()["plan"],
         "warnings": _client_id_warnings(warnings, ids) + [
             f"{name} is locked on this server — your value was ignored"
             for name in _ignored if name
@@ -6109,6 +6277,14 @@ async def transcription_progress(progress_id: str,
         # "separating" / "diarizing" / "translating". Set the moment the skip
         # is known, so the client's rail can say "skipped" instead of guessing.
         "skipped": entry.get("skipped"),
+        # Translation ticks: the language being translated and how far
+        # along it is (0..1 within that language).
+        "target": entry.get("target"),
+        "target_progress": entry.get("target_progress"),
+        # The server-owned plan (core/run_plan.py): per-stage expected /
+        # actual seconds, per-language units, and the overall fraction +
+        # ETA the client renders verbatim.
+        **_plan_fields(progress_id),
     }
 
 

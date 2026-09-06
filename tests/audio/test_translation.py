@@ -618,7 +618,7 @@ def test_progress_and_cancel(base_cfg, monkeypatch):
     res, _, _ = _run(translation.translate_segments(
         _segs("Eins.", "Zwei."), ["en", "fr"], source_lang="de",
         mode="fluent",
-        progress_cb=lambda f, s, t=None: (fractions.append(f),
+        progress_cb=lambda f, s, t=None, **kw: (fractions.append(f),
                                           steps.append(s))))
     assert fractions[-1] == 1.0
     assert fractions == sorted(fractions)
@@ -636,7 +636,7 @@ def test_progress_carries_last_text_tail(base_cfg, monkeypatch):
     tails = []
     _run(translation.translate_segments(
         _segs("Eins.", "Zwei."), ["en"], source_lang="de", mode="fluent",
-        progress_cb=lambda f, s=None, last_text=None: tails.append(last_text)))
+        progress_cb=lambda f, s=None, last_text=None, **kw: tails.append(last_text)))
     assert any(t for t in tails)                       # a tail arrived
     assert all(t is None or len(t) <= 160 for t in tails)
     # The tail is the (pseudo-)translated text — swapcased, not the source.
@@ -650,7 +650,7 @@ def test_progress_callback_raising_typeerror_fires_once(base_cfg, monkeypatch):
     _install_fake(monkeypatch, _xlate)
     calls = []
 
-    def cb(f, s, t=None):
+    def cb(f, s, t=None, **kw):
         calls.append((f, s))
         raise TypeError("internal bug")
 
@@ -1788,3 +1788,25 @@ def test_cached_gguf_none_on_ambiguous_or_missing(monkeypatch):
         raise CacheNotFound("x", cache_dir="/nope")
     monkeypatch.setattr(huggingface_hub, "scan_cache_dir", _boom)
     assert translation._cached_gguf("org/repo", "Q4") is None
+
+
+def test_progress_carries_target_and_target_progress(base_cfg, monkeypatch):
+    """Every tick names the language being translated and how far along
+    THAT language is; the per-target fraction resets at each boundary and a
+    same-language target reports 1.0 in one tick."""
+    _install_fake(monkeypatch, _xlate)
+    ticks = []
+    _run(translation.translate_segments(
+        _segs("Eins.", "Zwei.", "Drei."), ["de", "en", "fr"], source_lang="de",
+        mode="faithful",
+        progress_cb=lambda f, s, t=None, target=None, target_progress=None:
+            ticks.append((target, target_progress))))
+    by_target = {}
+    for tgt, tp in ticks:
+        by_target.setdefault(tgt, []).append(tp)
+    assert by_target["de"] == [1.0]
+    for tgt in ("en", "fr"):
+        seq = by_target[tgt]
+        assert seq == sorted(seq) and seq[-1] == 1.0 and seq[0] <= 1.0
+    # Order of appearance follows the target list.
+    assert [t for t, _ in ticks][0] == "de" and [t for t, _ in ticks][-1] == "fr"

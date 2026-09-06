@@ -1201,7 +1201,7 @@ async def translation_test(
             source_lang=body.source, mode="faithful",
             model_ref=ref or None, glossary=body.glossary or "",
             template_override=template, family_override=fam,
-            progress_cb=lambda f, step=None, last_text=None:
+            progress_cb=lambda f, step=None, last_text=None, **_kw:
                 _main._progress_set(_pid, stage="translating",
                                     progress=f, step=step),
             download_cb=lambda done, total:

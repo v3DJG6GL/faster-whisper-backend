@@ -505,3 +505,84 @@ def test_curated_4xx_is_rejected_not_a_server_failure(client, app_module, monkey
     assert _post(client, response_format="json").status_code == 400
     row = _ledger_row()
     assert row["status"] == "error" and row["error_class"] == "rejected"
+
+
+# --- the server-owned run plan ------------------------------------------------
+
+def test_progress_carries_plan_overall_and_eta(client, app_module):
+    """A polled entry with a run plan behind it publishes the plan, the
+    overall fraction and the ETA; an entry without one (the admin prompt
+    lab's) answers None for all three, never a KeyError."""
+    from faster_whisper_backend.core import run_plan
+    pid = "e" * 32
+    plan = run_plan.RunPlan(kind="file")
+    plan.set_stages(["transcribing", "translating"])
+    plan.set_audio_seconds(600.0, src="decoder")
+    plan.set_translation(["fr"], model="m", device="cuda", mode="fluent")
+    plan.set_segments(160)
+    app_module._RUN_PLAN_BY_PID[pid] = plan
+    try:
+        app_module._progress_set(pid, stage="transcribing", progress=0.5)
+        body = client.get(f"/v1/audio/transcriptions/progress/{pid}").json()
+    finally:
+        app_module._RUN_PLAN_BY_PID.pop(pid, None)
+        app_module._BATCH_PROGRESS.pop(pid, None)
+    assert [s["stage"] for s in body["plan"]] == ["transcribing", "translating"]
+    assert body["plan"][0]["state"] == "active"
+    assert body["plan"][1]["units"][0]["target"] == "fr"
+    assert 0.0 < body["overall"] < 1.0
+    assert body["eta_s"] > 0
+    # No plan: the keys are present and null.
+    pid2 = "f" * 32
+    app_module._progress_set(pid2, stage="translating", progress=0.1)
+    try:
+        body = client.get(f"/v1/audio/transcriptions/progress/{pid2}").json()
+    finally:
+        app_module._BATCH_PROGRESS.pop(pid2, None)
+    assert body["plan"] is None and body["overall"] is None
+    assert body["eta_s"] is None
+
+
+def test_verbose_json_carries_plan_receipt_and_entry_is_gone(client,
+                                                             app_module):
+    """The response carries the plan's receipt (every stage done with its
+    took_s) and the plan registry is cleaned with the progress entry."""
+    pid = "a1" * 16
+    r = _post(client, response_format="verbose_json", progress_id=pid)
+    assert r.status_code == 200, r.text
+    plan = r.json()["plan"]
+    assert [s["stage"] for s in plan] == ["transcribing"]
+    assert plan[0]["state"] == "done"
+    assert plan[0]["took_s"] >= 0.0
+    # (The test config's DEFAULT_MODEL is empty, so no model key rides.)
+    assert pid not in app_module._RUN_PLAN_BY_PID
+    # The plain json shape stays the OpenAI-compatible object.
+    r = _post(client, response_format="json")
+    assert "plan" not in r.json()
+
+
+def test_plan_reports_skipped_separation(client, app_module):
+    """A requested-but-declined stage is in the plan as `skipped`, not
+    dropped: the client's rail still gets a row to explain."""
+    seen = {}
+    pid = "b2" * 16
+    orig = app_module._progress_set
+
+    def spy(p, **fields):
+        orig(p, **fields)
+        if p == pid and p in app_module._RUN_PLAN_BY_PID:
+            seen["snap"] = app_module._RUN_PLAN_BY_PID[p].snapshot()
+
+    app_module._progress_set = spy
+    try:
+        r = _post(client, response_format="verbose_json",
+                  separate_bgm="true", progress_id=pid)
+    finally:
+        app_module._progress_set = orig
+    assert r.status_code == 200
+    states = {s["stage"]: s["state"] for s in seen["snap"]["plan"]}
+    assert states["separating"] == "skipped"
+    # The last tick lands mid-decode; the receipt in the response is final.
+    assert states["transcribing"] in ("active", "done")
+    receipt = {s["stage"]: s["state"] for s in r.json()["plan"]}
+    assert receipt == {"separating": "skipped", "transcribing": "done"}

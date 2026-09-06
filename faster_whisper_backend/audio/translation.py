@@ -1089,9 +1089,12 @@ async def translate_segments(
     :class:`TranslationError`. A target equal to ``source_lang`` is copied
     verbatim without a model call. ``mode``: see the module docstring.
     ``context_segments`` overrides ``TRANSLATION_CONTEXT_SEGMENTS`` when not
-    None. ``progress_cb(done_fraction, step_str, last_text)`` fires after
-    each batch — ``last_text`` is the tail (≤160 chars) of the last completed
-    translation, for live run panels;
+    None. ``progress_cb(done_fraction, step_str, last_text, target=...,
+    target_progress=...)`` fires after each batch — ``last_text`` is the tail
+    (≤160 chars) of the last completed translation, for live run panels;
+    ``target`` names the language being translated and ``target_progress``
+    (0..1) how far that language is, so a panel can draw one bar per target
+    on top of the global fraction;
     ``cancel_check`` (no-arg, truthy = abort) is polled between batches and
     raises :class:`TranslationCancelled`. ``template_override`` (the admin
     template-test path) forces the ``custom`` family and renders THAT
@@ -1142,13 +1145,21 @@ async def translate_segments(
     # source language and read as "not translating".
     last_ok: "str | None" = None
 
+    # Progress within the CURRENT target: reset at every target boundary so
+    # the run panel can show one bar per language on top of the global
+    # fraction. Plain ints; the loop is single-threaded.
+    unit_state = {"target": None, "done": 0}
+
     def _progress(step: str, last_text: "str | None" = None) -> None:
         if progress_cb is None:
             return
         frac = done_units / total_units
         tail = (last_text or "").strip()[:160] or None
         try:
-            progress_cb(frac, step, tail)
+            progress_cb(frac, step, tail,
+                        target=unit_state["target"],
+                        target_progress=(unit_state["done"] / len(segments)
+                                         if segments else 1.0))
         except Exception:  # noqa: BLE001 — progress must never break us
             pass
 
@@ -1228,11 +1239,14 @@ async def translate_segments(
     try:
       for target in targets:
         _check_cancel()
+        unit_state["target"] = target
+        unit_state["done"] = 0
         if _same_lang(target, source_lang):
             # Same-language short-circuit: copy each text verbatim.
             for i, seg in enumerate(segments):
                 results[i][target] = (seg.get("text") or "")
             done_units += len(segments)
+            unit_state["done"] = len(segments)
             _progress(f"{target} 1/1",
                       (segments[-1].get("text") or "") if segments else None)
             continue
@@ -1256,6 +1270,7 @@ async def translate_segments(
                     i += len(batch_idx)
                     batch_no += 1
                     done_units += len(batch_idx)
+                    unit_state["done"] += len(batch_idx)
                     _progress(f"{target} {min(batch_no, n_batches)}/{n_batches}",
                               last_ok)
                     continue
@@ -1299,6 +1314,7 @@ async def translate_segments(
                 i += len(batch_idx)
                 batch_no += 1
                 done_units += len(batch_idx)
+                unit_state["done"] += len(batch_idx)
                 _progress(f"{target} {min(batch_no, n_batches)}/{n_batches}",
                           last_ok)
         else:
@@ -1314,6 +1330,7 @@ async def translate_segments(
                     for j in group:
                         results[j][target] = ""
                     done_units += len(group)
+                    unit_state["done"] += len(group)
                     _progress(f"{target} {g_no}/{len(groups)}", last_ok)
                     continue
                 context = _context_lines(segments, group[0], ctx_n)
@@ -1348,6 +1365,7 @@ async def translate_segments(
                         results[j][target] = piece
                     last_ok = results[group[-1]].get(target) or last_ok
                 done_units += len(group)
+                unit_state["done"] += len(group)
                 _progress(f"{target} {g_no}/{len(groups)}", last_ok)
     finally:
         # Synchronous release: an await here could itself be interrupted by a

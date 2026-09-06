@@ -641,3 +641,38 @@ def test_empty_translation_allowlist_admits_any_well_formed_ref(app_module,
                         {"org/a:Q4"}, raising=False)
     assert app_module._translation_model_allowed(
         "someone/other:Q4", requested="someone/other:Q4") is False
+
+
+def test_text_run_has_a_one_stage_plan_with_units(client, app_module,
+                                                  monkeypatch):
+    """A text run is a plan of exactly one stage whose units are the
+    targets; the response carries its receipt."""
+    _enable(app_module, monkeypatch)
+    seen = {}
+
+    async def _fake(segments, targets, *, progress_cb=None, **kwargs):
+        progress_cb(0.5, "en 1/1", None, target="en", target_progress=0.5)
+        # What the progress route would answer right now (no nested HTTP
+        # call from inside the server: read the same sources it reads).
+        seen["progress"] = {
+            **dict(app_module._BATCH_PROGRESS.get(_PID) or {}),
+            **app_module._plan_fields(_PID)}
+        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
+                   for seg in segments]
+        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    r = client.post(URL, json=_body(progress_id=_PID))
+    assert r.status_code == 200, r.text
+    live = seen["progress"]
+    assert [s["stage"] for s in live["plan"]] == ["translating"]
+    assert live["plan"][0]["units"][0] == {
+        "target": "en", "state": "running", "progress": 0.5,
+        "elapsed_s": live["plan"][0]["units"][0]["elapsed_s"],
+        "est_s": live["plan"][0]["units"][0]["est_s"]}
+    assert live["target"] == "en" and live["target_progress"] == 0.5
+    assert 0.0 < live["overall"] < 1.0
+    receipt = r.json()["plan"]
+    assert receipt[0]["state"] == "done"
+    assert receipt[0]["units"][0]["state"] == "done"
+    assert _PID not in app_module._RUN_PLAN_BY_PID
