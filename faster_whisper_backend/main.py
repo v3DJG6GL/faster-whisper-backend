@@ -3823,6 +3823,7 @@ async def transcribe(
     translation_glossary: str | None = Form(None),
     keep_video: str | None = Form(None),
     video_max_height: int | None = Form(None),
+    video_format: str | None = Form(None),
     retain_media: str | None = Form(None),
     progress_id: str | None = Form(None),
     preload_plan: str | None = Form(None),
@@ -3972,6 +3973,7 @@ async def transcribe(
         # caller exactly like an unknown id.
         _keep_video = _form_bool(keep_video) is True
         _video_max_height = _clamp_video_height(video_max_height)
+        _video_format = _clean_video_format(video_format)
         if _keep_video:
             if source_url is None:
                 raise HTTPException(
@@ -4143,7 +4145,8 @@ async def transcribe(
                 _source_media_id = await asyncio.to_thread(
                     _ums.register, _dl_path, user_id=_user_id)
                 if _keep_video:
-                    _rung = _udl.pick_rung(_uinfo.video_ladder, _video_max_height)
+                    _rung = _udl.pick_rung(_uinfo.video_ladder, _video_max_height,
+                                           _video_format)
                     if _rung is None:
                         _video_result = _video_state(
                             state="failed", error="this link has no video track")
@@ -4999,8 +5002,10 @@ async def transcribe(
                                 min_speakers=_spk.get("min_speakers"),
                                 max_speakers=_spk.get("max_speakers"),
                                 model_id=(_diarization_model or None),
-                                progress_cb=lambda f, step=None: _progress_set(
-                                    _pid, progress=f, step=step),
+                                progress_cb=lambda f, step=None, **kw: _progress_set(
+                                    _pid, progress=f, step=step,
+                                    target=kw.get("target"),
+                                    target_progress=kw.get("target_progress")),
                                 cancel_check=lambda: _cancel_requested(_pid),
                             )
                         # Pure-Python O(segments × turns) — off the loop so a
@@ -5777,6 +5782,7 @@ async def translate_audio(
     translation_glossary: str | None = Form(None),
     keep_video: str | None = Form(None),
     video_max_height: int | None = Form(None),
+    video_format: str | None = Form(None),
     retain_media: str | None = Form(None),
     progress_id: str | None = Form(None),
     preload_plan: str | None = Form(None),
@@ -5810,6 +5816,7 @@ async def translate_audio(
         separation_model=separation_model,
         keep_video=keep_video,
         video_max_height=video_max_height,
+        video_format=video_format,
         retain_media=retain_media,
         translate_to=translate_to,
         translation_model=translation_model,
@@ -6487,14 +6494,32 @@ def _clamp_video_height(value) -> "int | None":
     return max(_VIDEO_MIN_HEIGHT, min(_VIDEO_MAX_HEIGHT, h))
 
 
+def _clean_video_format(value) -> "str | None":
+    """A client's rung choice: a yt-dlp format id the ladder listed, or
+    None (= best). Regex-gated here; pick_rung ignores ids no longer on
+    the ladder, so a stale choice degrades to the height rule."""
+    if not isinstance(value, str):
+        return None
+    v = value.strip()
+    return v if (v and _udl_format_id_re().match(v)) else None
+
+
+def _udl_format_id_re():
+    from faster_whisper_backend.url import download as _udl
+    return _udl.FORMAT_ID_RE
+
+
 def _video_state(**fields) -> dict:
     """The progress entry's `video` sub-object: one dict the client renders
-    as the Download row's second bar. `state` in {done, failed, cancelled}
-    is terminal — the poller stops on it."""
+    as the Video row beside the Audio stage. `state` in {done, failed,
+    cancelled} is terminal — the poller stops on it. `total_approx` says
+    whether `total_bytes` is an estimate (the client then prints "≈" and
+    never lets the bar run past it)."""
     base = {"state": "queued", "progress": None, "downloaded_bytes": None,
-            "total_bytes": None, "height": None, "container": None,
-            "media_id": None, "expires_at": None, "bytes": None,
-            "error": None}
+            "total_bytes": None, "total_approx": False, "height": None,
+            "container": None, "label": None, "vcodec": None, "acodec": None,
+            "format_id": None, "media_id": None, "expires_at": None,
+            "bytes": None, "error": None}
     base.update(fields)
     return base
 
@@ -6516,7 +6541,20 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
     from faster_whisper_backend.url import media_store as _ums
     state = _video_state(height=rung.get("height"),
                          container=rung.get("container") or "mkv",
-                         total_bytes=rung.get("approx_bytes"))
+                         total_bytes=rung.get("approx_bytes"),
+                         total_approx=bool(rung.get("bytes_approx")),
+                         label=rung.get("label"), vcodec=rung.get("vcodec"),
+                         acodec=rung.get("acodec"),
+                         format_id=rung.get("format_id"))
+    _fid = rung.get("format_id")
+    _format_ids = ((_fid, rung.get("audio_format_id"))
+                   if isinstance(_fid, str) and _fid else None)
+    _legs: dict = {}
+    if _format_ids:
+        if rung.get("video_bytes"):
+            _legs[_format_ids[0]] = int(rung["video_bytes"])
+        if _format_ids[1] and rung.get("audio_bytes"):
+            _legs[_format_ids[1]] = int(rung["audio_bytes"])
 
     def _pub(**fields) -> None:
         state.update(fields)
@@ -6540,6 +6578,7 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                 max_height=(rung.get("height") if capped else None),
                 container=state["container"],
                 expected_total=rung.get("approx_bytes"),
+                format_ids=_format_ids, leg_estimates=(_legs or None),
                 timeout=float(getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600)),
                 progress_cb=lambda f, tot, done: _pub(
                     state="downloading", progress=f, total_bytes=tot,
@@ -6547,6 +6586,18 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                 cancel_check=lambda: _cancel_requested(pid))
         _pub(state="registering", progress=1.0)
         size = os.path.getsize(path)
+        # Teach the ledger what this site's estimate was worth: the next
+        # preview of a fragmented rung from the same extractor scales its
+        # peak-bitrate numbers by actual/estimated.
+        _est = rung.get("approx_bytes")
+        if rung.get("bytes_approx") and _est and size > 0:
+            from faster_whisper_backend.runtime import stage_rates as _rates
+            _rates.record(_udl.RATIO_STAGE, rung.get("extractor"),
+                          rung.get("protocol"), None, size / float(_est))
+            logger.info("[url-dl] video estimate %.1f MB → actual %.1f MB "
+                        "(ratio %.2f, %s/%s)", _est / 1e6, size / 1e6,
+                        size / float(_est), rung.get("extractor"),
+                        rung.get("protocol"))
         mid = await asyncio.to_thread(
             _ums.register, path, user_id=user_id, kind="video",
             protect=({protect} if protect else None))
@@ -6750,6 +6801,7 @@ async def url_media_video(request: Request,
     if not isinstance(url, str) or not url.strip():
         raise HTTPException(status_code=422, detail="expected {\"url\": …}")
     max_height = _clamp_video_height(body.get("max_height"))
+    format_id = _clean_video_format(body.get("format_id"))
     progress_id = body.get("progress_id")
     _pid = progress_id if (isinstance(progress_id, str)
                            and _PROGRESS_ID_RE.match(progress_id)) else None
@@ -6777,7 +6829,7 @@ async def url_media_video(request: Request,
             logger.info("[url-dl] video rejected (host %s): %s", _uhost,
                         _log_safe(str(e)))
             raise HTTPException(status_code=400, detail=str(e))
-        rung = _udl.pick_rung(info.video_ladder, max_height)
+        rung = _udl.pick_rung(info.video_ladder, max_height, format_id)
         if rung is None:
             raise HTTPException(status_code=400,
                                 detail="this link has no video track")

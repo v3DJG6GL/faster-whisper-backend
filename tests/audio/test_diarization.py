@@ -189,7 +189,10 @@ def test_assign_speakers_no_turns_is_noop():
 
 def test_hook_maps_steps_and_stays_monotone(caplog):
     seen = []
-    hook = diarization._make_hook(lambda f, step=None: seen.append(f))
+    units = []
+    hook = diarization._make_hook(
+        lambda f, step=None, **kw: (seen.append(f),
+                                    units.append((kw.get("target"), kw.get("target_progress")))))
     with caplog.at_level(logging.INFO, logger="whisper-server"):
         hook("segmentation", None, total=10, completed=5)
         hook("segmentation", None, total=10, completed=10)
@@ -199,17 +202,38 @@ def test_hook_maps_steps_and_stays_monotone(caplog):
         hook("segmentation", None, total=10, completed=1)
         hook("clustering", None)      # no total → logged but never moves the bar
         hook("embeddings", None, total=4, completed=4)
-        assert seen == [0.225, 0.45, 0.675, 0.9]
+        assert seen == pytest.approx([0.02, 0.04, 0.04 + 0.93 * 0.5, 0.97])
         # A repeated bare call stays silent (no bar move, no re-log); a later
         # CHUNKED call from the same step promotes it to the next free window
         # instead of staying untracked forever.
         hook("clustering", None)
         hook("clustering", None, total=4, completed=4)
-    assert seen == [0.225, 0.45, 0.675, 0.9, 1.0]
+    assert seen == pytest.approx([0.02, 0.04, 0.04 + 0.93 * 0.5, 0.97, 1.0])
+    # Every moving tick names the plan's unit and the step's own fraction;
+    # the promoted third step is the clustering unit.
+    assert units == [("segmentation", 0.5), ("segmentation", 1.0),
+                     ("embeddings", 0.5), ("embeddings", 1.0), ("clustering", 1.0)]
     step_lines = [r.getMessage() for r in caplog.records
                   if "step: clustering" in r.getMessage()]
     assert step_lines == ["[diarize] step: clustering (untracked)",
                           "[diarize] step: clustering (promoted)"]
+
+
+def test_hook_reports_untracked_steps_as_clustering_only_after_embeddings():
+    """pyannote counts speakers BETWEEN segmentation and embeddings: that
+    bare step must not start the clustering unit (it would close the
+    embeddings unit before it ran). The bare step after embeddings does."""
+    units = []
+    hook = diarization._make_hook(
+        lambda f, step=None, **kw: units.append((step, kw.get("target"))))
+    hook("segmentation", None, total=2, completed=2)
+    hook("speaker_counting", None)
+    hook("embeddings", None, total=2, completed=1)
+    hook("embeddings", None, total=2, completed=2)
+    hook("discrete_diarization", None)
+    assert units == [("segmentation", "segmentation"), ("embeddings", "embeddings"),
+                     ("embeddings", "embeddings"),
+                     ("discrete_diarization", "clustering")]
 
 
 def test_hook_swallows_bad_callback():

@@ -134,6 +134,21 @@ VIDEO_CONTAINERS = ("mkv", "mp4")
 _VIDEO_MIN_HEIGHT, _VIDEO_MAX_HEIGHT = 144, 4320
 # The ladder never grows past this many rungs — a client select, not a table.
 _LADDER_MAX_RUNGS = 12
+# yt-dlp format ids as the selector accepts them (itags, "hls-1080p",
+# "DASH_720", "http-2500k"…). Anything else never reaches `-f`.
+FORMAT_ID_RE = re.compile(r"\A[A-Za-z0-9._+-]{1,40}\Z")
+# A format_note that NAMES a rung rather than restating its height:
+# YouTube's "Premium", Twitch's "Source", Vimeo's "Original".
+_NAMED_NOTE_RE = re.compile(r"\A(premium|source|original)\Z", re.I)
+# Two rungs inside one height whose bitrates sit this close are one rung.
+_TIER_DEDUPE = 0.10
+# A direct file the generic extractor could not inspect (no formats, no
+# codecs) still IS a video when its extension says so.
+_VIDEO_FILE_EXTS = ("mp4", "mkv", "webm", "mov", "m4v", "avi", "ts", "flv", "mpg", "mpeg")
+# The ledger key under which the download's actual-over-estimated byte ratio
+# is learned per extractor and protocol family (stage_rates has no seed for
+# it: an unmeasured site shows the site's own numbers, marked approximate).
+RATIO_STAGE = "dlratio"
 
 # yt-dlp codec ids, ranked the way its default sort ranks them within a
 # height (av01 > vp9 > hevc > avc1 > vp8).
@@ -165,38 +180,96 @@ def mp4_carries(vcodec: "str | None", acodec: "str | None") -> bool:
     return (not a or a == "none") or a.startswith(_MP4_AUDIO)
 
 
-def build_video_ladder(info: dict, *, max_bytes: int) -> "list[dict]":
-    """The distinct video heights a site offers, from yt-dlp's `formats`
-    list, highest first: one rung per height (the format yt-dlp's own sort
-    would pick inside that height), with the container the merge would
-    produce, an approximate merged size and an over-cap flag. Pure — no
-    network; the info dict came from the probe's extract_info."""
-    formats = info.get("formats")
-    if not isinstance(formats, list):
-        return []
-    duration = info.get("duration")
+def _fmt_bytes(f: dict, duration: "float | None") -> "tuple[int | None, bool]":
+    """(bytes, approximate): the site's exact size when it lists one, else
+    its own estimate, else bitrate × duration — the last two flagged."""
+    fs = f.get("filesize")
+    if fs:
+        try:
+            return int(fs), False
+        except (TypeError, ValueError):
+            pass
+    fsa = f.get("filesize_approx")
+    if fsa:
+        try:
+            return int(fsa), True
+        except (TypeError, ValueError):
+            pass
+    tbr = f.get("tbr")
+    if tbr and duration:
+        try:
+            return int(float(tbr) * duration * 125), True
+        except (TypeError, ValueError):
+            return None, True
+    return None, True
+
+
+def _fmt_rank(f: dict) -> tuple:
+    """yt-dlp's own order within a site: quality, resolution, fps, HDR,
+    source preference (YouTube's Premium boost lives here), codec, bitrate.
+    Ranking the way the downloader ranks is what keeps the card and the
+    fetched file in agreement."""
     try:
-        duration = float(duration) if duration is not None else None
+        q = float(f.get("quality") or 0)
     except (TypeError, ValueError):
-        duration = None
+        q = 0.0
+    h = f.get("height")
+    w = f.get("width")
+    try:
+        src = float(f.get("source_preference")
+                    if f.get("source_preference") is not None else -1)
+    except (TypeError, ValueError):
+        src = -1.0
+    return (
+        q,
+        int(h) if isinstance(h, (int, float)) and h > 0 else 0,
+        int(w) if isinstance(w, (int, float)) and w > 0 else 0,
+        float(f.get("fps") or 0),
+        str(f.get("dynamic_range") or "SDR").upper() != "SDR",
+        src,
+        _vcodec_rank(str(f.get("vcodec") or "")),
+        float(f.get("tbr") or 0),
+    )
 
-    def _bytes(f: dict) -> "int | None":
-        fs = f.get("filesize") or f.get("filesize_approx")
-        if fs:
-            try:
-                return int(fs)
-            except (TypeError, ValueError):
-                pass
-        tbr = f.get("tbr")
-        if tbr and duration:
-            try:
-                return int(float(tbr) * duration * 125)
-            except (TypeError, ValueError):
-                return None
-        return None
 
+def protocol_family(protocol: "str | None") -> str:
+    """The three families whose size honesty differs: fragmented HLS and
+    DASH manifests list peak bitrates and no sizes; a plain https file is
+    exact."""
+    p = str(protocol or "").lower()
+    if p.startswith("m3u8"):
+        return "m3u8"
+    if "dash" in p:
+        return "dash"
+    return "https"
+
+
+def _rung_spec(f: dict) -> str:
+    """The resolution half of a label: "1080p", "1080p60 HDR", the site's
+    own "1280x720" when only that is known, else ""."""
+    h = f.get("height")
+    if isinstance(h, (int, float)) and h > 0:
+        fps = float(f.get("fps") or 0)
+        fps_i = int(round(fps)) if fps else 0
+        hdr = str(f.get("dynamic_range") or "SDR").upper() != "SDR"
+        return f"{int(h)}p{fps_i if fps_i > 30 else ''}{' HDR' if hdr else ''}"
+    res = f.get("resolution")
+    if isinstance(res, str) and res.strip() and res.strip().lower() != "audio only":
+        return res.strip()[:16]
+    return ""
+
+
+def _rung_note(f: dict) -> "str | None":
+    note = f.get("format_note")
+    if isinstance(note, str) and _NAMED_NOTE_RE.match(note.strip()):
+        return note.strip().title()
+    return None
+
+
+def _video_candidates(formats: list) -> "tuple[list[dict], dict | None]":
+    """The rankable video formats and the best separate audio track."""
     best_audio: "tuple[float, dict] | None" = None
-    by_height: "dict[int, tuple[tuple, dict]]" = {}
+    vids: "list[dict]" = []
     for f in formats:
         if not isinstance(f, dict) or f.get("has_drm"):
             continue
@@ -206,71 +279,200 @@ def build_video_ladder(info: dict, *, max_bytes: int) -> "list[dict]":
         if str(f.get("ext") or "") == "mhtml" or \
                 "storyboard" in str(f.get("format_note") or "").lower():
             continue
+        fid = f.get("format_id")
+        if not isinstance(fid, str) or not FORMAT_ID_RE.match(fid):
+            continue
         vcodec = f.get("vcodec")
         acodec = f.get("acodec")
         if vcodec in (None, "none"):
-            if acodec and acodec != "none":
+            # YouTube's "DRC" twins are loudness-normalised duplicates of
+            # the same track — never the leg a merge should carry.
+            if acodec and acodec != "none" and \
+                    "drc" not in str(f.get("format_note") or "").lower():
                 score = float(f.get("abr") or f.get("tbr") or 0)
                 if best_audio is None or score > best_audio[0]:
                     best_audio = (score, f)
             continue
+        vids.append(f)
+    return vids, (best_audio[1] if best_audio else None)
+
+
+def build_video_ladder(info: dict, *, max_bytes: int,
+                       extractor: "str | None" = None,
+                       approx_ratio=None) -> "list[dict]":
+    """The video rungs a site offers, best first, in yt-dlp's own order —
+    so the top rung IS what `bv*+ba` would fetch (YouTube's Premium 1080p
+    included). One rung per height, plus a second rung inside a height when
+    the top one has no exact size and an exactly-sized alternative differs
+    in bitrate by more than 10 % (the exact AV1 1080p beside the estimated
+    Premium one). Sites that name nothing rankable but clearly serve a
+    video file get one "Best available" rung.
+
+    `approx_ratio(protocol_family) -> float | None` scales estimated bytes
+    and bitrates by what this site's fragmented streams actually delivered
+    last time (the ledger's learned actual/estimated ratio). Pure — no
+    network; the info dict came from the probe's extract_info."""
+    formats = info.get("formats")
+    if not isinstance(formats, list):
+        formats = []
+    duration = info.get("duration")
+    try:
+        duration = float(duration) if duration is not None else None
+    except (TypeError, ValueError):
+        duration = None
+
+    vids, audio_f = _video_candidates(formats)
+    groups: "dict[object, list[dict]]" = {}
+    for f in vids:
         h = f.get("height")
-        if not isinstance(h, (int, float)) or h <= 0:
+        if isinstance(h, (int, float)) and h > 0:
+            key: object = int(h)
+        else:
+            res = f.get("resolution")
+            key = f"res:{res}" if isinstance(res, str) and res else f"id:{f['format_id']}"
+        groups.setdefault(key, []).append(f)
+
+    chosen: "list[dict]" = []
+    for members in groups.values():
+        members.sort(key=_fmt_rank, reverse=True)
+        top = members[0]
+        chosen.append(top)
+        _tb, top_approx = _fmt_bytes(top, duration)
+        if not top_approx:
             continue
-        h = int(h)
-        fps = float(f.get("fps") or 0)
-        hdr = str(f.get("dynamic_range") or "SDR").upper() != "SDR"
-        key = (fps, hdr, _vcodec_rank(str(vcodec)), float(f.get("tbr") or 0))
-        cur = by_height.get(h)
-        if cur is None or key > cur[0]:
-            by_height[h] = (key, f)
+        top_tbr = float(top.get("tbr") or 0)
+        for m in members[1:]:
+            _b, approx = _fmt_bytes(m, duration)
+            if approx:
+                continue
+            mt = float(m.get("tbr") or 0)
+            if top_tbr and mt and abs(mt - top_tbr) / top_tbr <= _TIER_DEDUPE:
+                continue
+            chosen.append(m)
+            break
+    chosen.sort(key=_fmt_rank, reverse=True)
 
-    audio_f = best_audio[1] if best_audio else None
-    audio_bytes = _bytes(audio_f) if audio_f else None
-    audio_codec = str(audio_f.get("acodec")) if audio_f else None
-    out: "list[dict]" = []
-    for h in sorted(by_height, reverse=True)[:_LADDER_MAX_RUNGS]:
-        _key, f = by_height[h]
-        vbytes = _bytes(f)
-        has_audio = f.get("acodec") not in (None, "none")
-        approx = (vbytes + (audio_bytes or 0)) if (vbytes is not None and not has_audio) else vbytes
-        vcodec = str(f.get("vcodec"))
-        acodec = str(f.get("acodec")) if has_audio else audio_codec
-        fps = float(f.get("fps") or 0)
-        fps_i = int(round(fps)) if fps else None
-        hdr = str(f.get("dynamic_range") or "SDR").upper() != "SDR"
-        width = f.get("width")
-        out.append({
-            "kind": "video",
-            "height": h,
-            "width": int(width) if isinstance(width, (int, float)) and width > 0 else None,
-            "fps": fps_i,
-            "hdr": hdr,
-            "vcodec": vcodec,
-            "acodec": acodec,
-            "container": "mp4" if mp4_carries(vcodec, acodec) else "mkv",
-            "video_bytes": vbytes,
-            "audio_bytes": None if has_audio else audio_bytes,
-            "approx_bytes": approx,
-            "over_cap": approx is not None and approx > max_bytes,
-            "label": f"{h}p{fps_i if fps_i and fps_i > 30 else ''}{' HDR' if hdr else ''}",
-        })
-    return out
+    out = [_rung(f, audio_f=audio_f, duration=duration, max_bytes=max_bytes,
+                 extractor=extractor, approx_ratio=approx_ratio)
+           for f in chosen[:_LADDER_MAX_RUNGS]]
+    if out:
+        return out
+    # Nothing rankable. A direct file the generic extractor could only name
+    # by extension is still a video; a podcast mp3 is not.
+    ext = str(info.get("ext") or "").lower()
+    vcodec = info.get("vcodec")
+    if ext in _VIDEO_FILE_EXTS or (vcodec not in (None, "none") and not vids):
+        fs = info.get("filesize") or None
+        b = int(fs) if fs else None
+        return [{
+            "kind": "video", "height": None, "width": None, "fps": None,
+            "hdr": False, "vcodec": str(vcodec) if vcodec else None,
+            "acodec": None, "container": "mkv", "protocol": "https",
+            "format_id": None, "audio_format_id": None,
+            "video_bytes": b, "audio_bytes": None, "approx_bytes": b,
+            "bytes_approx": b is None, "tbr_kbps": None, "bitrate_approx": True,
+            "note": None, "extractor": extractor,
+            "over_cap": b is not None and b > max_bytes,
+            "label": "Best available",
+        }]
+    return []
 
 
-def pick_rung(ladder: "list[dict]", max_height: "int | None") -> "dict | None":
-    """The rung a request gets: the highest video rung at or under the
-    cap (None = best available). None when the link carries no video."""
-    rungs = [r for r in ladder if r.get("kind") == "video"
-             and isinstance(r.get("height"), int)]
+def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
+          max_bytes: int, extractor: "str | None", approx_ratio) -> dict:
+    has_audio = f.get("acodec") not in (None, "none")
+    proto = str(f.get("protocol") or "")
+    fam = protocol_family(proto)
+    vb, v_approx = _fmt_bytes(f, duration)
+    ratio = None
+    if v_approx and approx_ratio is not None:
+        try:
+            r = approx_ratio(fam)
+            ratio = float(r) if r and r > 0 else None
+        except Exception:  # noqa: BLE001 — a ledger hiccup never breaks a preview
+            ratio = None
+    if vb is not None and ratio:
+        vb = int(vb * ratio)
+    ab: "int | None" = None
+    a_approx = False
+    a_tbr = 0.0
+    if audio_f is not None and not has_audio:
+        ab, a_approx = _fmt_bytes(audio_f, duration)
+        a_tbr = float(audio_f.get("abr") or audio_f.get("tbr") or 0)
+        if ab is not None and a_approx and approx_ratio is not None:
+            try:
+                r = approx_ratio(protocol_family(audio_f.get("protocol")))
+                if r and r > 0:
+                    ab = int(ab * float(r))
+            except Exception:  # noqa: BLE001
+                pass
+    approx = (vb + (ab or 0)) if vb is not None else None
+    v_tbr = float(f.get("tbr") or f.get("vbr") or 0)
+    if v_tbr and v_approx and ratio:
+        v_tbr *= ratio
+    tbr = v_tbr + a_tbr
+    vcodec = str(f.get("vcodec"))
+    acodec = str(f.get("acodec")) if has_audio else (
+        str(audio_f.get("acodec")) if audio_f is not None else None)
+    fps = float(f.get("fps") or 0)
+    fps_i = int(round(fps)) if fps else None
+    hdr = str(f.get("dynamic_range") or "SDR").upper() != "SDR"
+    h = f.get("height")
+    width = f.get("width")
+    note = _rung_note(f)
+    spec = _rung_spec(f)
+    label = " ".join(x for x in (spec, note) if x) or "Best available"
+    return {
+        "kind": "video",
+        "height": int(h) if isinstance(h, (int, float)) and h > 0 else None,
+        "width": int(width) if isinstance(width, (int, float)) and width > 0 else None,
+        "fps": fps_i,
+        "hdr": hdr,
+        "vcodec": vcodec,
+        "acodec": acodec,
+        "container": "mp4" if mp4_carries(vcodec, acodec) else "mkv",
+        "protocol": fam,
+        "format_id": str(f["format_id"]),
+        "audio_format_id": (str(audio_f["format_id"])
+                            if (audio_f is not None and not has_audio) else None),
+        "video_bytes": vb,
+        "audio_bytes": None if has_audio else ab,
+        "approx_bytes": approx,
+        "bytes_approx": bool(v_approx or (not has_audio and a_approx)),
+        "tbr_kbps": int(round(tbr)) if tbr else None,
+        # A fragmented stream's bitrate is the manifest's peak, not an
+        # average — the learned ratio narrows it, the flag keeps the "≈".
+        "bitrate_approx": fam != "https",
+        "note": note,
+        "extractor": extractor,
+        "over_cap": approx is not None and approx > max_bytes,
+        "label": label,
+    }
+
+
+def pick_rung(ladder: "list[dict]", max_height: "int | None",
+              format_id: "str | None" = None) -> "dict | None":
+    """The rung a request gets: the one whose format id the client named
+    when it is still on the ladder, else the best-ranked rung at or under
+    the height cap (None = best available), else the smallest. None when
+    the link carries no video. The ladder is rank-ordered, so "best" is
+    its first entry — YouTube's Premium rung outranks plain 1080p."""
+    rungs = [r for r in ladder if r.get("kind") == "video"]
     if not rungs:
         return None
+    if format_id:
+        for r in rungs:
+            if r.get("format_id") == format_id:
+                return r
     if max_height is not None:
-        fitting = [r for r in rungs if r["height"] <= max_height]
+        fitting = [r for r in rungs if isinstance(r.get("height"), int)
+                   and r["height"] <= max_height]
         if fitting:
-            return max(fitting, key=lambda r: r["height"])
-        return min(rungs, key=lambda r: r["height"])
-    return max(rungs, key=lambda r: r["height"])
+            return fitting[0]
+        with_h = [r for r in rungs if isinstance(r.get("height"), int)]
+        if with_h:
+            return min(with_h, key=lambda r: r["height"])
+    return rungs[0]
 
 
 def validate_url(url: str) -> str:
@@ -643,7 +845,11 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
     _policy_check_info(info)
     ladder: "list[dict]" = []
     if getattr(cfg, "URL_VIDEO_ENABLED", False):
-        ladder = build_video_ladder(info, max_bytes=_effective_max_bytes())
+        from faster_whisper_backend.runtime import stage_rates as _rates
+        _xk = str(info.get("extractor_key") or key)
+        ladder = build_video_ladder(
+            info, max_bytes=_effective_max_bytes(), extractor=_xk,
+            approx_ratio=lambda fam: _rates.lookup(RATIO_STAGE, _xk, fam).get("rate"))
         if ladder:
             _fs = info.get("filesize_approx") or info.get("filesize")
             _ext = str(info["ext"]) if info.get("ext") else None
@@ -810,6 +1016,14 @@ def _parse_progress_line(line: str) -> "tuple[int | None, int | None] | None":
     """Parse one --progress-template line into (downloaded, total). Total
     falls back to the estimate; unknown fields arrive as 'NA' (yt-dlp quirk:
     never empty strings)."""
+    parsed = _parse_progress_fields(line)
+    return None if parsed is None else parsed[:2]
+
+
+def _parse_progress_fields(line: str) -> "tuple[int, int | None, str | None] | None":
+    """(downloaded, total, format_id) — the id is the fourth field the video
+    template adds, so a merge's two legs can be told apart; None on the
+    audio template."""
     if not line.startswith(_PROGRESS_PREFIX):
         return None
     fields = line[len(_PROGRESS_PREFIX):].split()
@@ -828,7 +1042,8 @@ def _parse_progress_line(line: str) -> "tuple[int | None, int | None] | None":
         total = _num(fields[2])
     if downloaded is None:
         return None
-    return downloaded, total
+    fid = fields[3] if len(fields) > 3 and fields[3] != "NA" else None
+    return downloaded, total, fid
 
 
 def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str]":
@@ -867,22 +1082,43 @@ def build_download_argv(url: str, *, dest_dir: str, max_bytes: int) -> "list[str
     ]
 
 
+def video_format_selector(max_height: "int | None" = None,
+                          format_ids: "tuple[str | None, str | None] | None" = None) -> str:
+    """The `-f` string: the rung's exact ids first (so the file IS the rung
+    the card priced), then the generic best-under-cap selector as the
+    fallback for a site whose format list moved between probe and run."""
+    if max_height is not None:
+        h = max(_VIDEO_MIN_HEIGHT, min(_VIDEO_MAX_HEIGHT, int(max_height)))
+        generic = VIDEO_FORMAT_CAPPED.format(h=h)
+    else:
+        generic = VIDEO_FORMAT_BEST
+    if not format_ids:
+        return generic
+    vid, aud = format_ids
+    if not (isinstance(vid, str) and FORMAT_ID_RE.match(vid)):
+        return generic
+    if aud is not None and not (isinstance(aud, str) and FORMAT_ID_RE.match(aud)):
+        return generic
+    exact = f"{vid}+{aud}" if aud else vid
+    return f"{exact}/{generic}"
+
+
 def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
                               max_height: "int | None" = None,
-                              container: str = "mkv") -> "list[str]":
-    """The yt-dlp invocation for the VIDEO of a link: best video + best
-    audio, merged by ffmpeg into `container`. Same launcher, guard, caps
-    and output rules as build_download_argv; `max_height` is clamped to an
-    int here so no client value ever reaches the selector as text."""
+                              container: str = "mkv",
+                              format_ids: "tuple[str | None, str | None] | None" = None,
+                              ) -> "list[str]":
+    """The yt-dlp invocation for the VIDEO of a link: the rung's exact
+    formats (best video + best audio as the fallback) merged by ffmpeg into
+    `container`. Same launcher, guard, caps and output rules as
+    build_download_argv; `max_height` is clamped to an int and the ids are
+    regex-checked here so no client value ever reaches the selector as
+    text."""
     from faster_whisper_backend.streaming.transport import ffmpeg_exe
 
     if container not in VIDEO_CONTAINERS:
         container = "mkv"
-    if max_height is not None:
-        h = max(_VIDEO_MIN_HEIGHT, min(_VIDEO_MAX_HEIGHT, int(max_height)))
-        fmt = VIDEO_FORMAT_CAPPED.format(h=h)
-    else:
-        fmt = VIDEO_FORMAT_BEST
+    fmt = video_format_selector(max_height, format_ids)
     return [
         sys.executable, GUARD_LAUNCHER,
         "--no-plugin-dirs", "--plugin-dirs", GUARD_DIR,
@@ -901,7 +1137,8 @@ def build_video_download_argv(url: str, *, dest_dir: str, max_bytes: int,
         "--newline", "--no-colors",
         "--progress-template",
         ("download:dl:%(progress.downloaded_bytes)s "
-         "%(progress.total_bytes)s %(progress.total_bytes_estimate)s"),
+         "%(progress.total_bytes)s %(progress.total_bytes_estimate)s "
+         "%(info.format_id)s"),
         "--", url,
     ]
 
@@ -948,12 +1185,15 @@ async def download_video(
     max_height: "int | None" = None,
     container: str = "mkv",
     expected_total: "int | None" = None,
+    format_ids: "tuple[str | None, str | None] | None" = None,
+    leg_estimates: "dict[str, int] | None" = None,
     timeout: "float | None" = None,
     progress_cb=None,
     cancel_check=None,
 ) -> str:
-    """Download the VIDEO of `url` (best video + best audio merged into
-    `container`) into `dest_dir` and return the file path.
+    """Download the VIDEO of `url` (the rung's exact formats, best video +
+    best audio as the fallback, merged into `container`) into `dest_dir`
+    and return the file path.
 
     progress_cb(fraction_or_None, total_bytes_or_None, downloaded_bytes) is
     throttled like download()'s, but counts CUMULATIVELY across the two
@@ -968,7 +1208,11 @@ async def download_video(
         container = "mkv"
     argv = build_video_download_argv(
         url, dest_dir=dest_dir, max_bytes=max_bytes, max_height=max_height,
-        container=container)
+        container=container, format_ids=format_ids)
+    logger.info("[url-dl] video download starting (host %s): -f %s, expected %s",
+                host_for_log(url),
+                video_format_selector(max_height, format_ids).split("/")[0],
+                f"{expected_total / 1e6:.1f} MB" if expected_total else "?")
 
     def _emit(downloaded: int, total: "int | None") -> None:
         if progress_cb is None:
@@ -979,7 +1223,7 @@ async def download_video(
     return await _run_yt_dlp(
         argv, url=url, dest_dir=dest_dir, max_bytes=max_bytes,
         timeout=timeout, emit=_emit, cancel_check=cancel_check,
-        expected_total=expected_total,
+        expected_total=expected_total, leg_estimates=leg_estimates,
         find_result=lambda d: _find_video_result(d, container))
 
 
@@ -994,6 +1238,7 @@ async def _run_yt_dlp(
     cancel_check,
     find_result,
     expected_total: "int | None" = None,
+    leg_estimates: "dict[str, int] | None" = None,
 ) -> str:
     """The subprocess half shared by download() and download_video(): run
     yt-dlp, stream its progress lines into `emit(downloaded, total)` (one
@@ -1046,23 +1291,53 @@ async def _run_yt_dlp(
     # yt-dlp prints one `dl:` series per file it fetches (a merge = video
     # then audio, each restarting at 0). `completed` carries the finished
     # files' bytes so the fraction, the cap and the log all see the sum.
+    # The denominator is per leg: a leg's own total once yt-dlp reports
+    # it, the probe's estimate for that leg before that, and the merged
+    # `expected_total` when no leg is known by id.
     completed = 0
     last_downloaded = 0
+    cur_leg: "str | None" = None
+    leg_total: "dict[str, int]" = {}       # id → best-known total
+    leg_done: "dict[str, int]" = {}        # id → bytes when its series ended
+    estimates = dict(leg_estimates or {})
 
-    def _cumulative(parsed: "tuple[int, int | None]") -> "tuple[int, int | None]":
-        nonlocal completed, last_downloaded
-        downloaded, total = parsed
-        if downloaded < last_downloaded:
+    def _denominator(cum: int, cur_total: "int | None") -> "int | None":
+        if not estimates and not leg_total:
+            if expected_total:
+                return max(int(expected_total), cum)
+            return (completed + cur_total) if cur_total else None
+        ids = set(estimates) | set(leg_total) | set(leg_done)
+        total = 0
+        for fid in ids:
+            if fid in leg_done:
+                total += leg_done[fid]
+            elif fid in leg_total:
+                total += leg_total[fid]
+            elif fid in estimates:
+                total += int(estimates[fid])
+        # A leg yt-dlp named that the probe never priced: fall back to the
+        # merged estimate rather than a denominator that is too small.
+        if cur_leg is not None and cur_leg not in ids and expected_total:
+            return max(int(expected_total), cum)
+        return max(total, cum) if total else (
+            max(int(expected_total), cum) if expected_total else None)
+
+    def _cumulative(parsed: "tuple[int, int | None, str | None]") -> "tuple[int, int | None]":
+        nonlocal completed, last_downloaded, cur_leg
+        downloaded, total, fid = parsed
+        new_series = downloaded < last_downloaded or (
+            fid is not None and cur_leg is not None and fid != cur_leg)
+        if new_series:
             completed += last_downloaded
+            if cur_leg is not None:
+                leg_done[cur_leg] = last_downloaded
+        if fid is not None:
+            cur_leg = fid
+            if total:
+                leg_total[fid] = int(total)
         last_downloaded = downloaded
         cum = completed + downloaded
-        if expected_total:
-            total_all: "int | None" = max(int(expected_total), cum)
-        elif total:
-            total_all = completed + total
-        else:
-            total_all = None
-        return cum, total_all
+        return cum, _denominator(cum, total)
 
     def _emit(parsed: "tuple[int, int | None]") -> None:
         try:
@@ -1089,9 +1364,8 @@ async def _run_yt_dlp(
                 continue
             if not raw:
                 break
-            parsed = _parse_progress_line(raw.decode("utf-8", "replace").strip())
-            if parsed is not None:
-                parsed = _cumulative(parsed)
+            fields = _parse_progress_fields(raw.decode("utf-8", "replace").strip())
+            parsed = _cumulative(fields) if fields is not None else None
             # Belt and braces over --max-filesize, which only fires when the
             # size is known up front (and per FILE — a merge's two streams
             # can pass it separately): a chunked / fragmented response with

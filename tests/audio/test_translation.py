@@ -1790,6 +1790,28 @@ def test_cached_gguf_none_on_ambiguous_or_missing(monkeypatch):
     assert translation._cached_gguf("org/repo", "Q4") is None
 
 
+def test_translation_logs_buckets_per_target(base_cfg, monkeypatch, caplog):
+    """The server log shows the translating stage like every sibling: 5 %
+    buckets per target, a line per finished target, and the same-language
+    copy named as such."""
+    import logging
+    _install_fake(monkeypatch, _xlate)
+    # One segment per batch so the target crosses several buckets.
+    monkeypatch.setattr(translation.cfg, "TRANSLATION_BATCH_SEGMENTS", 1, raising=False)
+    with caplog.at_level(logging.INFO, logger="whisper-server"):
+        _run(translation.translate_segments(
+            _segs("Eins.", "Zwei.", "Drei."), ["de", "en"], source_lang="de",
+            mode="faithful"))
+    lines = [r.getMessage() for r in caplog.records
+             if r.getMessage().startswith("[translate] ")]
+    assert "[translate] de copied verbatim (same language)" in lines
+    assert any(l.startswith("[translate] en done in ") and l.endswith("(3 segments)")
+               for l in lines)
+    buckets = [l for l in lines if l.startswith("[translate] en ") and "%" in l]
+    assert buckets and all("(" in l and "/3)" in l for l in buckets)
+    assert "[translate] en 100%" not in "\n".join(lines)
+
+
 def test_progress_carries_target_and_target_progress(base_cfg, monkeypatch):
     """Every tick names the language being translated and how far along
     THAT language is; the per-target fraction resets at each boundary and a

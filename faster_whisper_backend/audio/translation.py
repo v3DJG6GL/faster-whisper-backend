@@ -1148,18 +1148,36 @@ async def translate_segments(
     # Progress within the CURRENT target: reset at every target boundary so
     # the run panel can show one bar per language on top of the global
     # fraction. Plain ints; the loop is single-threaded.
-    unit_state = {"target": None, "done": 0}
+    unit_state = {"target": None, "done": 0, "bucket": 0, "t0": 0.0,
+                  "instant": False}
 
     def _progress(step: str, last_text: "str | None" = None) -> None:
+        tp = (unit_state["done"] / len(segments)) if segments else 1.0
+        # The 5 % bucket line every sibling stage prints, per target, plus
+        # one line when a target finishes — so a run is diagnosable from
+        # the server log alone and the client's receipts can be checked.
+        b = int(min(1.0, tp) * 20)
+        if b > unit_state["bucket"] and not unit_state["instant"]:
+            unit_state["bucket"] = b
+            if b < 20:
+                logger.info("[translate] %s %d%% (%d/%d)", unit_state["target"],
+                            b * 5, unit_state["done"], len(segments))
+        if tp >= 1.0 and unit_state["bucket"] < 21:
+            unit_state["bucket"] = 21
+            if unit_state["instant"]:
+                logger.info("[translate] %s copied verbatim (same language)",
+                            unit_state["target"])
+            else:
+                logger.info("[translate] %s done in %.1fs (%d segments)",
+                            unit_state["target"],
+                            time.perf_counter() - unit_state["t0"], len(segments))
         if progress_cb is None:
             return
         frac = done_units / total_units
         tail = (last_text or "").strip()[:160] or None
         try:
             progress_cb(frac, step, tail,
-                        target=unit_state["target"],
-                        target_progress=(unit_state["done"] / len(segments)
-                                         if segments else 1.0))
+                        target=unit_state["target"], target_progress=tp)
         except Exception:  # noqa: BLE001 — progress must never break us
             pass
 
@@ -1241,7 +1259,10 @@ async def translate_segments(
         _check_cancel()
         unit_state["target"] = target
         unit_state["done"] = 0
-        if _same_lang(target, source_lang):
+        unit_state["bucket"] = 0
+        unit_state["t0"] = time.perf_counter()
+        unit_state["instant"] = _same_lang(target, source_lang)
+        if unit_state["instant"]:
             # Same-language short-circuit: copy each text verbatim.
             for i, seg in enumerate(segments):
                 results[i][target] = (seg.get("text") or "")

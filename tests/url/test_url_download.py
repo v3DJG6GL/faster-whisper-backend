@@ -846,12 +846,16 @@ _LADDER_INFO = {
 
 def test_video_ladder_groups_by_height_and_picks_best_audio():
     ladder = udl.build_video_ladder(_LADDER_INFO, max_bytes=100_000_000)
-    assert [r["height"] for r in ladder] == [1080, 720, 360]
+    # The estimated 60 fps rung leads its height; the EXACTLY sized 30 fps
+    # sibling stays as a second 1080 rung (its bitrate is unknown, so it
+    # cannot be the same stream) — the "Premium beside AV1" shape.
+    assert [r["height"] for r in ladder] == [1080, 1080, 720, 360]
     top = ladder[0]
     # 60 fps beats 30 fps inside the 1080 rung (yt-dlp's own ordering);
     # bytes come from tbr × duration when no filesize is listed.
     assert top["fps"] == 60 and top["vcodec"].startswith("avc1")
     assert top["video_bytes"] == 2000 * 100 * 125
+    assert top["bytes_approx"] is True
     # Best audio by bitrate is the 130 kbps opus track → merged size adds it,
     # and opus keeps the rung out of MP4.
     assert top["acodec"] == "opus" and top["audio_bytes"] == 1_000_000
@@ -859,28 +863,107 @@ def test_video_ladder_groups_by_height_and_picks_best_audio():
     assert top["container"] == "mkv"
     assert top["label"] == "1080p60"
     assert top["over_cap"] is False
+    assert top["format_id"] == "v1080-60" and top["audio_format_id"] == "a1"
+    assert top["tbr_kbps"] == 2000 + 130 and top["bitrate_approx"] is False
+    second = ladder[1]
+    assert second["format_id"] == "v1080-30" and second["bytes_approx"] is False
+    assert second["approx_bytes"] == 20_000_000 + 1_000_000
     # A progressive (pre-muxed) rung carries its own audio: no add, mp4.
-    prog = ladder[2]
+    prog = ladder[3]
     assert prog["audio_bytes"] is None and prog["approx_bytes"] == 3_000_000
     assert prog["container"] == "mp4" and prog["label"] == "360p"
+    assert prog["audio_format_id"] is None
 
 
 def test_video_ladder_skips_drm_storyboards_rtmp_and_flags_over_cap():
     ladder = udl.build_video_ladder(_LADDER_INFO, max_bytes=5_000_000)
     assert all(r["height"] not in (2160, 1440) for r in ladder)
-    assert [r["over_cap"] for r in ladder] == [True, True, False]
+    assert [r["over_cap"] for r in ladder] == [True, True, True, False]
     assert udl.build_video_ladder({"formats": "nope"}, max_bytes=1) == []
     assert udl.build_video_ladder({}, max_bytes=1) == []
 
 
+def test_video_ladder_ranks_premium_first_and_applies_the_learned_ratio():
+    """YouTube: the Premium 1080p wins on source_preference even at a lower
+    codec rank; its HLS bytes and bitrate are peaks, scaled by the ledger's
+    learned ratio; the exact AV1 1080p stays beside it, untouched."""
+    info = {
+        "duration": 1000.0,
+        "formats": [
+            _fmt(format_id="140", vcodec="none", acodec="mp4a.40.2", abr=129, quality=3,
+                 filesize=16_000_000, ext="m4a"),
+            _fmt(format_id="140-drc", vcodec="none", acodec="mp4a.40.2", abr=129, quality=3,
+                 filesize=16_000_000, ext="m4a", format_note="medium, DRC"),
+            _fmt(format_id="399", vcodec="av01.0.08M.08", acodec="none", height=1080,
+                 width=1920, fps=25, quality=9, filesize=100_000_000, tbr=800, ext="mp4"),
+            _fmt(format_id="248", vcodec="vp9", acodec="none", height=1080, width=1920,
+                 fps=25, quality=9, filesize=160_000_000, tbr=1280),
+            _fmt(format_id="616", vcodec="vp09.00.40.08", acodec="none", height=1080,
+                 width=1920, fps=25, quality=9, tbr=4000, protocol="m3u8_native",
+                 source_preference=99, format_note="Premium", ext="mp4"),
+            _fmt(format_id="398", vcodec="av01.0.05M.08", acodec="none", height=720,
+                 quality=8, filesize=60_000_000, tbr=480, ext="mp4"),
+        ],
+    }
+    ladder = udl.build_video_ladder(info, max_bytes=10**10, extractor="Youtube",
+                                    approx_ratio=lambda fam: 0.5 if fam == "m3u8" else None)
+    assert [r["label"] for r in ladder] == ["1080p Premium", "1080p", "720p"]
+    prem, av1, _ = ladder
+    assert prem["format_id"] == "616" and prem["audio_format_id"] == "140"
+    assert prem["protocol"] == "m3u8" and prem["bytes_approx"] and prem["bitrate_approx"]
+    assert prem["video_bytes"] == int(4000 * 1000 * 125 * 0.5)
+    assert prem["tbr_kbps"] == 2000 + 129
+    assert prem["note"] == "Premium" and prem["extractor"] == "Youtube"
+    assert av1["format_id"] == "399" and av1["bytes_approx"] is False
+    assert av1["video_bytes"] == 100_000_000 and av1["tbr_kbps"] == 800 + 129
+    # The DRC twin never becomes the audio leg.
+    assert all(r["audio_format_id"] == "140" for r in ladder)
+    # No ledger sample yet: the site's own numbers, still marked approximate.
+    raw = udl.build_video_ladder(info, max_bytes=10**10, approx_ratio=lambda fam: None)
+    assert raw[0]["video_bytes"] == 4000 * 1000 * 125 and raw[0]["bytes_approx"]
+
+
+def test_video_ladder_generic_hls_and_direct_file():
+    hls = udl.build_video_ladder({"duration": 600.0, "formats": [
+        _fmt(format_id="1080", height=1080, tbr=6000, vcodec="avc1.64", acodec="mp4a.40",
+             protocol="m3u8_native", resolution="1920x1080"),
+        _fmt(format_id="480", height=480, tbr=800, vcodec="avc1.64", acodec="mp4a.40",
+             protocol="m3u8_native"),
+    ]}, max_bytes=10**10)
+    assert [r["label"] for r in hls] == ["1080p", "480p"]
+    assert hls[0]["audio_format_id"] is None and hls[0]["approx_bytes"] == 6000 * 600 * 125
+    assert hls[0]["bytes_approx"] and hls[0]["container"] == "mp4"
+    # A direct file the generic extractor could only name by extension.
+    direct = udl.build_video_ladder(
+        {"ext": "mp4", "formats": [_fmt(format_id="mp4", ext="mp4")]}, max_bytes=10**10)
+    assert len(direct) == 1 and direct[0]["label"] == "Best available"
+    assert direct[0]["format_id"] is None and direct[0]["approx_bytes"] is None
+    # ...but a podcast mp3 is not a video.
+    assert udl.build_video_ladder(
+        {"ext": "mp3", "formats": [_fmt(format_id="mp3", ext="mp3")]}, max_bytes=1) == []
+    # A resolution string stands in for a missing height.
+    res = udl.build_video_ladder({"formats": [
+        _fmt(format_id="hd", vcodec="avc1", acodec="mp4a", resolution="1280x720", tbr=900)]},
+        max_bytes=10**10)
+    assert res[0]["label"] == "1280x720" and res[0]["height"] is None
+
+
 def test_pick_rung():
     ladder = udl.build_video_ladder(_LADDER_INFO, max_bytes=100_000_000)
-    assert udl.pick_rung(ladder, None)["height"] == 1080
+    assert udl.pick_rung(ladder, None)["format_id"] == "v1080-60"
     assert udl.pick_rung(ladder, 720)["height"] == 720
     assert udl.pick_rung(ladder, 900)["height"] == 720
     # Below every rung: the smallest one, not nothing.
     assert udl.pick_rung(ladder, 144)["height"] == 360
     assert udl.pick_rung([{"kind": "audio", "height": None}], None) is None
+    # The client's exact choice wins while it is on the ladder; a stale id
+    # falls back to the height rule.
+    assert udl.pick_rung(ladder, None, "v1080-30")["format_id"] == "v1080-30"
+    assert udl.pick_rung(ladder, 720, "gone")["format_id"] == "v720"
+    # A height-less "Best available" rung is what an uncapped pick returns.
+    best = [{"kind": "video", "height": None, "format_id": None}]
+    assert udl.pick_rung(best, None) is best[0]
+    assert udl.pick_rung(best, 720) is best[0]
 
 
 def test_mp4_carries():
@@ -902,6 +985,7 @@ def test_video_argv_shape():
     assert "--no-playlist" in argv
     fmt_idx = argv.index("-f")
     assert argv[fmt_idx + 1] == udl.VIDEO_FORMAT_CAPPED.format(h=720)
+    assert "%(info.format_id)s" in argv[argv.index("--progress-template") + 1]
     m_idx = argv.index("--merge-output-format")
     assert argv[m_idx + 1] == "mkv"
     # The launcher + guard dir come first, exactly like the audio argv.
@@ -919,11 +1003,32 @@ def test_video_argv_best_when_uncapped_and_clamps_and_validates():
     assert argv[argv.index("--merge-output-format") + 1] == "mp4"
 
 
+def test_video_format_selector_puts_the_exact_ids_first():
+    cap = udl.VIDEO_FORMAT_CAPPED.format(h=1080)
+    assert udl.video_format_selector(1080, ("399", "140")) == f"399+140/{cap}"
+    assert udl.video_format_selector(None, ("hls-1080p", None)) == f"hls-1080p/{udl.VIDEO_FORMAT_BEST}"
+    # Anything the id regex rejects never reaches -f: generic only.
+    assert udl.video_format_selector(720, ("399 --exec", "140")) == udl.VIDEO_FORMAT_CAPPED.format(h=720)
+    assert udl.video_format_selector(720, ("399", "1/40")) == udl.VIDEO_FORMAT_CAPPED.format(h=720)
+    assert udl.video_format_selector(720, None) == udl.VIDEO_FORMAT_CAPPED.format(h=720)
+    argv = udl.build_video_download_argv("https://e.com/v", dest_dir="/tmp/x", max_bytes=1,
+                                         format_ids=("616", "251"))
+    assert argv[argv.index("-f") + 1] == f"616+251/{udl.VIDEO_FORMAT_BEST}"
+
+
+def test_parse_progress_fields_carries_the_format_id():
+    assert udl._parse_progress_fields("dl:10 100 NA 616") == (10, 100, "616")
+    assert udl._parse_progress_fields("dl:10 100 NA NA") == (10, 100, None)
+    assert udl._parse_progress_fields("dl:10 NA NA") == (10, None, None)
+    # The audio helper keeps its two-tuple contract.
+    assert udl._parse_progress_line("dl:10 100 NA 616") == (10, 100)
+
+
 def _patch_video_argv(monkeypatch, script: str):
     monkeypatch.setattr(
         udl, "build_video_download_argv",
-        lambda url, *, dest_dir, max_bytes, max_height=None, container="mkv":
-            _fake_argv(script.replace("__DEST__", dest_dir)))
+        lambda url, *, dest_dir, max_bytes, max_height=None, container="mkv",
+        format_ids=None: _fake_argv(script.replace("__DEST__", dest_dir)))
 
 
 _TWO_STREAMS_SCRIPT = """
@@ -953,6 +1058,40 @@ def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeyp
     # The second stream's restart at 100 must not read as 100 of 1300.
     assert all(d >= 1000 for _f, _t, d in seen if d and d < 1300 and d != 500 and d != 1000) or True
     assert any(d == 1100 for _f, _t, d in seen)
+
+
+_TWO_LEGS_BY_ID_SCRIPT = """
+import os, sys, time
+print("dl:500 NA NA 616", flush=True)
+time.sleep(0.35)
+print("dl:1200 1200 NA 616", flush=True)
+time.sleep(0.35)
+print("dl:100 300 NA 140", flush=True)
+time.sleep(0.35)
+print("dl:300 300 NA 140", flush=True)
+open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_video_denominator_is_per_leg(tmp_path, monkeypatch):
+    """Legs named by format id: the probe's per-leg estimate holds until
+    yt-dlp reports the leg's real total, then the sum refreshes — the video
+    leg's estimate of 1000 becomes its measured 1200, the audio leg keeps
+    its 300 estimate until its own series starts."""
+    _patch_video_argv(monkeypatch, _TWO_LEGS_BY_ID_SCRIPT)
+    seen = []
+    out = _run(udl.download_video(
+        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
+        timeout=30, format_ids=("616", "140"),
+        leg_estimates={"616": 1000, "140": 300},
+        progress_cb=lambda f, t, d: seen.append((f, t, d))))
+    assert os.path.basename(out) == "media.mkv"
+    totals = [t for _f, t, _d in seen]
+    assert totals[0] == 1300            # both estimates
+    assert 1500 in totals               # video leg measured at 1200 + audio 300
+    assert seen[-1] == (1.0, 1500, 1500)
+    fracs = [f for f, _t, _d in seen if f is not None]
+    assert fracs == sorted(fracs), fracs
 
 
 def test_download_video_cap_is_cumulative(tmp_path, monkeypatch):
@@ -1025,7 +1164,7 @@ def test_probe_carries_the_ladder_when_video_is_enabled(monkeypatch):
     monkeypatch.setattr(udl.cfg, "MEDIA_MAX_BYTES", 100_000_000, raising=False)
     monkeypatch.setattr(udl.cfg, "URL_VIDEO_ENABLED", True, raising=False)
     info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
-    assert [r["height"] for r in info.video_ladder] == [1080, 720, 360, None]
+    assert [r["height"] for r in info.video_ladder] == [1080, 1080, 720, 360, None]
     assert info.video_ladder[-1] == {
         "kind": "audio", "height": None, "ext": "m4a", "abr": 129.5,
         "approx_bytes": 900_000, "over_cap": False,

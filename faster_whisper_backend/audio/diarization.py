@@ -402,11 +402,18 @@ async def _get_pipeline(model_id: "str | None" = None, *, lease: bool = False):
 # the first two chunked steps dominate the wall clock in every pyannote
 # speaker pipeline. Steps without a total are logged but never move the bar
 # (the old behavior parked it at 90% the moment an unmapped step fired).
+# The plain fraction's windows are proportioned like the measured run
+# (segmentation is seconds, embeddings the wall clock); the run plan
+# refines them per model and device from its ledger — the hook also names
+# the step (`target`) and its own completed/total (`target_progress`) so
+# the plan can weigh each step by what it learned.
 _HOOK_NAMED_SPANS = (
-    ("segmentation", (0.00, 0.45)),
-    ("embedding", (0.45, 0.90)),
+    ("segmentation", (0.00, 0.04)),
+    ("embedding", (0.04, 0.97)),
 )
-_HOOK_ORDER_SPANS = ((0.00, 0.45), (0.45, 0.90), (0.90, 1.00))
+_HOOK_ORDER_SPANS = ((0.00, 0.04), (0.04, 0.97), (0.97, 1.00))
+# pyannote step name → the plan's unit (core.run_plan.DIARIZE_STEPS).
+_UNIT_OF = (("segmentation", "segmentation"), ("embedding", "embeddings"))
 
 
 def _make_hook(progress_cb, cancel_check=None):
@@ -418,6 +425,19 @@ def _make_hook(progress_cb, cancel_check=None):
     best = {"frac": 0.0}
     spans: dict = {}     # step name → (lo, hi)
     quartile: dict = {}  # step name → last logged quartile
+    # Units the plan tracks. An untracked step (speaker counting, the final
+    # assignment) is reported as "clustering" only once embeddings finished:
+    # pyannote counts speakers BETWEEN segmentation and embeddings, and a
+    # unit reported early would close the embeddings unit before it ran.
+    seen_units: dict = {"embeddings_done": False}
+
+    def _unit_for(name: str, chunked: bool) -> "str | None":
+        for key, unit in _UNIT_OF:
+            if key in name:
+                return unit
+        if seen_units["embeddings_done"]:
+            return "clustering"
+        return None
 
     def _hook(step_name, *_args, total=None, completed=None, **_kw):
         # OUTSIDE the swallow-everything progress guard below, so it
@@ -450,13 +470,22 @@ def _make_hook(progress_cb, cancel_check=None):
                 elif span is not None:
                     logger.info("[diarize] step: %s (promoted)", name)
             span = spans[name]
+            unit = _unit_for(name, chunked)
             if span is None or not chunked:
+                # Untracked step after embeddings: the plan's clustering unit
+                # starts, the plain fraction holds where it is.
+                if unit == "clustering" and first_seen:
+                    progress_cb(best["frac"], name, target=unit,
+                                target_progress=None)
                 return
             lo, hi = span
-            frac = lo + (hi - lo) * min(1.0, float(completed) / float(total))
+            local = min(1.0, float(completed) / float(total))
+            frac = lo + (hi - lo) * local
+            if unit == "embeddings" and local >= 1.0:
+                seen_units["embeddings_done"] = True
             if frac > best["frac"]:
                 best["frac"] = frac
-                progress_cb(frac, name)
+                progress_cb(frac, name, target=unit, target_progress=local)
             b = int(min(1.0, float(completed) / float(total)) * 20)
             if b > quartile[name]:
                 quartile[name] = b

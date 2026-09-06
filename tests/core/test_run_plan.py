@@ -52,10 +52,13 @@ def test_seed_estimates_use_seed_rates(ledger, clock):
     snap = p.snapshot()
     assert _stage(snap, "separating")["est_s"] == pytest.approx(600 / 8, abs=0.06)
     assert _stage(snap, "transcribing")["est_s"] == pytest.approx(600 / 6, abs=0.06)
-    assert _stage(snap, "diarizing")["est_s"] == pytest.approx(600 / 11, abs=0.06)
+    # Diarization is the sum of its three steps' own seeds, not the stage
+    # seed (that one keeps estimating a stage without units).
+    _DIAR = 600 / 600 + 600 / 14 + 600 / 400
+    assert _stage(snap, "diarizing")["est_s"] == pytest.approx(_DIAR, abs=0.06)
     # Nothing has run: the run is at 0 %, and the ETA is the whole plan.
     assert snap["overall"] == 0.0
-    assert snap["eta_s"] == pytest.approx(600 / 8 + 600 / 6 + 600 / 11, abs=0.2)
+    assert snap["eta_s"] == pytest.approx(600 / 8 + 600 / 6 + _DIAR, abs=0.2)
 
 
 def test_measured_rate_beats_the_seed(ledger, clock):
@@ -213,20 +216,67 @@ def test_translating_units_run_in_order_and_learn_per_unit(ledger, clock):
 def test_eta_projects_from_rate_and_goes_null_on_unevidenced_overrun(
         ledger, clock):
     p = _plan(clock, stages=["transcribing", "diarizing"])
-    p.set_audio_seconds(600.0, src="decoder")   # transcribe 100 s, diarize ~54.5 s
+    p.set_audio_seconds(600.0, src="decoder")   # transcribe 100 s, diarize ~45.4 s
+    _DIAR = 600 / 600 + 600 / 14 + 600 / 400
     p.tick(stage="transcribing", progress=0.0)
     clock.advance(20)
     p.tick(stage="transcribing", progress=0.1)   # 20 s for 10 % → 180 s left
     snap = p.snapshot()
-    assert snap["eta_s"] == pytest.approx(180 + 600 / 11, abs=0.2)
-    # Diarization runs past its estimate with no fraction at all.
+    assert snap["eta_s"] == pytest.approx(180 + _DIAR, abs=0.2)
+    # Diarization runs past its estimate with no fraction at all: the units
+    # are all still queued, so the remaining time is their estimates until
+    # the first step is named, then the running step's own overrun rule.
     clock.advance(200)
     p.stage_done("transcribing")
     p.tick(stage="diarizing")
     clock.advance(10)
-    assert p.snapshot()["eta_s"] == pytest.approx(600 / 11 - 10, abs=0.2)
+    assert p.snapshot()["eta_s"] == pytest.approx(_DIAR, abs=0.2)
+    p.tick(stage="diarizing", target="embeddings", target_progress=0.0)
     clock.advance(100)
     assert p.snapshot()["eta_s"] is None
+
+
+def test_diarizing_units_split_the_stage_and_learn_per_step(ledger, clock):
+    """The diarizing stage carries one unit per pyannote step; the hook's
+    target ticks move them, a unit closes on its own 100 % tick, and a
+    clean run teaches the ledger one rate per step."""
+    p = _plan(clock, stages=["diarizing"])
+    p.set_audio_seconds(600.0, src="decoder")
+    p.set_stage_model("diarizing", model="community-1", device="cuda")
+    units = _stage(p.snapshot(), "diarizing")["units"]
+    assert [u["target"] for u in units] == ["segmentation", "embeddings", "clustering"]
+    assert units[1]["est_s"] == pytest.approx(600 / 14, abs=0.1)
+    p.tick(stage="diarizing")
+    clock.advance(1)
+    p.tick(stage="diarizing", target="segmentation", target_progress=0.5)
+    clock.advance(1)
+    p.tick(stage="diarizing", target="segmentation", target_progress=1.0)
+    clock.advance(5)   # embeddings warm-up: not segmentation's time
+    p.tick(stage="diarizing", target="embeddings", target_progress=0.25)
+    snap = _stage(p.snapshot(), "diarizing")
+    seg, emb, clu = snap["units"]
+    assert seg == {"target": "segmentation", "state": "done", "took_s": 1.0}
+    assert emb["state"] == "running" and emb["progress"] == 0.25
+    assert clu["state"] == "queued"
+    # Unit-weighted stage fraction: segmentation's 1 s + a quarter of the
+    # embeddings estimate over the three estimates.
+    clock.advance(30)
+    p.tick(stage="diarizing", target="embeddings", target_progress=1.0)
+    p.tick(stage="diarizing", target="clustering", target_progress=None)
+    clock.advance(2)
+    p.stage_done("diarizing")
+    p.finish_run("ok")
+    done = _stage(p.snapshot(), "diarizing")
+    assert [u["state"] for u in done["units"]] == ["done", "done", "done"]
+    assert done["units"][1]["took_s"] == pytest.approx(30.0, abs=0.01)
+    assert done["units"][2]["took_s"] == pytest.approx(2.0, abs=0.01)
+    assert stage_rates.lookup("diarizing.embeddings", "community-1", "cuda")["rate"] \
+        == pytest.approx(600 / 30, abs=0.01)
+    assert stage_rates.lookup("diarizing.segmentation", "community-1", "cuda")["rate"] \
+        == pytest.approx(600 / 1.0, abs=0.01)
+    # Under the minimum sample: clustering's 2 s stays a seed... unless the
+    # ledger's floor is lower; either way the stage total was recorded.
+    assert stage_rates.lookup("diarizing", "community-1", "cuda")["src"] == "measured"
 
 
 def test_skipped_and_failed_stages(ledger, clock):

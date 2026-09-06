@@ -73,9 +73,17 @@ def same_lang(a: str | None, b: str | None) -> bool:
     return a.split("-")[0].lower() == b.split("-")[0].lower()
 
 
+# The diarizing stage's units, in pyannote's order. The hook maps whatever
+# step names a pipeline version emits onto these three; the client labels
+# them in plain words ("Finding speech turns", "Voice fingerprints",
+# "Grouping speakers").
+DIARIZE_STEPS = ("segmentation", "embeddings", "clustering")
+
+
 @dataclass
 class Unit:
-    """One translation target."""
+    """One unit of a stage that reports per-unit progress: a translation
+    target, or a diarization step."""
     target: str
     instant: bool = False          # same-language verbatim copy: no model call
     est_s: float | None = None
@@ -155,7 +163,12 @@ class RunPlan:
             order = [n for n in STAGES if n in names]
             new: list[Stage] = []
             for n in order:
-                new.append(keep.pop(n, None) or Stage(name=n))
+                st = keep.pop(n, None)
+                if st is None:
+                    st = Stage(name=n)
+                    if n == "diarizing":
+                        st.units = [Unit(target=u) for u in DIARIZE_STEPS]
+                new.append(st)
             for s in keep.values():
                 if s.state != "pending":
                     new.append(s)
@@ -310,7 +323,7 @@ class RunPlan:
                 st.frac = max(0.0, min(1.0, float(progress)))
             if st.name == "downloading" and total_bytes and total_bytes > 0:
                 self._download_bytes = float(total_bytes)
-            if st.name == "translating" and target and st.units:
+            if target and st.units:
                 self._advance_units_locked(st, target, target_progress, now)
             self._recompute()
 
@@ -347,6 +360,14 @@ class RunPlan:
                                                st.device, st.compute,
                                                n / u.took_s)
                     continue
+                if st.name == "diarizing" and st.units and self._audio_s:
+                    # Per step, so the row's bar splits by what each step
+                    # cost here; the stage rate below still keeps the total.
+                    for u in st.units:
+                        if u.took_s is not None and u.took_s >= _MIN_SAMPLE_S:
+                            stage_rates.record(f"diarizing.{u.target}", st.model,
+                                               st.device, None,
+                                               self._audio_s / u.took_s)
                 work = st.took_s - st.wait_s
                 q = self._quantity_now(st)
                 if q and work >= _MIN_SAMPLE_S:
@@ -414,6 +435,12 @@ class RunPlan:
         if u.instant and u.progress >= 1.0:
             u.state = "instant"
             u.took_s = 0.0
+        elif u.state == "running" and u.progress >= 1.0:
+            # Closed on its own last tick, not on the next unit's first one:
+            # the gap between them is the next unit's warm-up, not this
+            # unit's work.
+            u.state = "done"
+            u.took_s = (now - u.started) if u.started is not None else 0.0
 
     def _mark_instant_locked(self) -> None:
         st = self._get("translating")
@@ -461,6 +488,9 @@ class RunPlan:
             elif st.name == "translating":
                 self._recompute_units(st)
                 continue
+            elif st.name == "diarizing" and st.units:
+                self._recompute_steps(st, audio)
+                continue
             else:
                 q = audio
                 key_model, key_dev, key_comp = st.model, st.device, None
@@ -502,6 +532,31 @@ class RunPlan:
                 total += per_unit
         st.est_s = total if known else None
 
+    def _recompute_steps(self, st: Stage, audio: float | None) -> None:
+        """Diarization: every step is audio seconds over its own learned
+        realtime factor; the stage estimate is their sum. A step that
+        already finished contributes what it took."""
+        st.quantity = audio
+        total = 0.0
+        known = True
+        src = "seed"
+        for u in st.units or []:
+            if u.state == "done" and u.took_s is not None:
+                total += u.took_s
+                continue
+            rec = stage_rates.lookup(f"diarizing.{u.target}", st.model, st.device)
+            rate = rec.get("rate")
+            if rec.get("src") == "measured":
+                src = "measured"
+            if audio and rate:
+                u.est_s = audio / float(rate)
+                total += u.est_s
+            else:
+                u.est_s = None
+                known = False
+        st.est_src = src
+        st.est_s = total if (known and audio) else None
+
     # weight of a stage in the overall sum: what it cost, else what it should
     @staticmethod
     def _weight(st: Stage) -> float | None:
@@ -514,7 +569,7 @@ class RunPlan:
             return 1.0
         if st.state != "active":
             return 0.0
-        if st.name == "translating" and st.units:
+        if st.units:
             tot = 0.0
             got = 0.0
             for u in st.units:
@@ -563,8 +618,10 @@ class RunPlan:
                 and elapsed >= _PROJECT_MIN_ELAPSED_S):
             return elapsed * (1.0 - frac) / frac
         if est is not None:
-            if frac is not None:
+            if frac is not None and frac >= _PROJECT_MIN_FRAC:
                 return max(est * (1.0 - frac), 0.0)
+            # No usable fraction (none, or too little to project from): the
+            # estimate minus the clock, until the clock passes it.
             if elapsed < est:
                 return est - elapsed
         return None   # overrun with no evidence: the client says "estimating"
@@ -580,7 +637,7 @@ class RunPlan:
                 eta += st.est_s
                 continue
             # active
-            if st.name == "translating" and st.units:
+            if st.units:
                 for u in st.units:
                     if u.instant or u.state in ("done", "instant"):
                         continue

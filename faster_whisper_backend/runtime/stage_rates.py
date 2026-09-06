@@ -55,6 +55,13 @@ SEEDS: dict[str, float] = {
     "transcribing": 6.0,
     "diarizing": 11.0,
     "translating": 1.6,
+    # pyannote's steps, × realtime each: one forward pass of the
+    # segmentation model is seconds, the speaker embeddings are the wall
+    # clock, the clustering that follows is seconds again. These split the
+    # diarizing row's bar; the stage key above still estimates the whole.
+    "diarizing.segmentation": 600.0,
+    "diarizing.embeddings": 14.0,
+    "diarizing.clustering": 400.0,
 }
 
 _lock = threading.Lock()

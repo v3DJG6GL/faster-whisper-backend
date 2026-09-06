@@ -410,9 +410,9 @@ def video_enabled(url_enabled, monkeypatch):
 
     async def _download_video(url, *, dest_dir, max_bytes=None, max_height=None,
                               container="mkv", expected_total=None, timeout=None,
-                              progress_cb=None, cancel_check=None):
+                              progress_cb=None, cancel_check=None, **kw):
         calls.append({"max_height": max_height, "container": container,
-                      "expected_total": expected_total})
+                      "expected_total": expected_total, **kw})
         if progress_cb is not None:
             progress_cb(0.4, expected_total or 5000, 2000)
         if gate["release"] is not None:
@@ -458,7 +458,8 @@ def test_keep_video_response_carries_video_id_when_the_task_finishes(
     assert body["source_video_container"] == "mp4"
     assert body["source_video_bytes"] == len(b"video-bytes" * 8)
     assert video_enabled._video_calls[0] == {
-        "max_height": 720, "container": "mp4", "expected_total": 3000}
+        "max_height": 720, "container": "mp4", "expected_total": 3000,
+        "format_ids": None, "leg_estimates": None}
     r = client.get(f"/v1/audio/url-media/{vid}")
     assert r.status_code == 200
     assert r.headers["content-type"].startswith("video/mp4")
