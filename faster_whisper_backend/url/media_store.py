@@ -12,7 +12,7 @@ Deliberately tiny and in-process:
     orphan by definition. Multi-worker deployments are already documented as
     unsupported (SERVER_WORKERS: "keep at 1").
   - Bounded twice: per-entry TTL (URL_MEDIA_TTL_S) and a byte cap over the
-    whole dir (URL_MEDIA_MAX_BYTES, oldest download evicted first). sweep()
+    whole dir (RETAINED_MEDIA_MAX_BYTES, oldest download evicted first). sweep()
     runs from a lifespan task; register() also evicts inline so a burst
     can't overshoot until the next tick.
 """
@@ -203,7 +203,7 @@ def sweep() -> None:
 
 
 def _evict_over_cap(protect: "str | None" = None) -> None:
-    cap = int(getattr(cfg, "URL_MEDIA_MAX_BYTES", 2_000_000_000) or 0)
+    cap = int(getattr(cfg, "RETAINED_MEDIA_MAX_BYTES", 50_000_000_000) or 0)
     if cap <= 0:
         return
     if protect is not None:

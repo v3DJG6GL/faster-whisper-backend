@@ -14,7 +14,7 @@ def _fresh_store(tmp_path, monkeypatch):
     monkeypatch.setattr(ums.cfg, "URL_MEDIA_DIR", str(tmp_path / "url_media"),
                         raising=False)
     monkeypatch.setattr(ums.cfg, "URL_MEDIA_TTL_S", 3600, raising=False)
-    monkeypatch.setattr(ums.cfg, "URL_MEDIA_MAX_BYTES", 10_000, raising=False)
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 10_000, raising=False)
     ums.startup_reset()
     yield
     ums._REG.clear()
@@ -66,7 +66,7 @@ def test_sweep_ttl_and_unknown_id(tmp_path, monkeypatch):
 
 
 def test_lru_eviction_over_byte_cap(tmp_path, monkeypatch):
-    monkeypatch.setattr(ums.cfg, "URL_MEDIA_MAX_BYTES", 250, raising=False)
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 250, raising=False)
     first = ums.register(_make_src(tmp_path, "a.m4a", size=100), user_id=None)
     second = ums.register(_make_src(tmp_path, "b.m4a", size=100), user_id=None)
     third = ums.register(_make_src(tmp_path, "c.m4a", size=100), user_id=None)
@@ -78,7 +78,7 @@ def test_lru_eviction_over_byte_cap(tmp_path, monkeypatch):
 
 def test_register_oversized_file_returns_none_and_keeps_older(tmp_path,
                                                               monkeypatch):
-    monkeypatch.setattr(ums.cfg, "URL_MEDIA_MAX_BYTES", 50, raising=False)
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 50, raising=False)
     first = ums.register(_make_src(tmp_path, "a.m4a", size=30), user_id=None)
     assert first is not None
     # 100 bytes alone busts the 50-byte cap: no dead id may be advertised,

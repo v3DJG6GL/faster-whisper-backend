@@ -142,10 +142,8 @@ def validate_url(url: str) -> str:
 
 
 def _effective_max_bytes() -> int:
-    n = int(getattr(cfg, "URL_MAX_BYTES", 0) or 0)
-    if n <= 0:
-        n = int(getattr(cfg, "MAX_UPLOAD_BYTES", 200_000_000))
-    return n
+    """The one media ceiling: a link can never admit more than an upload."""
+    return int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
 
 
 def match_extractor(url: str) -> str:

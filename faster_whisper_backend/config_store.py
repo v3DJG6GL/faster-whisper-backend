@@ -495,12 +495,17 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "URL_MAX_DURATION_S":
         "Reject linked media longer than this many seconds (checked from "
         "metadata before downloading). Default 14400 (4 h).",
-    "URL_MAX_BYTES":
-        "Byte ceiling for one URL download. 0 = inherit MAX_UPLOAD_BYTES, "
-        "so a link can never admit more than an upload could.",
+    "URL_VIDEO_ENABLED":
+        "Let clients also keep the VIDEO of a link (best video + best audio, "
+        "merged by ffmpeg) so subtitles can be exported with the picture they "
+        "belong to. Fetched after the audio, off the GPU path. Bytes are "
+        "capped by MEDIA_MAX_BYTES like everything else.",
     "URL_DOWNLOAD_TIMEOUT_S":
-        "Wall-clock ceiling for one download subprocess; the download is "
-        "killed and the request fails past it. Default 900 (15 min).",
+        "Wall-clock ceiling for one audio download subprocess; the download "
+        "is killed and the request fails past it. Default 900 (15 min).",
+    "URL_VIDEO_DOWNLOAD_TIMEOUT_S":
+        "Wall-clock ceiling for one VIDEO download (video is 10-50x the audio "
+        "bytes, so it gets its own clock). Default 3600 (1 h).",
     "URL_PREVIEW_TIMEOUT_S":
         "Wall-clock ceiling for a metadata probe (/v1/audio/url-preview and "
         "the pre-download policy check). Default 20 s.",
@@ -519,9 +524,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "/v1/audio/url-media/{id}. The window starts when the download "
         "finishes (before transcription), so keep it comfortably longer "
         "than your slowest job. Default 3600.",
-    "URL_MEDIA_MAX_BYTES":
-        "Byte cap on URL_MEDIA_DIR; oldest files are evicted first when "
-        "the sum exceeds it.",
+    "RETAINED_MEDIA_MAX_BYTES":
+        "Byte cap on URL_MEDIA_DIR (retained audio AND video, downloaded or "
+        "uploaded); oldest files are evicted first when the sum exceeds it. "
+        "Size it for several videos at MEDIA_MAX_BYTES. Default 50 GB.",
 
     # --- Pipeline ---
     "PIPELINE_RULES":
@@ -626,14 +632,15 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "into VRAM and multiplies GPU memory.",
     "SERVER_LOG_LEVEL":
         "uvicorn log verbosity: critical | error | warning | info | debug.",
-    "MAX_UPLOAD_BYTES":
-        "Hard ceiling on a single /v1/audio/transcriptions upload, in "
-        "bytes. Larger requests are rejected with 413 instead of being "
-        "buffered. Default 200 MB (~3 h of 128 kbps audio).",
+    "MEDIA_MAX_BYTES":
+        "Hard ceiling on ONE media file, in bytes: a /v1/audio/transcriptions "
+        "upload (413 above it), the audio or video fetched for a link, and a "
+        "video uploaded for subtitle packaging. Default 10 GB.",
     "MAX_REQUEST_BYTES":
-        "Ceiling on ANY request body, in bytes, applied from Content-Length "
-        "before the body is read. Keep it above MAX_UPLOAD_BYTES so audio "
-        "uploads hit their own cap first. Default 256 MB.",
+        "Ceiling on a multipart request body, in bytes, applied from "
+        "Content-Length before the body is read. Keep it above "
+        "MEDIA_MAX_BYTES so uploads hit their own cap first. Other non-JSON "
+        "bodies keep a 256 MiB backstop regardless. Default 10 GiB.",
 
     # --- Access & sessions ---
     "ADMIN_WEBUI_ALLOWED_HOSTS":
@@ -699,6 +706,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Ceiling on URL-preview requests per identity per 60 seconds. Each "
         "preview makes the SERVER fetch a third-party page, so this bounds "
         "what an authenticated client can aim outbound. 0 = unlimited.",
+    "URL_VIDEO_RATE_PER_MIN":
+        "Ceiling on video downloads (a link run that keeps the video, or the "
+        "on-demand video route) per identity per 60 seconds. Each one pulls "
+        "up to MEDIA_MAX_BYTES from a third-party site. 0 = unlimited.",
     "CAPTURES_AUDIO_RATE_PER_MIN":
         "Ceiling on capture-audio fetches per identity per 60 seconds. Sized "
         "for the review UI's burst pattern (scrubbing a page of captures), "
@@ -1868,10 +1879,14 @@ class AdminConfig(BaseModel):
         "URL_ALLOW_GENERIC", scope="server", group="Transcribe from URL")
     URL_MAX_DURATION_S: Annotated[int, Field(ge=1, le=86400 * 7)] | None = _F(
         "URL_MAX_DURATION_S", scope="server", group="Transcribe from URL")
-    URL_MAX_BYTES: Annotated[int, Field(ge=0, le=10_000_000_000)] | None = _F(
-        "URL_MAX_BYTES", scope="server", group="Transcribe from URL")
+    URL_VIDEO_ENABLED: bool | None = _F(
+        "URL_VIDEO_ENABLED", scope="server", group="Transcribe from URL")
     URL_DOWNLOAD_TIMEOUT_S: Annotated[int, Field(ge=10, le=86400)] | None = _F(
         "URL_DOWNLOAD_TIMEOUT_S", scope="server",
+        group="Transcribe from URL",
+        subgroup="Advanced — timeouts, concurrency & retention")
+    URL_VIDEO_DOWNLOAD_TIMEOUT_S: Annotated[int, Field(ge=10, le=86400)] | None = _F(
+        "URL_VIDEO_DOWNLOAD_TIMEOUT_S", scope="server",
         group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention")
     URL_PREVIEW_TIMEOUT_S: Annotated[int, Field(ge=1, le=300)] | None = _F(
@@ -1894,8 +1909,8 @@ class AdminConfig(BaseModel):
     URL_MEDIA_TTL_S: Annotated[int, Field(ge=10, le=86400 * 7)] | None = _F(
         "URL_MEDIA_TTL_S", scope="server", group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention")
-    URL_MEDIA_MAX_BYTES: Annotated[int, Field(ge=0, le=100_000_000_000)] | None = _F(
-        "URL_MEDIA_MAX_BYTES", scope="server", group="Transcribe from URL",
+    RETAINED_MEDIA_MAX_BYTES: Annotated[int, Field(ge=0, le=500_000_000_000)] | None = _F(
+        "RETAINED_MEDIA_MAX_BYTES", scope="server", group="Transcribe from URL",
         subgroup="Advanced — timeouts, concurrency & retention")
 
     # --- Per-model overrides ---
@@ -1954,9 +1969,9 @@ class AdminConfig(BaseModel):
         "SERVER_WORKERS", scope="server", group="Server", restart=True)
     SERVER_LOG_LEVEL: LogLevel | None = _F(
         "SERVER_LOG_LEVEL", scope="server", group="Server", restart=True)
-    MAX_UPLOAD_BYTES: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
-        "MAX_UPLOAD_BYTES", scope="server", group="Server")
-    MAX_REQUEST_BYTES: Annotated[int, Field(ge=1024, le=10_000_000_000)] | None = _F(
+    MEDIA_MAX_BYTES: Annotated[int, Field(ge=1024, le=50_000_000_000)] | None = _F(
+        "MEDIA_MAX_BYTES", scope="server", group="Server")
+    MAX_REQUEST_BYTES: Annotated[int, Field(ge=1024, le=50_000_000_000)] | None = _F(
         "MAX_REQUEST_BYTES", scope="server", group="Server")
 
     # --- WebUI access control (host allowlists, bucketed by privilege tier) ---
@@ -2041,21 +2056,26 @@ class AdminConfig(BaseModel):
     ] | None = _F(
         "URL_PREVIEW_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=4)
+    URL_VIDEO_RATE_PER_MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "URL_VIDEO_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=5)
     CAPTURES_AUDIO_RATE_PER_MIN: Annotated[
         int, Field(ge=0, le=100_000)
     ] | None = _F(
         "CAPTURES_AUDIO_RATE_PER_MIN", scope="server",
-        group="Concurrency & Request Limits", order=5)
+        group="Concurrency & Request Limits", order=6)
     REPORTS_SUBMIT_RATE_PER_10MIN: Annotated[
         int, Field(ge=0, le=100_000)
     ] | None = _F(
         "REPORTS_SUBMIT_RATE_PER_10MIN", scope="server",
-        group="Concurrency & Request Limits", order=6)
+        group="Concurrency & Request Limits", order=7)
     LOGIN_FAILURE_RATE: Annotated[
         int, Field(ge=0, le=100_000)
     ] | None = _F(
         "LOGIN_FAILURE_RATE", scope="server",
-        group="Concurrency & Request Limits", order=7)
+        group="Concurrency & Request Limits", order=8)
 
     # --- Reports store ---
     REPORTS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
@@ -2228,8 +2248,8 @@ class AdminConfig(BaseModel):
     @model_validator(mode="after")
     def _validate_body_caps(self) -> "AdminConfig":
         # MAX_REQUEST_BYTES is documented (config.py, FIELD_DESCRIPTIONS,
-        # main._max_body_mw) as sitting ABOVE MAX_UPLOAD_BYTES so an oversized
-        # audio POST hits the upload-specific 413 that names the right setting.
+        # main._max_body_mw) as sitting ABOVE MEDIA_MAX_BYTES so an oversized
+        # media POST hits the media-specific 413 that names the right setting.
         # Enforce it on the EFFECTIVE values with the same _BASELINE fallback
         # as _validate_sample_sizing (see the rationale there).
         from faster_whisper_backend import config as _cfg
@@ -2238,13 +2258,13 @@ class AdminConfig(BaseModel):
         def _default(name: str) -> int:
             return int(_base[name] if name in _base else getattr(_cfg, name))
 
-        up = self.MAX_UPLOAD_BYTES
+        up = self.MEDIA_MAX_BYTES
         rq = self.MAX_REQUEST_BYTES
-        up = up if up is not None else _default("MAX_UPLOAD_BYTES")
+        up = up if up is not None else _default("MEDIA_MAX_BYTES")
         rq = rq if rq is not None else _default("MAX_REQUEST_BYTES")
         if rq < up:
             raise ValueError(
-                "require MAX_REQUEST_BYTES >= MAX_UPLOAD_BYTES "
+                "require MAX_REQUEST_BYTES >= MEDIA_MAX_BYTES "
                 f"(got {rq} < {up})"
             )
         return self

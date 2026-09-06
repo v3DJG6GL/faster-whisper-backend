@@ -319,17 +319,17 @@ SERVER_PORT = _D("SERVER_PORT")
 SERVER_WORKERS = _D("SERVER_WORKERS")
 SERVER_LOG_LEVEL = _D("SERVER_LOG_LEVEL")
 
-# Hard ceiling on one /v1/audio/transcriptions upload. Oversized requests are
-# rejected with 413 before the part is read, so a client can't make the handler
-# hold an arbitrary blob. 200 MB is ~3 h of 128 kbps audio — far above any
-# dictation clip, and well above CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT.
-MAX_UPLOAD_BYTES = _D("MAX_UPLOAD_BYTES")
+# Hard ceiling on ONE media file, in bytes: a /v1/audio/transcriptions upload
+# (413 above it, before the part is read), the audio or video fetched for a
+# link, and a video uploaded for subtitle packaging. One number so no path
+# can admit more than another. 10 GB.
+MEDIA_MAX_BYTES = _D("MEDIA_MAX_BYTES")
 
 # Service-wide ceiling on any request body, checked against Content-Length
-# before the body is read. Deliberately ABOVE MAX_UPLOAD_BYTES so the more
-# specific upload cap is what an oversized audio POST hits; this one is the
-# backstop for the JSON routes (a body Starlette buffers and json.loads
-# expands several-fold in memory). 256 MB.
+# before the body is read. Deliberately ABOVE MEDIA_MAX_BYTES so the more
+# specific media cap is what an oversized upload hits. Only multipart bodies
+# get this full ceiling: every other non-JSON body keeps a 256 MiB backstop
+# in main._max_body_mw, and JSON bodies MAX_JSON_BODY_BYTES. 10 GiB.
 MAX_REQUEST_BYTES = _D("MAX_REQUEST_BYTES")
 
 
@@ -698,21 +698,29 @@ URL_ALLOWED_EXTRACTORS: "list[str]" = _D("URL_ALLOWED_EXTRACTORS")
 URL_ALLOW_DIRECT_MEDIA: bool = _D("URL_ALLOW_DIRECT_MEDIA")
 URL_ALLOW_GENERIC: bool = _D("URL_ALLOW_GENERIC")
 
-# Resource ceilings for one download. URL_MAX_BYTES=0 inherits
-# MAX_UPLOAD_BYTES so the URL path can never admit more than an upload could.
+# Resource ceilings for one download. Bytes are capped by MEDIA_MAX_BYTES,
+# the same ceiling an upload gets, so a link can never admit more than an
+# upload could.
 URL_MAX_DURATION_S: int = _D("URL_MAX_DURATION_S")
-URL_MAX_BYTES: int = _D("URL_MAX_BYTES")
 URL_DOWNLOAD_TIMEOUT_S: int = _D("URL_DOWNLOAD_TIMEOUT_S")
+# Optional VIDEO of a link (best video + best audio, merged by ffmpeg) so the
+# client can export the picture its subtitles belong to. Fetched after the
+# audio, never on the GPU path; its own, longer wall clock (video is 10-50x
+# the audio bytes).
+URL_VIDEO_ENABLED: bool = _D("URL_VIDEO_ENABLED")
+URL_VIDEO_DOWNLOAD_TIMEOUT_S: int = _D("URL_VIDEO_DOWNLOAD_TIMEOUT_S")
 URL_PREVIEW_TIMEOUT_S: int = _D("URL_PREVIEW_TIMEOUT_S")
 URL_SOCKET_TIMEOUT_S: int = _D("URL_SOCKET_TIMEOUT_S")
 URL_DOWNLOAD_CONCURRENCY: int = _D("URL_DOWNLOAD_CONCURRENCY")
 
-# Retention of the downloaded audio so the client can fetch it once for local
-# playback (GET /v1/audio/url-media/{id}): TTL + byte-capped LRU under
-# URL_MEDIA_DIR; the directory is wiped on startup (ids die with the process).
+# Retention of downloaded (and uploaded) media so the client can fetch it once
+# for local playback or export (GET /v1/audio/url-media/{id}): TTL + byte-capped
+# LRU under URL_MEDIA_DIR; the directory is wiped on startup (ids die with the
+# process). RETAINED_MEDIA_MAX_BYTES sizes the whole dir — several videos at
+# MEDIA_MAX_BYTES, not just audio.
 URL_MEDIA_DIR: str = _D("URL_MEDIA_DIR")
 URL_MEDIA_TTL_S: int = _D("URL_MEDIA_TTL_S")
-URL_MEDIA_MAX_BYTES: int = _D("URL_MEDIA_MAX_BYTES")
+RETAINED_MEDIA_MAX_BYTES: int = _D("RETAINED_MEDIA_MAX_BYTES")
 
 
 # =============================================================================
@@ -847,6 +855,7 @@ STREAMING_MAX_SESSIONS_PER_USER: int = _D("STREAMING_MAX_SESSIONS_PER_USER")
 # third-party page, so the abuse lands on someone else's infrastructure —
 # hence the tight default.
 URL_PREVIEW_RATE_PER_MIN: int = _D("URL_PREVIEW_RATE_PER_MIN")
+URL_VIDEO_RATE_PER_MIN: int = _D("URL_VIDEO_RATE_PER_MIN")
 
 # Capture-audio fetches per identity per 60s. Sized for the review UI's burst
 # pattern (scrubbing through a page of captures), not steady-state use.

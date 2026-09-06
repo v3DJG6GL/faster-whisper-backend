@@ -3302,11 +3302,16 @@ async def _csrf_mw(request: Request, call_next):
     return await call_next(request)
 
 
+# Non-JSON, non-multipart bodies never legitimately approach the media cap;
+# they keep the pre-media-cap service ceiling.
+_NON_UPLOAD_BODY_BACKSTOP = 268_435_456
+
+
 @app.middleware("http")
 async def _max_body_mw(request: Request, call_next):
     """Service-wide ceiling on a declared request body, rejected before the
     body is read. Route-level caps stay authoritative for their own endpoint
-    (MAX_REQUEST_BYTES sits well above MAX_UPLOAD_BYTES, so the transcription
+    (MAX_REQUEST_BYTES sits well above MEDIA_MAX_BYTES, so the transcription
     413 still fires first); this one exists for the JSON routes, where
     Starlette buffers the whole body and json.loads expands it several-fold
     before any handler-side size check can run. Content-Length is advisory
@@ -3334,13 +3339,18 @@ async def _max_body_mw(request: Request, call_next):
     # is parsed, not prefix-matched: FastAPI treats `application/*+json`
     # (merge-patch+json, ld+json, ...) AND a request with NO Content-Type at
     # all as JSON and calls request.json() on it, so both must share the
-    # ceiling or they bypass it. multipart audio uploads always declare their
-    # own media type and keep the full MAX_REQUEST_BYTES.
+    # ceiling or they bypass it. multipart media uploads always declare their
+    # own media type and keep the full MAX_REQUEST_BYTES — sized for a
+    # MEDIA_MAX_BYTES video, i.e. gigabytes. Every OTHER non-JSON body keeps
+    # the old 256 MiB backstop: nothing but an upload has business being
+    # larger, and the media cap must not silently widen text/plain PUTs.
     _ctype = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
     _main, _, _sub = _ctype.partition("/")
     if not _ctype or (_main == "application"
                       and (_sub == "json" or _sub.endswith("+json"))):
         max_body = min(max_body, int(getattr(cfg, "MAX_JSON_BODY_BYTES", 4_194_304)))
+    elif _ctype != "multipart/form-data":
+        max_body = min(max_body, _NON_UPLOAD_BODY_BACKSTOP)
     _clen = request.headers.get("content-length")
     if _clen and _clen.isdigit() and int(_clen) > max_body:
         from fastapi.responses import JSONResponse
@@ -3860,7 +3870,7 @@ async def transcribe(
         # Upload ceiling. Content-Length is advisory (absent on chunked
         # bodies), so it only buys us an early exit before the model load —
         # the chunked read below is what actually enforces the bound.
-        max_upload = int(getattr(cfg, "MAX_UPLOAD_BYTES", 200_000_000))
+        max_upload = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
         _clen = request.headers.get("content-length")
         if _clen and _clen.isdigit() and int(_clen) > max_upload:
             raise HTTPException(status_code=413, detail="upload too large")
@@ -3922,7 +3932,7 @@ async def transcribe(
                 # semaphore (network-bound); it has its own, narrower one.
                 from faster_whisper_backend.url import download as _udl
                 from faster_whisper_backend.url import media_store as _ums
-                _url_max = int(getattr(cfg, "URL_MAX_BYTES", 0) or 0) or max_upload
+                _url_max = max_upload
                 logger.info("[url-dl] transcribe-from-url requested (host %s)",
                             _url_host_for_log(source_url))
                 _dl_t0 = time.perf_counter()
@@ -3984,7 +3994,7 @@ async def transcribe(
                 # the retained file serves GET /v1/audio/url-media/{id}.
                 # to_thread: the copy usually hardlinks but can degrade to a
                 # full copy, and register()'s move crosses filesystems
-                # (TMPDIR → URL_MEDIA_DIR) — up to URL_MAX_BYTES of blocking
+                # (TMPDIR → URL_MEDIA_DIR) — up to MEDIA_MAX_BYTES of blocking
                 # I/O that must not pin the event loop.
                 tmp_path = await asyncio.to_thread(
                     _ums.make_pipeline_copy, _dl_path)

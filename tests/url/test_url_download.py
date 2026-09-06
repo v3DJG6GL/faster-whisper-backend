@@ -74,17 +74,16 @@ def test_policy_rejects_over_duration(monkeypatch):
 
 
 def test_policy_rejects_over_filesize(monkeypatch):
-    monkeypatch.setattr(udl.cfg, "URL_MAX_BYTES", 1000, raising=False)
+    monkeypatch.setattr(udl.cfg, "MEDIA_MAX_BYTES", 1000, raising=False)
     with pytest.raises(udl.UrlDownloadError, match="size"):
         udl._policy_check_info({"filesize_approx": 2000})
 
 
-def test_effective_max_bytes_inherits_upload_cap(monkeypatch):
-    monkeypatch.setattr(udl.cfg, "URL_MAX_BYTES", 0, raising=False)
-    monkeypatch.setattr(udl.cfg, "MAX_UPLOAD_BYTES", 12345, raising=False)
+def test_effective_max_bytes_is_media_cap(monkeypatch):
+    # One ceiling for every media path: a link admits exactly what an
+    # upload would, never more.
+    monkeypatch.setattr(udl.cfg, "MEDIA_MAX_BYTES", 12345, raising=False)
     assert udl._effective_max_bytes() == 12345
-    monkeypatch.setattr(udl.cfg, "URL_MAX_BYTES", 99, raising=False)
-    assert udl._effective_max_bytes() == 99
 
 
 # ---------------------------------------------------------------------------
@@ -556,7 +555,7 @@ def test_probe_selects_download_format(monkeypatch):
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
     # A cap smaller than any merged video but above the audio track: the
     # probe must pass, and estimated size must come from `filesize` too.
-    monkeypatch.setattr(udl.cfg, "URL_MAX_BYTES", 1_000_000, raising=False)
+    monkeypatch.setattr(udl.cfg, "MEDIA_MAX_BYTES", 1_000_000, raising=False)
     info = _run(udl.probe("https://example.com/watch?v=x", timeout=5.0))
     assert captured.get("format") == udl.DOWNLOAD_FORMAT
     assert info.filesize_approx == 900_000

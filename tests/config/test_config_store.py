@@ -1117,17 +1117,17 @@ def test_save_lock_file_does_not_disturb_the_config_dir(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# MAX_REQUEST_BYTES must stay >= MAX_UPLOAD_BYTES (effective values)
+# MAX_REQUEST_BYTES must stay >= MEDIA_MAX_BYTES (effective values)
 # ---------------------------------------------------------------------------
 
-def test_upload_cap_above_baseline_request_cap_rejected():
-    # 1 GB upload cap alone: the baseline request cap (256 MiB) would answer
-    # first with the generic body-too-large 413 instead of the upload 413.
-    _bad(MAX_UPLOAD_BYTES=1_000_000_000)
+def test_media_cap_above_baseline_request_cap_rejected():
+    # 20 GB media cap alone: the baseline request cap (10 GiB) would answer
+    # first with the generic body-too-large 413 instead of the media 413.
+    _bad(MEDIA_MAX_BYTES=20_000_000_000)
 
 
-def test_upload_and_request_caps_raised_together_ok():
-    _ok(MAX_UPLOAD_BYTES=1_000_000_000, MAX_REQUEST_BYTES=2_000_000_000)
+def test_media_and_request_caps_raised_together_ok():
+    _ok(MEDIA_MAX_BYTES=20_000_000_000, MAX_REQUEST_BYTES=21_000_000_000)
 
 
 def test_request_cap_below_baseline_upload_cap_rejected():

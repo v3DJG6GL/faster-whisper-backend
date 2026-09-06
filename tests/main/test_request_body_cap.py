@@ -132,3 +132,17 @@ def test_non_json_content_type_keeps_the_service_wide_ceiling(client):
     r = client.put("/v1/client-settings", content=b"x" * (8 * 1024 * 1024),
                    headers={"Content-Type": "text/plain"})
     assert r.status_code != 413
+
+
+def test_non_multipart_non_json_keeps_a_256mib_backstop(client, app_module,
+                                                       monkeypatch):
+    # MAX_REQUEST_BYTES is sized for a MEDIA_MAX_BYTES video upload (GiB).
+    # Only multipart bodies get that ceiling: a text/plain PUT declaring
+    # 300 MiB is refused up front, exactly as before the media cap grew.
+    monkeypatch.setattr(app_module.cfg, "MAX_REQUEST_BYTES",
+                        10 * 1024 * 1024 * 1024, raising=False)
+    r = client.put("/v1/client-settings", content=b"x",
+                   headers={"Content-Type": "text/plain",
+                            "Content-Length": str(300 * 1024 * 1024)})
+    assert r.status_code == 413
+    assert r.json() == {"detail": "request body too large"}
