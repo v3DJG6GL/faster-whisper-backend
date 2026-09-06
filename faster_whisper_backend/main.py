@@ -7642,6 +7642,16 @@ _LOG_VIEWER_HTML = """<!doctype html>
     font-size: 0.9em; padding: 0 0.5rem; margin-left: 0.5rem;
     cursor: pointer; }
   .fold-ctl button:hover { background: var(--panel); }
+  /* Long transcript lines — RAW WHISPER, FINAL, a pipeline step's before /
+     after — clamp at 3 lines with a size-honest "Show all" button, the same
+     folding the /quick-config trace viewer applies to raw/final. */
+  .line .clip { display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3; overflow: hidden; }
+  .line .clip-btn { display: inline-block; margin: 0.15rem 0 0.2rem 2rem;
+    background: transparent; color: var(--cyan); border: 1px solid var(--border);
+    border-radius: 4px; font: inherit; font-size: 0.9em; padding: 0 0.5rem;
+    cursor: pointer; }
+  .line .clip-btn:hover { background: var(--panel); }
   {{NAV_CSS}}
 </style></head>
 <body>
@@ -7731,6 +7741,8 @@ _LOG_VIEWER_HTML = """<!doctype html>
   // LOG_STAGE_COLORS: false → no per-stage hue classes (monochrome log).
   const _STAGE_COLORS = {{LOG_STAGE_COLORS}};
   const _SEG_STEP = 50;
+  // Chars past which a transcript line clamps (the /quick-config threshold).
+  const _CLIP_CHARS = 400;
   // A segment data row: "      0    0.31s   13.29s  …". The header row starts
   // with '#' and must not be counted or folded.
   const _SEG_ROW = /^\\s+\\d+\\s+[-\\d]/;
@@ -7741,6 +7753,15 @@ _LOG_VIEWER_HTML = """<!doctype html>
   // `st.dimLeft` is threaded per render pass (live stream vs "Load older" batch
   // each get their own state object) so groups never dim across a boundary.
   const _SKIP_MARK = /\\[(EXCLUDED|SKIPPED)/;
+  // The PIPELINE block: its header stays, every step line under it (▸ label,
+  // before, after — each before/after a full transcript) folds by default
+  // behind a "show all" control, like /quick-config's "Show pipeline steps".
+  const _PIPE_HDR = /^\\s+PIPELINE\\s+\\(/;
+  function _pipeFold(st, cls) {
+    st.pipeRows = (st.pipeRows || 0) + 1;
+    if (st.pipeRows === 1) st.needCtl = 'pipe';
+    return cls + ' folded';
+  }
   function decorate(line, st) {
     // Section scope. A bare row like "    min_speakers      2 *" carries
     // nothing that identifies it as diarization, so no per-line regex can
@@ -7756,18 +7777,29 @@ _LOG_VIEWER_HTML = """<!doctype html>
       st.dimLeft = 0;
       return 'rule' + (st.stage ? ' ' + st.stage : '');
     }
+    if (_PIPE_HDR.test(line)) {
+      st.pipe = true; st.pipeRows = 0; st.ctl = null; st.dimLeft = 0;
+      return 'info';
+    }
     const cls = classify(line);
     if (cls === 'step') {
-      if (_SKIP_MARK.test(line)) { st.dimLeft = 2; return cls + ' dim'; }
-      st.dimLeft = 0; return cls;            // a step that ran resets the group
+      let out = cls;
+      if (_SKIP_MARK.test(line)) { st.dimLeft = 2; out += ' dim'; }
+      else st.dimLeft = 0;                   // a step that ran resets the group
+      return st.pipe ? _pipeFold(st, out) : out;
     }
     if (cls === 'rule' || cls === 'title' || cls === 'raw' || cls === 'final') {
       // Block boundary: end the dim group AND the section scope, so a stage
       // hue can never bleed past the receipt it belongs to.
       st.dimLeft = 0; st.stage = ''; st.inSeg = false; st.ctl = null;
+      st.pipe = false;
       return cls;
     }
-    if (st.dimLeft > 0) { st.dimLeft--; return cls + ' dim'; }
+    if (st.dimLeft > 0) {
+      st.dimLeft--;
+      return st.pipe ? _pipeFold(st, cls + ' dim') : cls + ' dim';
+    }
+    if (st.pipe && (cls === 'before' || cls === 'after')) return _pipeFold(st, cls);
     if (st.inSeg && _SEG_ROW.test(line)) {
       st.segRows = (st.segRows || 0) + 1;
       if (st.segRows > _SEG_SHOWN) {
@@ -7804,6 +7836,24 @@ _LOG_VIEWER_HTML = """<!doctype html>
       el.appendChild(k); el.appendChild(v);
       return el;
     }
+    if (/\\b(raw|final|before|after)\\b/.test(cls) && txt.length > _CLIP_CHARS) {
+      const body = document.createElement('span');
+      body.className = 'clip';
+      body.textContent = txt;
+      const label = 'Show all \u00b7 ' + txt.length.toLocaleString() + ' chars \u25be';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clip-btn';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        const clipped = body.classList.toggle('clip');
+        btn.textContent = clipped ? label : 'Show less \u25b4';
+      });
+      const nl = document.createElement('span');
+      nl.textContent = '\\n';
+      el.appendChild(body); el.appendChild(btn); el.appendChild(nl);
+      return el;
+    }
     el.textContent = txt + '\\n';
     return el;
   }
@@ -7827,23 +7877,29 @@ _LOG_VIEWER_HTML = """<!doctype html>
     }
     const left = _foldRemaining(ctl);
     if (left <= 0) { ctl.remove(); return; }
-    ctl.firstChild.textContent = '    ▸ ' + left + ' more segment rows';
+    ctl.firstChild.textContent = '    ▸ ' + left + ' more ' + ctl.dataset.noun;
   }
-  function makeFoldCtl() {
+  // kind: 'seg' (segment rows, revealed 50 at a time or all at once) or
+  // 'pipe' (pipeline step lines — 3-line groups, so only "show all").
+  function makeFoldCtl(kind) {
     const el = document.createElement('span');
     el.className = 'line fold-ctl';
+    el.dataset.noun = kind === 'pipe' ? 'pipeline lines' : 'segment rows';
     const lbl = document.createElement('span');
-    lbl.textContent = '    ▸ more segment rows';
+    lbl.textContent = '    ▸ more ' + el.dataset.noun;
     el.appendChild(lbl);
-    const b50 = document.createElement('button');
-    b50.type = 'button';
-    b50.textContent = 'show ' + _SEG_STEP;
-    b50.addEventListener('click', () => _unfold(el, _SEG_STEP));
+    if (kind !== 'pipe') {
+      const b50 = document.createElement('button');
+      b50.type = 'button';
+      b50.textContent = 'show ' + _SEG_STEP;
+      b50.addEventListener('click', () => _unfold(el, _SEG_STEP));
+      el.appendChild(b50);
+    }
     const ball = document.createElement('button');
     ball.type = 'button';
     ball.textContent = 'show all';
     ball.addEventListener('click', () => _unfold(el, 1e9));
-    el.appendChild(b50); el.appendChild(ball);
+    el.appendChild(ball);
     const nl = document.createElement('span');
     nl.textContent = '\\n';
     el.appendChild(nl);
@@ -7855,8 +7911,8 @@ _LOG_VIEWER_HTML = """<!doctype html>
   function appendLine(container, line, st) {
     const el = makeLine(line, st);
     if (st.needCtl) {
+      const ctl = makeFoldCtl(st.needCtl === 'pipe' ? 'pipe' : 'seg');
       st.needCtl = false;
-      const ctl = makeFoldCtl();
       container.appendChild(ctl);
       st.ctl = ctl;
     }
@@ -7865,7 +7921,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
     if (st.ctl) {
       const left = _foldRemaining(st.ctl);
       if (left > 0) st.ctl.firstChild.textContent =
-        '    ▸ ' + left + ' more segment rows';
+        '    ▸ ' + left + ' more ' + st.ctl.dataset.noun;
     }
     return el;
   }
