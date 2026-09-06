@@ -580,6 +580,14 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # WHISPER_URL_MEDIA_DIR above for the same reason.)
     monkeypatch.setattr(main, "_reclaim_hard_restart_orphans", lambda: None)
 
+    # The recent-transcriptions prune counter is process-global and only the
+    # tx_store fixture resets it: every 50th insert across the session prunes
+    # rows older than the TTL, so a route test that writes epoch-era rows
+    # failed whenever the suite's insert count happened to land on a multiple
+    # of 50 inside it. A fresh store per test gets a fresh counter.
+    from faster_whisper_backend.stats import recent_transcriptions_store as _rts
+    _rts._insert_counter = 0
+
     yield main
 
     # The lifespan opens eight store connections on a temp DB; close them so a
