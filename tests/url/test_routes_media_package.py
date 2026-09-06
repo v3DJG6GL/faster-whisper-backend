@@ -46,7 +46,7 @@ def package_enabled(app_module, tmp_path, monkeypatch):
     monkeypatch.setattr(pk, "probe_streams", _probe)
     latch = {"path": None}
 
-    def _argv(src, srt_paths, tracks, *, container, out_path, default_track):
+    def _argv(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
         script = f"""
 import os, shutil, time
 while {latch['path']!r} and os.path.exists({latch['path']!r}):
@@ -152,6 +152,27 @@ def test_streams_reports_the_probe_and_caches_it(client, package_enabled):
 
 
 # --- package ------------------------------------------------------------------
+
+def test_package_forwards_original_track_and_audio_language(client, package_enabled, monkeypatch):
+    seen = {}
+
+    def _argv(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
+        seen.update(kw, default_track=default_track)
+        return [sys.executable, "-c", f"open({out_path!r}, 'wb').write(b'video-bytes')"]
+    monkeypatch.setattr(pk, "build_package_argv", _argv)
+    mid = _upload(client).json()["media_id"]
+    r = client.post(f"/v1/audio/media/{mid}/package",
+                    json={"container": "mkv", "subtitles": _tracks(), "default_track": 0,
+                          "original_track": 0, "audio_lang": " de ", "audio_label": "Ger\x01man"})
+    assert r.status_code == 200, r.text
+    assert seen == {"default_track": 0, "original_track": 0,
+                    "audio_lang": "de", "audio_label": "German"}
+    # Out-of-range / malformed values are refused, not silently dropped.
+    for bad in ({"original_track": 5}, {"original_track": True}, {"audio_lang": "German"}):
+        r = client.post(f"/v1/audio/media/{mid}/package",
+                        json={"container": "mkv", "subtitles": _tracks(), **bad})
+        assert r.status_code == 422, (bad, r.text)
+
 
 def test_package_mkv_happy_path_streams_the_file_and_cleans_up(client, package_enabled):
     mid = _upload(client).json()["media_id"]

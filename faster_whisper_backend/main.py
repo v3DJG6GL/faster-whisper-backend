@@ -7022,7 +7022,8 @@ async def package_media(media_id: str, request: Request,
                         user: dict = Depends(_get_current_user_dep)):
     """Mux the client's SRT tracks into a retained video as soft subtitle
     streams and stream the file back. Body: {container: "mkv"|"mp4",
-    subtitles: [{lang, label?, srt}], default_track?, filename?}. MP4 only
+    subtitles: [{lang, label?, srt}], default_track?, original_track?,
+    audio_lang?, audio_label?, filename?}. MP4 only
     when the streams fit it (422 with code "mp4_incompatible" otherwise, and
     the reason). One packaging run per identity at a time."""
     from fastapi.responses import FileResponse
@@ -7079,6 +7080,19 @@ async def package_media(media_id: str, request: Request,
         if (not isinstance(default_track, int) or isinstance(default_track, bool)
                 or not 0 <= default_track < len(tracks)):
             raise HTTPException(status_code=422, detail="default_track is out of range")
+    original_track = body.get("original_track")
+    if original_track is not None:
+        if (not isinstance(original_track, int) or isinstance(original_track, bool)
+                or not 0 <= original_track < len(tracks)):
+            raise HTTPException(status_code=422, detail="original_track is out of range")
+    audio_lang = body.get("audio_lang")
+    if audio_lang is not None:
+        if not isinstance(audio_lang, str) or not _TRANSLATE_CODE_RE.match(audio_lang.strip()):
+            raise HTTPException(status_code=422, detail="audio_lang must be a language code")
+        audio_lang = audio_lang.strip()
+    audio_label = body.get("audio_label")
+    audio_label = (re.sub(r"[\x00-\x1f\x7f]", "", audio_label).strip()[:64]
+                   if isinstance(audio_label, str) else "") or None
     filename = body.get("filename")
     stem = (_MEDIA_FILENAME_RE.sub("", filename).strip()[:80]
             if isinstance(filename, str) else "") or media_id
@@ -7106,7 +7120,8 @@ async def package_media(media_id: str, request: Request,
     try:
         out = await _pk.package(
             entry["path"], tracks, container=container,
-            default_track=default_track,
+            default_track=default_track, original_track=original_track,
+            audio_lang=audio_lang, audio_label=audio_label,
             timeout=float(getattr(cfg, "MEDIA_PACKAGE_TIMEOUT_S", 900)))
     except _pk.SubtitleParseError as e:
         raise HTTPException(status_code=422, detail=str(e))

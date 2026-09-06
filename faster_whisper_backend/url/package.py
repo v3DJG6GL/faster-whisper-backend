@@ -166,10 +166,18 @@ def probe_streams(path: str) -> MediaStreams:
 
 def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleTrack]",
                        *, container: str, out_path: str,
-                       default_track: "int | None") -> "list[str]":
+                       default_track: "int | None",
+                       original_track: "int | None" = None,
+                       audio_lang: "str | None" = None,
+                       audio_label: "str | None" = None) -> "list[str]":
     """The exact ffmpeg invocation (separate so tests can pin and swap it).
     `-map 0:v:0` takes the FIRST video stream only — a cover-art stream in an
-    m4a must never become the picture; `-map 0:a?` keeps every audio track."""
+    m4a must never become the picture; `-map 0:a?` keeps every audio track.
+    `original_track` gets the Matroska original-language flag (ffmpeg's
+    `original` disposition, FlagOriginal since 4.4; MP4 has no such flag and
+    drops it) — the track NAME stays the plain language name. `audio_lang`
+    tags every audio stream with the spoken language (the source file usually
+    carries the uploader's default, "en" for a German video)."""
     from faster_whisper_backend.streaming.transport import ffmpeg_exe
 
     if container not in CONTAINERS:
@@ -185,9 +193,14 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     if srt_paths:
         argv += ["-c:s", "mov_text" if container == "mp4" else "srt"]
     for i, t in enumerate(tracks):
+        flags = [f for f, on in (("default", default_track == i),
+                                 ("original", original_track == i)) if on]
         argv += [f"-metadata:s:s:{i}", f"language={iso639_2t(t.lang)}",
                  f"-metadata:s:s:{i}", f"title={t.label}",
-                 f"-disposition:s:{i}", "default" if default_track == i else "0"]
+                 f"-disposition:s:{i}", "+".join(flags) if flags else "0"]
+    if audio_lang:
+        argv += ["-metadata:s:a", f"language={iso639_2t(audio_lang)}",
+                 "-metadata:s:a", f"title={audio_label or lang_name(audio_lang)}"]
     argv += ["-max_muxing_queue_size", "4096"]
     if container == "mp4":
         argv += ["-movflags", "+faststart", "-f", "mp4", out_path]
@@ -200,7 +213,10 @@ _SRT_HINT_RE = re.compile(r"sub_(\d+)\.srt")
 
 
 async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
-                  default_track: "int | None", timeout: float) -> str:
+                  default_track: "int | None", timeout: float,
+                  original_track: "int | None" = None,
+                  audio_lang: "str | None" = None,
+                  audio_label: "str | None" = None) -> str:
     """Mux `tracks` into `src` as soft subtitles; returns the output path
     inside a fresh `pkg-` workdir the CALLER removes after streaming it.
     Every failure removes the workdir here."""
@@ -216,6 +232,8 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
             srt_paths.append(p)
         out = os.path.join(workdir, f"out.{container}")
         argv = build_package_argv(src, srt_paths, tracks, container=container,
+                                  original_track=original_track,
+                                  audio_lang=audio_lang, audio_label=audio_label,
                                   out_path=out, default_track=default_track)
         t0 = time.monotonic()
         proc = await asyncio.create_subprocess_exec(

@@ -70,6 +70,30 @@ def test_build_package_argv_mkv():
     assert argv[-3:] == ["-f", "matroska", "/w/out.mkv"]
 
 
+def test_build_package_argv_original_flag_and_audio_language():
+    # The original-language track carries the flag, NOT a "· original" name;
+    # both flags combine with "+"; every audio stream gets the spoken language.
+    argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
+                                 container="mkv", out_path="/w/out.mkv", default_track=0,
+                                 original_track=0, audio_lang="de", audio_label="German")
+    d = [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
+    assert d == ["default+original", "0"]
+    a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a"]
+    assert a == ["language=deu", "title=German"]
+    # original without default; audio label defaults to the language name.
+    argv = pk.build_package_argv("/m/src.mkv", ["/w/sub_0.srt", "/w/sub_1.srt"], _tracks(),
+                                 container="mkv", out_path="/w/out.mkv", default_track=1,
+                                 original_track=0, audio_lang="pt-BR")
+    d = [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
+    assert d == ["original", "default"]
+    a = [argv[i + 1] for i, x in enumerate(argv) if x == "-metadata:s:a"]
+    assert a == ["language=por", "title=Portuguese (BR)"]
+    # No audio language → no audio metadata at all.
+    argv = pk.build_package_argv("/m/src.mkv", [], [], container="mkv",
+                                 out_path="/w/out.mkv", default_track=None)
+    assert "-metadata:s:a" not in argv
+
+
 def test_build_package_argv_mp4_mov_text_faststart_and_no_default():
     argv = pk.build_package_argv("/m/src.mp4", ["/w/sub_0.srt"], _tracks()[:1],
                                  container="mp4", out_path="/w/out.mp4", default_track=None)
@@ -86,7 +110,7 @@ def test_build_package_argv_mp4_mov_text_faststart_and_no_default():
 def _patch_argv(monkeypatch, script: str):
     """Swap the ffmpeg argv for a python script (same idiom as the yt-dlp
     tests). __OUT__ / __SRT__ are replaced with the real paths."""
-    def _fake(src, srt_paths, tracks, *, container, out_path, default_track):
+    def _fake(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
         s = script.replace("__OUT__", out_path).replace("__SRT__", srt_paths[0] if srt_paths else "")
         return [sys.executable, "-c", s]
     monkeypatch.setattr(pk, "build_package_argv", _fake)
