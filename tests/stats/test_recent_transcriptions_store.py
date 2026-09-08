@@ -418,3 +418,20 @@ def test_list_recent_kind_accepts_a_sequence(tx_store):
     assert ids(ts.list_recent(limit=10, kind=["transcribe", "download"])) == ["dl", "b1"]
     assert ids(ts.list_recent(limit=10, kind=("download",))) == ["dl"]
     assert ids(ts.list_recent(limit=10, kind=[])) == ["d1", "dl", "b1"]
+
+
+def test_record_timing_carries_username_for_rows_without_a_trace(tx_store):
+    """A translate row (and every error-path row) has no record_trace()
+    half, so the username must land through record_timing itself —
+    otherwise /stats shows '—' in USER·KEY for a job whose user is known."""
+    tx_store.record_timing(request_id="tr1", model="mt", audio_s=None,
+                           processing_s=0.7, status="ok", words=0,
+                           user_id="u1", username="John Doe", kind="translate")
+    row = tx_store.list_recent(limit=5)[0]
+    assert row["request_id"] == "tr1"
+    assert row["username"] == "John Doe"
+    assert row["user_id"] == "u1"
+    # A later timing write without a username never blanks the recorded one.
+    tx_store.record_timing(request_id="tr1", model="mt", audio_s=None,
+                           processing_s=0.9, status="ok", words=0, user_id="u1")
+    assert tx_store.list_recent(limit=5)[0]["username"] == "John Doe"

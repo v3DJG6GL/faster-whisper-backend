@@ -1078,7 +1078,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 stages=([{**stages[0], "detail": f"utt#{info['utterance']}"}]
                         if stages else None),
                 request_id=rid, user_id=user.get("user_id"), key_id=user.get("key_id"),
-                key_label=user.get("key_label"),
+                username=user.get("username"), key_label=user.get("key_label"),
                 job_id=usage_job_id,
                 language=(getattr(fw_info, "language", None) or req_language or None),
                 wait_s=metrics.take_wait())
@@ -1504,7 +1504,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 model=str(_loc.get("final_model") or ""), audio_dur=0.0,
                 proc_dur=0.0, status="error", words=0, kind="dictate",
                 request_id=session_id, user_id=user.get("user_id"),
-                key_id=user.get("key_id"), key_label=user.get("key_label"),
+                key_id=user.get("key_id"), username=user.get("username"),
+                key_label=user.get("key_label"),
                 job_id=_loc.get("usage_job_id") or session_id,
                 error_class=_ec, error_stage=_es)
         except Exception:  # noqa: BLE001 — never mask the real error

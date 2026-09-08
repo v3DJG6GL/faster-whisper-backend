@@ -311,6 +311,7 @@ def record_timing(
     status: str,
     words: int,
     user_id: str | None = None,
+    username: str | None = None,
     created_ts: float | None = None,
     kind: str | None = None,
     stages: list | None = None,
@@ -332,12 +333,16 @@ def record_timing(
     via `source`), `stages` (per-stage timing dicts, JSON-encoded) and
     `key_label` are the additive "Recent jobs" fields — all optional,
     COALESCEd on conflict so a caller that omits them never blanks what
-    an earlier write recorded."""
+    an earlier write recorded. `username` is COALESCEd the same way: a
+    translate row (and every error-path row) has no record_trace() half,
+    so without it here the /stats USER·KEY cell read "—" for a job whose
+    user_id was known all along."""
     if not request_id:
         return
     model = (model or "")[:_CAP_MODEL]
     kind = (kind or "")[:_CAP_KIND] or None
     key_label = (key_label or "")[:_CAP_KEY_LABEL] or None
+    username = (username or "")[:_CAP_KEY_LABEL] or None
     error_class = (error_class or "")[:32] or None
     error_stage = (error_stage or "")[:32] or None
     wait_s = None if wait_s is None else round(max(0.0, float(wait_s)), 3)
@@ -354,12 +359,13 @@ def record_timing(
     with _lock:
         conn.execute(
             "INSERT INTO recent_transcriptions ("
-            "  request_id, created_ts, user_id, model, status,"
+            "  request_id, created_ts, user_id, username, model, status,"
             "  audio_s, processing_s, words,"
             "  kind, stages, key_label, wait_s, error_class, error_stage"
-            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT(request_id) DO UPDATE SET"
             "  status      = excluded.status,"
+            "  username    = COALESCE(excluded.username, recent_transcriptions.username),"
             "  audio_s      = excluded.audio_s,"
             "  processing_s = excluded.processing_s,"
             "  words        = excluded.words,"
@@ -370,7 +376,7 @@ def record_timing(
             "  wait_s      = COALESCE(excluded.wait_s, recent_transcriptions.wait_s),"
             "  error_class = COALESCE(excluded.error_class, recent_transcriptions.error_class),"
             "  error_stage = COALESCE(excluded.error_stage, recent_transcriptions.error_stage)",
-            (request_id, ts, user_id, model, status,
+            (request_id, ts, user_id, username, model, status,
              audio_s, processing_s, words,
              kind, stages_blob, key_label, wait_s, error_class, error_stage),
         )
