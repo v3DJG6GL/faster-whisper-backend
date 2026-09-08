@@ -693,7 +693,7 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
     monkeypatch.setattr(translation, "translate_segments", _fake)
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
-        r = client.post(URL, json=_body())
+        r = client.post(URL, json={**_body(), "client_job": "a" * 32})
     assert r.status_code == 200, r.text
     blocks = [rec.getMessage() for rec in caplog.records
               if "/v1/text/translations" in rec.getMessage()
@@ -703,3 +703,5 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
     assert "org/d:Q4" in blk
     assert "targets" in blk and "en" in blk
     assert "Identity" in blk
+    # Links to the session's utterance receipts by the same `job=` token.
+    assert "job=aaaaaaaa" in blk

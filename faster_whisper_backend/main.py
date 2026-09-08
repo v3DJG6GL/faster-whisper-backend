@@ -768,6 +768,7 @@ def _format_translate_block(
     result: str,
     secs: float,
     load_secs: float,
+    client_job: str | None = None,
     user_id: str | None = None,
     key_id: str | None = None,
     username: str | None = None,
@@ -790,6 +791,10 @@ def _format_translate_block(
     if device:
         model_line += f"   device={device}"
     lines.append(model_line)
+    if client_job:
+        # Same `job=` the session's utterance receipts carry on their file
+        # line — grep for it and the whole session lines up.
+        lines.append(f"  for    dictation job={client_job[:8]}")
     lines.append(_section_rule("Translation"))
     rows = [
         ("targets", ", ".join(targets) if targets else "—"),
@@ -6157,6 +6162,13 @@ async def translate_text(request: Request,
     _cap = body.get("captured_id")
     _held_key = (_cap.strip()[:64]
                  if isinstance(_cap, str) and _cap.strip() else None)
+    # The dictation session this translation belongs to (the same client-
+    # minted id the stream handshake carried as `client_job`). A stop-timing
+    # one-shot claims no receipt, so this is the only handle that ties its
+    # standalone receipt to the utterances it translated. Malformed → absent.
+    _cj = body.get("client_job")
+    _client_job = (_cj if isinstance(_cj, str) and _PROGRESS_ID_RE.match(_cj)
+                   else None)
 
     try:
         _text_translate_rate.hit(_inflight_key)
@@ -6603,7 +6615,7 @@ async def translate_text(request: Request,
                 targets=list(targets), source=source, mode=mode,
                 result=(f"{len(seg_in)} segs · {total_chars} chars in / "
                         f"{_chars_out} out · {len(warnings)} guard fallbacks"),
-                secs=_elapsed, load_secs=_load_s,
+                secs=_elapsed, load_secs=_load_s, client_job=_client_job,
                 user_id=user.get("user_id"), key_id=user.get("key_id"),
                 username=user.get("username"), key_label=user.get("key_label")))
         except Exception as _me:  # noqa: BLE001 — never fail on a receipt

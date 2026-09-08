@@ -1011,7 +1011,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 _block_kwargs = dict(
                     file_label=f"stream {session_id[:8]} utt#{info['utterance']}  "
                                f"({info['audio_dur']:.2f}s, "
-                               f"{store_common.log_safe(str(response_format))})",
+                               f"{store_common.log_safe(str(response_format))})"
+                               # The client's session id, when it sent one: a
+                               # stop-timing translate names the same id on its
+                               # standalone receipt, so the two grep together.
+                               + (f"  job={usage_job_id[:8]}"
+                                  if usage_job_id != session_id else ""),
                     model_name=final_model, info=fw_info, kwargs=kwargs,
                     seg_diag=seg_diag, raw=raw_text, final=final_text,
                     steps=steps, request_id=rid, captured_id=captured_id,
