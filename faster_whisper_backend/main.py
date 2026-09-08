@@ -757,6 +757,68 @@ def _section_rule(label: str) -> str:
     return head + ("─" * fill)
 
 
+def _format_translate_block(
+    *,
+    request_id: str | None,
+    model_name: str | None,
+    device: str | None,
+    targets: list,
+    source: str | None,
+    mode: str | None,
+    result: str,
+    secs: float,
+    load_secs: float,
+    user_id: str | None = None,
+    key_id: str | None = None,
+    username: str | None = None,
+    key_label: str | None = None,
+) -> str:
+    """Standalone receipt for a /v1/text/translations request that claimed
+    no held dictation receipt — a stop-timing session's one-shot, a plain
+    API caller, or a live client from before the handshake. The held case
+    merges into the utterance's block instead (see receipt_hold); this is
+    the fallback that keeps such a request from leaving only progress
+    lines behind, with no model / targets / identity to tie it to a user."""
+    title_rule = "═" * _LOG_WIDTH
+    status = "✓ ok"
+    if request_id:
+        status = f"req={request_id[:8]}  {status}"
+    title = "  /v1/text/translations"
+    pad = max(1, _LOG_WIDTH - len(title) - len(status))
+    lines: list[str] = ["", title_rule, f"{title}{' ' * pad}{status}", title_rule]
+    model_line = f"  model  {model_name or '?'}"
+    if device:
+        model_line += f"   device={device}"
+    lines.append(model_line)
+    lines.append(_section_rule("Translation"))
+    rows = [
+        ("targets", ", ".join(targets) if targets else "—"),
+        ("source_lang", (source or "").strip() or "auto"),
+        ("mode", mode or "—"),
+        ("result", result),
+        ("wall", f"{secs:.1f}s" + (f"  (load {load_secs:.1f}s)" if load_secs > 0 else "")),
+    ]
+    for name, val in rows:
+        lines.append(f"    {name:<{_NAME_COL - 4}}{val}")
+
+    def _short_id(v):
+        v = v or ""
+        return v if v.startswith("(") else (v[:8] if v else "—")
+
+    if user_id or key_id:
+        lines.append(_section_rule("Identity"))
+        _safe_name = _log_safe(username) if username else None
+        who = f"{_safe_name} ({_short_id(user_id)})" if _safe_name else _short_id(user_id)
+        lines.append(f"    {'user':<{_NAME_COL - 4}}{who}")
+        if key_id:
+            _safe_label = _log_safe(key_label) if key_label else None
+            which = (f"{_safe_label} ({_short_id(key_id)})"
+                     if _safe_label else _short_id(key_id))
+            lines.append(f"    {'key':<{_NAME_COL - 4}}{which}")
+    lines.append(title_rule)
+    return "\n".join(lines)
+
+
 def _format_decode_params(kwargs: dict) -> list[str]:
     """Render decode params as aligned rows, with VAD parameters indented
     under vad_filter to show the relationship visually. Fields are only
@@ -6525,6 +6587,27 @@ async def translate_text(request: Request,
                 logger.info(_format_request_block(**_held))
             except Exception as _me:  # noqa: BLE001 — never fail on a receipt
                 logger.warning("[translate] held receipt render failed: %s", _me)
+        else:
+            _held_key = None   # nothing to claim → standalone receipt below
+    if not _held_key:
+        # No held utterance to merge into (a stop-timing one-shot, a plain
+        # API caller, or a capture that was already swept): still log ONE
+        # receipt, so the translate is not just four progress lines with
+        # no model / targets / user attached.
+        _used_model = meta.get("model") or _tr_model
+        _tr_key = preload.stats_key("translation", _used_model or "")
+        try:
+            logger.info(_format_translate_block(
+                request_id=request_id, model_name=_used_model,
+                device=_model_compute_device(_tr_key)[1],
+                targets=list(targets), source=source, mode=mode,
+                result=(f"{len(seg_in)} segs · {total_chars} chars in / "
+                        f"{_chars_out} out · {len(warnings)} guard fallbacks"),
+                secs=_elapsed, load_secs=_load_s,
+                user_id=user.get("user_id"), key_id=user.get("key_id"),
+                username=user.get("username"), key_label=user.get("key_label")))
+        except Exception as _me:  # noqa: BLE001 — never fail on a receipt
+            logger.warning("[translate] receipt render failed: %s", _me)
 
     # kept_original: targets for which the guard fallback returned the SOURCE
     # text — without it a kept German line under translations["en"] is

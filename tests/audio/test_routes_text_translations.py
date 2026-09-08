@@ -676,3 +676,30 @@ def test_text_run_has_a_one_stage_plan_with_units(client, app_module,
     assert receipt[0]["state"] == "done"
     assert receipt[0]["units"][0]["state"] == "done"
     assert _PID not in app_module._RUN_PLAN_BY_PID
+
+
+def test_unheld_request_logs_a_standalone_receipt(client, app_module,
+                                                  monkeypatch, caplog):
+    """A translate that names no captured_id (a stop-timing one-shot, a
+    plain API caller) still gets ONE receipt block with the model, targets
+    and identity — not just the progress lines."""
+    _enable(app_module, monkeypatch)
+    from faster_whisper_backend.audio import translation
+
+    async def _fake(segments, targets, *, progress_cb=None, download_cb=None,
+                    **kwargs):
+        per_seg = [{t: f"{seg['text']}-{t}" for t in targets} for seg in segments]
+        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _fake)
+
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        r = client.post(URL, json=_body())
+    assert r.status_code == 200, r.text
+    blocks = [rec.getMessage() for rec in caplog.records
+              if "/v1/text/translations" in rec.getMessage()
+              and "═══" in rec.getMessage()]
+    assert len(blocks) == 1
+    blk = blocks[0]
+    assert "org/d:Q4" in blk
+    assert "targets" in blk and "en" in blk
+    assert "Identity" in blk
