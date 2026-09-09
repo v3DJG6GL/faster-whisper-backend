@@ -2737,7 +2737,8 @@ function rjServerParams() {
   const view = rjView();
   if (view === 'failed' || $('rj-warnonly').checked) p.set('status', 'failed');
   if (view === 'slow') p.set('slow_rtf', '0.5');
-  if (Q.users.length) p.set('users', Q.users.join(','));
+  const users = rjFilter().users;   // published by static/stats.js (its Q is closure-private)
+  if (users) p.set('users', users.join(','));
   // No keys=: finished rows carry key_label only and the jobs table never filters by key.
   return p;
 }

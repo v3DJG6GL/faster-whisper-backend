@@ -8103,6 +8103,19 @@ _LOG_VIEWER_HTML = """<!doctype html>
   #loadOlderBtn[disabled] { opacity: 0.5; cursor: default; }
   .tz-hint { color: var(--dim); font-size: var(--fs-xs); cursor: help; }
   .line.hidden { display: none; }
+  /* Search: every hit is tinted, the one the ↑/↓ keys sit on is brighter. */
+  .line.match { background: color-mix(in srgb, var(--yellow) 14%, transparent); }
+  .line.match-cur { background: color-mix(in srgb, var(--yellow) 34%, transparent);
+    outline: 1px solid var(--yellow); }
+  #log.hide-mode .line.match { background: transparent; outline: none; }
+  #filter-nav { display: inline-flex; align-items: center; gap: 0.25rem; margin-left: 0.375rem; }
+  #filter-nav.hidden { display: none; }
+  #filter-nav button { background: transparent; color: var(--cyan); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 0.375rem; font: inherit; cursor: pointer; line-height: 1.4; }
+  #filter-nav button:hover { background: var(--panel); }
+  #filter-count { color: var(--dim); font-size: var(--fs-xs); min-width: 4ch; text-align: center; }
+  .filter-hide { color: var(--dim); font-size: var(--fs-xs); margin-left: 0.5rem; cursor: pointer;
+    white-space: nowrap; }
   .line.rule    { color: var(--dim); }
   .line.title   { color: var(--bold); font-weight: 600; }
   .line.meta    { color: var(--cyan); }
@@ -8172,7 +8185,13 @@ _LOG_VIEWER_HTML = """<!doctype html>
   <div class="subbar">
     <span class="subbar-title">Logs</span>
     <div class="subbar-left">
-      <input id="filter" type="text" placeholder="filter (case-insensitive substring)…">
+      <input id="filter" type="text" placeholder="search (case-insensitive substring)…">
+      <span id="filter-nav" class="hidden">
+        <button id="filterPrev" type="button" title="older match (Enter)">↑</button>
+        <span id="filter-count"></span>
+        <button id="filterNext" type="button" title="newer match (Shift+Enter)">↓</button>
+      </span>
+      <label class="filter-hide" title="hide every line that does not match (the old filter behavior)"><input type="checkbox" id="filterHide"> filter</label>
     </div>
     <div class="subbar-right">
       <span class="log-zoom" title="zoom log content only">
@@ -8199,12 +8218,24 @@ _LOG_VIEWER_HTML = """<!doctype html>
   const clearBtn = document.getElementById('clearBtn');
   let paused = false;
   let filterText = '';
+  // Search modes: by default every hit is highlighted and the view jumps
+  // to the newest one (↑/↓ step through them, folded hits get unfolded);
+  // with the "filter" box ticked, non-matching lines are hidden instead.
+  const hideEl = document.getElementById('filterHide');
+  const navEl = document.getElementById('filter-nav');
+  const countEl = document.getElementById('filter-count');
+  let hideMode = false;
+  let matchCurEl = null;
 
-  // Honor ?filter=... so the severity pills in the nav can deep-link.
+  // Honor ?filter=... so the severity pills in the nav can deep-link. A
+  // pill means "show me only those", so the deep link starts in hide mode.
   const initialFilter = new URLSearchParams(location.search).get('filter');
   if (initialFilter) {
     filterEl.value = initialFilter;
     filterText = initialFilter.toLowerCase();
+    hideMode = true;
+    if (hideEl) hideEl.checked = true;
+    log.classList.add('hide-mode');
   }
 
   function classify(line) {
@@ -8460,11 +8491,52 @@ _LOG_VIEWER_HTML = """<!doctype html>
     return el;
   }
   function applyFilter(el) {
-    if (filterText && !el.textContent.toLowerCase().includes(filterText)) {
-      el.classList.add('hidden');
-    } else {
-      el.classList.remove('hidden');
+    if (!filterText) {
+      el.classList.remove('hidden', 'match', 'match-cur');
+      return;
     }
+    const hit = el.textContent.toLowerCase().includes(filterText);
+    el.classList.toggle('match', hit);
+    if (!hit) el.classList.remove('match-cur');
+    el.classList.toggle('hidden', hideMode && !hit);
+  }
+  function _matches() { return Array.from(log.querySelectorAll('.line.match')); }
+  let _navQueued = false;
+  function updateNav(total) {
+    if (navEl) navEl.classList.toggle('hidden', !filterText);
+    if (!filterText || !countEl) return;
+    const m = total != null ? total : _matches().length;
+    const cur = matchCurEl ? _matches().indexOf(matchCurEl) : -1;
+    countEl.textContent = !m ? 'no match' : (cur >= 0 ? (cur + 1) + '/' + m : String(m));
+  }
+  function queueNav() {
+    if (_navQueued || !filterText) return;
+    _navQueued = true;
+    requestAnimationFrame(() => { _navQueued = false; updateNav(); });
+  }
+  function refilter() {
+    for (const el of log.children) applyFilter(el);
+    if (matchCurEl && !matchCurEl.classList.contains('match')) matchCurEl = null;
+    updateNav();
+  }
+  // dir: -1 = older, +1 = newer, 0 = restart at the newest hit.
+  function jumpMatch(dir) {
+    const m = _matches();
+    if (!m.length) { matchCurEl = null; updateNav(0); return; }
+    let i = matchCurEl ? m.indexOf(matchCurEl) : -1;
+    if (dir === 0 || i < 0) i = m.length - 1;
+    else i = (i + dir + m.length) % m.length;
+    if (matchCurEl) matchCurEl.classList.remove('match-cur');
+    matchCurEl = m[i];
+    matchCurEl.classList.add('match-cur');
+    if (matchCurEl.classList.contains('folded')) {
+      // A hit inside a folded block: open the block so the line can show.
+      let c = matchCurEl.previousSibling;
+      while (c && !(c.classList && c.classList.contains('fold-ctl'))) c = c.previousSibling;
+      if (c) _unfold(c, 1e9);
+    }
+    matchCurEl.scrollIntoView({ block: 'center' });
+    updateNav(m.length);
   }
   function _p2(n) { return (n < 10 ? '0' : '') + n; }
   // Log lines start with a UTC ISO-8601 'Z' timestamp; show it in the reader's
@@ -8514,12 +8586,33 @@ _LOG_VIEWER_HTML = """<!doctype html>
         log.firstChild.remove();
       }
     }
-    if (!paused) window.scrollTo(0, document.body.scrollHeight);
+    if (filterText) queueNav();
+    if (!paused && !(filterText && !hideMode)) window.scrollTo(0, document.body.scrollHeight);
   }
 
   filterEl.addEventListener('input', () => {
     filterText = filterEl.value.toLowerCase();
-    for (const el of log.children) applyFilter(el);
+    refilter();
+    if (!filterText) { matchCurEl = null; if (!paused) window.scrollTo(0, document.body.scrollHeight); }
+    else if (!hideMode) jumpMatch(0);
+  });
+  filterEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { filterEl.value = ''; filterText = ''; refilter(); return; }
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (!filterText) return;
+    jumpMatch(e.shiftKey ? +1 : -1);
+  });
+  const prevBtn = document.getElementById('filterPrev');
+  const nextBtn = document.getElementById('filterNext');
+  if (prevBtn) prevBtn.addEventListener('click', () => jumpMatch(-1));
+  if (nextBtn) nextBtn.addEventListener('click', () => jumpMatch(+1));
+  if (hideEl) hideEl.addEventListener('change', () => {
+    hideMode = hideEl.checked;
+    log.classList.toggle('hide-mode', hideMode);
+    refilter();
+    if (!hideMode && filterText) jumpMatch(0);
+    else if (!paused) window.scrollTo(0, document.body.scrollHeight);
   });
   pauseBtn.addEventListener('click', () => {
     paused = !paused;

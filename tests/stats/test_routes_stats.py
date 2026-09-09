@@ -1015,6 +1015,9 @@ def test_stats_page_jobs_table_v2(client):
     assert 'data-label="wait"' in html
     assert "window._fwCancelJob(c.dataset.pid, c)" in html
     assert "fetch('/stats/jobs?' + p.toString()" in html
+    # The users filter must come from the published window.__statsFilter —
+    # `Q` is closure-private to static/stats.js and the click threw on it.
+    assert "rjFilter().users" in html and "Q.users" not in html
     assert "rj-stage-row wait" in html and "end to end" in html
     assert "colspan=\"11\"" in html
     from faster_whisper_backend.core import web_common
