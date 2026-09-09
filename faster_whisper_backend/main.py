@@ -8392,7 +8392,10 @@ _LOG_VIEWER_HTML = """<!doctype html>
     const stage = /\\bst-\\w+\\b/.test(cls);
     // F2: split at the receipt's fixed 32-char name column so the key takes
     // the stage hue and the value stays readable. Fixed width, so no parsing.
-    if (stage && !/\\brule\\b/.test(cls) && /^ {4}\\S/.test(txt) && txt.length > 32) {
+    // 4 spaces for a section key, 6 for a nested one (vad_parameters):
+    // the value column sits at 32 either way. Table rows (Pipeline,
+    // Segments) start with a digit or '#' and must stay whole.
+    if (stage && !/\\brule\\b/.test(cls) && /^ {4,6}[^\\s\\d#]/.test(txt) && txt.length > 32) {
       const k = document.createElement('span');
       k.textContent = txt.slice(0, 32);
       const v = document.createElement('span');
