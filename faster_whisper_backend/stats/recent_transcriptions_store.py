@@ -383,6 +383,44 @@ def record_timing(
         _lazy_prune_if_due(prune_every, max_rows, ttl_days)
 
 
+def append_stage(request_id: str, stage: dict, *, add_processing_s: float = 0.0) -> bool:
+    """Fold a later stage into an EXISTING row: a dictation utterance's
+    translation arrives on a separate request after the utterance row was
+    written, and the /stats jobs table should show one row with two stages
+    (exactly like a batch job) rather than a dictate row and an orphan
+    translate row. Appends `stage` to the row's stages list and adds its
+    wall time to processing_s. Returns False when no such row exists (the
+    caller then records its own row as before)."""
+    if not request_id or not stage:
+        return False
+    conn = _require_conn()
+    with _lock:
+        row = conn.execute(
+            "SELECT stages, processing_s FROM recent_transcriptions WHERE request_id = ?",
+            (request_id,)).fetchone()
+        if row is None:
+            return False
+        try:
+            stages = json.loads(row[0]) if row[0] else []
+            if not isinstance(stages, list):
+                stages = []
+        except (TypeError, ValueError):
+            stages = []
+        stages.append(dict(stage))
+        try:
+            blob = json.dumps(stages, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return False
+        if len(blob) > _CAP_STAGES_JSON:
+            return False
+        proc = round(float(row[1] or 0.0) + max(0.0, float(add_processing_s or 0.0)), 3)
+        conn.execute(
+            "UPDATE recent_transcriptions SET stages = ?, processing_s = ?"
+            " WHERE request_id = ?",
+            (blob, proc, request_id))
+    return True
+
+
 def list_recent(
     *,
     before_ts: float | None = None,

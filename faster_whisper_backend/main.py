@@ -6393,10 +6393,15 @@ async def translate_text(request: Request,
             _progress_set(_pid, stage="downloading", progress=frac,
                           total_bytes=total or None)
 
-        def _record_run(status: str, exc: "BaseException | None" = None) -> None:
+        def _record_run(status: str, exc: "BaseException | None" = None,
+                        *, folded_into: "str | None" = None) -> None:
             """Persist this run as a recent-jobs row (kind='translate') on every
             terminal path. No audio duration; segment count lives in the stage
-            detail (words=0 — a segment count is not a word count)."""
+            detail (words=0 — a segment count is not a word count).
+
+            `folded_into` names the dictation utterance row this translation
+            was appended to as a stage; then only the usage rollup is written
+            here — a second recent-jobs row would show the one job twice."""
             nonlocal _job_finished
             secs = round(time.perf_counter() - _t0, 3)
             if _job_row and status != "ok":
@@ -6436,6 +6441,7 @@ async def translate_text(request: Request,
                          "targets": list(targets)}],
                 job_id=_pid or request_id,
                 wait_s=metrics.take_wait(),
+                recent_row=folded_into is None,
             )
 
         # `owner` binds the entry to this caller, exactly like the batch
@@ -6565,15 +6571,37 @@ async def translate_text(request: Request,
         request_id[:8], _elapsed, _load_s, max(0.0, _elapsed - _load_s),
         len(seg_in), ",".join(targets), total_chars, _chars_out,
         len(warnings))
-    _record_run("ok")
 
     # Complete the dictation receipt this request was holding open, so the
     # utterance and its translation read as ONE block instead of a receipt
-    # and four orphan [translate] lines with nothing linking them.
+    # and four orphan [translate] lines with nothing linking them. Claimed
+    # BEFORE the run is recorded: the utterance's recent-jobs row is where
+    # this translation lands as a second stage (like a batch job's), and
+    # _record_run must know that so it does not write a second row.
+    _folded_into: "str | None" = None
+    _held = None
     if _held_key:
         _used_model = meta.get("model") or _tr_model
         _tr_key = preload.stats_key("translation", _used_model or "")
         _held = receipt_hold.claim(_held_key)
+        if _held is not None and _held.get("request_id"):
+            try:
+                from faster_whisper_backend.stats import recent_transcriptions_store as _rts
+                if _rts.append_stage(
+                        str(_held["request_id"]),
+                        {"name": "translating", "secs": round(_elapsed, 3),
+                         "model": _used_model or None,
+                         "load_secs": round(_load_s, 3),
+                         "device": _model_compute_device(_tr_key)[1],
+                         "detail": f"{len(seg_in)} segs → {','.join(targets)}",
+                         "targets": list(targets)},
+                        add_processing_s=_elapsed):
+                    _folded_into = str(_held["request_id"])
+            except Exception as _fe:  # noqa: BLE001 — a stats miss never fails the request
+                logger.warning("[translate] could not fold into utterance row: %s", _fe)
+    _record_run("ok", folded_into=_folded_into)
+
+    if _held_key:
         if _held is not None:
             _held["translation"] = {
                 "model": _used_model or None,

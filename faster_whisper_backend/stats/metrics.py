@@ -281,7 +281,8 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
                          language: str | None = None,
                          wait_s: float | None = None,
                          error_class: str | None = None,
-                         error_stage: str | None = None) -> None:
+                         error_stage: str | None = None,
+                         recent_row: bool = True) -> None:
     """Called from the transcribe handler's outer finally on every
     /transcribe request (both success and error paths). UPSERTs the
     timing half of the recent-transcriptions row keyed by request_id;
@@ -307,31 +308,37 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
 
     ``wait_s`` is the time the request spent queued for a GPU slot;
     ``error_class`` / ``error_stage`` say why and where a failed job
-    failed (see ERROR_CLASSES). All three land in both stores."""
+    failed (see ERROR_CLASSES). All three land in both stores.
+
+    ``recent_row=False`` skips the recent-jobs row and keeps only the usage
+    rollup — for a dictation's follow-up translation, which is folded into
+    the utterance's own row (recent_transcriptions_store.append_stage)
+    instead of showing up as a second, unlinked job."""
     if not request_id:
         return
     try:
         from faster_whisper_backend import config as cfg
         from faster_whisper_backend.stats import recent_transcriptions_store
-        recent_transcriptions_store.record_timing(
-            request_id=request_id,
-            model=model,
-            audio_s=round(audio_dur, 3) if audio_dur else None,
-            processing_s=round(proc_dur, 3),
-            status=status,
-            words=int(words or 0),
-            user_id=user_id,
-            username=username,
-            kind=kind,
-            stages=stages,
-            key_label=key_label,
-            prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
-            max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
-            ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30)),
-            wait_s=wait_s,
-            error_class=error_class,
-            error_stage=error_stage,
-        )
+        if recent_row:
+            recent_transcriptions_store.record_timing(
+                request_id=request_id,
+                model=model,
+                audio_s=round(audio_dur, 3) if audio_dur else None,
+                processing_s=round(proc_dur, 3),
+                status=status,
+                words=int(words or 0),
+                user_id=user_id,
+                username=username,
+                kind=kind,
+                stages=stages,
+                key_label=key_label,
+                prune_every=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_PRUNE_EVERY", 50)),
+                max_rows=int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 500)),
+                ttl_days=float(getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 30)),
+                wait_s=wait_s,
+                error_class=error_class,
+                error_stage=error_stage,
+            )
     except Exception as e:
         logger.warning("[metrics] record_transcription persist failed: %s", e)
     try:

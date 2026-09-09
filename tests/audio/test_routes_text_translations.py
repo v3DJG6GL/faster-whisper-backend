@@ -705,3 +705,33 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
     assert "Identity" in blk
     # Links to the session's utterance receipts by the same `job=` token.
     assert "job=aaaaaaaa" in blk
+
+
+def test_claimed_dictation_receipt_folds_into_the_utterance_row(
+        client, app_module, monkeypatch):
+    """With a held receipt, the translation becomes a second stage on the
+    utterance's recent-jobs row instead of a separate translate row — the
+    /stats table shows ONE dictate job with transcribing + translating."""
+    from faster_whisper_backend.core import receipt_hold
+    from faster_whisper_backend.stats import recent_transcriptions_store as rts
+
+    _enable(app_module, monkeypatch)
+    _stub_translate(monkeypatch)
+    rts.record_timing(request_id="utt-rid", model="w", audio_s=4.0,
+                      processing_s=0.9, status="ok", words=7, kind="dictate",
+                      stages=[{"name": "transcribing", "secs": 0.9}])
+    receipt_hold.park("cap-fold", {"file_label": "utt#0", "model_name": "w",
+                                   "raw": "r", "final": "f", "seg_diag": [],
+                                   "kwargs": {}, "info": None,
+                                   "request_id": "utt-rid"}, hold_s=90)
+    try:
+        r = client.post(URL, json=_body(captured_id="cap-fold"))
+        assert r.status_code == 200, r.text
+        assert receipt_hold.pending() == 0
+    finally:
+        receipt_hold._reset_for_tests()
+    rows = rts.list_recent(limit=10)
+    assert [x["kind"] for x in rows].count("translate") == 0
+    utt = next(x for x in rows if x["request_id"] == "utt-rid")
+    assert [s["name"] for s in utt["stages"]] == ["transcribing", "translating"]
+    assert utt["processing_s"] >= 0.9   # stub translate takes ~0 s

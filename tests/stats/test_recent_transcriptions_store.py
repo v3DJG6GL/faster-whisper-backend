@@ -435,3 +435,22 @@ def test_record_timing_carries_username_for_rows_without_a_trace(tx_store):
     tx_store.record_timing(request_id="tr1", model="mt", audio_s=None,
                            processing_s=0.9, status="ok", words=0, user_id="u1")
     assert tx_store.list_recent(limit=5)[0]["username"] == "John Doe"
+
+
+def test_append_stage_folds_a_later_stage_into_the_row(tx_store):
+    """A dictation's translation arrives on a separate request: it lands as
+    a second stage on the utterance's row, adding its wall time — one row,
+    two stages, like a batch job. A miss returns False so the caller can
+    still record its own row."""
+    tx_store.record_timing(request_id="u1", model="w", audio_s=4.0,
+                           processing_s=0.9, status="ok", words=7,
+                           user_id="u", kind="dictate",
+                           stages=[{"name": "transcribing", "secs": 0.9}])
+    ok = tx_store.append_stage("u1", {"name": "translating", "secs": 12.5,
+                                      "model": "mt"}, add_processing_s=12.5)
+    assert ok is True
+    row = tx_store.list_recent(limit=5)[0]
+    assert [s["name"] for s in row["stages"]] == ["transcribing", "translating"]
+    assert row["processing_s"] == 13.4
+    assert row["kind"] == "dictate"
+    assert tx_store.append_stage("nope", {"name": "translating", "secs": 1}) is False
