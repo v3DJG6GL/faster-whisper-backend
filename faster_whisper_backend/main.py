@@ -8129,6 +8129,10 @@ _LOG_VIEWER_HTML = """<!doctype html>
   .line.st-dia  { color: var(--stage-diarizing); }
   .line.st-tra  { color: var(--stage-translating); }
   .line.st-dl   { color: var(--stage-downloading); }
+  /* Not a stage: the Identity section (user / key / profiles) and the
+     file / model header lines. Cyan like `meta`, so they stop being the one
+     grey island in an otherwise colored receipt. */
+  .line.st-id   { color: var(--cyan); }
   /* F2: on a stage PARAM row only the key column takes the hue; the value
      stays --fg. Ten rows of solid pink drowns the numbers you opened the
      log to read, and a row scrolled away from its section header still
@@ -8218,6 +8222,9 @@ _LOG_VIEWER_HTML = """<!doctype html>
     if (/(WARNING|WARN)/.test(line)) return 'warning';
     if (/(ERROR|CRITICAL)/.test(line)) return 'error';
     if (/file=|lang=|duration=|segments=|words=|format=/.test(line)) return 'meta';
+    // The receipt's header rows: "  file   stream 3789c1a7 utt#0 …",
+    // "  model  Systran/… compute=bfloat16 device=cuda", "  for    dictation job=…".
+    if (/^  (file|model|for) {2,}\\S/.test(line)) return 'meta';
     // A step's "before" text is a Python repr: single-quoted, or double-quoted
     // when the text itself contains an apostrophe ("I'm").
     if (/^\\s+['"].*['"]$/.test(line)) return 'before';
@@ -8232,7 +8239,17 @@ _LOG_VIEWER_HTML = """<!doctype html>
     'Pipeline': '', 'Separation': 'st-sep', 'Diarization': 'st-dia',
     'Translation': 'st-tra', 'Audio': 'st-whi', 'Decode params': 'st-whi',
     'Post-decode guards': 'st-whi', 'Segments': 'st-whi',
-    'Identity': '', 'Notes': '', 'Timing': 'st-tra', 'Output': 'st-tra',
+    'Identity': 'st-id', 'Notes': '', 'Timing': 'st-tra', 'Output': 'st-tra',
+  };
+  // Pipeline stage table rows: "     2  translating  tencent/… cuda 0.0s 2.9s"
+  // take the hue of the stage they name; a detail continuation under a row
+  // ("        2 segs → fr,de,cs") inherits the row above it. The header row
+  // ("     #  stage …") stays plain.
+  const _PIPE_ROW = /^ {1,6}\\d+\\s+([a-z-]+)\\b/;
+  const _PIPE_ROW_STAGE = {
+    'downloading': 'st-dl', 'separating': 'st-sep', 'vad': 'st-whi',
+    'transcribing': 'st-whi', 'diarizing': 'st-dia', 'translating': 'st-tra',
+    'translate': 'st-tra', 'transcribe': 'st-whi',
   };
   // Live per-stage progress lines OUTSIDE the receipt, so a whole job reads
   // in one color scheme rather than only its trailing block.
@@ -8277,6 +8294,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
       const label = sec[1].trim();
       st.stage = _STAGE_COLORS ? (_SEC_STAGE[label] || '') : '';
       st.inSeg = (label === 'Segments');
+      st.inPipeTable = (label === 'Pipeline'); st.rowStage = '';
       st.segRows = 0; st.ctl = null;
       st.dimLeft = 0;
       return 'rule' + (st.stage ? ' ' + st.stage : '');
@@ -8296,8 +8314,17 @@ _LOG_VIEWER_HTML = """<!doctype html>
       // Block boundary: end the dim group AND the section scope, so a stage
       // hue can never bleed past the receipt it belongs to.
       st.dimLeft = 0; st.stage = ''; st.inSeg = false; st.ctl = null;
-      st.pipe = false;
+      st.pipe = false; st.inPipeTable = false; st.rowStage = '';
       return cls;
+    }
+    if (st.inPipeTable && _STAGE_COLORS) {
+      const row = _PIPE_ROW.exec(line);
+      if (row) {
+        st.rowStage = _PIPE_ROW_STAGE[row[1]] || '';
+        return cls + (st.rowStage ? ' ' + st.rowStage : '');
+      }
+      // Continuation line under a stage row (deeper indent, no ordinal).
+      if (st.rowStage && /^ {7,}\\S/.test(line)) return cls + ' ' + st.rowStage;
     }
     if (st.dimLeft > 0) {
       st.dimLeft--;
