@@ -559,7 +559,7 @@ function wirePickers() {
 // The recent-jobs table (inline dashboard) follows the kind and user-id
 // filters: it reads this and re-renders from its last snapshot.
 function publishFilter() {
-  window.__statsFilter = { kinds: Q.kinds.slice(), users: Q.users.slice(), userNames: Q.users.map(u => pickLabel('user', u)) };
+  window.__statsFilter = { kinds: Q.kinds.slice(), kindsLabel: kindsLabel(), users: Q.users.slice(), userNames: Q.users.map(u => pickLabel('user', u)) };
   if (typeof window._fwRerenderJobs === 'function') { try { window._fwRerenderJobs(); } catch (_) {} }
 }
 
@@ -1006,10 +1006,26 @@ function flashCtl(id) {
   el.scrollIntoView({ block: 'nearest' });
   el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash');
 }
+// Flash the range control and every filter control that is currently
+// narrowing the window — the chip's ⏷ n counts them, so a click has to
+// show all n, not just the range. `only` limits it to the controls a
+// card follows (the jobs table: kind + who).
+function flashFilters(only) {
+  const active = [];
+  if (!only) active.push('sb-range');
+  if (Q.kinds.length) active.push('sb-kind');
+  if (Q.with.length) active.push('sb-with');
+  if (Q.users.length) active.push('sb-who');
+  if (Q.keys.length) active.push('sb-keys');
+  const ids = only ? only.filter(id => active.includes(id)) : active;
+  (ids.length ? ids : (only || ['sb-range'])).forEach(flashCtl);
+}
+window._fwFlashFilters = flashFilters;
 document.addEventListener('click', (e) => {
   const chip = e.target.closest('.card .win[data-win="usage"]'); if (!chip) return;
   e.preventDefault(); e.stopPropagation();
-  if (Q.range === 'custom') { flashCtl('sb-range'); openCustom(); } else flashCtl('sb-range');
+  flashFilters();
+  if (Q.range === 'custom') openCustom();
 });
 function cmpWord() { return lastDoc.compare && lastDoc.compare.mode === 'yoy' ? 'last year' : 'prev'; }
 

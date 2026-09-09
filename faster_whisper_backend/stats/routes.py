@@ -946,7 +946,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .pick-pop input[type=search] { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.5rem; font: inherit; margin-bottom: 0.4rem; }
   .pick-list { max-height: 16rem; overflow-y: auto; }
-  .pick-opt { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.3rem; border-radius: 3px; cursor: pointer; }
+  /* .pick-pop prefix: the pickers live in the sub-bar, whose
+     `header .subbar label { display: inline-flex }` (web_common) outranks a
+     bare .pick-opt and shrank every row to its content — bars started
+     wherever the name ended. */
+  .pick-pop .pick-opt { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.3rem; border-radius: 3px; cursor: pointer; }
   .pick-opt:hover { background: #21262d; }
   .pick-opt.stale { opacity: .6; }
   .pick-opt input { margin: 0; }
@@ -997,6 +1001,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
      line-height keeps every chip the same height whatever the row's font. */
   .card .win { display: inline-block; }
   .usage-toolbar .win { float: none; margin-left: 0.5rem; align-self: center; }
+  .card .win.on { color: var(--cyan); border-color: #1f4d4a; }
   .card .win b { color: var(--fg); font-weight: 500; }
   .card .win em { color: var(--yellow); font-style: normal; }
   .card .win.live { color: var(--green); border-color: #1f4d2a; }
@@ -1005,8 +1010,9 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .card .win.paused { color: var(--yellow); border-color: #4d3e1f; }
   @keyframes win-pulse { 0% { box-shadow: 0 0 0 0 rgba(57, 210, 192, .7); }
     100% { box-shadow: 0 0 0 6px rgba(57, 210, 192, 0); } }
-  .card .win.pulse, .seg-ctrl.flash { animation: win-pulse .7s ease-out 1; }
-  @media (prefers-reduced-motion: reduce) { .card .win.pulse, .seg-ctrl.flash { animation: none; } }
+  .card .win.pulse, .seg-ctrl.flash, .chips.flash, .picker.flash { animation: win-pulse .7s ease-out 1; }
+  .chips.flash, .picker.flash { border-radius: 6px; }
+  @media (prefers-reduced-motion: reduce) { .card .win.pulse, .seg-ctrl.flash, .chips.flash, .picker.flash { animation: none; } }
   .usage-error { font-size: var(--fs-xs); color: var(--yellow); }
   .usage-error button { font: inherit; font-size: var(--fs-xs); color: var(--fg);
     background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
@@ -1245,8 +1251,6 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
      per-stage bars, pinned running rows. Colors reuse the page tokens. */
   .rj-flag { color: var(--dim); font-size: var(--fs-xs); white-space: nowrap;
     display: inline-flex; align-items: center; gap: 0.3rem; }
-  #rj-follow { color: var(--dim); }
-  #rj-follow.on { color: var(--cyan); }
   .rj-x { width: 1.4rem; }
   .rj-tbl tr.rj-main { cursor: pointer; }
   .rj-tbl tr.rj-main:hover td { background: rgba(121, 192, 255, 0.04); }
@@ -1757,8 +1761,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
           <button data-v="slow" title="processing took more than half the audio's length (RTF &gt; 0.5)">slow</button>
         </div>
       </div>
-      <label class="rj-flag"><input type="checkbox" id="rj-warnonly"> warnings only</label>
-      <span class="rj-flag" id="rj-follow" title="the table follows the sub-bar's kind and who filters">follows kind · who</span>
+      <span class="spacer"></span>
+      <span class="win" data-win="jobs" title="the table follows the sub-bar's kind and who filters — click to jump to them"></span>
     </div>
     <table class="tbl rcards rj-tbl"><thead><tr>
       <th class="rj-x"></th><th>when</th><th>type</th><th>pipeline</th><th>model</th>
@@ -2625,6 +2629,32 @@ function rjFilter() {
            users: (f.users || []).length ? f.users : null,
            userNames: (f.users || []).length ? (f.userNames || f.users) : null };
 }
+// The jobs card's window chip: not a date range (the table is always the
+// newest jobs) but the two sub-bar filters it follows, in the same pill
+// as the usage cards so the eye finds it in the same place. Pulses when
+// the filters change; a click jumps to the controls (stats.js flashes
+// every active one).
+let _rjChipSig = null;
+function renderJobsChip(flt) {
+  const el = document.querySelector('.win[data-win="jobs"]');
+  if (!el) return;
+  const f = window.__statsFilter || {};
+  const parts = [];
+  if (flt.kinds) parts.push('kind: <b>' + esc(f.kindsLabel || flt.kinds.join(', ')) + '</b>');
+  if (flt.users) parts.push('user: <b>' + esc((flt.userNames || flt.users).join(', ')) + '</b>');
+  const html = parts.length ? '⏷ ' + parts.join(' · ') : 'all kinds · all users';
+  const sig = html;
+  const pulse = _rjChipSig != null && sig !== _rjChipSig;
+  _rjChipSig = sig;
+  el.innerHTML = html;
+  el.classList.toggle('on', parts.length > 0);
+  if (pulse) { el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); }
+}
+document.addEventListener('click', (e) => {
+  const chip = e.target.closest('.win[data-win="jobs"]'); if (!chip) return;
+  e.preventDefault(); e.stopPropagation();
+  if (typeof window._fwFlashFilters === 'function') window._fwFlashFilters(['sb-kind', 'sb-who']);
+});
 function segValRJ() {
   const k = rjFilter().kinds;
   return k ? k.join(',') : '';   // every job kind the chips map to (preload included), so the server page matches the client filter
@@ -2735,7 +2765,7 @@ function rjServerParams() {
   p.set('limit', '50');
   const kindF = segValRJ(); if (kindF) p.set('kind', kindF);
   const view = rjView();
-  if (view === 'failed' || $('rj-warnonly').checked) p.set('status', 'failed');
+  if (view === 'failed') p.set('status', 'failed');
   if (view === 'slow') p.set('slow_rtf', '0.5');
   const users = rjFilter().users;   // published by static/stats.js (its Q is closure-private)
   if (users) p.set('users', users.join(','));
@@ -2768,9 +2798,8 @@ function renderJobs(snap) {
   lastJobsSnap = snap;
   const flt = rjFilter();
   const view = rjView();
-  const warnOnly = $('rj-warnonly').checked || view === 'failed';
-  const follow = $('rj-follow');
-  if (follow) follow.classList.toggle('on', !!(flt.kinds || flt.users));
+  const warnOnly = view === 'failed';
+  renderJobsChip(flt);
 
   const seen = new Set((snap.recent_transcriptions || []).map(r => r.request_id || String(r.ts)));
   const rt = (snap.recent_transcriptions || []).concat(
@@ -2864,11 +2893,6 @@ function renderJobs(snap) {
   }
   const moreBtn = $('rj-more');
   if (moreBtn) moreBtn.addEventListener('click', rjLoadMore);
-  const warnCtl = $('rj-warnonly');
-  if (warnCtl) warnCtl.addEventListener('change', () => {
-    rjResetPages();
-    if (lastJobsSnap) renderJobs(lastJobsSnap);
-  });
   // The sub-bar's filters changed (static/stats.js): re-render from the
   // last snapshot and start paging from the top again.
   window._fwRerenderJobs = () => { rjResetPages(); if (lastJobsSnap) renderJobs(lastJobsSnap); };
