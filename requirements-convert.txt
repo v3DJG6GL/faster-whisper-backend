@@ -11,7 +11,7 @@ transformers>=5.16.1
 torch>=2.14.0
 
 # Enables `low_cpu_mem_usage=True` and sharded loading; cuts peak RAM ~half.
-accelerate>=1.14.0
+accelerate>=1.15.0
 
 # huggingface_hub is already a transitive dep of faster-whisper, but listed
 # explicitly so the version pin is auditable here.
