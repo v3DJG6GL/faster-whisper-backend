@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 # BOOT_ID (the per-process restart marker surfaced via /v1/models) lives in
 # build_info with the rest of the server identity; imported this early —
 # before config — so it exists exactly as soon as it used to.
+from faster_whisper_backend.core import decode_trace as _decode_trace
 from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 
 from faster_whisper_backend import config as cfg
@@ -692,6 +693,22 @@ _STAGE_ORDER = ("downloading", "separating", "vad", "transcribing",
                 "diarizing", "translating")
 
 
+class PlainText:
+    """Receipt value rendered verbatim (no repr quotes) — for composed rows
+    such as `1.52s  (3.74s → 2.22s)` that are display text, not a config value."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str):
+        self.text = str(text)
+
+    def __str__(self) -> str:
+        return self.text
+
+    def __repr__(self) -> str:
+        return f"PlainText({self.text!r})"
+
+
 def _pretty_value(v) -> str:
     """Compact display form for a config value: `true`/`false`, `(none)` for
     None, `(empty)` for "", trimmed-zero floats, repr'd strings."""
@@ -873,6 +890,76 @@ def _short_speaker(label: str) -> str:
     truncated."""
     m = re.search(r"(\d+)\s*$", label or "")
     return f"S{int(m.group(1))}" if m else (label or "")[:4]
+
+
+# Windows shown in full when a decode has at most this many; a long file is
+# summarised (totals + its slowest windows) so the receipt stays readable.
+_TRACE_FULL_MAX_WINDOWS = 12
+_TRACE_SLOWEST_SHOWN = 5
+
+
+def _fmt_secs(v) -> str:
+    return "-" if v is None else f"{float(v):.1f}s"
+
+
+def _fmt_num(v, fmt="{:.2f}") -> str:
+    return "-" if v is None else fmt.format(float(v))
+
+
+def _format_decode_trace_section(trace: "dict | None") -> list[str]:
+    """`Decode trace` section: one row per temperature rung, grouped by window.
+
+    Header carries the totals that answer "where did the time go" at a glance:
+    windows encoded, generate() calls, tokens generated, seconds inside
+    generate(). Per rung: temperature, search (beamN / bestN), tokens, the
+    window-level stats faster-whisper judged the rung by, wall time, and the
+    outcome — `retry · <rule>` for a rung that failed the ladder, and for the
+    last rung what became of the window (kept / skipped / no text)."""
+    if not trace or not trace.get("windows"):
+        return []
+    n_w = trace.get("n_windows", len(trace["windows"]))
+    head = (f"Decode trace  ({n_w} window{'s' if n_w != 1 else ''} · "
+            f"{trace.get('n_rungs', 0)} generate call"
+            f"{'s' if trace.get('n_rungs', 0) != 1 else ''} · "
+            f"{trace.get('tokens', 0)} tokens · "
+            f"{_fmt_secs(trace.get('generate_s'))} in generate")
+    if trace.get("extra_encodes"):
+        head += f" · +{trace['extra_encodes']} lang-detect encode"
+    head += ")"
+    out = [_section_rule(head)]
+    windows = list(trace["windows"])
+    omitted = 0
+    if len(windows) > _TRACE_FULL_MAX_WINDOWS:
+        ranked = sorted(windows, key=lambda w: -(w.get("secs") or 0.0))
+        keep = {id(w) for w in ranked[:_TRACE_SLOWEST_SHOWN]}
+        shown = [w for w in windows if id(w) in keep]
+        omitted = len(windows) - len(shown)
+        windows = shown
+        out.append(f"    slowest {len(shown)} of {n_w} windows shown")
+    out.append(f"    {'w#':>3}  {'at':>7}  {'span':>6}  {'enc':>5}   "
+               f"{'r#':>2}  {'T':>3}  {'search':<7}{'tokens':>6}  "
+               f"{'alp':>6}  {'cr':>5}  {'nsp':>4}  {'secs':>6}  outcome")
+    for w in windows:
+        at = "-" if w.get("start_s") is None else f"{w['start_s']:.2f}s"
+        span = "-" if w.get("len_s") is None else f"{w['len_s']:.2f}s"
+        prefix = (f"    {w.get('n', '?'):>3}  {at:>7}  {span:>6}  "
+                  f"{_fmt_secs(w.get('encode_s')):>5}   ")
+        blank = " " * len(prefix)
+        rungs = w.get("rungs") or []
+        if not rungs:
+            out.append(prefix + "(no generate call)")
+            continue
+        for j, r in enumerate(rungs):
+            bs, nh = r.get("beam_size"), r.get("num_hypotheses")
+            search = f"beam{bs}" if bs and bs > 1 else (f"best{nh}" if nh else "greedy")
+            row = (f"{j + 1:>2}  {r.get('temperature', 0.0):>3.1f}  {search:<7}"
+                   f"{r.get('tokens', 0):>6}  {_fmt_num(r.get('alp')):>6}  "
+                   f"{_fmt_num(r.get('cr')):>5}  {_fmt_num(r.get('nsp')):>4}  "
+                   f"{_fmt_secs(r.get('secs')):>6}  {r.get('outcome', '')}")
+            out.append((prefix if j == 0 else blank) + row)
+    if omitted:
+        out.append(f"    … {omitted} more window{'s' if omitted != 1 else ''} omitted")
+    return out
 
 
 def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
@@ -1154,6 +1241,7 @@ def _format_request_block(
     speakers: "list | None" = None,
     warnings: "list | None" = None,
     skipped: "list | None" = None,
+    decode_trace: "dict | None" = None,
 ) -> str:
     """Full per-request log block. `steps` is the per-pipeline trace; passed
     in only when cfg.TRACE_ENABLED so the block stays a single message.
@@ -1266,6 +1354,11 @@ def _format_request_block(
         lines.append(_section_rule("Post-decode guards  (* = non-default)"))
         for gk, gv in guards.items():
             lines.append(_param_row("    ", gk, gv))
+
+    # What faster-whisper did INSIDE model.transcribe — windows, rungs,
+    # tokens. The segments table cannot show this: a tail window that ran the
+    # whole temperature ladder and was then skipped leaves no segment at all.
+    lines.extend(_format_decode_trace_section(decode_trace))
 
     lines.extend(_format_segments_section(seg_diag, info, kwargs, speakers))
 
@@ -2330,6 +2423,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
                 None,
                 lambda: WhisperModel(load_path, **load_kwargs),
             )
+            _decode_trace.install(new_model)
             logger.info("Model loaded on %s: %s", primary_device, name)
         except Exception as e:
             logger.error("%s load failed for %s, falling back to %s: %s",
@@ -2343,6 +2437,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
                 None,
                 lambda: WhisperModel(load_path, **fallback_kwargs),
             )
+            _decode_trace.install(new_model)
             loaded_device = fallback_device
             loaded_compute = fallback_compute
             logger.info("Model loaded on %s: %s", fallback_device, name)
@@ -5051,14 +5146,22 @@ async def transcribe(
                             "[lead-pad] pre-decode failed, transcribing unpadded: %s",
                             _pad_err)
                         _audio = None
-                if _audio is not None:
-                    _segs, _info = _model.transcribe(_audio, **_kw)
+                # Decode trace (windows / rungs / tokens) for the receipt:
+                # the lazy generator is consumed inside the capture, that is
+                # where every window after the first is decoded.
+                with _decode_trace.capture(_kw) as _tr:
+                    if _audio is not None:
+                        _segs, _info = _model.transcribe(_audio, **_kw)
+                        _t["pre_secs"] = time.perf_counter() - _pre
+                        _out = _collect(_segs, _info)
+                        _t["trace"] = _decode_trace.finish(_tr, _out, _info)
+                        return (*_shift_to_original_timeline(
+                            _out, _info, _pad_ms / 1000.0), True)
+                    _segs, _info = _model.transcribe(_path, **_kw)
                     _t["pre_secs"] = time.perf_counter() - _pre
-                    return (*_shift_to_original_timeline(
-                        _collect(_segs, _info), _info, _pad_ms / 1000.0), True)
-                _segs, _info = _model.transcribe(_path, **_kw)
-                _t["pre_secs"] = time.perf_counter() - _pre
-                return _collect(_segs, _info), _info, False
+                    _out = _collect(_segs, _info)
+                    _t["trace"] = _decode_trace.finish(_tr, _out, _info)
+                    return _out, _info, False
             loop = asyncio.get_running_loop()
             _progress_set(_pid, stage="waiting", progress=None,
                           position=None, last_text=None, step=None,
@@ -5665,6 +5768,7 @@ async def transcribe(
                 username=user.get("username"),
                 key_label=user.get("key_label"),
                 guards={"segment_max_words_per_sec": _max_wps},
+                decode_trace=_decode_timing.get("trace"),
                 # Post-decode pipeline. Reconstructed from the locals in
                 # scope rather than from preload._plans: the plan omits
                 # whisper (loaded before the plan exists) and is absent

@@ -49,6 +49,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from faster_whisper_backend.auth import dependencies as auth
 from faster_whisper_backend import config_store
+from faster_whisper_backend.core import decode_trace
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.auth import rate_limit
@@ -721,12 +722,23 @@ async def transcribe_stream(ws: WebSocket) -> None:
             req_prompt = _locked_prompt
             prompt_provided = True  # locked admin value is now authoritative
 
-        async def _transcribe(model_obj, audio, kwargs):
+        async def _transcribe(model_obj, audio, kwargs, *, trace: bool = False):
+            """Returns (segments, info, trace_dict). `trace` (finals only)
+            records what faster-whisper did inside the call — windows, rungs,
+            tokens — for the receipt's Decode trace section. Partials skip
+            it: they run many times per utterance and nothing reads it."""
             loop = asyncio.get_running_loop()
 
             def work():
-                segs, info = model_obj.transcribe(audio, **kwargs)
-                return list(segs), info
+                if not trace:
+                    segs, info = model_obj.transcribe(audio, **kwargs)
+                    return list(segs), info, None
+                # The lazy generator must be consumed INSIDE the capture: the
+                # windows after the first are decoded there (thread-local).
+                with decode_trace.capture(kwargs) as tr:
+                    segs, info = model_obj.transcribe(audio, **kwargs)
+                    segs = list(segs)
+                    return segs, info, decode_trace.finish(tr, segs, info)
 
             # Shared GPU limiter (same object the batch route uses).
             async with main.get_inference_semaphore():
@@ -740,7 +752,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 main, partial_model_name, final=False, prompt=prompt,
                 want_words=gate_partial_words, language=req_language,
                 model_obj=partial_model_obj, overrides=req_overrides, ident=ident)
-            segs, _info = await _transcribe(partial_model_obj, audio, kwargs)
+            segs, _info, _ = await _transcribe(partial_model_obj, audio, kwargs)
             if gate_partial_words:
                 words = [(w.start, w.end, w.word)
                          for seg in segs for w in (getattr(seg, "words", None) or [])]
@@ -786,17 +798,19 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # ws.receive() drain (the wedge documented at the queue-sizing
             # note). The pump is the sole session mutator, so the extra
             # suspension adds no new interleaving.
+            _untrimmed_s = audio.shape[0] / SAMPLE_RATE
             audio = await asyncio.to_thread(
                 _trim_trailing_nonspeech,
                 audio,
                 tail_pad_ms,
                 float(main.cfg_for(final_model, "VAD_THRESHOLD", ident)),
                 session_id[:8])
+            _trimmed_s = audio.shape[0] / SAMPLE_RATE
             kwargs = _build_transcribe_kwargs(
                 main, final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language,
                 model_obj=final_model_obj, overrides=req_overrides, ident=ident)
-            segs, info = await _transcribe(final_model_obj, audio, kwargs)
+            segs, info, trace = await _transcribe(final_model_obj, audio, kwargs, trace=True)
             max_wps = float(main.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
             words_out: list[dict] = []
             seg_diag: list[dict] = []
@@ -840,12 +854,18 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # they would still carry the hallucination).
             dropped_all = bool(segs) and not kept
             last_decode.clear()
-            last_decode.update(info=info, seg_diag=seg_diag, kwargs=kwargs, guards={
+            last_decode.update(info=info, seg_diag=seg_diag, kwargs=kwargs, trace=trace, guards={
                 # Post-decode guard settings as applied to THIS decode — rendered
                 # in the log block's guards section (they are not transcribe
                 # kwargs, so the Decode params section can't show them).
                 "segment_max_words_per_sec": max_wps,
                 "tail_trim_pad_ms": tail_pad_ms,
+                # What the trim actually removed from THIS buffer (the block's
+                # `duration` row is the post-trim length; the utterance label
+                # is the pre-trim one — this row is the bridge between them).
+                "tail_trim_cut": main.PlainText(
+                    f"{_untrimmed_s - _trimmed_s:.2f}s  "
+                    f"({_untrimmed_s:.2f}s → {_trimmed_s:.2f}s)"),
                 "final_drop_min_avg_logprob": float(main.cfg_for(
                     final_model, "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", ident)),
                 "final_drop_temperature": float(main.cfg_for(
@@ -1026,6 +1046,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     user_id=user.get("user_id"), key_id=user.get("key_id"),
                     username=user.get("username"), key_label=user.get("key_label"),
                     guards=dec.get("guards"),
+                    decode_trace=dec.get("trace"),
                     stages=stages)
                 # Hold only when the client said a per-utterance translation
                 # is coming AND there is a capture id to key it on — that id is
