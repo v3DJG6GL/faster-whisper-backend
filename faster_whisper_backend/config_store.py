@@ -231,6 +231,15 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "cram 20+ words into sub-second windows while real speech stays "
         "under ~6. Segments with fewer than 3 words are never dropped. "
         "0 = disabled. Default 10.",
+    "DECODE_SKIP_RESIDUAL_WINDOWS":
+        "Stop decoding once a window reached the end of the audio (batch + "
+        "streaming final). Whisper re-decodes the sub-second leftover after "
+        "the last word as its own window — audio the previous window already "
+        "saw and chose not to transcribe — and the temperature ladder can loop "
+        "there for tens of seconds producing junk the confidence guard then "
+        "drops. Full 30 s windows of long files are unaffected. The refused "
+        "window is listed in the log block's Decode trace. Default on; turn "
+        "off only to check whether a missing last word is caused by this rule.",
     "SUPPRESS_BLANK":
         "Suppress blank token at start of decoder sampling. Default true. "
         "Almost never disable; only useful when debugging tokenizer behavior.",
@@ -1595,6 +1604,10 @@ class AdminConfig(BaseModel):
         subgroup="Advanced — anti-hallucination & token control")
     SEGMENT_MAX_WORDS_PER_S: Annotated[float, Field(ge=0.0, le=100.0)] | None = _F(
         "SEGMENT_MAX_WORDS_PER_S", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control")
+    DECODE_SKIP_RESIDUAL_WINDOWS: bool | None = _F(
+        "DECODE_SKIP_RESIDUAL_WINDOWS", scope="per_request",
         group="Decode params",
         subgroup="Advanced — anti-hallucination & token control")
     SUPPRESS_BLANK: bool | None = _F(

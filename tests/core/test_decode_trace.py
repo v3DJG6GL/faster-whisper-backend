@@ -91,17 +91,26 @@ class _Model:
                 break
         return last
 
+    lang_detect = False   # pad + encode the first window before any decode
+    duration = 2.2
+
     def transcribe(self, audio, **kw):
-        # Same order as generate_segments: pad_or_trim → encode → fallback per window.
+        # Lazy like generate_segments: each window is padded, encoded and
+        # decoded only when the caller pulls the next segment.
         import faster_whisper.transcribe as fwt
         import numpy as np
-        out = []
-        for spec in self.windows:
-            fwt.pad_or_trim(np.zeros((128, spec["frames"]), dtype="float32"))
-            self.encode(None)
-            self.generate_with_fallback("enc", [1, 2, 3], _Tokenizer(), None)
-            out.extend(_Seg(spec["seek"], "x") for _ in range(spec["yield"]))
-        return iter(out), FakeInfo(duration=2.2)
+
+        def gen():
+            if self.lang_detect:
+                fwt.pad_or_trim(np.zeros((128, self.windows[0]["frames"]), dtype="float32"))
+                self.encode(None)
+            for spec in self.windows:
+                fwt.pad_or_trim(np.zeros((128, spec["frames"]), dtype="float32"))
+                self.encode(None)
+                self.generate_with_fallback("enc", [1, 2, 3], _Tokenizer(), None)
+                for _ in range(spec["yield"]):
+                    yield _Seg(spec["seek"], "x")
+        return gen(), FakeInfo(duration=self.duration)
 
 
 _THR = {"cr": 2.4, "lp": -1.0, "ns": 0.6}
@@ -259,3 +268,110 @@ def test_plain_text_guard_value_renders_without_quotes(app_module):
                                 app_module.PlainText("1.52s  (3.74s → 2.22s)"))
     assert row.endswith("1.52s  (3.74s → 2.22s)")
     assert "'" not in row
+
+
+# ---------------------------------------------------------------------------
+# Residual-window stop (DECODE_SKIP_RESIDUAL_WINDOWS)
+# ---------------------------------------------------------------------------
+
+def _run_stop(m, **kw):
+    with dt.capture(_KW, **kw) as tr:
+        segs, info = m.transcribe(None)
+        segs = dt.consume(segs)
+        return segs, dt.finish(tr, segs, info)
+
+
+def test_residual_window_is_refused_before_it_is_encoded():
+    """The 2026-09-17 shape: window 1 covered the whole clip (shorter than
+    30 s), so the 0.47 s leftover after its last word is refused — no encode,
+    no generate, no temperature ladder — and window 1's segment is kept."""
+    m = dt.install(_incident_model())
+    segs, t = _run_stop(m, skip_residual=True)
+    assert len(segs) == 1
+    assert len(m.model.calls) == 1, "only window 1 reached the decoder"
+    assert t["n_windows"] == 2 and t["skipped_windows"] == 1
+    assert t["n_rungs"] == 1 and t["tokens"] == 5
+    w1, w2 = t["windows"]
+    assert w1["rungs"][0]["outcome"] == "kept · 1 segment"
+    assert w2["skipped"] == "residual" and w2["rungs"] == []
+    assert w2["encode_s"] is None
+    assert w2["outcome"] == "skipped · previous window reached end of audio"
+    assert w2["start_s"] == pytest.approx(2.2 - 0.47, abs=0.01)
+    assert w2["len_s"] == pytest.approx(0.47)
+
+
+def test_residual_stop_is_off_unless_asked():
+    m = dt.install(_incident_model())
+    segs, t = _run_stop(m)
+    assert len(segs) == 1 and t["n_rungs"] == 7 and t["skipped_windows"] == 0
+    assert "skipped" not in t["windows"][1]
+
+
+def test_language_detection_pad_does_not_arm_the_stop():
+    """transcribe() pads + encodes the first window for language detection
+    BEFORE the loop decodes it. That pad must not count as a decoded window,
+    or the real first window would be refused."""
+    m = _incident_model()
+    m.lang_detect = True
+    dt.install(m)
+    segs, t = _run_stop(m, skip_residual=True)
+    assert len(segs) == 1
+    assert t["n_windows"] == 2 and t["skipped_windows"] == 1
+    assert t["extra_encodes"] == 1
+    assert t["windows"][0]["rungs"][0]["outcome"] == "kept · 1 segment"
+
+
+def test_full_windows_of_a_long_file_are_never_refused():
+    """A 65 s file: two full 30 s windows, a 5 s last window, then the
+    residual after its last word. Only the residual is refused."""
+    plan = [[([5, 6, 7], -0.5, 0.01)]] * 3 + [[([9], -0.5, 0.01)]]
+    m = _Model(plan, _THR)
+    m.duration = 65.0
+    m.windows = [{"frames": 3000, "seek": 0, "yield": 1},
+                 {"frames": 3000, "seek": 2900, "yield": 1},
+                 {"frames": 500, "seek": 6000, "yield": 1},   # 65 s − 5 s
+                 {"frames": 60, "seek": 6440, "yield": 0}]
+    dt.install(m)
+    segs, t = _run_stop(m, skip_residual=True)
+    assert len(segs) == 3
+    assert len(m.model.calls) == 3
+    assert [w.get("skipped") for w in t["windows"]] == [None, None, None, "residual"]
+    assert t["windows"][2]["rungs"][0]["outcome"] == "kept · 1 segment"
+
+
+def test_consume_returns_everything_when_nothing_stops():
+    m = dt.install(_incident_model())
+    with dt.capture(_KW):
+        segs, _ = m.transcribe(None)
+        assert len(dt.consume(segs)) == 1
+
+
+def test_stop_needs_a_capture_to_be_armed():
+    """Without a capture the hooks are passthroughs: a plain transcribe on
+    the hooked model decodes every window, as faster-whisper would."""
+    m = dt.install(_incident_model())
+    segs, _ = m.transcribe(None)
+    assert len(list(segs)) == 1
+    assert len(m.model.calls) == 7
+
+
+def test_receipt_shows_the_refused_window_and_the_guard_row(app_module):
+    seg = [{"id": 0, "start": 0.02, "end": 1.72, "alp": -0.44, "nsp": 0.01,
+            "cr": 0.64, "temp": 0.0, "text": "Erzinkontinenz", "dropped": False}]
+    _, t = _run_stop(dt.install(_incident_model()), skip_residual=True)
+    base = dict(file_label="stream utt#3", model_name="m", info=FakeInfo(duration=2.2),
+                kwargs={"beam_size": 10}, seg_diag=seg, raw="", final="",
+                decode_trace=t)
+    block = app_module._format_request_block(
+        **base, guards={"skip_residual_windows": True})
+    assert "Decode trace  (2 windows · 1 generate call · 5 tokens" in block
+    assert "· 1 residual skipped)" in block
+    row = next(l for l in block.splitlines() if "skipped · previous window" in l)
+    assert row.startswith("      2 ")
+    assert "1.73s" in row and "0.47s" in row
+    guard = next(l for l in block.splitlines() if "skip_residual_windows" in l)
+    assert guard.rstrip().endswith("true"), "default on: no non-default marker"
+    off = app_module._format_request_block(
+        **base, guards={"skip_residual_windows": False})
+    assert next(l for l in off.splitlines()
+                if "skip_residual_windows" in l).rstrip().endswith("false *")

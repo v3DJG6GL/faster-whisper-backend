@@ -29,6 +29,22 @@ What is hooked (faster-whisper 1.2.x, ``transcribe.py``):
 
 Every hook is defensive: a faster-whisper build that renamed an attribute
 simply loses that facet of the trace, never the decode.
+
+Residual-window stop (``capture(..., skip_residual=True)``)
+-----------------------------------------------------------
+faster-whisper advances ``seek`` to the last aligned word, not to the end of
+the window it just decoded, so whatever trails that word (breath, VAD pad,
+endpointer silence) is decoded AGAIN as its own zero-padded window — audio the
+previous window already saw in full and chose not to transcribe. That leftover
+is where the temperature ladder loops: 2026-09-17 a 5.9 s utterance spent
+108 s in eleven rungs of 224-token repetition on two residual windows of
+0.49 s and 0.37 s, and the result was dropped anyway. The rule here: once a
+decoded window was shorter than 30 s it reached the end of the audio, and any
+window faster-whisper tries to start after it is refused — the ``pad_or_trim``
+hook raises ``ResidualWindowSkipped`` before the encoder runs, and
+``consume()`` turns that into a normal end of the segment stream. Windows of a
+long file are untouched: a full 30 s window never sets the flag. Language
+detection pads the first window before any decode and cannot set it either.
 """
 
 from __future__ import annotations
@@ -42,18 +58,44 @@ _tls = threading.local()
 
 _INSTALLED_FLAG = "_fwb_decode_trace_installed"
 
+_N_FRAMES = 3000          # one 30 s window at 100 mel frames / s
+_FRAMES_PER_S = 100.0
+
 
 def _current() -> "DecodeTrace | None":
     return getattr(_tls, "trace", None)
+
+
+class ResidualWindowSkipped(Exception):
+    """Raised inside faster-whisper's window loop (from the ``pad_or_trim``
+    hook) when a window would start after one that already reached the end
+    of the audio. Ends the segment generator early; see ``consume``."""
+
+
+def consume(gen) -> list:
+    """Materialise faster-whisper's lazy segment generator, treating the
+    residual-window stop as the normal end of the stream. Every segment the
+    earlier windows yielded is kept."""
+    out = []
+    try:
+        for seg in gen:
+            out.append(seg)
+    except ResidualWindowSkipped:
+        pass
+    return out
 
 
 class DecodeTrace:
     """Mutable collector for one ``model.transcribe`` call (one thread)."""
 
     def __init__(self, *, no_speech_threshold=None, log_prob_threshold=None,
-                 compression_ratio_threshold=None, length_penalty=1.0):
+                 compression_ratio_threshold=None, length_penalty=1.0,
+                 skip_residual: bool = False):
         self.windows: list[dict] = []
         self.extra_encodes = 0          # encoder passes not followed by a decode (language detection)
+        self.skip_residual = bool(skip_residual)
+        self.reached_end = False        # a DECODED window was shorter than 30 s
+        self.skipped_windows = 0
         self.pending_len_frames: int | None = None
         self.pending_encode_s: float | None = None
         self.no_speech_threshold = no_speech_threshold
@@ -64,7 +106,28 @@ class DecodeTrace:
 
     # -- hooks -------------------------------------------------------------
     def note_window_len(self, frames: int) -> None:
-        self.pending_len_frames = int(frames)
+        """A window is about to be padded for the encoder. When a decoded
+        window already reached the end of the audio, this one is the residual
+        after its last word: record it as skipped and stop the decode."""
+        frames = int(frames)
+        if self.skip_residual and self.reached_end:
+            self.windows.append({
+                "n": len(self.windows) + 1,
+                "len_frames": frames,
+                "encode_s": None,
+                "rungs": [],
+                "chosen": None,
+                "t0": time.perf_counter(),
+                "secs": 0.0,
+                "skipped": "residual",
+            })
+            self.skipped_windows += 1
+            self.pending_len_frames = None
+            self.pending_encode_s = None
+            raise ResidualWindowSkipped(
+                f"window {len(self.windows)} ({frames} frames) starts after the "
+                "window that reached the end of the audio")
+        self.pending_len_frames = frames
 
     def note_encode(self, secs: float) -> None:
         if self.pending_encode_s is not None:
@@ -83,6 +146,10 @@ class DecodeTrace:
             "t0": time.perf_counter(),
             "secs": None,
         }
+        # Only a window that is actually decoded can mark the end: language
+        # detection pads the first window too, before any decode.
+        if w["len_frames"] is not None and w["len_frames"] < _N_FRAMES:
+            self.reached_end = True
         self.pending_len_frames = None
         self.pending_encode_s = None
         self.windows.append(w)
@@ -105,17 +172,20 @@ class DecodeTrace:
 
 
 @contextlib.contextmanager
-def capture(kwargs: "dict | None" = None):
+def capture(kwargs: "dict | None" = None, *, skip_residual: bool = False):
     """Activate a trace for the decode running on THIS thread.
 
     Must wrap both ``model.transcribe(...)`` and the consumption of its lazy
-    segment generator (that is where the windows are decoded)."""
+    segment generator (that is where the windows are decoded). With
+    ``skip_residual`` the generator must be drained through ``consume()``,
+    which absorbs the ``ResidualWindowSkipped`` stop."""
     kw = kwargs or {}
     tr = DecodeTrace(
         no_speech_threshold=kw.get("no_speech_threshold"),
         log_prob_threshold=kw.get("log_prob_threshold"),
         compression_ratio_threshold=kw.get("compression_ratio_threshold"),
         length_penalty=kw.get("length_penalty", 1.0) or 1.0,
+        skip_residual=skip_residual,
     )
     prev = _current()
     _tls.trace = tr
@@ -283,6 +353,8 @@ def _install_pad_hook() -> None:
         if tr is not None:
             try:
                 tr.note_window_len(int(array.shape[-1]))
+            except ResidualWindowSkipped:
+                raise           # the stop rule, absorbed by consume()
             except Exception:
                 pass
         return orig(array, *args, **kwargs)
@@ -294,9 +366,6 @@ def _install_pad_hook() -> None:
 # ---------------------------------------------------------------------------
 # Post-decode summary
 # ---------------------------------------------------------------------------
-
-_N_FRAMES = 3000          # one 30 s window at 100 mel frames / s
-_FRAMES_PER_S = 100.0
 
 
 def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
@@ -365,7 +434,7 @@ def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
             else:
                 r["outcome"] = _window_outcome(w, r, seg_count, reasons, silence,
                                                ns_thr, lp_thr)
-        windows_out.append({
+        entry = {
             "n": w.get("n"),
             "start_s": start_s,
             "len_s": len_s,
@@ -373,7 +442,11 @@ def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
             "secs": w.get("secs"),
             "segments": seg_count,
             "rungs": rungs,
-        })
+        }
+        if w.get("skipped") == "residual":
+            entry["skipped"] = "residual"
+            entry["outcome"] = "skipped · previous window reached end of audio"
+        windows_out.append(entry)
     return {
         "windows": windows_out,
         "n_windows": len(windows_out),
@@ -381,6 +454,7 @@ def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
         "tokens": total_tokens,
         "generate_s": total_gen_s,
         "extra_encodes": tr.extra_encodes,
+        "skipped_windows": tr.skipped_windows,
         "total_s": time.perf_counter() - tr.t0,
     }
 

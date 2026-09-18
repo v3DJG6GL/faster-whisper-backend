@@ -665,6 +665,7 @@ _KWARG_TO_CFG = {
     # Post-decode guards (pseudo-kwargs: rendered in the log block's guards
     # section, never passed to model.transcribe)
     "segment_max_words_per_sec": "SEGMENT_MAX_WORDS_PER_S",
+    "skip_residual_windows": "DECODE_SKIP_RESIDUAL_WINDOWS",
     "tail_trim_pad_ms": "STREAMING_TAIL_TRIM_PAD_MS",
     "final_drop_min_avg_logprob": "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
     "final_drop_temperature": "STREAMING_FINAL_DROP_TEMPERATURE",
@@ -925,6 +926,8 @@ def _format_decode_trace_section(trace: "dict | None") -> list[str]:
             f"{_fmt_secs(trace.get('generate_s'))} in generate")
     if trace.get("extra_encodes"):
         head += f" · +{trace['extra_encodes']} lang-detect encode"
+    if trace.get("skipped_windows"):
+        head += f" · {trace['skipped_windows']} residual skipped"
     head += ")"
     out = [_section_rule(head)]
     windows = list(trace["windows"])
@@ -947,7 +950,11 @@ def _format_decode_trace_section(trace: "dict | None") -> list[str]:
         blank = " " * len(prefix)
         rungs = w.get("rungs") or []
         if not rungs:
-            out.append(prefix + "(no generate call)")
+            # A residual window the stop rule refused (no encode, no
+            # generate) still gets its row: that is how a reader sees the
+            # rule fire — and, should a last word ever go missing, whether
+            # this rule was involved.
+            out.append(prefix + (w.get("outcome") or "(no generate call)"))
             continue
         for j, r in enumerate(rungs):
             bs, nh = r.get("beam_size"), r.get("num_hypotheses")
@@ -5069,10 +5076,18 @@ async def transcribe(
             # a footnote. Written once from the executor thread; a plain dict
             # write is GIL-atomic, same as the _progress_set traffic below.
             _decode_timing: dict = {}
+            # Residual-window stop (DECODE_SKIP_RESIDUAL_WINDOWS): refuse the
+            # sub-second leftover faster-whisper re-decodes after the last
+            # word of a window that already reached the end of the audio —
+            # the temperature ladder loops there for tens of seconds and the
+            # result is dropped anyway. Resolved here (event loop) like every
+            # other cfg_for read; the executor thread only carries the bool.
+            _skip_residual = bool(cfg_for(
+                resolved_model, "DECODE_SKIP_RESIDUAL_WINDOWS", ident))
 
             def _do_transcribe(_model=model, _path=tmp_path,
                                _kw=transcribe_kwargs, _pad_ms=_lead_pad_ms,
-                               _t=_decode_timing):
+                               _t=_decode_timing, _skip=_skip_residual):
                 # Materialize the lazy segment generator WITH live progress:
                 # each yielded segment carries its end time, and info.duration
                 # is known up front — that ratio is genuine decode progress
@@ -5097,27 +5112,33 @@ async def transcribe(
                     _rplan.set_vad_retained(_retained)
                     _out = []
                     _log_bucket = 0  # 5%-step INFO trail, like the other stages
-                    for _s in _gen:
-                        # Cooperative cancel between decoded segments — this
-                        # executor thread is the only thing that can stop a
-                        # cancelled request's decode.
-                        if _cancel_requested(_pid):
-                            raise _ClientCancelled()
-                        _out.append(_s)
-                        if _dur > 0:
-                            _frac = min(1.0, float(_s.end) / _dur)
-                            _progress_set(
-                                _pid,
-                                progress=_frac,
-                                position=float(_s.end),
-                                # Live tail for the client's run panel.
-                                last_text=(_s.text or "").strip()[:300] or None)
-                            _b = int(_frac * 20)
-                            if _b > _log_bucket:
-                                _log_bucket = _b
-                                logger.info(
-                                    "[transcribe] %d%% (%.1fs / %.1fs)",
-                                    _b * 5, float(_s.end), _dur)
+                    try:
+                        for _s in _gen:
+                            # Cooperative cancel between decoded segments —
+                            # this executor thread is the only thing that can
+                            # stop a cancelled request's decode.
+                            if _cancel_requested(_pid):
+                                raise _ClientCancelled()
+                            _out.append(_s)
+                            if _dur > 0:
+                                _frac = min(1.0, float(_s.end) / _dur)
+                                _progress_set(
+                                    _pid,
+                                    progress=_frac,
+                                    position=float(_s.end),
+                                    # Live tail for the client's run panel.
+                                    last_text=(_s.text or "").strip()[:300] or None)
+                                _b = int(_frac * 20)
+                                if _b > _log_bucket:
+                                    _log_bucket = _b
+                                    logger.info(
+                                        "[transcribe] %d%% (%.1fs / %.1fs)",
+                                        _b * 5, float(_s.end), _dur)
+                    except _decode_trace.ResidualWindowSkipped:
+                        # The stop rule ended the stream after the window that
+                        # reached the end of the audio; everything yielded so
+                        # far is the complete output.
+                        pass
                     return _out
                 # This executor thread has the semaphore slot now: everything
                 # until _collect's first entry (lead-pad decode, transcribe()'s
@@ -5149,7 +5170,7 @@ async def transcribe(
                 # Decode trace (windows / rungs / tokens) for the receipt:
                 # the lazy generator is consumed inside the capture, that is
                 # where every window after the first is decoded.
-                with _decode_trace.capture(_kw) as _tr:
+                with _decode_trace.capture(_kw, skip_residual=_skip) as _tr:
                     if _audio is not None:
                         _segs, _info = _model.transcribe(_audio, **_kw)
                         _t["pre_secs"] = time.perf_counter() - _pre
@@ -5767,7 +5788,8 @@ async def transcribe(
                 key_id=user.get("key_id"),
                 username=user.get("username"),
                 key_label=user.get("key_label"),
-                guards={"segment_max_words_per_sec": _max_wps},
+                guards={"segment_max_words_per_sec": _max_wps,
+                        "skip_residual_windows": _skip_residual},
                 decode_trace=_decode_timing.get("trace"),
                 # Post-decode pipeline. Reconstructed from the locals in
                 # scope rather than from preload._plans: the plan omits

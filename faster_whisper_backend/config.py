@@ -469,6 +469,19 @@ HALLUCINATION_SILENCE_THRESHOLD: "float | None" = _D("HALLUCINATION_SILENCE_THRE
 # with fewer than 3 words are never dropped. 0 = disabled.
 SEGMENT_MAX_WORDS_PER_S: float = _D("SEGMENT_MAX_WORDS_PER_S")
 
+# Stop the decode after the window that reached the end of the audio. With
+# word timestamps faster-whisper advances its read position to the LAST WORD,
+# not to the end of the window, so the trailing breath / VAD pad / endpointer
+# silence is re-decoded as its own zero-padded window — audio the previous
+# window already saw in full and chose not to transcribe. That leftover is
+# where the temperature ladder loops (2026-09-17: 108 s of 224-token repetition
+# for a 5.9 s dictation, result dropped by the confidence guard anyway, live
+# audio shed meanwhile). Applies to batch files and streaming finals; a full
+# 30 s window never triggers it, so long files decode every window as before.
+# The refused window shows up in the receipt's Decode trace as "skipped ·
+# previous window reached end of audio". Off = faster-whisper's own behaviour.
+DECODE_SKIP_RESIDUAL_WINDOWS: bool = _D("DECODE_SKIP_RESIDUAL_WINDOWS")
+
 # Suppress blank token at start of decoder sampling. Default True. Almost
 # never disable; only useful when debugging tokenizer behavior.
 SUPPRESS_BLANK: bool = _D("SUPPRESS_BLANK")
@@ -1716,7 +1729,7 @@ def _decode_model_id(s: str) -> str:
 _OVERRIDE_BOOL_FIELDS = frozenset({
     "CONDITION_ON_PREVIOUS_TEXT", "WORD_TIMESTAMPS_ENABLED",
     "VAD_FILTER", "MULTILINGUAL", "SUPPRESS_BLANK",
-    "DIARIZE", "SEPARATE_BGM",
+    "DIARIZE", "SEPARATE_BGM", "DECODE_SKIP_RESIDUAL_WINDOWS",
 })
 _OVERRIDE_INT_FIELDS = frozenset({
     "BEAM_SIZE", "BEST_OF", "VAD_MIN_SILENCE_MS", "VAD_SPEECH_PAD_MS",

@@ -722,11 +722,16 @@ async def transcribe_stream(ws: WebSocket) -> None:
             req_prompt = _locked_prompt
             prompt_provided = True  # locked admin value is now authoritative
 
-        async def _transcribe(model_obj, audio, kwargs, *, trace: bool = False):
+        async def _transcribe(model_obj, audio, kwargs, *, trace: bool = False,
+                              skip_residual: bool = False):
             """Returns (segments, info, trace_dict). `trace` (finals only)
             records what faster-whisper did inside the call — windows, rungs,
             tokens — for the receipt's Decode trace section. Partials skip
-            it: they run many times per utterance and nothing reads it."""
+            it: they run many times per utterance and nothing reads it.
+            `skip_residual` (DECODE_SKIP_RESIDUAL_WINDOWS, finals only) stops
+            the decode after the window that reached the end of the audio;
+            partials run without the temperature ladder, so a residual window
+            costs them well under a second and needs no rule."""
             loop = asyncio.get_running_loop()
 
             def work():
@@ -735,9 +740,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     return list(segs), info, None
                 # The lazy generator must be consumed INSIDE the capture: the
                 # windows after the first are decoded there (thread-local).
-                with decode_trace.capture(kwargs) as tr:
+                with decode_trace.capture(kwargs, skip_residual=skip_residual) as tr:
                     segs, info = model_obj.transcribe(audio, **kwargs)
-                    segs = list(segs)
+                    segs = decode_trace.consume(segs)
                     return segs, info, decode_trace.finish(tr, segs, info)
 
             # Shared GPU limiter (same object the batch route uses).
@@ -810,7 +815,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 main, final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language,
                 model_obj=final_model_obj, overrides=req_overrides, ident=ident)
-            segs, info, trace = await _transcribe(final_model_obj, audio, kwargs, trace=True)
+            skip_residual = bool(main.cfg_for(
+                final_model, "DECODE_SKIP_RESIDUAL_WINDOWS", ident))
+            segs, info, trace = await _transcribe(
+                final_model_obj, audio, kwargs, trace=True, skip_residual=skip_residual)
             max_wps = float(main.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
             words_out: list[dict] = []
             seg_diag: list[dict] = []
@@ -859,6 +867,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # in the log block's guards section (they are not transcribe
                 # kwargs, so the Decode params section can't show them).
                 "segment_max_words_per_sec": max_wps,
+                "skip_residual_windows": skip_residual,
                 "tail_trim_pad_ms": tail_pad_ms,
                 # What the trim actually removed from THIS buffer (the block's
                 # `duration` row is the post-trim length; the utterance label

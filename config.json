@@ -60,6 +60,7 @@
   "CONVERT_QUANTIZATION": "float16",
   "CORS_ALLOW_ORIGINS": [],
   "CPU_THREADS": 0,
+  "DECODE_SKIP_RESIDUAL_WINDOWS": true,
   "DEFAULT_HOTWORDS": null,
   "DEFAULT_LANGUAGE": "de",
   "DEFAULT_MODEL": "Systran/faster-whisper-large-v3",

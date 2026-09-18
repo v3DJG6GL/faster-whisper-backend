@@ -615,3 +615,43 @@ def test_dictate_page_resampler_seam_uses_a_real_neighbour(app_module):
         body = client.get("/dictate").text
     assert "i < 0 ? resampleCarry : float32[i]" in body
     assert "float32[i + 1] : resampleCarry" not in body
+
+
+# --- residual-window stop (DECODE_SKIP_RESIDUAL_WINDOWS) ---------------------
+
+def test_stream_final_arms_the_residual_stop_and_reports_it(app_module, monkeypatch, caplog):
+    """The FINAL decode resolves DECODE_SKIP_RESIDUAL_WINDOWS through cfg_for,
+    hands it to the trace capture, and the receipt's guards block shows the
+    value (with the non-default marker once it is switched off)."""
+    import logging
+    from faster_whisper_backend.core import decode_trace as dt
+    from faster_whisper_backend.streaming import routes as streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    seen = []
+    real = dt.capture
+
+    def spy(kwargs=None, *, skip_residual=False):
+        seen.append(skip_residual)
+        return real(kwargs, skip_residual=skip_residual)
+    monkeypatch.setattr(streaming_routes.decode_trace, "capture", spy)
+
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
+            _dictate_one_utterance(client, {})
+    assert seen == [True], "one final decode, stop rule armed"
+    block = "\n".join(r.getMessage() for r in caplog.records
+                      if "Post-decode guards" in r.getMessage())
+    assert next(l for l in block.splitlines()
+                if "skip_residual_windows" in l).rstrip().endswith("true")
+
+    seen.clear(); caplog.clear()
+    monkeypatch.setattr(app_module.cfg, "DECODE_SKIP_RESIDUAL_WINDOWS", False, raising=False)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
+            _dictate_one_utterance(client, {})
+    assert seen == [False]
+    block = "\n".join(r.getMessage() for r in caplog.records
+                      if "Post-decode guards" in r.getMessage())
+    assert next(l for l in block.splitlines()
+                if "skip_residual_windows" in l).rstrip().endswith("false *")
