@@ -24,6 +24,7 @@ import uuid
 
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
 
@@ -252,7 +253,7 @@ def _install_shims() -> None:
 # threading.Lock in the executor thread covers zombies too.
 _separate_mutex = threading.Lock()
 
-_lock = asyncio.Lock()
+_lock = LoopLock()   # see core.loop_lock: survives a test suite's loop-per-lifespan
 _separator = None
 _separator_key: "tuple[str, str] | None" = None  # (model_filename, device)
 _last_used_monotonic: float = 0.0

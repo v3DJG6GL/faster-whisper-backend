@@ -23,6 +23,7 @@ import time
 
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
 
@@ -44,7 +45,7 @@ class DiarizationError(RuntimeError):
 # thread-safe.
 _infer_mutex = threading.Lock()
 
-_lock = asyncio.Lock()
+_lock = LoopLock()   # see core.loop_lock: survives a test suite's loop-per-lifespan
 _pipeline = None
 # (model_id, device, embedding_batch_size) the loaded pipeline was built with —
 # a config edit that changes any of these makes the cached pipeline stale.

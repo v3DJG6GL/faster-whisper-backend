@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
 
@@ -74,7 +75,7 @@ _infer_gate = asyncio.Lock()
 # in-use model is never evicted (see _drop_locked).
 _active: "dict[str, int]" = {}
 
-_lock = asyncio.Lock()
+_lock = LoopLock()   # see core.loop_lock: survives a test suite's loop-per-lifespan
 # ref → loaded llama_cpp.Llama, insertion-ordered oldest-first (LRU: a cache
 # hit moves the ref to the end; eviction pops from the front).
 _models: "OrderedDict[str, object]" = OrderedDict()
