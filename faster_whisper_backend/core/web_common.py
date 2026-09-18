@@ -1359,7 +1359,8 @@ NAV_OVERFLOW_JS = """
   function setOpen(o){btn.setAttribute('aria-expanded',o?'true':'false');list.hidden=!o;}
   function layout(){
     if(busy)return;busy=true;
-    restore();more.hidden=true;setOpen(false);
+    var wasOpen=!list.hidden;
+    restore();more.hidden=true;
     var drawer=toggle&&getComputedStyle(toggle).display!=='none';
     if(!drawer&&!fits()){
       more.hidden=false;
@@ -1376,13 +1377,19 @@ NAV_OVERFLOW_JS = """
       btn.querySelector('.cnt').textContent=n?String(n):'';
       if(!n){more.hidden=true;}
     }
+    /* a relayout (resize, gate change) must not slam an open menu shut */
+    setOpen(wasOpen&&!more.hidden);
     busy=false;
   }
   new ResizeObserver(function(){requestAnimationFrame(layout);}).observe(nav);
-  new MutationObserver(function(){requestAnimationFrame(layout);})
-    .observe(nav.parentElement,{attributes:true,attributeFilter:['class'],subtree:true});
+  /* Watch ONLY the links' class lists (the whoami gate adds .allowed).
+     Watching the whole bar re-ran layout on every sev-poller / activity
+     tick (they toggle hot/zero/idle classes) and closed the menu. */
+  var mo=new MutationObserver(function(){requestAnimationFrame(layout);});
+  mo.observe(nav,{attributes:true,attributeFilter:['class'],subtree:true});
+  mo.observe(list,{attributes:true,attributeFilter:['class'],subtree:true});
   btn.addEventListener('click',function(){setOpen(list.hidden);});
-  more.addEventListener('keydown',function(e){if(e.key==='Escape'&&!list.hidden){setOpen(false);btn.focus();}});
+  document.addEventListener('keydown',function(e){if(e.key==='Escape'&&!list.hidden){setOpen(false);btn.focus();}});
   document.addEventListener('click',function(e){if(!more.contains(e.target)&&!list.hidden)setOpen(false);});
   layout();
 })();</script>
