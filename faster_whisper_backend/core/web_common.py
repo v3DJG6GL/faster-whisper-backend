@@ -285,27 +285,54 @@ html { font-size: var(--fs-base); color-scheme: dark; }
 .ws-region::before { content: "\\27E6"; color: var(--dim); }
 .ws-region::after  { content: "\\27E7"; color: var(--dim); }
 header .navrow { display: flex; align-items: center; gap: 0.25rem;
-  flex-wrap: wrap; row-gap: 0.25rem; min-width: 0; }
+  flex-wrap: nowrap; flex: 1 1 auto; min-width: 0; overflow: hidden; }
+/* hairline between the work group (quick … dictate) and the admin group
+   (settings … overrides) — the split mirrors the body.role-admin gate. */
+header .nav-gsep { flex: none; width: 1px; height: 1.1em; margin: 0 0.35rem;
+  background: var(--border); }
+header .nav-gsep[hidden] { display: none; }
+/* Priority+ overflow: sits OUTSIDE #navrow (which clips) so its list can
+   drop below the bar. Hidden until NAV_OVERFLOW_JS moves links into it. */
+header .nav-more { position: relative; flex: none; }
+header .nav-more[hidden] { display: none; }
+header .nav-more-btn { background: transparent; color: var(--dim);
+  border: 1px solid transparent; border-radius: 6px; cursor: pointer;
+  font: inherit; font-size: var(--fs-sm); line-height: 1.2;
+  padding: 0.3rem 0.55rem; white-space: nowrap;
+  display: inline-flex; align-items: center; gap: 0.3rem; }
+header .nav-more-btn .cnt { font-family: "Geist Mono", var(--font-mono);
+  font-size: 0.85em; color: var(--help); }
+header .nav-more-btn:hover, header .nav-more-btn[aria-expanded="true"] {
+  background: #21262d; color: var(--fg); }
+header .nav-more-btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+header .nav-more-list { position: absolute; left: 0; top: calc(100% + 0.35rem);
+  z-index: 60; margin: 0; padding: 0.35rem; list-style: none; min-width: 11rem;
+  display: flex; flex-direction: column; gap: 0.1rem;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+  box-shadow: 0 12px 32px -12px rgba(0,0,0,0.8); }
+header .nav-more-list[hidden] { display: none; }
+header .nav-more-list .navlink { display: flex; width: 100%; box-sizing: border-box; }
+header .nav-more-list .nav-gsep { width: auto; height: 1px; margin: 0.25rem 0.4rem; }
 header .navlink { padding: 0.3rem 0.7rem; border-radius: 6px; color: var(--dim);
   text-decoration: none; font-size: var(--fs-sm); line-height: 1.2;
-  border: 1px solid transparent; flex-shrink: 0; white-space: nowrap;
+  border: 1px solid transparent; flex: none; white-space: nowrap;
   transition: background .12s ease, color .12s ease; }
 header .navlink:hover { background: #21262d; color: var(--fg); }
 /* Active page: accent text + subtle filled pill (redundant cue, not colour-
    only — server also sets aria-current="page"). */
 header .navlink.active { color: var(--cyan); background: #1f2630;
   border-color: var(--border); font-weight: 600; }
-header .sevpill { font-size: var(--fs-xs); padding: 0.125rem 0.5rem; border-radius: 4px;
-  border: 1px solid var(--border); color: var(--dim); text-decoration: none;
-  display: inline-flex; gap: 0.25rem; align-items: baseline;
+header .sevpill { font-size: var(--fs-xs); padding: 0; border-radius: 4px;
+  border: 0; color: var(--dim); text-decoration: none;
+  display: inline-flex; gap: 0.3rem; align-items: baseline;
   flex-shrink: 0; white-space: nowrap; }
 header .sevpill .n { font-variant-numeric: tabular-nums; }
 header .sevpill.warn.hot { color: var(--yellow); border-color: #4d3e1f; }
 header .sevpill.err.hot  { color: var(--red);    border-color: #5a2424; }
 header .sevpill.crit.hot { color: var(--red);    border-color: #5a2424;
-  background: #2d1414; }
+  text-shadow: 0 0 6px rgba(255,123,114,0.45); }
 header .sevpill.zero { opacity: 0.45; }
-@keyframes sev-flash { 0% { background: #5a2424 } 100% { background: transparent } }
+@keyframes sev-flash { 0% { color: var(--bold) } 100% { color: inherit } }
 header .sevpill.flash { animation: sev-flash .6s ease-out; }
 /* Scale picker dropdown — same dark-themed look as other selects.
    Inline SVG arrow keeps it portable across pages. */
@@ -320,9 +347,15 @@ header .scale-picker {
 }
 /* ---- Two-tier sticky header (Carbon/Primer "global bar + page toolbar") ----
    Row 1 .header-inner = GLOBAL BAR, identical on every page:
-     brand · │ · nav links ............ severity pills · scale picker
+     brand · │ · work links │ admin links · [more ▾] … status rail · utilities
+     FULL-BLEED and single-row: it is chrome, not content, so it is never
+     width-capped and never wraps (the old 68.75rem cap + flex-wrap folded it
+     into three rows on every monitor). When the links don't fit, NAV_OVERFLOW_JS
+     tucks them, right end first, into the .nav-more disclosure; container
+     queries below shed labels/metrics in a designed order before that.
    Row 2 .subbar = PAGE TOOLBAR, page-specific controls (search/filter on the
-     left, actions on the right). Omitted entirely on pages with no page
+     left, actions on the right). Stays aligned to the 68.75rem content column
+     so save/discard sit over the form. Omitted entirely on pages with no page
      actions, so the global bar never changes shape between pages.
    Container queries read in rem against the rendered header width, so they
    respect the --fs-base scale token (unlike @media). Page-local CSS styles
@@ -334,9 +367,8 @@ header { position: sticky; top: 0; z-index: 10;
 
 /* row 1 — global bar */
 header .header-inner { display: flex; align-items: center; gap: 0.75rem;
-  flex-wrap: wrap; row-gap: 0.4rem;
-  max-width: 68.75rem; margin: 0 auto; width: 100%;
-  padding: 0.55rem 1rem; box-sizing: border-box; }
+  flex-wrap: nowrap; width: 100%;
+  padding: 0.45rem 1rem; box-sizing: border-box; min-height: 3.2rem; }
 header .title { display: inline-flex; align-items: center; gap: 0.5rem;
   font-weight: 600; color: var(--bold); white-space: nowrap;
   flex-shrink: 1; min-width: 0; max-width: 22rem; overflow: hidden; }
@@ -386,10 +418,24 @@ header .vtag:hover::after, header .vtag:focus-visible::after { display: block; }
 header .brand-sep { flex-shrink: 0; width: 1px; align-self: stretch;
   margin: 0.15rem 0.35rem; background: var(--border); }
 /* spacer pushes the utility cluster to the right edge */
-header .spacer { flex: 1 1 0; min-width: 0.5rem; }
+header .spacer { flex: 0 0 0.25rem; }
 /* right-side utility cluster: severity pills + scale picker (same everywhere) */
 header .hdr-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
-header .sevpills { display: inline-flex; align-items: center; gap: 0.25rem; }
+/* Status rail — activity cluster + severity pills read as ONE segmented chip.
+   Each half keeps its own border (so a hidden half leaves no empty box) and
+   the halves fuse when both are visible. Same IDs as before: SEV_POLLER_JS
+   and ACTIVITY_CLUSTER_JS are untouched. */
+header .hdr-status { display: inline-flex; align-items: stretch; flex: none; }
+header .sevpills { display: inline-flex; align-items: center; gap: 0.55rem;
+  padding: 0 0.6rem; background: #0d1117; border: 1px solid var(--border);
+  border-radius: 6px; font-family: "Geist Mono", var(--font-mono); }
+header .hact-wrap:has(.hdr-activity.allowed) + .sevpills {
+  border-radius: 0 6px 6px 0; border-left: 0; }
+body.role-admin header .hdr-status .hdr-activity.allowed {
+  border-radius: 6px 0 0 6px; border-right: 0; }
+header .sevpill::before { content: ""; width: 0.5em; height: 0.5em; flex: none;
+  border-radius: 50%; background: currentColor; opacity: 0.5; align-self: center; }
+header .sevpill.hot::before { opacity: 1; }
 /* ---- Header activity cluster (jobs count + GPU/VRAM micro-bars) ----
    Shell rendered by activity_cluster_html (rides the SEV_PILLS placeholder
    — never spell the literal placeholder here: NAV_CSS is substituted after
@@ -584,22 +630,35 @@ header .subbar .capture-state.off { color: var(--dim);   border-color: var(--bor
 header .subbar .filt-label { display: inline-flex; align-items: center; gap: 0.35rem;
   font-size: var(--fs-sm); color: var(--help); white-space: nowrap; }
 
-/* responsive: shed the sevpill word labels, then tighten nav + drop divider */
-@container hdr (max-width: 60rem) {
-  header .sevpill .lbl { display: none; }
-  header .sevpill { padding: 0.125rem 0.4rem; }
-  /* activity cluster degrades in tiers: micro-labels go first … */
+/* Shedding tiers — rem inside @container resolves against --fs-base, so
+   the thresholds follow the scale picker. Lowest-information pixels go
+   first; the active link and the jobs count survive every tier. Links
+   that still don't fit are tucked by NAV_OVERFLOW_JS at any width. */
+@container hdr (max-width: 96rem) {
+  /* labels: the bar colours already say GPU vs VRAM, the dots say severity */
   header .hact-m .lbl { display: none; }
+  header .sevpill .lbl { display: none; }
 }
-@container hdr (max-width: 48rem) {
-  /* … then the VRAM metric … */
+@container hdr (max-width: 88rem) {
+  /* role suffix + version chip: identity, not wayfinding */
+  header .brand-word .bw-sep, header .brand-word .bw-c { display: none; }
+  header .vtag { display: none; }
+}
+@container hdr (max-width: 76rem) {
   header .hact-m.vramm { display: none; }
+  /* zero counters are noise; a hot counter is the only one that matters */
+  header .sevpill.zero { display: none; }
+  header .sevpills:not(:has(.sevpill.hot)) { display: none; }
+  body.role-admin header .hdr-status:not(:has(.sevpill.hot)) .hdr-activity.allowed {
+    border-radius: 6px; border-right: 1px solid var(--border); }
+}
+@container hdr (max-width: 60rem) {
+  header .hact-m { display: none; }
+  header .scale-picker { display: none; }
+  header .brand-sep { display: none; }
 }
 @container hdr (max-width: 40rem) {
   header .navlink { padding: 0.25rem 0.5rem; }
-  header .brand-sep { display: none; }
-  /* … ring + jobs count always remain (never a bare unlabeled zero). */
-  header .hact-m { display: none; }
 }
 
 /* ---- Admin-only nav elements ----
@@ -813,6 +872,7 @@ header .page-link.allowed { display: inline-flex; }
   /* Comfortable hit areas — rem rides the scale picker and clears the
      WCAG 2.5.8 (AA) 24px floor at every scale step. */
   header button, header .navlink, header .icon-btn, header .scale-picker,
+  header .nav-more-btn,
   header select, button, select, a.btn, .btn { min-height: 2.5rem; }
   header .icon-btn, .nav-toggle { min-width: 2.5rem; }
 }
@@ -860,6 +920,7 @@ header .page-link.allowed { display: inline-flex; }
   .nav-toggle { display: inline-flex; align-items: center;
     justify-content: center; }
   header .brand-sep { display: none; }
+  header .nav-gsep, header .nav-more { display: none; }
   /* the existing .navrow becomes the off-canvas panel (links keep their
      admin-only / page-link gating because they stay inside <header>). */
   header #navrow { position: fixed; top: 0; left: 0;
@@ -1266,6 +1327,64 @@ NAV_DRAWER_JS = """
   });
   if(bd)bd.addEventListener('click',close);
   nav.addEventListener('click',function(e){if(e.target.closest('.navlink'))close();});
+})();</script>
+"""
+
+
+# Priority+ nav overflow. Measures #navrow (scrollWidth vs clientWidth) and
+# moves links that don't fit — right end first, never the active page, never
+# a lone separator — into the .nav-more disclosure that follows #navrow.
+# Nodes are MOVED, not cloned, so the per-link admin-only / page-link gating
+# classes and the drawer's click-to-close keep working. Re-runs on resize
+# (ResizeObserver) and whenever a link's class list changes (the whoami gate
+# adds .allowed after first paint; a hidden link has zero width, so the first
+# pass would otherwise under-tuck). In drawer mode (≤40em, .nav-toggle shown)
+# every link is restored to #navrow and the control stays hidden.
+NAV_OVERFLOW_JS = """
+<script>
+(function(){
+  var nav=document.getElementById('navrow');
+  var more=nav&&nav.parentElement.querySelector('.nav-more');
+  if(!nav||!more||!window.ResizeObserver)return;
+  var btn=more.querySelector('.nav-more-btn'),list=more.querySelector('.nav-more-list');
+  var toggle=document.querySelector('.nav-toggle');
+  var items=Array.prototype.slice.call(nav.children).filter(function(c){
+    return c.classList.contains('navlink')||c.classList.contains('nav-gsep');});
+  var busy=false;
+  function fits(){return nav.scrollWidth<=nav.clientWidth+1;}
+  function restore(){
+    items.forEach(function(el){el.hidden=false;nav.appendChild(el);});
+    list.replaceChildren();
+  }
+  function setOpen(o){btn.setAttribute('aria-expanded',o?'true':'false');list.hidden=!o;}
+  function layout(){
+    if(busy)return;busy=true;
+    restore();more.hidden=true;setOpen(false);
+    var drawer=toggle&&getComputedStyle(toggle).display!=='none';
+    if(!drawer&&!fits()){
+      more.hidden=false;
+      for(var i=items.length-1;i>=0&&!fits();i--){
+        var el=items[i];
+        if(el.classList.contains('active'))continue;
+        if(el.classList.contains('nav-gsep')){el.hidden=true;continue;}
+        var li=document.createElement('li');li.appendChild(el);list.insertBefore(li,list.firstChild);
+      }
+      /* a separator left trailing in the bar, or leading in the list, says nothing */
+      var vis=items.filter(function(e){return e.parentElement===nav&&!e.hidden&&e.offsetParent!==null;});
+      var last=vis[vis.length-1];if(last&&last.classList.contains('nav-gsep'))last.hidden=true;
+      var n=list.querySelectorAll('.navlink').length;
+      btn.querySelector('.cnt').textContent=n?String(n):'';
+      if(!n){more.hidden=true;}
+    }
+    busy=false;
+  }
+  new ResizeObserver(function(){requestAnimationFrame(layout);}).observe(nav);
+  new MutationObserver(function(){requestAnimationFrame(layout);})
+    .observe(nav.parentElement,{attributes:true,attributeFilter:['class'],subtree:true});
+  btn.addEventListener('click',function(){setOpen(list.hidden);});
+  more.addEventListener('keydown',function(e){if(e.key==='Escape'&&!list.hidden){setOpen(false);btn.focus();}});
+  document.addEventListener('click',function(e){if(!more.contains(e.target)&&!list.hidden)setOpen(false);});
+  layout();
 })();</script>
 """
 
@@ -3373,6 +3492,9 @@ def nav_html(current: str) -> str:
         '<span class="navrow" id="navrow">',
     ]
     for label, href, active in _nav_items(current):
+        if label == "settings" and len(parts) > 2:
+            # hairline between the work group and the admin group
+            parts.append('<span class="nav-gsep" aria-hidden="true"></span>')
         classes = ["navlink"]
         extra_attr = ""
         if active:
@@ -3388,6 +3510,15 @@ def nav_html(current: str) -> str:
             f'{label}</a>'
         )
     parts.append("</span>")
+    # Priority+ overflow shell (outside #navrow so its list escapes the
+    # clip). NAV_OVERFLOW_JS moves links in/out; disclosure semantics only.
+    parts.append(
+        '<span class="nav-more" hidden>'
+        '<button type="button" class="nav-more-btn" aria-haspopup="true" '
+        'aria-expanded="false" aria-controls="nav-more-list">more '
+        '<span class="cnt"></span></button>'
+        '<ul id="nav-more-list" class="nav-more-list" hidden></ul></span>'
+    )
     parts.append('<div class="nav-backdrop"></div>')
     return "".join(parts)
 
@@ -3442,7 +3573,8 @@ def sev_pills_html() -> str:
     arrive on the first poll instead of in the initial HTML."""
     # Activity cluster first: it sits left of the pills in the utility
     # cluster and rides the same placeholder so all templates inherit it.
-    parts: list[str] = [activity_cluster_html(), '<span class="sevpills">']
+    parts: list[str] = ['<span class="hdr-status">', activity_cluster_html(),
+                        '<span class="sevpills">']
     for level, key in (("warn", "WARNING"), ("err", "ERROR"), ("crit", "CRITICAL")):
         cls = f"sevpill admin-only {level} zero"
         title = f"{key}+ since process start — click to filter logs"
@@ -3452,7 +3584,7 @@ def sev_pills_html() -> str:
             f'<span class="lbl">{level}</span> '
             f'<span class="n">0</span></a>'
         )
-    parts.append("</span>")
+    parts.append("</span></span>")
     return "".join(parts)
 
 
@@ -3502,7 +3634,8 @@ def _render_page_cached(
         .replace("{{SCALE_PICKER}}", SCALE_PICKER_HTML)
         .replace("{{RELOAD}}", RELOAD_BTN_HTML)
         .replace("{{LOGOUT}}", LOGOUT_BTN_HTML)
-        .replace("{{SCALE_PICKER_JS}}", SCALE_PICKER_JS + NAV_DRAWER_JS)
+        .replace("{{SCALE_PICKER_JS}}",
+                 SCALE_PICKER_JS + NAV_DRAWER_JS + NAV_OVERFLOW_JS)
         .replace(
             "{{SEV_POLLER_JS}}",
             # Order matters: the global landing helpers must be defined
