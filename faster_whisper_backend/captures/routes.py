@@ -753,7 +753,7 @@ async def reprocess_capture_api(
     # rules). Pipeline-only: no key / no per-request layer on reprocess.
     ident = main.build_ident({"user_id": row.get("user_id")}, row.get("model"))
     try:
-        new_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident)
+        new_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
     except Exception as e:
         logger.error("[captures] reprocess pipeline failed on `final`: %s", e)
         raise HTTPException(
@@ -770,6 +770,7 @@ async def reprocess_capture_api(
                 model_name=row.get("model"),
                 extra_excludes=captures_excludes,
                 ident=ident,
+                language=row.get("language"),
             )
         except Exception as e:
             logger.error(
@@ -1854,7 +1855,7 @@ def _refresh_final_if_stale(
         # per-identity reprocess and producing wrong text for owners with
         # per-identity pipeline rules.
         ident = main.build_ident({"user_id": row.get("user_id")}, row.get("model"))
-        fresh_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident)
+        fresh_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
     except Exception:
         return
     patch: dict[str, Any] = {}
@@ -1874,6 +1875,7 @@ def _refresh_final_if_stale(
                 model_name=row.get("model"),
                 extra_excludes=captures_excludes,
                 ident=ident,
+                language=row.get("language"),
             )
         except Exception:
             fresh_training = None
@@ -1924,6 +1926,7 @@ def _align_words_to_final(
     final: str,
     model_name: "str | None" = None,
     ident=None,
+    language: "str | None" = None,
 ) -> list[dict[str, Any]]:
     """Project raw STT words onto post-pipeline `final` via LCS
     alignment. Replaces the all-or-nothing fallback that came before
@@ -1969,7 +1972,7 @@ def _align_words_to_final(
         post_w = post_cache.get(raw_w)
         if post_w is None:
             try:
-                post_w = main._postprocess_text(raw_w, model_name=model_name, ident=ident)
+                post_w = main._postprocess_text(raw_w, model_name=model_name, ident=ident, language=language)
             except Exception:
                 post_w = raw_w
             post_cache[raw_w] = post_w
@@ -2166,9 +2169,10 @@ def _align_member_words(
         if ckey not in ident_cache:
             ident_cache[ckey] = main.build_ident({"user_id": uid}, mdl)
         ident = ident_cache[ckey]
-    ws = _align_words_to_final(words, final, model_name=m.get("model"), ident=ident)
+    _lang = m.get("language")
+    ws = _align_words_to_final(words, final, model_name=m.get("model"), ident=ident, language=_lang)
     if training != final:
-        wt = _align_words_to_final(words, training, model_name=m.get("model"), ident=ident)
+        wt = _align_words_to_final(words, training, model_name=m.get("model"), ident=ident, language=_lang)
         for i, w in enumerate(ws):
             tw = wt[i] if i < len(wt) else None
             if tw is None:

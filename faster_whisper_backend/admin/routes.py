@@ -3690,6 +3690,52 @@ async function _testOneRule(rule) {
   return (j.steps && j.steps[0]) || null;
 }
 
+// Whisper language codes + display names for the language picker widget.
+// 99 codes (ISO 639-1 + haw/jw/yue). Sourced from faster_whisper.tokenizer.
+var WHISPER_LANGS = [
+  {code:'af',name:'Afrikaans'},{code:'am',name:'Amharic'},{code:'ar',name:'Arabic'},
+  {code:'as',name:'Assamese'},{code:'az',name:'Azerbaijani'},{code:'ba',name:'Bashkir'},
+  {code:'be',name:'Belarusian'},{code:'bg',name:'Bulgarian'},{code:'bn',name:'Bengali'},
+  {code:'bo',name:'Tibetan'},{code:'br',name:'Breton'},{code:'bs',name:'Bosnian'},
+  {code:'ca',name:'Catalan'},{code:'cs',name:'Czech'},{code:'cy',name:'Welsh'},
+  {code:'da',name:'Danish'},{code:'de',name:'German'},{code:'el',name:'Greek'},
+  {code:'en',name:'English'},{code:'es',name:'Spanish'},{code:'et',name:'Estonian'},
+  {code:'eu',name:'Basque'},{code:'fa',name:'Persian'},{code:'fi',name:'Finnish'},
+  {code:'fo',name:'Faroese'},{code:'fr',name:'French'},{code:'gl',name:'Galician'},
+  {code:'gu',name:'Gujarati'},{code:'ha',name:'Hausa'},{code:'haw',name:'Hawaiian'},
+  {code:'he',name:'Hebrew'},{code:'hi',name:'Hindi'},{code:'hr',name:'Croatian'},
+  {code:'ht',name:'Haitian Creole'},{code:'hu',name:'Hungarian'},{code:'hy',name:'Armenian'},
+  {code:'id',name:'Indonesian'},{code:'is',name:'Icelandic'},{code:'it',name:'Italian'},
+  {code:'ja',name:'Japanese'},{code:'jw',name:'Javanese'},{code:'ka',name:'Georgian'},
+  {code:'kk',name:'Kazakh'},{code:'km',name:'Khmer'},{code:'kn',name:'Kannada'},
+  {code:'ko',name:'Korean'},{code:'la',name:'Latin'},{code:'lb',name:'Luxembourgish'},
+  {code:'ln',name:'Lingala'},{code:'lo',name:'Lao'},{code:'lt',name:'Lithuanian'},
+  {code:'lv',name:'Latvian'},{code:'mg',name:'Malagasy'},{code:'mi',name:'Maori'},
+  {code:'mk',name:'Macedonian'},{code:'ml',name:'Malayalam'},{code:'mn',name:'Mongolian'},
+  {code:'mr',name:'Marathi'},{code:'ms',name:'Malay'},{code:'mt',name:'Maltese'},
+  {code:'my',name:'Myanmar'},{code:'ne',name:'Nepali'},{code:'nl',name:'Dutch'},
+  {code:'nn',name:'Nynorsk'},{code:'no',name:'Norwegian'},{code:'oc',name:'Occitan'},
+  {code:'pa',name:'Punjabi'},{code:'pl',name:'Polish'},{code:'ps',name:'Pashto'},
+  {code:'pt',name:'Portuguese'},{code:'ro',name:'Romanian'},{code:'ru',name:'Russian'},
+  {code:'sa',name:'Sanskrit'},{code:'sd',name:'Sindhi'},{code:'si',name:'Sinhala'},
+  {code:'sk',name:'Slovak'},{code:'sl',name:'Slovenian'},{code:'sn',name:'Shona'},
+  {code:'so',name:'Somali'},{code:'sq',name:'Albanian'},{code:'sr',name:'Serbian'},
+  {code:'su',name:'Sundanese'},{code:'sv',name:'Swedish'},{code:'sw',name:'Swahili'},
+  {code:'ta',name:'Tamil'},{code:'te',name:'Telugu'},{code:'tg',name:'Tajik'},
+  {code:'th',name:'Thai'},{code:'tk',name:'Turkmen'},{code:'tl',name:'Tagalog'},
+  {code:'tr',name:'Turkish'},{code:'tt',name:'Tatar'},{code:'uk',name:'Ukrainian'},
+  {code:'ur',name:'Urdu'},{code:'uz',name:'Uzbek'},{code:'vi',name:'Vietnamese'},
+  {code:'yi',name:'Yiddish'},{code:'yo',name:'Yoruba'},{code:'zh',name:'Chinese'},
+  {code:'yue',name:'Cantonese'},
+];
+var LANG_GROUPS = {
+  'CJK': ['ja','ko','zh','yue'],
+  'Germanic': ['af','da','de','en','fo','is','lb','nl','nn','no','sv','yi'],
+  'Romance': ['ca','es','fr','gl','it','la','oc','pt','ro'],
+  'Slavic': ['be','bg','bs','cs','hr','mk','pl','ru','sk','sl','sr','uk'],
+  'Turkic': ['az','ba','kk','tk','tr','tt','uz'],
+};
+
 function makeRuleListEditor(name, initialRules, mode, opts) {
   // mode: "full" (default) → editable list with drag-reorder, add/delete,
   //         per-row body editor, per-row test badge. Used for the global
@@ -4086,6 +4132,15 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       head.appendChild(pill);
 
       if (!isTerminal) {
+        const rLangs = Array.isArray(rule.languages) ? rule.languages : [];
+        if (rLangs.length) {
+          const langBadge = document.createElement('span');
+          langBadge.className = 'lang-badge';
+          langBadge.innerHTML = '<svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg> '
+            + (rLangs.length <= 3 ? rLangs.join(' · ') : rLangs.length + ' langs');
+          langBadge.title = 'This rule only applies when the detected language is: ' + rLangs.join(', ');
+          head.appendChild(langBadge);
+        }
         const view = document.createElement('button');
         view.type = 'button';
         view.className = 'reset-link';
@@ -4503,6 +4558,30 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       promoteBtnEl.addEventListener('click', () => _promoteOne(rule));
     }
 
+    // ----- Language scope line: "applies to:" + language picker.
+    // Terminal rules skip it — they're always universal. ---------------
+    let _langPicker = null;
+    if (rule.type !== 'terminal') {
+      const headLineLang = document.createElement('div');
+      headLineLang.className = 'row-header-line2';
+      headLineLang.style.gap = '0.4rem';
+      const langLbl = document.createElement('span');
+      langLbl.className = 'meta-label';
+      langLbl.innerHTML = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" style="vertical-align:-2px;opacity:0.5;margin-right:2px"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>applies to:';
+      headLineLang.appendChild(langLbl);
+      _langPicker = window._renderLanguagePicker({
+        initial: Array.isArray(rule.languages) ? rule.languages : [],
+        allLangs: WHISPER_LANGS,
+        groups: LANG_GROUPS,
+        onChange: (newLangs) => {
+          rule.languages = newLangs;
+          commitFull();
+        },
+      });
+      headLineLang.appendChild(_langPicker.el);
+      head.appendChild(headLineLang);
+    }
+
     // ----- Line 2 (metadata): tag picker + user-editable toggle +
     // untagged badge. Terminal rules skip it entirely — they have no
     // tags, no exposed flag, no user-editable concept. ---------------
@@ -4736,6 +4815,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       body.querySelectorAll('input, select, textarea, button').forEach(el => { el.disabled = true; });
       headLine1.querySelectorAll('.switch').forEach(el => { el.disabled = true; });
       headLine2.querySelectorAll('input, button, .switch').forEach(el => { el.disabled = true; });
+      if (_langPicker) _langPicker.el.closest('.row-header-line2')?.querySelectorAll('input, button').forEach(el => { el.disabled = true; });
       drag.draggable = false;
       // Locked = "protect from edits + reorder": kill the ↑/↓ nudges too, not
       // just the drag grip (a locked rule must not move by any affordance).
@@ -6045,4 +6125,5 @@ document.addEventListener('DOMContentLoaded', async () => {
 {{SCALE_PICKER_JS}}
 {{SEV_POLLER_JS}}
 {{TAG_PICKER_JS}}
+{{LANG_PICKER_JS}}
 </body></html>"""

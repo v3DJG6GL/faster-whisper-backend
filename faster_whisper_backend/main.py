@@ -299,6 +299,7 @@ class _CompiledRule:
     # rules). Together they drive the `#P` / `#P.S` trace step number.
     card_no: int
     sub_no: "int | None" = None
+    languages: frozenset[str] = frozenset()
 
 
 _COMPILED_RULES: list[_CompiledRule] = []
@@ -407,13 +408,15 @@ def rebuild_caches() -> None:
             terminal_card_no = card_no
             continue
         rule_enabled = bool(rule.get("enabled", True))
+        rule_langs = frozenset(rule.get("languages") or ())
 
         # regex-list: expand each entry into its own _CompiledRule row, all
-        # sharing the card's name + enabled (so per-model EXCLUDE/INCLUDE and the
-        # global toggle flip the whole card together). Entries run in list order
-        # — NO longest-first sort. A bad entry is skipped (not the whole card);
-        # an empty-pattern entry is a no-op. Each row is a plain string-replacement
-        # sub, exactly like the retired single `regex` type.
+        # sharing the card's name + enabled + languages (so per-model
+        # EXCLUDE/INCLUDE and the global toggle flip the whole card together).
+        # Entries run in list order — NO longest-first sort. A bad entry is
+        # skipped (not the whole card); an empty-pattern entry is a no-op.
+        # Each row is a plain string-replacement sub, exactly like the retired
+        # single `regex` type.
         if rtype == "regex-list":
             rname = rule.get("name", "?")
             rlabel = rule.get("label", rname)
@@ -433,7 +436,7 @@ def rebuild_caches() -> None:
                 compiled.append(_CompiledRule(
                     rname, f"{rlabel} · {entry.get('label') or epat}",
                     "regex-list", ecre, entry.get("replacement", "") or "",
-                    rule_enabled, card_no, sub_no))
+                    rule_enabled, card_no, sub_no, rule_langs))
             continue
 
         try:
@@ -472,7 +475,8 @@ def rebuild_caches() -> None:
             continue
         compiled.append(_CompiledRule(rule.get("name", "?"),
                                        rule.get("label", rule.get("name", "?")),
-                                       rtype, cre, payload, rule_enabled, card_no))
+                                       rtype, cre, payload, rule_enabled, card_no,
+                                       languages=rule_langs))
     _COMPILED_RULES = compiled
     _TERMINAL_NAME = terminal_name
     _TERMINAL_LABEL = terminal_label
@@ -493,18 +497,24 @@ rebuild_caches()
 def _postprocess_text(text: str, model_name: "str | None" = None,
                        trace: "list | None" = None,
                        extra_excludes: "set[str] | None" = None,
-                       ident=None) -> str:
+                       ident=None,
+                       language: "str | None" = None) -> str:
     """Run the unified pipeline rule list on `text`. If `trace` is a list,
     each rule that changes the text appends `(label_with_ordinal, before, after)`
     so the per-request log block can render a diff view.
 
     Per-model scoping (precedence top-down):
       1. PIPELINE_RULES_EXCLUDE — force-DISABLE for this model (highest priority).
-      2. PIPELINE_RULES_INCLUDE — force-ENABLE for this model, even if globally
+      2. Language mismatch — rule.languages is non-empty AND the detected
+         language is not in it → skip (even if force-INCLUDEd). When
+         `language` is None (streaming partial before detection), no rule is
+         skipped — safe default for ephemeral display text.
+      3. PIPELINE_RULES_INCLUDE — force-ENABLE for this model, even if globally
          disabled.
-      3. Otherwise inherit `rule.enabled` from the global PIPELINE_RULES list.
+      4. Otherwise inherit `rule.enabled` from the global PIPELINE_RULES list.
 
-    Effective:  (rule.enabled AND slug NOT in EXCLUDE) OR (slug IN INCLUDE).
+    Effective:  (rule.enabled AND slug NOT in EXCLUDE) OR (slug IN INCLUDE),
+    AND (rule.languages is empty OR language matches or is unknown).
     A rule cannot appear in both lists — pydantic validator rejects that.
 
     `extra_excludes` is an additional set of rule slugs to skip on top of
@@ -550,6 +560,13 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
             if trace is not None:
                 trace.append((f"{ordinal} {rule.label} [EXCLUDED for {model_name}]",
                               text, text))
+            continue
+        if rule.languages and language and language not in rule.languages:
+            if trace is not None:
+                trace.append((
+                    f"{ordinal} {rule.label}"
+                    f" [SKIPPED lang:{language} ∉ {sorted(rule.languages)}]",
+                    text, text))
             continue
         forced_in = rule.name in include
         # Globally disabled and not force-included → skip silently.
@@ -5580,7 +5597,8 @@ async def transcribe(
 
             raw_full_text = "".join(raw_full_text_parts)
             trace: "list | None" = [] if cfg.TRACE_ENABLED else None
-            full_text_str = _postprocess_text(raw_full_text, model_name=resolved_model, trace=trace, ident=ident)
+            _detected_lang = getattr(info, "language", None)
+            full_text_str = _postprocess_text(raw_full_text, model_name=resolved_model, trace=trace, ident=ident, language=_detected_lang)
             # Captures-form text — same pipeline minus the captures-specific
             # exclude set (default-skips `dictation-map` + `capitalize-after-
             # terminator` so the stored text matches Whisper's raw output
@@ -5598,6 +5616,7 @@ async def transcribe(
                     trace=None,
                     extra_excludes=cfg.CAPTURES_PIPELINE_RULES_EXCLUDE,
                     ident=ident,
+                    language=_detected_lang,
                 )
             # Per-language transcripts for the capture row, joined the same
             # way verbose_json joins them. Kept as a KEYED map, not a blob:

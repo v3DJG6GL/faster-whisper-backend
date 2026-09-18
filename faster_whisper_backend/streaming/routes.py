@@ -882,8 +882,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             })
             return raw, words_out, dropped_all
 
+        _detected_lang = [req_language or None]
+
         def postprocess(raw_text):
-            return main._postprocess_text(raw_text, model_name=final_model, ident=ident)
+            return main._postprocess_text(raw_text, model_name=final_model, ident=ident, language=_detected_lang[0])
 
         # Output wrappers: the prefix sits at the very start of the document, the
         # suffix only on the final flush. committed/tail are full authoritative
@@ -941,7 +943,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 training_text = main._postprocess_text(
                     raw_text, model_name=final_model, trace=None,
                     extra_excludes=getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None),
-                    ident=ident)
+                    ident=ident, language=_detected_lang[0])
                 wav_path = _write_pcm16_wav(audio)
                 try:
                     return _cap_store.create_capture(
@@ -996,8 +998,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
             seg_diag = dec.get("seg_diag", [])
             kwargs = dec.get("kwargs", {})
 
+            _detected_lang[0] = getattr(fw_info, "language", None) or req_language or _detected_lang[0]
             steps: "list | None" = [] if getattr(cfg, "TRACE_ENABLED", False) else None
-            final_text = main._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident)
+            final_text = main._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident, language=_detected_lang[0])
             if not decoded:
                 logger.info(
                     "[stream %s] utt#%s: near-silence gate skipped the final "

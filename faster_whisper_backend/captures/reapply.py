@@ -94,7 +94,7 @@ def _run() -> None:
         # short text columns (no words / segments), so memory
         # stays bounded even at tens of thousands of rows.
         rows = conn.execute(
-            "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id"
+            "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id, language"
             " FROM captures ORDER BY created_ts DESC"
         ).fetchall()
         # Reprocess re-runs ONLY the pipeline (no model re-decode), so it
@@ -118,6 +118,7 @@ def _run() -> None:
             try:
                 new_final = main._postprocess_text(
                     raw_text, model_name=r["model"], ident=ident,
+                    language=r.get("language"),
                 )
             except Exception as e:
                 logger.warning(
@@ -138,6 +139,7 @@ def _run() -> None:
                     new_training = main._postprocess_text(
                         raw_text, model_name=r["model"],
                         extra_excludes=captures_excludes, ident=ident,
+                        language=r.get("language"),
                     )
                 except Exception as e:
                     logger.warning(

@@ -1258,6 +1258,53 @@ TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}\Z")   # \Z: `$` also matches befo
 NO_PROFILE_SENTINEL = "__none__"
 
 
+try:
+    from faster_whisper.tokenizer import _LANGUAGE_CODES as _FW_LANG_CODES
+    WHISPER_LANGUAGE_CODES: frozenset[str] = frozenset(_FW_LANG_CODES)
+except Exception:
+    WHISPER_LANGUAGE_CODES = frozenset((
+        "af","am","ar","as","az","ba","be","bg","bn","bo","br","bs","ca","cs",
+        "cy","da","de","el","en","es","et","eu","fa","fi","fo","fr","gl","gu",
+        "ha","haw","he","hi","hr","ht","hu","hy","id","is","it","ja","jw","ka",
+        "kk","km","kn","ko","la","lb","ln","lo","lt","lv","mg","mi","mk","ml",
+        "mn","mr","ms","mt","my","ne","nl","nn","no","oc","pa","pl","ps","pt",
+        "ro","ru","sa","sd","si","sk","sl","sn","so","sq","sr","su","sv","sw",
+        "ta","te","tg","th","tk","tl","tr","tt","uk","ur","uz","vi","yi","yo",
+        "zh","yue",
+    ))
+
+
+def normalize_languages(raw: Any) -> list[str]:
+    """Canonicalise a raw language-code list: trim, lowercase, drop empties,
+    dedup, sort. Raises ValueError on codes not in Whisper's language set.
+    Empty list is permitted (means 'apply to all languages')."""
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValueError("languages must be a list of strings")
+    seen: set[str] = set()
+    out: list[str] = []
+    for code in raw:
+        if not isinstance(code, str):
+            raise ValueError(
+                f"language code must be a string, got {type(code).__name__}"
+            )
+        norm = code.strip().lower()
+        if not norm:
+            continue
+        if norm not in WHISPER_LANGUAGE_CODES:
+            raise ValueError(
+                f"unknown language code {code!r} — must be one of Whisper's "
+                f"{len(WHISPER_LANGUAGE_CODES)} supported codes (ISO 639-1)"
+            )
+        if norm in seen:
+            continue
+        seen.add(norm)
+        out.append(norm)
+    out.sort()
+    return out
+
+
 def normalize_tags(raw: Any) -> list[str]:
     """Canonicalise a raw tag list: trim, lowercase, drop empties, dedup,
     sort. Raises ValueError on any tag that doesn't match TAG_RE. Empty
@@ -1298,6 +1345,7 @@ class _RuleBase(BaseModel):
     name: RuleSlug
     label: RuleLabel
     enabled: bool = True
+    languages: list[str] = Field(default_factory=list, max_length=99)
     locked: bool = False
     seeded: bool = False
     # When True, the rule is shown on /quick-config so end-users (non-admin
@@ -1321,6 +1369,11 @@ class _RuleBase(BaseModel):
     # "" rather than raising, so this cosmetic value can never trip
     # load_overrides (which drops ALL overrides on any validation error).
     color: str = ""
+
+    @field_validator("languages", mode="before")
+    @classmethod
+    def _normalize_languages(cls, v: Any) -> list[str]:
+        return normalize_languages(v)
 
     @field_validator("tags", mode="before")
     @classmethod
