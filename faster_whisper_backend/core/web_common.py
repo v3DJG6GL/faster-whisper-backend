@@ -3449,9 +3449,9 @@ def _nav_items(current: str) -> list[tuple[str, str, bool]]:
 # (label, href, current-key, admin_gated) — left-to-right nav order.
 _NAV_SPEC: list[tuple[str, str, str, bool]] = [
     ("quick",    "/quick-config",      "quick-config", True),
-    ("captures", "/captures",          "captures",     True),
-    ("reports",  "/reports",           "reports",      True),
     ("stats",    "/stats",             "stats",        False),
+    ("reports",  "/reports",           "reports",      True),
+    ("captures", "/captures",          "captures",     True),
     ("logs",     "/logs",              "logs",         False),
     # No per-page permission key and no admin gate: /dictate is the streaming
     # endpoint's own front end, reachable by every signed-in identity (the
@@ -3460,8 +3460,8 @@ _NAV_SPEC: list[tuple[str, str, str, bool]] = [
     # what nav_html does for a label absent from both maps.
     ("dictate",  "/dictate",           "dictate",      False),
     ("settings", "/settings",          "settings",     True),
-    ("pipeline", "/settings/pipeline", "pipeline",     True),
     ("keys",     "/settings/api-keys", "api-keys",     True),
+    ("pipeline", "/settings/pipeline", "pipeline",     True),
     ("overrides", "/settings/overrides", "overrides",  True),
 ]
 
