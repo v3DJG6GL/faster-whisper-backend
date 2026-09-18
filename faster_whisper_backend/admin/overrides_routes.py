@@ -84,7 +84,9 @@ def _build_rules() -> list[dict[str, Any]]:
     position in cfg.PIPELINE_RULES (the /settings/pipeline card ordinal) so the
     row can show `#N`, matching the pipeline page + the /logs trace.
     `languages` lets the row flag language-scoped rules: a force-on here still
-    won't fire on a non-matching language (see main._postprocess_text)."""
+    won't fire on a non-matching language (see main._postprocess_text).
+    `tags` are the quick-config visibility tags, shown read-only so the admin
+    can tell the two scopes apart (who sees it vs. when it runs)."""
     out = []
     for i, r in enumerate(getattr(cfg, "PIPELINE_RULES", None) or [], start=1):
         if not isinstance(r, dict) or r.get("type") == "terminal":
@@ -94,6 +96,7 @@ def _build_rules() -> list[dict[str, Any]]:
             "label": r.get("label") or r.get("name"),
             "enabled": bool(r.get("enabled", True)),
             "languages": list(r.get("languages") or []),
+            "tags": list(r.get("tags") or []),
             "card_no": i,
         })
     return out
@@ -1234,10 +1237,17 @@ window._renderWaterfall = (function () {
         + '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg> '
         + esc(langs.length <= 3 ? langs.join(' · ') : langs.length + ' langs')
         + '</span>';
+      // Visibility tags (cyan, read-only): who may see/edit the rule on
+      // /quick-config. Edited on /settings/pipeline, not here.
+      var tagChips = (Array.isArray(r.tags) ? r.tags : []).map(function (t) {
+        return ' <span class="tag-pill" title="'
+          + esc('Visibility tag: quick-config users tagged "' + t + '" can see this rule')
+          + '">' + esc(t) + '</span>';
+      }).join('');
       row.innerHTML = '<span class="ord">' + (r.card_no ? '#' + r.card_no : '') + '</span>'
         + '<span class="rl">' + esc(r.label)
         + ' <span class="slug">' + esc(r.name) + (r.enabled ? '' : ' (off)') + '</span>'
-        + langBadge + '</span>';
+        + tagChips + langBadge + '</span>';
       var grp = document.createElement('span'); grp.className = 'status-btn-group';
       grp.setAttribute('role', 'radiogroup');
       // inherit label carries the resolved global default, as the old select did
