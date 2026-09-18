@@ -63,14 +63,6 @@
       "enabled": false
     },
     {
-      "description": "crane (mirror-ghcr.yml) is version+hash coupled: CRANE_SHA256 must be updated in the same commit as CRANE_VERSION, and the new release tarball must be uploaded to the instance's 'tools' generic package registry BEFORE the bump lands. Renovate can do neither, so never automerge \u2014 surface as a Dependency Dashboard checkbox handled by hand.",
-      "matchPackageNames": [
-        "google/go-containerregistry"
-      ],
-      "automerge": false,
-      "dependencyDashboardApproval": true
-    },
-    {
       "description": "Major bumps require manual review \u2014 surface as checkboxes on the Dependency Dashboard, do not open the PR automatically, do not auto-merge. Minor/patch still flow through Renovate-side automerge, which waits for both all-ci and its own minimumReleaseAge check (platformAutomerge is off: Forgejo only honours required checks, so it would merge before the release age is met).",
       "matchUpdateTypes": [
         "major"

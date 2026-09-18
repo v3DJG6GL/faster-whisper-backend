@@ -75,27 +75,56 @@ jobs:
     steps:
       - name: Install crane
         env:
-          # Fetched from this instance's `tools` generic package registry —
-          # upload the new release tarball there BEFORE bumping this version.
           # renovate: datasource=github-releases depName=google/go-containerregistry
           CRANE_VERSION: v0.22.1
-          # SHA-256 of go-containerregistry_Linux_x86_64.tar.gz at
-          # $CRANE_VERSION, taken from the upstream release checksums.txt. A
-          # generic-package coordinate is mutable (delete + re-upload), and the
-          # very next step hands this binary both registry tokens plus push
-          # rights on the public ghcr.io mirror — so the bytes are verified
-          # before they run, the same way install-service.ps1 pins WinSW.
-          # MUST be updated together with CRANE_VERSION.
-          CRANE_SHA256: 1a57bc98207fa1c0d04bf760699099e26f8383499bfd55b99c1b919a928a7230
+          # Registry write for the cache fill below (same credentials the
+          # image jobs push with). Missing/insufficient → the fill is skipped
+          # with a notice; the job still runs on the upstream download.
+          REG_USER: ${{ secrets.REGISTRY_USER }}
+          REG_TOKEN: ${{ secrets.REGISTRY_TOKEN }}
         run: |
           set -euo pipefail
-          # To disk first: piping straight into tar leaves nothing to check.
-          curl -fsSL --retry 3 --retry-delay 5 --retry-connrefused --retry-all-errors \
-            -o crane.tar.gz \
-            "${GITHUB_SERVER_URL}/api/packages/tools/generic/go-containerregistry/${CRANE_VERSION}/go-containerregistry_Linux_x86_64.tar.gz"
-          echo "${CRANE_SHA256}  crane.tar.gz" | sha256sum -c -
-          sudo tar -xzf crane.tar.gz -C /usr/local/bin crane
-          rm -f crane.tar.gz
+          ASSET=go-containerregistry_Linux_x86_64.tar.gz
+          UPSTREAM="https://github.com/google/go-containerregistry/releases/download/${CRANE_VERSION}"
+          CACHE="${GITHUB_SERVER_URL}/api/packages/tools/generic/go-containerregistry/${CRANE_VERSION}/${ASSET}"
+          CURL="curl -fsSL --retry 3 --retry-delay 5 --retry-connrefused --retry-all-errors"
+
+          # The tarball is verified against the checksums.txt Google publishes
+          # with the release, whichever place it came from: the instance's
+          # `tools` generic package registry is only a cache (a generic-package
+          # coordinate is mutable), and the very next step hands this binary
+          # both registry tokens plus push rights on the public ghcr.io
+          # mirror. A Renovate version bump therefore needs no manual upload
+          # and no hash edit: the first run after the bump misses the cache,
+          # fetches upstream, verifies, and fills the cache for the next run.
+          $CURL -o checksums.txt "${UPSTREAM}/checksums.txt"
+          grep -F " ${ASSET}" checksums.txt > expected.sha256
+          test -s expected.sha256
+
+          if $CURL -o "$ASSET" "$CACHE" 2>/dev/null; then
+            echo "crane ${CRANE_VERSION}: cache hit"
+            FROM=cache
+          else
+            echo "crane ${CRANE_VERSION}: not in the tools registry, fetching upstream"
+            $CURL -o "$ASSET" "${UPSTREAM}/${ASSET}"
+            FROM=upstream
+          fi
+          sha256sum -c expected.sha256
+
+          if [ "$FROM" = upstream ]; then
+            if [ -n "${REG_USER:-}" ] && [ -n "${REG_TOKEN:-}" ]; then
+              if curl -fsS --retry 3 -u "${REG_USER}:${REG_TOKEN}"                    --upload-file "$ASSET" "$CACHE"; then
+                echo "crane ${CRANE_VERSION}: cached in the tools registry"
+              else
+                echo "::notice::could not cache crane ${CRANE_VERSION} in the tools registry (REGISTRY_USER needs write access to the 'tools' owner's packages); continuing with the verified upstream download"
+              fi
+            else
+              echo "::notice::REGISTRY_USER/REGISTRY_TOKEN not set — crane not cached, continuing with the verified upstream download"
+            fi
+          fi
+
+          sudo tar -xzf "$ASSET" -C /usr/local/bin crane
+          rm -f "$ASSET" checksums.txt expected.sha256
           crane version
 
       - name: Sync tags (digest-compare, copy only what drifted)
