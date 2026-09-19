@@ -785,7 +785,9 @@ def test_direct_media_probe_cuts_a_dribbled_header(monkeypatch):
         out = udl._direct_media_probe_sync(
             f"http://127.0.0.1:{port}/a.mp3", timeout=0.5)
         assert out is False
-        assert _t.monotonic() - t0 < 2.0  # the dribble alone takes ~7 s
+        # The dribble alone takes ~7 s. 4 s, not 2: a loaded CI runner needed
+        # 2.5 s for the 0.5 s deadline (run 1078) and the cut is still proven.
+        assert _t.monotonic() - t0 < 4.0
     finally:
         srv.close()
 
@@ -807,7 +809,7 @@ def test_thumbnail_cuts_a_dribbled_header(monkeypatch):
             out = await udl.fetch_thumbnail_data_uri(
                 f"http://127.0.0.1:{port}/t.jpg", timeout=0.5)
             assert out is None
-            assert _t.monotonic() - t0 < 2.0
+            assert _t.monotonic() - t0 < 4.0   # see the probe test above
         _run(go())
     finally:
         srv.close()
