@@ -8259,8 +8259,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
     border-radius: 4px; padding: 0 0.375rem; font: inherit; cursor: pointer; line-height: 1.4; }
   #filter-nav button:hover { background: var(--panel); }
   #filter-count { color: var(--dim); font-size: var(--fs-xs); min-width: 4ch; text-align: center; }
-  .filter-hide { color: var(--dim); font-size: var(--fs-xs); margin-left: 0.5rem; cursor: pointer;
-    white-space: nowrap; }
+  .filter-mode { margin-left: 0.5rem; }
   .line.rule    { color: var(--dim); }
   .line.title   { color: var(--bold); font-weight: 600; }
   .line.meta    { color: var(--cyan); }
@@ -8336,7 +8335,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
         <span id="filter-count"></span>
         <button id="filterNext" type="button" title="newer match (Shift+Enter)">↓</button>
       </span>
-      <label class="filter-hide" title="hide every line that does not match (the old filter behavior)"><input type="checkbox" id="filterHide"> filter</label>
+      <span id="filter-mode" class="status-btn-group filter-mode" role="radiogroup" aria-label="search mode" title="search: highlight matches and step through them · filter: hide every line that does not match"><button type="button" class="status-btn active" role="radio" aria-checked="true" data-mode="search">search</button><button type="button" class="status-btn" role="radio" aria-checked="false" data-mode="filter">filter</button></span>
     </div>
     <div class="subbar-right">
       <span class="log-zoom" title="zoom log content only">
@@ -8365,8 +8364,16 @@ _LOG_VIEWER_HTML = """<!doctype html>
   let filterText = '';
   // Search modes: by default every hit is highlighted and the view jumps
   // to the newest one (↑/↓ step through them, folded hits get unfolded);
-  // with the "filter" box ticked, non-matching lines are hidden instead.
-  const hideEl = document.getElementById('filterHide');
+  // in "filter" mode (segmented search | filter control), non-matching
+  // lines are hidden instead.
+  const modeBtns = Array.from(document.querySelectorAll('#filter-mode .status-btn'));
+  function syncModeUI() {
+    modeBtns.forEach(b => {
+      const on = (b.dataset.mode === 'filter') === hideMode;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+  }
   const navEl = document.getElementById('filter-nav');
   const countEl = document.getElementById('filter-count');
   let hideMode = false;
@@ -8379,7 +8386,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
     filterEl.value = initialFilter;
     filterText = initialFilter.toLowerCase();
     hideMode = true;
-    if (hideEl) hideEl.checked = true;
+    syncModeUI();
     log.classList.add('hide-mode');
   }
 
@@ -8755,13 +8762,16 @@ _LOG_VIEWER_HTML = """<!doctype html>
   const nextBtn = document.getElementById('filterNext');
   if (prevBtn) prevBtn.addEventListener('click', () => jumpMatch(-1));
   if (nextBtn) nextBtn.addEventListener('click', () => jumpMatch(+1));
-  if (hideEl) hideEl.addEventListener('change', () => {
-    hideMode = hideEl.checked;
+  modeBtns.forEach(b => b.addEventListener('click', () => {
+    const want = b.dataset.mode === 'filter';
+    if (want === hideMode) return;
+    hideMode = want;
+    syncModeUI();
     log.classList.toggle('hide-mode', hideMode);
     refilter();
     if (!hideMode && filterText) jumpMatch(0);
     else if (!paused) window.scrollTo(0, document.body.scrollHeight);
-  });
+  }));
   pauseBtn.addEventListener('click', () => {
     paused = !paused;
     pauseBtn.textContent = paused ? 'resume' : 'pause';
