@@ -3970,6 +3970,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (resetAllBtn) {
       resetAllBtn.style.display = (anyDirty || orderDirty) ? '' : 'none';
     }
+    if (addFactoryBtn) {
+      const missing = _missingFactoryRules();
+      addFactoryBtn.style.display = missing.length ? '' : 'none';
+      addFactoryBtn.textContent = '＋ Add ' + missing.length + ' rule'
+        + (missing.length === 1 ? '' : 's') + ' from config.json';
+      addFactoryBtn.title = 'In config.json but not in your local rule list (new in an '
+        + 'update, or deleted here): ' + missing.map(b => b.label || b.name).join(', ');
+    }
     if (promoteAllBtn) {
       promoteAllBtn.style.display = (anyPromotable || orderDirty) ? '' : 'none';
     }
@@ -4917,6 +4925,35 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   promoteOrderBtn.style.display = 'none';
   promoteOrderBtn.addEventListener('click', () => _promoteOrder());
   ctrls.appendChild(promoteOrderBtn);
+
+  // ＋ Add rules from config.json — a saved local rule list REPLACES the
+  // factory list, so a rule that an update adds to config.json never shows
+  // up here on its own (and "Promote all" would even remove it again as
+  // "deleted locally"). This surfaces such rules and inserts each one at its
+  // config.json position relative to the factory rules already present.
+  function _missingFactoryRules() {
+    return factoryRules.filter(b => b.type !== 'terminal'
+      && !rules.some(r => r.name === b.name));
+  }
+  const addFactoryBtn = document.createElement('button');
+  addFactoryBtn.type = 'button';
+  addFactoryBtn.className = 'promote-all-btn';
+  addFactoryBtn.style.display = 'none';
+  addFactoryBtn.addEventListener('click', () => {
+    const order = factoryRules.map(b => b.name);
+    _missingFactoryRules().forEach(b => {
+      const copy = JSON.parse(JSON.stringify(b));
+      // Before the next config.json rule that exists locally, else before
+      // the terminal step.
+      const after = order.slice(order.indexOf(b.name) + 1);
+      let at = rules.findIndex(r => after.indexOf(r.name) !== -1);
+      if (at === -1) at = rules.findIndex(r => r.type === 'terminal');
+      if (at === -1) at = rules.length;
+      rules.splice(at, 0, copy);
+    });
+    commitFull();
+  });
+  ctrls.appendChild(addFactoryBtn);
 
   const resetAllBtn = document.createElement('button');
   resetAllBtn.type = 'button';

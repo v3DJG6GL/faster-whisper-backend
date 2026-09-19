@@ -470,7 +470,7 @@
     },
     {
       "name": "ch-symbol-cleanup",
-      "label": "Swiss German symbol cleanup",
+      "label": "CH: Symbol cleanup",
       "enabled": true,
       "languages": [
         "de"
