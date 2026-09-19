@@ -186,6 +186,20 @@ class PatchCaptureIn(BaseModel):
     admin_notes: str | None = Field(default=None, max_length=8000)
 
 
+class BulkStatusIn(BaseModel):
+    """PATCH /captures/api/bulk — one status for many ids. The cap equals
+    the list endpoint's page cap, so a "select all loaded" is always one
+    request. `audio_missing` is system-set and never a target."""
+    model_config = {"extra": "forbid"}
+    ids: list[str] = Field(min_length=1, max_length=1000)
+    status: Literal["new", "reviewed", "ready", "dismissed"]
+
+
+class BulkIdsIn(BaseModel):
+    model_config = {"extra": "forbid"}
+    ids: list[str] = Field(min_length=1, max_length=1000)
+
+
 class ClearIn(BaseModel):
     model_config = {"extra": "forbid"}
     # Typed confirmation — the literal string "CAPTURES" must be sent.
@@ -214,6 +228,25 @@ async def captures_page() -> HTMLResponse:
 # JSON APIs
 # ---------------------------------------------------------------------
 
+def _effective_owner_filter(
+    user: dict[str, Any], user_filter: str | None,
+) -> "str | list[str] | None":
+    """Owner scope for the list / stats queries. `scope=own` callers are
+    pinned to themselves by effective_user_id_for; `scope=all` callers
+    (incl. admins) see everyone and may narrow with the admin-only
+    `?user_id=a,b` (comma-separated, the speaker picker) — a non-admin's
+    query is ignored."""
+    perms = user["permissions"]
+    caller_uid = user.get("user_id") or ""
+    effective: "str | list[str] | None" = perms.effective_user_id_for(
+        "captures", caller_uid)
+    if user.get("is_admin") and user_filter:
+        ids = [u.strip() for u in user_filter.split(",") if u.strip()]
+        if ids:
+            effective = ids[0] if len(ids) == 1 else ids
+    return effective
+
+
 @router.get(
     "/captures/api/list",
     dependencies=[Depends(require_page("captures"))],
@@ -228,13 +261,7 @@ async def list_captures_api(
     """Scope-aware list. `scope=own` users see only their own captures;
     `scope=all` users (incl. admins) see every capture and may narrow
     via the admin-only `?user_id=...` query for the per-user dropdown."""
-    perms = user["permissions"]
-    caller_uid = user.get("user_id") or ""
-    effective_user = perms.effective_user_id_for("captures", caller_uid)
-    # Admin-only ?user_id= override (non-admin's query is ignored — they
-    # are already scoped to their own data by effective_user_id_for).
-    if user.get("is_admin") and user_filter:
-        effective_user = user_filter
+    effective_user = _effective_owner_filter(user, user_filter)
 
     def _render() -> str:
         rows = captures_store.list_captures(
@@ -266,6 +293,45 @@ async def list_captures_api(
     # aggregates, then JSONResponse's own json.dumps of the whole body — of
     # which the serialization was the larger half there (1.8 s of 2.17 s).
     # Rows are plain types, so these are the same bytes JSONResponse emits.
+    body = await asyncio.to_thread(_render)
+    return Response(content=body, media_type="application/json")
+
+
+@router.get(
+    "/captures/api/stats",
+    dependencies=[Depends(require_page("captures"))],
+)
+async def captures_stats_api(
+    user_filter: str | None = Query(None, alias="user_id"),
+    user: dict[str, Any] = Depends(get_current_user),
+) -> Response:
+    """Queue totals for the summary strip: hours + counts by status, review
+    progress, ready-this-week, hours per speaker. Scoped exactly like the
+    list (own-scope callers see only themselves). The page calls it WITHOUT
+    a speaker filter so the strip describes the whole queue while the list
+    is narrowed; `?user_id=` exists for API callers."""
+    effective_user = _effective_owner_filter(user, user_filter)
+
+    def _render() -> str:
+        st = captures_store.stats(user_id=effective_user)
+        users = st.get("by_user") or []
+        names = api_keys_store.get_usernames([u["user_id"] for u in users])
+        top: list[dict[str, Any]] = []
+        rest_n, rest_s = 0, 0.0
+        for i, u in enumerate(users):
+            if i < 8:
+                top.append({**u, "username": names.get(u["user_id"])})
+            else:
+                rest_n += int(u["n"]); rest_s += float(u["s"])
+        if rest_n:
+            top.append({"user_id": None, "username": "others",
+                        "n": rest_n, "s": rest_s})
+        st["by_user"] = top
+        st["is_admin"] = bool(user.get("is_admin"))
+        st["user_id"] = user.get("user_id")
+        return json.dumps(st, ensure_ascii=False, allow_nan=False,
+                          separators=(",", ":"))
+
     body = await asyncio.to_thread(_render)
     return Response(content=body, media_type="application/json")
 
@@ -615,6 +681,93 @@ async def get_audio_api(
         # The grouped-sample audio route already sends this.
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _bulk_guard(
+    ids: list[str], user: dict[str, Any], kind: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Per-row admission for the bulk endpoints — the same three checks the
+    single-id PATCH / DELETE apply, but collected instead of raised:
+    unknown OR cross-user → `not_found` (uniform, no existence oracle),
+    member of a locked sample (non-admin) → `locked`. Accepted cross-user
+    rows are audit-logged like their single-id counterparts. Ids are
+    de-duplicated preserving order."""
+    rows: list[dict[str, Any]] = []
+    skipped: list[dict[str, str]] = []
+    for cid in dict.fromkeys(i for i in ids if isinstance(i, str) and i):
+        row = captures_store.get_capture(cid)
+        if row is None:
+            skipped.append({"id": cid, "reason": "not_found"})
+            continue
+        try:
+            user["permissions"].assert_can_read_row(
+                row, "captures", user.get("user_id") or "",
+                detail="capture not found",
+            )
+        except HTTPException:
+            skipped.append({"id": cid, "reason": "not_found"})
+            continue
+        try:
+            _assert_member_sample_not_locked(row, user)
+        except HTTPException:
+            skipped.append({"id": cid, "reason": "locked"})
+            continue
+        _audit_cross_user_read(user, row, kind, cid)
+        rows.append(row)
+    return rows, skipped
+
+
+@router.patch(
+    "/captures/api/bulk",
+    dependencies=[Depends(require_page("captures"))],
+)
+async def bulk_status_api(
+    payload: BulkStatusIn,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Set one status on many captures. Partial success by design: rows
+    the caller may not touch are reported under `skipped` with a reason
+    (`not_found` / `locked` / `audio_missing`) and the rest are updated.
+    `updated[].prev_status` lets the page offer an 8 s undo."""
+    def _run() -> dict[str, Any]:
+        rows, skipped = _bulk_guard(payload.ids, user, "capture-bulk-status")
+        ok_ids: list[str] = []
+        for r in rows:
+            if r.get("status") == "audio_missing":
+                # system status — the file is gone; nothing to review
+                skipped.append({"id": r["id"], "reason": "audio_missing"})
+            else:
+                ok_ids.append(r["id"])
+        updated = captures_store.bulk_update_status(ok_ids, payload.status) \
+            if ok_ids else []
+        return {"ok": True, "status": payload.status,
+                "updated": [{"id": u["id"], "prev_status": u["prev_status"]}
+                            for u in updated],
+                "skipped": skipped}
+    return JSONResponse(await asyncio.to_thread(_run))
+
+
+@router.post(
+    "/captures/api/bulk-delete",
+    dependencies=[Depends(require_page("captures"))],
+)
+async def bulk_delete_api(
+    payload: BulkIdsIn,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> JSONResponse:
+    """Delete many captures (rows + audio; a member's parent sample is
+    auto-dissolved, as with the single-id DELETE). Same admission rules
+    and partial-success shape as the bulk status endpoint. No undo."""
+    def _run() -> dict[str, Any]:
+        rows, skipped = _bulk_guard(payload.ids, user, "capture-bulk-delete")
+        deleted: list[str] = []
+        for r in rows:
+            if captures_store.delete_capture(r["id"]):
+                deleted.append(r["id"])
+            else:
+                skipped.append({"id": r["id"], "reason": "not_found"})
+        return {"ok": True, "deleted": deleted, "skipped": skipped}
+    return JSONResponse(await asyncio.to_thread(_run))
 
 
 @router.patch(

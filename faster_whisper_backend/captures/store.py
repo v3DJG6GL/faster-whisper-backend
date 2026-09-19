@@ -270,7 +270,22 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
 # Create
 # ---------------------------------------------------------------------
 
-def count(user_id: str | None = None) -> int:
+def _user_clause(user_id: "str | list[str] | None") -> tuple[str, list[Any]]:
+    """`user_id` filter fragment for the list / counts / stats queries:
+    None → no filter (admin, scope=all); a string → that owner; a list →
+    any of those owners (the speaker picker). Returns ("", []) or
+    ("user_id = ?", [id]) or ("user_id IN (?,?)", ids)."""
+    if user_id is None:
+        return "", []
+    if isinstance(user_id, str):
+        return "user_id = ?", [user_id]
+    ids = [u for u in user_id if isinstance(u, str) and u]
+    if not ids:
+        return "", []
+    return f"user_id IN ({','.join('?' * len(ids))})", ids
+
+
+def count(user_id: "str | list[str] | None" = None) -> int:
     """Total row count (any status), unfiltered or owner-scoped. Cheap;
     used by /quick-config to decide whether to surface the reapply-rules
     modal and by the captures list toolbar total. The ingest cap gate must
@@ -280,12 +295,11 @@ def count(user_id: str | None = None) -> int:
     narrows to a single owner so a scope=own toolbar total matches the
     rows that caller can actually see."""
     conn = _require_conn()
-    if user_id is None:
-        row = conn.execute("SELECT COUNT(*) FROM captures").fetchone()
-    else:
-        row = conn.execute(
-            "SELECT COUNT(*) FROM captures WHERE user_id = ?", (user_id,),
-        ).fetchone()
+    clause, params = _user_clause(user_id)
+    row = conn.execute(
+        "SELECT COUNT(*) FROM captures" + (f" WHERE {clause}" if clause else ""),
+        params,
+    ).fetchone()
     return int(row[0]) if row else 0
 
 
@@ -688,7 +702,7 @@ def list_captures(
     status: str | None = None,
     limit: int = 200,
     before_ts: float | None = None,
-    user_id: str | None = None,
+    user_id: "str | list[str] | None" = None,
 ) -> list[dict[str, Any]]:
     """Newest-first listing, optionally filtered by status and user_id.
     Heavy fields (words / segments) are dropped to keep the wire payload
@@ -709,9 +723,10 @@ def list_captures(
     if before_ts is not None:
         clauses.append("created_ts < ?")
         params.append(float(before_ts))
-    if user_id is not None:
-        clauses.append("user_id = ?")
-        params.append(user_id)
+    uclause, uparams = _user_clause(user_id)
+    if uclause:
+        clauses.append(uclause)
+        params.extend(uparams)
     where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
     params.append(int(limit))
     cur = conn.execute(
@@ -773,26 +788,102 @@ def find_by_request_id(request_id: str) -> list[dict[str, Any]]:
     return [_row_to_dict(r, include_words=False) for r in cur.fetchall()]
 
 
-def counts_by_status(user_id: str | None = None) -> dict[str, int]:
+def counts_by_status(user_id: "str | list[str] | None" = None) -> dict[str, int]:
     """Status breakdown for the page toolbar. `user_id=None` → all users
     (admin / scope=all); a string narrows to a single owner so a scope=own
     caller's toolbar counts match the rows they can see (and don't leak the
     global cross-user breakdown)."""
     conn = _require_conn()
     out = {s: 0 for s in _VALID_STATUS}
-    if user_id is None:
-        cur = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM captures GROUP BY status"
-        )
-    else:
-        cur = conn.execute(
-            "SELECT status, COUNT(*) AS n FROM captures WHERE user_id = ?"
-            " GROUP BY status", (user_id,),
-        )
+    clause, params = _user_clause(user_id)
+    where = f" WHERE {clause}" if clause else ""
+    cur = conn.execute(
+        f"SELECT status, COUNT(*) AS n FROM captures{where} GROUP BY status",
+        params,
+    )
     for row in cur:
         if row["status"] in out:
             out[row["status"]] = int(row["n"])
     return out
+
+
+def stats(user_id: "str | list[str] | None" = None,
+          week_s: float = 7 * 86400.0) -> dict[str, Any]:
+    """Queue totals for the /captures summary strip, in one grouped pass
+    (status × owner) plus one median lookup. Durations are seconds of
+    `audio_s`. "Ready this week" counts rows whose status is `ready` and
+    whose reviewed_ts (stamped on every status change) is within `week_s`
+    — i.e. rows that BECAME ready recently; an undo that re-marks ready
+    refreshes the stamp, which is accepted. `user_id` scopes like the
+    list: None → everything, str → one owner, list → any of them."""
+    conn = _require_conn()
+    clause, params = _user_clause(user_id)
+    where = f" WHERE {clause}" if clause else ""
+    cutoff = time.time() - float(week_s)
+    cur = conn.execute(
+        "SELECT status, user_id, COUNT(*) AS n, COUNT(audio_s) AS na,"
+        " COALESCE(SUM(audio_s), 0) AS s,"
+        " MIN(CASE WHEN status = 'new' THEN created_ts END) AS oldest_new,"
+        " SUM(CASE WHEN status = 'ready' AND reviewed_ts >= ? THEN 1 ELSE 0 END) AS wk_n,"
+        " COALESCE(SUM(CASE WHEN status = 'ready' AND reviewed_ts >= ?"
+        "   THEN audio_s END), 0) AS wk_s"
+        f" FROM captures{where} GROUP BY status, user_id",
+        [cutoff, cutoff, *params],
+    )
+    by_status: dict[str, dict[str, float]] = {
+        st: {"n": 0, "s": 0.0} for st in _VALID_STATUS}
+    by_user: dict[str | None, dict[str, float]] = {}
+    total_n = 0
+    total_na = 0
+    total_s = 0.0
+    oldest_new: float | None = None
+    wk_n = 0
+    wk_s = 0.0
+    for row in cur:
+        st = row["status"]
+        n = int(row["n"])
+        sec = float(row["s"] or 0.0)
+        total_n += n
+        total_na += int(row["na"] or 0)
+        total_s += sec
+        if st in by_status:
+            by_status[st]["n"] += n
+            by_status[st]["s"] += sec
+        u = by_user.setdefault(row["user_id"], {"n": 0, "s": 0.0})
+        u["n"] += n
+        u["s"] += sec
+        if row["oldest_new"] is not None:
+            on = float(row["oldest_new"])
+            oldest_new = on if oldest_new is None else min(oldest_new, on)
+        wk_n += int(row["wk_n"] or 0)
+        wk_s += float(row["wk_s"] or 0.0)
+    median: float | None = None
+    if total_na:
+        mrows = conn.execute(
+            "SELECT audio_s FROM captures WHERE audio_s IS NOT NULL"
+            + (f" AND {clause}" if clause else "")
+            + " ORDER BY audio_s LIMIT 2 - (? % 2) OFFSET (? - 1) / 2",
+            [*params, total_na, total_na],
+        ).fetchall()
+        vals = [float(r["audio_s"]) for r in mrows]
+        if vals:
+            median = sum(vals) / len(vals)
+    handled = sum(by_status[st]["n"] for st in ("reviewed", "ready", "dismissed"))
+    users = [
+        {"user_id": uid, "n": int(v["n"]), "s": float(v["s"])}
+        for uid, v in by_user.items()
+    ]
+    users.sort(key=lambda d: (-d["s"], -d["n"], d["user_id"] or ""))
+    return {
+        "total": {"n": total_n, "s": total_s, "median_s": median},
+        "by_status": {st: {"n": int(v["n"]), "s": float(v["s"])}
+                      for st, v in by_status.items()},
+        "review": {"handled_n": int(handled), "oldest_new_ts": oldest_new},
+        "ready": {"n": int(by_status["ready"]["n"]),
+                  "s": float(by_status["ready"]["s"]),
+                  "week_n": int(wk_n), "week_s": float(wk_s)},
+        "by_user": users,
+    }
 
 
 # ---------------------------------------------------------------------
@@ -878,6 +969,54 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
     except Exception:
         pass
     return row
+
+
+def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
+    """Set `status` on many rows in one locked pass. Same reviewed_ts rule
+    as update_capture (NULL when going back to `new`, now otherwise).
+    Returns, for every id that existed, {id, prev_status, prev_reviewed_ts}
+    so the caller can offer an undo; unknown ids are silently absent.
+    Invalidates the merge-proposer cache once per affected owner."""
+    if new_status not in _VALID_STATUS:
+        raise ValueError(f"invalid status: {new_status!r}")
+    ids = [i for i in dict.fromkeys(ids) if isinstance(i, str) and i]
+    if not ids:
+        return []
+    conn = _require_conn()
+    placeholders = ",".join("?" * len(ids))
+    now = time.time()
+    with _lock:
+        prev = conn.execute(
+            f"SELECT id, status, reviewed_ts, user_id FROM captures"
+            f" WHERE id IN ({placeholders})", ids,
+        ).fetchall()
+        if not prev:
+            return []
+        found = [r["id"] for r in prev]
+        if new_status == "new":
+            conn.execute(
+                f"UPDATE captures SET status = ?, reviewed_ts = NULL"
+                f" WHERE id IN ({','.join('?' * len(found))})",
+                [new_status, *found],
+            )
+        else:
+            conn.execute(
+                f"UPDATE captures SET status = ?, reviewed_ts = ?"
+                f" WHERE id IN ({','.join('?' * len(found))})",
+                [new_status, now, *found],
+            )
+    owners = {r["user_id"] for r in prev}
+    try:
+        from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
+        for uid in owners:
+            captures_merge_proposer.invalidate(uid)
+    except Exception:
+        pass
+    return [
+        {"id": r["id"], "prev_status": r["status"],
+         "prev_reviewed_ts": r["reviewed_ts"]}
+        for r in prev
+    ]
 
 
 # ---------------------------------------------------------------------

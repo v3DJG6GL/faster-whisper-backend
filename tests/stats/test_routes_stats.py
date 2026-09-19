@@ -1262,3 +1262,16 @@ def test_stats_js_discloses_unscoped_stage_rollups_and_small_fixes(client):
     assert "if (dim === 'key') p.delete('keys'); else p.delete('users');" not in js
     assert "delete el.gridstackNode;" not in js
     assert 'colspan="8"' not in js
+
+
+def test_stats_page_ships_shared_pick_list_widget(client):
+    """The users / keys filters are instances of web_common's shared
+    pick-list widget: the template must carry the substituted script (no
+    leaked placeholder) and empty .picker mounts for stats.js to fill."""
+    html = client.get("/stats").text
+    assert "{{PICK_LIST_JS}}" not in html
+    assert "window._renderPickList = _renderPickList" in html
+    assert '<span class="picker" id="sb-who"></span>' in html
+    assert '<span class="picker" id="sb-keys"></span>' in html
+    # the script precedes stats.js, which mounts the pickers at parse time
+    assert html.index("_renderPickList") < html.index("/static/stats.js")
