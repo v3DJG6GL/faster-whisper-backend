@@ -191,11 +191,14 @@ def test_batch_emptied_segment_counts_as_dropped(client, app_module, fake_model)
 
 
 def test_batch_repeated_commands_survive(client, fake_model):
-    text = "Neue Zeile Neue Zeile Neue Zeile"
-    fake_model._segments = [FakeSegment(text, 0.0, 6.0, words=_words(text, 0.0, 6.0))]
+    # Six copies: 12 words reach the repeat rule (>= 3 words x 3 repeats), so
+    # only the short-phrase protection (period 2 < 3) keeps them. Each "Neue
+    # Zeile" is post-processed into one newline — a cut would leave fewer.
+    text = " ".join(["Neue Zeile"] * 6)
+    fake_model._segments = [FakeSegment(text, 0.0, 12.0, words=_words(text, 0.0, 12.0))]
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1"})
-    assert r.json()["text"].lower().count("zeile") == 3 or "\n" in r.json()["text"]
+    assert r.json()["text"] == "\n" * 6
 
 
 def test_guard_hits_in_machine_snapshot_only(app_module):
@@ -205,11 +208,9 @@ def test_guard_hits_in_machine_snapshot_only(app_module):
     assert metrics.metrics_snapshot()["guard_hits"] == {"burst": 1}
 
 
-def test_stats_page_has_the_guard_line(app_module):
-    from faster_whisper_backend.stats import routes as stats_routes
-    import inspect
-    src = inspect.getsource(stats_routes)
-    assert 'id="guard-meta"' in src and "snap.guard_hits" in src
+def test_stats_page_has_the_guard_line(client):
+    html = client.get("/stats").text
+    assert 'id="guard-meta"' in html and "snap.guard_hits" in html
 
 
 def test_batch_conditioning_unchanged(client, fake_model):

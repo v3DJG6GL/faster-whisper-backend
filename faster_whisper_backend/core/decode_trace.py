@@ -77,7 +77,7 @@ _tls = threading.local()
 
 _INSTALLED_FLAG = "_fwb_decode_trace_installed"
 
-_N_FRAMES = 3000          # one 30 s window at 100 mel frames / s
+_N_FRAMES = 3000          # one 30 s window at 100 mel frames / s (fallback)
 _FRAMES_PER_S = 100.0
 _TOKEN_CAP_FLOOR = 30     # tokens every window may generate regardless of length
 
@@ -100,6 +100,18 @@ def _capped_max_length(orig_max: int, prompt_len: int, cap: "int | None") -> int
         return orig_max
     wanted = max(2 * cap, max(0, int(prompt_len) - 1) + cap)
     return min(int(orig_max), wanted)
+
+
+def _window_frames(model) -> int:
+    """Frames of one FULL window: the feature extractor's ``nb_max_frames``
+    (follows ``transcribe(chunk_length=...)``), 3000 when it cannot be read.
+    With a literal 3000 a smaller chunk_length would make every window look
+    short and arm the residual stop after window 1."""
+    try:
+        n = int(getattr(getattr(model, "feature_extractor", None), "nb_max_frames", 0) or 0)
+    except Exception:
+        n = 0
+    return n if n > 0 else _N_FRAMES
 
 
 def _current() -> "DecodeTrace | None":
@@ -137,6 +149,7 @@ class DecodeTrace:
         self.skip_residual = bool(skip_residual)
         self.reached_end = False        # a DECODED window was shorter than 30 s
         self.skipped_windows = 0
+        self.n_frames = _N_FRAMES       # frames of a full window; set by the hook
         self.pending_len_frames: int | None = None
         self.pending_encode_s: float | None = None
         self.no_speech_threshold = no_speech_threshold
@@ -189,7 +202,7 @@ class DecodeTrace:
         }
         # Only a window that is actually decoded can mark the end: language
         # detection pads the first window too, before any decode.
-        if w["len_frames"] is not None and w["len_frames"] < _N_FRAMES:
+        if w["len_frames"] is not None and w["len_frames"] < self.n_frames:
             self.reached_end = True
         self.pending_len_frames = None
         self.pending_encode_s = None
@@ -373,6 +386,7 @@ def install(model):
             # lets the rung hook compute the compression ratio it retried on.
             tokenizer = args[2] if len(args) > 2 else kwargs.get("tokenizer")
             _tls.tokenizer = tokenizer
+            tr.n_frames = _window_frames(model)
             w = tr.open_window()
             try:
                 result = _orig(*args, **kwargs)
@@ -453,11 +467,18 @@ def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
     if info is not None:
         dav = getattr(info, "duration_after_vad", None)
         dur = float(dav if dav is not None else (getattr(info, "duration", 0.0) or 0.0))
+        if not dur > 0:
+            dur = None                  # unknown length: place no window by it
     seeks: dict[int, int] = {}
     for s in segments or []:
         sk = getattr(s, "seek", None)
         if sk is not None:
             seeks[int(sk)] = seeks.get(int(sk), 0) + 1
+    # Seeks no window has claimed yet. faster-whisper decodes windows in rising
+    # seek order and can only advance inside the previous window, so the next
+    # window starts in (lo_f, hi_f].
+    pend = sorted(seeks)
+    lo_f = hi_f = 0
 
     windows_out = []
     total_tokens = 0
@@ -468,20 +489,30 @@ def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
         len_s = (lf / _FRAMES_PER_S) if lf is not None else None
         # A window shorter than 30 s is the last one of its clip: it ends at
         # the content end, so its start is content − length. The first window
-        # starts at 0 regardless.
+        # starts at 0 regardless. A full window after the first is placed by
+        # the seek its own segments carry; one that yielded nothing stays
+        # unplaced.
         start_s: float | None
         if i == 0:
             start_s = 0.0
-        elif len_s is not None and lf < _N_FRAMES and dur is not None:
+        elif len_s is not None and lf < tr.n_frames and dur is not None:
             start_s = max(0.0, dur - len_s)
         else:
             start_s = None
+            if lf is not None:
+                own = next((sk for sk in pend if lo_f < sk <= hi_f), None)
+                if own is not None:
+                    start_s = own / _FRAMES_PER_S
         seg_count = 0
+        span = int(lf) if lf is not None else tr.n_frames
         if start_s is not None:
             frame = int(round(start_s * _FRAMES_PER_S))
-            for sk, c in seeks.items():
-                if abs(sk - frame) <= 2:
-                    seg_count = c
+            for sk in [sk for sk in pend if abs(sk - frame) <= 2]:
+                seg_count += seeks[sk]
+                pend.remove(sk)
+            lo_f, hi_f = frame, frame + span
+        else:
+            hi_f += span
         rungs = []
         for r in w.get("rungs", []):
             total_tokens += int(r.get("tokens") or 0)

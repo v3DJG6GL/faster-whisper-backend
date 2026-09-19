@@ -8,7 +8,6 @@ carries the guard row, and the knob resolves through cfg_for like its
 siblings so a per-model / per-identity override reaches the decode.
 """
 
-import json
 import logging
 
 from faster_whisper_backend.core import decode_trace as dt

@@ -50,8 +50,17 @@ _ZERO_LEN_S = 0.005
 #   p0.10 | 'Fragezeichen' 6.12-6.12 p0.33   (6.12 s = end of the audio)
 _LOW_PROB = 0.15
 _SHORT_S = 0.133
+# A CONFIDENT absorber sandwiched between zero-length words is only taken up to
+# this length: leftover audio after the last word is short, a longer confident
+# word is speech ("wirklich" 0.4-1.9 p0.99 between two collapsed words).
+_ABSORBER_MAX_S = 1.0
 # The burst rule looks at the segment's last second.
 _BURST_WINDOW_S = 1.0
+# Burst rule: a word at least this long is a spoken word, however close the next
+# one starts — short function words ("und", "die") last 0.08-0.12 s, below the
+# 1/8 s gap. The made-up words before the pile are squeezed far below it
+# (" zu" 5.54-5.58) or zero-length.
+_BURST_REAL_MIN_S = 0.07
 # Repeat rule: phrases shorter than this are never touched — dictation commands
 # are legitimately repeated ("Neue Zeile Neue Zeile Neue Zeile").
 _REPEAT_MIN_PHRASE_WORDS = 3
@@ -94,19 +103,26 @@ def _key(unit: str) -> str:
 def _burst_cut(words, limit: float) -> int | None:
     """More than ``limit`` words start within the segment's last second → cut at
     the first word of the pile: the first word in that window whose gap to the
-    next word is below 1/limit s. Real words inside the look-back second keep
-    their normal gaps and stay."""
+    next word is below 1/limit s AND which is itself zero-length or squeezed
+    below 0.07 s. Real words inside the look-back second stay — those with
+    normal gaps, and fast short ones too (a spoken word has a length). Only
+    when no close word looks made up does the first close word start the cut."""
     if not limit or limit <= 0 or len(words) < 2:
         return None
     t_last = _start(words[-1])
-    lo = next(i for i, w in enumerate(words) if _start(w) > t_last - _BURST_WINDOW_S)
+    lo = next((i for i, w in enumerate(words) if _start(w) > t_last - _BURST_WINDOW_S),
+              len(words) - 1)
     if len(words) - lo <= limit:
         return None
     gap = 1.0 / float(limit)
+    first_close = None
     for i in range(lo, len(words) - 1):
         if _start(words[i + 1]) - _start(words[i]) < gap:
-            return i
-    return None
+            if (_end(words[i]) - _start(words[i])) < _BURST_REAL_MIN_S:
+                return i
+            if first_close is None:
+                first_close = i
+    return first_close
 
 
 def _zero_tail_cut(words, min_words: int) -> int | None:
@@ -116,20 +132,26 @@ def _zero_tail_cut(words, min_words: int) -> int | None:
       * zero-length words,
       * squeezed words (shorter than 0.133 s AND probability < 0.15),
       * the absorber — the leftover audio time must go to SOME word. It belongs
-        to the tail when it sits between zero-length words (``nehmen(0) → und →
-        pile``), or, once, when its probability is < 0.15 (``zu → nehmen?, →
-        Fragezeichen(0)``).
+        to the tail, once, when it sits between a zero-length word and a pile
+        of at least two zero-length words and is shorter than 1 s or unsure
+        (``nehmen(0) → und → pile``), or, once, when its probability is < 0.15
+        (``zu → nehmen?, → Fragezeichen(0)``).
     A confident non-zero word with a spoken word before it is the real last word
-    and is never cut; a single zero-length last word is kept."""
-    if not min_words or min_words <= 0 or not words or not _is_zero(words[-1]):
+    and is never cut, nor is one between two single collapsed words; a single
+    zero-length last word is kept (``min_words`` 1 is treated as off)."""
+    if not min_words or min_words < 2 or not words or not _is_zero(words[-1]):
         return None
     i = len(words)
     unsure_absorber_used = False
+    sandwiched_absorber_used = False
     while i > 0:
         w = words[i - 1]
         if _is_zero(w) or _squeezed(w):
             i -= 1
-        elif i >= 2 and _is_zero(words[i - 2]):
+        elif (not sandwiched_absorber_used and i >= 2 and _is_zero(words[i - 2])
+              and i + 1 < len(words) and _is_zero(words[i]) and _is_zero(words[i + 1])
+              and ((_end(w) - _start(w)) < _ABSORBER_MAX_S or _low_prob(w))):
+            sandwiched_absorber_used = True
             i -= 1                  # the sandwiched absorber
         elif _low_prob(w) and not unsure_absorber_used:
             unsure_absorber_used = True
@@ -176,12 +198,14 @@ def find_tail_cut(words, text: str, *, burst: float = 0.0, zero_tail: int = 0,
         z = _zero_tail_cut(words, int(zero_tail or 0))
         if z is not None:
             hits["zero_tail"] = z
-        keys = [_key(getattr(w, "word", "") or "") for w in words]
-    else:
-        keys = [_key(u) for u in _UNIT_RE.findall(text or "")]
-    r = _repeat_cut(keys, int(repeats or 0))
-    if r is not None:
-        hits["repeat"] = r
+    if int(repeats or 0) >= 2:      # the keys are only worth building when on
+        if words:
+            keys = [_key(getattr(w, "word", "") or "") for w in words]
+        else:
+            keys = [_key(u) for u in _UNIT_RE.findall(text or "")]
+        r = _repeat_cut(keys, int(repeats or 0))
+        if r is not None:
+            hits["repeat"] = r
     if not hits:
         return None
     idx = min(hits.values())
@@ -231,8 +255,9 @@ def apply_tail_guards(seg, *, burst: float = 0.0, zero_tail: int = 0,
             if rebuilt:
                 info["text_rebuilt"] = True
             seg.words = kept
-            if kept:
-                seg.end = max(_end(kept[-1]), float(getattr(seg, "start", 0.0) or 0.0))
+            seg_start = float(getattr(seg, "start", 0.0) or 0.0)
+            # Nothing kept: no consumer may inherit the made-up end.
+            seg.end = max(_end(kept[-1]), seg_start) if kept else seg_start
         else:
             units = _UNIT_RE.findall(text)
             kept_text = "".join(units[:idx])

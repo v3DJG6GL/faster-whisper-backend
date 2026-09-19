@@ -212,18 +212,44 @@ def test_incident_shape_is_traced_window_by_window():
 def test_capture_is_thread_local():
     """Two decodes on the same hooked model (INFERENCE_CONCURRENCY 2) must not
     see each other's windows."""
-    m = dt.install(_incident_model())
-    seen = {}
+    seen, results = {}, {}
+    barrier = threading.Barrier(2)
 
+    # Assertions live in the MAIN thread: one raised inside a worker is
+    # swallowed by threading and the test would pass anyway.
     def worker(name):
-        with dt.capture(_KW) as tr:
-            seen[name] = tr
-            assert dt._current() is tr
+        try:
+            with dt.capture(_KW) as tr:
+                seen[name] = tr
+                barrier.wait(timeout=5)         # both captures are open now
+                cur = dt._current()
+                cur.open_window()
+                cur.note_rung({"secs": 0.0, "tokens": len(name)})
+                barrier.wait(timeout=5)
+                results[name] = {"current_is_own": dt._current() is tr}
+        except Exception as e:  # noqa: BLE001
+            results[name] = {"error": e}
 
-    a = threading.Thread(target=worker, args=("a",))
-    a.start(); a.join()
+    threads = [threading.Thread(target=worker, args=(n,)) for n in ("a", "bb")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+    assert not any(t.is_alive() for t in threads)
+    assert results == {"a": {"current_is_own": True}, "bb": {"current_is_own": True}}
+    assert seen["a"] is not seen["bb"]
+    for name in ("a", "bb"):
+        assert len(seen[name].windows) == 1
+        assert [r["tokens"] for r in seen[name].windows[0]["rungs"]] == [len(name)]
     assert dt._current() is None
-    assert seen["a"].windows == []
+
+
+def test_nested_capture_restores_the_outer_trace():
+    with dt.capture(_KW) as outer:
+        with dt.capture(_KW) as inner:
+            assert dt._current() is inner
+        assert dt._current() is outer
+    assert dt._current() is None
 
 
 def test_finish_without_trace_is_none():
@@ -347,6 +373,58 @@ def test_full_windows_of_a_long_file_are_never_refused():
     assert len(m.model.calls) == 3
     assert [w.get("skipped") for w in t["windows"]] == [None, None, None, "residual"]
     assert t["windows"][2]["rungs"][0]["outcome"] == "kept · 1 segment"
+    # A full window after the first is placed by the seek of its own segments.
+    w2 = t["windows"][1]
+    assert w2["start_s"] == pytest.approx(29.0) and w2["segments"] == 1
+    assert w2["rungs"][-1]["outcome"] == "kept · 1 segment"
+
+
+def test_full_middle_window_without_text_claims_no_foreign_seek():
+    """A 95 s file whose second window yielded nothing: it stays unplaced with
+    0 segments, and the window after it still finds its own seek."""
+    plan = [[([5, 6, 7], -0.5, 0.01)]] * 4
+    m = _Model(plan, _THR)
+    m.duration = 95.0
+    m.windows = [{"frames": 3000, "seek": 0, "yield": 1},
+                 {"frames": 3000, "seek": 3000, "yield": 0},
+                 {"frames": 3000, "seek": 6000, "yield": 2},
+                 {"frames": 500, "seek": 9000, "yield": 1}]
+    t = _run(dt.install(m))
+    w1, w2, w3, w4 = t["windows"]
+    assert w2["start_s"] is None and w2["segments"] == 0
+    assert w2["rungs"][-1]["outcome"] == "no text"
+    assert w3["start_s"] == pytest.approx(60.0) and w3["segments"] == 2
+    assert w4["start_s"] == pytest.approx(90.0) and w4["segments"] == 1
+
+
+def test_unknown_duration_places_no_window_at_zero():
+    """info without a usable length (duration 0/None): the short tail window
+    must not resolve to frame 0 and inherit window 1's segments."""
+    m = _incident_model()
+    m.duration = 0.0
+    t = _run(dt.install(m))
+    w1, w2 = t["windows"]
+    assert w1["segments"] == 1
+    assert w2["start_s"] is None and w2["segments"] == 0
+
+
+def test_full_window_length_follows_the_feature_extractor():
+    """chunk_length 10 s: a 1000-frame window is FULL, not the end of the
+    audio, so the window after it is decoded, not refused."""
+    class FE:
+        nb_max_frames = 1000
+    plan = [[([5, 6, 7], -0.5, 0.01)]] * 3
+    m = _Model(plan, _THR)
+    m.feature_extractor = FE()
+    m.duration = 25.0
+    m.windows = [{"frames": 1000, "seek": 0, "yield": 1},
+                 {"frames": 1000, "seek": 1000, "yield": 1},
+                 {"frames": 500, "seek": 2000, "yield": 1}]
+    dt.install(m)
+    segs, t = _run_stop(m, skip_residual=True)
+    assert len(segs) == 3 and t["skipped_windows"] == 0
+    assert t["windows"][1]["start_s"] == pytest.approx(10.0)
+    assert t["windows"][2]["start_s"] == pytest.approx(20.0)
 
 
 def test_consume_returns_everything_when_nothing_stops():

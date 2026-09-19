@@ -781,12 +781,20 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # hold real speech after a cut. A trimmed hypothesis is just a
             # shorter one, so commits still only ever extend. DEBUG only, not
             # counted: previews decode about once a second.
+            # A segment cut to nothing is dropped, as the final and the batch
+            # route do: handed on as (start, end, "") two previews would agree
+            # on "" and LocalAgreement would commit an empty word at that time.
             _limits = main.tail_guard_limits(partial_model_name, ident)
+            _kept_segs = []
             for seg in segs:
                 _cut = segment_guards.apply_tail_guards(seg, **_limits)
                 if _cut:
                     logger.debug("[stream %s] preview: cut made-up tail (%s): %r",
                                  session_id[:8], "+".join(_cut["rules"]), _cut["text"])
+                    if not (getattr(seg, "text", "") or "").strip():
+                        continue
+                _kept_segs.append(seg)
+            segs = _kept_segs
             if gate_partial_words:
                 words = [(w.start, w.end, w.word)
                          for seg in segs for w in (getattr(seg, "words", None) or [])]

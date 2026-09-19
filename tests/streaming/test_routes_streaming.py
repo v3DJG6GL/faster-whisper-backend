@@ -771,11 +771,35 @@ def test_stream_final_and_previews_cut_the_made_up_tail(app_module, fake_model,
     assert "tail_cut" in caplog.text
 
 
+def test_stream_preview_drops_a_segment_cut_to_nothing(app_module, fake_model,
+                                                       monkeypatch):
+    """A preview whose only segment is one zero-length pile: handed on as
+    (start, made-up end, "") two previews agree on "" and LocalAgreement
+    commits an empty word at the made-up end — every later real word before
+    that time is then dropped. The preview must hand on nothing instead."""
+    from tests.conftest import FakeSegment, FakeWord
+    from faster_whisper_backend.streaming import localagreement
+    ws = [FakeWord(f" x{i}", 2.4, 2.4) for i in range(12)]
+    fake_model._segments = [FakeSegment("".join(w.word for w in ws), 0.3, 2.4, words=ws)]
+    seen = []
+    orig = localagreement.LocalAgreementProcessor.insert_hypothesis
+
+    def spy(self, words, offset):
+        words = list(words)
+        seen.append(words)
+        return orig(self, words, offset)
+
+    monkeypatch.setattr(localagreement.LocalAgreementProcessor, "insert_hypothesis", spy)
+    msgs = _stream_once(app_module, monkeypatch)
+    assert seen, "no preview was decoded"
+    assert all(h == [] for h in seen)
+    assert all(m["committed"] == "" for m in msgs if m["type"] == "partial")
+
+
 def test_stream_tail_cuts_off_keep_the_tail(app_module, fake_model, monkeypatch):
-    app_module.cfg.SEGMENT_MAX_WORD_BURST_PER_S = 0
-    app_module.cfg.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS = 0
-    app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS = 0
-    app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0
+    for name in ("SEGMENT_MAX_WORD_BURST_PER_S", "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
+                 "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", "SEGMENT_MAX_WORDS_PER_S"):
+        monkeypatch.setattr(app_module.cfg, name, 0, raising=False)
     fake_model._segments = [_loop_segment()]
     msgs = _stream_once(app_module, monkeypatch)
     finals = [m for m in msgs if m["type"] == "final"]

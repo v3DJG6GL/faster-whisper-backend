@@ -108,6 +108,59 @@ def test_confident_word_before_a_zero_length_last_word_stays():
     assert sg.find_tail_cut(words, "", zero_tail=2) is None
 
 
+def test_confident_word_between_two_single_zero_length_words_stays():
+    # DTW gave a mid-segment word and the last word the same frame: the long
+    # confident word between them is speech, not an absorber before a pile
+    words = [_w(" Das", 0.0, 0.4), _w(" ist", 0.4, 0.4),
+             _w(" wirklich", 0.4, 1.9, 0.99), _w(" gut", 1.9, 1.9)]
+    assert sg.find_tail_cut(words, "", zero_tail=2) is None
+    # alternating collapsed / confident words never chain into a tail
+    chain = [_w(" a", 0.0, 0.4), _w(" b", 0.4, 0.4), _w(" c", 0.4, 0.9, 0.95),
+             _w(" d", 0.9, 0.9), _w(" e", 0.9, 1.5, 0.95), _w(" f", 1.5, 1.5)]
+    assert sg.find_tail_cut(chain, "", zero_tail=2) is None
+
+
+def test_sandwiched_absorber_is_taken_once_and_only_when_short_or_unsure():
+    pile = [_w(f" x{i}", 3.0, 3.0) for i in range(3)]
+    # second sandwich further back: the walk stops at the first one's far side
+    words = [_w(" a", 0.0, 0.5), _w(" b", 0.5, 0.5), _w(" c", 0.5, 0.5),
+             _w(" d", 0.5, 1.0), _w(" e", 1.0, 1.0), _w(" f", 1.0, 1.0),
+             _w(" g", 1.0, 1.5)] + pile
+    assert sg.find_tail_cut(words, "", zero_tail=2) == (4, ["zero_tail"])
+    long_sure = [_w(" a", 0.0, 0.5), _w(" b", 0.5, 0.5), _w(" lang", 0.5, 3.0, 0.99)] + pile
+    assert sg.find_tail_cut(long_sure, "", zero_tail=2) == (3, ["zero_tail"])
+    long_unsure = long_sure[:2] + [_w(" lang", 0.5, 3.0, 0.05)] + pile
+    assert sg.find_tail_cut(long_unsure, "", zero_tail=2) == (1, ["zero_tail"])
+
+
+def test_zero_tail_min_words_one_is_off():
+    # the help text promises a single zero-length last word is always kept
+    words = [_w(" pro", 2.1, 2.5), _w(" Tag", 2.5, 3.4), _w(" Fragezeichen", 3.4, 3.4)]
+    assert sg.find_tail_cut(words, "", zero_tail=1) is None
+
+
+def test_fast_real_words_before_the_pile_survive_the_burst_rule():
+    # short function words start closer than 1/8 s but have a spoken length
+    words = [_w(" a", 4.0, 5.05), _w(" und", 5.05, 5.30), _w(" die", 5.30, 5.40),
+             _w(" ist", 5.40, 5.54), _w(" da", 5.54, 6.02)] \
+        + [_w(f" x{i}", 6.02, 6.02) for i in range(9)]
+    idx, rules = sg.find_tail_cut(words, "", burst=8, zero_tail=2)
+    assert words[idx].word == " x0"
+    assert rules == ["burst", "zero_tail"]
+
+
+def test_burst_falls_back_to_the_first_close_word_when_none_looks_made_up():
+    words = [_w(" a", 0.0, 1.0)] + [_w(f" x{i}", 1.0 + 0.1 * i, 1.1 + 0.1 * i)
+                                     for i in range(10)]
+    assert sg.find_tail_cut(words, "", burst=8) == (1, ["burst"])
+
+
+def test_unplaceable_word_starts_do_not_raise():
+    nan = float("nan")
+    words = [_w(" a", nan, nan), _w(" b", nan, nan)]
+    assert sg.find_tail_cut(words, "", burst=8) is None
+
+
 def test_only_one_unsure_absorber_is_taken():
     # two unsure normal-length words in a row before the zero-length end: only
     # the last one can be the absorber, and the walk stops at the other
@@ -193,6 +246,7 @@ def test_everything_cut_leaves_empty_text():
     seg = _seg([_w(f" x{i}", 1.0, 1.0) for i in range(12)])
     info = sg.apply_tail_guards(seg, burst=8, zero_tail=2)
     assert seg.text == "" and seg.words == [] and info["n"] == 12
+    assert seg.end == seg.start == 1.0, "the made-up end must not survive"
 
 
 def test_all_off_is_a_no_op():
@@ -201,8 +255,19 @@ def test_all_off_is_a_no_op():
     assert len(seg.words) == 20
 
 
+class _Boom:
+    text = "x"
+
+    @property
+    def words(self):
+        raise RuntimeError("boom")
+
+
 def test_guard_never_raises():
     assert sg.apply_tail_guards(NS(words=[object()], text=None), burst=8, zero_tail=2) is None
+    # a raising property is not swallowed by getattr's default: only the
+    # guard's own except can turn this into None
+    assert sg.apply_tail_guards(_Boom(), burst=8, zero_tail=2) is None
 
 
 def test_tail_words_diag_only_when_a_zero_length_word_is_present():
