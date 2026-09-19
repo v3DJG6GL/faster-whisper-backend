@@ -527,6 +527,12 @@ async def list_samples_api(
             )
             g["corrections"] = _project_member_corrections(members)
             g["username"] = usernames.get(g.get("user_id"))
+            # What the page's model filter and search box match a group by:
+            # a group has no model / request of its own, its members do.
+            g["models"] = sorted({m["model"] for m in members if m.get("model")})
+            g["member_ids"] = [m["id"] for m in members]
+            g["member_request_ids"] = [m["request_id"] for m in members
+                                       if m.get("request_id")]
         return groups, has_more
 
     # OFF the loop, like propose_merges_api / get_sample_audio_api /
@@ -637,6 +643,7 @@ def _sniff_audio_mime(abs_path: str, fallback_ext: str) -> str:
 async def get_audio_api(
     cid: str,
     request: Request,
+    original: bool = Query(False),
     user: dict[str, Any] = Depends(get_current_user),
 ) -> FileResponse:
     _audio_rate.hit(rate_limit.identity_key(user, request))
@@ -651,7 +658,10 @@ async def get_audio_api(
     # Prefer the trimmed WAV when one exists — that's what the export
     # uses, so reviewers should hear the same thing. Falls back to the
     # original if the trimmed file is missing on disk for any reason.
-    trimmed_rel = row.get("audio_trimmed_relpath")
+    # `?original=1` serves the untrimmed utterance instead: that is the audio
+    # the decode actually received, which a latency / hallucination replay
+    # needs (the trim removes exactly the silence such bugs live in).
+    trimmed_rel = None if original else row.get("audio_trimmed_relpath")
     abs_path: str | None = None
     if trimmed_rel:
         try:
@@ -673,7 +683,8 @@ async def get_audio_api(
     return FileResponse(
         path=abs_path,
         media_type=mime,
-        filename=f"{cid}.{row.get('audio_format','bin')}",
+        filename=(f"{cid}{'.original' if original else ''}"
+                  f".{row.get('audio_format','bin')}"),
         # Raw dictation audio behind a per-row owner check. FileResponse sends
         # ETag/Last-Modified and no Cache-Control, which makes it heuristically
         # cacheable — a shared cache in front of the app would answer the next,
@@ -3993,7 +4004,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     </div>
     <label class="subbar-search" title="search">
       <svg class="search-ico" viewBox="0 0 24 24" aria-hidden="true" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><line x1="16.5" y1="16.5" x2="21" y2="21"/></svg>
-      <input id="filt-search" type="text" aria-label="search" placeholder="text in raw / final / corrected">
+      <input id="filt-search" type="text" aria-label="search" placeholder="text, capture id or req id">
     </label>
     <div class="subbar-right">
       <button id="btn-refresh">Refresh</button>
@@ -4663,13 +4674,31 @@ _CAPTURES_HTML = r"""<!doctype html>
       if (s !== 'all' && r.status !== s) return false;
       if (m !== 'all' && r.model !== m) return false;
       if (!q) return true;
+      // id + request_id: the log block names a capture by those
+      // ("captured=b7dd6e6c  req=10578097"), so pasting either finds it.
       var hay = (
         (r.raw || '') + ' ' + (r.final || '') + ' ' +
         (r.text_for_training || '') + ' ' +
-        (r.corrected_text || '') + ' ' + (r.admin_notes || '')
+        (r.corrected_text || '') + ' ' + (r.admin_notes || '') + ' ' +
+        (r.id || '') + ' ' + (r.request_id || '')
       ).toLowerCase();
       return hay.indexOf(q) !== -1;
     });
+  }
+
+  // Same model + search filters for merged groups. A group matches the model
+  // filter when any member was decoded by it, and the search box by its
+  // transcript, notes, own id or any member's capture / request id.
+  function sampleMatchesFilters(g) {
+    var m = document.getElementById('filt-model').value;
+    var q = (document.getElementById('filt-search').value || '').trim().toLowerCase();
+    if (m !== 'all' && (g.models || []).indexOf(m) === -1) return false;
+    if (!q) return true;
+    var hay = (
+      (g.transcript || '') + ' ' + (g.admin_notes || '') + ' ' + (g.id || '') + ' ' +
+      (g.member_ids || []).join(' ') + ' ' + (g.member_request_ids || []).join(' ')
+    ).toLowerCase();
+    return hay.indexOf(q) !== -1;
   }
 
   function rebuildModelFilter() {
@@ -4992,6 +5021,22 @@ _CAPTURES_HTML = r"""<!doctype html>
     audio.preload = 'metadata';
     body.appendChild(_attachCompactPlayer(audio));
     state.audio = audio;
+
+    // Download links for ANY status (Export ready only covers `ready` rows):
+    // the trimmed WAV the player and the export use, and the untrimmed
+    // utterance the decode received — what a bug replay needs.
+    var dl = document.createElement('div');
+    dl.className = 'help audio-dl';
+    var audioUrl = '/captures/api/' + encodeURIComponent(r.id) + '/audio';
+    dl.appendChild(document.createTextNode('download audio: '));
+    [['trimmed', audioUrl], ['original', audioUrl + '?original=1']].forEach(function(pair, i) {
+      if (i) dl.appendChild(document.createTextNode(' · '));
+      var a = document.createElement('a');
+      a.href = pair[1]; a.textContent = pair[0];
+      a.setAttribute('download', '');
+      dl.appendChild(a);
+    });
+    body.appendChild(dl);
 
     // Authenticated audio fetch → blob URL (session cookie auto-sent). The
     // server always serves RIFF/WAVE 16 kHz mono (every capture is
@@ -8148,12 +8193,15 @@ _CAPTURES_HTML = r"""<!doctype html>
     // Build a merged timeline: ungrouped captures + group cards (members
     // are nested inside group cards, so we exclude them from the flat list).
     var ungrouped = rows.filter(function(r) { return !r.sample_id; });
-    // Apply the same status filter to groups. `audio_missing` is a
+    // Apply the same status, model and search filters to groups (they used
+    // to skip model + search and stayed on screen whatever was typed).
+    // `audio_missing` is a
     // captures-only system status — groups don't have it, so the
     // groups section renders empty when that filter is active.
-    var filteredSamples = (_filtStatus === 'all')
-      ? _allSamples.slice()
-      : _allSamples.filter(function(g) { return g.status === _filtStatus; });
+    var filteredSamples = _allSamples.filter(function(g) {
+      if (_filtStatus !== 'all' && g.status !== _filtStatus) return false;
+      return sampleMatchesFilters(g);
+    });
     var combined = ungrouped.map(function(r) {
       return { kind: 'capture', ts: r.created_ts || 0, data: r };
     }).concat(filteredSamples.map(function(g) {

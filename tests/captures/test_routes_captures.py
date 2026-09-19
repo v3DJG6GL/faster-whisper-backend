@@ -933,3 +933,72 @@ def test_list_samples_projects_chip_offsets_without_hydrating_words(
     assert len(groups) == 1
     assert groups[0]["corrections"] == [
         {"idx": 3, "wrong": "a", "correct": "b"}]
+
+
+def test_list_samples_carries_what_the_filters_match_on(client, make_user_key):
+    """Merged groups used to ignore the page's model filter and search box
+    (they stayed on screen whatever was typed): a group has no model or
+    request of its own. The list now projects both from its members."""
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    conn = cs._require_conn()
+    sid = "filtersid0000001"
+    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    _insert_member(conn, "filtmember00", sid, user_id=uid)
+    _insert_member(conn, "filtmember01", sid, user_id=uid)
+    conn.execute("UPDATE captures SET model = 'org/model-a', request_id = 'req-a',"
+                 " sample_order = 0 WHERE id = 'filtmember00'")
+    conn.execute("UPDATE captures SET model = 'org/model-b', request_id = NULL,"
+                 " sample_order = 1 WHERE id = 'filtmember01'")
+
+    body = client.get("/captures/api/samples", headers=bearer(raw)).json()
+    g = next(g for g in body["samples"] if g["id"] == sid)
+    assert g["models"] == ["org/model-a", "org/model-b"]
+    assert g["member_ids"] == ["filtmember00", "filtmember01"]
+    assert g["member_request_ids"] == ["req-a"]
+
+
+def test_page_search_matches_ids_and_filters_groups(client):
+    """Source pins: the search haystack includes the capture id and request
+    id (what the log block prints as `captured=` / `req=`), and group cards
+    go through the model + search filters like capture cards do."""
+    html = client.get("/captures").text
+    assert "(r.id || '') + ' ' + (r.request_id || '')" in html
+    assert "function sampleMatchesFilters(g)" in html
+    assert "return sampleMatchesFilters(g);" in html
+    assert "_allSamples.slice()" not in html
+
+
+def test_audio_original_switch_serves_the_untrimmed_file(client):
+    """The default is the trimmed WAV (what the player + export use);
+    `?original=1` serves the utterance the decode received. Both are reachable
+    for a capture of ANY status — Export ready only covers `ready` rows."""
+    from faster_whisper_backend.captures import store as cs
+
+    conn = cs._require_conn()
+    cid = "origaudio001"
+    _insert_member(conn, cid, None)
+    rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
+    trel = os.path.join(cid[0:2], cid[2:4], f"{cid}.trim.wav")
+    for r, payload in ((rel, b"RIFF....WAVEoriginal"), (trel, b"RIFF....WAVEtrimmed")):
+        path = cs.abs_audio_path(r)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            fh.write(payload)
+    conn.execute("UPDATE captures SET audio_trimmed_relpath = ? WHERE id = ?", (trel, cid))
+
+    r = client.get(f"/captures/api/{cid}/audio")
+    assert r.status_code == 200 and r.content.endswith(b"trimmed")
+    r = client.get(f"/captures/api/{cid}/audio?original=1")
+    assert r.status_code == 200 and r.content.endswith(b"original")
+    assert f"{cid}.original.wav" in r.headers["content-disposition"]
+    assert r.headers["cache-control"] == "no-store"
+
+
+def test_capture_card_offers_both_audio_downloads(client):
+    html = client.get("/captures").text
+    assert "download audio: " in html
+    assert "audioUrl + '?original=1'" in html

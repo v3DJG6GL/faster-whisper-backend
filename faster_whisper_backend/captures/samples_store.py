@@ -227,7 +227,7 @@ def get_members(sid: str) -> list[dict[str, Any]]:
         "SELECT id, created_ts, audio_s, raw_text AS raw, final_text AS final,"
         " text_for_training, audio_trimmed_relpath,"
         " corrected_text, corrections, status, sample_order, user_id,"
-        " language, task,"
+        " language, task, model, request_id,"
         " CASE WHEN json_valid(words) THEN json_array_length(words)"
         " ELSE 0 END AS word_count"
         " FROM captures WHERE sample_id = ? ORDER BY sample_order ASC",
