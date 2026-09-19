@@ -459,34 +459,17 @@ function renderChips() {
     summary.textContent = s;
   }
 }
-// ---- who / keys pickers: a searchable checklist of the users (keys) with
-// usage in the window, ranked by the measure (/stats/pick). Changes apply
-// as they are made; "clear" empties the pick. The keys list narrows to the
-// picked users' keys.
-let _pickOpen = null;
+// ---- who / keys pickers: the shared searchable checklist (web_common
+// PICK_LIST_JS) fed by /stats/pick — users (keys) with usage in the window,
+// ranked by the measure. Changes apply as they are made; "clear" empties
+// the pick. The keys list narrows to the picked users' keys.
+let whoPicker = null, keysPicker = null;
+const _pickMetric = { user: 'audio_s', key: 'audio_s' };
 function renderPickerButtons() {
-  [['sb-who', 'users', 'user'], ['sb-keys', 'keys', 'key']].forEach(([id, list, word]) => {
-    const n = Q[list].length, btn = document.querySelector('#' + id + ' > button');
-    if (!btn) return;
-    // Update the count span in place: replacing the button's HTML while a
-    // click on it is still bubbling detaches the click's target, and the
-    // outside-click handler then reads it as "outside" and closes the pop.
-    const span = btn.querySelector('.n');
-    if (span) span.textContent = n ? n + ' picked' : 'any';
-    btn.setAttribute('aria-expanded', _pickOpen === id ? 'true' : 'false');
-  });
+  if (whoPicker) whoPicker.setPicked(Q.users);
+  if (keysPicker) keysPicker.setPicked(Q.keys);
 }
-function openPicker(id, dim, list) {
-  const wrap = $(id), pop = wrap && wrap.querySelector('.pick-pop');
-  if (!pop) return;
-  if (_pickOpen === id) { closePickers(); return; }
-  closePickers();
-  _pickOpen = id;
-  pop.hidden = false;
-  renderPickerButtons();
-  const q = pop.querySelector('input[type=search]'), body = pop.querySelector('.pick-list');
-  q.value = '';
-  body.innerHTML = '<div class="pick-note">loading…</div>';
+function pickRows(dim, list) {
   const p = new URLSearchParams();
   if (Q.range === 'custom') { p.set('from', Q.from); p.set('to', Q.to); }
   else if (Q.range === 'all') p.set('all', '1');
@@ -494,67 +477,41 @@ function openPicker(id, dim, list) {
   p.set('dim', dim); p.set('metric', Q.metric);
   filterParams(p, list);          // rank by the slice, minus this dimension
   try { p.set('tz', Intl.DateTimeFormat().resolvedOptions().timeZone || ''); } catch (_) {}
-  fetch('/stats/pick?' + p.toString(), { cache: 'no-store' })
+  return fetch('/stats/pick?' + p.toString(), { cache: 'no-store' })
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then(j => {
-      if (_pickOpen !== id) return;
-      const rows = j.rows || [];
+      _pickMetric[dim] = j.metric;
+      const rows = (j.rows || []).map(r => ({
+        id: r.id, label: r.label, value: r.value, me: !!r.me, sub: r.user_label || '',
+      }));
       rows.forEach(r => { pickLabels[dim][r.id] = r.label; });
       // Picked ids that fell out of the window still show, so they can be un-picked.
-      Q[list].forEach(pid => { if (!rows.some(r => r.id === pid)) rows.push({ id: pid, label: pickLabel(dim, pid), value: 0, stale: true }); });
-      const max = Math.max(1, ...rows.map(r => Number(r.value) || 0));
-      const draw = (needle) => {
-        const vis = rows.filter(r => !needle || (r.label + ' ' + (r.user_label || '')).toLowerCase().includes(needle));
-        body.innerHTML = vis.length ? vis.map(r =>
-          '<label class="pick-opt' + (r.stale ? ' stale' : '') + '"><input type="checkbox" data-id="' + esc(r.id) + '"' + (Q[list].includes(r.id) ? ' checked' : '') + '>'
-          + '<span class="name">' + esc(r.label) + (r.me ? ' <span class="badge ok">you</span>' : '')
-          + (r.user_label ? '<span class="sub">' + esc(r.user_label) + '</span>' : '') + '</span>'
-          + '<span class="bar"><i style="width:' + ((Number(r.value) || 0) / max * 100).toFixed(0) + '%"></i></span>'
-          + '<span class="v">' + fmtMetric(j.metric, r.value) + '</span></label>').join('')
-          : '<div class="pick-note">nothing matches</div>';
-        pop.querySelector('.pick-foot span').textContent = Q[list].length + ' of ' + rows.length + ' picked';
-      };
-      draw('');
-      q.oninput = () => draw(q.value.trim().toLowerCase());
-      body.onchange = (e) => {
-        const cid = e.target && e.target.dataset.id; if (!cid) return;
-        Q[list] = e.target.checked ? Q[list].concat([cid]) : Q[list].filter(x => x !== cid);
-        pop.querySelector('.pick-foot span').textContent = Q[list].length + ' of ' + rows.length + ' picked';
-        renderPickerButtons();
-        pickerLoad();
-      };
-      q.focus();
-    })
-    .catch(() => { body.innerHTML = '<div class="pick-note">not available for your scope</div>'; });
+      Q[list].forEach(pid => {
+        if (!rows.some(r => r.id === pid)) rows.push({ id: pid, label: pickLabel(dim, pid), value: 0, stale: true });
+      });
+      return rows;
+    });
 }
 let _pickTimer = null;
 function pickerLoad() {     // coalesce a burst of checkbox clicks into one fetch
   clearTimeout(_pickTimer);
   _pickTimer = setTimeout(load, 250);
 }
-function closePickers() {
-  document.querySelectorAll('.pick-pop').forEach(p => { p.hidden = true; });
-  _pickOpen = null;
-  renderPickerButtons();
-}
 function wirePickers() {
-  [['sb-who', 'user', 'users'], ['sb-keys', 'key', 'keys']].forEach(([id, dim, list]) => {
-    const wrap = $(id); if (!wrap) return;
-    wrap.querySelector('button').addEventListener('click', () => openPicker(id, dim, list));
-    const clr = wrap.querySelector('.pick-clear');
-    if (clr) clr.addEventListener('click', () => {
-      if (!Q[list].length) return;
-      Q[list] = [];
-      wrap.querySelectorAll('.pick-list input').forEach(i => { i.checked = false; });
-      const foot = wrap.querySelector('.pick-foot span');
-      if (foot) foot.textContent = '0 of ' + wrap.querySelectorAll('.pick-list input').length + ' picked';
-      renderPickerButtons(); load();
+  if (!window._renderPickList) return;
+  [['sb-who', 'user', 'users', 'pick users · ranked by the measure in this window'],
+   ['sb-keys', 'key', 'keys', 'pick API keys · the picked users’ keys when users are picked']]
+  .forEach(([id, dim, list, title]) => {
+    const mount = $(id); if (!mount) return;
+    const inst = window._renderPickList({
+      mount, wordPlural: list, placeholder: 'search ' + list, title, ariaLabel: 'pick ' + list,
+      picked: Q[list].slice(), errorNote: 'not available for your scope',
+      fmt: (v) => fmtMetric(_pickMetric[dim], v),
+      fetchRows: () => pickRows(dim, list),
+      onChange: (ids) => { Q[list] = ids; renderPickerButtons(); pickerLoad(); },
     });
+    if (dim === 'user') whoPicker = inst; else keysPicker = inst;
   });
-  document.addEventListener('click', (e) => {
-    if (_pickOpen && e.target.isConnected && !e.target.closest('.picker')) closePickers();
-  });
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && _pickOpen) closePickers(); });
 }
 // The recent-jobs table (inline dashboard) follows the kind and user-id
 // filters: it reads this and re-renders from its last snapshot.

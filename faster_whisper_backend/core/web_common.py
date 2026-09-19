@@ -697,6 +697,47 @@ header.nav-row2 .hdr-right .icon-btn { order: 11; }
   header .navlink { padding: 0.25rem 0.5rem; }
 }
 
+
+/* ---- Shared pick-list widget (PICK_LIST_JS → window._renderPickList) ----
+   A button that opens a searchable checklist; used by /stats (users / keys,
+   ranked by the measure) and /captures (speakers, ranked by hours). Class
+   names are the ones /stats always used, so its layout is unchanged. */
+.picker { position: relative; display: inline-block; }
+.picker > button { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 0.1rem 0.5rem; cursor: pointer;
+  display: inline-flex; gap: 0.35rem; align-items: center; }
+.picker > button .n { color: var(--cyan); font: var(--fs-xs) var(--font-mono); }
+.picker > button[aria-expanded="true"] { border-color: var(--cyan); }
+.picker > button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
+.pick-pop { position: absolute; top: calc(100% + 0.3rem); left: 0; z-index: 30; width: 22rem;
+  max-width: 90vw; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+  padding: 0.5rem; box-shadow: 0 8px 24px rgba(0,0,0,.5); font-size: var(--fs-sm); text-align: left; }
+.pick-pop[hidden] { display: none; }
+.pick-pop input[type=search] { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.5rem; font: inherit; margin-bottom: 0.4rem; }
+.pick-list { max-height: 16rem; overflow-y: auto; }
+/* .pick-pop prefix: the pickers live in the sub-bar, whose
+   `header .subbar label { display: inline-flex }` outranks a bare .pick-opt
+   and shrank every row to its content — bars started wherever the name
+   ended. */
+.pick-pop .pick-opt { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.3rem; border-radius: 3px; cursor: pointer;
+  font-size: var(--fs-sm); color: var(--fg); white-space: nowrap; }
+.pick-opt:hover { background: #21262d; }
+.pick-opt.stale { opacity: .6; }
+.pick-opt input { margin: 0; }
+.pick-opt .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-opt .name .sub { color: var(--dim); font-size: var(--fs-xs); margin-left: 0.35rem; }
+.pick-opt .name .me { color: var(--green); font-size: var(--fs-xs); margin-left: 0.35rem;
+  border: 1px solid #1f4d2a; border-radius: 3px; padding: 0 0.3em; }
+.pick-opt .bar { width: 5rem; height: 4px; background: #21262d; border-radius: 2px; overflow: hidden; flex: none; }
+.pick-opt .bar i { display: block; height: 100%; background: var(--cyan); }
+.pick-opt .v { font: var(--fs-xs) var(--font-mono); color: var(--dim); width: 3.6rem; text-align: right; flex: none; }
+.pick-note { color: var(--dim); font-size: var(--fs-xs); padding: 0.3rem; }
+.pick-foot { display: flex; justify-content: space-between; align-items: center; padding-top: 0.4rem;
+  margin-top: 0.3rem; border-top: 1px solid var(--border); font-size: var(--fs-xs); color: var(--dim); }
+.pick-foot button { background: transparent; border: 1px solid var(--border); border-radius: 4px;
+  color: var(--fg); font: inherit; font-size: var(--fs-xs); padding: 0.05rem 0.5rem; cursor: pointer; }
+
 /* ---- Admin-only nav elements ----
    logs/stats/settings nav links + sev pills are marked .admin-only at
    render time. Hidden by default; revealed when the page's JS adds
@@ -2304,6 +2345,153 @@ TAG_PICKER_JS = r"""
 """
 
 
+# Shared pick-list widget — a button that opens a searchable checklist.
+# `window._renderPickList(opts)` is DOM-pure (no page globals), like
+# _renderTagPicker. Used by /stats for the users / keys filters (rows ranked
+# by the measure from /stats/pick) and by /captures for the speaker filter
+# (rows ranked by hours from /captures/api/stats).
+#
+#   opts = {
+#     mount:       existing element to become the root (keeps page ids), or
+#                  omit and append the returned `el` yourself;
+#     wordPlural:  button text ("users"), placeholder defaults to "search …";
+#     title, ariaLabel, anyLabel ("any"), errorNote;
+#     fetchRows:   () -> Promise<[{id, label, value?, sub?, me?, stale?}]>,
+#                  called on every open (rows may change with the window);
+#     fmt:         value -> string for the right-hand column (optional);
+#     picked:      initial ids;  multi: true (checkboxes) | false (radios);
+#     onChange:    (ids) -> void, fired per tick / clear.
+#   }
+#   returns { el, getPicked, setPicked(ids), setLabels({id: label}), close }
+#
+# One document-level outside-click / Escape handler serves every instance.
+PICK_LIST_JS = r"""
+<script>(function(){
+  var _open = null;
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function _renderPickList(opts) {
+    opts = opts || {};
+    var multi = opts.multi !== false;
+    var word = opts.wordPlural || 'items';
+    var picked = Array.isArray(opts.picked) ? opts.picked.slice() : [];
+    var rows = [], labels = {};
+    var el = opts.mount || document.createElement('span');
+    el.classList.add('picker');
+    el.innerHTML = '';
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('aria-haspopup', 'listbox');
+    btn.setAttribute('aria-expanded', 'false');
+    if (opts.title) btn.title = opts.title;
+    btn.appendChild(document.createTextNode(word + ' '));
+    var n = document.createElement('span'); n.className = 'n'; btn.appendChild(n);
+    btn.appendChild(document.createTextNode(' ▾'));
+    var pop = document.createElement('div');
+    pop.className = 'pick-pop'; pop.setAttribute('role', 'dialog');
+    pop.setAttribute('aria-label', opts.ariaLabel || ('pick ' + word)); pop.hidden = true;
+    var q = document.createElement('input');
+    q.type = 'search'; q.placeholder = opts.placeholder || ('search ' + word);
+    q.setAttribute('aria-label', q.placeholder);
+    var list = document.createElement('div');
+    list.className = 'pick-list'; list.setAttribute('role', 'listbox');
+    if (multi) list.setAttribute('aria-multiselectable', 'true');
+    var foot = document.createElement('div'); foot.className = 'pick-foot';
+    var fs = document.createElement('span'); foot.appendChild(fs);
+    var clr = document.createElement('button');
+    clr.type = 'button'; clr.className = 'pick-clear'; clr.textContent = 'clear'; foot.appendChild(clr);
+    pop.appendChild(q); pop.appendChild(list); pop.appendChild(foot);
+    el.appendChild(btn); el.appendChild(pop);
+
+    function label() {
+      n.textContent = picked.length
+        ? (multi ? picked.length + ' picked' : (labels[picked[0]] || picked[0]))
+        : (opts.anyLabel || 'any');
+      btn.setAttribute('aria-expanded', _open === inst ? 'true' : 'false');
+    }
+    function footer() { fs.textContent = picked.length + ' of ' + rows.length + ' picked'; }
+    function draw(needle) {
+      var max = 1;
+      rows.forEach(function(r) { max = Math.max(max, Number(r.value) || 0); });
+      var vis = rows.filter(function(r) {
+        return !needle || ((r.label || '') + ' ' + (r.sub || '')).toLowerCase().indexOf(needle) !== -1; });
+      list.innerHTML = vis.length ? vis.map(function(r) {
+        var on = picked.indexOf(r.id) !== -1;
+        return '<label class="pick-opt' + (r.stale ? ' stale' : '') + '">'
+          + '<input type="' + (multi ? 'checkbox' : 'radio') + '" data-id="' + esc(r.id) + '"' + (on ? ' checked' : '') + '>'
+          + '<span class="name">' + esc(r.label)
+          + (r.me ? '<span class="me">you</span>' : '')
+          + (r.sub ? '<span class="sub">' + esc(r.sub) + '</span>' : '') + '</span>'
+          + (r.value != null
+              ? '<span class="bar"><i style="width:' + ((Number(r.value) || 0) / max * 100).toFixed(0) + '%"></i></span>'
+                + '<span class="v">' + esc(opts.fmt ? opts.fmt(r.value) : String(r.value)) + '</span>'
+              : '')
+          + '</label>';
+      }).join('') : '<div class="pick-note">nothing matches</div>';
+      footer();
+    }
+    function open() {
+      if (_open === inst) { close(); return; }
+      if (_open) _open.close();
+      _open = inst;
+      pop.hidden = false; label();
+      q.value = '';
+      list.innerHTML = '<div class="pick-note">loading…</div>';
+      Promise.resolve().then(function() { return opts.fetchRows ? opts.fetchRows() : rows; })
+        .then(function(rs) {
+          if (_open !== inst) return;
+          rows = Array.isArray(rs) ? rs : [];
+          rows.forEach(function(r) { labels[r.id] = r.label; });
+          draw(''); label();
+          try { q.focus(); } catch (_) {}
+        })
+        .catch(function() {
+          list.innerHTML = '<div class="pick-note">' + esc(opts.errorNote || 'not available') + '</div>';
+        });
+    }
+    function close() { pop.hidden = true; if (_open === inst) _open = null; label(); }
+    btn.addEventListener('click', function(e) { e.stopPropagation(); open(); });
+    q.addEventListener('input', function() { draw(q.value.trim().toLowerCase()); });
+    list.addEventListener('change', function(e) {
+      var id = e.target && e.target.dataset.id; if (!id) return;
+      if (multi) picked = e.target.checked ? picked.concat([id]) : picked.filter(function(x) { return x !== id; });
+      else picked = [id];
+      footer(); label();
+      if (opts.onChange) opts.onChange(picked.slice());
+      if (!multi) close();
+    });
+    clr.addEventListener('click', function() {
+      if (!picked.length) return;
+      picked = [];
+      list.querySelectorAll('input').forEach(function(i) { i.checked = false; });
+      footer(); label();
+      if (opts.onChange) opts.onChange([]);
+    });
+    var inst = {
+      el: el,
+      getPicked: function() { return picked.slice(); },
+      setPicked: function(ids) {
+        picked = Array.isArray(ids) ? ids.slice() : [];
+        label();
+        if (!pop.hidden) draw(q.value.trim().toLowerCase());
+      },
+      setLabels: function(m) { Object.keys(m || {}).forEach(function(k) { labels[k] = m[k]; }); label(); },
+      close: close,
+    };
+    label();
+    return inst;
+  }
+  document.addEventListener('click', function(e) {
+    if (_open && e.target.isConnected && !e.target.closest('.picker')) _open.close();
+  });
+  document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && _open) _open.close(); });
+  window._renderPickList = _renderPickList;
+})();</script>
+"""
+
+
 LANG_PICKER_JS = r"""
 <script>(function(){
   var GLOBE_SVG = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" style="vertical-align:-2px;opacity:0.5"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>';
@@ -3743,6 +3931,7 @@ def _render_page_cached(
         .replace("{{PAGE_META}}", _page_meta_tag(current))
         .replace("{{TAG_PICKER_JS}}", TAG_PICKER_JS)
         .replace("{{LANG_PICKER_JS}}", LANG_PICKER_JS)
+        .replace("{{PICK_LIST_JS}}", PICK_LIST_JS)
         .replace("{{HEADER_TITLE}}", _header_title_for(current))
         .replace("{{HEADER_BRAND}}", _header_brand_for(current))
         .replace("{{HEADER_VTAG}}", _HEADER_VTAG_HTML)
@@ -3768,6 +3957,9 @@ def render_page(template: str, current: str) -> str:
       - {{TAG_PICKER_JS}}        → window._renderTagPicker(opts) widget
                                    shared by /settings rule editor +
                                    /settings/api-keys permissions matrix
+      - {{PICK_LIST_JS}}         → window._renderPickList(opts) searchable
+                                   checklist shared by /stats (users, keys)
+                                   and /captures (speakers)
       - {{HEADER_TITLE}}         → uniform page-title string —
                                    "faster-whisper-backend · <slug>"
                                    plain text, used inside <title>

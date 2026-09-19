@@ -932,38 +932,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .chip.filter .x { color: var(--dim); }
   .chip:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
   .sb-none { font-size: var(--fs-xs); color: var(--dim); }
-  /* who / keys pickers: a button that opens a searchable checklist ranked
-     by the measure; the list applies as it is ticked. */
-  .picker { position: relative; display: inline-block; }
-  .picker > button { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
-    color: var(--fg); font: inherit; font-size: var(--fs-sm); padding: 0.1rem 0.5rem; cursor: pointer;
-    display: inline-flex; gap: 0.35rem; align-items: center; }
-  .picker > button .n { color: var(--cyan); font: var(--fs-xs) var(--font-mono); }
-  .picker > button[aria-expanded="true"] { border-color: var(--cyan); }
-  .pick-pop { position: absolute; top: calc(100% + 0.3rem); left: 0; z-index: 30; width: 22rem;
-    max-width: 90vw; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
-    padding: 0.5rem; box-shadow: 0 8px 24px rgba(0,0,0,.5); font-size: var(--fs-sm); }
-  .pick-pop input[type=search] { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg);
-    border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.5rem; font: inherit; margin-bottom: 0.4rem; }
-  .pick-list { max-height: 16rem; overflow-y: auto; }
-  /* .pick-pop prefix: the pickers live in the sub-bar, whose
-     `header .subbar label { display: inline-flex }` (web_common) outranks a
-     bare .pick-opt and shrank every row to its content — bars started
-     wherever the name ended. */
-  .pick-pop .pick-opt { display: flex; align-items: center; gap: 0.5rem; padding: 0.2rem 0.3rem; border-radius: 3px; cursor: pointer; }
-  .pick-opt:hover { background: #21262d; }
-  .pick-opt.stale { opacity: .6; }
-  .pick-opt input { margin: 0; }
-  .pick-opt .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .pick-opt .name .sub { color: var(--dim); font-size: var(--fs-xs); margin-left: 0.35rem; }
-  .pick-opt .bar { width: 5rem; height: 4px; background: #21262d; border-radius: 2px; overflow: hidden; flex: none; }
-  .pick-opt .bar i { display: block; height: 100%; background: var(--cyan); }
-  .pick-opt .v { font: var(--fs-xs) var(--font-mono); color: var(--dim); width: 3.6rem; text-align: right; flex: none; }
-  .pick-note { color: var(--dim); font-size: var(--fs-xs); padding: 0.3rem; }
-  .pick-foot { display: flex; justify-content: space-between; align-items: center; padding-top: 0.4rem;
-    margin-top: 0.3rem; border-top: 1px solid var(--border); font-size: var(--fs-xs); color: var(--dim); }
-  .pick-foot button { background: transparent; border: 1px solid var(--border); border-radius: 4px;
-    color: var(--fg); font: inherit; font-size: var(--fs-xs); padding: 0.05rem 0.5rem; cursor: pointer; }
+  /* who / keys pickers: shared .picker widget, CSS + JS in web_common (PICK_LIST_JS). */
   .card .win .fn { color: var(--cyan); }
   .sb-summary { margin-left: auto; font: var(--fs-xs) var(--font-mono); color: var(--dim);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
@@ -1463,22 +1432,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button type="button" class="chip" data-v="vad"><i class="sw" style="background:var(--stage-vad)"></i>silence skipped</button>
     </span>
     <span class="seg-label" title="only jobs by the picked users / keys (one of them)">who</span>
-    <span class="picker" id="sb-who">
-      <button type="button" aria-haspopup="listbox" aria-expanded="false" title="pick users · ranked by the measure in this window">users <span class="n">any</span> ▾</button>
-      <div class="pick-pop" role="dialog" aria-label="pick users" hidden>
-        <input type="search" placeholder="search users" aria-label="search users">
-        <div class="pick-list" role="listbox" aria-multiselectable="true"></div>
-        <div class="pick-foot"><span>0 picked</span><button type="button" class="pick-clear">clear</button></div>
-      </div>
-    </span>
-    <span class="picker" id="sb-keys">
-      <button type="button" aria-haspopup="listbox" aria-expanded="false" title="pick API keys · the picked users' keys when users are picked">keys <span class="n">any</span> ▾</button>
-      <div class="pick-pop" role="dialog" aria-label="pick keys" hidden>
-        <input type="search" placeholder="search keys" aria-label="search keys">
-        <div class="pick-list" role="listbox" aria-multiselectable="true"></div>
-        <div class="pick-foot"><span>0 picked</span><button type="button" class="pick-clear">clear</button></div>
-      </div>
-    </span>
+    <span class="picker" id="sb-who"></span>
+    <span class="picker" id="sb-keys"></span>
     <span class="subbar-break"></span>
     <span class="sb-filters-group">
       <span class="seg-label">filters</span>
@@ -1780,6 +1735,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
 
 <!-- First-party page script (GridStack layout + the usage section); the
      build version busts the cacheable /static mount. -->
+{{PICK_LIST_JS}}
 <script src="/static/stats.js?v=__ASSET_V__"></script>
 <script>
 (() => {
