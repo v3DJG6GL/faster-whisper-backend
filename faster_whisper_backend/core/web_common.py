@@ -193,10 +193,12 @@ def sse_response(generator):
 # Inline CSS so each page can drop the nav into its existing <header> without
 # duplicating styles. Color tokens reuse the page-level CSS vars.
 #
-# `header .spacer { flex: 1 }` — single canonical spacer rule. Pages place
-# `<span class="spacer"></span>` between the nav block and the action cluster
-# so the right side stays right-aligned regardless of how many actions a page
-# has.
+# `header .spacer { flex: 0 0 0.25rem }` — single canonical spacer rule: a
+# fixed gap, NOT a grower. Pages place `<span class="spacer"></span>` between
+# the nav block and the action cluster; `header .navrow` absorbs the slack in
+# the single row and `header .hdr-right { margin-left: auto }` keeps the
+# cluster right-aligned when the nav leaves the flow (drawer mode). The spacer
+# is hidden entirely in nav-row2.
 # Pipeline-stage and job-kind hues — ONE definition for every backend page (/stats
 # cards and rings, /logs receipts, /quick-config traces) and the same values
 # the desktop app's app.css declares (--c-download, --c-separate, --c-ok for
@@ -308,6 +310,10 @@ header .navrow { display: flex; align-items: center; gap: 0.25rem;
 header .nav-gsep { flex: none; width: 1px; height: 1.1em; margin: 0 0.35rem;
   background: var(--border); }
 header .nav-gsep[hidden] { display: none; }
+/* every link after the hairline is admin-only: without the group it would
+   trail the bar. A :not() hide (never a reveal) so it cannot out-rank the
+   [hidden] / drawer rules. */
+body:not(.role-admin) header .nav-gsep { display: none; }
 /* Priority+ overflow: sits OUTSIDE #navrow (which clips) so its list can
    drop below the bar. Hidden until NAV_OVERFLOW_JS moves links into it. */
 header .nav-more { position: relative; flex: none; }
@@ -328,8 +334,13 @@ header .nav-more-list { position: absolute; left: 0; top: calc(100% + 0.35rem);
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
   box-shadow: 0 12px 32px -12px rgba(0,0,0,0.8); }
 header .nav-more-list[hidden] { display: none; }
-header .nav-more-list .navlink { display: flex; width: 100%; box-sizing: border-box; }
-header .nav-more-list .nav-gsep { width: auto; height: 1px; margin: 0.25rem 0.4rem; }
+/* display is set only where the whoami gates allow it: a bare
+   `.nav-more-list .navlink { display }` would out-rank `header .admin-only`
+   / `header .page-link` and reveal a tucked, gated link. */
+header .nav-more-list .navlink { width: 100%; box-sizing: border-box; }
+header .nav-more-list .navlink:not(.admin-only):not(.page-link),
+body.role-admin header .nav-more-list .admin-only,
+header .nav-more-list .page-link.allowed { display: flex; }
 header .navlink { padding: 0.3rem 0.7rem; border-radius: 6px; color: var(--dim);
   text-decoration: none; font-size: var(--fs-sm); line-height: 1.2;
   border: 1px solid transparent; flex: none; white-space: nowrap;
@@ -344,9 +355,9 @@ header .sevpill { font-size: var(--fs-xs); padding: 0; border-radius: 4px;
   display: inline-flex; gap: 0.3rem; align-items: baseline;
   flex-shrink: 0; white-space: nowrap; }
 header .sevpill .n { font-variant-numeric: tabular-nums; }
-header .sevpill.warn.hot { color: var(--yellow); border-color: #4d3e1f; }
-header .sevpill.err.hot  { color: var(--red);    border-color: #5a2424; }
-header .sevpill.crit.hot { color: var(--red);    border-color: #5a2424;
+header .sevpill.warn.hot { color: var(--yellow); }
+header .sevpill.err.hot  { color: var(--red); }
+header .sevpill.crit.hot { color: var(--red);
   text-shadow: 0 0 6px rgba(255,123,114,0.45); }
 header .sevpill.zero { opacity: 0.45; }
 @keyframes sev-flash { 0% { color: var(--bold) } 100% { color: inherit } }
@@ -444,10 +455,12 @@ header .vtag:hover::after, header .vtag:focus-visible::after { display: block; }
 /* the requested clear separation between logo and nav */
 header .brand-sep { flex-shrink: 0; width: 1px; align-self: stretch;
   margin: 0.15rem 0.35rem; background: var(--border); }
-/* spacer pushes the utility cluster to the right edge */
+/* fixed gap only: #navrow absorbs the slack in the single row */
 header .spacer { flex: 0 0 0.25rem; }
-/* right-side utility cluster: severity pills + scale picker (same everywhere) */
-header .hdr-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0; }
+/* right-side utility cluster: severity pills + scale picker (same everywhere).
+   Self-aligns right: in drawer mode #navrow is out of flow and nothing grows. */
+header .hdr-right { display: flex; align-items: center; gap: 0.5rem; flex-shrink: 0;
+  margin-left: auto; }
 /* Status rail — activity cluster + severity pills read as ONE segmented chip.
    Each half keeps its own border (so a hidden half leaves no empty box) and
    the halves fuse when both are visible. Same IDs as before: SEV_POLLER_JS
@@ -456,6 +469,9 @@ header .hdr-status { display: inline-flex; align-items: stretch; flex: none; }
 header .sevpills { display: inline-flex; align-items: center; gap: 0.55rem;
   padding: 0 0.6rem; background: #0d1117; border: 1px solid var(--border);
   border-radius: 6px; font-family: "Geist Mono", var(--font-mono); }
+/* every pill is admin-only, so the wrapper's box is too (a :not() hide, so
+   the c2 / c9 ladder rules are not out-ranked) */
+body:not(.role-admin) header .sevpills { display: none; }
 header .hact-wrap:has(.hdr-activity.allowed) + .sevpills {
   border-radius: 0 6px 6px 0; border-left: 0; }
 body.role-admin header .hdr-status .hdr-activity.allowed {
@@ -724,11 +740,14 @@ header.nav-row2 .scale-picker, header.nav-row2 .scale-cycle,
 header.nav-row2 .width-toggle,
 header.nav-row2 .hdr-right .icon-btn { order: 11; }
 /* Width preference: only meaningful once the window is wider than the fixed
-   data canvas, so the button exists only there. */
+   data canvas, so the button exists only there — and only on data-canvas
+   pages: the preference lifts --col-data alone, so elsewhere it would move
+   the header rail away from the column it lines up with. */
 header .width-toggle[aria-pressed="true"] { color: var(--cyan); border-color: var(--cyan); }
 @container hdr (max-width: 100rem) {
   header .width-toggle { display: none; }
 }
+body:not(.col-data) header .width-toggle { display: none; }
 
 @container hdr (max-width: 40rem) {
   header .navlink { padding: 0.25rem 0.5rem; }
@@ -1538,6 +1557,8 @@ NAV_OVERFLOW_JS = """
       var el=items[i];
       if(el.classList.contains('active'))continue;
       if(el.classList.contains('nav-gsep')){el.hidden=true;continue;}
+      /* a gated (unrendered) link frees no room and must not surface in the list */
+      if(el.offsetParent===null)continue;
       var li=document.createElement('li');li.appendChild(el);list.insertBefore(li,list.firstChild);
     }
     /* a separator left trailing in the bar says nothing */
@@ -2495,6 +2516,10 @@ PICK_LIST_JS = r"""
           align: 'start',
           boundary: function() { return btn.closest('.subbar') || btn.closest('main') || document.body; }
         });
+      } else if (!ctl && pop.hasAttribute('popover')) {
+        // No positioner: a manual popover never shows without showPopover(),
+        // so degrade to a plain [hidden]-toggled layer.
+        pop.removeAttribute('popover'); pop.style.position = 'absolute';
       }
       return ctl;
     }
@@ -2979,6 +3004,10 @@ ACTIVITY_CLUSTER_JS = """
         align: 'end',
         boundary: function(){ return document.querySelector('.header-inner'); }
       });
+    } else if (!ctl && pop.hasAttribute('popover')) {
+      // No positioner: a manual popover never shows without showPopover(),
+      // so degrade to a plain [hidden]-toggled layer.
+      pop.removeAttribute('popover'); pop.style.position = 'absolute';
     }
     return ctl;
   }

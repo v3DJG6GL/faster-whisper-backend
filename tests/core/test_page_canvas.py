@@ -49,6 +49,17 @@ def test_width_preference_control_and_bootstrap():
     assert "whisper-ui-width" in web_common.SCALE_PICKER_JS
     # hidden while the window is narrower than the fixed data canvas
     assert "@container hdr (max-width: 100rem)" in web_common.NAV_CSS
+    # ... and on every page the preference cannot widen (it lifts --col-data
+    # only). A :not() hide, so it cannot resurrect the button below 100rem.
+    assert "body:not(.col-data) header .width-toggle { display: none; }" in web_common.NAV_CSS
+
+
+def test_header_utility_cluster_self_aligns():
+    css = web_common.NAV_CSS
+    # drawer mode takes #navrow out of flow, so nothing else in the row grows
+    assert re.search(r"header \.hdr-right \{[^}]*margin-left: auto", css)
+    spacer = re.search(r"\nheader \.spacer \{[^}]*\}", css).group(0)
+    assert "flex: 0 0 0.25rem" in spacer
 
 
 def test_rendered_pages_carry_their_canvas_class(client):

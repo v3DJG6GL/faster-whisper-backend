@@ -187,6 +187,10 @@ _HUB_HTML = """<!doctype html>
      bails on this headerless page — hide the empty flex item so it does not
      consume the strip's gap. */
   .hub-sev .hact-wrap { display: none; }
+  /* The pills sit two wrappers deep (.hdr-status > .sevpills) with no
+     whitespace between them — carry the strip's gap down to them. */
+  .hub-sev .hdr-status, .hub-sev .sevpills { display: inline-flex;
+    align-items: center; gap: 0.25rem; }
   .hub-sev .sevpill { font-size: var(--fs-xs); padding: 0.1rem 0.5rem;
     border-radius: 4px; border: 1px solid var(--border); color: var(--dim);
     text-decoration: none; display: inline-flex; gap: 0.3em;
