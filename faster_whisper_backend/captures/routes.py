@@ -3104,7 +3104,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   html, body { background: var(--bg); color: var(--fg);
     font-family: var(--font-sans); font-size: var(--fs-lg);
     margin: 0; padding: 0; }
-  main { max-width: 75rem; margin: 0 auto; padding: 1rem 1.25rem 4rem; }
+  main { max-width: var(--col); margin: 0 auto; padding: 1rem var(--gutter) 4rem; box-sizing: border-box; }
   h2 { font-size: var(--fs-xl); margin: 0 0 0.5rem; color: var(--bold); }
   /* The page toolbar (status/model/search filters, capture-state badge +
      actions) now lives in the sticky header subbar — styled by NAV_CSS,
@@ -3283,6 +3283,16 @@ _CAPTURES_HTML = r"""<!doctype html>
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 0.75rem;
   }
+  /* Card grid: two columns once the canvas allows (three under the fluid
+     width preference) instead of ever-longer text lines in one column.
+     DOM order is untouched (shift-range selection keys off it). An OPEN
+     card and a sample group span every column so transcripts, audio and
+     member lists never sit in a narrow cell; the footer / empty state too. */
+  #list { display: grid; gap: 0.75rem; align-items: start;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 34rem), 1fr)); }
+  #list > .capture-card { margin-bottom: 0; }
+  #list > .capture-card.open, #list > .capture-card.is-group,
+  #list > .load-more-wrap, #list > .empty-state { grid-column: 1 / -1; }
   .cc-head {
     display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center;
     font-size: var(--fs-sm); color: var(--help);
@@ -3948,7 +3958,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   {{NAV_CSS}}
 </style>
 </head>
-<body>
+<body class="{{PAGE_CLASS}}">
 <header>
   <div class="header-inner">
     <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
@@ -3962,6 +3972,7 @@ _CAPTURES_HTML = r"""<!doctype html>
        and this row never truncates. -->
   <div class="subbar">
     <span class="subbar-title">Captures</span>
+    <span id="capture-state" class="capture-state off">capture OFF</span>
     <div class="subbar-left">
       <span class="filt-label">status <span id="filt-status-wrap"></span></span>
       <label>model
@@ -3970,7 +3981,6 @@ _CAPTURES_HTML = r"""<!doctype html>
         </select>
       </label>
       <span class="filt-label admin-only">speaker <span class="picker" id="filt-speaker"></span></span>
-      <span id="capture-state" class="capture-state off">capture OFF</span>
     </div>
   </div>
   <!-- Row 3 — action bar, three zones: merge-proposer entry points left (blue
@@ -4669,8 +4679,11 @@ _CAPTURES_HTML = r"""<!doctype html>
     _allCaptures.forEach(function(r) { if (r.model) seen[r.model] = true; });
     var opts = ['<option value="all">all</option>'];
     // German-aware, case-insensitive ordering (model IDs can be mixed-case).
+    // Label = last path segment (a <select> is as wide as its longest option,
+    // and "org/…" prefixes add nothing); the full id stays in value + title.
     Object.keys(seen).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare).forEach(function(m) {
-      opts.push('<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>');
+      var short = m.slice(m.lastIndexOf('/') + 1) || m;
+      opts.push('<option value="' + escapeHtml(m) + '" title="' + escapeHtml(m) + '">' + escapeHtml(short) + '</option>');
     });
     sel.innerHTML = opts.join('');
     if (Object.prototype.hasOwnProperty.call(seen, cur) || cur === 'all') sel.value = cur;

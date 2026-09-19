@@ -427,7 +427,7 @@ _OVERRIDES_HTML = r"""<!doctype html>
   main button.ghost:hover:not(:disabled) { background: #1f2630; border-color: var(--border2); color: var(--fg); }
   main button.danger { background: transparent; color: var(--red); border-color: transparent; }
   main button.danger:hover:not(:disabled) { background: #3a0d0d; border-color: #5a2424; }
-  main { padding: 1rem; max-width: 78rem; margin: 0 auto; }
+  main { padding: 1rem var(--gutter); max-width: var(--col); margin: 0 auto; box-sizing: border-box; }
   .hint { color: var(--help); font-size: var(--fs-sm); margin: 0.3rem 0 0; }
   .status { font-size: var(--fs-sm); color: var(--dim); margin-left: 0.5rem; }
   .status.ok { color: var(--green); } .status.err { color: var(--red); }
@@ -616,7 +616,7 @@ _OVERRIDES_HTML = r"""<!doctype html>
     .ov-row .ov-val, .ov-row .ov-lock, .ov-row .ov-ctrl { grid-column: 2; } }
   {{NAV_CSS}}
 </style></head>
-<body>
+<body class="{{PAGE_CLASS}}">
 <header>
   <div class="header-inner">
     <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}

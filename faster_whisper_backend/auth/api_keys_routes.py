@@ -583,7 +583,7 @@ _API_KEYS_HTML = r"""<!doctype html>
   /* Widened from 56rem to claim the unused right gutter on the user-key
      cards — admin keys + permissions matrix benefit from extra horizontal
      space and the per-row layout reads better without forced wrapping. */
-  main { padding: 1rem; max-width: 72rem; margin: 0 auto; }
+  main { padding: 1rem var(--gutter); max-width: var(--col); margin: 0 auto; box-sizing: border-box; }
   .banner-open {
     background: #5a2424; color: #fff; padding: 0.6rem 1rem;
     text-align: center; font-weight: 600;
@@ -975,7 +975,7 @@ _API_KEYS_HTML = r"""<!doctype html>
   .cs-frow .fv.warn { color: var(--yellow); }
   {{NAV_CSS}}
 </style></head>
-<body>
+<body class="{{PAGE_CLASS}}">
 
 <div id="open-banner" class="banner-open" style="display:none">
   &#9888; No admin key set &mdash; the server is in OPEN mode and anyone who can

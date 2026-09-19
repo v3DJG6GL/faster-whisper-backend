@@ -1307,8 +1307,8 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
   input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
   /* header / .header-inner / .title / page-toolbar controls (buttons,
      pills, the red-tinted #discard-btn) are all centralized in NAV_CSS. */
-  main { padding: 0.875rem; max-width: 68.75rem; margin: 0 auto;
-    container-type: inline-size; container-name: form; }
+  main { padding: 0.875rem var(--gutter); max-width: var(--col); margin: 0 auto;
+    box-sizing: border-box; container-type: inline-size; container-name: form; }
   /* Server-identity card — an empty shell above the JS-built #main; its
      facts arrive with the admin-only /settings/state. Shown only once the
      shared whoami pass confirms admin (body.role-admin, the same mechanism as
@@ -1316,8 +1316,8 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
      so neither pre-auth visitors of the host-gated shell nor a first paint see
      an empty card. Bottom padding 0: main's own top padding provides the
      normal 0.875rem section gap. */
-  #srv-ident { display: none; max-width: 68.75rem; margin: 0 auto;
-    padding: 0.875rem 0.875rem 0; box-sizing: border-box; }
+  #srv-ident { display: none; max-width: var(--col); margin: 0 auto;
+    padding: 0.875rem var(--gutter) 0; box-sizing: border-box; }
   body.role-admin #srv-ident.ready { display: block; }
   #srv-ident section { margin-bottom: 0; }
   #srv-ident .si-head { display: flex; align-items: baseline; gap: 0.6rem;
@@ -2010,7 +2010,7 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
   }
   {{NAV_CSS}}
 </style></head>
-<body>
+<body class="{{PAGE_CLASS}}">
 
 <div id="app-wrap">
   <header>

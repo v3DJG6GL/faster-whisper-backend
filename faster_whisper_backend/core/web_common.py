@@ -258,6 +258,19 @@ NAV_CSS = """
   --fs-lg:    1rem;       /* 15px (= base) */
   --fs-xl:    1.2rem;     /* ~18px */
   --fs-xxl:   1.467rem;   /* ~22px */
+  /* ---- Page canvas: ONE column shared by header, toolbar and content ----
+     Three width classes (Atlassian fixed-narrow / fixed-wide / fluid):
+       col-read  56rem   home hub (prose)
+       col-form  68.75rem quick, dictate, settings, pipeline (forms)
+       col-data  100rem  stats, reports, captures, keys, overrides (data)
+       col-fluid 150rem  logs (content is full-bleed; this caps the chrome)
+     `render_page` stamps the class on <body> from the page key. The fluid
+     width preference (header ⟷ button, localStorage whisper-ui-width, applied
+     pre-paint on <html>) lifts data pages to the fluid cap. All rem, so the
+     canvas rides the scale picker like everything else. */
+  --col-read: 56rem; --col-form: 68.75rem; --col-data: 100rem; --col-fluid: 150rem;
+  --gutter: 1rem;
+  --col: var(--col-data);
   /* system-ui resolves to the OS's actual UI font on every modern browser:
      Segoe UI on Windows, San Francisco on macOS, Plasma's chosen font on
      KDE (typically Noto Sans), Cantarell on GNOME. Explicit Linux names
@@ -275,6 +288,10 @@ NAV_CSS = """
 {{STAGE_TOKENS}}
 }
 html { font-size: var(--fs-base); color-scheme: dark; }
+body.col-read  { --col: var(--col-read); }
+body.col-form  { --col: var(--col-form); }
+body.col-fluid { --col: var(--col-fluid); }
+html.pref-fluid { --col-data: var(--col-fluid); }
 /* Boundary marker for transcription values: dim brackets around the EXACT
    text, with internal whitespace preserved (pre-wrap) so a leading/trailing
    space shows as a literal gap inside the brackets and the begin/end of the
@@ -348,14 +365,18 @@ header .scale-picker {
 /* ---- Two-tier sticky header (Carbon/Primer "global bar + page toolbar") ----
    Row 1 .header-inner = GLOBAL BAR, identical on every page:
      brand · │ · work links │ admin links · [more ▾] … status rail · utilities
-     FULL-BLEED and single-row: it is chrome, not content, so it is never
-     width-capped and never wraps (the old 68.75rem cap + flex-wrap folded it
-     into three rows on every monitor). When the links don't fit, NAV_OVERFLOW_JS
-     tucks them, right end first, into the .nav-more disclosure; container
-     queries below shed labels/metrics in a designed order before that.
+     Full-bleed SURFACE, but its content sits on the page canvas: never
+     narrower than the data canvas (100rem: the width one row needs, so form
+     pages don't fold it), never wider than the page's own column, so on data
+     pages brand and status rail end exactly where the cards end. Single-row
+     (the old 68.75rem cap + flex-wrap folded it into three rows). When the
+     links don't fit, NAV_OVERFLOW_JS drops them to a second row / tucks them
+     into the .nav-more disclosure; the compaction ladder sheds labels and
+     metrics in a designed order before that.
    Row 2 .subbar = PAGE TOOLBAR, page-specific controls (search/filter on the
-     left, actions on the right). Stays aligned to the 68.75rem content column
-     so save/discard sit over the form. Omitted entirely on pages with no page
+     left, actions on the right). Same column as <main> (var(--col)) so its
+     left edge lines up with the content below and it reflows only when the
+     content column is genuinely full. Omitted entirely on pages with no page
      actions, so the global bar never changes shape between pages.
    Container queries read in rem against the rendered header width, so they
    respect the --fs-base scale token (unlike @media). Page-local CSS styles
@@ -368,10 +389,9 @@ header { position: sticky; top: 0; z-index: 10;
 /* row 1 — global bar */
 header .header-inner { display: flex; align-items: center; gap: 0.75rem;
   flex-wrap: nowrap; width: 100%;
-  /* full-bleed surface, but the content stops spreading on very wide
-     monitors (150rem ≈ 2250px at 100%; rides the scale picker) */
-  max-width: 150rem; margin: 0 auto;
-  padding: 0.45rem 1rem; box-sizing: border-box; min-height: 3.2rem; }
+  /* page canvas, floored at the data canvas (see :root --col-*) */
+  max-width: max(var(--col), var(--col-data)); margin: 0 auto;
+  padding: 0.45rem var(--gutter); box-sizing: border-box; min-height: 3.2rem; }
 header .title { display: inline-flex; align-items: center; gap: 0.5rem;
   font-weight: 600; color: var(--bold); white-space: nowrap;
   flex-shrink: 1; min-width: 0; max-width: 22rem; overflow: hidden; }
@@ -573,8 +593,8 @@ header .auth-action[hidden] { display: none; }
    it looked like buttons stuck to a transparent strip). */
 header .subbar { display: flex; align-items: center; gap: 0.6rem;
   flex-wrap: wrap; row-gap: 0.4rem;
-  max-width: 68.75rem; margin: 0 auto; width: 100%;
-  padding: 0.45rem 1rem; box-sizing: border-box;
+  max-width: var(--col); margin: 0 auto; width: 100%;
+  padding: 0.45rem var(--gutter); box-sizing: border-box;
   border-top: 1px solid var(--border); }
 /* page title — fills the left, with a small green tick echoing the brand
    separator so the toolbar feels designed rather than empty-on-the-left. */
@@ -632,6 +652,10 @@ header .subbar select, header .subbar input[type="text"] {
   padding: 0.25rem 0.4rem; font: inherit; font-size: var(--fs-sm);
   font-family: var(--font-sans); }
 header .subbar input[type="text"] { min-width: 10rem; }
+/* A <select> is as wide as its LONGEST option (a full Hugging Face model id
+   can be 40+ chars), which used to blow a whole toolbar row. Cap it; pages
+   shorten option labels and keep the full id in the option title. */
+header .subbar select { max-width: 14rem; text-overflow: ellipsis; }
 header .subbar .counts { color: var(--help); font-size: var(--fs-sm); white-space: nowrap; }
 header .subbar .counts .n { color: var(--bold); font-weight: 600; }
 header .subbar .capture-state { font-size: var(--fs-sm);
@@ -691,7 +715,14 @@ header.nav-row2 .nav-more { order: 10; }
 header.nav-row2 .hdr-right { display: contents; }
 header.nav-row2 .hdr-status { margin-left: auto; }
 header.nav-row2 .scale-picker, header.nav-row2 .scale-cycle,
+header.nav-row2 .width-toggle,
 header.nav-row2 .hdr-right .icon-btn { order: 11; }
+/* Width preference: only meaningful once the window is wider than the fixed
+   data canvas, so the button exists only there. */
+header .width-toggle[aria-pressed="true"] { color: var(--cyan); border-color: var(--cyan); }
+@container hdr (max-width: 100rem) {
+  header .width-toggle { display: none; }
+}
 
 @container hdr (max-width: 40rem) {
   header .navlink { padding: 0.25rem 0.5rem; }
@@ -1275,7 +1306,9 @@ SCALE_BOOTSTRAP_HEAD = (
     '<link rel="icon" href="/static/favicon.ico" sizes="any">'
     '<link rel="apple-touch-icon" href="/static/apple-touch-icon.png">'
     "<script>(function(){var v=localStorage.getItem('whisper-ui-fs-base');"
-    "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');})();</script>"
+    "if(v)document.documentElement.style.setProperty('--fs-base',v+'px');"
+    "if(localStorage.getItem('whisper-ui-width')==='fluid')"
+    "document.documentElement.classList.add('pref-fluid');})();</script>"
 )
 
 
@@ -1291,6 +1324,11 @@ SCALE_PICKER_HTML = (
     # Compact stand-in shown by the ladder's c7 step: one click = next step.
     '<button id="scale-cycle" class="icon-btn scale-cycle" type="button" '
     'title="UI scale 100% — click for next" aria-label="UI scale">Aa</button>'
+    # Page width preference (fixed 100rem canvas / fluid 150rem). Hidden by
+    # NAV_CSS while the window is narrower than the fixed canvas.
+    '<button id="width-toggle" class="icon-btn width-toggle" type="button" '
+    'aria-pressed="false" title="Page width: fixed — click for fluid" '
+    'aria-label="Page width">\u27f7</button>'
 )
 
 
@@ -1348,6 +1386,18 @@ SCALE_PICKER_JS = """
     sel.selectedIndex=(sel.selectedIndex+1)%sel.options.length;
     sel.dispatchEvent(new Event('change'));});}
   sync();
+  // Page width preference — class on <html> (applied pre-paint by
+  // SCALE_BOOTSTRAP_HEAD), persisted like the scale.
+  var WKEY='whisper-ui-width', wt=document.getElementById('width-toggle');
+  function wsync(){if(!wt)return;var f=document.documentElement.classList.contains('pref-fluid');
+    wt.setAttribute('aria-pressed',f?'true':'false');
+    wt.title='Page width: '+(f?'fluid — click for fixed':'fixed — click for fluid');}
+  if(wt){wt.addEventListener('click',function(){
+    var f=!document.documentElement.classList.contains('pref-fluid');
+    document.documentElement.classList.toggle('pref-fluid',f);
+    try{localStorage.setItem(WKEY,f?'fluid':'fixed');}catch(e){}
+    wsync();});}
+  wsync();
 })();</script>
 """
 
@@ -1750,13 +1800,15 @@ OPEN_MODE_BANNER_JS = r"""
 
         // OPEN-mode warning banner — only when no admin key configured.
         // Idempotent: the banner gets a stable id so re-runs don't stack.
+        // In normal flow (not sticky): the header below it is sticky at
+        // top:0, so a sticky banner would sit on top of the brand row as
+        // soon as the page scrolls. The banner is seen on every page load.
         if (j.open_mode && !document.getElementById(BANNER_ID)) {
           var b = document.createElement('div');
           b.id = BANNER_ID;
           b.setAttribute('role','alert');
           b.style.cssText = 'background:#5a2424;color:#fff;padding:0.5rem 1rem;'
-            + 'text-align:center;font-weight:600;font-size:0.95rem;'
-            + 'position:sticky;top:0;z-index:20;';
+            + 'text-align:center;font-weight:600;font-size:0.95rem;';
           b.innerHTML = '⚠ No admin API key set — the server is in '
             + 'OPEN mode and anyone reachable can use it. '
             + '<a href="/settings/api-keys" style="color:#ffd1d1;text-decoration:underline">'
@@ -3929,6 +3981,7 @@ def _render_page_cached(
         .replace("{{TIME_HELPERS_JS}}", TIME_HELPERS_JS)
         .replace("{{NOT_ADMIN_LANDING_JS}}", NOT_ADMIN_LANDING_JS)
         .replace("{{PAGE_META}}", _page_meta_tag(current))
+        .replace("{{PAGE_CLASS}}", _col_class_for(current))
         .replace("{{TAG_PICKER_JS}}", TAG_PICKER_JS)
         .replace("{{LANG_PICKER_JS}}", LANG_PICKER_JS)
         .replace("{{PICK_LIST_JS}}", PICK_LIST_JS)
@@ -3954,6 +4007,8 @@ def render_page(template: str, current: str) -> str:
                                    (+ _renderNotAdminLanding alias)
       - {{PAGE_META}}            → <meta name="page-key" ...> carrier so
                                    shared JS knows which page it's on
+      - {{PAGE_CLASS}}           → body class naming the page canvas width
+                                  (col-read / col-form / col-data / col-fluid)
       - {{TAG_PICKER_JS}}        → window._renderTagPicker(opts) widget
                                    shared by /settings rule editor +
                                    /settings/api-keys permissions matrix
@@ -4132,6 +4187,29 @@ def _header_vtag_html() -> str:
 
 
 _HEADER_VTAG_HTML = _header_vtag_html()
+
+
+# Page canvas width class stamped on <body> (see NAV_CSS :root --col-*).
+# Every `current` value render_page() is called with must be listed: an
+# unknown page falls back to the data canvas, and the test suite pins the
+# table against the nav spec so a new page cannot silently land unmapped.
+_COL_CLASS_BY_CURRENT: dict[str, str] = {
+    "home":         "col-read",
+    "quick-config": "col-form",
+    "dictate":      "col-form",
+    "settings":     "col-form",
+    "pipeline":     "col-form",
+    "stats":        "col-data",
+    "reports":      "col-data",
+    "captures":     "col-data",
+    "api-keys":     "col-data",
+    "overrides":    "col-data",
+    "logs":         "col-fluid",
+}
+
+
+def _col_class_for(current: str) -> str:
+    return _COL_CLASS_BY_CURRENT.get(current, "col-data")
 
 
 def _page_meta_tag(current: str) -> str:

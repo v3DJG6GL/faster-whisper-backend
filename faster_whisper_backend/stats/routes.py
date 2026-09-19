@@ -831,7 +831,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* header / .header-inner / .title / page-toolbar controls (buttons,
      pills) are all centralized in NAV_CSS. */
   {{NAV_CSS}}
-  .grid { padding: 0.875rem; max-width: 68.75rem; margin: 0 auto;
+  .grid { padding: 0.875rem var(--gutter); max-width: var(--col); margin: 0 auto;
     box-sizing: border-box; min-height: 60vh; }
   .card { background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
     padding: 0.625rem 0.75rem; min-width: 0; height: 100%; box-sizing: border-box;
@@ -914,10 +914,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .hidden { display: none !important; }
   .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden;
     clip: rect(0 0 0 0); white-space: nowrap; }
-  /* --- Scope bar (header rows): range / compare on the first subbar row,
-     kind / ran / filter chips + the resolved window on the second. --- */
+  /* --- Scope bar (header rows). Each label + control pair is one
+     unsplittable .sb-group; the rows are whatever flex-wrap makes of the
+     page canvas (no hard line breaks), so a wide window gets fewer rows. --- */
   header .subbar .seg-label { color: var(--dim); font-size: var(--fs-xs);
-    text-transform: uppercase; letter-spacing: .04em; margin-left: 0.4rem; }
+    text-transform: uppercase; letter-spacing: .04em; }
+  header .sb-group { display: inline-flex; align-items: center; gap: 0.4rem;
+    flex: 0 0 auto; white-space: nowrap; }
   header .subbar-usage { padding-top: 0.25rem; }
   .chips { display: inline-flex; gap: 0.3rem; flex-wrap: wrap; align-items: center; }
   .chip { font: inherit; font-size: var(--fs-xs); border: 1px dashed var(--border);
@@ -1158,7 +1161,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
      removed from the grid for scope=own unless STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS).
      A plain block above the grid, outside GridStack, so it never takes
      part in the saved layout. */
-  .own-server { max-width: 68.75rem; margin: 0.875rem auto 0; padding: 0 0.875rem;
+  .own-server { max-width: var(--col); margin: 0.875rem auto 0; padding: 0 0.875rem;
     box-sizing: border-box; }
   .own-server .card { flex-direction: row; flex-wrap: wrap; align-items: baseline;
     gap: 0.4rem 1.4rem; height: auto; }
@@ -1270,15 +1273,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     margin: 0.15rem 0 0 7rem; }
   /* --- Live rings: scrubber + range mode --- */
   header #ring-scrub { width: 7rem; accent-color: var(--cyan); vertical-align: middle; }
-  /* Layout tools end the first sub-bar row; the rings/preset cluster always
-     takes the second row. */
+  /* Layout tools: last item of the first sub-bar, pushed to the right end of
+     whichever row they land on. */
   header .subbar-tools { display: inline-flex; gap: 0.35rem; margin-left: auto; }
   header .subbar-tools button { min-width: 2rem; padding-left: 0.45rem; padding-right: 0.45rem;
     font-size: var(--fs-md); line-height: 1.2; }
-  header .subbar-break { flex-basis: 100%; height: 0; }
-  header .subbar-row2 { flex: 1 1 auto; }
-  /* Filters take the last usage row (sentence chips grow without pushing
-     the chip groups around); the window summary sits at its right end. */
+  /* Filters (sentence chips) wrap freely after the chip groups; the window
+     summary sits at the right end of the last row. */
   header .sb-filters-group { display: inline-flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
   /* The 'usage' preset has no ring cards: the rings cluster does nothing,
      so it is dimmed and inert until another preset is picked. */
@@ -1357,7 +1358,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     transform: none;
   }
 </style></head>
-<body>
+<body class="{{PAGE_CLASS}}">
 <header>
   <div class="header-inner">
     <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
@@ -1368,10 +1369,12 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   </div>
   <div class="subbar">
     <span class="subbar-title">Stats</span>
-    <span class="seg-label">range</span>
-    <div class="seg-ctrl" id="sb-range">
-      <button data-v="7">7d</button><button data-v="30" class="active">30d</button><button data-v="90">90d</button><button data-v="180">180d</button><button data-v="365">1y</button><button data-v="all">all</button><button data-v="custom">custom…</button>
-    </div>
+    <span class="sb-group">
+      <span class="seg-label">range</span>
+      <div class="seg-ctrl" id="sb-range">
+        <button data-v="7">7d</button><button data-v="30" class="active">30d</button><button data-v="90">90d</button><button data-v="180">180d</button><button data-v="365">1y</button><button data-v="all">all</button><button data-v="custom">custom…</button>
+      </div>
+    </span>
     <div id="sb-custom" class="sb-custom hidden" role="dialog" aria-label="custom range">
       <label>from <input type="date" id="sb-from"></label>
       <label>to <input type="date" id="sb-to"></label>
@@ -1379,33 +1382,37 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <span id="sb-custom-note" class="note"></span>
       <button type="button" id="sb-custom-cancel">Cancel</button><button type="button" id="sb-custom-apply" class="primary">Apply</button>
     </div>
-    <span class="seg-label">compare</span>
-    <div class="seg-ctrl" id="sb-compare"><button data-v="off" class="active">off</button><button data-v="prev">previous</button><button data-v="yoy">last year</button></div>
-    <!-- Layout tools: icon-only, top right of the first row. -->
-    <div class="subbar-tools" id="layout-tools">
-      <button id="edit-layout-btn" aria-pressed="false" aria-label="edit layout" title="edit layout (E): drag tile titles and resize corners; Alt+arrows move, Alt+Shift+arrows resize the focused tile">✎</button>
-      <span id="layout-live" class="sr-only" aria-live="polite"></span>
-      <button id="reset-layout-btn" aria-label="reset layout" title="reset this preset's tile layout to defaults">↺</button>
-    </div>
-    <span class="subbar-break"></span>
-    <div class="subbar-left subbar-row2">
-      <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; system metrics cards replaced by a coarse server status">your usage</span>
+    <span class="sb-group">
+      <span class="seg-label">compare</span>
+      <div class="seg-ctrl" id="sb-compare"><button data-v="off" class="active">off</button><button data-v="prev">previous</button><button data-v="yoy">last year</button></div>
+    </span>
+    <span id="scope-pill" class="pill scope hidden" title="Your /stats scope is “own”: only jobs and usage from your own keys; system metrics cards replaced by a coarse server status">your usage</span>
+    <span class="sb-group">
       <span class="seg-label">layout</span>
       <div class="seg-ctrl" id="layout-preset" title="which tiles are on the grid; positions are remembered per preset">
         <button data-v="ops">ops</button><button data-v="usage">usage</button><button data-v="both" class="active">both</button>
       </div>
+    </span>
+    <span class="sb-group">
       <span class="seg-label rings-label">rings</span>
       <div class="seg-ctrl" id="live-range" title="live = the 2-minute ring at 1 Hz; 1h / 24h / 7d = the sampled history (STATS_SYSTEM_METRICS_SAMPLE_S)">
         <button data-v="live" class="active">live</button><button data-v="3600">1h</button><button data-v="86400">24h</button><button data-v="604800">7d</button>
       </div>
       <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
       <span id="status" class="pill live">live</span>
+    </span>
+    <!-- Layout tools: icon-only, right end of whichever row they land on. -->
+    <div class="subbar-tools" id="layout-tools">
+      <button id="edit-layout-btn" aria-pressed="false" aria-label="edit layout" title="edit layout (E): drag tile titles and resize corners; Alt+arrows move, Alt+Shift+arrows resize the focused tile">✎</button>
+      <span id="layout-live" class="sr-only" aria-live="polite"></span>
+      <button id="reset-layout-btn" aria-label="reset layout" title="reset this preset's tile layout to defaults">↺</button>
     </div>
   </div>
   <!-- Usage scope rows: the measure every usage card shows, kind (client-side), "with stage" chips (server
        narrows to jobs that ran every chosen stage), click-to-filter chips
        from the leaderboard, and the resolved window. -->
   <div class="subbar subbar-usage">
+    <span class="sb-group">
     <span class="seg-label measure-label" title="the number every usage card shows: the chart, its table and leaderboard, the busy-hours grid, the stages share bar and the highlighted headline tile">measure</span>
     <div class="seg-ctrl" id="sb-metric" title="what the usage cards count (M cycles)">
       <button data-v="audio_s" class="active" title="length of the audio received">audio duration</button>
@@ -1415,6 +1422,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button data-v="processing_s" title="processing time: wall-clock seconds inside the pipeline, on whatever device ran it (GPU or CPU)">processing time</button>
       <button data-v="errors" title="failed requests">errors</button>
     </div>
+    </span>
+    <span class="sb-group">
     <span class="seg-label" title="which kinds of jobs count — ANY of the chosen kinds; Alt-click isolates one">kind</span>
     <span class="chips" id="sb-kind">
       <button type="button" class="chip on" data-v="all">all</button>
@@ -1423,7 +1432,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button type="button" class="chip" data-v="url"><i class="sw" style="background:var(--kind-url)"></i>links</button>
       <button type="button" class="chip" data-v="text"><i class="sw" style="background:var(--kind-text)"></i>text</button>
     </span>
-    <span class="subbar-break"></span>
+    </span>
+    <span class="sb-group">
     <span class="seg-label" title="only jobs that ran EVERY chosen stage (translation, speaker diarization, music separation, silence skipping)">stage</span>
     <span class="chips" id="sb-with" title="only jobs that ran every chosen stage">
       <button type="button" class="chip" data-v="translating"><i class="sw" style="background:var(--stage-translating)"></i>translated</button>
@@ -1431,10 +1441,12 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <button type="button" class="chip" data-v="separating"><i class="sw" style="background:var(--stage-separating)"></i>music separated</button>
       <button type="button" class="chip" data-v="vad"><i class="sw" style="background:var(--stage-vad)"></i>silence skipped</button>
     </span>
+    </span>
+    <span class="sb-group">
     <span class="seg-label" title="only jobs by the picked users / keys (one of them)">who</span>
     <span class="picker" id="sb-who"></span>
     <span class="picker" id="sb-keys"></span>
-    <span class="subbar-break"></span>
+    </span>
     <span class="sb-filters-group">
       <span class="seg-label">filters</span>
       <span class="chips" id="sb-filters"></span>

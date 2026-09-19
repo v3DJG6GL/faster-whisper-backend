@@ -52,7 +52,7 @@
   }
   input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
 
-  main { flex: 1; padding: 1.25rem; overflow: auto; }
+  main { flex: 1; padding: 1.25rem var(--gutter); overflow: auto; width: 100%; max-width: var(--col); margin-inline: auto; box-sizing: border-box; }
   #doc {
     white-space: pre-wrap; word-break: break-word; line-height: 1.65;
     font: var(--fs-lg)/1.65 var(--font-mono); min-height: 6rem; max-width: 60rem;
@@ -85,7 +85,7 @@
   header .subbar #status.error { color: var(--red); }
 </style>
 </head>
-<body>
+<body class="{{PAGE_CLASS}}">
 <header>
   <div class="header-inner">
     <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}

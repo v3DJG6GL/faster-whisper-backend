@@ -1275,3 +1275,17 @@ def test_stats_page_ships_shared_pick_list_widget(client):
     assert '<span class="picker" id="sb-keys"></span>' in html
     # the script precedes stats.js, which mounts the pickers at parse time
     assert html.index("_renderPickList") < html.index("/static/stats.js")
+
+
+def test_stats_toolbar_reflows_without_hard_breaks(client):
+    """The scope bar has no forced line breaks any more: each label +
+    control pair is one unsplittable .sb-group and the rows are whatever
+    flex-wrap makes of the page canvas (wide window = fewer rows)."""
+    html = client.get("/stats").text
+    assert "subbar-break" not in html
+    assert "subbar-row2" not in html
+    assert html.count('<span class="sb-group">') >= 8
+    # the layout tools are the last item of the first toolbar
+    first = html[html.index('<div class="subbar">'):html.index('<div class="subbar subbar-usage">')]
+    assert first.rstrip().endswith('</div>\n  </div>')
+    assert first.index('id="layout-tools"') > first.index('id="live-range"')

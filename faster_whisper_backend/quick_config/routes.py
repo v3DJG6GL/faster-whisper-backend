@@ -1201,7 +1201,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   a { color: var(--cyan); }
   /* header / .header-inner / .title / page-toolbar controls (buttons,
      pills, the #status text) are all centralized in NAV_CSS. */
-  main { padding: 1rem; max-width: 60rem; margin: 0 auto; }
+  main { padding: 1rem var(--gutter); max-width: var(--col); margin: 0 auto; box-sizing: border-box; }
   /* Personal self-usage banner in the subbar's empty middle. Grows to fill,
      truncates on narrow screens; the subbar's own flex-wrap drops it to its
      own line when space is tight. */
@@ -1609,7 +1609,7 @@ _QUICK_CONFIG_HTML = r"""<!doctype html>
   {{NAV_CSS}}
 </style>
 </head>
-<body>
+<body class="{{PAGE_CLASS}}">
 
 <header>
   <div class="header-inner">

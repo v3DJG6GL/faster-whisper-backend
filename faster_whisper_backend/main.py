@@ -8214,7 +8214,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
      No max-width: log content uses the full viewport so long lines (HF
      URLs, model paths) sit on a single line on wide monitors instead of
      wrapping into the empty side-bands. The header bar stays centered at
-     68.75rem (its own .header-inner cap) so controls remain in a predictable
+     the page canvas (col-fluid, 150rem) so controls remain in a predictable
      spot. pre-wrap still wraps lines that genuinely exceed the viewport.
      font-size = global rem * --log-zoom is the multiplicative log-only
      zoom; bumping the global picker grows logs and chrome together, and
@@ -8318,7 +8318,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
   .line .clip-btn:hover { background: var(--panel); }
   {{NAV_CSS}}
 </style></head>
-<body>
+<body class="{{PAGE_CLASS}}">
 <header>
   <div class="header-inner">
     <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
@@ -8877,13 +8877,16 @@ _LOG_VIEWER_HTML = """<!doctype html>
   // Discrete steps so clicks "snap" to recognizable sizes like browser zoom.
   (function(){
     const KEY='whisper-log-zoom';
-    const STEPS=[0.7, 0.85, 1, 1.2, 1.4, 1.6, 1.8, 2.0];
+    // Down to 40%: on a wide monitor a dense, small log fits far more
+    // lines per screen than the UI scale alone allows.
+    const STEPS=[0.4, 0.5, 0.6, 0.7, 0.85, 1, 1.2, 1.4, 1.6, 1.8, 2.0];
+    const DEFAULT_IDX = STEPS.indexOf(1);
     const minus=document.getElementById('log-zoom-out');
     const plus =document.getElementById('log-zoom-in');
     const pct  =document.getElementById('log-zoom-pct');
     if(!minus||!plus||!pct) return;
     function nearestIdx(v){
-      let best=2, dist=Infinity;
+      let best=DEFAULT_IDX, dist=Infinity;
       STEPS.forEach((s,i)=>{ const d=Math.abs(s-v); if(d<dist){dist=d;best=i;} });
       return best;
     }

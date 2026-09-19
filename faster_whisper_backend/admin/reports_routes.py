@@ -485,14 +485,12 @@ _REPORTS_HTML = """<!doctype html>
   html, body { background: var(--bg); color: var(--fg);
     font-family: var(--font-sans); font-size: var(--fs-lg);
     margin: 0; padding: 0; }
-  main { max-width: 75rem; margin: 0 auto; padding: 1rem 1.25rem 4rem; }
+  main { max-width: var(--col); margin: 0 auto; padding: 1rem var(--gutter) 4rem; box-sizing: border-box; }
   h2 { font-size: var(--fs-xl); margin: 0 0 0.5rem; color: var(--bold); }
   /* The page toolbar (status/model/search filters + actions) now lives in
      the sticky header subbar — styled by NAV_CSS, consistent with every
-     other page. Counts ("12 open · 0 resolved · 0 dismissed") sit on their
-     own full-width line below the filter/action row so they don't push the
-     action buttons to wrap. */
-  header .subbar #counts { flex-basis: 100%; }
+     other page. Counts ("12 open · 0 resolved · 0 dismissed") sit right
+     after the status filter they describe and wrap with the filter group. */
   button {
     background: var(--input-bg); color: var(--fg);
     border: 1px solid var(--border); border-radius: 4px;
@@ -514,6 +512,12 @@ _REPORTS_HTML = """<!doctype html>
     background: var(--panel); border: 1px solid var(--border);
     border-radius: 6px; padding: 0.75rem 1rem; margin-bottom: 0.75rem;
   }
+  /* Card grid at width (same rule set as /captures): two columns once the
+     canvas allows, three under the fluid preference; empty state spans. */
+  #list { display: grid; gap: 0.75rem; align-items: start;
+    grid-template-columns: repeat(auto-fill, minmax(min(100%, 34rem), 1fr)); }
+  #list > .report-card { margin-bottom: 0; }
+  #list > .empty-state { grid-column: 1 / -1; }
   .rc-head {
     display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center;
     font-size: var(--fs-sm); color: var(--help); margin-bottom: 0.5rem;
@@ -667,7 +671,7 @@ _REPORTS_HTML = """<!doctype html>
   {{NAV_CSS}}
 </style>
 </head>
-<body>
+<body class="{{PAGE_CLASS}}">
 <header>
   <div class="header-inner">
     <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
@@ -687,6 +691,7 @@ _REPORTS_HTML = """<!doctype html>
           <option value="dismissed">dismissed</option>
         </select>
       </label>
+      <span class="counts" id="counts"></span>
       <label>model
         <select id="filt-model">
           <option value="all">all</option>
@@ -701,7 +706,6 @@ _REPORTS_HTML = """<!doctype html>
       <button id="btn-export" class="admin-only" title="Download all reports as JSON">Export</button>
       <button id="btn-clear" class="danger admin-only" title="Permanently delete every report">Clear all</button>
     </div>
-    <span class="counts" id="counts"></span>
   </div>
 </header>
 
@@ -966,8 +970,11 @@ _REPORTS_HTML = """<!doctype html>
     _allReports.forEach(function(r) { if (r.model) seen[r.model] = true; });
     var opts = ['<option value="all">all</option>'];
     // German-aware, case-insensitive ordering (model IDs can be mixed-case).
+    // Label = last path segment (a <select> is as wide as its longest option,
+    // and "org/…" prefixes add nothing); the full id stays in value + title.
     Object.keys(seen).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare).forEach(function(m) {
-      opts.push('<option value="' + escapeHtml(m) + '">' + escapeHtml(m) + '</option>');
+      var short = m.slice(m.lastIndexOf('/') + 1) || m;
+      opts.push('<option value="' + escapeHtml(m) + '" title="' + escapeHtml(m) + '">' + escapeHtml(short) + '</option>');
     });
     sel.innerHTML = opts.join('');
     if (Object.prototype.hasOwnProperty.call(seen, cur) || cur === 'all') sel.value = cur;

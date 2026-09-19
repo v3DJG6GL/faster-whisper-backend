@@ -131,7 +131,7 @@ _HUB_HTML = """<!doctype html>
       radial-gradient(120% 80% at 50% -10%, rgba(121,192,255,0.12), transparent 60%),
       radial-gradient(90% 60% at 50% 112%, rgba(126,231,135,0.09), transparent 60%);
     background-attachment: fixed; }
-  main { max-width: 56rem; margin: 0 auto; padding: 3.2rem 1.25rem 3rem;
+  main { max-width: var(--col); margin: 0 auto; padding: 3.2rem var(--gutter) 3rem;
     box-sizing: border-box; }
   #hub-body[hidden] { display: none; }
 
@@ -270,7 +270,7 @@ _HUB_HTML = """<!doctype html>
   }
   {{NAV_CSS}}
 </style></head>
-<body class="hub">
+<body class="hub {{PAGE_CLASS}}">
 <main>
   <section class="hero">
     <svg class="mark" viewBox="0 0 120 120" aria-hidden="true">
