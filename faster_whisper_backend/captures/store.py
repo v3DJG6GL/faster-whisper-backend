@@ -274,14 +274,16 @@ def _user_clause(user_id: "str | list[str] | None") -> tuple[str, list[Any]]:
     """`user_id` filter fragment for the list / counts / stats queries:
     None → no filter (admin, scope=all); a string → that owner; a list →
     any of those owners (the speaker picker). Returns ("", []) or
-    ("user_id = ?", [id]) or ("user_id IN (?,?)", ids)."""
+    ("user_id = ?", [id]) or ("user_id IN (?,?)", ids). None is the ONLY
+    "no filter" input: a list with no usable id matches nothing ("1 = 0")
+    — an empty owner set must never widen to every user."""
     if user_id is None:
         return "", []
     if isinstance(user_id, str):
         return "user_id = ?", [user_id]
     ids = [u for u in user_id if isinstance(u, str) and u]
     if not ids:
-        return "", []
+        return "1 = 0", []
     return f"user_id IN ({','.join('?' * len(ids))})", ids
 
 
@@ -775,6 +777,29 @@ def get_capture(cid: str) -> dict[str, Any] | None:
     return _row_to_dict(row, include_words=True) if row else None
 
 
+def get_captures_light(ids: list[str]) -> dict[str, dict[str, Any]]:
+    """{id: {id, user_id, status, sample_id}} for the ids that exist — the
+    four columns the bulk endpoints' admission checks read. No `SELECT *`
+    and no _row_to_dict: get_capture json.loads the words + segments blobs
+    (hundreds of KB each), which a 1000-id bulk request would parse and
+    throw away. Chunked to stay under SQLite's bind-variable limit."""
+    ids = [i for i in dict.fromkeys(ids) if isinstance(i, str) and i]
+    out: dict[str, dict[str, Any]] = {}
+    if not ids:
+        return out
+    conn = _require_conn()
+    for off in range(0, len(ids), 500):
+        chunk = ids[off:off + 500]
+        cur = conn.execute(
+            "SELECT id, user_id, status, sample_id FROM captures"
+            f" WHERE id IN ({','.join('?' * len(chunk))})", chunk,
+        )
+        for r in cur.fetchall():
+            out[r["id"]] = {"id": r["id"], "user_id": r["user_id"],
+                            "status": r["status"], "sample_id": r["sample_id"]}
+    return out
+
+
 def find_by_request_id(request_id: str) -> list[dict[str, Any]]:
     """Cross-link from /reports → captures matching a request_id. Used
     by the /captures `by-request` jump endpoint to surface every capture
@@ -974,8 +999,8 @@ def update_capture(cid: str, patch: dict[str, Any]) -> dict[str, Any] | None:
 def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
     """Set `status` on many rows in one locked pass. Same reviewed_ts rule
     as update_capture (NULL when going back to `new`, now otherwise).
-    Returns, for every id that existed, {id, prev_status, prev_reviewed_ts}
-    so the caller can offer an undo; unknown ids are silently absent.
+    Returns, for every id that existed, {id, prev_status} so the caller
+    can offer an undo; unknown ids are silently absent.
     Invalidates the merge-proposer cache once per affected owner."""
     if new_status not in _VALID_STATUS:
         raise ValueError(f"invalid status: {new_status!r}")
@@ -1012,11 +1037,7 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
             captures_merge_proposer.invalidate(uid)
     except Exception:
         pass
-    return [
-        {"id": r["id"], "prev_status": r["status"],
-         "prev_reviewed_ts": r["reviewed_ts"]}
-        for r in prev
-    ]
+    return [{"id": r["id"], "prev_status": r["status"]} for r in prev]
 
 
 # ---------------------------------------------------------------------

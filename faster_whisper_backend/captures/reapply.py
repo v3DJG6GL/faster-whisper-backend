@@ -118,7 +118,7 @@ def _run() -> None:
             try:
                 new_final = main._postprocess_text(
                     raw_text, model_name=r["model"], ident=ident,
-                    language=r.get("language"),
+                    language=r["language"],
                 )
             except Exception as e:
                 logger.warning(
@@ -139,7 +139,7 @@ def _run() -> None:
                     new_training = main._postprocess_text(
                         raw_text, model_name=r["model"],
                         extra_excludes=captures_excludes, ident=ident,
-                        language=r.get("language"),
+                        language=r["language"],
                     )
                 except Exception as e:
                     logger.warning(

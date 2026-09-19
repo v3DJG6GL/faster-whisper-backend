@@ -97,6 +97,12 @@ def test_stats_folds_speakers_past_eight_into_others(client, make_user_key):
     assert len(st["by_user"]) == 9
     assert st["by_user"][-1] == {"user_id": None, "username": "others",
                                  "n": 2, "s": 3.0}                # 2 + 1
+    # The fold is for the strip only: the speaker picker reads by_user_all,
+    # which keeps every speaker pickable (incl. the two folded above).
+    assert len(st["by_user_all"]) == 10
+    assert all(u["user_id"] for u in st["by_user_all"])
+    assert [u["username"] for u in st["by_user_all"]] == [
+        f"u{i}" for i in range(10)]
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +131,50 @@ def test_list_user_id_accepts_several_speakers(client, make_user_key):
     body = client.get(f"/captures/api/list?user_id={uid_a},{uid_b}",
                       headers=bearer(raw_a)).json()
     assert [r["id"] for r in body["captures"]] == ["a1a1a1a1a1a1"]
+
+
+def test_list_user_id_rejects_an_oversized_speaker_list(client, make_user_key):
+    """Every id is one SQL bind variable in four queries; an uncapped list
+    ends in sqlite's "too many SQL variables" (a 500), so it is a 422."""
+    from faster_whisper_backend.captures import routes as captures_routes
+
+    _root, raw_root = make_user_key("root", is_admin=True)
+    cap = captures_routes._MAX_OWNER_FILTER_IDS
+    ok = ",".join(f"u{i}" for i in range(cap))
+    assert client.get("/captures/api/list?user_id=" + ok,
+                      headers=bearer(raw_root)).status_code == 200
+    for path in ("/captures/api/list", "/captures/api/stats",
+                 "/captures/api/samples"):
+        r = client.get(f"{path}?user_id={ok},one-too-many",
+                       headers=bearer(raw_root))
+        assert r.status_code == 422, path
+
+
+def test_samples_user_id_accepts_several_speakers(client, make_user_key):
+    """/captures/api/samples scopes like the list: the comma-separated form
+    used to be bound as one `user_id = ?` string and matched nothing."""
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
+
+    _root, raw_root = make_user_key("root", is_admin=True)
+    uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
+    uid_b, _ = make_user_key("bob", pages={"captures": "own"})
+    uid_c, _ = make_user_key("carla", pages={"captures": "own"})
+    conn = cs._require_conn()
+    _insert_sample(conn, gs, "sampleaaaaa1", locked=False, user_id=uid_a)
+    _insert_sample(conn, gs, "samplebbbbb1", locked=False, user_id=uid_b)
+    _insert_sample(conn, gs, "sampleccccc1", locked=False, user_id=uid_c)
+
+    def ids(q, raw):
+        body = client.get("/captures/api/samples" + q, headers=bearer(raw)).json()
+        return sorted(g["id"] for g in body["samples"])
+
+    assert ids(f"?user_id={uid_a},{uid_b}", raw_root) == [
+        "sampleaaaaa1", "samplebbbbb1"]
+    assert ids(f"?user_id={uid_c}", raw_root) == ["sampleccccc1"]   # single id
+    assert len(ids("", raw_root)) == 3
+    # a non-admin's speaker list is ignored: still pinned to herself
+    assert ids(f"?user_id={uid_b},{uid_c}", raw_a) == ["sampleaaaaa1"]
 
 
 # ---------------------------------------------------------------------------
@@ -264,3 +314,83 @@ def test_bulk_delete_removes_rows_and_skips_locked(client, make_user_key):
     assert cs.get_capture("free0001cid0") is None
     assert cs.get_capture("locked01cid") is not None
     assert cs.count(user_id=uid) == 1
+
+
+def test_bulk_guard_never_loads_the_full_capture_row(client, make_user_key,
+                                                     monkeypatch):
+    """Admission reads id / user_id / status / sample_id only. get_capture
+    json.loads the words + segments blobs — per id, up to 1000 times."""
+    from faster_whisper_backend.captures import store as cs
+
+    _root, raw_root = make_user_key("root", is_admin=True)
+    uid_a, _ = make_user_key("alice", pages={"captures": "own"})
+    conn = cs._require_conn()
+    ids = [f"bulk{i:08d}" for i in range(50)]
+    for cid in ids:
+        _row(conn, cid, user_id=uid_a)
+
+    def _boom(cid):
+        raise AssertionError("bulk guard must not call get_capture")
+    monkeypatch.setattr(cs, "get_capture", _boom)
+
+    body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
+                        json={"ids": ids, "status": "reviewed"}).json()
+    assert [u["id"] for u in body["updated"]] == ids
+    assert body["skipped"] == []
+    monkeypatch.undo()
+    assert cs.get_capture(ids[-1])["status"] == "reviewed"
+
+
+def test_bulk_guard_looks_a_shared_sample_lock_up_once(client, make_user_key,
+                                                       monkeypatch):
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as cs
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"captures": "own"})
+    conn = cs._require_conn()
+    _insert_sample(conn, gs, "locked01sid", locked=True, user_id=uid)
+    for i in range(3):
+        _insert_member(conn, f"locked0{i}cid", "locked01sid", user_id=uid)
+    _row(conn, "free0001cid0", user_id=uid)
+
+    calls: list[str] = []
+    real = gs.get_sample
+    monkeypatch.setattr(gs, "get_sample",
+                        lambda sid: (calls.append(sid), real(sid))[1])
+    body = client.patch(
+        "/captures/api/bulk", headers=bearer(raw),
+        json={"ids": ["locked00cid", "locked01cid", "free0001cid0",
+                      "locked02cid"], "status": "ready"}).json()
+    assert [u["id"] for u in body["updated"]] == ["free0001cid0"]
+    assert body["skipped"] == [
+        {"id": c, "reason": "locked"}
+        for c in ("locked00cid", "locked01cid", "locked02cid")]
+    assert calls == ["locked01sid"]
+
+
+def test_bulk_status_reports_a_row_deleted_after_the_guard(client, make_user_key,
+                                                           monkeypatch):
+    """updated + skipped must account for every submitted id: a row that
+    vanishes between admission and the write is `not_found`, as in
+    bulk-delete — not silently absent from both lists."""
+    from faster_whisper_backend.captures import store as cs
+
+    _root, raw_root = make_user_key("root", is_admin=True)
+    uid_a, _ = make_user_key("alice", pages={"captures": "own"})
+    conn = cs._require_conn()
+    _row(conn, "a1a1a1a1a1a1", user_id=uid_a)
+    _row(conn, "a2a2a2a2a2a2", user_id=uid_a)
+
+    real = cs.bulk_update_status
+
+    def _racing(ids, new_status):
+        conn.execute("DELETE FROM captures WHERE id = ?", ("a2a2a2a2a2a2",))
+        return real(ids, new_status)
+    monkeypatch.setattr(cs, "bulk_update_status", _racing)
+
+    body = client.patch("/captures/api/bulk", headers=bearer(raw_root),
+                        json={"ids": ["a1a1a1a1a1a1", "a2a2a2a2a2a2"],
+                              "status": "ready"}).json()
+    assert body["updated"] == [{"id": "a1a1a1a1a1a1", "prev_status": "new"}]
+    assert body["skipped"] == [{"id": "a2a2a2a2a2a2", "reason": "not_found"}]

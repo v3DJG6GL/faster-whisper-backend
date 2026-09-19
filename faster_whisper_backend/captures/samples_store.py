@@ -175,7 +175,7 @@ def get_sample(sid: str) -> dict[str, Any] | None:
 
 
 def list_samples(
-    *, user_id: str | None = None, status: str | None = None,
+    *, user_id: "str | list[str] | None" = None, status: str | None = None,
     limit: int | None = None,
     before_ts: float | None = None, before_id: str | None = None,
 ) -> list[dict[str, Any]]:
@@ -189,12 +189,21 @@ def list_samples(
     call share a created_ts to the microsecond, so a plain `created_ts < ?`
     would silently drop every tie sitting on a page boundary. Ordering and
     comparison both use (created_ts, id) so the sequence is total.
+
+    `user_id` scopes like captures_store.list_captures: None → everything,
+    str → one owner, list → any of them (the speaker picker); a list with
+    no usable id matches nothing.
     """
     clauses: list[str] = []
     params: list[Any] = []
-    if user_id is not None:
+    if isinstance(user_id, str):
         clauses.append("user_id = ?")
         params.append(user_id)
+    elif user_id is not None:
+        owners = [u for u in user_id if isinstance(u, str) and u]
+        clauses.append(
+            f"user_id IN ({','.join('?' * len(owners))})" if owners else "1 = 0")
+        params.extend(owners)
     if status is not None and status in _VALID_STATUS:
         clauses.append("status = ?")
         params.append(status)

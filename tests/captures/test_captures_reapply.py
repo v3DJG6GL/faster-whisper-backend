@@ -6,12 +6,19 @@ that records the target but never executes it. We assert start() is
 idempotent (a second call while "running" returns state without spawning a
 2nd worker) and that status() returns a dict copy of the live state.
 
+The _run() tests at the bottom DO execute the worker body, synchronously and
+against a temp captures DB, with `main` replaced by a two-function fake — the
+start() tests alone left the whole row loop uncovered.
+
 The conftest autouse fixture resets _worker/_state between tests, but it
 seeds _state with a different key set than the module's real schema, so each
 test first restores the canonical idle state (the shape start() expects).
 """
 
+import logging
+import sys
 import threading
+import types
 
 import pytest
 
@@ -131,3 +138,90 @@ def test_start_after_done_spawns_again(fake_thread):
 def test_status_reflects_running_after_start(fake_thread):
     captures_reapply.start()
     assert captures_reapply.status()["status"] == "running"
+
+
+# ---------------------------------------------------------------------------
+# _run() — the worker body, executed for real
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fake_main(monkeypatch):
+    """Stand-in for the heavy `main` module. `from faster_whisper_backend
+    import main` resolves the package attribute first and sys.modules second,
+    so both are patched."""
+    import faster_whisper_backend as pkg
+
+    fake = types.ModuleType("faster_whisper_backend.main")
+    fake.calls = []
+
+    def build_ident(who, model_id):
+        return {"who": who, "model": model_id}
+
+    def _postprocess_text(text, **kw):
+        fake.calls.append(kw)
+        suffix = " [training]" if kw.get("extra_excludes") else " [final]"
+        return text.upper() + suffix
+
+    fake.build_ident = build_ident
+    fake._postprocess_text = _postprocess_text
+    monkeypatch.setitem(sys.modules, "faster_whisper_backend.main", fake)
+    monkeypatch.setattr(pkg, "main", fake, raising=False)
+    return fake
+
+
+def _insert(conn, cid, *, language, raw="hello", final="hello"):
+    conn.execute(
+        "INSERT INTO captures (id, created_ts, model, language, audio_relpath,"
+        " audio_format, raw_text, final_text, words, segments, corrections,"
+        " status, user_id) VALUES (?,1.0,'m',?,'x.wav','wav',?,?,'[]','[]',"
+        "'[]','new','alice')", (cid, language, raw, final))
+
+
+def test_run_passes_the_row_language_and_updates_the_capture(
+        captures_store_db, fake_main, monkeypatch, caplog):
+    """The rows are sqlite3.Row, which has no .get(): `r.get("language")`
+    raised inside the per-row try, so EVERY capture was logged as skipped
+    and the job still finished "done" with captures_updated == 0."""
+    from faster_whisper_backend import config as cfg
+
+    cs = captures_store_db
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
+                        raising=False)
+    conn = cs._require_conn()
+    _insert(conn, "reapply00001", language="de")
+    _insert(conn, "reapply00002", language=None)
+
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        captures_reapply._run()
+
+    st = captures_reapply.status()
+    assert st["status"] == "done" and st["error"] is None
+    assert st["total"] == 2 and st["processed"] == 2
+    assert st["captures_updated"] == 2
+    assert "skipped" not in caplog.text
+    assert sorted(str(c["language"]) for c in fake_main.calls) == ["None", "de"]
+    row = cs.get_capture("reapply00001")
+    assert row["final"] == "HELLO [final]"
+    assert row["text_for_training"] == "HELLO [final]"
+
+
+def test_run_training_pass_gets_the_language_too(
+        captures_store_db, fake_main, monkeypatch, caplog):
+    """Second call site: the captures-excludes training-form pass."""
+    from faster_whisper_backend import config as cfg
+
+    cs = captures_store_db
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", ["some-rule"],
+                        raising=False)
+    _insert(cs._require_conn(), "reapply00003", language="fr")
+
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
+        captures_reapply._run()
+
+    assert "skipped" not in caplog.text
+    assert captures_reapply.status()["captures_updated"] == 1
+    assert [(c["language"], bool(c.get("extra_excludes")))
+            for c in fake_main.calls] == [("fr", False), ("fr", True)]
+    row = cs.get_capture("reapply00003")
+    assert row["final"] == "HELLO [final]"
+    assert row["text_for_training"] == "HELLO [training]"

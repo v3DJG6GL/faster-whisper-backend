@@ -228,6 +228,10 @@ async def captures_page() -> HTMLResponse:
 # JSON APIs
 # ---------------------------------------------------------------------
 
+# Cap on the admin-only `?user_id=a,b,...` list (one bind variable each).
+_MAX_OWNER_FILTER_IDS = 200
+
+
 def _effective_owner_filter(
     user: dict[str, Any], user_filter: str | None,
 ) -> "str | list[str] | None":
@@ -235,13 +239,18 @@ def _effective_owner_filter(
     pinned to themselves by effective_user_id_for; `scope=all` callers
     (incl. admins) see everyone and may narrow with the admin-only
     `?user_id=a,b` (comma-separated, the speaker picker) — a non-admin's
-    query is ignored."""
+    query is ignored. More than _MAX_OWNER_FILTER_IDS ids → 422: every id
+    is one SQL bind variable in each of the list / counts / stats queries,
+    and past SQLite's variable limit that is an unhandled 500."""
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
     effective: "str | list[str] | None" = perms.effective_user_id_for(
         "captures", caller_uid)
     if user.get("is_admin") and user_filter:
         ids = [u.strip() for u in user_filter.split(",") if u.strip()]
+        if len(ids) > _MAX_OWNER_FILTER_IDS:
+            raise HTTPException(
+                422, f"user_id: at most {_MAX_OWNER_FILTER_IDS} ids")
         if ids:
             effective = ids[0] if len(ids) == 1 else ids
     return effective
@@ -327,6 +336,11 @@ async def captures_stats_api(
             top.append({"user_id": None, "username": "others",
                         "n": rest_n, "s": rest_s})
         st["by_user"] = top
+        # The fold above is presentation for the strip only. The speaker
+        # picker reads this full ranking — fed from `by_user` it could never
+        # offer speaker #9 and beyond.
+        st["by_user_all"] = [{**u, "username": names.get(u["user_id"])}
+                             for u in users]
         st["is_admin"] = bool(user.get("is_admin"))
         st["user_id"] = user.get("user_id")
         return json.dumps(st, ensure_ascii=False, allow_nan=False,
@@ -495,11 +509,9 @@ async def list_samples_api(
     UI's `load()` then silently swallows the failure and renders no
     groups, making merged groups invisible after creation."""
     from faster_whisper_backend.captures import samples_store as capture_samples_store
-    perms = user["permissions"]
-    caller_uid = user.get("user_id") or ""
-    scope = perms.effective_user_id_for("captures", caller_uid)
-    if user.get("is_admin") and user_filter:
-        scope = user_filter
+    # Same owner scope as the list: `?user_id=a,b` narrows to several
+    # speakers (the raw string bound as `user_id = ?` matched nothing).
+    scope = _effective_owner_filter(user, user_filter)
 
     def _gather() -> tuple[list[dict[str, Any]], bool]:
         # limit + 1: one row past the page tells us whether another page
@@ -705,8 +717,15 @@ def _bulk_guard(
     de-duplicated preserving order."""
     rows: list[dict[str, Any]] = []
     skipped: list[dict[str, str]] = []
-    for cid in dict.fromkeys(i for i in ids if isinstance(i, str) and i):
-        row = captures_store.get_capture(cid)
+    wanted = list(dict.fromkeys(i for i in ids if isinstance(i, str) and i))
+    # One light lookup (id / user_id / status / sample_id — all the checks
+    # below read) instead of a get_capture per id, which json.loads the
+    # words + segments blobs of up to 1000 rows just to discard them.
+    light = captures_store.get_captures_light(wanted)
+    # Sample-lock verdict per sample_id: members of one group share it.
+    lock_memo: dict[str, bool] = {}
+    for cid in wanted:
+        row = light.get(cid)
         if row is None:
             skipped.append({"id": cid, "reason": "not_found"})
             continue
@@ -718,9 +737,14 @@ def _bulk_guard(
         except HTTPException:
             skipped.append({"id": cid, "reason": "not_found"})
             continue
-        try:
-            _assert_member_sample_not_locked(row, user)
-        except HTTPException:
+        sid = row.get("sample_id") or ""
+        if sid not in lock_memo:
+            try:
+                _assert_member_sample_not_locked(row, user)
+                lock_memo[sid] = False
+            except HTTPException:
+                lock_memo[sid] = True
+        if lock_memo[sid]:
             skipped.append({"id": cid, "reason": "locked"})
             continue
         _audit_cross_user_read(user, row, kind, cid)
@@ -751,6 +775,12 @@ async def bulk_status_api(
                 ok_ids.append(r["id"])
         updated = captures_store.bulk_update_status(ok_ids, payload.status) \
             if ok_ids else []
+        # A row deleted between the guard and the write (another tab, the
+        # retention evictor) is absent from `updated`; report it, as
+        # bulk-delete does, so updated + skipped covers every submitted id.
+        done = {u["id"] for u in updated}
+        skipped.extend({"id": i, "reason": "not_found"}
+                       for i in ok_ids if i not in done)
         return {"ok": True, "status": payload.status,
                 "updated": [{"id": u["id"], "prev_status": u["prev_status"]}
                             for u in updated],
@@ -4625,10 +4655,14 @@ _CAPTURES_HTML = r"""<!doctype html>
   var _isAdmin = false;
   var STATUS_VALUES = ['all', 'new', 'reviewed', 'ready', 'dismissed', 'audio_missing'];
 
+  // `&user_id=a,b` for the picked speakers ('' when none). Shared by the
+  // capture list and both group fetches so they narrow the same way.
+  function _speakerQs() {
+    return _filtSpeakers.length
+      ? '&user_id=' + encodeURIComponent(_filtSpeakers.join(',')) : '';
+  }
   function _listUrl(limit) {
-    var u = '/captures/api/list?status=all&limit=' + limit;
-    if (_filtSpeakers.length) u += '&user_id=' + encodeURIComponent(_filtSpeakers.join(','));
-    return u;
+    return '/captures/api/list?status=all&limit=' + limit + _speakerQs();
   }
   // Filter state lives in the URL so a narrowed view can be bookmarked or
   // pasted into a report. The selection is transient by design.
@@ -4698,6 +4732,9 @@ _CAPTURES_HTML = r"""<!doctype html>
   function sampleMatchesFilters(g) {
     var m = document.getElementById('filt-model').value;
     var q = (document.getElementById('filt-search').value || '').trim().toLowerCase();
+    // Speaker too: the capture rows are narrowed server-side, so a group of
+    // another speaker left on screen contradicts the list next to it.
+    if (_filtSpeakers.length && _filtSpeakers.indexOf(g.user_id) === -1) return false;
     if (m !== 'all' && (g.models || []).indexOf(m) === -1) return false;
     if (!q) return true;
     var hay = (
@@ -4764,7 +4801,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   function renderStats() {
     var sec = document.getElementById('stats-strip');
     var st = _stats;
-    if (!st || !st.total) { sec.hidden = true; return; }
+    if (!st || !st.total || !st.total.n) { sec.hidden = true; return; }
     sec.hidden = false;
     var total = st.total, bs = st.by_status || {}, rv = st.review || {}, rd = st.ready || {};
     var title = document.getElementById('ss-title');
@@ -6029,7 +6066,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       if (!_isAdmin && _filtSpeakers.length) { _filtSpeakers = []; }
       // Pull groups in parallel-shape; failure is non-fatal (admin sees no groups).
       try {
-        var jg = await api('GET', '/captures/api/samples?limit=200');
+        var jg = await api('GET', '/captures/api/samples?limit=200' + _speakerQs());
         _allSamples = jg.samples || [];
         _samplesNext = jg.next || null;
       } catch (_) { _allSamples = []; _samplesNext = null; }
@@ -6063,7 +6100,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     var b = document.getElementById('btn-load-more-samples');
     if (b) { b.disabled = true; b.textContent = 'Loading more groups...'; }
     try {
-      var q = '/captures/api/samples?limit=200'
+      var q = '/captures/api/samples?limit=200' + _speakerQs()
         + '&before_ts=' + encodeURIComponent(_samplesNext.before_ts)
         + '&before_id=' + encodeURIComponent(_samplesNext.before_id);
       var jg = await api('GET', q);
@@ -8319,7 +8356,7 @@ _CAPTURES_HTML = r"""<!doctype html>
       fetchRows: function() {
         var p = _stats ? Promise.resolve(_stats) : api('GET', '/captures/api/stats').then(function(j) { _stats = j; renderStats(); return j; });
         return p.then(function(st) {
-          var rows = (st.by_user || []).filter(function(u) { return u.user_id; }).map(function(u) {
+          var rows = (st.by_user_all || st.by_user || []).filter(function(u) { return u.user_id; }).map(function(u) {
             return { id: u.user_id, label: u.username || String(u.user_id).slice(0, 6),
                      value: u.s, sub: u.n + ' rec', me: u.user_id === _me };
           });

@@ -365,6 +365,44 @@ def test_counts_and_total_scoped_to_user(captures_store_db, monkeypatch,
     assert bob["new"] == 1 and bob["ready"] == 0
 
 
+def test_empty_owner_list_matches_nothing(captures_store_db, monkeypatch,
+                                          tmp_path):
+    """Only None means "no owner filter". A list with no usable id is an
+    empty owner set and must fail CLOSED — it used to widen to every user."""
+    cs = captures_store_db
+    _make(cs, monkeypatch, tmp_path, user_id="alice")
+    _make(cs, monkeypatch, tmp_path, user_id="bob")
+
+    assert cs._user_clause(None) == ("", [])
+    for empty in ([], [""], [None]):
+        assert cs.count(user_id=empty) == 0
+        assert cs.list_captures(user_id=empty) == []
+        assert sum(cs.counts_by_status(user_id=empty).values()) == 0
+        assert cs.stats(user_id=empty)["total"]["n"] == 0
+    assert cs.count(user_id=["alice", "bob"]) == 2
+
+
+def test_get_captures_light_projection_and_chunking(captures_store_db,
+                                                    monkeypatch, tmp_path):
+    """The bulk guard's lookup: four columns, no words / segments decode,
+    unknown ids absent, and more ids than one IN-list chunk."""
+    cs = captures_store_db
+    cid = _make(cs, monkeypatch, tmp_path, user_id="alice")
+    conn = cs._require_conn()
+    many = [f"light{i:07d}" for i in range(1100)]
+    conn.executemany(
+        "INSERT INTO captures (id, created_ts, model, audio_relpath,"
+        " audio_format, raw_text, final_text, words, segments, corrections,"
+        " status, user_id) VALUES (?,1.0,'m','x.wav','wav','r','f','[]','[]',"
+        "'[]','new','bob')", [(i,) for i in many])
+
+    got = cs.get_captures_light([cid, "nope", cid, "", *many])
+    assert got[cid] == {"id": cid, "user_id": "alice", "status": "new",
+                        "sample_id": None}
+    assert "nope" not in got and len(got) == 1101
+    assert cs.get_captures_light([]) == {}
+
+
 # ---------------------------------------------------------------------------
 # update_capture
 # ---------------------------------------------------------------------------
