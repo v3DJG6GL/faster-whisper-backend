@@ -156,6 +156,12 @@ def test_package_nonzero_exit_never_echoes_stderr_and_classifies_srt(monkeypatch
     with pytest.raises(pk.PackageError) as ei:
         _run(pk.package("/x", [], container="mkv", default_track=None, timeout=10))
     assert str(ei.value) == "packaging failed"
+    # The bare marker with NO subtitle track is the source, not "track 1".
+    _patch_argv(monkeypatch, 'import sys; sys.stderr.write("src.mp4: Invalid data found when processing input\\n"); sys.exit(1)')
+    with pytest.raises(pk.PackageError) as ei:
+        _run(pk.package("/x", [], container="mkv", default_track=None, timeout=10))
+    assert not isinstance(ei.value, pk.SubtitleParseError)
+    assert str(ei.value) == "packaging failed"
 
 
 def test_package_no_output_is_an_error(monkeypatch):
@@ -226,3 +232,74 @@ def test_package_real_ffmpeg_muxes_language_tags(tmp_path):
             assert len(subs) == 1 and subs[0].metadata.get("language") == "eng"
     finally:
         shutil.rmtree(os.path.dirname(out), ignore_errors=True)
+
+
+def test_build_package_argv_maps_the_probed_video_index():
+    argv = pk.build_package_argv("/m/src.mkv", [], [], container="mkv",
+                                 out_path="/w/out.mkv", default_track=None,
+                                 video_index=1)
+    assert argv[argv.index("-map") + 1] == "0:v:1"
+
+
+def test_unreadable_streams_is_flagged_not_no_video():
+    facts = pk.unreadable_streams().as_dict()
+    assert facts["unreadable"] is True and facts["cover_art_only"] is False
+    assert facts["video_codec"] is None and facts["mp4_ok"] is False
+    assert facts["mp4_reason"] == pk.UNREADABLE_REASON
+    # The positional shape main.py builds keeps working (flags default off).
+    legacy = pk.MediaStreams(None, None, None, None, None, False, "x")
+    assert legacy.unreadable is False and legacy.video_index == 0
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+def test_probe_cover_art_only_file_has_no_video(tmp_path):
+    """An m4a with embedded artwork: the attached picture is not a video
+    stream, so the route's no_video guard fires instead of an MJPEG verdict."""
+    pytest.importorskip("av")
+    cover = str(tmp_path / "cover.jpg")
+    src = str(tmp_path / "song.m4a")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=1:duration=1",
+                    "-frames:v", "1", cover], check=True, timeout=60)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-i", cover, "-map", "0:a", "-map", "1:v", "-c:a", "aac",
+                    "-c:v", "mjpeg", "-disposition:v:0", "attached_pic", src],
+                   check=True, timeout=60)
+    streams = pk.probe_streams(src)
+    assert streams.video_codec is None and streams.width is None
+    assert streams.cover_art_only is True and streams.unreadable is False
+    assert streams.audio_codec == "aac"
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+def test_probe_mp4_verdict_covers_every_audio_stream(tmp_path):
+    """`-map 0:a?` muxes every audio track, so a second track MP4 can't
+    carry blocks MP4 even when the first one is AAC."""
+    pytest.importorskip("av")
+    src = str(tmp_path / "dual.mkv")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                    "-f", "lavfi", "-i", "sine=frequency=880:duration=1",
+                    "-map", "0:v", "-map", "1:a", "-map", "2:a",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p",
+                    "-c:a:0", "aac", "-c:a:1", "flac", "-shortest", src],
+                   check=True, timeout=60)
+    streams = pk.probe_streams(src)
+    assert streams.video_codec == "h264" and streams.audio_codec == "aac"
+    assert streams.mp4_ok is False and "FLAC" in streams.mp4_reason
+    assert streams.video_index == 0 and streams.cover_art_only is False
+
+
+def test_package_forwards_a_non_zero_video_index(monkeypatch):
+    seen = {}
+
+    def _fake(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
+        seen.update(kw)
+        return [sys.executable, "-c", _OK.replace("__OUT__", out_path)]
+    monkeypatch.setattr(pk, "build_package_argv", _fake)
+    out = _run(pk.package("/x", [], container="mkv", default_track=None,
+                          timeout=10, video_index=1))
+    shutil.rmtree(os.path.dirname(out), ignore_errors=True)
+    assert seen["video_index"] == 1

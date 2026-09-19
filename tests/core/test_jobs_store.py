@@ -97,10 +97,61 @@ def test_finish_rejects_running_and_unknown_states(db):
 def test_start_replaces_a_finished_row_under_the_same_id(db):
     jid = _start(db)
     db.finish(job_id=jid, state="done", result={"text": "1"}, ttl_s=_TTL)
-    _start(db, job_id=jid, request_id="req2")
+    # The owner's own re-use: start() reports the row written.
+    args = dict(job_id=jid, request_id="req2", kind="transcribe",
+                user_id="u1", key_id="k1", model="large-v3",
+                source_kind="file", source_name="meeting.m4a",
+                ttl_s=_TTL, max_rows=100, max_bytes=0, prune_every=0)
+    assert db.start(**args) is True
     row = db.get(jid)
     assert row["state"] == "running" and row["request_id"] == "req2"
     assert db.get_result(jid) is None
+
+
+def test_start_refuses_a_foreign_row(db):
+    # The job id is client-chosen: bob posting with alice's id must not
+    # destroy her stored result or take the id over.
+    jid = _start(db, user_id="alice", key_id="ka")
+    db.finish(job_id=jid, state="done", result={"text": "alice"}, ttl_s=_TTL)
+    args = dict(job_id=jid, request_id="req-bob", kind="transcribe",
+                user_id="bob", key_id="kb", model="large-v3",
+                source_kind="file", source_name="x.m4a",
+                ttl_s=_TTL, max_rows=100, max_bytes=0, prune_every=0)
+    assert db.start(**args) is False
+    row = db.get(jid)
+    assert row["user_id"] == "alice" and row["state"] == "done"
+    assert row["request_id"] == "req"
+    assert db.get_result(jid) == {"text": "alice"}
+    # An open-mode caller does not own it either.
+    assert db.start(**dict(args, user_id=None, key_id=None)) is False
+    # An EXPIRED foreign row no longer blocks the id.
+    db.finish(job_id=jid, state="done", result={"text": "alice"}, ttl_s=0.0)
+    time.sleep(0.01)
+    assert db.start(**args) is True
+    assert db.get(jid)["user_id"] == "bob" and db.get_result(jid) is None
+
+
+def test_init_db_twice_closes_the_previous_connection(tmp_path):
+    js._reset_for_tests()
+    path = str(tmp_path / "jobs.sqlite3")
+    js.init_db(path)
+    first = js._conn
+    js.init_db(path)
+    assert js._conn is not first
+    with pytest.raises(sqlite3.ProgrammingError):
+        first.execute("SELECT 1")  # closed, not leaked
+    js._reset_for_tests()
+
+
+def test_list_jobs_skips_the_side_blobs(db):
+    jid = _start(db)
+    db.finish(job_id=jid, state="done", result={"text": "x"},
+              stages=[{"name": "transcribing"}], plan=[{"stage": "t"}],
+              ttl_s=_TTL)
+    assert db.get(jid)["stages"] == [{"name": "transcribing"}]
+    (row,) = db.list_jobs(user_id="u1", key_id="k1")
+    assert row["stages"] is None and row["plan"] is None
+    assert row["result_available"] is True
 
 
 def test_ownership_user_key_and_open_mode(db):
@@ -165,6 +216,22 @@ def test_prune_ttl_rows_and_bytes(db):
     assert db.get("2" * 32) is None and db.get("3" * 32) is not None
 
 
+def test_byte_cap_never_eats_rows_that_hold_no_bytes(db):
+    # Two old failures in front of the byte-carrying rows: deleting them
+    # frees nothing, so the byte cap must walk past them.
+    for i, st in enumerate(("failed", "cancelled")):
+        db.finish(job_id=_start(db, job_id=str(i) * 32), state=st, ttl_s=_TTL)
+        time.sleep(0.01)
+    for i in (2, 3):
+        db.finish(job_id=_start(db, job_id=str(i) * 32), state="done",
+                  result={"t": "x" * 100}, ttl_s=_TTL)
+        time.sleep(0.01)
+    total = db.total_result_bytes()
+    assert db.prune(ttl_s=_TTL, max_rows=0, max_bytes=total - 1) == 1
+    assert db.get("0" * 32) is not None and db.get("1" * 32) is not None
+    assert db.get("2" * 32) is None and db.get("3" * 32) is not None
+
+
 def test_lazy_prune_runs_every_nth_insert(db):
     _start(db, job_id="e" * 32, ttl_s=0.0, prune_every=3)  # counter 1
     time.sleep(0.01)
@@ -182,6 +249,15 @@ def test_mark_running_as_failed_flips_only_running_rows(db):
     assert db.get(a)["state"] == "failed"
     assert db.get(a)["error"] == "server restarted"
     assert db.get(b)["state"] == "done"
+
+
+def test_mark_running_as_failed_is_skipped_with_several_workers(db, monkeypatch):
+    # The DB is shared: a respawned worker must not fail its siblings' runs.
+    from faster_whisper_backend import config as cfg
+    monkeypatch.setattr(cfg, "SERVER_WORKERS", 4, raising=False)
+    a = _start(db, job_id="a" * 32)
+    assert db.mark_running_as_failed("server restarted") == 0
+    assert db.get(a)["state"] == "running"
 
 
 def test_delete_and_clear(db):
@@ -204,3 +280,8 @@ def test_sweep_retention_reads_live_config(db, monkeypatch):
     db.finish(job_id="a" * 32, state="done", result={"t": 1}, ttl_s=0.0)
     time.sleep(0.01)
     assert db.sweep_retention() == 1
+    # A lowered TTL applies to every row stamped from then on.
+    b = _start(db, job_id="b" * 32)
+    db.finish(job_id=b, state="done", result={"t": 1},
+              ttl_s=float(cfg.JOBS_TTL_S))
+    assert db.get(b)["expires_ts"] <= time.time() + 1.5

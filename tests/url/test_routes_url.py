@@ -451,12 +451,25 @@ def test_keep_video_response_carries_video_id_when_the_task_finishes(
     # response either carries the id or says pending — never an error.
     if vid is None:
         assert body.get("source_video_pending") is True
-        # ...and the entry then reports it done.
-        return
+        # ...and the task then retains it: wait for the registry row instead
+        # of returning early, so the assertions below run on every schedule.
+        import time as _time
+        for _ in range(300):
+            ids = [m for m, e in url_media_store._REG.items()
+                   if e.get("kind") == "video"]
+            if ids:
+                break
+            _time.sleep(0.01)
+        assert len(ids) == 1, "the pending video task never retained its file"
+        vid = ids[0]
+        entry = url_media_store._REG[vid]
+        assert entry["ext"] == "mp4"
+        assert entry["size"] == len(b"video-bytes" * 8)
+    else:
+        assert body["source_video_height"] == 720
+        assert body["source_video_container"] == "mp4"
+        assert body["source_video_bytes"] == len(b"video-bytes" * 8)
     assert len(vid) == 32 and vid != body["source_media_id"]
-    assert body["source_video_height"] == 720
-    assert body["source_video_container"] == "mp4"
-    assert body["source_video_bytes"] == len(b"video-bytes" * 8)
     assert video_enabled._video_calls[0] == {
         "max_height": 720, "container": "mp4", "expected_total": 3000,
         "format_ids": None, "leg_estimates": None}

@@ -595,6 +595,9 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # of 50 inside it. A fresh store per test gets a fresh counter.
     from faster_whisper_backend.stats import recent_transcriptions_store as _rts
     _rts._insert_counter = 0
+    # Same for the jobs store's lazy-prune counter (every 20th insert).
+    from faster_whisper_backend.core import jobs_store as _jbs
+    _jbs._insert_counter = 0
 
     yield main
 

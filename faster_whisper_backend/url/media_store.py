@@ -51,6 +51,15 @@ KINDS = ("audio", "video")
 # on the same filesystem, not a multi-GB copy across TMPDIR → data dir).
 _STAGING_NAME = "staging"
 _STAGING_PREFIX = "vid-"
+# Raw-body upload spools (main.upload_media): `upload-<hex>.<ext>.part` while
+# the body streams in, `upload-<hex>.<ext>` between the rename and register().
+_UPLOAD_PREFIX = "upload-"
+# How long an upload spool may sit untouched before the reaper calls it
+# dead. The .part file is the LIVE destination of an in-flight request and
+# its mtime only advances when a chunk lands, so this is an idle bound, not a
+# duration bound: a stalled-but-alive client (paused upload, flaky mobile
+# link) must never lose its file to the 60 s janitor tick.
+_UPLOAD_IDLE_MAX_SEC = 3600.0
 
 
 def _dir() -> str:
@@ -121,7 +130,7 @@ def register(src_path: str, *, user_id: "str | None", kind: str = "audio",
         "path": dest, "ext": ext, "kind": kind, "user_id": user_id,
         "created": time.monotonic(), "size": size,
     }
-    _evict_over_cap(protect={media_id, *(protect or ())})
+    _evict_over_cap(protect=protect, newest=media_id)
     # A file that alone busts the byte cap is dropped straight away — the
     # caller must not advertise a media_id that would 404 immediately.
     return media_id if media_id in _REG else None
@@ -241,7 +250,7 @@ def sweep() -> None:
     try:
         names = os.listdir(d)
     except OSError:
-        return
+        names = []   # staging may still be listable — keep going
     wall = time.time()
     for name in names:
         stem, _dot, _ext = name.partition(".")
@@ -260,7 +269,8 @@ def sweep() -> None:
 def _reap_stale_staging(wall: float) -> None:
     """A video download whose task died without its finally leaves a
     `staging/vid-*` dir behind; anything older than the video wall clock
-    (plus a margin) can only be that."""
+    (plus a margin) can only be that. Upload spools (`upload-*`, with or
+    without `.part`) go once idle past _UPLOAD_IDLE_MAX_SEC."""
     d = os.path.join(_dir(), _STAGING_NAME)
     try:
         names = os.listdir(d)
@@ -269,11 +279,12 @@ def _reap_stale_staging(wall: float) -> None:
     max_age = float(getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600)) + 600.0
     for name in names:
         path = os.path.join(d, name)
-        if name.startswith("upload-") and name.endswith(".part"):
-            # A raw-body upload whose request died mid-stream.
+        if name.startswith(_UPLOAD_PREFIX):
+            # A raw-body upload whose request died mid-stream (`.part`), or
+            # between its rename to the final name and register().
             try:
                 if (not os.path.islink(path) and os.path.isfile(path)
-                        and wall - os.path.getmtime(path) >= _ORPHAN_MIN_AGE_SEC):
+                        and wall - os.path.getmtime(path) >= _UPLOAD_IDLE_MAX_SEC):
                     os.unlink(path)
             except OSError:
                 pass
@@ -290,21 +301,25 @@ def _reap_stale_staging(wall: float) -> None:
         shutil.rmtree(path, ignore_errors=True)
 
 
-def _evict_over_cap(protect: "str | set[str] | None" = None) -> None:
+def _evict_over_cap(protect: "str | set[str] | tuple[str, ...] | None" = None,
+                    *, newest: "str | None" = None) -> None:
     """FIFO eviction down to the byte cap. `protect` — one id or a set —
-    survives eviction, EXCEPT when the newest protected file alone busts
-    the cap: then it is dropped rather than wiping every older file to no
-    avail (register() reads it back as None)."""
+    and `newest` (the file register() just placed) survive eviction, EXCEPT
+    when `newest` alone busts the cap: then it is dropped rather than wiping
+    every older file to no avail (register() reads it back as None). Only
+    `newest` is eligible for that drop — a protected id was already
+    advertised to a client."""
     cap = int(getattr(cfg, "RETAINED_MEDIA_MAX_BYTES", 50_000_000_000) or 0)
     if cap <= 0:
         return
     keep: "set[str]" = ({protect} if isinstance(protect, str)
                         else set(protect or ()))
-    for mid in list(keep):
-        entry = _REG.get(mid)
+    if newest is not None:
+        entry = _REG.get(newest)
         if entry is not None and entry["size"] > cap:
-            _drop(mid)
-            keep.discard(mid)
+            _drop(newest)
+        else:
+            keep.add(newest)
     # Snapshot: register() runs on worker threads and the janitor on the
     # loop thread, so a concurrent insert must not trip "dict changed size
     # during iteration" here.

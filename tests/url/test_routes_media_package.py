@@ -324,7 +324,7 @@ def test_sweep_reaps_stale_upload_parts(package_enabled):
     part = os.path.join(ums.staging_dir(), "upload-deadbeef.mp4.part")
     with open(part, "wb") as f:
         f.write(b"x")
-    stale = time.time() - 600
+    stale = time.time() - (ums._UPLOAD_IDLE_MAX_SEC + 100)
     os.utime(part, (stale, stale))
     ums.sweep()
     assert not os.path.exists(part)

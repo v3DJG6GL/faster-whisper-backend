@@ -22,7 +22,8 @@ Lifecycle per run:
   3. `mark_running_as_failed("server restarted")` at lifespan start: a row
      still `running` when the process boots was interrupted (the work died
      with the process), so it must not read as in-flight forever.
-  4. `prune(...)` lazily every Nth insert AND hourly (main._jobs_retention_loop):
+  4. `prune(...)` lazily every Nth insert (a store-level fallback for a
+     caller without a sweep task) AND hourly (main._jobs_retention_loop):
      expired rows first, then the row cap (newest kept, running never
      evicted), then the byte cap (oldest finished results dropped until the
      stored result bytes fit).
@@ -109,12 +110,23 @@ _META_COLS = (
     "finished_ts, expires_ts, model, source_kind, source_name, task, "
     "response_format, error, result_bytes, stages_json, plan_json"
 )
+# The list route never emits the side blobs — don't decode two JSON columns
+# per row on every poll (get() keeps them).
+_LIST_COLS = _META_COLS.replace(", stages_json, plan_json", "")
 
 
 def init_db(path: str) -> None:
     """Open (or create) the DB at `path` in WAL mode. Idempotent — call once
     on service startup before any other function in this module."""
     global _conn
+    if _conn is not None:
+        # A second call re-opens; don't leak the previous connection (and
+        # its WAL file handles).
+        try:
+            _conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _conn = None
     _conn = store_common.open_wal_db(path)
     _conn.execute("PRAGMA temp_store=MEMORY;")
     _conn.executescript(_SCHEMA)
@@ -212,14 +224,27 @@ def start(
     max_rows: int,
     max_bytes: int,
     prune_every: int = 20,
-) -> None:
+) -> bool:
     """Insert the `running` row for a run that just seeded its progress
-    entry. INSERT OR REPLACE: a finished row under a re-used id is
-    superseded (an id still in flight never reaches here — the handler
-    demotes duplicates to "no progress" before seeding)."""
+    entry. INSERT OR REPLACE: the caller's OWN finished row under a re-used
+    id is superseded (an id still in flight never reaches here — the handler
+    demotes duplicates to "no progress" before seeding). The id is
+    client-chosen, so a live row that belongs to SOMEONE ELSE is never
+    replaced: returns False and writes nothing (the run goes on without a
+    job row). True when the row was written."""
     conn = _require_conn()
     now = time.time()
     with _lock:
+        prev = conn.execute(
+            "SELECT user_id, key_id, expires_ts FROM jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone()
+        if (prev is not None and float(prev["expires_ts"] or 0) >= now
+                and not is_owner(dict(prev), user_id=user_id or None,
+                                 key_id=key_id or None)):
+            logger.warning("[jobs] refused to replace a foreign row (id %s…)",
+                           str(job_id)[:8])
+            return False
         conn.execute(
             "INSERT OR REPLACE INTO jobs (job_id, request_id, kind, user_id, "
             "key_id, state, created_ts, finished_ts, expires_ts, model, "
@@ -241,6 +266,7 @@ def start(
         )
         _lazy_prune_if_due(prune_every, ttl_s=ttl_s, max_rows=max_rows,
                            max_bytes=max_bytes)
+    return True
 
 
 def finish(
@@ -312,10 +338,13 @@ def get_result(job_id: str) -> Any:
 
 def _owner_clause(user_id: str | None, key_id: str | None,
                   all_users: bool) -> tuple[str, list[Any]]:
-    """Ownership predicate mirroring main._progress_entry_for: a row belongs
+    """Ownership predicate modelled on main._progress_entry_for: a row belongs
     to the caller when its user_id matches, or — for a key without a user —
     when its key_id matches. A row with neither (open mode, no keys yet)
-    belongs to callers with neither. `all_users` (admin) lifts the filter."""
+    belongs to callers with neither — deliberately STRICTER than the live
+    progress entry, which serves an owner-less entry to any authenticated
+    caller: a durable row carries the transcript for days.
+    `all_users` (admin) lifts the filter."""
     if all_users:
         return "1=1", []
     if not user_id and not key_id:
@@ -355,7 +384,7 @@ def list_jobs(
         params.append(state)
     params.append(max(1, int(limit)))
     rows = conn.execute(
-        f"SELECT {_META_COLS} FROM jobs WHERE " + " AND ".join(clauses)
+        f"SELECT {_LIST_COLS} FROM jobs WHERE " + " AND ".join(clauses)
         + " ORDER BY created_ts DESC LIMIT ?",
         params,
     ).fetchall()
@@ -371,7 +400,18 @@ def delete(job_id: str) -> bool:
 
 def mark_running_as_failed(error: str) -> int:
     """Startup: every row still `running` was interrupted by the previous
-    process's death. Returns the count flipped to `failed`."""
+    process's death. Returns the count flipped to `failed`. Only sound with
+    ONE worker (the supported setup): the DB is shared, so with
+    SERVER_WORKERS > 1 a respawned worker would fail its siblings' live
+    runs — skipped then; prune()'s expiry pass collects the dead rows."""
+    from faster_whisper_backend import config as cfg
+    try:
+        workers = int(getattr(cfg, "SERVER_WORKERS", 1) or 1)
+    except (TypeError, ValueError):
+        workers = 1
+    if workers > 1:
+        logger.info("[jobs] interrupted-run flip skipped (multi-worker)")
+        return 0
     conn = _require_conn()
     now = time.time()
     with _lock:
@@ -397,9 +437,10 @@ def total_result_bytes() -> int:
 
 
 def prune(*, ttl_s: float, max_rows: int, max_bytes: int) -> int:
-    """Three passes, each a single DELETE: expired rows (finished OR running
-    past `ttl_s` — a run that outlives its own TTL is not a run any more);
-    rows beyond `max_rows` newest, never a running one; then oldest finished
+    """Three passes: expired rows (finished OR running past the `expires_ts`
+    stamped by start()/finish() — a run that outlives its own TTL is not a
+    run any more; `ttl_s` is NOT read here, it is kept for the callers'
+    signature); rows beyond `max_rows` newest, never a running one; then oldest finished
     rows until the stored result bytes fit `max_bytes`. 0 disables the row
     and byte caps. Returns the total deleted."""
     conn = _require_conn()
@@ -418,28 +459,32 @@ def prune(*, ttl_s: float, max_rows: int, max_bytes: int) -> int:
         if max_bytes > 0:
             total = total_result_bytes()
             if total > max_bytes:
-                # Walk finished rows oldest-first, accumulating until the
-                # remainder fits; delete that prefix in one statement.
+                # Walk finished rows that HOLD bytes oldest-first (a failed
+                # / cancelled row frees nothing), accumulating until the
+                # remainder fits; delete them in bounded IN-lists.
                 victims: list[str] = []
                 for r in conn.execute(
                     "SELECT job_id, result_bytes FROM jobs WHERE "
-                    "state != 'running' ORDER BY created_ts ASC"
+                    "state != 'running' AND result_bytes > 0 "
+                    "ORDER BY created_ts ASC"
                 ):
                     if total <= max_bytes:
                         break
                     victims.append(r["job_id"])
                     total -= int(r["result_bytes"] or 0)
-                if victims:
-                    marks = ",".join("?" * len(victims))
+                for i in range(0, len(victims), 500):
+                    chunk = victims[i:i + 500]
+                    marks = ",".join("?" * len(chunk))
                     cur = conn.execute(
-                        f"DELETE FROM jobs WHERE job_id IN ({marks})", victims)
+                        f"DELETE FROM jobs WHERE job_id IN ({marks})", chunk)
                     deleted += cur.rowcount or 0
     return deleted
 
 
 def sweep_retention() -> int:
     """Hourly sweep entry point (main._jobs_retention_loop): reads the live
-    config each call so a lowered knob applies on the next tick."""
+    config each call, so a lowered row/byte cap applies on the next tick and
+    a lowered TTL to every row stamped (start/finish) from then on."""
     from faster_whisper_backend import config as cfg
     n = prune(
         ttl_s=float(getattr(cfg, "JOBS_TTL_S", 259_200)),

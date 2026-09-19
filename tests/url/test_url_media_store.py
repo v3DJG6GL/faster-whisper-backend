@@ -256,3 +256,64 @@ def test_startup_reset_wipes_staging(tmp_path):
     job = ums.new_staging_job()
     ums.startup_reset()
     assert not os.path.exists(job)
+
+
+def test_stalled_upload_part_survives_the_sweep_until_the_idle_bound():
+    # The .part file is the LIVE spool of an in-flight upload; its mtime only
+    # moves when a chunk lands, so a client stalled for minutes must keep it.
+    part = os.path.join(ums.staging_dir(), "upload-deadbeef.mp4.part")
+    with open(part, "wb") as f:
+        f.write(b"x")
+    stalled = time.time() - 600
+    os.utime(part, (stalled, stalled))
+    ums.sweep()
+    assert os.path.exists(part)
+    dead = time.time() - (ums._UPLOAD_IDLE_MAX_SEC + 100)
+    os.utime(part, (dead, dead))
+    ums.sweep()
+    assert not os.path.exists(part)
+
+
+def test_sweep_reaps_a_renamed_but_unregistered_upload():
+    # The route renames the spool to its final name BEFORE register(); a
+    # request that died in between leaves `upload-<hex>.<ext>` behind.
+    fresh = os.path.join(ums.staging_dir(), "upload-cafebabe.mp4")
+    old = os.path.join(ums.staging_dir(), "upload-deadbeef.mp4")
+    for p in (fresh, old):
+        with open(p, "wb") as f:
+            f.write(b"x")
+    dead = time.time() - (ums._UPLOAD_IDLE_MAX_SEC + 100)
+    os.utime(old, (dead, dead))
+    ums.sweep()
+    assert os.path.exists(fresh) and not os.path.exists(old)
+
+
+def test_staging_is_reaped_even_when_the_retention_dir_cannot_be_listed(monkeypatch):
+    old = ums.new_staging_job()
+    monkeypatch.setattr(ums.cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 10, raising=False)
+    stale = time.time() - 700
+    os.utime(old, (stale, stale))
+    real_listdir = os.listdir
+
+    def _listdir(path):
+        if os.path.abspath(path) == os.path.abspath(ums._dir()):
+            raise PermissionError("denied")
+        return real_listdir(path)
+    monkeypatch.setattr(ums.os, "listdir", _listdir)
+    ums.sweep()
+    assert not os.path.isdir(old)
+
+
+def test_oversized_protected_id_is_never_dropped_by_a_later_register(tmp_path, monkeypatch):
+    # The cap is lowered (live config) below a file already advertised to a
+    # client: registering the run's video must not delete that audio.
+    audio = ums.register(_make_src(tmp_path, "a.m4a", size=400), user_id=None)
+    monkeypatch.setattr(ums.cfg, "RETAINED_MEDIA_MAX_BYTES", 300, raising=False)
+    video = ums.register(_make_src(tmp_path, "v.mkv", size=100), user_id=None,
+                         kind="video", protect={audio})
+    assert ums.resolve(audio, user_id=None) is not None
+    assert video and ums.resolve(video, user_id=None) is not None
+    # ...while a NEW file that alone busts the cap is still refused.
+    assert ums.register(_make_src(tmp_path, "big.mkv", size=500), user_id=None,
+                        kind="video", protect={audio}) is None
+    assert ums.resolve(audio, user_id=None) is not None

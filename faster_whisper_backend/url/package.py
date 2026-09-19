@@ -58,6 +58,13 @@ class MediaStreams:
     duration: "float | None"
     mp4_ok: bool
     mp4_reason: "str | None"
+    # Why `video_codec` is None, so the route can answer with the right
+    # error instead of one "no video stream" for all three cases.
+    unreadable: bool = False        # the container could not be opened
+    cover_art_only: bool = False    # the only "video" is embedded artwork
+    # Position of the picture among the file's VIDEO streams (`0:v:N`) —
+    # non-zero when cover art sits in front of the real video.
+    video_index: int = 0
 
     def as_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -142,6 +149,32 @@ def mp4_compatibility(video_codec: "str | None",
     return True, None
 
 
+UNREADABLE_REASON = "the file could not be read"
+
+_AV_DISPOSITION_ATTACHED_PIC = 0x0400
+_COVER_ART_CODECS = ("mjpeg", "png", "bmp", "gif")
+
+
+def unreadable_streams() -> MediaStreams:
+    """The facts for a file the probe could not open — what the route caches
+    when probe_streams() raises, flagged so it never reads as "no video"."""
+    return MediaStreams(None, None, None, None, None, False, UNREADABLE_REASON,
+                        unreadable=True)
+
+
+def _is_cover_art(stream) -> bool:
+    """ffmpeg's attached-picture disposition (a real MJPEG video — a camera
+    .avi/.mov — is NOT cover art); the codec name is only the fallback for a
+    PyAV build that does not expose the disposition."""
+    disp = getattr(stream, "disposition", None)
+    if disp is not None:
+        try:
+            return bool(int(disp) & _AV_DISPOSITION_ATTACHED_PIC)
+        except (TypeError, ValueError):
+            pass
+    return (stream.codec_context.name or "") in _COVER_ART_CODECS
+
+
 def probe_streams(path: str) -> MediaStreams:
     """Codec facts via PyAV (the lean image has no ffprobe). `-protocol_whitelist
     file` here too: the file came from a client upload or a site download."""
@@ -149,19 +182,28 @@ def probe_streams(path: str) -> MediaStreams:
 
     with av.open(path, options={"protocol_whitelist": "file"}) as c:
         videos = [s for s in c.streams if s.type == "video"]
-        # A cover-art stream (MJPEG/PNG in an m4a) is not the picture.
-        real = [s for s in videos
-                if (s.codec_context.name or "") not in ("mjpeg", "png", "bmp", "gif")]
-        v = (real or videos or [None])[0]
-        a = next((s for s in c.streams if s.type == "audio"), None)
+        # A cover-art stream (MJPEG/PNG in an m4a) is not the picture — a
+        # file with nothing else has NO video (never fall back to it).
+        real = [s for s in videos if not _is_cover_art(s)]
+        v = real[0] if real else None
+        # Every audio stream is muxed (`-map 0:a?`), so every one counts
+        # for the MP4 verdict; the first is the one reported.
+        acs = [(s.codec_context.name or "") for s in c.streams if s.type == "audio"]
         vc = (v.codec_context.name if v is not None else None)
-        ac = (a.codec_context.name if a is not None else None)
+        ac = (acs[0] or None) if acs else None
         width = int(v.codec_context.width) if v is not None and v.codec_context.width else None
         height = int(v.codec_context.height) if v is not None and v.codec_context.height else None
         duration = (float(c.duration) / 1_000_000.0) if c.duration else None
+        video_index = videos.index(v) if v is not None else 0
+        cover_only = bool(videos) and v is None
     ok, reason = mp4_compatibility(vc, ac)
+    for name in acs[1:]:
+        if not ok:
+            break
+        ok, reason = mp4_compatibility(vc, name)   # first offender wins
     return MediaStreams(video_codec=vc, audio_codec=ac, width=width, height=height,
-                        duration=duration, mp4_ok=ok, mp4_reason=reason)
+                        duration=duration, mp4_ok=ok, mp4_reason=reason,
+                        cover_art_only=cover_only, video_index=video_index)
 
 
 def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleTrack]",
@@ -169,10 +211,12 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
                        default_track: "int | None",
                        original_track: "int | None" = None,
                        audio_lang: "str | None" = None,
-                       audio_label: "str | None" = None) -> "list[str]":
+                       audio_label: "str | None" = None,
+                       video_index: int = 0) -> "list[str]":
     """The exact ffmpeg invocation (separate so tests can pin and swap it).
-    `-map 0:v:0` takes the FIRST video stream only — a cover-art stream in an
-    m4a must never become the picture; `-map 0:a?` keeps every audio track.
+    `-map 0:v:N` takes ONE video stream only — `video_index` is
+    MediaStreams.video_index, so a cover-art stream in front of the real
+    video never becomes the picture; `-map 0:a?` keeps every audio track.
     `original_track` gets the Matroska original-language flag (ffmpeg's
     `original` disposition, FlagOriginal since 4.4; MP4 has no such flag and
     drops it) — the track NAME stays the plain language name. `audio_lang`
@@ -186,7 +230,7 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
             "-protocol_whitelist", "file", "-i", src]
     for p in srt_paths:
         argv += ["-protocol_whitelist", "file", "-f", "srt", "-i", p]
-    argv += ["-map", "0:v:0", "-map", "0:a?"]
+    argv += ["-map", f"0:v:{max(0, int(video_index))}", "-map", "0:a?"]
     for i in range(len(srt_paths)):
         argv += ["-map", f"{i + 1}:0"]
     argv += ["-c:v", "copy", "-c:a", "copy"]
@@ -212,11 +256,24 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
 _SRT_HINT_RE = re.compile(r"sub_(\d+)\.srt")
 
 
+def _write_srts(workdir: str, tracks: "list[SubtitleTrack]") -> "list[str]":
+    """The tracks as `sub_N.srt` under fixed names, line endings normalised.
+    Up to MAX_TRACKS × MAX_SRT_BYTES of rewriting + I/O — run off the loop."""
+    srt_paths: "list[str]" = []
+    for i, t in enumerate(tracks):
+        p = os.path.join(workdir, f"sub_{i}.srt")
+        with open(p, "w", encoding="utf-8", newline="\n") as f:
+            f.write(t.srt.replace("\r\n", "\n").replace("\r", "\n"))
+        srt_paths.append(p)
+    return srt_paths
+
+
 async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                   default_track: "int | None", timeout: float,
                   original_track: "int | None" = None,
                   audio_lang: "str | None" = None,
-                  audio_label: "str | None" = None) -> str:
+                  audio_label: "str | None" = None,
+                  video_index: int = 0) -> str:
     """Mux `tracks` into `src` as soft subtitles; returns the output path
     inside a fresh `pkg-` workdir the CALLER removes after streaming it.
     Every failure removes the workdir here."""
@@ -224,17 +281,16 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
         container = "mkv"
     workdir = tempfile.mkdtemp(prefix="pkg-")
     try:
-        srt_paths: "list[str]" = []
-        for i, t in enumerate(tracks):
-            p = os.path.join(workdir, f"sub_{i}.srt")
-            with open(p, "w", encoding="utf-8", newline="\n") as f:
-                f.write(t.srt.replace("\r\n", "\n").replace("\r", "\n"))
-            srt_paths.append(p)
+        srt_paths = await asyncio.to_thread(_write_srts, workdir, tracks)
         out = os.path.join(workdir, f"out.{container}")
         argv = build_package_argv(src, srt_paths, tracks, container=container,
                                   original_track=original_track,
                                   audio_lang=audio_lang, audio_label=audio_label,
-                                  out_path=out, default_track=default_track)
+                                  out_path=out, default_track=default_track,
+                                  # Only when the picture is not 0:v:0 —
+                                  # swapped-in argv builders keep their shape.
+                                  **({"video_index": video_index}
+                                     if video_index else {}))
         t0 = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *argv, stdin=asyncio.subprocess.DEVNULL,
@@ -252,7 +308,9 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
             logger.warning("[package] ffmpeg exited %s: %s", proc.returncode,
                            log_safe(tail[-300:]))
             m = _SRT_HINT_RE.search(tail)
-            if m or "Invalid data found" in tail:
+            # The bare marker only points at a subtitle when there IS one —
+            # with no tracks it is the source that ffmpeg could not demux.
+            if m or (tracks and "Invalid data found" in tail):
                 n = (int(m.group(1)) + 1) if m else 1
                 raise SubtitleParseError(f"subtitle track {n} could not be parsed")
             raise PackageError("packaging failed")
