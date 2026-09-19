@@ -67,6 +67,15 @@ def test_reports_page(client):
     assert "text/html" in r.headers["content-type"]
 
 
+def test_reports_page_model_filter_keeps_colliding_ids_apart(client):
+    """Forks of one model share a basename: shortening both rendered two
+    identical <option>s. And a grid item needs min-width: 0, or one
+    unbreakable token widens its track past 1fr."""
+    html = client.get("/reports").text
+    assert "var short = baseCount[baseOf(m)] > 1 ? m : baseOf(m);" in html
+    assert "#list > .report-card { margin-bottom: 0; min-width: 0; }" in html
+
+
 def test_reports_list(client):
     client.post(_SUBMIT, json=_payload(request_id="list-1"))
     r = client.get("/reports/api/list")

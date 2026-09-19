@@ -94,3 +94,81 @@ def test_config_rev_never_reaches_config_json(tmp_path):
     out = cs.save_factory_rules([_rule(config_rev="09efe7b7acfad2"), term], str(path))
     assert all("config_rev" not in r for r in out)
     assert "config_rev" not in path.read_text(encoding="utf-8")
+
+
+def test_language_picker_change_never_rebuilds_the_rows(client):
+    """commitFull() -> paintAll() wipes every row, which destroyed the
+    language picker and its open multi-select dropdown on the first pick
+    (and leaked the popover's scroll/resize listeners)."""
+    html = _html(client)
+    body = html[html.index("_renderLanguagePicker({"):]
+    body = body[:body.index("});")]
+    assert "commitData();" in body
+    assert "commitFull();" not in body
+
+
+def test_config_revs_are_stamped_before_the_first_edit(client):
+    """Every commit runs AFTER the rule was mutated, so without a stamp at
+    construction a rule's first edit never gets a config_rev and the
+    'diverged' state (plus its overwrite warning) is unreachable for it."""
+    html = _html(client)
+    tail = html[html.rindex("function _afterPromoteAll("):]
+    assert "  _stampConfigRevs();\n  paintAll();\n  return wrap;" in tail
+
+
+def test_promote_keeps_an_absent_config_json_rule_in_place(client):
+    """A config.json rule missing here (a new es-punctuation in the middle of
+    the list) was re-appended at the END of the payload: a silent pipeline
+    reorder for every other deployment. It is spliced in before the next
+    config.json rule that exists here instead."""
+    html = _html(client)
+    body = html[html.index("function _buildFactoryPayload("):]
+    body = body[:body.index("\n  }\n")]
+    assert "if (!out.some(o => o.name === b.name)) out.push(" not in body
+    assert "let at = out.findIndex(o => after.indexOf(o.name) !== -1);" in body
+    assert "out.splice(at, 0, JSON.parse(JSON.stringify(b)));" in body
+
+
+def test_entry_diff_pairs_duplicate_labels_separately(client):
+    """Entry labels are free text: two entries sharing one collapsed onto a
+    single Map key, so the review dialog hid the earlier one's change."""
+    html = _html(client)
+    assert "const idOf = (e, i) => (e.label ? 'label:' + e.label : 'pos:' + i);" not in html
+    assert "return 'label:' + e.label + (c === 1 ? '' : '#' + c);" in html
+    # A fresh counter per side: the Nth duplicate pairs with the Nth.
+    assert "const oid = mkId(), nid = mkId();" in html
+
+
+def test_single_rule_dialog_with_no_rows_cannot_be_confirmed(client):
+    html = _html(client)
+    assert "const nothing = single && !o.groups[0].rows.length;" in html
+    assert "ok.disabled = sel.length === 0 || nothing;" in html
+    assert "No differences — both sides are already identical." in html
+
+
+def test_down_actions_reread_config_json_first(client):
+    """config.json can move under an open page; reset / update / add acted on
+    the copy captured at page load while every promote re-fetched it."""
+    html = _html(client)
+    for fn in ("_resetOne", "_resetAll", "_addFromConfig"):
+        body = html[html.index(f"async function {fn}("):]
+        assert body.index("await _refreshFactory()") < body.index("_reviewDialog({"), fn
+
+
+def test_sync_dialog_leftovers_are_gone(client):
+    html = _html(client)
+    for dead in ("_changeListEl", "_baselineList", "const selected = ", "allowEmpty",
+                 "⇪ Promote order", "wrap.appendChild(ctrls);\n  wrap.appendChild(ctrls);"):
+        assert dead not in html, dead
+
+
+def test_language_badge_mentions_the_unknown_language_case(client):
+    """main._postprocess_text skips a language-scoped rule only when a
+    language IS known; with none detected the rule runs."""
+    html = _html(client)
+    assert "Only runs when the detected language is" not in html
+    assert "(or when the language is unknown)" in html
+    ov = client.get("/settings/overrides")
+    assert ov.status_code == 200
+    assert "Only runs when the detected language is" not in ov.text
+    assert "(or when the language is unknown)" in ov.text

@@ -1201,9 +1201,13 @@ async def translation_test(
             source_lang=body.source, mode="faithful",
             model_ref=ref or None, glossary=body.glossary or "",
             template_override=template, family_override=fam,
-            progress_cb=lambda f, step=None, last_text=None, **_kw:
+            # target_progress is the only intra-target signal: a one-target
+            # test keeps `f` at 0.0 until the end, so forward it (as main does).
+            progress_cb=lambda f, step=None, last_text=None, target=None,
+                target_progress=None, **_kw:
                 _main._progress_set(_pid, stage="translating",
-                                    progress=f, step=step),
+                                    progress=f, step=step, target=target,
+                                    target_progress=target_progress),
             download_cb=lambda done, total:
                 _main._progress_set(
                     _pid, stage="downloading",
@@ -1214,10 +1218,10 @@ async def translation_test(
         return JSONResponse(status_code=status.HTTP_400_BAD_REQUEST,
                             content={"error": str(e)})
     finally:
-        if _pid:
-            _main._BATCH_PROGRESS.pop(_pid, None)
-            _main._BATCH_CANCELLED.discard(_pid)
-            _main._PROGRESS_OWNER.pop(_pid, None)
+        # The helper also leaves the _PROGRESS_CLOSED tombstone, so a straggling
+        # download_cb tick from the load thread cannot re-create the entry
+        # owner-less.
+        _main._progress_close(_pid)
     ms = int((time.perf_counter() - t0) * 1000)
     # A guard-failed test FALLS BACK to the untranslated source text — the
     # warnings are the only signal, so they MUST reach the admin (otherwise a
@@ -3968,7 +3972,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // affordances and reset buttons stay correct after a promote.
   let factoryRules = JSON.parse(JSON.stringify(
     (fieldDef(name) && fieldDef(name).default_value) || []));
-  function _baselineList() { return factoryRules; }
   function _factoryRule(slug) {
     for (const b of factoryRules) if (b.name === slug) return b;
     return null;
@@ -4305,7 +4308,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
           langBadge.className = 'lang-badge';
           langBadge.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg> '
             + (rLangs.length <= 3 ? rLangs.join(' · ') : rLangs.length + ' langs');
-          langBadge.title = 'Only runs when the detected language is: ' + rLangs.join(', ')
+          langBadge.title = 'Runs only when the detected language is one of: ' + rLangs.join(', ')
+            + ' (or when the language is unknown)'
             + '. Force-enabling it for this model does not override that.';
           head.appendChild(langBadge);
         }
@@ -4596,7 +4600,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       movedBadge.className = 'rule-moved-badge';
       movedBadge.textContent = '⇅ moved';
       movedBadge.title = 'Same content as config.json, but in a different '
-        + 'position — use "⇪ Promote order" to update config.json.';
+        + 'position — use "↑ Promote order" to update config.json.';
       movedBadge.style.display = _ruleMoved(rule) ? '' : 'none';
       headLine1.appendChild(movedBadge);
     }
@@ -4751,7 +4755,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         groups: LANG_GROUPS,
         onChange: (newLangs) => {
           rule.languages = newLangs;
-          commitFull();
+          // commitData, not commitFull: a full repaint destroys this picker
+          // and its open multi-select dropdown on the first pick.
+          commitData();
         },
       });
       headLineLang.appendChild(_langPicker.el);
@@ -5041,9 +5047,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   addBtn.addEventListener('click', () => _openAddCustomDialog());
   ctrls.appendChild(addBtn);
 
-  // ⇪ Promote all — write every local change (edited + new rules) into the
-  // committed config.json. refreshControlsVisibility shows it only when
-  // something differs from config.json.
   // Sync actions. "↓" (green) brings config.json to this server, "↑" (cyan)
   // writes this server's rules into config.json; every one of them opens the
   // review dialog before anything changes. Labels + counts are painted by
@@ -5131,7 +5134,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     syncNotice.appendChild(txt); syncNotice.appendChild(btn);
   }
 
-  wrap.appendChild(ctrls);
   wrap.appendChild(ctrls);
 
   function _openAddCustomDialog() {
@@ -5318,10 +5320,20 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if ((isList(o) || o === undefined) && (isList(n) || n === undefined) && (isList(o) || isList(n))
           && ((o || []).length || (n || []).length)) {
         o = o || []; n = n || [];
-        // Pair entries by label, else by position.
-        const idOf = (e, i) => (e.label ? 'label:' + e.label : 'pos:' + i);
-        const om = new Map(o.map((e, i) => [idOf(e, i), [e, i]]));
-        const nm = new Map(n.map((e, i) => [idOf(e, i), [e, i]]));
+        // Pair entries by label, else by position. Labels are free text: a
+        // repeated one gets a "#n" suffix (fresh counter per side, so the Nth
+        // duplicate pairs with the Nth) instead of collapsing onto one key.
+        const mkId = () => {
+          const seen = Object.create(null);
+          return (e, i) => {
+            if (!e.label) return 'pos:' + i;
+            const c = (seen[e.label] = (seen[e.label] || 0) + 1);
+            return 'label:' + e.label + (c === 1 ? '' : '#' + c);
+          };
+        };
+        const oid = mkId(), nid = mkId();
+        const om = new Map(o.map((e, i) => [oid(e, i), [e, i]]));
+        const nm = new Map(n.map((e, i) => [nid(e, i), [e, i]]));
         const ids = Array.from(new Set(Array.from(om.keys()).concat(Array.from(nm.keys()))));
         ids.forEach(id => {
           const oe = om.get(id), ne = nm.get(id);
@@ -5417,9 +5429,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const chips = document.createElement('div');
     chips.className = 'rv-chips';
     panel.appendChild(chips);
+    const same = document.createElement('div');
+    same.className = 'help';
+    same.textContent = 'No differences — both sides are already identical. Nothing to do.';
+    same.style.display = 'none';
+    panel.appendChild(same);
 
     const picks = [];   // [{id, cb}]
-    const selected = () => o.groups.filter((g, i) => !g.pick || picks[i].cb.checked);
     const single = o.groups.length === 1 && !o.groups[0].pick;
     if (single) {
       panel.appendChild(_rvTable(o.groups[0].rows, o.left, o.right));
@@ -5491,7 +5507,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if (c.changed) chip('changed', '~ ' + c.changed + ' changed');
       if (c.moved) chip('', '↕ ' + c.moved + ' moved');
       ok.textContent = o.confirm(sel.length);
-      ok.disabled = sel.length === 0 && !o.allowEmpty;
+      // A single-rule dialog with no rows: both sides are already identical
+      // (config.json is re-fetched before a promote). Say so instead of
+      // showing an empty table above an enabled confirm button.
+      const nothing = single && !o.groups[0].rows.length;
+      same.style.display = nothing ? '' : 'none';
+      ok.disabled = sel.length === 0 || nothing;
     }
     const _onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
     function close() {
@@ -5523,7 +5544,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (!parts.length) return '';
     return 'You lose ' + parts.join(' and ') + '. After Save this cannot be undone.';
   }
-  function _resetOne(rule) {
+  async function _resetOne(rule) {
+    if (!(await _refreshFactory())) return;
     const base = _factoryRule(rule.name);
     if (!base) return;
     const st = _ruleStatus(rule);
@@ -5549,7 +5571,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       },
     });
   }
-  function _resetAll() {
+  async function _resetAll() {
+    if (!(await _refreshFactory())) return;
     const groups = [];
     rules.forEach(r => {
       const st = _ruleStatus(r);
@@ -5582,7 +5605,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       },
     });
   }
-  function _addFromConfig() {
+  async function _addFromConfig() {
+    if (!(await _refreshFactory())) return;
     const missing = _missingFactoryRules();
     if (!missing.length) return;
     const order = factoryRules.map(b => b.name);
@@ -5618,14 +5642,6 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         _toast('Added ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's') + ' — press Save to apply it on this server.');
       },
     });
-  }
-  function _changeListEl(label, names) {
-    const d = document.createElement('div');
-    d.className = 'promote-change-line';
-    d.textContent = names.length
-      ? names.length + ' ' + label + ': ' + names.join(', ')
-      : '0 ' + label;
-    return d;
   }
   // Shared "pipeline order changed" element for the promote dialogs — lists
   // the moved rules and the resulting order. Positional (pipeline) order,
@@ -5669,9 +5685,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   //                factory-backed names NOT in the set keep their COMMITTED
   //                content at their new position; local-only names not in the
   //                set are skipped (config.json has no home for them).
-  //   keepAbsent : true -> re-append (before terminal) any config.json rule the
-  //                user deleted locally, so order/one-row promotes never
-  //                silently drop a committed rule. Promote-all passes false.
+  //   keepAbsent : true -> re-insert any config.json rule that is absent from
+  //                this server's list, at its config.json-relative position
+  //                (before the next config.json rule present here, else before
+  //                the terminal), so a promote never silently drops OR moves a
+  //                committed rule. Every promote path passes true; promote-all
+  //                filters out the explicitly ticked removals afterwards.
   function _buildFactoryPayload(promoteSet, keepAbsent) {
     const out = [];
     let terminal = null;
@@ -5684,9 +5703,17 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       }                                                             // else local-only & not promoted -> skip
     });
     if (keepAbsent) {
+      // Rule order is functional: an absent rule (e.g. a new es-punctuation
+      // this server's saved list predates) keeps its place, mirroring
+      // _addFromConfig's nextLocal — never appended to the end.
+      const fo = factoryRules.map(b => b.name);
       factoryRules.forEach(b => {
         if (b.type === 'terminal') return;
-        if (!out.some(o => o.name === b.name)) out.push(JSON.parse(JSON.stringify(b)));
+        if (out.some(o => o.name === b.name)) return;
+        const after = fo.slice(fo.indexOf(b.name) + 1);
+        let at = out.findIndex(o => after.indexOf(o.name) !== -1);
+        if (at === -1) at = out.length;
+        out.splice(at, 0, JSON.parse(JSON.stringify(b)));
       });
     }
     // The terminal is immutable in this editor (no label/note/pattern editing),
@@ -5728,6 +5755,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const r = await api('GET', '/settings/factory-rules');
     if (!r.ok) throw new Error('HTTP ' + r.status);
     return (await r.json()).PIPELINE_RULES || [];
+  }
+  // config.json can move under an open page (git pull, another admin's
+  // promote): the down-direction actions re-read it first, like the promotes.
+  async function _refreshFactory() {
+    try { factoryRules = await _fetchFactory(); }
+    catch (e) { alert('Could not load config.json.'); return false; }
+    refreshControlsVisibility();
+    return true;
   }
   async function _promoteOne(rule) {
     if (!rule || rule.type === 'terminal') return;
@@ -5911,6 +5946,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     });
   }
 
+  // Stamp every in-sync rule BEFORE the first edit: a commit runs after the
+  // rule already differs, so without this its first edit never gets a
+  // config_rev and 'diverged' is unreachable for it.
+  _stampConfigRevs();
   paintAll();
   return wrap;
 }

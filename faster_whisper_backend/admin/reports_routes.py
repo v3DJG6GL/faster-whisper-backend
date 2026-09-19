@@ -516,7 +516,7 @@ _REPORTS_HTML = """<!doctype html>
      canvas allows, three under the fluid preference; empty state spans. */
   #list { display: grid; gap: 0.75rem; align-items: start;
     grid-template-columns: repeat(auto-fill, minmax(min(100%, 34rem), 1fr)); }
-  #list > .report-card { margin-bottom: 0; }
+  #list > .report-card { margin-bottom: 0; min-width: 0; }
   #list > .empty-state { grid-column: 1 / -1; }
   .rc-head {
     display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: center;
@@ -614,7 +614,7 @@ _REPORTS_HTML = """<!doctype html>
 
   .rc-comment {
     font-family: var(--font-sans); font-size: var(--fs-md);
-    color: var(--fg); white-space: pre-wrap;
+    color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere;
   }
 
   .rc-notes textarea {
@@ -972,8 +972,12 @@ _REPORTS_HTML = """<!doctype html>
     // German-aware, case-insensitive ordering (model IDs can be mixed-case).
     // Label = last path segment (a <select> is as wide as its longest option,
     // and "org/…" prefixes add nothing); the full id stays in value + title.
+    // Two ids sharing a basename (forks of one model) keep the full id.
+    var baseOf = function(m) { return m.slice(m.lastIndexOf('/') + 1) || m; };
+    var baseCount = Object.create(null);
+    Object.keys(seen).forEach(function(m) { baseCount[baseOf(m)] = (baseCount[baseOf(m)] || 0) + 1; });
     Object.keys(seen).sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare).forEach(function(m) {
-      var short = m.slice(m.lastIndexOf('/') + 1) || m;
+      var short = baseCount[baseOf(m)] > 1 ? m : baseOf(m);
       opts.push('<option value="' + escapeHtml(m) + '" title="' + escapeHtml(m) + '">' + escapeHtml(short) + '</option>');
     });
     sel.innerHTML = opts.join('');
