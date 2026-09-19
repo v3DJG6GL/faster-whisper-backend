@@ -513,8 +513,10 @@ header .hdr-activity.stale .hact-jobs { color: var(--help); }
 header .hdr-activity.stale .hact-ring { animation: none;
   border-color: var(--border); }
 /* Popover: bordered sections (running · server · models) + footer link. */
-.hact-pop { position: absolute; right: 0; top: calc(100% + 0.5rem);
-  z-index: 60; width: 28rem; max-width: calc(100vw - 2rem);
+/* Placed by window._anchorPopover: end-aligned under the button, flipped to
+   start-align before it may leave the header canvas, clamped to the viewport. */
+.hact-pop { inset: auto; margin: 0; color: var(--fg);
+  z-index: 60; width: 28rem; max-width: min(calc(100vw - 2rem), var(--col-data));
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 8px; box-shadow: 0 12px 32px rgba(0,0,0,0.5);
   font-size: var(--fs-sm); color: var(--fg); text-align: left; }
@@ -740,8 +742,12 @@ header .width-toggle[aria-pressed="true"] { color: var(--cyan); border-color: va
 .picker > button .n { color: var(--cyan); font: var(--fs-xs) var(--font-mono); }
 .picker > button[aria-expanded="true"] { border-color: var(--cyan); }
 .picker > button:focus-visible { outline: 2px solid var(--cyan); outline-offset: 1px; }
-.pick-pop { position: absolute; top: calc(100% + 0.3rem); left: 0; z-index: 30; width: 22rem;
-  max-width: 90vw; background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
+/* Placed by window._anchorPopover (position:fixed, flipped at the toolbar
+   edge, clamped to the viewport); the [popover] UA box (inset/margin/colour)
+   is neutralised here so the layer looks the same on every path. Never
+   wider than the page canvas it has to fit in. */
+.pick-pop { z-index: 30; width: 22rem; max-width: min(90vw, var(--col)); inset: auto; margin: 0;
+  color: var(--fg); background: var(--panel); border: 1px solid var(--border); border-radius: 6px;
   padding: 0.5rem; box-shadow: 0 8px 24px rgba(0,0,0,.5); font-size: var(--fs-sm); text-align: left; }
 .pick-pop[hidden] { display: none; }
 .pick-pop input[type=search] { width: 100%; box-sizing: border-box; background: var(--bg); color: var(--fg);
@@ -1580,6 +1586,110 @@ NAV_OVERFLOW_JS = """
 # WebUI page. Fetches /auth/whoami; if open_mode=true, prepends a red
 # banner reminding the operator to bootstrap an admin key. Auth rides the
 # HttpOnly session cookie, sent automatically (no manual header).
+POPOVER_JS = r"""
+<script>(function(){
+  // ---- Shared floating-layer positioner: window._anchorPopover ---------
+  // One placement ladder for every dropdown a toolbar or header opens
+  // (pick-lists, the header activity popover, tag / language suggest
+  // lists, the pipeline colour palette):
+  //   1. start-align below the anchor (or end-align when opts.align is
+  //      'end' / 'right');
+  //   2. if that crosses opts.boundary (an element or a function returning
+  //      one — the page canvas: .subbar, .header-inner, a card) flip to the
+  //      anchor's other edge (flip-inline);
+  //   3. shift into the viewport with an 8px margin (a canvas narrower than
+  //      the layer on a phone);
+  //   4. flip above the anchor when there is no room below.
+  // The native Popover API promotes the element into the top layer so no
+  // ancestor overflow/clip/z-index can cut it; without it the node is
+  // portaled onto <body> with position:fixed. Re-placed on scroll + resize
+  // while open.
+  var _POPOVER_OK = typeof HTMLElement !== 'undefined'
+    && typeof HTMLElement.prototype.showPopover === 'function';
+
+  function _anchorPopover(popEl, anchorEl, opts) {
+    opts = opts || {};
+    var align = (opts.align === 'right' || opts.align === 'end') ? 'end' : 'start';
+    var gap = opts.gap == null ? 4 : opts.gap;
+    var pad = opts.padding == null ? 8 : opts.padding;
+    var nativePop = _POPOVER_OK && popEl.hasAttribute('popover');
+    var listening = false;
+
+    function boundaryRect() {
+      var b = typeof opts.boundary === 'function' ? opts.boundary() : opts.boundary;
+      var br = b && b.getBoundingClientRect ? b.getBoundingClientRect() : null;
+      if (!br || br.width <= 0) return null;
+      return br;
+    }
+    function place() {
+      var r = anchorEl.getBoundingClientRect();
+      var pw = popEl.offsetWidth, ph = popEl.offsetHeight;
+      var vw = document.documentElement.clientWidth;
+      var vh = document.documentElement.clientHeight;
+      var br = boundaryRect();
+      var left = align === 'end' ? (r.right - pw) : r.left;
+      if (br) {                                          // 2: flip at the canvas edge
+        if (align === 'start' && left + pw > br.right && r.right - pw >= br.left) left = r.right - pw;
+        if (align === 'end' && left < br.left && r.left + pw <= br.right) left = r.left;
+      }
+      var top = r.bottom + gap;                          // prefer below the anchor
+      if (top + ph > vh && r.top - gap - ph >= 0) top = r.top - gap - ph;  // 4: flip up
+      left = Math.max(pad, Math.min(left, vw - pw - pad));   // 3: shift into the viewport
+      top = Math.max(4, Math.min(top, vh - ph - 4));
+      // Override the UA [popover] defaults (inset:0; margin:auto) with explicit
+      // fixed coords; right/bottom:auto so a leftover inset can't stretch it.
+      popEl.style.position = 'fixed';
+      popEl.style.margin = '0';
+      popEl.style.left = left + 'px';
+      popEl.style.top = top + 'px';
+      popEl.style.right = 'auto';
+      popEl.style.bottom = 'auto';
+    }
+    function startListening() {
+      if (listening) return;
+      listening = true;
+      window.addEventListener('scroll', place, true);    // capture: catch inner scrollers
+      window.addEventListener('resize', place);
+    }
+    function stopListening() {
+      if (!listening) return;
+      listening = false;
+      window.removeEventListener('scroll', place, true);
+      window.removeEventListener('resize', place);
+    }
+    function isOpen() {
+      if (nativePop) { try { return popEl.matches(':popover-open'); } catch (e) { return false; } }
+      return !popEl.hidden && popEl.style.display !== 'none';
+    }
+    function show() {
+      if (!isOpen()) {
+        if (nativePop) { try { popEl.showPopover(); } catch (e) {} }
+        else {
+          if (popEl.parentNode !== document.body) document.body.appendChild(popEl);
+          popEl.hidden = false; popEl.style.display = '';
+        }
+      }
+      place(); startListening();
+    }
+    function hide() {
+      if (nativePop) { try { if (isOpen()) popEl.hidePopover(); } catch (e) {} }
+      else { popEl.hidden = true; popEl.style.display = 'none'; }
+      stopListening();
+    }
+    // Keep listeners in sync when the browser opens/closes the popover for us
+    // (auto popovers via an invoker button, Esc, or outside-click light-dismiss).
+    if (nativePop) {
+      popEl.addEventListener('toggle', function (ev) {
+        if (ev.newState === 'open') { place(); startListening(); }
+        else stopListening();
+      });
+    }
+    return { show: show, hide: hide, place: place, isOpen: isOpen };
+  }
+  window._anchorPopover = _anchorPopover;
+})();</script>
+"""
+
 OPEN_MODE_BANNER_JS = r"""
 <script>(function(){
   // Read the page-key carrier ONCE so any helper (the no-access landing,
@@ -2097,87 +2207,13 @@ TAG_PICKER_JS = r"""
   var TAG_RE = /^[a-z0-9][a-z0-9-]{0,31}$/;
   function _norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 
-  // ---- Shared top-layer popover positioner -----------------------------
-  // Both the tag-suggest list and the pipeline colour palette live inside
-  // cards with `overflow:hidden` (needed to clip the rail gradient to the
-  // rounded corners), which used to clip those dropdowns. The native Popover
-  // API promotes the element into the browser top layer, escaping ALL
-  // ancestor overflow/clip/z-index. We still position it ourselves from the
-  // anchor's viewport rect (CSS anchor-positioning isn't universal yet) and
-  // keep it pinned while open. Feature-detected; falls back to portaling the
-  // node onto <body> with position:fixed so older engines don't clip it either.
+  // The top-layer popover positioner (_anchorPopover) is shared from
+  // POPOVER_JS (every page with a header loads it before this block);
+  // the tag suggest list and the colour palette resolve it lazily.
   var _POPOVER_OK = typeof HTMLElement !== 'undefined'
     && typeof HTMLElement.prototype.showPopover === 'function';
 
   var _SUG_SEQ = 0;        // unique-id sequence for combobox <option> ids
-
-  function _anchorPopover(popEl, anchorEl, opts) {
-    opts = opts || {};
-    var align = opts.align || 'left';        // which edge aligns to the anchor
-    var gap = opts.gap == null ? 4 : opts.gap;
-    var nativePop = _POPOVER_OK && popEl.hasAttribute('popover');
-    var listening = false;
-
-    function place() {
-      var r = anchorEl.getBoundingClientRect();
-      var pw = popEl.offsetWidth, ph = popEl.offsetHeight;
-      var vw = document.documentElement.clientWidth;
-      var vh = document.documentElement.clientHeight;
-      var left = (align === 'right') ? (r.right - pw) : r.left;
-      var top = r.bottom + gap;                          // prefer below the anchor
-      if (top + ph > vh && r.top - gap - ph >= 0) top = r.top - gap - ph;  // flip up
-      left = Math.max(4, Math.min(left, vw - pw - 4));   // clamp into viewport
-      top = Math.max(4, Math.min(top, vh - ph - 4));
-      // Override the UA [popover] defaults (inset:0; margin:auto) with explicit
-      // fixed coords; right/bottom:auto so a leftover inset can't stretch it.
-      popEl.style.position = 'fixed';
-      popEl.style.margin = '0';
-      popEl.style.left = left + 'px';
-      popEl.style.top = top + 'px';
-      popEl.style.right = 'auto';
-      popEl.style.bottom = 'auto';
-    }
-    function startListening() {
-      if (listening) return;
-      listening = true;
-      window.addEventListener('scroll', place, true);    // capture: catch inner scrollers
-      window.addEventListener('resize', place);
-    }
-    function stopListening() {
-      if (!listening) return;
-      listening = false;
-      window.removeEventListener('scroll', place, true);
-      window.removeEventListener('resize', place);
-    }
-    function isOpen() {
-      if (nativePop) { try { return popEl.matches(':popover-open'); } catch (e) { return false; } }
-      return !popEl.hidden && popEl.style.display !== 'none';
-    }
-    function show() {
-      if (!isOpen()) {
-        if (nativePop) { try { popEl.showPopover(); } catch (e) {} }
-        else {
-          if (popEl.parentNode !== document.body) document.body.appendChild(popEl);
-          popEl.hidden = false; popEl.style.display = '';
-        }
-      }
-      place(); startListening();
-    }
-    function hide() {
-      if (nativePop) { try { if (isOpen()) popEl.hidePopover(); } catch (e) {} }
-      else { popEl.hidden = true; popEl.style.display = 'none'; }
-      stopListening();
-    }
-    // Keep listeners in sync when the browser opens/closes the popover for us
-    // (auto popovers via an invoker button, Esc, or outside-click light-dismiss).
-    if (nativePop) {
-      popEl.addEventListener('toggle', function (ev) {
-        if (ev.newState === 'open') { place(); startListening(); }
-        else stopListening();
-      });
-    }
-    return { show: show, hide: hide, place: place, isOpen: isOpen };
-  }
 
   function _renderTagPicker(opts) {
     opts = opts || {};
@@ -2215,7 +2251,7 @@ TAG_PICKER_JS = r"""
     suggest.setAttribute('popover', 'manual');
     if (!_POPOVER_OK) suggest.hidden = true;     // fallback path manages display
     el.appendChild(suggest);
-    var sugPop = _anchorPopover(suggest, pills, { gap: 2 });
+    var sugPop = window._anchorPopover(suggest, pills, { gap: 2 });
 
     // Suggestion-list state for keyboard navigation.
     var matchVals = [];     // string values currently shown
@@ -2392,7 +2428,6 @@ TAG_PICKER_JS = r"""
   }
 
   window._renderTagPicker = _renderTagPicker;
-  window._anchorPopover = _anchorPopover;
 })();</script>
 """
 
@@ -2444,6 +2479,21 @@ PICK_LIST_JS = r"""
     var pop = document.createElement('div');
     pop.className = 'pick-pop'; pop.setAttribute('role', 'dialog');
     pop.setAttribute('aria-label', opts.ariaLabel || ('pick ' + word)); pop.hidden = true;
+    // Top-layer popover placed by the shared ladder: start-aligned under the
+    // button, flipped to end-align before it may cross the toolbar (the page
+    // canvas), then clamped into the viewport. Resolved lazily: POPOVER_JS
+    // may be injected after this block.
+    pop.setAttribute('popover', 'manual');
+    var ctl = null;
+    function placer() {
+      if (!ctl && window._anchorPopover) {
+        ctl = window._anchorPopover(pop, btn, {
+          align: 'start',
+          boundary: function() { return btn.closest('.subbar') || btn.closest('main') || document.body; }
+        });
+      }
+      return ctl;
+    }
     var q = document.createElement('input');
     q.type = 'search'; q.placeholder = opts.placeholder || ('search ' + word);
     q.setAttribute('aria-label', q.placeholder);
@@ -2489,6 +2539,7 @@ PICK_LIST_JS = r"""
       if (_open) _open.close();
       _open = inst;
       pop.hidden = false; label();
+      var c = placer(); if (c) c.show();
       q.value = '';
       list.innerHTML = '<div class="pick-note">loading…</div>';
       Promise.resolve().then(function() { return opts.fetchRows ? opts.fetchRows() : rows; })
@@ -2503,7 +2554,10 @@ PICK_LIST_JS = r"""
           list.innerHTML = '<div class="pick-note">' + esc(opts.errorNote || 'not available') + '</div>';
         });
     }
-    function close() { pop.hidden = true; if (_open === inst) _open = null; label(); }
+    function close() {
+      if (ctl) ctl.hide();
+      pop.hidden = true; if (_open === inst) _open = null; label();
+    }
     btn.addEventListener('click', function(e) { e.stopPropagation(); open(); });
     q.addEventListener('input', function() { draw(q.value.trim().toLowerCase()); });
     list.addEventListener('change', function(e) {
@@ -2531,12 +2585,13 @@ PICK_LIST_JS = r"""
       },
       setLabels: function(m) { Object.keys(m || {}).forEach(function(k) { labels[k] = m[k]; }); label(); },
       close: close,
+      contains: function(node) { return el.contains(node) || pop.contains(node); },
     };
     label();
     return inst;
   }
   document.addEventListener('click', function(e) {
-    if (_open && e.target.isConnected && !e.target.closest('.picker')) _open.close();
+    if (_open && e.target.isConnected && !_open.contains(e.target)) _open.close();
   });
   document.addEventListener('keydown', function(e) { if (e.key === 'Escape' && _open) _open.close(); });
   window._renderPickList = _renderPickList;
@@ -2910,38 +2965,37 @@ ACTIVITY_CLUSTER_JS = """
     if (h !== pop._lastH) { pop.innerHTML = h; pop._lastH = h; }
   }
 
-  // The button can wrap to the LEFT edge of a narrow header; right:0
-  // anchoring would then push the 28rem popover off-screen. Clamp the
-  // rendered box into the viewport after every open.
-  function positionPop(){
-    pop.style.left = ''; pop.style.right = '0';
-    var r = pop.getBoundingClientRect();
-    if (r.left < 8) {
-      var wr = pop.parentElement.getBoundingClientRect();
-      pop.style.right = 'auto';
-      pop.style.left = (8 - wr.left) + 'px';
+  // Shared placement ladder (POPOVER_JS): end-aligned under the button,
+  // flipped to start-align before it may leave the header canvas, clamped
+  // into the viewport; re-placed on scroll / resize while open.
+  var ctl = null;
+  function placer(){
+    if (!ctl && window._anchorPopover) {
+      ctl = window._anchorPopover(pop, btn, {
+        align: 'end',
+        boundary: function(){ return document.querySelector('.header-inner'); }
+      });
     }
+    return ctl;
   }
-
+  function openPop(){
+    pop.hidden = false; btn.setAttribute('aria-expanded', 'true');
+    renderPop();
+    var c = placer(); if (c) c.show();
+  }
+  function closePop(){
+    var c = placer(); if (c) c.hide();
+    pop.hidden = true; btn.setAttribute('aria-expanded', 'false');
+  }
   btn.addEventListener('click', function(e){
     e.stopPropagation();
-    var show = pop.hidden;
-    pop.hidden = !show;
-    btn.setAttribute('aria-expanded', show ? 'true' : 'false');
-    if (show) { renderPop(); positionPop(); }
-  });
-  window.addEventListener('resize', function(){
-    if (!pop.hidden) positionPop();
+    if (pop.hidden) openPop(); else closePop();
   });
   document.addEventListener('click', function(e){
-    if (!pop.hidden && !pop.contains(e.target)) {
-      pop.hidden = true; btn.setAttribute('aria-expanded', 'false');
-    }
+    if (!pop.hidden && !pop.contains(e.target)) closePop();
   });
   document.addEventListener('keydown', function(e){
-    if (e.key === 'Escape' && !pop.hidden) {
-      pop.hidden = true; btn.setAttribute('aria-expanded', 'false');
-    }
+    if (e.key === 'Escape' && !pop.hidden) closePop();
   });
   // One cancel path for the popover and the /stats jobs table. Cookie-
   // authenticated pages go through _csrf_mw, which 403s any unsafe-method
@@ -3877,7 +3931,7 @@ def activity_cluster_html() -> str:
         '<span class="hact-bar vram"><i id="hact-vram"></i></span>'
         '<span id="hact-vramv" class="v">&ndash;</span></span>'
         '</button>'
-        '<div id="hact-pop" class="hact-pop" hidden></div>'
+        '<div id="hact-pop" class="hact-pop" popover="manual" hidden></div>'
         '</span>'
     )
 
@@ -3965,7 +4019,7 @@ def _render_page_cached(
         .replace("{{RELOAD}}", RELOAD_BTN_HTML)
         .replace("{{LOGOUT}}", LOGOUT_BTN_HTML)
         .replace("{{SCALE_PICKER_JS}}",
-                 SCALE_PICKER_JS + NAV_DRAWER_JS + NAV_OVERFLOW_JS)
+                 POPOVER_JS + SCALE_PICKER_JS + NAV_DRAWER_JS + NAV_OVERFLOW_JS)
         .replace(
             "{{SEV_POLLER_JS}}",
             # Order matters: the global landing helpers must be defined
@@ -3997,7 +4051,9 @@ def render_page(template: str, current: str) -> str:
       - {{SEV_PILLS}}            → severity pills (right utility cluster)
       - {{NAV_CSS}}              → shared header/scale-token CSS
       - {{SCALE_PICKER}}         → scale dropdown (header)
-      - {{SCALE_PICKER_JS}}      → wire-up script (end of body)
+      - {{SCALE_PICKER_JS}}      → wire-up script (end of body); also carries
+                                   POPOVER_JS (window._anchorPopover, the
+                                   shared dropdown placement ladder)
       - {{SEV_POLLER_JS}}        → 5-s pill re-sync + open-mode admin-
                                    key warning banner (end of body)
       - {{SCALE_BOOTSTRAP_HEAD}} → tiny pre-paint script (top of <head>)

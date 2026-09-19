@@ -453,10 +453,23 @@ function renderChips() {
     if (Q.range === 'custom') s += ' · custom';
     if (lastDoc.compare) s += ' · vs ' + (lastDoc.compare.mode === 'yoy' ? 'a year earlier' : 'previous ' + rg.days + ' d');
     if (lastDoc.tz && lastDoc.tz !== 'local') s += ' · ' + lastDoc.tz;
-    if (lastDoc.range && lastDoc.range.source === 'jobs') {
-      s += ' · stage filters cover the last ' + (rg.jobs_retention_days || 365) + ' days';
-    }
+    // Retention disclosure: with a stage filter the document is recomputed
+    // from the per-job rows, which USAGE_JOBS_RETENTION_DAYS prunes (0 =
+    // keep forever). Only a window that starts before that cutoff is cut
+    // short, so only then say so — "30 d" inside retention needs no note.
+    const ret = Number(rg.jobs_retention_days) || 0;
+    const todayDay = Math.floor(Date.now() / 86400000);
+    const truncated = rg.source === 'jobs' && ret > 0 && Number(rg.from) < todayDay - ret;
     summary.textContent = s;
+    summary.title = s;
+    if (truncated) {
+      const t = document.createElement('span');
+      t.className = 'trunc';
+      t.textContent = ' · stage data: last ' + ret + ' d only';
+      t.title = 'With a stage filter the numbers come from the per-job rows, which are kept for '
+        + ret + ' days; this window starts earlier, so it is cut short.';
+      summary.appendChild(t);
+    }
   }
 }
 // ---- who / keys pickers: the shared searchable checklist (web_common

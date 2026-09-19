@@ -937,8 +937,11 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   .sb-none { font-size: var(--fs-xs); color: var(--dim); }
   /* who / keys pickers: shared .picker widget, CSS + JS in web_common (PICK_LIST_JS). */
   .card .win .fn { color: var(--cyan); }
-  .sb-summary { margin-left: auto; font: var(--fs-xs) var(--font-mono); color: var(--dim);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 60%; }
+  header .subbar-caption { padding-top: 0.3rem; padding-bottom: 0.35rem; }
+  header .subbar-caption:has(.sb-summary:empty) { display: none; }
+  .sb-summary { margin: 0; min-width: 0; flex: 1 1 auto; font: var(--fs-xs) var(--font-mono);
+    color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sb-summary .trunc { color: var(--yellow); }
   .sb-custom { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.4rem;
     padding: 0.35rem 0.5rem; border: 1px solid var(--border); border-radius: 6px;
     background: var(--panel); font-size: var(--fs-sm); }
@@ -1273,13 +1276,16 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     margin: 0.15rem 0 0 7rem; }
   /* --- Live rings: scrubber + range mode --- */
   header #ring-scrub { width: 7rem; accent-color: var(--cyan); vertical-align: middle; }
-  /* Layout tools: last item of the first sub-bar, pushed to the right end of
-     whichever row they land on. */
-  header .subbar-tools { display: inline-flex; gap: 0.35rem; margin-left: auto; }
+  /* Layout tools: pinned to the top-right corner of the scope sub-bar (not a
+     row item, so wrapping never carries them to a lower row); the sub-bar
+     reserves their width on the right so the first row's groups keep clear. */
+  header .subbar-scope { position: relative; padding-right: calc(var(--gutter) + 5.4rem); }
+  header .subbar-tools { display: inline-flex; gap: 0.35rem; position: absolute;
+    top: 0.45rem; right: var(--gutter); }
   header .subbar-tools button { min-width: 2rem; padding-left: 0.45rem; padding-right: 0.45rem;
     font-size: var(--fs-md); line-height: 1.2; }
   /* Filters (sentence chips) wrap freely after the chip groups; the window
-     summary sits at the right end of the last row. */
+     summary is a caption under the header (.sb-summary), not a row item. */
   header .sb-filters-group { display: inline-flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
   /* The 'usage' preset has no ring cards: the rings cluster does nothing,
      so it is dimmed and inert until another preset is picked. */
@@ -1288,8 +1294,12 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
   /* ...and the 'ops' preset has no usage cards, so the measure control
      (and the usage sub-bar) is dimmed the same way. */
   body.preset-ops .subbar-usage { opacity: .35; pointer-events: none; }
-  header #status.pill { display: inline-block; min-width: 13.5rem; text-align: center;
-    box-sizing: border-box; }
+  /* Sized by its text: "live" is four letters, "paused · 43 s behind · back to
+     live" is the long form. No reserved width — on a narrow window a 13.5rem
+     floor pushed the layout tools onto a row of their own. Tabular digits keep
+     the paused form from wobbling as the seconds tick. */
+  header #status.pill { display: inline-block; text-align: center; box-sizing: border-box;
+    white-space: nowrap; font-variant-numeric: tabular-nums; }
   /* --- Turnaround histogram (inline SVG) --- */
   .ta-hist { flex: 1 1 0; min-height: 4rem; position: relative; overflow: hidden; }
   .ta-hist svg { width: 100%; height: 100%; display: block; overflow: visible; }
@@ -1367,7 +1377,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <span class="spacer"></span>
     <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
   </div>
-  <div class="subbar">
+  <div class="subbar subbar-scope">
     <span class="subbar-title">Stats</span>
     <span class="sb-group">
       <span class="seg-label">range</span>
@@ -1401,7 +1411,8 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <input type="range" id="ring-scrub" min="0" max="119" value="119" title="scrub the rings — the 2-minute ring or the history window (← → step, Space pauses, L returns to live)" aria-label="scrub the rings">
       <span id="status" class="pill live">live</span>
     </span>
-    <!-- Layout tools: icon-only, right end of whichever row they land on. -->
+    <!-- Layout tools: icon-only, pinned to the top-right corner of this
+         sub-bar however many rows the scope groups wrap into. -->
     <div class="subbar-tools" id="layout-tools">
       <button id="edit-layout-btn" aria-pressed="false" aria-label="edit layout" title="edit layout (E): drag tile titles and resize corners; Alt+arrows move, Alt+Shift+arrows resize the focused tile">✎</button>
       <span id="layout-live" class="sr-only" aria-live="polite"></span>
@@ -1451,8 +1462,13 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
       <span class="seg-label">filters</span>
       <span class="chips" id="sb-filters"></span>
     </span>
-    <span class="sb-summary" id="sb-summary"></span>
   </div>
+  <!-- Window caption: its own band of the sticky header (separator above),
+       never an item in the filters row, so chips can't push it around. The
+       sentence describes the resulting window (dates, days, bucket, compare,
+       tz, and a truncation warning when a stage filter reads per-job rows
+       that do not reach back as far as the window). -->
+  <div class="subbar subbar-caption"><p id="sb-summary" class="sb-summary"></p></div>
 </header>
 
 <!-- Own-scope server strip (scope=own without STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS): the

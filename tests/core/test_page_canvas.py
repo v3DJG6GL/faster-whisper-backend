@@ -64,3 +64,29 @@ def test_rendered_pages_carry_their_canvas_class(client):
         assert r.status_code == 200, path
         m = re.search(r'<body class="([^"]*)"', r.text)
         assert m and cls in m.group(1).split(), (path, m and m.group(1))
+
+
+# ---- floating layers stay inside the canvas -------------------------------
+
+def test_shared_popover_placer_is_loaded_on_pages_with_pick_lists(client):
+    for path in ("/captures", "/stats"):
+        t = client.get(path).text
+        assert "window._anchorPopover = _anchorPopover" in t, path
+        assert "_renderPickList" in t, path
+        # the pick-list opens a top-layer popover placed by the shared ladder
+        assert "pop.setAttribute('popover', 'manual')" in t, path
+        assert "boundary: function() { return btn.closest('.subbar')" in t, path
+
+
+def test_pick_pop_and_activity_pop_are_no_longer_absolute():
+    css = web_common.NAV_CSS
+    pick = re.search(r"\.pick-pop \{[^}]*\}", css).group(0)
+    assert "position: absolute" not in pick
+    assert "max-width: min(90vw, var(--col))" in pick
+    hact = re.search(r"\.hact-pop \{[^}]*\}", css).group(0)
+    assert "position: absolute" not in hact
+
+
+def test_activity_popover_markup_is_a_native_popover(client):
+    t = client.get("/settings").text
+    assert 'id="hact-pop" class="hact-pop" popover="manual" hidden' in t

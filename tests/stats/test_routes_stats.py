@@ -1285,8 +1285,26 @@ def test_stats_toolbar_reflows_without_hard_breaks(client):
     assert "subbar-break" not in html
     assert "subbar-row2" not in html
     assert html.count('<span class="sb-group">') >= 8
-    # the layout tools are the last item of the first toolbar
-    first = html[html.index('<div class="subbar">'):html.index('<div class="subbar subbar-usage">')]
+    # the layout tools are the last item of the scope toolbar, pinned to its
+    # top-right corner (absolute; the bar reserves their width on the right)
+    first = html[html.index('<div class="subbar subbar-scope">'):html.index('<div class="subbar subbar-usage">')]
     tools = first.index('id="layout-tools"')
     assert tools > first.index('id="live-range"')
     assert 'sb-group' not in first[tools:]
+    assert re.search(r"header \.subbar-tools \{[^}]*position: absolute", html)
+    assert re.search(r"header \.subbar-scope \{[^}]*padding-right: calc\(var\(--gutter\)", html)
+
+
+def test_stats_window_caption_is_its_own_header_band(client):
+    """The window summary is a dedicated band of the sticky header (its own
+    .subbar, separator above), never an item in the filters row, so chips
+    cannot push it onto a new line."""
+    t = client.get("/stats").text
+    hdr_end = t.index("</header>")
+    cap = t.index('id="sb-summary"')
+    assert cap < hdr_end
+    band = t.rfind('<div class="subbar', 0, cap)
+    assert 'class="subbar subbar-caption"' in t[band:cap]
+    # not inside the filters row
+    filters = t.index('id="sb-filters"')
+    assert t.index("</div>", filters) < band
