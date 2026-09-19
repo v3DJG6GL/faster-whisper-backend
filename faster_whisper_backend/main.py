@@ -7439,14 +7439,15 @@ def _jobs_attach_video_sync(pid: str, state: dict) -> None:
             row = _jobs_store.get(pid)
         if not row or row.get("state") != "done":
             return
-        payload = _jobs_store.get_result(pid)
-        if not isinstance(payload, dict) or not payload.pop(
-                "source_video_pending", None):
-            return
-        payload.update(_video_response_keys(None, state))
-        _jobs_store.finish(job_id=pid, state="done", result=payload,
-                           stages=row.get("stages"), plan=row.get("plan"),
-                           ttl_s=_jobs_ttl_s())
+
+        def _swap(payload: dict) -> bool:
+            if not payload.pop("source_video_pending", None):
+                return False
+            payload.update(_video_response_keys(None, state))
+            return True
+        # patch_result keeps finished_at / the TTL where the run's own
+        # finish put them: the video landing is not a second finish.
+        _jobs_store.patch_result(pid, _swap)
     except Exception as e:  # noqa: BLE001 — never fail the fetch on the ledger
         logger.warning("[jobs] could not attach the video to the job: %s", e)
 

@@ -605,6 +605,11 @@ class RunPlan:
             return st.took_s
         return st.est_s
 
+    @staticmethod
+    def _units_moved(st: Stage) -> bool:
+        return any(not u.instant and u.state in ("running", "done")
+                   for u in st.units)
+
     def _fraction(self, st: Stage, now: float) -> float:
         if st.state in ("done", "failed"):
             return 1.0
@@ -626,10 +631,14 @@ class RunPlan:
                 elif u.state == "running":
                     got += w * u.progress
             if tot > 0:
-                # A stage-level fraction is a floor under the unit sum: a
+                # Until a unit moves, the stage-level fraction stands in: a
                 # hook whose steps map to no unit (target=None) still moves
                 # the bar instead of parking it at 0 until the stage ends.
-                return max(got / tot, st.frac if st.frac is not None else 0.0)
+                # Once units report, they win — translation's stage fraction
+                # also counts the free verbatim copies the unit sum skips.
+                if st.frac is not None and not self._units_moved(st):
+                    return max(got / tot, st.frac)
+                return got / tot
         if st.frac is not None:
             return st.frac
         # A warm-up phase (resolving, waiting, analyzing, loading, a cold
@@ -688,6 +697,14 @@ class RunPlan:
                 eta += st.est_s
                 continue
             # active
+            if st.units and st.frac is not None and not self._units_moved(st):
+                # Same stand-in as _fraction: the bar moves on the stage
+                # fraction, so the ETA must not stay the queued-unit sum.
+                r = self._remaining(st.est_s, st.elapsed(now) - st.wait_s,
+                                    st.frac)
+                if r is not None:
+                    eta += r
+                    continue
             if st.units:
                 for u in st.units:
                     if u.instant or u.state in ("done", "instant"):

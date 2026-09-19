@@ -3662,7 +3662,9 @@ function translationTemplateEditor(name, v) {
         } else if (p.stage === 'starting') {
           stage.textContent = 'Loading model…';
         } else if (p.stage === 'translating') {
-          stage.textContent = 'Translating…' + (p.step ? ' ' + p.step : '');
+          const tp = p.target_progress != null
+            ? ' ' + Math.round(p.target_progress * 100) + '%' : '';
+          stage.textContent = 'Translating…' + (p.step ? ' ' + p.step : '') + tp;
         }
       } catch (_) { /* progress is best-effort */ }
     }, 1000);

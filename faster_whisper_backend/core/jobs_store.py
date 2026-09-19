@@ -44,7 +44,7 @@ import re
 import sqlite3
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from faster_whisper_backend.core import store_common
 
@@ -309,6 +309,33 @@ def finish(
                 now, now + float(ttl_s), job_id,
             ),
         )
+        return bool(cur.rowcount)
+
+
+def patch_result(job_id: str, patch: Callable[[dict], bool]) -> bool:
+    """Read-modify-write a `done` row's dict payload under the writer lock.
+    `patch` mutates the payload in place and returns whether it changed
+    anything. `finished_ts` / `expires_ts` stay as finish() stamped them: a
+    late addition (the kept video) is not a new finish. False when the row
+    is gone, not `done`, holds no dict payload, or `patch` declined."""
+    conn = _require_conn()
+    with _lock:
+        row = conn.execute(
+            "SELECT state, result_json FROM jobs WHERE job_id = ?",
+            (job_id,)).fetchone()
+        if row is None or row["state"] != "done" or not row["result_json"]:
+            return False
+        try:
+            payload = json.loads(row["result_json"])
+        except ValueError:
+            return False
+        if not isinstance(payload, dict) or not patch(payload):
+            return False
+        blob = json.dumps(payload, ensure_ascii=False)
+        cur = conn.execute(
+            "UPDATE jobs SET result_json = ?, result_bytes = ? "
+            "WHERE job_id = ? AND state = 'done'",
+            (blob, len(blob.encode("utf-8")), job_id))
         return bool(cur.rowcount)
 
 

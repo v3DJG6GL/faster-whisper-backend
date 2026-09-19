@@ -260,11 +260,20 @@ def test_package_maps_the_probed_video_index(client, package_enabled, monkeypatc
     assert seen == [1]
 
 
-def test_package_body_cap_covers_every_limit_compliant_request(package_enabled):
-    # MAX_TRACKS tracks of MAX_SRT_BYTES each must reach the route (and its
-    # own 422s), not the middleware's bare 413 — with JSON-escape headroom.
-    assert (package_enabled._media_package_max_body_bytes()
-            >= pk.MAX_TRACKS * pk.MAX_SRT_BYTES * 2)
+def test_package_body_cap_covers_every_limit_compliant_request(
+        client, package_enabled, monkeypatch):
+    # MAX_TRACKS tracks of MAX_SRT_BYTES each (24 MiB, past the old 16 MiB
+    # cap) must reach the route, not the middleware's bare 413.
+    def _argv(src, srt_paths, tracks, *, container, out_path, **kw):
+        return [sys.executable, "-c", f"open({out_path!r}, 'wb').write(b'video-bytes')"]
+    monkeypatch.setattr(pk, "build_package_argv", _argv)
+    mid = _upload(client).json()["media_id"]
+    cue = "1\n00:00:00,000 --> 00:00:01,000\n"
+    srt = cue + "x" * (pk.MAX_SRT_BYTES - len(cue) - 1) + "\n"
+    subs = [{"lang": "en", "srt": srt} for _ in range(pk.MAX_TRACKS)]
+    r = client.post(f"/v1/audio/media/{mid}/package",
+                    json={"container": "mkv", "subtitles": subs})
+    assert r.status_code == 200, r.text[:200]
 
 
 def test_upload_whose_spool_vanished_is_a_deliberate_500(

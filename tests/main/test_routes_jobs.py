@@ -1,6 +1,7 @@
 """GET/DELETE /v1/jobs* — the durable job resource for batch runs posted
 with a progress_id (core/jobs_store.py)."""
 
+import time
 import pytest
 
 from faster_whisper_backend.core import jobs_store as js
@@ -378,6 +379,8 @@ def test_late_video_outcome_is_patched_into_the_finished_row(client, app_module)
     js.finish(job_id=_PID, state="done", ttl_s=3600, stages=row["stages"],
               plan=row["plan"],
               result={"text": "hallo", "source_video_pending": True})
+    before = js.get(_PID)
+    time.sleep(0.05)
     app_module._jobs_attach_video_sync(_PID, {
         "state": "done", "media_id": "cd" * 16, "expires_at": 5, "height": 720,
         "container": "mp4", "bytes": 88})
@@ -386,6 +389,10 @@ def test_late_video_outcome_is_patched_into_the_finished_row(client, app_module)
     assert stored["source_video_media_id"] == "cd" * 16
     assert stored["source_video_container"] == "mp4" and stored["text"] == "hallo"
     assert js.get(_PID)["plan"] == row["plan"]
+    # The video landing is not a second finish: finished_at and the TTL stay.
+    after = js.get(_PID)
+    assert after["finished_ts"] == before["finished_ts"]
+    assert after["expires_ts"] == before["expires_ts"]
     # A row that never said "pending" is left alone.
     js.finish(job_id=_PID, state="done", ttl_s=3600, result={"text": "hallo"})
     app_module._jobs_attach_video_sync(_PID, {"state": "failed", "error": "x"})

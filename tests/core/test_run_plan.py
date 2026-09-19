@@ -357,7 +357,7 @@ def test_diarizing_units_split_the_stage_and_learn_per_step(ledger, clock):
 
 def test_unit_stage_falls_back_to_the_stage_fraction(ledger, clock):
     """A hook whose steps map to no unit reports only a stage fraction
-    (target=None): that is a floor under the unit sum, not thrown away."""
+    (target=None): it stands in until a unit moves, not thrown away."""
     p = _plan(clock, stages=["diarizing"])
     p.set_audio_seconds(600.0, src="decoder")
     p.tick(stage="diarizing")
@@ -367,6 +367,34 @@ def test_unit_stage_falls_back_to_the_stage_fraction(ledger, clock):
     # A unit sum that outruns the floor still wins.
     p.tick(stage="diarizing", target="embeddings", target_progress=0.9)
     assert p.snapshot()["overall"] > 0.8
+
+
+def test_stage_fraction_stand_in_moves_the_eta_too(ledger, clock):
+    """While only the stage fraction moves the bar, the ETA follows it
+    instead of staying the sum of the still-queued units."""
+    p = _plan(clock, stages=["diarizing"])
+    p.set_audio_seconds(600.0, src="decoder")
+    p.tick(stage="diarizing")
+    clock.advance(10)
+    p.tick(stage="diarizing", progress=0.2)
+    early = p.snapshot()["eta_s"]
+    clock.advance(40)
+    p.tick(stage="diarizing", progress=0.9)
+    late = p.snapshot()["eta_s"]
+    assert early is not None and late is not None and late < early
+
+
+def test_translation_units_win_over_a_stage_fraction_that_counts_free_copies(
+        ledger, clock):
+    """translation's stage fraction counts the verbatim same-language copy;
+    once a real target reports, the unit sum (which skips it) is the bar."""
+    p = _plan(clock, stages=["translating"], kind="text")
+    p.set_segments(80)
+    p.set_translation(["de", "fr"], model="m", device="cuda", mode="fluent",
+                      source_lang="de")
+    p.tick(stage="translating", progress=0.75, target="fr",
+           target_progress=0.5)
+    assert p.snapshot()["overall"] == pytest.approx(0.5)
 
 
 def test_warmup_phases_do_not_fill_by_the_clock(ledger, clock):
