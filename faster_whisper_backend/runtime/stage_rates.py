@@ -47,18 +47,18 @@ ALPHA = 0.5
 #   downloading   bytes per second
 #   separating    × realtime (audio seconds per wall second)
 #   transcribing  × realtime, over the audio the VAD kept
-#   diarizing     × realtime
+#   diarizing.*   × realtime, one key per pyannote step
 #   translating   translation units (segments) per second, per target
 SEEDS: dict[str, float] = {
     "downloading": 3_000_000.0,
     "separating": 8.0,
     "transcribing": 6.0,
-    "diarizing": 11.0,
     "translating": 1.6,
     # pyannote's steps, × realtime each: one forward pass of the
     # segmentation model is seconds, the speaker embeddings are the wall
     # clock, the clustering that follows is seconds again. These split the
-    # diarizing row's bar; the stage key above still estimates the whole.
+    # diarizing row's bar, and their sum is the stage's estimate: the plan
+    # never reads a bare "diarizing" key, so there is no seed for one.
     "diarizing.segmentation": 600.0,
     "diarizing.embeddings": 14.0,
     "diarizing.clustering": 400.0,
@@ -102,11 +102,24 @@ def _read() -> dict[str, dict]:
                     r = v.get("rate") if isinstance(v, dict) else None
                     if (isinstance(r, (int, float)) and math.isfinite(r)
                             and r > 0):
-                        rates[k] = v
+                        # Normalised here, once: lookup() and the fold
+                        # below trust `n`, and a hand-edited "n": "many"
+                        # must not raise out of either.
+                        row = {"rate": float(r), "n": _count(v.get("n"))}
+                        if "ts" in v:
+                            row["ts"] = v["ts"]
+                        rates[k] = row
     except (OSError, ValueError):
         rates = {}
     _cache, _cache_mtime = rates, mtime
     return rates
+
+
+def _count(n) -> int:
+    if (isinstance(n, (int, float)) and not isinstance(n, bool)
+            and math.isfinite(n) and n > 0):
+        return int(n)
+    return 0
 
 
 def _write_locked(rates: dict[str, dict]) -> None:
@@ -132,7 +145,7 @@ def lookup(stage: str, model: str | None, device: str | None,
     rec = _read().get(key_for(stage, model, device, compute))
     if rec is not None:
         return {"rate": float(rec["rate"]), "src": "measured",
-                "n": int(rec.get("n") or 0)}
+                "n": _count(rec.get("n"))}
     seed = SEEDS.get(stage)
     return {"rate": seed, "src": "seed", "n": 0}
 
@@ -144,13 +157,29 @@ def record(stage: str, model: str | None, device: str | None,
     dropped — a stage that took 0 s or ran backwards is bookkeeping noise,
     never evidence. Never raises: recording is a nicety after a finished
     job, and a locked or unwritable file must not fail the request."""
-    try:
-        r = float(rate)
-    except (TypeError, ValueError):
+    record_many([(stage, model, device, compute, rate)])
+
+
+def record_many(samples) -> None:
+    """record() for a whole run: `(stage, model, device, compute, rate)`
+    tuples folded IN ORDER (two samples of one key EWMA as two record()
+    calls would) under ONE lock, one re-read and one atomic write — a run
+    with diarization and three targets is otherwise ten fsync'd rewrites of
+    the same file. Same contract as record(): bad samples are dropped,
+    nothing valid means no write, never raises. Blocking file IO: call it
+    off the event loop."""
+    folds: list[tuple[str, float]] = []
+    for sample in samples or ():
+        try:
+            stage, model, device, compute, rate = sample
+            r = float(rate)
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(r) or r <= 0 or not stage:
+            continue
+        folds.append((key_for(stage, model, device, compute), r))
+    if not folds:
         return
-    if not math.isfinite(r) or r <= 0 or not stage:
-        return
-    k = key_for(stage, model, device, compute)
     with _lock:
         with contextlib.ExitStack() as stack:
             try:
@@ -159,22 +188,23 @@ def record(stage: str, model: str | None, device: str | None,
             except OSError:
                 pass   # lock timeout: write unlocked rather than lose the sample
             try:
-                _record_locked(k, r)
+                _record_locked(folds)
             except Exception:  # noqa: BLE001 — see docstring
                 pass
 
 
-def _record_locked(k: str, r: float) -> None:
+def _record_locked(folds: list[tuple[str, float]]) -> None:
     global _cache_mtime
     _cache_mtime = None   # see a peer worker's just-written rows
     rates = dict(_read())
-    old = rates.get(k)
-    if old is None:
-        rates[k] = {"rate": r, "n": 1, "ts": time.time()}
-    else:
-        prev = float(old.get("rate") or r)
-        rates[k] = {"rate": ALPHA * r + (1.0 - ALPHA) * prev,
-                    "n": int(old.get("n") or 0) + 1, "ts": time.time()}
+    for k, r in folds:
+        old = rates.get(k)
+        if old is None:
+            rates[k] = {"rate": r, "n": 1, "ts": time.time()}
+        else:
+            prev = float(old.get("rate") or r)
+            rates[k] = {"rate": ALPHA * r + (1.0 - ALPHA) * prev,
+                        "n": _count(old.get("n")) + 1, "ts": time.time()}
     _write_locked(rates)
 
 

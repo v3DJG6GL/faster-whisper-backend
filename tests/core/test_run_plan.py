@@ -52,8 +52,7 @@ def test_seed_estimates_use_seed_rates(ledger, clock):
     snap = p.snapshot()
     assert _stage(snap, "separating")["est_s"] == pytest.approx(600 / 8, abs=0.06)
     assert _stage(snap, "transcribing")["est_s"] == pytest.approx(600 / 6, abs=0.06)
-    # Diarization is the sum of its three steps' own seeds, not the stage
-    # seed (that one keeps estimating a stage without units).
+    # Diarization is the sum of its three steps' own seeds.
     _DIAR = 600 / 600 + 600 / 14 + 600 / 400
     assert _stage(snap, "diarizing")["est_s"] == pytest.approx(_DIAR, abs=0.06)
     # Nothing has run: the run is at 0 %, and the ETA is the whole plan.
@@ -107,6 +106,25 @@ def test_download_estimate_from_bytes(ledger, clock):
     p = _plan(clock, kind="url", stages=["downloading", "transcribing"])
     p.set_download_bytes(30_000_000, extractor="Youtube")
     assert _stage(p.snapshot(), "downloading")["est_s"] == pytest.approx(10.0)
+
+
+def test_download_rate_is_learned_under_the_extractor_key(ledger, clock):
+    """The record has to land on the key the estimate reads: the extractor,
+    not the (never set) stage model."""
+    p = _plan(clock, kind="url", stages=["downloading", "transcribing"])
+    p.set_download_bytes(30_000_000, extractor="Youtube")
+    p.tick(stage="downloading", progress=0.0)
+    clock.advance(5)
+    p.stage_done("downloading")
+    p.finish_run("ok")
+    rec = stage_rates.lookup("downloading", "Youtube", None)
+    assert rec["src"] == "measured"
+    assert rec["rate"] == pytest.approx(6_000_000.0)
+    assert stage_rates.lookup("downloading", None, None)["src"] == "seed"
+    # ...and the next run from that site estimates with it.
+    p2 = _plan(clock, kind="url", stages=["downloading", "transcribing"])
+    p2.set_download_bytes(30_000_000, extractor="Youtube")
+    assert _stage(p2.snapshot(), "downloading")["est_s"] == pytest.approx(5.0)
 
 
 # --- progression --------------------------------------------------------------
@@ -213,6 +231,64 @@ def test_translating_units_run_in_order_and_learn_per_unit(ledger, clock):
                               "faithful")["rate"] == pytest.approx(5.0)
 
 
+def test_an_unticked_instant_unit_closes_as_instant(ledger, clock):
+    # The verbatim copy is last, so no later target tick skips past it: the
+    # stage close has to give it the same verdict the unit walk would.
+    p = _plan(clock, stages=["translating"], kind="text")
+    p.set_segments(80)
+    p.set_translation(["fr", "de"], model="m", device="cuda", mode="fluent",
+                      source_lang="de")
+    p.tick(stage="translating", target="fr", target_progress=0.0)
+    clock.advance(10)
+    p.stage_done("translating")
+    by = {u["target"]: u for u in _stage(p.snapshot(), "translating")["units"]}
+    assert by["fr"]["state"] == "done" and by["fr"]["took_s"] == 10.0
+    assert by["de"] == {"target": "de", "instant": True, "state": "instant",
+                        "took_s": 0.0}
+
+
+def test_finish_run_writes_the_ledger_once(ledger, clock, monkeypatch):
+    """Downloading + diarizing steps + three targets: one locked
+    read-modify-write for the whole run, with the same learned rates."""
+    from faster_whisper_backend import config_store
+    writes = []
+    real = config_store._atomic_write_json
+
+    def counting(*a, **kw):
+        writes.append(1)
+        return real(*a, **kw)
+    monkeypatch.setattr(config_store, "_atomic_write_json", counting)
+    p = _plan(clock, stages=["transcribing", "diarizing", "translating"])
+    p.set_audio_seconds(600.0, src="decoder")
+    p.set_segments(80)
+    p.set_translation(["fr", "fi", "sv"], model="m", device="cuda",
+                      mode="fluent")
+    p.tick(stage="transcribing", progress=0.0)
+    clock.advance(60)
+    p.stage_done("transcribing")
+    for step in run_plan.DIARIZE_STEPS:
+        p.tick(stage="diarizing", target=step, target_progress=0.0)
+        clock.advance(10)
+        p.tick(stage="diarizing", target=step, target_progress=1.0)
+    p.stage_done("diarizing")
+    for t, secs in (("fr", 40), ("fi", 10), ("sv", 20)):
+        p.tick(stage="translating", target=t, target_progress=0.0)
+        clock.advance(secs)
+        p.tick(stage="translating", target=t, target_progress=1.0)
+    p.stage_done("translating")
+    p.finish_run("ok")
+    assert len(writes) == 1
+    p.finish_run("ok")                  # idempotent
+    assert len(writes) == 1
+    assert stage_rates.lookup("transcribing", None, None)["rate"] == \
+        pytest.approx(10.0)
+    assert stage_rates.lookup("diarizing.embeddings", None, None)["rate"] == \
+        pytest.approx(60.0)
+    # 2.0, 8.0, 4.0 folded in order: (2+8)/2 = 5, (5+4)/2 = 4.5, n = 3.
+    rec = stage_rates.lookup("translating", "m", "cuda", "fluent")
+    assert rec["rate"] == pytest.approx(4.5) and rec["n"] == 3
+
+
 def test_eta_projects_from_rate_and_goes_null_on_unevidenced_overrun(
         ledger, clock):
     p = _plan(clock, stages=["transcribing", "diarizing"])
@@ -274,9 +350,23 @@ def test_diarizing_units_split_the_stage_and_learn_per_step(ledger, clock):
         == pytest.approx(600 / 30, abs=0.01)
     assert stage_rates.lookup("diarizing.segmentation", "community-1", "cuda")["rate"] \
         == pytest.approx(600 / 1.0, abs=0.01)
-    # Under the minimum sample: clustering's 2 s stays a seed... unless the
-    # ledger's floor is lower; either way the stage total was recorded.
-    assert stage_rates.lookup("diarizing", "community-1", "cuda")["src"] == "measured"
+    # No stage-level row: the estimate is the sum of the steps, nothing
+    # ever looks a bare "diarizing" key up.
+    assert stage_rates.lookup("diarizing", "community-1", "cuda")["src"] == "seed"
+
+
+def test_unit_stage_falls_back_to_the_stage_fraction(ledger, clock):
+    """A hook whose steps map to no unit reports only a stage fraction
+    (target=None): that is a floor under the unit sum, not thrown away."""
+    p = _plan(clock, stages=["diarizing"])
+    p.set_audio_seconds(600.0, src="decoder")
+    p.tick(stage="diarizing")
+    assert p.snapshot()["overall"] == 0.0
+    p.tick(stage="diarizing", progress=0.6)
+    assert p.snapshot()["overall"] == pytest.approx(0.6)
+    # A unit sum that outruns the floor still wins.
+    p.tick(stage="diarizing", target="embeddings", target_progress=0.9)
+    assert p.snapshot()["overall"] > 0.8
 
 
 def test_warmup_phases_do_not_fill_by_the_clock(ledger, clock):
@@ -353,6 +443,31 @@ def test_stage_ticks_infer_skipped_predecessors(ledger, clock):
     snap = p.snapshot()
     assert _stage(snap, "transcribing")["state"] == "skipped"
     assert _stage(snap, "diarizing")["state"] == "active"
+
+
+def test_a_stage_inserted_before_the_active_one_reverts_it(ledger, clock):
+    """The provisional list had no separation, the entry seed activated
+    transcribing, then the final list put separating ahead of it: the
+    transcribe stage goes back to pending, it is not "done" after 0 s."""
+    p = _plan(clock, stages=["transcribing"])
+    p.set_audio_seconds(600.0, src="decoder")
+    p.tick(stage="waiting")
+    clock.advance(2)
+    p.set_stages(["separating", "transcribing"])
+    p.tick(stage="separating")
+    snap = p.snapshot()
+    assert _stage(snap, "separating")["state"] == "active"
+    tr = _stage(snap, "transcribing")
+    assert tr["state"] == "pending" and "took_s" not in tr
+    clock.advance(75)
+    p.stage_done("separating")
+    p.tick(stage="transcribing", progress=0.0)
+    clock.advance(60)
+    assert _stage(p.snapshot(), "transcribing")["state"] == "active"
+    p.stage_done("transcribing")
+    p.finish_run("ok")
+    assert stage_rates.lookup("transcribing", None, None)["rate"] == \
+        pytest.approx(10.0)
 
 
 def test_set_stages_final_keeps_started_stages(ledger, clock):

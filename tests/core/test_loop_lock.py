@@ -3,6 +3,7 @@ loop-per-lifespan. A lock left held by a dead loop must not wedge the next
 loop (the Windows CI failure at lifespan shutdown, run 997 onwards)."""
 
 import asyncio
+import threading
 
 from faster_whisper_backend.core.loop_lock import LoopLock
 
@@ -39,3 +40,54 @@ def test_behaves_like_a_lock_within_one_loop():
         await asyncio.gather(worker("a"), worker("b"))
     asyncio.run(main())
     assert order == ["a", "a-done", "b", "b-done"]
+
+
+def test_a_second_live_loop_never_swaps_out_a_held_lock():
+    """Two loops alive at once (a TestClient portal thread plus a test's
+    own asyncio.run): the second loop's acquire must not replace the lock
+    the first one holds — its release used to hit a fresh, unlocked object
+    and raise "Lock is not acquired" out of the `async with`."""
+    lk = LoopLock()
+    held = threading.Event()
+    go = threading.Event()
+    errors = []
+
+    async def first():
+        async with lk:
+            held.set()
+            await asyncio.to_thread(go.wait, 5)
+            assert lk.locked()
+
+    def run_first():
+        try:
+            asyncio.run(first())
+        except BaseException as e:  # noqa: BLE001 — reported to the test
+            errors.append(e)
+
+    t = threading.Thread(target=run_first)
+    t.start()
+    try:
+        assert held.wait(5)
+
+        async def second():
+            assert not lk.locked()      # this loop's view; creates nothing
+            async with lk:
+                return lk.locked()
+        assert asyncio.run(second()) is True
+    finally:
+        go.set()
+        t.join(5)
+    assert errors == []
+    assert not lk.locked()
+
+
+def test_release_without_acquire_raises():
+    lk = LoopLock()
+
+    async def main():
+        try:
+            lk.release()
+        except RuntimeError:
+            return True
+        return False
+    assert asyncio.run(main()) is True

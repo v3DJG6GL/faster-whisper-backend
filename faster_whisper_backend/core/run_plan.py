@@ -19,14 +19,16 @@ teaches the ledger from the stages that completed.
 Threading: setters and tick() may be called from executor threads (the
 decode, the demix, the pyannote hook all report from there); every public
 method takes the instance lock. snapshot() runs on the loop thread — it is
-the one writer of the monotonic hold.
+the one writer of the monotonic hold. finish_run() ends in blocking file IO
+(the ledger write, outside the instance lock): it is safe from any thread
+and belongs on a worker one.
 """
 
 from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from faster_whisper_backend.runtime import stage_rates
 
@@ -291,10 +293,8 @@ class RunPlan:
             if st is None or st.state in ("done", "failed", "skipped"):
                 # e.g. a cold-model "downloading" while translating: label
                 # the active stage, never rewind to a finished one.
-                if active is not None and name != active.name:
+                if active is not None:
                     active.phase = stage
-                elif active is not None:
-                    active.phase = phase
                 return
             if st.state == "pending":
                 earlier_pending = any(
@@ -305,7 +305,22 @@ class RunPlan:
                     # separation has had its turn: a sub-phase is a label,
                     # not evidence that the stages before it were skipped.
                     return
-                if active is not None:
+                if (active is not None and STAGES.index(active.name)
+                        > STAGES.index(st.name)):
+                    # set_stages() inserted this stage BEFORE the one the
+                    # entry seed already activated (the provisional list
+                    # did not know separation was on for this model): the
+                    # later stage has not had its turn, so it goes back to
+                    # pending instead of being closed as done after ~0 s.
+                    # Its queue time so far lies outside the window it will
+                    # really run in: dropped, not billed against that one.
+                    active.wait_s = 0.0
+                    active.wait_started = None
+                    active.state = "pending"
+                    active.started = None
+                    active.frac = None
+                    active.phase = None
+                elif active is not None:
                     self._close_locked(active, "done", None, now)
                 # Anything earlier still pending never ran.
                 for s in self._stages:
@@ -345,7 +360,10 @@ class RunPlan:
     def finish_run(self, status: str) -> None:
         """Teach the ledger from the stages that ran to completion. Only a
         clean run: a cancelled or failed one has stages whose wall time
-        says nothing about their rate."""
+        says nothing about their rate. The samples are gathered under the
+        plan lock and written after it, in ONE ledger read-modify-write —
+        blocking file IO, safe to call from a worker thread."""
+        samples: list[tuple] = []
         with self._lock:
             if self._finished:
                 return
@@ -361,23 +379,26 @@ class RunPlan:
                         if u.instant or u.took_s is None or not n:
                             continue
                         if u.took_s >= _MIN_SAMPLE_S:
-                            stage_rates.record("translating", st.model,
-                                               st.device, st.compute,
-                                               n / u.took_s)
+                            samples.append(("translating", st.model,
+                                            st.device, st.compute,
+                                            n / u.took_s))
                     continue
-                if st.name == "diarizing" and st.units and self._audio_s:
-                    # Per step, so the row's bar splits by what each step
-                    # cost here; the stage rate below still keeps the total.
+                if st.name == "diarizing" and st.units:
+                    # Per step only: _recompute estimates the stage as the
+                    # sum of its steps and never reads a stage-level row.
                     for u in st.units:
-                        if u.took_s is not None and u.took_s >= _MIN_SAMPLE_S:
-                            stage_rates.record(f"diarizing.{u.target}", st.model,
-                                               st.device, None,
-                                               self._audio_s / u.took_s)
+                        if (self._audio_s and u.took_s is not None
+                                and u.took_s >= _MIN_SAMPLE_S):
+                            samples.append((f"diarizing.{u.target}", st.model,
+                                            st.device, None,
+                                            self._audio_s / u.took_s))
+                    continue
                 work = st.took_s - st.wait_s
                 q = self._quantity_now(st)
                 if q and work >= _MIN_SAMPLE_S:
-                    stage_rates.record(st.name, st.model, st.device,
-                                       st.compute, q / work)
+                    samples.append((st.name, *self._rate_key(st), q / work))
+        if samples:
+            stage_rates.record_many(samples)
 
     # ── internals (lock held) ──────────────────────────────────────────
 
@@ -415,8 +436,15 @@ class RunPlan:
             st.frac = 1.0
         for u in st.units or []:
             if u.state in ("queued", "running"):
-                u.took_s = (now - u.started) if u.started is not None else 0.0
-                u.state = "done"
+                # Same verdict as _advance_units_locked: a verbatim copy the
+                # stage never ticked is still "instant", not a translation.
+                if u.instant:
+                    u.took_s = 0.0
+                    u.state = "instant"
+                else:
+                    u.took_s = ((now - u.started) if u.started is not None
+                                else 0.0)
+                    u.state = "done"
                 u.progress = 1.0
 
     def _advance_units_locked(self, st: Stage, target: str,
@@ -468,6 +496,17 @@ class RunPlan:
                                     if self._vad_retained is not None else 1.0)
         return self._audio_s
 
+    def _rate_key(self, st: Stage) -> tuple[str | None, str | None,
+                                            str | None]:
+        """(model, device, compute) of the stage's ledger row — ONE rule for
+        the lookup in _recompute and the record in finish_run. A download
+        is keyed by its extractor, only whisper has a compute type."""
+        if st.name == "downloading":
+            return self._extractor, None, None
+        if st.name == "transcribing":
+            return st.model, st.device, st.compute
+        return st.model, st.device, None
+
     def _segments_for_estimate(self) -> float | None:
         if self._n_segments is not None:
             return float(self._n_segments)
@@ -484,12 +523,10 @@ class RunPlan:
             q: float | None = None
             if st.name == "downloading":
                 q = self._download_bytes
-                key_model, key_dev, key_comp = self._extractor, None, None
             elif st.name == "transcribing":
                 q = (audio * (self._vad_retained
                               if self._vad_retained is not None else 1.0)
                      if audio else None)
-                key_model, key_dev, key_comp = st.model, st.device, st.compute
             elif st.name == "translating":
                 self._recompute_units(st)
                 continue
@@ -498,12 +535,11 @@ class RunPlan:
                 continue
             else:
                 q = audio
-                key_model, key_dev, key_comp = st.model, st.device, None
             st.quantity = q
             if q is None or q <= 0:
                 st.est_s, st.est_src = None, "unknown"
                 continue
-            rec = stage_rates.lookup(st.name, key_model, key_dev, key_comp)
+            rec = stage_rates.lookup(st.name, *self._rate_key(st))
             rate = rec.get("rate")
             if not rate:
                 st.est_s, st.est_src = None, "unknown"
@@ -590,7 +626,10 @@ class RunPlan:
                 elif u.state == "running":
                     got += w * u.progress
             if tot > 0:
-                return got / tot
+                # A stage-level fraction is a floor under the unit sum: a
+                # hook whose steps map to no unit (target=None) still moves
+                # the bar instead of parking it at 0 until the stage ends.
+                return max(got / tot, st.frac if st.frac is not None else 0.0)
         if st.frac is not None:
             return st.frac
         # A warm-up phase (resolving, waiting, analyzing, loading, a cold

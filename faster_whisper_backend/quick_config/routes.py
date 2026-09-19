@@ -37,7 +37,6 @@ import hashlib
 import json
 import logging
 import time
-import weakref
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
@@ -51,6 +50,7 @@ from faster_whisper_backend.core import store_common
 from faster_whisper_backend.quick_config import state as quick_config_state
 from faster_whisper_backend.stats import recent_transcriptions_store
 from faster_whisper_backend.core import web_common
+from faster_whisper_backend.core.loop_lock import LoopLock
 from faster_whisper_backend.admin.routes import (
     _apply_hot_changes,
     _canon_rules,
@@ -91,21 +91,18 @@ _GUARDED_SAVE_EXECUTOR = ThreadPoolExecutor(
 # second save would silently revert the first caller's edit. This closes the
 # single-worker window only; with SERVER_WORKERS > 1 the cross-process case
 # still relies on config_store._save_lock + the per-slug fingerprints.
-# Keyed weakly per event loop: an asyncio.Lock binds to the first loop that
-# awaits it, and this module (unlike main) is not reloaded per test, so a
-# single module-level Lock would raise "bound to a different event loop" on
-# the second TestClient. In production one worker = one loop = one lock.
-_PATCH_LOCKS: "weakref.WeakKeyDictionary[Any, asyncio.Lock]" = (
-    weakref.WeakKeyDictionary()
-)
+# A LoopLock (one asyncio.Lock per event loop): an asyncio.Lock binds to the
+# first loop that awaits it, and this module (unlike main) is not reloaded
+# per test, so a plain module-level Lock would raise "bound to a different
+# event loop" on the second TestClient. In production one worker = one loop
+# = one lock.
+_PATCH_LOCK = LoopLock()
 
 
-def _patch_lock() -> asyncio.Lock:
-    loop = asyncio.get_running_loop()
-    lock = _PATCH_LOCKS.get(loop)
-    if lock is None:
-        lock = _PATCH_LOCKS[loop] = asyncio.Lock()
-    return lock
+def _patch_lock() -> LoopLock:
+    # An accessor because admin.routes._pipeline_rules_lock imports and
+    # calls it to share this lock.
+    return _PATCH_LOCK
 
 # Ingress cap for a callback:map patch, read off the schema so the two can
 # never drift. The same bound is enforced by Pydantic inside save_overrides,

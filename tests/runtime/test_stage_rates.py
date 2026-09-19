@@ -68,5 +68,50 @@ def test_unreadable_file_degrades_to_seeds(ledger):
     assert stage_rates.lookup("separating", "uvr", "cuda")["rate"] == 8.5
 
 
+def test_a_hand_edited_count_never_raises(ledger):
+    with open(ledger, "w", encoding="utf-8") as f:
+        json.dump({"version": 1, "rates": {
+            "transcribing|||": {"rate": 6.0, "n": "many"},
+            "separating|||": {"rate": 4.0, "n": {}},
+            "downloading|||": {"rate": 5.0, "n": float("nan")},
+        }}, f)
+    stage_rates._reset_for_tests()
+    assert stage_rates.lookup("transcribing", None, None) == \
+        {"rate": 6.0, "src": "measured", "n": 0}
+    assert stage_rates.lookup("separating", None, None)["n"] == 0
+    assert stage_rates.lookup("downloading", None, None)["n"] == 0
+    # ...and the fold on top of such a row counts from there.
+    stage_rates.record("transcribing", None, None, None, 8.0)
+    assert stage_rates.lookup("transcribing", None, None) == \
+        {"rate": 7.0, "src": "measured", "n": 1}
+
+
+def test_record_many_is_one_write_folded_in_order(ledger, monkeypatch):
+    from faster_whisper_backend import config_store
+    writes = []
+    real = config_store._atomic_write_json
+
+    def counting(*a, **kw):
+        writes.append(1)
+        return real(*a, **kw)
+    monkeypatch.setattr(config_store, "_atomic_write_json", counting)
+    stage_rates.record_many([
+        ("translating", "m", "cuda", "fluent", 2.0),
+        ("separating", "uvr", "cuda", None, float("nan")),   # dropped
+        ("translating", "m", "cuda", "fluent", 8.0),
+        ("diarizing.embeddings", "p", "cuda", None, 20.0),
+        ("bad",),                                            # dropped
+    ])
+    assert len(writes) == 1
+    rec = stage_rates.lookup("translating", "m", "cuda", "fluent")
+    assert rec == {"rate": 5.0, "src": "measured", "n": 2}
+    assert stage_rates.lookup("diarizing.embeddings", "p", "cuda")["n"] == 1
+    assert stage_rates.lookup("separating", "uvr", "cuda")["src"] == "seed"
+    # Nothing valid: no write at all.
+    stage_rates.record_many([("separating", "uvr", "cuda", None, 0)])
+    stage_rates.record_many([])
+    assert len(writes) == 1
+
+
 def test_unknown_stage_has_no_rate(ledger):
     assert stage_rates.lookup("mystery", None, None)["rate"] is None

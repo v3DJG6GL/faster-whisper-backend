@@ -70,7 +70,7 @@ _infer_mutex = threading.Lock()
 # is held — N queued translations would otherwise occupy N pool threads
 # shared with whisper decodes and model loads. _infer_mutex stays as the
 # defensive thread guard inside _complete.
-_infer_gate = asyncio.Lock()
+_infer_gate = LoopLock()   # as _lock below: a plain asyncio.Lock binds to one loop
 # ref → count of jobs currently holding a lease on the cached model — an
 # in-use model is never evicted (see _drop_locked).
 _active: "dict[str, int]" = {}
@@ -81,12 +81,12 @@ _lock = LoopLock()   # see core.loop_lock: survives a test suite's loop-per-life
 _models: "OrderedDict[str, object]" = OrderedDict()
 # ref → time.monotonic() of last use, for the idle evictor.
 _last_used: "dict[str, float]" = {}
-# ref → asyncio.Lock serializing that one ref's cold load, so a warm hit on
+# ref → LoopLock serializing that one ref's cold load, so a warm hit on
 # any OTHER ref never waits behind a multi-GB download (see _get_model).
 # Entries persist for the process — one tiny Lock per distinct ref ever
 # loaded; popping them on release would open a re-create race that lets two
 # jobs load the same model concurrently.
-_loading: "dict[str, asyncio.Lock]" = {}
+_loading: "dict[str, LoopLock]" = {}
 # Loads currently inside _load_blocking, and how many times a load has
 # started while another was already running — a VRAM delta measured across
 # such an overlap belongs to neither load (see _get_model).
@@ -693,7 +693,7 @@ async def _get_model(ref: str, *, lease: bool = False, download_cb=None):
 
     # Miss (or stale load params): serialize per REF so two jobs never load
     # the same model twice, while warm hits on other refs stay unblocked.
-    load_lock = _loading.setdefault(ref, asyncio.Lock())
+    load_lock = _loading.setdefault(ref, LoopLock())
     async with load_lock:
         llm = _models.get(ref)
         if llm is not None:

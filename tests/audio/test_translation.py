@@ -1269,6 +1269,47 @@ def _two_overlapping_loads(monkeypatch, made, refs=("o/a", "o/b")):
     return asyncio.run(run())
 
 
+def test_contended_locks_survive_a_second_event_loop(lru_env, monkeypatch):
+    """audio/* is not reloaded per test, and a plain asyncio.Lock binds to
+    the loop it was first CONTENDED on: the per-ref load lock and the infer
+    gate, contended in one loop, must still work in the next one."""
+    made, _stats = lru_env
+
+    async def contend_gate():
+        async def hold():
+            async with translation._infer_gate:
+                await asyncio.sleep(0.01)
+        await asyncio.gather(hold(), hold())
+
+    for _ in range(2):                   # each asyncio.run is a new loop
+        asyncio.run(contend_gate())
+    load_lock = None
+    for _ in range(2):
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_load(ref, device, family, download_cb=None):
+            started.set()
+            release.wait(5)
+            made[ref] = _FakeLlama(ref)
+            return made[ref]
+        monkeypatch.setattr(translation, "_load_blocking", slow_load)
+        translation._models.clear()      # a miss again; _loading is kept
+
+        async def run():
+            first = asyncio.ensure_future(translation._get_model("o/a"))
+            await asyncio.get_running_loop().run_in_executor(
+                None, started.wait, 5)
+            second = asyncio.ensure_future(translation._get_model("o/a"))
+            await asyncio.sleep(0.05)    # second is parked on the ref lock
+            release.set()
+            return await asyncio.gather(first, second)
+        a, b = asyncio.run(run())
+        assert a is b
+        assert load_lock in (None, translation._loading["o/a"])
+        load_lock = translation._loading["o/a"]
+
+
 def test_concurrent_misses_respect_max_loaded_models(lru_env, monkeypatch):
     """Two misses on DIFFERENT refs both pass the pre-load cap check (the
     load runs outside _lock) — the post-load insert must re-trim, or the
