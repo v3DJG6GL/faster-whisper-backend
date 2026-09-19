@@ -368,6 +368,9 @@ header { position: sticky; top: 0; z-index: 10;
 /* row 1 — global bar */
 header .header-inner { display: flex; align-items: center; gap: 0.75rem;
   flex-wrap: nowrap; width: 100%;
+  /* full-bleed surface, but the content stops spreading on very wide
+     monitors (150rem ≈ 2250px at 100%; rides the scale picker) */
+  max-width: 150rem; margin: 0 auto;
   padding: 0.45rem 1rem; box-sizing: border-box; min-height: 3.2rem; }
 header .title { display: inline-flex; align-items: center; gap: 0.5rem;
   font-weight: 600; color: var(--bold); white-space: nowrap;
@@ -450,7 +453,15 @@ header .hdr-activity { display: none; align-items: center; gap: 0.65rem;
   font-family: "Geist Mono", var(--font-mono); font-size: var(--fs-xs);
   line-height: 1.2; }
 header .hdr-activity.allowed { display: inline-flex; }
-header .hdr-activity:hover { border-color: var(--cyan); }
+header .hdr-status:hover .hdr-activity, header .hdr-status:hover .sevpills,
+header .hdr-status:focus-within .hdr-activity, header .hdr-status:focus-within .sevpills {
+  border-color: var(--cyan); }
+/* the pill under the pointer answers on its own (it is a link to /logs):
+   underline + full opacity — hot pills keep their severity colour */
+header .sevpill:hover { opacity: 1; }
+header .sevpill:hover .lbl, header .sevpill:hover .n {
+  text-decoration: underline; text-underline-offset: 0.2em; }
+header .sevpill:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; border-radius: 3px; }
 header .hdr-activity .v { font-variant-numeric: tabular-nums; }
 /* Jobs: spinning ring + count — magenta while busy, static + dim when idle.
    The ring stays painted at every width so the control keeps its identity
@@ -630,33 +641,58 @@ header .subbar .capture-state.off { color: var(--dim);   border-color: var(--bor
 header .subbar .filt-label { display: inline-flex; align-items: center; gap: 0.35rem;
   font-size: var(--fs-sm); color: var(--help); white-space: nowrap; }
 
-/* Shedding tiers — rem inside @container resolves against --fs-base, so
-   the thresholds follow the scale picker. Lowest-information pixels go
-   first; the active link and the jobs count survive every tier. Links
-   that still don't fit are tucked by NAV_OVERFLOW_JS at any width. */
-@container hdr (max-width: 96rem) {
-  /* labels: the bar colours already say GPU vs VRAM, the dots say severity */
-  header .hact-m .lbl { display: none; }
-  header .sevpill .lbl { display: none; }
-}
-@container hdr (max-width: 88rem) {
-  /* role suffix + version chip: identity, not wayfinding */
-  header .brand-word .bw-sep, header .brand-word .bw-c { display: none; }
-  header .vtag { display: none; }
-}
-@container hdr (max-width: 76rem) {
-  header .hact-m.vramm { display: none; }
-  /* zero counters are noise; a hot counter is the only one that matters */
-  header .sevpill.zero { display: none; }
-  header .sevpills:not(:has(.sevpill.hot)) { display: none; }
-  body.role-admin header .hdr-status:not(:has(.sevpill.hot)) .hdr-activity.allowed {
-    border-radius: 6px; border-right: 1px solid var(--border); }
-}
-@container hdr (max-width: 60rem) {
-  header .hact-m { display: none; }
-  header .scale-picker { display: none; }
-  header .brand-sep { display: none; }
-}
+/* ---- Compaction ladder (classes set by NAV_OVERFLOW_JS, measurement-
+   driven, no width thresholds — correct at every --fs-base automatically).
+   The script adds these one at a time, re-measuring after each, until the
+   bar fits. Order = lowest-information pixels first; the brand is identity
+   and goes last; the jobs count and a hot severity survive every step.
+     c1a  severity word labels          c7  scale picker → "Aa" cycle button
+     c1   GPU / VRAM micro-labels       c5  VRAM segment
+     c2   zero severity counters        c6  GPU segment
+                                        c3  version chip
+                                        c4  "› backend" suffix
+     c8  activity segment (jobs/GPU/VRAM)   c9  severity pills   — phones only
+     c10 "Aa" scale button                  c11 reload button    — phones only
+   On a single row only c1a + c1 are allowed; past that the nav moves to
+   its own row (header.nav-row2) and the ladder restarts on the brand row. */
+header.c1a .sevpill .lbl { display: none; }
+header.c1 .hact-m .lbl { display: none; }
+header.c2 .sevpill.zero { display: none; }
+header.c2 .sevpills:not(:has(.sevpill.hot)) { display: none; }
+body.role-admin header.c2 .hdr-status:not(:has(.sevpill.hot)) .hdr-activity.allowed {
+  border-radius: 6px; border-right: 1px solid var(--border); }
+header.c7 .scale-picker { display: none; }
+header.c7 .scale-cycle { display: inline-flex; }
+header.c5 .hact-m.vramm { display: none; }
+header.c6 .hact-m.gpum { display: none; }
+header.c3 .vtag { display: none; }
+header.c4 .brand-word .bw-sep, header.c4 .brand-word .bw-c { display: none; }
+/* phone-only last resorts: the whole activity segment, then the pills */
+header.c8 .hact-wrap { display: none; }
+header.c8 .sevpills { border-radius: 6px; border-left: 1px solid var(--border); }
+header.c9 .sevpills { display: none; }
+header.c10 .scale-cycle { display: none; }
+header.c11 #reload-btn { display: none; }
+/* "Aa" stand-in for the scale <select> (c7): cycles through the same steps */
+header .scale-cycle { display: none; font-family: "Hubot Sans", var(--font-sans);
+  font-size: var(--fs-sm); font-weight: 600; letter-spacing: -0.02em;
+  padding: 0.25rem 0.45rem; line-height: 1; }
+
+/* Two-row mode: the nav (plus scale / reload / sign-out) gets its own row
+   under the brand row. .nav-brk is the forced line break; .hdr-right is
+   dissolved (display:contents) so the status rail can stay on row 1 while
+   the utility buttons follow the nav to row 2 — no template change. */
+header .nav-brk { display: none; }
+header.nav-row2 .header-inner { flex-wrap: wrap; row-gap: 0.25rem; }
+header.nav-row2 .brand-sep, header.nav-row2 .spacer { display: none; }
+header.nav-row2 .nav-brk { display: block; flex: 1 0 100%; height: 0; order: 9; }
+header.nav-row2 #navrow { flex: 1 1 0; order: 10; }
+header.nav-row2 .nav-more { order: 10; }
+header.nav-row2 .hdr-right { display: contents; }
+header.nav-row2 .hdr-status { margin-left: auto; }
+header.nav-row2 .scale-picker, header.nav-row2 .scale-cycle,
+header.nav-row2 .hdr-right .icon-btn { order: 11; }
+
 @container hdr (max-width: 40rem) {
   header .navlink { padding: 0.25rem 0.5rem; }
 }
@@ -920,7 +956,7 @@ header .page-link.allowed { display: inline-flex; }
   .nav-toggle { display: inline-flex; align-items: center;
     justify-content: center; }
   header .brand-sep { display: none; }
-  header .nav-gsep, header .nav-more { display: none; }
+  header .nav-gsep, header .nav-more, header .nav-brk { display: none; }
   /* the existing .navrow becomes the off-canvas panel (links keep their
      admin-only / page-link gating because they stay inside <header>). */
   header #navrow { position: fixed; top: 0; left: 0;
@@ -1211,6 +1247,9 @@ SCALE_PICKER_HTML = (
     '<option value="18">120%</option>'
     '<option value="20">130%</option>'
     '</select>'
+    # Compact stand-in shown by the ladder's c7 step: one click = next step.
+    '<button id="scale-cycle" class="icon-btn scale-cycle" type="button" '
+    'title="UI scale 100% — click for next" aria-label="UI scale">Aa</button>'
 )
 
 
@@ -1260,7 +1299,14 @@ SCALE_PICKER_JS = """
   sel.addEventListener('change',function(){
     document.documentElement.style.setProperty('--fs-base',sel.value+'px');
     localStorage.setItem(KEY,sel.value);
+    sync();
   });
+  var cyc=document.getElementById('scale-cycle');
+  function sync(){if(cyc)cyc.title='UI scale '+sel.options[sel.selectedIndex].text+' — click for next';}
+  if(cyc){cyc.addEventListener('click',function(){
+    sel.selectedIndex=(sel.selectedIndex+1)%sel.options.length;
+    sel.dispatchEvent(new Event('change'));});}
+  sync();
 })();</script>
 """
 
@@ -1331,60 +1377,95 @@ NAV_DRAWER_JS = """
 """
 
 
-# Priority+ nav overflow. Measures #navrow (scrollWidth vs clientWidth) and
-# moves links that don't fit — right end first, never the active page, never
-# a lone separator — into the .nav-more disclosure that follows #navrow.
-# Nodes are MOVED, not cloned, so the per-link admin-only / page-link gating
+# Priority+ nav overflow + compaction ladder. Three things, in order:
+#   1. On a single row, shed only the cheap label steps (c1a, c1) until the
+#      bar fits.
+#   2. If it still doesn't, switch to header.nav-row2 (nav + utility buttons
+#      on their own row) and re-run the FULL ladder on the brand row alone.
+#   3. If the nav still overflows its row, tuck links — right end first,
+#      never the active page, never a lone separator — into the .nav-more
+#      disclosure that follows #navrow.
+# Everything is measured (scrollWidth vs clientWidth; in two-row mode, "the
+# brand and the status rail share a line"), never thresholded, so it is right
+# at every --fs-base. Nodes are MOVED, not cloned, so the per-link gating
 # classes and the drawer's click-to-close keep working. Re-runs on resize
-# (ResizeObserver) and whenever a link's class list changes (the whoami gate
-# adds .allowed after first paint; a hidden link has zero width, so the first
-# pass would otherwise under-tuck). In drawer mode (≤40em, .nav-toggle shown)
-# every link is restored to #navrow and the control stays hidden.
+# (ResizeObserver on the row, the nav, the brand and the status rail — the
+# pollers change the rail's width) and when a link's class list changes (the
+# whoami gate adds .allowed after first paint). In drawer mode (≤40em,
+# .nav-toggle shown) the nav is off-canvas: links are restored, no nav-row2,
+# and the ladder runs on the brand row only.
 NAV_OVERFLOW_JS = """
 <script>
 (function(){
+  var hdr=document.querySelector('header');
   var nav=document.getElementById('navrow');
   var more=nav&&nav.parentElement.querySelector('.nav-more');
-  if(!nav||!more||!window.ResizeObserver)return;
+  if(!hdr||!nav||!more||!window.ResizeObserver)return;
+  var inner=nav.parentElement;
   var btn=more.querySelector('.nav-more-btn'),list=more.querySelector('.nav-more-list');
   var toggle=document.querySelector('.nav-toggle');
+  var title=inner.querySelector('.title'),status=inner.querySelector('.hdr-status');
   var items=Array.prototype.slice.call(nav.children).filter(function(c){
     return c.classList.contains('navlink')||c.classList.contains('nav-gsep');});
+  var STEPS=['c1a','c1','c2','c7','c5','c6','c3','c4','c8','c9','c10','c11'],SINGLE_ROW_MAX=2;
   var busy=false;
-  function fits(){return nav.scrollWidth<=nav.clientWidth+1;}
+  function navFits(){return nav.scrollWidth<=nav.clientWidth+1;}
+  /* .title may shrink and clip its own wordmark — that is not a fit */
+  function brandFits(){return !title||title.scrollWidth<=title.clientWidth+1;}
+  function rowFits(){
+    if(hdr.classList.contains('nav-row2')&&status&&title){
+      var st=status.getBoundingClientRect();
+      if(st.width>0){
+        var br=title.getBoundingClientRect();
+        var same=Math.abs((br.top+br.bottom)/2-(st.top+st.bottom)/2)<br.height/2;
+        return same&&st.right<=inner.getBoundingClientRect().right+1&&brandFits();
+      }
+    }
+    return inner.scrollWidth<=inner.clientWidth+1&&brandFits();
+  }
+  function fits(){return navFits()&&rowFits();}
+  function reset(){STEPS.forEach(function(c){hdr.classList.remove(c);});}
+  function ladder(ok,max){var n=max||STEPS.length;for(var i=0;i<n&&!ok();i++)hdr.classList.add(STEPS[i]);}
   function restore(){
     items.forEach(function(el){el.hidden=false;nav.appendChild(el);});
     list.replaceChildren();
   }
   function setOpen(o){btn.setAttribute('aria-expanded',o?'true':'false');list.hidden=!o;}
+  function tuck(){
+    more.hidden=false;
+    for(var i=items.length-1;i>=0&&!navFits();i--){
+      var el=items[i];
+      if(el.classList.contains('active'))continue;
+      if(el.classList.contains('nav-gsep')){el.hidden=true;continue;}
+      var li=document.createElement('li');li.appendChild(el);list.insertBefore(li,list.firstChild);
+    }
+    /* a separator left trailing in the bar says nothing */
+    var vis=items.filter(function(e){return e.parentElement===nav&&!e.hidden&&e.offsetParent!==null;});
+    var last=vis[vis.length-1];if(last&&last.classList.contains('nav-gsep'))last.hidden=true;
+    var n=list.querySelectorAll('.navlink').length;
+    btn.querySelector('.cnt').textContent=n?String(n):'';
+    if(!n)more.hidden=true;
+  }
   function layout(){
     if(busy)return;busy=true;
     var wasOpen=!list.hidden;
-    restore();more.hidden=true;
+    hdr.classList.remove('nav-row2');reset();restore();more.hidden=true;
     var drawer=toggle&&getComputedStyle(toggle).display!=='none';
-    if(!drawer&&!fits()){
-      more.hidden=false;
-      for(var i=items.length-1;i>=0&&!fits();i--){
-        var el=items[i];
-        if(el.classList.contains('active'))continue;
-        if(el.classList.contains('nav-gsep')){el.hidden=true;continue;}
-        var li=document.createElement('li');li.appendChild(el);list.insertBefore(li,list.firstChild);
-      }
-      /* a separator left trailing in the bar, or leading in the list, says nothing */
-      var vis=items.filter(function(e){return e.parentElement===nav&&!e.hidden&&e.offsetParent!==null;});
-      var last=vis[vis.length-1];if(last&&last.classList.contains('nav-gsep'))last.hidden=true;
-      var n=list.querySelectorAll('.navlink').length;
-      btn.querySelector('.cnt').textContent=n?String(n):'';
-      if(!n){more.hidden=true;}
+    if(drawer){
+      ladder(rowFits);            /* phone: brand row only, nav is off-canvas */
+    }else{
+      ladder(fits,SINGLE_ROW_MAX);
+      if(!fits()){hdr.classList.add('nav-row2');reset();ladder(rowFits);}
+      if(!navFits())tuck();
     }
-    /* a relayout (resize, gate change) must not slam an open menu shut */
+    /* a relayout (resize, poller tick, gate change) must not slam an open menu shut */
     setOpen(wasOpen&&!more.hidden);
     busy=false;
   }
-  new ResizeObserver(function(){requestAnimationFrame(layout);}).observe(nav);
-  /* Watch ONLY the links' class lists (the whoami gate adds .allowed).
-     Watching the whole bar re-ran layout on every sev-poller / activity
-     tick (they toggle hot/zero/idle classes) and closed the menu. */
+  var ro=new ResizeObserver(function(){requestAnimationFrame(layout);});
+  ro.observe(inner);ro.observe(nav);if(title)ro.observe(title);if(status)ro.observe(status);
+  /* Watch ONLY the links' class lists (the whoami gate adds .allowed);
+     the rail's own class churn is covered by its ResizeObserver. */
   var mo=new MutationObserver(function(){requestAnimationFrame(layout);});
   mo.observe(nav,{attributes:true,attributeFilter:['class'],subtree:true});
   mo.observe(list,{attributes:true,attributeFilter:['class'],subtree:true});
@@ -3526,6 +3607,8 @@ def nav_html(current: str) -> str:
         '<span class="cnt"></span></button>'
         '<ul id="nav-more-list" class="nav-more-list" hidden></ul></span>'
     )
+    # forced line break for header.nav-row2 (display:none otherwise)
+    parts.append('<span class="nav-brk" aria-hidden="true"></span>')
     parts.append('<div class="nav-backdrop"></div>')
     return "".join(parts)
 
@@ -3547,7 +3630,7 @@ def activity_cluster_html() -> str:
         'title="server activity — click for running jobs">'
         '<span class="hact-jobs"><span class="hact-ring"></span>'
         '<span id="hact-jobs" class="v">0</span></span>'
-        '<span class="hact-m" title="GPU util"><span class="lbl">GPU</span>'
+        '<span class="hact-m gpum" title="GPU util"><span class="lbl">GPU</span>'
         '<span class="hact-bar"><i id="hact-gpu"></i></span>'
         '<span id="hact-gpuv" class="v">&ndash;</span></span>'
         '<span class="hact-m vramm" title="VRAM"><span class="lbl">VRAM</span>'
