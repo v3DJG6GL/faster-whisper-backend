@@ -90,3 +90,11 @@ def test_pick_pop_and_activity_pop_are_no_longer_absolute():
 def test_activity_popover_markup_is_a_native_popover(client):
     t = client.get("/settings").text
     assert 'id="hact-pop" class="hact-pop" popover="manual" hidden' in t
+
+
+# ---- header height must not depend on the page's body line-height ---------
+
+def test_header_pins_its_own_line_height():
+    css = web_common.NAV_CSS
+    hdr = re.search(r"\nheader \{[^}]*\}", css).group(0)
+    assert re.search(r"line-height: 1\.5;", hdr), hdr

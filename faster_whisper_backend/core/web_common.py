@@ -382,6 +382,10 @@ header .scale-picker {
    respect the --fs-base scale token (unlike @media). Page-local CSS styles
    `header button` / `header .pill`, which still match inside the subbar. */
 header { position: sticky; top: 0; z-index: 10;
+  /* own line-height: pages set body line-height to 1.5 or leave it at
+     `normal`, and the brand row inherits it, so the header sat 5-10 px
+     lower on some pages (visible in Firefox, hidden in Chromium). */
+  line-height: 1.5;
   background: var(--panel); border-bottom: 1px solid var(--border);
   box-shadow: 0 6px 20px -14px rgba(0,0,0,0.7);
   container-type: inline-size; container-name: hdr; }
