@@ -3812,6 +3812,12 @@ _CAPTURES_HTML = r"""<!doctype html>
     background: #21262d; color: var(--bold);
   }
   .compact-player-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  /* Download links in the player row: same box as the transport button. */
+  a.compact-player-dl {
+    gap: 0.3rem; text-decoration: none; font-size: var(--fs-xs);
+    color: var(--help); align-self: stretch;
+  }
+  a.compact-player-dl:hover { background: #21262d; color: var(--bold); }
   /* Inline SVG glyphs (play/pause/skip-to-start/undo) — block so flex
      centering applies cleanly; sized in em so they ride the --fs-* scale. */
   .compact-player-btn svg, .merge-preview-btn svg { display: block; }
@@ -5022,21 +5028,26 @@ _CAPTURES_HTML = r"""<!doctype html>
     body.appendChild(_attachCompactPlayer(audio));
     state.audio = audio;
 
-    // Download links for ANY status (Export ready only covers `ready` rows):
-    // the trimmed WAV the player and the export use, and the untrimmed
-    // utterance the decode received — what a bug replay needs.
-    var dl = document.createElement('div');
-    dl.className = 'help audio-dl';
+    // Download buttons for ANY status (Export ready only covers `ready`
+    // rows), in the player row and in its button style. "original" is the
+    // untrimmed utterance the decode received — what a bug replay needs;
+    // it only differs from the default when a trim exists.
     var audioUrl = '/captures/api/' + encodeURIComponent(r.id) + '/audio';
-    dl.appendChild(document.createTextNode('download audio: '));
-    [['trimmed', audioUrl], ['original', audioUrl + '?original=1']].forEach(function(pair, i) {
-      if (i) dl.appendChild(document.createTextNode(' · '));
+    var trimmed = !!(r.audio_trim_lead_ms || r.audio_trim_trail_ms);
+    var dls = trimmed
+      ? [['trimmed', audioUrl, 'Download the trimmed WAV (what the player and the export use)'],
+         ['original', audioUrl + '?original=1', 'Download the untrimmed WAV (what the decode received)']]
+      : [['wav', audioUrl, 'Download the WAV']];
+    dls.forEach(function(d) {
       var a = document.createElement('a');
-      a.href = pair[1]; a.textContent = pair[0];
+      a.className = 'compact-player-btn compact-player-dl';
+      a.href = d[1]; a.title = d[2];
       a.setAttribute('download', '');
-      dl.appendChild(a);
+      a.setAttribute('aria-label', d[2]);
+      a.appendChild(_svgIcon('download'));
+      a.appendChild(document.createTextNode(d[0]));
+      audio.parentNode.appendChild(a);
     });
-    body.appendChild(dl);
 
     // Authenticated audio fetch → blob URL (session cookie auto-sent). The
     // server always serves RIFF/WAVE 16 kHz mono (every capture is
@@ -6530,6 +6541,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     play:     'M8 5v14l11-7z',
     pause:    'M6 5h4v14H6zm8 0h4v14h-4z',
     skipprev: 'M6 6h2v12H6zm3.5 6 8.5 6V6z',
+    download: 'M5 20h14v-2H5zM19 9h-4V3H9v6H5l7 7z',
     undo:     'M12.5 8c-2.65 0-5.05.99-6.9 2.6L2 7v9h9l-3.62-3.62c1.39-1.16 '
             + '3.16-1.88 5.12-1.88 3.54 0 6.55 2.31 7.6 5.5l2.37-.78C21.08 '
             + '11.03 17.15 8 12.5 8z',

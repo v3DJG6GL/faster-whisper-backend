@@ -1000,5 +1000,6 @@ def test_audio_original_switch_serves_the_untrimmed_file(client):
 
 def test_capture_card_offers_both_audio_downloads(client):
     html = client.get("/captures").text
-    assert "download audio: " in html
+    assert "compact-player-btn compact-player-dl" in html
     assert "audioUrl + '?original=1'" in html
+    assert "a.compact-player-dl {" in html
