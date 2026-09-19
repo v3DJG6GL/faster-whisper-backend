@@ -246,13 +246,19 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Needs word timestamps. Applies to batch, streaming finals and live "
         "previews. 0 = off. Default 8.",
     "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS":
-        "Cut a segment's last words when at least this many in a row have no "
-        "duration (start = end). Words the model invents after the audio has "
-        "ended get exactly zero length; spoken words do not. A single "
-        "zero-length word at the end is kept, so a real last word is never "
-        "lost. Catches short made-up endings that are too few words for the "
-        "burst check. Needs word timestamps. Applies to batch, streaming "
-        "finals and live previews. 0 = off. Default 2.",
+        "Cut a made-up ending of at least this many words when the segment's "
+        "last word has no duration (start = end). Words the model invents "
+        "after the audio has ended get exactly zero length; spoken words do "
+        "not. The ending is followed backwards over zero-length words, over "
+        "words that are both very short (under 0.13 s) and very unsure "
+        "(confidence under 0.15), and over the one unsure word that soaked up "
+        "the leftover audio time. It stops at the first confident word. A "
+        "single zero-length word at the end is kept, so a real last word is "
+        "never lost. Catches short made-up endings that are too few words "
+        "for the burst check (measured: 'zu nehmen?, Fragezeichen' with "
+        "confidence 0.01 / 0.10 behind a real word at 0.99). Needs word "
+        "timestamps. Applies to batch, streaming finals and live previews. "
+        "0 = off. Default 2.",
     "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS":
         "When a segment ends with the same phrase of 3 or more words "
         "repeated at least this many times in a row, keep the first copy and "

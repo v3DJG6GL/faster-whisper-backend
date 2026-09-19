@@ -41,6 +41,15 @@ import unicodedata
 # (start == end == last frame); a real one-frame word is 0.02 s and must stay,
 # and ``0.02`` itself is not exactly representable, so compare well below it.
 _ZERO_LEN_S = 0.005
+# Zero-length rule, short tails: a made-up word right before the zero-length end
+# is either squeezed short AND very unsure, or it is the one word that absorbed
+# the leftover audio time and is very unsure. Thresholds are OpenAI's word
+# anomaly score (whisper PR #1838: probability < 0.15, duration < 0.133 s).
+# Measured 2026-09-19 on the 3-word tail "zu nehmen?, Fragezeichen":
+#   'Tabletten' 4.62-5.52 p0.99 | 'zu' 5.52-5.58 p0.01 | 'nehmen?,' 5.58-6.12
+#   p0.10 | 'Fragezeichen' 6.12-6.12 p0.33   (6.12 s = end of the audio)
+_LOW_PROB = 0.15
+_SHORT_S = 0.133
 # The burst rule looks at the segment's last second.
 _BURST_WINDOW_S = 1.0
 # Repeat rule: phrases shorter than this are never touched — dictation commands
@@ -62,6 +71,15 @@ def _end(w) -> float:
 
 def _is_zero(w) -> bool:
     return (_end(w) - _start(w)) < _ZERO_LEN_S
+
+
+def _low_prob(w) -> bool:
+    p = getattr(w, "probability", None)
+    return p is not None and float(p) < _LOW_PROB
+
+
+def _squeezed(w) -> bool:
+    return (_end(w) - _start(w)) < _SHORT_S and _low_prob(w)
 
 
 def _key(unit: str) -> str:
@@ -92,22 +110,34 @@ def _burst_cut(words, limit: float) -> int | None:
 
 
 def _zero_tail_cut(words, min_words: int) -> int | None:
-    """The segment ends with at least ``min_words`` zero-length words → cut the
-    run. The leftover audio time must go to SOME word: when that absorber sits
-    between zero-length words (``nehmen(0) → und → pile``) it is part of the
-    tail and is cut too; a non-zero word with a spoken word before it is the
-    real last word and is never cut."""
-    if not min_words or min_words <= 0:
+    """The segment ends with a zero-length word and the made-up tail it closes
+    is at least ``min_words`` long → cut the tail. Walking backwards from the
+    end, the tail is made of:
+      * zero-length words,
+      * squeezed words (shorter than 0.133 s AND probability < 0.15),
+      * the absorber — the leftover audio time must go to SOME word. It belongs
+        to the tail when it sits between zero-length words (``nehmen(0) → und →
+        pile``), or, once, when its probability is < 0.15 (``zu → nehmen?, →
+        Fragezeichen(0)``).
+    A confident non-zero word with a spoken word before it is the real last word
+    and is never cut; a single zero-length last word is kept."""
+    if not min_words or min_words <= 0 or not words or not _is_zero(words[-1]):
         return None
     i = len(words)
-    while i > 0 and _is_zero(words[i - 1]):
-        i -= 1
+    unsure_absorber_used = False
+    while i > 0:
+        w = words[i - 1]
+        if _is_zero(w) or _squeezed(w):
+            i -= 1
+        elif i >= 2 and _is_zero(words[i - 2]):
+            i -= 1                  # the sandwiched absorber
+        elif _low_prob(w) and not unsure_absorber_used:
+            unsure_absorber_used = True
+            i -= 1
+        else:
+            break
     if len(words) - i < min_words:
         return None
-    while i >= 2 and _is_zero(words[i - 2]):
-        i -= 1                      # the sandwiched absorber
-        while i > 0 and _is_zero(words[i - 1]):
-            i -= 1
     return i
 
 

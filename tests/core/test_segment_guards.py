@@ -88,6 +88,46 @@ def test_real_last_word_that_absorbed_leftover_time_is_never_cut():
     assert sg.find_tail_cut(words, "", zero_tail=2) == (2, ["zero_tail"])
 
 
+def test_real_short_tail_from_the_server_is_cut():
+    """2026-09-19 20:47, prompt "…Tag?, Fragezeichen": the 3-word tail the first
+    version let through — real timings and probabilities from the server log."""
+    words = [_w(" zwei", 2.91, 3.55, 0.44), _w(" Tabletten", 4.62, 5.52, 0.99),
+             _w(" zu", 5.52, 5.58, 0.01), _w(" nehmen?,", 5.58, 6.12, 0.10),
+             _w(" Fragezeichen", 6.12, 6.12, 0.33)]
+    assert sg.find_tail_cut(words, "", burst=8, zero_tail=2, repeats=3) == (2, ["zero_tail"])
+    seg = _seg(words)
+    sg.apply_tail_guards(seg, zero_tail=2)
+    assert seg.text == " zwei Tabletten" and seg.end == 5.52
+
+
+def test_confident_word_before_a_zero_length_last_word_stays():
+    # a dictated command that got no duration: one zero-length word, the word
+    # before it is confident → nothing is cut
+    words = [_w(" pro", 2.1, 2.5, 0.97), _w(" Tag", 2.5, 3.4, 0.95),
+             _w(" Fragezeichen", 3.4, 3.4, 0.6)]
+    assert sg.find_tail_cut(words, "", zero_tail=2) is None
+
+
+def test_only_one_unsure_absorber_is_taken():
+    # two unsure normal-length words in a row before the zero-length end: only
+    # the last one can be the absorber, and the walk stops at the other
+    words = [_w(" eins", 0.0, 0.5, 0.9), _w(" zwei", 0.5, 1.0, 0.1),
+             _w(" drei", 1.0, 1.6, 0.1), _w(" x", 1.6, 1.6, 0.3)]
+    assert sg.find_tail_cut(words, "", zero_tail=2) == (2, ["zero_tail"])
+
+
+def test_low_probability_alone_never_cuts():
+    # no zero-length last word → the rule has no anchor
+    words = [_w(" eins", 0.0, 0.5, 0.05), _w(" zwei", 0.5, 0.6, 0.05), _w(" drei", 0.6, 1.2, 0.05)]
+    assert sg.find_tail_cut(words, "", zero_tail=2) is None
+
+
+def test_missing_probability_is_not_low():
+    words = [_w(" eins", 0.0, 0.5), NS(word=" zwei", start=0.5, end=1.2),
+             _w(" x", 1.2, 1.2)]
+    assert sg.find_tail_cut(words, "", zero_tail=2) is None
+
+
 def test_one_frame_word_is_not_zero_length():
     words = [_w(" eins", 0.0, 0.5), _w(" a", 0.5, 0.52), _w(" b", 0.52, 0.54)]
     assert sg.find_tail_cut(words, "", zero_tail=2) is None
