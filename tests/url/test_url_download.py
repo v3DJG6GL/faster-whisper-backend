@@ -172,28 +172,28 @@ def test_empty_resolution_is_forbidden(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_parse_progress_line_well_formed():
-    assert udl._parse_progress_line("dl:1024 4096 NA") == (1024, 4096)
+    assert udl._parse_progress_fields("dl:1024 4096 NA")[:2] == (1024, 4096)
 
 
 def test_parse_progress_line_estimate_fallback():
-    assert udl._parse_progress_line("dl:10 NA 200") == (10, 200)
+    assert udl._parse_progress_fields("dl:10 NA 200")[:2] == (10, 200)
 
 
 def test_parse_progress_line_unknown_total():
-    assert udl._parse_progress_line("dl:10 NA NA") == (10, None)
+    assert udl._parse_progress_fields("dl:10 NA NA")[:2] == (10, None)
 
 
 def test_parse_progress_line_infinite_total_is_none():
     # int(float("inf")) raises OverflowError, not ValueError — it must be
     # swallowed like 'NA', never escape as a generic 500.
-    assert udl._parse_progress_line("dl:10 inf NA") == (10, None)
+    assert udl._parse_progress_fields("dl:10 inf NA")[:2] == (10, None)
 
 
 @pytest.mark.parametrize("line", [
     "", "garbage", "dl:", "dl:NA NA NA", "1024 4096 NA", "[youtube] extracting",
 ])
 def test_parse_progress_line_rejects_noise(line):
-    assert udl._parse_progress_line(line) is None
+    assert udl._parse_progress_fields(line) is None
 
 
 # ---------------------------------------------------------------------------
@@ -923,6 +923,12 @@ def test_video_ladder_ranks_premium_first_and_applies_the_learned_ratio():
     # No ledger sample yet: the site's own numbers, still marked approximate.
     raw = udl.build_video_ladder(info, max_bytes=10**10, approx_ratio=lambda fam: None)
     assert raw[0]["video_bytes"] == 4000 * 1000 * 125 and raw[0]["bytes_approx"]
+    # The unscaled estimate rides along, independent of the learned ratio:
+    # it is what the recorder divides the real size by.
+    assert prem["raw_approx_bytes"] == 4000 * 1000 * 125 + 16_000_000
+    assert raw[0]["raw_approx_bytes"] == prem["raw_approx_bytes"]
+    assert prem["approx_bytes"] == int(4000 * 1000 * 125 * 0.5) + 16_000_000
+    assert av1["raw_approx_bytes"] == av1["approx_bytes"] == 100_000_000 + 16_000_000
 
 
 def test_video_ladder_generic_hls_and_direct_file():
@@ -948,6 +954,25 @@ def test_video_ladder_generic_hls_and_direct_file():
         _fmt(format_id="hd", vcodec="avc1", acodec="mp4a", resolution="1280x720", tbr=900)]},
         max_bytes=10**10)
     assert res[0]["label"] == "1280x720" and res[0]["height"] is None
+
+
+def test_video_ladder_video_only_rung_without_an_audio_candidate_still_merges():
+    """An HLS master playlist: the video variants are explicitly video-only
+    and the audio rendition carries no acodec, so it never becomes a
+    candidate. The rung must still ask for a merge ("ba"), or the exact id
+    alone downloads a soundless file."""
+    ladder = udl.build_video_ladder({"duration": 600.0, "formats": [
+        _fmt(format_id="hls-audio", vcodec="none", protocol="m3u8_native", ext="mp4"),
+        _fmt(format_id="hls-3000", height=1080, tbr=3000, vcodec="avc1.64", acodec="none",
+             protocol="m3u8_native"),
+    ]}, max_bytes=10**10)
+    assert ladder[0]["format_id"] == "hls-3000" and ladder[0]["audio_format_id"] == "ba"
+    assert udl.video_format_selector(1080, ("hls-3000", "ba")).startswith("hls-3000+ba/")
+    # Unknown acodec (possibly muxed) stays a single-file rung.
+    unknown = udl.build_video_ladder({"duration": 600.0, "formats": [
+        _fmt(format_id="v", height=720, tbr=900, vcodec="avc1.64",
+             protocol="m3u8_native")]}, max_bytes=10**10)
+    assert unknown[0]["audio_format_id"] is None
 
 
 def test_pick_rung():
@@ -1022,8 +1047,6 @@ def test_parse_progress_fields_carries_the_format_id():
     assert udl._parse_progress_fields("dl:10 100 NA 616") == (10, 100, "616")
     assert udl._parse_progress_fields("dl:10 100 NA NA") == (10, 100, None)
     assert udl._parse_progress_fields("dl:10 NA NA") == (10, None, None)
-    # The audio helper keeps its two-tuple contract.
-    assert udl._parse_progress_line("dl:10 100 NA 616") == (10, 100)
 
 
 def _patch_video_argv(monkeypatch, script: str):
@@ -1058,7 +1081,7 @@ def test_download_video_counts_cumulatively_across_two_streams(tmp_path, monkeyp
     assert fracs == sorted(fracs), fracs
     assert seen[-1] == (1.0, 1300, 1300)
     # The second stream's restart at 100 must not read as 100 of 1300.
-    assert all(d >= 1000 for _f, _t, d in seen if d and d < 1300 and d != 500 and d != 1000) or True
+    assert all(d >= 1000 for _f, _t, d in seen if 1000 < d < 1300), seen
     assert any(d == 1100 for _f, _t, d in seen)
 
 
@@ -1094,6 +1117,80 @@ def test_download_video_denominator_is_per_leg(tmp_path, monkeypatch):
     assert seen[-1] == (1.0, 1500, 1500)
     fracs = [f for f, _t, _d in seen if f is not None]
     assert fracs == sorted(fracs), fracs
+
+
+_UNPRICED_AUDIO_LEG_SCRIPT = """
+import os, sys, time
+print("dl:500 1000 NA 616", flush=True)
+time.sleep(0.35)
+print("dl:1000 1000 NA 616", flush=True)
+time.sleep(0.35)
+print("dl:100 NA NA 140", flush=True)
+time.sleep(0.35)
+print("dl:300 300 NA 140", flush=True)
+open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_video_never_reads_100_percent_while_a_leg_is_pending(tmp_path, monkeypatch):
+    # The probe priced the video leg only: the bar must not sit at 100 %
+    # through the whole audio leg.
+    _patch_video_argv(monkeypatch, _UNPRICED_AUDIO_LEG_SCRIPT)
+    seen = []
+    _run(udl.download_video(
+        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=10_000,
+        timeout=30, format_ids=("616", "140"), leg_estimates={"616": 1000},
+        expected_total=1000, progress_cb=lambda f, t, d: seen.append((f, t, d))))
+    fracs = [f for f, _t, _d in seen]
+    assert len(seen) == 4 and all(f < 1.0 for f in fracs[:-1]), seen
+    assert fracs == sorted(fracs), fracs
+    assert seen[-1] == (1.0, 1300, 1300)
+
+
+_DROP_INSIDE_ONE_LEG_SCRIPT = """
+import os, sys, time
+print("dl:500 1000 NA 616", flush=True)
+time.sleep(0.35)
+print("dl:200 1000 NA 616", flush=True)
+time.sleep(0.35)
+print("dl:1000 1000 NA 616", flush=True)
+open(os.path.join(r"__DEST__", "media.mkv"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_video_counter_reset_inside_one_leg_is_not_a_new_file(tmp_path, monkeypatch):
+    _patch_video_argv(monkeypatch, _DROP_INSIDE_ONE_LEG_SCRIPT)
+    seen = []
+    _run(udl.download_video(
+        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=1200,
+        timeout=30, format_ids=("616", None),
+        progress_cb=lambda f, t, d: seen.append((f, t, d))))
+    assert seen[-1] == (1.0, 1000, 1000)
+
+
+_AUDIO_RESTART_SCRIPT = """
+import os, sys, time
+print("dl:600 1000 NA", flush=True)
+time.sleep(0.35)
+print("dl:200 1000 NA", flush=True)
+time.sleep(0.35)
+print("dl:1000 1000 NA", flush=True)
+open(os.path.join(r"__DEST__", "media.m4a"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_audio_counter_restart_is_not_double_counted(tmp_path, monkeypatch):
+    # The audio selector fetches ONE file: a retry that does not resume
+    # restarts the counter, and must not read as a finished first file
+    # (600 + 1000 would trip the 1200 cap on a 1000-byte download).
+    _patch_argv(monkeypatch, _AUDIO_RESTART_SCRIPT)
+    seen = []
+    out = _run(udl.download(
+        "https://example.com/v", dest_dir=str(tmp_path), max_bytes=1200,
+        timeout=30, progress_cb=lambda f, tot: seen.append((f, tot))))
+    assert os.path.basename(out) == "media.m4a"
+    assert seen[-1] == (1.0, 1000)
+    assert all(tot == 1000 for _f, tot in seen)
 
 
 def test_download_video_cap_is_cumulative(tmp_path, monkeypatch):
@@ -1136,6 +1233,32 @@ def test_find_result_file_ignores_two_dot_names(tmp_path):
     assert udl._find_result_file(str(tmp_path)) is None
     (tmp_path / "media.mkv").write_bytes(b"y")
     assert os.path.basename(udl._find_result_file(str(tmp_path))) == "media.mkv"
+
+
+@pytest.mark.parametrize("name", ["media.MP3", "media.MP4", "media.unknown_video"])
+def test_find_result_file_accepts_the_extension_yt_dlp_kept(tmp_path, name):
+    # yt-dlp keeps the URL's own case and falls back to `unknown_video`; a
+    # finished download must not read as "the cap bit, no file".
+    (tmp_path / name).write_bytes(b"y")
+    assert os.path.basename(udl._find_result_file(str(tmp_path))) == name
+    assert os.path.basename(udl._find_video_result(str(tmp_path), "mkv")) == name
+    # The one-dot rule still holds beside it.
+    (tmp_path / "media.f251.WEBM").write_bytes(b"x")
+    with pytest.raises(udl.UrlDownloadError, match="merged"):
+        udl._find_video_result(str(tmp_path), "mkv")
+
+
+_UPPERCASE_EXT_SCRIPT = """
+import os
+open(os.path.join(r"__DEST__", "media.MP3"), "wb").write(b"x" * 64)
+"""
+
+
+def test_download_returns_an_uppercase_extension_file(tmp_path, monkeypatch):
+    _patch_argv(monkeypatch, _UPPERCASE_EXT_SCRIPT)
+    out = _run(udl.download("https://example.com/AUDIO.MP3", dest_dir=str(tmp_path),
+                            max_bytes=10_000, timeout=30))
+    assert os.path.basename(out) == "media.MP3"
 
 
 def test_probe_carries_the_ladder_when_video_is_enabled(monkeypatch):

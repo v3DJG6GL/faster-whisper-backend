@@ -391,13 +391,20 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
             ratio = float(r) if r and r > 0 else None
         except Exception:  # noqa: BLE001 — a ledger hiccup never breaks a preview
             ratio = None
+    # The estimate BEFORE the learned ratio: the recorder measures the real
+    # size against this one, so each sample is actual/raw and the EWMA
+    # converges on the true ratio (against the scaled value it settles on
+    # its square root).
+    vb_raw = vb
     if vb is not None and ratio:
         vb = int(vb * ratio)
     ab: "int | None" = None
+    ab_raw: "int | None" = None
     a_approx = False
     a_tbr = 0.0
     if audio_f is not None and not has_audio:
         ab, a_approx = _fmt_bytes(audio_f, duration)
+        ab_raw = ab
         a_tbr = float(audio_f.get("abr") or audio_f.get("tbr") or 0)
         if ab is not None and a_approx and approx_ratio is not None:
             try:
@@ -422,6 +429,17 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
     note = _rung_note(f)
     spec = _rung_spec(f)
     label = " ".join(x for x in (spec, note) if x) or "Best available"
+    # An explicitly video-only format with no usable audio candidate (an HLS
+    # audio rendition carries no acodec and is dropped) still needs a merge:
+    # "ba" keeps the exact video id and lets yt-dlp pick the audio, instead
+    # of retaining a soundless file. acodec None (unknown, possibly muxed)
+    # stays a single-file rung.
+    if audio_f is not None and not has_audio:
+        audio_id: "str | None" = str(audio_f["format_id"])
+    elif audio_f is None and f.get("acodec") == "none":
+        audio_id = "ba"
+    else:
+        audio_id = None
     return {
         "kind": "video",
         "height": int(h) if isinstance(h, (int, float)) and h > 0 else None,
@@ -433,11 +451,14 @@ def _rung(f: dict, *, audio_f: "dict | None", duration: "float | None",
         "container": "mp4" if mp4_carries(vcodec, acodec) else "mkv",
         "protocol": fam,
         "format_id": str(f["format_id"]),
-        "audio_format_id": (str(audio_f["format_id"])
-                            if (audio_f is not None and not has_audio) else None),
+        "audio_format_id": audio_id,
         "video_bytes": vb,
         "audio_bytes": None if has_audio else ab,
         "approx_bytes": approx,
+        # Unscaled twin of approx_bytes (both legs, no learned ratio). The
+        # sample the recorder files mixes both legs' bytes under the VIDEO
+        # rung's protocol family.
+        "raw_approx_bytes": (vb_raw + (ab_raw or 0)) if vb_raw is not None else None,
         "bytes_approx": bool(v_approx or (not has_audio and a_approx)),
         "tbr_kbps": int(round(tbr)) if tbr else None,
         # A fragmented stream's bitrate is the manifest's peak, not an
@@ -1012,18 +1033,12 @@ _PROGRESS_PREFIX = "dl:"
 _STDERR_TAIL_MAX = 4096
 
 
-def _parse_progress_line(line: str) -> "tuple[int | None, int | None] | None":
-    """Parse one --progress-template line into (downloaded, total). Total
-    falls back to the estimate; unknown fields arrive as 'NA' (yt-dlp quirk:
-    never empty strings)."""
-    parsed = _parse_progress_fields(line)
-    return None if parsed is None else parsed[:2]
-
-
 def _parse_progress_fields(line: str) -> "tuple[int, int | None, str | None] | None":
-    """(downloaded, total, format_id) — the id is the fourth field the video
-    template adds, so a merge's two legs can be told apart; None on the
-    audio template."""
+    """Parse one --progress-template line into (downloaded, total,
+    format_id). Total falls back to the estimate; unknown fields arrive as
+    'NA' (yt-dlp quirk: never empty strings). The id is the fourth field
+    the video template adds, so a merge's two legs can be told apart; None
+    on the audio template."""
     if not line.startswith(_PROGRESS_PREFIX):
         return None
     fields = line[len(_PROGRESS_PREFIX):].split()
@@ -1224,6 +1239,8 @@ async def download_video(
         argv, url=url, dest_dir=dest_dir, max_bytes=max_bytes,
         timeout=timeout, emit=_emit, cancel_check=cancel_check,
         expected_total=expected_total, leg_estimates=leg_estimates,
+        cumulative=True,
+        expected_legs=len([i for i in (format_ids or ()) if i]) or None,
         find_result=lambda d: _find_video_result(d, container))
 
 
@@ -1239,10 +1256,13 @@ async def _run_yt_dlp(
     find_result,
     expected_total: "int | None" = None,
     leg_estimates: "dict[str, int] | None" = None,
+    cumulative: bool = False,
+    expected_legs: "int | None" = None,
 ) -> str:
     """The subprocess half shared by download() and download_video(): run
     yt-dlp, stream its progress lines into `emit(downloaded, total)` (one
-    call per 0.3 s, cumulative across the files one invocation fetches),
+    call per 0.3 s; with `cumulative`, summed across the files one
+    invocation fetches — the audio selector never merges, so it is off there),
     enforce the byte cap, the wall clock and cancellation, then hand the
     finished directory to `find_result`."""
     # YTDLP_NO_PLUGINS makes yt-dlp skip plugin loading entirely; the launcher
@@ -1318,15 +1338,31 @@ async def _run_yt_dlp(
         # A leg yt-dlp named that the probe never priced: fall back to the
         # merged estimate rather than a denominator that is too small.
         if cur_leg is not None and cur_leg not in ids and expected_total:
-            return max(int(expected_total), cum)
-        return max(total, cum) if total else (
-            max(int(expected_total), cum) if expected_total else None)
+            den = max(int(expected_total), cum)
+        else:
+            den = max(total, cum) if total else (
+                max(int(expected_total), cum) if expected_total else None)
+        # A declared leg not seen yet, or the current one still unpriced:
+        # more bytes are coming, so the fraction must not read 100 % yet.
+        seen = set(leg_done) | ({cur_leg} if cur_leg is not None else set())
+        pending = (expected_legs is not None and len(seen) < expected_legs) or (
+            cur_leg is not None and cur_leg not in leg_total
+            and cur_leg not in estimates)
+        if pending and den is not None and den <= cum:
+            den = cum + 1
+        return den
 
     def _cumulative(parsed: "tuple[int, int | None, str | None]") -> "tuple[int, int | None]":
         nonlocal completed, last_downloaded, cur_leg
         downloaded, total, fid = parsed
-        new_series = downloaded < last_downloaded or (
-            fid is not None and cur_leg is not None and fid != cur_leg)
+        # A named leg changes series when its id does — a counter that
+        # drops INSIDE one leg is a retry that did not resume, not a new
+        # file. Without ids the drop is the only signal, and only a merge
+        # (cumulative) fetches more than one file.
+        if fid is not None:
+            new_series = cur_leg is not None and fid != cur_leg
+        else:
+            new_series = cumulative and downloaded < last_downloaded
         if new_series:
             completed += last_downloaded
             if cur_leg is not None:
@@ -1451,9 +1487,12 @@ def _discard_partials(dest_dir: str) -> None:
 
 # The finished output `-o media.%(ext)s` produces: exactly one dot. A merge's
 # intermediates (`media.f251.webm`) and partials (`media.mkv.part`) both
-# carry a second one and never qualify.
-_RESULT_NAME_RE = re.compile(r"\Amedia\.[a-z0-9]{2,5}\Z")
-_INTERMEDIATE_NAME_RE = re.compile(r"\Amedia\.f[^.]+\.[a-z0-9]+\Z")
+# carry a second one and never qualify. The extension is whatever yt-dlp
+# took from the URL — its own case (`media.MP3`), or the literal
+# `unknown_video` when it could not name one — so the class is the whole
+# alphabet yt-dlp can produce, not "lowercase, five chars".
+_RESULT_NAME_RE = re.compile(r"\Amedia\.[A-Za-z0-9_]{1,16}\Z")
+_INTERMEDIATE_NAME_RE = re.compile(r"\Amedia\.f[^.]+\.[A-Za-z0-9_]+\Z")
 
 
 def _find_result_file(dest_dir: str) -> "str | None":
