@@ -147,7 +147,11 @@ def test_running_row_merges_live_progress_and_result_is_409(client, app_module):
 
 def test_delete_running_flags_cancel_then_the_post_lands_cancelled(client,
                                                                      app_module):
-    _seed_running(app_module)
+    # Seeded as the caller's OWN row (the open-mode synthetic admin): a
+    # foreign row under the id is never replaced, and that run gets no row.
+    from faster_whisper_backend.auth import api_keys_store
+    _seed_running(app_module,
+                  owner=api_keys_store.OPEN_MODE_USER["user_id"])
     try:
         r = client.delete(f"/v1/jobs/{_PID}")
         assert r.json() == {"cancelled": True}
@@ -323,3 +327,66 @@ def test_jobs_sweep_runs_off_the_loop_thread(app_module, monkeypatch):
     from tests.main.test_retention_loops import _drive
     calls = _drive(monkeypatch, app_module._jobs_retention_loop, js)
     assert calls == [False]
+
+
+# --- the id belongs to whoever ran it first -------------------------------------
+
+def test_foreign_progress_id_never_replaces_the_owners_row(client, make_user_key):
+    make_user_key("root", is_admin=True)   # locks the server down
+    _, alice = make_user_key("alice")
+    _, bob = make_user_key("bob")
+    first = _post(client, bearer(alice), progress_id=_PID,
+                  response_format="verbose_json")
+    assert first.status_code == 200, first.text
+    # Bob posts with alice's (finished) id: his run goes on without a row.
+    assert _post(client, bearer(bob), progress_id=_PID).status_code == 200
+    res = client.get(f"/v1/jobs/{_PID}/result", headers=bearer(alice))
+    assert res.status_code == 200 and res.json() == first.json()
+    assert client.get(f"/v1/jobs/{_PID}", headers=bearer(bob)).status_code == 404
+
+
+def test_jobs_start_leaves_pruning_to_the_retention_loop(client, app_module,
+                                                         monkeypatch):
+    seen: list = []
+    real = js.start
+
+    def _start(**kw):
+        seen.append(kw)
+        return real(**kw)
+    monkeypatch.setattr(app_module._jobs_store, "start", _start)
+    assert _post(client, progress_id=_PID).status_code == 200
+    assert [kw.get("prune_every") for kw in seen] == [0]
+
+
+def test_jobs_finish_never_raises_on_an_unencodable_payload(client, app_module):
+    assert _post(client, progress_id=_PID).status_code == 200
+    # The sync helper is called bare on translate_text's success tail: an
+    # encoder error must be swallowed like every other ledger failure.
+    app_module._jobs_finish_sync(_PID, status="ok", payload={"x": object()})
+
+
+def test_jobs_finish_logs_a_row_that_vanished(client, app_module, caplog):
+    import logging
+    with caplog.at_level(logging.INFO):
+        app_module._jobs_finish_sync("ab" * 16, status="ok", payload={"text": "x"})
+    assert any("gone before finish" in r.getMessage() for r in caplog.records)
+
+
+def test_late_video_outcome_is_patched_into_the_finished_row(client, app_module):
+    assert _post(client, progress_id=_PID).status_code == 200
+    row = js.get(_PID)
+    js.finish(job_id=_PID, state="done", ttl_s=3600, stages=row["stages"],
+              plan=row["plan"],
+              result={"text": "hallo", "source_video_pending": True})
+    app_module._jobs_attach_video_sync(_PID, {
+        "state": "done", "media_id": "cd" * 16, "expires_at": 5, "height": 720,
+        "container": "mp4", "bytes": 88})
+    stored = js.get_result(_PID)
+    assert "source_video_pending" not in stored
+    assert stored["source_video_media_id"] == "cd" * 16
+    assert stored["source_video_container"] == "mp4" and stored["text"] == "hallo"
+    assert js.get(_PID)["plan"] == row["plan"]
+    # A row that never said "pending" is left alone.
+    js.finish(job_id=_PID, state="done", ttl_s=3600, result={"text": "hallo"})
+    app_module._jobs_attach_video_sync(_PID, {"state": "failed", "error": "x"})
+    assert js.get_result(_PID) == {"text": "hallo"}

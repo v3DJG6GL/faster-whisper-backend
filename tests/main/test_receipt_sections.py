@@ -303,3 +303,30 @@ def test_task_renders_in_decode_params_with_the_non_default_marker(app_module):
     assert rows[0].rstrip().endswith("*")
     assert not any(r.split()[0] == "task"
                    for r in app_module._format_decode_params({"beam_size": 5}))
+
+
+def test_tail_cut_rows_are_capped_with_a_count(app_module):
+    cut = {"rules": ["zero_length"], "n": 2, "from": 1.5, "text": " zu Ende"}
+    few = app_module.tail_cut_rows([cut] * 3)
+    assert list(few) == ["tail_cut", "tail_cut_2", "tail_cut_3"]
+    many = app_module.tail_cut_rows([cut] * (app_module._TAIL_CUT_ROWS_MAX + 7))
+    assert len(many) == app_module._TAIL_CUT_ROWS_MAX + 1
+    assert str(many["tail_cut_more"]) == "7 more not listed"
+
+
+def test_decode_trace_header_carries_the_total_wall_time(app_module):
+    w = {"n": 1, "start_s": 0.0, "len_s": 2.0, "encode_s": 0.1, "secs": 1.0,
+         "rungs": [{"temperature": 0.0, "beam_size": 5, "tokens": 5,
+                    "secs": 1.0, "outcome": "kept · 1 segment"}]}
+    t = {"windows": [w], "n_windows": 1, "n_rungs": 1, "tokens": 5,
+         "generate_s": 1.0, "total_s": 2.5}
+    head = app_module._format_decode_trace_section(t)[0]
+    assert "1.0s in generate · 2.5s total" in head
+    t.pop("total_s")
+    assert "total" not in app_module._format_decode_trace_section(t)[0]
+
+
+def test_one_fmt_secs_helper(app_module):
+    assert app_module._fmt_secs(None) == "-" and app_module._fmt_secs(1.26) == "1.3s"
+    import inspect
+    assert inspect.getsource(app_module).count("def _fmt_secs(") == 1

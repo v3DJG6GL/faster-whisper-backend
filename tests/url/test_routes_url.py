@@ -80,9 +80,22 @@ def test_preview_403_when_disabled(client):
     assert r.status_code == 403
 
 
-def test_media_403_when_disabled(client):
+def test_media_403_when_disabled(client, app_module, monkeypatch):
+    # The fetch serves both producers' ids (link runs AND packaging uploads,
+    # the latter on by default): 403 only when neither feature is on.
+    monkeypatch.setattr(app_module.cfg, "MEDIA_PACKAGE_ENABLED", False,
+                        raising=False)
     r = client.get(f"/v1/audio/url-media/{'a' * 32}")
     assert r.status_code == 403
+
+
+def test_media_is_served_while_packaging_is_enabled(client, app_module):
+    # URL download off (the default), packaging on (the default): an unknown
+    # id is a plain 404, not "URL download is not enabled".
+    assert app_module.cfg.URL_DOWNLOAD_ENABLED is False
+    assert getattr(app_module.cfg, "MEDIA_PACKAGE_ENABLED", True) is True
+    r = client.get(f"/v1/audio/url-media/{'a' * 32}")
+    assert r.status_code == 404
 
 
 def test_me_reports_disabled(client):
@@ -443,7 +456,8 @@ def test_preview_carries_the_ladder(client, video_enabled, monkeypatch):
 
 def test_keep_video_response_carries_video_id_when_the_task_finishes(
         client, video_enabled):
-    r = _post_url(client, keep_video="true", video_max_height="720")
+    r = _post_url(client, keep_video="true", video_max_height="720",
+                  progress_id=_PID)
     assert r.status_code == 200, r.text
     body = r.json()
     vid = body.get("source_video_media_id")
@@ -510,6 +524,40 @@ def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
     assert r.headers["content-type"].startswith("video/x-matroska")
 
 
+def test_keep_video_finishing_late_lands_in_the_stored_job_result(
+        client, video_enabled):
+    import time as _time
+
+    release = video_enabled._video_gate["make"]()
+    video_enabled._video_gate["release"] = release
+    r = _post_url(client, keep_video="true", progress_id=_PID)
+    assert r.status_code == 200 and r.json().get("source_video_pending") is True
+    release.set()
+    # Re-attaching after the fetch ended: the stored result names the video
+    # (the progress entry that reported it is gone by then).
+    body: dict = {}
+    for _ in range(300):
+        body = client.get(f"/v1/jobs/{_PID}/result").json()
+        if body.get("source_video_media_id"):
+            break
+        _time.sleep(0.01)
+    ids = [m for m, e in url_media_store._REG.items() if e.get("kind") == "video"]
+    assert body.get("source_video_media_id") == ids[0]
+    assert body["source_video_container"] == "mkv"
+    assert "source_video_pending" not in body
+
+
+def test_keep_video_without_progress_id_is_rejected(client, video_enabled):
+    # The fetch outlives the response and reports through the progress entry
+    # alone: without an id its media id would be unreachable by anyone.
+    r = _post_url(client, keep_video="true")
+    assert r.status_code == 422
+    assert "progress_id" in r.json()["detail"]
+    assert video_enabled._video_calls == []
+    assert not [m for m, e in url_media_store._REG.items()
+                if e.get("kind") == "video"]
+
+
 def test_keep_video_with_an_upload_is_422(client, video_enabled):
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1", "keep_video": "true"})
@@ -519,15 +567,16 @@ def test_keep_video_with_an_upload_is_422(client, video_enabled):
 
 def test_keep_video_403_when_video_disabled(client, url_enabled, monkeypatch):
     monkeypatch.setattr(url_enabled.cfg, "URL_VIDEO_ENABLED", False, raising=False)
-    r = _post_url(client, keep_video="true")
+    r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 403
     assert "video" in r.json()["detail"]
 
 
 def test_keep_video_rate_limited(client, video_enabled, monkeypatch):
     monkeypatch.setattr(video_enabled.cfg, "URL_VIDEO_RATE_PER_MIN", 1, raising=False)
-    assert _post_url(client, keep_video="true").status_code == 200
-    r = _post_url(client, keep_video="true")
+    assert _post_url(client, keep_video="true",
+                     progress_id=_PID).status_code == 200
+    r = _post_url(client, keep_video="true", progress_id="cafe" * 8)
     assert r.status_code == 429
     assert "video" in r.json()["detail"]
 
@@ -536,7 +585,7 @@ def test_keep_video_no_video_track_is_a_soft_error(client, url_enabled, monkeypa
     monkeypatch.setattr(url_enabled.cfg, "URL_VIDEO_ENABLED", True, raising=False)
     # url_enabled's probe returns an empty ladder: the transcript still
     # succeeds and the response says why there is no video.
-    r = _post_url(client, keep_video="true")
+    r = _post_url(client, keep_video="true", progress_id=_PID)
     assert r.status_code == 200, r.text
     assert r.json()["source_video_error"] == "this link has no video track"
     assert "source_video_media_id" not in r.json()
@@ -556,6 +605,40 @@ def test_on_demand_video_route(client, video_enabled):
     assert client.post("/v1/audio/url-media/video", json={}).status_code == 422
     assert client.post("/v1/audio/url-media/video",
                        content=b"nope").status_code == 422
+
+
+def test_video_reports_the_container_that_landed(client, video_enabled, monkeypatch):
+    # No merge happened: the site's own pre-muxed webm sits behind a rung
+    # that predicted "mp4". The client names its export after this field.
+    async def _single(url, *, dest_dir, container="mkv", **kw):
+        path = os.path.join(dest_dir, "media.webm")
+        with open(path, "wb") as f:
+            f.write(b"webm-bytes")
+        return path
+    monkeypatch.setattr(url_download, "download_video", _single)
+    body = client.post("/v1/audio/url-media/video",
+                       json={"url": _URL, "max_height": 720}).json()
+    assert body["container"] == "webm"
+    assert url_media_store._REG[body["media_id"]]["ext"] == "webm"
+
+
+def test_video_ratio_is_learned_against_the_unscaled_estimate(
+        client, video_enabled, monkeypatch):
+    # approx_bytes is ALREADY scaled by the learned ratio: measuring against
+    # it would settle the EWMA on sqrt(true ratio).
+    from faster_whisper_backend.runtime import stage_rates
+
+    async def _probe(url, *, timeout):
+        rung = dict(_LADDER[1], bytes_approx=True, approx_bytes=44,
+                    raw_approx_bytes=176, extractor="Youtube", protocol="m3u8")
+        return _info(url=url, video_ladder=[rung, dict(_LADDER[2])])
+    monkeypatch.setattr(url_download, "probe", _probe)
+    seen: list = []
+    monkeypatch.setattr(stage_rates, "record", lambda *a: seen.append(a))
+    r = client.post("/v1/audio/url-media/video", json={"url": _URL})
+    assert r.status_code == 200, r.text
+    assert len(seen) == 1 and seen[0][0] == url_download.RATIO_STAGE
+    assert seen[0][-1] == pytest.approx(len(b"video-bytes" * 8) / 176)
 
 
 def test_on_demand_video_over_cap_is_400(client, video_enabled, monkeypatch):

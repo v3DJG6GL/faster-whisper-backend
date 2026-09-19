@@ -31,7 +31,9 @@ def package_enabled(app_module, tmp_path, monkeypatch):
     """Packaging on, the store under tmp, ffmpeg + PyAV stubbed: the argv
     becomes a python script that copies the source and appends a marker."""
     monkeypatch.setattr(app_module.cfg, "MEDIA_PACKAGE_ENABLED", True, raising=False)
-    monkeypatch.setattr(app_module.cfg, "URL_DOWNLOAD_ENABLED", True, raising=False)
+    # URL download stays OFF (the shipped default): packaging ids must be
+    # fetchable through /v1/audio/url-media without the link feature.
+    monkeypatch.setattr(app_module.cfg, "URL_DOWNLOAD_ENABLED", False, raising=False)
     monkeypatch.setattr(app_module.cfg, "URL_MEDIA_DIR", str(tmp_path / "url_media"),
                         raising=False)
     ums.startup_reset()
@@ -220,6 +222,61 @@ def test_package_no_video_stream_422(client, package_enabled, monkeypatch):
     assert r.json()["detail"]["code"] == "no_video"
 
 
+def test_package_unreadable_source_is_not_reported_as_no_video(
+        client, package_enabled, monkeypatch):
+    def _boom(path):
+        raise ValueError("moov atom not found")
+    monkeypatch.setattr(pk, "probe_streams", _boom)
+    mid = _upload(client).json()["media_id"]
+    r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+    assert r.status_code == 422
+    assert r.json()["detail"] == {"code": "unreadable",
+                                  "message": pk.UNREADABLE_REASON}
+    assert "moov" not in r.text
+
+
+def test_package_cover_art_only_says_so(client, package_enabled, monkeypatch):
+    monkeypatch.setattr(pk, "probe_streams", lambda p: _streams(
+        video_codec=None, cover_art_only=True))
+    mid = _upload(client).json()["media_id"]
+    r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+    assert r.status_code == 422
+    assert r.json()["detail"]["code"] == "no_video"
+    assert "cover art" in r.json()["detail"]["message"]
+
+
+def test_package_maps_the_probed_video_index(client, package_enabled, monkeypatch):
+    seen: list = []
+    inner = pk.build_package_argv
+
+    def _argv(*a, **kw):
+        seen.append(kw.get("video_index"))
+        return inner(*a, **kw)
+    monkeypatch.setattr(pk, "build_package_argv", _argv)
+    monkeypatch.setattr(pk, "probe_streams", lambda p: _streams(video_index=1))
+    mid = _upload(client).json()["media_id"]
+    r = client.post(f"/v1/audio/media/{mid}/package", json={"container": "mkv"})
+    assert r.status_code == 200, r.text
+    assert seen == [1]
+
+
+def test_package_body_cap_covers_every_limit_compliant_request(package_enabled):
+    # MAX_TRACKS tracks of MAX_SRT_BYTES each must reach the route (and its
+    # own 422s), not the middleware's bare 413 — with JSON-escape headroom.
+    assert (package_enabled._media_package_max_body_bytes()
+            >= pk.MAX_TRACKS * pk.MAX_SRT_BYTES * 2)
+
+
+def test_upload_whose_spool_vanished_is_a_deliberate_500(
+        client, package_enabled, monkeypatch):
+    def _gone(src, dst):
+        raise FileNotFoundError(src)
+    monkeypatch.setattr(package_enabled.os, "replace", _gone)
+    r = _upload(client)
+    assert r.status_code == 500
+    assert r.json()["detail"] == "upload staging file vanished"
+
+
 @pytest.mark.parametrize("body", [
     {"container": "webm"},
     {"container": "mkv", "subtitles": [{"lang": "EN", "srt": "1\n0 --> 1\nx"}] },
@@ -344,6 +401,37 @@ def test_retain_media_keeps_the_upload_and_returns_its_id(client, package_enable
     # Without the flag nothing is retained; the spool is gone either way.
     r = client.post("/v1/audio/transcriptions", files=_FILE,
                     data={"model": "whisper-1", "response_format": "verbose_json"})
+    assert "source_media_id" not in r.json()
+    assert not [n for n in os.listdir(tempfile.gettempdir())
+                if n.startswith("urlmedia-") and time.time() - os.path.getmtime(
+                    os.path.join(tempfile.gettempdir(), n)) < 5]
+
+
+def test_retain_media_with_a_text_response_is_422(client, package_enabled):
+    # A text body has no field for the media id: refused up front, before
+    # the spool (and its hardlinked copy) is written.
+    _FILE = {"file": ("a.mp4", b"RIFFxxxxWAVE" + b"\0" * 64, "video/mp4")}
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1", "response_format": "text",
+                          "retain_media": "true"})
+    assert r.status_code == 422
+    assert "retain_media" in r.json()["detail"]
+    assert not [n for n in os.listdir(tempfile.gettempdir())
+                if n.startswith("urlmedia-") and time.time() - os.path.getmtime(
+                    os.path.join(tempfile.gettempdir(), n)) < 5]
+    assert not [m for m, e in ums._REG.items() if e.get("kind") == "video"]
+
+
+def test_retain_media_refused_by_the_store_leaves_no_copy(client, package_enabled,
+                                                          monkeypatch):
+    # register() answering None (store full / unwritable) leaves the copy on
+    # disk: the handler must still unlink it.
+    monkeypatch.setattr(ums, "register", lambda *a, **kw: None)
+    _FILE = {"file": ("a.mp4", b"RIFFxxxxWAVE" + b"\0" * 64, "video/mp4")}
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1", "response_format": "verbose_json",
+                          "retain_media": "true"})
+    assert r.status_code == 200, r.text
     assert "source_media_id" not in r.json()
     assert not [n for n in os.listdir(tempfile.gettempdir())
                 if n.startswith("urlmedia-") and time.time() - os.path.getmtime(

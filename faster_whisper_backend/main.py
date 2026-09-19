@@ -16,9 +16,9 @@ from contextlib import asynccontextmanager
 # BOOT_ID (the per-process restart marker surfaced via /v1/models) lives in
 # build_info with the rest of the server identity; imported this early —
 # before config — so it exists exactly as soon as it used to.
+from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 from faster_whisper_backend.core import decode_trace as _decode_trace
 from faster_whisper_backend.core import segment_guards
-from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 
 from faster_whisper_backend import config as cfg
 # system_stats imports psutil + pynvml at module load and primes psutil's
@@ -921,10 +921,6 @@ _TRACE_FULL_MAX_WINDOWS = 12
 _TRACE_SLOWEST_SHOWN = 5
 
 
-def _fmt_secs(v) -> str:
-    return "-" if v is None else f"{float(v):.1f}s"
-
-
 def _fmt_num(v, fmt="{:.2f}") -> str:
     return "-" if v is None else fmt.format(float(v))
 
@@ -946,6 +942,10 @@ def _format_decode_trace_section(trace: "dict | None") -> list[str]:
             f"{'s' if trace.get('n_rungs', 0) != 1 else ''} · "
             f"{trace.get('tokens', 0)} tokens · "
             f"{_fmt_secs(trace.get('generate_s'))} in generate")
+    if trace.get("total_s") is not None:
+        # Wall time of the whole decode: what is not "in generate" is
+        # encoding, VAD and the segment bookkeeping between windows.
+        head += f" · {_fmt_secs(trace['total_s'])} total"
     if trace.get("extra_encodes"):
         head += f" · +{trace['extra_encodes']} lang-detect encode"
     if trace.get("skipped_windows"):
@@ -1870,10 +1870,21 @@ def tail_guard_rows(limits: dict) -> dict:
     }
 
 
+# Tail cuts listed one per row; a long file that trips the guards on many
+# segments gets the rest as a count, like the capped segments table.
+_TAIL_CUT_ROWS_MAX = 10
+
+
 def tail_cut_rows(cuts: list) -> dict:
-    """One receipt row per tail cut that fired (`tail_cut`, `tail_cut_2`, …)."""
-    return {("tail_cut" if n == 0 else f"tail_cut_{n + 1}"):
-            PlainText(segment_guards.describe_cut(c)) for n, c in enumerate(cuts)}
+    """One receipt row per tail cut that fired (`tail_cut`, `tail_cut_2`, …),
+    the first `_TAIL_CUT_ROWS_MAX` of them; `tail_cut_more` counts the rest."""
+    rows = {("tail_cut" if n == 0 else f"tail_cut_{n + 1}"):
+            PlainText(segment_guards.describe_cut(c))
+            for n, c in enumerate(cuts[:_TAIL_CUT_ROWS_MAX])}
+    if len(cuts) > _TAIL_CUT_ROWS_MAX:
+        rows["tail_cut_more"] = PlainText(
+            f"{len(cuts) - _TAIL_CUT_ROWS_MAX} more not listed")
+    return rows
 
 
 def record_tail_cut(cut: dict, *, emptied: bool) -> None:
@@ -3584,10 +3595,16 @@ async def _csrf_mw(request: Request, call_next):
 # Non-JSON, non-multipart bodies never legitimately approach the media cap;
 # they keep the pre-media-cap service ceiling.
 _NON_UPLOAD_BODY_BACKSTOP = 268_435_456
-# The packaging request: up to MAX_TRACKS SRT files of MAX_SRT_BYTES each,
-# JSON-escaped — 16 MiB covers the worst case with room.
-_MEDIA_PACKAGE_MAX_BODY_BYTES = 16 * 1024 * 1024
 _MEDIA_PACKAGE_PATH_RE = re.compile(r"\A/v1/audio/media/[0-9a-f]{32}/package\Z")
+
+
+def _media_package_max_body_bytes() -> int:
+    """The packaging request's body cap, derived from the route's own bounds
+    (MAX_TRACKS SRT files of MAX_SRT_BYTES each = 12 x 2 MiB today) with 2x
+    headroom for JSON escaping — so a body that respects every per-track
+    limit reaches the route and its 422s instead of a bare 413 here."""
+    from faster_whisper_backend.url import package as _pk
+    return _pk.MAX_TRACKS * _pk.MAX_SRT_BYTES * 2
 
 
 @app.middleware("http")
@@ -3644,7 +3661,7 @@ async def _max_body_mw(request: Request, call_next):
         if _path == "/v1/audio/media":
             max_body = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
         elif _MEDIA_PACKAGE_PATH_RE.match(_path):
-            max_body = _MEDIA_PACKAGE_MAX_BODY_BYTES
+            max_body = _media_package_max_body_bytes()
     _clen = request.headers.get("content-length")
     if _clen and _clen.isdigit() and int(_clen) > max_body:
         from fastapi.responses import JSONResponse
@@ -3981,18 +3998,21 @@ def _jobs_start(pid: "str | None", *, request_id: str, kind: str,
                 source_name: "str | None", task: "str | None" = None,
                 response_format: "str | None" = None) -> bool:
     """Insert the `running` row for `pid`. False when no row was written
-    (no id, feature off, or the store is unavailable)."""
+    (no id, feature off, the store is unavailable, or the id already names
+    another caller's row — the store refuses to replace that one)."""
     if not pid or not _jobs_enabled():
         return False
     try:
-        _jobs_store.start(
+        # prune_every=0: retention is `_jobs_retention_loop`'s job (hourly,
+        # off the loop); the store's lazy prune would run on the event loop.
+        return bool(_jobs_store.start(
             job_id=pid, request_id=request_id, kind=kind,
             user_id=user_id, key_id=key_id, model=model,
             source_kind=source_kind, source_name=source_name, task=task,
             response_format=response_format, ttl_s=_jobs_ttl_s(),
             max_rows=int(getattr(cfg, "JOBS_MAX_ROWS", 2000)),
-            max_bytes=int(getattr(cfg, "JOBS_MAX_BYTES", 2_000_000_000)))
-        return True
+            max_bytes=int(getattr(cfg, "JOBS_MAX_BYTES", 2_000_000_000)),
+            prune_every=0))
     except Exception as e:  # noqa: BLE001 — never fail a run on the ledger
         logger.warning("[jobs] could not record job start: %s", e)
         return False
@@ -4019,13 +4039,17 @@ def _jobs_finish_sync(pid: str, *, status: str, payload=None,
     the handler returned it (dict, or the `text` format's str); it is stored
     only for status "ok". Blocking SQLite — call off the loop for big runs."""
     state = {"ok": "done", "cancelled": "cancelled"}.get(status, "failed")
-    result = None
-    if state == "done" and payload is not None:
-        result = _jsonable_encoder(payload)
     try:
-        _jobs_store.finish(job_id=pid, state=state, error=error,
-                           result=result, stages=stages, plan=plan,
-                           model=model, task=task, ttl_s=_jobs_ttl_s())
+        result = None
+        if state == "done" and payload is not None:
+            result = _jsonable_encoder(payload)
+        if not _jobs_store.finish(job_id=pid, state=state, error=error,
+                                  result=result, stages=stages, plan=plan,
+                                  model=model, task=task, ttl_s=_jobs_ttl_s()):
+            # Evicted meanwhile (row cap / byte cap / TTL): a re-attaching
+            # client gets 404, and this line is what explains it.
+            logger.info("[jobs] row %s gone before finish — result not stored",
+                        pid[:8])
     except Exception as e:  # noqa: BLE001
         logger.warning("[jobs] could not record job end: %s", e)
 
@@ -4132,7 +4156,10 @@ def _progress_set(pid: "str | None", **fields) -> None:
                      target=fields.get("target"),
                      target_progress=fields.get("target_progress"),
                      total_bytes=fields.get("total_bytes"),
-                     step=fields.get("step"))
+                     # Sticky like `stage`: a write that omits `step` (the
+                     # keep_video task's `video=` ticks) means "unchanged",
+                     # not "no step" — every step ends with an explicit None.
+                     step=entry.get("step"))
         except Exception:  # noqa: BLE001
             pass
 
@@ -4369,7 +4396,22 @@ async def transcribe(
                 raise HTTPException(
                     status_code=403,
                     detail="video download is not enabled on this server")
+            if not _pid:
+                # The fetch outlives the response and reports through the
+                # progress entry alone: without an id nobody could poll,
+                # cancel or ever learn the media id it registers.
+                raise HTTPException(
+                    status_code=422,
+                    detail="keep_video needs a progress_id to report the "
+                           "video through")
             _url_video_rate.hit(_rl.identity_key(user, request))
+        if _retain_media and response_format == "text":
+            # A text body has no field for the media id, so the retained
+            # copy could never be addressed — refuse before the spool (and
+            # its hardlink) is written, like keep_video above.
+            raise HTTPException(
+                status_code=422,
+                detail="retain_media requires a json response format")
         _rplan.set_stages(_provisional_stages(
             is_url=source_url is not None,
             separate=_form_bool(separate_bgm), diarize=_form_bool(diarize),
@@ -4459,7 +4501,6 @@ async def transcribe(
                 # semaphore (network-bound); it has its own, narrower one.
                 from faster_whisper_backend.url import download as _udl
                 from faster_whisper_backend.url import media_store as _ums
-                _url_max = max_upload
                 logger.info("[url-dl] transcribe-from-url requested (host %s)",
                             _url_host_for_log(source_url))
                 _dl_t0 = time.perf_counter()
@@ -4491,7 +4532,7 @@ async def transcribe(
                         _dl_path = await _udl.download(
                             _url,
                             dest_dir=_url_job_dir,
-                            max_bytes=_url_max,
+                            max_bytes=max_upload,
                             timeout=float(getattr(
                                 cfg, "URL_DOWNLOAD_TIMEOUT_S", 900)),
                             progress_cb=lambda f, tot: _progress_set(
@@ -4563,9 +4604,10 @@ async def transcribe(
                                 _pid, _url, _rung,
                                 capped=_video_max_height is not None,
                                 user_id=_user_id, protect=_source_media_id,
-                                run_finished=_run_finished))
-                        if _pid:
-                            _VIDEO_TASKS[_pid] = _video_task
+                                run_finished=_run_finished,
+                                job_row=_job_row))
+                        # keep_video is refused without a progress_id.
+                        _VIDEO_TASKS[_pid] = _video_task
             else:
                 # Stream the part to the temp file in chunks, counting bytes as
                 # we go: the upload is never fully resident, and an oversized
@@ -6004,7 +6046,10 @@ async def transcribe(
                 _source_media_id = await asyncio.to_thread(
                     _ums_r.register, _retained_upload, user_id=_user_id,
                     kind="video")
-                _retained_upload = None
+                if _source_media_id is not None:
+                    # register() moved the file; on a refusal (None) it may
+                    # still be on disk, and the inner finally unlinks it.
+                    _retained_upload = None
 
             if response_format == "verbose_json":
                 response = {
@@ -6193,20 +6238,7 @@ async def transcribe(
             # the TTL retires them on its own.
             _PLAN_BY_PID.pop(_pid, None)
             _RUN_PLAN_BY_PID.pop(_pid, None)
-        # Teach the rates ledger from the stages that ran clean.
-        try:
-            _rplan.finish_run(_status)
-        except Exception:  # noqa: BLE001 — a ledger write never fails a run
-            pass
         jobs.job_end(request_id)
-        if _job_row:
-            await _jobs_finish(
-                _pid, status=_status,
-                payload=(_response_payload if _status == "ok" else None),
-                error=_job_error_text(_status, _exc),
-                stages=(_stage_timings or None),
-                plan=_rplan.snapshot()["plan"],
-                model=resolved_model, task=_task_now)
         if _status != "ok" and _error_class is None:
             _error_class, _error_stage = metrics.classify_error(
                 _exc, status=_status, stage=_cur_stage)
@@ -6231,6 +6263,24 @@ async def transcribe(
             language=_language,
             wait_s=metrics.take_wait(),
         )
+        # The awaits come LAST: a cancellation landing on one of them (a
+        # second cancel at shutdown) escapes this finally, and nothing that
+        # must never be skipped may sit behind it. The job row first — its
+        # write is shielded and outlives the cancel.
+        if _job_row:
+            await _jobs_finish(
+                _pid, status=_status,
+                payload=(_response_payload if _status == "ok" else None),
+                error=_job_error_text(_status, _exc),
+                stages=(_stage_timings or None),
+                plan=_rplan.snapshot()["plan"],
+                model=resolved_model, task=_task_now)
+        # Teach the rates ledger from the stages that ran clean. Off the
+        # loop: one locked, fsync'd rewrite of the ledger file.
+        try:
+            await asyncio.to_thread(_rplan.finish_run, _status)
+        except Exception:  # noqa: BLE001 — a ledger write never fails a run
+            pass
 
 
 @app.post("/v1/audio/translations")
@@ -6649,11 +6699,14 @@ async def translate_text(request: Request,
                     plan=_rplan.snapshot()["plan"], model=(_tr_model or None))
                 _job_finished = True
             if status == "ok":
+                # The clean run's ledger write is blocking file IO: the
+                # success tail awaits it off the loop as its last step.
                 _rplan.stage_done("translating")
-            try:
-                _rplan.finish_run(status)
-            except Exception:  # noqa: BLE001 — never fail on a ledger write
-                pass
+            else:
+                try:
+                    _rplan.finish_run(status)   # no IO: nothing is learned
+                except Exception:  # noqa: BLE001 — never fail on a ledger write
+                    pass
             _ec, _es = metrics.classify_error(exc, status=status,
                                               stage="translating")
             metrics.record_transcription(
@@ -6818,18 +6871,21 @@ async def translate_text(request: Request,
     if _held_key:
         _used_model = meta.get("model") or _tr_model
         _tr_key = preload.stats_key("translation", _used_model or "")
+        # ONE stage row for both consumers (the /stats recent-jobs row and
+        # the receipt's Pipeline table), so they cannot print different
+        # seconds for the same stage.
+        _tr_stage = {"name": "translating", "secs": round(_elapsed, 3),
+                     "model": _used_model or None,
+                     "load_secs": round(_load_s, 3),
+                     "device": _model_compute_device(_tr_key)[1],
+                     "detail": f"{len(seg_in)} segs → {','.join(targets)}",
+                     "targets": list(targets)}
         _held = receipt_hold.claim(_held_key)
         if _held is not None and _held.get("request_id"):
             try:
                 from faster_whisper_backend.stats import recent_transcriptions_store as _rts
                 if _rts.append_stage(
-                        str(_held["request_id"]),
-                        {"name": "translating", "secs": round(_elapsed, 3),
-                         "model": _used_model or None,
-                         "load_secs": round(_load_s, 3),
-                         "device": _model_compute_device(_tr_key)[1],
-                         "detail": f"{len(seg_in)} segs → {','.join(targets)}",
-                         "targets": list(targets)},
+                        str(_held["request_id"]), dict(_tr_stage),
                         add_processing_s=_elapsed):
                     _folded_into = str(_held["request_id"])
             except Exception as _fe:  # noqa: BLE001 — a stats miss never fails the request
@@ -6850,14 +6906,7 @@ async def translate_text(request: Request,
             # Append the translate row to the stage table the utterance was
             # parked with, so the Pipeline section shows both halves and the
             # cold-load cost lands where a reader looks for it.
-            _held["stages"] = list(_held.get("stages") or []) + [{
-                "name": "translating",
-                "secs": round(_elapsed, 2),
-                "model": _used_model or None,
-                "load_secs": round(_load_s, 2),
-                "device": _model_compute_device(_tr_key)[1],
-                "detail": f"{len(seg_in)} segs → {','.join(targets)}",
-            }]
+            _held["stages"] = list(_held.get("stages") or []) + [_tr_stage]
             try:
                 logger.info(_format_request_block(**_held))
             except Exception as _me:  # noqa: BLE001 — never fail on a receipt
@@ -6909,6 +6958,12 @@ async def translate_text(request: Request,
         # Text results are small (segments in, translations out) — inline.
         _jobs_finish_sync(_pid, status="ok", payload=_result,
                           plan=_result["plan"], model=(meta.get("model") or _tr_model or None))
+    # Teach the rates ledger — off the loop (a locked, fsync'd file rewrite)
+    # and LAST, so a cancellation landing on this await skips nothing.
+    try:
+        await asyncio.to_thread(_rplan.finish_run, "ok")
+    except Exception:  # noqa: BLE001 — never fail on a ledger write
+        pass
     return _result
 
 
@@ -7192,8 +7247,10 @@ _url_video_rate = _rl.FixedWindow(
 )
 
 # progress_id → the keep_video task still running past its transcription
-# handler. Bounded by the number of in-flight video fetches; each task pops
-# its own key in its finally.
+# handler. Nothing reads it back: it is the strong reference that keeps
+# asyncio from collecting a detached task mid-flight (the loop only holds
+# tasks weakly). Bounded by the number of in-flight video fetches; each task
+# pops its own key in its finally.
 _VIDEO_TASKS: "dict[str, asyncio.Task]" = {}
 
 _VIDEO_MIME = {
@@ -7222,13 +7279,9 @@ def _clean_video_format(value) -> "str | None":
     the ladder, so a stale choice degrades to the height rule."""
     if not isinstance(value, str):
         return None
-    v = value.strip()
-    return v if (v and _udl_format_id_re().match(v)) else None
-
-
-def _udl_format_id_re():
     from faster_whisper_backend.url import download as _udl
-    return _udl.FORMAT_ID_RE
+    v = value.strip()
+    return v if (v and _udl.FORMAT_ID_RE.match(v)) else None
 
 
 def _video_state(**fields) -> dict:
@@ -7250,7 +7303,8 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                                   capped: bool, user_id: "str | None",
                                   protect: "str | None",
                                   run_finished: "list[bool]",
-                                  mirror_stage: bool = False) -> dict:
+                                  mirror_stage: bool = False,
+                                  job_row: bool = False) -> dict:
     """Fetch the VIDEO of `url` at `rung` into the media store and report it
     through the progress entry's `video` sub-object (and, for the on-demand
     route, the entry's own stage/progress). Returns the terminal state dict;
@@ -7258,7 +7312,9 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
 
     The transcription handler may return before this finishes: its finally
     then leaves the progress entry to us (`run_finished`), so the client can
-    keep polling for `video.state` and still cancel the fetch."""
+    keep polling for `video.state` and still cancel the fetch. `job_row`:
+    this run owns the durable job row under `pid`, whose stored result is
+    patched with the outcome when it was written while we were pending."""
     from faster_whisper_backend.url import download as _udl
     from faster_whisper_backend.url import media_store as _ums
     state = _video_state(height=rung.get("height"),
@@ -7306,19 +7362,27 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                     state="downloading", progress=f, total_bytes=tot,
                     downloaded_bytes=done),
                 cancel_check=lambda: _cancel_requested(pid))
-        _pub(state="registering", progress=1.0)
+        # Report the container that LANDED: an un-merged single download
+        # keeps the site's own extension (a webm behind an "mkv" rung), and
+        # the client names its export after this field.
+        _landed = os.path.splitext(path)[1].lstrip(".").lower()
+        _pub(state="registering", progress=1.0,
+             **({"container": _landed} if _landed else {}))
         size = os.path.getsize(path)
         # Teach the ledger what this site's estimate was worth: the next
         # preview of a fragmented rung from the same extractor scales its
         # peak-bitrate numbers by actual/estimated.
         _est = rung.get("approx_bytes")
-        if rung.get("bytes_approx") and _est and size > 0:
+        # Measured against the UNSCALED estimate: against the already-scaled
+        # one the EWMA settles on sqrt(true ratio) instead of the ratio.
+        _raw = rung.get("raw_approx_bytes") or _est
+        if rung.get("bytes_approx") and _raw and size > 0:
             from faster_whisper_backend.runtime import stage_rates as _rates
             _rates.record(_udl.RATIO_STAGE, rung.get("extractor"),
-                          rung.get("protocol"), None, size / float(_est))
+                          rung.get("protocol"), None, size / float(_raw))
             logger.info("[url-dl] video estimate %.1f MB → actual %.1f MB "
-                        "(ratio %.2f, %s/%s)", _est / 1e6, size / 1e6,
-                        size / float(_est), rung.get("extractor"),
+                        "(ratio %.2f, %s/%s)", (_est or _raw) / 1e6, size / 1e6,
+                        size / float(_raw), rung.get("extractor"),
                         rung.get("protocol"))
         mid = await asyncio.to_thread(
             _ums.register, path, user_id=user_id, kind="video",
@@ -7351,7 +7415,40 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
             _VIDEO_TASKS.pop(pid, None)
             if run_finished[0]:
                 _progress_close(pid)
+    if pid and job_row and run_finished[0]:
+        # The handler stored `source_video_pending`; a client re-attaching
+        # via /v1/jobs/{id}/result needs the outcome. (A cancelled task
+        # never gets here: the scrub then simply drops the flag.)
+        await asyncio.to_thread(_jobs_attach_video_sync, pid, dict(state))
     return dict(state)
+
+
+def _jobs_attach_video_sync(pid: str, state: dict) -> None:
+    """Swap a finished job row's `source_video_pending` for the video keys
+    the response would have carried had the fetch ended in time. Only a
+    `done` row whose payload still holds the flag is touched; swallows and
+    logs like every ledger helper."""
+    try:
+        row = _jobs_store.get(pid)
+        for _ in range(10):
+            # The fetch can end while the handler's own finish is still on
+            # its thread; blocking is fine here (worker thread).
+            if not row or row.get("state") != "running":
+                break
+            time.sleep(0.1)
+            row = _jobs_store.get(pid)
+        if not row or row.get("state") != "done":
+            return
+        payload = _jobs_store.get_result(pid)
+        if not isinstance(payload, dict) or not payload.pop(
+                "source_video_pending", None):
+            return
+        payload.update(_video_response_keys(None, state))
+        _jobs_store.finish(job_id=pid, state="done", result=payload,
+                           stages=row.get("stages"), plan=row.get("plan"),
+                           ttl_s=_jobs_ttl_s())
+    except Exception as e:  # noqa: BLE001 — never fail the fetch on the ledger
+        logger.warning("[jobs] could not attach the video to the job: %s", e)
 
 
 def _video_response_keys(task: "asyncio.Task | None",
@@ -7466,9 +7563,13 @@ async def url_media(media_id: str,
     answer the same 404 — no oracle. FileResponse handles Range, so the
     client player can seek without re-downloading."""
     from fastapi.responses import FileResponse
-    if not getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
+    # Either producer hands out these ids: a link run (URL download) or an
+    # uploaded / retained video (media packaging, on by default). Gating on
+    # the URL feature alone left the packaging ids live but unreadable.
+    if not (getattr(cfg, "URL_DOWNLOAD_ENABLED", False)
+            or getattr(cfg, "MEDIA_PACKAGE_ENABLED", True)):
         raise HTTPException(status_code=403,
-                            detail="URL download is not enabled on this server")
+                            detail="media retention is not enabled on this server")
     if not _URL_MEDIA_ID_RE.match(media_id):
         raise HTTPException(status_code=422, detail="malformed media id")
     from faster_whisper_backend.url import media_store as _ums
@@ -7642,8 +7743,7 @@ def _media_streams_for(entry: dict, media_id: str) -> "dict | None":
     except Exception as e:  # noqa: BLE001 — a hostile file must not 500 the route
         logger.info("[package] stream probe failed for %s: %s", media_id,
                     _log_safe(str(e)))
-        facts = _pk.MediaStreams(None, None, None, None, None, False,
-                                 "the file could not be read").as_dict()
+        facts = _pk.unreadable_streams().as_dict()
     _ums.probe_cache_set(media_id, facts)
     return facts
 
@@ -7692,7 +7792,13 @@ async def upload_media(request: Request,
         if received == 0:
             raise HTTPException(status_code=422, detail="empty upload")
         final = part[:-len(".part")]
-        os.replace(part, final)
+        try:
+            os.replace(part, final)
+        except OSError:
+            # The spool went away under us (a staging sweep, a wiped tmp
+            # dir): a deliberate error instead of a bare traceback.
+            raise HTTPException(status_code=500,
+                                detail="upload staging file vanished")
         part = None
         media_id = await asyncio.to_thread(
             _ums.register, final, user_id=user.get("user_id"), kind="video")
@@ -7820,10 +7926,18 @@ async def package_media(media_id: str, request: Request,
     if facts is None:
         raise HTTPException(status_code=503,
                             detail="stream probing is unavailable on this server (PyAV)")
+    if facts.get("unreadable"):
+        # The probe could not open the file at all: that is not "no video".
+        raise HTTPException(status_code=422,
+                            detail={"code": "unreadable",
+                                    "message": _pk.UNREADABLE_REASON})
     if not facts.get("video_codec"):
         raise HTTPException(status_code=422,
                             detail={"code": "no_video",
-                                    "message": "this media has no video stream"})
+                                    "message": (
+                                        "this media has only cover art, no video stream"
+                                        if facts.get("cover_art_only")
+                                        else "this media has no video stream")})
     if container == "mp4" and not facts.get("mp4_ok"):
         raise HTTPException(status_code=422,
                             detail={"code": "mp4_incompatible",
@@ -7839,7 +7953,9 @@ async def package_media(media_id: str, request: Request,
             entry["path"], tracks, container=container,
             default_track=default_track, original_track=original_track,
             audio_lang=audio_lang, audio_label=audio_label,
-            timeout=float(getattr(cfg, "MEDIA_PACKAGE_TIMEOUT_S", 900)))
+            timeout=float(getattr(cfg, "MEDIA_PACKAGE_TIMEOUT_S", 900)),
+            # The real video can sit behind a cover-art stream.
+            video_index=int(facts.get("video_index") or 0))
     except _pk.SubtitleParseError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except _pk.PackageTimeout as e:
@@ -7852,7 +7968,7 @@ async def package_media(media_id: str, request: Request,
     background.add_task(shutil.rmtree, workdir, True)
     return FileResponse(
         path=out,
-        media_type={"mkv": "video/x-matroska", "mp4": "video/mp4"}[container],
+        media_type=_VIDEO_MIME[container],
         filename=f"{stem}.{container}",
         headers={"Cache-Control": "no-store"},
     )
@@ -8342,7 +8458,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
   .line.match { background: color-mix(in srgb, var(--yellow) 14%, transparent); }
   .line.match-cur { background: color-mix(in srgb, var(--yellow) 34%, transparent);
     outline: 1px solid var(--yellow); }
-  #log.hide-mode .line.match { background: transparent; outline: none; }
+  #log.hide-mode .line.match:not(.match-cur) { background: transparent; outline: none; }
   #filter-nav { display: inline-flex; align-items: center; gap: 0.25rem; margin-left: 0.375rem; }
   #filter-nav.hidden { display: none; }
   #filter-nav button { background: transparent; color: var(--cyan); border: 1px solid var(--border);
@@ -8747,11 +8863,13 @@ _LOG_VIEWER_HTML = """<!doctype html>
   }
   function _matches() { return Array.from(log.querySelectorAll('.line.match')); }
   let _navQueued = false;
-  function updateNav(total) {
+  function updateNav(list) {
+    // `list`: the caller's own _matches() result, so one DOM scan serves both.
     if (navEl) navEl.classList.toggle('hidden', !filterText);
     if (!filterText || !countEl) return;
-    const m = total != null ? total : _matches().length;
-    const cur = matchCurEl ? _matches().indexOf(matchCurEl) : -1;
+    if (!list) list = _matches();
+    const m = list.length;
+    const cur = matchCurEl ? list.indexOf(matchCurEl) : -1;
     countEl.textContent = !m ? 'no match' : (cur >= 0 ? (cur + 1) + '/' + m : String(m));
   }
   function queueNav() {
@@ -8767,7 +8885,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
   // dir: -1 = older, +1 = newer, 0 = restart at the newest hit.
   function jumpMatch(dir) {
     const m = _matches();
-    if (!m.length) { matchCurEl = null; updateNav(0); return; }
+    if (!m.length) { matchCurEl = null; updateNav(m); return; }
     let i = matchCurEl ? m.indexOf(matchCurEl) : -1;
     if (dir === 0 || i < 0) i = m.length - 1;
     else i = (i + dir + m.length) % m.length;
@@ -8781,7 +8899,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
       if (c) _unfold(c, 1e9);
     }
     matchCurEl.scrollIntoView({ block: 'center' });
-    updateNav(m.length);
+    updateNav(m);
   }
   function _p2(n) { return (n < 10 ? '0' : '') + n; }
   // Log lines start with a UTC ISO-8601 'Z' timestamp; show it in the reader's

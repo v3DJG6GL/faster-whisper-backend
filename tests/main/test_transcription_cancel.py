@@ -430,3 +430,63 @@ def test_cancelled_request_is_classified_cancelled(client, app_module):
     row = recent_transcriptions_store.list_recent(limit=1)[0]
     assert row["status"] == "cancelled"
     assert row["error_class"] == "cancelled"
+
+
+def test_cancel_landing_on_the_job_write_still_records_the_run(client, app_module,
+                                                               monkeypatch):
+    # The outer finally's awaits sit AFTER the usage/metrics row: a second
+    # cancellation delivered while the handler is parked on the job write
+    # escapes the finally, and must not take the run's record with it.
+    import asyncio
+
+    import pytest
+
+    async def _cancelled_finish(pid, **kw):
+        raise asyncio.CancelledError()
+    monkeypatch.setattr(app_module, "_jobs_finish", _cancelled_finish)
+    recorded = []
+    _orig = app_module.metrics.record_transcription
+
+    def _spy(**kw):
+        recorded.append(kw)
+        return _orig(**kw)
+    monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
+    with pytest.raises(Exception):
+        _post(client, progress_id=_PID)
+    assert recorded and recorded[-1]["status"] == "ok"
+
+
+def test_a_field_only_progress_write_keeps_the_step(app_module):
+    # `step` is sticky like `stage`: the keep_video task's `video=` ticks
+    # omit it, and that means "unchanged" — not "the warm-up is over".
+    from faster_whisper_backend.core import run_plan
+
+    class _Clock:
+        t = 100.0
+
+        def __call__(self):
+            return self.t
+    clock = _Clock()
+    plan = run_plan.RunPlan(kind="url", now=clock)
+    plan.set_stages(["separating", "transcribing"])
+    plan.set_audio_seconds(600.0, src="decoder")
+    app_module._RUN_PLAN_BY_PID[_PID] = plan
+    try:
+        app_module._progress_set(_PID, stage="separating", step=None)
+        app_module._progress_set(_PID, step="preparing")
+        held = plan.snapshot()["overall"]
+        clock.t += 20
+        app_module._progress_set(_PID, video={"state": "downloading"})
+        clock.t += 20
+        snap = plan.snapshot()
+        sep = next(s for s in snap["plan"] if s["stage"] == "separating")
+        assert sep["phase"] == "preparing"
+        assert snap["overall"] == held
+        # The explicit end of the step still clears it.
+        app_module._progress_set(_PID, progress=0.5, step=None)
+        sep = next(s for s in plan.snapshot()["plan"] if s["stage"] == "separating")
+        assert sep.get("phase") is None
+    finally:
+        app_module._RUN_PLAN_BY_PID.pop(_PID, None)
+        app_module._progress_close(_PID)
+        app_module._PROGRESS_CLOSED.pop(_PID, None)
