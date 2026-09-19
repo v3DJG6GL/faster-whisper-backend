@@ -1287,5 +1287,6 @@ def test_stats_toolbar_reflows_without_hard_breaks(client):
     assert html.count('<span class="sb-group">') >= 8
     # the layout tools are the last item of the first toolbar
     first = html[html.index('<div class="subbar">'):html.index('<div class="subbar subbar-usage">')]
-    assert first.rstrip().endswith('</div>\n  </div>')
-    assert first.index('id="layout-tools"') > first.index('id="live-range"')
+    tools = first.index('id="layout-tools"')
+    assert tools > first.index('id="live-range"')
+    assert 'sb-group' not in first[tools:]
