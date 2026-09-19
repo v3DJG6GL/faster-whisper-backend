@@ -231,6 +231,20 @@
       finalEl.textContent = docPrefix + (m.committed || "");
       tailEl.textContent = m.tail || "";
       renderPartial("", "");
+      // A final is the terminal frame of the utterance that showed
+      // "transcribing…" below. Only while running: after Stop the status is
+      // "finishing…" and the drain's finals must not put "listening" back.
+      if (running) setStatus("listening", "live");
+    }
+    else if (m.type === "utterance") {
+      // Lifecycle of the utterance the server is holding. "decoding" = it heard
+      // the end of the phrase and is running the final decode — without this the
+      // page said "listening" through the whole decode, as if nothing was
+      // happening. "dropped" = it ended with no text (noise); back to listening.
+      // Unknown states are ignored on purpose (the server may grow more).
+      if (!running) return;
+      if (m.state === "decoding") setStatus("transcribing…", "live");
+      else if (m.state === "dropped") setStatus("listening", "live");
     }
     else if (m.type === "boundary") {
       // Hard break (STREAMING_HARD_BREAK_SILENCE_MS of silence): the server

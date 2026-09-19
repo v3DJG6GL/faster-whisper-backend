@@ -53,6 +53,47 @@ def test_stream_happy_path_partials_then_final(app_module, monkeypatch):
     assert finals[-1].get("last") is True
 
 
+def test_stream_announces_the_utterance_lifecycle(app_module, monkeypatch):
+    """Over the real socket: ``ready`` advertises the frames, and the one
+    utterance is announced, marked as decoding, and closed by its final — in
+    that order, all on one ordinal. A client paints "the server is working"
+    between ``open`` and the terminal frame, so the order IS the contract."""
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            ws.send_json({
+                "type": "config", "model": "whisper-1", "response_format": "json",
+                "audio": {"format": "pcm_s16le", "sample_rate": 16000},
+            })
+            ready = ws.receive_json()
+            assert ready["type"] == "ready"
+            assert ready["utterance_frames"] is True
+
+            ws.send_bytes(_pcm(8000, 2500))
+            ws.send_bytes(_pcm(0, 1500))
+            ws.send_json({"type": "stop"})
+            msgs = _drain(ws)
+
+    seen = []
+    for m in msgs:
+        if m["type"] == "utterance":
+            seen.append((m["state"], m["utterance"]))
+        elif m["type"] == "final" and not m.get("last"):
+            seen.append(("final", m["utterance"]))
+    assert seen == [("open", 0), ("decoding", 0), ("final", 0)], msgs
+
+
+def test_dictate_page_shows_the_decode_as_transcribing(app_module):
+    """The page said "listening" through the whole final decode. It now follows
+    the utterance frames — and only while running, so the post-Stop drain's
+    frames can't overwrite "finishing…"."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        body = client.get("/dictate").text
+    assert 'm.type === "utterance"' in body
+    assert 'm.state === "decoding"' in body
+    assert "transcribing" in body
+
+
 def test_stream_rejects_unsupported_audio_format(app_module):
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:

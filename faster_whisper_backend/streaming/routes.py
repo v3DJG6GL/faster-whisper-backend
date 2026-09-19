@@ -23,9 +23,19 @@ Protocol (see streaming_session for the emission contract):
   server → client:
     {"type":"loading",model}  (keepalive while a cold model loads — may repeat)
     {"type":"ready",..} / {"type":"partial",committed,pending} /
-    {"type":"final",committed,tail,last?} / {"type":"error",code,message}
+    {"type":"final",utterance,committed,tail,last?} / {"type":"error",code,message}
     (final: ``committed`` is append-only/locked, ``tail`` is the provisional
      trailing sentence; both are full strings — the client replaces each region.)
+    {"type":"utterance",utterance,state,reason?}  lifecycle of the utterance the
+     server is holding: state "open" (once, at min-speech), "decoding" (once,
+     before the final decode), "dropped" (reason no_speech|empty|error). Every
+     announced utterance ends in exactly one of: a ``final`` with the same
+     ordinal, or "dropped". Clients must ignore states they do not know. The
+     closing ``last`` final is the document, not an utterance: its ordinal
+     belongs to none.
+    {"type":"captured",id,utterance}  receipt for a stored capture (after its final)
+    {"type":"boundary",utterance,separator}  long-silence hard break: fresh document
+    {"type":"closing"}  the server is done; the socket closes next
 
 main.py is imported lazily inside the handler to avoid the
 main → streaming_routes → main import cycle.
@@ -1076,7 +1086,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
             _detected_lang[0] = getattr(fw_info, "language", None) or req_language or _detected_lang[0]
             steps: "list | None" = [] if getattr(cfg, "TRACE_ENABLED", False) else None
             final_text = main._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident, language=_detected_lang[0])
-            if not decoded:
+            if info.get("decode_failed"):
+                # The session already logged the failure (type only). Say here
+                # what the text IS, so the row below isn't read as a decode.
+                logger.info(
+                    "[stream %s] utt#%s: the final decode failed — the text is "
+                    "the partial-committed transcript",
+                    session_id[:8], info["utterance"])
+            elif not decoded:
                 logger.info(
                     "[stream %s] utt#%s: near-silence gate skipped the final "
                     "decode — the text is the partial-committed transcript "
@@ -1464,6 +1481,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             "type": "ready", "session": session_id, "model": final_model,
             "partial_model": partial_model_name, "sample_rate": SAMPLE_RATE,
             "response_format": response_format, "audio_format": audio_fmt,
+            # This server announces each utterance's lifecycle (open / decoding /
+            # dropped — see the session module). Informational: a client that
+            # predates the frame ignores both this key and the frames.
+            "utterance_frames": True,
         }
         # Surface (never silently drop) any handshake override the admin config
         # locked out, so the client can see why it had no effect.

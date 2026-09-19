@@ -27,6 +27,16 @@ Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) transcri
   utterance's log receipt open and the client must echo the id back as `captured_id` on its
   `POST /v1/text/translations` so both halves log as one block. An id never claimed is released
   by the `LOG_RECEIPT_HOLD_S` idle sweep (default 90 s) with a "never sent" note.
+  **Utterance lifecycle:** so a client can show "the server is working" instead of guessing from
+  silence, the server sends `{"type": "utterance", "utterance": N, "state": …}` —
+  `open` (once, when the utterance holds `STREAMING_GATE_MIN_SPEECH_MS` of speech), `decoding`
+  (once, right before the final decode) and `dropped` (with `reason`: `no_speech` | `empty` |
+  `error`) when it ends without text. Every announced utterance ends in exactly one terminal
+  frame: a `final` carrying the same `utterance` ordinal, or `dropped`. Ordinals are unique and
+  only grow; clients must ignore states (and frame types) they don't know. The `ready` frame
+  carries `"utterance_frames": true` on servers that send them. A failed final decode no longer
+  retries on every audio frame: the utterance ends with the partial-agreed text as its `final`
+  (or `dropped`/`error` when there is none) and the session carries on.
 - GPU-accelerated (CUDA) via faster-whisper + CTranslate2, with **automatic CPU fallback** when no GPU is available
 - **Per-request model selection** — clients pass `model="large-v3"` / `"large-v3-turbo"` / any HF repo id; LRU-cached in VRAM
 - **Text-to-text translation stage** (optional install) — translate the finished transcript into arbitrary target languages with local GGUF models (HY-MT1.5, TranslateGemma, MiLM-MT, … via llama.cpp): `translate_to=de,fr` on a transcription request or standalone `POST /v1/text/translations`; **fluent** (sentence-group merge) or **faithful** (per-cue) mode, glossary enforcement, per-language `translations` in the response. Off by default (`WHISPER_TRANSLATION_ENABLED`).

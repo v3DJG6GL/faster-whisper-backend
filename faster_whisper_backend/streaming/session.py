@@ -9,6 +9,17 @@ partial/final decode loop, stabilizes live text with LocalAgreement-2, and emits
     ``committed`` prefix (append-only, never rewritten on screen) and a provisional
     ``tail`` (shown immediately but still revisable). Emitted per utterance once
     end-of-speech silence (or a forced commit) produces a fresh decode.
+  * ``utterance`` messages — the lifecycle of the utterance the server is
+    holding, so a client can show "the backend is working" instead of guessing
+    from silence: ``{"type":"utterance","utterance":N,"state":...}`` with
+    ``open`` (once, when the utterance holds ``min_speech_ms`` of speech — the
+    same gate the partials use, so a noise blip never announces), ``decoding``
+    (at most once, right before the final decode) and ``dropped`` (+ ``reason``:
+    ``no_speech`` | ``empty`` | ``error``) when it ends without a ``final``.
+    **Every announced utterance ends in exactly one terminal frame: a ``final``
+    carrying the same ordinal, or ``dropped``.** Ordinals are unique and only
+    ever grow; ``close()``'s closing document is not an utterance and never
+    emits ``dropped``.
 
 The class is **dependency-injected**: the model decode calls, the post-processing
 function, and the emit sink are passed in, so this module imports nothing from
@@ -170,6 +181,13 @@ class StreamSession:
         self._trimmed_samples = 0
         self._trimmed_words: "list[dict]" = []
         self._utterance_index = 0
+        # Lifecycle of the current utterance as the CLIENT has been told it:
+        # None (nothing announced) → "open" → "decoding". Announced utterances
+        # always end in exactly one terminal frame (``final`` or
+        # ``utterance``/``dropped``) — see _emit_utterance / _end_utterance.
+        self._utt_state: Optional[str] = None
+        self._final_emitted = False        # per-_finalize: a ``final`` went out
+        self._terminal_sent = False        # per-_finalize: ``final`` or ``dropped`` went out
         self._prompt = base_prompt.strip()
         self._closed = False
         # Set by the streaming route's consumer when it has fallen behind realtime:
@@ -320,6 +338,12 @@ class StreamSession:
             self._speech_ms += FRAME_MS
             self._silence_ms = 0
             self._idle_silence_ms = 0
+            # Announce the utterance once it holds enough speech to be decoded
+            # at all. Here and not in _run_partial: that one returns early while
+            # the consumer is behind realtime, which is exactly when a client
+            # most needs to know the server is holding its words.
+            if self._utt_state is None and self._speech_ms >= self.cfg.min_speech_ms:
+                await self._emit_utterance("open")
         else:
             self._idle_silence_ms += FRAME_MS
             if self._in_utterance:
@@ -432,7 +456,42 @@ class StreamSession:
             self.la.pop_committed(cut)
 
     async def _finalize(self, forced: bool = False) -> None:
+        # Did this utterance reach the wire as a ``final``? / has the client been
+        # given its terminal frame (``final`` or ``dropped``)? Both feed the
+        # lifecycle contract: _end_utterance advances the ordinal off the first,
+        # the error path below closes the cycle off the second.
+        # Instance state rather than return values, because the interesting case
+        # is a raise AFTER the final went out (on_final failing): the handlers
+        # below still need to know it did.
+        self._final_emitted = False
+        self._terminal_sent = False
+        try:
+            await self._finalize_inner(forced)
+        except CloseAbort:
+            # The route is tearing the session down (revoked credential): say
+            # nothing more, exactly as close() does.
+            raise
+        except Exception:
+            # postprocess / emit / on_final failed. Whatever the caller does with
+            # the error, a client that was told "open"/"decoding" must not be left
+            # waiting on this utterance forever.
+            if self._utt_state is not None and not self._terminal_sent:
+                try:
+                    await self._emit_utterance("dropped", "error")
+                except Exception:  # noqa: BLE001 — the sink itself may be what failed
+                    pass
+            raise
+        finally:
+            # Never emit from here: teardown cancels the pump mid-await, and an
+            # await inside ``finally`` would swallow that cancellation.
+            self._end_utterance(self._final_emitted)
+
+    async def _finalize_inner(self, forced: bool) -> None:
+        """The finalize body. _finalize owns the reset + ordinal advance, so
+        every exit from here — return or raise — closes the utterance exactly
+        once."""
         audio = self.audio
+        decode_failed = False
         # Anti-hallucination: never run the final decode on near-silence.
         if self._speech_ms < self.cfg.min_speech_ms or rms_dbfs(audio) < self.cfg.rms_gate_dbfs:
             # The gate judges the LIVE (post-trim) buffer only — text already
@@ -447,7 +506,11 @@ class StreamSession:
             tail = self.la.finish()
             raw = self.la.committed_text + self.la.text_of(tail)
             if not raw.strip():
-                self._reset_utterance()
+                # Nothing to say for it. An utterance the client was told about
+                # still gets its terminal frame — a noise burst long enough to
+                # pass min_speech_ms but too quiet for the RMS gate lands here.
+                if self._utt_state is not None:
+                    await self._emit_utterance("dropped", "no_speech")
                 return
             proc_dur = 0.0
             decoded = False
@@ -461,10 +524,40 @@ class StreamSession:
                      for w in (self.la.committed + tail)]
         else:
             decoded = True
+            await self._emit_utterance("decoding")
             t0 = time.perf_counter()
-            raw, words, dropped_all = await self.decode_final(audio.copy(), self._prompt)
+            try:
+                raw, words, dropped_all = await self.decode_final(audio.copy(), self._prompt)
+            except CloseAbort:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                # A failed final decode used to propagate with the utterance
+                # still open: _silence_ms stayed over the commit threshold, so
+                # the very next frame re-entered here and decoded the same
+                # buffer again — for as long as the fault lasted — while the
+                # raise also aborted feed_pcm's frame loop and lost the rest of
+                # that chunk. Treat it like the decode that returned nothing:
+                # what LocalAgreement already agreed (and the client already
+                # showed as partials) is the transcript. Same tolerance, and the
+                # same type-only log, as close(): the message can carry a
+                # client-chosen handshake string.
+                logger.warning("[stream %s] final decode failed (%s) — using the "
+                               "partial transcript", self.session_id[:8], type(exc).__name__)
+                decode_failed = True
+                decoded = False
+                tail = self.la.finish()
+                raw = self.la.committed_text + self.la.text_of(tail)
+                # LocalAgreement words are already utterance-absolute and hold
+                # any trim-banked prefix — see the gate path above.
+                words = [{"word": w.text, "start": w.start, "end": w.end}
+                         for w in (self.la.committed + tail)]
+                dropped_all = False
             proc_dur = time.perf_counter() - t0
-            if not (raw and raw.strip()) and not dropped_all:
+            if decode_failed:
+                if not raw.strip():
+                    await self._emit_utterance("dropped", "error")
+                    return
+            elif not (raw and raw.strip()) and not dropped_all:
                 # The final decode produced nothing at all (e.g. its VAD filter trimmed
                 # the whole buffer) — fall back to the partial-built LocalAgreement
                 # transcript. But when the decode DID produce segments and dropped them
@@ -489,35 +582,40 @@ class StreamSession:
         # The gate path's words are already utterance-absolute and already
         # include the banked prefix (see above), so only a real decode's
         # buffer-relative words are re-based here.
-        try:
-            if self._trimmed_audio:
-                full_audio = np.concatenate([*self._trimmed_audio, audio])
-                if decoded:
-                    off = self._buffer_offset
-                    words = self._trimmed_words + [
-                        {**w, "start": w["start"] + off, "end": w["end"] + off}
-                        for w in words]
-            else:
-                full_audio = audio
-            self.raw_confirmed += raw
-            self._prompt = self._make_prompt()
-            processed = self.postprocess(self.raw_confirmed)
-            await self._emit_document(processed, forced=forced, words=words)
-            if self.on_final is not None:
-                await self.on_final({
-                    "utterance": self._utterance_index,
-                    "audio_dur": full_audio.shape[0] / self.cfg.sample_rate,
-                    "trimmed_sec": self._trimmed_sec,
-                    "decoded": decoded,
-                    "proc_dur": proc_dur,
-                    "raw_text": raw,
-                    "words": words,
-                    "audio": full_audio,
-                    "forced": forced,
-                })
-            self._utterance_index += 1
-        finally:
-            self._reset_utterance()
+        if self._trimmed_audio:
+            full_audio = np.concatenate([*self._trimmed_audio, audio])
+            if decoded:
+                off = self._buffer_offset
+                words = self._trimmed_words + [
+                    {**w, "start": w["start"] + off, "end": w["end"] + off}
+                    for w in words]
+        else:
+            full_audio = audio
+        self.raw_confirmed += raw
+        self._prompt = self._make_prompt()
+        processed = self.postprocess(self.raw_confirmed)
+        if await self._emit_document(processed, forced=forced, words=words):
+            self._final_emitted = True
+            self._terminal_sent = True
+        elif self._utt_state is not None:
+            # The whole document post-processed to nothing (a lone hallucination
+            # the decode dropped, a filler the pipeline strips): no ``final``
+            # goes out, so close the cycle explicitly. Only here — close() calls
+            # _emit_document too, and its closing document is not an utterance.
+            await self._emit_utterance("dropped", "empty")
+        if self.on_final is not None:
+            await self.on_final({
+                "utterance": self._utterance_index,
+                "audio_dur": full_audio.shape[0] / self.cfg.sample_rate,
+                "trimmed_sec": self._trimmed_sec,
+                "decoded": decoded,
+                "decode_failed": decode_failed,
+                "proc_dur": proc_dur,
+                "raw_text": raw,
+                "words": words,
+                "audio": full_audio,
+                "forced": forced,
+            })
 
     async def _hard_break(self) -> None:
         """End the whole grouping after a long silence and start a fresh document,
@@ -544,7 +642,7 @@ class StreamSession:
     async def _emit_document(
         self, processed: str, *, forced: bool = False, flush_all: bool = False,
         last: bool = False, words: Optional[list[dict]] = None,
-    ) -> None:
+    ) -> bool:
         """Emit the post-processed document split into a stable ``committed`` prefix
         and a provisional ``tail``.
 
@@ -561,7 +659,7 @@ class StreamSession:
         self._committed_len = commit_len
         self._prev_processed = processed
         if not committed and not tail:
-            return
+            return False
         msg = {
             "type": "final",
             "utterance": self._utterance_index,
@@ -575,6 +673,36 @@ class StreamSession:
         if words:
             msg["words"] = words
         await self.emit(msg)
+        return True
+
+    async def _emit_utterance(self, state: str, reason: Optional[str] = None) -> None:
+        """Tell the client where the current utterance stands (see the module
+        docstring for the contract). ``open``/``decoding`` are sent at most once
+        each — a caller that reaches the same state twice is a no-op, so nothing
+        upstream can turn this into a per-frame flood."""
+        if state in ("open", "decoding"):
+            if self._utt_state == state or (state == "open" and self._utt_state is not None):
+                return
+            self._utt_state = state
+        else:
+            self._terminal_sent = True
+        msg = {"type": "utterance", "utterance": self._utterance_index, "state": state}
+        if reason:
+            msg["reason"] = reason
+        await self.emit(msg)
+
+    def _end_utterance(self, final_emitted: bool) -> None:
+        """Close the current utterance: advance the ordinal, then reset.
+
+        The ONE place the ordinal moves. It advances whenever the ordinal may
+        have reached the wire — the utterance was announced, or a ``final``
+        carried it — and never otherwise. It used to be bumped at the end of the
+        finalize body, which a raising postprocess/on_final skipped AFTER
+        ``final(N)`` had gone out: the next utterance then reused N, and a
+        client pairing ``captured`` receipts by ordinal lost that phrase's."""
+        if self._utt_state is not None or final_emitted:
+            self._utterance_index += 1
+        self._reset_utterance()
 
     def _stable_commit_len(self, processed: str) -> int:
         """Index up to which ``processed`` is safe to commit append-only.
@@ -617,6 +745,7 @@ class StreamSession:
         self._trimmed_samples = 0
         self._trimmed_words = []
         self._in_utterance = False
+        self._utt_state = None
         self._speech_ms = 0
         self._silence_ms = 0
         self._new_since_partial = 0
