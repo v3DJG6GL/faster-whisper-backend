@@ -240,6 +240,14 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "drops. Full 30 s windows of long files are unaffected. The refused "
         "window is listed in the log block's Decode trace. Default on; turn "
         "off only to check whether a missing last word is caused by this rule.",
+    "DECODE_TOKEN_CAP_PER_SECOND":
+        "Limit every decode attempt to 30 + this many tokens per second of "
+        "audio in the window (batch + streaming final). A decode that gets "
+        "stuck repeating itself otherwise runs to the model's hard limit and "
+        "costs 15-20 s before it is discarded. Real speech is about 3 tokens "
+        "per second, so correct text is never touched; 30 s windows of long "
+        "files are unaffected. An attempt that ran into the limit says "
+        "'hit cap' in the log block's Decode trace. 0 = disabled. Default 10.",
     "SUPPRESS_BLANK":
         "Suppress blank token at start of decoder sampling. Default true. "
         "Almost never disable; only useful when debugging tokenizer behavior.",
@@ -1038,6 +1046,13 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "otherwise see the rolling prompt + the utterance's own text and echo "
         "it verbatim into the transcript. Cross-utterance context via "
         "initial_prompt is unaffected. Batch keeps CONDITION_ON_PREVIOUS_TEXT.",
+    "STREAMING_FINAL_BEST_OF":
+        "Candidates a FINAL decode's retry attempts (temperature > 0) write in "
+        "parallel. The attempt only ends when the slowest candidate ends, so "
+        "one candidate stuck in a loop makes a short correct answer wait 10+ s. "
+        "1 (default) avoids that; raise towards BEST_OF for slightly more "
+        "robust retries at that latency risk. The first attempt (BEAM_SIZE) is "
+        "unaffected. Batch keeps BEST_OF.",
     "STREAMING_TAIL_TRIM_PAD_MS":
         "Audio kept (ms) after the last detected speech when trimming the "
         "trailing endpointer silence/noise off the FINAL decode buffer — "
@@ -1663,6 +1678,10 @@ class AdminConfig(BaseModel):
         "DECODE_SKIP_RESIDUAL_WINDOWS", scope="per_request",
         group="Decode params",
         subgroup="Advanced — anti-hallucination & token control")
+    DECODE_TOKEN_CAP_PER_SECOND: Annotated[float, Field(ge=0.0, le=50.0)] | None = _F(
+        "DECODE_TOKEN_CAP_PER_SECOND", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control")
     SUPPRESS_BLANK: bool | None = _F(
         "SUPPRESS_BLANK", scope="per_request", group="Decode params",
         subgroup="Advanced — anti-hallucination & token control")
@@ -1754,10 +1773,14 @@ class AdminConfig(BaseModel):
         "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
         order=9, model_override=False)
+    STREAMING_FINAL_BEST_OF: Annotated[int, Field(ge=1, le=20)] | None = _F(
+        "STREAMING_FINAL_BEST_OF", scope="per_request",
+        group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
+        order=10, model_override=False)
     STREAMING_TAIL_TRIM_PAD_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F(
         "STREAMING_TAIL_TRIM_PAD_MS", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
-        order=10, model_override=False)
+        order=11, model_override=False)
     STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F(
         "STREAMING_VAD_INNER_SILENCE_MS", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",

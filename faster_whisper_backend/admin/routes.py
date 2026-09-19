@@ -2548,6 +2548,7 @@ function modelOverridesEditor(name, v) {
       advTitle: 'all anti-hallucination knobs',
       basic: [],
       adv:   ['HALLUCINATION_SILENCE_THRESHOLD','DECODE_SKIP_RESIDUAL_WINDOWS',
+              'DECODE_TOKEN_CAP_PER_SECOND',
               'SUPPRESS_BLANK','SUPPRESS_TOKENS',
               'SUPPRESS_CHARS','PREPEND_PUNCTUATIONS','APPEND_PUNCTUATIONS'] },
     { id: 'stages', title: 'Pipeline stages (diarization, BGM, translation)',

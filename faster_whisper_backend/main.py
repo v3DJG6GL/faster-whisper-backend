@@ -683,6 +683,7 @@ _KWARG_TO_CFG = {
     # section, never passed to model.transcribe)
     "segment_max_words_per_sec": "SEGMENT_MAX_WORDS_PER_S",
     "skip_residual_windows": "DECODE_SKIP_RESIDUAL_WINDOWS",
+    "token_cap_per_second": "DECODE_TOKEN_CAP_PER_SECOND",
     "tail_trim_pad_ms": "STREAMING_TAIL_TRIM_PAD_MS",
     "final_drop_min_avg_logprob": "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB",
     "final_drop_temperature": "STREAMING_FINAL_DROP_TEMPERATURE",
@@ -980,6 +981,10 @@ def _format_decode_trace_section(trace: "dict | None") -> list[str]:
                    f"{r.get('tokens', 0):>6}  {_fmt_num(r.get('alp')):>6}  "
                    f"{_fmt_num(r.get('cr')):>5}  {_fmt_num(r.get('nsp')):>4}  "
                    f"{_fmt_secs(r.get('secs')):>6}  {r.get('outcome', '')}")
+            if j == 0 and w.get("token_cap") is not None:
+                # DECODE_TOKEN_CAP_PER_SECOND lowered this window's per-rung
+                # token limit (a rung that ran into it says "hit cap").
+                row += f"  [cap {w['token_cap']}]"
             out.append((prefix if j == 0 else blank) + row)
     if omitted:
         out.append(f"    … {omitted} more window{'s' if omitted != 1 else ''} omitted")
@@ -5101,10 +5106,16 @@ async def transcribe(
             # other cfg_for read; the executor thread only carries the bool.
             _skip_residual = bool(cfg_for(
                 resolved_model, "DECODE_SKIP_RESIDUAL_WINDOWS", ident))
+            # Per-rung token limit scaled to the window's length: a decode
+            # that loops otherwise runs to the model's hard limit at ~83 ms a
+            # token (core/decode_trace.py, "Token cap"). 0 = off.
+            _token_cap = float(cfg_for(
+                resolved_model, "DECODE_TOKEN_CAP_PER_SECOND", ident) or 0.0)
 
             def _do_transcribe(_model=model, _path=tmp_path,
                                _kw=transcribe_kwargs, _pad_ms=_lead_pad_ms,
-                               _t=_decode_timing, _skip=_skip_residual):
+                               _t=_decode_timing, _skip=_skip_residual,
+                               _cap=_token_cap):
                 # Materialize the lazy segment generator WITH live progress:
                 # each yielded segment carries its end time, and info.duration
                 # is known up front — that ratio is genuine decode progress
@@ -5187,7 +5198,8 @@ async def transcribe(
                 # Decode trace (windows / rungs / tokens) for the receipt:
                 # the lazy generator is consumed inside the capture, that is
                 # where every window after the first is decoded.
-                with _decode_trace.capture(_kw, skip_residual=_skip) as _tr:
+                with _decode_trace.capture(_kw, skip_residual=_skip,
+                                           token_cap_per_s=_cap) as _tr:
                     if _audio is not None:
                         _segs, _info = _model.transcribe(_audio, **_kw)
                         _t["pre_secs"] = time.perf_counter() - _pre
@@ -5808,7 +5820,8 @@ async def transcribe(
                 username=user.get("username"),
                 key_label=user.get("key_label"),
                 guards={"segment_max_words_per_sec": _max_wps,
-                        "skip_residual_windows": _skip_residual},
+                        "skip_residual_windows": _skip_residual,
+                        "token_cap_per_second": _token_cap},
                 decode_trace=_decode_timing.get("trace"),
                 # Post-decode pipeline. Reconstructed from the locals in
                 # scope rather than from preload._plans: the plan omits

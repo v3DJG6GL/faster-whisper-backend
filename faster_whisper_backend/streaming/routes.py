@@ -302,6 +302,16 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
         # client decode_overrides value too (reported via overrides_ignored).
         kwargs["condition_on_previous_text"] = bool(
             cfg_for(model_name, "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT", ident))
+        # best_of → STREAMING_FINAL_BEST_OF (default 1): a sampled fallback
+        # rung runs all best_of candidates until the LAST one ends, so one
+        # looping sibling made a 17-token answer cost 13.9 s (2026-09-19).
+        # With one candidate the rung costs what its own answer costs. Batch
+        # keeps BEST_OF; a client decode_overrides value still wins (unless the
+        # identity locks that key — the assembler dropped it then).
+        _locked = ident.locked_client_keys if ident is not None else frozenset()
+        if "best_of" not in (overrides or {}) or "best_of" in _locked:
+            kwargs["best_of"] = int(
+                cfg_for(model_name, "STREAMING_FINAL_BEST_OF", ident))
         return kwargs
     # PARTIAL decode: keep every quality knob the final/batch decode applies
     # (hotwords, suppress_tokens/chars, punctuation, penalties, thresholds — all
@@ -723,7 +733,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             prompt_provided = True  # locked admin value is now authoritative
 
         async def _transcribe(model_obj, audio, kwargs, *, trace: bool = False,
-                              skip_residual: bool = False):
+                              skip_residual: bool = False,
+                              token_cap_per_s: float = 0.0):
             """Returns (segments, info, trace_dict). `trace` (finals only)
             records what faster-whisper did inside the call — windows, rungs,
             tokens — for the receipt's Decode trace section. Partials skip
@@ -731,7 +742,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             `skip_residual` (DECODE_SKIP_RESIDUAL_WINDOWS, finals only) stops
             the decode after the window that reached the end of the audio;
             partials run without the temperature ladder, so a residual window
-            costs them well under a second and needs no rule."""
+            costs them well under a second and needs no rule.
+            `token_cap_per_s` (DECODE_TOKEN_CAP_PER_SECOND, finals only) bounds
+            each rung's token count by the window length, so a looping decode
+            cannot run to the model's hard limit."""
             loop = asyncio.get_running_loop()
 
             def work():
@@ -740,7 +754,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     return list(segs), info, None
                 # The lazy generator must be consumed INSIDE the capture: the
                 # windows after the first are decoded there (thread-local).
-                with decode_trace.capture(kwargs, skip_residual=skip_residual) as tr:
+                with decode_trace.capture(kwargs, skip_residual=skip_residual,
+                                          token_cap_per_s=token_cap_per_s) as tr:
                     segs, info = model_obj.transcribe(audio, **kwargs)
                     segs = decode_trace.consume(segs)
                     return segs, info, decode_trace.finish(tr, segs, info)
@@ -817,8 +832,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 model_obj=final_model_obj, overrides=req_overrides, ident=ident)
             skip_residual = bool(main.cfg_for(
                 final_model, "DECODE_SKIP_RESIDUAL_WINDOWS", ident))
+            token_cap = float(main.cfg_for(
+                final_model, "DECODE_TOKEN_CAP_PER_SECOND", ident) or 0.0)
             segs, info, trace = await _transcribe(
-                final_model_obj, audio, kwargs, trace=True, skip_residual=skip_residual)
+                final_model_obj, audio, kwargs, trace=True,
+                skip_residual=skip_residual, token_cap_per_s=token_cap)
             max_wps = float(main.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
             words_out: list[dict] = []
             seg_diag: list[dict] = []
@@ -868,6 +886,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # kwargs, so the Decode params section can't show them).
                 "segment_max_words_per_sec": max_wps,
                 "skip_residual_windows": skip_residual,
+                "token_cap_per_second": token_cap,
                 "tail_trim_pad_ms": tail_pad_ms,
                 # What the trim actually removed from THIS buffer (the block's
                 # `duration` row is the post-trim length; the utterance label

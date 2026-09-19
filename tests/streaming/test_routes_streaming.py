@@ -631,9 +631,9 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(app_module, monkeypa
     seen = []
     real = dt.capture
 
-    def spy(kwargs=None, *, skip_residual=False):
+    def spy(kwargs=None, *, skip_residual=False, **kw):
         seen.append(skip_residual)
-        return real(kwargs, skip_residual=skip_residual)
+        return real(kwargs, skip_residual=skip_residual, **kw)
     monkeypatch.setattr(streaming_routes.decode_trace, "capture", spy)
 
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
@@ -655,3 +655,70 @@ def test_stream_final_arms_the_residual_stop_and_reports_it(app_module, monkeypa
                       if "Post-decode guards" in r.getMessage())
     assert next(l for l in block.splitlines()
                 if "skip_residual_windows" in l).rstrip().endswith("false *")
+
+
+def _final_and_partial_kwargs(fake_model):
+    """Record every transcribe call; the FINAL is the one carrying the
+    temperature ladder (partials decode at a single temperature)."""
+    calls = []
+    real = fake_model.transcribe
+
+    def rec(path, **kw):
+        calls.append(kw)
+        return real(path, **kw)
+    fake_model.transcribe = rec
+    return calls
+
+
+def _is_final(kw):
+    return isinstance(kw.get("temperature"), (tuple, list))
+
+
+def test_stream_final_caps_tokens_and_samples_one_candidate(
+        app_module, fake_model, monkeypatch, caplog):
+    """2026-09-19: a looping rung ran to 224 tokens (18.6 s), then a sampled
+    rung's 17-token answer waited 13.9 s for a looping sibling. The FINAL
+    decode gets the token cap (through the trace capture) and
+    STREAMING_FINAL_BEST_OF; partials keep their own knobs."""
+    import logging
+    from faster_whisper_backend.core import decode_trace as dt
+    from faster_whisper_backend.streaming import routes as streaming_routes
+
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    caps = []
+    real = dt.capture
+
+    def spy(kwargs=None, **kw):
+        caps.append(kw.get("token_cap_per_s"))
+        return real(kwargs, **kw)
+    monkeypatch.setattr(streaming_routes.decode_trace, "capture", spy)
+    calls = _final_and_partial_kwargs(fake_model)
+
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with caplog.at_level(logging.INFO, logger=streaming_routes.logger.name):
+            _dictate_one_utterance(client, {})
+    assert caps == [10.0]
+    finals = [kw for kw in calls if _is_final(kw)]
+    assert len(finals) == 1 and finals[0]["best_of"] == 1
+    assert all(kw["best_of"] == app_module.cfg.BEST_OF
+               for kw in calls if not _is_final(kw)), "partials untouched"
+    block = "\n".join(r.getMessage() for r in caplog.records
+                      if "Post-decode guards" in r.getMessage())
+    assert next(l for l in block.splitlines()
+                if "token_cap_per_second" in l).rstrip().endswith("10.0")
+
+    caps.clear(); calls.clear()
+    monkeypatch.setattr(app_module.cfg, "DECODE_TOKEN_CAP_PER_SECOND", 0.0, raising=False)
+    monkeypatch.setattr(app_module.cfg, "STREAMING_FINAL_BEST_OF", 3, raising=False)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        _dictate_one_utterance(client, {})
+    assert caps == [0.0]
+    assert [kw["best_of"] for kw in calls if _is_final(kw)] == [3]
+
+
+def test_stream_final_best_of_yields_to_a_client_override(app_module, fake_model, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    calls = _final_and_partial_kwargs(fake_model)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        _dictate_one_utterance(client, {"decode_overrides": {"best_of": 4}})
+    assert [kw["best_of"] for kw in calls if _is_final(kw)] == [4]

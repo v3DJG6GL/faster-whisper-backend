@@ -482,6 +482,18 @@ SEGMENT_MAX_WORDS_PER_S: float = _D("SEGMENT_MAX_WORDS_PER_S")
 # previous window reached end of audio". Off = faster-whisper's own behaviour.
 DECODE_SKIP_RESIDUAL_WINDOWS: bool = _D("DECODE_SKIP_RESIDUAL_WINDOWS")
 
+# Per-rung token limit scaled to the decoded window: 30 + this many tokens per
+# second of window audio. A decode that falls into a repetition loop otherwise
+# runs to the model's hard limit (224 tokens with a full hotwords prompt) at
+# ~83 ms a token on beam 10 — 2026-09-19 a 7 s dictation waited 18.6 s for a
+# looped rung that was then discarded. Real speech is about 3 tokens per second
+# (timestamps included), so 10 leaves a >3x margin; a 30 s window is never
+# affected. Applied inside the generate hook (core/decode_trace.py), NOT via
+# faster-whisper's max_new_tokens, which CTranslate2 halves and which raises
+# with a long prompt. A capped rung says "hit cap" in the Decode trace.
+# Applies to batch files and streaming finals. 0 = off.
+DECODE_TOKEN_CAP_PER_SECOND: float = _D("DECODE_TOKEN_CAP_PER_SECOND")
+
 # Suppress blank token at start of decoder sampling. Default True. Almost
 # never disable; only useful when debugging tokenizer behavior.
 SUPPRESS_BLANK: bool = _D("SUPPRESS_BLANK")
@@ -1317,6 +1329,13 @@ STREAMING_FINAL_DROP_TEMPERATURE: float = _D("STREAMING_FINAL_DROP_TEMPERATURE")
 # nothing to echo. Cross-utterance context is unaffected (initial_prompt still
 # reaches the first window).
 STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT: bool = _D("STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT")
+# best_of for the FINAL decode's sampled fallback rungs (temperature > 0).
+# CTranslate2 runs all best_of candidates until the LAST one ends and returns
+# the best-scoring, so one looping sibling makes a short correct answer wait
+# for a full-length run (2026-09-19: 17 tokens, 13.9 s). 1 = the rung costs
+# what its own answer costs. The first rung (beam search) is unaffected.
+# Batch keeps BEST_OF; a client decode_overrides best_of still wins.
+STREAMING_FINAL_BEST_OF: int = _D("STREAMING_FINAL_BEST_OF")
 # Trailing non-speech cut from the FINAL decode buffer before inference: the
 # buffer always ends with >= STREAMING_VAD_OUTER_SILENCE_MS of endpointer
 # silence (that silence is what triggered the finalize), plus whatever noise
@@ -1745,7 +1764,7 @@ _OVERRIDE_FLOAT_FIELDS = frozenset({
     "COMPRESSION_RATIO_THRESHOLD", "PATIENCE", "LENGTH_PENALTY",
     "REPETITION_PENALTY", "PROMPT_RESET_ON_TEMPERATURE",
     "LANGUAGE_DETECTION_THRESHOLD", "HALLUCINATION_SILENCE_THRESHOLD",
-    "SEGMENT_MAX_WORDS_PER_S",
+    "SEGMENT_MAX_WORDS_PER_S", "DECODE_TOKEN_CAP_PER_SECOND",
 })
 _OVERRIDE_LIST_FIELDS = frozenset({
     "PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE",

@@ -45,6 +45,25 @@ hook raises ``ResidualWindowSkipped`` before the encoder runs, and
 ``consume()`` turns that into a normal end of the segment stream. Windows of a
 long file are untouched: a full 30 s window never sets the flag. Language
 detection pads the first window before any decode and cannot set it either.
+
+Token cap (``capture(..., token_cap_per_s=10)``)
+------------------------------------------------
+A decode that falls into a repetition loop runs to the model's hard limit
+(448 positions minus the prompt, 224 tokens with a full hotwords prompt), and
+the cost is linear in tokens: 2026-09-19 a 7 s utterance spent 18.6 s on 224
+looped tokens at beam 10, then 13.9 s on a sampled rung whose 17-token answer
+had to wait for a sibling candidate that looped to the limit (CTranslate2 runs
+all ``best_of`` candidates until the last one ends). Real speech here is about
+3 tokens per second, so the ``generate`` hook lowers ``max_length`` to what the
+window can plausibly need: ``30 + rate x window seconds`` tokens. A 30 s window
+is never affected (its cap exceeds the hard limit).
+
+faster-whisper's own ``max_new_tokens`` is NOT used: CTranslate2 decodes
+``min(max_length // 2, max_length - prompt)`` tokens, so ``max_new_tokens=100``
+yields 51 tokens without a prompt, and with a long prompt faster-whisper raises
+ValueError and the request fails. Only the generate hook knows the prompt
+length; ``_capped_max_length`` solves for the ``max_length`` that really grants
+the wanted token count, and can only ever lower the limit.
 """
 
 from __future__ import annotations
@@ -60,6 +79,27 @@ _INSTALLED_FLAG = "_fwb_decode_trace_installed"
 
 _N_FRAMES = 3000          # one 30 s window at 100 mel frames / s
 _FRAMES_PER_S = 100.0
+_TOKEN_CAP_FLOOR = 30     # tokens every window may generate regardless of length
+
+
+def _token_cap(window_frames, rate) -> "int | None":
+    """Tokens one rung may generate for a window of ``window_frames`` mel
+    frames; None when the cap is off or the window length is unknown."""
+    if not rate or rate <= 0 or window_frames is None:
+        return None
+    return int(_TOKEN_CAP_FLOOR + float(rate) * (int(window_frames) / _FRAMES_PER_S) + 0.999)
+
+
+def _capped_max_length(orig_max: int, prompt_len: int, cap: "int | None") -> int:
+    """The ``max_length`` that makes CTranslate2 decode at most ``cap`` tokens.
+
+    CT2 (whisper.cc) feeds ``prompt_len - 1`` tokens as the prompt and decodes
+    ``min(max_length // 2, max_length - (prompt_len - 1))`` more, so both terms
+    must reach ``cap``. Never returns more than ``orig_max``."""
+    if cap is None:
+        return orig_max
+    wanted = max(2 * cap, max(0, int(prompt_len) - 1) + cap)
+    return min(int(orig_max), wanted)
 
 
 def _current() -> "DecodeTrace | None":
@@ -90,8 +130,9 @@ class DecodeTrace:
 
     def __init__(self, *, no_speech_threshold=None, log_prob_threshold=None,
                  compression_ratio_threshold=None, length_penalty=1.0,
-                 skip_residual: bool = False):
+                 skip_residual: bool = False, token_cap_per_s: float = 0.0):
         self.windows: list[dict] = []
+        self.token_cap_per_s = float(token_cap_per_s or 0.0)
         self.extra_encodes = 0          # encoder passes not followed by a decode (language detection)
         self.skip_residual = bool(skip_residual)
         self.reached_end = False        # a DECODED window was shorter than 30 s
@@ -172,13 +213,16 @@ class DecodeTrace:
 
 
 @contextlib.contextmanager
-def capture(kwargs: "dict | None" = None, *, skip_residual: bool = False):
+def capture(kwargs: "dict | None" = None, *, skip_residual: bool = False,
+            token_cap_per_s: float = 0.0):
     """Activate a trace for the decode running on THIS thread.
 
     Must wrap both ``model.transcribe(...)`` and the consumption of its lazy
     segment generator (that is where the windows are decoded). With
     ``skip_residual`` the generator must be drained through ``consume()``,
-    which absorbs the ``ResidualWindowSkipped`` stop."""
+    which absorbs the ``ResidualWindowSkipped`` stop. ``token_cap_per_s``
+    (DECODE_TOKEN_CAP_PER_SECOND, 0 = off) bounds every rung's token count by
+    the window's length; see the module docstring."""
     kw = kwargs or {}
     tr = DecodeTrace(
         no_speech_threshold=kw.get("no_speech_threshold"),
@@ -186,6 +230,7 @@ def capture(kwargs: "dict | None" = None, *, skip_residual: bool = False):
         compression_ratio_threshold=kw.get("compression_ratio_threshold"),
         length_penalty=kw.get("length_penalty", 1.0) or 1.0,
         skip_residual=skip_residual,
+        token_cap_per_s=token_cap_per_s,
     )
     prev = _current()
     _tls.trace = tr
@@ -216,14 +261,42 @@ class _GenerateProxy:
         tr = _current()
         if tr is None:
             return inner.generate(*args, **kwargs)
+        cap = None
+        if tr.token_cap_per_s > 0:
+            try:
+                cap = _apply_token_cap(tr, args, kwargs)
+            except Exception:  # a cap that cannot be computed is no cap
+                cap = None
         t0 = time.perf_counter()
         results = inner.generate(*args, **kwargs)
         secs = time.perf_counter() - t0
         try:
-            tr.note_rung(_describe_rung(results, kwargs, secs, tr))
+            rung = _describe_rung(results, kwargs, secs, tr)
+            if cap is not None and rung.get("tokens", 0) >= cap:
+                rung["capped"] = True
+            tr.note_rung(rung)
         except Exception:  # never let bookkeeping break a decode
             tr.note_rung({"secs": secs})
         return results
+
+
+def _apply_token_cap(tr: DecodeTrace, args: tuple, kwargs: dict) -> "int | None":
+    """Lower ``kwargs["max_length"]`` for the open window; returns the cap in
+    tokens when it took effect. generate(features, prompts, **kw)."""
+    if not tr.windows or tr.windows[-1].get("secs") is not None:
+        return None                     # no open window: length unknown
+    w = tr.windows[-1]
+    cap = _token_cap(w.get("len_frames"), tr.token_cap_per_s)
+    orig = kwargs.get("max_length")
+    prompts = args[1] if len(args) > 1 else kwargs.get("prompts")
+    if cap is None or not orig or not prompts:
+        return None
+    new = _capped_max_length(int(orig), len(prompts[0]), cap)
+    if new >= int(orig):
+        return None
+    kwargs["max_length"] = new
+    w["token_cap"] = cap
+    return cap
 
 
 def _describe_rung(results, kwargs: dict, secs: float, tr: DecodeTrace) -> dict:
@@ -434,6 +507,8 @@ def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
             else:
                 r["outcome"] = _window_outcome(w, r, seg_count, reasons, silence,
                                                ns_thr, lp_thr)
+            if r.get("capped"):
+                r["outcome"] += " · hit cap"
         entry = {
             "n": w.get("n"),
             "start_s": start_s,
@@ -443,6 +518,8 @@ def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
             "segments": seg_count,
             "rungs": rungs,
         }
+        if w.get("token_cap") is not None:
+            entry["token_cap"] = w["token_cap"]
         if w.get("skipped") == "residual":
             entry["skipped"] = "residual"
             entry["outcome"] = "skipped · previous window reached end of audio"

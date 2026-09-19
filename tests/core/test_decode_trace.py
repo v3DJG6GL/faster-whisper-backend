@@ -43,6 +43,12 @@ class _CT2:
     def generate(self, enc, prompts, **kw):
         self.calls.append(kw)
         tokens, score, nsp = self.script.pop(0)
+        ml = kw.get("max_length")
+        if ml is not None:
+            # CTranslate2 (whisper.cc): the prompt minus its last token is fed
+            # as context, then at most this many tokens are decoded.
+            limit = min(ml // 2, ml - (len(prompts[0]) - 1))
+            tokens = list(tokens)[:max(0, limit)]
         return [_Result(tokens, score, nsp)]
 
     is_multilingual = True
@@ -80,6 +86,8 @@ class _Model:
         for i, t in enumerate(temps):
             kw = ({"beam_size": 10, "patience": 1} if t == 0.0
                   else {"beam_size": 1, "num_hypotheses": 5, "sampling_temperature": t})
+            if self.max_length is not None:
+                kw["max_length"] = self.max_length
             r = self.model.generate(encoder_output, [prompt], length_penalty=1.0, **kw)[0]
             n = len(r.sequences_ids[0])
             alp = r.scores[0] * n / (n + 1)
@@ -92,6 +100,8 @@ class _Model:
         return last
 
     lang_detect = False   # pad + encode the first window before any decode
+    max_length = None     # 448 = pass max_length like faster-whisper does
+    prompt = (1, 2, 3)
     duration = 2.2
 
     def transcribe(self, audio, **kw):
@@ -107,7 +117,7 @@ class _Model:
             for spec in self.windows:
                 fwt.pad_or_trim(np.zeros((128, spec["frames"]), dtype="float32"))
                 self.encode(None)
-                self.generate_with_fallback("enc", [1, 2, 3], _Tokenizer(), None)
+                self.generate_with_fallback("enc", list(self.prompt), _Tokenizer(), None)
                 for _ in range(spec["yield"]):
                     yield _Seg(spec["seek"], "x")
         return gen(), FakeInfo(duration=self.duration)
@@ -375,3 +385,103 @@ def test_receipt_shows_the_refused_window_and_the_guard_row(app_module):
         **base, guards={"skip_residual_windows": False})
     assert next(l for l in off.splitlines()
                 if "skip_residual_windows" in l).rstrip().endswith("false *")
+
+
+# ---------------------------------------------------------------------------
+# Token cap (DECODE_TOKEN_CAP_PER_SECOND)
+# ---------------------------------------------------------------------------
+
+def _ct2_decodes(max_length, prompt_len):
+    """Tokens CTranslate2 really decodes for a given max_length (whisper.cc)."""
+    return min(max_length // 2, max_length - (prompt_len - 1))
+
+
+@pytest.mark.parametrize("prompt_len", [3, 33, 224, 228])
+def test_capped_max_length_grants_exactly_the_cap(prompt_len):
+    """faster-whisper's max_new_tokens=100 yields 51 tokens without a prompt
+    (CT2 halves max_length) and raises with a long one. The helper solves for
+    the max_length that grants the cap whatever the prompt length is."""
+    cap = dt._token_cap(706, 10)            # 7.06 s window
+    assert cap == 101
+    ml = dt._capped_max_length(448, prompt_len, cap)
+    assert ml <= 448
+    assert _ct2_decodes(ml, prompt_len) == cap
+
+
+def test_cap_never_raises_the_limit_and_spares_full_windows():
+    assert dt._token_cap(3000, 10) == 330
+    assert dt._capped_max_length(448, 228, 330) == 448      # 30 s window untouched
+    assert dt._capped_max_length(448, 3, None) == 448
+    assert dt._token_cap(706, 0) is None                    # off
+    assert dt._token_cap(None, 10) is None                  # window length unknown
+
+
+def _looping_model(prompt_len=224):
+    """The 2026-09-19 shape: ONE 7.06 s window; the beam rung loops to the
+    limit and is discarded, the first sampled rung returns the sentence."""
+    loop = list(range(100, 100 + 440))
+    m = _Model([[(loop, -0.22, 0.01), ([5] * 17, -0.22, 0.01)]], _THR)
+    m.windows = [{"frames": 706, "seek": 0, "yield": 1}]
+    m.duration = 7.06
+    m.max_length = 448
+    m.prompt = tuple(range(prompt_len))
+    return m
+
+
+def test_looping_rung_stops_at_the_cap_and_says_so():
+    m = dt.install(_looping_model())
+    segs, t = _run_stop(m, token_cap_per_s=10)
+    assert len(segs) == 1
+    assert [c["max_length"] for c in m.model.calls] == [324, 324]   # 223 + 101
+    w = t["windows"][0]
+    assert w["token_cap"] == 101
+    r1, r2 = w["rungs"]
+    assert r1["tokens"] == 101 and r1["capped"] is True
+    assert r1["outcome"].startswith("retry · cr") and r1["outcome"].endswith("· hit cap")
+    assert r2["tokens"] == 17 and "capped" not in r2
+    assert r2["outcome"] == "kept · 1 segment"
+
+
+def test_cap_is_off_unless_asked():
+    m = dt.install(_looping_model())
+    _, t = _run_stop(m)
+    assert [c["max_length"] for c in m.model.calls] == [448, 448]
+    assert t["windows"][0]["rungs"][0]["tokens"] == 224
+    assert "token_cap" not in t["windows"][0]
+
+
+def test_short_prompt_still_gets_the_full_cap():
+    """Without a hotwords prompt CT2's max_length // 2 term is the binding
+    one: the cap must double, not add."""
+    m = dt.install(_looping_model(prompt_len=3))
+    _, t = _run_stop(m, token_cap_per_s=10)
+    assert m.model.calls[0]["max_length"] == 202
+    assert t["windows"][0]["rungs"][0]["tokens"] == 101
+
+
+def test_full_window_is_not_capped():
+    m = _looping_model()
+    m.windows = [{"frames": 3000, "seek": 0, "yield": 1}]
+    m.duration = 30.0
+    dt.install(m)
+    _, t = _run_stop(m, token_cap_per_s=10)
+    assert m.model.calls[0]["max_length"] == 448
+    assert "token_cap" not in t["windows"][0]
+
+
+def test_cap_failure_never_breaks_the_decode(monkeypatch):
+    def boom(*a, **k):
+        raise RuntimeError("no cap today")
+    monkeypatch.setattr(dt, "_apply_token_cap", boom)
+    m = dt.install(_looping_model())
+    segs, t = _run_stop(m, token_cap_per_s=10)
+    assert len(segs) == 1 and m.model.calls[0]["max_length"] == 448
+
+
+def test_receipt_shows_the_cap_and_the_guard_row(app_module):
+    m = dt.install(_looping_model())
+    _, t = _run_stop(m, token_cap_per_s=10)
+    lines = app_module._format_decode_trace_section(t)
+    text = "\n".join(lines)
+    assert "[cap 101]" in text and "hit cap" in text
+

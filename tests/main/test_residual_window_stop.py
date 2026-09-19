@@ -57,12 +57,43 @@ def test_batch_capture_is_armed_from_config(client, app_module, fake_model, monk
     seen = {}
     real = dt.capture
 
-    def spy(kwargs=None, *, skip_residual=False):
+    def spy(kwargs=None, *, skip_residual=False, **kw):
         seen["skip"] = skip_residual
-        return real(kwargs, skip_residual=skip_residual)
+        return real(kwargs, skip_residual=skip_residual, **kw)
     monkeypatch.setattr(app_module._decode_trace, "capture", spy)
     assert _post(client).status_code == 200
     assert seen == {"skip": True}
     app_module.cfg.DECODE_SKIP_RESIDUAL_WINDOWS = False
     assert _post(client).status_code == 200
     assert seen == {"skip": False}
+
+
+def test_batch_gets_the_token_cap_and_keeps_best_of(client, app_module, fake_model,
+                                                    monkeypatch, caplog):
+    """DECODE_TOKEN_CAP_PER_SECOND reaches the batch capture and the receipt;
+    STREAMING_FINAL_BEST_OF is a streaming knob and must not leak here."""
+    seen = []
+    real = dt.capture
+
+    def spy(kwargs=None, **kw):
+        seen.append(kw.get("token_cap_per_s"))
+        return real(kwargs, **kw)
+    monkeypatch.setattr(app_module._decode_trace, "capture", spy)
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        assert _post(client).status_code == 200
+    assert seen == [10.0]
+    assert fake_model.last_kwargs["best_of"] == app_module.cfg.BEST_OF == 5
+    block = "\n".join(rec.getMessage() for rec in caplog.records
+                      if "Post-decode guards" in rec.getMessage())
+    guard = next(l for l in block.splitlines() if "token_cap_per_second" in l)
+    assert guard.rstrip().endswith("10.0")
+
+    app_module.cfg.DECODE_TOKEN_CAP_PER_SECOND = 0.0
+    seen.clear(); caplog.clear()
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        assert _post(client).status_code == 200
+    assert seen == [0.0]
+    block = "\n".join(rec.getMessage() for rec in caplog.records
+                      if "Post-decode guards" in rec.getMessage())
+    guard = next(l for l in block.splitlines() if "token_cap_per_second" in l)
+    assert guard.rstrip().endswith("*")
