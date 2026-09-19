@@ -308,7 +308,7 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
         ]
     monkeypatch.setattr(cr, "_align_words_to_final", fake_align)
 
-    # final applies dictation-map ("Komma"→"Komma"); training excludes it.
+    # final applies de-dictation-map ("Komma"→"Komma"); training excludes it.
     m = {
         "words": [{"start": 0, "end": 1}, {"start": 1, "end": 2}],
         "final": "Komma World", "text_for_training": "comma world", "model": None,

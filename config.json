@@ -34,7 +34,7 @@
   "CAPTURES_MAX_MB": 5000,
   "CAPTURES_PIPELINE_RULES_EXCLUDE": [
     "capitalize-after-terminator",
-    "dictation-map"
+    "de-dictation-map"
   ],
   "CAPTURES_PROPOSER_CACHE_TTL_S": 60,
   "CAPTURES_PROPOSER_DUP_THRESHOLD": 0.85,
@@ -321,6 +321,9 @@
       "name": "de-strip-and-lowercase-non-noun",
       "label": "DE: Strip + lowercase next non-noun",
       "enabled": true,
+      "languages": [
+        "de"
+      ],
       "locked": false,
       "seeded": true,
       "exposed": false,
@@ -438,6 +441,9 @@
       "name": "de-split-punctuation-keywords",
       "label": "DE: Split merged punctuation keywords",
       "enabled": true,
+      "languages": [
+        "de"
+      ],
       "locked": false,
       "seeded": true,
       "exposed": false,
@@ -466,6 +472,9 @@
       "name": "ch-symbol-cleanup",
       "label": "Swiss German symbol cleanup",
       "enabled": true,
+      "languages": [
+        "de"
+      ],
       "locked": false,
       "seeded": true,
       "exposed": false,
@@ -513,9 +522,12 @@
       ]
     },
     {
-      "name": "dictation-map",
-      "label": "Dictation map",
+      "name": "de-dictation-map",
+      "label": "DE: Dictation map",
       "enabled": true,
+      "languages": [
+        "de"
+      ],
       "locked": true,
       "seeded": true,
       "exposed": false,
@@ -621,6 +633,35 @@
       "pattern": "(-)([a-zäöüß])"
     },
     {
+      "name": "es-punctuation",
+      "label": "ES: Punctuation",
+      "enabled": true,
+      "languages": [
+        "es"
+      ],
+      "locked": false,
+      "seeded": true,
+      "exposed": false,
+      "color": "",
+      "tags": [],
+      "note": "Spanish opens a question with ¿ and an exclamation with ¡; Whisper usually writes only the closing mark. Adds the opening mark at the start of the sentence (after . ! ? … or a line break), unless it is already there.",
+      "type": "regex-list",
+      "entries": [
+        {
+          "pattern": "(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¿)([^.!?…¿\\n]+\\?)",
+          "replacement": "\\1¿\\2",
+          "label": "es-opening-question-mark",
+          "note": "Qué hora es? → ¿Qué hora es?"
+        },
+        {
+          "pattern": "(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¡)([^.!?…¡\\n]+!)",
+          "replacement": "\\1¡\\2",
+          "label": "es-opening-exclamation-mark",
+          "note": "Qué bien! → ¡Qué bien!"
+        }
+      ]
+    },
+    {
       "name": "digit-and-whitespace-tidy",
       "label": "Digit + whitespace tidy",
       "enabled": true,
@@ -708,10 +749,10 @@
           "note": "Collapses surrounding whitespace and a stray comma on each side of a newline, keeping the newline."
         },
         {
-          "pattern": "(?:,|\\.)(- |-)",
+          "pattern": "(?<!\\d)(?:,|\\.)(- |-)",
           "replacement": "",
           "label": "delete-punct-before-hyphen",
-          "note": "Removes a comma or period stuck before a hyphen, along with the hyphen: a,-b → ab."
+          "note": "Removes a comma or period stuck before a hyphen, along with the hyphen: a,-b → ab. Never right after a digit: '3.-10 Oktober', '12.-14.03.' and '2,-5 mg' keep their punctuation (the unguarded rule produced '310 Oktober')."
         }
       ]
     },

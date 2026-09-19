@@ -128,8 +128,8 @@ def _blob_to_layer(layer_id: str, label: str, profile_name: str | None,
     }
     locks = {_renames.RENAMED_KEYS.get(f, f) for f in (blob.get("locks") or [])}
     locks = {f for f in locks if f in SCALAR_OVERRIDE_FIELDS}
-    exclude = {s for s in (blob.get("PIPELINE_RULES_EXCLUDE") or [])}
-    include = {s for s in (blob.get("PIPELINE_RULES_INCLUDE") or [])}
+    exclude = set(_renames.rename_slugs(list(blob.get("PIPELINE_RULES_EXCLUDE") or [])))
+    include = set(_renames.rename_slugs(list(blob.get("PIPELINE_RULES_INCLUDE") or [])))
     if not (fields or locks or exclude or include):
         return None
     return {

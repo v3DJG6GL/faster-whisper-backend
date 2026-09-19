@@ -894,7 +894,7 @@ async def reprocess_capture_api(
     PIPELINE_RULES (and the captures-specific exclude set).
 
     Use case: after editing PIPELINE_RULES (e.g. adding a typo-fix or
-    a new dictation-map entry), a reviewer wants this specific capture
+    a new de-dictation-map entry), a reviewer wants this specific capture
     re-derived without waiting for the bulk reapply job. The bulk job
     /quick-config/reapply-rules also handles this row eventually, but
     the per-row trigger gives immediate feedback in the UI. `scope=own`

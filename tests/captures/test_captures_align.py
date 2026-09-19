@@ -201,7 +201,7 @@ def test_align_member_words_attaches_training_tokens(monkeypatch):
         "model": None,
     }
     out = cr._align_member_words(m)
-    # Runtime `word`: the dictation-map form; "Schrägstrich"/"92" merged away.
+    # Runtime `word`: the de-dictation-map form; "Schrägstrich"/"92" merged away.
     assert out[3]["word"] == "134/92"
     assert out[4].get("removed") is True
     assert out[5].get("removed") is True

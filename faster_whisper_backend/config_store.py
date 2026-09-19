@@ -261,7 +261,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "single-token results are added to the effective suppress_tokens "
         "list — the decoder cannot emit them. Use '.,?!:;' for verbatim "
         "dictation: model can't auto-insert punctuation, so spoken 'Punkt' / "
-        "'Komma' surface as words for the dictation-map PIPELINE_RULE to "
+        "'Komma' surface as words for the de-dictation-map PIPELINE_RULE to "
         "convert. Empty / unset = no extra suppression. Per-model overridable.",
     "PREPEND_PUNCTUATIONS":
         "With WORD_TIMESTAMPS_ENABLED, glue these characters onto the "
@@ -565,7 +565,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "PIPELINE_RULES_EXCLUDE":
         "(Per-model only) List of pipeline rule slugs to FORCE-DISABLE when "
         "this model is serving the request — even if the rule is enabled "
-        "globally. Use to drop e.g. 'dictation-map' for German fine-tunes "
+        "globally. Use to drop e.g. 'de-dictation-map' for German fine-tunes "
         "that already emit punctuation symbols.",
     "PIPELINE_RULES_INCLUDE":
         "(Per-model only) List of pipeline rule slugs to FORCE-ENABLE when "
@@ -926,7 +926,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Set of PIPELINE_RULES slugs to SKIP when computing each "
         "capture's `text_for_training` (the column /captures shows and "
         "the export emits). All other PIPELINE_RULES still run. Default "
-        "skips `dictation-map` + `capitalize-after-terminator` so the "
+        "skips `de-dictation-map` + `capitalize-after-terminator` so the "
         "stored training text matches Whisper's raw output under "
         "SUPPRESS_CHARS — \"Komma\"/\"Punkt\" stay as words; sentence-"
         "internal lowercase preserved. /transcribe runtime output is "
@@ -3352,6 +3352,7 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     make every write raise ValidationError forever (and no save could ever
     clean the file)."""
     _renames.migrate_keys(raw)
+    _renames.migrate_rule_slugs(raw)
     for profiles_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
         profiles = raw.get(profiles_key)
         if isinstance(profiles, dict):

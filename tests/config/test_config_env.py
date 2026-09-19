@@ -224,7 +224,7 @@ def test_load_defaults_resolves_data_dir_placeholders(monkeypatch, tmp_path):
 def test_load_defaults_coerces_set_fields(monkeypatch, tmp_path):
     _write_cfg(tmp_path,
                ALLOWED_MODELS=["large-v2", "large-v3"],
-               CAPTURES_PIPELINE_RULES_EXCLUDE=["dictation-map"])
+               CAPTURES_PIPELINE_RULES_EXCLUDE=["de-dictation-map"])
     monkeypatch.setattr(config, "_REPO_DIR", str(tmp_path))
     d = config._load_defaults()
     assert d["ALLOWED_MODELS"] == {"large-v2", "large-v3"}

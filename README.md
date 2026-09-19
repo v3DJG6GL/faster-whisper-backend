@@ -567,7 +567,7 @@ A single ordered list of rules — `cfg.PIPELINE_RULES` — is applied to each t
 
 The 14 seeded defaults handle orthography normalization (`ß`→`ss`), Whisper noise stripping, dictation (`Punkt`→`.`, `neue Zeile`→`\n`, …), and tidy spacing/newlines/capitalization. They live in the committed **`config.json`** (the `PIPELINE_RULES` array, next to all the scalar defaults); `faster_whisper_backend/config.py` loads that file at startup. Each rule carries an optional `note` field documenting its rationale.
 
-**Ordering invariants:** `dictation-map` multi-word phrases must precede their single-word components (the alternation regex is rebuilt longest-first, so the longest phrase wins); the `terminal` trim rule is always last.
+**Ordering invariants:** `de-dictation-map` multi-word phrases must precede their single-word components (the alternation regex is rebuilt longest-first, so the longest phrase wins); the `terminal` trim rule is always last.
 
 **Editing — the dedicated editor at `/settings/pipeline`** (`/settings` keeps every
 other section and links there in its place). One rule list

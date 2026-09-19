@@ -239,7 +239,7 @@ DEFAULT_PROMPT: "str | None" = _D("DEFAULT_PROMPT")
 #   - "callback:upper"              -- capitalize after sentence terminator
 #   - "terminal"                    -- final lstrip(" \t\r") + rstrip(" \t\r"); always last
 #
-# Ordering invariants: dictation-map multi-word phrases must precede their
+# Ordering invariants: de-dictation-map multi-word phrases must precede their
 # single-word components (longest-first wins); the terminal rule is always
 # last. See README ("Pipeline rules") for the full rationale.
 #
@@ -506,7 +506,7 @@ SUPPRESS_TOKENS: "str | None" = _D("SUPPRESS_TOKENS")
 # request time to vocab IDs and merged into the effective suppress_tokens
 # list. Empty / None = no extra suppression. Set to ".,?!:;" for verbatim
 # dictation: model can't auto-insert punctuation, so spoken "Punkt" /
-# "Komma" surface as words for the dictation-map PIPELINE_RULE to convert.
+# "Komma" surface as words for the de-dictation-map PIPELINE_RULE to convert.
 SUPPRESS_CHARS: "str | None" = _D("SUPPRESS_CHARS")
 
 # With WORD_TIMESTAMPS_ENABLED, glue these characters onto the FOLLOWING /
@@ -1181,12 +1181,12 @@ CAPTURES_SAMPLE_JOIN_STRATEGY = _D("CAPTURES_SAMPLE_JOIN_STRATEGY")
 #
 # Default skip-set produces word-form training text that matches
 # Whisper's raw output at inference time under SUPPRESS_CHARS:
-#   - `dictation-map`: converts spoken "Komma"/"Punkt"/"Klammer auf"
+#   - `de-dictation-map`: converts spoken "Komma"/"Punkt"/"Klammer auf"
 #     into ","/"."/"(" etc. Keeping the WORDS in training text avoids
 #     teaching the model to emit tokens it will then be suppressed
 #     from at inference.
 #   - `capitalize-after-terminator`: depends on terminators (.?!)
-#     existing — with dictation-map skipped, there are no terminators,
+#     existing — with de-dictation-map skipped, there are no terminators,
 #     so the rule would partial-fire only on `\n`. Cleaner to skip
 #     entirely; the training text matches raw Whisper casing exactly.
 #
@@ -1688,6 +1688,8 @@ try:
         if _kind in _EMPTY_IS_VALUE_KINDS:
             _EMPTY_IS_VALUE.add(_field)
         globals()[_field] = _ENV_READER_FUNCS[_kind](_env, _cur)
+    globals()["CAPTURES_PIPELINE_RULES_EXCLUDE"] = _renames.rename_slugs(
+        globals()["CAPTURES_PIPELINE_RULES_EXCLUDE"])
 
     # --- JSON-encoded structured fields (escape hatch) ----------------------
     for _field in _ENV_JSON_FIELDS:
@@ -1696,6 +1698,8 @@ try:
             continue
         try:
             _parsed = json.loads(_raw)
+            # Renamed rule slugs (config_renames.RENAMED_RULES) keep working.
+            _parsed = _renames.migrate_rule_slugs({_field: _parsed})[_field]
             # Validate then dump back to plain dicts/lists so the runtime shape
             # matches config.local.json (load_overrides uses the same dump).
             _validated = _AdminConfig.model_validate({_field: _parsed}, context=_env_slug_ctx())

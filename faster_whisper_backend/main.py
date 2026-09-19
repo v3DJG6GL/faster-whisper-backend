@@ -5612,7 +5612,7 @@ async def transcribe(
             _detected_lang = getattr(info, "language", None)
             full_text_str = _postprocess_text(raw_full_text, model_name=resolved_model, trace=trace, ident=ident, language=_detected_lang)
             # Captures-form text — same pipeline minus the captures-specific
-            # exclude set (default-skips `dictation-map` + `capitalize-after-
+            # exclude set (default-skips `de-dictation-map` + `capitalize-after-
             # terminator` so the stored text matches Whisper's raw output
             # under SUPPRESS_CHARS for fine-tune training). Only computed when
             # the capture eligibility gate has already passed at handler
@@ -5908,7 +5908,7 @@ async def transcribe(
             # Joined per-language transcripts, shared by verbose_json AND the
             # default json shape below. Deliberately NOT run through
             # _postprocess_text: the pipeline's rules are German-dictation-
-            # shaped (dictation-map, punctuation words) and would mangle
+            # shaped (de-dictation-map, punctuation words) and would mangle
             # translated text.
             _translations_joined = ({
                 _lang: " ".join(

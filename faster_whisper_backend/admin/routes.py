@@ -1300,7 +1300,7 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
      and silently dropping every CSS rule that follows.
      Chrome (titles, labels, descriptions, buttons, badges) uses --font-sans;
      code-y contexts (input/textarea values, log lines, regex panels, the
-     dictation-map key/value cells) opt into --font-mono via the rules below. */
+     de-dictation-map key/value cells) opt into --font-mono via the rules below. */
   html, body { background: var(--bg); color: var(--fg);
     font: 1rem/1.5 var(--font-sans);
     margin: 0; padding: 0; min-height: 100%; }
@@ -1576,10 +1576,10 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
     margin-top: 0.875rem; flex-wrap: wrap; }
   .rule-modal-buttons button.primary { color: var(--cyan); border-color: var(--cyan); }
   .promote-diff { margin-top: 0.5rem; }
-  .promote-diff-row { display: grid; grid-template-columns: 7rem 1fr 1fr;
+  .promote-diff-row { display: grid; grid-template-columns: minmax(7rem, 14rem) 1fr 1fr;
     gap: 0.5rem; font-family: var(--font-mono); font-size: var(--fs-xs);
     padding: 0.25rem 0; border-bottom: 1px solid var(--border); }
-  .promote-diff-key { color: var(--dim); }
+  .promote-diff-key { color: var(--dim); overflow-wrap: anywhere; }
   .promote-diff-old { color: var(--red); white-space: pre-wrap; word-break: break-all; }
   .promote-diff-new { color: var(--green); white-space: pre-wrap; word-break: break-all; }
   .promote-change-line { font-size: var(--fs-sm); margin-top: 0.25rem; }
@@ -3644,7 +3644,7 @@ function translationTemplateEditor(name, v) {
 // type-specific sub-editor + per-row live status badge.
 //
 // Drag-to-reorder uses HTML5 native DnD on the .drag-handle. Locked rules
-// (e.g. dictation-map → tidies → capitalize chain) trigger a confirm()
+// (e.g. de-dictation-map → tidies → capitalize chain) trigger a confirm()
 // dialog when dropped to a position that breaks an ordering edge.
 
 const TEST_PRESETS = {
@@ -5092,22 +5092,69 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const keys = Array.from(new Set(
       Object.keys(effRule).concat(Object.keys(baseRule)))).sort();
     let any = false;
-    keys.forEach(k => {
-      if (k === 'seeded') return;
-      const ov = JSON.stringify(baseRule[k]);
-      const nv = JSON.stringify(effRule[k]);
-      if (ov === nv) return;
+    // One row per CHANGED item. A missing side renders as an em dash, so an
+    // added / removed map key or list entry reads at a glance.
+    const addRow = (key, ov, nv) => {
       any = true;
       const rowEl = document.createElement('div');
       rowEl.className = 'promote-diff-row';
       const kEl = document.createElement('div');
-      kEl.className = 'promote-diff-key'; kEl.textContent = k;
+      kEl.className = 'promote-diff-key'; kEl.textContent = key;
       const oEl = document.createElement('div');
-      oEl.className = 'promote-diff-old'; oEl.textContent = ov;
+      oEl.className = 'promote-diff-old';
+      oEl.textContent = ov === undefined ? '—' : ov;
       const nEl = document.createElement('div');
-      nEl.className = 'promote-diff-new'; nEl.textContent = nv;
+      nEl.className = 'promote-diff-new';
+      nEl.textContent = nv === undefined ? '—' : nv;
       rowEl.appendChild(kEl); rowEl.appendChild(oEl); rowEl.appendChild(nEl);
       box.appendChild(rowEl);
+    };
+    const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
+    const js = v => v === undefined ? undefined : JSON.stringify(v);
+    keys.forEach(k => {
+      if (k === 'seeded') return;
+      const o = baseRule[k], n = effRule[k];
+      if (JSON.stringify(o) === JSON.stringify(n)) return;
+      if (isObj(o) && isObj(n)) {
+        // A map (dictation map: 80+ keys) used to render as ONE line of JSON
+        // per side, which hid what changed. Diff it key by key; same-content
+        // maps in a different key order are reported as such.
+        const mk = Array.from(new Set(Object.keys(o).concat(Object.keys(n))))
+          .sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
+        let sub = 0;
+        mk.forEach(key => {
+          if (js(o[key]) === js(n[key])) return;
+          sub++;
+          addRow(k + ' · ' + JSON.stringify(key), js(o[key]), js(n[key]));
+        });
+        if (!sub) addRow(k, 'same ' + mk.length + ' entries', 'order changed only');
+        return;
+      }
+      if (Array.isArray(o) && Array.isArray(n)
+          && o.concat(n).every(isObj)) {
+        // Entry lists (regex-list): pair entries by label, else by position.
+        const idOf = (e, i) => (e.label ? 'label:' + e.label : 'pos:' + i);
+        const om = new Map(o.map((e, i) => [idOf(e, i), [e, i]]));
+        const nm = new Map(n.map((e, i) => [idOf(e, i), [e, i]]));
+        const ids = Array.from(new Set(Array.from(om.keys()).concat(Array.from(nm.keys()))));
+        let sub = 0;
+        ids.forEach(id => {
+          const oe = om.get(id), ne = nm.get(id);
+          const name = k + ' · ' + (id.indexOf('label:') === 0
+            ? id.slice(6) : '#' + (Number(id.slice(4)) + 1));
+          if (!oe || !ne) { sub++; addRow(name, oe && js(oe[0]), ne && js(ne[0])); return; }
+          const fk = Array.from(new Set(Object.keys(oe[0]).concat(Object.keys(ne[0])))).sort();
+          fk.forEach(f => {
+            if (js(oe[0][f]) === js(ne[0][f])) return;
+            sub++;
+            addRow(name + ' · ' + f, js(oe[0][f]), js(ne[0][f]));
+          });
+          if (oe[1] !== ne[1]) { sub++; addRow(name + ' · position', String(oe[1] + 1), String(ne[1] + 1)); }
+        });
+        if (!sub) addRow(k, js(o), js(n));
+        return;
+      }
+      addRow(k, js(o), js(n));
     });
     if (!any) {
       const p = document.createElement('div');

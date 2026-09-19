@@ -16,7 +16,7 @@ German-only dictation. Swiss-German dropped (not needed). No code changes — th
 | 6 | Data volume per model size | Verified — see "Data quantity" section. Numbers drop vs Swiss-German case because no acoustic shift, only vocab. | Informational |
 | 7 | Silence trim | Apply at group-merge time (Silero VAD) + per-singleton trim button so reviewers see and hear exactly what Whisper will be trained on. | Future plan |
 | 9 | Punctuation strategy | Word-form ("Komma"/"Punkt" stay as German words), NO symbol punctuation, preserve German casing as Whisper raw produces it (proper nouns capitalized; "ich"/"wie" lowercase because no terminator cue). | Future plan |
-| 14.2.1 | Rule-deselect mechanism | Applied at storage time (not export); captures-specific config separate from `/transcribe`. Default-deselect: `dictation-map` + `capitalize-after-terminator`. Other rules keep applying. | Future plan |
+| 14.2.1 | Rule-deselect mechanism | Applied at storage time (not export); captures-specific config separate from `/transcribe`. Default-deselect: `de-dictation-map` + `capitalize-after-terminator`. Other rules keep applying. | Future plan |
 | 14.2.2 | Capitalization claim | Earlier claim was wrong. Raw Whisper output doesn't capitalize "ich"/"wie" because there's no terminator cue. Training text matches raw exactly. | Corrected |
 | 14.2.3 | Mixed-corpora warning | Dropped — dictation-only by design. | — |
 | 15 | Alternative self-hostable ASR models | Survey below. Stay on faster-whisper, switch fine-tune base to `primeline/whisper-large-v3-turbo-german` (Apache 2.0, ~2.6 % de WER). Optional Stage-2 medical-term post-processor. | Future plan |
@@ -58,7 +58,7 @@ Note "ich"/"wie" lowercase because Whisper raw output has no terminator cue. Pro
 
 - Rule deselection applied at storage time, not export.
 - Captures-specific config separate from runtime `/transcribe` (which keeps all rules).
-- Default-deselect: `dictation-map` + `capitalize-after-terminator`.
+- Default-deselect: `de-dictation-map` + `capitalize-after-terminator`.
 - All other rules (ß→ss, ẞ→SS, digit-range normalization, dedup-space, edge-trim) keep applying.
 - Reviewers see training-form text on /captures page; chips operate against training form; export reads `text` directly.
 - Configurable so admins can re-enable specific rules to experiment.
@@ -143,7 +143,7 @@ No published Whisper fine-tune A/B-tests word-form-keep vs strip-all training da
 |---|---|
 | Base model swap | Switch from current base to `primeline/whisper-large-v3-turbo-german` (Apache 2.0, ~2.6 % de WER, ~4 GB VRAM). |
 | Fine-tune approach | PEFT/LoRA on /captures medical dictation corpus. Start ~10 h, scale to 30–80 h for production-grade. Above ~150 h consider full FT. |
-| Pipeline retention | Keep existing PIPELINE_RULES + post-processor. Captures-specific rule deselect (`dictation-map` + `capitalize-after-terminator`) produces training-form text at storage time. |
+| Pipeline retention | Keep existing PIPELINE_RULES + post-processor. Captures-specific rule deselect (`de-dictation-map` + `capitalize-after-terminator`) produces training-form text at storage time. |
 
 ### Stage 2 — Domain post-processor
 
@@ -168,7 +168,7 @@ No published Whisper fine-tune A/B-tests word-form-keep vs strip-all training da
 3. Export only `status=ready` (principle: status is the quality gate; drop all non-ready states by default — `audio_missing`, `is_stale`, `is_locked`, `new`, `reviewed`, `dismissed`).
 4. Drop `newline` group-join strategy; force `space` or `". "`.
 5. Silence-trim during group merge (Silero VAD) + per-singleton manual trim button so reviewers see/hear exactly what Whisper will be trained on.
-6. Captures-specific pipeline-rule deselect config (default-skip: `dictation-map` + `capitalize-after-terminator`), applied at storage time so reviewers see training-form text.
+6. Captures-specific pipeline-rule deselect config (default-skip: `de-dictation-map` + `capitalize-after-terminator`), applied at storage time so reviewers see training-form text.
 7. Run a ~10 h LoRA ablation comparing word-form-keep vs strip-all training data on real corpus to validate Strategy A.
 8. **Switch fine-tune base to `primeline/whisper-large-v3-turbo-german`** (Apache 2.0, ~2.6 % de WER, 4 GB VRAM, drop-in for CTranslate2).
 9. Optional Stage-2 medical-term/casing post-processor (dictionary or LLM such as Granite-3.3-8b-instruct).

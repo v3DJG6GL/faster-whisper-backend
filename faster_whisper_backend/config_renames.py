@@ -52,7 +52,61 @@ RENAMED_KEYS: dict[str, str] = {
     "STATS_OWN_SHOWS_MACHINE": "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS",
 }
 
+# Pipeline rule slugs that were renamed, old -> current. A slug is referenced
+# by name from stored data (a local PIPELINE_RULES copy, the exclude / include
+# lists of MODEL_OVERRIDES / OVERRIDE_PROFILES / per-identity bindings,
+# CAPTURES_PIPELINE_RULES_EXCLUDE), and an unknown slug fails validation —
+# which drops ALL local overrides. Language-specific rules carry their
+# language prefix (de-, ch-, es-).
+RENAMED_RULES: dict[str, str] = {
+    "dictation-map": "de-dictation-map",
+}
+
+# Keys holding a list of rule slugs, at the top level and inside each
+# MODEL_OVERRIDES / OVERRIDE_PROFILES bundle.
+_SLUG_LIST_KEYS = ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE",
+                   "CAPTURES_PIPELINE_RULES_EXCLUDE")
+
 ENV_PREFIX = "WHISPER_"
+
+
+def rename_slugs(slugs: Any) -> Any:
+    """Map renamed rule slugs in a list / set / tuple of slugs (order kept,
+    a slug present under both names collapses to one). Other values pass
+    through untouched."""
+    if not isinstance(slugs, (list, tuple, set, frozenset)):
+        return slugs
+    out: list[Any] = []
+    for s in slugs:
+        s = RENAMED_RULES.get(s, s) if isinstance(s, str) else s
+        if s not in out:
+            out.append(s)
+    return type(slugs)(out) if not isinstance(slugs, list) else out
+
+
+def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
+    """Apply RENAMED_RULES to a stored overrides dict (in place; also
+    returned): the `name` of each stored PIPELINE_RULES entry and every slug
+    list. A stored rule already using the new name wins over the old one."""
+    rules = raw.get("PIPELINE_RULES")
+    if isinstance(rules, list):
+        names = {r.get("name") for r in rules if isinstance(r, dict)}
+        for r in rules:
+            if isinstance(r, dict) and r.get("name") in RENAMED_RULES:
+                new = RENAMED_RULES[r["name"]]
+                if new not in names:
+                    r["name"] = new
+                    names.add(new)
+    bundles = [raw]
+    for key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
+        group = raw.get(key)
+        if isinstance(group, dict):
+            bundles.extend(b for b in group.values() if isinstance(b, dict))
+    for b in bundles:
+        for key in _SLUG_LIST_KEYS:
+            if key in b:
+                b[key] = rename_slugs(b[key])
+    return raw
 
 
 def alias_env(environ: MutableMapping[str, str]) -> list[str]:
