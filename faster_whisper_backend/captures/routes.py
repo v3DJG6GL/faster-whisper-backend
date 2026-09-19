@@ -3166,7 +3166,62 @@ _CAPTURES_HTML = r"""<!doctype html>
   /* Counts get their own line below the status/model/capture-state row: the
      live string ("667 new · 0 reviewed · 5 ready · 0 dismissed") is long and
      would otherwise push the capture-state badge to wrap on its own. */
-  header .subbar #counts { flex-basis: 100%; }
+  /* status-button counts (server counts, speaker- and search-aware) */
+  .status-btn .cnt { font-family: var(--font-mono); font-size: 0.85em; color: var(--help);
+    margin-left: 0.35em; font-variant-numeric: tabular-nums; }
+  .status-btn.active .cnt { color: inherit; opacity: 0.8; }
+
+  /* ---- summary strip ---- */
+  #stats-strip { border: 1px solid var(--border); border-radius: 6px; background: var(--panel);
+    margin-bottom: 0.75rem; overflow: hidden; }
+  #stats-strip[hidden] { display: none; }
+  .ss-head { display: flex; align-items: center; padding: 0.15rem 0.5rem; }
+  #ss-toggle { background: transparent; border: 0; color: var(--bold); font: 600 var(--fs-md)/1.4 var(--font-sans);
+    padding: 0.25rem 0.4rem; cursor: pointer; display: inline-flex; gap: 0.5rem; align-items: center; }
+  #ss-toggle:hover { color: var(--cyan); background: transparent; }
+  #ss-toggle .chev { display: inline-block; transition: transform .12s ease; color: var(--dim); }
+  #stats-strip.collapsed #ss-toggle .chev { transform: rotate(-90deg); }
+  #stats-strip.collapsed .ss-body { display: none; }
+  #ss-title small { color: var(--help); font-weight: 400; margin-left: 0.4rem; font-family: var(--font-mono); }
+  .ss-body { display: grid; grid-template-columns: minmax(15rem, 1.3fr) repeat(3, minmax(9rem, 1fr));
+    gap: 1px; background: var(--border); border-top: 1px solid var(--border); }
+  .ss-body > div { background: var(--panel); padding: 0.6rem 0.9rem; min-width: 0; }
+  .ss-k { color: var(--help); font-size: var(--fs-xs); }
+  .ss-v { font-family: var(--font-mono); font-size: 1.35rem; color: var(--bold); line-height: 1.2;
+    margin-top: 0.1rem; font-variant-numeric: tabular-nums; }
+  .ss-v small { font-size: 0.6em; color: var(--help); margin-left: 0.35rem; font-family: var(--font-mono); }
+  .ss-sub { color: var(--help); font-size: var(--fs-xs); margin-top: 0.2rem; font-family: var(--font-mono); }
+  .ss-stack { display: flex; height: 7px; border-radius: 4px; overflow: hidden; margin-top: 0.5rem; background: #21262d; }
+  .ss-stack i { display: block; height: 100%; }
+  .ss-leg { display: flex; flex-wrap: wrap; gap: 0.2rem 0.9rem; margin-top: 0.35rem;
+    font: var(--fs-xs) var(--font-mono); color: var(--help); }
+  .ss-leg i { display: inline-block; width: 0.55em; height: 0.55em; border-radius: 2px; margin-right: 0.3em; }
+  .ss-c-new { background: var(--yellow); } .ss-c-reviewed { background: var(--cyan); }
+  .ss-c-ready { background: var(--green); } .ss-c-dismissed { background: #484f58; }
+  .ss-c-audio_missing { background: #6e2a2a; }
+  .ss-bars { display: flex; flex-direction: column; gap: 0.25rem; margin-top: 0.35rem; }
+  .ss-bars .row { display: grid; grid-template-columns: 6em 1fr 4.2em; gap: 0.5rem; align-items: center;
+    font: var(--fs-xs) var(--font-mono); }
+  .ss-bars .row .u { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ss-bars .row .u.me { color: var(--green); }
+  .ss-bars .row .b { height: 5px; background: #21262d; border-radius: 3px; overflow: hidden; }
+  .ss-bars .row .b i { display: block; height: 100%; background: var(--magenta); }
+  .ss-bars .row .d { text-align: right; color: var(--help); }
+  @media (max-width: 52em) { .ss-body { grid-template-columns: 1fr 1fr; } }
+
+  /* ---- select-all row above the list ---- */
+  #list-head { display: flex; align-items: center; gap: 1rem; padding: 0.2rem 0.6rem 0.45rem;
+    font-size: var(--fs-sm); color: var(--help); }
+  #list-head[hidden] { display: none; }
+  #list-head label { display: inline-flex; align-items: center; gap: 0.4rem; cursor: pointer; }
+  #list-head input { margin: 0; }
+  #list-head .kbd { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--dim); }
+  #action-bar #ab-scope { color: var(--cyan); }
+  #toast { display: flex; align-items: center; gap: 0.8rem; }
+  #toast.show { pointer-events: auto; }
+  #toast button { background: transparent; border: 1px solid var(--border); color: var(--cyan);
+    border-radius: 4px; padding: 0.1rem 0.6rem; font: inherit; font-size: var(--fs-sm); cursor: pointer; }
+  #toast button[hidden] { display: none; }
 
   /* Advanced ▾ dropdown (bulk reprocess + destructive actions). */
   .load-more-wrap { display: flex; justify-content: center; padding: 14px 0 4px; }
@@ -3914,9 +3969,9 @@ _CAPTURES_HTML = r"""<!doctype html>
           <option value="all">all</option>
         </select>
       </label>
+      <span class="filt-label admin-only">speaker <span class="picker" id="filt-speaker"></span></span>
       <span id="capture-state" class="capture-state off">capture OFF</span>
     </div>
-    <span class="counts" id="counts"></span>
   </div>
   <!-- Row 3 — action bar, three zones: merge-proposer entry points left (blue
        accent, the prominent fast-path workflow), search filling the middle,
@@ -3952,15 +4007,37 @@ _CAPTURES_HTML = r"""<!doctype html>
 </header>
 
 <main>
+  <!-- Summary strip: whole-queue totals in hours (filter-independent, so it
+       never collapses to "100% new" when the list is narrowed). Folds to a
+       one-line total; the fold is remembered per browser. -->
+  <section id="stats-strip" hidden>
+    <div class="ss-head">
+      <button id="ss-toggle" type="button" aria-expanded="true" aria-controls="ss-body"
+        title="fold / unfold the summary"><span class="chev" aria-hidden="true">▾</span>
+        <span id="ss-title">Captures</span></button>
+    </div>
+    <div id="ss-body" class="ss-body"></div>
+  </section>
+
   <div id="action-bar">
     <span class="summary"><strong id="ab-count">0</strong> selected</span>
     <span class="meter" id="ab-meter">Σ 0.00 s / {{SAMPLE_CAP_S}} s</span>
+    <span class="summary" id="ab-scope"></span>
     <span class="summary" id="ab-warn"></span>
     <span class="spacer"></span>
+    <button id="ab-reviewed" title="set status reviewed on the selection (undo for 8 s)">Mark reviewed</button>
+    <button id="ab-ready" title="set status ready on the selection (undo for 8 s)">Mark ready</button>
+    <button id="ab-dismiss" title="set status dismissed on the selection (undo for 8 s)">Dismiss</button>
+    <button id="ab-delete" class="danger" title="delete the selected recordings and their audio files">Delete…</button>
     <button id="ab-merge" class="primary" disabled>Merge into sample</button>
     <button id="ab-clear">Clear selection</button>
   </div>
 
+  <div id="list-head" hidden>
+    <label><input type="checkbox" id="sel-all" aria-label="select all visible">
+      <span id="sel-all-lbl">select all visible</span></label>
+    <span class="kbd">⇧ click selects a range</span>
+  </div>
   <div id="list"></div>
 </main>
 
@@ -4038,10 +4115,11 @@ _CAPTURES_HTML = r"""<!doctype html>
   </div>
 </div>
 
-<div id="toast"></div>
+<div id="toast"><span id="toast-msg"></span><button id="toast-act" type="button" hidden></button></div>
 
 {{SCALE_PICKER_JS}}
 {{SEV_POLLER_JS}}
+{{PICK_LIST_JS}}
 {{TIME_HELPERS_JS}}
 <script>
 (function() {
@@ -4060,15 +4138,32 @@ _CAPTURES_HTML = r"""<!doctype html>
   // Toast
   // -------------------------------------------------------------------
   var _toastTimer = null;
-  function toast(msg, err) {
+  // toast(msg, err, action?) — action = {label, fn, ms}: renders a button
+  // (Undo) and keeps the toast up for `ms` (default 8 s). Existing callers
+  // pass two args and are unchanged.
+  function toast(msg, err, action) {
     var el = document.getElementById('toast');
-    el.textContent = msg;
+    var msgEl = document.getElementById('toast-msg');
+    var act = document.getElementById('toast-act');
+    if (msgEl) msgEl.textContent = msg; else el.textContent = msg;
+    if (act) {
+      act.hidden = !action;
+      act.onclick = null;
+      if (action) {
+        act.textContent = action.label || 'Undo';
+        act.onclick = function() {
+          act.hidden = true; el.classList.remove('show');
+          try { action.fn(); } catch (_) {}
+        };
+      }
+    }
     el.classList.toggle('err', !!err);
     el.classList.add('show');
     if (_toastTimer) clearTimeout(_toastTimer);
     _toastTimer = setTimeout(function() {
       el.classList.remove('show');
-    }, err ? 5000 : 2500);
+      if (act) act.hidden = true;
+    }, action ? (action.ms || 8000) : (err ? 5000 : 2500));
   }
 
   // Themed yes/no confirm dialog (replaces the browser-native confirm()).
@@ -4189,6 +4284,9 @@ _CAPTURES_HTML = r"""<!doctype html>
       b.className = 'status-btn';
       b.dataset.value = opt.value;
       b.textContent = opt.label;
+      var cnt = document.createElement('span');
+      cnt.className = 'cnt';
+      b.appendChild(cnt);
       b.setAttribute('role', 'radio');
       var on = (opt.value === current);
       b.setAttribute('aria-checked', String(on));
@@ -4213,7 +4311,15 @@ _CAPTURES_HTML = r"""<!doctype html>
         btn.setAttribute('aria-checked', String(on));
       });
     }
-    return { root: root, setValue: setValue };
+    function setCounts(map) {
+      buttons.forEach(function(btn, key) {
+        var c = btn.querySelector('.cnt');
+        if (!c) return;
+        var v = map && Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+        c.textContent = (v === null || v === undefined) ? '' : String(v);
+      });
+    }
+    return { root: root, setValue: setValue, setCounts: setCounts };
   }
 
   // -------------------------------------------------------------------
@@ -4262,6 +4368,112 @@ _CAPTURES_HTML = r"""<!doctype html>
     });
   }
 
+  // The rows a "select all" covers: exactly the shift-range set — every
+  // filtered, loaded, ungrouped capture (members live inside sample cards).
+  function _visibleSelectable() {
+    return applyFilters(_allCaptures).filter(function(r) { return !r.sample_id; });
+  }
+  function _syncSelectAll() {
+    var head = document.getElementById('list-head');
+    var cb = document.getElementById('sel-all');
+    if (!head || !cb) return;
+    var vis = _visibleSelectable();
+    head.hidden = vis.length === 0;
+    var picked = vis.filter(function(r) { return _selection.has(r.id); }).length;
+    cb.checked = vis.length > 0 && picked === vis.length;
+    cb.indeterminate = picked > 0 && picked < vis.length;
+    document.getElementById('sel-all-lbl').textContent =
+      picked === vis.length && vis.length ? 'all ' + vis.length + ' visible selected' : 'select all ' + vis.length + ' visible';
+    var scope = document.getElementById('ab-scope');
+    if (scope) scope.textContent = (_totalCount > _allCaptures.length)
+      ? '(' + _allCaptures.length + ' of ' + _totalCount + ' loaded)' : '';
+  }
+  function _selectAllVisible(on) {
+    var vis = _visibleSelectable();
+    vis.forEach(function(r) { if (on) _selection.add(r.id); else _selection.delete(r.id); });
+    _lastSelectId = null;
+    _updateActionBar();
+    document.querySelectorAll('.capture-card').forEach(function(card) {
+      var cid = card.dataset.id; if (!cid) return;
+      var inSel = _selection.has(cid);
+      card.classList.toggle('selected', inSel);
+      var cb = card.querySelector('.sel-checkbox'); if (cb) cb.checked = inSel;
+    });
+  }
+
+  async function _bulkStatus(status) {
+    var rows = _selectedRows();
+    if (!rows.length) return;
+    var ids = rows.map(function(r) { return r.id; });
+    var word = { reviewed: 'reviewed', ready: 'ready', dismissed: 'dismissed', new: 'new' }[status] || status;
+    try {
+      var j = await api('PATCH', '/captures/api/bulk', { ids: ids, status: status });
+      var updated = j.updated || [], skipped = j.skipped || [];
+      var byId = {}; updated.forEach(function(u) { byId[u.id] = u; });
+      _allCaptures.forEach(function(r) { if (byId[r.id]) r.status = status; });
+      _clearSelection();
+      render();
+      reloadCounts();
+      var why = {};
+      skipped.forEach(function(s) { why[s.reason] = (why[s.reason] || 0) + 1; });
+      var note = Object.keys(why).map(function(k) { return why[k] + ' ' + k.replace('_', ' '); }).join(', ');
+      var msg = updated.length + ' marked ' + word + (note ? ' · ' + skipped.length + ' skipped (' + note + ')' : '');
+      toast(msg, false, updated.length ? { label: 'Undo', fn: function() { _undoBulk(updated); } } : null);
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast('Bulk update failed: ' + e.message, true);
+    }
+  }
+  // Inverse of _bulkStatus: one request per previous status (≤ 4). A row
+  // deleted or evicted meanwhile comes back as skipped/not_found.
+  async function _undoBulk(updated) {
+    var groups = {};
+    updated.forEach(function(u) { (groups[u.prev_status] = groups[u.prev_status] || []).push(u.id); });
+    var restored = 0, gone = 0;
+    try {
+      for (var st in groups) {
+        if (!Object.prototype.hasOwnProperty.call(groups, st)) continue;
+        if (['new', 'reviewed', 'ready', 'dismissed'].indexOf(st) === -1) continue;
+        var j = await api('PATCH', '/captures/api/bulk', { ids: groups[st], status: st });
+        restored += (j.updated || []).length;
+        gone += (j.skipped || []).length;
+        var set = {}; (j.updated || []).forEach(function(u) { set[u.id] = true; });
+        _allCaptures.forEach(function(r) { if (set[r.id]) r.status = st; });
+      }
+      render();
+      reloadCounts();
+      toast('Undid ' + restored + (gone ? ' · ' + gone + ' no longer exist' : ''));
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast('Undo failed: ' + e.message, true);
+    }
+  }
+  async function _bulkDelete() {
+    var rows = _selectedRows();
+    if (!rows.length) return;
+    var sec = rows.reduce(function(a, r) { return a + (r.audio_s || 0); }, 0);
+    var ok = await _confirm({
+      title: 'Delete ' + rows.length + ' capture' + (rows.length === 1 ? '' : 's') + '?',
+      body: rows.length + ' recording' + (rows.length === 1 ? '' : 's') + ' · ' + fmtHours(sec)
+        + ' of audio and their files. This cannot be undone.',
+      confirmLabel: 'Delete', danger: true });
+    if (!ok) return;
+    try {
+      var j = await api('POST', '/captures/api/bulk-delete', { ids: rows.map(function(r) { return r.id; }) });
+      var gone = {}; (j.deleted || []).forEach(function(id) { gone[id] = true; });
+      _allCaptures = _allCaptures.filter(function(r) { return !gone[r.id]; });
+      Object.keys(gone).forEach(function(id) {
+        var card = document.querySelector('.capture-card[data-id="' + id + '"]');
+        if (card) { collapse(card, id); card.remove(); }
+      });
+      _clearSelection();
+      render();
+      reloadCounts();
+      var sk = (j.skipped || []).length;
+      toast('Deleted ' + (j.deleted || []).length + (sk ? ' · ' + sk + ' skipped' : ''));
+    } catch (e) {
+      if (e.message !== 'unauthorized') toast('Delete failed: ' + e.message, true);
+    }
+  }
+
   function _selectedRows() {
     return Array.from(_selection)
       .map(function(id) { return _allCaptures.find(function(r) { return r.id === id; }); })
@@ -4273,6 +4485,7 @@ _CAPTURES_HTML = r"""<!doctype html>
     var n = _selection.size;
     document.getElementById('ab-count').textContent = String(n);
     bar.classList.toggle('show', n >= 1);
+    _syncSelectAll();
     if (n === 0) return;
     var rows = _selectedRows();
     var totalSec = rows.reduce(function(s, r) {
@@ -4304,9 +4517,12 @@ _CAPTURES_HTML = r"""<!doctype html>
       warn.textContent = '';
     }
 
-    var baseOk = n >= 1 && !mixedUsers && !hasInSample;
+    // A bulk-sized selection (select all) is never a merge candidate: skip
+    // the trimmed-duration estimate (500 ids per keystroke) and keep Merge off.
+    var baseOk = n >= 1 && n <= 20 && !mixedUsers && !hasInSample;
     var mergeBtn = document.getElementById('ab-merge');
     mergeBtn.disabled = !baseOk;
+    if (n > 20 && !mixedUsers && !hasInSample) warn.textContent = 'merge needs 20 or fewer';
     if (baseOk) {
       _fetchTrimEstimate(rows.map(function(r) { return r.id; }), gap_ms,
                          meter, mergeBtn);
@@ -4370,6 +4586,64 @@ _CAPTURES_HTML = r"""<!doctype html>
   // Initialised to 'new' to preserve the original page default. The
   // status filter button-group bootstrap below mirrors this value.
   var _filtStatus = 'new';
+  // Speaker filter (admins): user ids picked in the shared pick-list; sent
+  // to the list API as a comma-separated user_id so the server narrows.
+  var _filtSpeakers = [];
+  var _speakerPicker = null;
+  var _statusGroup = null;
+  var _pendingModel = null;       // ?model= from the URL, applied once loaded
+  var _stats = null;              // /captures/api/stats snapshot (whole queue)
+  var _totalCount = 0;            // server total for the caller's scope
+  var _me = null;
+  var _isAdmin = false;
+  var STATUS_VALUES = ['all', 'new', 'reviewed', 'ready', 'dismissed', 'audio_missing'];
+
+  function _listUrl(limit) {
+    var u = '/captures/api/list?status=all&limit=' + limit;
+    if (_filtSpeakers.length) u += '&user_id=' + encodeURIComponent(_filtSpeakers.join(','));
+    return u;
+  }
+  // Filter state lives in the URL so a narrowed view can be bookmarked or
+  // pasted into a report. The selection is transient by design.
+  function _syncUrl() {
+    var p = new URLSearchParams();
+    if (_filtStatus !== 'new') p.set('status', _filtStatus);
+    if (_filtSpeakers.length) p.set('speakers', _filtSpeakers.join(','));
+    var m = document.getElementById('filt-model').value;
+    if (m && m !== 'all') p.set('model', m);
+    var q = (document.getElementById('filt-search').value || '').trim();
+    if (q) p.set('q', q);
+    var qs = p.toString();
+    try {
+      history.replaceState(null, '', location.pathname + (qs ? '?' + qs : ''));
+    } catch (_) {}
+  }
+  function _readUrl() {
+    var p = new URLSearchParams(location.search);
+    var st = p.get('status');
+    if (st && STATUS_VALUES.indexOf(st) !== -1) _filtStatus = st;
+    var sp = (p.get('speakers') || '').split(',').map(function(x) { return x.trim(); }).filter(Boolean);
+    _filtSpeakers = sp;
+    var q = p.get('q'); if (q) document.getElementById('filt-search').value = q;
+    var m = p.get('model'); if (m && m !== 'all') _pendingModel = m;
+  }
+  function fmtHours(sec) {
+    sec = Number(sec) || 0;
+    if (sec >= 3600) return (sec / 3600).toFixed(1) + ' h';
+    if (sec >= 60) return Math.round(sec / 60) + ' min';
+    return Math.round(sec) + ' s';
+  }
+  function fmtClock(sec) {
+    sec = Math.round(Number(sec) || 0);
+    var m = Math.floor(sec / 60), s = sec % 60;
+    return m + ':' + (s < 10 ? '0' : '') + s;
+  }
+  function fmtAge(ts) {
+    if (!ts) return '';
+    var d = (Date.now() / 1000 - ts) / 86400;
+    if (d < 1) return Math.max(1, Math.round(d * 24)) + ' h';
+    return Math.round(d) + ' d';
+  }
 
   function applyFilters(rows) {
     var s = _filtStatus;
@@ -4402,14 +4676,122 @@ _CAPTURES_HTML = r"""<!doctype html>
     if (Object.prototype.hasOwnProperty.call(seen, cur) || cur === 'all') sel.value = cur;
   }
 
+  // Counts live inside the status buttons. Server counts (already scoped
+  // to the picked speakers) when nothing else narrows; otherwise counted
+  // over the loaded rows with the model + search filters applied — the
+  // status filter itself never applies, since it is the dimension shown.
   function updateCounts() {
-    var el = document.getElementById('counts');
-    var c = _counts || {};
-    el.innerHTML =
-      '<span class="n">' + (c.new || 0) + '</span> new · ' +
-      '<span class="n">' + (c.reviewed || 0) + '</span> reviewed · ' +
-      '<span class="n">' + (c.ready || 0) + '</span> ready · ' +
-      '<span class="n">' + (c.dismissed || 0) + '</span> dismissed';
+    if (!_statusGroup) return;
+    var m = document.getElementById('filt-model').value;
+    var q = (document.getElementById('filt-search').value || '').trim();
+    var c;
+    if ((!m || m === 'all') && !q) {
+      c = Object.assign({}, _counts || {});
+      c.all = Object.keys(c).reduce(function(a, k) { return a + (c[k] || 0); }, 0);
+    } else {
+      var saved = _filtStatus; _filtStatus = 'all';
+      var rows; try { rows = applyFilters(_allCaptures); } finally { _filtStatus = saved; }
+      c = { all: rows.length };
+      rows.forEach(function(r) { c[r.status || 'new'] = (c[r.status || 'new'] || 0) + 1; });
+    }
+    STATUS_VALUES.forEach(function(k) { if (c[k] === undefined) c[k] = 0; });
+    _statusGroup.setCounts(c);
+  }
+
+  // ---- summary strip ------------------------------------------------
+  var STRIP_KEY = 'captures-strip-collapsed';
+  function _stripCollapsed() { try { return localStorage.getItem(STRIP_KEY) === '1'; } catch (_) { return false; } }
+  function _setStripCollapsed(on) {
+    var sec = document.getElementById('stats-strip');
+    sec.classList.toggle('collapsed', !!on);
+    document.getElementById('ss-toggle').setAttribute('aria-expanded', on ? 'false' : 'true');
+    try { localStorage.setItem(STRIP_KEY, on ? '1' : '0'); } catch (_) {}
+  }
+  function _el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined && text !== null) e.textContent = text;
+    return e;
+  }
+  function renderStats() {
+    var sec = document.getElementById('stats-strip');
+    var st = _stats;
+    if (!st || !st.total) { sec.hidden = true; return; }
+    sec.hidden = false;
+    var total = st.total, bs = st.by_status || {}, rv = st.review || {}, rd = st.ready || {};
+    var title = document.getElementById('ss-title');
+    title.textContent = 'Captures';
+    var small = _el('small', '', fmtHours(total.s) + ' · ' + total.n + ' recording' + (total.n === 1 ? '' : 's'));
+    title.appendChild(small);
+    var body = document.getElementById('ss-body');
+    body.innerHTML = '';
+
+    // 1 · recorded, with the duration-by-status bar
+    var t1 = _el('div');
+    t1.appendChild(_el('div', 'ss-k', 'recorded' + (_isAdmin ? ', all speakers' : '')));
+    var v1 = _el('div', 'ss-v', fmtHours(total.s));
+    var s1 = _el('small', '', total.n + ' recording' + (total.n === 1 ? '' : 's')
+      + (total.median_s != null ? ' · median ' + fmtClock(total.median_s) : ''));
+    v1.appendChild(s1); t1.appendChild(v1);
+    var stack = _el('div', 'ss-stack'); stack.setAttribute('aria-label', 'duration by status');
+    var leg = _el('div', 'ss-leg');
+    ['new', 'reviewed', 'ready', 'dismissed', 'audio_missing'].forEach(function(k) {
+      var v = bs[k] || { n: 0, s: 0 };
+      if (k === 'audio_missing' && !v.n) return;
+      var i = _el('i', 'ss-c-' + k);
+      i.style.width = (total.s ? (v.s / total.s * 100) : 0).toFixed(1) + '%';
+      stack.appendChild(i);
+      var l = _el('span'); l.appendChild(_el('i', 'ss-c-' + k));
+      l.appendChild(document.createTextNode(k.replace('_', ' ') + ' ' + fmtHours(v.s)));
+      leg.appendChild(l);
+    });
+    t1.appendChild(stack); t1.appendChild(leg);
+    body.appendChild(t1);
+
+    // 2 · review progress
+    var t2 = _el('div');
+    t2.appendChild(_el('div', 'ss-k', 'review progress'));
+    var pct = total.n ? Math.round((rv.handled_n || 0) / total.n * 100) : 0;
+    var v2 = _el('div', 'ss-v', pct + ' %');
+    v2.appendChild(_el('small', '', (rv.handled_n || 0) + ' of ' + total.n + ' handled'));
+    t2.appendChild(v2);
+    var nn = (bs.new || {}).n || 0;
+    t2.appendChild(_el('div', 'ss-sub', nn + ' new' + (nn && rv.oldest_new_ts ? ' · oldest ' + fmtAge(rv.oldest_new_ts) : '')));
+    body.appendChild(t2);
+
+    // 3 · ready for training
+    var t3 = _el('div');
+    t3.appendChild(_el('div', 'ss-k', 'ready for training'));
+    var v3 = _el('div', 'ss-v', fmtHours(rd.s));
+    v3.appendChild(_el('small', '', (rd.n || 0) + ' recording' + (rd.n === 1 ? '' : 's')));
+    t3.appendChild(v3);
+    t3.appendChild(_el('div', 'ss-sub', rd.week_n ? '+' + fmtHours(rd.week_s) + ' this week (' + rd.week_n + ')' : 'nothing new this week'));
+    body.appendChild(t3);
+
+    // 4 · by speaker
+    var t4 = _el('div');
+    t4.appendChild(_el('div', 'ss-k', 'by speaker'));
+    var users = st.by_user || [];
+    var bars = _el('div', 'ss-bars');
+    var max = users.reduce(function(a, u) { return Math.max(a, u.s || 0); }, 0) || 1;
+    if (!users.length) bars.appendChild(_el('div', 'ss-sub', 'no recordings yet'));
+    users.forEach(function(u) {
+      var row = _el('div', 'row');
+      var name = u.username || (u.user_id ? String(u.user_id).slice(0, 6) : '?');
+      var un = _el('span', 'u' + (u.user_id && u.user_id === _me ? ' me' : ''), name);
+      un.title = name + ' · ' + u.n + ' recording' + (u.n === 1 ? '' : 's');
+      var b = _el('span', 'b'); var bi = _el('i'); bi.style.width = ((u.s || 0) / max * 100).toFixed(0) + '%'; b.appendChild(bi);
+      row.appendChild(un); row.appendChild(b); row.appendChild(_el('span', 'd', fmtHours(u.s)));
+      bars.appendChild(row);
+    });
+    t4.appendChild(bars);
+    body.appendChild(t4);
+  }
+  async function reloadStats() {
+    try {
+      _stats = await api('GET', '/captures/api/stats');
+      renderStats();
+    } catch (_) { /* strip stays as it was */ }
   }
 
   function updateCaptureBadge(enabled) {
@@ -5569,9 +5951,13 @@ _CAPTURES_HTML = r"""<!doctype html>
   // -------------------------------------------------------------------
   async function load() {
     try {
-      var j = await api('GET', '/captures/api/list?status=all&limit=500');
+      var j = await api('GET', _listUrl(500));
       _allCaptures = j.captures || [];
       _counts = j.counts || {};
+      _totalCount = j.total_count || _allCaptures.length;
+      _me = j.user_id || null;
+      _isAdmin = !!j.is_admin;
+      if (!_isAdmin && _filtSpeakers.length) { _filtSpeakers = []; }
       // Pull groups in parallel-shape; failure is non-fatal (admin sees no groups).
       try {
         var jg = await api('GET', '/captures/api/samples?limit=200');
@@ -5580,10 +5966,18 @@ _CAPTURES_HTML = r"""<!doctype html>
       } catch (_) { _allSamples = []; _samplesNext = null; }
       updateCaptureBadge(!!j.enabled);
       rebuildModelFilter();
+      if (_pendingModel) {
+        var msel = document.getElementById('filt-model');
+        if (Array.prototype.some.call(msel.options, function(o) { return o.value === _pendingModel; })) msel.value = _pendingModel;
+        _pendingModel = null;
+      }
       updateCounts();
       _clearSelection();
       render();
       if (j.is_admin) document.body.classList.add('role-admin');
+      if (_speakerPicker) _speakerPicker.setPicked(_filtSpeakers);
+      _syncUrl();
+      reloadStats();
     } catch (e) {
       if (e.message === 'unauthorized' || e.message === 'not-admin') return;
       toast('Failed to load captures: ' + e.message, true);
@@ -5618,13 +6012,16 @@ _CAPTURES_HTML = r"""<!doctype html>
     }
   }
 
+  // Counts + strip together: every status change on a row moves both.
   async function reloadCounts() {
     try {
-      var j = await api('GET', '/captures/api/list?status=all&limit=1');
+      var j = await api('GET', _listUrl(1));
       _counts = j.counts || _counts;
+      _totalCount = j.total_count || _totalCount;
       updateCaptureBadge(!!j.enabled);
       updateCounts();
     } catch (_) {}
+    reloadStats();
   }
 
   // -------------------------------------------------------------------
@@ -7812,11 +8209,13 @@ _CAPTURES_HTML = r"""<!doctype html>
         delete _openRows[cid];
       }
     });
+    _syncSelectAll();
   };
 
   // -------------------------------------------------------------------
   // Wire up
   // -------------------------------------------------------------------
+  _readUrl();
   (function() {
     var opts = [
       { value: 'all',           label: 'All' },
@@ -7828,11 +8227,51 @@ _CAPTURES_HTML = r"""<!doctype html>
     ];
     var grp = buildStatusButtonGroup(opts, _filtStatus, function(v) {
       _filtStatus = v;
+      _syncUrl();
       render();
     });
+    _statusGroup = grp;
     document.getElementById('filt-status-wrap').appendChild(grp.root);
   })();
-  document.getElementById('filt-model').addEventListener('change', render);
+  // Speaker filter — the shared pick-list (web_common), rows = the strip's
+  // per-speaker hours, so the picker doubles as a small leaderboard.
+  (function() {
+    var mount = document.getElementById('filt-speaker');
+    if (!mount || !window._renderPickList) return;
+    _speakerPicker = window._renderPickList({
+      mount: mount, wordPlural: 'speakers', placeholder: 'search speakers',
+      title: 'only recordings by the picked speakers', ariaLabel: 'pick speakers',
+      picked: _filtSpeakers.slice(), anyLabel: 'anyone',
+      fmt: fmtHours,
+      fetchRows: function() {
+        var p = _stats ? Promise.resolve(_stats) : api('GET', '/captures/api/stats').then(function(j) { _stats = j; renderStats(); return j; });
+        return p.then(function(st) {
+          var rows = (st.by_user || []).filter(function(u) { return u.user_id; }).map(function(u) {
+            return { id: u.user_id, label: u.username || String(u.user_id).slice(0, 6),
+                     value: u.s, sub: u.n + ' rec', me: u.user_id === _me };
+          });
+          if (_me && !rows.some(function(r) { return r.id === _me; })) {
+            rows.push({ id: _me, label: 'me', value: 0, me: true });
+          }
+          _filtSpeakers.forEach(function(id) {
+            if (!rows.some(function(r) { return r.id === id; })) rows.push({ id: id, label: id.slice(0, 6), value: 0, stale: true });
+          });
+          return rows;
+        });
+      },
+      onChange: function(ids) { _filtSpeakers = ids; _syncUrl(); load(); },
+    });
+  })();
+  document.getElementById('ss-toggle').addEventListener('click', function() {
+    _setStripCollapsed(!document.getElementById('stats-strip').classList.contains('collapsed'));
+  });
+  _setStripCollapsed(_stripCollapsed());
+  document.getElementById('sel-all').addEventListener('change', function(e) { _selectAllVisible(e.target.checked); });
+  document.getElementById('ab-reviewed').addEventListener('click', function() { _bulkStatus('reviewed'); });
+  document.getElementById('ab-ready').addEventListener('click', function() { _bulkStatus('ready'); });
+  document.getElementById('ab-dismiss').addEventListener('click', function() { _bulkStatus('dismissed'); });
+  document.getElementById('ab-delete').addEventListener('click', _bulkDelete);
+  document.getElementById('filt-model').addEventListener('change', function() { _syncUrl(); updateCounts(); render(); });
   // Debounce search input: render() does a full list rebuild AND each
   // previously-open row re-runs toggleExpand → triggers a fresh
   // /captures/api/{cid} GET. Per-keystroke firing storms the server
@@ -7840,7 +8279,7 @@ _CAPTURES_HTML = r"""<!doctype html>
   var _searchTimer = null;
   document.getElementById('filt-search').addEventListener('input', function() {
     if (_searchTimer) clearTimeout(_searchTimer);
-    _searchTimer = setTimeout(function() { _searchTimer = null; render(); }, 150);
+    _searchTimer = setTimeout(function() { _searchTimer = null; _syncUrl(); updateCounts(); render(); }, 150);
   });
   document.getElementById('btn-refresh').addEventListener('click', load);
   document.getElementById('btn-export').addEventListener('click', onExport);
