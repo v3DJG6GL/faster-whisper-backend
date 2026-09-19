@@ -1585,6 +1585,104 @@ _SETTINGS_VIEWER_HTML = r"""<!doctype html>
   .promote-change-line { font-size: var(--fs-sm); margin-top: 0.25rem; }
   .promote-unsaved-note { color: var(--yellow); font-size: var(--fs-xs);
     margin-top: 0.5rem; }
+  /* Sync actions between THIS SERVER (config.local.json) and config.json.
+     Direction is part of the look: .up (cyan, "↑") writes this server's
+     version into config.json, .down (green, "↓") brings config.json here.
+     Filled variants exist only inside the review dialog's confirm button. */
+  .sync-btn { display: inline-flex; align-items: center; gap: 0.35rem; font: inherit;
+    font-size: var(--fs-sm); background: #21262d; color: var(--fg); cursor: pointer;
+    border: 1px solid var(--border); border-radius: 4px; padding: 0.25rem 0.7rem;
+    white-space: nowrap; }
+  .sync-btn:hover { border-color: var(--help); color: var(--bold); }
+  .sync-btn.up { color: var(--cyan); border-color: rgba(121,192,255,0.45);
+    background: rgba(121,192,255,0.08); }
+  .sync-btn.up:hover { border-color: var(--cyan); }
+  .sync-btn.down { color: var(--green); border-color: rgba(126,231,135,0.45);
+    background: rgba(126,231,135,0.08); }
+  .sync-btn.down:hover { border-color: var(--green); }
+  .sync-btn.solid-up { background: var(--cyan); border-color: var(--cyan);
+    color: #0d1117; font-weight: 600; }
+  .sync-btn.solid-down { background: var(--green); border-color: var(--green);
+    color: #0d1117; font-weight: 600; }
+  .sync-btn.solid-danger { background: var(--red); border-color: var(--red);
+    color: #0d1117; font-weight: 600; }
+  .sync-btn:disabled { opacity: 0.45; cursor: default; }
+  .rule-sync-slot { display: inline-flex; gap: 0.3rem; align-items: center;
+    margin-left: auto; }
+  .rule-row .sync-btn.sm { font-size: var(--fs-xs); padding: 0.15rem 0.5rem; }
+  .sync-count { font-family: var(--font-mono); font-size: var(--fs-xs);
+    background: rgba(255,255,255,0.1); border-radius: 8px; padding: 0 0.4rem; }
+  /* Sync bar sits ABOVE the rule list: at the bottom of a 15-rule list the
+     actions were a screen and a half away from the badges they act on. */
+  .sync-bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center;
+    margin-bottom: 0.6rem; }
+  .sync-bar .sync-spacer { flex: 1 1 1rem; }
+  .sync-bar[hidden], .sync-notice[hidden] { display: none; }
+  .sync-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem 1rem;
+    border: 1px solid rgba(126,231,135,0.4); background: rgba(126,231,135,0.06);
+    border-radius: 6px; padding: 0.55rem 0.8rem; margin-bottom: 0.6rem; }
+  .sync-notice-text { flex: 1 1 16rem; font-size: var(--fs-md); }
+  .sync-notice-text b { color: var(--bold); font-weight: 600; }
+  .sync-notice-names { color: var(--help); font-family: var(--font-mono);
+    font-size: var(--fs-xs); }
+  .rule-origin-badge.behind { color: var(--cyan); }
+  .rule-origin-badge.diverged { color: var(--yellow); }
+  /* Review dialog */
+  .rule-modal.review { max-width: 58rem; display: flex; flex-direction: column; gap: 0.75rem; }
+  .rv-flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5rem; }
+  .rv-node { flex: 1 1 13rem; border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.4rem 0.6rem; background: var(--bg); }
+  .rv-node.src { border-color: rgba(126,231,135,0.5); }
+  .rv-node.dst { border-color: rgba(255,123,114,0.5); }
+  .rv-node-t { font-size: var(--fs-sm); color: var(--bold); font-weight: 600; }
+  .rv-node-s { font-size: var(--fs-xs); color: var(--help); }
+  .rv-arrow { align-self: center; color: var(--help); font-family: var(--font-mono);
+    font-size: var(--fs-sm); white-space: nowrap; }
+  .rv-chips { display: flex; flex-wrap: wrap; gap: 0.35rem; }
+  .rv-chip { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--help);
+    border: 1px solid var(--border); border-radius: 10px; padding: 0.05rem 0.5rem; }
+  .rv-chip.added { color: var(--green); border-color: rgba(126,231,135,0.4); }
+  .rv-chip.removed { color: var(--red); border-color: rgba(255,123,114,0.4); }
+  .rv-chip.changed { color: var(--yellow); border-color: rgba(242,204,96,0.4); }
+  .rv-tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 4px; }
+  .rv-table { border-collapse: collapse; width: 100%; min-width: 34rem;
+    font-family: var(--font-mono); font-size: var(--fs-xs); }
+  .rv-table th { text-align: left; font-family: var(--font-sans); font-weight: 600;
+    color: var(--bold); background: #21262d; padding: 0.4rem 0.6rem;
+    border-bottom: 1px solid var(--border); vertical-align: top; }
+  .rv-table th small { display: block; font-weight: 400; color: var(--help); }
+  .rv-table td { padding: 0.3rem 0.6rem; border-bottom: 1px solid var(--border);
+    vertical-align: top; overflow-wrap: anywhere; white-space: pre-wrap; }
+  .rv-table tr:last-child td { border-bottom: none; }
+  .rv-table td.k { color: var(--help); width: 28%; }
+  .rv-table td.o { color: var(--red); background: rgba(255,123,114,0.05); width: 36%; }
+  .rv-table td.n { color: var(--green); background: rgba(126,231,135,0.05); width: 36%; }
+  .rv-table td.none { color: var(--dim); background: none; }
+  .rv-glyph { display: inline-block; width: 1.1em; font-weight: 700; }
+  .rv-kind { font-family: var(--font-sans); font-size: 0.66rem; border-radius: 3px;
+    padding: 0 0.3rem; margin-right: 0.35rem; border: 1px solid var(--border);
+    color: var(--help); }
+  details.rv-grp { border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+  details.rv-grp + details.rv-grp { margin-top: 0.4rem; }
+  details.rv-grp > summary { list-style: none; cursor: pointer; display: flex;
+    flex-wrap: wrap; align-items: center; gap: 0.5rem; padding: 0.4rem 0.6rem;
+    font-size: var(--fs-md); }
+  details.rv-grp > summary::-webkit-details-marker { display: none; }
+  details.rv-grp > summary::before { content: "▸"; color: var(--dim); }
+  details.rv-grp[open] > summary::before { content: "▾"; }
+  details.rv-grp .rv-tablewrap { border: none; border-top: 1px solid var(--border);
+    border-radius: 0; }
+  .rv-grp-name { color: var(--bold); font-weight: 600; }
+  .rv-grp-meta { color: var(--dim); font-family: var(--font-mono); font-size: var(--fs-xs); }
+  .rv-grp-sp { flex: 1 1 0.5rem; }
+  .rv-grp input { accent-color: var(--cyan); }
+  .rv-warn { font-size: var(--fs-sm); color: var(--yellow);
+    border-left: 2px solid var(--yellow); padding-left: 0.6rem; }
+  .rv-lose { font-size: var(--fs-sm); color: var(--red);
+    border-left: 2px solid var(--red); padding-left: 0.6rem; }
+  .rv-foot { display: flex; flex-wrap: wrap; gap: 0.5rem; justify-content: flex-end;
+    align-items: center; }
+  .rv-foot-note { flex: 1 1 1rem; font-size: var(--fs-xs); color: var(--dim); }
   .rule-toast { position: fixed; bottom: 1.25rem; left: 50%;
     transform: translateX(-50%); background: #161b22; color: var(--fg);
     border: 1px solid var(--cyan); border-radius: 4px;
@@ -3763,9 +3861,20 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const advWarn = document.createElement('div');
     advWarn.className = 'advanced-warn';
     advWarn.innerHTML = '⚠ <strong>advanced</strong> — incorrect regex breaks transcription. '
-      + 'Use the test panel below to dry-run before saving. ↺ Reset to default if you get stuck.';
+      + 'Use the test panel below to dry-run before saving. “↓ Reset” on a rule brings back its config.json version if you get stuck.';
     wrap.appendChild(advWarn);
   }
+
+  // Notice strip above the list: config.json rules this server does not have
+  // (new in an update). Exists only when there is something to add.
+  const syncNotice = document.createElement('div');
+  syncNotice.className = 'sync-notice';
+  syncNotice.hidden = true;
+  wrap.appendChild(syncNotice);
+  const syncBar = document.createElement('div');
+  syncBar.className = 'sync-bar';
+  syncBar.hidden = true;
+  wrap.appendChild(syncBar);
 
   const list = document.createElement('div');
   list.className = 'rule-list';
@@ -3875,27 +3984,58 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     return o;
   }
   // Content equality ignoring the vestigial `seeded` flag (config.json is
-  // always seeded:true; a local-only rule is seeded:false — not a real diff)
-  // and the server-owned `map_meta` timestamps (present on disk once a cb:map
-  // entry is touched via /quick-config, absent from the config.json baseline —
-  // not a functional diff, so it must not flip the origin badge to 'edited').
-  function _ruleContentEqual(a, b) {
-    const strip = (r) => {
-      const c = Object.assign({}, r);
-      delete c.seeded;
-      delete c.map_meta;
-      return _sortDeep(c);
-    };
-    return JSON.stringify(strip(a)) === JSON.stringify(strip(b));
+  // always seeded:true; a rule only on this server is seeded:false — not a
+  // real diff), the server-owned `map_meta` timestamps (present on disk once
+  // a cb:map entry is touched via /quick-config, absent from config.json)
+  // and the editor's own `config_rev` bookkeeping.
+  function _ruleStrip(r) {
+    const c = Object.assign({}, r);
+    delete c.seeded;
+    delete c.map_meta;
+    delete c.config_rev;
+    return _sortDeep(c);
   }
-  // 'factory'    — in config.json, identical
-  // 'edited'     — in config.json, content differs (local edit)
-  // 'local-only' — not in config.json
+  function _ruleContentEqual(a, b) {
+    return JSON.stringify(_ruleStrip(a)) === JSON.stringify(_ruleStrip(b));
+  }
+  // Fingerprint of a rule's content (cyrb53, hex). Stored on a local rule as
+  // `config_rev` = the config.json content it was last in sync with.
+  function _ruleHash(r) {
+    const str = JSON.stringify(_ruleStrip(r));
+    let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+    for (let i = 0; i < str.length; i++) {
+      const ch = str.charCodeAt(i);
+      h1 = Math.imul(h1 ^ ch, 2654435761);
+      h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16).padStart(14, '0');
+  }
+  // A rule equal to config.json is in sync by definition: remember that
+  // version. A rule that differs keeps the rev it had — that is what later
+  // tells "edited here" from "config.json moved on".
+  function _stampConfigRevs() {
+    rules.forEach(r => {
+      if (!r || r.type === 'terminal') return;
+      const base = _factoryRule(r.name);
+      if (base && _ruleContentEqual(r, base)) r.config_rev = _ruleHash(base);
+    });
+  }
+  // 'factory'    — same as config.json
+  // 'edited'     — edited on this server; config.json unchanged since (or no
+  //                config_rev recorded: a list saved before revs existed)
+  // 'behind'     — NOT edited here; config.json changed (an update)
+  // 'diverged'   — edited here AND config.json changed
+  // 'local-only' — only on this server
   function _ruleStatus(rule) {
     if (!rule || rule.type === 'terminal') return 'factory';
     const base = _factoryRule(rule.name);
     if (!base) return 'local-only';
-    return _ruleContentEqual(rule, base) ? 'factory' : 'edited';
+    if (_ruleContentEqual(rule, base)) return 'factory';
+    const rev = rule.config_rev;
+    if (!rev || rev === _ruleHash(base)) return 'edited';
+    return _ruleHash(rule) === rev ? 'behind' : 'diverged';
   }
   // Name sequences (non-terminal) shared by the order-dirty check and the
   // per-rule "moved" marker. Both compare the RELATIVE order of the rules
@@ -3926,61 +4066,75 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   }
   function _paintBadge(el, st) {
     el.className = 'rule-origin-badge ' + st;
-    el.textContent = st === 'edited' ? '◆ edited'
-                   : st === 'local-only' ? '✚ local-only'
-                   : '● factory';
+    el.textContent = st === 'edited' ? '◆ edited here'
+                   : st === 'behind' ? '◇ config.json is newer'
+                   : st === 'diverged' ? '◆ edited here · config.json changed too'
+                   : st === 'local-only' ? '✚ only on this server'
+                   : '● same as config.json';
     el.title = st === 'edited'
-        ? 'Differs from config.json — local edit not yet promoted'
+        ? 'Edited on this server — not in config.json yet'
+      : st === 'behind'
+        ? 'You did not edit this rule; config.json changed (an update). "↓ Update" brings the new version here.'
+      : st === 'diverged'
+        ? 'Edited on this server, and config.json changed as well. Review both directions before you pick one.'
       : st === 'local-only'
-        ? 'Not in config.json — local-only rule'
-        : 'Matches config.json';
+        ? 'This rule exists only on this server, not in config.json'
+        : 'Identical to config.json';
   }
 
   function refreshControlsVisibility() {
     if (isChecklist) return;   // checklist rows have no reset/dirty controls
     // Per row: repaint the origin badge, toggle the ⇪ promote button, and
     // show the per-row reset button only when the rule differs from config.json.
-    let anyDirty = false;        // some rule is 'edited'
-    let anyPromotable = false;   // some rule is 'edited' or 'local-only'
+    let nReset = 0;      // rules that differ from config.json (any reason)
+    let nPromote = 0;    // rules with something of their own to write up
     list.querySelectorAll('.rule-row').forEach(r => {
       const idx = parseInt(r.dataset.idx, 10);
       const rule = rules[idx];
       if (!rule) return;
       const st = _ruleStatus(rule);
-      const promotable = st !== 'factory' && rule.type !== 'terminal';
-      if (st === 'edited') anyDirty = true;
-      if (promotable) anyPromotable = true;
+      const differs = st === 'edited' || st === 'behind' || st === 'diverged';
+      // 'behind' has no edits of its own: promoting it would write the OLD
+      // content over the newer config.json.
+      const promotable = rule.type !== 'terminal'
+        && (st === 'edited' || st === 'diverged' || st === 'local-only');
+      if (differs) nReset++;
+      if (promotable) nPromote++;
       const badge = r.querySelector('.rule-origin-badge');
       if (badge) _paintBadge(badge, st);
       const mv = r.querySelector('.rule-moved-badge');
       if (mv) mv.style.display = _ruleMoved(rule) ? '' : 'none';
-      const pb = r.querySelector('.promote-btn');
+      const pb = r.querySelector('.row-promote');
       if (pb) pb.style.display = promotable ? '' : 'none';
-      const btn = r.querySelector('.reset-link');
-      if (btn) btn.style.display = (st === 'edited') ? '' : 'none';
+      const btn = r.querySelector('.row-reset');
+      if (btn) {
+        btn.style.display = differs ? '' : 'none';
+        btn.textContent = st === 'behind' ? '↓ Update' : '↓ Reset';
+        btn.title = st === 'behind'
+          ? 'Bring the newer config.json version of this rule to this server'
+          : 'Discard the edits made on this server — shows what you lose first';
+      }
     });
     // List-wide controls: hide when there is nothing to act on.
     const orderDirty = _seededOrderDirty();
-    if (resetOrderBtn) {
-      resetOrderBtn.style.display = orderDirty ? '' : 'none';
-    }
-    if (promoteOrderBtn) {
-      promoteOrderBtn.style.display = orderDirty ? '' : 'none';
+    if (resetOrderBtn) resetOrderBtn.style.display = orderDirty ? '' : 'none';
+    if (promoteOrderBtn) promoteOrderBtn.style.display = orderDirty ? '' : 'none';
+    const _setCount = (btn, label, n) => {
+      btn.textContent = label + ' ';
+      const c = document.createElement('span');
+      c.className = 'sync-count'; c.textContent = String(n);
+      btn.appendChild(c);
+    };
+    if (promoteAllBtn) {
+      promoteAllBtn.style.display = nPromote ? '' : 'none';
+      _setCount(promoteAllBtn, '↑ Promote all to config.json', nPromote);
     }
     if (resetAllBtn) {
-      resetAllBtn.style.display = (anyDirty || orderDirty) ? '' : 'none';
+      resetAllBtn.style.display = nReset ? '' : 'none';
+      _setCount(resetAllBtn, '↓ Reset all to config.json', nReset);
     }
-    if (addFactoryBtn) {
-      const missing = _missingFactoryRules();
-      addFactoryBtn.style.display = missing.length ? '' : 'none';
-      addFactoryBtn.textContent = '＋ Add ' + missing.length + ' rule'
-        + (missing.length === 1 ? '' : 's') + ' from config.json';
-      addFactoryBtn.title = 'In config.json but not in your local rule list (new in an '
-        + 'update, or deleted here): ' + missing.map(b => b.label || b.name).join(', ');
-    }
-    if (promoteAllBtn) {
-      promoteAllBtn.style.display = (anyPromotable || orderDirty) ? '' : 'none';
-    }
+    syncBar.hidden = !(nReset || nPromote || orderDirty);
+    _paintSyncNotice();
   }
 
   // --- commit helpers --------------------------------------------------
@@ -3993,10 +4147,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // Promoting (a separate action) writes config.json instead.
   function commitData() {
     if (isChecklist) return;   // checklist mode is read-only — no setDirty
+    _stampConfigRevs();
     setDirty(name, JSON.parse(JSON.stringify(rules)));
     refreshControlsVisibility();
   }
   function commitFull() {
+    _stampConfigRevs();
     setDirty(name, JSON.parse(JSON.stringify(rules)));
     paintAll();
   }
@@ -4417,13 +4573,21 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     pill.textContent = _typePill(rule.type);
     headLine1.appendChild(pill);
 
-    // Origin badge — factory / edited / local-only vs config.json. Repainted
-    // live by refreshControlsVisibility. Skipped for the terminal rule.
+    // Origin badge — how this rule relates to config.json. Repainted live by
+    // refreshControlsVisibility. Skipped for the terminal rule. The sync slot
+    // right after it takes the "↓ Reset / Update" and "↑ Promote" buttons:
+    // they sit next to the badge they act on, and both only open the review
+    // dialog, so the scannable head row stays safe.
+    let syncSlot = null;
     if (rule.type !== 'terminal') {
       const originBadge = document.createElement('span');
       originBadge.className = 'rule-origin-badge';
       _paintBadge(originBadge, _ruleStatus(rule));
       headLine1.appendChild(originBadge);
+      // Mounted at the right end of the "applies to" line below: line 1 is
+      // full (label, slug, type, badge) and squeezed the label to "DE: St…".
+      syncSlot = document.createElement('span');
+      syncSlot.className = 'rule-sync-slot';
       // Position-diverged marker — same content as config.json but moved.
       // Toggled live by refreshControlsVisibility.
       const movedBadge = document.createElement('span');
@@ -4561,11 +4725,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (rule.type !== 'terminal') {
       promoteBtnEl = document.createElement('button');
       promoteBtnEl.type = 'button';
-      promoteBtnEl.className = 'promote-btn';
-      promoteBtnEl.textContent = '⇪ promote';
-      promoteBtnEl.title = 'Promote this rule into the committed config.json';
+      promoteBtnEl.className = 'sync-btn sm up row-promote';
+      promoteBtnEl.textContent = '↑ Promote';
+      promoteBtnEl.title = "Write this server's version of the rule into config.json — shows the changes first";
       promoteBtnEl.style.display = 'none';
-      promoteBtnEl.addEventListener('click', () => _promoteOne(rule));
+      promoteBtnEl.addEventListener('click', (e) => { e.stopPropagation(); _promoteOne(rule); });
     }
 
     // ----- Language scope line: "applies to:" + language picker.
@@ -4589,6 +4753,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         },
       });
       headLineLang.appendChild(_langPicker.el);
+      if (syncSlot) headLineLang.appendChild(syncSlot);
       head.appendChild(headLineLang);
     }
 
@@ -4661,23 +4826,17 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (_canReset) {
       const reset = document.createElement('button');
       reset.type = 'button';
-      reset.className = 'reset-link';
-      reset.textContent = '↺ reset to default';
-      reset.title = 'Discard the local edit — restore this rule to its config.json value';
-      reset.style.display = 'none';   // refreshControlsVisibility shows it when 'edited'
-      reset.addEventListener('click', () => {
-        const baseline = _baselineList().find(b => b.name === rule.name);
-        if (!baseline) return;
-        rules[idx] = JSON.parse(JSON.stringify(baseline));
-        commitFull();
-      });
-      _destructiveBtns.push(reset);
+      reset.className = 'sync-btn sm down row-reset';
+      reset.textContent = '↓ Reset';
+      reset.style.display = 'none';   // refreshControlsVisibility shows + labels it
+      reset.addEventListener('click', (e) => { e.stopPropagation(); _resetOne(rule); });
+      if (syncSlot) syncSlot.appendChild(reset);
     } else if (_canDelete) {
       const del = document.createElement('button');
       del.type = 'button';
       del.className = 'delete-btn';
       del.textContent = '× delete';
-      del.title = 'Remove this local-only rule';
+      del.title = 'Remove this rule (it exists only on this server)';
       del.addEventListener('click', () => {
         expandedNames.delete(rule.name);
         _saveExpanded();
@@ -4800,10 +4959,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // Destructive actions live in a body-footer (out of the scannable
     // head row). Append AFTER the rule editor + test panel so the
     // visual order reads: edit body → run test → reset/delete.
-    if (promoteBtnEl || _destructiveBtns.length) {
+    if (promoteBtnEl && syncSlot) syncSlot.appendChild(promoteBtnEl);
+    if (_destructiveBtns.length) {
       const footer = document.createElement('div');
       footer.className = 'row-body-actions';
-      if (promoteBtnEl) footer.appendChild(promoteBtnEl);
       for (const btn of _destructiveBtns) footer.appendChild(btn);
       body.appendChild(footer);
     }
@@ -4883,20 +5042,24 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // ⇪ Promote all — write every local change (edited + new rules) into the
   // committed config.json. refreshControlsVisibility shows it only when
   // something differs from config.json.
-  const promoteAllBtn = document.createElement('button');
-  promoteAllBtn.type = 'button';
-  promoteAllBtn.className = 'promote-all-btn';
-  promoteAllBtn.textContent = '⇪ Promote all changes to config.json';
-  promoteAllBtn.title = 'Write every local change into the committed config.json';
-  promoteAllBtn.style.display = 'none';
-  promoteAllBtn.addEventListener('click', () => _promoteAll());
-  ctrls.appendChild(promoteAllBtn);
+  // Sync actions. "↓" (green) brings config.json to this server, "↑" (cyan)
+  // writes this server's rules into config.json; every one of them opens the
+  // review dialog before anything changes. Labels + counts are painted by
+  // refreshControlsVisibility.
+  const resetAllBtn = document.createElement('button');
+  resetAllBtn.type = 'button';
+  resetAllBtn.className = 'sync-btn down';
+  resetAllBtn.title = 'Bring rules back to their config.json version — pick which, see what you lose';
+  resetAllBtn.style.display = 'none';
+  resetAllBtn.addEventListener('click', () => _resetAll());
+  syncBar.appendChild(resetAllBtn);
 
   const resetOrderBtn = document.createElement('button');
   resetOrderBtn.type = 'button';
-  resetOrderBtn.className = 'reset-link';
+  resetOrderBtn.className = 'sync-btn';
   resetOrderBtn.textContent = '↺ Reset order';
-  resetOrderBtn.title = 'Restore config.json rule order; local-only rules append before terminal';
+  resetOrderBtn.title = 'Restore the config.json rule order; rules that exist only on this server go before the last step';
+  resetOrderBtn.style.display = 'none';
   resetOrderBtn.addEventListener('click', () => {
     const baseOrder = factoryRules.map(b => b.name);
     const factory = [];
@@ -4912,70 +5075,61 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (terminal) rules.push(terminal);
     commitFull();
   });
-  ctrls.appendChild(resetOrderBtn);
+  syncBar.appendChild(resetOrderBtn);
 
-  // ⇪ Promote order — write the current pipeline ORDER into config.json
-  // (rule contents unchanged). Sibling of "↺ Reset order"; shown only when
-  // the seeded order diverges from config.json.
+  const syncSpacer = document.createElement('span');
+  syncSpacer.className = 'sync-spacer';
+  syncBar.appendChild(syncSpacer);
+
+  // ↑ Promote order — write the current pipeline ORDER into config.json
+  // (rule contents unchanged); shown only when the order differs.
   const promoteOrderBtn = document.createElement('button');
   promoteOrderBtn.type = 'button';
-  promoteOrderBtn.className = 'promote-all-btn';
-  promoteOrderBtn.textContent = '⇪ Promote order';
+  promoteOrderBtn.className = 'sync-btn up';
+  promoteOrderBtn.textContent = '↑ Promote order';
   promoteOrderBtn.title = 'Write the current pipeline ORDER into config.json (rule contents unchanged)';
   promoteOrderBtn.style.display = 'none';
   promoteOrderBtn.addEventListener('click', () => _promoteOrder());
-  ctrls.appendChild(promoteOrderBtn);
+  syncBar.appendChild(promoteOrderBtn);
 
-  // ＋ Add rules from config.json — a saved local rule list REPLACES the
-  // factory list, so a rule that an update adds to config.json never shows
-  // up here on its own (and "Promote all" would even remove it again as
-  // "deleted locally"). This surfaces such rules and inserts each one at its
-  // config.json position relative to the factory rules already present.
+  const promoteAllBtn = document.createElement('button');
+  promoteAllBtn.type = 'button';
+  promoteAllBtn.className = 'sync-btn up';
+  promoteAllBtn.title = "Write this server's rules into config.json — pick which, see every change";
+  promoteAllBtn.style.display = 'none';
+  promoteAllBtn.addEventListener('click', () => _promoteAll());
+  syncBar.appendChild(promoteAllBtn);
+
+  // config.json rules missing from this server's list. A saved local list
+  // REPLACES the factory list, so a rule an update adds to config.json never
+  // shows up here on its own.
   function _missingFactoryRules() {
     return factoryRules.filter(b => b.type !== 'terminal'
       && !rules.some(r => r.name === b.name));
   }
-  const addFactoryBtn = document.createElement('button');
-  addFactoryBtn.type = 'button';
-  addFactoryBtn.className = 'promote-all-btn';
-  addFactoryBtn.style.display = 'none';
-  addFactoryBtn.addEventListener('click', () => {
-    const order = factoryRules.map(b => b.name);
-    _missingFactoryRules().forEach(b => {
-      const copy = JSON.parse(JSON.stringify(b));
-      // Before the next config.json rule that exists locally, else before
-      // the terminal step.
-      const after = order.slice(order.indexOf(b.name) + 1);
-      let at = rules.findIndex(r => after.indexOf(r.name) !== -1);
-      if (at === -1) at = rules.findIndex(r => r.type === 'terminal');
-      if (at === -1) at = rules.length;
-      rules.splice(at, 0, copy);
-    });
-    commitFull();
-  });
-  ctrls.appendChild(addFactoryBtn);
+  function _paintSyncNotice() {
+    const missing = _missingFactoryRules();
+    syncNotice.textContent = '';
+    syncNotice.hidden = missing.length === 0;
+    if (!missing.length) return;
+    const txt = document.createElement('div');
+    txt.className = 'sync-notice-text';
+    const b = document.createElement('b');
+    b.textContent = 'config.json has ' + missing.length + ' rule'
+      + (missing.length === 1 ? '' : 's') + ' this server does not have yet.';
+    const names = document.createElement('div');
+    names.className = 'sync-notice-names';
+    names.textContent = missing.map(m => m.label || m.name).join(', ');
+    txt.appendChild(b); txt.appendChild(names);
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sync-btn down';
+    btn.textContent = '↓ Review and add';
+    btn.addEventListener('click', () => _addFromConfig());
+    syncNotice.appendChild(txt); syncNotice.appendChild(btn);
+  }
 
-  const resetAllBtn = document.createElement('button');
-  resetAllBtn.type = 'button';
-  resetAllBtn.className = 'reset-link';
-  resetAllBtn.textContent = '↺ Reset all to config.json';
-  resetAllBtn.title = 'Discard every local edit — restore all rules to their config.json values';
-  resetAllBtn.addEventListener('click', () => {
-    const customs = rules.filter(r => !_factoryHas(r.name) && r.type !== 'terminal');
-    const ok = confirm(
-      'Discard every local edit and restore all rules to their config.json values.\n' +
-      (customs.length ? `Your ${customs.length} local-only rule(s) will be kept at their current positions.\n\n` : '\n') +
-      'Continue?'
-    );
-    if (!ok) return;
-    // Replace each config.json-backed rule with its committed copy.
-    rules = rules.map(r => _factoryHas(r.name)
-      ? JSON.parse(JSON.stringify(_factoryRule(r.name)))
-      : r);
-    commitFull();
-  });
-  ctrls.appendChild(resetAllBtn);
-
+  wrap.appendChild(ctrls);
   wrap.appendChild(ctrls);
 
   function _openAddCustomDialog() {
@@ -5114,92 +5268,354 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     document.addEventListener('keydown', _onKey);
     return close;
   }
-  // Field-by-field diff between the rule being promoted and its config.json
-  // copy (or a "NEW" note when the rule is not in config.json yet).
-  function _ruleDiffEl(effRule, baseRule) {
-    const box = document.createElement('div');
-    box.className = 'promote-diff';
-    if (!baseRule) {
-      const p = document.createElement('div');
-      p.className = 'help';
-      p.textContent = 'NEW — this rule is not in config.json yet; it will be added.';
-      box.appendChild(p);
-      return box;
-    }
-    const keys = Array.from(new Set(
-      Object.keys(effRule).concat(Object.keys(baseRule)))).sort();
-    let any = false;
-    // One row per CHANGED item. A missing side renders as an em dash, so an
-    // added / removed map key or list entry reads at a glance.
-    const addRow = (key, ov, nv) => {
-      any = true;
-      const rowEl = document.createElement('div');
-      rowEl.className = 'promote-diff-row';
-      const kEl = document.createElement('div');
-      kEl.className = 'promote-diff-key'; kEl.textContent = key;
-      const oEl = document.createElement('div');
-      oEl.className = 'promote-diff-old';
-      oEl.textContent = ov === undefined ? '—' : ov;
-      const nEl = document.createElement('div');
-      nEl.className = 'promote-diff-new';
-      nEl.textContent = nv === undefined ? '—' : nv;
-      rowEl.appendChild(kEl); rowEl.appendChild(oEl); rowEl.appendChild(nEl);
-      box.appendChild(rowEl);
-    };
+  // ---- review dialog: one diff + confirm for every sync action ----------
+  // Rows of a rule diff, BEFORE -> AFTER: {key, kind, o, n}; kind is one of
+  // added / removed / changed / moved; o / n are display strings (undefined =
+  // not present on that side). Either side may be null (a rule that does not
+  // exist there). Maps are diffed key by key and entry lists entry by entry —
+  // an 80-key dictation map as one JSON line per side hid what changed.
+  const _RV_SKIP = { seeded: 1, map_meta: 1, config_rev: 1 };
+  // A rule that exists on one side only: its slug and the default "enabled"
+  // say nothing the group header does not.
+  const _RV_SKIP_ONE_SIDED = { name: 1, enabled: 1 };
+  function _ruleDiffRows(before, after) {
+    const rows = [];
+    const o0 = before || {}, n0 = after || {};
     const isObj = v => v && typeof v === 'object' && !Array.isArray(v);
     const js = v => v === undefined ? undefined : JSON.stringify(v);
+    const kindOf = (ov, nv) => ov === undefined ? 'added' : nv === undefined ? 'removed' : 'changed';
+    const add = (key, ov, nv, kind) => rows.push({ key, kind: kind || kindOf(ov, nv), o: ov, n: nv });
+    const entryText = e => (e.pattern === undefined ? JSON.stringify(e)
+      : e.pattern + '  →  ' + (e.replacement === '' ? '(delete)' : e.replacement));
+    const keys = Array.from(new Set(Object.keys(o0).concat(Object.keys(n0)))).sort();
     keys.forEach(k => {
-      if (k === 'seeded') return;
-      const o = baseRule[k], n = effRule[k];
+      if (_RV_SKIP[k]) return;
+      let o = o0[k], n = n0[k];
+      // One side has no rule at all: only list what carries content.
+      if (!before || !after) {
+        const v = before ? o : n;
+        if (_RV_SKIP_ONE_SIDED[k] && v !== false) return;
+        if (v === '' || (v === false && k !== 'enabled') || v == null
+            || (Array.isArray(v) && !v.length) || (isObj(v) && !Object.keys(v).length)) return;
+      }
       if (JSON.stringify(o) === JSON.stringify(n)) return;
-      if (isObj(o) && isObj(n)) {
-        // A map (dictation map: 80+ keys) used to render as ONE line of JSON
-        // per side, which hid what changed. Diff it key by key; same-content
-        // maps in a different key order are reported as such.
+      if ((isObj(o) || o === undefined) && (isObj(n) || n === undefined) && (isObj(o) || isObj(n))) {
+        o = o || {}; n = n || {};
         const mk = Array.from(new Set(Object.keys(o).concat(Object.keys(n))))
           .sort(new Intl.Collator('de', { sensitivity: 'base', numeric: true }).compare);
         let sub = 0;
         mk.forEach(key => {
           if (js(o[key]) === js(n[key])) return;
           sub++;
-          addRow(k + ' · ' + JSON.stringify(key), js(o[key]), js(n[key]));
+          add(k + ' · ' + JSON.stringify(key), js(o[key]), js(n[key]));
         });
-        if (!sub) addRow(k, 'same ' + mk.length + ' entries', 'order changed only');
+        if (!sub) add(k, 'same ' + mk.length + ' entries', 'same entries, different order', 'moved');
         return;
       }
-      if (Array.isArray(o) && Array.isArray(n)
-          && o.concat(n).every(isObj)) {
-        // Entry lists (regex-list): pair entries by label, else by position.
+      const isList = v => Array.isArray(v) && v.every(isObj);
+      if ((isList(o) || o === undefined) && (isList(n) || n === undefined) && (isList(o) || isList(n))
+          && ((o || []).length || (n || []).length)) {
+        o = o || []; n = n || [];
+        // Pair entries by label, else by position.
         const idOf = (e, i) => (e.label ? 'label:' + e.label : 'pos:' + i);
         const om = new Map(o.map((e, i) => [idOf(e, i), [e, i]]));
         const nm = new Map(n.map((e, i) => [idOf(e, i), [e, i]]));
         const ids = Array.from(new Set(Array.from(om.keys()).concat(Array.from(nm.keys()))));
-        let sub = 0;
         ids.forEach(id => {
           const oe = om.get(id), ne = nm.get(id);
-          const name = k + ' · ' + (id.indexOf('label:') === 0
+          const nm_ = k + ' · ' + (id.indexOf('label:') === 0
             ? id.slice(6) : '#' + (Number(id.slice(4)) + 1));
-          if (!oe || !ne) { sub++; addRow(name, oe && js(oe[0]), ne && js(ne[0])); return; }
+          if (!oe || !ne) { add(nm_, oe && entryText(oe[0]), ne && entryText(ne[0])); return; }
           const fk = Array.from(new Set(Object.keys(oe[0]).concat(Object.keys(ne[0])))).sort();
           fk.forEach(f => {
-            if (js(oe[0][f]) === js(ne[0][f])) return;
-            sub++;
-            addRow(name + ' · ' + f, js(oe[0][f]), js(ne[0][f]));
+            if (js(oe[0][f]) !== js(ne[0][f])) add(nm_ + ' · ' + f, js(oe[0][f]), js(ne[0][f]));
           });
-          if (oe[1] !== ne[1]) { sub++; addRow(name + ' · position', String(oe[1] + 1), String(ne[1] + 1)); }
+          if (oe[1] !== ne[1]) add(nm_ + ' · position', String(oe[1] + 1), String(ne[1] + 1), 'moved');
         });
-        if (!sub) addRow(k, js(o), js(n));
         return;
       }
-      addRow(k, js(o), js(n));
+      add(k, js(o), js(n));
     });
-    if (!any) {
-      const p = document.createElement('div');
-      p.className = 'help';
-      p.textContent = 'No differences — already identical to config.json.';
-      box.appendChild(p);
+    return rows;
+  }
+  function _rvTable(rows, left, right) {
+    const wrapEl = document.createElement('div');
+    wrapEl.className = 'rv-tablewrap';
+    const t = document.createElement('table');
+    t.className = 'rv-table';
+    const hr = document.createElement('tr');
+    [['Field', ''], left, right].forEach(h => {
+      const th = document.createElement('th');
+      th.textContent = h[0];
+      if (h[1]) { const sm = document.createElement('small'); sm.textContent = h[1]; th.appendChild(sm); }
+      hr.appendChild(th);
+    });
+    t.appendChild(hr);
+    const cell = (cls, glyph, v) => {
+      const td = document.createElement('td');
+      if (v === undefined) { td.className = cls + ' none'; td.textContent = '— not present'; return td; }
+      td.className = cls;
+      const g = document.createElement('span');
+      g.className = 'rv-glyph'; g.textContent = glyph;
+      td.appendChild(g); td.appendChild(document.createTextNode(v));
+      return td;
+    };
+    rows.forEach(r => {
+      const tr = document.createElement('tr');
+      const k = document.createElement('td');
+      k.className = 'k';
+      const kind = document.createElement('span');
+      kind.className = 'rv-kind'; kind.textContent = r.kind;
+      k.appendChild(kind); k.appendChild(document.createTextNode(r.key));
+      tr.appendChild(k); tr.appendChild(cell('o', '−', r.o)); tr.appendChild(cell('n', '+', r.n));
+      t.appendChild(tr);
+    });
+    wrapEl.appendChild(t);
+    return wrapEl;
+  }
+  const _RV_SERVER = { t: 'This server', s: 'config.local.json — not in git' };
+  const _RV_CONFIG = { t: 'config.json', s: 'git-tracked — shared by every deployment' };
+  // o: { title, up (true = this server -> config.json), verb, left:[h,sub],
+  //      right:[h,sub], groups:[{id, name, meta, rows, pick, checked, open}],
+  //      extraEls, warn, lose, confirm(n) -> label, confirmClass,
+  //      onConfirm(selectedIds) }
+  // Left column = what gets overwritten, right column = what it becomes.
+  function _reviewDialog(o) {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'rule-modal-backdrop';
+    const panel = document.createElement('div');
+    panel.className = 'rule-modal review';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-modal', 'true');
+    const h = document.createElement('div');
+    h.className = 'rule-modal-title';
+    h.textContent = o.title;
+    panel.appendChild(h);
+
+    const flow = document.createElement('div');
+    flow.className = 'rv-flow';
+    const node = (n, cls, tag) => {
+      const b = document.createElement('div');
+      b.className = 'rv-node ' + cls;
+      const t = document.createElement('div');
+      t.className = 'rv-node-t'; t.textContent = n.t + '  ·  ' + tag;
+      const sub = document.createElement('div');
+      sub.className = 'rv-node-s'; sub.textContent = n.s;
+      b.appendChild(t); b.appendChild(sub);
+      return b;
+    };
+    const arrow = document.createElement('div');
+    arrow.className = 'rv-arrow';
+    arrow.textContent = '── ' + (o.verb || 'overwrites') + ' ──▶';
+    flow.appendChild(node(o.up ? _RV_SERVER : _RV_CONFIG, 'src', 'source'));
+    flow.appendChild(arrow);
+    flow.appendChild(node(o.up ? _RV_CONFIG : _RV_SERVER, 'dst', 'gets changed'));
+    panel.appendChild(flow);
+
+    const chips = document.createElement('div');
+    chips.className = 'rv-chips';
+    panel.appendChild(chips);
+
+    const picks = [];   // [{id, cb}]
+    const selected = () => o.groups.filter((g, i) => !g.pick || picks[i].cb.checked);
+    const single = o.groups.length === 1 && !o.groups[0].pick;
+    if (single) {
+      panel.appendChild(_rvTable(o.groups[0].rows, o.left, o.right));
+      picks.push(null);
+    } else {
+      const box = document.createElement('div');
+      o.groups.forEach((g, i) => {
+        const det = document.createElement('details');
+        det.className = 'rv-grp';
+        det.open = g.open !== false && o.groups.length <= 3;
+        const sum = document.createElement('summary');
+        let cb = null;
+        if (g.pick) {
+          cb = document.createElement('input');
+          cb.type = 'checkbox';
+          cb.checked = g.checked !== false;
+          cb.setAttribute('aria-label', 'Include ' + g.name);
+          cb.addEventListener('click', e => e.stopPropagation());
+          cb.addEventListener('change', paint);
+          sum.appendChild(cb);
+        }
+        picks.push(cb ? { cb } : null);
+        const nm = document.createElement('span');
+        nm.className = 'rv-grp-name'; nm.textContent = g.name;
+        sum.appendChild(nm);
+        if (g.meta) {
+          const m = document.createElement('span');
+          m.className = 'rv-grp-meta'; m.textContent = g.meta;
+          sum.appendChild(m);
+        }
+        const sp = document.createElement('span'); sp.className = 'rv-grp-sp';
+        const cnt = document.createElement('span');
+        cnt.className = 'rv-chip';
+        cnt.textContent = g.rows.length + (g.rows.length === 1 ? ' change' : ' changes');
+        sum.appendChild(sp); sum.appendChild(cnt);
+        det.appendChild(sum);
+        det.appendChild(_rvTable(g.rows, g.left || o.left, g.right || o.right));
+        box.appendChild(det);
+      });
+      panel.appendChild(box);
     }
-    return box;
+    (o.extraEls || []).forEach(e => { if (e) panel.appendChild(e); });
+    if (o.warn) { const w = document.createElement('div'); w.className = 'rv-warn'; w.textContent = o.warn; panel.appendChild(w); }
+    if (o.lose) { const l = document.createElement('div'); l.className = 'rv-lose'; l.textContent = o.lose; panel.appendChild(l); }
+    const note = _unsavedNoteEl();
+    if (note && o.up) panel.appendChild(note);
+
+    const foot = document.createElement('div');
+    foot.className = 'rv-foot';
+    const fn = document.createElement('span');
+    fn.className = 'rv-foot-note';
+    fn.textContent = 'Esc closes. Nothing is written until you confirm.';
+    const cancel = document.createElement('button');
+    cancel.type = 'button'; cancel.className = 'sync-btn'; cancel.textContent = 'Cancel';
+    const ok = document.createElement('button');
+    ok.type = 'button'; ok.className = 'sync-btn ' + o.confirmClass;
+    foot.appendChild(fn); foot.appendChild(cancel); foot.appendChild(ok);
+    panel.appendChild(foot);
+
+    function paint() {
+      const sel = o.groups.filter((g, i) => !picks[i] || picks[i].cb.checked);
+      const c = { added: 0, removed: 0, changed: 0, moved: 0 };
+      sel.forEach(g => g.rows.forEach(r => { c[r.kind] = (c[r.kind] || 0) + 1; }));
+      chips.textContent = '';
+      const chip = (cls, text) => { const e = document.createElement('span'); e.className = 'rv-chip ' + cls; e.textContent = text; chips.appendChild(e); };
+      if (!single) chip('', sel.length + ' of ' + o.groups.length + ' rules selected');
+      if (c.added) chip('added', '+ ' + c.added + ' added');
+      if (c.removed) chip('removed', '− ' + c.removed + ' removed');
+      if (c.changed) chip('changed', '~ ' + c.changed + ' changed');
+      if (c.moved) chip('', '↕ ' + c.moved + ' moved');
+      ok.textContent = o.confirm(sel.length);
+      ok.disabled = sel.length === 0 && !o.allowEmpty;
+    }
+    const _onKey = (e) => { if (e.key === 'Escape') { e.preventDefault(); close(); } };
+    function close() {
+      document.removeEventListener('keydown', _onKey);
+      if (backdrop.parentNode) backdrop.parentNode.removeChild(backdrop);
+    }
+    cancel.addEventListener('click', close);
+    ok.addEventListener('click', () => {
+      const ids = o.groups.filter((g, i) => !picks[i] || picks[i].cb.checked).map(g => g.id);
+      close();
+      o.onConfirm(ids);
+    });
+    backdrop.addEventListener('click', (e) => { if (e.target === backdrop) close(); });
+    backdrop.appendChild(panel);
+    document.body.appendChild(backdrop);
+    document.addEventListener('keydown', _onKey);
+    paint();
+    cancel.focus();
+    return close;
+  }
+  // "You lose ..." line for a reset: what exists only in this server's copy.
+  function _loseText(rowsList) {
+    const c = { added: 0, removed: 0, changed: 0 };
+    rowsList.forEach(rows => rows.forEach(r => { if (c[r.kind] !== undefined) c[r.kind]++; }));
+    // Rows run this-server -> config.json, so "removed" = something only here.
+    const parts = [];
+    if (c.removed) parts.push(c.removed + ' item' + (c.removed === 1 ? '' : 's') + ' that exist only here');
+    if (c.changed) parts.push(c.changed + ' edited field' + (c.changed === 1 ? '' : 's'));
+    if (!parts.length) return '';
+    return 'You lose ' + parts.join(' and ') + '. After Save this cannot be undone.';
+  }
+  function _resetOne(rule) {
+    const base = _factoryRule(rule.name);
+    if (!base) return;
+    const st = _ruleStatus(rule);
+    const rows = _ruleDiffRows(rule, base);
+    const label = rule.label || rule.name;
+    const behind = st === 'behind';
+    _reviewDialog({
+      title: (behind ? 'Update “' : 'Reset “') + label + (behind ? '” from config.json?' : '” to config.json?'),
+      up: false, verb: 'overwrites',
+      left: ['This server now', behind ? 'the older version' : 'your edits — will be discarded'],
+      right: [behind ? 'After update' : 'After reset', 'the config.json version'],
+      groups: [{ id: rule.name, name: label, rows }],
+      lose: behind ? '' : _loseText([rows]),
+      warn: st === 'diverged' ? 'config.json changed as well since this rule was last in sync — the right column is the NEW config.json version.' : '',
+      confirm: () => behind ? '↓ Update this rule' : '↓ Discard my edits and reset',
+      confirmClass: behind ? 'solid-down' : 'solid-danger',
+      onConfirm: () => {
+        const i = rules.findIndex(r => r.name === rule.name);
+        if (i === -1) return;
+        rules[i] = JSON.parse(JSON.stringify(base));
+        commitFull();
+        _toast((behind ? 'Updated “' : 'Reset “') + label + '” — press Save to apply it on this server.');
+      },
+    });
+  }
+  function _resetAll() {
+    const groups = [];
+    rules.forEach(r => {
+      const st = _ruleStatus(r);
+      if (st !== 'edited' && st !== 'behind' && st !== 'diverged') return;
+      groups.push({
+        id: r.name, name: r.label || r.name, pick: true,
+        // Only a rule you did NOT edit is safe to take by default.
+        checked: st === 'behind', open: st !== 'behind',
+        meta: st === 'behind' ? 'only config.json changed'
+            : st === 'diverged' ? 'your edits + config.json changed' : 'has your own edits',
+        rows: _ruleDiffRows(r, _factoryRule(r.name)),
+      });
+    });
+    if (!groups.length) return;
+    _reviewDialog({
+      title: 'Reset rules to config.json?',
+      up: false, verb: 'overwrites',
+      left: ['This server now', 'will be discarded'],
+      right: ['After reset', 'the config.json version'],
+      groups,
+      lose: 'Rules with your own edits start unchecked. Rules that exist only on this server are never touched.',
+      confirm: n => '↓ Reset ' + n + ' selected rule' + (n === 1 ? '' : 's'),
+      confirmClass: 'solid-danger',
+      onConfirm: (ids) => {
+        const pick = new Set(ids);
+        rules = rules.map(r => pick.has(r.name)
+          ? JSON.parse(JSON.stringify(_factoryRule(r.name))) : r);
+        commitFull();
+        _toast('Reset ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's') + ' — press Save to apply it on this server.');
+      },
+    });
+  }
+  function _addFromConfig() {
+    const missing = _missingFactoryRules();
+    if (!missing.length) return;
+    const order = factoryRules.map(b => b.name);
+    const nextLocal = (b) => {
+      const after = order.slice(order.indexOf(b.name) + 1);
+      return rules.find(r => after.indexOf(r.name) !== -1) || null;
+    };
+    _reviewDialog({
+      title: 'Add ' + missing.length + ' rule' + (missing.length === 1 ? '' : 's') + ' from config.json to this server?',
+      up: false, verb: 'adds to',
+      left: ['This server now', 'rule does not exist'],
+      right: ['After adding', 'copied from config.json'],
+      groups: missing.map(b => {
+        const nx = nextLocal(b);
+        const langs = (b.languages || []).length ? (b.languages || []).join(', ') + ' only' : 'all languages';
+        return { id: b.name, name: b.label || b.name, pick: true, checked: true,
+          meta: 'new · goes before “' + (nx ? (nx.label || nx.name) : 'the last step') + '” · ' + langs,
+          rows: _ruleDiffRows(null, b) };
+      }),
+      confirm: n => '↓ Add ' + n + ' rule' + (n === 1 ? '' : 's'),
+      confirmClass: 'solid-down',
+      onConfirm: (ids) => {
+        const pick = new Set(ids);
+        missing.filter(b => pick.has(b.name)).forEach(b => {
+          // Before the next config.json rule that exists here, else before
+          // the terminal step.
+          const nx = nextLocal(b);
+          let at = nx ? rules.indexOf(nx) : rules.findIndex(r => r.type === 'terminal');
+          if (at === -1) at = rules.length;
+          rules.splice(at, 0, JSON.parse(JSON.stringify(b)));
+        });
+        commitFull();
+        _toast('Added ' + ids.length + ' rule' + (ids.length === 1 ? '' : 's') + ' — press Save to apply it on this server.');
+      },
+    });
   }
   function _changeListEl(label, names) {
     const d = document.createElement('div');
@@ -5242,9 +5658,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (!_pipelineDirty()) return null;
     const w = document.createElement('div');
     w.className = 'promote-unsaved-note';
-    w.textContent = '⚠ You have unsaved local edits. Promote captures them into '
-      + 'config.json now; also use the page Save to apply them on THIS deployment '
-      + '(or clear the local override after a "promote all").';
+    w.textContent = '⚠ You have unsaved edits on this page. Promote writes them into '
+      + 'config.json now; press Save as well to keep them on this server.';
     return w;
   }
   // Build the full config.json array from the CURRENT pipeline order.
@@ -5320,31 +5735,33 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     factoryRules = fresh;
     refreshControlsVisibility();
     const base = fresh.find(b => b.name === rule.name) || null;
-    const body = document.createElement('div');
-    const intro = document.createElement('div');
-    intro.className = 'help';
-    intro.textContent = base
-      ? 'This writes the rule into the committed config.json (git-tracked).'
-      : 'This adds the rule to the committed config.json (git-tracked).';
-    body.appendChild(intro);
-    body.appendChild(_ruleDiffEl(rule, base));
-    const note = _unsavedNoteEl();
-    if (note) body.appendChild(note);
-    _modal({
-      title: 'Promote “' + (rule.label || rule.name) + '” to config.json?',
-      bodyEl: body,
-      buttons: [
-        { label: 'Cancel' },
-        { label: 'Promote to config.json', primary: true, onClick: async (close) => {
-            close();
-            // Preserve the CURRENT pipeline order; promote only this rule's
-            // content. _buildFactoryPayload enforces terminal-last and the
-            // before-terminal placement of a newly-promoted local-only rule.
-            const out = await _postFactory(_buildFactoryPayload(new Set([rule.name]), true));
-            if (out) _toast('Promoted to config.json — commit & push to ship it.');
-          } },
-      ],
+    const label = rule.label || rule.name;
+    const st = _ruleStatus(rule);
+    _reviewDialog({
+      title: 'Promote “' + label + '” to config.json?',
+      up: true, verb: base ? 'overwrites' : 'adds to',
+      left: ['config.json now', base ? 'will be replaced' : 'rule does not exist'],
+      right: ['After promote', "this server's version"],
+      groups: [{ id: rule.name, name: label, rows: _ruleDiffRows(base, rule) }],
+      warn: st === 'diverged' ? 'config.json changed since this rule was last in sync. Promoting replaces those newer config.json changes with your version — the left column shows what would go.' : '',
+      confirm: () => '↑ Promote to config.json',
+      confirmClass: 'solid-up',
+      onConfirm: async () => {
+        // Preserve the CURRENT pipeline order; promote only this rule's
+        // content. _buildFactoryPayload enforces terminal-last and the
+        // before-terminal placement of a rule that is new in config.json.
+        const out = await _postFactory(_buildFactoryPayload(new Set([rule.name]), true));
+        if (out) { _afterPromoteStamp(); _toast('Promoted to config.json — commit & push to ship it.'); }
+      },
     });
+  }
+  // After a promote the promoted rules equal config.json again: record the
+  // new rev so a later config.json change reads as "config.json is newer".
+  function _afterPromoteStamp() {
+    const before = JSON.stringify(rules);
+    _stampConfigRevs();
+    if (JSON.stringify(rules) !== before) setDirty(name, JSON.parse(JSON.stringify(rules)));
+    refreshControlsVisibility();
   }
   async function _promoteAll() {
     let fresh;
@@ -5352,46 +5769,50 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     catch (e) { alert('Could not load config.json.'); return; }
     factoryRules = fresh;
     refreshControlsVisibility();
-    const factByName = new Map(fresh.map(b => [b.name, b]));
-    const effByName = new Map(rules.map(r => [r.name, r]));
-    const edited = [], added = [], removed = [];
+    const groups = [];
     rules.forEach(r => {
       if (r.type === 'terminal') return;
-      const b = factByName.get(r.name);
-      if (!b) added.push(r.name);
-      else if (!_ruleContentEqual(r, b)) edited.push(r.name);
+      const st = _ruleStatus(r);
+      if (st !== 'edited' && st !== 'diverged' && st !== 'local-only') return;
+      groups.push({
+        id: r.name, name: r.label || r.name, pick: true, checked: true,
+        meta: st === 'local-only' ? 'only on this server · new in config.json'
+            : st === 'diverged' ? 'edited here · config.json changed too' : 'edited here',
+        rows: _ruleDiffRows(_factoryRule(r.name), r),
+      });
     });
-    fresh.forEach(b => {
-      if (b.type !== 'terminal' && !effByName.has(b.name)) removed.push(b.name);
+    // config.json rules this server does not have: left alone unless ticked.
+    // (A saved local list cannot tell "deleted here on purpose" from "new in
+    // an update", so removal from config.json is always an explicit choice.)
+    _missingFactoryRules().forEach(b => {
+      groups.push({
+        id: '-' + b.name, name: b.label || b.name, pick: true, checked: false, open: false,
+        meta: 'not on this server · tick to REMOVE it from config.json',
+        right: ['After promote', 'removed from config.json'],
+        rows: _ruleDiffRows(b, null),
+      });
     });
-    const body = document.createElement('div');
-    const summary = document.createElement('div');
-    summary.className = 'help';
-    summary.textContent = 'This overwrites config.json with your current rule list:';
-    body.appendChild(summary);
-    body.appendChild(_changeListEl('edited', edited));
-    body.appendChild(_changeListEl('added', added));
-    body.appendChild(_changeListEl('removed from config.json', removed));
-    body.appendChild(_orderChangeEl());
-    const note = _unsavedNoteEl();
-    if (note) body.appendChild(note);
-    _modal({
-      title: 'Promote all changes to config.json?',
-      bodyEl: body,
-      buttons: [
-        { label: 'Cancel' },
-        { label: 'Promote all', primary: true, onClick: async (close) => {
-            close();
-            // Promote every current non-terminal rule's content (keepAbsent=false
-            // still drops locally-deleted factory rules — the "removed from
-            // config.json" list above). Routing through _buildFactoryPayload means
-            // the immutable terminal is written from COMMITTED content, never a
-            // stale effective one.
-            const allNames = new Set(rules.filter(r => r.type !== 'terminal').map(r => r.name));
-            const out = await _postFactory(_buildFactoryPayload(allNames, false));
-            if (out) _afterPromoteAll(out);
-          } },
-      ],
+    if (!groups.length) return;
+    _reviewDialog({
+      title: 'Promote rules to config.json?',
+      up: true, verb: 'overwrites',
+      left: ['config.json now', 'will be replaced'],
+      right: ['After promote', "this server's version"],
+      groups,
+      extraEls: [_seededOrderDirty() ? _orderChangeEl() : null],
+      warn: _seededOrderDirty() ? 'The rule order on this server differs from config.json and is written as well.' : '',
+      confirm: n => '↑ Promote ' + n + ' selected rule' + (n === 1 ? '' : 's'),
+      confirmClass: 'solid-up',
+      onConfirm: async (ids) => {
+        const promote = new Set(ids.filter(i => i[0] !== '-'));
+        const remove = new Set(ids.filter(i => i[0] === '-').map(i => i.slice(1)));
+        // keepAbsent=true: config.json rules missing here stay in config.json;
+        // only the explicitly ticked ones are dropped. The immutable terminal
+        // is written from COMMITTED content (see _buildFactoryPayload).
+        const payload = _buildFactoryPayload(promote, true).filter(r => !remove.has(r.name));
+        const out = await _postFactory(payload);
+        if (out) { _afterPromoteStamp(); _afterPromoteAll(out); }
+      },
     });
   }
   async function _promoteOrder() {
@@ -5413,9 +5834,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     if (localOnly.length) {
       const w = document.createElement('div');
       w.className = 'promote-unsaved-note';
-      w.textContent = '⚠ ' + localOnly.length + ' local-only rule(s) are NOT written '
-        + 'to config.json (it has no home for them): ' + localOnly.join(', ') + '. '
-        + 'Their position drops out of the global order — use "⇪ Promote all" to ship them.';
+      w.textContent = '⚠ ' + localOnly.length + ' rule(s) that exist only on this server are NOT '
+        + 'written to config.json: ' + localOnly.join(', ') + '. Their position is not '
+        + 'part of the config.json order — use "↑ Promote all" to write them as well.';
       body.appendChild(w);
     }
     const note = _unsavedNoteEl();
@@ -5447,18 +5868,18 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const p = document.createElement('div');
     p.className = 'help';
     p.textContent = orphaned.length
-      ? 'This deployment has a local PIPELINE_RULES override that shadows '
+      ? 'This server keeps its own saved rule list, which is used instead of '
         + 'config.json — but config.json does NOT contain every rule running here.'
-      : 'config.json now holds your rules. This deployment still has a local '
-        + 'PIPELINE_RULES override that shadows config.json. Clear it so config.json '
-        + 'runs directly here? config.json is committable either way.';
+      : 'config.json now holds your rules. This server still keeps its own saved '
+        + 'rule list, which is used instead of config.json. Drop it so config.json '
+        + 'runs directly here? config.json can be committed either way.';
     body.appendChild(p);
     if (orphaned.length) {
       const w = document.createElement('div');
       w.className = 'promote-unsaved-note';
-      w.textContent = '⚠ Clearing the override would DROP ' + orphaned.length
-        + ' local-only rule(s) from the running pipeline: ' + orphaned.join(', ')
-        + '. They are not in config.json. Keep the override, or run "⇪ Promote all" '
+      w.textContent = '⚠ Dropping this server\'s list would REMOVE ' + orphaned.length
+        + ' rule(s) from the running pipeline: ' + orphaned.join(', ')
+        + '. They are not in config.json. Keep the list, or run "↑ Promote all" '
         + 'first to write them into config.json.';
       body.appendChild(w);
     }
@@ -5467,7 +5888,7 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       try {
         r = await api('POST', '/settings/factory-rules/clear-local-override');
       } catch (e) { alert('Could not reach the server.'); return; }
-      if (!r.ok) { alert('Clearing the local override failed.'); return; }
+      if (!r.ok) { alert("Dropping this server's rule list failed."); return; }
       close();
       location.reload();
     };
@@ -5478,12 +5899,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       bodyEl: body,
       buttons: orphaned.length
         ? [
-            { label: 'Keep local override', primary: true },
-            { label: 'Clear anyway (drops local-only rules)', onClick: _doClear },
+            { label: "Keep this server's list", primary: true },
+            { label: 'Drop it anyway (removes those rules)', onClick: _doClear },
           ]
         : [
-            { label: 'Keep local override' },
-            { label: 'Clear local override', primary: true, onClick: _doClear },
+            { label: "Keep this server's list" },
+            { label: "Drop this server's list", primary: true, onClick: _doClear },
           ],
     });
   }

@@ -1384,6 +1384,22 @@ class _RuleBase(BaseModel):
     # "" rather than raising, so this cosmetic value can never trip
     # load_overrides (which drops ALL overrides on any validation error).
     color: str = ""
+    # Fingerprint of the config.json rule this LOCAL copy was last in sync
+    # with (set by the pipeline editor on add / reset / promote, and for a
+    # rule that equals config.json when the list is saved). A saved local
+    # list replaces the factory list, so without it the editor cannot tell
+    # "edited on this server" from "config.json changed in an update" — both
+    # are just "differs". Editor bookkeeping only: never evaluated by the
+    # pipeline, never written to config.json (see save_factory_rules), and
+    # forgiving like `color` (a malformed value becomes None, not an error).
+    config_rev: str | None = None
+
+    @field_validator("config_rev", mode="before")
+    @classmethod
+    def _normalize_config_rev(cls, v: Any) -> "str | None":
+        if isinstance(v, str) and re.fullmatch(r"[0-9a-f]{6,32}", v):
+            return v
+        return None
 
     @field_validator("languages", mode="before")
     @classmethod
@@ -3563,7 +3579,8 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
     Returns the validated, coerced rule list. Raises ValidationError on bad
     input — the route handler converts that to a 422 response.
     """
-    rules = [{**r, "seeded": True} for r in rules]
+    rules = [{**{k: v for k, v in r.items() if k != "config_rev"}, "seeded": True}
+             for r in rules]
     validated = AdminConfig.model_validate(
         {"PIPELINE_RULES": rules}, context={"guard_regex": True})
     out_rules = validated.model_dump(exclude_none=True, mode="json")["PIPELINE_RULES"]
