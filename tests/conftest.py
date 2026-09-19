@@ -19,6 +19,7 @@ full), so all fixtures are usable on every matrix leg.
 
 from __future__ import annotations
 
+import copy
 import importlib
 import os
 import sys
@@ -68,6 +69,7 @@ def _reset_singletons():
     # metrics ring buffers / counters
     metrics.req_count.clear()
     metrics.err_count.clear()
+    metrics.guard_hits.clear()
     metrics._latency.clear()
     metrics._errors_ts.clear()
     metrics.model_loads.clear()
@@ -502,6 +504,11 @@ class FakeModel:
             words = [FakeWord("hallo", 0.0, 0.5), FakeWord("welt", 0.5, 1.0)] \
                 if include_words else []
             segs = [FakeSegment("hallo welt", 0.0, 1.0, words)]
+        else:
+            # Fresh objects per decode, like the real decoder: the post-decode
+            # guards cut segments IN PLACE, and a streaming test decodes the
+            # same fixture many times (previews, then the final).
+            segs = copy.deepcopy(segs)
         return iter(segs), self._info
 
 

@@ -65,6 +65,18 @@ _USAGE_KIND_BY_JOB_KIND = {"dictate": "dictation", "translate": "text"}
 req_count: Counter[str] = Counter()         # path -> total
 err_count: Counter[str] = Counter()         # path -> 5xx total
 
+# Post-decode hallucination guards that fired, since process start. In-memory
+# on purpose: a diagnostic ("is a guard cutting at all / far too often?"), not
+# a statistic. Live previews are not counted (they decode about once a second).
+GUARD_NAMES = ("word_rate", "low_conf", "burst", "zero_tail", "repeat", "emptied")
+guard_hits: Counter[str] = Counter()
+
+
+def record_guard_hit(name: str) -> None:
+    """One post-decode guard fired on a batch request or a streaming final."""
+    if name in GUARD_NAMES:
+        guard_hits[name] += 1
+
 # Bumped/dec'd by the transcribe handler with try/finally.
 in_flight_transcriptions: int = 0
 
@@ -502,6 +514,7 @@ def metrics_snapshot(*, include_identity: bool = False,
         "slot_busy": slot_busy_snapshot(),
         "requests": dict(req_count),
         "errors_total": dict(err_count),
+        "guard_hits": dict(guard_hits),
         "errors_window": {
             "1m": _errors_in(60),
             "5m": _errors_in(300),

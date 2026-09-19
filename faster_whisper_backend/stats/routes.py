@@ -1564,6 +1564,7 @@ _STATS_VIEWER_HTML = r"""<!doctype html>
     <div id="inflight-val" class="val">0<span class="sub">in flight</span></div>
     <div id="gate-meta" class="meta"></div>
     <div id="activity-meta" class="meta"></div>
+    <div id="guard-meta" class="meta" hidden></div>
    </div></div>
   </div>
 
@@ -2509,6 +2510,16 @@ function render(snap) {
   $('activity-meta').innerHTML =
     `<b>uptime</b> ${fmtSec(snap.uptime_sec)} &nbsp; ` +
     `<b>total req</b> ${totalReq}`;
+  // Post-decode hallucination guards that fired since start (hidden at 0).
+  const gh = snap.guard_hits || {};
+  const ghLabels = { word_rate: 'segment rate', low_conf: 'low confidence',
+                     burst: 'word burst', zero_tail: 'zero-length tail',
+                     repeat: 'repeated phrase', emptied: 'emptied' };
+  const ghParts = Object.keys(ghLabels).filter(k => gh[k] > 0)
+    .map(k => `${ghLabels[k]} ${Number(gh[k])}`);
+  $('guard-meta').hidden = !ghParts.length;
+  $('guard-meta').innerHTML = ghParts.length
+    ? `<b>guards fired</b> ${ghParts.join(' · ')}` : '';
   // Counters since the process started: say so on their cards.
   document.querySelectorAll('.card .win[data-win="boot"]').forEach(el => {
     el.innerHTML = '<b>since start</b> · ' + fmtSec(snap.uptime_sec);

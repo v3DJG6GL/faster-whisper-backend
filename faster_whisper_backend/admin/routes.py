@@ -2645,7 +2645,9 @@ function modelOverridesEditor(name, v) {
     { id: 'antihalluc', title: 'Anti-hallucination & token control',
       advTitle: 'all anti-hallucination knobs',
       basic: [],
-      adv:   ['HALLUCINATION_SILENCE_THRESHOLD','DECODE_SKIP_RESIDUAL_WINDOWS',
+      adv:   ['HALLUCINATION_SILENCE_THRESHOLD','SEGMENT_MAX_WORDS_PER_S',
+              'SEGMENT_MAX_WORD_BURST_PER_S','SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS',
+              'SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS','DECODE_SKIP_RESIDUAL_WINDOWS',
               'DECODE_TOKEN_CAP_PER_SECOND',
               'SUPPRESS_BLANK','SUPPRESS_TOKENS',
               'SUPPRESS_CHARS','PREPEND_PUNCTUATIONS','APPEND_PUNCTUATIONS'] },
@@ -2657,7 +2659,7 @@ function modelOverridesEditor(name, v) {
               'TRANSLATION_MODEL','TRANSLATION_MODE','TRANSLATION_CONTEXT_SEGMENTS',
               'TRANSLATION_GLOSSARY','TRANSLATION_MAX_TARGETS'] },
     { id: 'output', title: 'Output wrappers', advTitle: null,
-      basic: ['OUTPUT_PREFIX','OUTPUT_SUFFIX','SEGMENT_MAX_WORDS_PER_S'], adv: [] },
+      basic: ['OUTPUT_PREFIX','OUTPUT_SUFFIX'], adv: [] },
   ];
 
   // LOAD_TIME_FIELDS subset that overlaps with ModelOverride. Editing any of

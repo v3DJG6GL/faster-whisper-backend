@@ -722,3 +722,61 @@ def test_stream_final_best_of_yields_to_a_client_override(app_module, fake_model
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         _dictate_one_utterance(client, {"decode_overrides": {"best_of": 4}})
     assert [kw["best_of"] for kw in calls if _is_final(kw)] == [4]
+
+
+# ---------------------------------------------------------------------------
+# Tail cuts inside a segment (core/segment_guards.py) on finals and previews.
+# Timings are the real ones the production server returned on 2026-09-19.
+# ---------------------------------------------------------------------------
+
+def _loop_segment():
+    from tests.conftest import FakeSegment, FakeWord
+    real = [(" Besser", 0.32, 0.74), (" wäre", 0.74, 1.0), (" zwei", 1.0, 1.4),
+            (" Tabletten", 1.4, 2.0)]
+    tail = [(" zu", 2.0, 2.04), (" nehmen", 2.04, 2.04), (" und", 2.04, 2.4)] + [
+        (w, 2.4, 2.4) for w in (" die", " Doppelpunkte", " abzuschliessen") * 3]
+    ws = [FakeWord(*x) for x in real + tail]
+    return FakeSegment("".join(w.word for w in ws), 0.32, 2.4, words=ws)
+
+
+def _stream_once(app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            ws.send_json({"type": "config", "model": "whisper-1",
+                          "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+            assert ws.receive_json()["type"] == "ready"
+            ws.send_bytes(_pcm(8000, 2500))
+            ws.send_bytes(_pcm(0, 1500))
+            ws.send_json({"type": "stop"})
+            return _drain(ws)
+
+
+def test_stream_final_and_previews_cut_the_made_up_tail(app_module, fake_model,
+                                                        monkeypatch, caplog):
+    from faster_whisper_backend.stats import metrics
+    fake_model._segments = [_loop_segment()]
+    with caplog.at_level("INFO"):
+        msgs = _stream_once(app_module, monkeypatch)
+    finals = [m for m in msgs if m["type"] == "final"]
+    partials = [m for m in msgs if m["type"] == "partial"]
+    text = "".join(m["committed"] + m.get("tail", "") for m in finals[-1:])
+    assert "Tabletten" in text and "abzuschliessen" not in text and "nehmen" not in text
+    # previews never show (and LocalAgreement never commits) the tail either
+    assert partials
+    assert all("abzuschliessen" not in m["committed"] + m.get("pending", "")
+               for m in partials)
+    assert metrics.guard_hits["burst"] >= 1          # finals only — previews uncounted
+    assert "cut made-up tail of final segment (burst+zero_tail+repeat" in caplog.text
+    assert "tail_cut" in caplog.text
+
+
+def test_stream_tail_cuts_off_keep_the_tail(app_module, fake_model, monkeypatch):
+    app_module.cfg.SEGMENT_MAX_WORD_BURST_PER_S = 0
+    app_module.cfg.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS = 0
+    app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS = 0
+    app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0
+    fake_model._segments = [_loop_segment()]
+    msgs = _stream_once(app_module, monkeypatch)
+    finals = [m for m in msgs if m["type"] == "final"]
+    assert "abzuschliessen" in "".join(m["committed"] + m.get("tail", "") for m in finals)

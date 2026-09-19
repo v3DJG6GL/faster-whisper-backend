@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 # build_info with the rest of the server identity; imported this early —
 # before config — so it exists exactly as soon as it used to.
 from faster_whisper_backend.core import decode_trace as _decode_trace
+from faster_whisper_backend.core import segment_guards
 from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 
 from faster_whisper_backend import config as cfg
@@ -682,6 +683,9 @@ _KWARG_TO_CFG = {
     # Post-decode guards (pseudo-kwargs: rendered in the log block's guards
     # section, never passed to model.transcribe)
     "segment_max_words_per_sec": "SEGMENT_MAX_WORDS_PER_S",
+    "segment_max_word_burst_per_sec": "SEGMENT_MAX_WORD_BURST_PER_S",
+    "segment_zero_length_tail_min_words": "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
+    "segment_repeat_collapse_min_repeats": "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS",
     "skip_residual_windows": "DECODE_SKIP_RESIDUAL_WINDOWS",
     "token_cap_per_second": "DECODE_TOKEN_CAP_PER_SECOND",
     "tail_trim_pad_ms": "STREAMING_TAIL_TRIM_PAD_MS",
@@ -1025,6 +1029,9 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
     label = f"Segments  (n={n})"
     if dropped_n:
         label += f"  [✗ = {dropped_n} dropped by post-decode guard]"
+    cut_n = sum(1 for s in seg_diag if s.get("cut") and not s.get("dropped"))
+    if cut_n:
+        label += f"  [✂ = {cut_n} made-up tail cut]"
     out = [_section_rule(label)]
     has_spk = bool(speakers) and any(speakers)
     spk_head = f"{'spk':>5}  " if has_spk else ""
@@ -1044,7 +1051,7 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
         text = s["text"]
         if len(text) > text_max:
             text = text[:text_max - 3] + "..."
-        mark = "✗" if s.get("dropped") else " "
+        mark = "✗" if s.get("dropped") else ("✂" if s.get("cut") else " ")
         spk = ""
         if has_spk:
             raw_spk = speakers[i] if i < len(speakers) else ""
@@ -1841,6 +1848,41 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
 # Below this many words a segment's rate is statistically meaningless (a single
 # short interjection in a tight VAD chunk can legitimately look "fast").
 _WORD_RATE_MIN_WORDS = 3
+
+
+def tail_guard_limits(model_name, ident) -> dict:
+    """The three tail-cut settings (core/segment_guards.py) resolved for this
+    model + identity, as apply_tail_guards kwargs. Shared by the batch route and
+    both streaming decodes."""
+    return {
+        "burst": float(cfg_for(model_name, "SEGMENT_MAX_WORD_BURST_PER_S", ident) or 0),
+        "zero_tail": int(cfg_for(model_name, "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", ident) or 0),
+        "repeats": int(cfg_for(model_name, "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", ident) or 0),
+    }
+
+
+def tail_guard_rows(limits: dict) -> dict:
+    """The receipt's "Post-decode guards" rows for the three tail-cut settings."""
+    return {
+        "segment_max_word_burst_per_sec": limits["burst"],
+        "segment_zero_length_tail_min_words": limits["zero_tail"],
+        "segment_repeat_collapse_min_repeats": limits["repeats"],
+    }
+
+
+def tail_cut_rows(cuts: list) -> dict:
+    """One receipt row per tail cut that fired (`tail_cut`, `tail_cut_2`, …)."""
+    return {("tail_cut" if n == 0 else f"tail_cut_{n + 1}"):
+            PlainText(segment_guards.describe_cut(c)) for n, c in enumerate(cuts)}
+
+
+def record_tail_cut(cut: dict, *, emptied: bool) -> None:
+    """Count one tail cut on /stats: every rule that fired, plus "emptied" when
+    nothing was left of the segment."""
+    for rule in cut.get("rules") or []:
+        metrics.record_guard_hit(rule)
+    if emptied:
+        metrics.record_guard_hit("emptied")
 
 
 def segment_exceeds_word_rate(seg, max_wps: float) -> bool:
@@ -5283,6 +5325,12 @@ async def transcribe(
             # Post-decode word-rate guard (SEGMENT_MAX_WORDS_PER_S): drops
             # hallucinated echo segments — see segment_exceeds_word_rate.
             _max_wps = float(cfg_for(resolved_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
+            # Tail cuts inside a segment (core/segment_guards.py). They run
+            # AFTER the whole-segment verdict, on the survivors: a segment made
+            # up from start to end is still dropped whole rather than trimmed to
+            # two garbage words.
+            _tail_limits = tail_guard_limits(resolved_model, ident)
+            _tail_cuts: list[dict] = []
 
             for i, segment in enumerate(segments_iter):
                 # segment.temperature reflects CT2's actual after-fallback
@@ -5296,6 +5344,13 @@ async def transcribe(
                 seg_cr = getattr(segment, "compression_ratio", 1.0)
 
                 dropped = segment_exceeds_word_rate(segment, _max_wps)
+                _cut = None
+                if not dropped:
+                    # Cuts words / text / end IN PLACE, so every consumer below
+                    # (diag row, segments, words, joined text, capture) carries
+                    # the cut version.
+                    _cut = segment_guards.apply_tail_guards(segment, **_tail_limits)
+                _emptied = _cut is not None and not (segment.text or "").strip()
                 seg_diag.append({
                     "id": i,
                     "start": segment.start,
@@ -5304,10 +5359,30 @@ async def transcribe(
                     "nsp": segment.no_speech_prob,
                     "cr": seg_cr,
                     "temp": seg_temp,
-                    "text": segment.text,
-                    "dropped": dropped,
+                    # An emptied row shows what was removed, not "".
+                    "text": _cut["text"] if _emptied else segment.text,
+                    # An emptied segment counts as dropped (speaker alignment
+                    # hands one label to every kept row).
+                    "dropped": dropped or _emptied,
+                    **({"cut": _cut} if _cut else {}),
                 })
+                if _cut:
+                    _tail_cuts.append(_cut)
+                    record_tail_cut(_cut, emptied=_emptied)
+                    logger.info(
+                        "[transcribe] cut made-up tail (%s, %d words%s): %r",
+                        "+".join(_cut["rules"]), _cut["n"],
+                        "" if _cut.get("from") is None else f" from {_cut['from']:.2f}s",
+                        _cut["text"])
+                    if _emptied:
+                        continue
+                elif not dropped:
+                    _tw = segment_guards.tail_words_diag(segment)
+                    if _tw:
+                        logger.info("[transcribe] tail_words (zero-length word, "
+                                    "nothing cut): %s", _tw)
                 if dropped:
+                    metrics.record_guard_hit("word_rate")
                     _dur = float(segment.end) - float(segment.start)
                     logger.info(
                         "[transcribe] dropped word-rate-anomalous segment "
@@ -5820,6 +5895,8 @@ async def transcribe(
                 username=user.get("username"),
                 key_label=user.get("key_label"),
                 guards={"segment_max_words_per_sec": _max_wps,
+                        **tail_guard_rows(_tail_limits),
+                        **tail_cut_rows(_tail_cuts),
                         "skip_residual_windows": _skip_residual,
                         "token_cap_per_second": _token_cap},
                 decode_trace=_decode_timing.get("trace"),

@@ -226,11 +226,43 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Default disabled. Try 2.0 if Whisper invents 'thanks for watching' "
         "filler in long silences.",
     "SEGMENT_MAX_WORDS_PER_S":
-        "Drop a decoded segment (batch + streaming final) whose word rate "
-        "exceeds this many words per second — hallucinated echo segments "
-        "cram 20+ words into sub-second windows while real speech stays "
-        "under ~6. Segments with fewer than 3 words are never dropped. "
-        "0 = disabled. Default 10.",
+        "Drop a whole segment when its average speed is above this many "
+        "words per second (number of words ÷ segment length). Catches "
+        "segments that are made up from start to end: an echo of earlier "
+        "text squeezed into a fraction of a second reaches 28–48 words per "
+        "second, dictated speech stays under about 5. It cannot catch a "
+        "made-up tail behind real words in the same segment, because the "
+        "real words pull the average down — that is what "
+        "SEGMENT_MAX_WORD_BURST_PER_S and SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS "
+        "are for. Segments with fewer than 3 words are never dropped. "
+        "Applies to batch and streaming finals. 0 = off. Default 10.",
+    "SEGMENT_MAX_WORD_BURST_PER_S":
+        "Cut the end of a segment when more than this many words start "
+        "within its last second. The model sometimes does not stop after the "
+        "last spoken word and keeps writing; those extra words have no audio "
+        "behind them, so they pile up at the end of the recording (measured: "
+        "12 word starts in one second, dictated speech at most 3). The text "
+        "is cut at the first word of the pile; everything before it stays. "
+        "Needs word timestamps. Applies to batch, streaming finals and live "
+        "previews. 0 = off. Default 8.",
+    "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS":
+        "Cut a segment's last words when at least this many in a row have no "
+        "duration (start = end). Words the model invents after the audio has "
+        "ended get exactly zero length; spoken words do not. A single "
+        "zero-length word at the end is kept, so a real last word is never "
+        "lost. Catches short made-up endings that are too few words for the "
+        "burst check. Needs word timestamps. Applies to batch, streaming "
+        "finals and live previews. 0 = off. Default 2.",
+    "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS":
+        "When a segment ends with the same phrase of 3 or more words "
+        "repeated at least this many times in a row, keep the first copy and "
+        "cut the rest. Safety net for repetition loops whose word timings "
+        "look normal. Phrases of 1 or 2 words are never touched, so repeated "
+        "commands (\"Neue Zeile Neue Zeile Neue Zeile\") stay. A repeat in "
+        "the middle of a segment (a song refrain) is left alone; only a loop "
+        "that runs to the end of the segment is cut. Works without word "
+        "timestamps. Applies to batch, streaming finals and live previews. "
+        "0 = off (1 is treated as off). Default 3.",
     "DECODE_SKIP_RESIDUAL_WINDOWS":
         "Stop decoding once a window reached the end of the audio (batch + "
         "streaming final). Whisper re-decodes the sub-second leftover after "
@@ -1688,6 +1720,18 @@ class AdminConfig(BaseModel):
         subgroup="Advanced — anti-hallucination & token control")
     SEGMENT_MAX_WORDS_PER_S: Annotated[float, Field(ge=0.0, le=100.0)] | None = _F(
         "SEGMENT_MAX_WORDS_PER_S", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control")
+    SEGMENT_MAX_WORD_BURST_PER_S: Annotated[float, Field(ge=0.0, le=100.0)] | None = _F(
+        "SEGMENT_MAX_WORD_BURST_PER_S", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control")
+    SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS: Annotated[int, Field(ge=0, le=20)] | None = _F(
+        "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control")
+    SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS: Annotated[int, Field(ge=0, le=20)] | None = _F(
+        "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", scope="per_request",
         group="Decode params",
         subgroup="Advanced — anti-hallucination & token control")
     DECODE_SKIP_RESIDUAL_WINDOWS: bool | None = _F(

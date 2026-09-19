@@ -469,6 +469,26 @@ HALLUCINATION_SILENCE_THRESHOLD: "float | None" = _D("HALLUCINATION_SILENCE_THRE
 # with fewer than 3 words are never dropped. 0 = disabled.
 SEGMENT_MAX_WORDS_PER_S: float = _D("SEGMENT_MAX_WORDS_PER_S")
 
+# Tail cuts INSIDE a segment (core/segment_guards.py). The rate guard above
+# averages over the whole segment and can only drop it whole, so it cannot see a
+# made-up tail behind real words: the model (large-v3 above all) sometimes does
+# not stop after the last spoken word and keeps writing, in the SAME segment
+# (2026-09-19: "…zwei Tabletten" + "zu nehmen und dann die Doppelpunktzutaten
+# abzuschalten" ×3, 4.3 w/s on average). Those words have no audio behind them:
+# faster-whisper aligns them all onto the last frame, exactly zero-length and
+# stacked at the end of the audio. Three independent rules, each 0 = off, all
+# applied to batch, streaming finals and live previews:
+#   burst      — more than N words start within the segment's last second
+#                (measured 12; clean dictation at most 3) → cut at the pile.
+#   zero tail  — the segment ends with at least N zero-length words → cut them.
+#                A single zero-length last word is kept.
+#   repeat     — the segment ends with a phrase of 3+ words repeated at least N
+#                times → keep the first copy. 1-2 word phrases ("Neue Zeile"
+#                ×3) are never touched; works without word timestamps.
+SEGMENT_MAX_WORD_BURST_PER_S: float = _D("SEGMENT_MAX_WORD_BURST_PER_S")
+SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS: int = _D("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS")
+SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS: int = _D("SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS")
+
 # Stop the decode after the window that reached the end of the audio. With
 # word timestamps faster-whisper advances its read position to the LAST WORD,
 # not to the end of the window, so the trailing breath / VAD pad / endpointer
@@ -1758,6 +1778,7 @@ _OVERRIDE_INT_FIELDS = frozenset({
     "BEAM_SIZE", "BEST_OF", "VAD_MIN_SILENCE_MS", "VAD_SPEECH_PAD_MS",
     "LEADING_SILENCE_PAD_MS",
     "NO_REPEAT_NGRAM_SIZE", "LANGUAGE_DETECTION_SEGMENTS",
+    "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS",
     "NUM_WORKERS", "DEVICE_INDEX",
     "DIARIZATION_NUM_SPEAKERS", "DIARIZATION_MIN_SPEAKERS",
     "DIARIZATION_MAX_SPEAKERS",
@@ -1769,6 +1790,7 @@ _OVERRIDE_FLOAT_FIELDS = frozenset({
     "REPETITION_PENALTY", "PROMPT_RESET_ON_TEMPERATURE",
     "LANGUAGE_DETECTION_THRESHOLD", "HALLUCINATION_SILENCE_THRESHOLD",
     "SEGMENT_MAX_WORDS_PER_S", "DECODE_TOKEN_CAP_PER_SECOND",
+    "SEGMENT_MAX_WORD_BURST_PER_S",
 })
 _OVERRIDE_LIST_FIELDS = frozenset({
     "PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE",

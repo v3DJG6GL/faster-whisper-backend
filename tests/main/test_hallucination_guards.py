@@ -97,6 +97,11 @@ def test_batch_drops_echo_segment(client, fake_model):
 
 def test_batch_guard_disabled_keeps_everything(client, app_module, fake_model):
     app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0
+    # The tail cuts would empty the echo segment too (22 words in 0.54 s is one
+    # big burst) — "everything off" means all four guards.
+    app_module.cfg.SEGMENT_MAX_WORD_BURST_PER_S = 0
+    app_module.cfg.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS = 0
+    app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS = 0
     real = FakeSegment("hallo welt", 0.0, 1.0,
                        words=_words("hallo welt", 0.0, 1.0))
     fake_model._segments = [real, _echo_segment()]
@@ -107,6 +112,104 @@ def test_batch_guard_disabled_keeps_everything(client, app_module, fake_model):
     body = r.json()
     assert "Unterschenkel" in body["text"]
     assert len(body["segments"]) == 2
+
+
+# ---------------------------------------------------------------------------
+# Tail cuts inside a segment (core/segment_guards.py) — batch integration.
+# Timings are the real ones the production server returned on 2026-09-19.
+# ---------------------------------------------------------------------------
+
+_REAL = [(" Besser", 0.32, 0.74), (" wäre", 0.74, 1.0), (" wahrscheinlich", 1.0, 1.42),
+         (" einmal", 1.42, 2.1), (" pro", 2.1, 2.5), (" Tag", 2.5, 2.86),
+         (" zwei", 2.86, 3.52), (" Tabletten", 4.6, 5.54)]
+_TAIL = [(" zu", 5.54, 5.58), (" nehmen", 5.58, 5.58), (" und", 5.58, 6.02)] + [
+    (w, 6.02, 6.02) for w in (" die", " Doppelpunkte", " abzuschliessen") * 3]
+_SPOKEN = "Besser wäre wahrscheinlich einmal pro Tag zwei Tabletten"
+
+
+def _loop_segment() -> FakeSegment:
+    ws = [FakeWord(*x) for x in _REAL + _TAIL]
+    return FakeSegment("".join(w.word for w in ws), 0.32, 6.02, words=ws)
+
+
+def test_batch_cuts_made_up_tail_everywhere(client, fake_model, caplog):
+    from faster_whisper_backend.stats import metrics
+    fake_model._segments = [_loop_segment()]
+    with caplog.at_level("INFO"):
+        r = client.post("/v1/audio/transcriptions", files=_FILE,
+                        data={"model": "whisper-1",
+                              "response_format": "verbose_json",
+                              "timestamp_granularities[]": "word"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["text"] == _SPOKEN
+    assert body["segments"][0]["text"].strip() == _SPOKEN
+    assert body["segments"][0]["end"] == 5.54
+    assert [w["word"] for w in body["words"]][-1] == " Tabletten"
+    assert metrics.guard_hits["burst"] == 1 and metrics.guard_hits["zero_tail"] == 1
+    assert metrics.guard_hits["emptied"] == 0
+    log = caplog.text
+    assert "cut made-up tail (burst+zero_tail+repeat, 12 words from 5.54s)" in log
+    assert "tail_cut" in log and "✂ = 1 made-up tail cut" in log
+    assert "segment_max_word_burst_per_sec" in log
+
+
+def test_batch_tail_cuts_off_keep_the_tail(client, app_module, fake_model):
+    app_module.cfg.SEGMENT_MAX_WORD_BURST_PER_S = 0
+    app_module.cfg.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS = 0
+    app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS = 0
+    fake_model._segments = [_loop_segment()]
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1"})
+    assert "abzuschliessen" in r.json()["text"]
+
+
+def test_batch_whole_segment_verdict_runs_before_the_cut(client, fake_model):
+    """The echo segment is dropped WHOLE by the rate guard — not trimmed down to
+    its first few words by the burst rule."""
+    from faster_whisper_backend.stats import metrics
+    real = FakeSegment("hallo welt", 0.0, 1.0, words=_words("hallo welt", 0.0, 1.0))
+    fake_model._segments = [real, _echo_segment()]
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1"})
+    assert r.json()["text"] == "hallo welt"
+    assert metrics.guard_hits["word_rate"] == 1 and metrics.guard_hits["burst"] == 0
+
+
+def test_batch_emptied_segment_counts_as_dropped(client, app_module, fake_model):
+    from faster_whisper_backend.stats import metrics
+    app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0          # let it reach the cuts
+    real = FakeSegment("hallo welt", 0.0, 1.0, words=_words("hallo welt", 0.0, 1.0))
+    pile = [FakeWord(f" x{i}", 2.0, 2.0) for i in range(12)]
+    fake_model._segments = [real, FakeSegment("".join(w.word for w in pile), 2.0, 2.0, words=pile)]
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1", "response_format": "verbose_json"})
+    body = r.json()
+    assert body["text"] == "hallo welt"
+    assert [s["id"] for s in body["segments"]] == [0]
+    assert metrics.guard_hits["emptied"] == 1
+
+
+def test_batch_repeated_commands_survive(client, fake_model):
+    text = "Neue Zeile Neue Zeile Neue Zeile"
+    fake_model._segments = [FakeSegment(text, 0.0, 6.0, words=_words(text, 0.0, 6.0))]
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1"})
+    assert r.json()["text"].lower().count("zeile") == 3 or "\n" in r.json()["text"]
+
+
+def test_guard_hits_in_machine_snapshot_only(app_module):
+    from faster_whisper_backend.stats import metrics
+    metrics.record_guard_hit("burst")
+    metrics.record_guard_hit("not-a-guard")
+    assert metrics.metrics_snapshot()["guard_hits"] == {"burst": 1}
+
+
+def test_stats_page_has_the_guard_line(app_module):
+    from faster_whisper_backend.stats import routes as stats_routes
+    import inspect
+    src = inspect.getsource(stats_routes)
+    assert 'id="guard-meta"' in src and "snap.guard_hits" in src
 
 
 def test_batch_conditioning_unchanged(client, fake_model):
@@ -218,12 +321,20 @@ def test_admin_config_rejects_out_of_range():
         config_store.AdminConfig(SEGMENT_MAX_WORDS_PER_S=-1.0)
     with _pytest.raises(ValidationError):
         config_store.AdminConfig(STREAMING_TAIL_TRIM_PAD_MS=999999)
+    for bad in ({"SEGMENT_MAX_WORD_BURST_PER_S": -1.0},
+                {"SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 21},
+                {"SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS": -1}):
+        with _pytest.raises(ValidationError):
+            config_store.AdminConfig(**bad)
 
 
 def test_defaults_present_in_config(app_module):
     assert app_module.cfg.SEGMENT_MAX_WORDS_PER_S == 10.0
     assert app_module.cfg.STREAMING_TAIL_TRIM_PAD_MS == 300
     assert app_module.cfg.STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT is False
+    assert app_module.cfg.SEGMENT_MAX_WORD_BURST_PER_S == 8.0
+    assert app_module.cfg.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS == 2
+    assert app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS == 3
 
 
 # ---------------------------------------------------------------------------
@@ -280,7 +391,9 @@ def test_batch_request_logs_guard_setting(client, caplog):
 # ---------------------------------------------------------------------------
 
 _NEW_FIELDS = ("SEGMENT_MAX_WORDS_PER_S", "STREAMING_TAIL_TRIM_PAD_MS",
-               "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT")
+               "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT",
+               "SEGMENT_MAX_WORD_BURST_PER_S", "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
+               "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS")
 
 
 def test_new_fields_in_override_profile_and_lockable(app_module):

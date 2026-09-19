@@ -54,6 +54,7 @@ from faster_whisper_backend.core import jobs
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.auth import rate_limit
 from faster_whisper_backend.core import receipt_hold
+from faster_whisper_backend.core import segment_guards
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.streaming.session import CloseAbort, StreamConfig, StreamSession
@@ -773,6 +774,19 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 want_words=gate_partial_words, language=req_language,
                 model_obj=partial_model_obj, overrides=req_overrides, ident=ident)
             segs, _info, _ = await _transcribe(partial_model_obj, audio, kwargs)
+            # Live previews get the same tail cuts as the final (core/
+            # segment_guards.py): a made-up tail that shows up in two previews in
+            # a row would otherwise be committed by LocalAgreement and banked as
+            # confirmed text. Per segment, no cascade — a multi-window buffer can
+            # hold real speech after a cut. A trimmed hypothesis is just a
+            # shorter one, so commits still only ever extend. DEBUG only, not
+            # counted: previews decode about once a second.
+            _limits = main.tail_guard_limits(partial_model_name, ident)
+            for seg in segs:
+                _cut = segment_guards.apply_tail_guards(seg, **_limits)
+                if _cut:
+                    logger.debug("[stream %s] preview: cut made-up tail (%s): %r",
+                                 session_id[:8], "+".join(_cut["rules"]), _cut["text"])
             if gate_partial_words:
                 words = [(w.start, w.end, w.word)
                          for seg in segs for w in (getattr(seg, "words", None) or [])]
@@ -838,6 +852,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 final_model_obj, audio, kwargs, trace=True,
                 skip_residual=skip_residual, token_cap_per_s=token_cap)
             max_wps = float(main.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
+            # Tail cuts inside a segment — AFTER the whole-segment verdicts, on
+            # the survivors (a segment made up from start to end is still
+            # dropped whole). See core/segment_guards.py.
+            tail_limits = main.tail_guard_limits(final_model, ident)
+            tail_cuts: list[dict] = []
             words_out: list[dict] = []
             seg_diag: list[dict] = []
             kept: list[str] = []
@@ -845,22 +864,49 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 dropped_conf = _is_failed_segment(seg)
                 dropped_rate = main.segment_exceeds_word_rate(seg, max_wps)
                 dropped = dropped_conf or dropped_rate
+                cut = None
+                if not dropped:
+                    # IN PLACE: raw, the capture's words and the rolling prompt
+                    # all inherit the cut, so a made-up tail can no longer feed
+                    # the next utterance's prompt.
+                    cut = segment_guards.apply_tail_guards(seg, **tail_limits)
+                emptied = cut is not None and not (seg.text or "").strip()
+                dropped = dropped or emptied
                 seg_diag.append({
                     "id": i, "start": seg.start, "end": seg.end,
                     "alp": getattr(seg, "avg_logprob", 0.0),
                     "nsp": getattr(seg, "no_speech_prob", 0.0),
                     "cr": getattr(seg, "compression_ratio", 1.0),
                     "temp": getattr(seg, "temperature", 0.0),
-                    "text": seg.text,
+                    # An emptied row shows what was removed, not "".
+                    "text": cut["text"] if emptied else seg.text,
                     "dropped": dropped,
+                    **({"cut": cut} if cut else {}),
                 })
+                if cut:
+                    tail_cuts.append(cut)
+                    main.record_tail_cut(cut, emptied=emptied)
+                    logger.info("[stream %s] cut made-up tail of final segment "
+                                "(%s, %d words%s): %r", session_id[:8],
+                                "+".join(cut["rules"]), cut["n"],
+                                "" if cut.get("from") is None
+                                else f" from {cut['from']:.2f}s", cut["text"])
+                    if emptied:
+                        continue
+                elif not dropped:
+                    _tw = segment_guards.tail_words_diag(seg)
+                    if _tw:
+                        logger.info("[stream %s] tail_words (zero-length word, "
+                                    "nothing cut): %s", session_id[:8], _tw)
                 if dropped_conf:
+                    metrics.record_guard_hit("low_conf")
                     logger.info("[stream %s] dropped low-confidence final segment "
                                 "(alp=%.2f temp=%.2f): %r", session_id[:8],
                                 getattr(seg, "avg_logprob", 0.0),
                                 getattr(seg, "temperature", 0.0), seg.text)
                     continue
                 if dropped_rate:
+                    metrics.record_guard_hit("word_rate")
                     _dur = float(seg.end) - float(seg.start)
                     _n = (len(getattr(seg, "words", None) or [])
                           or len((seg.text or "").split()))
@@ -885,6 +931,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # in the log block's guards section (they are not transcribe
                 # kwargs, so the Decode params section can't show them).
                 "segment_max_words_per_sec": max_wps,
+                **main.tail_guard_rows(tail_limits),
+                **main.tail_cut_rows(tail_cuts),
                 "skip_residual_windows": skip_residual,
                 "token_cap_per_second": token_cap,
                 "tail_trim_pad_ms": tail_pad_ms,
