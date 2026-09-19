@@ -478,9 +478,20 @@ function renderChips() {
 // the pick. The keys list narrows to the picked users' keys.
 let whoPicker = null, keysPicker = null;
 const _pickMetric = { user: 'audio_s', key: 'audio_s' };
+// What each widget already holds. setPicked() rebuilds the option list, and
+// doing that for an unchanged set — on the widget's own onChange, while the
+// tick is still bubbling, and again on the reload 250 ms later — scrolls
+// the list back to the top and drops keyboard focus for nothing.
+const _pickerHas = { users: null, keys: null };
+const _pickSig = (ids) => ids.join('\u0000');
+function syncPicker(inst, list) {
+  if (!inst || _pickerHas[list] === _pickSig(Q[list])) return;
+  _pickerHas[list] = _pickSig(Q[list]);
+  inst.setPicked(Q[list]);
+}
 function renderPickerButtons() {
-  if (whoPicker) whoPicker.setPicked(Q.users);
-  if (keysPicker) keysPicker.setPicked(Q.keys);
+  syncPicker(whoPicker, 'users');
+  syncPicker(keysPicker, 'keys');
 }
 function pickRows(dim, list) {
   const p = new URLSearchParams();
@@ -521,8 +532,9 @@ function wirePickers() {
       picked: Q[list].slice(), errorNote: 'not available for your scope',
       fmt: (v) => fmtMetric(_pickMetric[dim], v),
       fetchRows: () => pickRows(dim, list),
-      onChange: (ids) => { Q[list] = ids; renderPickerButtons(); pickerLoad(); },
+      onChange: (ids) => { Q[list] = ids; _pickerHas[list] = _pickSig(ids); renderPickerButtons(); pickerLoad(); },
     });
+    _pickerHas[list] = _pickSig(Q[list]);
     if (dim === 'user') whoPicker = inst; else keysPicker = inst;
   });
 }

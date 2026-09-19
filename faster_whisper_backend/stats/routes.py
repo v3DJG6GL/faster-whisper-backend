@@ -2640,6 +2640,7 @@ function renderJobsChip(flt) {
   const html = parts.length ? '⏷ ' + parts.join(' · ') : 'all kinds · all users';
   const sig = html;
   const pulse = _rjChipSig != null && sig !== _rjChipSig;
+  if (sig === _rjChipSig) return;   // runs on every 1 Hz snapshot
   _rjChipSig = sig;
   el.innerHTML = html;
   el.classList.toggle('on', parts.length > 0);

@@ -98,7 +98,9 @@ jobs:
           # and no hash edit: the first run after the bump misses the cache,
           # fetches upstream, verifies, and fills the cache for the next run.
           $CURL -o checksums.txt "${UPSTREAM}/checksums.txt"
-          grep -F " ${ASSET}" checksums.txt > expected.sha256
+          # Whole-field match: a later "<asset>.sbom.json" / ".sig" line must
+          # not land in expected.sha256 (sha256sum -c would look for that file).
+          awk -v a="$ASSET" '$2 == a || $2 == "*" a' checksums.txt > expected.sha256
           test -s expected.sha256
 
           if $CURL -o "$ASSET" "$CACHE" 2>/dev/null; then
@@ -109,7 +111,17 @@ jobs:
             $CURL -o "$ASSET" "${UPSTREAM}/${ASSET}"
             FROM=upstream
           fi
-          sha256sum -c expected.sha256
+          if ! sha256sum -c expected.sha256; then
+            # A bad cached copy (interrupted upload, re-uploaded coordinate)
+            # must not break every run while a good one is one fetch away.
+            # The stale package stays until someone deletes it; the upload
+            # below then fails with the notice and the run continues.
+            [ "$FROM" = cache ] || exit 1
+            echo "::warning::cached crane ${CRANE_VERSION} fails its checksum — delete it from the tools registry; fetching upstream"
+            $CURL -o "$ASSET" "${UPSTREAM}/${ASSET}"
+            FROM=upstream
+            sha256sum -c expected.sha256
+          fi
 
           if [ "$FROM" = upstream ]; then
             if [ -n "${REG_USER:-}" ] && [ -n "${REG_TOKEN:-}" ]; then

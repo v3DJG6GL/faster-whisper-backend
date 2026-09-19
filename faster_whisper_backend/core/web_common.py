@@ -2608,7 +2608,12 @@ PICK_LIST_JS = r"""
       el: el,
       getPicked: function() { return picked.slice(); },
       setPicked: function(ids) {
-        picked = Array.isArray(ids) ? ids.slice() : [];
+        var next = Array.isArray(ids) ? ids.slice() : [];
+        // A page echoing the widget's own ids back must not redraw the open
+        // list: that rebuilds it under a click that is still bubbling.
+        if (next.length === picked.length &&
+            next.every(function(x, i) { return x === picked[i]; })) return;
+        picked = next;
         label();
         if (!pop.hidden) draw(q.value.trim().toLowerCase());
       },

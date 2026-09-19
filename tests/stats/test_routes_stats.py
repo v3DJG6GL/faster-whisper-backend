@@ -1277,6 +1277,25 @@ def test_stats_page_ships_shared_pick_list_widget(client):
     assert html.index("_renderPickList") < html.index("/static/stats.js")
 
 
+def test_stats_js_does_not_rebuild_an_unchanged_picker():
+    """setPicked() redraws the option list; echoing the widget's own pick
+    back into it mid-click (and again on the reload) scrolled the list to the
+    top and dropped focus. stats.js only pushes a set the widget lacks."""
+    js = pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
+    assert "if (!inst || _pickerHas[list] === _pickSig(Q[list])) return;" in js
+    assert "whoPicker.setPicked(Q.users)" not in js
+    # the widget's own change is recorded before the echo
+    assert "Q[list] = ids; _pickerHas[list] = _pickSig(ids); renderPickerButtons();" in js
+
+
+def test_jobs_chip_is_not_rewritten_every_snapshot(client):
+    """renderJobs() runs at 1 Hz; the chip's DOM is only replaced when its
+    text changed (like renderWindowChips)."""
+    html = client.get("/stats").text
+    guard = html.index("if (sig === _rjChipSig) return;")
+    assert guard < html.index("el.innerHTML = html;", guard)
+
+
 def test_stats_toolbar_reflows_without_hard_breaks(client):
     """The scope bar has no forced line breaks any more: each label +
     control pair is one unsplittable .sb-group and the rows are whatever

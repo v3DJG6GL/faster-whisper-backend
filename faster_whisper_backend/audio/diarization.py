@@ -432,7 +432,7 @@ def _make_hook(progress_cb, cancel_check=None):
     # unit reported early would close the embeddings unit before it ran.
     seen_units: dict = {"embeddings_done": False}
 
-    def _unit_for(name: str, chunked: bool) -> "str | None":
+    def _unit_for(name: str) -> "str | None":
         for key, unit in _UNIT_OF:
             if key in name:
                 return unit
@@ -471,7 +471,7 @@ def _make_hook(progress_cb, cancel_check=None):
                 elif span is not None:
                     logger.info("[diarize] step: %s (promoted)", name)
             span = spans[name]
-            unit = _unit_for(name, chunked)
+            unit = _unit_for(name)
             if span is None or not chunked:
                 # Untracked step after embeddings: the plan's clustering unit
                 # starts, the plain fraction holds where it is.

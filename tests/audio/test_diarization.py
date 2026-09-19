@@ -237,10 +237,15 @@ def test_hook_reports_untracked_steps_as_clustering_only_after_embeddings():
 
 
 def test_hook_swallows_bad_callback():
-    def _boom(_f, _step=None):
+    hits = []
+
+    def _boom(_f, _step=None, **_kw):
+        hits.append(1)
         raise RuntimeError("cb exploded")
     hook = diarization._make_hook(_boom)
     hook("segmentation", None, total=10, completed=5)  # must not raise
+    # the callback's OWN exception was swallowed, not a signature mismatch
+    assert hits == [1]
 
 
 # --- offline env var is scoped to the load -----------------------------------
