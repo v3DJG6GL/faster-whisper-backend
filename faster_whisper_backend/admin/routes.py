@@ -483,7 +483,7 @@ async def get_state(response: Response) -> dict[str, Any]:
     }
 
 
-def _pipeline_rules_lock() -> asyncio.Lock:
+def _pipeline_rules_lock() -> "LoopLock":
     """The loop-keyed lock that serializes every PIPELINE_RULES
     read-modify-write — SHARED with /quick-config, which defined it first:
     quick_config_routes.apply_rules_patch snapshots cfg.PIPELINE_RULES from
@@ -492,7 +492,7 @@ def _pipeline_rules_lock() -> asyncio.Lock:
     applied, answered 200 — and then silently reverted by the stale
     quick-config document. Both routers queueing on one lock closes the
     cross-endpoint half of that lost update (the intra-endpoint half is
-    quick_config_routes._PATCH_LOCKS' original job). Lazy import:
+    quick_config_routes._PATCH_LOCK's original job). Lazy import:
     quick_config_routes imports this module at startup."""
     from faster_whisper_backend.quick_config.routes import _patch_lock
     return _patch_lock()
