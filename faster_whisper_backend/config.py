@@ -483,7 +483,8 @@ SEGMENT_MAX_WORDS_PER_S: float = _D("SEGMENT_MAX_WORDS_PER_S")
 #   zero tail  — the segment's last word is zero-length and the made-up ending
 #                it closes is at least N words (zero-length words, very short +
 #                very unsure words, one unsure absorber of the leftover time) →
-#                cut it. A single zero-length last word is kept.
+#                cut it. A single zero-length last word is kept, so N = 1
+#                is rejected (0 or 2+).
 #   repeat     — the segment ends with a phrase of 3+ words repeated at least N
 #                times → keep the first copy. 1-2 word phrases ("Neue Zeile"
 #                ×3) are never touched; works without word timestamps.

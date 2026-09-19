@@ -82,6 +82,29 @@ def test_spanish_opening_marks(app_module):
     assert run("Wie spät ist es?", "de") == "Wie spät ist es?", "German is untouched"
 
 
+def test_spanish_opening_marks_on_consecutive_sentences(app_module):
+    """The sentence-start anchor is zero-width: a consumed terminator made the
+    scan resume past it, so only every other question got its opening mark."""
+    app_module.cfg.PIPELINE_RULES = [
+        copy.deepcopy(_by_name()["es-punctuation"]),
+        {"name": "trim-edges", "label": "Trim", "type": "terminal"}]
+    app_module.rebuild_caches()
+    run = lambda t: app_module._postprocess_text(t, model_name="", language="es")
+    assert run("Qué? Cómo?") == "¿Qué? ¿Cómo?"
+    assert run("Hola! Adiós!") == "¡Hola! ¡Adiós!"
+    assert run("Qué hora es? Y luego? Vale.") == "¿Qué hora es? ¿Y luego? Vale."
+    assert run("Uno\nDos? Tres!") == "Uno\n¿Dos? ¡Tres!"
+    # digit guard: a decimal point is not a sentence end
+    assert run("Vale. Cuesta 3.5 euros?") == "Vale. ¿Cuesta 3.5 euros?"
+    assert run("Son las 10.23? Vale!") == "¿Son las 10.23? ¡Vale!"
+
+
+def test_spanish_patterns_pass_the_regex_guard():
+    from faster_whisper_backend.core import regex_guard
+    entries = _by_name()["es-punctuation"]["entries"]
+    regex_guard.validate([[e["label"], e["pattern"], e["replacement"]] for e in entries])
+
+
 def test_german_map_does_not_touch_spanish(app_module):
     app_module.cfg.PIPELINE_RULES = copy.deepcopy(_factory_rules())
     app_module.rebuild_caches()

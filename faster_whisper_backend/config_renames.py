@@ -7,7 +7,8 @@ keeps working unchanged:
   the new name at config import unless the new name is already set
   (``alias_env``);
 * ``config.local.json`` — a stored old key is moved to the new key before
-  validation (``migrate_keys``). AdminConfig forbids unknown keys and a
+  validation (``migrate_keys``; a key in ``REMOVED_KEYS`` is dropped
+  instead). AdminConfig forbids unknown keys and a
   validation failure drops ALL overrides, so without this one stale key
   would silently lose every setting.
 
@@ -50,7 +51,18 @@ RENAMED_KEYS: dict[str, str] = {
     "STATS_HISTORY_SAMPLE_S": "STATS_SYSTEM_METRICS_SAMPLE_S",
     "STATS_HISTORY_RETENTION_DAYS": "STATS_SYSTEM_METRICS_RETENTION_DAYS",
     "STATS_OWN_SHOWS_MACHINE": "STATS_OWN_SCOPE_SHOW_SYSTEM_METRICS",
+    # One size cap for uploads and URL downloads (MEDIA_MAX_BYTES); the
+    # retention cap says what it bounds.
+    "MAX_UPLOAD_BYTES": "MEDIA_MAX_BYTES",
+    "URL_MEDIA_MAX_BYTES": "RETAINED_MEDIA_MAX_BYTES",
 }
+
+# Keys that were removed with no successor. A stored one is dropped before
+# validation for the same reason a renamed one is moved (an unknown key
+# loses every override). URL_MAX_BYTES folded into MEDIA_MAX_BYTES, but its
+# shipped value 0 ("inherit the upload cap") is not a legal MEDIA_MAX_BYTES,
+# so it cannot be mapped. Not env-aliased: an unknown WHISPER_* var is inert.
+REMOVED_KEYS: frozenset[str] = frozenset({"URL_MAX_BYTES"})
 
 # Pipeline rule slugs that were renamed, old -> current. A slug is referenced
 # by name from stored data (a local PIPELINE_RULES copy, the exclude / include
@@ -126,9 +138,12 @@ def alias_env(environ: MutableMapping[str, str]) -> list[str]:
 
 def migrate_keys(raw: dict[str, Any]) -> dict[str, Any]:
     """Move every renamed key in a stored overrides dict to its new name
-    (in place; also returned). An already-present new key wins."""
+    (in place; also returned). An already-present new key wins. Keys in
+    REMOVED_KEYS are dropped."""
     for old, new in RENAMED_KEYS.items():
         if old in raw:
             raw.setdefault(new, raw[old])
             del raw[old]
+    for old in REMOVED_KEYS:
+        raw.pop(old, None)
     return raw

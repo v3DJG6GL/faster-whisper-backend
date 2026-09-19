@@ -106,6 +106,16 @@ def test_float_bounds(field, lo, hi):
     _bad(**{field: hi + 0.1})
 
 
+def test_zero_length_tail_min_words_is_off_or_at_least_two():
+    # The help text promises a single zero-length last word is kept; 1 would
+    # cut exactly that word.
+    _ok(SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS=0)
+    _ok(SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS=2)
+    _ok(SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS=20)
+    _bad(SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS=1)
+    _bad(SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS=21)
+
+
 def test_capture_max_duration_min_is_0_1():
     # Asymmetric: MIN allows 0.0 but MAX requires ge=0.1.
     # Pair with MIN=0 so the cross-field validator passes.

@@ -254,7 +254,7 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "(confidence under 0.15), and over the one unsure word that soaked up "
         "the leftover audio time. It stops at the first confident word. A "
         "single zero-length word at the end is kept, so a real last word is "
-        "never lost. Catches short made-up endings that are too few words "
+        "never lost (which is why 1 is not accepted). Catches short made-up endings that are too few words "
         "for the burst check (measured: 'zu nehmen?, Fragezeichen' with "
         "confidence 0.01 / 0.10 behind a real word at 0.99). Needs word "
         "timestamps. Applies to batch, streaming finals and live previews. "
@@ -2585,6 +2585,16 @@ class AdminConfig(BaseModel):
             )
         return self
 
+    @field_validator("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS")
+    @classmethod
+    def _zero_tail_not_one(cls, v: int | None) -> int | None:
+        # A single zero-length last word is always kept (a real last word can
+        # come out zero-length), so 1 could never fire; refuse it rather than
+        # show a rule as on that is off.
+        if v == 1:
+            raise ValueError("must be 0 (off) or at least 2")
+        return v
+
     @field_validator("LOG_FILE")
     @classmethod
     def _safe_log_path(cls, v: str | None) -> str | None:
@@ -3417,6 +3427,10 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     merges the payload atop the raw file, so a surviving legacy key would
     make every write raise ValidationError forever (and no save could ever
     clean the file)."""
+    gone = sorted(k for k in _renames.REMOVED_KEYS if k in raw)
+    if gone:
+        print(f"[config_store] dropped removed keys {gone} — they no longer "
+              f"exist and have no successor", file=sys.stderr)
     _renames.migrate_keys(raw)
     _renames.migrate_rule_slugs(raw)
     for profiles_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):

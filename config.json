@@ -647,17 +647,17 @@
       "exposed": false,
       "color": "",
       "tags": [],
-      "note": "Spanish opens a question with ¿ and an exclamation with ¡; Whisper usually writes only the closing mark. Adds the opening mark at the start of the sentence (after . ! ? … or a line break), unless it is already there.",
+      "note": "Spanish opens a question with ¿ and an exclamation with ¡; Whisper usually writes only the closing mark. Adds the opening mark at the start of the sentence (after . ! ? … or a line break), unless it is already there. A period between two digits (3.5, 10.23) does not end a sentence.",
       "type": "regex-list",
       "entries": [
         {
-          "pattern": "(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¿)([^.!?…¿\\n]+\\?)",
+          "pattern": "(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¿)((?:[^.!?…¿\\n]|(?<=\\d)\\.(?=\\d))+\\?)",
           "replacement": "\\1¿\\2",
           "label": "es-opening-question-mark",
           "note": "Qué hora es? → ¿Qué hora es?"
         },
         {
-          "pattern": "(^\\s*|[.!?…]\\s*|\\n\\s*)(?!¡)([^.!?…¡\\n]+!)",
+          "pattern": "(^\\s*|(?<=[.!?…])(?!(?<=\\d\\.)\\d)\\s*|(?<=\\n)\\s*)(?!¡)((?:[^.!?…¡\\n]|(?<=\\d)\\.(?=\\d))+!)",
           "replacement": "\\1¡\\2",
           "label": "es-opening-exclamation-mark",
           "note": "Qué bien! → ¡Qué bien!"

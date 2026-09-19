@@ -719,6 +719,61 @@ def test_local_overrides_migrate_renamed_keys(tmp_path):
     assert out.get("HF_TOKEN") == "hf_new"
 
 
+@pytest.mark.parametrize("old,new,value", [
+    ("MAX_UPLOAD_BYTES", "MEDIA_MAX_BYTES", 200000000),
+    ("URL_MEDIA_MAX_BYTES", "RETAINED_MEDIA_MAX_BYTES", 2000000000),
+])
+def test_local_overrides_survive_legacy_size_cap_keys(tmp_path, old, new, value):
+    """The size caps that were folded into MEDIA_MAX_BYTES /
+    RETAINED_MEDIA_MAX_BYTES shipped in config.json, so a stored file holds
+    them. One such key must not make validation drop every other override."""
+    from faster_whisper_backend import config_store
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({old: value, "BEAM_SIZE": 5,
+                             "DEFAULT_LANGUAGE": "de"}), encoding="utf-8")
+    out = config_store.load_overrides(str(p))
+    assert out.get(new) == value
+    assert old not in out
+    assert out.get("BEAM_SIZE") == 5 and out.get("DEFAULT_LANGUAGE") == "de"
+
+
+def test_local_overrides_drop_removed_key_and_keep_siblings(tmp_path, capsys):
+    """URL_MAX_BYTES has no successor (its shipped 0 = 'inherit' is not a
+    legal MEDIA_MAX_BYTES): it is dropped with a stderr note, never mapped,
+    and the rest of the file survives."""
+    from faster_whisper_backend import config_renames, config_store
+    assert "URL_MAX_BYTES" in config_renames.REMOVED_KEYS
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"URL_MAX_BYTES": 0, "MAX_UPLOAD_BYTES": 200000000,
+                             "BEAM_SIZE": 5}), encoding="utf-8")
+    out = config_store.load_overrides(str(p))
+    assert out == {"MEDIA_MAX_BYTES": 200000000, "BEAM_SIZE": 5}
+    assert "URL_MAX_BYTES" in capsys.readouterr().err
+
+
+def test_removed_keys_are_really_gone():
+    """A REMOVED_KEYS entry that is still a config attribute (or also a
+    rename source) would be silently discarded from every stored file."""
+    from faster_whisper_backend import config_renames, config_store
+    for key in config_renames.REMOVED_KEYS:
+        assert not hasattr(config, key), key
+        assert key not in config_store.AdminConfig.model_fields, key
+        assert key not in config_renames.RENAMED_KEYS, key
+
+
+def test_legacy_upload_cap_env_var_is_aliased():
+    """WHISPER_MAX_UPLOAD_BYTES in an existing .env keeps bounding uploads
+    instead of silently giving way to the MEDIA_MAX_BYTES default."""
+    from faster_whisper_backend import config_renames
+    env = {"WHISPER_MAX_UPLOAD_BYTES": "200000000",
+           "WHISPER_URL_MEDIA_MAX_BYTES": "2000000000",
+           "WHISPER_URL_MAX_BYTES": "0"}
+    warns = config_renames.alias_env(env)
+    assert env["WHISPER_MEDIA_MAX_BYTES"] == "200000000"
+    assert env["WHISPER_RETAINED_MEDIA_MAX_BYTES"] == "2000000000"
+    assert len(warns) == 2
+
+
 def test_every_renamed_key_targets_a_live_field():
     """Each RENAMED_KEYS value must be a real config attribute, and no old
     spelling may still be one — otherwise the alias points into the void or
