@@ -271,6 +271,20 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "that runs to the end of the segment is cut. Works without word "
         "timestamps. Applies to batch, streaming finals and live previews. "
         "0 = off (1 is treated as off). Default 3.",
+    "SEGMENT_HEAD_ECHO_MIN_WORDS":
+        "Cut the start of a decode when it repeats the last words of its "
+        "prompt — at least this many. Live dictation sends the previous "
+        "sentences as the prompt, and the model sometimes writes their end "
+        "again before the new speech, so it would be typed twice. Words the "
+        "model repeats that way have no audio behind them: they are cut only "
+        "when every one has no duration, is very short (under 0.13 s) and "
+        "very unsure (confidence under 0.15), or is shorter than 0.07 s — one "
+        "unsure word of any length may soak up the time before the real "
+        "speech. A repeat you actually spoke has normal timings and stays. "
+        "Only the first segment of a decode is checked; with no prompt (and "
+        "no hotwords) there is nothing to compare. Needs word timestamps. "
+        "Applies to batch, streaming finals and live previews. 0 = off; 1 is "
+        "not accepted (a single repeated word is too common). Default 3.",
     "DECODE_SKIP_RESIDUAL_WINDOWS":
         "Stop decoding once a window reached the end of the audio (batch + "
         "streaming final). Whisper re-decodes the sub-second leftover after "
@@ -1742,6 +1756,10 @@ class AdminConfig(BaseModel):
         "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", scope="per_request",
         group="Decode params",
         subgroup="Advanced — anti-hallucination & token control")
+    SEGMENT_HEAD_ECHO_MIN_WORDS: Annotated[int, Field(ge=0, le=32)] | None = _F(
+        "SEGMENT_HEAD_ECHO_MIN_WORDS", scope="per_request",
+        group="Decode params",
+        subgroup="Advanced — anti-hallucination & token control")
     DECODE_SKIP_RESIDUAL_WINDOWS: bool | None = _F(
         "DECODE_SKIP_RESIDUAL_WINDOWS", scope="per_request",
         group="Decode params",
@@ -2597,6 +2615,16 @@ class AdminConfig(BaseModel):
             raise ValueError("must be 0 (off) or at least 2")
         return v
 
+    @field_validator("SEGMENT_HEAD_ECHO_MIN_WORDS")
+    @classmethod
+    def _head_echo_not_one(cls, v: int | None) -> int | None:
+        # One repeated word ("und", "die") starts sentences all the time, so the
+        # guard treats 1 as off; refuse it rather than show a rule as on that
+        # is off.
+        if v == 1:
+            raise ValueError("must be 0 (off) or at least 2")
+        return v
+
     @field_validator("LOG_FILE")
     @classmethod
     def _safe_log_path(cls, v: str | None) -> str | None:
@@ -3435,6 +3463,13 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
               f"exist and have no successor", file=sys.stderr)
     _renames.migrate_keys(raw)
     _renames.migrate_rule_slugs(raw)
+    # A stored PIPELINE_RULES copy still carrying a factory entry's OLD text
+    # gets the fixed one (config_renames.UPGRADED_RULE_ENTRIES); an entry the
+    # admin edited is left alone.
+    upgraded = _renames.upgrade_rule_entries(raw)
+    if upgraded:
+        print(f"[config_store] upgraded stored factory rule entries {upgraded} "
+              f"to the current factory text", file=sys.stderr)
     for profiles_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
         profiles = raw.get(profiles_key)
         if isinstance(profiles, dict):

@@ -845,3 +845,50 @@ def test_stream_tail_cuts_off_keep_the_tail(app_module, fake_model, monkeypatch)
     msgs = _stream_once(app_module, monkeypatch)
     finals = [m for m in msgs if m["type"] == "final"]
     assert "abzuschliessen" in "".join(m["committed"] + m.get("tail", "") for m in finals)
+
+
+# ---- formatting language: known before the utterance is formatted ----------
+
+def test_stream_formats_the_first_final_in_the_detected_language(app_module, fake_model,
+                                                                 monkeypatch):
+    """Auto language: the utterance's own final is formatted in the language
+    its decode detected. It used to be recorded only in on_final — after the
+    final had gone out formatted with EVERY language's rules (a German
+    question got the Spanish '¿') — and the closing final then formatted the
+    same sentence without it."""
+    from tests.conftest import FakeSegment
+    fake_model._segments = [FakeSegment(" Hat der Patient Fieber Fragezeichen", 0.0, 1.0)]
+    msgs = _stream_once(app_module, monkeypatch)
+    docs = [m["committed"] + m.get("tail", "") for m in msgs if m["type"] == "final"]
+    assert len(docs) >= 2                                # the utterance's final + the close
+    assert docs[0] == "Hat der Patient Fieber?"
+    assert all("¿" not in d for d in docs)
+    for a, b in zip(docs, docs[1:]):
+        assert b.startswith(a)
+
+
+def test_stream_unknown_language_skips_language_tagged_rules(app_module, fake_model,
+                                                             monkeypatch):
+    """No language requested, none detected: "und" — every language-tagged rule
+    is skipped (the German map and the Spanish marks alike) instead of all of
+    them running."""
+    from tests.conftest import FakeInfo, FakeSegment
+    fake_model._segments = [FakeSegment(" Hat der Patient Fieber Fragezeichen", 0.0, 1.0)]
+    fake_model._info = FakeInfo(language=None)
+    msgs = _stream_once(app_module, monkeypatch)
+    docs = [m["committed"] + m.get("tail", "") for m in msgs if m["type"] == "final"]
+    assert docs and all("¿" not in d for d in docs)
+    assert "Fragezeichen" in docs[-1]
+
+
+def test_stream_holds_a_split_dictation_phrase_until_the_close(app_module, fake_model,
+                                                                monkeypatch):
+    """The route wires the real hold-back: a final ending in 'neue' is not
+    sent until the close releases it."""
+    from tests.conftest import FakeSegment
+    fake_model._segments = [FakeSegment(" Befund unauffällig Punkt neue", 0.0, 1.0)]
+    msgs = _stream_once(app_module, monkeypatch)
+    finals = [m for m in msgs if m["type"] == "final"]
+    assert finals[0]["committed"] + finals[0]["tail"] == "Befund unauffällig."
+    assert finals[-1].get("last") is True
+    assert finals[-1]["committed"] == "Befund unauffällig. Neue"

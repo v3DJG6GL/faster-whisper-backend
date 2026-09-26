@@ -68,7 +68,8 @@ err_count: Counter[str] = Counter()         # path -> 5xx total
 # Post-decode hallucination guards that fired, since process start. In-memory
 # on purpose: a diagnostic ("is a guard cutting at all / far too often?"), not
 # a statistic. Live previews are not counted (they decode about once a second).
-GUARD_NAMES = ("word_rate", "low_conf", "burst", "zero_tail", "repeat", "emptied")
+GUARD_NAMES = ("word_rate", "low_conf", "head_echo", "burst", "zero_tail", "repeat",
+               "emptied")
 guard_hits: Counter[str] = Counter()
 
 

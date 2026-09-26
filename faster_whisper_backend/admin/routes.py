@@ -41,6 +41,7 @@ from faster_whisper_backend import config_store
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.audio import translation
+from faster_whisper_backend.core import dictation_map
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.auth.dependencies import require_admin
 
@@ -1017,10 +1018,10 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                             "error": "map must be an object"}
                 if not m:
                     return {**common, "after": text, "skipped": True}
-                alternation = "|".join(re.escape(k) for k in sorted(m, key=len, reverse=True))
-                cre = re.compile(r"\b(" + alternation + r")\b", re.IGNORECASE)
-                replacer = _main._make_map_replacer(
-                    {k.lower(): v for k, v in m.items()})
+                # The engine's own compile (main.rebuild_caches uses it too):
+                # ß/ss variants and the dictated-punctuation prefix included,
+                # so the dry run shows what a transcription really gets.
+                cre, replacer, _lookup = dictation_map.compile_map(m)
             else:
                 pattern = rule.get("pattern", "") or ""
                 if not pattern:
@@ -2651,7 +2652,8 @@ function modelOverridesEditor(name, v) {
       basic: [],
       adv:   ['HALLUCINATION_SILENCE_THRESHOLD','SEGMENT_MAX_WORDS_PER_S',
               'SEGMENT_MAX_WORD_BURST_PER_S','SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS',
-              'SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS','DECODE_SKIP_RESIDUAL_WINDOWS',
+              'SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS','SEGMENT_HEAD_ECHO_MIN_WORDS',
+              'DECODE_SKIP_RESIDUAL_WINDOWS',
               'DECODE_TOKEN_CAP_PER_SECOND',
               'SUPPRESS_BLANK','SUPPRESS_TOKENS',
               'SUPPRESS_CHARS','PREPEND_PUNCTUATIONS','APPEND_PUNCTUATIONS'] },

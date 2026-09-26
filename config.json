@@ -154,6 +154,7 @@
   "REPORTS_RETENTION_DAYS": 90,
   "RETAINED_MEDIA_MAX_BYTES": 50000000000,
   "REPORTS_SUBMIT_RATE_PER_10MIN": 20,
+  "SEGMENT_HEAD_ECHO_MIN_WORDS": 3,
   "SEGMENT_MAX_WORDS_PER_S": 10.0,
   "SEGMENT_MAX_WORD_BURST_PER_S": 8.0,
   "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS": 3,
@@ -536,7 +537,7 @@
       "exposed": false,
       "color": "green",
       "tags": [],
-      "note": "Maps spoken dictation keywords to symbols/punctuation (Komma → ',', Bindestrich → '-', Prozent → '%', …); whole words, any case.",
+      "note": "Maps spoken dictation keywords to symbols/punctuation (Komma → ',', Bindestrich → '-', Prozent → '%', …); whole words, any case. A key written with ß also matches its ss spelling (the Swiss ß → ss cleanup runs first). A dictated punctuation word wins over Whisper's own punctuation right before it: 12... Komma 5 → 12,5.",
       "type": "callback:map",
       "map": {
         " Binde Strich ": "-",
@@ -607,6 +608,7 @@
         "eckige Klammer zu": "]",
         "geschweifte Klammer auf": "{",
         "geschweifte Klammer zu": "}",
+        "grösser als": ">",
         "größer als": ">",
         "kleiner als": "<",
         "neue Absätze": "\n\n",
@@ -707,10 +709,10 @@
           "note": "Removes space after an opening bracket: ( [ {."
         },
         {
-          "pattern": "\"[ \\t]*([^\"\\n]+?)[ \\t]*\"",
-          "replacement": "\"\\1\"",
+          "pattern": "\"[ \\t]*([^\"]*?)[ \\t]*(\"|\\Z)",
+          "replacement": "\"\\1\\2",
           "label": "tighten-quote-spacing",
-          "note": "Removes spaces just inside a quote pair: \" text \" → \"text\"."
+          "note": "Removes spaces just inside a quote pair: \" text \" → \"text\". Pairs quotes left to right: an opening quote drops the spaces after it, a closing one the spaces before it; an unclosed quote at the end is already treated as opening."
         },
         {
           "pattern": "  +",

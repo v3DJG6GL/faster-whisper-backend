@@ -2514,7 +2514,8 @@ function render(snap) {
   const gh = snap.guard_hits || {};
   const ghLabels = { word_rate: 'segment rate', low_conf: 'low confidence',
                      burst: 'word burst', zero_tail: 'zero-length tail',
-                     repeat: 'repeated phrase', emptied: 'emptied' };
+                     repeat: 'repeated phrase', head_echo: 'prompt echo',
+                     emptied: 'emptied' };
   const ghParts = Object.keys(ghLabels).filter(k => gh[k] > 0)
     .map(k => `${ghLabels[k]} ${Number(gh[k])}`);
   $('guard-meta').hidden = !ghParts.length;

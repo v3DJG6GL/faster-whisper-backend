@@ -144,3 +144,57 @@ def test_no_factory_default_names_a_renamed_rule():
         text = fh.read()
     for old in renames.RENAMED_RULES:
         assert f'"{old}"' not in text, f"config.json still names {old}"
+
+
+# ---- factory entries whose text changed: stored copies are upgraded -------
+
+def _quote_entry(rules):
+    return next(e for r in rules for e in (r.get("entries") or [])
+                if e.get("label") == "tighten-quote-spacing")
+
+
+def test_upgraded_entries_match_config_json():
+    """The NEW side of every upgrade is what config.json ships — an upgrade
+    that wrote anything else would fork stored copies from the factory."""
+    for label, (_old, new) in renames.UPGRADED_RULE_ENTRIES.items():
+        e = next(e for r in _factory_rules() for e in (r.get("entries") or [])
+                 if e.get("label") == label)
+        assert (e["pattern"], e["replacement"]) == new
+
+
+def test_stored_old_factory_entry_is_upgraded_once():
+    rules = copy.deepcopy(_factory_rules())
+    old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
+    e = _quote_entry(rules)
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == ["digit-and-whitespace-tidy/tighten-quote-spacing"]
+    assert raw["PIPELINE_RULES"] == _factory_rules()
+    # idempotent: a second pass finds nothing to do
+    assert renames.upgrade_rule_entries(raw) == []
+
+
+def test_edited_factory_entry_is_left_alone():
+    rules = copy.deepcopy(_factory_rules())
+    old_pat, _old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
+    e = _quote_entry(rules)
+    e["pattern"], e["replacement"] = old_pat, '"\\1" '       # admin's own replacement
+    raw = {"PIPELINE_RULES": rules}
+    assert renames.upgrade_rule_entries(raw) == []
+    assert _quote_entry(raw["PIPELINE_RULES"])["pattern"] == old_pat
+    assert renames.upgrade_rule_entries({}) == []
+    assert renames.upgrade_rule_entries({"PIPELINE_RULES": "junk"}) == []
+
+
+def test_load_overrides_upgrades_a_stored_old_quote_entry(tmp_path):
+    from faster_whisper_backend import config_store as cs
+    rules = copy.deepcopy(_factory_rules())
+    old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
+    e = _quote_entry(rules)
+    e["pattern"], e["replacement"] = old_pat, old_rep
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    new = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][1]
+    got = _quote_entry(out["PIPELINE_RULES"])
+    assert (got["pattern"], got["replacement"]) == new

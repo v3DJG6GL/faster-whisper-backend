@@ -74,6 +74,27 @@ RENAMED_RULES: dict[str, str] = {
     "dictation-map": "de-dictation-map",
 }
 
+# Factory regex-list entries whose text was CHANGED in config.json, keyed by
+# the entry label: (old pattern, old replacement) -> (new pattern, new
+# replacement). A saved PIPELINE_RULES copy (config.local.json, or the
+# WHISPER_PIPELINE_RULES JSON env var) holds the whole list as it was when the
+# admin last saved, so a factory fix never reached it — the stored copy wins
+# over config.json entry for entry. upgrade_rule_entries rewrites an entry ONLY
+# when both its pattern and its replacement still equal the old factory text
+# exactly: an entry the admin edited is theirs and stays untouched.
+UPGRADED_RULE_ENTRIES: dict[str, tuple[tuple[str, str], tuple[str, str]]] = {
+    # The old pair matched `"…"` greedily from any quote, so a quote that was
+    # still open at the end of one utterance's text was paired differently
+    # once the next utterance closed it — already-typed text changed and live
+    # dictation wrote the quoted words twice. The new one pairs quotes left to
+    # right (an unclosed quote at the end already counts as opening) and may
+    # span a line break.
+    "tighten-quote-spacing": (
+        ('"[ \\t]*([^"\\n]+?)[ \\t]*"', '"\\1"'),
+        ('"[ \\t]*([^"]*?)[ \\t]*("|\\Z)', '"\\1\\2'),
+    ),
+}
+
 # Keys holding a list of rule slugs, at the top level and inside each
 # MODEL_OVERRIDES / OVERRIDE_PROFILES bundle.
 _SLUG_LIST_KEYS = ("PIPELINE_RULES_EXCLUDE", "PIPELINE_RULES_INCLUDE",
@@ -119,6 +140,35 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
             if key in b:
                 b[key] = rename_slugs(b[key])
     return raw
+
+
+def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
+    """Apply UPGRADED_RULE_ENTRIES to the stored PIPELINE_RULES of an
+    overrides dict (in place). Returns the labels of the entries rewritten,
+    for the caller's log line; empty when nothing matched. Idempotent: an
+    upgraded entry no longer equals the old text."""
+    rules = raw.get("PIPELINE_RULES")
+    done: list[str] = []
+    if not isinstance(rules, list):
+        return done
+    for r in rules:
+        if not isinstance(r, dict) or r.get("type") != "regex-list":
+            continue
+        entries = r.get("entries")
+        if not isinstance(entries, list):
+            continue
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            up = UPGRADED_RULE_ENTRIES.get(e.get("label"))  # type: ignore[arg-type]
+            if up is None:
+                continue
+            (old_pat, old_rep), (new_pat, new_rep) = up
+            if e.get("pattern") == old_pat and (e.get("replacement") or "") == old_rep:
+                e["pattern"] = new_pat
+                e["replacement"] = new_rep
+                done.append(f"{r.get('name')}/{e.get('label')}")
+    return done
 
 
 def alias_env(environ: MutableMapping[str, str]) -> list[str]:

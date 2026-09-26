@@ -23,9 +23,17 @@ Protocol (see streaming_session for the emission contract):
   server → client:
     {"type":"loading",model}  (keepalive while a cold model loads — may repeat)
     {"type":"ready",..} / {"type":"partial",committed,pending} /
-    {"type":"final",utterance,committed,tail,last?} / {"type":"error",code,message}
-    (final: ``committed`` is append-only/locked, ``tail`` is the provisional
-     trailing sentence; both are full strings — the client replaces each region.)
+    {"type":"final",utterance?,committed,tail,forced?,last?,flush?} /
+    {"type":"error",code,message}
+    (final: both are full strings. Within one document ``committed + tail``
+     only grows — every final extends the previous one, so the client may type
+     just the difference; ``committed`` is locked, ``tail`` the newest sentence
+     and only a display hint (it does not change later either). A trailing
+     fragment a dictation rule could still join with what follows ("neue" of
+     "neue Zeile", "Komma" before a line break, "120 Schrägstrich") may be
+     withheld until the next final, the ``boundary``, a ``flush`` or the close;
+     when nothing follows, it arrives in a release final: ``flush: true`` and
+     no ``utterance``, sent BEFORE the ``boundary`` it precedes.)
     {"type":"utterance",utterance,state,reason?}  lifecycle of the utterance the
      server is holding: state "open" (once, at min-speech), "decoding" (once,
      before the final decode), "dropped" (reason no_speech|empty|error). Every
@@ -775,6 +783,23 @@ async def transcribe_stream(ws: WebSocket) -> None:
             async with main.get_inference_semaphore():
                 return await loop.run_in_executor(None, work)
 
+        # The language the document is FORMATTED in (language-tagged rules run
+        # only for theirs). It has to be known before an utterance is formatted:
+        # it used to be updated in on_final, i.e. AFTER the utterance's own
+        # final had been formatted and sent — so an auto-language session's
+        # first sentence ran every language's rules (a German question came out
+        # with a Spanish '¿') and the next final formatted the same sentence
+        # differently. decode_final now sets it from the decode it just ran;
+        # until a final has, the partials' guess stands in.
+        _detected_lang = [req_language or None]
+        _partial_lang: list = [None]
+
+        def _fmt_lang():
+            """Detected (final) → guessed (partial) → requested → "und": an
+            unknown language skips every language-tagged rule instead of
+            running them all."""
+            return _detected_lang[0] or _partial_lang[0] or req_language or "und"
+
         async def decode_partial(audio, prompt):
             _refresh_ident()
             if _auth_revoked:
@@ -784,6 +809,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 want_words=gate_partial_words, language=req_language,
                 model_obj=partial_model_obj, overrides=req_overrides, ident=ident)
             segs, _info, _ = await _transcribe(partial_model_obj, audio, kwargs)
+            if not req_language:
+                _partial_lang[0] = getattr(_info, "language", None) or _partial_lang[0]
             # Live previews get the same tail cuts as the final (core/
             # segment_guards.py): a made-up tail that shows up in two previews in
             # a row would otherwise be committed by LocalAgreement and banked as
@@ -794,9 +821,22 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # A segment cut to nothing is dropped, as the final and the batch
             # route do: handed on as (start, end, "") two previews would agree
             # on "" and LocalAgreement would commit an empty word at that time.
+            # The prompt-echo head cut runs on the first segment, before its
+            # tail cuts — the preview's prompt is the same rolling context the
+            # final decodes with, so it echoes the same way.
             _limits = main.tail_guard_limits(partial_model_name, ident)
+            _head_min = main.head_echo_min_words(partial_model_name, ident)
+            _head_prompt = segment_guards.prompt_tail_text(kwargs)
             _kept_segs = []
-            for seg in segs:
+            for _si, seg in enumerate(segs):
+                if _si == 0 and _head_min and _head_prompt:
+                    _hcut = segment_guards.apply_head_echo_guard(
+                        seg, _head_prompt, _head_min)
+                    if _hcut:
+                        logger.debug("[stream %s] preview: cut prompt echo (%d words): %r",
+                                     session_id[:8], _hcut["n"], _hcut["text"])
+                        if not (getattr(seg, "text", "") or "").strip():
+                            continue
                 _cut = segment_guards.apply_tail_guards(seg, **_limits)
                 if _cut:
                     logger.debug("[stream %s] preview: cut made-up tail (%s): %r",
@@ -875,6 +915,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # dropped whole). See core/segment_guards.py.
             tail_limits = main.tail_guard_limits(final_model, ident)
             tail_cuts: list[dict] = []
+            # Head cut (SEGMENT_HEAD_ECHO_MIN_WORDS): the decode repeating the
+            # last words of its prompt — the previous utterances — before the
+            # new speech, which would type the end of the last sentence twice.
+            # First surviving segment only, before its tail cuts.
+            head_min = main.head_echo_min_words(final_model, ident)
+            head_prompt = segment_guards.prompt_tail_text(kwargs)
+            head_pending = bool(head_min and head_prompt)
+            head_cut: "dict | None" = None
             words_out: list[dict] = []
             seg_diag: list[dict] = []
             kept: list[str] = []
@@ -883,12 +931,23 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 dropped_rate = main.segment_exceeds_word_rate(seg, max_wps)
                 dropped = dropped_conf or dropped_rate
                 cut = None
-                if not dropped:
+                hcut = None
+                if not dropped and head_pending:
+                    head_pending = False
+                    hcut = segment_guards.apply_head_echo_guard(seg, head_prompt, head_min)
+                    if hcut is None:
+                        _hw = segment_guards.head_words_diag(seg, head_prompt, head_min)
+                        if _hw:
+                            logger.info("[stream %s] head_words (prompt repeated, looks "
+                                        "spoken, nothing cut): %s", session_id[:8], _hw)
+                    head_cut = hcut
+                if not dropped and (hcut is None or (seg.text or "").strip()):
                     # IN PLACE: raw, the capture's words and the rolling prompt
                     # all inherit the cut, so a made-up tail can no longer feed
                     # the next utterance's prompt.
                     cut = segment_guards.apply_tail_guards(seg, **tail_limits)
-                emptied = cut is not None and not (seg.text or "").strip()
+                emptied = ((cut is not None or hcut is not None)
+                           and not (seg.text or "").strip())
                 dropped = dropped or emptied
                 seg_diag.append({
                     "id": i, "start": seg.start, "end": seg.end,
@@ -897,10 +956,21 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     "cr": getattr(seg, "compression_ratio", 1.0),
                     "temp": getattr(seg, "temperature", 0.0),
                     # An emptied row shows what was removed, not "".
-                    "text": cut["text"] if emptied else seg.text,
+                    "text": ((hcut or {}).get("text", "") + (cut or {}).get("text", "")
+                             if emptied else seg.text),
                     "dropped": dropped,
                     **({"cut": cut} if cut else {}),
+                    **({"head_cut": hcut} if hcut else {}),
                 })
+                if hcut:
+                    # "emptied" once per segment: here only when the head cut
+                    # alone left nothing (the tail cuts then never ran).
+                    main.record_tail_cut(hcut, emptied=emptied and cut is None)
+                    logger.info("[stream %s] cut prompt echo from the start of the final "
+                                "(%d words %.2f-%.2fs): %r", session_id[:8],
+                                hcut["n"], hcut["from"], hcut["to"], hcut["text"])
+                    if emptied and cut is None:
+                        continue
                 if cut:
                     tail_cuts.append(cut)
                     main.record_tail_cut(cut, emptied=emptied)
@@ -943,6 +1013,12 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # (partials run at fixed temperature and so never trip _is_failed_segment —
             # they would still carry the hallucination).
             dropped_all = bool(segs) and not kept
+            # The formatting language, from THIS decode, before the session
+            # formats its text (see _fmt_lang). Only when something was kept:
+            # a decode of dropped noise says nothing about the speaker.
+            if kept:
+                _detected_lang[0] = (getattr(info, "language", None) or req_language
+                                     or _detected_lang[0])
             last_decode.clear()
             last_decode.update(info=info, seg_diag=seg_diag, kwargs=kwargs, trace=trace, guards={
                 # Post-decode guard settings as applied to THIS decode — rendered
@@ -951,6 +1027,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 "segment_max_words_per_sec": max_wps,
                 **main.tail_guard_rows(tail_limits),
                 **main.tail_cut_rows(tail_cuts),
+                **main.head_echo_rows(head_min, head_cut),
                 "skip_residual_windows": skip_residual,
                 "token_cap_per_second": token_cap,
                 "tail_trim_pad_ms": tail_pad_ms,
@@ -967,10 +1044,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             })
             return raw, words_out, dropped_all
 
-        _detected_lang = [req_language or None]
-
         def postprocess(raw_text):
-            return main._postprocess_text(raw_text, model_name=final_model, ident=ident, language=_detected_lang[0])
+            return main._postprocess_text(raw_text, model_name=final_model, ident=ident, language=_fmt_lang())
 
         # Output wrappers: the prefix sits at the very start of the document, the
         # suffix only on the final flush. committed/tail are full authoritative
@@ -1028,7 +1103,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 training_text = main._postprocess_text(
                     raw_text, model_name=final_model, trace=None,
                     extra_excludes=getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None),
-                    ident=ident, language=_detected_lang[0])
+                    ident=ident, language=_fmt_lang())
                 wav_path = _write_pcm16_wav(audio)
                 try:
                     return _cap_store.create_capture(
@@ -1083,9 +1158,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             seg_diag = dec.get("seg_diag", [])
             kwargs = dec.get("kwargs", {})
 
-            _detected_lang[0] = getattr(fw_info, "language", None) or req_language or _detected_lang[0]
             steps: "list | None" = [] if getattr(cfg, "TRACE_ENABLED", False) else None
-            final_text = main._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident, language=_detected_lang[0])
+            final_text = main._postprocess_text(raw_text, model_name=final_model, trace=steps, ident=ident, language=_fmt_lang())
             if info.get("decode_failed"):
                 # The session already logged the failure (type only). Say here
                 # what the text IS, so the row below isn't read as a decode.
@@ -1228,6 +1302,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
                          else (main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or "")),
             on_final=on_final,
             session_id=session_id,
+            # Seam hooks (streaming/session.py). Lambdas, not bound values: they
+            # read `ident` (re-resolved by _refresh_ident) and the language at
+            # call time.
+            holdback=lambda raw: main.holdback_start(
+                raw, model_name=final_model, ident=ident, language=_fmt_lang()),
+            format_key=_fmt_lang,
+            diagnose=lambda sent_raw, raw: main.seam_culprit(
+                sent_raw, raw, model_name=final_model, ident=ident, language=_fmt_lang()),
         )
 
         def _refresh_ident():

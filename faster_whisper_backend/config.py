@@ -492,6 +492,15 @@ SEGMENT_MAX_WORD_BURST_PER_S: float = _D("SEGMENT_MAX_WORD_BURST_PER_S")
 SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS: int = _D("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS")
 SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS: int = _D("SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS")
 
+# The HEAD twin of the tail cuts: the decode repeats the last N+ words of its
+# prompt (streaming: the previous utterances; else the hotwords) before the new
+# speech — typed twice in live dictation. Cut from the first surviving segment
+# only when those words equal the prompt's end AND every one is zero-length,
+# very short + very unsure, or under 0.07 s (one unsure absorber allowed); a
+# spoken repeat keeps its length and confidence and stays. Batch, streaming
+# finals and live previews. 0 = off; 1 is rejected (0 or 2-32).
+SEGMENT_HEAD_ECHO_MIN_WORDS: int = _D("SEGMENT_HEAD_ECHO_MIN_WORDS")
+
 # Stop the decode after the window that reached the end of the audio. With
 # word timestamps faster-whisper advances its read position to the LAST WORD,
 # not to the end of the window, so the trailing breath / VAD pad / endpointer
@@ -1723,6 +1732,15 @@ try:
             _parsed = json.loads(_raw)
             # Renamed rule slugs (config_renames.RENAMED_RULES) keep working.
             _parsed = _renames.migrate_rule_slugs({_field: _parsed})[_field]
+            # ...and so does a factory entry whose text was fixed since the
+            # JSON was written (config_renames.UPGRADED_RULE_ENTRIES).
+            _wrapped = {_field: _parsed}
+            _upgraded = _renames.upgrade_rule_entries(_wrapped)
+            if _upgraded:
+                _ENV_WARNINGS.append(
+                    f"{_ENV_VAR_MAPPING[_field]}: upgraded factory rule entries "
+                    f"{_upgraded} to the current factory text")
+            _parsed = _wrapped[_field]
             # Validate then dump back to plain dicts/lists so the runtime shape
             # matches config.local.json (load_overrides uses the same dump).
             _validated = _AdminConfig.model_validate({_field: _parsed}, context=_env_slug_ctx())
@@ -1782,6 +1800,7 @@ _OVERRIDE_INT_FIELDS = frozenset({
     "LEADING_SILENCE_PAD_MS",
     "NO_REPEAT_NGRAM_SIZE", "LANGUAGE_DETECTION_SEGMENTS",
     "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS",
+    "SEGMENT_HEAD_ECHO_MIN_WORDS",
     "NUM_WORKERS", "DEVICE_INDEX",
     "DIARIZATION_NUM_SPEAKERS", "DIARIZATION_MIN_SPEAKERS",
     "DIARIZATION_MAX_SPEAKERS",

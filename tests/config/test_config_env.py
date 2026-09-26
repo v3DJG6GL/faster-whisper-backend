@@ -373,6 +373,28 @@ def test_json_pipeline_rules_env(monkeypatch):
         importlib.reload(config)
 
 
+def test_json_pipeline_rules_env_upgrades_an_old_factory_entry(monkeypatch):
+    """A WHISPER_PIPELINE_RULES copy written before a factory entry was fixed
+    gets the fixed text (config_renames.UPGRADED_RULE_ENTRIES), with a warning."""
+    import json as _json
+    from faster_whisper_backend import config_renames
+    (old_pat, old_rep), new = config_renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"]
+    rules = [
+        {"name": "tidy", "label": "Tidy", "type": "regex-list",
+         "entries": [{"pattern": old_pat, "replacement": old_rep,
+                      "label": "tighten-quote-spacing"}]},
+        {"name": "x", "label": "X", "type": "terminal"},
+    ]
+    try:
+        _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES=_json.dumps(rules))
+        e = config.PIPELINE_RULES[0]["entries"][0]
+        assert (e["pattern"], e["replacement"]) == new
+        assert any("upgraded factory rule entries" in m for m in config._ENV_WARNINGS)
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 def test_invalid_json_keeps_default_and_warns(monkeypatch):
     try:
         _reload_with_env(monkeypatch, WHISPER_PIPELINE_RULES="not json")

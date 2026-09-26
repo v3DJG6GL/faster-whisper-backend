@@ -355,6 +355,20 @@ def test_test_pipeline_regex_list_skips_bad_entry(client):
     assert r.json()["final"] == "X Z"
 
 
+def test_test_pipeline_map_preview_matches_the_engine(client, app_module):
+    """The dry run compiles a callback:map with the engine's own compile
+    (core/dictation_map.py): the ß/ss variants and the dictated-punctuation
+    prefix show in the preview exactly as a transcription gets them."""
+    rule = next(r for r in app_module.cfg.PIPELINE_RULES if r.get("type") == "callback:map")
+    engine = next(cr for cr in app_module._COMPILED_RULES if cr.name == rule["name"])
+    sample = " Der Wert ist grösser als 5, HB 12... Komma 5"
+    r = client.post("/settings/test-pipeline", json={"sample": sample, "rules": [rule]})
+    assert r.status_code == 200, r.text
+    after = r.json()["steps"][0]["after"]
+    assert after == app_module._apply_rule(engine, sample)
+    assert after == " Der Wert ist > 5, HB 12, 5"
+
+
 def test_test_pipeline_rules_not_list_400(client):
     r = client.post("/settings/test-pipeline", json={"sample": "x", "rules": "nope"})
     assert r.status_code == 400

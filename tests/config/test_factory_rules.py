@@ -256,24 +256,83 @@ def test_neuenzeile_fires_at_end_of_utterance():
     Regression: config.json once shipped "Neuenzeile " with a trailing
     space; compiled word-bounded, the escaped space + closing \\b demanded
     a following word character, so the key never fired at end of utterance.
-    Compiles the real factory map exactly like main.rebuild_caches does for
-    callback:map rules (longest-first alternation, \\b-bounded, IGNORECASE,
-    lower-cased lookup) — kept inline so this file stays pydantic-only.
+    Compiles the real factory map with core.dictation_map.compile_map — the
+    one compile main.rebuild_caches and the /settings/pipeline dry run use
+    (a pure module, so this file stays pydantic-only).
     """
-    import re
-
-    for rule in cs.load_factory_rules():
-        if rule.get("type") == "callback:map" and "Neuenzeile" in rule.get("map", {}):
-            m = rule["map"]
-            break
-    else:
-        assert False, "no factory callback:map rule with a 'Neuenzeile' key"
-    alternation = "|".join(re.escape(k) for k in sorted(m, key=len, reverse=True))
-    cre = re.compile(r"\b(" + alternation + r")\b", re.IGNORECASE)
-    lookup = {k.lower(): v for k, v in m.items()}
-    sub = lambda text: cre.sub(lambda mt: lookup.get(mt.group(0).lower(), mt.group(0)), text)
+    sub = _factory_map_sub()
     assert "\n" in sub("Text Neuenzeile")
     assert "\n" in sub("Text Neuenzeile.")
+
+
+def _factory_map():
+    for rule in cs.load_factory_rules():
+        if rule.get("type") == "callback:map" and "Neuenzeile" in rule.get("map", {}):
+            return rule["map"]
+    assert False, "no factory callback:map rule with a 'Neuenzeile' key"
+
+
+def _factory_map_sub(m=None):
+    from faster_whisper_backend.core.dictation_map import compile_map
+    cre, replacer, _lookup = compile_map(m if m is not None else _factory_map())
+    return lambda text: cre.sub(replacer, text)
+
+
+def _factory_entry(label):
+    for rule in cs.load_factory_rules():
+        for e in rule.get("entries") or []:
+            if e.get("label") == label:
+                return e
+    assert False, f"no factory entry {label!r}"
+
+
+def test_quote_spacing_pairs_quotes_left_to_right():
+    """tighten-quote-spacing pairs quotes in order: an opening quote drops the
+    spaces after it, a closing one the spaces before it — also across a line
+    break — and an unclosed quote at the end already counts as opening. The
+    old pattern paired a quote left open at the end of one utterance
+    differently once the next one closed it, so live dictation typed the
+    quotation twice."""
+    import re
+    e = _factory_entry("tighten-quote-spacing")
+    cre, rep = re.compile(e["pattern"]), e["replacement"]
+    sub = lambda t: cre.sub(rep, t)
+    assert sub('Sie sagt " mir ist schwindlig " Punkt') == 'Sie sagt "mir ist schwindlig" Punkt'
+    # an open quote at the end is formatted as opening — the same as once closed
+    assert sub('Sie sagt " mir ist') == 'Sie sagt "mir ist'
+    assert sub('Sie sagt " mir ist schwindlig " .').startswith(sub('Sie sagt " mir ist'))
+    # a quotation spanning a line break
+    assert sub('" eins\nzwei "') == '"eins\nzwei"'
+    # two quotations: each pair on its own
+    assert sub('a " b " c " d "') == 'a "b" c "d"'
+
+
+def test_eszett_keys_also_match_their_ss_spelling():
+    """The Swiss cleanup turns ß into ss before the map runs, so a ß key must
+    also match its ss spelling; an explicit ss key wins over the derived one."""
+    sub = _factory_map_sub()
+    assert sub("Der Wert ist grösser als 5") == "Der Wert ist > 5"
+    assert sub("Der Wert ist größer als 5") == "Der Wert ist > 5"
+    custom = _factory_map_sub({"Fußnote": "[1]", "Fussnote": "(fn)"})
+    assert custom("eine Fussnote") == "eine (fn)"
+    assert custom("eine Fußnote") == "eine [1]"
+    assert _factory_map_sub({"Straße": "Str."})("Hauptstrasse Strasse") == "Hauptstrasse Str."
+
+
+def test_dictated_punctuation_wins_over_whisper_punctuation():
+    """Whisper's own punctuation directly before a dictated punctuation word
+    is replaced together with it; a mark between two digits is untouched."""
+    sub = _factory_map_sub()
+    assert sub(" HB 12... Komma 5") == " HB 12, 5"
+    assert sub(" HB 12. Punkt") == " HB 12."
+    assert sub(" Dosis 1, Komma, 5 mg") == " Dosis 1,, 5 mg"
+    assert sub("12.5 und 12,5") == "12.5 und 12,5"
+    # a non-punctuation key keeps the mark before it
+    assert sub("Ende. Gradzeichen") == "Ende. °"
+    # a longer key starting with a punctuation word keeps Whisper's mark
+    custom = _factory_map_sub({"Komma": ",", "Komma Strich": "x"})
+    assert custom("a. Komma Strich") == "a. x"
+    assert custom("a. Komma") == "a,"
 
 
 if __name__ == "__main__":

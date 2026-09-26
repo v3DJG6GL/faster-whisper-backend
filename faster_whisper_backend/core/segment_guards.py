@@ -31,6 +31,20 @@ the zero-length pile first would blind the burst rule) — the smallest wins.
   zero_tail  SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS
   repeat     SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS
 
+One HEAD-anchored rule sits beside them, for the mirror image at the start of a
+decode: the model repeats the last words of its PROMPT (the rolling dictation
+context, or the hotwords) before the new speech, and the echo has no audio
+behind it either — zero-length or squeezed words stacked on the first frames.
+Streaming dictation sends the previous utterances as prompt, so an echo there
+types the end of the last sentence a second time.
+
+  head_echo  SEGMENT_HEAD_ECHO_MIN_WORDS
+
+It cuts ``words[:k]`` of the first surviving segment only when those k words
+equal the prompt's last k words AND every one of them looks made up — a real
+repeat ("… zwei Tabletten" / "zwei Tabletten am Abend") is spoken words with a
+length and a confidence, and stays.
+
 Pure module: no import of ``main`` (streaming imports main lazily).
 """
 
@@ -66,6 +80,10 @@ _BURST_REAL_MIN_S = 0.07
 _REPEAT_MIN_PHRASE_WORDS = 3
 # Longest phrase (period) searched; bounds the cost at O(32·n).
 _REPEAT_MAX_PERIOD = 32
+# Head-echo rule: longest echo searched (also the setting's ceiling), and the
+# number of leading words a near-miss diagnostic line shows.
+_HEAD_ECHO_MAX_WORDS = 32
+_HEAD_DIAG_WORDS = 8
 
 _UNIT_RE = re.compile(r"\s*\S+")
 
@@ -288,3 +306,145 @@ def describe_cut(info: dict) -> str:
         removed = removed[:57] + "…"
     where = f" from {info['from']:.2f}s" if info.get("from") is not None else ""
     return f"{'+'.join(info.get('rules') or [])} · {info.get('n', 0)} words{where}: {removed!r}"
+
+
+# ---- head echo of the decode prompt ------------------------------------------
+
+
+def prompt_tail_text(kwargs) -> str:
+    """The text the decoder was conditioned on, as far as an echo can come from
+    it: ``initial_prompt`` when set (streaming sends the rolling dictation
+    context there), else ``hotwords`` (faster-whisper puts them in the same
+    prompt slot when there is no initial prompt). "" when neither is set."""
+    kwargs = kwargs or {}
+    ip = kwargs.get("initial_prompt")
+    if isinstance(ip, str) and ip.strip():
+        return ip
+    hw = kwargs.get("hotwords")
+    if isinstance(hw, str) and hw.strip():
+        return hw
+    return ""
+
+
+def _head_matches(words, prompt_text: str, min_words: int):
+    """Every k (largest first, ``min_words`` <= k <= 32) for which the first k
+    words, normalized like the repeat rule's keys, equal the prompt's last k
+    whitespace tokens."""
+    if not min_words or min_words < 2 or not words:
+        return
+    tokens = (prompt_text or "").split()
+    if len(tokens) < min_words:
+        return
+    top = min(_HEAD_ECHO_MAX_WORDS, len(words), len(tokens))
+    if top < min_words:
+        return
+    wkeys = [_key(getattr(w, "word", "") or "") for w in words[:top]]
+    pkeys = [_key(t) for t in tokens[-top:]]
+    for k in range(top, min_words - 1, -1):
+        if wkeys[:k] == pkeys[len(pkeys) - k:]:
+            yield k
+
+
+def _looks_made_up(head) -> bool:
+    """True when no word of ``head`` has a spoken word's shape: each one is
+    zero-length, squeezed (under 0.133 s AND probability < 0.15) or shorter than
+    0.07 s, except at most ONE unsure word (probability < 0.15) of any length —
+    the absorber that soaked up the audio time before the real speech starts,
+    as the zero-length tail rule allows one at the end."""
+    absorber_used = False
+    for w in head:
+        if _is_zero(w) or _squeezed(w) or (_end(w) - _start(w)) < _BURST_REAL_MIN_S:
+            continue
+        if _low_prob(w) and not absorber_used:
+            absorber_used = True
+            continue
+        return False
+    return True
+
+
+def find_head_echo(words, prompt_text: str, min_words: int) -> int | None:
+    """Number of leading words to cut as an echo of the prompt, or None.
+
+    The largest k (at most 32) whose first k words equal the prompt's last k
+    words (NFKC, casefold, punctuation stripped) is tried first; it is cut only
+    when every one of those words looks made up (see _looks_made_up). If not,
+    the next smaller matching k is tried, down to ``min_words`` — a long match
+    whose last word is real speech can still hide a shorter made-up echo in
+    front of it. ``min_words`` 0 is off; 1 is treated as off (a single repeated
+    word is far too common to call an echo)."""
+    for k in _head_matches(words, prompt_text, min_words):
+        if _looks_made_up(words[:k]):
+            return k
+    return None
+
+
+def cut_head_text(text: str, removed_words, kept_words) -> tuple[str, bool]:
+    """``text`` without the removed leading words — the head twin of cut_text.
+    Walks the removed words through the text; when the walk fails the kept
+    words are joined instead. Returns (kept_text, rebuilt)."""
+    text = text or ""
+    pos = 0
+    for w in removed_words:
+        tok = (getattr(w, "word", "") or "").strip()
+        if not tok:
+            continue
+        idx = text.find(tok, pos)
+        if idx < 0:
+            return "".join(getattr(x, "word", "") or "" for x in kept_words), True
+        pos = idx + len(tok)
+    return text[pos:], False
+
+
+def apply_head_echo_guard(seg, prompt_text: str, min_words: int) -> dict | None:
+    """Cut an echo of the prompt from the start of one decoded segment IN PLACE
+    (words, text, start). Needs word timestamps — without them there is no way
+    to tell an echo from a real repeat, so nothing is cut. Returns None when
+    nothing was cut, else ``{"rules", "n", "from", "to", "text"}`` — ``text`` is
+    what was REMOVED. Never raises: a guard must not break a decode."""
+    try:
+        words = list(getattr(seg, "words", None) or [])
+        k = find_head_echo(words, prompt_text, int(min_words or 0))
+        if not k:
+            return None
+        removed, kept = words[:k], words[k:]
+        text = getattr(seg, "text", "") or ""
+        kept_text, rebuilt = cut_head_text(text, removed, kept)
+        info = {"rules": ["head_echo"], "n": k, "from": _start(removed[0]),
+                "to": _end(removed[-1]),
+                "text": "".join(getattr(w, "word", "") or "" for w in removed)}
+        if rebuilt:
+            info["text_rebuilt"] = True
+        seg.words = kept
+        seg_end = float(getattr(seg, "end", 0.0) or 0.0)
+        # Nothing kept: no consumer may inherit the made-up start.
+        seg.start = min(_start(kept[0]), seg_end) if kept else seg_end
+        seg.text = kept_text
+        return info
+    except Exception:  # noqa: BLE001 — see docstring
+        return None
+
+
+def head_words_diag(seg, prompt_text: str, min_words: int) -> str | None:
+    """Compact dump of a segment's first words when they repeat the prompt's
+    last words (at least ``min_words``) but look spoken, so nothing was cut —
+    the near misses needed to tune the rule (word, start, end, probability)."""
+    try:
+        words = list(getattr(seg, "words", None) or [])
+        k = next(_head_matches(words, prompt_text, int(min_words or 0)), None)
+        if not k:
+            return None
+        return f"{k} words match the prompt: " + " ".join(
+            f"{(getattr(w, 'word', '') or '').strip()!r}@{_start(w):.2f}-{_end(w):.2f}"
+            f"/p{float(getattr(w, 'probability', 0.0) or 0.0):.2f}"
+            for w in words[:min(k, _HEAD_DIAG_WORDS)])
+    except Exception:  # noqa: BLE001 — diagnostics only
+        return None
+
+
+def describe_head_cut(info: dict) -> str:
+    """One receipt line for a head cut: n words up to t: 'removed…'."""
+    removed = info.get("text") or ""
+    if len(removed) > 60:
+        removed = removed[:57] + "…"
+    return (f"prompt echo · {info.get('n', 0)} words "
+            f"{info.get('from', 0.0):.2f}-{info.get('to', 0.0):.2f}s: {removed!r}")

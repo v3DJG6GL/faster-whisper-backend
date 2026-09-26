@@ -3,6 +3,7 @@ import json
 import random
 import sys
 import ctypes
+import functools
 import logging
 import logging.handlers
 import math
@@ -19,6 +20,8 @@ from contextlib import asynccontextmanager
 from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 from faster_whisper_backend.core import decode_trace as _decode_trace
 from faster_whisper_backend.core import segment_guards
+from faster_whisper_backend.core import dictation_map as _dictation_map
+from faster_whisper_backend.core import seam_holdback as _seam_holdback
 
 from faster_whisper_backend import config as cfg
 # system_stats imports psutil + pynvml at module load and primes psutil's
@@ -272,7 +275,7 @@ if TYPE_CHECKING:
 # Disabled rules and skipped types (terminal, empty patterns) are filtered
 # out of the compiled list — the runtime walker is just a tight for-loop.
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as _dc_field
 
 
 @dataclass(frozen=True)
@@ -301,9 +304,17 @@ class _CompiledRule:
     card_no: int
     sub_no: "int | None" = None
     languages: frozenset[str] = frozenset()
+    # callback:map only: the effective lower-cased key → value lookup (ß keys'
+    # ss variants included, see core/dictation_map.py). The streaming
+    # hold-back builds its spec from it. Kept out of eq/hash: a dict is
+    # unhashable and the replacer already carries the same data.
+    map_lookup: "dict[str, str] | None" = _dc_field(default=None, compare=False)
 
 
 _COMPILED_RULES: list[_CompiledRule] = []
+# Bumped by every rebuild_caches(): the key under which per-rule-set derived
+# data (the streaming hold-back spec) is cached.
+_RULES_GEN: int = 0
 # Captured from the terminal rule's name/label in cfg.PIPELINE_RULES at cache
 # build time. Falls back to the constants below if the user removed the
 # terminal row. The slug is used to honor exclude-set membership (a captures
@@ -374,14 +385,6 @@ def _make_lowercase_wordlist_replacer(wordlist: frozenset):
     return replace
 
 
-def _make_map_replacer(lookup: dict):
-    """Returns a regex-sub callback that does a case-insensitive dict lookup
-    on the entire match. Used by callback:map rules."""
-    def replace(m: "re.Match[str]") -> str:
-        return lookup.get(m.group(0).lower(), m.group(0))
-    return replace
-
-
 def rebuild_caches() -> None:
     """(Re)compile every rule in cfg.PIPELINE_RULES into _COMPILED_RULES.
 
@@ -396,7 +399,7 @@ def rebuild_caches() -> None:
     usually catches these, but a hand-edited config.py or a runtime
     catastrophic-backtracking case might surface here).
     """
-    global _COMPILED_RULES, _TERMINAL_NAME, _TERMINAL_LABEL, _TERMINAL_CARD_NO
+    global _COMPILED_RULES, _TERMINAL_NAME, _TERMINAL_LABEL, _TERMINAL_CARD_NO, _RULES_GEN
     compiled: list[_CompiledRule] = []
     terminal_name = _TERMINAL_NAME
     terminal_label = _TERMINAL_LABEL
@@ -440,20 +443,21 @@ def rebuild_caches() -> None:
                     rule_enabled, card_no, sub_no, rule_langs))
             continue
 
+        map_lookup = None
         try:
             if rtype == "callback:map":
-                # Auto-build alternation regex from map keys, longest-first,
-                # word-bounded, case-insensitive — matches the legacy
-                # _DICTATION_REGEX behaviour exactly.
+                # Alternation regex from the map keys, longest-first,
+                # word-bounded, case-insensitive, plus the ß/ss variants and
+                # the "dictated punctuation wins" prefix — built by
+                # core/dictation_map.py, which the /settings/pipeline dry run
+                # shares so the preview is the engine.
                 m = rule.get("map", {}) or {}
                 if not m:
                     continue
-                alternation = "|".join(re.escape(k) for k in sorted(m, key=len, reverse=True))
-                cre = re.compile(r"\b(" + alternation + r")\b", re.IGNORECASE)
                 # Pre-bind the per-rule replacer once at compile time. _apply_rule
                 # then becomes a uniform pattern.sub(payload, text) for every rule
                 # type — no closure allocation on the hot path (twice per request).
-                payload: object = _make_map_replacer({k.lower(): v for k, v in m.items()})
+                cre, payload, map_lookup = _dictation_map.compile_map(m)
             else:
                 pattern = rule.get("pattern", "")
                 if not pattern:
@@ -477,11 +481,12 @@ def rebuild_caches() -> None:
         compiled.append(_CompiledRule(rule.get("name", "?"),
                                        rule.get("label", rule.get("name", "?")),
                                        rtype, cre, payload, rule_enabled, card_no,
-                                       languages=rule_langs))
+                                       languages=rule_langs, map_lookup=map_lookup))
     _COMPILED_RULES = compiled
     _TERMINAL_NAME = terminal_name
     _TERMINAL_LABEL = terminal_label
     _TERMINAL_CARD_NO = terminal_card_no
+    _RULES_GEN += 1
 
 
 def _apply_rule(rule: _CompiledRule, text: str) -> str:
@@ -493,6 +498,44 @@ def _apply_rule(rule: _CompiledRule, text: str) -> str:
 
 
 rebuild_caches()
+
+
+def _scoping(model_name: "str | None", ident=None,
+             extra_excludes: "set[str] | None" = None) -> "tuple[set[str], set[str]]":
+    """The (exclude, include) rule-slug sets _postprocess_text applies for this
+    model / identity — see its docstring for the precedence."""
+    exclude: "set[str]" = set()
+    include: "set[str]" = set()
+    if ident is not None:
+        # The resolver already folded the per-model layer into these sets
+        # (identity rules win first-mention; per-model is the fallback layer).
+        # Don't re-read MODEL_OVERRIDES here or it would double-apply.
+        exclude = set(ident.pipeline_exclude)
+        include = set(ident.pipeline_include)
+    elif model_name:
+        overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
+        m_over = overrides.get(model_name) if isinstance(overrides, dict) else None
+        if isinstance(m_over, dict):
+            ex = m_over.get("PIPELINE_RULES_EXCLUDE") or []
+            inc = m_over.get("PIPELINE_RULES_INCLUDE") or []
+            if isinstance(ex, list):
+                exclude = set(ex)
+            if isinstance(inc, list):
+                include = set(inc)
+    if extra_excludes:
+        exclude = exclude | extra_excludes
+    return exclude, include
+
+
+def _rule_runs(rule: _CompiledRule, exclude: "set[str] | frozenset[str]",
+               include: "set[str] | frozenset[str]", language: "str | None") -> bool:
+    """Whether _postprocess_text applies `rule` under this scoping: not
+    excluded, not skipped for the language, and enabled or force-included."""
+    if rule.name in exclude:
+        return False
+    if rule.languages and language and language not in rule.languages:
+        return False
+    return rule.enabled or rule.name in include
 
 
 def _postprocess_text(text: str, model_name: "str | None" = None,
@@ -532,52 +575,26 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
     path applies an additional unconditional trim after the output
     wrappers, so per-model exclusion of trim-edges has no effect there.
     """
-    exclude: "set[str]" = set()
-    include: "set[str]" = set()
-    if ident is not None:
-        # The resolver already folded the per-model layer into these sets
-        # (identity rules win first-mention; per-model is the fallback layer).
-        # Don't re-read MODEL_OVERRIDES here or it would double-apply.
-        exclude = set(ident.pipeline_exclude)
-        include = set(ident.pipeline_include)
-    elif model_name:
-        overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-        m_over = overrides.get(model_name) if isinstance(overrides, dict) else None
-        if isinstance(m_over, dict):
-            ex = m_over.get("PIPELINE_RULES_EXCLUDE") or []
-            inc = m_over.get("PIPELINE_RULES_INCLUDE") or []
-            if isinstance(ex, list):
-                exclude = set(ex)
-            if isinstance(inc, list):
-                include = set(inc)
-    if extra_excludes:
-        exclude = exclude | extra_excludes
+    exclude, include = _scoping(model_name, ident, extra_excludes)
     for rule in _COMPILED_RULES:
         # Step number mirrors the /settings/pipeline card position (`#P` / `#P.S`),
         # NOT the flat index over the expanded compiled list.
         ordinal = _rule_ordinal(rule.card_no, rule.sub_no)
-        # Force-EXCLUDE wins outright — admin explicitly turned this off.
-        if rule.name in exclude:
+        if not _rule_runs(rule, exclude, include, language):
+            # When tracing, surface the skip so the log explains why a rule
+            # didn't run — the reasons in _rule_runs' order: force-EXCLUDE
+            # wins outright (admin explicitly turned this off), then the
+            # language, then globally disabled and not force-included.
             if trace is not None:
-                trace.append((f"{ordinal} {rule.label} [EXCLUDED for {model_name}]",
-                              text, text))
-            continue
-        if rule.languages and language and language not in rule.languages:
-            if trace is not None:
-                trace.append((
-                    f"{ordinal} {rule.label}"
-                    f" [SKIPPED lang:{language} ∉ {sorted(rule.languages)}]",
-                    text, text))
+                if rule.name in exclude:
+                    why = f"EXCLUDED for {model_name}"
+                elif rule.languages and language and language not in rule.languages:
+                    why = f"SKIPPED lang:{language} ∉ {sorted(rule.languages)}"
+                else:
+                    why = "SKIPPED globally disabled"
+                trace.append((f"{ordinal} {rule.label} [{why}]", text, text))
             continue
         forced_in = rule.name in include
-        # Globally disabled and not force-included → skip silently.
-        # When tracing, surface the skip so the log explains why a rule
-        # didn't run.
-        if not rule.enabled and not forced_in:
-            if trace is not None:
-                trace.append((f"{ordinal} {rule.label} [SKIPPED globally disabled]",
-                              text, text))
-            continue
         before = text
         text = _apply_rule(rule, before)
         if trace is not None:
@@ -614,6 +631,59 @@ def _postprocess_text(text: str, model_name: "str | None" = None,
         if trace is not None and before_trim != text:
             trace.append((f"{term_ordinal} {_TERMINAL_LABEL}", before_trim, text))
     return text
+
+
+# ---- live-dictation seam helpers (streaming/session.py) ----------------------
+# The streaming session formats its document utterance by utterance and never
+# changes text it already sent. These two read the SAME rule selection as
+# _postprocess_text (_scoping / _rule_runs), so what is held back and what is
+# blamed always matches what the formatting actually runs.
+
+@functools.lru_cache(maxsize=64)
+def _holdback_spec(gen: int, exclude: "frozenset[str]", include: "frozenset[str]",
+                   language: "str | None") -> "_seam_holdback.HoldSpec":
+    # `gen` only keys the cache: a rebuild_caches() bumps _RULES_GEN, so a
+    # spec built from an older rule set is never served again.
+    return _seam_holdback.build_spec(
+        rule.map_lookup for rule in _COMPILED_RULES
+        if rule.type == "callback:map" and rule.map_lookup
+        and _rule_runs(rule, exclude, include, language))
+
+
+def holdback_start(raw: str, *, model_name: "str | None" = None, ident=None,
+                   language: "str | None" = None) -> int:
+    """Index into `raw` from which live dictation holds the text back instead
+    of formatting and sending it (len(raw) = nothing held) — the trailing
+    words the active dictation maps would still join with the next utterance.
+    See core/seam_holdback.py."""
+    exclude, include = _scoping(model_name, ident)
+    spec = _holdback_spec(_RULES_GEN, frozenset(exclude), frozenset(include), language)
+    return _seam_holdback.held_start(raw, spec)
+
+
+def seam_culprit(prefix_raw: str, full_raw: str, *, model_name: "str | None" = None,
+                 ident=None, language: "str | None" = None) -> str:
+    """The rule after which formatting `full_raw` stops extending the
+    formatting of its prefix `prefix_raw` — as '#P.S label' — for the
+    streaming seam WARNING. Both texts are walked rule by rule with the same
+    selection as _postprocess_text; edges are compared the way the terminal
+    trim leaves them. Warning path only: no caching, no output bound."""
+    exclude, include = _scoping(model_name, ident)
+    a, b = prefix_raw, full_raw
+
+    def extends(pa: str, pb: str) -> bool:
+        return pb.lstrip(" \t\r").startswith(pa.lstrip(" \t\r").rstrip(" \t\r"))
+
+    ok = extends(a, b)
+    for rule in _COMPILED_RULES:
+        if not _rule_runs(rule, exclude, include, language):
+            continue
+        a, b = _apply_rule(rule, a), _apply_rule(rule, b)
+        now = extends(a, b)
+        if ok and not now:
+            return f"{_rule_ordinal(rule.card_no, rule.sub_no)} {rule.label}"
+        ok = now
+    return "none found" if ok else "raw text already diverges"
 
 
 # =============================================================================
@@ -686,6 +756,7 @@ _KWARG_TO_CFG = {
     "segment_max_word_burst_per_sec": "SEGMENT_MAX_WORD_BURST_PER_S",
     "segment_zero_length_tail_min_words": "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
     "segment_repeat_collapse_min_repeats": "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS",
+    "segment_head_echo_min_words": "SEGMENT_HEAD_ECHO_MIN_WORDS",
     "skip_residual_windows": "DECODE_SKIP_RESIDUAL_WINDOWS",
     "token_cap_per_second": "DECODE_TOKEN_CAP_PER_SECOND",
     "tail_trim_pad_ms": "STREAMING_TAIL_TRIM_PAD_MS",
@@ -1032,6 +1103,9 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
     cut_n = sum(1 for s in seg_diag if s.get("cut") and not s.get("dropped"))
     if cut_n:
         label += f"  [✂ = {cut_n} made-up tail cut]"
+    head_n = sum(1 for s in seg_diag if s.get("head_cut") and not s.get("dropped"))
+    if head_n:
+        label += f"  [✂ = {head_n} prompt echo cut from the start]"
     out = [_section_rule(label)]
     has_spk = bool(speakers) and any(speakers)
     spk_head = f"{'spk':>5}  " if has_spk else ""
@@ -1051,7 +1125,8 @@ def _format_segments_section(seg_diag: list[dict], info, kwargs: dict,
         text = s["text"]
         if len(text) > text_max:
             text = text[:text_max - 3] + "..."
-        mark = "✗" if s.get("dropped") else ("✂" if s.get("cut") else " ")
+        mark = "✗" if s.get("dropped") else (
+            "✂" if s.get("cut") or s.get("head_cut") else " ")
         spk = ""
         if has_spk:
             raw_spk = speakers[i] if i < len(speakers) else ""
@@ -1887,9 +1962,27 @@ def tail_cut_rows(cuts: list) -> dict:
     return rows
 
 
+def head_echo_min_words(model_name, ident) -> int:
+    """SEGMENT_HEAD_ECHO_MIN_WORDS resolved for this model + identity (the head
+    twin of tail_guard_limits; kept apart because it is not an
+    apply_tail_guards kwarg). 1 is treated as off, like the guard does."""
+    n = int(cfg_for(model_name, "SEGMENT_HEAD_ECHO_MIN_WORDS", ident) or 0)
+    return n if n >= 2 else 0
+
+
+def head_echo_rows(min_words: int, cut: "dict | None") -> dict:
+    """The receipt's "Post-decode guards" rows for the head-echo rule: the
+    setting, plus a `head_cut` row when it fired. Only the first surviving
+    segment is checked, so there is at most one cut per decode."""
+    rows: dict = {"segment_head_echo_min_words": min_words}
+    if cut:
+        rows["head_cut"] = PlainText(segment_guards.describe_head_cut(cut))
+    return rows
+
+
 def record_tail_cut(cut: dict, *, emptied: bool) -> None:
-    """Count one tail cut on /stats: every rule that fired, plus "emptied" when
-    nothing was left of the segment."""
+    """Count one tail (or head-echo) cut on /stats: every rule that fired, plus
+    "emptied" when nothing was left of the segment."""
     for rule in cut.get("rules") or []:
         metrics.record_guard_hit(rule)
     if emptied:
@@ -5373,6 +5466,14 @@ async def transcribe(
             # two garbage words.
             _tail_limits = tail_guard_limits(resolved_model, ident)
             _tail_cuts: list[dict] = []
+            # Head cut (SEGMENT_HEAD_ECHO_MIN_WORDS): an echo of the prompt's
+            # last words at the start of the decode. Only the first surviving
+            # segment can carry it — the prompt precedes the first window — and
+            # it runs before the tail cuts, on the same survivor.
+            _head_min = head_echo_min_words(resolved_model, ident)
+            _head_prompt = segment_guards.prompt_tail_text(transcribe_kwargs)
+            _head_pending = bool(_head_min and _head_prompt)
+            _head_cut: "dict | None" = None
 
             for i, segment in enumerate(segments_iter):
                 # segment.temperature reflects CT2's actual after-fallback
@@ -5387,12 +5488,25 @@ async def transcribe(
 
                 dropped = segment_exceeds_word_rate(segment, _max_wps)
                 _cut = None
-                if not dropped:
+                _hcut = None
+                if not dropped and _head_pending:
+                    _head_pending = False
+                    _hcut = segment_guards.apply_head_echo_guard(
+                        segment, _head_prompt, _head_min)
+                    if _hcut is None:
+                        _hw = segment_guards.head_words_diag(
+                            segment, _head_prompt, _head_min)
+                        if _hw:
+                            logger.info("[transcribe] head_words (prompt repeated, "
+                                        "looks spoken, nothing cut): %s", _hw)
+                    _head_cut = _hcut
+                if not dropped and (_hcut is None or (segment.text or "").strip()):
                     # Cuts words / text / end IN PLACE, so every consumer below
                     # (diag row, segments, words, joined text, capture) carries
                     # the cut version.
                     _cut = segment_guards.apply_tail_guards(segment, **_tail_limits)
-                _emptied = _cut is not None and not (segment.text or "").strip()
+                _emptied = ((_cut is not None or _hcut is not None)
+                            and not (segment.text or "").strip())
                 seg_diag.append({
                     "id": i,
                     "start": segment.start,
@@ -5402,12 +5516,24 @@ async def transcribe(
                     "cr": seg_cr,
                     "temp": seg_temp,
                     # An emptied row shows what was removed, not "".
-                    "text": _cut["text"] if _emptied else segment.text,
+                    "text": ((_hcut or {}).get("text", "") + (_cut or {}).get("text", "")
+                             if _emptied else segment.text),
                     # An emptied segment counts as dropped (speaker alignment
                     # hands one label to every kept row).
                     "dropped": dropped or _emptied,
                     **({"cut": _cut} if _cut else {}),
+                    **({"head_cut": _hcut} if _hcut else {}),
                 })
+                if _hcut:
+                    # "emptied" is counted once per segment: here only when the
+                    # head cut alone left nothing (the tail cut then never ran).
+                    record_tail_cut(_hcut, emptied=_emptied and _cut is None)
+                    logger.info(
+                        "[transcribe] cut prompt echo from the start of the first "
+                        "segment (%d words %.2f-%.2fs): %r",
+                        _hcut["n"], _hcut["from"], _hcut["to"], _hcut["text"])
+                    if _emptied and _cut is None:
+                        continue
                 if _cut:
                     _tail_cuts.append(_cut)
                     record_tail_cut(_cut, emptied=_emptied)
@@ -5939,6 +6065,7 @@ async def transcribe(
                 guards={"segment_max_words_per_sec": _max_wps,
                         **tail_guard_rows(_tail_limits),
                         **tail_cut_rows(_tail_cuts),
+                        **head_echo_rows(_head_min, _head_cut),
                         "skip_residual_windows": _skip_residual,
                         "token_cap_per_second": _token_cap},
                 decode_trace=_decode_timing.get("trace"),

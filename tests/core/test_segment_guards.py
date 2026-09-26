@@ -280,3 +280,121 @@ def test_describe_cut():
     s = sg.describe_cut({"rules": ["burst", "zero_tail"], "n": 12, "from": 5.54,
                          "text": " zu nehmen"})
     assert s == "burst+zero_tail · 12 words from 5.54s: ' zu nehmen'"
+
+
+# ---- head echo of the decode prompt (SEGMENT_HEAD_ECHO_MIN_WORDS) -------------
+#
+# Live dictation sends the previous utterances as prompt; the decode sometimes
+# writes their last words again before the new speech. Those words have no audio
+# behind them — stacked on the first frames, zero-length or squeezed.
+
+_PROMPT = "Der Patient nimmt zwei Tabletten am Abend."
+_NEW = [(" Morgen", 0.52, 0.9, 0.97), (" kommt", 0.9, 1.2, 0.95), (" er", 1.2, 1.3, 0.9),
+        (" wieder.", 1.3, 1.7, 0.93)]
+
+
+def _echo(words):
+    return _seg([_w(*x) for x in words + _NEW])
+
+
+def test_head_echo_is_cut_to_the_new_speech():
+    # 'zwei' zero-length, 'Tabletten' squeezed + unsure, 'am' under 0.07 s,
+    # 'Abend.' the one unsure absorber of the time before the real speech
+    seg = _echo([(" zwei", 0.0, 0.0), (" Tabletten", 0.0, 0.1, 0.05),
+                 (" am", 0.1, 0.14), (" Abend.", 0.14, 0.5, 0.08)])
+    info = sg.apply_head_echo_guard(seg, _PROMPT, 3)
+    assert info["rules"] == ["head_echo"] and info["n"] == 4
+    assert info["text"] == " zwei Tabletten am Abend."
+    assert (info["from"], info["to"]) == (0.0, 0.5)
+    assert seg.text == " Morgen kommt er wieder."
+    assert [w.word for w in seg.words][0] == " Morgen"
+    assert seg.start == 0.52
+
+
+def test_spoken_repeat_of_the_prompt_stays():
+    words = [(" am", 0.0, 0.3, 0.9), (" Abend", 0.3, 0.8, 0.95)]
+    seg = _echo([(" zwei", 0.0, 0.0)] + [(" Tabletten", 0.0, 0.0)] + words)
+    before = seg.text
+    assert sg.apply_head_echo_guard(seg, _PROMPT, 3) is None
+    assert seg.text == before and len(seg.words) == 8
+    # …and that near miss is what the INFO diagnostic line is for
+    diag = sg.head_words_diag(seg, _PROMPT, 3)
+    assert diag.startswith("4 words match the prompt: ")
+    assert "'Abend'@0.30-0.80/p0.95" in diag
+
+
+def test_only_one_unsure_absorber():
+    # two unsure words of speaking length: only one may be the absorber
+    seg = _echo([(" am", 0.0, 0.4, 0.1), (" Abend", 0.4, 0.8, 0.1)])
+    assert sg.find_head_echo(seg.words, _PROMPT, 2) is None
+    seg = _echo([(" am", 0.0, 0.4, 0.1), (" Abend", 0.4, 0.45, 0.1)])    # squeezed
+    assert sg.find_head_echo(seg.words, _PROMPT, 2) == 2
+
+
+def test_head_echo_min_words_and_off():
+    words = [(" am", 0.0, 0.0), (" Abend", 0.0, 0.0)]
+    assert sg.find_head_echo(_echo(words).words, _PROMPT, 3) is None     # 2 < 3
+    assert sg.find_head_echo(_echo(words).words, _PROMPT, 2) == 2
+    for off in (0, 1, None):
+        assert sg.find_head_echo(_echo(words).words, _PROMPT, off) is None
+
+
+def test_head_echo_needs_the_prompt_end_not_just_any_prompt_words():
+    # "zwei Tabletten" is in the prompt, but not at its end
+    seg = _echo([(" zwei", 0.0, 0.0), (" Tabletten", 0.0, 0.0), (" nehmen", 0.0, 0.0)])
+    assert sg.find_head_echo(seg.words, _PROMPT, 2) is None
+    assert sg.find_head_echo(seg.words, "", 2) is None
+
+
+def test_head_echo_normalizes_case_and_punctuation():
+    seg = _echo([(" Am", 0.0, 0.0), (" abend,", 0.0, 0.0), (" …", 0.0, 0.0)])
+    assert sg.find_head_echo(seg.words, "Er kommt am Abend. …", 2) == 3
+
+
+def test_head_echo_falls_back_to_a_shorter_made_up_match():
+    # The longest match (4 words) ends in two spoken words; the 2-word match in
+    # front of them is made up and is cut on its own.
+    prompt = "Befund Doppelpunkt neue Zeile neue Zeile"
+    seg = _seg([_w(" neue", 0.0, 0.0), _w(" Zeile", 0.0, 0.0),
+                _w(" neue", 0.2, 0.6, 0.9), _w(" Zeile", 0.6, 1.0, 0.9),
+                _w(" Lunge", 1.1, 1.5, 0.9)])
+    assert sg.find_head_echo(seg.words, prompt, 2) == 2
+
+
+def test_whole_segment_echo_empties_it():
+    seg = _seg([_w(" am", 1.0, 1.0), _w(" Abend.", 1.0, 1.02)])
+    info = sg.apply_head_echo_guard(seg, _PROMPT, 2)
+    assert info["n"] == 2 and seg.words == [] and not seg.text.strip()
+    assert seg.start == seg.end == 1.02
+
+
+def test_head_echo_needs_word_timestamps():
+    seg = NS(start=0.0, end=2.0, text=" am Abend Morgen kommt er", words=[])
+    assert sg.apply_head_echo_guard(seg, _PROMPT, 2) is None
+    assert sg.head_words_diag(seg, _PROMPT, 2) is None
+
+
+def test_head_echo_guard_never_raises():
+    assert sg.apply_head_echo_guard(_Boom(), _PROMPT, 2) is None
+    assert sg.head_words_diag(_Boom(), _PROMPT, 2) is None
+
+
+def test_head_text_walk_falls_back_to_the_kept_words():
+    seg = _echo([(" am", 0.0, 0.0), (" Abend", 0.0, 0.0)])
+    seg.text = " something else entirely"
+    info = sg.apply_head_echo_guard(seg, _PROMPT, 2)
+    assert info["text_rebuilt"] is True
+    assert seg.text == " Morgen kommt er wieder."
+
+
+def test_prompt_tail_text_prefers_the_initial_prompt():
+    assert sg.prompt_tail_text({"initial_prompt": "a b", "hotwords": "c"}) == "a b"
+    assert sg.prompt_tail_text({"initial_prompt": None, "hotwords": "c d"}) == "c d"
+    assert sg.prompt_tail_text({"initial_prompt": "  ", "hotwords": ""}) == ""
+    assert sg.prompt_tail_text(None) == ""
+
+
+def test_describe_head_cut():
+    s = sg.describe_head_cut({"rules": ["head_echo"], "n": 2, "from": 0.0, "to": 0.5,
+                              "text": " am Abend"})
+    assert s == "prompt echo · 2 words 0.00-0.50s: ' am Abend'"

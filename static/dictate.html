@@ -224,10 +224,12 @@
     if (m.type === "ready") { setStatus("listening", "live"); }
     else if (m.type === "partial") { renderPartial(m.committed, m.pending); }
     else if (m.type === "final") {
-      // committed = locked append-only prefix; tail = provisional trailing sentence.
-      // Both are full strings (server re-sends them), so we replace, not append —
-      // a post-processing seam rewrite can never desync the display. They span
-      // only the CURRENT document (since the last hard break), hence docPrefix.
+      // committed = locked prefix; tail = the newest sentence (a display hint —
+      // the document only grows, nothing sent is rewritten). A release final
+      // (flush: true, no utterance) carries words the server held back. Both
+      // are full strings (server re-sends them), so we replace, not append.
+      // They span only the CURRENT document (since the last hard break),
+      // hence docPrefix.
       finalEl.textContent = docPrefix + (m.committed || "");
       tailEl.textContent = m.tail || "";
       renderPartial("", "");

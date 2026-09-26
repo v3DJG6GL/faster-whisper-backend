@@ -5,9 +5,12 @@ partial/final decode loop, stabilizes live text with LocalAgreement-2, and emits
 
   * ``partial`` messages — raw Whisper text (committed prefix + provisional tail),
     updated ~1×/s while speaking. **No post-processing.**
-  * ``final`` messages — the post-processed document, split into a stable
-    ``committed`` prefix (append-only, never rewritten on screen) and a provisional
-    ``tail`` (shown immediately but still revisable). Emitted per utterance once
+  * ``final`` messages — the post-processed document. Within one document it
+    only ever GROWS: every final's ``committed + tail`` starts with the previous
+    final's, so a client that types the difference never has to take text back.
+    ``committed`` is the part that is also final on screen; ``tail`` (the newest
+    sentence) is a display hint only — it will not change either, it just has
+    not been confirmed by a second pass yet. Emitted per utterance once
     end-of-speech silence (or a forced commit) produces a fresh decode.
   * ``utterance`` messages — the lifecycle of the utterance the server is
     holding, so a client can show "the backend is working" instead of guessing
@@ -20,16 +23,34 @@ partial/final decode loop, stabilizes live text with LocalAgreement-2, and emits
     carrying the same ordinal, or ``dropped``.** Ordinals are unique and only
     ever grow; ``close()``'s closing document is not an utterance and never
     emits ``dropped``.
+  * a **release** ``final`` (``"flush": true``, no ``utterance``) — the trailing
+    words the session withheld (see below), sent when nothing follows them: right
+    before a ``boundary``, on a client ``flush`` with no utterance in flight,
+    after 5 s of silence when hard breaks are off, and folded into the closing
+    ``last`` final.
 
 The class is **dependency-injected**: the model decode calls, the post-processing
 function, and the emit sink are passed in, so this module imports nothing from
 ``main.py`` (no circular import) and is unit-testable without faster-whisper.
 
-Post-processing is run on the session's *rolling whole-document raw transcript*
-(``raw_confirmed``) — identical semantics to the batch route — and only the
-provably-stable prefix is emitted. This dissolves every cross-utterance "seam"
-hazard in the 17-rule pipeline (split ``"neue Zeile"``, capitalize-after-terminator,
-punctuation dedup, …) instead of patching each one.
+Post-processing is run on the session's rolling raw transcript
+(``raw_confirmed``) — the batch route's semantics, whole document at a time —
+but the pipeline is not prefix-stable: a few rules decide by looking at the
+words that FOLLOW (a ``"neue Zeile"`` split across the pause, a comma the
+newline tidy eats, ``120 Schrägstrich | 80``, an opening quote). Two things keep
+sent text fixed anyway:
+
+  * **hold-back** — the trailing raw words such a rule could still join with the
+    next utterance (``holdback``, built from the active dictation maps; see
+    core/seam_holdback.py) are neither formatted nor sent yet. The raw text is
+    held, never formatted text: the pipeline is not idempotent, so formatted
+    output is never run through it again.
+  * **re-anchor** — if a new document still does not extend what was sent
+    (a self-correction like "Punkt | Strichpunkt"), a WARNING names the rule
+    (``diagnose``) and the rest of the document is formatted on its own from
+    the sent text on, joined by :meth:`StreamSession._seam_join`. The same
+    happens, at INFO, when the formatting language changes mid-document
+    (``format_key``). Both last until the next boundary.
 """
 
 import asyncio
@@ -67,8 +88,21 @@ DecodePartial = Callable[[np.ndarray, str], Awaitable[Hypothesis]]
 DecodeFinal = Callable[[np.ndarray, str], Awaitable[FinalResult]]
 Postprocess = Callable[[str], str]
 Emit = Callable[[dict], Awaitable[None]]
+# Index into a raw text from which its trailing words are held back.
+Holdback = Callable[[str], int]
+# (sent part's raw, whole raw) → the rule that made them diverge, for the log.
+Diagnose = Callable[[str, str], str]
 
 _TERMINATOR_RE = re.compile(r"[.?!\n]")
+# With hard breaks off nothing else ever releases held-back words while the
+# speaker stays silent, so they go out after this much silence.
+_IDLE_RELEASE_MS = 5000
+# _emit_document's default: tag the frame with the current utterance ordinal.
+_CURRENT_UTTERANCE = object()
+# _seam_join: no space after an opening bracket / low quote, none before
+# closing punctuation. “ and ‘ are left out: in German they CLOSE („…“).
+_OPENING_BRACKETS = "([{„‚«"
+_CLOSING_PUNCT = ".,:;!?%)]}…»“‘"
 
 
 def _common_prefix_len(a: str, b: str) -> int:
@@ -116,6 +150,9 @@ class StreamSession:
         base_prompt: str = "",
         on_final: Optional[Callable[[dict], Awaitable[None]]] = None,
         session_id: str = "",
+        holdback: Optional[Holdback] = None,
+        format_key: Optional[Callable[[], object]] = None,
+        diagnose: Optional[Diagnose] = None,
     ) -> None:
         self.cfg = config
         self.session_id = session_id      # for log lines only (route's connection id)
@@ -126,6 +163,14 @@ class StreamSession:
         self.emit = emit
         self.base_prompt = base_prompt
         self.on_final = on_final
+        # Seam handling (see the module docstring). All three are optional: a
+        # session without `holdback` formats everything at once (sent text can
+        # then only be kept fixed by re-anchoring); without `format_key` a
+        # language change is not noticed; without `diagnose` the seam warning
+        # names no rule.
+        self.holdback = holdback
+        self.format_key = format_key
+        self.diagnose = diagnose
 
         # Silero VAD is a synchronous ONNX call and it runs once per 32 ms
         # frame, so doing it inline pinned the event loop for as long as a
@@ -165,7 +210,8 @@ class StreamSession:
 
         self.raw_confirmed = ""            # cross-utterance verbatim accumulator
         self._committed_len = 0            # chars of processed text locked as append-only committed
-        self._prev_processed = ""          # last whole-doc post-process (document-level LocalAgreement)
+        self._prev_processed = ""          # last emitted document (document-level LocalAgreement)
+        self._reset_document()
         self._trimmed_text = ""            # committed text whose audio _maybe_trim cut away
         self._trimmed_sec = 0.0            # seconds of utterance audio _maybe_trim cut away
         # Audio + word dicts banked by _maybe_trim so on_final can hand captures
@@ -264,9 +310,14 @@ class StreamSession:
             await self._consume_frame(frame)
 
     async def flush_utterance(self) -> None:
-        """Force-finalize the current utterance (client 'flush' control message)."""
+        """Force-finalize the current utterance (client 'flush' control message).
+        A flush means "give me everything": the finalize releases held-back
+        words too, and with no utterance in flight a held tail goes out as a
+        release final."""
         if self._in_utterance:
-            await self._finalize(forced=True)
+            await self._finalize(forced=True, flush_hold=True)
+        elif self._has_held():
+            await self._release_held()
 
     async def close(self) -> None:
         """Drain: finalize any in-flight utterance and commit the whole document."""
@@ -287,8 +338,7 @@ class StreamSession:
                     # client-chosen handshake string.
                     logger.warning("final decode failed on close (%s); committing confirmed text",
                                    type(exc).__name__)
-            processed = self.postprocess(self.raw_confirmed)
-            await self._emit_document(processed, flush_all=True, last=True)
+            await self._emit_update(flush_hold=True, flush_all=True, last=True)
         finally:
             # One thread per session; releasing it here (rather than leaving it
             # to GC) keeps the count tied to live sessions. wait=False so a
@@ -359,6 +409,13 @@ class StreamSession:
                 and self.raw_confirmed
                 and self._idle_silence_ms >= self.cfg.hard_break_silence_ms):
             await self._hard_break()
+        # Hard breaks off: nothing else would release held-back words while the
+        # speaker stays quiet. Fires once per gap — the release leaves nothing held.
+        elif (self.cfg.hard_break_silence_ms == 0
+                and not self._in_utterance
+                and self._idle_silence_ms >= _IDLE_RELEASE_MS
+                and self._has_held()):
+            await self._release_held()
 
         if not self._in_utterance:
             self._trim_preroll()
@@ -455,7 +512,7 @@ class StreamSession:
             self._buffer_offset = cut
             self.la.pop_committed(cut)
 
-    async def _finalize(self, forced: bool = False) -> None:
+    async def _finalize(self, forced: bool = False, flush_hold: bool = False) -> None:
         # Did this utterance reach the wire as a ``final``? / has the client been
         # given its terminal frame (``final`` or ``dropped``)? Both feed the
         # lifecycle contract: _end_utterance advances the ordinal off the first,
@@ -466,7 +523,7 @@ class StreamSession:
         self._final_emitted = False
         self._terminal_sent = False
         try:
-            await self._finalize_inner(forced)
+            await self._finalize_inner(forced, flush_hold)
         except CloseAbort:
             # The route is tearing the session down (revoked credential): say
             # nothing more, exactly as close() does.
@@ -486,7 +543,7 @@ class StreamSession:
             # await inside ``finally`` would swallow that cancellation.
             self._end_utterance(self._final_emitted)
 
-    async def _finalize_inner(self, forced: bool) -> None:
+    async def _finalize_inner(self, forced: bool, flush_hold: bool = False) -> None:
         """The finalize body. _finalize owns the reset + ordinal advance, so
         every exit from here — return or raise — closes the utterance exactly
         once."""
@@ -593,8 +650,7 @@ class StreamSession:
             full_audio = audio
         self.raw_confirmed += raw
         self._prompt = self._make_prompt()
-        processed = self.postprocess(self.raw_confirmed)
-        if await self._emit_document(processed, forced=forced, words=words):
+        if await self._emit_update(flush_hold=flush_hold, forced=forced, words=words):
             self._final_emitted = True
             self._terminal_sent = True
         elif self._utt_state is not None:
@@ -621,11 +677,15 @@ class StreamSession:
         """End the whole grouping after a long silence and start a fresh document,
         without closing the WebSocket.
 
-        Emits a ``boundary`` marker so the client resets its injection baseline (and
+        Words still held back go out first, as a release final — BEFORE the
+        ``boundary`` marker, so they land in the document they belong to. Then
+        emits a ``boundary`` marker so the client resets its injection baseline (and
         optionally types ``hard_break_separator`` between documents), then clears the
         cross-utterance accumulators. The rolling prompt is reset too — a long pause
         is treated as a new context; to instead keep terminology across breaks, drop
         the ``self._prompt`` reset below."""
+        if self._has_held():
+            await self._release_held()
         await self.emit({
             "type": "boundary",
             "utterance": self._utterance_index,
@@ -634,42 +694,158 @@ class StreamSession:
         self.raw_confirmed = ""
         self._committed_len = 0
         self._prev_processed = ""
+        self._reset_document()
         self._prompt = self.base_prompt.strip()
         self._idle_silence_ms = 0
+
+    # ---- document composition ---------------------------------------------
+
+    def _reset_document(self) -> None:
+        """Start a new document: nothing sent, formatting anchored at the start."""
+        self._sent = ""                    # the last emitted document (what the client typed)
+        self._sent_raw_end = 0             # raw_confirmed[:this] is covered by _sent
+        self._anchor_raw = 0               # formatting runs on raw_confirmed[_anchor_raw:] ...
+        self._anchor_text = ""             # ... and is joined onto this (the sent text at the re-anchor)
+        self._anchor_key = None            # format_key() the anchored text was formatted under
+
+    def _has_held(self) -> bool:
+        """Raw words exist that no emitted document covers yet."""
+        return bool(self.raw_confirmed[self._sent_raw_end:].strip())
+
+    def _reanchor(self) -> None:
+        """Freeze everything sent so far; format the rest of the document on its
+        own from here (sticky until the boundary)."""
+        self._anchor_raw = self._sent_raw_end
+        self._anchor_text = self._sent
+
+    def _format_from_anchor(self, end: int) -> str:
+        piece = self.postprocess(self.raw_confirmed[self._anchor_raw:end])
+        if not self._anchor_text:
+            return piece
+        return self._anchor_text + self._seam_join(self._anchor_text, piece)
+
+    def _compose(self, flush_hold: bool = False) -> tuple[str, int]:
+        """The next document, and the raw index it covers.
+
+        Formats ``raw_confirmed[_anchor_raw:end]`` — ``end`` excludes the
+        held-back words unless ``flush_hold`` — and joins it onto the anchor
+        text. The result must extend what was sent; if it does not, the seam
+        is logged and the document re-anchored at the sent text."""
+        raw = self.raw_confirmed
+        key = self.format_key() if self.format_key is not None else None
+        if self._sent and self._anchor_key is not None and key != self._anchor_key:
+            logger.info("[stream %s] formatting language changed (%s → %s); new text "
+                        "formatted from here", self.session_id[:8], self._anchor_key, key)
+            self._reanchor()
+        self._anchor_key = key
+        end = len(raw)
+        if not flush_hold and self.holdback is not None:
+            try:
+                held = self.holdback(raw[self._anchor_raw:])
+            except Exception as exc:  # noqa: BLE001 — a hold-back must not break dictation
+                logger.warning("[stream %s] hold-back failed (%s); formatting everything",
+                               self.session_id[:8], type(exc).__name__)
+            else:
+                # Never hold back what a release already sent.
+                end = max(self._sent_raw_end, self._anchor_raw + held)
+        doc = self._format_from_anchor(end)
+        if not doc.startswith(self._sent):
+            at = _common_prefix_len(doc, self._sent)
+            culprit = "?"
+            if self.diagnose is not None:
+                try:
+                    culprit = self.diagnose(raw[self._anchor_raw:self._sent_raw_end],
+                                            raw[self._anchor_raw:end])
+                except Exception as exc:  # noqa: BLE001 — diagnostics only
+                    culprit = f"? ({type(exc).__name__})"
+            logger.warning("[stream %s] seam: document diverges from sent text at char "
+                           "%d/%d (culprit %s; sent %d chars stay as typed) — formatting "
+                           "new text on its own from here", self.session_id[:8], at,
+                           len(self._sent), culprit, len(self._sent))
+            self._reanchor()
+            doc = self._format_from_anchor(end)
+        return doc, end
+
+    @staticmethod
+    def _seam_join(left: str, piece: str) -> str:
+        """What to append to ``left`` (sent text) for ``piece`` (formatted on its
+        own): the space the pipeline would have put there, and a capital first
+        letter after a sentence end. Casing is only ever raised — the piece
+        was formatted without its context and a lower-case start there may be
+        the pipeline's deliberate choice, an upper-case one never needs undoing."""
+        if not piece:
+            return ""
+        first = piece[0]
+        tail = left.rstrip(" \t")
+        if (not left or left[-1] in " \t\n" or piece[0] in " \t\n"
+                or left[-1] in _OPENING_BRACKETS or left[-1] in "-/"
+                or first in _CLOSING_PUNCT or first in "-/"):
+            sep = ""
+        elif left[-1] == '"':
+            # An odd count means the last quote opened a quotation.
+            sep = "" if left.count('"') % 2 == 1 else " "
+        elif first == '"':
+            # A quote that closes an open quotation hugs the text before it.
+            sep = "" if left.count('"') % 2 == 1 else " "
+        else:
+            sep = " "
+        if first.islower() and (not tail or tail[-1] in ".?!\n"):
+            piece = first.upper() + piece[1:]
+        return sep + piece
+
+    async def _emit_update(self, *, flush_hold: bool = False, **kw) -> bool:
+        """Compose the next document and emit it (``kw`` → _emit_document).
+        Returns whether a ``final`` went out (see _emit_document)."""
+        doc, end = self._compose(flush_hold)
+        return await self._emit_document(doc, raw_end=end, **kw)
+
+    async def _release_held(self) -> None:
+        """Send the held-back words: a release final (flush, no utterance)."""
+        await self._emit_update(flush_hold=True, flush_all=True,
+                                utterance=None, flush=True)
 
     # ---- emission ---------------------------------------------------------
 
     async def _emit_document(
         self, processed: str, *, forced: bool = False, flush_all: bool = False,
         last: bool = False, words: Optional[list[dict]] = None,
+        utterance: object = _CURRENT_UTTERANCE, flush: bool = False,
+        raw_end: Optional[int] = None,
     ) -> bool:
         """Emit the post-processed document split into a stable ``committed`` prefix
-        and a provisional ``tail``.
+        and a ``tail``.
 
-        ``committed`` is append-only — it only ever grows and is never rewritten on
-        screen. ``tail`` is the still-unstable remainder: shown live (so the most
-        recent sentence is visible immediately) but explicitly provisional, since
-        appending the next utterance can still reshape it. ``flush_all`` (session
-        close) commits the whole document. Both are full authoritative strings, not
-        byte deltas — the client replaces each region, so a seam rewrite in the
-        post-processing can never desync the display."""
+        The document itself only grows (``_compose`` guarantees it extends the
+        last one), so ``committed`` is truly append-only too. ``tail`` is the
+        newest sentence, not yet confirmed by a second pass — a display hint;
+        it does not change either. ``flush_all`` (close, release) commits the
+        whole document. Both are full strings, not byte deltas — the client
+        replaces each region. ``utterance=None`` omits the ordinal (a release
+        final belongs to no utterance); ``flush`` marks a release. ``raw_end``
+        is the raw index the document covers (from _compose)."""
         commit_len = len(processed) if flush_all else self._stable_commit_len(processed)
         committed = processed[:commit_len]
         tail = processed[commit_len:]
         self._committed_len = commit_len
         self._prev_processed = processed
+        self._sent = processed
+        if raw_end is not None:
+            self._sent_raw_end = raw_end
         if not committed and not tail:
             return False
-        msg = {
-            "type": "final",
-            "utterance": self._utterance_index,
-            "committed": committed,
-            "tail": tail,
-        }
+        msg: dict = {"type": "final"}
+        if utterance is _CURRENT_UTTERANCE:
+            msg["utterance"] = self._utterance_index
+        elif utterance is not None:
+            msg["utterance"] = utterance
+        msg["committed"] = committed
+        msg["tail"] = tail
         if forced:
             msg["forced"] = True
         if last:
             msg["last"] = True
+        if flush:
+            msg["flush"] = True
         if words:
             msg["words"] = words
         await self.emit(msg)
@@ -705,18 +881,16 @@ class StreamSession:
         self._reset_utterance()
 
     def _stable_commit_len(self, processed: str) -> int:
-        """Index up to which ``processed`` is safe to commit append-only.
+        """Index up to which ``processed`` is committed.
 
         Document-level LocalAgreement: commit only through the last sentence
         terminator (``. ? ! \\n``) that lies within the prefix the last *two*
-        whole-document post-processes agree on. Appending a later utterance can
-        still rewrite earlier text — a 'neue Zeile' split across the seam, the
-        capitalization after a terminator, a number spanning the boundary, even a
-        repeated sentence whose punctuation collapses — so requiring two passes to
-        agree before locking keeps the committed region flicker-free. The cost is
-        that the newest sentence stays provisional for one extra finalize, but it is
-        still shown (as the tail). A safety valve commits an over-long un-agreed
-        tail so the held region can't grow without bound."""
+        emitted documents agree on. Since the document only grows (hold-back +
+        re-anchor, see _compose) the previous one is always a prefix, so this
+        now commits through the last terminator of the PREVIOUS document: the
+        newest sentence is reported as ``tail`` for one extra finalize. That
+        split is presentation only — nothing in the tail is rewritten later. A
+        safety valve commits an over-long tail so it can't grow without bound."""
         agree = _common_prefix_len(processed, self._prev_processed)
         boundary = 0
         for m in _TERMINATOR_RE.finditer(processed):

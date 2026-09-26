@@ -211,6 +211,112 @@ def test_guard_hits_in_machine_snapshot_only(app_module):
 def test_stats_page_has_the_guard_line(client):
     html = client.get("/stats").text
     assert 'id="guard-meta"' in html and "snap.guard_hits" in html
+    assert "head_echo: 'prompt echo'" in html
+
+
+# ---------------------------------------------------------------------------
+# Head cut: an echo of the decode prompt at the start (SEGMENT_HEAD_ECHO_MIN_WORDS)
+# ---------------------------------------------------------------------------
+
+_ECHO_PROMPT = "Der Patient nimmt zwei Tabletten am Abend."
+
+
+def _head_echo_segment() -> FakeSegment:
+    ws = [FakeWord(" zwei", 0.0, 0.0), FakeWord(" Tabletten", 0.0, 0.0),
+          FakeWord(" am", 0.0, 0.05), FakeWord(" Abend.", 0.05, 0.4, 0.08),
+          FakeWord(" Morgen", 0.5, 0.9), FakeWord(" kommt", 0.9, 1.2),
+          FakeWord(" er", 1.2, 1.3), FakeWord(" wieder.", 1.3, 1.7)]
+    return FakeSegment("".join(w.word for w in ws), 0.0, 1.7, words=ws)
+
+
+def test_batch_cuts_prompt_echo_from_the_start(client, fake_model, caplog):
+    from faster_whisper_backend.stats import metrics
+    fake_model._segments = [_head_echo_segment()]
+    with caplog.at_level("INFO"):
+        r = client.post("/v1/audio/transcriptions", files=_FILE,
+                        data={"model": "whisper-1", "prompt": _ECHO_PROMPT,
+                              "response_format": "verbose_json",
+                              "timestamp_granularities[]": "word"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "Tabletten" not in body["text"] and body["text"].startswith("Morgen")
+    assert body["segments"][0]["start"] == 0.5
+    assert [w["word"] for w in body["words"]][0] == " Morgen"
+    assert metrics.guard_hits["head_echo"] == 1 and metrics.guard_hits["emptied"] == 0
+    log = caplog.text
+    assert "cut prompt echo from the start of the first segment (4 words 0.00-0.40s)" in log
+    assert "segment_head_echo_min_words" in log
+    assert "head_cut" in log and "prompt echo · 4 words" in log
+    assert "prompt echo cut from the start" in log
+
+
+def test_batch_prompt_echo_off_or_without_prompt_keeps_it(client, app_module, fake_model):
+    fake_model._segments = [_head_echo_segment()]
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1"})
+    assert "Tabletten" in r.json()["text"]           # no prompt → nothing to compare
+    app_module.cfg.SEGMENT_HEAD_ECHO_MIN_WORDS = 0
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1", "prompt": _ECHO_PROMPT})
+    assert "Tabletten" in r.json()["text"]
+
+
+def test_batch_prompt_echo_only_on_the_first_segment(client, fake_model):
+    first = FakeSegment(" Hallo.", 0.0, 0.4, words=[FakeWord(" Hallo.", 0.0, 0.4)])
+    fake_model._segments = [first, _head_echo_segment()]
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1", "prompt": _ECHO_PROMPT})
+    assert "Tabletten" in r.json()["text"]
+
+
+def test_batch_whole_segment_prompt_echo_is_emptied(client, app_module, fake_model):
+    from faster_whisper_backend.stats import metrics
+    app_module.cfg.SEGMENT_MAX_WORDS_PER_S = 0          # let it reach the cuts
+    # three words (the default minimum), squeezed onto the first frames; the
+    # head cut runs before the tail cuts, so it is the one that empties it
+    ws = [FakeWord(" Tabletten", 0.0, 0.0), FakeWord(" am", 0.0, 0.0),
+          FakeWord(" Abend.", 0.0, 0.04)]
+    real = FakeSegment(" Morgen wieder.", 0.5, 1.5,
+                       words=[FakeWord(" Morgen", 0.5, 1.0), FakeWord(" wieder.", 1.0, 1.5)])
+    fake_model._segments = [FakeSegment(" Tabletten am Abend.", 0.0, 0.04, words=ws), real]
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={"model": "whisper-1", "prompt": _ECHO_PROMPT,
+                          "response_format": "verbose_json"})
+    body = r.json()
+    assert body["text"] == "Morgen wieder"         # factory strip-trailing-period
+    assert [s["id"] for s in body["segments"]] == [0]
+    assert metrics.guard_hits["head_echo"] == 1 and metrics.guard_hits["emptied"] == 1
+
+
+def test_stream_final_cuts_prompt_echo(app_module, fake_model, monkeypatch, caplog):
+    from fastapi.testclient import TestClient
+    from tests._streaming_helpers import ws_drain
+    from faster_whisper_backend.stats import metrics
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    fake_model._segments = [_head_echo_segment()]
+    t = np.arange(8000 * 2) / RATE
+    loud = (0.3 * np.sin(2 * np.pi * 220 * t) * 32767).astype("<i2").tobytes()
+    with caplog.at_level("INFO"):
+        with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+            with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+                ws.send_json({"type": "config", "model": "whisper-1",
+                              "prompt": _ECHO_PROMPT,
+                              "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+                assert ws.receive_json()["type"] == "ready"
+                ws.send_bytes(loud)
+                ws.send_bytes(b"\0\0" * int(RATE * 1.5))
+                ws.send_json({"type": "stop"})
+                msgs = ws_drain(ws)[0]
+    finals = [m for m in msgs if m["type"] == "final"]
+    assert finals
+    text = finals[-1]["committed"] + finals[-1].get("tail", "")
+    assert "Morgen" in text and "Tabletten" not in text
+    # previews cut it too (uncounted), so LocalAgreement never commits the echo
+    assert all("Tabletten" not in m["committed"] + m.get("pending", "")
+               for m in msgs if m["type"] == "partial")
+    assert metrics.guard_hits["head_echo"] >= 1
+    assert "cut prompt echo from the start of the final (4 words" in caplog.text
+    assert "head_cut" in caplog.text
 
 
 def test_batch_conditioning_unchanged(client, fake_model):
@@ -324,7 +430,9 @@ def test_admin_config_rejects_out_of_range():
         config_store.AdminConfig(STREAMING_TAIL_TRIM_PAD_MS=999999)
     for bad in ({"SEGMENT_MAX_WORD_BURST_PER_S": -1.0},
                 {"SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 21},
-                {"SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS": -1}):
+                {"SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS": -1},
+                {"SEGMENT_HEAD_ECHO_MIN_WORDS": 1},
+                {"SEGMENT_HEAD_ECHO_MIN_WORDS": 33}):
         with _pytest.raises(ValidationError):
             config_store.AdminConfig(**bad)
 
@@ -336,6 +444,7 @@ def test_defaults_present_in_config(app_module):
     assert app_module.cfg.SEGMENT_MAX_WORD_BURST_PER_S == 8.0
     assert app_module.cfg.SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS == 2
     assert app_module.cfg.SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS == 3
+    assert app_module.cfg.SEGMENT_HEAD_ECHO_MIN_WORDS == 3
 
 
 # ---------------------------------------------------------------------------
@@ -394,7 +503,7 @@ def test_batch_request_logs_guard_setting(client, caplog):
 _NEW_FIELDS = ("SEGMENT_MAX_WORDS_PER_S", "STREAMING_TAIL_TRIM_PAD_MS",
                "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT",
                "SEGMENT_MAX_WORD_BURST_PER_S", "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
-               "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS")
+               "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", "SEGMENT_HEAD_ECHO_MIN_WORDS")
 
 
 def test_new_fields_in_override_profile_and_lockable(app_module):

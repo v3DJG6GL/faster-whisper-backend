@@ -14,7 +14,9 @@ from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import EnergyEndpointer
 
 
-def _make_session(*, postprocess, decode_partial=None, decode_final=None, cfg=None):
+def _make_session(*, postprocess, decode_partial=None, decode_final=None, cfg=None,
+                  **seams):
+    """``seams``: the optional holdback / format_key / diagnose hooks."""
     msgs: list[dict] = []
 
     async def emit(m):
@@ -33,8 +35,20 @@ def _make_session(*, postprocess, decode_partial=None, decode_final=None, cfg=No
         decode_final=decode_final or _df,
         postprocess=postprocess,
         emit=emit,
+        **seams,
     )
     return s, msgs
+
+
+def _hold_trailing(word):
+    """Toy hold-back: hold a trailing ``word`` (like the real spec holds the
+    first word of a multi-word dictation key)."""
+    def holdback(raw):
+        stripped = raw.rstrip()
+        if stripped.split()[-1:] == [word]:
+            return len(stripped) - len(word)
+        return len(raw)
+    return holdback
 
 
 # ---- committed/tail emission mechanics ------------------------------------
@@ -47,11 +61,11 @@ def test_committed_is_append_only_and_document_equals_postprocess():
 
     async def run():
         s.raw_confirmed = "der patient hat fieber."
-        await s._emit_document(s.postprocess(s.raw_confirmed))
+        await s._emit_update()
         s.raw_confirmed += " blutdruck normal"          # no terminator yet → tail
-        await s._emit_document(s.postprocess(s.raw_confirmed))
+        await s._emit_update()
         s.raw_confirmed += "."                            # terminator (commits on close)
-        await s._emit_document(s.postprocess(s.raw_confirmed))
+        await s._emit_update()
         await s.close()
 
     asyncio.run(run())
@@ -75,24 +89,25 @@ def test_committed_is_append_only_and_document_equals_postprocess():
 
 def test_committed_never_holds_half_resolved_dictation_phrase():
     """A multi-word dictation phrase split across utterances ('neue' then 'zeile')
-    is never committed half-resolved — the literal 'neue' stays out of committed
-    text until the phrase completes (it may appear only in the provisional tail)."""
+    is never sent half-resolved — the hold-back keeps the literal 'neue' out of
+    every document until the phrase completes."""
     def pp(raw):                       # toy dictation map: phrase → newline
         return raw.replace("neue zeile", "\n")
 
-    s, msgs = _make_session(postprocess=pp)
+    s, msgs = _make_session(postprocess=pp, holdback=_hold_trailing("neue"))
 
     async def run():
         s.raw_confirmed = "bla bla neue"              # incomplete phrase, no terminator
-        await s._emit_document(s.postprocess(s.raw_confirmed))
+        await s._emit_update()
         s.raw_confirmed = "bla bla neue zeile text."  # phrase completes + terminator
-        await s._emit_document(s.postprocess(s.raw_confirmed))
+        await s._emit_update()
         await s.close()
 
     asyncio.run(run())
     finals = [m for m in msgs if m["type"] == "final"]
     committeds = [m["committed"] for m in finals]
     assert all("neue" not in c for c in committeds)   # literal "neue" never committed
+    assert all("neue" not in m["tail"] for m in finals)  # ... nor shown
     assert committeds[-1] == "bla bla \n text."
 
 
@@ -103,7 +118,7 @@ def test_close_commits_unterminated_tail():
 
     async def run():
         s.raw_confirmed = "hallo welt"                # no terminator
-        await s._emit_document(s.postprocess(s.raw_confirmed))
+        await s._emit_update()
         pre = [m for m in msgs if m["type"] == "final"]
         # shown immediately, but provisional (not committed) — fixes the "text only
         # appears after the next utterance" bug.
@@ -129,7 +144,7 @@ def test_close_survives_failed_final_decode_and_still_commits():
 
     async def run():
         s.raw_confirmed = "erster satz."
-        await s._emit_document(s.postprocess(s.raw_confirmed))
+        await s._emit_update()
         await s.feed_pcm(const_pcm(8000, 1000))
         assert s._in_utterance
         await s.close()
@@ -396,3 +411,242 @@ def test_empty_final_still_falls_back_to_localagreement():
 
     asyncio.run(run())
     assert "welt" in s.raw_confirmed        # recovered from the partials' transcript
+
+
+# ---- hold-back, release finals, re-anchor ----------------------------------
+
+_FAST = dict(min_chunk_ms=96, vad_min_silence_ms=96, commit_silence_ms=192,
+             min_speech_ms=64, forced_commit_sec=100, buffer_trim_sec=100,
+             rms_gate_dbfs=-60, preroll_keep_ms=100)
+
+
+def _neue_zeile(raw):
+    """Toy pipeline: 'neue zeile' → newline, edges trimmed like trim-edges."""
+    return raw.replace(" neue zeile", "\n").strip()
+
+
+def _queued_final(texts):
+    queue = list(texts)
+
+    async def decode_final(audio, prompt):
+        return (queue.pop(0), [], False)
+    return decode_final
+
+
+def _finals(msgs):
+    return [m for m in msgs if m["type"] == "final"]
+
+
+def test_held_words_are_released_before_the_boundary():
+    """A held trailing word goes out as a release final (flush, no utterance)
+    BEFORE the boundary marker, so it lands in the document it belongs to."""
+    s, msgs = _make_session(
+        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
+        cfg=StreamConfig(**_FAST, hard_break_silence_ms=500),
+        holdback=_hold_trailing("neue"))
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 300))
+        await s.feed_pcm(_pcm(0, 700))      # finalize, then the hard break
+
+    asyncio.run(run())
+    # Lifecycle ``utterance`` frames (open/decoding) are not what this test is about.
+    kinds = [(m["type"], m.get("flush", False)) for m in msgs
+             if m["type"] not in ("partial", "utterance")]
+    assert kinds == [("final", False), ("final", True), ("boundary", False)]
+    held, release = _finals(msgs)
+    assert held["committed"] + held["tail"] == "bla"
+    assert release["committed"] == "bla neue" and release["tail"] == ""
+    assert "utterance" not in release and "utterance" in held
+    assert s._sent == "" and s._sent_raw_end == 0    # new document
+
+
+def test_close_releases_held_words_in_the_last_final():
+    s, msgs = _make_session(
+        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
+        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        holdback=_hold_trailing("neue"))
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 300))
+        await s.feed_pcm(_pcm(0, 400))
+        await s.close()
+
+    asyncio.run(run())
+    finals = _finals(msgs)
+    assert finals[0]["committed"] + finals[0]["tail"] == "bla"
+    assert finals[-1]["committed"] == "bla neue" and finals[-1].get("last") is True
+    assert "utterance" in finals[-1]
+
+
+def test_flush_releases_held_words_between_utterances():
+    """A client flush with no utterance in flight releases the held tail as a
+    release final; a second flush has nothing left to send."""
+    s, msgs = _make_session(
+        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
+        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        holdback=_hold_trailing("neue"))
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 300))
+        await s.feed_pcm(_pcm(0, 400))
+        await s.flush_utterance()
+        await s.flush_utterance()
+
+    asyncio.run(run())
+    finals = _finals(msgs)
+    assert len(finals) == 2
+    assert finals[1] == {"type": "final", "committed": "bla neue", "tail": "", "flush": True}
+
+
+def test_flush_in_utterance_finalizes_with_the_hold_released():
+    s, msgs = _make_session(
+        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
+        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        holdback=_hold_trailing("neue"))
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 300))
+        assert s._in_utterance
+        await s.flush_utterance()
+
+    asyncio.run(run())
+    (final,) = _finals(msgs)
+    assert final["committed"] + final["tail"] == "bla neue"
+    assert final.get("forced") is True and "utterance" in final
+
+
+def test_idle_release_when_hard_breaks_are_off():
+    """With hard breaks off nothing else would release a held word while the
+    speaker stays quiet: 5 s of silence release it, once."""
+    s, msgs = _make_session(
+        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue"]),
+        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        holdback=_hold_trailing("neue"))
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 300))
+        await s.feed_pcm(_pcm(0, 3000))
+        assert len(_finals(msgs)) == 1           # not yet
+        await s.feed_pcm(_pcm(0, 5000))
+
+    asyncio.run(run())
+    finals = _finals(msgs)
+    assert len(finals) == 2
+    assert finals[1]["committed"] == "bla neue" and finals[1].get("flush") is True
+    assert not [m for m in msgs if m["type"] == "boundary"]
+
+
+def test_dropped_final_keeps_the_hold():
+    """An utterance whose final decode drops everything adds no text: the held
+    word stays held and joins the utterance after it."""
+    s, msgs = _make_session(
+        postprocess=_neue_zeile, decode_final=_queued_final(["bla neue", "", " zeile text."]),
+        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        holdback=_hold_trailing("neue"))
+
+    async def run():
+        for _ in range(3):
+            await s.feed_pcm(_pcm(8000, 300))
+            await s.feed_pcm(_pcm(0, 400))
+
+    asyncio.run(run())
+    docs = [m["committed"] + m["tail"] for m in _finals(msgs)]
+    assert all("neue" not in d for d in docs)
+    assert docs[-1] == "bla\n text."
+    for a, b in zip(docs, docs[1:]):
+        assert b.startswith(a)
+
+
+def test_seam_divergence_reanchors_logs_and_sticks(caplog):
+    """When a new document would rewrite sent text anyway, the sent text stays
+    as typed: a WARNING names the culprit, and the rest of the document is
+    formatted on its own — also for later utterances (sticky)."""
+    import logging
+
+    def pp(raw):                                    # 'a b' → 'X' (looks ahead)
+        return raw.replace("a b", "X").strip()
+
+    s, msgs = _make_session(postprocess=pp, diagnose=lambda a, b: "#9 toy")
+
+    async def run():
+        s.raw_confirmed = "a"
+        await s._emit_update()
+        s.raw_confirmed += " b c"
+        await s._emit_update()
+        s.raw_confirmed += " a b"
+        await s._emit_update()
+
+    with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
+        asyncio.run(run())
+    docs = [m["committed"] + m["tail"] for m in _finals(msgs)]
+    assert docs == ["a", "a b c", "a b c X"]
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1 and "seam" in warnings[0] and "#9 toy" in warnings[0]
+
+
+def test_language_change_reanchors_without_rewriting_sent_text(caplog):
+    import logging
+
+    lang = ["de"]
+
+    def pp(raw):
+        return raw.strip().upper() if lang[0] == "en" else raw.strip()
+
+    s, msgs = _make_session(postprocess=pp, format_key=lambda: lang[0])
+
+    async def run():
+        s.raw_confirmed = "hallo"
+        await s._emit_update()
+        lang[0] = "en"
+        s.raw_confirmed += " welt"
+        await s._emit_update()
+
+    with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.session"):
+        asyncio.run(run())
+    docs = [m["committed"] + m["tail"] for m in _finals(msgs)]
+    assert docs == ["hallo", "hallo WELT"]
+    msgs_logged = [(r.levelno, r.getMessage()) for r in caplog.records]
+    assert any(lvl == logging.INFO and "formatting language changed" in m
+               for lvl, m in msgs_logged)
+    assert not any(lvl >= logging.WARNING for lvl, _ in msgs_logged)
+
+
+def test_committed_region_only_grows():
+    """The document-level agreement now runs on emitted documents, which only
+    grow — so committed never shrinks or changes either."""
+    s, msgs = _make_session(postprocess=lambda raw: raw.strip())
+
+    async def run():
+        s.raw_confirmed = "eins."
+        await s._emit_update()
+        s.raw_confirmed += " zwei."
+        await s._emit_update()
+        s.raw_confirmed += " drei"
+        await s._emit_update()
+
+    asyncio.run(run())
+    committeds = [m["committed"] for m in _finals(msgs)]
+    assert committeds == ["", "eins.", "eins. zwei."]
+
+
+@pytest.mark.parametrize("left,piece,joined", [
+    ("Er sagt", "hallo", " hallo"),
+    ("Ende.", "weiter", " Weiter"),
+    ("Ende.", "Weiter", " Weiter"),
+    ("Zeile\n", "weiter", "Weiter"),
+    ("Wert", ", 5", ", 5"),
+    ("Wert", ".", "."),
+    ("Befund (", "rechts", "rechts"),
+    ('Sie sagt "', "mir", "mir"),
+    ('Sie sagt "mir ist', '"', '"'),
+    ('Er sagt "ja".', '"Nein"', ' "Nein"'),
+    ("120/", "80", "80"),
+    ("Eisen-", "Infusion", "Infusion"),
+    ("Wert", "-5", "-5"),
+    ("Wert", "", ""),
+    ("frage?", "nein", " Nein"),
+    ("klein", "Gross", " Gross"),     # never lower-cased
+])
+def test_seam_join(left, piece, joined):
+    assert StreamSession._seam_join(left, piece) == joined

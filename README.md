@@ -14,8 +14,13 @@ Self-hosted [faster-whisper](https://github.com/SYSTRAN/faster-whisper) transcri
 - OpenAI-compatible API — drop-in replacement for `client.audio.transcriptions.create(...)`
 - **Live streaming dictation** — WebSocket endpoint `/v1/audio/transcriptions/stream` that emits
   flicker-free partial text *while you speak* (LocalAgreement-2 stabilization) and **post-processed**
-  final text per utterance (a locked, append-only `committed` prefix plus a revisable `tail` —
-  both sent as full strings the client replaces). Reuses the same models, VAD, and post-processing
+  final text per utterance, sent as full strings (`committed` + `tail`). Within one document the
+  text only grows — every final extends the previous one, so a client can type just the new part
+  and never has to take text back; `tail` (the newest sentence) is a display hint. A trailing
+  fragment a dictation rule could still join with what follows (`neue` of `neue Zeile`, `Komma`
+  before a line break, `120 Schrägstrich`) is withheld until the next final, the hard-break
+  `boundary`, a client `flush` or the close — when nothing follows it arrives in a release final
+  (`flush: true`, no `utterance`). Reuses the same models, VAD, and post-processing
   pipeline as the batch route (which is unchanged); accepts raw 16 kHz PCM **or** browser Opus/WebM
   (decoded server-side via a bundled `ffmpeg` — `imageio-ffmpeg`, no system install needed; a
   system `ffmpeg` on PATH is used when present); two-tier Silero/energy endpointing. Try it in the browser at `/dictate`.
@@ -570,12 +575,14 @@ A single ordered list of rules — `cfg.PIPELINE_RULES` — is applied to each t
 
 - `regex-list` — an ordered batch of find→replace entries (each one `re.sub`), edited as a single card
 - `callback:lowercase-wordlist` — strip terminator and lowercase next word if it's in the wordlist
-- `callback:map` — auto-built alternation of map keys (longest-first, case-insensitive); look up replacement
+- `callback:map` — auto-built alternation of map keys (longest-first, case-insensitive); look up replacement.
+  A key written with `ß` also matches its `ss` spelling (the Swiss `ß`→`ss` cleanup runs first; an
+  explicit `ss` key wins), and dictated punctuation wins over Whisper's own: `HB 12... Komma 5` → `HB 12,5`
 - `callback:dedup` — collapse adjacent punctuation runs (last non-comma wins; pure-comma run → single comma)
 - `callback:upper` — capitalize after sentence terminator
 - `terminal` — final `lstrip(" \t\r") + rstrip(" \t\r")`; always last (preserves leading/trailing `\n`)
 
-The 14 seeded defaults handle orthography normalization (`ß`→`ss`), Whisper noise stripping, dictation (`Punkt`→`.`, `neue Zeile`→`\n`, …), and tidy spacing/newlines/capitalization. They live in the committed **`config.json`** (the `PIPELINE_RULES` array, next to all the scalar defaults); `faster_whisper_backend/config.py` loads that file at startup. Each rule carries an optional `note` field documenting its rationale.
+The 15 seeded cards handle orthography normalization (`ß`→`ss`), Whisper noise stripping, dictation (`Punkt`→`.`, `neue Zeile`→`\n`, …), and tidy spacing/newlines/capitalization. They live in the committed **`config.json`** (the `PIPELINE_RULES` array, next to all the scalar defaults); `faster_whisper_backend/config.py` loads that file at startup. Each rule carries an optional `note` field documenting its rationale.
 
 **Ordering invariants:** `de-dictation-map` multi-word phrases must precede their single-word components (the alternation regex is rebuilt longest-first, so the longest phrase wins); the `terminal` trim rule is always last.
 
