@@ -674,6 +674,48 @@ def test_thumbnail_fetch_runs_on_probe_pool(monkeypatch):
     assert seen["thread"].startswith("url-probe")
 
 
+def _fake_opener(monkeypatch, body: bytes, ctype: str = "text/vtt"):
+    """Swap the guarded opener for one that serves `body` in 1 KB chunks."""
+    class _Resp:
+        headers = {"Content-Type": ctype}
+
+        def __init__(self):
+            self._chunks = [body[i:i + 1024] for i in range(0, len(body), 1024)]
+
+        def read(self, n):
+            return self._chunks.pop(0) if self._chunks else b""
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Opener:
+        def open(self, req, timeout=None):
+            return _Resp()
+
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: False)
+    monkeypatch.setattr(udl.urllib.request, "build_opener",
+                        lambda *handlers: _Opener())
+
+
+def test_capped_get_caps_filters_and_refuses_hosts(monkeypatch):
+    _fake_opener(monkeypatch, b"x" * 5000)
+    assert udl._capped_get("https://e.com/a", max_bytes=5000, timeout=1.0) == (
+        "text/vtt", b"x" * 5000)
+    with pytest.raises(udl.UrlDownloadError, match="size limit"):
+        udl._capped_get("https://e.com/a", max_bytes=4999, timeout=1.0)
+    with pytest.raises(udl.UrlDownloadError, match="unexpected file type"):
+        udl._capped_get("https://e.com/a", max_bytes=9999, timeout=1.0,
+                        accept=lambda c: c.startswith("image/"))
+    with pytest.raises(udl.UrlDownloadError, match="could not be reached"):
+        udl._capped_get("file:///etc/passwd", max_bytes=10, timeout=1.0)
+    monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: True)
+    with pytest.raises(udl.UrlDownloadError, match="could not be reached"):
+        udl._capped_get("https://e.com/a", max_bytes=10, timeout=1.0)
+
+
 def _rebinding_server(monkeypatch, content_type):
     """Local server + a getaddrinfo stub for "rebind.test" that answers a
     public address on the first lookup (the _host_is_forbidden gate) and

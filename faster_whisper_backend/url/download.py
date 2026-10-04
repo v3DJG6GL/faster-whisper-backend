@@ -914,6 +914,45 @@ def _log_probe_failure(url: str, e: Exception) -> None:
                    host_for_log(url), log_safe(str(e)))
 
 
+def _capped_get(url: str, *, max_bytes: int, timeout: float,
+                accept=lambda ctype: True) -> "tuple[str, bytes]":
+    """One small GET under the address policy: http(s) only, a forbidden
+    host refused before any I/O, the guarded opener (pinned DNS, every
+    redirect hop re-checked), the body read in chunks under `max_bytes` and
+    a wall-clock deadline (the opener's `timeout` is per socket op, and the
+    header phase gets a hard cutoff too: a dribbled status line never trips
+    the per-op timeout). Returns (content type, body). Sync — run it on
+    _PROBE_POOL. Raises UrlDownloadError (client-safe) for a refused host,
+    an unaccepted content type, an over-cap or over-time body; transport
+    errors (urllib.error.HTTPError included) propagate for the caller."""
+    parts = urllib.parse.urlsplit(url)
+    if (parts.scheme.lower() not in ("http", "https") or not parts.hostname
+            or _host_is_forbidden(parts.hostname)):
+        raise UrlDownloadError("the site could not be reached from the server")
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "faster-whisper-backend"})
+    with _WallClockCutoff(timeout) as cutoff, \
+            _guarded_opener(cutoff).open(req, timeout=timeout) as resp:
+        ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if not accept(ctype):
+            raise UrlDownloadError("the site answered with an unexpected file type")
+        # Chunked against a monotonic deadline: a host dribbling bytes under
+        # the per-op timeout could otherwise hold this worker thread forever
+        # (the outer wait_for abandons the await, never the thread).
+        t0 = time.monotonic()
+        buf = bytearray()
+        while True:
+            chunk = resp.read(32768)
+            if not chunk:
+                break
+            buf.extend(chunk)
+            if len(buf) > max_bytes:
+                raise UrlDownloadError("the file is over the server's size limit")
+            if time.monotonic() - t0 > timeout:
+                raise UrlTimeoutError("the site took too long to answer")
+    return ctype, bytes(buf)
+
+
 async def fetch_thumbnail_data_uri(
     url: "str | None", *, max_bytes: int = 512_000, timeout: float = 5.0,
 ) -> "str | None":
@@ -923,43 +962,17 @@ async def fetch_thumbnail_data_uri(
     thumbnail is still a preview."""
     if not url:
         return None
-    parts = urllib.parse.urlsplit(url)
-    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
-        return None
 
     def _fetch() -> "str | None":
-        if _host_is_forbidden(parts.hostname or ""):
-            return None
-        req = urllib.request.Request(
-            url, headers={"User-Agent": "faster-whisper-backend"})
         try:
-            # The header phase gets the same hard cutoff as the body loop
-            # below: a dribbled status line never trips the per-op timeout.
-            with _WallClockCutoff(timeout) as cutoff, \
-                    _guarded_opener(cutoff).open(req, timeout=timeout) as resp:
-                ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-                if not ctype.startswith("image/") or "svg" in ctype:
-                    return None
-                # Chunked against a monotonic deadline: `timeout` on the
-                # opener is per-socket-op, so a host dribbling bytes under
-                # it could otherwise hold this worker thread forever (the
-                # outer wait_for abandons the await, never the thread).
-                t0 = time.monotonic()
-                buf = bytearray()
-                while True:
-                    chunk = resp.read(32768)
-                    if not chunk:
-                        break
-                    buf.extend(chunk)
-                    if len(buf) > max_bytes:
-                        return None
-                    if time.monotonic() - t0 > timeout:
-                        return None
+            ctype, body = _capped_get(
+                url, max_bytes=max_bytes, timeout=timeout,
+                accept=lambda c: c.startswith("image/") and "svg" not in c)
         except Exception:  # noqa: BLE001 — soft-fail by contract
             return None
-        if not buf:
+        if not body:
             return None
-        return f"data:{ctype};base64,{base64.b64encode(bytes(buf)).decode('ascii')}"
+        return f"data:{ctype};base64,{base64.b64encode(body).decode('ascii')}"
 
     try:
         return await asyncio.wait_for(
