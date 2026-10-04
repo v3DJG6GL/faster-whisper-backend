@@ -331,7 +331,9 @@ def test_gpu_gate_counts_held_queue_and_charges_the_wait():
             metrics.seed_wait()
             async with gate:
                 seen["first_snap"] = gate.snapshot()
-                await asyncio.sleep(0.05)
+                # 100 ms hold vs a 10 ms head-start: Windows sleeps in ~16 ms
+                # ticks, so a 50 ms hold measured 26 ms of wait on the runner.
+                await asyncio.sleep(0.1)
             seen["first_wait"] = metrics.take_wait()
 
         async def second():
@@ -348,7 +350,7 @@ def test_gpu_gate_counts_held_queue_and_charges_the_wait():
     seen = asyncio.run(scenario())
     assert seen["first_snap"]["held"] == 1 and seen["first_snap"]["capacity"] == 1
     assert seen["first_wait"] == 0.0
-    assert seen["second_wait"] >= 0.03
+    assert seen["second_wait"] >= 0.05
     assert seen["second_snap"]["queue_depth"] == 0
     assert seen["end"] == {"capacity": 1, "held": 0, "queue_depth": 0,
                            "oldest_wait_s": 0.0}
