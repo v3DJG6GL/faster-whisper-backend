@@ -10,6 +10,9 @@ and layout are per-caller:
   dead Play button on the /captures page).
 - BGM separation: 44.1 kHz stereo — what the UVR/MDX separator natively
   consumes; anything else it would re-decode/resample itself, slowly.
+
+decode_pieces_16k reads short 16 kHz float pieces straight into memory for
+a link's language check; both open the source through _open_audio.
 """
 from __future__ import annotations
 
@@ -17,6 +20,71 @@ import os
 
 _OUT_FORMAT = "s16"          # signed 16-bit
 _OUT_CODEC = "pcm_s16le"     # WAV's native uncompressed codec
+
+
+def _av():
+    try:
+        import av
+    except ImportError as e:
+        raise RuntimeError("PyAV (av) not installed; cannot transcode") from e
+    return av
+
+
+def _open_audio(src_path: str):
+    """(container, first audio stream) of `src_path`; the caller closes the
+    container. ValueError when there is no audio stream."""
+    # The source is an uploaded clip (or a downloaded link) whose bytes AND
+    # filename extension a client chose, and libavformat scores demuxers
+    # partly on the extension (AVPROBE_SCORE_EXTENSION). Without this, a
+    # crafted concat/ffconcat, HLS playlist or SDP input can coax the demuxer
+    # into following external file:// or http:// references — the classic
+    # ffmpeg local-file-read / SSRF surface. streaming_transport already pins
+    # "-protocol_whitelist pipe" on the realtime path for exactly this reason;
+    # a real clip is self-contained, so restricting the batch path to the
+    # file protocol rejects nothing legitimate.
+    container = _av().open(src_path, options={"protocol_whitelist": "file"})
+    stream = next((s for s in container.streams if s.type == "audio"), None)
+    if stream is None:
+        container.close()
+        raise ValueError("source has no audio stream")
+    return container, stream
+
+
+def decode_pieces_16k(src_path: str, starts: "list[float]",
+                      seconds: float) -> list:
+    """`seconds` of audio from each of `starts` (seconds into the media) as
+    16 kHz mono float32 arrays — what Whisper's language detection takes.
+    Seeks instead of decoding the whole file; a piece past the end comes
+    back empty."""
+    import numpy as np
+
+    av = _av()
+    want = int(seconds * 16000)
+    pieces = []
+    container, stream = _open_audio(src_path)
+    try:
+        for start in starts:
+            container.seek(int(start / stream.time_base), stream=stream)
+            # Fresh per piece: a resampler keeps samples buffered across a seek.
+            resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
+            chunks, have = [], 0
+            for frame in container.decode(stream):
+                # The seek lands on the keyframe at or before `start`.
+                if (frame.time is not None
+                        and frame.time + frame.samples / frame.sample_rate < start):
+                    continue
+                frame.pts = None
+                for out in resampler.resample(frame):
+                    chunk = out.to_ndarray().reshape(-1)
+                    chunks.append(chunk)
+                    have += chunk.size
+                if have >= want:
+                    break
+            pieces.append(np.concatenate(chunks)[:want] if chunks
+                          else np.zeros(0, dtype=np.float32))
+    finally:
+        container.close()
+    return pieces
 
 
 def transcode_to_wav_16k_mono(src_path: str, dst_path: str) -> int:
@@ -28,29 +96,11 @@ def transcode_to_wav(src_path: str, dst_path: str, *,
     """Decode anything PyAV understands, resample to `rate`/`layout`, write
     a RIFF/WAVE file at dst_path. Returns bytes written. On any failure
     the destination is best-effort unlinked."""
-    try:
-        import av
-    except ImportError as e:
-        raise RuntimeError("PyAV (av) not installed; cannot transcode") from e
-
+    av = _av()
     in_container = None
     out_container = None
     try:
-        # The source is an uploaded clip whose bytes AND filename extension the
-        # caller chose, and libavformat scores demuxers partly on the extension
-        # (AVPROBE_SCORE_EXTENSION). Without this, a crafted concat/ffconcat,
-        # HLS playlist or SDP input can coax the demuxer into following external
-        # file:// or http:// references — the classic ffmpeg local-file-read /
-        # SSRF surface. streaming_transport already pins "-protocol_whitelist
-        # pipe" on the realtime path for exactly this reason; a real clip is
-        # self-contained, so restricting the batch path to the file protocol
-        # rejects nothing legitimate.
-        in_container = av.open(src_path, options={"protocol_whitelist": "file"})
-        in_stream = next(
-            (s for s in in_container.streams if s.type == "audio"), None,
-        )
-        if in_stream is None:
-            raise ValueError("source has no audio stream")
+        in_container, in_stream = _open_audio(src_path)
 
         out_container = av.open(dst_path, mode="w", format="wav")
         out_stream = out_container.add_stream(_OUT_CODEC, rate=rate)

@@ -297,6 +297,7 @@ no restart and no bucket reset.
 | `URL_PREVIEW_RATE_PER_MIN` | 10/min | `POST /v1/audio/url-preview` |
 | `URL_VIDEO_RATE_PER_MIN` | 6/min | a link run that keeps the video (`keep_video`) or `POST /v1/audio/url-media/video` — each pulls up to `MEDIA_MAX_BYTES` from the site |
 | `URL_SUBTITLES_RATE_PER_MIN` | 6/min | `POST /v1/audio/url-subtitles` — a re-probe plus up to 8 capped subtitle GETs from the site |
+| `URL_LANGUAGE_RATE_PER_MIN` | 4/min | `POST /v1/audio/url-language` — downloads the link's audio and runs three short language detections on the GPU |
 | `JOBS_RATE_PER_MIN` | 120/min | `GET`/`DELETE /v1/jobs*` — a re-attached client polls its job once a second |
 | `CAPTURES_AUDIO_RATE_PER_MIN` | 240/min | capture-audio fetches |
 | `REPORTS_SUBMIT_RATE_PER_10MIN` | 20/10 min | user report submissions |

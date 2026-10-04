@@ -7404,6 +7404,16 @@ _url_subtitles_rate = _rl.FixedWindow(
             "({limit}/min; retry in {retry_after}s)",
 )
 
+# Per-identity window for link language checks — the costliest URL route: a
+# whole audio download from a third party AND three detections on the GPU.
+_url_language_rate = _rl.FixedWindow(
+    config_field="URL_LANGUAGE_RATE_PER_MIN",
+    window_s=60.0,
+    default_max=4,
+    message="too many language checks — slow down "
+            "({limit}/min; retry in {retry_after}s)",
+)
+
 # progress_id → the keep_video task still running past its transcription
 # handler. Nothing reads it back: it is the strong reference that keeps
 # asyncio from collecting a detached task mid-flight (the loop only holds
@@ -7974,6 +7984,86 @@ async def url_media_audio(request: Request,
     return await _url_media_on_demand(user, body, url, "audio download", _fetch)
 
 
+@app.post("/v1/audio/url-language")
+async def url_language(request: Request,
+                       user: dict = Depends(_get_current_user_dep)):
+    """Which language does a link speak? {url, model?, progress_id?} →
+    {language, probability, verdict: detected|mixed|unknown, also, pieces:
+    [{at, language, probability}], media_id, media_expires_at}. Downloads
+    the WHOLE audio through the guarded download (a ranged ffmpeg fetch
+    would bypass the SSRF guard) and keeps it in the media store, so the run
+    that follows reuses it (`prefetched_media_id`); then Whisper's language
+    detection listens to three 20 s pieces (url/language_check.py) under
+    the inference semaphore and a model lease. Cancel through the shared
+    cancel route on `progress_id`."""
+    body, url = await _url_request(request, user, _url_language_rate,
+                                   switch="URL_LANGUAGE_CHECK_ENABLED",
+                                   what="the language check")
+    from faster_whisper_backend.audio import transcode as _transcode
+    from faster_whisper_backend.url import download as _udl
+    from faster_whisper_backend.url import language_check as _lc
+    from faster_whisper_backend.url import media_store as _ums
+    _model = body.get("model")
+    model_name = _resolve_model_name(_model.strip() if isinstance(_model, str) else "")
+    _user_id = user.get("user_id")
+
+    def _detect(model, audio) -> "tuple[str | None, float]":
+        try:
+            lang, prob, _all = model.detect_language(audio=audio, vad_filter=True)
+        except ValueError:
+            # No speech left after VAD (music, silence) or an empty piece.
+            return None, 0.0
+        return lang, float(prob)
+
+    async def _check(pid, url, info) -> dict:
+        t0 = time.perf_counter()
+        mid = await _download_link_audio(pid, url, _user_id)
+        entry = _ums.resolve_entry(mid, user_id=_user_id)
+        if entry is None:
+            raise _udl.UrlDownloadError("the server could not retain the audio")
+        starts = _lc.piece_starts(info.duration)
+        try:
+            audio = await asyncio.to_thread(
+                _transcode.decode_pieces_16k, entry["path"], starts,
+                _lc.PIECE_SECONDS)
+        except Exception as e:  # noqa: BLE001 — PyAV's text names the path
+            logger.info("[url-dl] language check could not decode the audio "
+                        "(host %s): %s", _url_host_for_log(url),
+                        _log_safe(type(e).__name__))
+            raise _udl.UrlDownloadError(
+                "the link's audio could not be decoded") from None
+        _progress_set(pid, stage="waiting", progress=None)
+        model = await _get_or_load_model(model_name, lease=True)
+        try:
+            _check_cancelled(pid)
+            _w0 = time.perf_counter()
+            async with get_inference_semaphore():
+                wait_s = time.perf_counter() - _w0
+                heard = []
+                for i, piece in enumerate(audio):
+                    _check_cancelled(pid)
+                    _progress_set(pid, stage="transcribing", step="language",
+                                  progress=i / len(audio), model=model_name)
+                    heard.append(await asyncio.to_thread(_detect, model, piece))
+        finally:
+            _release_model_lease(model_name)
+        result = _lc.vote(heard)
+        pieces = [{"at": at, "language": lang, "probability": round(p, 3)}
+                  for at, (lang, p) in zip(starts, heard)]
+        logger.info(
+            "[url-dl] language check (host %s): %s %s p=%.2f%s · pieces %s"
+            " · model %s · gpu wait %.1fs · %.1fs total",
+            _url_host_for_log(url), result["verdict"], result["language"] or "?",
+            result["probability"],
+            f" also {','.join(result['also'])}" if result["also"] else "",
+            ", ".join(f"{p['at']:.0f}s {p['language'] or '-'} {p['probability']:.2f}"
+                      for p in pieces),
+            model_name, wait_s, time.perf_counter() - t0)
+        return {**result, "pieces": pieces, "media_id": mid,
+                "media_expires_at": _ums.expires_at_unix(mid)}
+    return await _url_media_on_demand(user, body, url, "language check", _check)
+
+
 # ── Media export: upload, stream facts, subtitle packaging ──────────────────
 # The client exports a video WITH its subtitle tracks: it generates the SRTs
 # itself (edits, renames and speaker colours included), the server muxes them
@@ -8362,6 +8452,11 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     if caps["url_video_enabled"]:
         # No server-side height ceiling in this release: null = best available.
         caps["url_video_default_max_height"] = None
+    # Additive: whether the spoken-language check of a link is offered
+    # (POST /v1/audio/url-language).
+    caps["url_language_check_enabled"] = bool(
+        caps["url_download_enabled"]
+        and getattr(cfg, "URL_LANGUAGE_CHECK_ENABLED", False))
     # Additive: whether a link's own subtitle tracks are listed by the preview
     # and fetchable (POST /v1/audio/url-subtitles).
     caps["url_subtitles_enabled"] = bool(

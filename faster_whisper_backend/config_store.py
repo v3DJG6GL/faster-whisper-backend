@@ -585,6 +585,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "uploaded or original-language automatic captions) instead of "
         "transcribing: small capped GETs of the VTT/SRT text, never a media "
         "download. Rate-limited by URL_SUBTITLES_RATE_PER_MIN.",
+    "URL_LANGUAGE_CHECK_ENABLED":
+        "Let clients ask which language a link speaks before running it: "
+        "the server downloads the audio (kept for the run that follows) and "
+        "Whisper listens to three 20 s pieces. The costliest URL route — it "
+        "takes a download slot and a GPU slot; rate-limited by "
+        "URL_LANGUAGE_RATE_PER_MIN.",
     "URL_DOWNLOAD_TIMEOUT_S":
         "Wall-clock ceiling for one audio download subprocess; the download "
         "is killed and the request fails past it. Default 900 (15 min).",
@@ -809,6 +815,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Ceiling on subtitle fetches (POST /v1/audio/url-subtitles) per "
         "identity per 60 seconds. Each re-probes the link and fetches up to "
         "8 tracks from the site. 0 = unlimited.",
+    "URL_LANGUAGE_RATE_PER_MIN":
+        "Ceiling on link language checks (POST /v1/audio/url-language) per "
+        "identity per 60 seconds. Each downloads the whole audio and runs "
+        "three short language detections on the GPU. 0 = unlimited.",
     "MEDIA_UPLOAD_RATE_PER_MIN":
         "Ceiling on video uploads for packaging (POST /v1/audio/media) per "
         "identity per 60 seconds — each can be MEDIA_MAX_BYTES. 0 = unlimited.",
@@ -2109,6 +2119,9 @@ class AdminConfig(BaseModel):
         "URL_VIDEO_ENABLED", scope="server", group="Transcribe from URL")
     URL_SUBTITLES_ENABLED: bool | None = _F(
         "URL_SUBTITLES_ENABLED", scope="server", group="Transcribe from URL")
+    URL_LANGUAGE_CHECK_ENABLED: bool | None = _F(
+        "URL_LANGUAGE_CHECK_ENABLED", scope="server",
+        group="Transcribe from URL")
     URL_DOWNLOAD_TIMEOUT_S: Annotated[int, Field(ge=10, le=86400)] | None = _F(
         "URL_DOWNLOAD_TIMEOUT_S", scope="server",
         group="Transcribe from URL",
@@ -2299,6 +2312,11 @@ class AdminConfig(BaseModel):
         int, Field(ge=0, le=100_000)
     ] | None = _F(
         "URL_SUBTITLES_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=5)
+    URL_LANGUAGE_RATE_PER_MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "URL_LANGUAGE_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=5)
     MEDIA_UPLOAD_RATE_PER_MIN: Annotated[
         int, Field(ge=0, le=100_000)

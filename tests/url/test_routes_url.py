@@ -814,3 +814,95 @@ def test_me_reports_subtitle_caps(client, url_enabled, monkeypatch):
     assert client.get("/v1/me").json()["url_subtitles_enabled"] is True
     monkeypatch.setattr(url_enabled.cfg, "URL_SUBTITLES_ENABLED", False, raising=False)
     assert client.get("/v1/me").json()["url_subtitles_enabled"] is False
+
+
+# --- POST /v1/audio/url-language ----------------------------------------------
+
+@pytest.fixture
+def lang_check(url_enabled, monkeypatch, fake_model):
+    """The check with its decode stubbed (the url_enabled download writes no
+    real audio) and every lease release recorded."""
+    import numpy as np
+    from faster_whisper_backend.audio import transcode
+    monkeypatch.setattr(transcode, "decode_pieces_16k", lambda path, starts, s: [
+        np.zeros(16000, dtype=np.float32) for _ in starts])
+    released: list = []
+    monkeypatch.setattr(url_enabled, "_release_model_lease", released.append)
+    fake_model.released = released
+    return fake_model
+
+
+def test_language_403_when_off(client, url_enabled, monkeypatch):
+    monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_CHECK_ENABLED", False, raising=False)
+    r = client.post("/v1/audio/url-language", json={"url": _URL})
+    assert r.status_code == 403 and "language check" in r.json()["detail"]
+    # URL download off entirely: same 403, whatever the check's own switch.
+    monkeypatch.setattr(url_enabled.cfg, "URL_DOWNLOAD_ENABLED", False, raising=False)
+    monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_CHECK_ENABLED", True, raising=False)
+    assert client.post("/v1/audio/url-language", json={"url": _URL}).status_code == 403
+
+
+def test_language_check_undecodable_audio_is_400(client, url_enabled):
+    # url_enabled's download writes bytes no demuxer reads.
+    r = client.post("/v1/audio/url-language", json={"url": _URL})
+    assert r.status_code == 400 and "decoded" in r.json()["detail"]
+
+
+def test_language_check_votes_and_keeps_the_audio(client, url_enabled, lang_check,
+                                                  monkeypatch):
+    monkeypatch.setattr(url_enabled.cfg, "INFERENCE_CONCURRENCY", 1, raising=False)
+    held: list = []
+    real = type(lang_check).detect_language
+
+    def _detect(self, audio=None, **kw):
+        held.append((url_enabled.get_inference_semaphore().locked(), kw))
+        return real(self, audio=audio, **kw)
+    monkeypatch.setattr(type(lang_check), "detect_language", _detect)
+    lang_check.heard = [("de", 0.9), ("de", 0.8), ("en", 0.88)]
+    r = client.post("/v1/audio/url-language",
+                    json={"url": _URL, "model": "whisper-1", "progress_id": _PID})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert (body["language"], body["verdict"], body["also"]) == ("de", "mixed", ["en"])
+    assert [p["at"] for p in body["pieces"]] == [18.0, 45.0, 70.0]   # 90 s media
+    assert [p["language"] for p in body["pieces"]] == ["de", "de", "en"]
+    assert held == [(True, {"vad_filter": True})] * 3      # under the GPU gate
+    assert lang_check.released == [url_enabled.cfg.DEFAULT_MODEL]
+    entry = url_media_store.resolve_entry(body["media_id"], user_id=None)
+    assert entry["kind"] == "audio" and entry["source_url"] == _URL
+    assert body["media_expires_at"] > 0
+    assert _PID not in url_enabled._BATCH_PROGRESS
+
+
+def test_language_check_cancel_between_pieces(client, url_enabled, lang_check,
+                                              monkeypatch):
+    real = type(lang_check).detect_language
+
+    def _detect(self, audio=None, **kw):
+        url_enabled._BATCH_CANCELLED.add(_PID)       # the cancel route's flag
+        return real(self, audio=audio, **kw)
+    monkeypatch.setattr(type(lang_check), "detect_language", _detect)
+    r = client.post("/v1/audio/url-language", json={"url": _URL, "progress_id": _PID})
+    assert r.status_code == 499
+    assert lang_check.detect_calls == 1 and len(lang_check.released) == 1
+
+
+def test_language_check_no_speech_is_unknown(client, url_enabled, lang_check, monkeypatch):
+    lang_check.heard = [(None, 0.0)]
+    body = client.post("/v1/audio/url-language", json={"url": _URL}).json()
+    assert body["verdict"] == "unknown" and body["language"] is None
+
+
+def test_language_check_rate_limited(client, url_enabled, lang_check, monkeypatch):
+    monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_RATE_PER_MIN", 1, raising=False)
+    assert client.post("/v1/audio/url-language", json={"url": _URL}).status_code == 200
+    r = client.post("/v1/audio/url-language", json={"url": _URL})
+    assert r.status_code == 429
+    assert r.json()["error"]["param"] == "URL_LANGUAGE_RATE_PER_MIN"
+
+
+def test_me_reports_language_check_caps(client, url_enabled, monkeypatch):
+    assert client.get("/v1/me").json()["url_language_check_enabled"] is True
+    monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_CHECK_ENABLED", False, raising=False)
+    assert client.get("/v1/me").json()["url_language_check_enabled"] is False
+

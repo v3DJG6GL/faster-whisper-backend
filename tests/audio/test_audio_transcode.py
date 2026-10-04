@@ -150,3 +150,57 @@ def test_transcode_rejects_ffconcat_playlist_referencing_a_file(tmp_path):
     with pytest.raises(Exception):
         audio_transcode.transcode_to_wav_16k_mono(str(playlist), dst)
     assert not os.path.exists(dst)
+
+
+# ---------------------------------------------------------------------------
+# decode_pieces_16k (the link language check)
+# ---------------------------------------------------------------------------
+
+def _two_tone(path, *, rate=44100):
+    """60 s stereo: 440 Hz for the first 30 s, 880 Hz after — a piece's
+    dominant frequency tells where it was cut from."""
+    t = np.arange(rate * 60) / rate
+    tone = np.where(t < 30, np.sin(2 * np.pi * 440 * t), np.sin(2 * np.pi * 880 * t))
+    pcm = np.repeat((tone * 8000).astype(np.int16), 2)
+    if path.endswith(".wav"):
+        with wave.open(path, "wb") as w:
+            w.setnchannels(2)
+            w.setsampwidth(2)
+            w.setframerate(rate)
+            w.writeframes(pcm.tobytes())
+        return path
+    import av
+    with av.open(path, "w") as out:
+        st = out.add_stream("aac", rate=rate, layout="stereo")
+        step = 1024
+        frames = pcm.reshape(-1, 2)
+        for i in range(0, len(frames), step):
+            fr = av.AudioFrame.from_ndarray(
+                frames[i:i + step].reshape(1, -1), format="s16", layout="stereo")
+            fr.sample_rate = rate
+            for pkt in st.encode(fr):
+                out.mux(pkt)
+        for pkt in st.encode(None):
+            out.mux(pkt)
+    return path
+
+
+def _peak_hz(piece):
+    spec = np.abs(np.fft.rfft(piece))
+    return np.argmax(spec) * RATE / len(piece)
+
+
+@pytest.mark.parametrize("name", ["two.wav", "two.m4a"])
+def test_decode_pieces_seeks_to_each_start(tmp_path, name):
+    src = _two_tone(str(tmp_path / name))
+    pieces = audio_transcode.decode_pieces_16k(src, [5.0, 40.0, 10.0, 70.0], 4.0)
+    assert [p.dtype for p in pieces[:3]] == [np.float32] * 3
+    assert [len(p) for p in pieces] == [4 * RATE] * 3 + [0]   # past the end
+    assert [round(_peak_hz(p)) for p in pieces[:3]] == [440, 880, 440]
+
+
+def test_decode_pieces_refuses_non_file_protocols(tmp_path):
+    playlist = tmp_path / "x.m3u8"
+    playlist.write_text("#EXTM3U\n#EXTINF:1,\nhttp://127.0.0.1:9/a.wav\n")
+    with pytest.raises(Exception):
+        audio_transcode.decode_pieces_16k(str(playlist), [0.0], 1.0)

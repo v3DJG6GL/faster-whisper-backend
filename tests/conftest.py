@@ -494,6 +494,9 @@ class FakeModel:
         self._info = info or FakeInfo()
         self.last_kwargs: dict[str, Any] = {}
         self.last_audio: Any = None
+        # detect_language's scripted answers, one per call (the last repeats).
+        self.heard: list = [("de", 0.95)]
+        self.detect_calls = 0
 
     def transcribe(self, path, **kwargs):
         self.last_kwargs = kwargs
@@ -510,6 +513,15 @@ class FakeModel:
             # same fixture many times (previews, then the final).
             segs = copy.deepcopy(segs)
         return iter(segs), self._info
+
+    def detect_language(self, audio=None, **kwargs):
+        """faster-whisper's (language, probability, all_probs), scripted by
+        `heard`; a None language is "no speech left after VAD"."""
+        self.detect_calls += 1
+        lang, prob = self.heard[min(self.detect_calls, len(self.heard)) - 1]
+        if lang is None:
+            raise ValueError("no speech")
+        return lang, prob, [(lang, prob)]
 
 
 @pytest.fixture
