@@ -4322,6 +4322,22 @@ def _form_bool(value: "str | None") -> "bool | None":
     return None
 
 
+def _prefetched_audio(media_id: "str | None", url: str,
+                      user_id: "str | None") -> "dict | None":
+    """The retained audio a link's language check downloaded, when this
+    caller may reuse it for `url`: a well-formed id the media store resolves
+    for them (its owner rule), kind audio, downloaded from the same
+    validated URL. Any miss is None and the run simply downloads — no error
+    a caller could use to probe other users' ids."""
+    if not isinstance(media_id, str) or not _URL_MEDIA_ID_RE.match(media_id):
+        return None
+    from faster_whisper_backend.url import media_store as _ums
+    entry = _ums.resolve_entry(media_id, user_id=user_id)
+    if not entry or entry["kind"] != "audio" or entry.get("source_url") != url:
+        return None
+    return entry
+
+
 @app.post("/v1/audio/transcriptions")
 async def transcribe(
     request: Request,
@@ -4350,6 +4366,7 @@ async def transcribe(
     video_max_height: int | None = Form(None),
     video_format: str | None = Form(None),
     retain_media: str | None = Form(None),
+    prefetched_media_id: str | None = Form(None),
     progress_id: str | None = Form(None),
     preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
@@ -4462,6 +4479,9 @@ async def transcribe(
     # inner finally on every path) and the retention id echoed to the client.
     _url_job_dir: "str | None" = None
     _source_media_id: "str | None" = None
+    # The pipeline's copy of a language check's retained audio, when the run
+    # reuses it (prefetched_media_id) instead of downloading.
+    _reused_copy: "str | None" = None
     # Optional VIDEO of a link (keep_video): fetched by a task that runs
     # alongside the pipeline and may outlive this handler — see
     # _download_video_for_run for the progress-entry hand-over.
@@ -4645,19 +4665,37 @@ async def transcribe(
                     _progress_set(_pid, stage="downloading", progress=None,
                                   total_bytes=None,
                                   step=(_uinfo.extractor_key or None))
-                    _url_job_dir = tempfile.mkdtemp(prefix="urldl-")
-                    async with _get_url_download_semaphore():
-                        _check_cancelled(_pid)
-                        _dl_path = await _udl.download(
-                            _url,
-                            dest_dir=_url_job_dir,
-                            max_bytes=max_upload,
-                            timeout=float(getattr(
-                                cfg, "URL_DOWNLOAD_TIMEOUT_S", 900)),
-                            progress_cb=lambda f, tot: _progress_set(
-                                _pid, stage="downloading", progress=f,
-                                total_bytes=tot),
-                            cancel_check=lambda: _cancel_requested(_pid))
+                    # The audio a language check of this link already
+                    # downloaded (POST /v1/audio/url-language): reused when
+                    # the caller may, else the run downloads as usual.
+                    _reuse = _prefetched_audio(prefetched_media_id, _url,
+                                               _user_id)
+                    if _reuse:
+                        _reused_copy = await asyncio.to_thread(
+                            _ums.make_pipeline_copy, _reuse["path"])
+                    if _reused_copy:
+                        _dl_path = _reuse["path"]
+                        logger.info("[url-dl] reusing the audio the language"
+                                    " check downloaded (host %s)",
+                                    _url_host_for_log(_url))
+                    else:
+                        if prefetched_media_id:
+                            logger.info("[url-dl] prefetched audio not "
+                                        "reusable (host %s) — downloading",
+                                        _url_host_for_log(_url))
+                        _url_job_dir = tempfile.mkdtemp(prefix="urldl-")
+                        async with _get_url_download_semaphore():
+                            _check_cancelled(_pid)
+                            _dl_path = await _udl.download(
+                                _url,
+                                dest_dir=_url_job_dir,
+                                max_bytes=max_upload,
+                                timeout=float(getattr(
+                                    cfg, "URL_DOWNLOAD_TIMEOUT_S", 900)),
+                                progress_cb=lambda f, tot: _progress_set(
+                                    _pid, stage="downloading", progress=f,
+                                    total_bytes=tot),
+                                cancel_check=lambda: _cancel_requested(_pid))
                     # Resolve + download as one receipt row: on a long link
                     # it can dominate wall time. Cancelled/error paths leave
                     # no entry.
@@ -4691,15 +4729,20 @@ async def transcribe(
                 # full copy, and register()'s move crosses filesystems
                 # (TMPDIR → URL_MEDIA_DIR) — up to MEDIA_MAX_BYTES of blocking
                 # I/O that must not pin the event loop.
-                tmp_path = await asyncio.to_thread(
-                    _ums.make_pipeline_copy, _dl_path)
-                if tmp_path is None:
-                    # Disk trouble (logged by the store) — generic 500 path.
-                    raise RuntimeError("url pipeline copy failed")
-                # Retention is a playback nicety: None just means the client
-                # gets no audio copy, never a failed transcription.
-                _source_media_id = await asyncio.to_thread(
-                    _ums.register, _dl_path, user_id=_user_id)
+                if _reused_copy:
+                    # Already retained under the check's id: hand that out.
+                    tmp_path, _source_media_id = _reused_copy, prefetched_media_id
+                else:
+                    tmp_path = await asyncio.to_thread(
+                        _ums.make_pipeline_copy, _dl_path)
+                    if tmp_path is None:
+                        # Disk trouble (logged by the store) — generic 500 path.
+                        raise RuntimeError("url pipeline copy failed")
+                    # Retention is a playback nicety: None just means the
+                    # client gets no audio copy, never a failed transcription.
+                    _source_media_id = await asyncio.to_thread(
+                        _ums.register, _dl_path, user_id=_user_id,
+                        source_url=_url)
                 if _keep_video:
                     _rung = _udl.pick_rung(_uinfo.video_ladder, _video_max_height,
                                            _video_format)
@@ -6054,7 +6097,9 @@ async def transcribe(
                     os.path.splitext(_dl_path or "")[1].lstrip(".") or "audio")
                 _file_label = (f"url:{_url_host}  ({audio_bytes/1024:.1f} KB, "
                                f"{_log_safe(response_format)})")
-                _audio_src_label = f"{_src_fmt} → 16 kHz mono (url download via yt-dlp"
+                _audio_src_label = (
+                    f"{_src_fmt} → 16 kHz mono (url download via yt-dlp"
+                    + (", reused from the language check" if _reused_copy else ""))
             else:
                 _src_fmt = _log_safe(file.content_type
                                      or os.path.splitext(file.filename or "")[1].lstrip(".")
@@ -6458,6 +6503,7 @@ async def translate_audio(
     video_max_height: int | None = Form(None),
     video_format: str | None = Form(None),
     retain_media: str | None = Form(None),
+    prefetched_media_id: str | None = Form(None),
     progress_id: str | None = Form(None),
     preload_plan: str | None = Form(None),
     user: dict = Depends(_get_current_user_dep),
@@ -6492,6 +6538,7 @@ async def translate_audio(
         video_max_height=video_max_height,
         video_format=video_format,
         retain_media=retain_media,
+        prefetched_media_id=prefetched_media_id,
         translate_to=translate_to,
         translation_model=translation_model,
         translation_mode=translation_mode,

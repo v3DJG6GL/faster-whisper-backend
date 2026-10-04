@@ -906,3 +906,62 @@ def test_me_reports_language_check_caps(client, url_enabled, monkeypatch):
     monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_CHECK_ENABLED", False, raising=False)
     assert client.get("/v1/me").json()["url_language_check_enabled"] is False
 
+
+# --- prefetched_media_id (reuse the language check's download) ---------------
+
+def _prefetched(tmp_path, *, user_id=None, kind="audio", source_url=_URL, name="pre.m4a"):
+    src = tmp_path / name
+    src.write_bytes(b"prefetched" * 4)
+    return url_media_store.register(str(src), user_id=user_id, kind=kind,
+                                    source_url=source_url)
+
+
+@pytest.fixture
+def downloads(url_enabled, monkeypatch):
+    calls: list = []
+    real = url_download.download
+
+    async def _counting(url, **kw):
+        calls.append(url)
+        return await real(url, **kw)
+    monkeypatch.setattr(url_download, "download", _counting)
+    return calls
+
+
+def test_prefetched_audio_is_reused(client, url_enabled, downloads, tmp_path, fake_model):
+    mid = _prefetched(tmp_path)
+    r = _post_url(client, prefetched_media_id=mid)
+    assert r.status_code == 200, r.text
+    assert downloads == []
+    assert r.json()["source_media_id"] == mid
+    assert os.path.basename(fake_model.last_audio).startswith("urlmedia-")
+    # The retained file survives the run (the pipeline owned a copy).
+    assert client.get(f"/v1/audio/url-media/{mid}").content == b"prefetched" * 4
+
+
+@pytest.mark.parametrize("case", ["other_url", "video", "expired", "unknown", "malformed"])
+def test_prefetched_miss_downloads_quietly(client, url_enabled, downloads, tmp_path,
+                                           monkeypatch, case):
+    mid = {"other_url": lambda: _prefetched(tmp_path, source_url=_URL + "x"),
+           "video": lambda: _prefetched(tmp_path, kind="video", name="v.mp4"),
+           "expired": lambda: _prefetched(tmp_path),
+           "unknown": lambda: "a" * 32,
+           "malformed": lambda: "../etc"}[case]()
+    if case == "expired":
+        monkeypatch.setattr(url_enabled.cfg, "URL_MEDIA_TTL_S", 0, raising=False)
+    r = _post_url(client, prefetched_media_id=mid)
+    assert r.status_code == 200, r.text
+    assert downloads == [_URL]
+
+
+def test_prefetched_foreign_owner_downloads(client, url_enabled, downloads, tmp_path,
+                                            make_user_key):
+    from tests.conftest import bearer
+    _admin, admin_key = make_user_key("admin", is_admin=True)
+    other, _k = make_user_key("bob")
+    mid = _prefetched(tmp_path, user_id=other)
+    r = client.post("/v1/audio/transcriptions", headers=bearer(admin_key), data={
+        "model": "whisper-1", "source_url": _URL, "response_format": "verbose_json",
+        "prefetched_media_id": mid})
+    assert r.status_code == 200, r.text
+    assert downloads == [_URL] and r.json()["source_media_id"] != mid
