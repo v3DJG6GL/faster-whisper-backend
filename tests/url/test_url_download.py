@@ -538,7 +538,8 @@ def test_probe_selects_download_format(monkeypatch):
         def extract_info(self, url, download=False):
             return {"extractor_key": "Youtube", "title": "t",
                     "duration": 60, "filesize": 900_000,
-                    "ext": "m4a", "abr": 129.5}
+                    "ext": "m4a", "abr": 129.5, "language": "de",
+                    "subtitles": {"de": [{"url": "https://e.test/s.vtt?pot=T"}]}}
 
         def sanitize_info(self, info):
             return info
@@ -560,6 +561,10 @@ def test_probe_selects_download_format(monkeypatch):
     assert captured.get("format") == udl.DOWNLOAD_FORMAT
     assert info.filesize_approx == 900_000
     assert (info.ext, info.abr) == ("m4a", 129.5)
+    # The site's language and tracks ride along; the URL stays server-side.
+    assert info.language == "de"
+    assert [t["id"] for t in info.subtitle_tracks] == ["m-de"]
+    assert "pot=T" not in repr(info)
     # Playlists/channel tabs must resolve flat, or a channel's /videos page
     # times the probe out before the playlist rejection can fire.
     assert captured.get("extract_flat") == "in_playlist"

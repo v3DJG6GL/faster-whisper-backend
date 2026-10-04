@@ -7675,10 +7675,12 @@ async def url_preview(request: Request,
                      _uhost, _log_safe(str(e)))
         raise HTTPException(status_code=500, detail="link preview failed")
     logger.info(
-        "[url-dl] preview ok (host %s): extractor=%s duration=%s est_bytes=%s",
+        "[url-dl] preview ok (host %s): extractor=%s duration=%s est_bytes=%s"
+        " language=%s subtitle_tracks=%d",
         _uhost, info.extractor_key,
         f"{info.duration:.0f}s" if info.duration is not None else "?",
-        info.filesize_approx if info.filesize_approx is not None else "?")
+        info.filesize_approx if info.filesize_approx is not None else "?",
+        info.language or "?", len(info.subtitle_tracks))
     thumb = await _udl.fetch_thumbnail_data_uri(info.thumbnail_url)
     return {
         "title": info.title,
@@ -7697,6 +7699,10 @@ async def url_preview(request: Request,
         # off or the link has none.
         "video_ladder": info.video_ladder,
         "media_max_bytes": int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
+        # The spoken language the site names (null when it names none) and
+        # its own subtitle tracks, ids only — the source URLs stay here.
+        "language": info.language,
+        "subtitle_tracks": info.subtitle_tracks,
     }
 
 

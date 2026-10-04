@@ -99,6 +99,14 @@ class UrlMediaInfo:
     # the link carries no video. Advisory for the client's picker — the
     # download's format selector is what actually decides.
     video_ladder: "list[dict]" = dataclasses.field(default_factory=list)
+    # The spoken language the site names, and its own subtitle tracks
+    # (url/subtitles.py): the public list for the preview, and the
+    # server-only {id: {url, ext}} the url-subtitles route fetches from —
+    # signed URLs that must never reach a client or a log line.
+    language: "str | None" = None
+    subtitle_tracks: "list[dict]" = dataclasses.field(default_factory=list)
+    subtitle_sources: "dict[str, dict]" = dataclasses.field(
+        default_factory=dict, repr=False)
 
 
 def yt_dlp_version() -> "str | None":
@@ -882,6 +890,8 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
                 "label": "audio only" + (f" · {_ext}" if _ext else "")
                          + (f" · {int(_abr)} kbps" if _abr else ""),
             })
+    from faster_whisper_backend.url import subtitles as _subs
+    tracks, sources = _subs.list_tracks(info)
     return UrlMediaInfo(
         url=url,
         extractor_key=str(info.get("extractor_key") or key),
@@ -898,6 +908,9 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         ext=(str(info["ext"]) if info.get("ext") else None),
         abr=(float(info["abr"]) if info.get("abr") else None),
         video_ladder=ladder,
+        language=_subs.language_of(info),
+        subtitle_tracks=tracks,
+        subtitle_sources=sources,
     )
 
 

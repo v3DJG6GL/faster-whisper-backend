@@ -253,7 +253,27 @@ def test_preview_happy_path(client, url_enabled, monkeypatch):
         "extractor": "Youtube", "estimated_bytes": 4096, "thumbnail": None,
         "ext": "m4a", "abr": 128.0,
         "video_ladder": [], "media_max_bytes": url_enabled.cfg.MEDIA_MAX_BYTES,
+        "language": None, "subtitle_tracks": [],
     }
+
+
+def test_preview_lists_tracks_never_their_urls(client, url_enabled, monkeypatch):
+    async def _thumb(url, **kw):
+        return None
+
+    async def _probe(url, *, timeout):
+        return _info(url=url, language="de", subtitle_tracks=[
+            {"id": "m-de-CH", "lang": "de-CH", "name": "German", "kind": "manual",
+             "ext": "vtt", "hoh": False}],
+            subtitle_sources={"m-de-CH": {"url": "https://x.test/s?pot=SECRET",
+                                          "ext": "vtt"}})
+    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri", _thumb)
+    monkeypatch.setattr(url_download, "probe", _probe)
+    r = client.post("/v1/audio/url-preview", json={"url": _URL})
+    body = r.json()
+    assert body["language"] == "de"
+    assert [t["id"] for t in body["subtitle_tracks"]] == ["m-de-CH"]
+    assert "SECRET" not in r.text
 
 
 def test_preview_policy_reject_400(client, url_enabled, monkeypatch):
@@ -685,3 +705,4 @@ def test_url_media_mime_by_kind(client, url_enabled, tmp_path):
         .startswith("audio/x-matroska")
     assert client.get(f"/v1/audio/url-media/{vid}").headers["content-type"] \
         .startswith("video/mp4")
+
