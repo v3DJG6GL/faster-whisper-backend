@@ -26,3 +26,14 @@ def test_language_name_lookup_order():
     assert languages.language_name("rm") == "Rm"               # title-case fallback
     assert languages.language_name(None) == ""
     assert languages.language_name("") == ""
+
+
+def test_canonical_code():
+    c = languages.canonical_code
+    assert c("deu") == "de" and c("EN") == "en" and c("jav") == "jw"
+    assert c("zh_hant") == "zh-Hant" and c("sr-Latn") == "sr"
+    assert c("pt-br") == "pt-BR" and c("haw") == "haw"
+    assert c("rm") is None and c("multilingual") is None and c("") is None
+    # Every mapped code lands on a code the table names.
+    assert all(v in languages.ALL_LANGUAGE_NAMES
+               for v in languages._ISO639_3_TO_1.values())

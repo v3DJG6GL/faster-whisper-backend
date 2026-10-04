@@ -116,6 +116,14 @@ def test_card_codes_normalise():
     assert translation._card_codes(None) == ()
 
 
+def test_card_codes_map_iso639_3_and_drop_unnamed():
+    # Cards list ISO 639-3 ("eng", "deu", NLLB's "cmn_Hans") as often as
+    # 639-1; the client must never show "Eng" or "Rm".
+    card = type("Card", (), {"language": [
+        "eng", "deu", "eng_Latn", "cmn_Hans", "zho_Hant", "rm", "xyz", "fil"]})()
+    assert translation._card_codes(card) == ("en", "de", "zh", "zh-Hant")
+
+
 # ---------------------------------------------------------------------------
 # Prompt rendering per family
 # ---------------------------------------------------------------------------

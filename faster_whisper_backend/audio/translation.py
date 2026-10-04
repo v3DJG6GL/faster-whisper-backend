@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
-    TRANSLATE_CODE_RE, language_codes, language_name)
+    canonical_code, language_codes, language_name)
 from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
@@ -369,22 +369,17 @@ _card_languages: "dict[str, tuple[str, ...]]" = {}
 
 
 def _card_codes(card_data) -> "tuple[str, ...]":
-    """card_data.language (a list or one string) → well-formed codes: base
-    lowercased, a script subtag title-cased like the family tables
-    ("zh-hant" → "zh-Hant"), a region upper-cased; "multilingual" and other
-    non-codes drop."""
+    """card_data.language (a list or one string) → the codes the language
+    table can name, spelled its way (core.languages.canonical_code): "eng"
+    and "EN" are "en", "zh_hant" is "zh-Hant"; "multilingual" and codes no
+    table names drop, so a client never labels a language "Eng"."""
     raw = getattr(card_data, "language", None)
     if isinstance(raw, str):
         raw = [raw]
     out: "list[str]" = []
     for item in raw if isinstance(raw, list) else []:
-        if not isinstance(item, str):
-            continue
-        base, _, sub = item.strip().replace("_", "-").partition("-")
-        code = base.lower()
-        if sub:
-            code += "-" + (sub.title() if len(sub) == 4 else sub.upper())
-        if TRANSLATE_CODE_RE.match(code) and code not in out:
+        code = canonical_code(item) if isinstance(item, str) else None
+        if code and code not in out:
             out.append(code)
     return tuple(out)
 
