@@ -23,14 +23,14 @@
 # `pip install -r requirements.txt` still does the whole job.
 -r requirements-heavy.txt
 
-fastapi>=0.141.1
+fastapi>=0.142.2
 uvicorn[standard]>=0.54.0
 python-multipart>=0.0.32
 
 # Auto-loads a local .env file at startup (config.py). Optional at runtime:
 # config.py guards the import, so a missing python-dotenv just disables .env
 # loading — real environment variables still work.
-python-dotenv>=1.2.3
+python-dotenv>=1.2.4
 
 # Admin /settings + /stats observability. nvidia-ml-py is the canonical 2025+
 # NVML binding (the legacy `pynvml` PyPI package is now a deprecated shim that
