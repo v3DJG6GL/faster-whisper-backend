@@ -703,6 +703,10 @@ TRANSLATION_BATCH_SEGMENTS: int = _D("TRANSLATION_BATCH_SEGMENTS")
 TRANSLATION_PROMPT_FAMILY: str = _D("TRANSLATION_PROMPT_FAMILY")
 TRANSLATION_PROMPT_TEMPLATE: str = _D("TRANSLATION_PROMPT_TEMPLATE")
 
+# Target languages offered for every translation model (csv, "en,de,fr-CA").
+# Empty = each model's own list: its prompt family's table ∪ its model card.
+TRANSLATION_LANGUAGES: str = _D("TRANSLATION_LANGUAGES")
+
 # Call-time defaults (per-identity > per-model > global; lockable):
 #   TRANSLATE_TO      — csv of target codes ("en,fr-CA"); empty = translation
 #                       off unless the request asks.

@@ -7,6 +7,7 @@ test_effective_config.py; here we assert the HTTP wiring and the admin binding
 round-trip (the new request-gate keys survive validate_binding/_parse_binding).
 """
 
+from faster_whisper_backend.core import languages
 from tests.conftest import bearer
 
 OV = "/settings/overrides"
@@ -84,14 +85,15 @@ def test_me_translation_models_default_first_with_loaded_flags(
     translation._models["org/default-GGUF:Q4"] = object()
     translation._models["org/extra-GGUF:Q4"] = object()
     j = client.get("/v1/me").json()
+    # Generic chatml-family refs without a model card: languages unknown.
     assert j["translation_models"] == [
-        {"id": "org/default-GGUF:Q4", "loaded": True},
-        {"id": "org/alpha-GGUF:Q4", "loaded": False},
-        {"id": "org/zeta-GGUF:Q4", "loaded": False},
+        {"id": "org/default-GGUF:Q4", "loaded": True, "languages": None},
+        {"id": "org/alpha-GGUF:Q4", "loaded": False, "languages": None},
+        {"id": "org/zeta-GGUF:Q4", "loaded": False, "languages": None},
     ]
-    # Language menu: "en" first, then the sorted rest — non-empty either way.
-    langs = j["translation_languages"]
-    assert langs[0] == "en" and "de" in langs
+    # Deprecated language menu: the default model's list, or every named
+    # code when that is unknown.
+    assert j["translation_languages"] == sorted(languages.ALL_LANGUAGE_NAMES)
     # llama_cpp_version is best-effort: a string when installed, else null —
     # never absent while the stage is enabled.
     assert "llama_cpp_version" in j
@@ -106,8 +108,23 @@ def test_me_translation_models_empty_default_still_answers(
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS", {"org/only-GGUF:Q4"})
     j = client.get("/v1/me").json()
     assert j["translation_models"] == [
-        {"id": "org/only-GGUF:Q4", "loaded": False}]
-    assert j["translation_languages"][0] == "en"
+        {"id": "org/only-GGUF:Q4", "loaded": False, "languages": None}]
+    assert "en" in j["translation_languages"]
+
+
+def test_me_translation_models_carry_their_languages(
+        client, app_module, monkeypatch):
+    from faster_whisper_backend.audio import translation
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_DEFAULT_MODEL",
+                        "tencent/HY-MT1.5-7B-GGUF:Q4_K_M")
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ALLOWED_MODELS",
+                        {"org/other-GGUF:Q4"})
+    j = client.get("/v1/me").json()
+    hy, other = j["translation_models"]
+    assert hy["languages"] == sorted(translation._FAMILIES["hunyuan"].languages)
+    assert other["languages"] is None
+    assert j["translation_languages"] == hy["languages"]
 
 
 def test_me_translate_to_default_respects_identity_override(

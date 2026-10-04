@@ -46,7 +46,8 @@ from dataclasses import dataclass, field
 
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.runtime import system_stats
-from faster_whisper_backend.core.languages import language_name
+from faster_whisper_backend.core.languages import (
+    TRANSLATE_CODE_RE, language_codes, language_name)
 from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
@@ -130,18 +131,10 @@ def _parse_model_ref(ref: str) -> "tuple[str, str | None]":
 _lang_name = language_name
 
 
-def list_languages() -> "list[str]":
-    """Language codes offered to clients (for /v1/me): the app's core set
-    (the codes _ZH_LANG_NAMES names), sorted, "en" first — the models
-    themselves accept far more."""
-    codes = sorted(_ZH_LANG_NAMES)
-    codes.remove("en")
-    return ["en"] + codes
-
-
 # Chinese language names for HY-MT's official contextual template (the
-# instruction that carries them is Chinese — see _build_hunyuan). Keys are
-# lowercase base codes; anything absent falls back to the English name.
+# instruction that carries them is Chinese — see _build_hunyuan): the 38
+# HY-MT1.5 languages as its model card names them, plus a few more. Keys are
+# lowercase codes; anything absent falls back to the English name.
 _ZH_LANG_NAMES: "dict[str, str]" = {
     "en": "英语", "de": "德语", "fr": "法语", "es": "西班牙语",
     "it": "意大利语", "pt": "葡萄牙语", "ru": "俄语", "ja": "日语",
@@ -150,6 +143,11 @@ _ZH_LANG_NAMES: "dict[str, str]" = {
     "da": "丹麦语", "fi": "芬兰语", "no": "挪威语", "uk": "乌克兰语",
     "ro": "罗马尼亚语", "hu": "匈牙利语", "el": "希腊语", "hi": "印地语",
     "th": "泰语", "vi": "越南语", "id": "印尼语",
+    "ms": "马来语", "tl": "菲律宾语", "zh-hant": "繁体中文", "km": "高棉语",
+    "my": "缅甸语", "fa": "波斯语", "gu": "古吉拉特语", "ur": "乌尔都语",
+    "te": "泰卢固语", "mr": "马拉地语", "he": "希伯来语", "bn": "孟加拉语",
+    "ta": "泰米尔语", "bo": "藏语", "kk": "哈萨克语", "mn": "蒙古语",
+    "ug": "维吾尔语", "yue": "粤语",
 }
 
 
@@ -181,10 +179,11 @@ def _build_hunyuan(text, source_code, source_name, target_code, target_name,
                 parts.append(f"{src} 翻译成 {tgt}")
             parts.append("")
         parts.append(context)
-        base = (target_code or "").strip().lower().split("-")[0]
+        low = (target_code or "").strip().lower()
         # Fallback: the English target name — the mixed-language instruction
         # still works for targets outside the mapped set.
-        zh_target = _ZH_LANG_NAMES.get(base) or target_name
+        zh_target = (_ZH_LANG_NAMES.get(low)
+                     or _ZH_LANG_NAMES.get(low.split("-")[0]) or target_name)
         parts.append(
             f"参考上面的信息，把下面的文本翻译成{zh_target}，"
             f"注意不需要翻译上文，也不要额外解释：")
@@ -279,31 +278,57 @@ class Family:
     builder, sampling params and context size. ``uses_context`` records
     whether the builder actually renders the ``context`` argument — the
     context-free guard retry is a no-op for a greedy family whose builder
-    ignores it (identical prompt, temperature 0)."""
+    ignores it (identical prompt, temperature 0). ``languages`` are the codes
+    the family's model card names as supported (() = unknown)."""
     chat: bool
     build: "object"     # (text, source_code, source_name, target_code,
     #                      target_name, context, glossary) -> str | list[dict]
     sampling: dict = field(default_factory=dict)
     n_ctx: int = 8192
     uses_context: bool = True
+    languages: "tuple[str, ...]" = ()
 
 
 _GREEDY = {"temperature": 0.0}
 
 _FAMILIES: "dict[str, Family]" = {
+    # HY-MT1.5 model card: 33 languages + 5 dialects/minority languages.
     "hunyuan": Family(
         chat=True, build=_build_hunyuan, n_ctx=8192,
         sampling={"top_k": 20, "top_p": 0.6, "repeat_penalty": 1.05,
-                  "temperature": 0.7}),
+                  "temperature": 0.7},
+        languages=(
+            "zh", "en", "fr", "pt", "es", "ja", "tr", "ru", "ar", "ko", "th",
+            "it", "de", "vi", "ms", "id", "tl", "hi", "zh-Hant", "pl", "cs",
+            "nl", "km", "my", "fa", "gu", "ur", "te", "mr", "he", "bn", "ta",
+            "uk", "bo", "kk", "mn", "ug", "yue")),
+    # TranslateGemma: the WMT24++ languages it was evaluated on
+    # (arXiv 2601.09012, Table 4); "tl" and "zh-Hant" are chat-template keys.
     "gemma-translate": Family(
         chat=True, build=_build_gemma, n_ctx=2048, sampling=dict(_GREEDY),
-        uses_context=False),
+        uses_context=False,
+        languages=(
+            "en", "ar", "bg", "bn", "ca", "cs", "da", "de", "el", "es", "et",
+            "fa", "fi", "tl", "fr", "gu", "he", "hi", "hr", "hu", "id", "is",
+            "it", "ja", "kn", "ko", "lt", "lv", "ml", "mr", "nl", "no", "pa",
+            "pl", "pt", "ro", "ru", "sk", "sl", "sr", "sv", "sw", "ta", "te",
+            "th", "tr", "uk", "ur", "vi", "zh", "zh-Hant", "zu")),
     "milmmt": Family(
         chat=False, build=_build_milmmt, n_ctx=8192, sampling=dict(_GREEDY),
-        uses_context=False),
+        uses_context=False,
+        languages=(
+            "ar", "az", "bg", "bn", "ca", "cs", "da", "de", "el", "en", "es",
+            "fa", "fi", "fr", "he", "hi", "hr", "hu", "id", "it", "ja", "kk",
+            "km", "ko", "lo", "ms", "my", "no", "nl", "pl", "pt", "ro", "ru",
+            "sk", "sl", "sv", "ta", "th", "tl", "tr", "ur", "uz", "vi", "yue",
+            "zh", "zh-Hant")),
     "seedx": Family(
         chat=False, build=_build_seedx, n_ctx=8192, sampling=dict(_GREEDY),
-        uses_context=False),
+        uses_context=False,
+        languages=(
+            "ar", "fr", "ms", "ru", "cs", "hr", "nb", "sv", "da", "hu", "nl",
+            "th", "de", "id", "no", "tr", "en", "it", "pl", "uk", "es", "ja",
+            "pt", "vi", "fi", "ko", "ro", "zh")),
     "chatml": Family(
         chat=True, build=_build_chatml, n_ctx=4096, sampling=dict(_GREEDY),
         uses_context=False),
@@ -335,6 +360,44 @@ def resolve_family(ref: str) -> str:
     if configured != "auto" and configured in _FAMILIES:
         return configured
     return detect_family(ref)
+
+
+# repo → the language codes its model card lists, captured from the
+# model_info call _predownload_gguf makes anyway (never a request of its own,
+# never under LOCAL_FILES_ONLY). In memory only: known after the first load.
+_card_languages: "dict[str, tuple[str, ...]]" = {}
+
+
+def _card_codes(card_data) -> "tuple[str, ...]":
+    """card_data.language (a list or one string) → well-formed codes: base
+    lowercased, a script subtag title-cased like the family tables
+    ("zh-hant" → "zh-Hant"), a region upper-cased; "multilingual" and other
+    non-codes drop."""
+    raw = getattr(card_data, "language", None)
+    if isinstance(raw, str):
+        raw = [raw]
+    out: "list[str]" = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, str):
+            continue
+        base, _, sub = item.strip().replace("_", "-").partition("-")
+        code = base.lower()
+        if sub:
+            code += "-" + (sub.title() if len(sub) == 4 else sub.upper())
+        if TRANSLATE_CODE_RE.match(code) and code not in out:
+            out.append(code)
+    return tuple(out)
+
+
+def languages_for(ref: str) -> "list[str] | None":
+    """The target codes a model supports: the TRANSLATION_LANGUAGES override,
+    else its (resolved) family table ∪ its model card, else None (unknown)."""
+    override = language_codes(getattr(cfg, "TRANSLATION_LANGUAGES", ""))
+    if override:
+        return override
+    family = _FAMILIES.get(resolve_family(ref), _FAMILIES["chatml"])
+    card = _card_languages.get(_parse_model_ref(ref or "")[0], ())
+    return sorted({*family.languages, *card}) or None
 
 
 def _ctx_for(family: str) -> int:
@@ -522,8 +585,9 @@ def _predownload_gguf(repo: str, quant: "str | None",
     from faster_whisper_backend.core import jobs
 
     pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
-    files = [s.rfilename
-             for s in (HfApi().model_info(repo).siblings or [])]
+    info = HfApi().model_info(repo)
+    _card_languages[repo] = _card_codes(getattr(info, "card_data", None))
+    files = [s.rfilename for s in (info.siblings or [])]
     matches = sorted(f for f in files
                      if fnmatch.fnmatch(f.lower(), pattern))
     if len(matches) != 1:

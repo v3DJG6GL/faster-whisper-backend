@@ -517,6 +517,12 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Custom prompt template, used when TRANSLATION_PROMPT_FAMILY is "
         "'custom'. Must contain {text} and {target_language}; optional "
         "slots: {source_language}, {context}, {glossary}.",
+    "TRANSLATION_LANGUAGES":
+        "Comma-separated language codes (e.g. 'en,de,fr-CA') offered as "
+        "translation targets for EVERY translation model. Empty = each "
+        "model's own list: the languages its prompt family supports plus "
+        "those its Hugging Face model card names (known once it has loaded); "
+        "a model with neither offers every language, untested.",
     "TRANSLATE_TO":
         "Comma-separated target language codes (e.g. 'en' or 'en,fr-CA') "
         "a transcription is translated into when the request does not say. "
@@ -2045,6 +2051,10 @@ class AdminConfig(BaseModel):
         evict="translation")
     TRANSLATION_PROMPT_TEMPLATE: Annotated[str, Field(max_length=8000)] | None = _F(
         "TRANSLATION_PROMPT_TEMPLATE", scope="server", group="Translation")
+    TRANSLATION_LANGUAGES: Annotated[
+        str, Field(max_length=2000, pattern=_TRANSLATE_TO_PATTERN)
+    ] | None = _F(
+        "TRANSLATION_LANGUAGES", scope="server", group="Translation")
     # Call-time defaults (per-identity > per-model > global; lockable).
     TRANSLATE_TO: Annotated[
         str, Field(max_length=64, pattern=_TRANSLATE_TO_PATTERN)

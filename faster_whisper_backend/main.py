@@ -21,6 +21,9 @@ from faster_whisper_backend.build_info import APP_VERSION, BOOT_ID, SERVER_NAME
 from faster_whisper_backend.core import decode_trace as _decode_trace
 from faster_whisper_backend.core import segment_guards
 from faster_whisper_backend.core import dictation_map as _dictation_map
+from faster_whisper_backend.core.languages import (
+    ALL_LANGUAGE_NAMES, TRANSLATE_CODE_RE as _TRANSLATE_CODE_RE,
+    language_codes)
 from faster_whisper_backend.core import seam_holdback as _seam_holdback
 
 from faster_whisper_backend import config as cfg
@@ -4003,10 +4006,6 @@ def _progress_close(pid: "str | None") -> None:
             _PROGRESS_CLOSED.pop(k, None)
 _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 
-# One target-language code inside the `translate_to` csv: a 2-3 letter base
-# ("en", "de", "gsw") plus an optional BCP-47-ish subtag ("fr-CA", "zh-Hant").
-_TRANSLATE_CODE_RE = re.compile(r"\A[a-z]{2,3}(-[A-Za-z0-9]{2,8})?\Z")
-
 # Mirrors config_store._TRANSLATION_MODEL_REF_PATTERN — org/repo[:quant].
 _TRANSLATION_REF_RE = re.compile(
     r"\A[A-Za-z0-9][A-Za-z0-9_.\-]*/[A-Za-z0-9_.\-]+(:[A-Za-z0-9_.\-]+)?\Z")
@@ -4961,12 +4960,7 @@ async def transcribe(
             # csv → deduped ordered list of well-formed codes. Malformed
             # entries drop silently (the sloppy-caller stance of the clamped
             # knobs); the MAX_TARGETS clamp warns, naming what it dropped.
-            _translate_to: "list[str]" = []
-            for _code in (_tt_raw or "").split(","):
-                _code = _code.strip()
-                if (_code and _code not in _translate_to
-                        and _TRANSLATE_CODE_RE.match(_code)):
-                    _translate_to.append(_code)
+            _translate_to = language_codes(_tt_raw)
             _translation_max_targets = int(cfg_for(
                 resolved_model, "TRANSLATION_MAX_TARGETS", ident) or 1)
             if len(_translate_to) > _translation_max_targets:
@@ -8274,25 +8268,25 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         getattr(cfg, "TRANSLATION_ENABLED", False))
     if caps["translation_enabled"]:
         _t_default = _translation_default_model()
+        # "languages": the codes the model supports (TRANSLATION_LANGUAGES
+        # override, else its family table ∪ model card), null = unknown.
         caps["translation_models"] = [
-            {"id": _ref, "loaded": preload.is_resident("translation", _ref)}
+            {"id": _ref, "loaded": preload.is_resident("translation", _ref),
+             "languages": _tr.languages_for(_ref)}
             for _ref in _stage_refs(
                 _t_default,
                 sorted(getattr(cfg, "TRANSLATION_ALLOWED_MODELS", None)
                        or set()))]
-        # Language menu for the client's target picker.
-        caps["translation_languages"] = _tr.list_languages()
+        # DEPRECATED — clients read translation_models[].languages. Kept for
+        # older clients: the default model's list, or every named code when
+        # that is unknown.
+        caps["translation_languages"] = (
+            _tr.languages_for(_t_default) or sorted(ALL_LANGUAGE_NAMES))
         # The CALLER's effective TRANSLATE_TO default (per-identity overrides
         # respected), parsed csv → list like the transcribe handler does.
         _ident = build_ident(user, None)
-        _tt_raw = cfg_for(None, "TRANSLATE_TO", _ident) or ""
-        _tt_list: "list[str]" = []
-        for _code in _tt_raw.split(","):
-            _code = _code.strip()
-            if (_code and _code not in _tt_list
-                    and _TRANSLATE_CODE_RE.match(_code)):
-                _tt_list.append(_code)
-        caps["translate_to_default"] = _tt_list
+        caps["translate_to_default"] = language_codes(
+            cfg_for(None, "TRANSLATE_TO", _ident))
         # Engine version, yt_dlp_version-style best-effort (null when the
         # optional dependency set isn't installed); cached at module level —
         # it cannot change without a restart.

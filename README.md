@@ -267,6 +267,11 @@ env twins), needing `pip install -r requirements-translate.txt`:
   `custom` renders `TRANSLATION_PROMPT_TEMPLATE`, which must contain `{text}`
   and `{target_language}` — the WebUI previews and test-runs the template),
   `TRANSLATION_BATCH_SEGMENTS` (faithful-mode segments per prompt).
+- **Languages** — `/v1/me` lists each translation model's target codes
+  (`translation_models[].languages`): its prompt family's table (HY-MT1.5 38,
+  TranslateGemma 52, MiLM-MT 46, Seed-X 28) plus the languages its model card
+  names (read once the model has loaded), `null` when neither is known.
+  `TRANSLATION_LANGUAGES` (csv) replaces that list for every model.
 - **Per-request defaults** (per-identity/per-model overridable, lockable) —
   `TRANSLATE_TO` (csv of target codes; empty = translate only when the request
   asks), `TRANSLATION_MODEL`, `TRANSLATION_MODE` (`fluent` merges sentence

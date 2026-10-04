@@ -63,11 +63,57 @@ def test_resolve_family_honors_config_override(monkeypatch):
     assert translation.resolve_family("x/hunyuan-mt") == "hunyuan"
 
 
-def test_list_languages_en_first_sorted():
-    langs = translation.list_languages()
-    assert langs[0] == "en"
-    assert langs[1:] == sorted(langs[1:])
-    assert "de" in langs and len(langs) == len(set(langs))
+# ---------------------------------------------------------------------------
+# Per-model language lists
+# ---------------------------------------------------------------------------
+
+def test_every_family_code_has_a_name():
+    for fam in translation._FAMILIES.values():
+        for code in fam.languages:
+            assert code in languages.ALL_LANGUAGE_NAMES, code
+
+
+def test_hunyuan_languages_follow_its_model_card():
+    langs = translation.languages_for("tencent/HY-MT1.5-7B-GGUF:Q4_K_M")
+    assert len(langs) == 38
+    assert {"yue", "zh-Hant", "ug", "bo"} <= set(langs)
+    assert not {"sv", "da", "no", "fi", "hu", "ro", "el"} & set(langs)
+
+
+def test_languages_for_unions_the_model_card(monkeypatch):
+    monkeypatch.setitem(translation._card_languages,
+                        "tencent/HY-MT1.5-7B-GGUF", ("sv", "en"))
+    langs = translation.languages_for("tencent/HY-MT1.5-7B-GGUF:Q4_K_M")
+    assert len(langs) == 39 and "sv" in langs
+
+
+def test_languages_for_override_wins(monkeypatch):
+    monkeypatch.setattr(cfg, "TRANSLATION_LANGUAGES", "de, en,de,bad code",
+                        raising=False)
+    assert translation.languages_for("org/whatever") == ["de", "en"]
+    assert translation.languages_for("x/hy-mt") == ["de", "en"]
+
+
+def test_languages_for_unknown_model(monkeypatch):
+    # chatml without a card: unknown, not "none".
+    assert translation.languages_for("org/plain-llm") is None
+    monkeypatch.setitem(translation._card_languages, "org/plain-llm",
+                        ("en", "de"))
+    assert translation.languages_for("org/plain-llm:Q4") == ["de", "en"]
+
+
+def test_languages_for_honors_the_family_pin(monkeypatch):
+    monkeypatch.setattr(cfg, "TRANSLATION_PROMPT_FAMILY", "seedx",
+                        raising=False)
+    assert len(translation.languages_for("org/plain-llm")) == 28
+
+
+def test_card_codes_normalise():
+    card = type("Card", (), {"language": [
+        "EN", "zh_hant", "pt-br", "multilingual", 7, "en"]})()
+    assert translation._card_codes(card) == ("en", "zh-Hant", "pt-BR")
+    assert translation._card_codes(type("C", (), {"language": "de"})()) == ("de",)
+    assert translation._card_codes(None) == ()
 
 
 # ---------------------------------------------------------------------------
@@ -130,6 +176,13 @@ def test_hunyuan_prompt_plain_context_and_glossary():
     fallback = _build("hunyuan", "Hallo", target="rm",
                       context="A: Guten Tag")[0]["content"]
     assert "把下面的文本翻译成Rm，" in fallback
+    # Every HY-MT language has its Chinese name; a script subtag is matched
+    # before its base (Traditional Chinese is not 中文).
+    for code in translation._FAMILIES["hunyuan"].languages:
+        assert code.lower() in translation._ZH_LANG_NAMES, code
+    hant = _build("hunyuan", "Hallo", target="zh-Hant",
+                  context="A: Guten Tag")[0]["content"]
+    assert "把下面的文本翻译成繁体中文，" in hant
     # No-context glossary stays in the English prompt style, as today.
     with_gl = _build("hunyuan", "Hallo",
                      glossary="Herz = heart\nbogus line")[0]["content"]
@@ -827,7 +880,8 @@ def test_load_blocking_threads_offline_flag_explicitly(monkeypatch):
 # HF cache dir is passed EXPLICITLY (the hub freezes HF_HOME at import)
 # ---------------------------------------------------------------------------
 
-def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",)):
+def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",),
+                      card_languages=None):
     import types
 
     class _Sib:
@@ -836,6 +890,7 @@ def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",)):
 
     class _Info:
         siblings = [_Sib(f) for f in files]
+        card_data = types.SimpleNamespace(language=card_languages)
 
     class HfApi:
         def model_info(self, repo):
@@ -861,6 +916,17 @@ def test_predownload_passes_download_root_cache_dir(monkeypatch, tmp_path):
     assert record[0]["repo_id"] == "org/repo"
     assert record[0]["filename"] == "m.Q4.gguf"
     assert record[0]["cache_dir"] == str(tmp_path / "hf" / "hub")
+
+
+def test_predownload_captures_the_model_card_languages(monkeypatch,
+                                                       tmp_path):
+    record = []
+    _install_fake_hub(monkeypatch, record, card_languages=["de", "sv"])
+    monkeypatch.setattr(translation, "_card_languages", {})
+    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
+    translation._predownload_gguf("org/repo", "Q4")
+    assert translation._card_languages == {"org/repo": ("de", "sv")}
+    assert translation.languages_for("org/repo:Q4") == ["de", "sv"]
 
 
 def test_predownload_set_hf_home_wins_over_download_root(monkeypatch,
