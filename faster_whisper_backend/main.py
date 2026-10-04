@@ -2128,12 +2128,14 @@ def _resolve_request_knob(resolved_model, ident, ignored: "list[str]",
 
 def build_ident(user: "dict | None", model_id: "str | None",
                 request_overrides: "dict | None" = None,
-                request_profile: "str | None" = None):
+                request_profile: "str | None" = None,
+                with_provenance: bool = False):
     """Resolve the per-identity effective config ONCE for a request / streaming
     handshake / capture row, to thread through cfg_for / assemble_transcribe_
     kwargs / _postprocess_text. Open mode and callers with no per-identity
     config yield a Resolved with no identity layers (per-model rules still
-    folded) — equivalent to threading ident=None."""
+    folded) — equivalent to threading ident=None. ``with_provenance`` adds the
+    per-field layer stack (GET /v1/decode-defaults names each value's source)."""
     from faster_whisper_backend import effective_config
     user = user or {}
     return effective_config.resolve(
@@ -2142,6 +2144,7 @@ def build_ident(user: "dict | None", model_id: "str | None",
         key_id=user.get("key_id"),
         request_overrides=request_overrides or {},
         request_profile=request_profile,
+        with_provenance=with_provenance,
     )
 
 
@@ -2395,6 +2398,43 @@ def _get_url_download_semaphore() -> "asyncio.Semaphore":
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]*(/[A-Za-z0-9_.\-]+)?\Z")
 
 
+def _check_model_allowed(name: str) -> None:
+    """400 when an ALLOWED_MODELS allowlist is set and ``name`` is not on it."""
+    if cfg.ALLOWED_MODELS and name not in cfg.ALLOWED_MODELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{name}' is not in the allowed list. "
+                   f"Allowed: {sorted(cfg.ALLOWED_MODELS)}",
+        )
+
+
+def _check_model_shape(name: str) -> None:
+    """400 for a malformed model id when no allowlist is set.
+
+    No allowlist configured: the name arrives verbatim from the request, and
+    in the loader it reaches os.path.isdir() / the HF hub / the CT2 converter.
+    Accept DEFAULT_MODEL (which may legitimately be a local directory) and
+    otherwise only well-formed model ids — no filesystem paths, no "..", no URLs."""
+    if (
+        not cfg.ALLOWED_MODELS
+        and name != cfg.DEFAULT_MODEL
+        and (".." in name or not _MODEL_ID_RE.match(name))
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{name}' is not a valid model id. Use a "
+                   f"faster-whisper name or a HuggingFace repo id, or add it "
+                   f"to ALLOWED_MODELS.",
+        )
+
+
+def _check_model_name(name: str) -> None:
+    """Both model gates the loader applies, without loading anything — for
+    endpoints that only read a model's config (GET /v1/decode-defaults)."""
+    _check_model_allowed(name)
+    _check_model_shape(name)
+
+
 async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel":
     """Return the cached WhisperModel for ``name``, loading it on a miss.
 
@@ -2412,12 +2452,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     # cache fast path, or a model that is still resident keeps being served to
     # clients after the admin withdrew it (MODEL_IDLE_TIMEOUT_S defaults to 0,
     # so the entry only leaves on LRU pressure or restart).
-    if cfg.ALLOWED_MODELS and name not in cfg.ALLOWED_MODELS:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{name}' is not in the allowed list. "
-                   f"Allowed: {sorted(cfg.ALLOWED_MODELS)}",
-        )
+    _check_model_allowed(name)
 
     cached = _loaded_models.get(name)
     if cached is not None:
@@ -2434,21 +2469,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             _model_leases[name] = _model_leases.get(name, 0) + 1
         return cached
 
-    # No allowlist configured: the name arrives verbatim from the request, and
-    # below it reaches os.path.isdir() / the HF hub / the CT2 converter. Accept
-    # DEFAULT_MODEL (which may legitimately be a local directory) and otherwise
-    # only well-formed model ids — no filesystem paths, no "..", no URLs.
-    if (
-        not cfg.ALLOWED_MODELS
-        and name != cfg.DEFAULT_MODEL
-        and (".." in name or not _MODEL_ID_RE.match(name))
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Model '{name}' is not a valid model id. Use a "
-                   f"faster-whisper name or a HuggingFace repo id, or add it "
-                   f"to ALLOWED_MODELS.",
-        )
+    _check_model_shape(name)
 
     # Auto-convert HF transformers Whisper repos to CT2 format if enabled.
     # Runs OUTSIDE _model_load_lock so loads of OTHER cached models stay
@@ -8343,6 +8364,101 @@ async def get_override_profile(name: str,
         prompt_locked = "DEFAULT_PROMPT" in (blob.get("locks") or [])
     return {"name": name, "values": values, "locked": locked,
             "prompt": prompt, "prompt_locked": prompt_locked}
+
+
+# The longest model id GET /v1/decode-defaults looks at; a real one is far shorter.
+_DECODE_DEFAULTS_MODEL_MAX = 200
+
+
+def _provenance_source(rows: "list[dict] | None") -> "tuple[str, str]":
+    """(source, label) of the row that supplies a field's value, from
+    effective_config's provenance stack. Coarse categories for the client's
+    tooltip: an identity layer bound to the caller's key or user is "account",
+    the request-named profile "override_profile", then "model" / "server";
+    nothing set anywhere is faster-whisper's own default ("builtin"). A field
+    without a provenance stack (not identity-overridable) reads from global."""
+    if rows is None:
+        return "server", "global default"
+    for row in rows:
+        if not (row.get("is_winner") and row.get("is_set")):
+            continue
+        layer_id = str(row.get("layer_id") or "")
+        label = str(row.get("label") or "")
+        if layer_id.startswith("request.profile:"):
+            return "override_profile", label
+        if layer_id.startswith(("key.", "user.")):
+            return "account", label
+        if layer_id == "per-model":
+            return "model", label
+        if layer_id == "global":
+            return "server", label
+    return "builtin", "faster-whisper default"
+
+
+@app.get("/v1/decode-defaults")
+async def get_decode_defaults(model: str = "", override_profile: str = "",
+                              user: dict = Depends(_get_current_user_dep)):
+    """The decode values THIS caller's requests get when they send no
+    decode_overrides — each of the client decode keys with its value, where it
+    comes from and whether an admin locked it, plus the prompt and the two
+    values live dictation pins on its final decode. Drives the client's
+    "Inherit · <value>" labels.
+
+    Resolved exactly like a request: identity layers (key/user direct values,
+    their bound profiles, then ``override_profile`` when the caller may request
+    it; ``__none__`` drops the bound profiles) > per-model > global. ``model``
+    "" or "whisper-1" is DEFAULT_MODEL; a model the server would refuse is 400,
+    like a transcription naming it. Nothing is loaded.
+
+    Exposes the global / per-model / bound DEFAULT_PROMPT and DEFAULT_HOTWORDS to
+    any key holder — intended: they shape every transcript that key gets back
+    (SECURITY-REVIEW_NOTES, "decode defaults are readable"). User-tier auth."""
+    from faster_whisper_backend import config_store
+    model = (model or "").strip()
+    if len(model) > _DECODE_DEFAULTS_MODEL_MAX:
+        raise HTTPException(status_code=400, detail="Model id is too long.")
+    model_name = _resolve_model_name(model)
+    _check_model_name(model_name)
+    request_profile = (override_profile or "").strip() or None
+    ident = build_ident(user, model_name, request_profile=request_profile,
+                        with_provenance=True)
+    provenance = ident.provenance or {}
+
+    def _entry(field: str, value, locked: bool) -> dict:
+        source, label = _provenance_source(provenance.get(field))
+        return {"value": value, "source": source, "label": label,
+                "locked": bool(locked)}
+
+    settings: dict = {}
+    for field, client_key in config_store.CONFIG_TO_CLIENT_KEY.items():
+        value = cfg_for(model_name, field, ident)
+        # Blank text is "unset" to the decoder (hotwords are only sent when
+        # non-blank) — say so, rather than ghosting an empty string.
+        if isinstance(value, str) and not value.strip() and client_key == "hotwords":
+            value = None
+        settings[client_key] = _entry(field, value,
+                                      client_key in ident.locked_client_keys)
+    prompt = cfg_for(model_name, "DEFAULT_PROMPT", ident)
+    prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
+    return {
+        "model": model_name,
+        "profile_applied": ident.request_profile_applied,
+        "settings": settings,
+        "prompt": _entry("DEFAULT_PROMPT", prompt, "DEFAULT_PROMPT" in ident.locked),
+        # Live dictation's final decode pins condition_on_previous_text (a
+        # client override is ignored, streaming/routes.py) and defaults best_of
+        # to its own value (a client override still wins).
+        "streaming": {
+            "condition_on_previous_text": {
+                "final": bool(cfg_for(model_name,
+                                      "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT", ident)),
+                "partial": bool(cfg_for(model_name,
+                                        "STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT", ident)),
+                "pinned": True,
+            },
+            "best_of": {"value": int(cfg_for(model_name, "STREAMING_FINAL_BEST_OF", ident))},
+        },
+    }
 
 
 # =============================================================================
