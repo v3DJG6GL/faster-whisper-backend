@@ -38,6 +38,13 @@ def test_register_resolve_roundtrip(tmp_path):
     assert not os.path.exists(str(tmp_path / "dl.m4a"))
 
 
+def test_register_keeps_the_source_url(tmp_path):
+    mid = ums.register(_make_src(tmp_path), user_id="u1", source_url="https://e.test/v")
+    assert ums.resolve_entry(mid, user_id="u1")["source_url"] == "https://e.test/v"
+    mid = ums.register(_make_src(tmp_path, name="b.m4a"), user_id="u1")
+    assert ums.resolve_entry(mid, user_id="u1")["source_url"] is None
+
+
 def test_unknown_ext_becomes_bin(tmp_path):
     mid = ums.register(_make_src(tmp_path, name="dl.weird"), user_id=None)
     assert ums.resolve(mid, user_id=None)[1] == "bin"

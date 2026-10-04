@@ -7825,6 +7825,92 @@ async def url_media(media_id: str,
     )
 
 
+async def _url_media_on_demand(user: dict, body: dict, url: str, what: str,
+                               fetch) -> dict:
+    """The on-demand link fetch both url-media routes (and the language
+    check) share: a job row, the progress entry under the body's optional
+    `progress_id` (the shared cancel route aborts it), a fresh policy probe,
+    then `await fetch(pid, validated_url, info)` for the route's own work
+    and answer. Client-safe errors only: policy/download 400, cancel 499."""
+    from faster_whisper_backend.url import download as _udl
+    progress_id = body.get("progress_id")
+    _pid = progress_id if (isinstance(progress_id, str)
+                           and _PROGRESS_ID_RE.match(progress_id)) else None
+    if _pid and _pid in _BATCH_PROGRESS:
+        _pid = None
+    _user_id = user.get("user_id")
+    _uhost = _url_host_for_log(url)
+    request_id = uuid.uuid4().hex
+    jobs.job_start("download", id=request_id,
+                   user=user.get("username") or _user_id, key=user.get("key_id"),
+                   user_id=_user_id, detail=f"{what} · {_uhost}")
+    if _pid:
+        _JOB_BY_PID[_pid] = request_id
+        jobs.job_update(request_id, progress_id=_pid)
+    logger.info("[url-dl] %s requested on demand (host %s)", what, _uhost)
+    try:
+        _progress_set(_pid, stage="resolving", progress=None,
+                      owner=(_user_id or user.get("key_id")))
+        _url = _udl.validate_url(url)
+        _check_cancelled(_pid)
+        info = await _udl.probe(
+            _url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
+        return await fetch(_pid, _url, info)
+    except (_ClientCancelled, _udl.UrlCancelled):
+        raise HTTPException(status_code=499, detail="cancelled by the client")
+    except _udl.UrlDownloadError as e:
+        # str() is client-safe by the module's contract.
+        logger.info("[url-dl] %s rejected (host %s): %s", what, _uhost,
+                    _log_safe(str(e)))
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:  # noqa: BLE001 — never forward raw errors
+        logger.error("[url-dl] %s failed (host %s): %s", what, _uhost,
+                     _log_safe(str(e)))
+        raise HTTPException(status_code=500, detail=f"{what} failed")
+    finally:
+        if _pid:
+            _progress_close(_pid)
+            _JOB_BY_PID.pop(_pid, None)
+        jobs.job_end(request_id)
+
+
+async def _download_link_audio(pid: "str | None", url: str,
+                               user_id: "str | None") -> str:
+    """A link's AUDIO into the media store through the guarded download()
+    (the whole file — never yt-dlp's ranged ffmpeg fetch, which bypasses
+    the SSRF guard) under the URL download semaphore; returns the media id,
+    registered with `source_url` so a run of the same link can reuse it.
+    Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
+    from faster_whisper_backend.url import download as _udl
+    from faster_whisper_backend.url import media_store as _ums
+    job: "str | None" = None
+    try:
+        async with _get_url_download_semaphore():
+            _check_cancelled(pid)
+            job = _ums.new_staging_job()
+            _progress_set(pid, stage="downloading", progress=None)
+            path = await _udl.download(
+                url, dest_dir=job,
+                timeout=float(getattr(cfg, "URL_DOWNLOAD_TIMEOUT_S", 900)),
+                progress_cb=lambda f, tot: _progress_set(
+                    pid, stage="downloading", progress=f, total_bytes=tot),
+                cancel_check=lambda: _cancel_requested(pid))
+        size = os.path.getsize(path)
+        mid = await asyncio.to_thread(_ums.register, path, user_id=user_id,
+                                      source_url=url)
+        if mid is None:
+            raise _udl.UrlDownloadError("the server could not retain the audio")
+        logger.info("[url-dl] audio retained (%s, %.1f MB, host %s)",
+                    os.path.splitext(path)[1].lstrip(".") or "?", size / 1e6,
+                    _url_host_for_log(url))
+        return mid
+    finally:
+        if job:
+            shutil.rmtree(job, ignore_errors=True)
+
+
 @app.post("/v1/audio/url-media/video")
 async def url_media_video(request: Request,
                           user: dict = Depends(_get_current_user_dep)):
@@ -7840,33 +7926,8 @@ async def url_media_video(request: Request,
     from faster_whisper_backend.url import download as _udl
     max_height = _clamp_video_height(body.get("max_height"))
     format_id = _clean_video_format(body.get("format_id"))
-    progress_id = body.get("progress_id")
-    _pid = progress_id if (isinstance(progress_id, str)
-                           and _PROGRESS_ID_RE.match(progress_id)) else None
-    if _pid and _pid in _BATCH_PROGRESS:
-        _pid = None
-    _user_id = user.get("user_id")
-    _uhost = _url_host_for_log(url)
-    request_id = uuid.uuid4().hex
-    jobs.job_start("download", id=request_id,
-                   user=user.get("username") or _user_id, key=user.get("key_id"),
-                   user_id=_user_id, detail=f"video · {_uhost}")
-    if _pid:
-        _JOB_BY_PID[_pid] = request_id
-        jobs.job_update(request_id, progress_id=_pid)
-    logger.info("[url-dl] video requested on demand (host %s)", _uhost)
-    try:
-        _progress_set(_pid, stage="resolving", progress=None,
-                      owner=(_user_id or user.get("key_id")))
-        try:
-            _url = _udl.validate_url(url)
-            _check_cancelled(_pid)
-            info = await _udl.probe(
-                _url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
-        except _udl.UrlDownloadError as e:
-            logger.info("[url-dl] video rejected (host %s): %s", _uhost,
-                        _log_safe(str(e)))
-            raise HTTPException(status_code=400, detail=str(e))
+
+    async def _fetch(pid, url, info) -> dict:
         rung = _udl.pick_rung(info.video_ladder, max_height, format_id)
         if rung is None:
             raise HTTPException(status_code=400,
@@ -7874,12 +7935,13 @@ async def url_media_video(request: Request,
         if rung.get("over_cap"):
             raise HTTPException(status_code=400,
                                 detail="the video exceeds the server's size limit")
-        _progress_set(_pid, stage="downloading", progress=None,
+        _progress_set(pid, stage="downloading", progress=None,
                       total_bytes=rung.get("approx_bytes"),
                       step=(info.extractor_key or None))
         state = await _download_video_for_run(
-            _pid, _url, rung, capped=max_height is not None, user_id=_user_id,
-            protect=None, run_finished=[False], mirror_stage=True)
+            pid, url, rung, capped=max_height is not None,
+            user_id=user.get("user_id"), protect=None, run_finished=[False],
+            mirror_stage=True)
         if state.get("state") == "done":
             return {"media_id": state["media_id"],
                     "expires_at": state["expires_at"],
@@ -7890,19 +7952,26 @@ async def url_media_video(request: Request,
             raise HTTPException(status_code=499, detail="cancelled by the client")
         raise HTTPException(status_code=400,
                             detail=state.get("error") or "video download failed")
-    except _ClientCancelled:
-        raise HTTPException(status_code=499, detail="cancelled by the client")
-    except HTTPException:
-        raise
-    except Exception as e:  # noqa: BLE001 — never forward raw errors
-        logger.error("[url-dl] video download failed (host %s): %s", _uhost,
-                     _log_safe(str(e)))
-        raise HTTPException(status_code=500, detail="video download failed")
-    finally:
-        if _pid:
-            _progress_close(_pid)
-            _JOB_BY_PID.pop(_pid, None)
-        jobs.job_end(request_id)
+    return await _url_media_on_demand(user, body, url, "video download", _fetch)
+
+
+@app.post("/v1/audio/url-media/audio")
+async def url_media_audio(request: Request,
+                          user: dict = Depends(_get_current_user_dep)):
+    """Fetch a link's AUDIO on demand into the media store: {media_id,
+    expires_at, ext, bytes}. For a run whose transcript comes from the
+    site's own subtitles — it still keeps the audio for playback. The same
+    download (policy, guard, caps, semaphore) a source_url transcription
+    makes, so no limiter of its own; progress/cancel as the video route."""
+    body, url = await _url_request(request, user, None)
+    from faster_whisper_backend.url import media_store as _ums
+
+    async def _fetch(pid, url, info) -> dict:
+        mid = await _download_link_audio(pid, url, user.get("user_id"))
+        entry = _ums.resolve_entry(mid, user_id=user.get("user_id")) or {}
+        return {"media_id": mid, "expires_at": _ums.expires_at_unix(mid),
+                "ext": entry.get("ext"), "bytes": entry.get("size")}
+    return await _url_media_on_demand(user, body, url, "audio download", _fetch)
 
 
 # ── Media export: upload, stream facts, subtitle packaging ──────────────────

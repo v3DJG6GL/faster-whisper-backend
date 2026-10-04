@@ -662,6 +662,37 @@ def test_video_ratio_is_learned_against_the_unscaled_estimate(
     assert seen[0][-1] == pytest.approx(len(b"video-bytes" * 8) / 176)
 
 
+def test_on_demand_audio_route(client, url_enabled):
+    r = client.post("/v1/audio/url-media/audio", json={"url": _URL, "progress_id": _PID})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert len(body["media_id"]) == 32 and body["ext"] == "m4a"
+    assert body["bytes"] == len(b"m4a-bytes" * 8) and body["expires_at"] > 0
+    entry = url_media_store.resolve_entry(body["media_id"], user_id=None)
+    assert entry["kind"] == "audio" and entry["source_url"] == _URL
+    assert _PID not in url_enabled._BATCH_PROGRESS
+    assert client.post("/v1/audio/url-media/audio", json={}).status_code == 422
+
+
+def test_on_demand_audio_errors(client, url_enabled, monkeypatch):
+    async def _fail(url, **kw):
+        raise UrlDownloadError("this media is unavailable or has been removed")
+    monkeypatch.setattr(url_download, "download", _fail)
+    r = client.post("/v1/audio/url-media/audio", json={"url": _URL})
+    assert r.status_code == 400 and "unavailable" in r.json()["detail"]
+
+    async def _cancelled(url, **kw):
+        raise url_download.UrlCancelled()
+    monkeypatch.setattr(url_download, "download", _cancelled)
+    assert client.post("/v1/audio/url-media/audio",
+                       json={"url": _URL}).status_code == 499
+
+
+def test_on_demand_audio_403_when_url_download_is_off(client):
+    assert client.post("/v1/audio/url-media/audio",
+                       json={"url": _URL}).status_code == 403
+
+
 def test_on_demand_video_over_cap_is_400(client, video_enabled, monkeypatch):
     async def _probe(url, *, timeout):
         rungs = [dict(r, over_cap=True) for r in _LADDER]

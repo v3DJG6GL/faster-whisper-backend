@@ -35,7 +35,7 @@ from faster_whisper_backend.core.store_common import secure_dir, secure_file
 logger = logging.getLogger("whisper-api")
 
 # media_id -> {path, ext, kind ("audio"|"video"), user_id,
-#              created (time.monotonic), size}
+#              created (time.monotonic), size, source_url}
 _REG: "dict[str, dict]" = {}
 
 # Extensions we expect yt-dlp to produce. Anything else keeps a neutral
@@ -97,13 +97,15 @@ def startup_reset() -> None:
 
 
 def register(src_path: str, *, user_id: "str | None", kind: str = "audio",
-             protect: "tuple[str, ...] | set[str] | None" = None) -> "str | None":
+             protect: "tuple[str, ...] | set[str] | None" = None,
+             source_url: "str | None" = None) -> "str | None":
     """Move `src_path` into the retention dir under a fresh opaque id and
     return the media_id — or None when retention is unavailable (the
     transcription itself must not fail over a playback nicety). `protect`
     names ids the inline eviction must keep (a run's fresh audio while its
     video registers — the cap must never eat the copy the client is about
-    to fetch)."""
+    to fetch). `source_url`: the validated link the file was downloaded
+    from, so a later run of the same link can reuse it (never logged)."""
     if kind not in KINDS:
         kind = "audio"
     ext = os.path.splitext(src_path)[1].lstrip(".").lower()
@@ -128,7 +130,7 @@ def register(src_path: str, *, user_id: "str | None", kind: str = "audio",
         return None
     _REG[media_id] = {
         "path": dest, "ext": ext, "kind": kind, "user_id": user_id,
-        "created": time.monotonic(), "size": size,
+        "created": time.monotonic(), "size": size, "source_url": source_url,
     }
     _evict_over_cap(protect=protect, newest=media_id)
     # A file that alone busts the byte cap is dropped straight away — the
@@ -173,7 +175,7 @@ def make_pipeline_copy(src: str) -> "str | None":
 
 
 def resolve_entry(media_id: str, *, user_id: "str | None") -> "dict | None":
-    """`{path, ext, kind, size}` when `media_id` exists, is still fresh, and
+    """`{path, ext, kind, size, source_url}` when `media_id` exists, is still fresh, and
     belongs to `user_id` (None owner or None caller ⇒ open-mode, allow).
     None otherwise — the route maps every miss to one 404, no oracle."""
     entry = _REG.get(media_id)
@@ -191,7 +193,8 @@ def resolve_entry(media_id: str, *, user_id: "str | None") -> "dict | None":
         _REG.pop(media_id, None)
         return None
     return {"path": path, "ext": entry["ext"],
-            "kind": entry.get("kind", "audio"), "size": entry["size"]}
+            "kind": entry.get("kind", "audio"), "size": entry["size"],
+            "source_url": entry.get("source_url")}
 
 
 def resolve(media_id: str, *, user_id: "str | None") -> "tuple[str, str] | None":
