@@ -580,6 +580,11 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "merged by ffmpeg) so subtitles can be exported with the picture they "
         "belong to. Fetched after the audio, off the GPU path. Bytes are "
         "capped by MEDIA_MAX_BYTES like everything else.",
+    "URL_SUBTITLES_ENABLED":
+        "Let clients list and fetch a link's own subtitle tracks (the site's "
+        "uploaded or original-language automatic captions) instead of "
+        "transcribing: small capped GETs of the VTT/SRT text, never a media "
+        "download. Rate-limited by URL_SUBTITLES_RATE_PER_MIN.",
     "URL_DOWNLOAD_TIMEOUT_S":
         "Wall-clock ceiling for one audio download subprocess; the download "
         "is killed and the request fails past it. Default 900 (15 min).",
@@ -800,6 +805,10 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "Ceiling on video downloads (a link run that keeps the video, or the "
         "on-demand video route) per identity per 60 seconds. Each one pulls "
         "up to MEDIA_MAX_BYTES from a third-party site. 0 = unlimited.",
+    "URL_SUBTITLES_RATE_PER_MIN":
+        "Ceiling on subtitle fetches (POST /v1/audio/url-subtitles) per "
+        "identity per 60 seconds. Each re-probes the link and fetches up to "
+        "8 tracks from the site. 0 = unlimited.",
     "MEDIA_UPLOAD_RATE_PER_MIN":
         "Ceiling on video uploads for packaging (POST /v1/audio/media) per "
         "identity per 60 seconds — each can be MEDIA_MAX_BYTES. 0 = unlimited.",
@@ -2098,6 +2107,8 @@ class AdminConfig(BaseModel):
         "URL_MAX_DURATION_S", scope="server", group="Transcribe from URL")
     URL_VIDEO_ENABLED: bool | None = _F(
         "URL_VIDEO_ENABLED", scope="server", group="Transcribe from URL")
+    URL_SUBTITLES_ENABLED: bool | None = _F(
+        "URL_SUBTITLES_ENABLED", scope="server", group="Transcribe from URL")
     URL_DOWNLOAD_TIMEOUT_S: Annotated[int, Field(ge=10, le=86400)] | None = _F(
         "URL_DOWNLOAD_TIMEOUT_S", scope="server",
         group="Transcribe from URL",
@@ -2283,6 +2294,11 @@ class AdminConfig(BaseModel):
         int, Field(ge=0, le=100_000)
     ] | None = _F(
         "URL_VIDEO_RATE_PER_MIN", scope="server",
+        group="Concurrency & Request Limits", order=5)
+    URL_SUBTITLES_RATE_PER_MIN: Annotated[
+        int, Field(ge=0, le=100_000)
+    ] | None = _F(
+        "URL_SUBTITLES_RATE_PER_MIN", scope="server",
         group="Concurrency & Request Limits", order=5)
     MEDIA_UPLOAD_RATE_PER_MIN: Annotated[
         int, Field(ge=0, le=100_000)

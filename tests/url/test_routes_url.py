@@ -6,6 +6,7 @@ stubbed at the module boundary; everything from the handler down runs real.
 
 from __future__ import annotations
 
+import asyncio
 import os
 
 import pytest
@@ -706,3 +707,79 @@ def test_url_media_mime_by_kind(client, url_enabled, tmp_path):
     assert client.get(f"/v1/audio/url-media/{vid}").headers["content-type"] \
         .startswith("video/mp4")
 
+
+# --- POST /v1/audio/url-subtitles ---------------------------------------------
+
+_SUB_TRACKS = [{"id": "m-de", "lang": "de", "name": None, "kind": "manual",
+                "ext": "vtt", "hoh": False}]
+_SUB_SOURCES = {"m-de": {"url": "https://subs.test/de.vtt?pot=SECRET", "ext": "vtt"}}
+
+
+@pytest.fixture
+def subs_enabled(url_enabled, monkeypatch):
+    async def _probe(url, *, timeout):
+        return _info(url=url, subtitle_tracks=list(_SUB_TRACKS),
+                     subtitle_sources=dict(_SUB_SOURCES))
+    monkeypatch.setattr(url_download, "probe", _probe)
+    monkeypatch.setattr(url_download, "_capped_get", lambda url, **kw: (
+        "text/vtt", b"WEBVTT\n\n00:00.000 --> 00:01.000\nHallo\n"))
+    return url_enabled
+
+
+def test_subtitles_403_when_url_download_is_off(client):
+    r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": ["m-de"]})
+    assert r.status_code == 403
+
+
+def test_subtitles_403_when_its_switch_is_off(client, subs_enabled, monkeypatch):
+    monkeypatch.setattr(subs_enabled.cfg, "URL_SUBTITLES_ENABLED", False, raising=False)
+    r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": ["m-de"]})
+    assert r.status_code == 403
+    assert "subtitle download" in r.json()["detail"]
+    # …and the preview stops listing tracks.
+    monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri",
+                        lambda *a, **k: asyncio.sleep(0))
+    assert client.post("/v1/audio/url-preview",
+                       json={"url": _URL}).json()["subtitle_tracks"] == []
+
+
+@pytest.mark.parametrize("tracks", [[], ["m-de"] * 9, ["../x"], [7], "m-de", None])
+def test_subtitles_422_on_bad_ids(client, subs_enabled, tracks):
+    r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": tracks})
+    assert r.status_code == 422
+
+
+def test_subtitles_happy_path_never_leaks_the_source(client, subs_enabled, caplog):
+    r = client.post("/v1/audio/url-subtitles",
+                    json={"url": _URL, "tracks": ["m-de", "m-de", "a-fr"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert [(t["id"], t["lang"], t["kind"], t["ext"]) for t in body["tracks"]] == [
+        ("m-de", "de", "manual", "vtt")]
+    assert body["tracks"][0]["text"].startswith("WEBVTT")
+    assert [f["id"] for f in body["failed"]] == ["a-fr"]
+    assert "SECRET" not in r.text and "SECRET" not in caplog.text
+
+
+def test_subtitles_probe_rejection_is_400(client, subs_enabled, monkeypatch):
+    async def _reject(url, *, timeout):
+        raise UrlDownloadError("this video is private")
+    monkeypatch.setattr(url_download, "probe", _reject)
+    r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": ["m-de"]})
+    assert r.status_code == 400 and "private" in r.json()["detail"]
+
+
+def test_subtitles_rate_limited(client, subs_enabled, monkeypatch):
+    monkeypatch.setattr(subs_enabled.cfg, "URL_SUBTITLES_RATE_PER_MIN", 2, raising=False)
+    for _ in range(2):
+        assert client.post("/v1/audio/url-subtitles",
+                           json={"url": _URL, "tracks": ["m-de"]}).status_code == 200
+    r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": ["m-de"]})
+    assert r.status_code == 429
+    assert r.json()["error"]["param"] == "URL_SUBTITLES_RATE_PER_MIN"
+
+
+def test_me_reports_subtitle_caps(client, url_enabled, monkeypatch):
+    assert client.get("/v1/me").json()["url_subtitles_enabled"] is True
+    monkeypatch.setattr(url_enabled.cfg, "URL_SUBTITLES_ENABLED", False, raising=False)
+    assert client.get("/v1/me").json()["url_subtitles_enabled"] is False

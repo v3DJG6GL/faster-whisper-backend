@@ -7394,6 +7394,16 @@ _url_video_rate = _rl.FixedWindow(
             "({limit}/min; retry in {retry_after}s)",
 )
 
+# Per-identity window for subtitle fetches: each one re-probes the link and
+# GETs up to 8 small tracks from the site — the preview limiter's reasoning.
+_url_subtitles_rate = _rl.FixedWindow(
+    config_field="URL_SUBTITLES_RATE_PER_MIN",
+    window_s=60.0,
+    default_max=6,
+    message="too many subtitle downloads — slow down "
+            "({limit}/min; retry in {retry_after}s)",
+)
+
 # progress_id → the keep_video task still running past its transcription
 # handler. Nothing reads it back: it is the strong reference that keeps
 # asyncio from collecting a detached task mid-flight (the loop only holds
@@ -7640,6 +7650,32 @@ def _url_host_for_log(url: str) -> str:
     return _udl.host_for_log(url)
 
 
+async def _url_request(request: Request, user: dict,
+                       rate: "_rl.FixedWindow | None", *,
+                       switch: "str | None" = None,
+                       what: str = "") -> "tuple[dict, str]":
+    """The prelude every POST /v1/audio/url-* route shares: the URL feature
+    (then the route's own `switch`) gates with a curated 403, the route's
+    per-identity window counts the call, and the JSON body must carry a
+    non-empty `url`. Returns (body, url)."""
+    if not getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
+        raise HTTPException(status_code=403,
+                            detail="URL download is not enabled on this server")
+    if switch and not getattr(cfg, switch, False):
+        raise HTTPException(status_code=403,
+                            detail=f"{what} is not enabled on this server")
+    if rate is not None:
+        rate.hit(_rl.identity_key(user, request))
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body is a caller error
+        raise HTTPException(status_code=422, detail="expected a JSON body")
+    url = body.get("url") if isinstance(body, dict) else None
+    if not isinstance(url, str) or not url.strip():
+        raise HTTPException(status_code=422, detail="expected {\"url\": …}")
+    return body, url
+
+
 @app.post("/v1/audio/url-preview")
 async def url_preview(request: Request,
                       user: dict = Depends(_get_current_user_dep)):
@@ -7648,18 +7684,8 @@ async def url_preview(request: Request,
     client never talks to the media site itself). Advisory: the client may
     still POST a URL whose preview failed; the download re-checks the same
     policy authoritatively. Client-safe 400s from the policy taxonomy."""
-    if not getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
-        raise HTTPException(status_code=403,
-                            detail="URL download is not enabled on this server")
-    _url_preview_rate.hit(_rl.identity_key(user, request))
+    _body, url = await _url_request(request, user, _url_preview_rate)
     from faster_whisper_backend.url import download as _udl
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001 — malformed body is a caller error
-        raise HTTPException(status_code=422, detail="expected a JSON body")
-    url = body.get("url") if isinstance(body, dict) else None
-    if not isinstance(url, str) or not url.strip():
-        raise HTTPException(status_code=422, detail="expected {\"url\": …}")
     _uhost = _url_host_for_log(url)
     logger.info("[url-dl] preview requested (host %s)", _uhost)
     try:
@@ -7702,8 +7728,55 @@ async def url_preview(request: Request,
         # The spoken language the site names (null when it names none) and
         # its own subtitle tracks, ids only — the source URLs stay here.
         "language": info.language,
-        "subtitle_tracks": info.subtitle_tracks,
+        "subtitle_tracks": (info.subtitle_tracks
+                            if getattr(cfg, "URL_SUBTITLES_ENABLED", False)
+                            else []),
     }
+
+
+@app.post("/v1/audio/url-subtitles")
+async def url_subtitles(request: Request,
+                        user: dict = Depends(_get_current_user_dep)):
+    """A link's own subtitle tracks as text: {url, tracks: [ids ≤ 8 from
+    the preview]} → {tracks: [{id, lang, kind, ext, text}], failed: [{id,
+    error}]}. The client names tracks by id only; a fresh probe re-applies
+    the URL policy and mints fresh signed source URLs, which never leave
+    the server (nor its log — they carry tokens)."""
+    body, url = await _url_request(request, user, _url_subtitles_rate,
+                                   switch="URL_SUBTITLES_ENABLED",
+                                   what="subtitle download")
+    from faster_whisper_backend.url import download as _udl
+    from faster_whisper_backend.url import subtitles as _subs
+    ids = body.get("tracks")
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= _subs.MAX_FETCH
+            or not all(isinstance(i, str) and _subs.TRACK_ID_RE.match(i)
+                       for i in ids)):
+        raise HTTPException(
+            status_code=422,
+            detail=f"expected 1–{_subs.MAX_FETCH} subtitle track ids")
+    ids = list(dict.fromkeys(ids))
+    _uhost = _url_host_for_log(url)
+    logger.info("[url-dl] subtitles requested (host %s): %s", _uhost,
+                ", ".join(ids))
+    _t0 = time.perf_counter()
+    try:
+        info = await _udl.probe(
+            url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
+    except _udl.UrlDownloadError as e:
+        logger.info("[url-dl] subtitles rejected (host %s): %s", _uhost,
+                    _log_safe(str(e)))
+        raise HTTPException(status_code=400, detail=str(e))
+    tracks, failed = await _subs.fetch_tracks(info, ids)
+    # Ids, sizes and the client-safe reasons only: the source URLs are
+    # signed (YouTube's carry a pot token) and never reach the log.
+    (logger.warning if failed else logger.info)(
+        "[url-dl] subtitles (host %s): %d fetched%s, %d failed%s in %.1fs",
+        _uhost, len(tracks),
+        "".join(f" · {t['id']} {len(t['text']) / 1024:.0f} KB" for t in tracks),
+        len(failed),
+        "".join(f" · {f['id']}: {_log_safe(f['error'])}" for f in failed),
+        time.perf_counter() - _t0)
+    return {"tracks": tracks, "failed": failed}
 
 
 _URL_MEDIA_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
@@ -7761,21 +7834,10 @@ async def url_media_video(request: Request,
     the transcription's download; progress/cancel through the shared
     registry when the body carries a `progress_id` (the entry reports
     stage "downloading" plus the `video` sub-object)."""
-    if not getattr(cfg, "URL_DOWNLOAD_ENABLED", False):
-        raise HTTPException(status_code=403,
-                            detail="URL download is not enabled on this server")
-    if not getattr(cfg, "URL_VIDEO_ENABLED", False):
-        raise HTTPException(status_code=403,
-                            detail="video download is not enabled on this server")
-    _url_video_rate.hit(_rl.identity_key(user, request))
+    body, url = await _url_request(request, user, _url_video_rate,
+                                   switch="URL_VIDEO_ENABLED",
+                                   what="video download")
     from faster_whisper_backend.url import download as _udl
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001 — malformed body is a caller error
-        raise HTTPException(status_code=422, detail="expected a JSON body")
-    url = body.get("url") if isinstance(body, dict) else None
-    if not isinstance(url, str) or not url.strip():
-        raise HTTPException(status_code=422, detail="expected {\"url\": …}")
     max_height = _clamp_video_height(body.get("max_height"))
     format_id = _clean_video_format(body.get("format_id"))
     progress_id = body.get("progress_id")
@@ -8231,6 +8293,11 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     if caps["url_video_enabled"]:
         # No server-side height ceiling in this release: null = best available.
         caps["url_video_default_max_height"] = None
+    # Additive: whether a link's own subtitle tracks are listed by the preview
+    # and fetchable (POST /v1/audio/url-subtitles).
+    caps["url_subtitles_enabled"] = bool(
+        caps["url_download_enabled"]
+        and getattr(cfg, "URL_SUBTITLES_ENABLED", False))
     # Additive: the durable job resource (GET/DELETE /v1/jobs*). The flag is
     # always present; the detail block rides only when on.
     caps["jobs_enabled"] = _jobs_enabled()

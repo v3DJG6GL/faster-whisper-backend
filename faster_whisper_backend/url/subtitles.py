@@ -1,10 +1,11 @@
-"""A link's own subtitle tracks, from the yt-dlp info dict (pure).
+"""A link's own subtitle tracks, from the yt-dlp info dict.
 
-`list_tracks(info)` turns `subtitles` / `automatic_captions` into the short
+`list_tracks(info)` (pure) turns `subtitles` / `automatic_captions` into the short
 list a preview shows plus the server-side sources the url-subtitles route
 fetches from. Only ids leave the server: the source URLs are signed,
 short-lived and on YouTube carry a `pot` token, so the client names a track
-by id and the route re-probes for fresh URLs.
+by id and the route re-probes for fresh URLs; `fetch_tracks` then GETs
+them through the guarded, capped download._capped_get.
 
 Rules:
   - every manual track (a person uploaded it);
@@ -20,8 +21,14 @@ Rules:
 """
 from __future__ import annotations
 
+import asyncio
 import re
+import time
+import urllib.error
 import urllib.parse
+
+from faster_whisper_backend import config as cfg
+from faster_whisper_backend.url import download as _udl
 
 MAX_TRACKS = 24
 _FORMATS = ("vtt", "srt")  # preference order
@@ -95,3 +102,67 @@ def list_tracks(info: dict) -> "tuple[list[dict], dict[str, dict]]":
         sources[tid] = {"url": str(f["url"]), "ext": _ext_of(f)}
     return public, sources
 
+
+# ── fetching ────────────────────────────────────────────────────────────────
+MAX_FETCH = 8                      # tracks per request
+TRACK_MAX_BYTES = 2 * 1024 * 1024  # one track
+TOTAL_MAX_BYTES = 8 * 1024 * 1024  # one request
+_FETCH_BUDGET_S = 60.0             # all tracks of one request, wall clock
+
+
+def sniff(body: bytes, ext: str) -> str:
+    """The body as subtitle text, or UrlDownloadError: VTT must open with
+    WEBVTT, SRT must carry a cue arrow, and an HLS playlist is refused
+    whatever the site called it (fetching its segments would be a fan-out
+    of requests no cap ever saw)."""
+    try:
+        text = body.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = body.decode("cp1252", errors="replace")  # old SRT files
+    if text.lstrip().startswith("#EXTM3U"):
+        raise _udl.UrlDownloadError("the site sent a playlist, not subtitles")
+    if (ext == "vtt" and not text.startswith("WEBVTT")) or (
+            ext == "srt" and "-->" not in text):
+        raise _udl.UrlDownloadError("the site sent no readable subtitles")
+    return text
+
+
+async def fetch_tracks(info, ids: "list[str]") -> "tuple[list[dict], list[dict]]":
+    """Fetch the tracks `ids` names from a FRESH probe's `info` (its signed
+    URLs are minutes old at most): ({id, lang, kind, ext, text} …,
+    {id, error} …). One at a time through download._capped_get — guarded
+    opener, TRACK_MAX_BYTES each, TOTAL_MAX_BYTES and _FETCH_BUDGET_S over
+    the request. Errors are client-safe; a source URL never reaches one."""
+    by_id = {t["id"]: t for t in info.subtitle_tracks}
+    loop = asyncio.get_running_loop()
+    deadline = time.monotonic() + _FETCH_BUDGET_S
+    budget = TOTAL_MAX_BYTES
+    tracks: "list[dict]" = []
+    failed: "list[dict]" = []
+    for tid in ids:
+        track, src = by_id.get(tid), info.subtitle_sources.get(tid)
+        timeout = min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
+                      deadline - time.monotonic())
+        try:
+            if track is None or src is None:
+                raise _udl.UrlDownloadError("the link no longer offers this track")
+            if timeout <= 0:
+                raise _udl.UrlTimeoutError("the site took too long to answer")
+            _ctype, body = await asyncio.wait_for(loop.run_in_executor(
+                _udl._PROBE_POOL, lambda: _udl._capped_get(
+                    src["url"], max_bytes=min(TRACK_MAX_BYTES, budget),
+                    timeout=timeout)), timeout + 2.0)
+            budget -= len(body)
+            tracks.append({"id": tid, "lang": track["lang"], "kind": track["kind"],
+                           "ext": track["ext"], "text": sniff(body, track["ext"])})
+        except urllib.error.HTTPError as e:
+            failed.append({"id": tid, "error": (
+                "the site is rate-limiting subtitle downloads" if e.code == 429
+                else f"the site refused the subtitle download (HTTP {e.code})")})
+        except _udl.UrlDownloadError as e:
+            failed.append({"id": tid, "error": str(e)})
+        except asyncio.TimeoutError:
+            failed.append({"id": tid, "error": "the site took too long to answer"})
+        except Exception:  # noqa: BLE001 — transport noise; never echo it
+            failed.append({"id": tid, "error": "the subtitles could not be fetched"})
+    return tracks, failed
