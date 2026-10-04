@@ -8191,14 +8191,11 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     without one when the server is locked down.
 
     Returns: {can_request_override_profile, can_request_decode_overrides,
-    allowed_override_profiles: ["*"] | [names…] | [], vad_filter_default}."""
+    allowed_override_profiles: ["*"] | [names…] | []} plus the feature flags
+    below. The decode values a caller inherits are GET /v1/decode-defaults."""
     from faster_whisper_backend import effective_config
     caps = effective_config.resolve_capabilities(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
-    # Additive: the server-wide VAD default, so the client's "Default" segment
-    # on its Skip-silence control can say which way inherit points. Server-wide
-    # (not per-model/identity) — it labels a ghost, it doesn't gate anything.
-    caps["vad_filter_default"] = bool(getattr(cfg, "VAD_FILTER", True))
     # Additive: whether the optional pipeline stages exist on this server at
     # all, so the client can disable its "Separate music" / "Speaker
     # diarization" toggles pre-flight instead of letting a request soft-fail
@@ -8285,8 +8282,7 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         # Language menu for the client's target picker.
         caps["translation_languages"] = _tr.list_languages()
         # The CALLER's effective TRANSLATE_TO default (per-identity overrides
-        # respected — unlike vad_filter_default above, which is a server-wide
-        # ghost label), parsed csv → list like the transcribe handler does.
+        # respected), parsed csv → list like the transcribe handler does.
         _ident = build_ident(user, None)
         _tt_raw = cfg_for(None, "TRANSLATE_TO", _ident) or ""
         _tt_list: "list[str]" = []

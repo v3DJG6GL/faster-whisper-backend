@@ -40,13 +40,6 @@ def test_me_open_mode_all_allowed(client):
     assert j["allowed_override_profiles"] == ["*"]
 
 
-def test_me_reports_vad_filter_default(client, app_module, monkeypatch):
-    # Additive convenience for the client's Skip-silence "Default" label.
-    assert client.get("/v1/me").json()["vad_filter_default"] is True
-    monkeypatch.setattr(app_module.cfg, "VAD_FILTER", False)
-    assert client.get("/v1/me").json()["vad_filter_default"] is False
-
-
 def test_me_reports_stage_availability(client, app_module, monkeypatch):
     # Additive pre-flight flags for the client's Separate-music / diarization
     # toggles — a disabled feature otherwise only soft-fails into a warning
