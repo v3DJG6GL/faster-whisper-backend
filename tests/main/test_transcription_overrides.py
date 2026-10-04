@@ -370,3 +370,17 @@ def test_echoing_a_pinned_translation_model_passes_the_allowlist_gate(
                    inherited="org/pinned-GGUF:Q4") is True
     assert allowed("org/evil-GGUF:Q8", requested="org/evil-GGUF:Q8",
                    inherited="org/pinned-GGUF:Q4") is False
+
+
+def test_multilingual_with_a_set_language_is_reported_ignored(
+        client, app_module, fake_model, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", "", raising=False)
+    data = {"model": "whisper-1", "response_format": "verbose_json",
+            "decode_overrides": json.dumps({"multilingual": True})}
+    r = client.post("/v1/audio/transcriptions", files=_FILE, data=data)
+    assert fake_model.last_kwargs["multilingual"] is True
+    assert "overrides_ignored" not in r.json()
+    r = client.post("/v1/audio/transcriptions", files=_FILE,
+                    data={**data, "language": "de"})
+    assert "multilingual" not in fake_model.last_kwargs
+    assert r.json()["overrides_ignored"] == ["multilingual"]

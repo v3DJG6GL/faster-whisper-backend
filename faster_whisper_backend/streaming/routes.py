@@ -744,6 +744,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             if req_language and req_language != _locked_lang:
                 overrides_ignored.append("language")
             req_language = _locked_lang
+        main._note_auto_detect_only(
+            req_overrides, req_language if req_language is not None
+            else main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
+            overrides_ignored)
         if "DEFAULT_PROMPT" in ident.locked:
             _locked_prompt = main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
             if prompt_provided and req_prompt != _locked_prompt:
@@ -1381,6 +1385,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     if _client_language and _client_language != _ll:
                         overrides_ignored.append("language")
                     req_language = _ll
+                main._note_auto_detect_only(
+                    req_overrides, req_language if req_language is not None
+                    else main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
+                    overrides_ignored)
                 req_prompt = _client_prompt
                 _provided = _client_prompt_provided
                 if "DEFAULT_PROMPT" in ident.locked:

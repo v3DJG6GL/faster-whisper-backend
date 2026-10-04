@@ -914,6 +914,15 @@ def _install_fake_hub(monkeypatch, record, files=("m.Q4.gguf",),
     monkeypatch.setitem(sys.modules, "huggingface_hub", mod)
 
 
+def test_predownload_logs_the_card_languages(monkeypatch, caplog):
+    _install_fake_hub(monkeypatch, [], card_languages=["eng", "de", "rm", "zh_hant"])
+    with caplog.at_level("INFO", logger="whisper-server"):
+        translation._predownload_gguf("org/card", "Q4")
+    assert translation._card_languages["org/card"] == ("en", "de", "zh-Hant")
+    assert ("[translate] model card of org/card: 3 language(s) kept of 4 listed "
+            "(2 renamed, 1 dropped)") in caplog.text
+
+
 def test_predownload_passes_download_root_cache_dir(monkeypatch, tmp_path):
     record = []
     _install_fake_hub(monkeypatch, record)

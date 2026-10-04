@@ -1929,6 +1929,16 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     return transcribe_kwargs
 
 
+def _note_auto_detect_only(overrides: dict, language: "str | None",
+                           ignored: list) -> None:
+    """multilingual applies to auto-detect only (assemble_transcribe_kwargs
+    drops it when a language is set): a client override for it then lands
+    in `overrides_ignored`, like a locked key, instead of vanishing."""
+    if (language and overrides.get("multilingual") is not None
+            and "multilingual" not in ignored):
+        ignored.append("multilingual")
+
+
 # Below this many words a segment's rate is statistically meaningless (a single
 # short interjection in a tight VAD chunk can legitimately look "fast").
 _WORD_RATE_MIN_WORDS = 3
@@ -5177,6 +5187,8 @@ async def transcribe(
                 want_word_ts=want_word_ts, initial_prompt=initial_prompt_arg,
                 overrides=_overrides, ident=ident, task=_task,
             )
+            _note_auto_detect_only(_overrides, transcribe_kwargs.get("language"),
+                                   ignored)
 
             # Pre-decode music-separation stage (soft-fail): replaces the
             # uploaded tmp file with a vocals-only WAV, so the decode AND the

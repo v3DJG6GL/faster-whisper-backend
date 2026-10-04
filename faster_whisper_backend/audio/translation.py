@@ -373,15 +373,20 @@ def _card_codes(card_data) -> "tuple[str, ...]":
     table can name, spelled its way (core.languages.canonical_code): "eng"
     and "EN" are "en", "zh_hant" is "zh-Hant"; "multilingual" and codes no
     table names drop, so a client never labels a language "Eng"."""
-    raw = getattr(card_data, "language", None)
-    if isinstance(raw, str):
-        raw = [raw]
     out: "list[str]" = []
-    for item in raw if isinstance(raw, list) else []:
-        code = canonical_code(item) if isinstance(item, str) else None
+    for item in _card_items(card_data):
+        code = canonical_code(item)
         if code and code not in out:
             out.append(code)
     return tuple(out)
+
+
+def _card_items(card_data) -> "list[str]":
+    """card_data.language as listed: a list or one string, strings only."""
+    raw = getattr(card_data, "language", None)
+    if isinstance(raw, str):
+        raw = [raw]
+    return [i for i in raw if isinstance(i, str)] if isinstance(raw, list) else []
 
 
 def languages_for(ref: str) -> "list[str] | None":
@@ -581,7 +586,17 @@ def _predownload_gguf(repo: str, quant: "str | None",
 
     pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
     info = HfApi().model_info(repo)
-    _card_languages[repo] = _card_codes(getattr(info, "card_data", None))
+    _card = getattr(info, "card_data", None)
+    _card_languages[repo] = _card_codes(_card)
+    _listed = _card_items(_card)
+    if _listed:
+        _kept = _card_languages[repo]
+        logger.info("[translate] model card of %s: %d language(s) kept of %d "
+                    "listed (%d renamed, %d dropped)", repo, len(_kept),
+                    len(_listed),
+                    sum(1 for i in _listed
+                        if canonical_code(i) not in (None, i.strip())),
+                    sum(1 for i in _listed if canonical_code(i) is None))
     files = [s.rfilename for s in (info.siblings or [])]
     matches = sorted(f for f in files
                      if fnmatch.fnmatch(f.lower(), pattern))
