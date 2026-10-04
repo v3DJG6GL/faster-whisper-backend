@@ -21,6 +21,14 @@
 # PyAV (bundles the ffmpeg libraries) and numpy — ~200 MB of wheels.
 faster-whisper>=1.2.1
 
+# PyAV is faster-whisper's audio decoder (pulled in above with only av>=11).
+# Capped below 19: PyAV 19 removed av.open(metadata_errors=…), which
+# faster-whisper 1.2.1 still passes, so every batch decode raises. Fixed on
+# faster-whisper master (passes it only for PyAV < 19), not yet released.
+# Lift the cap with the faster-whisper release that carries that fix — the
+# PyAV 19 update waits as a checkbox on the Renovate Dependency Dashboard.
+av>=11,<19
+
 # Bundled, cross-platform ffmpeg BINARY for the live-streaming endpoint's
 # encoded transport (browser Opus/WebM → 16 kHz PCM). Ships a static ffmpeg in
 # the wheel (Linux/macOS/Windows), so the encoded transport works with no
