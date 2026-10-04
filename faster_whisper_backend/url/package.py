@@ -212,7 +212,8 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
                        original_track: "int | None" = None,
                        audio_lang: "str | None" = None,
                        audio_label: "str | None" = None,
-                       video_index: int = 0) -> "list[str]":
+                       video_index: int = 0,
+                       strip_empty_captions: bool = False) -> "list[str]":
     """The exact ffmpeg invocation (separate so tests can pin and swap it).
     `-map 0:v:N` takes ONE video stream only — `video_index` is
     MediaStreams.video_index, so a cover-art stream in front of the real
@@ -221,7 +222,10 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     `original` disposition, FlagOriginal since 4.4; MP4 has no such flag and
     drops it) — the track NAME stays the plain language name. `audio_lang`
     tags every audio stream with the spoken language (the source file usually
-    carries the uploader's default, "en" for a German video)."""
+    carries the uploader's default, "en" for a German video).
+    `strip_empty_captions` drops the H.264 SEI units, which takes broadcast
+    captions that never carry text (url/captions.py) out of the picture —
+    players otherwise list them as empty "Closed captions 1–4" tracks."""
     from faster_whisper_backend.streaming.transport import ffmpeg_exe
 
     if container not in CONTAINERS:
@@ -234,6 +238,8 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     for i in range(len(srt_paths)):
         argv += ["-map", f"{i + 1}:0"]
     argv += ["-c:v", "copy", "-c:a", "copy"]
+    if strip_empty_captions:
+        argv += ["-bsf:v", "filter_units=remove_types=6"]
     if srt_paths:
         argv += ["-c:s", "mov_text" if container == "mp4" else "srt"]
     for i, t in enumerate(tracks):
@@ -273,7 +279,8 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                   original_track: "int | None" = None,
                   audio_lang: "str | None" = None,
                   audio_label: "str | None" = None,
-                  video_index: int = 0) -> str:
+                  video_index: int = 0,
+                  video_codec: "str | None" = None) -> str:
     """Mux `tracks` into `src` as soft subtitles; returns the output path
     inside a fresh `pkg-` workdir the CALLER removes after streaming it.
     Every failure removes the workdir here."""
@@ -282,6 +289,7 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
     workdir = tempfile.mkdtemp(prefix="pkg-")
     try:
         srt_paths = await asyncio.to_thread(_write_srts, workdir, tracks)
+        strip = await _empty_captions_to_strip(src, video_codec, video_index, timeout)
         out = os.path.join(workdir, f"out.{container}")
         argv = build_package_argv(src, srt_paths, tracks, container=container,
                                   original_track=original_track,
@@ -290,7 +298,8 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                                   # Only when the picture is not 0:v:0 —
                                   # swapped-in argv builders keep their shape.
                                   **({"video_index": video_index}
-                                     if video_index else {}))
+                                     if video_index else {}),
+                                  **({"strip_empty_captions": True} if strip else {}))
         t0 = time.monotonic()
         proc = await asyncio.create_subprocess_exec(
             *argv, stdin=asyncio.subprocess.DEVNULL,
@@ -323,6 +332,35 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
     except BaseException:
         shutil.rmtree(workdir, ignore_errors=True)
         raise
+
+
+async def _empty_captions_to_strip(src: str, video_codec: "str | None",
+                                   video_index: int, timeout: float) -> bool:
+    """Whether this H.264 source carries only empty broadcast captions (and
+    the server's ffmpeg can drop them). Never fails the package: any doubt
+    keeps the captions."""
+    if (video_codec or "").lower() != "h264" or not ffmpeg_has_bsf("filter_units"):
+        return False
+    from faster_whisper_backend.url import captions as _cc
+    try:
+        return await asyncio.to_thread(_cc.embedded_captions_empty, src,
+                                       video_index=video_index,
+                                       timeout=min(300.0, max(10.0, timeout / 3)))
+    except Exception as e:  # noqa: BLE001 — a scan failure must not fail the export
+        logger.warning("[package] caption scan failed: %s", log_safe(str(e)[:200]))
+        return False
+
+
+@functools.lru_cache(maxsize=8)
+def ffmpeg_has_bsf(name: str) -> bool:
+    """Whether the server's ffmpeg has the bitstream filter `name`."""
+    from faster_whisper_backend.streaming.transport import ffmpeg_exe
+    try:
+        out = subprocess.run([ffmpeg_exe(), "-hide_banner", "-bsfs"], capture_output=True,
+                             text=True, check=False, timeout=15).stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return re.search(rf"^\s*{re.escape(name)}\s*$", out or "", re.M) is not None
 
 
 async def _kill(proc, grace: float = 5.0) -> None:
@@ -380,3 +418,4 @@ def ffmpeg_capabilities() -> FfmpegCaps:
 
 def _reset_for_tests() -> None:
     ffmpeg_capabilities.cache_clear()
+    ffmpeg_has_bsf.cache_clear()

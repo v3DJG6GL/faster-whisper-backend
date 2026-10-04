@@ -8104,7 +8104,8 @@ async def package_media(media_id: str, request: Request,
             audio_lang=audio_lang, audio_label=audio_label,
             timeout=float(getattr(cfg, "MEDIA_PACKAGE_TIMEOUT_S", 900)),
             # The real video can sit behind a cover-art stream.
-            video_index=int(facts.get("video_index") or 0))
+            video_index=int(facts.get("video_index") or 0),
+            video_codec=facts.get("video_codec"))
     except _pk.SubtitleParseError as e:
         raise HTTPException(status_code=422, detail=str(e))
     except _pk.PackageTimeout as e:
