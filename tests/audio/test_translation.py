@@ -18,6 +18,7 @@ import pytest
 
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.audio import translation
+from faster_whisper_backend.core import languages
 
 
 # ---------------------------------------------------------------------------
@@ -155,11 +156,8 @@ def test_custom_template_renders_all_slots(monkeypatch):
     assert content == "S=German T=English C= G=\nHallo"
 
 
-def test_lang_name_fallbacks():
-    assert translation._lang_name("de") == "German"
-    assert translation._lang_name("fr-CA") == "French"   # region → base name
-    assert translation._lang_name("rm") == "Rm"          # title-case fallback
-    assert translation._lang_name(None) == ""
+def test_lang_name_is_the_shared_table():
+    assert translation._lang_name is languages.language_name
 
 
 # ---------------------------------------------------------------------------

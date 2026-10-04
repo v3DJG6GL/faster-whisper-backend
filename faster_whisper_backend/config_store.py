@@ -30,6 +30,7 @@ from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
 from faster_whisper_backend import config_renames as _renames
+from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.paths import REPO_ROOT
 
 from pydantic import (
@@ -1327,20 +1328,8 @@ TAG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,31}\Z")   # \Z: `$` also matches befo
 NO_PROFILE_SENTINEL = "__none__"
 
 
-try:
-    from faster_whisper.tokenizer import _LANGUAGE_CODES as _FW_LANG_CODES
-    WHISPER_LANGUAGE_CODES: frozenset[str] = frozenset(_FW_LANG_CODES)
-except Exception:
-    WHISPER_LANGUAGE_CODES = frozenset((
-        "af","am","ar","as","az","ba","be","bg","bn","bo","br","bs","ca","cs",
-        "cy","da","de","el","en","es","et","eu","fa","fi","fo","fr","gl","gu",
-        "ha","haw","he","hi","hr","ht","hu","hy","id","is","it","ja","jw","ka",
-        "kk","km","kn","ko","la","lb","ln","lo","lt","lv","mg","mi","mk","ml",
-        "mn","mr","ms","mt","my","ne","nl","nn","no","oc","pa","pl","ps","pt",
-        "ro","ru","sa","sd","si","sk","sl","sn","so","sq","sr","su","sv","sw",
-        "ta","te","tg","th","tk","tl","tr","tt","uk","ur","uz","vi","yi","yo",
-        "zh","yue",
-    ))
+# Whisper's language codes (tests pin the table to faster-whisper's own list).
+WHISPER_LANGUAGE_CODES: frozenset[str] = frozenset(WHISPER_LANGUAGE_NAMES)
 
 
 def normalize_languages(raw: Any) -> list[str]:

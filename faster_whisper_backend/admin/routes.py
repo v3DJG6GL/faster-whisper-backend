@@ -42,6 +42,7 @@ from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.audio import translation
 from faster_whisper_backend.core import dictation_map
+from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.auth.dependencies import require_admin
 
@@ -113,6 +114,8 @@ _MO_LOAD_TIME_FIELDS_JSON: str = json.dumps(sorted(
     config_store.LOAD_TIME_FIELDS & set(config_store.ModelOverride.model_fields)
 ))
 _MO_FIELD_META_JSON: str = json.dumps(_mo_field_meta())
+_WHISPER_LANGS_JSON: str = json.dumps(
+    [{"code": c, "name": n} for c, n in WHISPER_LANGUAGE_NAMES.items()])
 
 # Discriminated-union adapter for PIPELINE_RULES canonicalization. Built once
 # at import time — TypeAdapter construction walks every rule subclass and is
@@ -383,7 +386,8 @@ async def settings_page() -> HTMLResponse:
             _SETTINGS_VIEWER_HTML.replace("{{SETTINGS_VIEW}}", "settings")
             .replace("{{SERVER_IDENT}}", _SERVER_IDENT_SHELL)
             .replace("{{MO_LOAD_TIME_FIELDS_JSON}}", _MO_LOAD_TIME_FIELDS_JSON)
-            .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON),
+            .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON)
+            .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON),
             current="settings"),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -408,7 +412,8 @@ async def pipeline_page() -> HTMLResponse:
             _SETTINGS_VIEWER_HTML.replace("{{SETTINGS_VIEW}}", "pipeline")
             .replace("{{SERVER_IDENT}}", "")
             .replace("{{MO_LOAD_TIME_FIELDS_JSON}}", _MO_LOAD_TIME_FIELDS_JSON)
-            .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON),
+            .replace("{{MO_FIELD_META_JSON}}", _MO_FIELD_META_JSON)
+            .replace("{{WHISPER_LANGS_JSON}}", _WHISPER_LANGS_JSON),
             current="pipeline"),
         headers={
             "Cache-Control": "no-store, no-cache, must-revalidate, max-age=0",
@@ -3799,44 +3804,9 @@ async function _testOneRule(rule) {
   return (j.steps && j.steps[0]) || null;
 }
 
-// Whisper language codes + display names for the language picker widget.
-// 99 codes (ISO 639-1 + haw/jw/yue). Sourced from faster_whisper.tokenizer.
-var WHISPER_LANGS = [
-  {code:'af',name:'Afrikaans'},{code:'am',name:'Amharic'},{code:'ar',name:'Arabic'},
-  {code:'as',name:'Assamese'},{code:'az',name:'Azerbaijani'},{code:'ba',name:'Bashkir'},
-  {code:'be',name:'Belarusian'},{code:'bg',name:'Bulgarian'},{code:'bn',name:'Bengali'},
-  {code:'bo',name:'Tibetan'},{code:'br',name:'Breton'},{code:'bs',name:'Bosnian'},
-  {code:'ca',name:'Catalan'},{code:'cs',name:'Czech'},{code:'cy',name:'Welsh'},
-  {code:'da',name:'Danish'},{code:'de',name:'German'},{code:'el',name:'Greek'},
-  {code:'en',name:'English'},{code:'es',name:'Spanish'},{code:'et',name:'Estonian'},
-  {code:'eu',name:'Basque'},{code:'fa',name:'Persian'},{code:'fi',name:'Finnish'},
-  {code:'fo',name:'Faroese'},{code:'fr',name:'French'},{code:'gl',name:'Galician'},
-  {code:'gu',name:'Gujarati'},{code:'ha',name:'Hausa'},{code:'haw',name:'Hawaiian'},
-  {code:'he',name:'Hebrew'},{code:'hi',name:'Hindi'},{code:'hr',name:'Croatian'},
-  {code:'ht',name:'Haitian Creole'},{code:'hu',name:'Hungarian'},{code:'hy',name:'Armenian'},
-  {code:'id',name:'Indonesian'},{code:'is',name:'Icelandic'},{code:'it',name:'Italian'},
-  {code:'ja',name:'Japanese'},{code:'jw',name:'Javanese'},{code:'ka',name:'Georgian'},
-  {code:'kk',name:'Kazakh'},{code:'km',name:'Khmer'},{code:'kn',name:'Kannada'},
-  {code:'ko',name:'Korean'},{code:'la',name:'Latin'},{code:'lb',name:'Luxembourgish'},
-  {code:'ln',name:'Lingala'},{code:'lo',name:'Lao'},{code:'lt',name:'Lithuanian'},
-  {code:'lv',name:'Latvian'},{code:'mg',name:'Malagasy'},{code:'mi',name:'Maori'},
-  {code:'mk',name:'Macedonian'},{code:'ml',name:'Malayalam'},{code:'mn',name:'Mongolian'},
-  {code:'mr',name:'Marathi'},{code:'ms',name:'Malay'},{code:'mt',name:'Maltese'},
-  {code:'my',name:'Myanmar'},{code:'ne',name:'Nepali'},{code:'nl',name:'Dutch'},
-  {code:'nn',name:'Nynorsk'},{code:'no',name:'Norwegian'},{code:'oc',name:'Occitan'},
-  {code:'pa',name:'Punjabi'},{code:'pl',name:'Polish'},{code:'ps',name:'Pashto'},
-  {code:'pt',name:'Portuguese'},{code:'ro',name:'Romanian'},{code:'ru',name:'Russian'},
-  {code:'sa',name:'Sanskrit'},{code:'sd',name:'Sindhi'},{code:'si',name:'Sinhala'},
-  {code:'sk',name:'Slovak'},{code:'sl',name:'Slovenian'},{code:'sn',name:'Shona'},
-  {code:'so',name:'Somali'},{code:'sq',name:'Albanian'},{code:'sr',name:'Serbian'},
-  {code:'su',name:'Sundanese'},{code:'sv',name:'Swedish'},{code:'sw',name:'Swahili'},
-  {code:'ta',name:'Tamil'},{code:'te',name:'Telugu'},{code:'tg',name:'Tajik'},
-  {code:'th',name:'Thai'},{code:'tk',name:'Turkmen'},{code:'tl',name:'Tagalog'},
-  {code:'tr',name:'Turkish'},{code:'tt',name:'Tatar'},{code:'uk',name:'Ukrainian'},
-  {code:'ur',name:'Urdu'},{code:'uz',name:'Uzbek'},{code:'vi',name:'Vietnamese'},
-  {code:'yi',name:'Yiddish'},{code:'yo',name:'Yoruba'},{code:'zh',name:'Chinese'},
-  {code:'yue',name:'Cantonese'},
-];
+// Whisper language codes + display names for the language picker widget
+// (core.languages.WHISPER_LANGUAGE_NAMES, injected at render).
+var WHISPER_LANGS = {{WHISPER_LANGS_JSON}};
 var LANG_GROUPS = {
   'CJK': ['ja','ko','zh','yue'],
   'Germanic': ['af','da','de','en','fo','is','lb','nl','nn','no','sv','yi'],

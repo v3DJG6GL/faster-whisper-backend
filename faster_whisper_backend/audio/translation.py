@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.runtime import system_stats
+from faster_whisper_backend.core.languages import language_name
 from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
@@ -124,33 +125,16 @@ def _parse_model_ref(ref: str) -> "tuple[str, str | None]":
 # Prompt families
 # =============================================================================
 
-# English language names for the app languages (+ a title-case fallback for
-# anything else — see _lang_name). Keys are lowercase base codes.
-_LANG_NAMES: "dict[str, str]" = {
-    "en": "English", "de": "German", "fr": "French", "it": "Italian",
-    "es": "Spanish", "pt": "Portuguese", "nl": "Dutch", "pl": "Polish",
-    "ru": "Russian", "uk": "Ukrainian", "cs": "Czech", "sv": "Swedish",
-    "da": "Danish", "no": "Norwegian", "fi": "Finnish", "tr": "Turkish",
-    "ar": "Arabic", "zh": "Chinese", "ja": "Japanese", "ko": "Korean",
-    "hu": "Hungarian", "ro": "Romanian", "el": "Greek", "hi": "Hindi",
-    "th": "Thai", "vi": "Vietnamese", "id": "Indonesian",
-}
-
-
-def _lang_name(code: "str | None") -> str:
-    """English name for a language code; region subtags fall back to the base
-    code's name; unknown codes are title-cased ("rm" → "Rm")."""
-    if not code:
-        return ""
-    low = code.strip().lower()
-    base = low.split("-")[0]
-    return _LANG_NAMES.get(low) or _LANG_NAMES.get(base) or base.title()
+# English language names come from core.languages; _lang_name stays the
+# module's spelling for its callers (prompt builders, url.package).
+_lang_name = language_name
 
 
 def list_languages() -> "list[str]":
-    """Language codes offered to clients (for /v1/me): the _LANG_NAMES keys,
-    sorted, "en" first — the models themselves accept far more."""
-    codes = sorted(_LANG_NAMES)
+    """Language codes offered to clients (for /v1/me): the app's core set
+    (the codes _ZH_LANG_NAMES names), sorted, "en" first — the models
+    themselves accept far more."""
+    codes = sorted(_ZH_LANG_NAMES)
     codes.remove("en")
     return ["en"] + codes
 
