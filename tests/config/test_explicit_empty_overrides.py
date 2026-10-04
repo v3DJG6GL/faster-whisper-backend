@@ -48,14 +48,38 @@ def test_null_bool_override_inherits_instead_of_forcing_false():
     assert kw["vad_filter"] is False and kw["vad_parameters"] is None
 
 
+def test_multilingual_override_true_null_and_locked():
+    from faster_whisper_backend import main
+    kw = main._apply_decode_overrides({}, "whisper-1", {"multilingual": True})
+    assert kw["multilingual"] is True
+    # null inherits the configured value
+    kw = main._apply_decode_overrides({"multilingual": True}, "whisper-1",
+                                      {"multilingual": None})
+    assert kw["multilingual"] is True
+    # a locked key is dropped: the admin value stands
+    locked = ec.Resolved(locked_client_keys=frozenset({"multilingual"}))
+    kw = main._apply_decode_overrides({}, "whisper-1", {"multilingual": True},
+                                      ident=locked)
+    assert "multilingual" not in kw
+
+
 # --- profile / per-model layer ------------------------------------------------
 
-def _assemble(values):
+def _assemble(values, language="", overrides=None):
     from faster_whisper_backend import main
     return main.assemble_transcribe_kwargs(
-        None, None, language="", temperature=0.0, vad_filter=False,
+        None, None, language=language, temperature=0.0, vad_filter=False,
         vad_parameters=None, want_word_ts=False, initial_prompt=None,
-        ident=ec.Resolved(values=values))
+        overrides=overrides, ident=ec.Resolved(values=values))
+
+
+def test_multilingual_applies_to_auto_detect_only():
+    assert _assemble({}, overrides={"multilingual": True})["multilingual"] is True
+    assert _assemble({"MULTILINGUAL": True})["multilingual"] is True
+    # A chosen language wins: faster-whisper would re-detect per window.
+    assert "multilingual" not in _assemble(
+        {}, language="de", overrides={"multilingual": True})
+    assert "multilingual" not in _assemble({"MULTILINGUAL": True}, language="de")
 
 
 def test_profile_blank_punctuation_is_forwarded_not_dropped():

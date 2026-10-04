@@ -65,6 +65,13 @@ def test_per_model_value_says_model(client, app_module, monkeypatch):
     assert beam["source"] == "model"
 
 
+def test_multilingual_is_a_client_key(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "MULTILINGUAL", True)
+    ml = client.get(URL).json()["settings"]["multilingual"]
+    assert ml == {"value": True, "source": "server", "label": "global default",
+                  "locked": False}
+
+
 def test_unset_value_is_builtin(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "DEFAULT_HOTWORDS", None)
     hw = client.get(URL).json()["settings"]["hotwords"]

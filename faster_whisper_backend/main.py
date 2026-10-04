@@ -1715,8 +1715,9 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
             if cv is not None:
                 kwargs[key] = cv
     # A JSON null on a bool override means "inherit", not False.
-    if overrides.get("condition_on_previous_text") is not None:
-        kwargs["condition_on_previous_text"] = bool(overrides["condition_on_previous_text"])
+    for key in ("condition_on_previous_text", "multilingual"):
+        if overrides.get(key) is not None:
+            kwargs[key] = bool(overrides[key])
     for key, cap in _DECODE_STR_CAPS.items():
         if key in overrides and isinstance(overrides[key], str):
             kwargs[key] = overrides[key][:cap]
@@ -1920,6 +1921,11 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     # Per-request overrides win (clamped), EXCEPT fields locked by an identity
     # layer (skipped). No-op when None/empty.
     _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides, ident=ident)
+    # multilingual re-detects the language on every 30 s window and IGNORES a
+    # given language — a chosen language must win, so it applies to
+    # auto-detect only.
+    if transcribe_kwargs.get("language"):
+        transcribe_kwargs.pop("multilingual", None)
     return transcribe_kwargs
 
 

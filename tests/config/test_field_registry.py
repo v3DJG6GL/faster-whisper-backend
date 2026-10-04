@@ -321,6 +321,7 @@ CONFIG_TO_CLIENT_KEY_SNAPSHOT = (
      'APPEND_PUNCTUATIONS': 'append_punctuations',
      'SUPPRESS_TOKENS': 'suppress_tokens',
      'CONDITION_ON_PREVIOUS_TEXT': 'condition_on_previous_text',
+     'MULTILINGUAL': 'multilingual',
      'VAD_FILTER': 'vad_filter',
      'VAD_MIN_SILENCE_MS': 'vad_min_silence_duration_ms',
      'VAD_SPEECH_PAD_MS': 'vad_speech_pad_ms',

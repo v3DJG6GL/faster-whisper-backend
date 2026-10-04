@@ -374,6 +374,17 @@ def test_condition_on_previous_text_override_is_reported_ignored(client, app_mod
         assert "condition_on_previous_text" in ready.get("overrides_ignored", [])
 
 
+def test_multilingual_override_reaches_the_final_decode(app_module, fake_model):
+    from faster_whisper_backend.streaming import routes as sr
+    # The handshake narrows decode_overrides to the client keys; multilingual
+    # is one, and the final decode (auto-detect) carries it.
+    assert "multilingual" in sr._CLIENT_OVERRIDE_KEYS
+    kw = sr._build_transcribe_kwargs(
+        app_module, "some-model", final=True, prompt="", want_words=False,
+        language="", model_obj=fake_model, overrides={"multilingual": True})
+    assert kw["multilingual"] is True
+
+
 def test_running_dictate_job_names_its_model(client, app_module):
     from faster_whisper_backend.core import jobs
 

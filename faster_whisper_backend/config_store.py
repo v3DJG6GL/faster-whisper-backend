@@ -212,7 +212,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     # --- Language detection (active when DEFAULT_LANGUAGE is empty) ---
     "MULTILINGUAL":
         "Re-run language detection on every segment instead of once. "
-        "Default false. Enable for code-switching audio. (faster-whisper)",
+        "Default false. Enable for code-switching audio. Applies only when "
+        "the language is auto-detected — a set language wins. Clients may "
+        "override it per request ('multilingual'). (faster-whisper)",
     "LANGUAGE_DETECTION_THRESHOLD":
         "Min probability the top language token must reach for detection "
         "to be accepted. Default 0.5. Raise for stricter detection.",
@@ -1720,7 +1722,8 @@ class AdminConfig(BaseModel):
     # --- Language detection (active when DEFAULT_LANGUAGE is empty) ---
     MULTILINGUAL: bool | None = _F(
         "MULTILINGUAL", scope="per_request", group="Decode params",
-        subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)")
+        subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)",
+        client_key="multilingual")
     LANGUAGE_DETECTION_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
         "LANGUAGE_DETECTION_THRESHOLD", scope="per_request",
         group="Decode params",
