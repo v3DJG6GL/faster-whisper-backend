@@ -361,17 +361,23 @@ def resolve_family(ref: str) -> str:
 _card_languages: "dict[str, tuple[str, ...]]" = {}
 
 
-def _card_codes(card_data) -> "tuple[str, ...]":
-    """card_data.language (a list or one string) → the codes the language
+def _card_codes(card_data) -> "tuple[tuple[str, ...], int, int]":
+    """card_data.language (a list or one string) → (the codes the language
     table can name, spelled its way (core.languages.canonical_code): "eng"
-    and "EN" are "en", "zh_hant" is "zh-Hant"; "multilingual" and codes no
-    table names drop, so a client never labels a language "Eng"."""
+    and "EN" are "en", "zh_hant" is "zh-Hant"; how many listed items were
+    renamed; how many dropped). "multilingual" and codes no table names
+    drop, so a client never labels a language "Eng"."""
     out: "list[str]" = []
+    renamed = dropped = 0
     for item in _card_items(card_data):
         code = canonical_code(item)
-        if code and code not in out:
+        if code is None:
+            dropped += 1
+            continue
+        renamed += code != item.strip()
+        if code not in out:
             out.append(code)
-    return tuple(out)
+    return tuple(out), renamed, dropped
 
 
 def _card_items(card_data) -> "list[str]":
@@ -580,16 +586,13 @@ def _predownload_gguf(repo: str, quant: "str | None",
     pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
     info = HfApi().model_info(repo)
     _card = getattr(info, "card_data", None)
-    _card_languages[repo] = _card_codes(_card)
-    _listed = _card_items(_card)
+    _kept, _renamed, _dropped = _card_codes(_card)
+    _card_languages[repo] = _kept
+    _listed = len(_card_items(_card))
     if _listed:
-        _kept = _card_languages[repo]
         logger.info("[translate] model card of %s: %d language(s) kept of %d "
                     "listed (%d renamed, %d dropped)", repo, len(_kept),
-                    len(_listed),
-                    sum(1 for i in _listed
-                        if canonical_code(i) not in (None, i.strip())),
-                    sum(1 for i in _listed if canonical_code(i) is None))
+                    _listed, _renamed, _dropped)
     files = [s.rfilename for s in (info.siblings or [])]
     matches = sorted(f for f in files
                      if fnmatch.fnmatch(f.lower(), pattern))

@@ -111,9 +111,11 @@ def test_languages_for_honors_the_family_pin(monkeypatch):
 def test_card_codes_normalise():
     card = type("Card", (), {"language": [
         "EN", "zh_hant", "pt-br", "multilingual", 7, "en"]})()
-    assert translation._card_codes(card) == ("en", "zh-Hant", "pt-BR")
-    assert translation._card_codes(type("C", (), {"language": "de"})()) == ("de",)
-    assert translation._card_codes(None) == ()
+    # "EN", "zh_hant", "pt-br" renamed; "multilingual" dropped; 7 not listed.
+    assert translation._card_codes(card) == (("en", "zh-Hant", "pt-BR"), 3, 1)
+    one = type("C", (), {"language": "de"})()
+    assert translation._card_codes(one) == (("de",), 0, 0)
+    assert translation._card_codes(None) == ((), 0, 0)
 
 
 def test_card_codes_map_iso639_3_and_drop_unnamed():
@@ -121,7 +123,7 @@ def test_card_codes_map_iso639_3_and_drop_unnamed():
     # 639-1; the client must never show "Eng" or "Rm".
     card = type("Card", (), {"language": [
         "eng", "deu", "eng_Latn", "cmn_Hans", "zho_Hant", "rm", "xyz", "fil"]})()
-    assert translation._card_codes(card) == ("en", "de", "zh", "zh-Hant")
+    assert translation._card_codes(card)[0] == ("en", "de", "zh", "zh-Hant")
 
 
 # ---------------------------------------------------------------------------
