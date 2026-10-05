@@ -107,6 +107,45 @@ def test_build_package_argv_mp4_mov_text_faststart_and_no_default():
     assert argv[-2] == "matroska" and "-c:s" not in argv
 
 
+def _disp(argv):
+    return [argv[i + 1] for i, a in enumerate(argv) if a.startswith("-disposition:s:")]
+
+
+def _flagged_tracks():
+    srt = "1\n00:00:00,000 --> 00:00:01,000\nHi\n"
+    return [pk.SubtitleTrack("de", "Whisper", srt, default=True, original=True),
+            pk.SubtitleTrack("de", "Site", srt, original=True, hearing_impaired=True),
+            pk.SubtitleTrack("en", "Translation", srt, default=True),
+            pk.SubtitleTrack("en", "Auto", srt)]
+
+
+def test_build_package_argv_per_track_flags():
+    # Several originals, one default per language, a hearing-impaired track.
+    paths = [f"/w/sub_{i}.srt" for i in range(4)]
+    argv = pk.build_package_argv("/m/src.mkv", paths, _flagged_tracks(), container="mkv",
+                                 out_path="/w/out.mkv", default_track=None)
+    assert _disp(argv) == ["default+original", "original+hearing_impaired", "default", "0"]
+    assert not any(a.startswith("handler_name=") for a in argv)
+    # The legacy indices OR into the per-track flags.
+    argv = pk.build_package_argv("/m/src.mkv", paths, _flagged_tracks(), container="mkv",
+                                 out_path="/w/out.mkv", default_track=1, original_track=3)
+    assert _disp(argv) == ["default+original", "default+original+hearing_impaired",
+                           "default", "original"]
+
+
+def test_build_package_argv_mp4_handler_name_and_no_original():
+    # MP4 has no FlagOriginal: it is left out; default + HI stay. The hdlr
+    # name carries the title (movenc writes no `title` for mov_text).
+    paths = [f"/w/sub_{i}.srt" for i in range(4)]
+    argv = pk.build_package_argv("/m/src.mp4", paths, _flagged_tracks(), container="mp4",
+                                 out_path="/w/out.mp4", default_track=None, original_track=3)
+    assert _disp(argv) == ["default", "hearing_impaired", "default", "0"]
+    h = [argv[i + 1] for i, a in enumerate(argv)
+         if a.startswith("-metadata:s:s:") and argv[i + 1].startswith("handler_name=")]
+    assert h == ["handler_name=Whisper", "handler_name=Site",
+                 "handler_name=Translation", "handler_name=Auto"]
+
+
 def _patch_argv(monkeypatch, script: str):
     """Swap the ffmpeg argv for a python script (same idiom as the yt-dlp
     tests). __OUT__ / __SRT__ are replaced with the real paths."""
@@ -232,6 +271,40 @@ def test_package_real_ffmpeg_muxes_language_tags(tmp_path):
             assert len(subs) == 1 and subs[0].metadata.get("language") == "eng"
     finally:
         shutil.rmtree(os.path.dirname(out), ignore_errors=True)
+
+
+@pytest.mark.skipif(shutil.which("ffprobe") is None or shutil.which("ffmpeg") is None,
+                    reason="needs a system ffmpeg + ffprobe")
+def test_package_real_ffmpeg_writes_per_track_dispositions(tmp_path):
+    """The flags survive the real mux: ffprobe reads them back (MKV keeps
+    FlagOriginal; MP4 keeps default + hearing_impaired and the hdlr name)."""
+    import json
+    src = str(tmp_path / "src.mp4")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                    "-c:v", "libx264", "-pix_fmt", "yuv420p", src], check=True, timeout=60)
+
+    def _subs(path):
+        r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s",
+                            "-show_streams", "-of", "json", path],
+                           capture_output=True, text=True, check=True, timeout=60)
+        return json.loads(r.stdout)["streams"]
+
+    for container in ("mkv", "mp4"):
+        out = _run(pk.package(src, _flagged_tracks(), container=container,
+                              default_track=None, timeout=60))
+        try:
+            subs = _subs(out)
+            d = [(s["disposition"]["default"], s["disposition"]["original"],
+                  s["disposition"]["hearing_impaired"]) for s in subs]
+            if container == "mkv":
+                assert d == [(1, 1, 0), (0, 1, 1), (1, 0, 0), (0, 0, 0)]
+            else:
+                assert d == [(1, 0, 0), (0, 0, 1), (1, 0, 0), (0, 0, 0)]
+                assert [s["tags"].get("handler_name") for s in subs] == [
+                    "Whisper", "Site", "Translation", "Auto"]
+        finally:
+            shutil.rmtree(os.path.dirname(out), ignore_errors=True)
 
 
 def test_build_package_argv_maps_the_probed_video_index():

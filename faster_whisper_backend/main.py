@@ -8367,8 +8367,12 @@ async def package_media(media_id: str, request: Request,
                         user: dict = Depends(_get_current_user_dep)):
     """Mux the client's SRT tracks into a retained video as soft subtitle
     streams and stream the file back. Body: {container: "mkv"|"mp4",
-    subtitles: [{lang, label?, srt}], default_track?, original_track?,
-    audio_lang?, audio_label?, filename?}. MP4 only
+    subtitles: [{lang, label?, srt, default?, original?, hearing_impaired?}],
+    default_track?, original_track?, audio_lang?, audio_label?, filename?}.
+    The per-track booleans set that disposition on the track (several tracks
+    may carry each one); the older `default_track` / `original_track`
+    indices still work and combine with them (index match OR own flag).
+    `original` is Matroska-only (MP4 has no such flag). MP4 only
     when the streams fit it (422 with code "mp4_incompatible" otherwise, and
     the reason). One packaging run per identity at a time."""
     from fastapi.responses import FileResponse
@@ -8419,7 +8423,14 @@ async def package_media(media_id: str, request: Request,
         label = t.get("label")
         label = (re.sub(r"[\x00-\x1f\x7f]", "", label).strip()[:64]
                  if isinstance(label, str) else "") or _pk.lang_name(lang)
-        tracks.append(_pk.SubtitleTrack(lang=lang, label=label, srt=srt))
+        flags = {}
+        for k in ("default", "original", "hearing_impaired"):
+            v = t.get(k, False)
+            if not isinstance(v, bool):
+                raise HTTPException(status_code=422,
+                                    detail=f"subtitles[{i}].{k} must be a boolean")
+            flags[k] = v
+        tracks.append(_pk.SubtitleTrack(lang=lang, label=label, srt=srt, **flags))
     default_track = body.get("default_track")
     if default_track is not None:
         if (not isinstance(default_track, int) or isinstance(default_track, bool)

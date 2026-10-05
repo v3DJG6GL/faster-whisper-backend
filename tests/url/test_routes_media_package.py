@@ -176,6 +176,33 @@ def test_package_forwards_original_track_and_audio_language(client, package_enab
         assert r.status_code == 422, (bad, r.text)
 
 
+def test_package_forwards_per_track_flags(client, package_enabled, monkeypatch):
+    seen = {}
+
+    def _argv(src, srt_paths, tracks, *, container, out_path, default_track, **kw):
+        seen["flags"] = [(t.default, t.original, t.hearing_impaired) for t in tracks]
+        seen["indices"] = (default_track, kw.get("original_track"))
+        return [sys.executable, "-c", f"open({out_path!r}, 'wb').write(b'video-bytes')"]
+    monkeypatch.setattr(pk, "build_package_argv", _argv)
+    mid = _upload(client).json()["media_id"]
+    subs = _tracks()
+    subs[0].update(default=True, original=True)
+    subs[1].update(hearing_impaired=True)
+    r = client.post(f"/v1/audio/media/{mid}/package",
+                    json={"container": "mkv", "subtitles": subs, "original_track": 1})
+    assert r.status_code == 200, r.text
+    # Absent booleans are off; the legacy index travels alongside untouched.
+    assert seen == {"flags": [(True, True, False), (False, False, True)],
+                    "indices": (None, 1)}
+    for k in ("default", "original", "hearing_impaired"):
+        for bad in (1, "true", None):
+            subs = _tracks()
+            subs[0][k] = bad
+            r = client.post(f"/v1/audio/media/{mid}/package",
+                            json={"container": "mkv", "subtitles": subs})
+            assert r.status_code == 422 and f"subtitles[0].{k}" in r.text, (k, bad, r.text)
+
+
 def test_package_mkv_happy_path_streams_the_file_and_cleans_up(client, package_enabled):
     mid = _upload(client).json()["media_id"]
     before = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("pkg-")}

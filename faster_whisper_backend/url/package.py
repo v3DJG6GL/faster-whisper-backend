@@ -75,6 +75,10 @@ class SubtitleTrack:
     lang: str
     label: str
     srt: str
+    # Per-track dispositions (several tracks may carry each one).
+    default: bool = False
+    original: bool = False
+    hearing_impaired: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -218,9 +222,15 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     `-map 0:v:N` takes ONE video stream only — `video_index` is
     MediaStreams.video_index, so a cover-art stream in front of the real
     video never becomes the picture; `-map 0:a?` keeps every audio track.
-    `original_track` gets the Matroska original-language flag (ffmpeg's
-    `original` disposition, FlagOriginal since 4.4; MP4 has no such flag and
-    drops it) — the track NAME stays the plain language name. `audio_lang`
+    A track is `default` / `original` when its own flag is set OR its index
+    is `default_track` / `original_track` (the single-index form older
+    clients send). `original` is the Matroska original-language flag
+    (ffmpeg's `original` disposition, FlagOriginal since 4.4) — the track
+    NAME stays the plain language name. MP4 has no such flag (movenc drops it
+    silently), so the argv leaves it out there; `default` and
+    `hearing_impaired` survive in MP4. MP4 tracks also get `handler_name` =
+    the title: players such as Jellyfin read the hdlr name as the track
+    title, and movenc writes no `title` for mov_text. `audio_lang`
     tags every audio stream with the spoken language (the source file usually
     carries the uploader's default, "en" for a German video).
     `strip_empty_captions` drops the H.264 SEI units, which takes broadcast
@@ -243,11 +253,15 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
     if srt_paths:
         argv += ["-c:s", "mov_text" if container == "mp4" else "srt"]
     for i, t in enumerate(tracks):
-        flags = [f for f, on in (("default", default_track == i),
-                                 ("original", original_track == i)) if on]
+        flags = [f for f, on in (
+            ("default", t.default or default_track == i),
+            ("original", (t.original or original_track == i) and container != "mp4"),
+            ("hearing_impaired", t.hearing_impaired)) if on]
         argv += [f"-metadata:s:s:{i}", f"language={iso639_2t(t.lang)}",
-                 f"-metadata:s:s:{i}", f"title={t.label}",
-                 f"-disposition:s:{i}", "+".join(flags) if flags else "0"]
+                 f"-metadata:s:s:{i}", f"title={t.label}"]
+        if container == "mp4":
+            argv += [f"-metadata:s:s:{i}", f"handler_name={t.label}"]
+        argv += [f"-disposition:s:{i}", "+".join(flags) if flags else "0"]
     if audio_lang:
         argv += ["-metadata:s:a", f"language={iso639_2t(audio_lang)}",
                  "-metadata:s:a", f"title={audio_label or lang_name(audio_lang)}"]
