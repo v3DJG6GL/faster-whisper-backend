@@ -16,8 +16,10 @@ Rules:
   - one format per track, vtt over srt; never an HLS playlist (SRF lists a
     248-byte m3u8 stub beside the real vtt — fetching its segments would
     be a fan-out of server requests the caps never saw);
-  - at most MAX_TRACKS, ids `^[A-Za-z0-9_-]{1,32}$` minted from kind + lang
-    so the same link yields the same ids on every probe.
+  - at most MAX_TRACKS, ids `^[A-Za-z0-9_-]{1,32}$` minted from kind + the
+    site's language key so the same link yields the same ids on every probe;
+  - `lang` (and `language_of`) in the server's own spelling (`_code`), so
+    the code a track carries is one the packaging route accepts.
 """
 from __future__ import annotations
 
@@ -27,6 +29,7 @@ import time
 import urllib.error
 import urllib.parse
 
+from faster_whisper_backend.core.languages import canonical_code
 from faster_whisper_backend.url import download as _udl
 
 MAX_TRACKS = 24
@@ -60,15 +63,23 @@ def _best_format(formats) -> "dict | None":
     return usable[0] if usable else None
 
 
+def _code(key: str) -> str:
+    """A site's language key (already _LANG_RE-shaped) as the server spells
+    codes: canonical_code where the language table names it ("EN" → "en",
+    "deu" → "de", "pt-br" → "pt-BR", "zh-Hans" → "zh"), else the lowercase
+    base ("rm", "fil", "sr-Latn-RS" → "sr")."""
+    return canonical_code(key) or key.split("-")[0].lower()
+
+
 def language_of(info: dict) -> "str | None":
     """The spoken language the site names (YouTube's `language`), else the
     language of its one original-language auto track; None when unknown."""
     lang = info.get("language")
     if isinstance(lang, str) and _LANG_RE.match(lang):
-        return lang
+        return _code(lang)
     orig = [k[:-5] for k in (info.get("automatic_captions") or {})
             if isinstance(k, str) and k.endswith("-orig")]
-    return orig[0] if len(orig) == 1 and _LANG_RE.match(orig[0]) else None
+    return _code(orig[0]) if len(orig) == 1 and _LANG_RE.match(orig[0]) else None
 
 
 def list_tracks(info: dict) -> "tuple[list[dict], dict[str, dict]]":
@@ -94,7 +105,7 @@ def list_tracks(info: dict) -> "tuple[list[dict], dict[str, dict]]":
             continue
         name = str(f.get("name") or "")[:_NAME_MAX] or None
         public.append({
-            "id": tid, "lang": lang, "name": name, "kind": kind,
+            "id": tid, "lang": _code(lang), "name": name, "kind": kind,
             "ext": _ext_of(f),
             "hoh": bool(_HOH_RE.search(f"{lang} {name or ''}")),
         })

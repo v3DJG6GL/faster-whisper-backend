@@ -81,6 +81,19 @@ def test_srt_when_no_vtt_and_nothing_else():
     assert [(t["id"], t["ext"]) for t in subs.list_tracks(info)[0]] == [("m-en", "srt")]
 
 
+def test_lang_is_a_code_the_server_accepts_ids_keep_the_site_key():
+    from faster_whisper_backend.core.languages import TRANSLATE_CODE_RE
+    keys = ("EN", "deu", "pt-br", "sr-Latn-RS", "rm", "zh-Hant")
+    public, _ = subs.list_tracks({"subtitles": {
+        k: [{"url": f"https://e.test/{i}.vtt"}] for i, k in enumerate(keys)}})
+    assert [(t["id"], t["lang"]) for t in public] == [
+        ("m-EN", "en"), ("m-deu", "de"), ("m-pt-br", "pt-BR"),
+        ("m-sr-Latn-RS", "sr"), ("m-rm", "rm"), ("m-zh-Hant", "zh-Hant")]
+    assert all(TRANSLATE_CODE_RE.match(t["lang"]) for t in public)
+    assert subs.language_of({"language": "EN"}) == "en"
+    assert subs.language_of({"automatic_captions": {"sr-Latn-RS-orig": []}}) == "sr"
+
+
 def test_hearing_impaired_from_names():
     info = {"subtitles": {
         "de": [{"url": "https://e.test/a.vtt", "name": "Untertitel für Hörgeschädigte"}],
