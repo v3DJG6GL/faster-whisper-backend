@@ -6,7 +6,7 @@ import json
 from tests.conftest import bearer
 
 _API = "/settings/api-keys/api"
-_V1 = "/v1/client-settings"
+_V1 = "/v1/synced-client-settings"
 
 
 def _seed(client, blob, base=0, device=None, headers=None):

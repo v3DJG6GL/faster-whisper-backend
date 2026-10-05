@@ -408,7 +408,7 @@ async def patch_key_config_api(
 # Synced client settings (desktop sync) — per-account admin management.
 #
 # The desktop app syncs its settings through the user-tier
-# /v1/client-settings endpoint (client_settings_routes). These admin
+# /v1/synced-client-settings endpoint (client_settings_routes). These admin
 # endpoints add per-account visibility + management on the keys page.
 # The stored blob is OPAQUE, SENSITIVE client JSON (by user choice it can
 # include the account's saved API keys), so the metadata endpoint never
@@ -2301,7 +2301,7 @@ _API_KEYS_HTML = r"""<!doctype html>
   }
 
   // ---- per-account synced client settings (chip + drawer) ----
-  // The desktop app syncs its settings per account via /v1/client-settings;
+  // The desktop app syncs its settings per account via /v1/synced-client-settings;
   // this page surfaces METADATA (version/size/device/updated) + management.
   // The stored blob can include the account's saved API keys, so it never
   // renders here — it only moves as an explicit export download (two-press

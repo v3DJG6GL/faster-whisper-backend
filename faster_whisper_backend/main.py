@@ -2185,7 +2185,8 @@ def build_ident(user: "dict | None", model_id: "str | None",
     kwargs / _postprocess_text. Open mode and callers with no per-identity
     config yield a Resolved with no identity layers (per-model rules still
     folded) — equivalent to threading ident=None. ``with_provenance`` adds the
-    per-field layer stack (GET /v1/decode-defaults names each value's source)."""
+    per-field layer stack (GET /v1/request-default-settings names each value's
+    source)."""
     from faster_whisper_backend import effective_config
     user = user or {}
     return effective_config.resolve(
@@ -2480,7 +2481,7 @@ def _check_model_shape(name: str) -> None:
 
 def _check_model_name(name: str) -> None:
     """Both model gates the loader applies, without loading anything — for
-    endpoints that only read a model's config (GET /v1/decode-defaults)."""
+    endpoints that only read a model's config (GET /v1/request-default-settings)."""
     _check_model_allowed(name)
     _check_model_shape(name)
 
@@ -3382,9 +3383,9 @@ async def lifespan(app: FastAPI):
         logger.error("Failed to initialize reports store: %s", _re)
 
     # Open the desktop-client settings-sync store (one opaque blob per
-    # account, served at /v1/client-settings). Non-fatal: sync degrades to
-    # 503s but transcription keeps working. No retention loop — bounded at
-    # one row per account.
+    # account, served at /v1/synced-client-settings). Non-fatal: sync
+    # degrades to 503s but transcription keeps working. No retention loop —
+    # bounded at one row per account.
     try:
         from faster_whisper_backend.client_settings import store as client_settings_store
         client_settings_store.init_db(cfg.CLIENT_SETTINGS_DB)
@@ -3394,7 +3395,7 @@ async def lifespan(app: FastAPI):
     except Exception as _cse:
         logger.error(
             "Failed to initialize client-settings store at %s: %s — "
-            "/v1/client-settings will answer 503 until this is fixed "
+            "/v1/synced-client-settings will answer 503 until this is fixed "
             "(WHISPER_CLIENT_SETTINGS_DB / WHISPER_DB_DIR / WHISPER_DATA_DIR)",
             cfg.CLIENT_SETTINGS_DB, _cse,
         )
@@ -3884,6 +3885,47 @@ async def _metrics_mw(request: Request, call_next):
         metrics.record_request(path, status,
                                (time.perf_counter() - start) * 1000.0,
                                unmatched=route is None)
+
+
+# Renamed client endpoints: old path → its successor. Both paths are served by
+# the same handler (stacked route decorators, the old one deprecated=True), so
+# a client built before the rename keeps working; no redirect, because a 307/
+# 308 makes the client replay a PUT body. _legacy_path_mw stamps the RFC 9745 /
+# RFC 8594 headers on every answer from an old path.
+_LEGACY_PATHS = {
+    "/v1/decode-defaults": "/v1/request-default-settings",
+    "/v1/client-settings": "/v1/synced-client-settings",
+}
+# When the old paths were deprecated (2026-10-05 00:00 UTC), as the
+# `Deprecation: @<epoch>` structured-field date.
+_LEGACY_SINCE_EPOCH = 1791158400
+# Old paths already logged — once per path per process is enough to see which
+# deployments still run old clients.
+_legacy_paths_logged: set[str] = set()
+
+
+@app.middleware("http")
+async def _legacy_path_mw(request: Request, call_next):
+    """Deprecation headers for the renamed endpoints in _LEGACY_PATHS.
+
+    A middleware, not an injected Response: the PUT handler returns its own
+    JSONResponse and errors are HTTPExceptions, both of which drop headers set
+    on an injected Response. Registered before _security_headers_mw, so it
+    wraps the inner middlewares and also stamps their early 403/413."""
+    response = await call_next(request)
+    path = request.url.path
+    successor = _LEGACY_PATHS.get(path)
+    if successor is not None:
+        response.headers["Deprecation"] = f"@{_LEGACY_SINCE_EPOCH}"
+        response.headers["Link"] = f'<{successor}>; rel="successor-version"'
+        if path not in _legacy_paths_logged:
+            _legacy_paths_logged.add(path)
+            logger.info(
+                "Deprecated path %s called (successor %s, user-agent %s); "
+                "logged once per path",
+                path, successor,
+                _log_safe(request.headers.get("user-agent") or "-"))
+    return response
 
 
 # Responses that legitimately want to be cached: the vendored bundles, the
@@ -8582,7 +8624,8 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
 
     Returns: {can_request_override_profile, can_request_decode_overrides,
     allowed_override_profiles: ["*"] | [names…] | []} plus the feature flags
-    below. The decode values a caller inherits are GET /v1/decode-defaults."""
+    below. The decode values a caller inherits are GET
+    /v1/request-default-settings."""
     from faster_whisper_backend import effective_config
     caps = effective_config.resolve_capabilities(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
@@ -8747,7 +8790,7 @@ async def get_override_profile(name: str,
     profiles = getattr(cfg, "OVERRIDE_PROFILES", None) or {}
     blob = profiles.get(name)
     values, locked = effective_config.project_profile_to_client(blob)
-    # `prompt` is exposed SEPARATELY (not in `values`, which is exactly the 19
+    # `prompt` is exposed SEPARATELY (not in `values`, which is exactly the
     # client decode keys): the client's "Vocabulary / prompt" maps to the server's
     # DEFAULT_PROMPT, which has no client decode key, so the editor needs it here to
     # ghost the profile's prompt as an inherited default.
@@ -8762,7 +8805,7 @@ async def get_override_profile(name: str,
             "prompt": prompt, "prompt_locked": prompt_locked}
 
 
-# The longest model id GET /v1/decode-defaults looks at; a real one is far shorter.
+# The longest model id GET /v1/request-default-settings looks at; a real one is far shorter.
 _DECODE_DEFAULTS_MODEL_MAX = 200
 
 
@@ -8791,7 +8834,8 @@ def _provenance_source(rows: "list[dict] | None") -> "tuple[str, str]":
     return "builtin", "faster-whisper default"
 
 
-@app.get("/v1/decode-defaults")
+@app.get("/v1/request-default-settings")
+@app.get("/v1/decode-defaults", deprecated=True)
 async def get_decode_defaults(model: str = "", override_profile: str = "",
                               user: dict = Depends(_get_current_user_dep)):
     """The decode values THIS caller's requests get when they send no
@@ -10124,8 +10168,9 @@ except Exception as _e:
 
 
 # =============================================================================
-# /v1/client-settings - desktop-client settings sync
+# /v1/synced-client-settings - desktop-client settings sync
 # =============================================================================
+# (the old /v1/client-settings path is a deprecated alias, see _LEGACY_PATHS)
 # Always registered (a route-level 404 must keep meaning "backend build too
 # old for sync"). User-tier bearer auth only — deliberately NO page gate and
 # NO host allowlist: settings sync is account infrastructure for remote
@@ -10135,7 +10180,7 @@ try:
     from faster_whisper_backend.client_settings.routes import router as _client_settings_router
     app.include_router(_client_settings_router)
     logger.info(
-        "Client-settings sync at GET/PUT/DELETE /v1/client-settings"
+        "Client-settings sync at GET/PUT/DELETE /v1/synced-client-settings"
     )
 except Exception as _e:
     logger.error("Failed to load client-settings router: %s", _e)
@@ -10154,8 +10199,8 @@ except Exception as _e:
 # =============================================================================
 # /v1/models/preload - ask the server to warm the models a job will need
 # =============================================================================
-# Always registered, same rationale as /v1/client-settings above: a route-level
-# 404 must keep meaning "backend build too old for preloading", never
+# Always registered, same rationale as /v1/synced-client-settings above: a
+# route-level 404 must keep meaning "backend build too old for preloading", never
 # "preloading is off here" — the latter is a 202 with every entry `deferred`.
 # User-tier bearer auth only (the tier /v1/models and /v1/me already use to
 # publish `loaded` flags for these exact models); no page gate, no host

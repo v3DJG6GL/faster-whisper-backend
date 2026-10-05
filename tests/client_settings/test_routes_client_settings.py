@@ -1,8 +1,8 @@
-"""Integration tests for /v1/client-settings (desktop settings sync)."""
+"""Integration tests for /v1/synced-client-settings (desktop settings sync)."""
 
 from tests.conftest import bearer
 
-_URL = "/v1/client-settings"
+_URL = "/v1/synced-client-settings"
 
 
 def _put(client, blob, base_version, device=None, headers=None):
@@ -173,3 +173,49 @@ def test_partial_init_maps_to_503_not_500(client, monkeypatch):
     r = client.get(_URL)
     assert r.status_code == 503
     assert "CLIENT_SETTINGS_DB" in r.json()["detail"]
+
+
+# --- the old /v1/client-settings path: a deprecated alias -------------------
+
+_OLD = "/v1/client-settings"
+
+
+def _assert_deprecated(r):
+    assert r.headers["Deprecation"].startswith("@")
+    assert int(r.headers["Deprecation"][1:]) > 0
+    assert r.headers["Link"] == f'<{_URL}>; rel="successor-version"'
+
+
+def test_old_path_serves_get_put_delete_with_deprecation_headers(client):
+    r = client.put(_OLD, json={"blob": {"n": 1}, "base_version": 0})
+    assert r.status_code == 200
+    _assert_deprecated(r)
+    r = client.get(_OLD)
+    assert r.status_code == 200 and r.json()["blob"] == {"n": 1}
+    _assert_deprecated(r)
+    # Same store as the new path.
+    assert client.get(_URL).json()["version"] == 1
+    assert "Deprecation" not in client.get(_URL).headers
+    r = client.delete(_OLD)
+    assert r.status_code == 200 and r.json()["deleted"] is True
+    _assert_deprecated(r)
+
+
+def test_old_path_errors_carry_deprecation_headers(client):
+    _put(client, {"n": 1}, 0)
+    r = client.put(_OLD, json={"blob": {"n": 2}, "base_version": 0})
+    assert r.status_code == 409
+    _assert_deprecated(r)
+    r = client.put(_OLD, json={"blob": "not an object", "base_version": 0})
+    assert r.status_code == 422
+    _assert_deprecated(r)
+
+
+def test_old_path_logged_once(client, app_module, monkeypatch, caplog):
+    monkeypatch.setattr(app_module, "_legacy_paths_logged", set())
+    with caplog.at_level("INFO", logger="whisper-api"):
+        client.get(_OLD)
+        client.get(_OLD)
+    lines = [r for r in caplog.records
+             if "Deprecated path /v1/client-settings" in r.getMessage()]
+    assert len(lines) == 1

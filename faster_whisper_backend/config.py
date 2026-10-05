@@ -1147,9 +1147,9 @@ SESSIONS_DB = _D("SESSIONS_DB")
 BOOTSTRAP_ADMIN_KEY: "str | None" = _D("BOOTSTRAP_ADMIN_KEY")
 
 # Desktop-client settings-sync store: one opaque settings blob per account
-# (user_id), PUT/GET by the desktop client at /v1/client-settings so every
-# machine authenticating as the same account shares one configuration. The
-# blob may contain the client's own backend API keys — sensitive; never
+# (user_id), PUT/GET by the desktop client at /v1/synced-client-settings so
+# every machine authenticating as the same account shares one configuration.
+# The blob may contain the client's own backend API keys — sensitive; never
 # logged. SQLite (WAL) next to config.local.json; three runtime files
 # (.sqlite3, -wal, -shm), all gitignored. See client_settings/store.py.
 CLIENT_SETTINGS_DB = _D("CLIENT_SETTINGS_DB")

@@ -1,10 +1,10 @@
 """POST /v1/models/preload — ask the server to warm the models a job is about
 to need.
 
-Mounted always-on in main.py (like /v1/client-settings), so a route-level 404
-keeps its client-side meaning of "this backend build doesn't have the
-endpoint" rather than "preloading is switched off here" — the latter is a 202
-with every entry `deferred`.
+Mounted always-on in main.py (like /v1/synced-client-settings), so a
+route-level 404 keeps its client-side meaning of "this backend build doesn't
+have the endpoint" rather than "preloading is switched off here" — the latter
+is a 202 with every entry `deferred`.
 
 Security model:
   - User-tier bearer auth ONLY: Depends(get_current_user), the same tier as

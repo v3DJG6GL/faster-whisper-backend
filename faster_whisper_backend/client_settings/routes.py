@@ -4,9 +4,12 @@ Mounted always-on in main.py (like the pipeline-rules /v1 router), so a
 route-level 404 keeps its client-side meaning of "this backend build
 doesn't have the endpoint". Endpoints:
 
-  GET    /v1/client-settings   Current blob (200 {version:0, blob:null} when empty)
-  PUT    /v1/client-settings   Optimistic write; 409 carries the current state
-  DELETE /v1/client-settings   Drop the stored blob
+  GET    /v1/synced-client-settings   Current blob (200 {version:0, blob:null} when empty)
+  PUT    /v1/synced-client-settings   Optimistic write; 409 carries the current state
+  DELETE /v1/synced-client-settings   Drop the stored blob
+
+The old /v1/client-settings path stays as a deprecated alias of all three
+(main.py's _LEGACY_PATHS stamps the Deprecation/Link headers).
 
 Security model:
   - User-tier bearer auth ONLY: Depends(get_current_user). Deliberately NO
@@ -80,7 +83,8 @@ def _state_body(row: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-@router.get("/client-settings")
+@router.get("/synced-client-settings")
+@router.get("/client-settings", deprecated=True)
 async def get_client_settings(
     response: Response,
     user: dict[str, Any] = Depends(get_current_user),
@@ -100,7 +104,8 @@ async def get_client_settings(
         raise _store_unavailable() from None
 
 
-@router.put("/client-settings")
+@router.put("/synced-client-settings")
+@router.put("/client-settings", deprecated=True)
 async def put_client_settings(
     payload: PutClientSettings,
     user: dict[str, Any] = Depends(get_current_user),
@@ -146,7 +151,8 @@ async def put_client_settings(
     return JSONResponse(status_code=status.HTTP_200_OK, content=_state_body(row))
 
 
-@router.delete("/client-settings")
+@router.delete("/synced-client-settings")
+@router.delete("/client-settings", deprecated=True)
 async def delete_client_settings(
     user: dict[str, Any] = Depends(get_current_user),
 ) -> dict[str, Any]:

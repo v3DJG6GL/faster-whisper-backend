@@ -2436,7 +2436,7 @@ class AdminConfig(BaseModel):
     USAGE_UNREPORTED_AFTER_H: Annotated[int, Field(ge=1, le=720)] | None = _F(
         "USAGE_UNREPORTED_AFTER_H", scope="server", group="Usage statistics")
 
-    # --- Client settings sync (the desktop app's /v1/client-settings) ---
+    # --- Client settings sync (the desktop app's /v1/synced-client-settings) ---
     CLIENT_SETTINGS_DB: Annotated[str, Field(min_length=1, max_length=512)] | None = _F(
         "CLIENT_SETTINGS_DB", scope="server", group="Client settings sync",
         restart=True)

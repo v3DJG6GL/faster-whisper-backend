@@ -22,8 +22,8 @@ def _put_json(client, payload, chunked=False):
         def _gen():
             for i in range(0, len(payload), 65536):
                 yield payload[i:i + 65536]
-        return client.put("/v1/client-settings", content=_gen(), headers=_JSON)
-    return client.put("/v1/client-settings", content=payload, headers=_JSON)
+        return client.put("/v1/synced-client-settings", content=_gen(), headers=_JSON)
+    return client.put("/v1/synced-client-settings", content=payload, headers=_JSON)
 
 
 def test_small_json_body_is_not_rejected(client):
@@ -60,7 +60,7 @@ def test_oversize_json_is_rejected_before_the_route_runs(client, app_module):
 def test_oversize_json_with_plus_json_subtype_is_413(client):
     # FastAPI parses application/*+json bodies as JSON too — a prefix test on
     # "application/json" would hand them the 256 MB service-wide ceiling.
-    r = client.put("/v1/client-settings", content=_big_json(8 * 1024 * 1024),
+    r = client.put("/v1/synced-client-settings", content=_big_json(8 * 1024 * 1024),
                    headers={"Content-Type": "application/merge-patch+json"})
     assert r.status_code == 413
 
@@ -68,7 +68,7 @@ def test_oversize_json_with_plus_json_subtype_is_413(client):
 def test_oversize_body_with_no_content_type_is_413(client):
     # No Content-Type at all: FastAPI still buffers and json.loads-expands the
     # body, so an absent header must count as JSON for the cap.
-    r = client.put("/v1/client-settings", content=_big_json(8 * 1024 * 1024))
+    r = client.put("/v1/synced-client-settings", content=_big_json(8 * 1024 * 1024))
     assert "content-type" not in r.request.headers
     assert r.status_code == 413
 
@@ -76,7 +76,7 @@ def test_oversize_body_with_no_content_type_is_413(client):
 def test_small_body_with_no_content_type_is_not_413(client):
     # Legitimate small header-less traffic keeps flowing (the route may still
     # reject it on its own terms, but never with the middleware's 413).
-    r = client.put("/v1/client-settings", content=_big_json(1024))
+    r = client.put("/v1/synced-client-settings", content=_big_json(1024))
     assert r.status_code != 413
 
 
@@ -129,7 +129,7 @@ def test_non_json_content_type_keeps_the_service_wide_ceiling(client):
     # text/plain is neither JSON nor an upload: it keeps MAX_REQUEST_BYTES, so a
     # body that would trip the JSON cap is not rejected by the middleware (the
     # route rejects it on its own terms instead).
-    r = client.put("/v1/client-settings", content=b"x" * (8 * 1024 * 1024),
+    r = client.put("/v1/synced-client-settings", content=b"x" * (8 * 1024 * 1024),
                    headers={"Content-Type": "text/plain"})
     assert r.status_code != 413
 
@@ -141,7 +141,7 @@ def test_non_multipart_non_json_keeps_a_256mib_backstop(client, app_module,
     # 300 MiB is refused up front, exactly as before the media cap grew.
     monkeypatch.setattr(app_module.cfg, "MAX_REQUEST_BYTES",
                         10 * 1024 * 1024 * 1024, raising=False)
-    r = client.put("/v1/client-settings", content=b"x",
+    r = client.put("/v1/synced-client-settings", content=b"x",
                    headers={"Content-Type": "text/plain",
                             "Content-Length": str(300 * 1024 * 1024)})
     assert r.status_code == 413

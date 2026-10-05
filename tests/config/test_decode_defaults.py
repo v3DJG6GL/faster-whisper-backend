@@ -1,4 +1,4 @@
-"""GET /v1/decode-defaults: the decode values a caller's requests get with no
+"""GET /v1/request-default-settings: the decode values a caller's requests get with no
 decode_overrides — each client decode key with its value, source and lock, the
 prompt, and the two values live dictation pins. Driven through the real app.
 
@@ -13,7 +13,7 @@ from tests.conftest import bearer
 
 OV = "/settings/overrides"
 PERMS = "/settings/api-keys/api/users"
-URL = "/v1/decode-defaults"
+URL = "/v1/request-default-settings"
 
 
 @pytest.fixture(autouse=True)
@@ -176,3 +176,18 @@ def test_decode_gate_off_locks_every_key(client, make_user_key):
     _set_key_binding(client, h, uid, kid, allow_request_decode_overrides=False)
     j = client.get(URL, headers=bearer(raw_alice)).json()
     assert all(e["locked"] for e in j["settings"].values())
+
+
+def test_old_path_is_a_deprecated_alias(client):
+    new = client.get(URL)
+    old = client.get("/v1/decode-defaults")
+    assert old.status_code == 200
+    assert old.json() == new.json()
+    assert old.headers["Deprecation"].startswith("@")
+    assert old.headers["Link"] == f'<{URL}>; rel="successor-version"'
+    assert "Deprecation" not in new.headers
+    # An error answer from the old path carries the headers too.
+    bad = client.get("/v1/decode-defaults", params={"model": "x" * 300})
+    assert bad.status_code == 400
+    assert bad.headers["Deprecation"] == old.headers["Deprecation"]
+    assert bad.headers["Link"] == old.headers["Link"]
