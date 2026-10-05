@@ -33,6 +33,35 @@ def test_v1_models_shape(client):
     assert all(e["loaded"] is False for e in body["data"])
 
 
+def test_v1_models_name_each_device(client, app_module, monkeypatch):
+    from faster_whisper_backend.runtime import system_stats
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_MODEL", "tiny")
+    monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", {"tiny", "small"})
+    monkeypatch.setattr(app_module.cfg, "MODEL_DEVICE", "cuda")
+    monkeypatch.setattr(app_module.cfg, "MODEL_OVERRIDES",
+                        {"small": {"MODEL_DEVICE": "cpu"}})
+    # Not loaded: where a load would put it (per-model override > global).
+    devices = {e["id"]: e["device"] for e in client.get("/v1/models").json()["data"]}
+    assert devices == {"tiny": "cuda", "small": "cpu"}
+    # Loaded: where it actually sits — a CUDA load that fell back to CPU
+    # registers the fallback device.
+    monkeypatch.setattr(system_stats, "_loaded_models", {})
+    system_stats.register_loaded_model("tiny", None, device="cpu",
+                                       compute_type="int8")
+    devices = {e["id"]: e["device"] for e in client.get("/v1/models").json()["data"]}
+    assert devices["tiny"] == "cpu"
+
+
+def test_model_device_resolves_auto(app_module, monkeypatch):
+    import sys
+    import types
+    fake = types.SimpleNamespace(get_cuda_device_count=lambda: 1)
+    monkeypatch.setitem(sys.modules, "ctranslate2", fake)
+    assert app_module._model_device("tiny", "AUTO") == "cuda"
+    fake.get_cuda_device_count = lambda: 0
+    assert app_module._model_device("tiny", "auto") == "cpu"
+
+
 def test_logs_page_open_no_auth(client):
     r = client.get("/logs")
     assert r.status_code == 200

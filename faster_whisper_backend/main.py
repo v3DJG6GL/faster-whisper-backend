@@ -8567,6 +8567,10 @@ async def list_models():
     the per-process boot_id and the whole ALLOWED_MODELS list, so it is a
     fingerprint, not public metadata."""
     now = int(time.time())
+    # The device each loaded model actually sits on — register_loaded_model
+    # records the fallback device after a failed primary load.
+    loaded_devices = {m["name"]: m["device"]
+                      for m in system_stats.loaded_models_snapshot()}
     names: list[str] = list(_loaded_models.keys())
     if cfg.DEFAULT_MODEL not in names:
         names.append(cfg.DEFAULT_MODEL)
@@ -8591,10 +8595,26 @@ async def list_models():
                 # residency predicate for all four families, so this flag and
                 # the preloader's admission ladder can never disagree.
                 "loaded": preload.is_resident("whisper", n),
+                "device": _model_device(n, loaded_devices.get(n)),
             }
             for n in names
         ],
     }
+
+
+def _model_device(name: str, loaded_device: "str | None") -> str:
+    """The device a whisper model runs on, as a short lowercase token: where
+    it is loaded, else where a load would put it (MODEL_DEVICE, per-model
+    override > global). "auto" resolves like CTranslate2 does: cuda when it
+    sees a GPU, else cpu."""
+    device = str(loaded_device or cfg_for(name, "MODEL_DEVICE") or "cpu").lower()
+    if device == "auto":
+        try:
+            import ctranslate2
+            device = "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+        except Exception:  # noqa: BLE001 — no CT2 / no driver reads as cpu
+            device = "cpu"
+    return device[:16]
 
 
 # llama-cpp-python version cache, url_download.yt_dlp_version-style: the
