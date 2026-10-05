@@ -9073,7 +9073,9 @@ _LOG_VIEWER_HTML = """<!doctype html>
      this is display only, which is the whole difference from the old inert
      "(+610 more)" tail, where the rows were never written at all. */
   .line.folded  { display: none; }
-  .fold-ctl { color: var(--dim); cursor: default; }
+  /* Controls, not log text: the selection highlight skips them, and the
+     copy handler drops them from the clipboard. */
+  .fold-ctl { color: var(--dim); cursor: default; user-select: none; }
   .fold-ctl button { background: transparent; color: var(--cyan);
     border: 1px solid var(--border); border-radius: 4px; font: inherit;
     font-size: 0.9em; padding: 0 0.5rem; margin-left: 0.5rem;
@@ -9087,7 +9089,7 @@ _LOG_VIEWER_HTML = """<!doctype html>
   .line .clip-btn { display: inline-block; margin: 0.15rem 0 0.2rem 2rem;
     background: transparent; color: var(--cyan); border: 1px solid var(--border);
     border-radius: 4px; font: inherit; font-size: 0.9em; padding: 0 0.5rem;
-    cursor: pointer; }
+    cursor: pointer; user-select: none; }
   .line .clip-btn:hover { background: var(--panel); }
   {{NAV_CSS}}
 </style></head>
@@ -9429,6 +9431,38 @@ _LOG_VIEWER_HTML = """<!doctype html>
     if (!hit) el.classList.remove('match-cur');
     el.classList.toggle('hidden', hideMode && !hit);
   }
+  // Copy what was selected, not what the viewer happens to show. Folded
+  // segment / pipeline rows (display:none) and the clamped tail of a long
+  // transcript line lie inside the selection's DOM range, but the browser's
+  // own copy drops or clips them — and copies the fold and "Show all" button
+  // labels instead. Cloning the range keeps every node in it (and the classes
+  // of the partly selected first and last rows, so those stay trimmed to the
+  // selection); the controls and the rows the search filter hides are then
+  // removed — hide mode means "not these". The range is clamped to #log, so
+  // Ctrl+A copies the log, not the header or this script. A selection that
+  // never touches the log keeps the browser's own copy.
+  document.addEventListener('copy', (e) => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !e.clipboardData) return;
+    const whole = document.createRange();
+    whole.selectNodeContents(log);
+    const parts = [];
+    for (let i = 0; i < sel.rangeCount; i++) {
+      const r = sel.getRangeAt(i).cloneRange();
+      if (!r.intersectsNode(log)) continue;
+      if (r.compareBoundaryPoints(Range.START_TO_START, whole) < 0)
+        r.setStart(whole.startContainer, whole.startOffset);
+      if (r.compareBoundaryPoints(Range.END_TO_END, whole) > 0)
+        r.setEnd(whole.endContainer, whole.endOffset);
+      const frag = r.cloneContents();
+      frag.querySelectorAll('.line.hidden, .fold-ctl, button')
+        .forEach((n) => n.remove());
+      parts.push(frag.textContent);
+    }
+    if (!parts.length) return;
+    e.clipboardData.setData('text/plain', parts.join('\\n'));
+    e.preventDefault();
+  });
   function _matches() { return Array.from(log.querySelectorAll('.line.match')); }
   let _navQueued = false;
   function updateNav(list) {

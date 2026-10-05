@@ -136,3 +136,15 @@ def test_logs_page_live_trim_steps_the_load_older_cursor_back(client):
     trim = trim[:trim.index("if (!paused) window.scrollTo")]
     assert "_logsSkip--" in trim
     assert "contains('line')" in trim
+
+
+def test_logs_page_copy_handler_keeps_folded_rows_drops_controls(client):
+    # Copying a selection must carry the folded / clamped rows it spans; the
+    # handler removes only the controls and the rows the search filter hides.
+    html = client.get("/logs").text
+    h = html[html.index("document.addEventListener('copy'"):]
+    h = h[:h.index("e.preventDefault()")]
+    assert "cloneContents()" in h
+    assert "'.line.hidden, .fold-ctl, button'" in h
+    assert ".folded" not in h
+

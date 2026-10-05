@@ -112,7 +112,7 @@ _NODE = shutil.which("node")
 
 
 @pytest.mark.skipif(_NODE is None, reason="node unavailable for JS syntax check")
-@pytest.mark.parametrize("url", ["/settings/pipeline", "/quick-config", "/settings"])
+@pytest.mark.parametrize("url", ["/settings/pipeline", "/quick-config", "/settings", "/logs"])
 def test_inline_scripts_parse(client, url, tmp_path):
     html = client.get(url).text
     blocks = re.findall(r"<script\b([^>]*)>(.*?)</script>", html, re.S)
