@@ -154,8 +154,9 @@ _WS_BAD_ORIGIN = 4403
 _WS_IDLE_TIMEOUT = 4408  # client sent no audio for STREAMING_IDLE_TIMEOUT_S
 
 # The client decode_override keys the server actually honors (main._apply_decode_
-# overrides consumes exactly this set; every other key is discarded there). Bound
-# once at import from the public config_store.CONFIG_TO_CLIENT_KEY registry so
+# overrides consumes the decode ones, _client_stream_values the live-dictation
+# ones; every other key is discarded). Bound once at import from the public
+# config_store.CONFIG_TO_CLIENT_KEY registry so
 # the handshake can narrow the client's dict — and without retaining an
 # unbounded, connection-lifetime dict of attacker-chosen keys.
 _CLIENT_OVERRIDE_KEYS: frozenset[str] = frozenset(
@@ -241,12 +242,69 @@ def authenticate_ws(ws: WebSocket) -> "dict | None":
     return auth._resolve_user(ws, _ws_credentials(ws))
 
 
-def _stream_config(cfg_for, ident=None) -> StreamConfig:
+def _client_stream_values(main, overrides: dict, ident) -> "tuple[dict, list[str]]":
+    """The live-dictation knobs this connection's decode_overrides set
+    (config_store.STREAM_ONLY_CLIENT_KEYS), as {STREAMING_* field: value} for
+    _stream_config / make_endpointer, plus a note per adjustment made.
+
+    Locked keys (ident.locked_client_keys, which also covers the master gate)
+    are skipped — the handshake already reports them in overrides_ignored.
+    Numbers are clamped to the field's own bounds (client_key_bounds), the
+    separator is kept verbatim up to its max length ("\\n" included).
+
+    The silence gates only work as a pair, so when a client value takes part:
+    inner must stay below outer (inner >= outer stretches the commit wait to
+    the forced-commit cap, session.py) — else inner = outer - 50; and a hard
+    break must be off (0) or longer than outer (the idle-silence clock
+    survives the finalize, so hard break <= outer would break after every
+    utterance) — else hard break = outer + 1000. Server-only values are the
+    admin's and are never adjusted."""
+    bounds = config_store.client_key_bounds()
+    field_of = {ck: f for f, ck in config_store.CONFIG_TO_CLIENT_KEY.items()}
+    values: dict = {}
+    for key in config_store.STREAM_ONLY_CLIENT_KEYS:
+        if key not in overrides or key in ident.locked_client_keys:
+            continue
+        raw, b = overrides[key], bounds[key]
+        if b["kind"] == "int":
+            v = main._clamp_int(raw, b["min"], b["max"])
+        elif b["kind"] == "float":
+            v = main._clamp_float(raw, b["min"], b["max"])
+        else:
+            v = raw[:b["maxlen"]] if isinstance(raw, str) else None
+        if v is not None:
+            values[field_of[key]] = v
+    notes: list[str] = []
+    inner_f, outer_f = "STREAMING_VAD_INNER_SILENCE_MS", "STREAMING_VAD_OUTER_SILENCE_MS"
+    hb_f = "STREAMING_HARD_BREAK_SILENCE_MS"
+
+    def eff(field):
+        return int(values[field] if field in values
+                   else main.cfg_for(None, field, ident))
+    outer = eff(outer_f)
+    if inner_f in values or outer_f in values:
+        inner = eff(inner_f)
+        if inner >= outer:
+            values[inner_f] = max(0, outer - 50)
+            notes.append(f"inner {inner}→{values[inner_f]} ms (below outer {outer})")
+    if hb_f in values or outer_f in values:
+        hb = eff(hb_f)
+        if hb and hb <= outer:
+            values[hb_f] = outer + 1000
+            notes.append(f"hard break {hb}→{values[hb_f]} ms (above outer {outer})")
+    return values, notes
+
+
+def _stream_config(cfg_for, ident=None, client: "dict | None" = None) -> StreamConfig:
     # Per-identity override (ident) > global. STREAMING_* are not per-model, so
     # model_id=None skips cfg_for's per-model layer — one resolver for every
-    # STREAMING_* knob (the route resolves its siblings the same way).
+    # STREAMING_* knob (the route resolves its siblings the same way). `client`
+    # holds this connection's own values (_client_stream_values), which win.
+    client = client or {}
+
     def g(name, default):
-        return cfg_for(None, "STREAMING_" + name, ident)
+        field = "STREAMING_" + name
+        return client[field] if field in client else cfg_for(None, field, ident)
     return StreamConfig(
         sample_rate=SAMPLE_RATE,
         # Public config keys (the g("…") suffix, after STREAMING_) may differ from
@@ -1291,11 +1349,21 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 language=(getattr(fw_info, "language", None) or req_language or None),
                 wait_s=metrics.take_wait())
 
+        # The client's own live-dictation knobs (decode_overrides), fixed for
+        # the connection like the rest of the session shape.
+        client_knobs, knob_notes = _client_stream_values(main, req_overrides, ident)
+        if client_knobs:
+            logger.info("[stream %s] client knobs %s%s", session_id[:8],
+                        ", ".join(f"{k.removeprefix('STREAMING_').lower()}={v!r}"
+                                  for k, v in sorted(client_knobs.items())),
+                        f" (adjusted: {'; '.join(knob_notes)})" if knob_notes else "")
         session = StreamSession(
-            config=_stream_config(main.cfg_for, ident),
+            config=_stream_config(main.cfg_for, ident, client=client_knobs),
             endpointer=make_endpointer(
                 main.cfg_for(final_model, "STREAMING_VAD_BACKEND", ident),
-                threshold=float(main.cfg_for(final_model, "STREAMING_VAD_THRESHOLD", ident)),
+                threshold=float(client_knobs.get(
+                    "STREAMING_VAD_THRESHOLD",
+                    main.cfg_for(final_model, "STREAMING_VAD_THRESHOLD", ident))),
                 energy_dbfs=float(main.cfg_for(final_model, "STREAMING_GATE_RMS_DBFS", ident)),
             ),
             decode_partial=decode_partial,
@@ -1325,8 +1393,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
             data_version PRAGMA (see config_store._KEYS_PROBE_MIN_INTERVAL_S);
             a real change costs a couple of indexed SQLite reads,
             paid at the utterance boundary (not per partial frame). Session-shaping
-            STREAMING_*/endpointer params and the word-timestamp gates stay fixed
-            for the connection. Never raises — a refresh must not break dictation.
+            STREAMING_*/endpointer params (the client's own knobs included) and
+            the word-timestamp gates stay fixed for the connection: a lock added
+            mid-session applies to them from the next connection. Never raises —
+            a refresh must not break dictation.
 
             The same bump ALSO revalidates the credential. A WebSocket has no
             request boundary, so `authenticate_ws` used to run exactly once, at

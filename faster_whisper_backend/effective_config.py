@@ -622,9 +622,11 @@ def resolve_capabilities(user_id: str | None = None,
 
 def project_profile_to_client(blob: Any) -> tuple[dict[str, Any], list[str]]:
     """Project an OVERRIDE_PROFILES blob to the lowercase client decode_override
-    keys it sets, plus the client keys it locks. Server-managed-only fields
-    (streaming, output wrappers, language detection) have no client key and are
-    omitted — they are reachable only by naming the profile, never per field."""
+    keys it sets, plus the client keys it locks. The live-dictation knobs
+    (STREAMING_VAD_THRESHOLD, the inner/outer/hard-break silences and the
+    hard-break separator) are client keys too. Server-managed-only fields (the
+    other STREAMING_* knobs) have no client key and are omitted — they are
+    reachable only by naming the profile, never per field."""
     if not isinstance(blob, dict):
         return {}, []
     values: dict[str, Any] = {}

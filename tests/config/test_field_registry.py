@@ -330,7 +330,12 @@ CONFIG_TO_CLIENT_KEY_SNAPSHOT = (
      'VAD_FILTER': 'vad_filter',
      'VAD_MIN_SILENCE_MS': 'vad_min_silence_duration_ms',
      'VAD_SPEECH_PAD_MS': 'vad_speech_pad_ms',
-     'VAD_THRESHOLD': 'vad_threshold'}
+     'VAD_THRESHOLD': 'vad_threshold',
+     'STREAMING_VAD_THRESHOLD': 'streaming_vad_threshold',
+     'STREAMING_VAD_INNER_SILENCE_MS': 'streaming_vad_inner_silence_ms',
+     'STREAMING_VAD_OUTER_SILENCE_MS': 'streaming_vad_outer_silence_ms',
+     'STREAMING_HARD_BREAK_SILENCE_MS': 'streaming_hard_break_silence_ms',
+     'STREAMING_HARD_BREAK_SEPARATOR': 'streaming_hard_break_separator'}
 )
 
 LOCKABLE_SNAPSHOT = frozenset(
@@ -757,6 +762,23 @@ def test_config_to_client_key_matches_snapshot():
     assert cs.CONFIG_TO_CLIENT_KEY == CONFIG_TO_CLIENT_KEY_SNAPSHOT
     # effective_config keeps its historical alias pointing at the same dict.
     assert effective_config._CONFIG_TO_CLIENT_KEY is cs.CONFIG_TO_CLIENT_KEY
+
+
+def test_stream_only_client_keys_are_the_streaming_ones():
+    # Derived from the registry (client_key ∩ not model_override), never a
+    # hand list: every streaming_* client key and nothing else.
+    assert cs.STREAM_ONLY_CLIENT_KEYS == frozenset(
+        k for k in CONFIG_TO_CLIENT_KEY_SNAPSHOT.values()
+        if k.startswith("streaming_"))
+
+
+def test_client_key_bounds_follow_the_field_schema():
+    b = cs.client_key_bounds()
+    assert set(b) == set(cs.CONFIG_TO_CLIENT_KEY.values())
+    assert b["beam_size"] == {"kind": "int", "min": 1, "max": 20}
+    assert b["streaming_vad_outer_silence_ms"] == {"kind": "int", "min": 100, "max": 10000}
+    assert b["streaming_hard_break_separator"] == {"kind": "str", "maxlen": 8}
+    assert cs.client_key_bounds() is b   # cached
 
 
 def test_lockable_fields_match_snapshot():

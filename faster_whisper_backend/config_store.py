@@ -18,6 +18,7 @@ covers Windows sharing-violations from AV scanners briefly holding the file.
 from __future__ import annotations
 
 import contextlib
+import functools
 import ipaddress
 import json
 import os
@@ -1860,7 +1861,8 @@ class AdminConfig(BaseModel):
     STREAMING_VAD_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
         "STREAMING_VAD_THRESHOLD", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
-        order=2, model_override=False)
+        order=2, model_override=False,
+        client_key="streaming_vad_threshold")
     STREAMING_GATE_RMS_DBFS: Annotated[float, Field(ge=-90.0, le=0.0)] | None = _F(
         "STREAMING_GATE_RMS_DBFS", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
@@ -1896,19 +1898,23 @@ class AdminConfig(BaseModel):
     STREAMING_VAD_INNER_SILENCE_MS: Annotated[int, Field(ge=0, le=5000)] | None = _F(
         "STREAMING_VAD_INNER_SILENCE_MS", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
-        order=5, model_override=False)
+        order=5, model_override=False,
+        client_key="streaming_vad_inner_silence_ms")
     STREAMING_VAD_OUTER_SILENCE_MS: Annotated[int, Field(ge=100, le=10000)] | None = _F(
         "STREAMING_VAD_OUTER_SILENCE_MS", scope="per_request",
         group="Live streaming", subgroup="Endpointing (VAD) & speech gates",
-        order=6, model_override=False)
+        order=6, model_override=False,
+        client_key="streaming_vad_outer_silence_ms")
     STREAMING_HARD_BREAK_SILENCE_MS: Annotated[int, Field(ge=0, le=120000)] | None = _F(
         "STREAMING_HARD_BREAK_SILENCE_MS", scope="per_request",
         group="Live streaming", subgroup="Finalize & document breaks",
-        order=2, model_override=False)
+        order=2, model_override=False,
+        client_key="streaming_hard_break_silence_ms")
     STREAMING_HARD_BREAK_SEPARATOR: Annotated[str, Field(max_length=8)] | None = _F(
         "STREAMING_HARD_BREAK_SEPARATOR", scope="per_request",
         group="Live streaming", subgroup="Finalize & document breaks",
-        order=3, model_override=False)
+        order=3, model_override=False,
+        client_key="streaming_hard_break_separator")
     STREAMING_FORCED_COMMIT_S: Annotated[float, Field(ge=5.0, le=29.0)] | None = _F(
         "STREAMING_FORCED_COMMIT_S", scope="per_request",
         group="Live streaming", subgroup="Finalize & document breaks",
@@ -3171,6 +3177,15 @@ CONFIG_TO_CLIENT_KEY: dict[str, str] = {
     if reg["client_key"]
 }
 
+# The client keys only live dictation reads: the STREAMING_* fields (not
+# per-model, so never a model.transcribe kwarg). They ride decode_overrides
+# like every client key and are applied by the streaming handshake; a batch
+# request has nothing to apply them to, so it neither uses nor reports them.
+STREAM_ONLY_CLIENT_KEYS: frozenset[str] = frozenset(
+    reg["client_key"] for reg in _REGISTRY.values()
+    if reg["client_key"] and not reg["model_override"]
+)
+
 # Fields whose resolved value a client per-request decode_override may be
 # LOCKED against — every overridable scalar, i.e. everything except the
 # pipeline include/exclude lists (which are virtual, not AdminConfig fields,
@@ -3503,6 +3518,19 @@ def override_field_meta(
             info["maxlen"] = v["maxLength"]
         out[name] = info
     return out
+
+
+@functools.lru_cache(maxsize=1)
+def client_key_bounds() -> dict[str, dict[str, Any]]:
+    """Client decode key → the widget metadata (kind / min / max / maxlen) of
+    the config field it governs, from the same JSON schema the profile editor
+    reads (override_field_meta over OverrideProfile) — so a request-side clamp
+    can never drift from the admin bounds. Cached: the schema is fixed at
+    import. Callers must not mutate the result."""
+    meta = override_field_meta(OverrideProfile)
+    return {client_key: meta[field]
+            for field, client_key in CONFIG_TO_CLIENT_KEY.items()
+            if field in meta}
 
 
 def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:

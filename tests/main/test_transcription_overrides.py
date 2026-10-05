@@ -72,6 +72,31 @@ def test_no_identity_config_is_unchanged(client, make_user_key, fake_model):
     assert "overrides_ignored" not in r.json()
 
 
+def test_stream_only_keys_never_reach_batch(client, make_user_key, fake_model):
+    # Live-dictation keys ride decode_overrides like every client key, but a
+    # batch request neither applies them (no model.transcribe kwarg) nor
+    # reports a locked one as ignored — it was never a batch knob.
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    admin_h = bearer(raw_admin)
+    _setup_profile(client, admin_h, "p", STREAMING_VAD_OUTER_SILENCE_MS=1500,
+                   locks=["STREAMING_VAD_OUTER_SILENCE_MS"])
+    uid, raw_alice = make_user_key("alice", is_admin=False)
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
+                     json={"pages": {}, "config": {"overrides": {}, "profiles": ["p"], "locks": []}})
+    assert r.status_code == 200, r.text
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "decode_overrides": json.dumps({
+                  "streaming_vad_outer_silence_ms": 3000,
+                  "streaming_vad_threshold": 0.3,
+                  "streaming_hard_break_separator": "\n"})},
+    )
+    assert r.status_code == 200, r.text
+    assert not any(k.startswith("streaming_") for k in fake_model.last_kwargs)
+    assert "overrides_ignored" not in r.json()
+
+
 def test_decode_overrides_drop_non_finite_floats():
     """JSON permits NaN/Infinity literals; a non-finite float override is dropped
     (ignored) rather than clamped to the field's bound, matching the integer path.

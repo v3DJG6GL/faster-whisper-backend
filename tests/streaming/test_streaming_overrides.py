@@ -572,3 +572,118 @@ def test_revocation_during_the_closing_drain_still_closes_with_4401(
     assert not any(m.get("code") == "internal" for m in msgs), msgs
     assert not any(m.get("type") == "final" and m.get("last") for m in msgs), msgs
     assert "error" not in rows, rows
+
+
+# --- live-dictation knobs as client keys --------------------------------------
+
+def _knobs_handshake(client, monkeypatch, overrides, headers=None):
+    """Handshake with `overrides` and return (ready frame, the client values
+    _stream_config received, the endpointer threshold)."""
+    from faster_whisper_backend.streaming import routes
+    seen = {}
+    real_cfg, real_ep = routes._stream_config, routes.make_endpointer
+
+    def _cfg(cfg_for, ident=None, client=None):
+        seen["client"] = dict(client or {})
+        seen["config"] = real_cfg(cfg_for, ident, client=client)
+        return seen["config"]
+
+    def _ep(*a, **kw):
+        seen["threshold"] = kw.get("threshold")
+        return real_ep(*a, **kw)
+    monkeypatch.setattr(routes, "_stream_config", _cfg)
+    monkeypatch.setattr(routes, "make_endpointer", _ep)
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=headers or {}) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "decode_overrides": overrides,
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ready = ws.receive_json()
+        ws.send_json({"type": "stop"})
+        _drain(ws)
+    return ready, seen
+
+
+def test_stream_knobs_applied(client, app_module, monkeypatch, caplog):
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_INNER_SILENCE_MS", 700)
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        ready, seen = _knobs_handshake(client, monkeypatch, {
+            "streaming_vad_threshold": 0.35,
+            "streaming_vad_outer_silence_ms": 2500,
+            "streaming_hard_break_silence_ms": 0,
+            "streaming_hard_break_separator": "\n"})
+    assert ready["type"] == "ready" and "overrides_ignored" not in ready
+    cfg = seen["config"]
+    assert cfg.commit_silence_ms == 2500
+    assert cfg.vad_min_silence_ms == 700          # server value, already below outer
+    assert cfg.hard_break_silence_ms == 0         # 0 = never
+    assert cfg.hard_break_separator == "\n"
+    assert seen["threshold"] == 0.35
+    assert any("client knobs" in r.getMessage()
+               and "vad_outer_silence_ms=2500" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_stream_knobs_clamped_to_field_bounds(client, monkeypatch):
+    _, seen = _knobs_handshake(client, monkeypatch, {
+        "streaming_vad_threshold": 7,
+        "streaming_vad_outer_silence_ms": 99999,
+        "streaming_vad_inner_silence_ms": "nope",
+        "streaming_hard_break_separator": "x" * 50})
+    assert seen["threshold"] == 1.0
+    assert seen["config"].commit_silence_ms == 10000
+    assert "STREAMING_VAD_INNER_SILENCE_MS" not in seen["client"]  # unparseable → dropped
+    assert seen["config"].hard_break_separator == "x" * 8
+
+
+def test_stream_knobs_inner_kept_below_outer(client, app_module, monkeypatch, caplog):
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_OUTER_SILENCE_MS", 1200)
+    with caplog.at_level(logging.INFO, logger="whisper-api"):
+        _, seen = _knobs_handshake(client, monkeypatch,
+                                   {"streaming_vad_inner_silence_ms": 3000})
+    assert seen["config"].vad_min_silence_ms == 1150
+    assert any("inner 3000→1150" in r.getMessage() for r in caplog.records)
+    # A client outer below the server inner moves the inner too.
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_INNER_SILENCE_MS", 700)
+    _, seen = _knobs_handshake(client, monkeypatch,
+                               {"streaming_vad_outer_silence_ms": 400})
+    assert seen["config"].vad_min_silence_ms == 350
+
+
+def test_stream_knobs_hard_break_kept_above_outer(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 5000)
+    _, seen = _knobs_handshake(client, monkeypatch,
+                               {"streaming_vad_outer_silence_ms": 6000})
+    assert seen["config"].hard_break_silence_ms == 7000
+    _, seen = _knobs_handshake(client, monkeypatch,
+                               {"streaming_hard_break_silence_ms": 800})
+    assert seen["config"].hard_break_silence_ms == (
+        app_module.cfg.STREAMING_VAD_OUTER_SILENCE_MS + 1000)
+    # Server-only values are the admin's: never adjusted.
+    monkeypatch.setattr(app_module.cfg, "STREAMING_HARD_BREAK_SILENCE_MS", 500)
+    _, seen = _knobs_handshake(client, monkeypatch, {"beam_size": 3})
+    assert seen["client"] == {} and seen["config"].hard_break_silence_ms == 500
+
+
+def test_stream_knobs_locked_are_ignored(client, make_user_key, monkeypatch):
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    _profile(client, h, "p", STREAMING_VAD_OUTER_SILENCE_MS=1500,
+             locks=["STREAMING_VAD_OUTER_SILENCE_MS"])
+    uid, raw_alice = make_user_key("alice")
+    _bind(client, h, uid, profiles=["p"])
+    ready, seen = _knobs_handshake(
+        client, monkeypatch,
+        {"streaming_vad_outer_silence_ms": 3000, "streaming_vad_threshold": 0.3},
+        headers=bearer(raw_alice))
+    assert ready["overrides_ignored"] == ["streaming_vad_outer_silence_ms"]
+    assert seen["config"].commit_silence_ms == 1500
+    assert seen["threshold"] == 0.3
+
+
+def test_stream_knobs_master_gate_off(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "ALLOW_REQUEST_DECODE_OVERRIDES", False)
+    ready, seen = _knobs_handshake(client, monkeypatch,
+                                   {"streaming_vad_outer_silence_ms": 3000})
+    assert ready["overrides_ignored"] == ["streaming_vad_outer_silence_ms"]
+    assert seen["client"] == {}

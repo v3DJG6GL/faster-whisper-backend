@@ -5238,7 +5238,12 @@ async def transcribe(
                     _overrides = {}
             # Per-request decode keys dropped by a lock (assemble_transcribe_
             # kwargs enforces the drop; we record it here for the response).
-            ignored.extend(sorted(k for k in _overrides if k in ident.locked_client_keys))
+            # Live-dictation keys are not batch knobs at all: a locked one was
+            # never going to apply here, so it is not reported either.
+            from faster_whisper_backend import config_store
+            ignored.extend(sorted(
+                k for k in _overrides if k in ident.locked_client_keys
+                and k not in config_store.STREAM_ONLY_CLIENT_KEYS))
             # A locked TEMPERATURE has to bind the OpenAI-compat `temperature`
             # Form field too, the way a locked DEFAULT_PROMPT/DEFAULT_LANGUAGE
             # binds `prompt`/`language` above. assemble_transcribe_kwargs only
