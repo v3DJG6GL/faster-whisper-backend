@@ -7869,6 +7869,9 @@ async def url_preview(request: Request,
         # off or the link has none.
         "video_ladder": info.video_ladder,
         "media_max_bytes": int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
+        # The longest link this server downloads (the client flags a longer
+        # one before "Add link").
+        "url_max_duration_s": int(getattr(cfg, "URL_MAX_DURATION_S", 0) or 0),
         # The spoken language the site names (null when it names none) and
         # its own subtitle tracks, ids only — the source URLs stay here.
         "language": info.language,
@@ -8629,6 +8632,9 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     from faster_whisper_backend import effective_config
     caps = effective_config.resolve_capabilities(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
+    # The caller's identity layers, for the per_request values below
+    # (TRANSLATE_TO, TRANSLATION_MAX_TARGETS) — resolved once.
+    _ident = build_ident(user, None)
     # Additive: whether the optional pipeline stages exist on this server at
     # all, so the client can disable its "Separate music" / "Speaker
     # diarization" toggles pre-flight instead of letting a request soft-fail
@@ -8732,7 +8738,6 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
             _tr.languages_for(_t_default) or sorted(ALL_LANGUAGE_NAMES))
         # The CALLER's effective TRANSLATE_TO default (per-identity overrides
         # respected), parsed csv → list like the transcribe handler does.
-        _ident = build_ident(user, None)
         caps["translate_to_default"] = language_codes(
             cfg_for(None, "TRANSLATE_TO", _ident))
         # Engine version, yt_dlp_version-style best-effort (null when the
@@ -8755,7 +8760,59 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         for _m in _stage_refs(
             (getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "").strip(),
             getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None))]
+    caps["server_info"] = _server_info(caps, _ident)
     return caps
+
+
+def _server_info(caps: dict, ident) -> dict:
+    """/v1/me's read-only policy view: the limits a request runs into and
+    what this server keeps about the caller's work. Privacy-positive
+    disclosure (SECURITY-REVIEW_NOTES, "server_info is an admin policy
+    view"): retention knobs and caps only, never data. Every value is
+    scope="server" (plain cfg) except TRANSLATION_MAX_TARGETS, which is
+    per_request and resolved for the caller exactly like the text route."""
+    limits: dict = {
+        "translation_max_targets": int(
+            cfg_for(None, "TRANSLATION_MAX_TARGETS", ident) or 1),
+    }
+    if caps.get("url_download_enabled"):
+        limits["url_max_duration_s"] = int(getattr(cfg, "URL_MAX_DURATION_S", 0) or 0)
+        # [] = every dedicated extractor (the allowlist is off).
+        limits["url_allowed_extractors"] = list(
+            getattr(cfg, "URL_ALLOWED_EXTRACTORS", None) or [])
+        limits["url_allow_direct_media"] = bool(
+            getattr(cfg, "URL_ALLOW_DIRECT_MEDIA", False))
+    return {
+        "limits": limits,
+        "keeps": {
+            # Captures are only written while word timestamps are on (the
+            # batch route and the live final decode both gate on it); the
+            # switch is still what the operator chose.
+            "captures": {
+                "enabled": bool(getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)),
+                "retention_days": int(getattr(cfg, "CAPTURES_RETENTION_DAYS", 0) or 0),
+                "sample_fraction": float(
+                    getattr(cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0)),
+                "max": int(getattr(cfg, "CAPTURES_MAX", 0) or 0),
+            },
+            "server_log": {
+                "max_bytes": int(getattr(cfg, "LOG_MAX_BYTES", 0) or 0),
+                "backup_count": int(getattr(cfg, "LOG_BACKUP_COUNT", 0) or 0),
+            },
+            "recent_transcriptions": {
+                "retention_days": int(
+                    getattr(cfg, "RECENT_TRANSCRIPTIONS_RETENTION_DAYS", 0) or 0),
+                "max": int(getattr(cfg, "RECENT_TRANSCRIPTIONS_MAX", 0) or 0),
+            },
+            # 0 = kept forever (the retention loops skip a 0).
+            "usage_app_retention_days": int(
+                getattr(cfg, "USAGE_APP_RETENTION_DAYS", 0) or 0),
+            "usage_retention_days": int(getattr(cfg, "USAGE_RETENTION_DAYS", 0) or 0),
+            "usage_jobs_retention_days": int(
+                getattr(cfg, "USAGE_JOBS_RETENTION_DAYS", 0) or 0),
+            "url_media_ttl_s": int(getattr(cfg, "URL_MEDIA_TTL_S", 0) or 0),
+        },
+    }
 
 
 @app.get("/v1/override-profiles")

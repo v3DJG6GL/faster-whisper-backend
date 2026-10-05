@@ -250,6 +250,7 @@ def test_preview_happy_path(client, url_enabled, monkeypatch):
         "extractor": "Youtube", "estimated_bytes": 4096, "thumbnail": None,
         "ext": "m4a", "abr": 128.0,
         "video_ladder": [], "media_max_bytes": url_enabled.cfg.MEDIA_MAX_BYTES,
+        "url_max_duration_s": url_enabled.cfg.URL_MAX_DURATION_S,
         "language": None, "subtitle_tracks": [],
     }
 

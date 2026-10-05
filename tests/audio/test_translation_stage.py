@@ -168,8 +168,9 @@ def test_translate_to_clamped_to_max_targets_with_warning(
         client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
                         raising=False)
-    # Default TRANSLATION_MAX_TARGETS is 3; ask for 5 (+ a malformed entry
-    # and a duplicate, both dropped silently BEFORE the clamp).
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 3)
+    # TRANSLATION_MAX_TARGETS 3; ask for 5 (+ a malformed entry and a
+    # duplicate, both dropped silently BEFORE the clamp).
     calls = []
     _stub_translate(monkeypatch, calls=calls)
     r = _post(client, translate_to="en,NOT_A_CODE,fr,en,it,es,pt")

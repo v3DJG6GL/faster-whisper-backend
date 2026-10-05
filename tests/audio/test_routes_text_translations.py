@@ -312,6 +312,7 @@ def test_413_over_total_char_cap(client, app_module, monkeypatch):
 
 def test_422_malformed_shapes(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 3)
     calls = []
     _stub_translate(monkeypatch, calls=calls)
     cases = [

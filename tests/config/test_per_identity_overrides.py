@@ -391,3 +391,59 @@ def test_me_stage_model_lists_seed_the_configured_model(client, app_module,
     j = client.get("/v1/me").json()
     assert [m["id"] for m in j["diarization_models"]] == ["pyannote/x", "pyannote/y"]
     assert [m["id"] for m in j["separation_models"]] == ["UVR-A", "UVR-B"]
+
+
+# --- GET /v1/me server_info --------------------------------------------------
+
+def test_me_server_info_limits_and_keeps(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", False)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_MAX", 1234)
+    monkeypatch.setattr(app_module.cfg, "USAGE_RETENTION_DAYS", 0)
+    info = client.get("/v1/me").json()["server_info"]
+    assert set(info) == {"limits", "keeps"}
+    assert info["limits"] == {"translation_max_targets": 8}
+    keeps = info["keeps"]
+    assert keeps["captures"]["enabled"] is False
+    assert keeps["captures"]["max"] == 1234
+    assert set(keeps["captures"]) == {"enabled", "retention_days",
+                                      "sample_fraction", "max"}
+    assert keeps["server_log"] == {
+        "max_bytes": app_module.cfg.LOG_MAX_BYTES,
+        "backup_count": app_module.cfg.LOG_BACKUP_COUNT}
+    assert set(keeps["recent_transcriptions"]) == {"retention_days", "max"}
+    assert keeps["usage_retention_days"] == 0
+    for k in ("usage_app_retention_days", "usage_jobs_retention_days",
+              "url_media_ttl_s"):
+        assert isinstance(keeps[k], int)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 0.25)
+    caps = client.get("/v1/me").json()["server_info"]["keeps"]["captures"]
+    assert caps["enabled"] is True and caps["sample_fraction"] == 0.25
+
+
+def test_me_server_info_url_limits_only_with_url_download(
+        client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "URL_DOWNLOAD_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "URL_MAX_DURATION_S", 600)
+    monkeypatch.setattr(app_module.cfg, "URL_ALLOWED_EXTRACTORS", ["Youtube"])
+    monkeypatch.setattr(app_module.cfg, "URL_ALLOW_DIRECT_MEDIA", False)
+    limits = client.get("/v1/me").json()["server_info"]["limits"]
+    assert limits["url_max_duration_s"] == 600
+    assert limits["url_allowed_extractors"] == ["Youtube"]
+    assert limits["url_allow_direct_media"] is False
+
+
+def test_me_server_info_max_targets_per_identity(
+        client, app_module, make_user_key, monkeypatch):
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    _profiles(client, h, {"two": {"TRANSLATION_MAX_TARGETS": 2}})
+    uid, raw_alice = make_user_key("alice")
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {},
+        "config": {"overrides": {}, "profiles": ["two"], "locks": []}})
+    assert r.status_code == 200, r.text
+    alice = client.get("/v1/me", headers=bearer(raw_alice)).json()
+    assert alice["server_info"]["limits"]["translation_max_targets"] == 2
+    admin = client.get("/v1/me", headers=h).json()
+    assert admin["server_info"]["limits"]["translation_max_targets"] == 8
