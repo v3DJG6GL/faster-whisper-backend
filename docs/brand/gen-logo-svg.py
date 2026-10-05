@@ -55,26 +55,8 @@ def run_paths(text, font, size, tracking_em, fill, x, baseline_y):
         x += hmtx[gname][0] * scale + track
     return "".join(out), x
 
-# ---- the two marks, verbatim from each repo's canonical artwork -------------
-FE_MARK = """<g transform="translate(0 10) scale(0.1015625)">
-  <defs>
-    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#262019"/><stop offset="1" stop-color="#0e0d0b"/>
-    </linearGradient>
-    <linearGradient id="bar" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffb95e"/><stop offset="1" stop-color="#ff9e2c"/>
-    </linearGradient>
-  </defs>
-  <rect width="1024" height="1024" rx="224" fill="url(#tile)"/>
-  <g fill="url(#bar)" transform="translate(512 512) skewX(-9) translate(-512 -512)">
-    <rect x="152" y="392" width="104" height="240" rx="52"/>
-    <rect x="308" y="292" width="104" height="440" rx="52"/>
-    <rect x="464" y="192" width="104" height="640" rx="52"/>
-    <rect x="620" y="332" width="104" height="360" rx="52"/>
-    <rect x="776" y="432" width="104" height="160" rx="52"/>
-  </g>
-</g>"""
-
+# ---- the backend mark, verbatim from docs/brand/icon.svg -------------------
+# (faster-whisper-frontend keeps its own copy of this script for its mark.)
 BE_MARK = """<g transform="translate(0 10) scale(0.8667)">
   <defs>
     <linearGradient id="fw" x1="0" y1="0" x2="1" y2="1">
@@ -92,8 +74,6 @@ BE_MARK = """<g transform="translate(0 10) scale(0.8667)">
 </g>"""
 
 VARIANTS = {
-    ("frontend", "dark"):  dict(ink="#f3eee6", accent="#ff9e2c", faint="#6f675c"),
-    ("frontend", "light"): dict(ink="#221b13", accent="#bf6f12", faint="#9a9082"),
     ("backend", "dark"):   dict(ink="#f0f6fc", accent="#7ee787", faint="#8b949e"),
     ("backend", "light"):  dict(ink="#1f2328", accent="#1a7f37", faint="#59636e"),
 }
@@ -101,7 +81,7 @@ VARIANTS = {
 def build(product, theme, out_path):
     c = VARIANTS[(product, theme)]
     label = product.upper()
-    mark = FE_MARK if product == "frontend" else BE_MARK
+    mark = BE_MARK
     # Geometry mirroring logo.html (values measured against the PNG renders):
     # mark 104px tall at y=10; title baseline ~54, sub baseline ~114.
     text_x = 104 + 40

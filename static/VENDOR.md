@@ -1,7 +1,8 @@
 # Vendored static assets
 
-These files are committed to the repo so the `/stats` dashboard works
-fully offline — no CDN fetch at page-load.
+These third-party files are committed to the repo so every WebUI page works
+fully offline — the `/stats` dashboard, the `/docs` and `/redoc` API pages and
+the brand fonts in every page header. No CDN fetch at page-load.
 
 ## uPlot
 
@@ -28,8 +29,11 @@ fully offline — no CDN fetch at page-load.
 
 ## Brand fonts (Hubot Sans, Geist Mono)
 
-- **Source**: the `@fontsource-variable/hubot-sans` and `@fontsource-variable/geist-mono`
-  packages (same pinned files the faster-whisper-frontend app bundles).
+- **Versions**: `@fontsource-variable/hubot-sans` 5.2.8 (the latin file is
+  byte-identical from 5.0.1 through 5.3.0), `@fontsource-variable/geist-mono`
+  5.2.8 (5.3.0 changed the file — the frontend app floats on `^5.3.0`, so its
+  copy can differ from this one).
+- **Source**: https://fontsource.org (npm `@fontsource-variable/*`).
 - **License**: SIL OFL-1.1 (both).
 - **Files**:
   - `hubot-sans-latin-wght-normal.woff2` (~48 KB) — variable weight 200–900.
@@ -107,6 +111,10 @@ curl -sL -o swagger-ui.css \
   "https://cdn.jsdelivr.net/npm/swagger-ui-dist@<NEW_VERSION>/swagger-ui.css"
 curl -sL -o redoc.standalone.js \
   "https://cdn.jsdelivr.net/npm/redoc@<NEW_VERSION>/bundles/redoc.standalone.js"
+curl -sL -o hubot-sans-latin-wght-normal.woff2 \
+  "https://cdn.jsdelivr.net/npm/@fontsource-variable/hubot-sans@<NEW_VERSION>/files/hubot-sans-latin-wght-normal.woff2"
+curl -sL -o geist-mono-latin-wght-normal.woff2 \
+  "https://cdn.jsdelivr.net/npm/@fontsource-variable/geist-mono@<NEW_VERSION>/files/geist-mono-latin-wght-normal.woff2"
 
 # Record the new digests in this file (ALL of them, not just the changed one):
 sha256sum swagger-ui-bundle.js swagger-ui.css redoc.standalone.js \
@@ -122,4 +130,10 @@ them byte-identical to the upstream release so `git blame` stays meaningful.
 
 ## Not vendored
 
-`stats.js` is first-party — the /stats page script (GridStack layout + usage section); it lives here only to share the cacheable `/static` mount.
+Everything else in `static/` is first-party; it lives here only to share the
+cacheable `/static` mount:
+
+- `stats.js` — the /stats page script (GridStack layout + usage section).
+- `favicon.svg`, `favicon.ico`, `favicon-16.png`, `favicon-32.png`,
+  `apple-touch-icon.png` — the brand icon in browser-tab sizes
+  (sources and regeneration in `docs/brand/`).

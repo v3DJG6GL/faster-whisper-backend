@@ -4202,7 +4202,8 @@ def _header_title_for(current: str) -> str:
 
 
 # Inline brand mark: the forward-skewed audio-waveform tile (same geometry
-# as static/logo.svg). Sized in em so it tracks the --fs-base UI scale.
+# as docs/brand/icon.svg; tests/core/test_brand_mark.py keeps the inline
+# copies in step). Sized in em so it tracks the --fs-base UI scale.
 _BRAND_MARK_SVG = (
     '<svg class="brand-mark" viewBox="0 0 120 120" aria-hidden="true" focusable="false">'
     '<defs><linearGradient id="fw-hdr" x1="0" y1="0" x2="1" y2="1">'

@@ -11,7 +11,7 @@ green, then a green `>` prompt before the tracked-caps `BACKEND` label
 
 | File | What it is |
 |---|---|
-| `icon.svg` | Icon only, vector. Copy of the canonical `static/logo.svg` (that one is served by the WebUI — keep this copy in sync). |
+| `icon.svg` | Icon only, vector — the canonical mark. The WebUI draws the same geometry inline (`core/web_common.brand_mark_svg`); `logo.html` and `gen-logo-svg.py` carry adapted copies. |
 | `icon.png` | Icon only, 512 px raster. |
 | `logo-dark.svg` / `logo-light.svg` | Full logo (icon + wordmark), vector, wordmark converted to paths — renders everywhere with zero font dependencies. Regenerate with `python3 docs/brand/gen-logo-svg.py` (needs fontTools + brotli). |
 | `logo-dark.png` / `logo-light.png` | Full logo, raster (@2×, ~1060 px wide), transparent background. The repo README serves them via a `prefers-color-scheme` `<picture>`. |
