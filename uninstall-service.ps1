@@ -87,8 +87,8 @@ if (-not $svc) {
 
     # --- delete ---------------------------------------------------------
     # Prefer WinSW's own uninstall when a hash-verified wrapper is present
-    # (cleaner SCM-handoff). Everything else — wrapper missing, hash mismatch,
-    # or a legacy nssm install — falls back to sc.exe delete, which removes the
+    # (cleaner SCM-handoff). Everything else -- wrapper missing, hash mismatch,
+    # or a legacy nssm install -- falls back to sc.exe delete, which removes the
     # registration without executing any repo-local binary elevated.
     Write-Host "Removing $ServiceName from the SCM..."
     if (Test-WinSWTrusted) {

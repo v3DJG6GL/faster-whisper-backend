@@ -2,8 +2,9 @@
 # faster-whisper's ctranslate2 and PyAV ship self-contained wheels (PyAV bundles
 # the ffmpeg libraries), so no apt ffmpeg/system codecs are required.
 #
-# GPU: build a derived image that also `pip install -r requirements-gpu.txt` and
-# run with `--gpus all` on an NVIDIA host (see README).
+# GPU: use Dockerfile.gpu (same base and layer order, plus the CUDA wheels and
+# their loader path) and run with `--gpus all` / docker-compose.gpu.yml on an
+# NVIDIA host (see README).
 #
 # Base pinned by digest (supply chain: a retagged or tampered upstream image
 # can't slip in unnoticed). Digest = the multi-arch index of python:3.14-slim

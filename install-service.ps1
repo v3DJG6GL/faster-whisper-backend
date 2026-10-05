@@ -110,7 +110,13 @@ if (-not (Test-Path $Python)) {
         if ($cmd) { $sysPy = $cmd.Source; break }
     }
     if (-not $sysPy) {
-        throw "No Python found on PATH. Install Python 3.10+ from https://www.python.org/downloads/ (check 'Add to PATH'), then re-run this script."
+        throw "No Python found on PATH. Install Python 3.12+ from https://www.python.org/downloads/ (check 'Add to PATH'), then re-run this script."
+    }
+    # CI tests 3.12-3.14; older interpreters are untested and refused here,
+    # before a venv is built on them.
+    & $sysPy -c "import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)"
+    if ($LASTEXITCODE -ne 0) {
+        throw "$sysPy is older than Python 3.12. Install Python 3.12+ from https://www.python.org/downloads/ (check 'Add to PATH'), then re-run this script."
     }
 
     Write-Host "Creating venv with: $sysPy" -ForegroundColor Cyan
@@ -135,7 +141,7 @@ if (-not (Test-Path $Python)) {
 # --- pre-flight: stop + remove any existing WhisperAPI service -------------
 # Done BEFORE the dependency install below so pip can replace compiled files
 # (.pyd/.dll, e.g. pydantic_core / httptools) that the still-running service
-# would otherwise hold open — which on Windows leaves orphaned "~pkg" dirs and
+# would otherwise hold open -- which on Windows leaves orphaned "~pkg" dirs and
 # "Failed to remove contents" warnings. Handles BOTH the legacy NSSM-installed
 # service AND a previous WinSW install (re-running this script). WinSW's
 # `install` is not idempotent, so we always drop here and re-register at the end.
@@ -234,11 +240,11 @@ if ($Gpu) {
 }
 
 # -Full: the heavy extras of the Docker "-full" tags. Keep the GPU branch in
-# sync with Dockerfile.gpu's INCLUDE_EXTRAS=1 block — same packages, same pins,
+# sync with Dockerfile.gpu's INCLUDE_EXTRAS=1 block -- same packages, same pins,
 # same reasons:
 #   * torch from the cu126 index so it shares the ONE CUDA 12 userspace the
 #     GPU wheels above use (PyPI-default torch pulls the cu13 stack instead).
-#   * onnxruntime-gpu >=1.27 on PyPI is a CUDA 13 build — on a cu12 stack its
+#   * onnxruntime-gpu >=1.27 on PyPI is a CUDA 13 build -- on a cu12 stack its
 #     CUDA provider fails to load and separation silently runs on the CPU.
 #     1.26.x is the last CUDA 12.8 build; forced LAST (--no-deps) so its files
 #     also win over the CPU-only onnxruntime faster-whisper pulls in.
@@ -253,7 +259,7 @@ if ($Full) {
     # faster_whisper_backend/audio/bgm_separation.py loads never touch it. Try the real wheel first; if
     # none exists for this Python, install a local stub that satisfies pip and
     # raises a clear error if quantized Demucs is ever actually used. (Linux
-    # depends on plain `diffq`, whose sdist compiles — the .sh handles that
+    # depends on plain `diffq`, whose sdist compiles -- the .sh handles that
     # with best-effort gcc instead.)
     $oldPref = $ErrorActionPreference; $ErrorActionPreference = "Continue"
     & $Python -m pip install --only-binary :all: "diffq-fixed>=0.2" 2>&1 | Out-Null
@@ -319,7 +325,7 @@ def restore_quantized_state(*args, **kwargs):
         if ($LASTEXITCODE -ne 0) { throw "pip install of the full extras failed (exit $LASTEXITCODE)" }
         & $Python -m pip install --force-reinstall --no-deps "onnxruntime-gpu==1.26.*"
         if ($LASTEXITCODE -ne 0) { throw "pip install onnxruntime-gpu==1.26.* failed (exit $LASTEXITCODE)" }
-        # Translation (llama-cpp-python): the project's cu124 wheel index — no
+        # Translation (llama-cpp-python): the project's cu124 wheel index -- no
         # cu126 index exists; cu124 wheels run on a cu12.6 userspace (CUDA 12
         # minor-version compatibility). PyPI is sdist-only (source build).
         & $Python -m pip install -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu124
@@ -329,7 +335,7 @@ def restore_quantized_state(*args, **kwargs):
         & $Python -m pip install -r $diarizeReq -r $bgmReq
         if ($LASTEXITCODE -ne 0) { throw "pip install of the full extras failed (exit $LASTEXITCODE)" }
         # Translation (llama-cpp-python): prebuilt CPU wheels from the project
-        # index — PyPI is sdist-only and would compile llama.cpp from source.
+        # index -- PyPI is sdist-only and would compile llama.cpp from source.
         & $Python -m pip install -r $translateReq --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cpu
         if ($LASTEXITCODE -ne 0) { throw "pip install -r requirements-translate.txt failed (exit $LASTEXITCODE)" }
     }
@@ -353,9 +359,9 @@ function Test-FfmpegShared($cmd) {
     return [bool]($cmd -and (Get-ChildItem -Path (Split-Path $cmd.Source) -Filter "avutil-*.dll" -ErrorAction SilentlyContinue))
 }
 # Pinned BtbN shared build, ffmpeg 9.0. torchcodec supports ffmpeg majors
-# 4-9, but 9 only since torchcodec 0.16.0 — requirements-diarize.txt pins
-# that floor to match. (Docker/Linux stay on distro apt ffmpeg — 7.1 on
-# Debian 13 — which is inside the supported range; the majors don't need to
+# 4-9, but 9 only since torchcodec 0.16.0 -- requirements-diarize.txt pins
+# that floor to match. (Docker/Linux stay on distro apt ffmpeg -- 7.1 on
+# Debian 13 -- which is inside the supported range; the majors don't need to
 # agree across deployment types.) URL and hash MUST be updated together,
 # like the WinSW pin above; Renovate does not manage either (it can't
 # recompute hashes). The extracted copy is stamped with the zip's SHA-256
@@ -456,7 +462,7 @@ function Install-ConvertDeps {
     Write-Host "Installing conversion extras (transformers + torch + accelerate, ~2 GB)..." -ForegroundColor Cyan
     if ($Gpu) {
         # Keep any torch resolution on the same CUDA 12 userspace the -Full/-Gpu
-        # block established (see its "one CUDA 12 userspace" rationale) — the
+        # block established (see its "one CUDA 12 userspace" rationale) -- the
         # default PyPI index could swap in a CPU / cu13 torch wheel.
         & $Python -m pip install -r $convertReq --extra-index-url https://download.pytorch.org/whl/cu126
     } else {
@@ -485,7 +491,7 @@ if ($WithConvert) {
     }
 }
 
-# NOTE: the service stop + orphan-kill + legacy-nssm cleanup runs EARLIER now —
+# NOTE: the service stop + orphan-kill + legacy-nssm cleanup runs EARLIER now --
 # moved up to before the dependency install so pip can replace compiled files
 # (.pyd/.dll) the running service would otherwise hold open. See the "pre-flight"
 # block above. The WinSW (re)install happens below.
@@ -597,7 +603,7 @@ $xml = @"
        hands admin rights to every caller on that allowlist, so create one:
          WHISPER_BOOTSTRAP_ADMIN_KEY=<high-entropy value>
        Earlier revisions of this file suggested a WHISPER_ADMIN_TOKEN env var.
-       Nothing has ever read it — setting it protected nothing. -->
+       Nothing has ever read it -- setting it protected nothing. -->
 </service>
 "@
 Set-Content -Path $WinSWXml -Value $xml -Encoding UTF8

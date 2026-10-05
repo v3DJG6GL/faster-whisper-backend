@@ -122,3 +122,48 @@ def test_logo_html_comment_no_longer_claims_verbatim_mark():
     html = _read("docs", "brand", "logo.html")
     assert "inlined verbatim" not in html
     assert 'id="fw"' in html and "fw-wave" in html
+
+
+def test_gpu_compose_is_the_cpu_compose_plus_the_gpu_bits():
+    """docker-compose.gpu.yml is a standalone copy of docker-compose.yml (not
+    an overlay). Apart from comments, the only allowed differences are the
+    image tag and the GPU `deploy:` reservation block; anything else is
+    drift that one file got and the other missed."""
+    def code(name):
+        return [ln.rstrip() for ln in _read(name).splitlines()
+                if ln.strip() and not ln.strip().startswith("#")]
+
+    cpu, gpu = code("docker-compose.yml"), code("docker-compose.gpu.yml")
+    start = next(i for i, ln in enumerate(gpu) if ln.strip() == "deploy:")
+    indent = len(gpu[start]) - len(gpu[start].lstrip())
+    end = start + 1
+    while end < len(gpu) and len(gpu[end]) - len(gpu[end].lstrip()) > indent:
+        end += 1
+    assert "nvidia" in "\n".join(gpu[start:end])
+    gpu = gpu[:start] + gpu[end:]
+    strip_tag = lambda lines: [re.sub(r"^(\s*image: \S+?):[\w.-]+$", r"\1", ln) for ln in lines]
+    assert strip_tag(cpu) == strip_tag(gpu)
+
+
+# --- PowerShell encoding -----------------------------------------------------
+
+def test_powershell_scripts_are_pure_ascii():
+    # The installers self-elevate via `Start-Process powershell`, which is
+    # always Windows PowerShell 5.1: it reads a BOM-less script as the ANSI
+    # code page, so UTF-8 punctuation turns into mojibake (an em dash became
+    # a€” in WhisperAPI.xml), and cp1252 0x94 is a smart quote that
+    # PowerShell treats as a string delimiter.
+    for name in ("install-service.ps1", "uninstall-service.ps1"):
+        with open(os.path.join(REPO, name), "rb") as fh:
+            data = fh.read()
+        bad = [i for i, b in enumerate(data) if b > 127]
+        assert not bad, f"{name}: non-ASCII byte at offset {bad[0]}"
+
+
+def test_installers_require_python_312():
+    # CI tests 3.12-3.14; both installers refuse older interpreters before
+    # building a venv on them, and say so.
+    assert "sys.version_info >= (3, 12)" in _read("install-service.sh")
+    ps1 = _read("install-service.ps1")
+    assert "sys.version_info >= (3, 12)" in ps1
+    assert "Python 3.10" not in ps1
