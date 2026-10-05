@@ -8359,6 +8359,31 @@ async def media_streams(media_id: str,
     return facts
 
 
+def _require_lang_code(value, field: str) -> str:
+    """A body field that must hold one language code: stripped, else 422."""
+    if not isinstance(value, str) or not _TRANSLATE_CODE_RE.match(value.strip()):
+        raise HTTPException(status_code=422,
+                            detail=f"{field} must be a language code")
+    return value.strip()
+
+
+def _clean_label(value) -> str:
+    """A client track title: control characters out, at most 64 chars; ""
+    when absent or not a string."""
+    return (re.sub(r"[\x00-\x1f\x7f]", "", value).strip()[:64]
+            if isinstance(value, str) else "")
+
+
+def _track_index(body: dict, key: str, count: int) -> "int | None":
+    """An optional subtitle-track index in the body: None, or 0..count-1
+    (a bool is not an index), else 422."""
+    value = body.get(key)
+    if value is not None and (not isinstance(value, int) or isinstance(value, bool)
+                              or not 0 <= value < count):
+        raise HTTPException(status_code=422, detail=f"{key} is out of range")
+    return value
+
+
 @app.post("/v1/audio/media/{media_id}/package")
 async def package_media(media_id: str, request: Request,
                         background: BackgroundTasks,
@@ -8405,11 +8430,7 @@ async def package_media(media_id: str, request: Request,
     for i, t in enumerate(raw_subs):
         if not isinstance(t, dict):
             raise HTTPException(status_code=422, detail=f"subtitles[{i}] must be an object")
-        lang = t.get("lang")
-        if not isinstance(lang, str) or not _TRANSLATE_CODE_RE.match(lang.strip()):
-            raise HTTPException(status_code=422,
-                                detail=f"subtitles[{i}].lang must be a language code")
-        lang = lang.strip()
+        lang = _require_lang_code(t.get("lang"), f"subtitles[{i}].lang")
         srt = t.get("srt")
         if not isinstance(srt, str) or "-->" not in srt or "\x00" in srt:
             raise HTTPException(status_code=422,
@@ -8418,9 +8439,7 @@ async def package_media(media_id: str, request: Request,
             raise HTTPException(status_code=422,
                                 detail=f"subtitle track {i + 1} is larger than "
                                        f"{_pk.MAX_SRT_BYTES // (1024 * 1024)} MiB")
-        label = t.get("label")
-        label = (re.sub(r"[\x00-\x1f\x7f]", "", label).strip()[:64]
-                 if isinstance(label, str) else "") or language_label(lang)
+        label = _clean_label(t.get("label")) or language_label(lang)
         flags = {}
         for k in ("default", "original", "hearing_impaired"):
             v = t.get(k, False)
@@ -8429,24 +8448,12 @@ async def package_media(media_id: str, request: Request,
                                     detail=f"subtitles[{i}].{k} must be a boolean")
             flags[k] = v
         tracks.append(_pk.SubtitleTrack(lang=lang, label=label, srt=srt, **flags))
-    default_track = body.get("default_track")
-    if default_track is not None:
-        if (not isinstance(default_track, int) or isinstance(default_track, bool)
-                or not 0 <= default_track < len(tracks)):
-            raise HTTPException(status_code=422, detail="default_track is out of range")
-    original_track = body.get("original_track")
-    if original_track is not None:
-        if (not isinstance(original_track, int) or isinstance(original_track, bool)
-                or not 0 <= original_track < len(tracks)):
-            raise HTTPException(status_code=422, detail="original_track is out of range")
+    default_track = _track_index(body, "default_track", len(tracks))
+    original_track = _track_index(body, "original_track", len(tracks))
     audio_lang = body.get("audio_lang")
     if audio_lang is not None:
-        if not isinstance(audio_lang, str) or not _TRANSLATE_CODE_RE.match(audio_lang.strip()):
-            raise HTTPException(status_code=422, detail="audio_lang must be a language code")
-        audio_lang = audio_lang.strip()
-    audio_label = body.get("audio_label")
-    audio_label = (re.sub(r"[\x00-\x1f\x7f]", "", audio_label).strip()[:64]
-                   if isinstance(audio_label, str) else "") or None
+        audio_lang = _require_lang_code(audio_lang, "audio_lang")
+    audio_label = _clean_label(body.get("audio_label")) or None
     filename = body.get("filename")
     stem = (_MEDIA_FILENAME_RE.sub("", filename).strip()[:80]
             if isinstance(filename, str) else "") or media_id
