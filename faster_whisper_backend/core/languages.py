@@ -79,6 +79,25 @@ _ISO639_3_TO_1: "dict[str, str]" = dict(pair.split("=")[::-1] for pair in """
     mg=plt ne=npi az=azj ps=pbt sq=als yi=ydd
 """.split())
 
+# The inverse: 639-1 → ISO 639-2/T (terminology codes — `deu` not `ger`,
+# `fra` not `fre`: what ffmpeg writes and what Matroska/MP4 players expect).
+# Built in reverse so the FIRST 3-letter code per language wins ("zh" →
+# "zho", not "cmn"); "jv" is the standard spelling of Whisper's "jw".
+_ISO639_1_TO_2T: "dict[str, str]" = {
+    **{one: three for three, one in reversed(_ISO639_3_TO_1.items())},
+    "jv": "jav"}
+
+
+def iso639_2t(code: "str | None") -> str:
+    """The 639-2/T tag for a client language code ("pt-BR" → "por"); the
+    region is dropped (containers store 639-2 only), a 3-letter code the
+    table lacks already is one ("yue", "haw"), and an unknown code becomes
+    "und" rather than an invalid tag."""
+    base = (code or "").strip().lower().split("-")[0]
+    if len(base) == 3 and base.isalpha() and base not in _ISO639_1_TO_2T:
+        return base
+    return _ISO639_1_TO_2T.get(base, "und")
+
 
 def canonical_code(code: str) -> "str | None":
     """A model card's language code as this table spells it, or None when

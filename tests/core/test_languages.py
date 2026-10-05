@@ -37,3 +37,16 @@ def test_canonical_code():
     # Every mapped code lands on a code the table names.
     assert all(v in languages.ALL_LANGUAGE_NAMES
                for v in languages._ISO639_3_TO_1.values())
+
+
+def test_iso639_2t_terminology_codes():
+    t = languages.iso639_2t
+    assert t("en") == "eng" and t("de") == "deu" and t("fr") == "fra"
+    assert t("zh") == "zho" and t("nl") == "nld" and t("pt-BR") == "por"
+    assert t("jw") == "jav" and t("jv") == "jav"
+    assert t("yue") == "yue" and t("haw") == "haw" and t("deu") == "deu"
+    assert t("xx") == "und" and t("") == "und" and t(None) == "und"
+    # The extra translation languages get their tag, not "und".
+    assert t("nb") == "nob" and t("ug") == "uig" and t("zu") == "zul"
+    # Every named language has a real tag.
+    assert all(t(code) != "und" for code in languages.ALL_LANGUAGE_NAMES)

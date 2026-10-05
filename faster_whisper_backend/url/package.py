@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 import time
 
+from faster_whisper_backend.core.languages import iso639_2t
 from faster_whisper_backend.core.store_common import log_safe
 
 logger = logging.getLogger("whisper-api")
@@ -96,40 +97,6 @@ class FfmpegCaps:
 # MP4 so the panel can say why the choice is greyed out.
 _MP4_VIDEO = frozenset({"h264", "hevc", "mpeg4"})
 _MP4_AUDIO = frozenset({"aac", "mp3", "ac3", "eac3", "alac"})
-
-# ISO 639-1 → ISO 639-2/T (terminology codes — `deu` not `ger`, `fra` not
-# `fre`: what ffmpeg writes and what Matroska/MP4 players expect) for the
-# languages Whisper outputs, plus the few 3-letter codes it uses directly.
-_ISO639_1_TO_2T: "dict[str, str]" = {
-    "af": "afr", "am": "amh", "ar": "ara", "as": "asm", "az": "aze", "ba": "bak",
-    "be": "bel", "bg": "bul", "bn": "ben", "bo": "bod", "br": "bre", "bs": "bos",
-    "ca": "cat", "cs": "ces", "cy": "cym", "da": "dan", "de": "deu", "el": "ell",
-    "en": "eng", "es": "spa", "et": "est", "eu": "eus", "fa": "fas", "fi": "fin",
-    "fo": "fao", "fr": "fra", "gl": "glg", "gu": "guj", "ha": "hau", "haw": "haw",
-    "he": "heb", "hi": "hin", "hr": "hrv", "ht": "hat", "hu": "hun", "hy": "hye",
-    "id": "ind", "is": "isl", "it": "ita", "ja": "jpn", "jv": "jav", "jw": "jav",
-    "ka": "kat", "kk": "kaz", "km": "khm", "kn": "kan", "ko": "kor", "la": "lat",
-    "lb": "ltz", "ln": "lin", "lo": "lao", "lt": "lit", "lv": "lav", "mg": "mlg",
-    "mi": "mri", "mk": "mkd", "ml": "mal", "mn": "mon", "mr": "mar", "ms": "msa",
-    "mt": "mlt", "my": "mya", "ne": "nep", "nl": "nld", "nn": "nno", "no": "nor",
-    "oc": "oci", "pa": "pan", "pl": "pol", "ps": "pus", "pt": "por", "ro": "ron",
-    "ru": "rus", "sa": "san", "sd": "snd", "si": "sin", "sk": "slk", "sl": "slv",
-    "sn": "sna", "so": "som", "sq": "sqi", "sr": "srp", "su": "sun", "sv": "swe",
-    "sw": "swa", "ta": "tam", "te": "tel", "tg": "tgk", "th": "tha", "tk": "tuk",
-    "tl": "tgl", "tr": "tur", "tt": "tat", "uk": "ukr", "ur": "urd", "uz": "uzb",
-    "vi": "vie", "yi": "yid", "yo": "yor", "yue": "yue", "zh": "zho",
-}
-
-
-def iso639_2t(code: "str | None") -> str:
-    """The 639-2/T tag for a client language code ("pt-BR" → "por"); the
-    region is dropped (containers store 639-2 only) and an unknown code
-    becomes "und" rather than an invalid tag."""
-    base = (code or "").strip().lower().split("-")[0]
-    if len(base) == 3 and base.isalpha() and base not in _ISO639_1_TO_2T:
-        return base   # already a 639-2 code
-    return _ISO639_1_TO_2T.get(base, "und")
-
 
 def lang_name(code: "str | None") -> str:
     """English name for the track title ("German", "Portuguese (BR)")."""
