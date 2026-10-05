@@ -79,3 +79,26 @@ def test_segment_temperature_falls_back_to_the_decoded_value(
     )
     assert r.status_code == 200, r.text
     assert r.json()["segments"][0]["temperature"] == 0.0
+
+
+def test_client_ladder_reaches_the_decoder(client, make_user_key, fake_model):
+    _, raw_alice = make_user_key("alice")
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "decode_overrides": '{"temperature": "0,0.4,0.8"}'},
+    )
+    assert r.status_code == 200, r.text
+    assert fake_model.last_kwargs["temperature"] == (0.0, 0.4, 0.8)
+
+
+def test_locked_temperature_drops_a_client_ladder(client, make_user_key, fake_model):
+    raw_alice = _lock_temperature_for_alice(client, make_user_key, "0.0,0.2")
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "decode_overrides": '{"temperature": "0.5,1.0"}'},
+    )
+    assert r.status_code == 200, r.text
+    assert fake_model.last_kwargs["temperature"] == (0.0, 0.2)
+    assert "temperature" in r.json()["overrides_ignored"]

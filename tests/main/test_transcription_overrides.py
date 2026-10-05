@@ -112,6 +112,26 @@ def test_decode_overrides_drop_non_finite_floats():
         assert "temperature" not in kw and "no_speech_threshold" not in kw, (literal, kw)
 
 
+def test_client_temperature_can_be_a_retry_ladder():
+    """A client temperature is a number or a ladder (list / comma string, the
+    TEMPERATURE format): rungs clamped to [0, 1], at most 16, one rung stays a
+    float, several become faster-whisper's tuple; unparseable or empty input
+    is dropped (the configured value stands)."""
+    from faster_whisper_backend import main
+
+    def t(v):
+        return main._apply_decode_overrides({"temperature": 0.3}, "whisper-1",
+                                            {"temperature": v})["temperature"]
+    assert t(0.7) == 0.7
+    assert t("0.4") == 0.4
+    assert t("0, 0.4, 0.8") == (0.0, 0.4, 0.8)
+    assert t([0, 0.5, 1]) == (0.0, 0.5, 1.0)
+    assert t("0,2,-1") == (0.0, 1.0, 0.0)                 # clamped rung by rung
+    assert t([0.1] * 40) == tuple([0.1] * 16)              # at most 16 rungs
+    for junk in ("", ",", "0,abc", [], [0, "x"], [0, None], "nan", {}, None):
+        assert t(junk) == 0.3, junk
+
+
 def test_decode_overrides_drop_overflowing_suppress_tokens():
     """A suppress_tokens override whose member overflows int() is dropped, not
     500'd: a JSON 1e999 / Infinity literal parses to float('inf') and int(inf)

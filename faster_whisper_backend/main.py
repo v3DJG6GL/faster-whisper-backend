@@ -1701,7 +1701,6 @@ _DECODE_INT_BOUNDS = {
     "language_detection_segments": _client_bounds("language_detection_segments"),
 }
 _DECODE_FLOAT_BOUNDS = {
-    "temperature": (0.0, 1.0),
     "no_speech_threshold": (0.0, 1.0),
     "log_prob_threshold": (-10.0, 0.0),
     "compression_ratio_threshold": (0.0, 10.0),
@@ -1722,6 +1721,10 @@ _DECODE_STR_CAPS = {
 # "also suppress the non-speech set" sentinel.
 _SUPPRESS_TOKENS_MAX = 256
 _SUPPRESS_TOKEN_ID_MAX = 2 ** 31
+# A client temperature is a number or a retry ladder (list / comma string,
+# like TEMPERATURE): every rung clamped to this range, at most this many rungs.
+_TEMPERATURE_BOUNDS = (0.0, 1.0)
+_TEMPERATURE_RUNGS_MAX = 16
 
 
 def _clamp_int(v, lo, hi):
@@ -1768,6 +1771,10 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
             cv = _clamp_float(overrides[key], lo, hi)
             if cv is not None:
                 kwargs[key] = cv
+    if "temperature" in overrides:
+        tv = _client_temperature(overrides["temperature"])
+        if tv is not None:
+            kwargs["temperature"] = tv
     # A JSON null on a bool override means "inherit", not False.
     for key in ("condition_on_previous_text", "multilingual"):
         if overrides.get(key) is not None:
@@ -1851,6 +1858,26 @@ def _temperature_ladder(s: "str | None") -> "tuple[float, ...]":
         return tuple(_finite(t.strip()) for t in (s or "").split(",") if t.strip())
     except ValueError:
         return ()
+
+
+def _client_temperature(v) -> "float | tuple[float, ...] | None":
+    """A client `temperature` decode key: a number, or a retry ladder as a
+    list or a comma string (TEMPERATURE's own format, parsed by
+    _temperature_ladder). Rungs are clamped to _TEMPERATURE_BOUNDS and capped
+    at _TEMPERATURE_RUNGS_MAX; one rung is a float (as before), several a
+    tuple (faster-whisper's ladder). None for anything unparseable or empty —
+    the override is then dropped, like the other clamp paths."""
+    if isinstance(v, str):
+        raw = _temperature_ladder(v)
+    elif isinstance(v, (list, tuple)):
+        raw = tuple(v)
+    else:
+        raw = (v,)
+    rungs = [_clamp_float(r, *_TEMPERATURE_BOUNDS)
+             for r in raw[:_TEMPERATURE_RUNGS_MAX]]
+    if not rungs or None in rungs:
+        return None
+    return rungs[0] if len(rungs) == 1 else tuple(rungs)
 
 
 def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
@@ -4593,11 +4620,11 @@ async def transcribe(
     # Both are already bounded on every sibling path — DEFAULT_PROMPT is
     # Field(max_length=2048) and the `hotwords` client override is capped by
     # _DECODE_STR_CAPS, while `temperature` inside decode_overrides is clamped
-    # by _DECODE_FLOAT_BOUNDS. Clamp rather than 422 so a caller that is merely
+    # rung by rung to _TEMPERATURE_BOUNDS. Clamp rather than 422 so a caller that is merely
     # sloppy keeps working; NaN fails every comparison, hence the self-test.
     if prompt is not None:
         prompt = prompt[:_DECODE_STR_CAPS.get("prompt", 2048)]
-    _t_lo, _t_hi = _DECODE_FLOAT_BOUNDS.get("temperature", (0.0, 1.0))
+    _t_lo, _t_hi = _TEMPERATURE_BOUNDS
     temperature = (
         min(_t_hi, max(_t_lo, temperature)) if temperature == temperature else _t_lo
     )
