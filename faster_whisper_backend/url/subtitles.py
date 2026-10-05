@@ -5,7 +5,7 @@ list a preview shows plus the server-side sources the url-subtitles route
 fetches from. Only ids leave the server: the source URLs are signed,
 short-lived and on YouTube carry a `pot` token, so the client names a track
 by id and the route re-probes for fresh URLs; `fetch_tracks` then GETs
-them through the guarded, capped download._capped_get.
+them through the guarded, capped download.capped_get.
 
 Rules:
   - every manual track (a person uploaded it);
@@ -27,7 +27,6 @@ import time
 import urllib.error
 import urllib.parse
 
-from faster_whisper_backend import config as cfg
 from faster_whisper_backend.url import download as _udl
 
 MAX_TRACKS = 24
@@ -130,28 +129,22 @@ def sniff(body: bytes, ext: str) -> str:
 async def fetch_tracks(info, ids: "list[str]") -> "tuple[list[dict], list[dict]]":
     """Fetch the tracks `ids` names from a FRESH probe's `info` (its signed
     URLs are minutes old at most): ({id, lang, kind, ext, text} …,
-    {id, error} …). One at a time through download._capped_get — guarded
+    {id, error} …). One at a time through download.capped_get — guarded
     opener, TRACK_MAX_BYTES each, TOTAL_MAX_BYTES and _FETCH_BUDGET_S over
     the request. Errors are client-safe; a source URL never reaches one."""
     by_id = {t["id"]: t for t in info.subtitle_tracks}
-    loop = asyncio.get_running_loop()
     deadline = time.monotonic() + _FETCH_BUDGET_S
     budget = TOTAL_MAX_BYTES
     tracks: "list[dict]" = []
     failed: "list[dict]" = []
     for tid in ids:
         track, src = by_id.get(tid), info.subtitle_sources.get(tid)
-        timeout = min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
-                      deadline - time.monotonic())
         try:
             if track is None or src is None:
                 raise _udl.UrlDownloadError("the link no longer offers this track")
-            if timeout <= 0:
-                raise _udl.UrlTimeoutError("the site took too long to answer")
-            _ctype, body = await asyncio.wait_for(loop.run_in_executor(
-                _udl._PROBE_POOL, lambda: _udl._capped_get(
-                    src["url"], max_bytes=min(TRACK_MAX_BYTES, budget),
-                    timeout=timeout)), timeout + 2.0)
+            _ctype, body = await _udl.capped_get(
+                src["url"], max_bytes=min(TRACK_MAX_BYTES, budget),
+                deadline=deadline)
             budget -= len(body)
             tracks.append({"id": tid, "lang": track["lang"], "kind": track["kind"],
                            "ext": track["ext"], "text": sniff(body, track["ext"])})

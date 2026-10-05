@@ -9,7 +9,7 @@ stream (HLS, DASH), the whole file means hundreds of small requests (RTVE:
 under the pieces instead.
 
 Every request — playlist and segment, on whatever host (CDNs) — goes through
-download._capped_get: http(s) only, forbidden hosts refused before any I/O,
+download.capped_get: http(s) only, forbidden hosts refused before any I/O,
 the guarded opener (pinned DNS, every redirect hop re-checked), a byte cap
 and a wall-clock deadline. Never yt-dlp's download_ranges/--download-sections:
 those hand the fetch to ffmpeg, which bypasses the SSRF guard.
@@ -21,7 +21,6 @@ fails a check on its own. The parsers (`parse_hls`, `dash_media`,
 """
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import math
 import os
@@ -29,7 +28,6 @@ import re
 import time
 import urllib.parse
 
-from faster_whisper_backend import config as cfg
 from faster_whisper_backend.url import download as _udl
 from faster_whisper_backend.url.language_check import select_segments
 
@@ -224,7 +222,6 @@ async def fetch_pieces(source: dict, starts: "list[float]", seconds: float,
     `dest_dir` (init + segments, concatenated): ([(path, skip seconds)],
     {segments, bytes}). Raises Unsupported / UrlDownloadError (→ the caller
     falls back), UrlCancelled when `cancel_check()` trips."""
-    loop = asyncio.get_running_loop()
     deadline = time.monotonic() + BUDGET_S
     headers = source.get("headers") or {}
 
@@ -232,16 +229,10 @@ async def fetch_pieces(source: dict, starts: "list[float]", seconds: float,
         url, rng = part
         if cancel_check():
             raise _udl.UrlCancelled()
-        timeout = min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
-                      deadline - time.monotonic())
-        if timeout <= 0:
-            raise _udl.UrlTimeoutError("the site took too long to answer")
         hdrs = headers if rng is None else {
             **headers, "Range": f"bytes={rng[0]}-{rng[0] + rng[1] - 1}"}
-        _ctype, body = await asyncio.wait_for(loop.run_in_executor(
-            _udl._PROBE_POOL, lambda: _udl._capped_get(
-                url, max_bytes=cap, timeout=timeout, headers=hdrs)),
-            timeout + 2.0)
+        _ctype, body = await _udl.capped_get(
+            url, max_bytes=cap, deadline=deadline, headers=hdrs)
         if rng is not None and len(body) != rng[1]:
             # A server ignoring Range sends the whole file (a short one fits
             # the cap): its bytes would be the wrong part of the stream.

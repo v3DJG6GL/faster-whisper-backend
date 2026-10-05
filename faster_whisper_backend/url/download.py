@@ -942,12 +942,12 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
     redirect hop re-checked), the body read in chunks under `max_bytes` and
     a wall-clock deadline (the opener's `timeout` is per socket op, and the
     header phase gets a hard cutoff too: a dribbled status line never trips
-    the per-op timeout). Returns (content type, body). Sync — run it on
-    _PROBE_POOL. `headers` (the extractor's, e.g. a site's Referer) go on
-    top of our User-Agent. Raises UrlDownloadError (client-safe) for a
-    refused host, an unaccepted content type, an over-cap or over-time
-    body; transport errors (urllib.error.HTTPError included) propagate for
-    the caller."""
+    the per-op timeout). Returns (content type, body). Sync — callers await
+    capped_get, which runs it on _PROBE_POOL. `headers` (the extractor's,
+    e.g. a site's Referer) go on top of our User-Agent. Raises
+    UrlDownloadError (client-safe) for a refused host, an unaccepted content
+    type, an over-cap or over-time body; transport errors
+    (urllib.error.HTTPError included) propagate for the caller."""
     parts = urllib.parse.urlsplit(url)
     if (parts.scheme.lower() not in ("http", "https") or not parts.hostname
             or _host_is_forbidden(parts.hostname)):
@@ -976,6 +976,23 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
     return ctype, bytes(buf)
 
 
+async def capped_get(url: str, *, max_bytes: int, deadline: float,
+                     accept=lambda ctype: True,
+                     headers: "dict[str, str] | None" = None) -> "tuple[str, bytes]":
+    """_capped_get on _PROBE_POOL under a monotonic `deadline` shared by a
+    whole request: this GET gets the socket timeout or what is left of the
+    deadline, whichever is shorter (UrlTimeoutError when nothing is left),
+    and the await is abandoned 2 s past it."""
+    timeout = min(float(getattr(cfg, "URL_SOCKET_TIMEOUT_S", 15)),
+                  deadline - time.monotonic())
+    if timeout <= 0:
+        raise UrlTimeoutError("the site took too long to answer")
+    return await asyncio.wait_for(asyncio.get_running_loop().run_in_executor(
+        _PROBE_POOL, lambda: _capped_get(
+            url, max_bytes=max_bytes, timeout=timeout, accept=accept,
+            headers=headers)), timeout + 2.0)
+
+
 async def fetch_thumbnail_data_uri(
     url: "str | None", *, max_bytes: int = 512_000, timeout: float = 5.0,
 ) -> "str | None":
@@ -985,24 +1002,15 @@ async def fetch_thumbnail_data_uri(
     thumbnail is still a preview."""
     if not url:
         return None
-
-    def _fetch() -> "str | None":
-        try:
-            ctype, body = _capped_get(
-                url, max_bytes=max_bytes, timeout=timeout,
-                accept=lambda c: c.startswith("image/") and "svg" not in c)
-        except Exception:  # noqa: BLE001 — soft-fail by contract
-            return None
-        if not body:
-            return None
-        return f"data:{ctype};base64,{base64.b64encode(body).decode('ascii')}"
-
     try:
-        return await asyncio.wait_for(
-            asyncio.get_running_loop().run_in_executor(_PROBE_POOL, _fetch),
-            timeout + 2.0)
-    except Exception:  # noqa: BLE001
+        ctype, body = await capped_get(
+            url, max_bytes=max_bytes, deadline=time.monotonic() + timeout,
+            accept=lambda c: c.startswith("image/") and "svg" not in c)
+    except Exception:  # noqa: BLE001 — soft-fail by contract
         return None
+    if not body:
+        return None
+    return f"data:{ctype};base64,{base64.b64encode(body).decode('ascii')}"
 
 
 # ── error taxonomy ──────────────────────────────────────────────────────────

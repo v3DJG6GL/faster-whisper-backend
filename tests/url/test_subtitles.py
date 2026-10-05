@@ -129,7 +129,7 @@ def served(monkeypatch):
     asked: list = []
     table: dict = {}
 
-    def _get(url, *, max_bytes, timeout, accept=None):
+    def _get(url, *, max_bytes, timeout, accept=None, headers=None):
         asked.append(max_bytes)
         body = table[url.rsplit("/", 1)[1].split(".")[0]][1]
         if isinstance(body, int):
