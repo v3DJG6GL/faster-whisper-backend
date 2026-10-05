@@ -4687,10 +4687,11 @@ async def transcribe(
                 _cur_stage = "downloading"
                 try:
                     _check_cancelled(_pid)
-                    _url = _udl.validate_url(source_url)
+                    # probe() validates the URL; info.url is the normalised one.
                     _uinfo = await _udl.probe(
-                        _url,
+                        source_url,
                         timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
+                    _url = _uinfo.url
                     logger.info(
                         "[url-dl] resolved (host %s): extractor=%s duration=%s"
                         " — starting download",
@@ -7953,10 +7954,9 @@ async def _url_media_on_demand(user: dict, body: dict, url: str, what: str,
     try:
         _progress_set(_pid, stage="resolving", progress=None,
                       owner=(_user_id or user.get("key_id")))
-        _url = _udl.validate_url(url)
         _check_cancelled(_pid)
-        info = await _probe_link(_url, what)
-        return await fetch(_pid, _url, info)
+        info = await _probe_link(url, what)
+        return await fetch(_pid, info.url, info)
     except (_ClientCancelled, _udl.UrlCancelled):
         raise HTTPException(status_code=499, detail="cancelled by the client")
     except _udl.UrlDownloadError as e:

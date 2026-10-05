@@ -45,7 +45,8 @@ def url_enabled(app_module, tmp_path, monkeypatch):
     url_media_store.startup_reset()
 
     async def _probe(url, *, timeout):
-        return _info(url=url)
+        # Like the real probe: the URL is validated (and normalised) first.
+        return _info(url=url_download.validate_url(url))
 
     async def _download(url, *, dest_dir, max_bytes=None, timeout=None,
                         progress_cb=None, cancel_check=None):
