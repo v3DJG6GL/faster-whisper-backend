@@ -687,3 +687,53 @@ def test_stream_knobs_master_gate_off(client, app_module, monkeypatch):
                                    {"streaming_vad_outer_silence_ms": 3000})
     assert ready["overrides_ignored"] == ["streaming_vad_outer_silence_ms"]
     assert seen["client"] == {}
+
+
+def test_stream_client_output_wrappers_survive_a_refresh(
+        client, make_user_key, fake_model, app_module, monkeypatch):
+    # _refresh_ident recomputes the wrappers; it must keep the client's.
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    uid, raw_alice = make_user_key("alice")
+    from faster_whisper_backend.auth import api_keys_store
+    with client.websocket_connect(
+            "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "decode_overrides": {"output_prefix": ">> ",
+                                           "output_suffix": " <<"},
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        # Any config bump makes the next utterance re-resolve ident.
+        api_keys_store.set_user_permissions(
+            uid, {"pages": {}, "config": {"overrides": {}, "profiles": [], "locks": []}})
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        msgs = _drain(ws)
+    finals = [m for m in msgs if m.get("type") == "final"]
+    assert len(finals) >= 2
+    assert all((f.get("committed") or f.get("tail") or "").startswith(">> ")
+               for f in finals if f.get("committed") or f.get("tail"))
+    assert finals[-1]["last"] and finals[-1]["committed"].endswith(" <<")
+
+
+def test_stream_client_output_wrappers_master_gate_off(
+        client, fake_model, app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    monkeypatch.setattr(app_module.cfg, "OUTPUT_PREFIX", "[cfg] ")
+    monkeypatch.setattr(app_module.cfg, "ALLOW_REQUEST_DECODE_OVERRIDES", False)
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "decode_overrides": {"output_prefix": ">> "},
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        ready = ws.receive_json()
+        assert ready["overrides_ignored"] == ["output_prefix"]
+        ws.send_bytes(_pcm(8000, 2500))
+        ws.send_bytes(_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        msgs = _drain(ws)
+    final = next(m for m in msgs if m.get("type") == "final" and m.get("committed"))
+    assert final["committed"].startswith("[cfg] ")

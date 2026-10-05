@@ -409,3 +409,43 @@ def test_multilingual_with_a_set_language_is_reported_ignored(
                     data={**data, "language": "de"})
     assert "multilingual" not in fake_model.last_kwargs
     assert r.json()["overrides_ignored"] == ["multilingual"]
+
+
+def test_client_output_wrappers_in_batch(client, app_module):
+    app_module.cfg.OUTPUT_PREFIX = "[cfg] "
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE,
+        data={"model": "whisper-1", "response_format": "text",
+              "decode_overrides": json.dumps({"output_prefix": ">> ",
+                                              "output_suffix": " <<"})})
+    assert r.status_code == 200, r.text
+    assert r.json() == ">> hallo welt <<"
+    # "" is an explicit "no prefix" over the configured one.
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE,
+        data={"model": "whisper-1", "response_format": "text",
+              "decode_overrides": json.dumps({"output_prefix": ""})})
+    assert r.json() == "hallo welt"
+
+
+def test_client_output_wrappers_master_gate_off(client, app_module):
+    app_module.cfg.OUTPUT_PREFIX = "[cfg] "
+    app_module.cfg.ALLOW_REQUEST_DECODE_OVERRIDES = False
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE,
+        data={"model": "whisper-1", "response_format": "verbose_json",
+              "decode_overrides": json.dumps({"output_prefix": ">> "})})
+    assert r.status_code == 200, r.text
+    assert r.json()["text"] == "[cfg] hallo welt"
+    assert r.json()["overrides_ignored"] == ["output_prefix"]
+
+
+def test_batch_reports_hallucination_threshold_without_word_timestamps(
+        client, fake_model):
+    r = client.post(
+        "/v1/audio/transcriptions", files=_FILE,
+        data={"model": "whisper-1", "response_format": "json",
+              "decode_overrides": json.dumps({"hallucination_silence_threshold": 2})})
+    assert r.status_code == 200, r.text
+    assert fake_model.last_kwargs["word_timestamps"] is False
+    assert r.json()["overrides_ignored"] == ["hallucination_silence_threshold"]

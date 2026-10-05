@@ -188,3 +188,85 @@ def test_stream_handshake_language_is_tri_state(monkeypatch):
     src = __import__("inspect").getsource(streaming_routes)
     assert 'req_language = _req_language.strip() if isinstance(_req_language, str) else None' in src
     assert 'language if language is not None' in src
+
+
+def test_client_suppress_chars_replace_config_and_empty_means_none(monkeypatch):
+    from faster_whisper_backend import main
+    seen = []
+
+    def _resolve(model_id, model, chars, from_client=False):
+        seen.append((chars, from_client))
+        return [7] if chars == "." else [9]
+    monkeypatch.setattr(main, "_resolve_suppress_chars", _resolve)
+    kw = _assemble({"SUPPRESS_CHARS": "."}, overrides={"suppress_chars": "?"})
+    assert kw["suppress_tokens"] == [-1, 9] and seen[-1] == ("?", True)
+    # "" is an explicit "no chars": nothing resolved, faster-whisper default.
+    seen.clear()
+    kw = _assemble({"SUPPRESS_CHARS": "."}, overrides={"suppress_chars": ""})
+    assert kw.get("suppress_tokens") == _assemble({}).get("suppress_tokens")
+    assert seen == []
+    # Locked: the configured chars stand.
+    locked = ec.Resolved(values={"SUPPRESS_CHARS": "."},
+                         locked_client_keys=frozenset({"suppress_chars"}))
+    kw = main.assemble_transcribe_kwargs(
+        None, None, language="", temperature=0.0, vad_filter=False,
+        vad_parameters=None, want_word_ts=False, initial_prompt=None,
+        overrides={"suppress_chars": "?"}, ident=locked)
+    assert kw["suppress_tokens"] == [-1, 7]
+
+
+def test_suppress_chars_cache_is_a_capped_lru(monkeypatch):
+    from types import SimpleNamespace
+    from faster_whisper_backend import main
+    monkeypatch.setattr(main, "_suppress_chars_cache", main.OrderedDict())
+    monkeypatch.setattr(main, "_SUPPRESS_CHARS_CACHE_MAX", 3)
+    tok = SimpleNamespace(encode=lambda v, add_special_tokens=False: [ord(v[-1])])
+    model = SimpleNamespace(hf_tokenizer=tok)
+    for ch in "abc":
+        main._resolve_suppress_chars("m", model, ch, True)
+    main._resolve_suppress_chars("m", model, "a", True)   # hit → most recent
+    main._resolve_suppress_chars("m", model, "d", True)   # evicts "b"
+    assert list(main._suppress_chars_cache) == [("m", "c"), ("m", "a"), ("m", "d")]
+    main._drop_suppress_chars_cache("m")
+    assert not main._suppress_chars_cache
+
+
+def test_hallucination_silence_zero_is_off(monkeypatch):
+    # faster-whisper treats only None as off; 0 from the config or the
+    # client never reaches it.
+    assert "hallucination_silence_threshold" not in _assemble(
+        {"HALLUCINATION_SILENCE_THRESHOLD": 0.0})
+    assert _assemble({"HALLUCINATION_SILENCE_THRESHOLD": 2.0})[
+        "hallucination_silence_threshold"] == 2.0
+    assert "hallucination_silence_threshold" not in _assemble(
+        {"HALLUCINATION_SILENCE_THRESHOLD": 2.0},
+        overrides={"hallucination_silence_threshold": 0})
+    assert _assemble({}, overrides={"hallucination_silence_threshold": 99})[
+        "hallucination_silence_threshold"] == 60.0     # clamped to the field max
+
+
+def test_language_detection_keys_clamped_and_auto_detect_only():
+    from faster_whisper_backend import main
+    kw = _assemble({}, overrides={"language_detection_segments": 50,
+                                  "language_detection_threshold": 0.8})
+    assert kw["language_detection_segments"] == 10
+    assert kw["language_detection_threshold"] == 0.8
+    ignored = []
+    main._note_auto_detect_only({"language_detection_segments": 2,
+                                 "language_detection_threshold": 0.8}, "de", ignored)
+    assert ignored == ["language_detection_threshold", "language_detection_segments"]
+    ignored = []
+    main._note_auto_detect_only({"language_detection_segments": 2}, "", ignored)
+    assert ignored == []
+
+
+def test_hallucination_threshold_needs_word_timestamps():
+    from faster_whisper_backend import main
+    ignored = []
+    main._note_word_ts_only({"hallucination_silence_threshold": 2.0}, False, ignored)
+    assert ignored == ["hallucination_silence_threshold"]
+    for ov, wts in (({"hallucination_silence_threshold": 2.0}, True),
+                    ({"hallucination_silence_threshold": 0}, False), ({}, False)):
+        ignored = []
+        main._note_word_ts_only(ov, wts, ignored)
+        assert ignored == [], (ov, wts)

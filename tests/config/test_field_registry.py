@@ -335,7 +335,13 @@ CONFIG_TO_CLIENT_KEY_SNAPSHOT = (
      'STREAMING_VAD_INNER_SILENCE_MS': 'streaming_vad_inner_silence_ms',
      'STREAMING_VAD_OUTER_SILENCE_MS': 'streaming_vad_outer_silence_ms',
      'STREAMING_HARD_BREAK_SILENCE_MS': 'streaming_hard_break_silence_ms',
-     'STREAMING_HARD_BREAK_SEPARATOR': 'streaming_hard_break_separator'}
+     'STREAMING_HARD_BREAK_SEPARATOR': 'streaming_hard_break_separator',
+     'HALLUCINATION_SILENCE_THRESHOLD': 'hallucination_silence_threshold',
+     'SUPPRESS_CHARS': 'suppress_chars',
+     'LANGUAGE_DETECTION_SEGMENTS': 'language_detection_segments',
+     'LANGUAGE_DETECTION_THRESHOLD': 'language_detection_threshold',
+     'OUTPUT_PREFIX': 'output_prefix',
+     'OUTPUT_SUFFIX': 'output_suffix'}
 )
 
 LOCKABLE_SNAPSHOT = frozenset(

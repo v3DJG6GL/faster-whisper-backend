@@ -27,6 +27,7 @@ from faster_whisper_backend.core.languages import (
 from faster_whisper_backend.core import seam_holdback as _seam_holdback
 
 from faster_whisper_backend import config as cfg
+from faster_whisper_backend import config_store
 # system_stats imports psutil + pynvml at module load and primes psutil's
 # non-blocking counters. Imported here (early) so the priming happens before
 # any request handler runs.
@@ -1619,24 +1620,32 @@ _model_leases: "dict[str, int]" = {}
 # loaded model's hf_tokenizer. The encoding depends on the model's BPE
 # table, so the cache key is (model_id, chars_str). Invalidated on model
 # unload (LRU/idle/evict-on-edit) and naturally rekeyed when SUPPRESS_CHARS
-# changes.
-_suppress_chars_cache: "dict[tuple[str, str], tuple[int, ...]]" = {}
+# changes. An LRU capped at _SUPPRESS_CHARS_CACHE_MAX entries: a client's
+# suppress_chars decode key makes the strings caller-chosen.
+_suppress_chars_cache: "OrderedDict[tuple[str, str], tuple[int, ...]]" = OrderedDict()
+_SUPPRESS_CHARS_CACHE_MAX = 256
 
 
 def _resolve_suppress_chars(model_id: str,
                             model: "WhisperModel",
-                            chars: "str | None") -> "tuple[int, ...]":
+                            chars: "str | None",
+                            from_client: bool = False) -> "tuple[int, ...]":
     """Return the sorted tuple of vocab IDs to suppress for the given chars.
     Each char is encoded both bare and with a leading space — Whisper's BPE
     often tokenizes a punct char differently in those positions (mirrors
     faster-whisper's own non_speech_tokens approach). Multi-piece results
     are skipped with a warning (suppressing only the first piece would
-    block every word that starts with that piece)."""
+    block every word that starts with that piece). ``from_client``: the
+    chars came from a request, so their resolution logs at DEBUG only."""
     if not chars:
         return ()
     key = (model_id, chars)
     cached = _suppress_chars_cache.get(key)
     if cached is not None:
+        try:
+            _suppress_chars_cache.move_to_end(key)
+        except KeyError:   # dropped by a concurrent unload; still a valid answer
+            pass
         return cached
     tok = getattr(model, "hf_tokenizer", None)
     ids: set[int] = set()
@@ -1663,9 +1672,11 @@ def _resolve_suppress_chars(model_id: str,
                     )
     out = tuple(sorted(ids))
     _suppress_chars_cache[key] = out
+    while len(_suppress_chars_cache) > _SUPPRESS_CHARS_CACHE_MAX:
+        _suppress_chars_cache.popitem(last=False)
     if out:
-        logger.info("SUPPRESS_CHARS resolved for %s (%r): %r",
-                    model_id, chars, out)
+        (logger.debug if from_client else logger.info)(
+            "SUPPRESS_CHARS resolved for %s (%r): %r", model_id, chars, out)
     return out
 
 
@@ -1674,10 +1685,20 @@ def _resolve_suppress_chars(model_id: str,
 # to the SAME bounds the admin config enforces (config_store.py), so an untrusted
 # client cannot request unbounded compute on the shared server. Applied AFTER config
 # resolution, so the order is: request > per-model override > global default.
+# Only model.transcribe kwargs belong in these tables: every key in them is
+# forwarded as one (live-dictation keys are applied by the streaming route).
+def _client_bounds(key: str) -> "tuple":
+    """(min, max) of a client decode key, read from its config field's own
+    bounds (config_store.client_key_bounds) rather than copied by hand."""
+    b = config_store.client_key_bounds()[key]
+    return b["min"], b["max"]
+
+
 _DECODE_INT_BOUNDS = {
     "beam_size": (1, 20),
     "best_of": (1, 20),
     "no_repeat_ngram_size": (0, 10),
+    "language_detection_segments": _client_bounds("language_detection_segments"),
 }
 _DECODE_FLOAT_BOUNDS = {
     "temperature": (0.0, 1.0),
@@ -1687,6 +1708,8 @@ _DECODE_FLOAT_BOUNDS = {
     "patience": (0.5, 5.0),
     "length_penalty": (0.1, 5.0),
     "repetition_penalty": (0.5, 5.0),
+    "hallucination_silence_threshold": _client_bounds("hallucination_silence_threshold"),
+    "language_detection_threshold": _client_bounds("language_detection_threshold"),
 }
 _DECODE_STR_CAPS = {
     "hotwords": 2048,
@@ -1903,7 +1926,9 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     if _lang_segs and _lang_segs != 1:
         transcribe_kwargs["language_detection_segments"] = _lang_segs
     _hallu_silence = cf("HALLUCINATION_SILENCE_THRESHOLD")
-    if _hallu_silence is not None:
+    if _hallu_silence:
+        # 0 is "off" here, but an active threshold to faster-whisper (it only
+        # treats None as off) — so only a positive value is forwarded.
         transcribe_kwargs["hallucination_silence_threshold"] = _hallu_silence
     _suppress_blank = cf("SUPPRESS_BLANK")
     if _suppress_blank is False:
@@ -1934,15 +1959,29 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     # Per-request overrides win (clamped), EXCEPT fields locked by an identity
     # layer (skipped). No-op when None/empty.
     _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides, ident=ident)
+    # A client hallucination_silence_threshold of 0 is "off" too (see above).
+    if not transcribe_kwargs.get("hallucination_silence_threshold"):
+        transcribe_kwargs.pop("hallucination_silence_threshold", None)
     # SUPPRESS_CHARS — chars resolved to vocab IDs via the loaded model's
     # tokenizer, then merged into the EFFECTIVE suppress_tokens list, i.e.
     # after a client suppress_tokens override (which used to replace the
     # merged ids). Genuinely additive: key absent = faster-whisper's default
     # (-1, the non-speech set) plus the chars; a cleared list (None, from the
     # config or the client) = the chars only; a list = the list plus the chars.
+    # A client suppress_chars (unless locked) replaces the configured string;
+    # "" is an explicit "no chars".
     _suppress_chars = cf("SUPPRESS_CHARS")
+    _client_chars = (overrides or {}).get("suppress_chars")
+    _chars_from_client = (
+        isinstance(_client_chars, str)
+        and "suppress_chars" not in (ident.locked_client_keys
+                                     if ident is not None else frozenset()))
+    if _chars_from_client:
+        _suppress_chars = _client_chars[
+            :config_store.client_key_bounds()["suppress_chars"]["maxlen"]]
     if _suppress_chars:
-        extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars)
+        extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars,
+                                            _chars_from_client)
         if extra_ids:
             if "suppress_tokens" not in transcribe_kwargs:
                 merged_ids = sorted({-1, *extra_ids})
@@ -1960,14 +1999,54 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     return transcribe_kwargs
 
 
+# Client keys that only act while the language is auto-detected.
+_AUTO_DETECT_ONLY_KEYS = ("multilingual", "language_detection_threshold",
+                          "language_detection_segments")
+
+
 def _note_auto_detect_only(overrides: dict, language: "str | None",
                            ignored: list) -> None:
-    """multilingual applies to auto-detect only (assemble_transcribe_kwargs
-    drops it when a language is set): a client override for it then lands
-    in `overrides_ignored`, like a locked key, instead of vanishing."""
-    if (language and overrides.get("multilingual") is not None
-            and "multilingual" not in ignored):
-        ignored.append("multilingual")
+    """multilingual and the language-detection knobs apply to auto-detect
+    only (assemble_transcribe_kwargs drops multilingual when a language is
+    set; faster-whisper skips detection): a client override for one of them
+    then lands in `overrides_ignored`, like a locked key, instead of
+    vanishing."""
+    if not language:
+        return
+    for key in _AUTO_DETECT_ONLY_KEYS:
+        if overrides.get(key) is not None and key not in ignored:
+            ignored.append(key)
+
+
+def _note_word_ts_only(overrides: dict, word_timestamps: bool,
+                       ignored: list) -> None:
+    """faster-whisper reads hallucination_silence_threshold only from a decode
+    with word timestamps: without them a client value (0 = off aside) lands in
+    `overrides_ignored` instead of vanishing."""
+    if (not word_timestamps and overrides.get("hallucination_silence_threshold")
+            and "hallucination_silence_threshold" not in ignored):
+        ignored.append("hallucination_silence_threshold")
+
+
+def _output_wrappers(resolved_model, ident, overrides: "dict | None") -> "tuple[str, str]":
+    """(OUTPUT_PREFIX, OUTPUT_SUFFIX) for this request: the client's
+    output_prefix / output_suffix decode keys win unless locked, else the
+    resolved config. Gated on ident.locked_client_keys, which carries the
+    decode-override master gate too (_resolve_request_knob's ident.locked
+    would miss it). "" is an explicit "none"; capped at the field length.
+    Shared by the batch route and the streaming wrappers (handshake and
+    _refresh_ident)."""
+    locked = ident.locked_client_keys if ident is not None else frozenset()
+    bounds = config_store.client_key_bounds()
+    out = []
+    for field, key in (("OUTPUT_PREFIX", "output_prefix"),
+                       ("OUTPUT_SUFFIX", "output_suffix")):
+        v = (overrides or {}).get(key)
+        if isinstance(v, str) and key not in locked:
+            out.append(v[:bounds[key]["maxlen"]])
+        else:
+            out.append(cfg_for(resolved_model, field, ident) or "")
+    return out[0], out[1]
 
 
 # Below this many words a segment's rate is statistically meaningless (a single
@@ -5240,7 +5319,6 @@ async def transcribe(
             # kwargs enforces the drop; we record it here for the response).
             # Live-dictation keys are not batch knobs at all: a locked one was
             # never going to apply here, so it is not reported either.
-            from faster_whisper_backend import config_store
             ignored.extend(sorted(
                 k for k in _overrides if k in ident.locked_client_keys
                 and k not in config_store.STREAM_ONLY_CLIENT_KEYS))
@@ -5273,6 +5351,7 @@ async def transcribe(
             )
             _note_auto_detect_only(_overrides, transcribe_kwargs.get("language"),
                                    ignored)
+            _note_word_ts_only(_overrides, want_word_ts, ignored)
 
             # Pre-decode music-separation stage (soft-fail): replaces the
             # uploaded tmp file with a vocals-only WAV, so the decode AND the
@@ -6059,9 +6138,10 @@ async def transcribe(
             # Output wrappers (G/PM): plain prefix/suffix concatenated to
             # the final transcript text after the pipeline runs (including
             # the in-pipeline terminal trim) and BEFORE a defensive
-            # post-wrapper trim. Per-model overrides win.
-            _output_prefix = cfg_for(resolved_model, "OUTPUT_PREFIX", ident) or ""
-            _output_suffix = cfg_for(resolved_model, "OUTPUT_SUFFIX", ident) or ""
+            # post-wrapper trim. Per-model overrides win; the client's
+            # output_prefix / output_suffix win over both unless locked.
+            _output_prefix, _output_suffix = _output_wrappers(
+                resolved_model, ident, _overrides)
             if _output_prefix or _output_suffix:
                 _wrap_before = full_text_str
                 full_text_str = _output_prefix + full_text_str + _output_suffix

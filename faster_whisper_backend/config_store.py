@@ -227,8 +227,8 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
     "HALLUCINATION_SILENCE_THRESHOLD":
         "With WORD_TIMESTAMPS_ENABLED=true, skip silent stretches longer "
         "than this many seconds when a possible hallucination is detected. "
-        "Default disabled. Try 2.0 if Whisper invents 'thanks for watching' "
-        "filler in long silences.",
+        "Default disabled; 0 = disabled too. Try 2.0 if Whisper invents "
+        "'thanks for watching' filler in long silences.",
     "SEGMENT_MAX_WORDS_PER_S":
         "Drop a whole segment when its average speed is above this many "
         "words per second (number of words ÷ segment length). Catches "
@@ -1756,17 +1756,20 @@ class AdminConfig(BaseModel):
     LANGUAGE_DETECTION_THRESHOLD: Annotated[float, Field(ge=0.0, le=1.0)] | None = _F(
         "LANGUAGE_DETECTION_THRESHOLD", scope="per_request",
         group="Decode params",
-        subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)")
+        subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)",
+        client_key="language_detection_threshold")
     LANGUAGE_DETECTION_SEGMENTS: Annotated[int, Field(ge=1, le=10)] | None = _F(
         "LANGUAGE_DETECTION_SEGMENTS", scope="per_request",
         group="Decode params",
-        subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)")
+        subgroup="Advanced — language detection (active when DEFAULT_LANGUAGE empty)",
+        client_key="language_detection_segments")
 
     # --- Anti-hallucination & token control ---
     HALLUCINATION_SILENCE_THRESHOLD: Annotated[float, Field(ge=0.0, le=60.0)] | None = _F(
         "HALLUCINATION_SILENCE_THRESHOLD", scope="per_request",
         group="Decode params",
-        subgroup="Advanced — anti-hallucination & token control")
+        subgroup="Advanced — anti-hallucination & token control",
+        client_key="hallucination_silence_threshold")
     SEGMENT_MAX_WORDS_PER_S: Annotated[float, Field(ge=0.0, le=100.0)] | None = _F(
         "SEGMENT_MAX_WORDS_PER_S", scope="per_request",
         group="Decode params",
@@ -1805,7 +1808,8 @@ class AdminConfig(BaseModel):
     SUPPRESS_CHARS: Annotated[str, Field(max_length=64)] | None = _F(
         "SUPPRESS_CHARS", scope="per_request", group="Decode params",
         subgroup="Advanced — anti-hallucination & token control",
-        cache_rebuild=True)
+        cache_rebuild=True,
+        client_key="suppress_chars")
     PREPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = _F(
         "PREPEND_PUNCTUATIONS", scope="per_request", group="Decode params",
         subgroup="Advanced — anti-hallucination & token control",
@@ -1817,9 +1821,11 @@ class AdminConfig(BaseModel):
 
     # --- Output wrappers (NOT a faster-whisper param; backend-level) ---
     OUTPUT_PREFIX: Annotated[str, Field(max_length=512)] | None = _F(
-        "OUTPUT_PREFIX", scope="per_request", group="Output wrappers")
+        "OUTPUT_PREFIX", scope="per_request", group="Output wrappers",
+        client_key="output_prefix")
     OUTPUT_SUFFIX: Annotated[str, Field(max_length=512)] | None = _F(
-        "OUTPUT_SUFFIX", scope="per_request", group="Output wrappers")
+        "OUTPUT_SUFFIX", scope="per_request", group="Output wrappers",
+        client_key="output_suffix")
 
     # --- Live streaming (WebSocket dictation) ---
     STREAMING_ENABLED: bool | None = _F(

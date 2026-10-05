@@ -806,6 +806,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             req_overrides, req_language if req_language is not None
             else main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
             overrides_ignored)
+        main._note_word_ts_only(req_overrides, gate_final_words, overrides_ignored)
         if "DEFAULT_PROMPT" in ident.locked:
             _locked_prompt = main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
             if prompt_provided and req_prompt != _locked_prompt:
@@ -1112,9 +1113,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # Output wrappers: the prefix sits at the very start of the document, the
         # suffix only on the final flush. committed/tail are full authoritative
         # strings (the client replaces each region), so re-applying the prefix on
-        # every final is correct — it never accumulates.
-        out_prefix = main.cfg_for(final_model, "OUTPUT_PREFIX", ident) or ""
-        out_suffix = main.cfg_for(final_model, "OUTPUT_SUFFIX", ident) or ""
+        # every final is correct — it never accumulates. The client's
+        # output_prefix / output_suffix win unless locked.
+        out_prefix, out_suffix = main._output_wrappers(final_model, ident, req_overrides)
 
         async def emit(message):
             if message.get("type") == "final":
@@ -1444,8 +1445,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # on the permissions it captured at the handshake.
                 user = fresh
                 ident = main.build_ident(user, final_model, request_profile=req_override_profile)
-                out_prefix = main.cfg_for(final_model, "OUTPUT_PREFIX", ident) or ""
-                out_suffix = main.cfg_for(final_model, "OUTPUT_SUFFIX", ident) or ""
+                out_prefix, out_suffix = main._output_wrappers(
+                    final_model, ident, req_overrides)
                 overrides_ignored = sorted(k for k in req_overrides
                                            if k in ident.locked_client_keys)
                 _note_pinned_condition(req_overrides, overrides_ignored)
@@ -1459,6 +1460,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     req_overrides, req_language if req_language is not None
                     else main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
                     overrides_ignored)
+                main._note_word_ts_only(req_overrides, gate_final_words,
+                                        overrides_ignored)
                 req_prompt = _client_prompt
                 _provided = _client_prompt_provided
                 if "DEFAULT_PROMPT" in ident.locked:
