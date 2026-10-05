@@ -12,7 +12,7 @@ import shutil
 import tempfile
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 # BOOT_ID (the per-process restart marker surfaced via /v1/models) lives in
 # build_info with the rest of the server identity; imported this early —
@@ -4737,19 +4737,12 @@ async def transcribe(
                             logger.info("[url-dl] prefetched audio not "
                                         "reusable (host %s) — downloading",
                                         _url_host_for_log(_url))
+                        # Not a staging job: the download outlives this
+                        # block (pipeline copy, retention) and the handler's
+                        # finally removes the dir.
                         _url_job_dir = tempfile.mkdtemp(prefix="urldl-")
-                        async with _get_url_download_semaphore():
-                            _check_cancelled(_pid)
-                            _dl_path = await _udl.download(
-                                _url,
-                                dest_dir=_url_job_dir,
-                                max_bytes=max_upload,
-                                timeout=float(getattr(
-                                    cfg, "URL_DOWNLOAD_TIMEOUT_S", 900)),
-                                progress_cb=lambda f, tot: _progress_set(
-                                    _pid, stage="downloading", progress=f,
-                                    total_bytes=tot),
-                                cancel_check=lambda: _cancel_requested(_pid))
+                        _dl_path = await _guarded_audio_download(
+                            _pid, _url, _url_job_dir, max_bytes=max_upload)
                     # Resolve + download as one receipt row: on a long link
                     # it can dominate wall time. Cancelled/error paths leave
                     # no entry.
@@ -7603,58 +7596,57 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                      "total_bytes": state["total_bytes"]}
         _progress_set(pid, video=dict(state), **extra)
 
-    job: "str | None" = None
     try:
         _pub(state="queued")
-        async with _get_url_download_semaphore():
-            if _cancel_requested(pid):
-                raise _udl.UrlCancelled()
-            job = _ums.new_staging_job()
-            _pub(state="downloading")
-            path = await _udl.download_video(
-                url, dest_dir=job,
-                max_bytes=int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
-                max_height=(rung.get("height") if capped else None),
-                container=state["container"],
-                expected_total=rung.get("approx_bytes"),
-                format_ids=_format_ids, leg_estimates=(_legs or None),
-                timeout=float(getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600)),
-                progress_cb=lambda f, tot, done: _pub(
-                    state="downloading", progress=f, total_bytes=tot,
-                    downloaded_bytes=done),
-                cancel_check=lambda: _cancel_requested(pid))
-        # Report the container that LANDED: an un-merged single download
-        # keeps the site's own extension (a webm behind an "mkv" rung), and
-        # the client names its export after this field.
-        _landed = os.path.splitext(path)[1].lstrip(".").lower()
-        _pub(state="registering", progress=1.0,
-             **({"container": _landed} if _landed else {}))
-        size = os.path.getsize(path)
-        # Teach the ledger what this site's estimate was worth: the next
-        # preview of a fragmented rung from the same extractor scales its
-        # peak-bitrate numbers by actual/estimated.
-        _est = rung.get("approx_bytes")
-        # Measured against the UNSCALED estimate: against the already-scaled
-        # one the EWMA settles on sqrt(true ratio) instead of the ratio.
-        _raw = rung.get("raw_approx_bytes") or _est
-        if rung.get("bytes_approx") and _raw and size > 0:
-            from faster_whisper_backend.runtime import stage_rates as _rates
-            _rates.record(_udl.RATIO_STAGE, rung.get("extractor"),
-                          rung.get("protocol"), None, size / float(_raw))
-            logger.info("[url-dl] video estimate %.1f MB → actual %.1f MB "
-                        "(ratio %.2f, %s/%s)", (_est or _raw) / 1e6, size / 1e6,
-                        size / float(_raw), rung.get("extractor"),
-                        rung.get("protocol"))
-        mid = await asyncio.to_thread(
-            _ums.register, path, user_id=user_id, kind="video",
-            protect=({protect} if protect else None))
-        if mid is None:
-            _pub(state="failed", error="the server could not retain the video")
-        else:
-            _pub(state="done", media_id=mid, expires_at=_ums.expires_at_unix(mid),
-                 bytes=size)
-            logger.info("[url-dl] video retained (%s, %.1f MB, host %s)",
-                        state["container"], size / 1e6, _url_host_for_log(url))
+        with _url_staging_job() as job:
+            async with _get_url_download_semaphore():
+                if _cancel_requested(pid):
+                    raise _udl.UrlCancelled()
+                _pub(state="downloading")
+                path = await _udl.download_video(
+                    url, dest_dir=job,
+                    max_bytes=int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000)),
+                    max_height=(rung.get("height") if capped else None),
+                    container=state["container"],
+                    expected_total=rung.get("approx_bytes"),
+                    format_ids=_format_ids, leg_estimates=(_legs or None),
+                    timeout=float(getattr(cfg, "URL_VIDEO_DOWNLOAD_TIMEOUT_S", 3600)),
+                    progress_cb=lambda f, tot, done: _pub(
+                        state="downloading", progress=f, total_bytes=tot,
+                        downloaded_bytes=done),
+                    cancel_check=lambda: _cancel_requested(pid))
+            # Report the container that LANDED: an un-merged single download
+            # keeps the site's own extension (a webm behind an "mkv" rung), and
+            # the client names its export after this field.
+            _landed = os.path.splitext(path)[1].lstrip(".").lower()
+            _pub(state="registering", progress=1.0,
+                 **({"container": _landed} if _landed else {}))
+            size = os.path.getsize(path)
+            # Teach the ledger what this site's estimate was worth: the next
+            # preview of a fragmented rung from the same extractor scales its
+            # peak-bitrate numbers by actual/estimated.
+            _est = rung.get("approx_bytes")
+            # Measured against the UNSCALED estimate: against the already-scaled
+            # one the EWMA settles on sqrt(true ratio) instead of the ratio.
+            _raw = rung.get("raw_approx_bytes") or _est
+            if rung.get("bytes_approx") and _raw and size > 0:
+                from faster_whisper_backend.runtime import stage_rates as _rates
+                _rates.record(_udl.RATIO_STAGE, rung.get("extractor"),
+                              rung.get("protocol"), None, size / float(_raw))
+                logger.info("[url-dl] video estimate %.1f MB → actual %.1f MB "
+                            "(ratio %.2f, %s/%s)", (_est or _raw) / 1e6, size / 1e6,
+                            size / float(_raw), rung.get("extractor"),
+                            rung.get("protocol"))
+            mid = await asyncio.to_thread(
+                _ums.register, path, user_id=user_id, kind="video",
+                protect=({protect} if protect else None))
+            if mid is None:
+                _pub(state="failed", error="the server could not retain the video")
+            else:
+                _pub(state="done", media_id=mid, expires_at=_ums.expires_at_unix(mid),
+                     bytes=size)
+                logger.info("[url-dl] video retained (%s, %.1f MB, host %s)",
+                            state["container"], size / 1e6, _url_host_for_log(url))
     except _udl.UrlCancelled:
         _pub(state="cancelled")
     except asyncio.CancelledError:
@@ -7670,8 +7662,6 @@ async def _download_video_for_run(pid: "str | None", url: str, rung: dict, *,
                      _url_host_for_log(url), _log_safe(str(e)))
         _pub(state="failed", error="video download failed")
     finally:
-        if job:
-            shutil.rmtree(job, ignore_errors=True)
         if pid:
             _VIDEO_TASKS.pop(pid, None)
             if run_finished[0]:
@@ -7973,6 +7963,35 @@ async def _url_media_on_demand(user: dict, body: dict, url: str, what: str,
         jobs.job_end(request_id)
 
 
+@contextmanager
+def _url_staging_job():
+    """A private job dir in the media store's staging area for one link
+    fetch, removed on every exit path (sweep() catches a crashed process)."""
+    from faster_whisper_backend.url import media_store as _ums
+    job = _ums.new_staging_job()
+    try:
+        yield job
+    finally:
+        shutil.rmtree(job, ignore_errors=True)
+
+
+async def _guarded_audio_download(pid: "str | None", url: str, dest_dir: str,
+                                  *, max_bytes: "int | None" = None) -> str:
+    """A link's whole AUDIO into `dest_dir` through the guarded download()
+    under the URL download semaphore, reporting under `pid` and honouring
+    its cancel. Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
+    from faster_whisper_backend.url import download as _udl
+    async with _get_url_download_semaphore():
+        _check_cancelled(pid)
+        _progress_set(pid, stage="downloading", progress=None)
+        return await _udl.download(
+            url, dest_dir=dest_dir, max_bytes=max_bytes,
+            timeout=float(getattr(cfg, "URL_DOWNLOAD_TIMEOUT_S", 900)),
+            progress_cb=lambda f, tot: _progress_set(
+                pid, stage="downloading", progress=f, total_bytes=tot),
+            cancel_check=lambda: _cancel_requested(pid))
+
+
 async def _download_link_audio(pid: "str | None", url: str,
                                user_id: "str | None") -> str:
     """A link's AUDIO into the media store through the guarded download()
@@ -7982,18 +8001,8 @@ async def _download_link_audio(pid: "str | None", url: str,
     Raises UrlDownloadError / UrlCancelled / _ClientCancelled."""
     from faster_whisper_backend.url import download as _udl
     from faster_whisper_backend.url import media_store as _ums
-    job: "str | None" = None
-    try:
-        async with _get_url_download_semaphore():
-            _check_cancelled(pid)
-            job = _ums.new_staging_job()
-            _progress_set(pid, stage="downloading", progress=None)
-            path = await _udl.download(
-                url, dest_dir=job,
-                timeout=float(getattr(cfg, "URL_DOWNLOAD_TIMEOUT_S", 900)),
-                progress_cb=lambda f, tot: _progress_set(
-                    pid, stage="downloading", progress=f, total_bytes=tot),
-                cancel_check=lambda: _cancel_requested(pid))
+    with _url_staging_job() as job:
+        path = await _guarded_audio_download(pid, url, job)
         size = os.path.getsize(path)
         mid = await asyncio.to_thread(_ums.register, path, user_id=user_id,
                                       source_url=url)
@@ -8003,9 +8012,6 @@ async def _download_link_audio(pid: "str | None", url: str,
                     os.path.splitext(path)[1].lstrip(".") or "?", size / 1e6,
                     _url_host_for_log(url))
         return mid
-    finally:
-        if job:
-            shutil.rmtree(job, ignore_errors=True)
 
 
 async def _segmented_pieces(pid: "str | None", url: str, source: dict,
@@ -8018,23 +8024,21 @@ async def _segmented_pieces(pid: "str | None", url: str, source: dict,
     import urllib.error
     from faster_whisper_backend.audio import transcode as _transcode
     from faster_whisper_backend.url import download as _udl
-    from faster_whisper_backend.url import media_store as _ums
     from faster_whisper_backend.url import segmented as _seg
     t0 = time.perf_counter()
-    job: "str | None" = None
     try:
-        async with _get_url_download_semaphore():
-            _check_cancelled(pid)
-            job = _ums.new_staging_job()
-            _progress_set(pid, stage="downloading", progress=None)
-            files, got = await _seg.fetch_pieces(
-                source, starts, seconds, job,
-                cancel_check=lambda: _cancel_requested(pid),
-                progress_cb=lambda f: _progress_set(
-                    pid, stage="downloading", progress=f))
-        audio = await asyncio.to_thread(lambda: [
-            _transcode.decode_span_16k(path, skip, seconds)
-            for path, skip in files])
+        with _url_staging_job() as job:
+            async with _get_url_download_semaphore():
+                _check_cancelled(pid)
+                _progress_set(pid, stage="downloading", progress=None)
+                files, got = await _seg.fetch_pieces(
+                    source, starts, seconds, job,
+                    cancel_check=lambda: _cancel_requested(pid),
+                    progress_cb=lambda f: _progress_set(
+                        pid, stage="downloading", progress=f))
+            audio = await asyncio.to_thread(lambda: [
+                _transcode.decode_span_16k(path, skip, seconds)
+                for path, skip in files])
         if not all(len(a) for a in audio):
             raise _seg.Unsupported("a piece decoded empty")
     except (_ClientCancelled, _udl.UrlCancelled):
@@ -8047,9 +8051,6 @@ async def _segmented_pieces(pid: "str | None", url: str, source: dict,
                     "%s — downloading the whole audio",
                     _url_host_for_log(url), _log_safe(why))
         return None, why
-    finally:
-        if job:
-            shutil.rmtree(job, ignore_errors=True)
     return audio, (f"chunks {got['segments']} seg / {got['bytes'] / 1e6:.1f} MB"
                    f" in {time.perf_counter() - t0:.1f}s")
 

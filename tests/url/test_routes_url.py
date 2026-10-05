@@ -704,6 +704,18 @@ def test_on_demand_audio_errors(client, url_enabled, monkeypatch):
                        json={"url": _URL}).status_code == 499
 
 
+def test_on_demand_audio_leaves_no_staging_job(client, url_enabled, monkeypatch):
+    assert client.post("/v1/audio/url-media/audio",
+                       json={"url": _URL}).status_code == 200
+
+    async def _fail(url, **kw):
+        raise UrlDownloadError("this media is unavailable or has been removed")
+    monkeypatch.setattr(url_download, "download", _fail)
+    assert client.post("/v1/audio/url-media/audio",
+                       json={"url": _URL}).status_code == 400
+    assert os.listdir(url_media_store.staging_dir()) == []
+
+
 def test_on_demand_audio_403_when_url_download_is_off(client):
     assert client.post("/v1/audio/url-media/audio",
                        json={"url": _URL}).status_code == 403
