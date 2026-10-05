@@ -107,6 +107,11 @@ class UrlMediaInfo:
     subtitle_tracks: "list[dict]" = dataclasses.field(default_factory=list)
     subtitle_sources: "dict[str, dict]" = dataclasses.field(
         default_factory=dict, repr=False)
+    # Server-only, signed URLs like subtitle_sources: the selected audio
+    # format when it is a segmented stream (HLS/DASH), which the language
+    # check samples without the whole file (url/segmented.py); None for a
+    # progressive file.
+    segmented: "dict | None" = dataclasses.field(default=None, repr=False)
 
 
 def yt_dlp_version() -> "str | None":
@@ -890,6 +895,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
                 "label": "audio only" + (f" · {_ext}" if _ext else "")
                          + (f" · {int(_abr)} kbps" if _abr else ""),
             })
+    from faster_whisper_backend.url import segmented as _seg
     from faster_whisper_backend.url import subtitles as _subs
     tracks, sources = _subs.list_tracks(info)
     return UrlMediaInfo(
@@ -911,6 +917,7 @@ async def probe(url: str, *, timeout: float) -> UrlMediaInfo:
         language=_subs.language_of(info),
         subtitle_tracks=tracks,
         subtitle_sources=sources,
+        segmented=_seg.source_of(info),
     )
 
 
@@ -928,22 +935,25 @@ def _log_probe_failure(url: str, e: Exception) -> None:
 
 
 def _capped_get(url: str, *, max_bytes: int, timeout: float,
-                accept=lambda ctype: True) -> "tuple[str, bytes]":
+                accept=lambda ctype: True,
+                headers: "dict[str, str] | None" = None) -> "tuple[str, bytes]":
     """One small GET under the address policy: http(s) only, a forbidden
     host refused before any I/O, the guarded opener (pinned DNS, every
     redirect hop re-checked), the body read in chunks under `max_bytes` and
     a wall-clock deadline (the opener's `timeout` is per socket op, and the
     header phase gets a hard cutoff too: a dribbled status line never trips
     the per-op timeout). Returns (content type, body). Sync — run it on
-    _PROBE_POOL. Raises UrlDownloadError (client-safe) for a refused host,
-    an unaccepted content type, an over-cap or over-time body; transport
-    errors (urllib.error.HTTPError included) propagate for the caller."""
+    _PROBE_POOL. `headers` (the extractor's, e.g. a site's Referer) go on
+    top of our User-Agent. Raises UrlDownloadError (client-safe) for a
+    refused host, an unaccepted content type, an over-cap or over-time
+    body; transport errors (urllib.error.HTTPError included) propagate for
+    the caller."""
     parts = urllib.parse.urlsplit(url)
     if (parts.scheme.lower() not in ("http", "https") or not parts.hostname
             or _host_is_forbidden(parts.hostname)):
         raise UrlDownloadError("the site could not be reached from the server")
     req = urllib.request.Request(
-        url, headers={"User-Agent": "faster-whisper-backend"})
+        url, headers={"User-Agent": "faster-whisper-backend", **(headers or {})})
     with _WallClockCutoff(timeout) as cutoff, \
             _guarded_opener(cutoff).open(req, timeout=timeout) as resp:
         ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()

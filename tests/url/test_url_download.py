@@ -565,6 +565,8 @@ def test_probe_selects_download_format(monkeypatch):
     assert info.language == "de"
     assert [t["id"] for t in info.subtitle_tracks] == ["m-de"]
     assert "pot=T" not in repr(info)
+    # A progressive file: the language check downloads it whole.
+    assert info.segmented is None
     # Playlists/channel tabs must resolve flat, or a channel's /videos page
     # times the probe out before the playlist rejection can fire.
     assert captured.get("extract_flat") == "in_playlist"

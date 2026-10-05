@@ -901,6 +901,96 @@ def test_language_check_rate_limited(client, url_enabled, lang_check, monkeypatc
     assert r.json()["error"]["param"] == "URL_LANGUAGE_RATE_PER_MIN"
 
 
+# The chunked path: a link whose audio is a segmented stream (url/segmented.py).
+_HLS = "https://cdn.test/v/index.m3u8"
+
+
+@pytest.fixture
+def hls_link(url_enabled, lang_check, monkeypatch):
+    """A 60 s link whose audio is HLS — 15 × 4 s real TS segments behind a
+    fake guarded GET (requests recorded) — and every full download recorded.
+    Each detect_language call records its piece's sample count."""
+    import urllib.error
+    from types import SimpleNamespace
+
+    from tests.url.test_segmented import hls_playlist, ts_segments
+    names = [f"s{i}.ts" for i in range(15)]
+    table = {f"https://cdn.test/v/{n}": b for n, b in zip(names, ts_segments(15))}
+    table[_HLS] = hls_playlist(names).encode()
+    link = SimpleNamespace(table=table, asked=[], downloads=[], heard=[],
+                           on_get=lambda: None)
+
+    def _get(url, *, max_bytes, timeout, accept=None, headers=None):
+        link.asked.append(url)
+        link.on_get()
+        if isinstance(table[url], int):
+            raise urllib.error.HTTPError(url, table[url], "x", {}, None)
+        return "video/mp2t", table[url]
+    monkeypatch.setattr(url_download, "_capped_get", _get)
+
+    async def _probe(url, *, timeout):
+        return _info(url=url, duration=60.0, segmented={
+            "protocol": "hls", "url": _HLS, "headers": {}})
+    monkeypatch.setattr(url_download, "probe", _probe)
+    full = url_download.download
+
+    async def _download(url, **kw):
+        link.downloads.append(url)
+        return await full(url, **kw)
+    monkeypatch.setattr(url_download, "download", _download)
+    real = type(lang_check).detect_language
+
+    def _detect(self, audio=None, **kw):
+        link.heard.append(len(audio))
+        return real(self, audio=audio, **kw)
+    monkeypatch.setattr(type(lang_check), "detect_language", _detect)
+    return link
+
+
+def test_language_check_samples_only_the_segments(client, hls_link, caplog):
+    caplog.set_level("INFO", logger="whisper-api")
+    r = client.post("/v1/audio/url-language", json={"url": _URL, "progress_id": _PID})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [p["at"] for p in body["pieces"]] == [12.0, 30.0, 40.0]
+    assert hls_link.heard == [20 * 16000] * 3            # three full 20 s pieces
+    # No whole file: nothing retained for the run to reuse.
+    assert hls_link.downloads == []
+    assert (body["media_id"], body["media_expires_at"]) == (None, None)
+    # The playlist, then segments 2–14 only (windows ± 1 s), each once.
+    assert hls_link.asked == [_HLS] + [f"https://cdn.test/v/s{i}.ts" for i in range(2, 15)]
+    line = next(r.message for r in caplog.records if "language check (host" in r.message)
+    assert "chunks 13 seg" in line and "cdn.test" not in caplog.text
+
+
+@pytest.mark.parametrize("break_it,why", [
+    (lambda t: t.update({_HLS: b"#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n"}),
+     "encrypted"),
+    (lambda t: t.update({"https://cdn.test/v/s7.ts": 403}), "HTTP 403"),
+    (lambda t: t.update({f"https://cdn.test/v/s{i}.ts": b"junk" for i in range(15)}),
+     ""),                                                  # undecodable segments
+])
+def test_language_check_falls_back_to_the_full_download(client, hls_link, caplog,
+                                                        break_it, why):
+    caplog.set_level("INFO", logger="whisper-api")
+    break_it(hls_link.table)
+    r = client.post("/v1/audio/url-language", json={"url": _URL})
+    assert r.status_code == 200, r.text
+    assert hls_link.downloads == [_URL]
+    assert r.json()["media_id"] and r.json()["media_expires_at"] > 0
+    line = next(r.message for r in caplog.records if "samples no segments" in r.message)
+    assert why in line and "downloading the whole audio" in line
+    assert "full download in" in caplog.text
+
+
+def test_language_check_cancel_during_the_segments_is_499(client, hls_link,
+                                                          url_enabled):
+    hls_link.on_get = lambda: url_enabled._BATCH_CANCELLED.add(_PID)
+    r = client.post("/v1/audio/url-language", json={"url": _URL, "progress_id": _PID})
+    assert r.status_code == 499
+    assert hls_link.asked == [_HLS] and hls_link.downloads == []
+
+
 def test_me_reports_language_check_caps(client, url_enabled, monkeypatch):
     assert client.get("/v1/me").json()["url_language_check_enabled"] is True
     monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_CHECK_ENABLED", False, raising=False)

@@ -8011,6 +8011,52 @@ async def _download_link_audio(pid: "str | None", url: str,
             shutil.rmtree(job, ignore_errors=True)
 
 
+async def _segmented_pieces(pid: "str | None", url: str, source: dict,
+                            starts: "list[float]",
+                            seconds: float) -> "tuple[list | None, str]":
+    """The language check's pieces from only the stream segments under them
+    (url/segmented.py), for a link whose audio is HLS/DASH: (pieces, how).
+    (None, why) when that path cannot serve this stream — the caller then
+    downloads the whole file, so nothing but a cancel escapes from here."""
+    import urllib.error
+    from faster_whisper_backend.audio import transcode as _transcode
+    from faster_whisper_backend.url import download as _udl
+    from faster_whisper_backend.url import media_store as _ums
+    from faster_whisper_backend.url import segmented as _seg
+    t0 = time.perf_counter()
+    job: "str | None" = None
+    try:
+        async with _get_url_download_semaphore():
+            _check_cancelled(pid)
+            job = _ums.new_staging_job()
+            _progress_set(pid, stage="downloading", progress=None)
+            files, got = await _seg.fetch_pieces(
+                source, starts, seconds, job,
+                cancel_check=lambda: _cancel_requested(pid),
+                progress_cb=lambda f: _progress_set(
+                    pid, stage="downloading", progress=f))
+        audio = await asyncio.to_thread(lambda: [
+            _transcode.decode_span_16k(path, skip, seconds)
+            for path, skip in files])
+        if not all(len(a) for a in audio):
+            raise _seg.Unsupported("a piece decoded empty")
+    except (_ClientCancelled, _udl.UrlCancelled):
+        raise
+    except Exception as e:  # noqa: BLE001 — any failure: the full download
+        why = (str(e) if isinstance(e, (_seg.Unsupported, _udl.UrlDownloadError))
+               else f"HTTP {e.code}" if isinstance(e, urllib.error.HTTPError)
+               else type(e).__name__)  # transport text can name the URL
+        logger.info("[url-dl] language check samples no segments (host %s): "
+                    "%s — downloading the whole audio",
+                    _url_host_for_log(url), _log_safe(why))
+        return None, why
+    finally:
+        if job:
+            shutil.rmtree(job, ignore_errors=True)
+    return audio, (f"chunks {got['segments']} seg / {got['bytes'] / 1e6:.1f} MB"
+                   f" in {time.perf_counter() - t0:.1f}s")
+
+
 @app.post("/v1/audio/url-media/video")
 async def url_media_video(request: Request,
                           user: dict = Depends(_get_current_user_dep)):
@@ -8079,13 +8125,16 @@ async def url_language(request: Request,
                        user: dict = Depends(_get_current_user_dep)):
     """Which language does a link speak? {url, model?, progress_id?} →
     {language, probability, verdict: detected|mixed|unknown, also, pieces:
-    [{at, language, probability}], media_id, media_expires_at}. Downloads
-    the WHOLE audio through the guarded download (a ranged ffmpeg fetch
-    would bypass the SSRF guard) and keeps it in the media store, so the run
-    that follows reuses it (`prefetched_media_id`); then Whisper's language
-    detection listens to three 20 s pieces (url/language_check.py) under
-    the inference semaphore and a model lease. Cancel through the shared
-    cancel route on `progress_id`."""
+    [{at, language, probability}], media_id, media_expires_at}. A link
+    whose audio is a segmented stream (HLS/DASH) has only the segments under
+    three 20 s pieces fetched (url/segmented.py; media_id null — the run
+    downloads normally); any other link, or a stream that path cannot
+    serve, has the WHOLE audio downloaded through the guarded download (a
+    ranged ffmpeg fetch would bypass the SSRF guard) and kept in the media
+    store, so the run that follows reuses it (`prefetched_media_id`). Then
+    Whisper's language detection listens to the pieces
+    (url/language_check.py) under the inference semaphore and a model
+    lease. Cancel through the shared cancel route on `progress_id`."""
     body, url = await _url_request(request, user, _url_language_rate,
                                    switch="URL_LANGUAGE_CHECK_ENABLED",
                                    what="the language check")
@@ -8107,21 +8156,28 @@ async def url_language(request: Request,
 
     async def _check(pid, url, info) -> dict:
         t0 = time.perf_counter()
-        mid = await _download_link_audio(pid, url, _user_id)
-        entry = _ums.resolve_entry(mid, user_id=_user_id)
-        if entry is None:
-            raise _udl.UrlDownloadError("the server could not retain the audio")
         starts = _lc.piece_starts(info.duration)
-        try:
-            audio = await asyncio.to_thread(
-                _transcode.decode_pieces_16k, entry["path"], starts,
-                _lc.PIECE_SECONDS)
-        except Exception as e:  # noqa: BLE001 — PyAV's text names the path
-            logger.info("[url-dl] language check could not decode the audio "
-                        "(host %s): %s", _url_host_for_log(url),
-                        _log_safe(type(e).__name__))
-            raise _udl.UrlDownloadError(
-                "the link's audio could not be decoded") from None
+        audio, mid = None, None
+        if info.segmented is not None:
+            audio, how = await _segmented_pieces(
+                pid, url, info.segmented, starts, _lc.PIECE_SECONDS)
+        if audio is None:
+            _d0 = time.perf_counter()
+            mid = await _download_link_audio(pid, url, _user_id)
+            how = f"full download in {time.perf_counter() - _d0:.1f}s"
+            entry = _ums.resolve_entry(mid, user_id=_user_id)
+            if entry is None:
+                raise _udl.UrlDownloadError("the server could not retain the audio")
+            try:
+                audio = await asyncio.to_thread(
+                    _transcode.decode_pieces_16k, entry["path"], starts,
+                    _lc.PIECE_SECONDS)
+            except Exception as e:  # noqa: BLE001 — PyAV's text names the path
+                logger.info("[url-dl] language check could not decode the audio "
+                            "(host %s): %s", _url_host_for_log(url),
+                            _log_safe(type(e).__name__))
+                raise _udl.UrlDownloadError(
+                    "the link's audio could not be decoded") from None
         _progress_set(pid, stage="waiting", progress=None)
         model = await _get_or_load_model(model_name, lease=True)
         try:
@@ -8142,15 +8198,15 @@ async def url_language(request: Request,
                   for at, (lang, p) in zip(starts, heard)]
         logger.info(
             "[url-dl] language check (host %s): %s %s p=%.2f%s · pieces %s"
-            " · model %s · gpu wait %.1fs · %.1fs total",
+            " · %s · model %s · gpu wait %.1fs · %.1fs total",
             _url_host_for_log(url), result["verdict"], result["language"] or "?",
             result["probability"],
             f" also {','.join(result['also'])}" if result["also"] else "",
             ", ".join(f"{p['at']:.0f}s {p['language'] or '-'} {p['probability']:.2f}"
                       for p in pieces),
-            model_name, wait_s, time.perf_counter() - t0)
+            how, model_name, wait_s, time.perf_counter() - t0)
         return {**result, "pieces": pieces, "media_id": mid,
-                "media_expires_at": _ums.expires_at_unix(mid)}
+                "media_expires_at": _ums.expires_at_unix(mid) if mid else None}
     return await _url_media_on_demand(user, body, url, "language check", _check)
 
 

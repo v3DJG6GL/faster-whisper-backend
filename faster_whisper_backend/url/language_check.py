@@ -1,12 +1,16 @@
 """Which language does a link speak? The pure half of POST /v1/audio/url-language.
 
-The route downloads the whole audio (through the guarded download — never a
-ranged ffmpeg fetch, which would bypass the SSRF guard), decodes a few short
-pieces spread over it and lets Whisper's language detection listen to each;
-these two functions pick the pieces and turn what was heard into a verdict.
+The route gets a few short pieces spread over the audio — only the segments
+under them when the link is a segmented stream (url/segmented.py), else the
+whole file through the guarded download (never a ranged ffmpeg fetch, which
+would bypass the SSRF guard) — and lets Whisper's language detection listen
+to each; these functions pick the pieces (and the segments under them) and
+turn what was heard into a verdict.
 """
 from __future__ import annotations
 
+import bisect
+import itertools
 from collections import Counter
 
 PIECE_SECONDS = 20.0
@@ -22,6 +26,24 @@ def piece_starts(duration: "float | None") -> "list[float]":
         return [0.0]
     last = duration - PIECE_SECONDS
     return [round(min(duration * f, last), 1) for f in _PIECE_AT]
+
+
+def select_segments(durations: "list[float]", starts: "list[float]",
+                    seconds: float, margin: float) -> "list[tuple[int, int, float]]":
+    """The segments under each piece [start, start + seconds), widened by
+    `margin` on both sides: (first, end, skip) per start — segments
+    [first:end], and `skip` seconds of them before the piece begins. A piece
+    past the last segment gets first == end."""
+    edges = list(itertools.accumulate(durations, initial=0.0))
+    n = len(durations)
+    out = []
+    for start in starts:
+        first = max(0, bisect.bisect_right(edges, max(0.0, start - margin)) - 1)
+        first = min(first, n)
+        end = max(first, min(n, bisect.bisect_left(edges, start + seconds + margin)))
+        skip = max(0.0, start - edges[first]) if first < n else 0.0
+        out.append((first, end, round(skip, 3)))
+    return out
 
 
 def vote(heard: "list[tuple[str | None, float]]") -> dict:

@@ -11,8 +11,9 @@ and layout are per-caller:
 - BGM separation: 44.1 kHz stereo — what the UVR/MDX separator natively
   consumes; anything else it would re-decode/resample itself, slowly.
 
-decode_pieces_16k reads short 16 kHz float pieces straight into memory for
-a link's language check; both open the source through _open_audio.
+decode_pieces_16k / decode_span_16k read short 16 kHz float pieces straight
+into memory for a link's language check; all open the source through
+_open_audio.
 """
 from __future__ import annotations
 
@@ -50,41 +51,63 @@ def _open_audio(src_path: str):
     return container, stream
 
 
+def _read_16k(container, stream, want: int, *, skip: int = 0,
+              after: "float | None" = None):
+    """Decode `stream` from where the container stands into 16 kHz mono
+    float32: drop frames that end before `after` (seconds, stream time) and
+    then the first `skip` samples, return the next `want` (fewer at EOF)."""
+    import numpy as np
+
+    # Fresh per call: a resampler keeps samples buffered across a seek.
+    resampler = _av().AudioResampler(format="flt", layout="mono", rate=16000)
+    chunks, have = [], 0
+    for frame in container.decode(stream):
+        # A seek lands on the keyframe at or before `after`.
+        if (after is not None and frame.time is not None
+                and frame.time + frame.samples / frame.sample_rate < after):
+            continue
+        frame.pts = None
+        for out in resampler.resample(frame):
+            chunk = out.to_ndarray().reshape(-1)
+            chunks.append(chunk)
+            have += chunk.size
+        if have >= skip + want:
+            break
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+    return np.concatenate(chunks)[skip:skip + want]
+
+
 def decode_pieces_16k(src_path: str, starts: "list[float]",
                       seconds: float) -> list:
     """`seconds` of audio from each of `starts` (seconds into the media) as
     16 kHz mono float32 arrays — what Whisper's language detection takes.
     Seeks instead of decoding the whole file; a piece past the end comes
     back empty."""
-    import numpy as np
-
-    av = _av()
     want = int(seconds * 16000)
     pieces = []
     container, stream = _open_audio(src_path)
     try:
         for start in starts:
             container.seek(int(start / stream.time_base), stream=stream)
-            # Fresh per piece: a resampler keeps samples buffered across a seek.
-            resampler = av.AudioResampler(format="flt", layout="mono", rate=16000)
-            chunks, have = [], 0
-            for frame in container.decode(stream):
-                # The seek lands on the keyframe at or before `start`.
-                if (frame.time is not None
-                        and frame.time + frame.samples / frame.sample_rate < start):
-                    continue
-                frame.pts = None
-                for out in resampler.resample(frame):
-                    chunk = out.to_ndarray().reshape(-1)
-                    chunks.append(chunk)
-                    have += chunk.size
-                if have >= want:
-                    break
-            pieces.append(np.concatenate(chunks)[:want] if chunks
-                          else np.zeros(0, dtype=np.float32))
+            pieces.append(_read_16k(container, stream, want, after=start))
     finally:
         container.close()
     return pieces
+
+
+def decode_span_16k(src_path: str, skip: float, seconds: float):
+    """`seconds` of audio after the first `skip` seconds of a short file, as
+    one 16 kHz mono float32 array. Counts decoded samples instead of
+    seeking: a run of concatenated stream segments (a link's language-check
+    piece) carries the stream's own timestamps, which neither start at 0
+    nor need be continuous."""
+    container, stream = _open_audio(src_path)
+    try:
+        return _read_16k(container, stream, int(seconds * 16000),
+                         skip=int(skip * 16000))
+    finally:
+        container.close()
 
 
 def transcode_to_wav_16k_mono(src_path: str, dst_path: str) -> int:

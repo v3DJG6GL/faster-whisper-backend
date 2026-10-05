@@ -31,3 +31,22 @@ def test_vote(heard, language, verdict, also):
 
 def test_vote_probability_is_the_agreeing_mean():
     assert lc.vote([("de", 0.9), ("de", 0.8), ("en", 0.95)])["probability"] == 0.85
+
+
+@pytest.mark.parametrize("durations,starts,seconds,margin,runs", [
+    # 4 s segments; a piece at 5 s for 6 s ± 1 s spans [4, 12] → segments 1–2.
+    ([4.0] * 12, [5.0], 6.0, 1.0, [(1, 3, 1.0)]),
+    # Edges: a window ending exactly on a boundary takes no extra segment.
+    ([4.0] * 12, [4.0], 8.0, 0.0, [(1, 3, 0.0)]),
+    # The margin reaches into the neighbours on both sides: [3.5, 8.5].
+    ([4.0] * 12, [4.5], 3.0, 1.0, [(0, 3, 4.5)]),
+    # From the start, and clipped at the end of the stream.
+    ([4.0] * 3, [0.0, 9.0], 20.0, 1.0, [(0, 3, 0.0), (2, 3, 1.0)]),
+    # Past the end: nothing.
+    ([4.0] * 3, [30.0], 5.0, 1.0, [(3, 3, 0.0)]),
+    # Uneven durations (EXTINF / DASH fragment lengths): edges 0 2 8 8.5 12 22.
+    ([2.0, 6.0, 0.5, 3.5, 10.0], [7.0, 8.4], 4.0, 0.5, [(1, 4, 5.0), (1, 5, 6.4)]),
+    ([], [0.0], 20.0, 1.0, [(0, 0, 0.0)]),
+])
+def test_select_segments(durations, starts, seconds, margin, runs):
+    assert lc.select_segments(durations, starts, seconds, margin) == runs
