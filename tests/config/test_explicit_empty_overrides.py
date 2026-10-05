@@ -99,6 +99,24 @@ def test_profile_blank_suppress_tokens_keeps_chars_without_the_default_set(monke
     assert -1 in kw["suppress_tokens"] and {7, 8} <= set(kw["suppress_tokens"])
 
 
+def test_suppress_chars_survive_a_client_suppress_tokens_override(monkeypatch):
+    # The chars merge runs AFTER the client override, which used to replace
+    # the merged ids wholesale.
+    from faster_whisper_backend import main
+    monkeypatch.setattr(main, "_resolve_suppress_chars", lambda *a: [7, 8])
+    kw = _assemble({"SUPPRESS_CHARS": "."}, overrides={"suppress_tokens": "5,6"})
+    assert kw["suppress_tokens"] == [5, 6, 7, 8]
+    # A client clear means "no list": the chars only, no -1 default set.
+    for cleared in ("", []):
+        kw = _assemble({"SUPPRESS_CHARS": "."},
+                       overrides={"suppress_tokens": cleared})
+        assert kw["suppress_tokens"] == [7, 8], cleared
+    # A client list over a cleared config list: the list plus the chars.
+    kw = _assemble({"SUPPRESS_TOKENS": "", "SUPPRESS_CHARS": "."},
+                   overrides={"suppress_tokens": [-1]})
+    assert kw["suppress_tokens"] == [-1, 7, 8]
+
+
 # --- batch form fields ---------------------------------------------------------
 
 def _bind_profile(client, make_user_key, **fields):

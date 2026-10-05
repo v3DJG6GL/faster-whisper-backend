@@ -1910,10 +1910,8 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
         transcribe_kwargs["suppress_blank"] = False
     _suppress_tokens_str = cf("SUPPRESS_TOKENS")
     # An explicitly blank SUPPRESS_TOKENS (profile / per-model / global) is
-    # "suppress nothing"; remembered so the SUPPRESS_CHARS merge below does
-    # not quietly re-add the -1 default set the admin cleared.
-    _suppress_cleared = (_suppress_tokens_str is not None
-                         and not _suppress_tokens_str.strip())
+    # "suppress nothing" — faster-whisper's spelling is None, which the
+    # SUPPRESS_CHARS merge below reads as "cleared".
     if _suppress_tokens_str is not None:
         if _suppress_tokens_str.strip():
             try:
@@ -1924,22 +1922,6 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
                 pass
         else:
             transcribe_kwargs["suppress_tokens"] = None
-    # SUPPRESS_CHARS — chars resolved to vocab IDs via the loaded
-    # model's tokenizer, then merged into the effective suppress_tokens
-    # list. Genuinely additive: existing IDs from SUPPRESS_TOKENS are
-    # preserved.
-    _suppress_chars = cf("SUPPRESS_CHARS")
-    if _suppress_chars:
-        extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars)
-        if extra_ids:
-            existing = transcribe_kwargs.get("suppress_tokens")
-            if _suppress_cleared:
-                merged_ids = sorted(set(extra_ids))
-            elif existing is None:
-                merged_ids = sorted({-1, *extra_ids})
-            else:
-                merged_ids = sorted(set(existing) | set(extra_ids))
-            transcribe_kwargs["suppress_tokens"] = merged_ids
     # "" is an explicit "no punctuation splitting" (a cleared profile /
     # per-model field), so it is forwarded like the per-request override
     # path does; only an ABSENT value leaves faster-whisper's default.
@@ -1952,6 +1934,24 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     # Per-request overrides win (clamped), EXCEPT fields locked by an identity
     # layer (skipped). No-op when None/empty.
     _apply_decode_overrides(transcribe_kwargs, resolved_model, overrides, ident=ident)
+    # SUPPRESS_CHARS — chars resolved to vocab IDs via the loaded model's
+    # tokenizer, then merged into the EFFECTIVE suppress_tokens list, i.e.
+    # after a client suppress_tokens override (which used to replace the
+    # merged ids). Genuinely additive: key absent = faster-whisper's default
+    # (-1, the non-speech set) plus the chars; a cleared list (None, from the
+    # config or the client) = the chars only; a list = the list plus the chars.
+    _suppress_chars = cf("SUPPRESS_CHARS")
+    if _suppress_chars:
+        extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars)
+        if extra_ids:
+            if "suppress_tokens" not in transcribe_kwargs:
+                merged_ids = sorted({-1, *extra_ids})
+            elif transcribe_kwargs["suppress_tokens"] is None:
+                merged_ids = sorted(set(extra_ids))
+            else:
+                merged_ids = sorted(set(transcribe_kwargs["suppress_tokens"])
+                                    | set(extra_ids))
+            transcribe_kwargs["suppress_tokens"] = merged_ids
     # multilingual re-detects the language on every 30 s window and IGNORES a
     # given language — a chosen language must win, so it applies to
     # auto-detect only.
