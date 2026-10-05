@@ -325,6 +325,7 @@ def test_422_malformed_shapes(client, app_module, monkeypatch):
         _body(targets=["en", "fr", "it", "es"]),              # over MAX (3)
         _body(translation_mode="poetic"),
         _body(context_segments="three"),
+        _body(context_segments=True),                         # bool is not an int here
         "just a string",
         {"segments": [{"id": i, "text": "x"} for i
                       in range(app_module._TEXT_TRANSLATE_MAX_SEGMENTS + 1)],

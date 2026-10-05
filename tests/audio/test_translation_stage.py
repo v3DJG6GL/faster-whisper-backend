@@ -343,3 +343,56 @@ def test_translation_progress_forwards_target_fields_into_plan_units(
     receipt = next(s for s in r.json()["plan"] if s["stage"] == "translating")
     assert {u["state"] for u in receipt["units"]} == {"done"}
     assert receipt["compute"] == "fluent"
+
+
+# --- context_segments form field ---------------------------------------------
+
+def test_context_segments_form_field_inherit_value_clamp(
+        client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_CONTEXT_SEGMENTS", 3)
+    calls = []
+    _stub_translate(monkeypatch, calls=calls)
+    assert _post(client, translate_to="en").status_code == 200
+    assert calls[-1]["context_segments"] == 3          # absent → inherit
+    assert _post(client, translate_to="en", context_segments="0").status_code == 200
+    assert calls[-1]["context_segments"] == 0          # 0 is a value, not "unset"
+    assert _post(client, translate_to="en", context_segments="99").status_code == 200
+    assert calls[-1]["context_segments"] == 10         # clamped to the field
+    # /v1/audio/translations forwards it (an omitted argument would be the
+    # Form FieldInfo, not None).
+    r = client.post("/v1/audio/translations", files=_FILE,
+                    data={"model": "whisper-1", "response_format": "verbose_json",
+                          "translate_to": "fr", "context_segments": "5"})
+    assert r.status_code == 200, r.text
+    assert calls[-1]["context_segments"] == 5
+    r = client.post("/v1/audio/translations", files=_FILE,
+                    data={"model": "whisper-1", "translate_to": "fr"})
+    assert r.status_code == 200, r.text
+    assert calls[-1]["context_segments"] == 3
+
+
+def test_locked_context_segments_ignores_client_value(
+        client, app_module, make_user_key, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_ENABLED", True,
+                        raising=False)
+    calls = []
+    _stub_translate(monkeypatch, calls=calls)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    r = client.post("/settings/overrides/state", headers=h, json={
+        "OVERRIDE_PROFILES": {"ctx": {"TRANSLATION_CONTEXT_SEGMENTS": 1,
+                                      "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]}}})
+    assert r.status_code == 200, r.text
+    uid, raw_alice = make_user_key("alice")
+    r = client.patch(f"/settings/api-keys/api/users/{uid}/permissions", headers=h,
+                     json={"pages": {}, "config": {"overrides": {},
+                                                   "profiles": ["ctx"], "locks": []}})
+    assert r.status_code == 200, r.text
+    r = client.post("/v1/audio/transcriptions", files=_FILE, headers=bearer(raw_alice),
+                    data={"model": "whisper-1", "response_format": "verbose_json",
+                          "translate_to": "en", "context_segments": "6"})
+    assert r.status_code == 200, r.text
+    assert calls[-1]["context_segments"] == 1
+    assert "context_segments" in r.json()["overrides_ignored"]

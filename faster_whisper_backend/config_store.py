@@ -3527,13 +3527,19 @@ def override_field_meta(
 
 
 @functools.lru_cache(maxsize=1)
+def field_bounds() -> dict[str, dict[str, Any]]:
+    """Per-identity overridable field → its widget metadata (kind / min / max
+    / maxlen), from the same JSON schema the profile editor reads
+    (override_field_meta over OverrideProfile) — so a request-side clamp can
+    never drift from the admin bounds. Cached: the schema is fixed at import.
+    Callers must not mutate the result."""
+    return override_field_meta(OverrideProfile)
+
+
+@functools.lru_cache(maxsize=1)
 def client_key_bounds() -> dict[str, dict[str, Any]]:
-    """Client decode key → the widget metadata (kind / min / max / maxlen) of
-    the config field it governs, from the same JSON schema the profile editor
-    reads (override_field_meta over OverrideProfile) — so a request-side clamp
-    can never drift from the admin bounds. Cached: the schema is fixed at
-    import. Callers must not mutate the result."""
-    meta = override_field_meta(OverrideProfile)
+    """field_bounds() keyed by client decode key instead of config field."""
+    meta = field_bounds()
     return {client_key: meta[field]
             for field, client_key in CONFIG_TO_CLIENT_KEY.items()
             if field in meta}

@@ -191,3 +191,19 @@ def test_old_path_is_a_deprecated_alias(client):
     assert bad.status_code == 400
     assert bad.headers["Deprecation"] == old.headers["Deprecation"]
     assert bad.headers["Link"] == old.headers["Link"]
+
+
+def test_translation_context_segments_entry(client, app_module, make_user_key, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_CONTEXT_SEGMENTS", 3)
+    j = client.get(URL).json()
+    assert j["translation"] == {"context_segments": {
+        "value": 3, "source": "server", "label": "global default", "locked": False}}
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    _profiles(client, h, {"ctx": {"TRANSLATION_CONTEXT_SEGMENTS": 0,
+                                  "locks": ["TRANSLATION_CONTEXT_SEGMENTS"]}})
+    uid, raw_alice = make_user_key("alice")
+    _set_key_binding(client, h, uid, _key_id(client, h, uid), profiles=["ctx"])
+    entry = client.get(URL, headers=bearer(raw_alice)).json()["translation"]["context_segments"]
+    assert entry["value"] == 0 and entry["locked"] is True
+    assert entry["source"] == "account"

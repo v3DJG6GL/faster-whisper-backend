@@ -2233,6 +2233,16 @@ def cfg_for(model_id: "str | None", field: str, ident=None):
 _NO_DEFAULT = object()
 
 
+def _clamp_context_segments(v: "int | None") -> "int | None":
+    """A request's TRANSLATION_CONTEXT_SEGMENTS, clamped to the field's own
+    bounds (0–10; None = absent, inherit). Shared by the audio routes and the
+    text route."""
+    if v is None:
+        return None
+    b = config_store.field_bounds()["TRANSLATION_CONTEXT_SEGMENTS"]
+    return _clamp_int(v, b["min"], b["max"])
+
+
 def _resolve_request_knob(resolved_model, ident, ignored: "list[str]",
                           cfg_name: str, client_name: str, req_val,
                           default=""):
@@ -4547,6 +4557,7 @@ async def transcribe(
     translation_model: str | None = Form(None),
     translation_mode: str | None = Form(None),
     translation_glossary: str | None = Form(None),
+    context_segments: int | None = Form(None),
     keep_video: str | None = Form(None),
     video_max_height: int | None = Form(None),
     video_format: str | None = Form(None),
@@ -5207,8 +5218,13 @@ async def transcribe(
             # The config field is Field(max_length=4000); cap the raw client
             # value to the same bound rather than 422ing a sloppy caller.
             _translation_glossary = (_translation_glossary or "")[:4000]
-            _translation_context = int(cfg_for(
-                resolved_model, "TRANSLATION_CONTEXT_SEGMENTS", ident) or 0)
+            # Context segments: the same ladder; a request value is clamped
+            # to the field's range like the text route does.
+            _translation_context = int(_resolve_request_knob(
+                resolved_model, ident, ignored,
+                "TRANSLATION_CONTEXT_SEGMENTS", "context_segments",
+                _clamp_context_segments(context_segments),
+                default=_NO_DEFAULT) or 0)
 
             # The run plan's FINAL stage list and per-stage models, now that
             # every enable/allowlist/soft-skip verdict has landed (a stage
@@ -6675,6 +6691,7 @@ async def translate_audio(
     translation_model: str | None = Form(None),
     translation_mode: str | None = Form(None),
     translation_glossary: str | None = Form(None),
+    context_segments: int | None = Form(None),
     keep_video: str | None = Form(None),
     video_max_height: int | None = Form(None),
     video_format: str | None = Form(None),
@@ -6719,6 +6736,9 @@ async def translate_audio(
         translation_model=translation_model,
         translation_mode=translation_mode,
         translation_glossary=translation_glossary,
+        # Explicit like every argument here: an omitted one would receive
+        # its Form(None) FieldInfo, not None.
+        context_segments=context_segments,
         progress_id=progress_id,
         preload_plan=preload_plan,
         user=user,
@@ -6907,13 +6927,13 @@ async def translate_text(request: Request,
         glossary = (_knob("TRANSLATION_GLOSSARY", "translation_glossary",
                           glossary) or "")[:4000]
         context_segments = body.get("context_segments")
-        if context_segments is not None and not isinstance(context_segments, int):
+        # bool is an int subclass: JSON true must not pass as 1.
+        if context_segments is not None and (not isinstance(context_segments, int)
+                                             or isinstance(context_segments, bool)):
             raise HTTPException(status_code=422,
                                 detail="context_segments must be an integer")
-        if context_segments is not None:
-            context_segments = min(10, max(0, context_segments))
         _ctx_resolved = _knob("TRANSLATION_CONTEXT_SEGMENTS", "context_segments",
-                              context_segments)
+                              _clamp_context_segments(context_segments))
         context_segments = int(_ctx_resolved) if _ctx_resolved is not None else None
 
         model_ref = body.get("translation_model")
@@ -9047,6 +9067,14 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
         "profile_applied": ident.request_profile_applied,
         "settings": settings,
         "prompt": _entry("DEFAULT_PROMPT", prompt, "DEFAULT_PROMPT" in ident.locked),
+        # The per-run translation knobs a file/link run inherits (form fields,
+        # not decode keys — locked by config name like the prompt).
+        "translation": {
+            "context_segments": _entry(
+                "TRANSLATION_CONTEXT_SEGMENTS",
+                int(cfg_for(model_name, "TRANSLATION_CONTEXT_SEGMENTS", ident) or 0),
+                "TRANSLATION_CONTEXT_SEGMENTS" in ident.locked),
+        },
         # Live dictation's final decode pins condition_on_previous_text (a
         # client override is ignored, streaming/routes.py) and defaults best_of
         # to its own value (a client override still wins).
