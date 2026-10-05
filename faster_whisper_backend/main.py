@@ -4103,6 +4103,29 @@ def _translation_model_allowed(ref: str,
 _JOB_BY_PID: "dict[str, str]" = {}
 _JOB_MIRROR_FIELDS = ("stage", "progress", "step", "model", "total_bytes")
 
+
+def _claim_progress_id(progress_id) -> "str | None":
+    """A request's opt-in progress id (see _BATCH_PROGRESS), or None. A
+    malformed id is treated as absent — progress is a convenience, never a
+    422. So is an id that is already in flight: the registries keyed on it
+    are bare overwrites, and a colliding id would share one entry and one
+    cancel flag with (and let this caller cancel) another request."""
+    if not (isinstance(progress_id, str) and _PROGRESS_ID_RE.match(progress_id)):
+        return None
+    if progress_id in _BATCH_PROGRESS:
+        logger.info("[progress] id already in flight — progress/cancel "
+                    "disabled for this request")
+        return None
+    return progress_id
+
+
+def _bind_job_pid(pid: "str | None", request_id: str) -> None:
+    """Bind a claimed progress id to its jobs.py row (the mirror above); the
+    handler's outer finally pops it."""
+    if pid:
+        _JOB_BY_PID[pid] = request_id
+        jobs.job_update(request_id, progress_id=pid)
+
 # progress_id → preload plan id, the same shape and lifetime as _JOB_BY_PID
 # above and popped in the same finally. Bound once, right after the batch
 # handler has fully resolved the stage plan.
@@ -4413,16 +4436,7 @@ async def transcribe(
     user: dict = Depends(_get_current_user_dep),
 ):
     resolved_model = _resolve_model_name(model_name)
-    # Opt-in progress reporting (see _BATCH_PROGRESS). A malformed id is
-    # treated as absent — progress is a convenience, never a 422. So is an
-    # id that is already in flight: the registries keyed on it are bare
-    # overwrites, and a colliding id would share one entry and one cancel
-    # flag with (and let this caller cancel) another request.
-    _pid = progress_id if (progress_id and _PROGRESS_ID_RE.match(progress_id)) else None
-    if _pid and _pid in _BATCH_PROGRESS:
-        logger.info("[progress] id already in flight — progress/cancel "
-                    "disabled for this request")
-        _pid = None
+    _pid = _claim_progress_id(progress_id)
     # Whisper's only two tasks; anything else is a caller error, not something
     # to silently coerce (unlike the clamped numeric knobs below, a wrong task
     # would return output in the wrong language with no other signal).
@@ -4549,9 +4563,7 @@ async def transcribe(
     jobs.job_start("transcribe", id=request_id, model=resolved_model,
                    user=user.get("username") or _user_id, key=_key_id,
                    user_id=_user_id)
-    if _pid:
-        _JOB_BY_PID[_pid] = request_id
-        jobs.job_update(request_id, progress_id=_pid)
+    _bind_job_pid(_pid, request_id)
     try:
         # Seed the registry entry EARLY so the cancel endpoint (which only
         # accepts ids it can see in-flight) has a target well before the
@@ -6805,19 +6817,9 @@ async def translate_text(request: Request,
 
         # Optional progress/cancel plumbing: a valid id joins _BATCH_PROGRESS so
         # the existing GET progress and POST cancel endpoints work unchanged
-        # (cancel only accepts ids it can see in flight). Malformed → absent,
-        # matching the batch handler's stance.
-        progress_id = body.get("progress_id")
-        _pid = progress_id if (isinstance(progress_id, str)
-                               and _PROGRESS_ID_RE.match(progress_id)) else None
+        # (cancel only accepts ids it can see in flight).
+        _pid = _claim_progress_id(body.get("progress_id"))
         _rplan = _run_plan.RunPlan(kind="text")
-        # An id already in flight is treated as absent too (see the batch
-        # handler): it would otherwise share the other request's entry and
-        # cancel flag.
-        if _pid and _pid in _BATCH_PROGRESS:
-            logger.info("[progress] id already in flight — progress/cancel "
-                        "disabled for this request")
-            _pid = None
     except BaseException:
         # Any rejection above (422/413/429/400) — or a client disconnect
         # mid-validation — must hand the parked receipt back NOW, or the
@@ -7936,20 +7938,14 @@ async def _url_media_on_demand(user: dict, body: dict, url: str, what: str,
     then `await fetch(pid, validated_url, info)` for the route's own work
     and answer. Client-safe errors only: policy/download 400, cancel 499."""
     from faster_whisper_backend.url import download as _udl
-    progress_id = body.get("progress_id")
-    _pid = progress_id if (isinstance(progress_id, str)
-                           and _PROGRESS_ID_RE.match(progress_id)) else None
-    if _pid and _pid in _BATCH_PROGRESS:
-        _pid = None
+    _pid = _claim_progress_id(body.get("progress_id"))
     _user_id = user.get("user_id")
     _uhost = _url_host_for_log(url)
     request_id = uuid.uuid4().hex
     jobs.job_start("download", id=request_id,
                    user=user.get("username") or _user_id, key=user.get("key_id"),
                    user_id=_user_id, detail=f"{what} · {_uhost}")
-    if _pid:
-        _JOB_BY_PID[_pid] = request_id
-        jobs.job_update(request_id, progress_id=_pid)
+    _bind_job_pid(_pid, request_id)
     logger.info("[url-dl] %s requested on demand (host %s)", what, _uhost)
     try:
         _progress_set(_pid, stage="resolving", progress=None,

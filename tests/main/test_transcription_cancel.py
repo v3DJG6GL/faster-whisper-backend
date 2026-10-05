@@ -263,15 +263,17 @@ def test_cancel_inside_translation_stage_is_not_a_soft_fail(
 
 # --- colliding progress ids ---------------------------------------------------
 
-def test_in_flight_progress_id_is_treated_as_absent(client, app_module):
+def test_in_flight_progress_id_is_treated_as_absent(client, app_module, caplog):
     # A client-chosen id that is already live belongs to another request:
     # this one gets no progress rail instead of sharing (and popping) the
     # other's entry and cancel flag.
+    caplog.set_level("INFO", logger="whisper-api")
     app_module._BATCH_PROGRESS[_PID] = {
         "stage": "transcribing", "owner": "other", "updated": 0}
     try:
         r = _post(client, progress_id=_PID)
         assert r.status_code == 200, r.text
+        assert "id already in flight" in caplog.text
         entry = app_module._BATCH_PROGRESS.get(_PID)
         assert entry is not None
         assert entry["owner"] == "other" and entry["stage"] == "transcribing"

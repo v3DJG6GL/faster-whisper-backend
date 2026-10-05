@@ -675,6 +675,21 @@ def test_on_demand_audio_route(client, url_enabled):
     assert client.post("/v1/audio/url-media/audio", json={}).status_code == 422
 
 
+def test_on_demand_in_flight_progress_id_is_treated_as_absent(client, url_enabled,
+                                                               caplog):
+    caplog.set_level("INFO", logger="whisper-api")
+    url_enabled._BATCH_PROGRESS[_PID] = {"stage": "transcribing", "owner": "other",
+                                         "updated": 0}
+    try:
+        r = client.post("/v1/audio/url-media/audio",
+                        json={"url": _URL, "progress_id": _PID})
+        assert r.status_code == 200, r.text
+        assert "id already in flight" in caplog.text
+        assert url_enabled._BATCH_PROGRESS[_PID]["owner"] == "other"
+    finally:
+        url_enabled._BATCH_PROGRESS.pop(_PID, None)
+
+
 def test_on_demand_audio_errors(client, url_enabled, monkeypatch):
     async def _fail(url, **kw):
         raise UrlDownloadError("this media is unavailable or has been removed")
