@@ -733,10 +733,11 @@ def test_me_reports_video_caps(client, url_enabled, monkeypatch):
     assert "url_video_default_max_height" not in body
 
 
-def test_me_reports_video_off_when_url_download_is_off(client):
+def test_me_reports_video_off_when_url_download_is_off(client, app_module):
     body = client.get("/v1/me").json()
     assert body["url_video_enabled"] is False
-    assert "media_max_bytes" not in body
+    # The upload ceiling rides regardless: file uploads are capped too.
+    assert body["media_max_bytes"] == app_module.cfg.MEDIA_MAX_BYTES
 
 
 def test_url_media_mime_by_kind(client, url_enabled, tmp_path):

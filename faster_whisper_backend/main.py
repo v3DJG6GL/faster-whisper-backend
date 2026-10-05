@@ -8777,9 +8777,10 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     if caps["url_download_enabled"]:
         from faster_whisper_backend.url import download as _udl
         caps["yt_dlp_version"] = _udl.yt_dlp_version()
-        # The one media ceiling, so the client can label a preview's rungs
-        # over the cap and size its own local copies.
-        caps["media_max_bytes"] = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
+    # The one media ceiling, so the client can label a preview's rungs over
+    # the cap, size its own local copies and refuse an oversized upload
+    # before sending it. Always present: uploads are capped too.
+    caps["media_max_bytes"] = int(getattr(cfg, "MEDIA_MAX_BYTES", 10_000_000_000))
     # Additive: whether a link's VIDEO can be kept/fetched (keep_video on the
     # transcription form, POST /v1/audio/url-media/video). Always present;
     # the detail key rides only when on — same discipline as yt_dlp_version.
@@ -9067,8 +9068,29 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
         "profile_applied": ident.request_profile_applied,
         "settings": settings,
         "prompt": _entry("DEFAULT_PROMPT", prompt, "DEFAULT_PROMPT" in ident.locked),
-        # The per-run translation knobs a file/link run inherits (form fields,
-        # not decode keys — locked by config name like the prompt).
+        # The per-run defaults a file/link run inherits for its form fields
+        # (not decode keys — locked by config name like the prompt), resolved
+        # the way the run resolves them.
+        "language": _entry("DEFAULT_LANGUAGE",
+                           cfg_for(model_name, "DEFAULT_LANGUAGE", ident) or "",
+                           "DEFAULT_LANGUAGE" in ident.locked),
+        "word_timestamps": _entry(
+            "WORD_TIMESTAMPS_ENABLED",
+            bool(cfg_for(model_name, "WORD_TIMESTAMPS_ENABLED", ident)),
+            "WORD_TIMESTAMPS_ENABLED" in ident.locked),
+        "diarize": _entry("DIARIZE", bool(cfg_for(model_name, "DIARIZE", ident)),
+                          "DIARIZE" in ident.locked),
+        "separate_bgm": _entry("SEPARATE_BGM",
+                               bool(cfg_for(model_name, "SEPARATE_BGM", ident)),
+                               "SEPARATE_BGM" in ident.locked),
+        "diarization_model": _entry(
+            "DIARIZATION_MODEL",
+            (cfg_for(model_name, "DIARIZATION_MODEL", ident) or "").strip(),
+            "DIARIZATION_MODEL" in ident.locked),
+        "separation_model": _entry(
+            "BGM_SEPARATION_UVR_MODEL",
+            (cfg_for(model_name, "BGM_SEPARATION_UVR_MODEL", ident) or "").strip(),
+            "BGM_SEPARATION_UVR_MODEL" in ident.locked),
         "translation": {
             "context_segments": _entry(
                 "TRANSLATION_CONTEXT_SEGMENTS",

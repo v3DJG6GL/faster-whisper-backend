@@ -207,3 +207,61 @@ def test_translation_context_segments_entry(client, app_module, make_user_key, m
     entry = client.get(URL, headers=bearer(raw_alice)).json()["translation"]["context_segments"]
     assert entry["value"] == 0 and entry["locked"] is True
     assert entry["source"] == "account"
+
+
+def test_run_defaults_entries(client, app_module, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", "de")
+    monkeypatch.setattr(app_module.cfg, "DIARIZE", False)
+    monkeypatch.setattr(app_module.cfg, "SEPARATE_BGM", False)
+    monkeypatch.setattr(app_module.cfg, "WORD_TIMESTAMPS_ENABLED", True)
+    monkeypatch.setattr(app_module.cfg, "DIARIZATION_MODEL",
+                        "pyannote/speaker-diarization-community-1")
+    monkeypatch.setattr(app_module.cfg, "BGM_SEPARATION_UVR_MODEL", "UVR-MDX-NET-Inst_HQ_4")
+    j = client.get(URL).json()
+    srv = {"source": "server", "label": "global default", "locked": False}
+    assert j["language"] == {"value": "de", **srv}
+    assert j["diarize"] == {"value": False, **srv}
+    assert j["separate_bgm"] == {"value": False, **srv}
+    assert j["word_timestamps"] == {"value": True, **srv}
+    assert j["diarization_model"]["value"] == "pyannote/speaker-diarization-community-1"
+    assert j["separation_model"]["value"] == "UVR-MDX-NET-Inst_HQ_4"
+    # "" is auto-detect.
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", "")
+    assert client.get(URL).json()["language"]["value"] == ""
+
+
+def test_run_defaults_per_model(client, app_module, monkeypatch):
+    model = app_module.cfg.DEFAULT_MODEL
+    monkeypatch.setattr(app_module.cfg, "DIARIZE", False)
+    monkeypatch.setattr(app_module.cfg, "MODEL_OVERRIDES", {model: {
+        "DIARIZE": True, "WORD_TIMESTAMPS_ENABLED": False,
+        "DEFAULT_LANGUAGE": "fr"}}, raising=False)
+    j = client.get(URL, params={"model": model}).json()
+    assert j["diarize"]["value"] is True and j["diarize"]["source"] == "model"
+    assert j["word_timestamps"]["value"] is False
+    assert j["language"]["value"] == "fr"
+
+
+def test_run_defaults_per_profile(client, app_module, make_user_key, monkeypatch):
+    monkeypatch.setattr(app_module.cfg, "SEPARATE_BGM", False)
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    _profiles(client, h, {
+        "studio": {"SEPARATE_BGM": True, "DIARIZE": True,
+                   "DIARIZATION_MODEL": "pyannote/speaker-diarization-3.1",
+                   "BGM_SEPARATION_UVR_MODEL": "Kim_Vocal_2",
+                   "locks": ["DIARIZE"]},
+        "en": {"DEFAULT_LANGUAGE": "en"}})
+    uid, raw_alice = make_user_key("alice")
+    _set_key_binding(client, h, uid, _key_id(client, h, uid), profiles=["studio"])
+    ah = bearer(raw_alice)
+    j = client.get(URL, headers=ah).json()
+    assert j["separate_bgm"]["value"] is True
+    assert j["separate_bgm"]["source"] == "account"
+    assert j["diarize"] == {**j["diarize"], "value": True, "locked": True}
+    assert j["diarization_model"]["value"] == "pyannote/speaker-diarization-3.1"
+    assert j["separation_model"]["value"] == "Kim_Vocal_2"
+    # A requested profile layers in too.
+    j = client.get(URL, params={"override_profile": "en"}, headers=ah).json()
+    assert j["language"]["value"] == "en"
+    assert j["language"]["source"] == "override_profile"
