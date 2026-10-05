@@ -77,11 +77,6 @@ def test_source_url_403_when_disabled(client):
     assert "not enabled" in r.json()["detail"]
 
 
-def test_preview_403_when_disabled(client):
-    r = client.post("/v1/audio/url-preview", json={"url": _URL})
-    assert r.status_code == 403
-
-
 def test_media_403_when_disabled(client, app_module, monkeypatch):
     # The fetch serves both producers' ids (link runs AND packaging uploads,
     # the latter on by default): 403 only when neither feature is on.
@@ -716,11 +711,6 @@ def test_on_demand_audio_leaves_no_staging_job(client, url_enabled, monkeypatch)
     assert os.listdir(url_media_store.staging_dir()) == []
 
 
-def test_on_demand_audio_403_when_url_download_is_off(client):
-    assert client.post("/v1/audio/url-media/audio",
-                       json={"url": _URL}).status_code == 403
-
-
 def test_on_demand_video_over_cap_is_400(client, video_enabled, monkeypatch):
     async def _probe(url, *, timeout):
         rungs = [dict(r, over_cap=True) for r in _LADDER]
@@ -729,12 +719,6 @@ def test_on_demand_video_over_cap_is_400(client, video_enabled, monkeypatch):
     r = client.post("/v1/audio/url-media/video", json={"url": _URL})
     assert r.status_code == 400
     assert "size limit" in r.json()["detail"]
-
-
-def test_on_demand_video_403_when_disabled(client, url_enabled, monkeypatch):
-    monkeypatch.setattr(url_enabled.cfg, "URL_VIDEO_ENABLED", False, raising=False)
-    r = client.post("/v1/audio/url-media/video", json={"url": _URL})
-    assert r.status_code == 403
 
 
 def test_me_reports_video_caps(client, url_enabled, monkeypatch):
@@ -786,17 +770,9 @@ def subs_enabled(url_enabled, fake_capped_get, monkeypatch):
     return url_enabled
 
 
-def test_subtitles_403_when_url_download_is_off(client):
-    r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": ["m-de"]})
-    assert r.status_code == 403
-
-
-def test_subtitles_403_when_its_switch_is_off(client, subs_enabled, monkeypatch):
+def test_preview_lists_no_tracks_when_subtitles_are_off(client, subs_enabled,
+                                                        monkeypatch):
     monkeypatch.setattr(subs_enabled.cfg, "URL_SUBTITLES_ENABLED", False, raising=False)
-    r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": ["m-de"]})
-    assert r.status_code == 403
-    assert "subtitle download" in r.json()["detail"]
-    # …and the preview stops listing tracks.
     monkeypatch.setattr(url_download, "fetch_thumbnail_data_uri",
                         lambda *a, **k: asyncio.sleep(0))
     assert client.post("/v1/audio/url-preview",
@@ -843,22 +819,6 @@ def test_probe_crash_is_a_generic_500(client, subs_enabled, monkeypatch, caplog,
     assert "/srv/internal" in caplog.text            # logged, never answered
 
 
-def test_subtitles_rate_limited(client, subs_enabled, monkeypatch):
-    monkeypatch.setattr(subs_enabled.cfg, "URL_SUBTITLES_RATE_PER_MIN", 2, raising=False)
-    for _ in range(2):
-        assert client.post("/v1/audio/url-subtitles",
-                           json={"url": _URL, "tracks": ["m-de"]}).status_code == 200
-    r = client.post("/v1/audio/url-subtitles", json={"url": _URL, "tracks": ["m-de"]})
-    assert r.status_code == 429
-    assert r.json()["error"]["param"] == "URL_SUBTITLES_RATE_PER_MIN"
-
-
-def test_me_reports_subtitle_caps(client, url_enabled, monkeypatch):
-    assert client.get("/v1/me").json()["url_subtitles_enabled"] is True
-    monkeypatch.setattr(url_enabled.cfg, "URL_SUBTITLES_ENABLED", False, raising=False)
-    assert client.get("/v1/me").json()["url_subtitles_enabled"] is False
-
-
 # --- POST /v1/audio/url-language ----------------------------------------------
 
 @pytest.fixture
@@ -873,16 +833,6 @@ def lang_check(url_enabled, monkeypatch, fake_model):
     monkeypatch.setattr(url_enabled, "_release_model_lease", released.append)
     fake_model.released = released
     return fake_model
-
-
-def test_language_403_when_off(client, url_enabled, monkeypatch):
-    monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_CHECK_ENABLED", False, raising=False)
-    r = client.post("/v1/audio/url-language", json={"url": _URL})
-    assert r.status_code == 403 and "language check" in r.json()["detail"]
-    # URL download off entirely: same 403, whatever the check's own switch.
-    monkeypatch.setattr(url_enabled.cfg, "URL_DOWNLOAD_ENABLED", False, raising=False)
-    monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_CHECK_ENABLED", True, raising=False)
-    assert client.post("/v1/audio/url-language", json={"url": _URL}).status_code == 403
 
 
 def test_language_check_undecodable_audio_is_400(client, url_enabled):
@@ -934,14 +884,6 @@ def test_language_check_no_speech_is_unknown(client, url_enabled, lang_check, mo
     lang_check.heard = [(None, 0.0)]
     body = client.post("/v1/audio/url-language", json={"url": _URL}).json()
     assert body["verdict"] == "unknown" and body["language"] is None
-
-
-def test_language_check_rate_limited(client, url_enabled, lang_check, monkeypatch):
-    monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_RATE_PER_MIN", 1, raising=False)
-    assert client.post("/v1/audio/url-language", json={"url": _URL}).status_code == 200
-    r = client.post("/v1/audio/url-language", json={"url": _URL})
-    assert r.status_code == 429
-    assert r.json()["error"]["param"] == "URL_LANGUAGE_RATE_PER_MIN"
 
 
 # The chunked path: a link whose audio is a segmented stream (url/segmented.py).
@@ -1026,10 +968,52 @@ def test_language_check_cancel_during_the_segments_is_499(client, hls_link,
     assert hls_link.downloads == []
 
 
-def test_me_reports_language_check_caps(client, url_enabled, monkeypatch):
-    assert client.get("/v1/me").json()["url_language_check_enabled"] is True
-    monkeypatch.setattr(url_enabled.cfg, "URL_LANGUAGE_CHECK_ENABLED", False, raising=False)
-    assert client.get("/v1/me").json()["url_language_check_enabled"] is False
+# --- the gates every POST /v1/audio/url-* route shares -------------------------
+
+_ROUTE_BODIES = {"url-preview": {}, "url-subtitles": {"tracks": ["m-de"]},
+                 "url-media/video": {}, "url-media/audio": {}, "url-language": {}}
+
+
+@pytest.mark.parametrize("route", list(_ROUTE_BODIES))
+def test_route_403_when_url_download_is_off(client, route):
+    r = client.post(f"/v1/audio/{route}", json={"url": _URL, **_ROUTE_BODIES[route]})
+    assert r.status_code == 403 and "not enabled" in r.json()["detail"]
+
+
+@pytest.mark.parametrize("route,switch,what", [
+    ("url-subtitles", "URL_SUBTITLES_ENABLED", "subtitle download"),
+    ("url-media/video", "URL_VIDEO_ENABLED", "video download"),
+    ("url-language", "URL_LANGUAGE_CHECK_ENABLED", "language check"),
+])
+def test_route_403_when_its_switch_is_off(client, url_enabled, monkeypatch,
+                                          route, switch, what):
+    monkeypatch.setattr(url_enabled.cfg, switch, False, raising=False)
+    r = client.post(f"/v1/audio/{route}", json={"url": _URL, **_ROUTE_BODIES[route]})
+    assert r.status_code == 403 and what in r.json()["detail"]
+
+
+@pytest.mark.parametrize("route,knob,setup", [
+    ("url-subtitles", "URL_SUBTITLES_RATE_PER_MIN", "subs_enabled"),
+    ("url-language", "URL_LANGUAGE_RATE_PER_MIN", "lang_check"),
+])
+def test_route_rate_limited(client, url_enabled, monkeypatch, request,
+                            route, knob, setup):
+    request.getfixturevalue(setup)
+    monkeypatch.setattr(url_enabled.cfg, knob, 1, raising=False)
+    body = {"url": _URL, **_ROUTE_BODIES[route]}
+    assert client.post(f"/v1/audio/{route}", json=body).status_code == 200
+    r = client.post(f"/v1/audio/{route}", json=body)
+    assert r.status_code == 429 and r.json()["error"]["param"] == knob
+
+
+@pytest.mark.parametrize("field,switch", [
+    ("url_subtitles_enabled", "URL_SUBTITLES_ENABLED"),
+    ("url_language_check_enabled", "URL_LANGUAGE_CHECK_ENABLED"),
+])
+def test_me_reports_route_caps(client, url_enabled, monkeypatch, field, switch):
+    assert client.get("/v1/me").json()[field] is True
+    monkeypatch.setattr(url_enabled.cfg, switch, False, raising=False)
+    assert client.get("/v1/me").json()[field] is False
 
 
 # --- prefetched_media_id (reuse the language check's download) ---------------
