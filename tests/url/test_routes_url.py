@@ -801,6 +801,20 @@ def test_subtitles_probe_rejection_is_400(client, subs_enabled, monkeypatch):
     assert r.status_code == 400 and "private" in r.json()["detail"]
 
 
+@pytest.mark.parametrize("route,extra,detail", [
+    ("url-preview", {}, "link preview failed"),
+    ("url-subtitles", {"tracks": ["m-de"]}, "subtitle download failed"),
+])
+def test_probe_crash_is_a_generic_500(client, subs_enabled, monkeypatch, caplog,
+                                      route, extra, detail):
+    async def _crash(url, *, timeout):
+        raise RuntimeError("boom in /srv/internal")
+    monkeypatch.setattr(url_download, "probe", _crash)
+    r = client.post(f"/v1/audio/{route}", json={"url": _URL, **extra})
+    assert r.status_code == 500 and r.json()["detail"] == detail
+    assert "/srv/internal" in caplog.text            # logged, never answered
+
+
 def test_subtitles_rate_limited(client, subs_enabled, monkeypatch):
     monkeypatch.setattr(subs_enabled.cfg, "URL_SUBTITLES_RATE_PER_MIN", 2, raising=False)
     for _ in range(2):

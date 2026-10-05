@@ -7776,6 +7776,26 @@ async def _url_request(request: Request, user: dict,
     return body, url
 
 
+async def _probe_link(url: str, what: str, failed: "str | None" = None):
+    """The policy-gated probe a url-* route answers from: a rejected link is
+    a client-safe 400, anything else a logged generic 500 (`failed`, else
+    "<what> failed") — never a raw error."""
+    from faster_whisper_backend.url import download as _udl
+    _uhost = _url_host_for_log(url)
+    try:
+        return await _udl.probe(
+            url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
+    except _udl.UrlDownloadError as e:
+        # str() is client-safe by the module's contract.
+        logger.info("[url-dl] %s rejected (host %s): %s", what, _uhost,
+                    _log_safe(str(e)))
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:  # noqa: BLE001 — never forward raw errors
+        logger.error("[url-dl] %s failed (host %s): %s", what, _uhost,
+                     _log_safe(str(e)))
+        raise HTTPException(status_code=500, detail=failed or f"{what} failed")
+
+
 @app.post("/v1/audio/url-preview")
 async def url_preview(request: Request,
                       user: dict = Depends(_get_current_user_dep)):
@@ -7788,18 +7808,7 @@ async def url_preview(request: Request,
     from faster_whisper_backend.url import download as _udl
     _uhost = _url_host_for_log(url)
     logger.info("[url-dl] preview requested (host %s)", _uhost)
-    try:
-        info = await _udl.probe(
-            url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
-    except _udl.UrlDownloadError as e:
-        # str() is client-safe by the module's contract.
-        logger.info("[url-dl] preview rejected (host %s): %s",
-                    _uhost, _log_safe(str(e)))
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:  # noqa: BLE001 — never forward raw errors
-        logger.error("[url-dl] preview failed (host %s): %s",
-                     _uhost, _log_safe(str(e)))
-        raise HTTPException(status_code=500, detail="link preview failed")
+    info = await _probe_link(url, "preview", "link preview failed")
     logger.info(
         "[url-dl] preview ok (host %s): extractor=%s duration=%s est_bytes=%s"
         " language=%s subtitle_tracks=%d",
@@ -7845,7 +7854,6 @@ async def url_subtitles(request: Request,
     body, url = await _url_request(request, user, _url_subtitles_rate,
                                    switch="URL_SUBTITLES_ENABLED",
                                    what="subtitle download")
-    from faster_whisper_backend.url import download as _udl
     from faster_whisper_backend.url import subtitles as _subs
     ids = body.get("tracks")
     if (not isinstance(ids, list) or not 1 <= len(ids) <= _subs.MAX_FETCH
@@ -7859,13 +7867,7 @@ async def url_subtitles(request: Request,
     logger.info("[url-dl] subtitles requested (host %s): %s", _uhost,
                 ", ".join(ids))
     _t0 = time.perf_counter()
-    try:
-        info = await _udl.probe(
-            url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
-    except _udl.UrlDownloadError as e:
-        logger.info("[url-dl] subtitles rejected (host %s): %s", _uhost,
-                    _log_safe(str(e)))
-        raise HTTPException(status_code=400, detail=str(e))
+    info = await _probe_link(url, "subtitles", "subtitle download failed")
     tracks, failed = await _subs.fetch_tracks(info, ids)
     # Ids, sizes and the client-safe reasons only: the source URLs are
     # signed (YouTube's carry a pot token) and never reach the log.
@@ -7953,8 +7955,7 @@ async def _url_media_on_demand(user: dict, body: dict, url: str, what: str,
                       owner=(_user_id or user.get("key_id")))
         _url = _udl.validate_url(url)
         _check_cancelled(_pid)
-        info = await _udl.probe(
-            _url, timeout=float(getattr(cfg, "URL_PREVIEW_TIMEOUT_S", 20)))
+        info = await _probe_link(_url, what)
         return await fetch(_pid, _url, info)
     except (_ClientCancelled, _udl.UrlCancelled):
         raise HTTPException(status_code=499, detail="cancelled by the client")
