@@ -209,26 +209,9 @@ def hls_playlist(names, *, extra="") -> str:
 
 
 @pytest.fixture
-def served(monkeypatch):
-    """A fake guarded GET: url → body (bytes, or an int HTTP status);
-    honours Range; records (url, headers) per request."""
-    table: dict = {}
-    calls: list = []
-
-    def _get(url, *, max_bytes, timeout, accept=None, headers=None):
-        calls.append((url, dict(headers or {})))
-        body = table[url]
-        if isinstance(body, int):
-            raise urllib.error.HTTPError(url, body, "x", {}, None)
-        rng = (headers or {}).get("Range")
-        if rng:
-            a, b = map(int, rng.removeprefix("bytes=").split("-"))
-            body = body[a:b + 1]
-        if len(body) > max_bytes:
-            raise udl.UrlDownloadError("the file is over the server's size limit")
-        return "application/octet-stream", body
-    monkeypatch.setattr(udl, "_capped_get", _get)
-    return table, calls
+def served(fake_capped_get):
+    """url → body (bytes, or an int HTTP status); (url, headers) per request."""
+    return fake_capped_get.table, fake_capped_get.calls
 
 
 def _fetch(source, starts, seconds, dest, cancel=lambda: False):

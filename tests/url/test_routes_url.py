@@ -747,13 +747,14 @@ _SUB_SOURCES = {"m-de": {"url": "https://subs.test/de.vtt?pot=SECRET", "ext": "v
 
 
 @pytest.fixture
-def subs_enabled(url_enabled, monkeypatch):
+def subs_enabled(url_enabled, fake_capped_get, monkeypatch):
+    fake_capped_get.table[_SUB_SOURCES["m-de"]["url"]] = (
+        b"WEBVTT\n\n00:00.000 --> 00:01.000\nHallo\n")
+
     async def _probe(url, *, timeout):
         return _info(url=url, subtitle_tracks=list(_SUB_TRACKS),
                      subtitle_sources=dict(_SUB_SOURCES))
     monkeypatch.setattr(url_download, "probe", _probe)
-    monkeypatch.setattr(url_download, "_capped_get", lambda url, **kw: (
-        "text/vtt", b"WEBVTT\n\n00:00.000 --> 00:01.000\nHallo\n"))
     return url_enabled
 
 
@@ -906,27 +907,17 @@ _HLS = "https://cdn.test/v/index.m3u8"
 
 
 @pytest.fixture
-def hls_link(url_enabled, lang_check, monkeypatch):
+def hls_link(url_enabled, lang_check, fake_capped_get, monkeypatch):
     """A 60 s link whose audio is HLS — 15 × 4 s real TS segments behind a
     fake guarded GET (requests recorded) — and every full download recorded.
     Each detect_language call records its piece's sample count."""
-    import urllib.error
-    from types import SimpleNamespace
-
     from tests.url.test_segmented import hls_playlist, ts_segments
     names = [f"s{i}.ts" for i in range(15)]
-    table = {f"https://cdn.test/v/{n}": b for n, b in zip(names, ts_segments(15))}
-    table[_HLS] = hls_playlist(names).encode()
-    link = SimpleNamespace(table=table, asked=[], downloads=[], heard=[],
-                           on_get=lambda: None)
-
-    def _get(url, *, max_bytes, timeout, accept=None, headers=None):
-        link.asked.append(url)
-        link.on_get()
-        if isinstance(table[url], int):
-            raise urllib.error.HTTPError(url, table[url], "x", {}, None)
-        return "video/mp2t", table[url]
-    monkeypatch.setattr(url_download, "_capped_get", _get)
+    link = fake_capped_get
+    link.table.update({f"https://cdn.test/v/{n}": b
+                       for n, b in zip(names, ts_segments(15))})
+    link.table[_HLS] = hls_playlist(names).encode()
+    link.ctype, link.downloads, link.heard = "video/mp2t", [], []
 
     async def _probe(url, *, timeout):
         return _info(url=url, duration=60.0, segmented={
@@ -958,7 +949,8 @@ def test_language_check_samples_only_the_segments(client, hls_link, caplog):
     assert hls_link.downloads == []
     assert (body["media_id"], body["media_expires_at"]) == (None, None)
     # The playlist, then segments 2–14 only (windows ± 1 s), each once.
-    assert hls_link.asked == [_HLS] + [f"https://cdn.test/v/s{i}.ts" for i in range(2, 15)]
+    assert [u for u, _h in hls_link.calls] == [
+        _HLS] + [f"https://cdn.test/v/s{i}.ts" for i in range(2, 15)]
     line = next(r.message for r in caplog.records if "language check (host" in r.message)
     assert "chunks 13 seg" in line and "cdn.test" not in caplog.text
 
@@ -988,7 +980,8 @@ def test_language_check_cancel_during_the_segments_is_499(client, hls_link,
     hls_link.on_get = lambda: url_enabled._BATCH_CANCELLED.add(_PID)
     r = client.post("/v1/audio/url-language", json={"url": _URL, "progress_id": _PID})
     assert r.status_code == 499
-    assert hls_link.asked == [_HLS] and hls_link.downloads == []
+    assert [u for u, _h in hls_link.calls] == [_HLS]
+    assert hls_link.downloads == []
 
 
 def test_me_reports_language_check_caps(client, url_enabled, monkeypatch):

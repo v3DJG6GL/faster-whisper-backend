@@ -105,7 +105,6 @@ def test_caps_and_id_shape():
 # ── fetching ────────────────────────────────────────────────────────────────
 
 import asyncio  # noqa: E402
-import urllib.error  # noqa: E402
 
 import pytest  # noqa: E402
 
@@ -114,31 +113,23 @@ from faster_whisper_backend.url import download as udl  # noqa: E402
 _VTT = b"\xef\xbb\xbfWEBVTT\n\n00:00.000 --> 00:01.000\nHallo\n"
 
 
-def _info_with(bodies: dict):
-    """A probe result whose tracks are served by a fake _capped_get."""
-    tracks, sources = subs.list_tracks({"subtitles": {
-        lang: [{"url": f"https://subs.test/{lang}.{ext}", "ext": ext}]
-        for lang, (ext, _b) in bodies.items()}})
-    return udl.UrlMediaInfo(url="https://e.test/v", extractor_key="X",
-                            subtitle_tracks=tracks, subtitle_sources=sources)
-
-
 @pytest.fixture
-def served(monkeypatch):
-    """lang → (ext, body | HTTP status int); records each max_bytes asked."""
-    asked: list = []
-    table: dict = {}
+def served(fake_capped_get):
+    """(info_with, asked): info_with(lang → (ext, body | HTTP status int)) is a
+    probe result whose track URLs the fake GET serves; asked records each
+    max_bytes."""
+    fake_capped_get.ctype = "text/vtt"
 
-    def _get(url, *, max_bytes, timeout, accept=None, headers=None):
-        asked.append(max_bytes)
-        body = table[url.rsplit("/", 1)[1].split(".")[0]][1]
-        if isinstance(body, int):
-            raise urllib.error.HTTPError(url, body, "x", {}, None)
-        if len(body) > max_bytes:
-            raise udl.UrlDownloadError("the file is over the server's size limit")
-        return "text/vtt", body
-    monkeypatch.setattr(udl, "_capped_get", _get)
-    return table, asked
+    def info_with(bodies: dict):
+        fake_capped_get.table.update({
+            f"https://subs.test/{lang}.{ext}": body
+            for lang, (ext, body) in bodies.items()})
+        tracks, sources = subs.list_tracks({"subtitles": {
+            lang: [{"url": f"https://subs.test/{lang}.{ext}", "ext": ext}]
+            for lang, (ext, _b) in bodies.items()}})
+        return udl.UrlMediaInfo(url="https://e.test/v", extractor_key="X",
+                                subtitle_tracks=tracks, subtitle_sources=sources)
+    return info_with, fake_capped_get.caps
 
 
 def _fetch(info, ids):
@@ -155,10 +146,9 @@ def test_sniff():
 
 
 def test_fetch_returns_text_and_client_safe_failures(served):
-    table, _asked = served
-    table.update({"de": ("vtt", _VTT), "en": ("vtt", 429), "fr": ("vtt", 403),
-                  "it": ("vtt", b"#EXTM3U\n")})
-    info = _info_with(table)
+    info_with, _asked = served
+    info = info_with({"de": ("vtt", _VTT), "en": ("vtt", 429), "fr": ("vtt", 403),
+                      "it": ("vtt", b"#EXTM3U\n")})
     tracks, failed = _fetch(info, ["m-de", "m-en", "m-fr", "m-it", "m-xx"])
     assert tracks == [{"id": "m-de", "lang": "de", "kind": "manual", "ext": "vtt",
                        "text": _VTT.decode("utf-8-sig")}]
@@ -171,10 +161,10 @@ def test_fetch_returns_text_and_client_safe_failures(served):
 
 
 def test_fetch_caps_each_track_and_the_request(served):
-    table, asked = served
+    info_with, asked = served
     big = b"WEBVTT\n" + b"x" * (subs.TRACK_MAX_BYTES - 7)   # exactly at the cap
-    table.update({lang: ("vtt", big) for lang in ("aa", "ab", "ac", "ad", "ae")})
-    tracks, failed = _fetch(_info_with(table), [f"m-{l}" for l in ("aa", "ab", "ac", "ad", "ae")])
+    info = info_with({lang: ("vtt", big) for lang in ("aa", "ab", "ac", "ad", "ae")})
+    tracks, failed = _fetch(info, [f"m-{l}" for l in ("aa", "ab", "ac", "ad", "ae")])
     assert len(tracks) == 4 and [f["id"] for f in failed] == ["m-ae"]
     assert asked == [subs.TRACK_MAX_BYTES] * 4 + [0]
     assert sum(len(t["text"]) for t in tracks) <= subs.TOTAL_MAX_BYTES

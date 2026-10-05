@@ -11,11 +11,42 @@ together and the assertion only ever sees this test's own entries.
 """
 
 import tempfile
+import urllib.error
+from types import SimpleNamespace
 
 import pytest
+
+from faster_whisper_backend.url import download as udl
 
 
 @pytest.fixture(autouse=True)
 def _private_tempdir(tmp_path, monkeypatch):
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
     yield
+
+
+@pytest.fixture
+def fake_capped_get(monkeypatch):
+    """A fake guarded GET (download._capped_get): `table` maps url → body
+    (bytes, or an int HTTP status); honours Range and max_bytes; records
+    (url, headers) per request in `calls` and each max_bytes in `caps`;
+    `on_get()` runs first, `ctype` is the answer's content type."""
+    fake = SimpleNamespace(table={}, calls=[], caps=[], on_get=lambda: None,
+                           ctype="application/octet-stream")
+
+    def _get(url, *, max_bytes, timeout, accept=None, headers=None):
+        fake.calls.append((url, dict(headers or {})))
+        fake.caps.append(max_bytes)
+        fake.on_get()
+        body = fake.table[url]
+        if isinstance(body, int):
+            raise urllib.error.HTTPError(url, body, "x", {}, None)
+        rng = (headers or {}).get("Range")
+        if rng:
+            a, b = map(int, rng.removeprefix("bytes=").split("-"))
+            body = body[a:b + 1]
+        if len(body) > max_bytes:
+            raise udl.UrlDownloadError("the file is over the server's size limit")
+        return fake.ctype, body
+    monkeypatch.setattr(udl, "_capped_get", _get)
+    return fake
