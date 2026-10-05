@@ -1,4 +1,4 @@
-# Virtual environment (Windows-built, ~2 GB — rebuild from requirements.txt)
+# Virtual environments: venv/ is what the installers create, .venv/ the dev venv
 venv/
 .venv/
 
@@ -25,64 +25,37 @@ secrets/
 # must not be committable. The tracked example file is negated back in.
 .env.*
 !.env.example
-*.local
 
 # Admin-WebUI runtime overrides (the .example.json variant IS committed)
 config.local.json
 
-# filelock sidecars from config_store's save serialisation (config.json.lock,
-# config.local.json.lock) — runtime artefacts, never committed
-*.lock
+# filelock sidecars from the atomic JSON writer's save serialisation
+# (config.json.lock, config.local.json.lock, model_sizes.json.lock,
+# stage_rates.json.lock) — runtime artefacts, never committed. Narrowed to
+# *.json.lock so a lockfile a tool wants committed (uv.lock, …) is not swallowed.
+*.json.lock
 
 # In-checkout data/model roots — the Windows bare-metal defaults (<repo>\data,
 # <repo>\models); also cover Linux runs with WHISPER_DATA_DIR=./data
 /data/
 /models/
 
-# Transcription error reports — durable PHI store (SQLite + WAL/SHM sidecars)
-reports.local.sqlite3
-reports.local.sqlite3-shm
-reports.local.sqlite3-wal
+# Every SQLite store (+ WAL/SHM sidecars) named *.local.sqlite3 — reports,
+# captures, sessions, recent transcriptions, API keys, usage, client settings,
+# jobs, system metrics. Several hold PHI, transcript text or credential hashes.
+# Their default home is {DATA_DIR}/db (covered by /data/ when DATA_DIR=./data);
+# the glob also covers a store pointed anywhere else inside the checkout.
+*.local.sqlite3
+*.local.sqlite3-wal
+*.local.sqlite3-shm
 
-# Whisper fine-tuning capture store (SQLite + WAL/SHM) and audio files
-captures.local.sqlite3
-captures.local.sqlite3-shm
-captures.local.sqlite3-wal
+# Whisper fine-tuning capture audio — the legacy repo-root dir (the current
+# default is {DATA_DIR}/captures). Anchored: an unanchored captures/ would
+# also swallow faster_whisper_backend/captures/ and tests/captures/.
 /captures/
 
 # Capture-export manifest — carries transcript text out of the capture store
 manifest.jsonl
-
-# Session store (SQLite + WAL/SHM) — holds session-token hashes
-sessions.local.sqlite3
-sessions.local.sqlite3-shm
-sessions.local.sqlite3-wal
-
-# Persistent recent-transcriptions store (SQLite + WAL/SHM)
-recent_transcriptions.local.sqlite3
-recent_transcriptions.local.sqlite3-shm
-recent_transcriptions.local.sqlite3-wal
-
-# API key store (SQLite + WAL/SHM)
-api_keys.local.sqlite3
-api_keys.local.sqlite3-shm
-api_keys.local.sqlite3-wal
-
-# Usage/metrics store (SQLite + WAL/SHM)
-usage.local.sqlite3
-usage.local.sqlite3-shm
-usage.local.sqlite3-wal
-
-# Desktop-client settings-sync store (SQLite + WAL/SHM) — blob may hold the
-# client's own backend API keys
-client_settings.local.sqlite3
-client_settings.local.sqlite3-shm
-client_settings.local.sqlite3-wal
-
-# Durable job resource (core/jobs_store.py) — carries transcript text
-jobs.local.sqlite3
-jobs.local.sqlite3-shm
-jobs.local.sqlite3-wal
 
 # Editor / IDE
 .vscode/
@@ -95,8 +68,8 @@ Thumbs.db
 
 # Test artifacts / temp uploads
 *.log
-tmp/
-logs/
+/tmp/
+/logs/
 *.wav
 *.mp3
 *.m4a
@@ -106,10 +79,19 @@ WhisperAPI.exe
 WhisperAPI.xml
 WhisperAPI.wrapper.log
 # Pinned shared-build ffmpeg, downloaded by install-service.ps1 -Full when no
-# shared ffmpeg is on PATH (main.py puts ffmpeg/bin on the service PATH)
-ffmpeg/
+# shared ffmpeg is on PATH (faster_whisper_backend/main.py puts ffmpeg/bin on the service PATH)
+/ffmpeg/
 # Legacy NSSM era — install-service.ps1 -RemoveLocal cleans this up
 nssm.exe
+
+# Local review ledgers (code review / security review / simplify runs)
 SIMPLIFY_NOTES.md
 CODE-REVIEW_NOTES.md
 SECURITY-REVIEW_NOTES.md
+
+# Tool caches
+.ruff_cache/
+
+# Claude Code per-user settings (project-shared .claude/ content may be committed)
+.claude/settings.json
+.claude/settings.local.json

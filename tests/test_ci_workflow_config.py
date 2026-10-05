@@ -184,7 +184,8 @@ def test_vulnerability_alert_automerge_records_the_major_override():
 # --- .gitignore / .dockerignore -----------------------------------------------
 
 def test_ignore_files_do_not_swallow_package_dirs():
-    """`captures/` is the Windows raw-WAV dir at the repo ROOT. In .gitignore
+    """`captures/` is the legacy repo-root raw-WAV dir (the current default is
+    {DATA_DIR}/captures). In .gitignore
     an unanchored `captures/` also matches faster_whisper_backend/captures/
     and tests/captures/ (git would refuse their __init__.py); in
     .dockerignore the dangerous form was `**/captures/` (a bare `captures/`
@@ -196,3 +197,54 @@ def test_ignore_files_do_not_swallow_package_dirs():
         assert "/captures/" in lines, f"{fname}: anchor the captures/ ignore to the root"
         for bad in ("captures/", "**/captures/"):
             assert bad not in lines, f"{fname}: {bad!r} also matches package dirs"
+
+
+def test_ignore_files_anchor_every_root_only_dir():
+    """Same trap as captures/ for the other root-only dirs: an unanchored
+    `logs/`, `tmp/` or `ffmpeg/` in .gitignore matches a same-named package
+    or test dir at any depth, and `**/logs/` in .dockerignore silently drops
+    a faster_whisper_backend/logs/ package from every image (a real probe
+    build showed it). `*.lock` would swallow a committed tool lockfile."""
+    git = [ln.strip() for ln in _read(".gitignore").splitlines()]
+    for d in ("logs", "tmp", "ffmpeg"):
+        assert f"/{d}/" in git, f".gitignore: anchor {d}/ to the root"
+        assert f"{d}/" not in git and f"**/{d}/" not in git
+    assert "*.lock" not in git
+    docker = [ln.strip() for ln in _read(".dockerignore").splitlines()]
+    for d in ("logs", "tmp", "ffmpeg", "captures"):
+        assert f"**/{d}/" not in docker, f".dockerignore: **/{d}/ matches package dirs"
+
+
+# --- Dockerfiles -------------------------------------------------------------
+
+def test_gpu_loader_path_matches_the_python_base_image():
+    """Dockerfile.gpu puts the pip-installed nvidia/* dirs on LD_LIBRARY_PATH
+    by their site-packages path, which embeds the base image's python3.X.
+    A base-image minor bump (Renovate: python:3.14-slim -> 3.15-slim) that
+    misses the path builds green and then loses cuBLAS/cuDNN at runtime, so
+    this fails the bump PR until the path follows."""
+    import re
+
+    gpu = _read("Dockerfile.gpu")
+    base = re.search(r"^FROM python:(\d+\.\d+)-slim", gpu, re.M)
+    assert base, "Dockerfile.gpu: FROM python:X.Y-slim not found"
+    env = re.search(r"^ENV LD_LIBRARY_PATH=(\S+)", gpu, re.M)
+    assert env, "Dockerfile.gpu: ENV LD_LIBRARY_PATH not found"
+    versions = set(re.findall(r"/python(\d+\.\d+)/", env.group(1)))
+    assert versions == {base.group(1)}, (
+        f"LD_LIBRARY_PATH names python{sorted(versions)}, base image is {base.group(1)}")
+    # The CPU image must stay on the same base so both variants move together.
+    cpu_from = re.search(r"^FROM (\S+)", _read("Dockerfile"), re.M).group(1)
+    gpu_from = re.search(r"^FROM (\S+)", gpu, re.M).group(1)
+    assert cpu_from == gpu_from
+
+
+def test_python_base_image_minor_bumps_need_approval():
+    rules = json.loads(_read("renovate.json"))["packageRules"]
+    hits = [r for r in rules if r.get("matchPackageNames") == ["python"]
+            and r.get("matchDatasources") == ["docker"]]
+    assert len(hits) == 1
+    rule = hits[0]
+    assert "minor" in rule["matchUpdateTypes"]
+    assert rule["automerge"] is False
+    assert rule["dependencyDashboardApproval"] is True

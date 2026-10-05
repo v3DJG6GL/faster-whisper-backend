@@ -2,7 +2,6 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": [
     "config:recommended",
-    "customManagers:dockerfileVersions",
     "customManagers:githubActionsVersions",
     ":semanticCommits",
     ":dependencyDashboard"
@@ -27,7 +26,7 @@
       "groupName": "github-actions"
     },
     {
-      "description": "Group the Python runtime + dev requirements (base / gpu / convert / dev) into one PR.",
+      "description": "Group every requirements*.txt (base, heavy, gpu, convert, translate, diarize, bgm, dev) into one PR.",
       "matchManagers": [
         "pip_requirements"
       ],
@@ -66,6 +65,21 @@
       "description": "Major bumps require manual review \u2014 surface as checkboxes on the Dependency Dashboard, do not open the PR automatically, do not auto-merge. Minor/patch still flow through Renovate-side automerge, which waits for both all-ci and its own minimumReleaseAge check (platformAutomerge is off: Forgejo only honours required checks, so it would merge before the release age is met).",
       "matchUpdateTypes": [
         "major"
+      ],
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    },
+    {
+      "description": "Python base-image minor/major bumps (python:3.14-slim -> 3.15-slim) need a human: Dockerfile.gpu hardcodes the python3.X segment of its LD_LIBRARY_PATH (nvidia/* wheel dirs), so an automerged minor bump would build green and then lose cuBLAS/cuDNN at runtime. tests/test_ci_workflow_config.py also fails such a PR until the path is updated. Digest and patch updates keep the fast lane.",
+      "matchDatasources": [
+        "docker"
+      ],
+      "matchPackageNames": [
+        "python"
+      ],
+      "matchUpdateTypes": [
+        "major",
+        "minor"
       ],
       "automerge": false,
       "dependencyDashboardApproval": true

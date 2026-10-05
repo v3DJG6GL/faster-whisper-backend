@@ -164,12 +164,12 @@ jobs:
       # Coverage is gated: the suite must exercise at least this percent of
       # the application modules, so coverage can only ratchet upward. A
       # shortfall fails this leg, which fails the `all-ci` gate below, which
-      # blocks auto-merge / release publishing. Baseline measured at 66% on
-      # Linux; set a few points lower so the Windows leg (which skips the
-      # POSIX-only timezone tests) and minor per-version variance don't
-      # false-fail. Raise this number as coverage grows — never lower it.
+      # blocks auto-merge / release publishing. Measured 2026-10-06 at 87% on
+      # both Linux and Windows (run 1226); set 3 points lower so per-version
+      # variance and the Windows leg's POSIX-only skips don't false-fail.
+      # Raise this number as coverage grows — never lower it.
       - name: Run tests (with coverage gate)
-        run: pytest -q --cov-fail-under=63
+        run: pytest -q --cov-fail-under=84
 
   # Windows portability parity guard — a single leg on the self-hosted VM
   # runner (host mode), using the system python (VM prerequisite in the
@@ -232,7 +232,7 @@ jobs:
           python -m pip install -r requirements.txt -r requirements-dev.txt
 
       - name: Run tests (with coverage gate)
-        run: python -m pytest -q --cov-fail-under=63
+        run: python -m pytest -q --cov-fail-under=84
 
   # Single, stable status check to require in the branch protection. Matrix
   # legs expand/rename over time; this gate aggregates them so the required

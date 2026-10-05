@@ -1,17 +1,20 @@
-# Coverage configuration. Measures the faster_whisper_backend package;
-# excludes the tests themselves, the manual scripts (scripts/), the
-# virtualenvs, the docs tooling (docs/), and the uvicorn launcher
-# (faster_whisper_backend/__main__.py runs the server at import, so the
-# suite can never execute it).
+# Coverage configuration. Measures the application package and the yt-dlp
+# SSRF guard plugin (tests/url/test_url_ssrf_guard.py loads the guard
+# in-process by path, so its lines map back to ytdlp_plugins/).
+#
+# Omitted:
+# - faster_whisper_backend/__main__.py runs the server at import, so the
+#   suite can never execute it.
+# - ytdlp_plugins/run_guarded_yt_dlp.py is the launcher the guard runs as a
+#   subprocess; coverage does not follow subprocesses here.
 [run]
 branch = True
+source =
+    faster_whisper_backend
+    ytdlp_plugins
 omit =
-    tests/*
-    docs/*
-    scripts/*
-    venv/*
-    .venv/*
     faster_whisper_backend/__main__.py
+    ytdlp_plugins/run_guarded_yt_dlp.py
 
 [report]
 show_missing = True
