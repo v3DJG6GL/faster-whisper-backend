@@ -721,6 +721,15 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "using the same hues the app's stage rail uses, so a stage reads "
         "the same color in the log as while it ran. Disable for a "
         "monochrome log.",
+    "CONSOLE_LOG_LEVEL":
+        "Lowest level written to the console (stderr — what docker logs "
+        "and journald capture). The log file and the /logs page always "
+        "keep INFO, whatever this says. Default warning: each "
+        "transcription's log block is an INFO record carrying the "
+        "transcript text, so it stays out of container logs. info = the "
+        "full log on the console too; debug additionally prints library "
+        "debug output (console only). uvicorn's own lines follow "
+        "SERVER_LOG_LEVEL. Applies immediately.",
 
     # --- Server ---
     "SERVER_HOST":
@@ -2206,6 +2215,8 @@ class AdminConfig(BaseModel):
         "LOG_RECEIPT_HOLD_S", scope="server", group="Logging", order=9)
     LOG_STAGE_COLORS: bool | None = _F(
         "LOG_STAGE_COLORS", scope="server", group="Logging", order=10)
+    CONSOLE_LOG_LEVEL: LogLevel | None = _F(
+        "CONSOLE_LOG_LEVEL", scope="server", group="Logging", order=11)
 
     # --- Server ---
     SERVER_HOST: Annotated[str, Field(min_length=1, max_length=64)] | None = _F(
@@ -2941,6 +2952,15 @@ class AdminConfig(BaseModel):
                 f"rule slugs: {unknown}. Valid: {sorted(canonical)}."
             )
         return self
+
+    @field_validator("CONSOLE_LOG_LEVEL", mode="before")
+    @classmethod
+    def _lowercase_console_log_level(cls, v: Any) -> Any:
+        """Accept Python's own spelling (WHISPER_CONSOLE_LOG_LEVEL=WARNING);
+        the stored value is the lowercase LogLevel literal."""
+        if isinstance(v, str):
+            return v.strip().lower()
+        return v
 
     @field_validator("CONVERT_QUANTIZATION", mode="before")
     @classmethod

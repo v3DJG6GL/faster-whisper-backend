@@ -303,6 +303,15 @@ LOG_RECEIPT_HOLD_S = _D("LOG_RECEIPT_HOLD_S")
 # /logs viewer with the same hues the frontend's stage rail uses, so a
 # stage is the same color in the log as while the user watched it run.
 LOG_STAGE_COLORS = _D("LOG_STAGE_COLORS")
+#
+# CONSOLE_LOG_LEVEL — threshold for the stderr console handler only, i.e.
+# what `docker logs` / journald get. The log FILE (and so /logs) always keeps
+# INFO. Default "warning": the per-request receipt is one INFO record carrying
+# raw and final transcript text, and the console copy has none of the file's
+# 0600 protection. "debug" also lets library DEBUG output through — to the
+# console only. uvicorn's own startup and access lines follow
+# SERVER_LOG_LEVEL instead (they never pass through this handler).
+CONSOLE_LOG_LEVEL = _D("CONSOLE_LOG_LEVEL")
 
 # Print a fancy multi-line trace block for every transcription request.
 # Disable for production / high-traffic deployments where the log volume

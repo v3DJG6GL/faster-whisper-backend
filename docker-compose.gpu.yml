@@ -141,6 +141,19 @@ services:
       - whisper-data:/data
       - whisper-models:/models
     restart: unless-stopped
+    # Console output (`docker logs`): only WARNING and above by default — the
+    # full log, including each transcription's log block with its transcript
+    # text, stays in /data/logs and on the /logs page. Raise CONSOLE_LOG_LEVEL
+    # under Settings > Logging to see more here (it applies without a restart;
+    # setting WHISPER_CONSOLE_LOG_LEVEL instead pins it). uvicorn's per-request
+    # access lines follow WHISPER_SERVER_LOG_LEVEL (warning drops them).
+    # Docker's default json-file driver never rotates; cap it here unless the
+    # daemon already sets a driver (daemon.json, Loki, journald):
+    # logging:
+    #   driver: json-file        # or `local`: compressed, rotates by default
+    #   options:
+    #     max-size: "10m"
+    #     max-file: "3"
     # Mount file-based secrets and reference them with the *_FILE vars above.
     # secrets:
     #   - bootstrap_admin_key

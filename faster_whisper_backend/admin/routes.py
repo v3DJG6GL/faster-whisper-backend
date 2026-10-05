@@ -705,6 +705,12 @@ async def _apply_hot_changes(
             os.environ.pop("HF_TOKEN", None)
             logger.info("[config] HF_TOKEN env cleared (config field unset)")
 
+    # The console handler's level is read once at import; push the new one.
+    # From cfg, not `written`, so an env pin or a reset to baseline wins.
+    if "CONSOLE_LOG_LEVEL" in written:
+        from faster_whisper_backend import main as _main
+        _main.apply_console_log_level(getattr(cfg, "CONSOLE_LOG_LEVEL", "warning"))
+
     # save_overrides already bumped the config version when the FILE was
     # written, but the running cfg only got the new values in the setattr loop
     # above — two awaits later. A streaming session whose _refresh_ident ran

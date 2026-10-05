@@ -56,6 +56,7 @@
   "CLIENT_SETTINGS_DB": "{DB_DIR}/client_settings.local.sqlite3",
   "COMPRESSION_RATIO_THRESHOLD": 2.4,
   "CONDITION_ON_PREVIOUS_TEXT": true,
+  "CONSOLE_LOG_LEVEL": "warning",
   "CONVERTED_MODELS_DIR": "{MODELS_DIR}/converted",
   "CONVERT_QUANTIZATION": "float16",
   "CORS_ALLOW_ORIGINS": [],

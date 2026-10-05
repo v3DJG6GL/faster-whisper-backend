@@ -122,6 +122,9 @@ if _log_dir_ok:
         "%(asctime)s %(levelname)s %(name)s %(message)s",
         datefmt="%Y-%m-%dT%H:%M:%SZ",   # UTC (converter=gmtime); viewer localizes
     ))
+    # Pinned so the file (and /logs) reads the same whatever the console
+    # level is — CONSOLE_LOG_LEVEL=debug lowers the ROOT level, see below.
+    _file_handler.setLevel(logging.INFO)
     _root.addHandler(_file_handler)
 
 # Tail WARNING+ records into an in-memory ring used by the nav-row severity
@@ -129,6 +132,34 @@ if _log_dir_ok:
 from faster_whisper_backend.core.web_common import SeverityCounter
 from faster_whisper_backend.paths import REPO_ROOT
 _root.addHandler(SeverityCounter())
+
+
+def apply_console_log_level(name: object) -> None:
+    """Point the stderr handler (docker logs / journald) at CONSOLE_LOG_LEVEL.
+
+    The root level follows it down to DEBUG only — never up — so INFO keeps
+    reaching the file handler (pinned at INFO above) at every setting. Called
+    at import and again by the settings save path when the field changes."""
+    lvl = getattr(logging, str(name or "").strip().upper(), None)
+    if not isinstance(lvl, int):
+        lvl = logging.WARNING
+    _console_handler.setLevel(lvl)
+    _root.setLevel(min(logging.INFO, lvl))
+
+
+apply_console_log_level(getattr(cfg, "CONSOLE_LOG_LEVEL", "warning"))
+if _console_handler.level > logging.INFO:
+    # A quiet `docker logs` should not look like a dead server. handle()
+    # skips the level check, and the record goes to the console ONLY — not
+    # the file, not the severity pills.
+    _console_handler.handle(logging.LogRecord(
+        "whisper-api", logging.INFO, __file__, 0,
+        "console log level is %s: INFO lines (including each transcription's "
+        "log block) %s. Change CONSOLE_LOG_LEVEL under Settings > Logging.",
+        (logging.getLevelName(_console_handler.level),
+         f"go only to {cfg.LOG_FILE} and the /logs page" if _log_dir_ok
+         else "are not written anywhere (the log file is unavailable)"),
+        None))
 
 logger = logging.getLogger("whisper-api")
 

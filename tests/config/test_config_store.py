@@ -205,6 +205,13 @@ def test_server_log_level_literal():
     _bad(SERVER_LOG_LEVEL="verbose")
 
 
+def test_console_log_level_literal():
+    _ok(CONSOLE_LOG_LEVEL="debug")
+    # Python's own spelling is accepted and stored as the lowercase literal.
+    assert _ok(CONSOLE_LOG_LEVEL=" WARNING ").CONSOLE_LOG_LEVEL == "warning"
+    _bad(CONSOLE_LOG_LEVEL="verbose")
+
+
 # ---------------------------------------------------------------------------
 # Translation (T2T) fields
 # ---------------------------------------------------------------------------
