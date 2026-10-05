@@ -50,15 +50,33 @@ ALL_LANGUAGE_NAMES: "dict[str, str]" = {
 _NAMES = {code.lower(): name for code, name in ALL_LANGUAGE_NAMES.items()}
 
 
+def lookup(table: "dict[str, str]", code: "str | None") -> "str | None":
+    """A lowercase-keyed table's entry for a language code: the full code
+    first ("zh-hant"), then its base ("pt-BR" → "pt"); None when neither."""
+    low = (code or "").strip().lower()
+    return table.get(low) or table.get(low.split("-")[0])
+
+
 def language_name(code: "str | None") -> str:
     """English name for a language code: the full code first ("zh-Hant"),
     then its base ("pt-BR" → "Portuguese"); unknown codes are title-cased
     ("rm" → "Rm")."""
     if not code:
         return ""
-    low = code.strip().lower()
-    base = low.split("-")[0]
-    return _NAMES.get(low) or _NAMES.get(base) or base.title()
+    return lookup(_NAMES, code) or code.strip().lower().split("-")[0].title()
+
+
+def language_label(code: "str | None") -> str:
+    """A track title for a language code: the name the table gives the full
+    code ("zh-Hant" → "Traditional Chinese"), else the base name with the
+    subtag kept ("pt-BR" → "Portuguese (BR)"); "Unknown" for no code."""
+    raw = (code or "").strip()
+    if not raw:
+        return "Unknown"
+    base, _, sub = raw.partition("-")
+    if not sub or raw.lower() in _NAMES:
+        return language_name(raw)
+    return f"{language_name(base)} ({sub.upper()})"
 
 
 # ISO 639-3 → the table's 639-1 code, for the codes the table names: model

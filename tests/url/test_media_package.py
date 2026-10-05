@@ -1,4 +1,4 @@
-"""url/package.py — subtitle packaging: the track title, the MP4 rule,
+"""url/package.py — subtitle packaging: the MP4 rule,
 the ffmpeg argv, the runner against a fake ffmpeg, and the capability probe."""
 
 from __future__ import annotations
@@ -17,12 +17,6 @@ from faster_whisper_backend.url import package as pk
 
 def _run(coro):
     return asyncio.run(coro)
-
-
-def test_lang_name_keeps_region_in_the_title():
-    assert pk.lang_name("de") == "German"
-    assert pk.lang_name("pt-BR") == "Portuguese (BR)"
-    assert pk.lang_name("") == "Unknown"
 
 
 def test_mp4_compatibility_allowlist():

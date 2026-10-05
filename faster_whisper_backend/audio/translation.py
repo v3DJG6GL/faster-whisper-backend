@@ -47,7 +47,7 @@ from dataclasses import dataclass, field
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
-    canonical_code, language_codes, language_name)
+    canonical_code, language_codes, language_name, lookup)
 from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
@@ -126,11 +126,6 @@ def _parse_model_ref(ref: str) -> "tuple[str, str | None]":
 # Prompt families
 # =============================================================================
 
-# English language names come from core.languages; _lang_name stays the
-# module's spelling for its callers (prompt builders, url.package).
-_lang_name = language_name
-
-
 # Chinese language names for HY-MT's official contextual template (the
 # instruction that carries them is Chinese — see _build_hunyuan): the 38
 # HY-MT1.5 languages as its model card names them, plus a few more. Keys are
@@ -179,11 +174,9 @@ def _build_hunyuan(text, source_code, source_name, target_code, target_name,
                 parts.append(f"{src} 翻译成 {tgt}")
             parts.append("")
         parts.append(context)
-        low = (target_code or "").strip().lower()
         # Fallback: the English target name — the mixed-language instruction
         # still works for targets outside the mapped set.
-        zh_target = (_ZH_LANG_NAMES.get(low)
-                     or _ZH_LANG_NAMES.get(low.split("-")[0]) or target_name)
+        zh_target = lookup(_ZH_LANG_NAMES, target_code) or target_name
         parts.append(
             f"参考上面的信息，把下面的文本翻译成{zh_target}，"
             f"注意不需要翻译上文，也不要额外解释：")
@@ -429,12 +422,12 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
         tpl = template if template is not None else \
             (getattr(cfg, "TRANSLATION_PROMPT_TEMPLATE", "") or "")
         prompt = [{"role": "user", "content": _render_custom_template(
-            tpl, text, _lang_name(source_code), _lang_name(target),
+            tpl, text, language_name(source_code), language_name(target),
             context, glossary)}]
     else:
         prompt = fam.build(
-            text, source_code, _lang_name(source_code), target,
-            _lang_name(target), context, glossary)
+            text, source_code, language_name(source_code), target,
+            language_name(target), context, glossary)
     out: dict = {
         "family": fam_name,
         "chat": fam.chat,
@@ -1095,12 +1088,12 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
     fam = _FAMILIES[family]
     if template_override is not None and family == "custom":
         prompt = [{"role": "user", "content": _render_custom_template(
-            template_override, text, _lang_name(source_code),
-            _lang_name(target_code), context, glossary)}]
+            template_override, text, language_name(source_code),
+            language_name(target_code), context, glossary)}]
     else:
         prompt = fam.build(
-            text, source_code, _lang_name(source_code), target_code,
-            _lang_name(target_code), context, glossary)
+            text, source_code, language_name(source_code), target_code,
+            language_name(target_code), context, glossary)
     # Context counts toward the budget: a context-echoing model (the guard
     # catches it) must not ALSO be truncated mid-sentence into a secondary
     # guard failure.

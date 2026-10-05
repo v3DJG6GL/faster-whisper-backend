@@ -28,6 +28,23 @@ def test_language_name_lookup_order():
     assert languages.language_name("") == ""
 
 
+def test_language_label_keeps_the_subtag_in_the_title():
+    label = languages.language_label
+    assert label("de") == "German" and label("pt-BR") == "Portuguese (BR)"
+    assert label("zh-TW") == "Chinese (TW)" and label("rm-CH") == "Rm (CH)"
+    # A code the table names in full keeps that name.
+    assert label("zh-Hant") == "Traditional Chinese"
+    assert label("") == "Unknown" and label(None) == "Unknown"
+
+
+def test_lookup_full_code_then_base():
+    table = {"zh-hant": "Hant", "zh": "Zh"}
+    assert languages.lookup(table, "zh-Hant") == "Hant"
+    assert languages.lookup(table, "ZH-TW") == "Zh"
+    assert languages.lookup(table, "de") is None
+    assert languages.lookup(table, None) is None
+
+
 def test_canonical_code():
     c = languages.canonical_code
     assert c("deu") == "de" and c("EN") == "en" and c("jav") == "jw"

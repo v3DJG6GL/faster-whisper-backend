@@ -23,7 +23,7 @@ from faster_whisper_backend.core import segment_guards
 from faster_whisper_backend.core import dictation_map as _dictation_map
 from faster_whisper_backend.core.languages import (
     ALL_LANGUAGE_NAMES, TRANSLATE_CODE_RE as _TRANSLATE_CODE_RE,
-    language_codes)
+    language_codes, language_label)
 from faster_whisper_backend.core import seam_holdback as _seam_holdback
 
 from faster_whisper_backend import config as cfg
@@ -8422,7 +8422,7 @@ async def package_media(media_id: str, request: Request,
                                        f"{_pk.MAX_SRT_BYTES // (1024 * 1024)} MiB")
         label = t.get("label")
         label = (re.sub(r"[\x00-\x1f\x7f]", "", label).strip()[:64]
-                 if isinstance(label, str) else "") or _pk.lang_name(lang)
+                 if isinstance(label, str) else "") or language_label(lang)
         flags = {}
         for k in ("default", "original", "hearing_impaired"):
             v = t.get(k, False)

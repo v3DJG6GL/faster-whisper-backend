@@ -26,7 +26,7 @@ import subprocess
 import tempfile
 import time
 
-from faster_whisper_backend.core.languages import iso639_2t
+from faster_whisper_backend.core.languages import iso639_2t, language_label
 from faster_whisper_backend.core.store_common import log_safe
 
 logger = logging.getLogger("whisper-api")
@@ -97,17 +97,6 @@ class FfmpegCaps:
 # MP4 so the panel can say why the choice is greyed out.
 _MP4_VIDEO = frozenset({"h264", "hevc", "mpeg4"})
 _MP4_AUDIO = frozenset({"aac", "mp3", "ac3", "eac3", "alac"})
-
-def lang_name(code: "str | None") -> str:
-    """English name for the track title ("German", "Portuguese (BR)")."""
-    from faster_whisper_backend.audio import translation as _tr
-    raw = (code or "").strip()
-    if not raw:
-        return "Unknown"
-    base, _, region = raw.partition("-")
-    name = _tr._lang_name(base) or base
-    return f"{name} ({region.upper()})" if region else name
-
 
 def mp4_compatibility(video_codec: "str | None",
                       audio_codec: "str | None") -> "tuple[bool, str | None]":
@@ -231,7 +220,7 @@ def build_package_argv(src: str, srt_paths: "list[str]", tracks: "list[SubtitleT
         argv += [f"-disposition:s:{i}", "+".join(flags) if flags else "0"]
     if audio_lang:
         argv += ["-metadata:s:a", f"language={iso639_2t(audio_lang)}",
-                 "-metadata:s:a", f"title={audio_label or lang_name(audio_lang)}"]
+                 "-metadata:s:a", f"title={audio_label or language_label(audio_lang)}"]
     argv += ["-max_muxing_queue_size", "4096"]
     if container == "mp4":
         argv += ["-movflags", "+faststart", "-f", "mp4", out_path]

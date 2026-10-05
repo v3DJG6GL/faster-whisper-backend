@@ -130,8 +130,8 @@ def test_card_codes_map_iso639_3_and_drop_unnamed():
 
 def _build(family, text, *, source="de", target="en", context="", glossary=""):
     fam = translation._FAMILIES[family]
-    return fam.build(text, source, translation._lang_name(source), target,
-                     translation._lang_name(target), context, glossary)
+    return fam.build(text, source, languages.language_name(source), target,
+                     languages.language_name(target), context, glossary)
 
 
 def test_milmmt_raw_prompt_uses_english_names():
@@ -215,10 +215,6 @@ def test_custom_template_renders_all_slots(monkeypatch):
     # Missing optional slots render as "" (never KeyError / literal braces).
     content = _build("custom", "Hallo", context="", glossary="")[0]["content"]
     assert content == "S=German T=English C= G=\nHallo"
-
-
-def test_lang_name_is_the_shared_table():
-    assert translation._lang_name is languages.language_name
 
 
 # ---------------------------------------------------------------------------
