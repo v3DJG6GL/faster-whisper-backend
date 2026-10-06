@@ -15,3 +15,5 @@ fc47ca7d73db748ae4ade5622178c350b582fe87
 e42f49a1f3a1b5203f9bc558869f59f197c0ac87
 # url/ -> media/, package.py -> subtitle_mux.py (rename only).
 05b9bbe49424ef3d854556449585cb6ce54f5bcd
+# api-keys/hub/reports/merge/vad_trim/recent_feed moves (rename only).
+984a38aabd3c96a4af4eafb3ad6fefcb32c0b0e9
