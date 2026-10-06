@@ -123,9 +123,13 @@ def migrate_rule_slugs(raw: dict[str, Any]) -> dict[str, Any]:
     list. A stored rule already using the new name wins over the old one."""
     rules = raw.get("PIPELINE_RULES")
     if isinstance(rules, list):
-        names = {r.get("name") for r in rules if isinstance(r, dict)}
+        # str only: a hand-edited non-string name must reach the schema's
+        # error, not crash the dict lookups here (load_overrides never raises).
+        names = {r.get("name") for r in rules
+                 if isinstance(r, dict) and isinstance(r.get("name"), str)}
         for r in rules:
-            if isinstance(r, dict) and r.get("name") in RENAMED_RULES:
+            if (isinstance(r, dict) and isinstance(r.get("name"), str)
+                    and r["name"] in RENAMED_RULES):
                 new = RENAMED_RULES[r["name"]]
                 if new not in names:
                     r["name"] = new
@@ -158,9 +162,9 @@ def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
         if not isinstance(entries, list):
             continue
         for e in entries:
-            if not isinstance(e, dict):
+            if not isinstance(e, dict) or not isinstance(e.get("label"), str):
                 continue
-            up = UPGRADED_RULE_ENTRIES.get(e.get("label"))  # type: ignore[arg-type]
+            up = UPGRADED_RULE_ENTRIES.get(e["label"])
             if up is None:
                 continue
             (old_pat, old_rep), (new_pat, new_rep) = up

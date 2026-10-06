@@ -755,6 +755,29 @@ def test_load_overrides_non_object_returns_empty(tmp_path):
     assert cs.load_overrides(str(p)) == {}
 
 
+@pytest.mark.parametrize("rules", [
+    [{"name": ["x"], "type": "regex-list", "entries": []}],
+    [{"name": "r", "type": "regex-list",
+      "entries": [{"label": ["x"], "pattern": "a", "replacement": "b"}]}],
+])
+def test_load_overrides_hand_edited_unhashable_rule_fields_never_raise(tmp_path, rules):
+    # The rename/upgrade migrations run before validation; a list where a
+    # string belongs must end in the schema's rejection, not a TypeError.
+    p = tmp_path / "h.json"
+    p.write_text(json.dumps({"PIPELINE_RULES": rules}), encoding="utf-8")
+    assert cs.load_overrides(str(p)) == {}
+
+
+def test_override_models_apply_the_global_value_rules():
+    for model in (settings_schema.ModelOverride, settings_schema.OverrideProfile):
+        for bad in ({"TEMPERATURE": "banana"}, {"SUPPRESS_TOKENS": "x,y"},
+                    {"SEGMENT_HEAD_ECHO_MIN_WORDS": 1},
+                    {"SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 1}):
+            with pytest.raises(ValidationError):
+                model.model_validate(bad)
+        model.model_validate({"TEMPERATURE": "0,0.2", "SEGMENT_HEAD_ECHO_MIN_WORDS": 2})
+
+
 def test_load_overrides_unknown_key_ignored_whole_file(tmp_path):
     p = tmp_path / "u.json"
     p.write_text(json.dumps({"BEAM_SIZE": 5, "BOGUS": 1}), encoding="utf-8")

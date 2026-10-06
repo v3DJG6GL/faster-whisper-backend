@@ -2090,6 +2090,21 @@ try:
                 for _f in (_named or _left):
                     _revert_env_field(_f, _reason)
 
+        # What a before-normalizer made of a surviving env string is the
+        # runtime value (WHISPER_CONSOLE_LOG_LEVEL=WARNING -> "warning"), not
+        # the raw spelling the pass above only checked.
+        _left = [_f for _f in sorted(_changed) if _f not in _ENV_REJECTED]
+        if _left:
+            try:
+                _norm = _AdminConfig.model_validate(_effective_env_dict(),
+                                                    context=_env_slug_ctx())
+                for _f in _left:
+                    _v = getattr(_norm, _f, None)
+                    if isinstance(_v, str) and isinstance(globals()[_f], str):
+                        globals()[_f] = _v
+            except Exception:  # noqa: BLE001 — the passes above already reported
+                pass
+
     # MODEL_OVERRIDES is assembled key-by-key from the
     # WHISPER_MODEL_OVERRIDE__<id>__<FIELD> convention, which bypasses
     # ModelOverride's `extra: forbid` and its per-field bounds entirely — so an

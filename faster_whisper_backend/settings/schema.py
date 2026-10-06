@@ -490,11 +490,67 @@ _VIRTUAL_OVERRIDE_FIELDS: dict[str, dict[str, Any]] = {
 # its ModelOverride / OverrideProfile forward references.
 
 
+# Value rules shared by AdminConfig and the per-model / per-profile override
+# models (_CallTimeOverrideBase): create_model copies annotations, not
+# validators, so each rule lives here once and both sides call it.
+def _guard_words_not_one(v: int | None) -> int | None:
+    """SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS / SEGMENT_HEAD_ECHO_MIN_WORDS: 1 is
+    refused rather than shown as a rule that is on but off — a single
+    zero-length last word is always kept (a real last word can come out
+    zero-length), and one repeated word ("und", "die") starts sentences all
+    the time, so both guards treat 1 as off."""
+    if v == 1:
+        raise ValueError("must be 0 (off) or at least 2")
+    return v
+
+
+def _temperature_csv(v: str | None) -> str | None:
+    """temperature is stored as a comma-separated string (e.g. '0,0.2,0.4').
+    Empty / None = library default. Validate parseable floats, ascending
+    order is NOT enforced (faster-whisper accepts any order)."""
+    if v is None or not v.strip():
+        return v
+    for token in v.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            f = float(token)
+        except ValueError:
+            raise ValueError(
+                f"temperature must be comma-separated floats; got '{token}'"
+            )
+        if not (0.0 <= f <= 1.0):
+            raise ValueError(
+                f"temperature values must be in [0.0, 1.0]; got {f}"
+            )
+    return v
+
+
+def _suppress_tokens_csv(v: str | None) -> str | None:
+    """suppress_tokens is stored as a comma-separated string of ints.
+    '-1' is the library sentinel for default suppression set; '' = no
+    suppression."""
+    if v is None or not v.strip():
+        return v
+    for token in v.split(","):
+        token = token.strip()
+        if not token:
+            continue
+        try:
+            int(token)
+        except ValueError:
+            raise ValueError(
+                f"suppress_tokens must be comma-separated ints; got '{token}'"
+            )
+    return v
+
+
 class AdminConfig(BaseModel):
     """Pydantic schema for config.local.json. Every field is Optional; absent
     means "do not override". Bounds and patterns enforce resource caps and
     cheap input hygiene at validation time. Per-field user-facing descriptions
-    live in FIELD_DESCRIPTIONS above (single source of truth — change there,
+    live in FIELD_DESCRIPTIONS (settings/descriptions.py; single source of truth — change there,
     every consumer reflects it on next reload)."""
 
     # `protected_namespaces=()` disables Pydantic's "model_*" reserved-prefix
@@ -1518,25 +1574,10 @@ class AdminConfig(BaseModel):
             )
         return self
 
-    @field_validator("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS")
+    @field_validator("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", "SEGMENT_HEAD_ECHO_MIN_WORDS")
     @classmethod
-    def _zero_tail_not_one(cls, v: int | None) -> int | None:
-        # A single zero-length last word is always kept (a real last word can
-        # come out zero-length), so 1 could never fire; refuse it rather than
-        # show a rule as on that is off.
-        if v == 1:
-            raise ValueError("must be 0 (off) or at least 2")
-        return v
-
-    @field_validator("SEGMENT_HEAD_ECHO_MIN_WORDS")
-    @classmethod
-    def _head_echo_not_one(cls, v: int | None) -> int | None:
-        # One repeated word ("und", "die") starts sentences all the time, so the
-        # guard treats 1 as off; refuse it rather than show a rule as on that
-        # is off.
-        if v == 1:
-            raise ValueError("must be 0 (off) or at least 2")
-        return v
+    def _guard_words_not_one(cls, v: int | None) -> int | None:
+        return _guard_words_not_one(v)
 
     @field_validator("LOG_FILE")
     @classmethod
@@ -1841,26 +1882,7 @@ class AdminConfig(BaseModel):
     @field_validator("TEMPERATURE")
     @classmethod
     def _validate_temperature(cls, v: str | None) -> str | None:
-        """temperature is stored as a comma-separated string (e.g. '0,0.2,0.4').
-        Empty / None = library default. Validate parseable floats, ascending
-        order is NOT enforced (faster-whisper accepts any order)."""
-        if v is None or not v.strip():
-            return v
-        for token in v.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            try:
-                f = float(token)
-            except ValueError:
-                raise ValueError(
-                    f"temperature must be comma-separated floats; got '{token}'"
-                )
-            if not (0.0 <= f <= 1.0):
-                raise ValueError(
-                    f"temperature values must be in [0.0, 1.0]; got {f}"
-                )
-        return v
+        return _temperature_csv(v)
 
     @field_validator("TRANSLATION_PROMPT_TEMPLATE")
     @classmethod
@@ -1883,22 +1905,7 @@ class AdminConfig(BaseModel):
     @field_validator("SUPPRESS_TOKENS")
     @classmethod
     def _validate_suppress_tokens(cls, v: str | None) -> str | None:
-        """suppress_tokens is stored as a comma-separated string of ints.
-        '-1' is the library sentinel for default suppression set; '' = no
-        suppression."""
-        if v is None or not v.strip():
-            return v
-        for token in v.split(","):
-            token = token.strip()
-            if not token:
-                continue
-            try:
-                int(token)
-            except ValueError:
-                raise ValueError(
-                    f"suppress_tokens must be comma-separated ints; got '{token}'"
-                )
-        return v
+        return _suppress_tokens_csv(v)
 
     @field_validator("ADMIN_WEBUI_ALLOWED_HOSTS", "USER_WEBUI_ALLOWED_HOSTS")
     @classmethod
@@ -2214,6 +2221,22 @@ class _CallTimeOverrideBase(BaseModel):
     """Config + validator carrier for the generated _CallTimeOverrideMixin
     (create_model can't attach validators directly)."""
     model_config = {"extra": "forbid", "protected_namespaces": ()}
+
+    @field_validator("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", "SEGMENT_HEAD_ECHO_MIN_WORDS",
+                     check_fields=False)
+    @classmethod
+    def _guard_words_not_one(cls, v: int | None) -> int | None:
+        return _guard_words_not_one(v)
+
+    @field_validator("TEMPERATURE", check_fields=False)
+    @classmethod
+    def _validate_temperature(cls, v: str | None) -> str | None:
+        return _temperature_csv(v)
+
+    @field_validator("SUPPRESS_TOKENS", check_fields=False)
+    @classmethod
+    def _validate_suppress_tokens(cls, v: str | None) -> str | None:
+        return _suppress_tokens_csv(v)
 
     @model_validator(mode="after")
     def _no_overlap_include_exclude(self) -> "_CallTimeOverrideBase":

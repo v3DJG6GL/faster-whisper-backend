@@ -140,6 +140,18 @@ def test_per_model_env_scanner_end_to_end(monkeypatch):
         importlib.reload(config)  # restore from the clean environment
 
 
+def test_env_value_is_stored_as_the_schema_normalizes_it(monkeypatch):
+    # The schema accepts Python's own spelling; the runtime value (and so the
+    # /settings page) is the lowercase literal, not the raw env text.
+    monkeypatch.setenv("WHISPER_CONSOLE_LOG_LEVEL", "WARNING")
+    try:
+        importlib.reload(config)
+        assert config.CONSOLE_LOG_LEVEL == "warning"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(config)
+
+
 # ---------------------------------------------------------------------------
 # _load_defaults (stdlib loader: config.json is the single source of factory
 # defaults; config.py reads every value from it at import)
