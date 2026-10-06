@@ -530,8 +530,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "download. Rate-limited by URL_SUBTITLES_RATE_PER_MIN.",
     "URL_LANGUAGE_CHECK_ENABLED":
         "Let clients ask which language a link speaks before running it: "
-        "the server downloads the audio (kept for the run that follows) and "
-        "Whisper listens to three 20 s pieces. The costliest URL route — it "
+        "the server downloads the audio (kept for the run that follows) — "
+        "or, for a segmented HLS/DASH stream, only the segments it samples "
+        "(nothing kept) — and Whisper listens to three 20 s pieces. The costliest URL route — it "
         "takes a download slot and a GPU slot; rate-limited by "
         "URL_LANGUAGE_RATE_PER_MIN.",
     "URL_DOWNLOAD_TIMEOUT_S":
@@ -769,8 +770,9 @@ FIELD_DESCRIPTIONS: dict[str, str] = {
         "8 tracks from the site. 0 = unlimited.",
     "URL_LANGUAGE_RATE_PER_MIN":
         "Ceiling on link language checks (POST /v1/audio/url-language) per "
-        "identity per 60 seconds. Each downloads the whole audio and runs "
-        "three short language detections on the GPU. 0 = unlimited.",
+        "identity per 60 seconds. Each downloads the whole audio (a "
+        "segmented stream: just the sampled segments) and runs three short "
+        "language detections on the GPU. 0 = unlimited.",
     "MEDIA_UPLOAD_RATE_PER_MIN":
         "Ceiling on video uploads for packaging (POST /v1/audio/media) per "
         "identity per 60 seconds — each can be MEDIA_MAX_BYTES. 0 = unlimited.",
