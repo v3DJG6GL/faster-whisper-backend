@@ -212,3 +212,39 @@ def test_run_training_pass_gets_the_language_too(
     row = cs.get_capture("reapply00003")
     assert row["final"] == "HELLO [final]"
     assert row["text_for_training"] == "HELLO [training]"
+
+
+def test_run_scopes_a_translate_capture_by_its_english_text(
+        captures_store_db, monkeypatch):
+    """A task=translate capture stores the SPOKEN language ("de") but English
+    text; the live run scoped its rules by "en", so the reapply must too —
+    a de-scoped rule must not rewrite final or text_for_training. The
+    transcribe twin with the same language still gets the de scope."""
+    from faster_whisper_backend.settings import config as cfg
+
+    cs = captures_store_db
+    monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", ["some-rule"],
+                        raising=False)
+    monkeypatch.setattr(effective_config, "build_ident", lambda who, m: {})
+    langs: list = []
+
+    def _postprocess_text(text, **kw):
+        langs.append(kw.get("language"))
+        # Stand-in for a de-only rule (de-dictation-map lowercasing).
+        return text.lower() if kw.get("language") == "de" else text
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _postprocess_text)
+    conn = cs._require_conn()
+    raw = "It is over. Was it good?"
+    _insert(conn, "reapplytr001", language="de", raw=raw, final=raw)
+    conn.execute("UPDATE captures SET task = 'translate', text_for_training = ?"
+                 " WHERE id = 'reapplytr001'", (raw,))
+    _insert(conn, "reapplytx001", language="de", raw=raw, final=raw)
+    conn.execute("UPDATE captures SET task = 'transcribe' WHERE id = 'reapplytx001'")
+
+    captures_reapply._run()
+
+    row = cs.get_capture("reapplytr001")
+    assert row["final"] == raw and row["text_for_training"] == raw
+    assert cs.get_capture("reapplytx001")["final"] == raw.lower()
+    assert sorted(langs) == ["de", "de", "en", "en"]

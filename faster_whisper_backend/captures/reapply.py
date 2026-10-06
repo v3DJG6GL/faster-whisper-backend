@@ -97,7 +97,7 @@ def _run() -> None:
         # short text columns (no words / segments), so memory
         # stays bounded even at tens of thousands of rows.
         rows = conn.execute(
-            "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id, language"
+            "SELECT id, raw_text AS raw, final_text AS final, text_for_training, model, sample_id, user_id, language, task"
             " FROM captures ORDER BY created_ts DESC"
         ).fetchall()
         # Reprocess re-runs ONLY the pipeline (no model re-decode), so it
@@ -118,10 +118,13 @@ def _run() -> None:
             raw_text = r["raw"] or ""
             patch: dict[str, str] = {}
             ident = _ident_for(r["user_id"], r["model"])
+            # Scope by the TEXT language ("en" for task=translate), as the
+            # live run did — see captures_store.text_language.
+            text_lang = captures_store.text_language(r)
             try:
                 new_final = pl_engine._postprocess_text(
                     raw_text, model_name=r["model"], ident=ident,
-                    language=r["language"],
+                    language=text_lang,
                 )
             except Exception as e:
                 logger.warning(
@@ -142,7 +145,7 @@ def _run() -> None:
                     new_training = pl_engine._postprocess_text(
                         raw_text, model_name=r["model"],
                         extra_excludes=captures_excludes, ident=ident,
-                        language=r["language"],
+                        language=text_lang,
                     )
                 except Exception as e:
                     logger.warning(

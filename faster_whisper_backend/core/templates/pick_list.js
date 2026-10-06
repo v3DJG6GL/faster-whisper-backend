@@ -64,6 +64,9 @@
       btn.setAttribute('aria-expanded', _open === inst ? 'true' : 'false');
     }
     function footer() { fs.textContent = picked.length + ' of ' + rows.length + ' picked'; }
+    // The layer was placed (flip-up test, bottom clamp) at its one-line
+    // "loading…" height; every redraw changes that height, so re-place it.
+    function replace() { if (ctl && _open === inst) ctl.place(); }
     function draw(needle) {
       var max = 1;
       rows.forEach(function(r) { max = Math.max(max, Number(r.value) || 0); });
@@ -82,7 +85,7 @@
               : '')
           + '</label>';
       }).join('') : '<div class="pick-note">nothing matches</div>';
-      footer();
+      footer(); replace();
     }
     function open() {
       if (_open === inst) { close(); return; }
@@ -102,12 +105,14 @@
           if (!current()) return;
           rows = Array.isArray(rs) ? rs : [];
           rows.forEach(function(r) { labels[r.id] = r.label; });
-          draw(''); label();
+          // Honour whatever was typed while the rows loaded.
+          draw(q.value.trim().toLowerCase()); label();
           try { q.focus(); } catch (_) {}
         })
         .catch(function() {
           if (!current()) return;
           list.innerHTML = '<div class="pick-note">' + esc(opts.errorNote || 'not available') + '</div>';
+          replace();
         });
     }
     function close() {

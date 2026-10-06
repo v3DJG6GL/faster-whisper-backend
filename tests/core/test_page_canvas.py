@@ -105,6 +105,22 @@ def test_shared_popover_placer_is_loaded_on_pages_with_pick_lists(client):
         assert "boundary: function() { return btn.closest('.subbar')" in t, path
 
 
+def test_pickers_re_place_their_layer_after_a_redraw():
+    """The layer is placed at show() time; the pick list then grows from its
+    one-line "loading…" note and the language dropdown changes height on
+    every search keystroke, so each redraw must re-run the placement."""
+    pick = web_common.PICK_LIST_JS
+    assert "function replace() { if (ctl && _open === inst) ctl.place(); }" in pick
+    draw = pick[pick.index("function draw(needle)"):pick.index("function open()")]
+    assert "footer(); replace();" in draw
+    # Text typed while the rows loaded is honoured by the first draw.
+    assert "draw(q.value.trim().toLowerCase()); label();" in pick
+    assert "draw(''); label();" not in pick
+    lang = web_common.LANG_PICKER_JS
+    body = lang[lang.index("function _renderDropdown(query)"):]
+    assert "if (popCtl && popCtl.isOpen()) popCtl.place();" in body
+
+
 def test_pick_pop_and_activity_pop_are_no_longer_absolute():
     css = web_common.NAV_CSS
     pick = re.search(r"\.pick-pop \{[^}]*\}", css).group(0)

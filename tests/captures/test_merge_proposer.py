@@ -386,6 +386,9 @@ def test_propose_never_mixes_transcribe_and_translate(captures_store_db,
                      text="hello world", task="translate")
     proposals, _ = P.propose_merges(
         user_id_filter=None, is_admin=True, caller_user_id="admin")
+    # Both still proposed (as solos) — an empty result must not pass vacuously.
+    assert sorted(i for p in proposals for i in p["member_ids"]) == [
+        "captrde00000001", "captrde00000002"]
     for p in proposals:
         assert len(p["member_ids"]) == 1
 

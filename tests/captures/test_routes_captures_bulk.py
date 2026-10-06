@@ -209,6 +209,33 @@ def test_bulk_status_updates_and_reports_prev(client, make_user_key):
     assert captures_store.get_capture("a1a1a1a1a1a1")["reviewed_ts"] is None
 
 
+def test_bulk_status_keeps_reviewed_ts_of_rows_already_at_the_target(
+        client, make_user_key):
+    """A mixed selection marked ready must not re-stamp a row that has been
+    ready for months — stats() would count it as "ready this week"."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    _root, raw_root = make_user_key("root", is_admin=True)
+    uid_a, _ = make_user_key("alice", pages={"captures": "own"})
+    conn = captures_store._require_conn()
+    old_ts = time.time() - 90 * 86400
+    _row(conn, "a1a1a1a1a1a1", user_id=uid_a)
+    _row(conn, "a2a2a2a2a2a2", user_id=uid_a, status="ready",
+         reviewed_ts=old_ts)
+
+    r = client.patch("/captures/api/bulk", headers=bearer(raw_root),
+                     json={"ids": ["a1a1a1a1a1a1", "a2a2a2a2a2a2"],
+                           "status": "ready"})
+    assert r.status_code == 200
+    assert r.json()["updated"] == [
+        {"id": "a1a1a1a1a1a1", "prev_status": "new"},
+        {"id": "a2a2a2a2a2a2", "prev_status": "ready"}]
+    assert captures_store.get_capture("a2a2a2a2a2a2")["reviewed_ts"] == old_ts
+    assert captures_store.get_capture("a1a1a1a1a1a1")["reviewed_ts"] > old_ts
+    st = client.get("/captures/api/stats", headers=bearer(raw_root)).json()
+    assert st["ready"]["n"] == 2 and st["ready"]["week_n"] == 1
+
+
 def test_bulk_status_skips_locked_member_for_nonadmin_only(client, make_user_key):
     from faster_whisper_backend.captures import samples_store as gs
     from faster_whisper_backend.captures import store as captures_store

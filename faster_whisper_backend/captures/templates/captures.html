@@ -1632,16 +1632,25 @@
       if (s !== 'all' && r.status !== s) return false;
       if (m !== 'all' && r.model !== m) return false;
       if (!q) return true;
-      // id + request_id: the log block names a capture by those
-      // ("captured=b7dd6e6c  req=10578097"), so pasting either finds it.
       var hay = (
         (r.raw || '') + ' ' + (r.final || '') + ' ' +
         (r.text_for_training || '') + ' ' +
-        (r.corrected_text || '') + ' ' + (r.admin_notes || '') + ' ' +
-        (r.id || '') + ' ' + (r.request_id || '')
+        (r.corrected_text || '') + ' ' + (r.admin_notes || '')
       ).toLowerCase();
-      return hay.indexOf(q) !== -1;
+      return hay.indexOf(q) !== -1 || _idPrefix(q, [r.id, r.request_id]);
     });
+  }
+
+  // id + request_id: the log block names a capture by their prefix
+  // ("captured=b7dd6e6c  req=10578097"), so pasting either finds it. A
+  // PREFIX match, kept out of the text haystack: both are 32-hex uuids, so a
+  // substring match would let any hex-only word ("de", "add", "12") hit
+  // ~1 in 5 random rows — and select-all + Dismiss would then hit them too.
+  function _idPrefix(q, ids) {
+    for (var i = 0; i < ids.length; i++) {
+      if (ids[i] && String(ids[i]).toLowerCase().indexOf(q) === 0) return true;
+    }
+    return false;
   }
 
   // Same model + search filters for merged groups. A group matches the model
@@ -1655,11 +1664,9 @@
     if (_filtSpeakers.length && _filtSpeakers.indexOf(g.user_id) === -1) return false;
     if (m !== 'all' && (g.models || []).indexOf(m) === -1) return false;
     if (!q) return true;
-    var hay = (
-      (g.transcript || '') + ' ' + (g.admin_notes || '') + ' ' + (g.id || '') + ' ' +
-      (g.member_ids || []).join(' ') + ' ' + (g.member_request_ids || []).join(' ')
-    ).toLowerCase();
-    return hay.indexOf(q) !== -1;
+    var hay = ((g.transcript || '') + ' ' + (g.admin_notes || '')).toLowerCase();
+    return hay.indexOf(q) !== -1 ||
+      _idPrefix(q, [g.id].concat(g.member_ids || [], g.member_request_ids || []));
   }
 
   function rebuildModelFilter() {

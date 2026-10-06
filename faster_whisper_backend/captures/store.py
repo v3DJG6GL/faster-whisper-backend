@@ -266,6 +266,24 @@ def _row_to_dict(row: sqlite3.Row, include_words: bool = True) -> dict[str, Any]
     return d
 
 
+def text_language(row: Any) -> "str | None":
+    """Language of a capture's TEXT, which scopes every pipeline re-run.
+    `language` stores the SPOKEN language (the training manifest needs it),
+    but a task=translate capture holds English text — the live run scoped its
+    rules by "en" (main.transcribe's _text_lang), so a re-run must too, or a
+    German translate capture gets de-* rules applied to English text."""
+    def _col(k: str) -> Any:
+        # dict (get_capture) or sqlite3.Row (bulk projections); a projection
+        # without the column reads as None.
+        try:
+            return row[k]
+        except (KeyError, IndexError):
+            return None
+    if _col("task") == "translate":
+        return "en"
+    return _col("language")
+
+
 # ---------------------------------------------------------------------
 # Create
 # ---------------------------------------------------------------------
@@ -1029,17 +1047,21 @@ def bulk_update_status(ids: list[str], new_status: str) -> list[dict[str, Any]]:
         if not prev:
             return []
         found = [r["id"] for r in prev]
+        # `status != ?` leaves a row already at the target untouched: a
+        # re-stamped reviewed_ts would count a months-old ready row as
+        # "ready this week" in stats(). It is still reported (prev_status ==
+        # new_status) so the caller's accounting and undo stay the same.
         if new_status == "new":
             conn.execute(
                 f"UPDATE captures SET status = ?, reviewed_ts = NULL"
-                f" WHERE id IN ({','.join('?' * len(found))})",
-                [new_status, *found],
+                f" WHERE id IN ({','.join('?' * len(found))}) AND status != ?",
+                [new_status, *found, new_status],
             )
         else:
             conn.execute(
                 f"UPDATE captures SET status = ?, reviewed_ts = ?"
-                f" WHERE id IN ({','.join('?' * len(found))})",
-                [new_status, now, *found],
+                f" WHERE id IN ({','.join('?' * len(found))}) AND status != ?",
+                [new_status, now, *found, new_status],
             )
     owners = {r["user_id"] for r in prev}
     try:

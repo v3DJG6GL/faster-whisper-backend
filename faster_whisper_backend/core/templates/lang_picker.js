@@ -160,6 +160,10 @@
           dropContent.appendChild(opt);
         });
       }
+      // The layer was placed (flip-up, clamp) at its old height; a search
+      // keystroke or a toggle changes it — and a toggle can re-wrap the pills
+      // and move the "+ add" anchor — so re-place it while open.
+      if (popCtl && popCtl.isOpen()) popCtl.place();
     }
 
     _renderPills();

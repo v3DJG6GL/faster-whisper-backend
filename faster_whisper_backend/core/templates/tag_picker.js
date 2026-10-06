@@ -4,8 +4,10 @@
   function _norm(s) { return String(s == null ? '' : s).trim().toLowerCase(); }
 
   // The top-layer popover positioner (_anchorPopover) is shared from
-  // POPOVER_JS (every page with a header loads it before this block);
-  // the tag suggest list and the colour palette resolve it lazily.
+  // POPOVER_JS, which ships inside the SCALE_PICKER_JS block. It is looked up
+  // when a picker is BUILT, not when this block loads — but unguarded, so a
+  // page embedding this block must also embed SCALE_PICKER_JS and call
+  // _renderTagPicker only after it ran (settings / api-keys do both).
   var _POPOVER_OK = typeof HTMLElement !== 'undefined'
     && typeof HTMLElement.prototype.showPopover === 'function';
 

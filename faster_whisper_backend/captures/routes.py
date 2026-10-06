@@ -32,6 +32,7 @@ import logging
 import os
 import tarfile
 import tempfile
+import threading
 import time
 from datetime import datetime
 from typing import Any, Literal
@@ -87,6 +88,15 @@ def _proposer_pool() -> "concurrent.futures.ThreadPoolExecutor":
         _PROPOSER_POOL = concurrent.futures.ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="captures-proposer")
     return _PROPOSER_POOL
+
+
+# Serialises every read-merge-write of member `corrections`: the single
+# capture PATCH, the sample PATCH fan-out and preview-save-chips all run in
+# worker threads now, so without it one save can land between another's read
+# and its writes, and the three-way merge would run against a stale `current`
+# (a lost chip edit). A threading.Lock, taken INSIDE the to_thread callables,
+# so a waiter parks a worker thread, never the event loop.
+_corrections_write_lock = threading.Lock()
 
 
 router = APIRouter(
@@ -828,39 +838,55 @@ async def patch_capture_api(
     """Edit a single capture (corrections, status, notes). `scope=own`
     users can edit only their own; `scope=all` users (incl. admins)
     can edit any capture. 404 (not 403) on cross-user access."""
-    row = captures_store.get_capture(cid)
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
-    user["permissions"].assert_can_read_row(
-        row, "captures", user.get("user_id") or "",
-        detail="capture not found",
-    )
-    _audit_cross_user_read(user, row, "capture-patch", cid)
-    _assert_member_sample_not_locked(row, user)
-    patch: dict[str, Any] = {}
-    if payload.status is not None:
-        patch["status"] = payload.status
-    if payload.corrected_text is not None:
-        patch["corrected_text"] = payload.corrected_text
-    if payload.corrections is not None:
-        edited = [c.model_dump() for c in payload.corrections]
-        if payload.baseline_corrections is not None:
-            # Three-way merge: apply the user's deltas to the current
-            # DB state, not just replace. Protects against concurrent
-            # cross-tab admin saves (and the same member edited from its
-            # group view).
-            current = row.get("corrections") or []
-            baseline = [c.model_dump() for c in payload.baseline_corrections]
-            edited = text_corrections.three_way_merge_corrections(
-                baseline, edited, current,
-            )
-        patch["corrections"] = edited
-    if payload.admin_notes is not None:
-        patch["admin_notes"] = payload.admin_notes
-    try:
-        updated = captures_store.update_capture(cid, patch)
-    except ValueError as e:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    # Off the loop, like reprocess_capture_api: update_capture takes
+    # captures_store._lock, which clear_all holds across DELETE + VACUUM and
+    # other workers hold too — acquiring it inline would park the event loop
+    # (every request and WebSocket) for that span. The HTTPExceptions raised
+    # inside propagate out of to_thread unchanged.
+    def _run() -> dict[str, Any] | None:
+        if payload.corrections is None:
+            return _patch()
+        # Read-merge-write of the chips, serialised against the sample-level
+        # fan-out (see _corrections_write_lock); the row is read under it.
+        with _corrections_write_lock:
+            return _patch()
+
+    def _patch() -> dict[str, Any] | None:
+        row = captures_store.get_capture(cid)
+        if row is None:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
+        user["permissions"].assert_can_read_row(
+            row, "captures", user.get("user_id") or "",
+            detail="capture not found",
+        )
+        _audit_cross_user_read(user, row, "capture-patch", cid)
+        _assert_member_sample_not_locked(row, user)
+        patch: dict[str, Any] = {}
+        if payload.status is not None:
+            patch["status"] = payload.status
+        if payload.corrected_text is not None:
+            patch["corrected_text"] = payload.corrected_text
+        if payload.corrections is not None:
+            edited = [c.model_dump() for c in payload.corrections]
+            if payload.baseline_corrections is not None:
+                # Three-way merge: apply the user's deltas to the current
+                # DB state, not just replace. Protects against concurrent
+                # cross-tab admin saves (and the same member edited from its
+                # group view).
+                current = row.get("corrections") or []
+                baseline = [c.model_dump() for c in payload.baseline_corrections]
+                edited = text_corrections.three_way_merge_corrections(
+                    baseline, edited, current,
+                )
+            patch["corrections"] = edited
+        if payload.admin_notes is not None:
+            patch["admin_notes"] = payload.admin_notes
+        try:
+            return captures_store.update_capture(cid, patch)
+        except ValueError as e:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+
+    updated = await asyncio.to_thread(_run)
     if updated is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "capture not found")
     return JSONResponse({"ok": True, "capture": updated})
@@ -959,7 +985,7 @@ async def reprocess_capture_api(
         # rules). Pipeline-only: no key / no per-request layer on reprocess.
         ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
         try:
-            new_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
+            new_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=captures_store.text_language(row))
         except Exception as e:
             logger.error("[captures] reprocess pipeline failed on `final`: %s", e)
             raise HTTPException(
@@ -976,7 +1002,7 @@ async def reprocess_capture_api(
                     model_name=row.get("model"),
                     extra_excludes=captures_excludes,
                     ident=ident,
-                    language=row.get("language"),
+                    language=captures_store.text_language(row),
                 )
             except Exception as e:
                 logger.error(
@@ -1605,14 +1631,27 @@ async def preview_save_chips_api(
 
     saved: dict[str, int] = {}
     members_corrections: dict[str, list[dict[str, Any]]] = {}
-    for cap in captures:
-        mid = cap["id"]
-        member_chips = per_member.get(mid, [])
-        updated = captures_store.update_capture(mid, {"corrections": member_chips})
-        canonical = (updated or {}).get("corrections") or []
-        members_corrections[mid] = canonical
-        saved[mid] = len(canonical)
 
+    # Off the loop: up to 30 update_capture calls, each taking
+    # captures_store._lock (see patch_capture_api). Under the corrections
+    # lock, and re-checked: a concurrent create_sample may have grouped a
+    # member since the validation above — a sample member's chips are the
+    # sample's to write (and may be locked), so it is skipped.
+    def _save() -> None:
+        with _corrections_write_lock:
+            light = captures_store.get_captures_light([c["id"] for c in captures])
+            for cap in captures:
+                mid = cap["id"]
+                now_row = light.get(mid)
+                if now_row is None or now_row.get("sample_id"):
+                    continue
+                member_chips = per_member.get(mid, [])
+                updated = captures_store.update_capture(mid, {"corrections": member_chips})
+                canonical = (updated or {}).get("corrections") or []
+                members_corrections[mid] = canonical
+                saved[mid] = len(canonical)
+
+    await asyncio.to_thread(_save)
     captures_merge_proposer.invalidate(owner_user_id)
     return JSONResponse({
         "saved": saved,
@@ -1919,7 +1958,7 @@ def _refresh_final_if_stale(
         # per-identity reprocess and producing wrong text for owners with
         # per-identity pipeline rules.
         ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
-        fresh_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
+        fresh_final = pl_engine._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=captures_store.text_language(row))
     except Exception:
         return
     patch: dict[str, Any] = {}
@@ -1939,7 +1978,7 @@ def _refresh_final_if_stale(
                 model_name=row.get("model"),
                 extra_excludes=captures_excludes,
                 ident=ident,
-                language=row.get("language"),
+                language=captures_store.text_language(row),
             )
         except Exception:
             fresh_training = None
@@ -2060,7 +2099,8 @@ def _align_member_words(
         if ckey not in ident_cache:
             ident_cache[ckey] = effective_config.build_ident({"user_id": uid}, mdl)
         ident = ident_cache[ckey]
-    _lang = m.get("language")
+    # Pipeline scope = the TEXT language ("en" for task=translate).
+    _lang = captures_store.text_language(m)
     ws = capture_samples._align_words_to_final(words, final, model_name=m.get("model"), ident=ident, language=_lang)
     if training != final:
         wt = capture_samples._align_words_to_final(words, training, model_name=m.get("model"), ident=ident, language=_lang)
@@ -2288,7 +2328,20 @@ async def patch_sample_api(
 
         return capture_samples_store.update_sample(sid, patch)
 
-    updated = await asyncio.to_thread(_apply)
+    def _apply_serialised() -> dict[str, Any] | None:
+        if payload.corrections is None:
+            return _apply()
+        # The member read, three-way merge and per-member writes must not
+        # interleave with a member's own PATCH or another group save.
+        with _corrections_write_lock:
+            return _apply()
+
+    updated = await asyncio.to_thread(_apply_serialised)
+    if updated is None:
+        # Dissolved while we waited (dissolve / member delete run in threads
+        # too): update_sample matched no row. A 404, not a 500 from
+        # _enrich_sample(None).
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "sample not found")
     # Off the loop — see get_sample_api: the enrich pass is a quadratic LCS
     # per member.
     return JSONResponse(

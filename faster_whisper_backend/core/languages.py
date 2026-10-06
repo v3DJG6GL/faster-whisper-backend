@@ -112,11 +112,13 @@ _ISO639_1_TO_2T: "dict[str, str]" = {
 
 def iso639_2t(code: "str | None") -> str:
     """The 639-2/T tag for a client language code ("pt-BR" → "por"); the
-    region is dropped (containers store 639-2 only), a 3-letter code the
-    table lacks already is one ("yue", "haw"), and an unknown code becomes
-    "und" rather than an invalid tag."""
+    region is dropped (containers store 639-2 only), an ISO 639-3
+    individual code the table maps is folded to its macrolanguage ("cmn" →
+    "zho", "arb" → "ara": players do not know the 639-3 spelling), a 3-letter
+    code the table lacks already is one ("yue", "haw"), and an unknown code
+    becomes "und" rather than an invalid tag."""
     base = (code or "").strip().lower().split("-")[0]
-    base = _LEGACY_639_1.get(base, base)
+    base = _LEGACY_639_1.get(base, _ISO639_3_TO_1.get(base, base))
     if len(base) == 3 and base.isalpha() and base not in _ISO639_1_TO_2T:
         return base
     return _ISO639_1_TO_2T.get(base, "und")

@@ -66,7 +66,12 @@ def severity_counts() -> dict[str, int]:
     counter" the user investigates via the /logs?filter=<level> link on each
     pill. Restart resets to zero."""
     warn = err = crit = 0
-    for _ts, lvl in _SEVERITY_LOG:
+    # Iterate a snapshot: emit() appends from any logging thread, and a
+    # Python-level walk of the live deque raises "deque mutated during
+    # iteration" (a 500 on /sev, a dead /stats/stream) during exactly the
+    # warning bursts these counts exist for. tuple() copies at C level, in
+    # one step under the GIL.
+    for _ts, lvl in tuple(_SEVERITY_LOG):
         if lvl >= logging.CRITICAL:
             crit += 1
         elif lvl >= logging.ERROR:

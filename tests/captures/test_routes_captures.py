@@ -963,11 +963,17 @@ def test_list_samples_carries_what_the_filters_match_on(client, make_user_key):
 
 
 def test_page_search_matches_ids_and_filters_groups(client):
-    """Source pins: the search haystack includes the capture id and request
-    id (what the log block prints as `captured=` / `req=`), and group cards
-    go through the model + search filters like capture cards do."""
+    """Source pins: the search matches the capture id and request id (what
+    the log block prints as `captured=` / `req=`) by PREFIX, kept out of the
+    text haystack — a substring match on 32-hex ids let any hex-only word hit
+    random rows — and group cards go through the model + search filters like
+    capture cards do."""
     html = client.get("/captures").text
-    assert "(r.id || '') + ' ' + (r.request_id || '')" in html
+    assert "_idPrefix(q, [r.id, r.request_id])" in html
+    assert "_idPrefix(q, [g.id].concat(g.member_ids || [], g.member_request_ids || []))" in html
+    assert "String(ids[i]).toLowerCase().indexOf(q) === 0" in html
+    assert "(r.id || '') + ' ' + (r.request_id || '')" not in html
+    assert "(g.member_ids || []).join(' ')" not in html
     assert "function sampleMatchesFilters(g)" in html
     assert "return sampleMatchesFilters(g);" in html
     assert "_allSamples.slice()" not in html
@@ -1130,3 +1136,181 @@ def test_regenerate_of_a_sample_dissolved_mid_wait_is_404(client, make_user_key,
     r = client.post(f"/captures/api/samples/{sid}/regenerate", headers=bearer(raw))
     assert r.status_code == 404, r.text
     assert built == []
+
+
+def _de_scoped_pipeline(monkeypatch):
+    """Stand-in for a de-only rule: lowercases when scoped to "de"."""
+    langs: list = []
+
+    def _pp(text, **kw):
+        langs.append(kw.get("language"))
+        return text.lower() if kw.get("language") == "de" else text
+
+    monkeypatch.setattr(pl_engine, "_postprocess_text", _pp)
+    return langs
+
+
+def _translate_capture(conn, cid, user_id, *, task):
+    _insert_member(conn, cid, None, user_id=user_id)
+    raw = "It is over. Was it good?"
+    conn.execute(
+        "UPDATE captures SET raw_text = ?, final_text = ?, text_for_training = ?,"
+        " task = ? WHERE id = ?", (raw, raw, raw, task, cid))
+    return raw
+
+
+def test_reprocess_and_self_heal_scope_a_translate_capture_by_english(
+        client, make_user_key, monkeypatch):
+    """language stores the SPOKEN language; a task=translate capture's text
+    is English, so /reprocess and the page-view self-heal must scope the
+    pipeline by "en" (as the live run did) and leave its text alone. A
+    transcribe twin still gets the de scope."""
+    from faster_whisper_backend.captures import store as captures_store
+
+    uid, raw_key = make_user_key("root", is_admin=True)
+    conn = captures_store._require_conn()
+    text = _translate_capture(conn, "transl000001", uid, task="translate")
+    _translate_capture(conn, "transc000001", uid, task="transcribe")
+    langs = _de_scoped_pipeline(monkeypatch)
+    h = bearer(raw_key)
+
+    # Page view (self-heal) — no rewrite of the stored English text.
+    assert client.get("/captures/api/transl000001", headers=h).status_code == 200
+    row = captures_store.get_capture("transl000001")
+    assert row["final"] == text and row["text_for_training"] == text
+    # Explicit /reprocess — nothing changes.
+    r = client.post("/captures/api/transl000001/reprocess", headers=h)
+    assert r.status_code == 200, r.text
+    assert r.json()["changed"] == []
+    assert captures_store.get_capture("transl000001")["final"] == text
+    assert set(langs) == {"en"}
+    # Contrast: the transcribe twin is scoped "de".
+    r = client.post("/captures/api/transc000001/reprocess", headers=h)
+    assert r.json()["capture"]["final"] == text.lower()
+
+
+def test_patch_capture_runs_off_the_loop_under_the_corrections_lock(
+        client, make_user_key, monkeypatch):
+    """update_capture takes captures_store._lock (held across clear_all's
+    VACUUM), so the PATCH must not call it on the event loop; a chip save
+    holds the corrections lock across its read-merge-write."""
+    import asyncio
+
+    from faster_whisper_backend.captures import routes as captures_routes
+    from faster_whisper_backend.captures import store as captures_store
+
+    uid, raw_key = make_user_key("root", is_admin=True)
+    _insert_member(captures_store._require_conn(), "patchthr0001", None,
+                   user_id=uid)
+    seen: list = []
+    real = captures_store.update_capture
+
+    def _spy(cid, patch):
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        seen.append((on_loop, captures_routes._corrections_write_lock.locked()))
+        return real(cid, patch)
+
+    monkeypatch.setattr(captures_store, "update_capture", _spy)
+    h = bearer(raw_key)
+    r = client.patch("/captures/api/patchthr0001", headers=h,
+                     json={"admin_notes": "n"})
+    assert r.status_code == 200, r.text
+    r = client.patch("/captures/api/patchthr0001", headers=h,
+                     json={"corrections": [], "baseline_corrections": []})
+    assert r.status_code == 200, r.text
+    assert seen == [(False, False), (False, True)]
+    # Guards still surface as their HTTP codes from inside the thread.
+    assert client.patch("/captures/api/nosuchcid000", headers=h,
+                        json={"admin_notes": "n"}).status_code == 404
+    assert client.patch("/captures/api/patchthr0001", headers=h,
+                        json={"status": "bogus"}).status_code in (400, 422)
+
+
+def test_patch_of_a_sample_dissolved_mid_apply_is_404(client, make_user_key,
+                                                     monkeypatch):
+    """A dissolve committed between the route's get_sample and _apply's
+    update_sample leaves update_sample returning None — a 404, not a 500
+    from _enrich_sample(None)."""
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as captures_store
+
+    _uid, raw_key = make_user_key("root", is_admin=True)
+    sid = "patchdis000001"
+    _insert_sample(captures_store._require_conn(), gs, sid, locked=False)
+    monkeypatch.setattr(gs, "update_sample", lambda s, patch: None)
+    r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw_key),
+                     json={"admin_notes": "x"})
+    assert r.status_code == 404, r.text
+
+
+def test_sample_chip_save_holds_the_corrections_lock(client, make_user_key,
+                                                     monkeypatch):
+    """The sample PATCH's member read + per-member chip writes run under the
+    same lock as a member's own PATCH, so neither can land between the
+    other's read and write."""
+    from faster_whisper_backend.captures import routes as captures_routes
+    from faster_whisper_backend.captures import samples_store as gs
+    from faster_whisper_backend.captures import store as captures_store
+
+    uid, raw_key = make_user_key("root", is_admin=True)
+    sid = "patchlck000001"
+    conn = captures_store._require_conn()
+    _insert_sample(conn, gs, sid, locked=False, user_id=uid)
+    _insert_member(conn, "patchlckmem1", sid, user_id=uid)
+    held: list = []
+    real = gs.get_members
+
+    def _spy(s):
+        held.append(captures_routes._corrections_write_lock.locked())
+        return real(s)
+
+    monkeypatch.setattr(gs, "get_members", _spy)
+    r = client.patch(f"/captures/api/samples/{sid}", headers=bearer(raw_key),
+                     json={"corrections": [], "baseline_corrections": []})
+    assert r.status_code == 200, r.text
+    assert held and held[0] is True
+
+
+def test_preview_save_chips_writes_off_the_loop_and_skips_newly_grouped(
+        client, make_user_key, monkeypatch):
+    """Up to 30 update_capture calls must not run on the event loop, and a
+    member that a concurrent create_sample grouped after the validation is
+    left alone (its chips now belong to the sample)."""
+    import asyncio
+
+    from faster_whisper_backend.captures import routes as captures_routes
+    from faster_whisper_backend.captures import store as captures_store
+
+    _uid, raw_key = make_user_key("root", is_admin=True)
+    ids = _mixed_pair(None, "de")
+    real_light = captures_store.get_captures_light
+
+    def _light(cids):
+        out = real_light(cids)
+        out[ids[1]] = dict(out[ids[1]], sample_id="grabbedsid01")
+        return out
+
+    seen: list = []
+    real_update = captures_store.update_capture
+
+    def _spy(cid, patch):
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        seen.append((cid, on_loop, captures_routes._corrections_write_lock.locked()))
+        return real_update(cid, patch)
+
+    monkeypatch.setattr(captures_store, "get_captures_light", _light)
+    monkeypatch.setattr(captures_store, "update_capture", _spy)
+    r = client.post("/captures/api/samples/preview-save-chips",
+                    headers=bearer(raw_key),
+                    json={"member_ids": ids, "corrections": []})
+    assert r.status_code == 200, r.text
+    assert seen == [(ids[0], False, True)]
+    assert list(r.json()["saved"]) == [ids[0]]

@@ -67,6 +67,9 @@ def test_iso639_2t_terminology_codes():
     assert t("jw") == "jav" and t("jv") == "jav"
     assert t("iw") == "heb" and t("in") == "ind"
     assert t("yue") == "yue" and t("haw") == "haw" and t("deu") == "deu"
+    # ISO 639-3 individual codes (NLLB spellings) are not 639-2 tags: fold
+    # them to the macrolanguage a player can name.
+    assert t("cmn") == "zho" and t("arb") == "ara" and t("ydd") == "yid"
     assert t("xx") == "und" and t("") == "und" and t(None) == "und"
     # The extra translation languages get their tag, not "und".
     assert t("nb") == "nob" and t("ug") == "uig" and t("zu") == "zul"

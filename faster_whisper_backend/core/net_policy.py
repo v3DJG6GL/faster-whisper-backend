@@ -34,7 +34,9 @@ def address_is_forbidden(addr: str) -> bool:
 
     Covers loopback (127/8, ::1), RFC1918 (10/8, 172.16/12, 192.168/16), ULA
     (fc00::/7), link-local (169.254/16 — cloud metadata — and fe80::/10),
-    CGNAT (100.64/10), multicast, reserved and the unspecified address.
+    the deprecated IPv6 site-local fec0::/10 (which ipaddress counts as none
+    of the others), CGNAT (100.64/10), multicast, reserved and the
+    unspecified address.
     An IPv4-mapped IPv6 literal (::ffff:127.0.0.1) is judged as its IPv4 half,
     so the mapping can't be used to smuggle an internal target past the gate.
     """
@@ -45,7 +47,8 @@ def address_is_forbidden(addr: str) -> bool:
     if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
         ip = ip.ipv4_mapped
     if (ip.is_private or ip.is_loopback or ip.is_link_local
-            or ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+            or getattr(ip, "is_site_local", False)):
         return True
     return isinstance(ip, ipaddress.IPv4Address) and ip in CGNAT_NET
 
