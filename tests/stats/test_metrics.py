@@ -395,3 +395,67 @@ def test_take_wait_without_a_seed_is_zero_and_take_resets():
 def test_metrics_snapshot_carries_the_gate(tx_store):
     snap = metrics.metrics_snapshot()
     assert set(snap["gpu_gate"]) == {"capacity", "held", "queue_depth", "oldest_wait_s"}
+
+
+def test_an_unseeded_context_is_not_charged_the_wait():
+    """The streaming handler seeds one accumulator per session; a live
+    preview's acquire must run with it unset (WAIT_ACC.set(None)) so only
+    the final's own wait lands on the dictation row."""
+    import asyncio
+
+    async def scenario():
+        gate = metrics.GpuGate(1)
+        metrics.seed_wait()
+        await gate.acquire()
+        release = asyncio.get_running_loop().call_later(0.05, gate.release)
+
+        async def preview():
+            tok = metrics.WAIT_ACC.set(None)
+            try:
+                async with gate:
+                    pass
+            finally:
+                metrics.WAIT_ACC.reset(tok)
+
+        await preview()
+        release.cancel()
+        return metrics.take_wait()
+
+    assert asyncio.run(scenario()) == 0.0
+
+
+def test_metrics_snapshot_survives_concurrent_writers(tx_store):
+    """metrics_snapshot runs on a worker thread while record_request (the
+    loop) and record_model_load (loader threads) mutate the deque / dict it
+    reads: a Python-level walk raised "deque mutated during iteration" /
+    "dictionary changed size during iteration"."""
+    import sys
+    import threading
+
+    now = time.time()
+    metrics._errors_ts.extend(now for _ in range(20000))
+    for i in range(2000):
+        metrics.model_loads[f"seed{i}"] = [1.0]
+    stop = threading.Event()
+
+    def hammer():
+        i = 0
+        while not stop.is_set():
+            metrics.record_request("/x", 500, 1.0)
+            # Bounded key set that still changes the dict's size every call.
+            metrics.model_loads.pop(f"m{i % 50}", None)
+            metrics.record_model_load(f"m{i % 50}", 1.0)
+            i += 1
+
+    old = sys.getswitchinterval()
+    sys.setswitchinterval(1e-5)
+    t = threading.Thread(target=hammer, daemon=True)
+    t.start()
+    try:
+        deadline = time.monotonic() + 1.0
+        while time.monotonic() < deadline:
+            metrics.metrics_snapshot()
+    finally:
+        stop.set()
+        t.join()
+        sys.setswitchinterval(old)

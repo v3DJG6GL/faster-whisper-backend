@@ -88,6 +88,11 @@ def test_v1_usage_params_clamped_and_tz_echoed(client):
                              "jobs_retention_days": 365}
     r = client.get("/v1/usage", params={"from": 20007, "to": 20006})
     assert r.status_code == 422 and "from" in r.json()["detail"]
+    # A future `from` alone: `to` defaults to today, so the same 422.
+    import datetime
+    future = (datetime.date.today() - datetime.date(1970, 1, 1)).days + 5
+    r = client.get("/v1/usage", params={"from": future})
+    assert r.status_code == 422 and "from" in r.json()["detail"]
     # Beyond datetime.date's range: a 422, not a zeroed document.
     r = client.get("/v1/usage", params={"to": 1000000000})
     assert r.status_code == 422 and "out of range" in r.json()["detail"]

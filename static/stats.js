@@ -640,6 +640,7 @@ function validateCustom() {
 // ---------------------------------------------------------------- fetch
 let lastDoc = null;
 let lastTail = null;
+let tailNote = '— loading —';   // what the tail-fed cards say while lastTail is null
 let _seq = 0;
 const usageCards = () => document.querySelectorAll('.usage-fed');
 
@@ -680,14 +681,20 @@ function loadTail(seq) {
   fetch('/stats/tail' + tailQuery(), { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null)
     .then(j => {
-      if (seq !== _seq || !j) return;
-      lastTail = j;
+      if (seq !== _seq) return;
+      if (!j) tailNote = '— unavailable —';
+      else lastTail = j;
       // The usage document may still be in flight: its arrival renders
       // everything (renderAll), so only refresh the tail-fed cards when it
       // is already here.
       if (lastDoc) { renderHeadline(); renderTurnaround(); renderFailures(); }
     })
-    .catch(err => console.warn('[stats] tail fetch failed', err));
+    .catch(err => {
+      console.warn('[stats] tail fetch failed', err);
+      if (seq !== _seq) return;
+      tailNote = '— unavailable —';
+      if (lastDoc) { renderHeadline(); renderTurnaround(); renderFailures(); }
+    });
 }
 // Kinds narrow the document's per-kind splits on the client, but the
 // by-user / key / model breakdowns, the leaderboard and the tail are
@@ -697,24 +704,27 @@ function load() {
   renderChips(); syncUrl();
   usageCards().forEach(el => el.classList.add('updating'));
   const mine = ++_seq;
+  // The previous window's tail must not render under the new chips while
+  // this one is in flight, nor for good when it fails.
+  lastTail = null; tailNote = '— loading —';
   loadTail(mine);
   fetch('/stats/usage' + queryString(), { cache: 'no-store' })
     .then(r => {
-      if (r.status === 403) {
-        // Own scope asked for the per-user board (the only row would be the
-        // viewer); the page routes own scope to `key` itself, so this is a
-        // hand-edited URL. Say so instead of "unavailable".
-        $('usage-board-rows').innerHTML =
-          '<tr><td colspan="9" class="empty">— not available for your scope —</td></tr>';
-        return { _scopeDenied: true };
-      }
+      // Own scope asked for the per-user board (the only row would be the
+      // viewer); the page routes own scope to `key` itself, so this is a
+      // hand-edited URL. Said below, once the response is known current.
+      if (r.status === 403) return { _scopeDenied: true };
       return r.ok ? r.json() : null;
     })
     .then(j => {
       if (mine !== _seq) return;      // stale response — a newer change won
       usageCards().forEach(el => el.classList.remove('updating'));
       if (!j) { showError(); return; }
-      if (j._scopeDenied) return;
+      if (j._scopeDenied) {
+        $('usage-board-rows').innerHTML =
+          '<tr><td colspan="9" class="empty">— not available for your scope —</td></tr>';
+        return;
+      }
       hideError();
       lastDoc = j;
       // Names for picked user ids the picker never resolved (a pasted or
@@ -785,7 +795,8 @@ function renderTurnaround() {
   const t = lastTail && lastTail.turnaround;
   const tag = $('turnaround-tag'); const note = $('turnaround-note'); const wv = $('turnaround-wait');
   if (!t || !t.n) {
-    el.innerHTML = '<div class="usage-empty" style="position:static">No finished jobs in this window.</div>';
+    el.innerHTML = '<div class="usage-empty" style="position:static">'
+      + (t ? 'No finished jobs in this window.' : esc(tailNote)) + '</div>';
     if (tag) tag.textContent = ''; if (note) note.textContent = ''; if (wv) wv.innerHTML = '';
     return;
   }
@@ -893,7 +904,7 @@ function renderFailures() {
   const el = $('failures-list'); if (!el) return;
   const f = lastTail && lastTail.failures;
   const tag = $('failures-tag');
-  if (!f) { el.innerHTML = '<span class="empty">— loading —</span>'; return; }
+  if (!f) { el.innerHTML = '<span class="empty">' + esc(tailNote) + '</span>'; if (tag) tag.textContent = ''; return; }
   if (tag) tag.textContent = f.failed + ' of ' + fmtCount(f.jobs) + ' jobs failed'
     + (f.jobs ? ' · ' + (f.failed / f.jobs * 100).toFixed(1) + ' %' : '');
   const rows = [];
@@ -1076,6 +1087,11 @@ function prepareLines() {
         : (j.by === 'stage' && STAGE_COLOR[ln.id]) || PALETTE[i % PALETTE.length],
     }));
   }
+  // Prune BEFORE the compare total and before renderAll draws the legend:
+  // narrowing the kinds to a hidden series used to zero the compare line
+  // and show its legend button "off" while the chart drew it.
+  hidden = new Set([...hidden].filter(id => curLines.some(ln => ln.id === id)));
+  if (hidden.size && hidden.size === curLines.length) hidden.clear();   // a reload can never land on an all-hidden set
   cmpTotal = null;
   if (j.compare && j.compare.lines && j.compare.lines.length) {
     const n = xs.length;
@@ -1200,8 +1216,6 @@ function announce(text) { const a = $('usage-live'); if (a) a.textContent = text
 
 function renderChart() {
   prepareLines();
-  hidden = new Set([...hidden].filter(id => curLines.some(ln => ln.id === id)));
-  if (hidden.size && hidden.size === curLines.length) hidden.clear();   // a reload can never land on an all-hidden set
   if (chart) { chart.destroy(); chart = null; }
   tipEl.style.display = 'none';
   const empty = $('usage-empty');
@@ -1655,9 +1669,10 @@ function renderHours() {
     b[0][i] += pv; b[1][i] += sv;
   };
   const kindOn = k => !Q.kinds.length || Q.kinds.includes(k);
-  // Fill from the source the rhythm reads; `cellOf` maps a compare-window
-  // record onto this grid too (days shifted by the window offset).
-  const fill = (target, doc, offsetDays) => {
+  // Fill from the source the rhythm reads; `shiftDay` maps a compare-window
+  // day onto this grid too (prev: the window offset; yoy: the same calendar
+  // day a year on, since a constant 365/366 slips a day across a leap day).
+  const fill = (target, doc, shiftDay) => {
     if (mode === 'hours' || mode === 'days') {
       (mode === 'hours' ? doc.hours : doc.dom_hours || []).forEach(h => {
         const i = mode === 'hours' ? h.dow * 24 + h.hour : L.slotCell(h);
@@ -1668,17 +1683,22 @@ function renderHours() {
       return;
     }
     (doc.series || []).forEach(p => {
-      const i = L.dayCell(p.day + offsetDays); if (i < 0) return;
+      const i = L.dayCell(shiftDay ? shiftDay(p.day) : p.day); if (i < 0) return;
       const all = kindScoped(p) || {};
       target.c[i] += Number(all[M] || 0); target.s[i] += Number(all[C] || 0);
       if (target.k) KINDS.forEach(k => { if (kindOn(k) && p[k]) addKind(k, i, Number(p[k][M] || 0), Number(p[k][C] || 0)); });
     });
   };
-  fill({ c: cells, s: sess, k: true }, lastDoc, 0);
+  fill({ c: cells, s: sess, k: true }, lastDoc, null);
   const cmpSrc = { hours: 'hours', days: 'dom_hours', months: 'series' }[mode];
   const cmp = lastDoc.compare && lastDoc.compare[cmpSrc] ? lastDoc.compare : null;
   const cmpCells = new Array(N).fill(0);
-  if (cmp) fill({ c: cmpCells, s: new Array(N).fill(0), k: false }, cmp, mode === 'months' ? (rg.from - cmp.range.from) : 0);
+  const yearOn = day => {
+    const [y, m, d] = ymOfDay(day);
+    return Math.round(Date.UTC(y + 1, m, Math.min(d, new Date(Date.UTC(y + 1, m + 1, 0)).getUTCDate())) / DAY_MS);
+  };
+  if (cmp) fill({ c: cmpCells, s: new Array(N).fill(0), k: false }, cmp,
+    mode !== 'months' ? null : cmp.mode === 'yoy' ? yearOn : (day => day + rg.from - cmp.range.from));
   const br = quantileBreaks(cells);
   let peak = -1, peakV = 0;
   cells.forEach((v, i) => { if (v > peakV) { peakV = v; peak = i; } });

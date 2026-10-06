@@ -32,6 +32,11 @@ def test_stats_usage_out_of_range_window_is_422(client):
     assert client.get("/stats/usage?to=1000000000").status_code == 422
     assert client.get("/stats/pick?dim=user&to=1000000000").status_code == 422
     assert client.get("/stats/tail?to=1000000000").status_code == 422
+    # A future `from` with no `to` (which defaults to today): a 422 too,
+    # not resolve_window's ValueError escaping the store call as a 500.
+    assert client.get("/stats/usage?from=90000").status_code == 422
+    assert client.get("/stats/pick?dim=user&from=90000").status_code == 422
+    assert client.get("/stats/tail?from=90000").status_code == 422
     # /stats/history: finite but past SQLite's 64-bit INTEGER.
     assert client.get("/stats/history?metric=gpu_util&from=1e300&to=1e301").status_code == 422
     r = client.get("/stats/history?metric=gpu_util&step=99999999999999999999999")
@@ -833,6 +838,14 @@ def test_stats_layout_presets_edit_mode_and_ring_freeze(client):
     assert "hooks: { setCursor: [onSparkHover], draw: [drawInsetLabels] }" in html
     assert "histX.indexOf(frozenTs)" in html
     assert "if (frozenTs != null) { applyFreeze(); refreshStatusPill(); }" in html
+    # setData re-resolves a scrubbed cursor's pixel against the shifted
+    # scale every tick; with no pointer the hook puts the cursor back on the
+    # frozen sample instead of advancing frozenTs.
+    hover = html[html.index("function onSparkHover(u) {"):]
+    hover = hover[:hover.index("\n}\n")]
+    assert hover.index("if (hoverU === null && frozenTs != null) {") < hover.index(
+        "frozenTs = ts;")
+    assert "nearestIdx(xs, frozenTs)" in hover and "u.valToPos(xs[want], 'x')" in hover
 
 
 def test_lite_payload_and_activity_card_carry_the_gpu_gate(client):
@@ -1049,6 +1062,16 @@ def test_stats_page_jobs_table_survives_filter_changes_and_frames(client):
         assert s in html, s
     hidden = html[html.index("document.addEventListener('visibilitychange'"):]
     assert hidden.index("histX.length = 0;") < hidden.index("openStream();")
+    # ...but only after a long hide: a short tab switch keeps the ring and a
+    # live-mode freeze.
+    assert hidden.index("Date.now() - _hiddenAt > HIDE_CLEAR_MS") < hidden.index(
+        "histX.length = 0;")
+    # Snapshot rows that scroll out of the newest-N window after "load
+    # older" are held, not dropped between the snapshot and the older pages.
+    jobs = html[html.index("function renderJobs(snap) {"):]
+    assert jobs.index("if (rjAnchored && lastJobsSnap") < jobs.index("lastJobsSnap = snap;")
+    assert "snapRows.concat(rjHeld.concat(rjExtra)" in jobs
+    assert "rjAnchored = false; rjHeld = [];" in html
     with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
         js = f.read()
     for s in ("if (sig === _publishedSig) return;",
@@ -1239,6 +1262,30 @@ def test_stats_js_chart_never_all_hidden_after_reload(client):
         js = f.read()
     assert "if (hidden.size === curLines.length) hidden.clear();" in js
     assert "if (hidden.size && hidden.size === curLines.length) hidden.clear();" in js
+    # The prune runs inside prepareLines BEFORE the compare total (and so
+    # before renderAll draws the legend), not after it in renderChart.
+    prep = js[js.index("function prepareLines() {"):js.index("function chartData()")]
+    assert prep.index("hidden.clear();") < prep.index(
+        "const keep = new Set(visibleLines()")
+    chart = js[js.index("function renderChart() {"):]
+    chart = chart[:chart.index("\n}\n")]
+    assert "hidden.clear()" not in chart
+
+
+def test_stats_js_tail_never_shows_the_previous_window(client):
+    """load() dropped nothing: the usage document arriving before the tail
+    (or a failed tail fetch) drew the old window's turnaround and failures
+    under the new chips. A 403 from a superseded load must not overwrite a
+    newer leaderboard either."""
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
+    load = js[js.index("function load() {"):js.index("function showError()")]
+    assert load.index("lastTail = null;") < load.index("loadTail(mine);")
+    assert load.index("if (mine !== _seq) return;") < load.index(
+        "not available for your scope")
+    tail = js[js.index("function loadTail(seq) {"):js.index("function setKind()")]
+    assert "tailNote = '— unavailable —';" in tail
+    assert "esc(tailNote)" in js[js.index("function renderFailures()"):]
 
 
 def test_stats_board_unknown_kind_row_not_clickable(client):

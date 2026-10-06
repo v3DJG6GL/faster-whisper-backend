@@ -203,15 +203,16 @@ def test_series_and_leaderboard_carry_proc_s_and_sessions(usage_store_db):
                     hour=1, processing_s=2.0, job_id="j1", kind="file")
     us.record_usage(key_id="k1", user_id="a", audio_s=10.0, words=1, status="ok",
                     hour=1, processing_s=3.0, job_id="j2", kind="file")
-    # b has MORE audio than a but fewer sessions: a metric that fell back to
-    # the audio_s default would rank b first, so the sessions assert below
-    # only passes through a real ORDER BY sessions.
+    # b has MORE audio than a but less processing time and fewer sessions:
+    # a metric that fell back to the audio_s default would rank b first, so
+    # the processing_s and sessions asserts below only pass through a real
+    # ORDER BY of that metric.
     us.record_usage(key_id="k2", user_id="b", audio_s=50.0, words=1, status="ok",
-                    hour=1, processing_s=9.0, job_id="j3", kind="file")
+                    hour=1, processing_s=1.0, job_id="j3", kind="file")
     day = us.series()[0]
-    assert day["processing_s"] == 14.0 and day["sessions"] == 3
+    assert day["processing_s"] == 6.0 and day["sessions"] == 3
     board = us.leaderboard(by="user", metric="processing_s")
-    assert [r["user_id"] for r in board] == ["b", "a"]
-    assert board[1]["processing_s"] == 5.0 and board[1]["sessions"] == 2
+    assert [r["user_id"] for r in board] == ["a", "b"]
+    assert board[0]["processing_s"] == 5.0 and board[0]["sessions"] == 2
     assert us.leaderboard(by="user", metric="audio_s")[0]["user_id"] == "b"
     assert us.leaderboard(by="user", metric="sessions")[0]["user_id"] == "a"

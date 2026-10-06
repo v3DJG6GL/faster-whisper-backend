@@ -265,3 +265,19 @@ def test_overview_compare_rebuckets_prev_onto_the_current_week_axis(usage_store_
     assert len(line) == 26 and sum(line) == 99.0
     # pt + span = t: the prev window's last day sits in the current last bucket.
     assert line[-1] == 99.0
+
+
+def test_overview_by_model_leaves_out_outcome_stubs(usage_store_db):
+    """record_outcome's stub (a dictation session with no utterance) is not a
+    decode: _jobs_where already kept it out of the tail, but the by=model
+    breakdown and the models table counted it as an "(unknown)" session."""
+    us = usage_store_db
+    us.record_usage(key_id="k1", user_id="alice", audio_s=10.0, words=5,
+                    status="ok", kind="dictation", processing_s=1.0,
+                    job_id="d1", model="large-v3")
+    assert us.record_outcome(user_id="alice", job_id="s" * 32, activation="hold",
+                             delivery="typed", translation="none") == "accepted"
+    o = us.overview(user_id=None, tz=_UTC, tz_name="UTC", days=1, by="model",
+                    metric="sessions")
+    assert [r["id"] for r in o["leaderboard"]] == ["large-v3"]
+    assert [m["model"] for m in o["models"]] == ["large-v3"]

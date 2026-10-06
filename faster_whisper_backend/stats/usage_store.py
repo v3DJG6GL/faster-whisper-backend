@@ -1096,7 +1096,7 @@ def parse_window_params(*, days: int | None = None, from_day: int | None = None,
     1..MAX_WINDOW_DAYS; `with_` is a comma list of optional stages; `tz` an
     IANA name (unknown → server-local). Raises ValueError with a message fit
     for a 422 body when a stage is unknown, `from`/`to` is outside
-    0..MAX epoch-day, or `from` is after `to`."""
+    0..MAX epoch-day, or `from` is after `to` (today when `to` is absent)."""
     zone = resolve_tz(tz)
     tz_name = str(tz) if zone is not None else "local"
     eff_days = None
@@ -1114,6 +1114,12 @@ def parse_window_params(*, days: int | None = None, from_day: int | None = None,
         if d is not None and not (0 <= int(d) <= _MAX_EPOCH_DAY):
             raise ValueError(f"'{name}' out of range (0..{_MAX_EPOCH_DAY})")
     if from_day is not None and to_day is not None and from_day > to_day:
+        raise ValueError("'from' is after 'to'")
+    # `to` defaults to today in the window's zone (resolve_window), so a
+    # future `from` alone is the same error — caught here, not as a 500
+    # from resolve_window deep in the store call.
+    if (from_day is not None and to_day is None and not all_time
+            and int(from_day) > _epoch_day(datetime.datetime.now(zone).date())):
         raise ValueError("'from' is after 'to'")
     return WindowSpec(tz=zone, tz_name=tz_name, days=eff_days,
                       from_day=from_day, to_day=to_day, all_time=bool(all_time),
@@ -1591,7 +1597,7 @@ def overview(
         for job in conn.execute(
             "SELECT model, created_ts, status, audio_s, words, processing_s, utterances"
             " FROM usage_jobs" + where + _with_clause(with_stages)
-            + " AND created_ts >= ? AND created_ts < ?",
+            + " AND created_ts >= ? AND created_ts < ?" + _no_outcome_stub(),
             (*params, *with_stages, float(start_ts), float(end_ts)),
         ):
             name = job["model"] or "(unknown)"
@@ -1760,7 +1766,8 @@ def _models_in_window(conn: sqlite3.Connection, user_id: Ids,
         " SUM(status <> 'ok') AS errors, SUM(words) AS words,"
         " SUM(audio_s) AS audio_s, SUM(processing_s) AS processing_s"
         " FROM usage_jobs" + where + _with_clause(with_stages)
-        + " AND created_ts >= ? AND created_ts < ? GROUP BY model"
+        + " AND created_ts >= ? AND created_ts < ?" + _no_outcome_stub()
+        + " GROUP BY model"
         " ORDER BY audio_s DESC, model",
         (*params, *with_stages, float(start_ts), float(end_ts)),
     ):
@@ -1786,6 +1793,13 @@ def _models_in_window(conn: sqlite3.Connection, user_id: Ids,
 TURNAROUND_EDGES_S: tuple[int, ...] = (0, 1, 2, 5, 10, 30, 60, 120, 300, 900)
 
 
+def _no_outcome_stub(prefix: str = "") -> str:
+    """The predicate that leaves record_outcome's stubs out of every per-job
+    model / tail reader (see _jobs_where): they never reach usage_hourly,
+    so counting them as "(unknown)" sessions would disagree with it."""
+    return f" AND NOT ({prefix}kind = 'dictation' AND {prefix}utterances = 0)"
+
+
 def _jobs_where(user_id: Ids, key_id: Ids, kind: Ids,
                 start_ts: float, end_ts: float, alias: str = ""
                 ) -> tuple[str, list[Any]]:
@@ -1803,7 +1817,7 @@ def _jobs_where(user_id: Ids, key_id: Ids, kind: Ids,
                                  key_col=p + "key_id", kinds=kinds,
                                  kind_col=p + "kind")
     where += f" AND {p}created_ts >= ? AND {p}created_ts < ?"
-    where += f" AND NOT ({p}kind = 'dictation' AND {p}utterances = 0)"
+    where += _no_outcome_stub(p)
     params += [float(start_ts), float(end_ts)]
     return where, params
 

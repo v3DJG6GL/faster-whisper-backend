@@ -54,7 +54,9 @@ def test_every_nth_tick_takes_a_sample_on_the_grid(sampler, monkeypatch):
     taken = [sampler.tick(2_000_003 + i) for i in range(25)]
     samples = [s for s in taken if s]
     assert len(samples) == 3
-    assert samples[0]["ts"] % 7 == 0
+    # The 7th tick (now = 2_000_009) floored onto the 7 s grid; `% 7 == 0`
+    # held for any tick's timestamp, so it could not catch the wrong one.
+    assert [s["ts"] for s in samples] == [2_000_005, 2_000_012, 2_000_019]
     assert samples[0]["gpu_util"] == 42.0 and samples[0]["cpu_pct"] == 12.5
     assert samples[0]["slot_busy"] == 0.0
     assert len(sampler._pending) == 3

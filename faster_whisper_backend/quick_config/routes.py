@@ -300,8 +300,16 @@ def _redact_invisible_slugs(
             orig = str(red.get(key) or "")
             val = orig
             for slug in hidden:
-                # settings/schema.py formats the slug with !r, hence the quotes.
-                val = val.replace(f"'{slug}'", "'<hidden rule>'")
+                # Only the two slug-bearing forms settings/schema.py emits:
+                # `rule {idx} ({slug!r})` and `duplicate rule name '{slug}'`.
+                # A bare `'{slug}'` also matched the caller's own map keys,
+                # which the collision message echoes in quotes — a key equal
+                # to a hidden slug blanked their own error and answered
+                # "does this hidden rule exist?" one save at a time. Map
+                # keys can hold neither parentheses nor quotes.
+                val = val.replace(f"('{slug}')", "('<hidden rule>')")
+                val = val.replace(
+                    f"rule name '{slug}'", "rule name '<hidden rule>'")
             swapped = swapped or val != orig
             # The schema's guard messages read `rule {idx} ({slug!r}) entry
             # {eidx}: ...` — after the slug swap the ordinal still gives away
@@ -687,10 +695,8 @@ async def v1_get_recent_words(
     cap = int(getattr(cfg, "QUICK_CONFIG_WORD_SUGGESTIONS_MAX", 200))
     max_words = cap
     if limit is not None:
-        try:
-            max_words = max(0, min(cap, int(limit)))
-        except (TypeError, ValueError):
-            max_words = cap
+        # FastAPI already rejected a non-integer `limit` with a 422.
+        max_words = max(0, min(cap, limit))
     words = await asyncio.to_thread(
         functools.partial(build_word_suggestions, user, max_words=max_words))
     return {"words": words, "max": cap}

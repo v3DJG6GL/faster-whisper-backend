@@ -2054,15 +2054,26 @@ const _ALLOWED_BY_TYPE = {
   'callback:upper':              new Set(['enabled', 'pattern']),
 };
 
-async function load() {
+// Fetch /quick-config/state: the parsed body, or null (status + toast set).
+// Split from applyState so _doSave can snapshot pending edits AFTER the
+// network round trip and apply in the same synchronous step.
+async function fetchState() {
   const r = await ensureToken();
-  if (!r) { setStatus('not authenticated'); return; }
+  if (!r) { setStatus('not authenticated'); return null; }
   if (!r.ok) {
     setStatus('load failed (' + r.status + ')');
     showToast('load failed: ' + r.status, 'err');
-    return;
+    return null;
   }
-  const j = await r.json();
+  return await r.json();
+}
+
+async function load() {
+  const j = await fetchState();
+  if (j) applyState(j);
+}
+
+function applyState(j) {
   initialRules = j.rules || [];
   // Newest-cb:map-entries-shown threshold, sourced from the backend config
   // (QUICK_CONFIG_MAP_COLLAPSE_AFTER) so the page + desktop client agree.
@@ -2191,8 +2202,11 @@ async function doSave() {
 async function _doSave(patch, fingerprints) {
   setStatus('saving…');
   // What this POST sends. Anything edited after this point, on any rule, is
-  // NOT in the save, and the load() below would silently discard it, so it
-  // is diffed against this snapshot and re-applied after the reload.
+  // NOT in the save, and the applyState() below would silently discard it,
+  // so it is diffed against this snapshot and re-applied after the reload.
+  // The diff is taken AFTER fetchState()'s await and applied in the same
+  // synchronous step: no edit can slip in between, and a failed fetch
+  // leaves liveRules alone instead of re-applying diffs it already holds.
   const sent = JSON.parse(JSON.stringify(liveRules));
   const r = await api('POST', '/quick-config/state',
                       { rules_patch: patch, fingerprints });
@@ -2240,13 +2254,15 @@ async function _doSave(patch, fingerprints) {
     const conflictSlugs = conflicts.map(c => c.slug);
     const conflictSet = new Set(conflictSlugs);
 
-    // Snapshot diffs BEFORE await load() — load() resets initialRules.
+    const j = await fetchState();
+    if (!j) return;
+    // Snapshot diffs BEFORE applyState() — it resets initialRules.
     const diffsBySlug = _diffsSince(initialRules, conflictSet);
     // Edits made to the OTHER rules while the POST was in flight.
     const inflight = _diffsSince(sent);
     for (const slug of conflictSet) inflight.delete(slug);
 
-    await load();   // refetches; clears dirty; renders fresh server state
+    applyState(j);   // clears dirty; renders fresh server state
 
     // Re-apply each user diff onto the fresh server state. dirty gets
     // re-populated so the next Save sends an updated patch with the
@@ -2284,8 +2300,10 @@ async function _doSave(patch, fingerprints) {
     // re-apply button anymore.
     startReapplyJobSilent(result.captures_count);
   }
+  const j = await fetchState();
+  if (!j) return;
   const inflight = _diffsSince(sent);
-  await load();
+  applyState(j);
   if (_reapplyDiffs(inflight)) {
     renderCards();
     updateButtons();

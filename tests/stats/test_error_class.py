@@ -54,7 +54,8 @@ class _Http(Exception):
      ("other", "downloading")),
     (_AvError("Invalid data found when processing input"), "error", "transcribing",
      ("decode_failed", "transcribing")),
-    (ValueError("bad"), "error", "analyzing", ("decode_failed", "analyzing")),
+    # No caller ever passes a pre-decode stage, so no stage-name fallback.
+    (ValueError("bad"), "error", "analyzing", ("other", "analyzing")),
     (_Http(499), "cancelled", None, ("cancelled", None)),
     (_Http(499), "error", "transcribing", ("cancelled", "transcribing")),
     (_Http(400), "error", "downloading", ("rejected", "downloading")),
@@ -72,3 +73,43 @@ def test_error_classes_are_the_documented_six_plus_other():
                                      "cancelled", "decode_failed", "rejected", "other")
     assert url_download.UrlPolicyError.error_class in metrics.ERROR_CLASSES
     assert url_download.UrlTimeoutError.error_class in metrics.ERROR_CLASSES
+
+
+def _raised_from(wrapper, cause, *, suppress=False):
+    try:
+        try:
+            raise cause
+        except BaseException as e:
+            if suppress:
+                raise wrapper from None
+            raise wrapper from e
+    except BaseException as w:
+        return w
+
+
+def test_classify_error_reads_the_wrapped_cause():
+    """The soft-fail stages re-raise a client-safe RuntimeError over the real
+    failure: a CUDA OOM under diarization / translation was "other", and the
+    diarization load wrapper's "out of memory or unavailable" text made any
+    placement failure an OOM."""
+    from faster_whisper_backend.audio.diarization import DiarizationError
+
+    oom = _raised_from(DiarizationError("diarization failed on this file"),
+                       RuntimeError("CUDA out of memory. Tried to allocate 2 GiB"))
+    assert metrics.classify_error(oom, status="error", stage="diarizing") == (
+        "cuda_oom", "diarizing")
+    # `from None` still leaves the cause on __context__.
+    oom = _raised_from(RuntimeError("translation inference failed"),
+                       _TorchOOM("CUDA out of memory"), suppress=True)
+    assert metrics.classify_error(oom, status="error", stage="translating") == (
+        "cuda_oom", "translating")
+    load = _raised_from(
+        DiarizationError("could not load m on cuda — the device is out of "
+                         "memory or unavailable; see the server log"),
+        RuntimeError("no CUDA-capable device is detected"))
+    assert metrics.classify_error(load, status="error", stage="diarizing") == (
+        "other", "diarizing")
+    # A timeout chains the CancelledError it turned into: still a timeout.
+    t = _raised_from(TimeoutError(), asyncio.CancelledError())
+    assert metrics.classify_error(t, status="error", stage="downloading") == (
+        "timeout", "downloading")

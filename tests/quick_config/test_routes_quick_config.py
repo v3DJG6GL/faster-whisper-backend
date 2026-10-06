@@ -503,6 +503,23 @@ def test_quick_config_page_save_and_recent_guards(client):
               "'whitespace only'",
               "if (Math.round(s) >= 60) return m + ' min';"):
         assert s in html, s
+    # _doSave refetches BEFORE it snapshots the in-flight edits, and nothing
+    # is awaited between that snapshot and applying the fresh state, so an
+    # edit typed during the GET cannot be wiped; a failed fetch returns
+    # instead of re-applying diffs liveRules already holds.
+    save = html[html.index("async function _doSave("):
+                html.index("// --- Silent reapply strip")]
+    for tail in (save[save.index("const conflictSet"):],
+                 save[save.index("startReapplyJobSilent("):]):
+        fetch = tail.index("const j = await fetchState();\n")
+        assert tail.index("if (!j) return;", fetch) < tail.index(
+            "_diffsSince(sent)")
+        assert fetch < tail.index("_diffsSince(sent)")
+        window = tail[tail.index("_diffsSince(sent)"):
+                      tail.index("_reapplyDiffs(inflight)")]
+        assert "await" not in window, window
+        assert "applyState(j);" in window
+    assert "await load()" not in save
     # The seen-set reset moved AFTER the await.
     body = html[html.index("async function reloadRecent()"):html.index("async function loadOlder()")]
     assert body.index("await api(") < body.index("_seenReqIds = new Set();")
@@ -576,6 +593,27 @@ def test_redact_blanks_non_guard_errors_naming_a_hidden_rule():
     # The caller's own rule keeps its collision message.
     msg = ("Value error, rule 1 ('meins'): map keys ['A', 'a'] collide "
            "when lowercased")
+    out = q._redact_invisible_slugs(
+        [{"loc": "PIPELINE_RULES", "msg": msg}], user, rules)
+    assert out == [{"loc": "PIPELINE_RULES", "msg": msg}]
+
+
+def test_redact_keeps_own_map_keys_that_equal_a_hidden_slug():
+    """The slug swap matched any quoted occurrence, so the caller's own map
+    key equal to a hidden slug (echoed in quotes by the collision message)
+    blanked their own error — and its presence told them the hidden rule
+    exists, one guess per save."""
+    from faster_whisper_backend.quick_config import routes as q
+
+    class _Perms:
+        def can_see_rule(self, rule):
+            return bool(rule.get("exposed"))
+
+    user = {"is_admin": False, "permissions": _Perms()}
+    rules = [{"name": "meins", "exposed": True},
+             {"name": "geheim-rule", "exposed": False}]
+    msg = ("rule 1 ('meins'): map keys ['Geheim-rule', 'geheim-rule'] "
+           "collide when lowercased")
     out = q._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES", "msg": msg}], user, rules)
     assert out == [{"loc": "PIPELINE_RULES", "msg": msg}]

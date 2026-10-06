@@ -753,6 +753,12 @@ def test_parse_window_params_matches_v1_route(usage_store_db):
         us.parse_window_params(with_="decoding")
     with pytest.raises(ValueError, match="from"):
         us.parse_window_params(from_day=20007, to_day=20006)
+    # `to` defaults to today: a future `from` alone is the same error here,
+    # not resolve_window's ValueError inside the store call (a 500).
+    future = us._epoch_day(datetime.date.today()) + 5
+    with pytest.raises(ValueError, match="'from' is after 'to'"):
+        us.parse_window_params(from_day=future)
+    assert us.parse_window_params(from_day=future, all_time=True).all_time
     with pytest.raises(ValueError, match="'to' out of range"):
         us.parse_window_params(to_day=10**9)
     with pytest.raises(ValueError, match="'from' out of range"):

@@ -1039,6 +1039,19 @@ function onSparkHover(u) {
   // left); a synced or hidden spark resolving no sample must not.
   if (ts == null && hoverU !== u) return;
   if (ts === frozenTs) return;
+  // No pointer (a scrub / Space / range refresh): every setData re-resolves
+  // the cursor's PIXEL against the shifted x-scale, which used to walk the
+  // frozen timestamp a sample on per tick. Put the cursor back on the
+  // frozen sample instead; once it has left the axis, return to now.
+  if (hoverU === null && frozenTs != null) {
+    const xs0 = scrubAxis();
+    if (!xs0.length || frozenTs < xs0[0]) { backToLive(); return; }
+    const want = nearestIdx(xs, frozenTs);
+    if (want >= 0 && want !== idx) {
+      try { u.setCursor({ left: u.valToPos(xs[want], 'x'), top: 8 }); } catch (_) {}
+    }
+    return;
+  }
   frozenTs = ts;
   applyFreeze();
   refreshStatusPill();
@@ -1213,7 +1226,9 @@ function loadRangeSparks() {
           // a refresh keeps the frozen TIMESTAMP; once it falls out of the
           // window, return to now
           if (j.t.length && frozenTs < j.t[0]) backToLive();
-          else { applyFreeze(); try { u.setCursor({ left: u.valToPos(frozenTs, 'x'), top: 8 }); } catch (_) {} refreshStatusPill(); }
+          // (onSparkHover re-places the cursor once setData's scale commit
+          // re-resolves it; a setCursor here would read the OLD scale)
+          else { applyFreeze(); refreshStatusPill(); }
         }
         const last = j.avg.length ? j.avg[j.avg.length - 1] : null;
         const mx = j.max.length ? Math.max(...j.max) : null;
@@ -1953,6 +1968,12 @@ function stageColor(name) {
 let rjExtra = [];
 let rjCursor = null;
 let rjExhausted = false;
+// Once "load older" anchored the pages to a cursor, every snapshot row that
+// scrolls out of the snapshot's newest-N window is kept here (newest
+// first): it is newer than that cursor, so neither list would show it and
+// the table would silently skip those jobs.
+let rjAnchored = false;
+let rjHeld = [];
 
 function rjView() {
   const b = document.querySelector('#rj-view button.active');
@@ -1965,6 +1986,7 @@ let rjGen = 0;
 function rjResetPages() {
   rjGen++;
   rjExtra = []; rjCursor = null; rjExhausted = false;
+  rjAnchored = false; rjHeld = [];
   const btn = $('rj-more'); if (btn) { btn.disabled = false; btn.textContent = 'load older jobs'; }
 }
 function rjServerParams() {
@@ -1981,7 +2003,8 @@ function rjServerParams() {
 }
 function rjLoadMore() {
   const btn = $('rj-more'); if (!btn || rjExhausted) return;
-  const rt = (lastJobsSnap && lastJobsSnap.recent_transcriptions) || [];
+  const rt = ((lastJobsSnap && lastJobsSnap.recent_transcriptions) || []).concat(rjHeld);
+  rjAnchored = true;
   const oldest = rjExtra.length ? rjExtra[rjExtra.length - 1].ts
     : rt.reduce((m, r) => (r.ts && (m == null || r.ts < m)) ? r.ts : m, null);
   const p = rjServerParams();
@@ -2010,15 +2033,29 @@ function rjLoadMore() {
 // [data-vol] cell contents it wrote.
 let _rtSig = null, _rtVals = [];
 function renderJobs(snap) {
+  const rjId = r => r.request_id || String(r.ts);
+  if (rjAnchored && lastJobsSnap && lastJobsSnap !== snap
+      && Array.isArray(snap.recent_transcriptions)) {
+    const now = new Set((snap.recent_transcriptions || []).map(rjId));
+    const held = new Set(rjHeld.map(rjId));
+    const left = (lastJobsSnap.recent_transcriptions || [])
+      .filter(r => !now.has(rjId(r)) && !held.has(rjId(r)));
+    if (left.length) rjHeld = left.concat(rjHeld).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+  }
   lastJobsSnap = snap;
   const flt = rjFilter();
   const view = rjView();
   const warnOnly = view === 'failed';
   renderJobsChip(flt);
 
-  const seen = new Set((snap.recent_transcriptions || []).map(r => r.request_id || String(r.ts)));
-  const rt = (snap.recent_transcriptions || []).concat(
-    rjExtra.filter(r => !seen.has(r.request_id || String(r.ts))));
+  const snapRows = snap.recent_transcriptions || [];
+  const seen = new Set(snapRows.map(rjId));
+  const rt = snapRows.concat(rjHeld.concat(rjExtra).filter(r => {
+    const k = rjId(r);
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  }));
   const running = view === 'slow' ? [] : (snap.jobs || []);
 
   // Rows are built twice: with V = identity for the real markup and with
@@ -2208,17 +2245,24 @@ function openStream() {
 // recovery poll — otherwise a poll that succeeds in the background would
 // openStream() concurrently with the visibility re-open, racing two
 // EventSources for the same gid until one was orphaned.
+const HIDE_CLEAR_MS = 30000;   // a few sample periods of gap
+let _hiddenAt = null;
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') {
+    if (_hiddenAt == null) _hiddenAt = Date.now();
     if (es) { try { es.close(); } catch {} es = null; }
     if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }
     setStatus('paused (hidden)', 'paused');
   } else {
     // The ring is sized in samples, not time: after a long hide the sparks
     // would join stale samples to fresh ones across the gap, as the
-    // recovery probe already avoids.
-    histX.length = 0;
-    for (const k in hist) hist[k].length = 0;
+    // recovery probe already avoids. A short tab switch keeps the ring
+    // (and a live-mode freeze, which applyFreeze drops off an empty ring).
+    if (_hiddenAt != null && Date.now() - _hiddenAt > HIDE_CLEAR_MS) {
+      histX.length = 0;
+      for (const k in hist) hist[k].length = 0;
+    }
+    _hiddenAt = null;
     openStream();
   }
 });

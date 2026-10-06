@@ -181,7 +181,59 @@ ERROR_CLASSES: tuple[str, ...] = (
 _OOM_RE = re.compile(
     r"out of memory|CUDA_ERROR_OUT_OF_MEMORY|cudaErrorMemoryAllocation"
     r"|CUBLAS_STATUS_ALLOC_FAILED|Failed to allocate memory", re.I)
-_DECODE_STAGES = frozenset(("analyzing", "transcoding"))
+# Classes a wrapped cause hands up to its wrapper: the soft-fail stages
+# (diarization, music separation, translation) re-raise a client-safe
+# RuntimeError over the real failure, whose text names none of these.
+# `cancelled` and `rejected` describe the request itself, so they stay the
+# outermost exception's call (a timeout chains a CancelledError).
+_CHAINED_CLASSES = frozenset(("policy_blocked", "cuda_oom", "timeout",
+                              "decode_failed"))
+_CHAIN_DEPTH = 5
+
+
+def _cause_class(exc: BaseException) -> str | None:
+    """The first _CHAINED_CLASSES class down `exc`'s cause / context chain
+    (bounded), else None."""
+    seen = {id(exc)}
+    inner = exc.__cause__ or exc.__context__
+    for _ in range(_CHAIN_DEPTH):
+        if inner is None or id(inner) in seen:
+            return None
+        seen.add(id(inner))
+        cls = _own_class(inner, oom_text=True)
+        if cls in _CHAINED_CLASSES:
+            return cls
+        inner = inner.__cause__ or inner.__context__
+    return None
+
+
+def _own_class(exc: BaseException, *, oom_text: bool) -> str:
+    """Classify one exception by its own type, attributes and message."""
+    if isinstance(exc, asyncio.CancelledError):
+        return "cancelled"
+    pre = getattr(exc, "error_class", None)
+    if isinstance(pre, str) and pre in ERROR_CLASSES:
+        return pre
+    name = type(exc).__name__
+    module = getattr(type(exc), "__module__", "") or ""
+    msg = str(exc)
+    if name == "OutOfMemoryError" or (
+            oom_text and isinstance(exc, (RuntimeError, MemoryError))
+            and _OOM_RE.search(msg)):
+        return "cuda_oom"
+    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
+        return "timeout"
+    if module.startswith("av") or name in ("InvalidDataError", "FFmpegError"):
+        return "decode_failed"
+    if isinstance(exc, RuntimeError) and "timed out" in msg.lower():
+        return "timeout"
+    code = getattr(exc, "status_code", None)
+    if isinstance(code, int):
+        if code == 499:
+            return "cancelled"
+        if 400 <= code < 500:
+            return "rejected"
+    return "other"
 
 
 def classify_error(exc: "BaseException | None", *, status: str,
@@ -189,35 +241,23 @@ def classify_error(exc: "BaseException | None", *, status: str,
     """`(error_class, error_stage)` for a finished job: (None, None) when it
     succeeded, else one of ERROR_CLASSES and the stage it was in. An
     exception may pre-classify itself via an `error_class` attribute
-    (url_download.UrlPolicyError does)."""
+    (url_download.UrlPolicyError does). A wrapper's cause chain is read
+    before the wrapper's own message, and a wrapper raised `from` a cause
+    is not taken for an OOM on its own text (the diarization load wrapper
+    says "out of memory or unavailable" over any placement failure)."""
     if status == "ok":
         return None, None
     if status == "cancelled" or isinstance(exc, asyncio.CancelledError):
         return "cancelled", stage
+    if exc is None:
+        return "other", stage
     pre = getattr(exc, "error_class", None)
     if isinstance(pre, str) and pre in ERROR_CLASSES:
         return pre, stage
-    name = type(exc).__name__ if exc is not None else ""
-    module = getattr(type(exc), "__module__", "") or ""
-    msg = str(exc) if exc is not None else ""
-    if name == "OutOfMemoryError" or (
-            isinstance(exc, (RuntimeError, MemoryError)) and _OOM_RE.search(msg)):
-        return "cuda_oom", stage
-    if isinstance(exc, (asyncio.TimeoutError, TimeoutError)):
-        return "timeout", stage
-    if module.startswith("av") or name in ("InvalidDataError", "FFmpegError"):
-        return "decode_failed", stage
-    if isinstance(exc, RuntimeError) and "timed out" in msg.lower():
-        return "timeout", stage
-    code = getattr(exc, "status_code", None)
-    if isinstance(code, int):
-        if code == 499:
-            return "cancelled", stage
-        if 400 <= code < 500:
-            return "rejected", stage
-    if stage in _DECODE_STAGES and exc is not None:
-        return "decode_failed", stage
-    return "other", stage
+    cls = _cause_class(exc)
+    if cls is not None:
+        return cls, stage
+    return _own_class(exc, oom_text=exc.__cause__ is None), stage
 
 
 def gpu_gate_snapshot() -> dict[str, Any]:
@@ -440,8 +480,12 @@ def _errors_in(seconds: float) -> int:
     cutoff = time.time() - seconds
     # _errors_ts is append-ordered; iterate from newest. Bounded by
     # _ERROR_WINDOW_SEC of traffic so this stays O(window) at worst.
+    # Copied first (one C-level step): this runs on the snapshot's worker
+    # thread while record_request appends / poplefts on the loop, and a
+    # Python-level walk of the live deque raised "deque mutated during
+    # iteration".
     n = 0
-    for t in reversed(_errors_ts):
+    for t in reversed(tuple(_errors_ts)):
         if t < cutoff:
             break
         n += 1
@@ -491,7 +535,10 @@ def metrics_snapshot(*, include_identity: bool = False,
     that owner (the /stats "own" page scope); None = every user."""
     durations = sorted(_latency)
     loads_summary = {}
-    for m, v in model_loads.items():
+    # Copies, as in _errors_in: the model-loader threads add keys and trim
+    # buckets while this runs on the snapshot's worker thread.
+    for m, v in list(model_loads.items()):
+        v = list(v)
         if not v:
             continue
         tail = v[-5:]
