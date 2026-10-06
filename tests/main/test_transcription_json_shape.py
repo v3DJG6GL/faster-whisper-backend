@@ -3,7 +3,7 @@ carry the same additive keys as verbose_json: an ignored (locked) client
 override, the applied request profile, and the translation guard's kept
 map — none of them should require verbose_json to be seen."""
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.audio import translation
 from tests.conftest import bearer
 

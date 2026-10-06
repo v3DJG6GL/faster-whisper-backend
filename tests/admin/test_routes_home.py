@@ -38,7 +38,7 @@ def test_root_renders_every_tile_when_admin_ui_enabled(client):
 
 
 def test_root_drops_gated_tiles_when_admin_ui_disabled(app_module, monkeypatch):
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "ADMIN_UI_ENABLED", False)
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as c:
         r = c.get("/")
@@ -54,7 +54,7 @@ def test_root_drops_gated_tiles_when_admin_ui_disabled(app_module, monkeypatch):
 
 
 def test_root_host_gate(app_module, monkeypatch):
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "USER_WEBUI_ALLOWED_HOSTS", [])
     with TestClient(app_module.app, client=("203.0.113.9", 1234)) as c:
         assert c.get("/").status_code == 403

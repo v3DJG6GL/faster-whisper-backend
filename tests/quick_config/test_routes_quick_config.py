@@ -236,7 +236,7 @@ def test_post_patch_oversized_map_400(client, app_module):
 
     slug = _expose_first_map_rule(app_module)
     assert slug is not None, "fixture config has no callback:map rule"
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
 
     cap = quick_config_routes._MAP_MAX_ENTRIES
     # Track the schema rather than re-pinning the literal: this still catches
@@ -530,7 +530,7 @@ def test_concurrent_patches_do_not_lose_an_update(client, app_module,
     import time as _time
     from concurrent.futures import ThreadPoolExecutor
 
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
 
     slug_a = _expose_first_regex_list_rule(app_module)
     slug_b = _expose_first_map_rule(app_module)

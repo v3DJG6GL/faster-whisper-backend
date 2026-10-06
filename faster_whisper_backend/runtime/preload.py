@@ -44,7 +44,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import system_stats

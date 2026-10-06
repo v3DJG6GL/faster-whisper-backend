@@ -9,8 +9,8 @@ must not."""
 
 import asyncio
 
-from faster_whisper_backend import config as cfg
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import config_store
 from faster_whisper_backend import main
 from faster_whisper_backend.admin import routes as admin_routes
 

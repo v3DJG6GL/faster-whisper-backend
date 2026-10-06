@@ -61,6 +61,69 @@ RATE = 16000
 # Cross-cutting singleton reset
 # ---------------------------------------------------------------------------
 
+def _reset_main(main) -> None:
+    # /v1/text/translations rate limiter (module-global fixed-window counter):
+    # clear so a rate-limit test can't 429 a later translate test.
+    main._text_translate_rate.clear()
+    main._JOB_BY_PID.clear()
+    main._PLAN_BY_PID.clear()
+    # Whisper job leases: a leaked lease would make a later eviction test
+    # see a refusal instead of the drop it asserts.
+    main._model_leases.clear()
+
+
+# (module, hook): the hook is the name of a zero-argument function in that
+# module, or a callable taking the module. A hook runs only when its module is
+# already in sys.modules — an unimported module holds no state, and forcing
+# the import would drag heavy modules (main) into pure-unit tests. Exceptions
+# are NOT swallowed: a renamed hook or attribute must fail loudly.
+_RESET_HOOKS: tuple[tuple[str, Any], ...] = (
+    # metrics ring buffers / counters + the published GpuGate
+    ("faster_whisper_backend.stats.metrics", "_reset_for_tests"),
+    # proposer caches
+    ("faster_whisper_backend.captures.merge_proposer", "_reset_for_tests"),
+    # reapply worker state — reset to the module's canonical idle shape.
+    ("faster_whisper_backend.captures.reapply", "_reset_for_tests"),
+    # api-key debounce cache (the index/lockdown are rebuilt by init_db)
+    ("faster_whisper_backend.auth.api_keys_store", "_reset_last_used_cache_for_tests"),
+    # central running-jobs registry
+    ("faster_whisper_backend.core.jobs", "_reset_for_tests"),
+    # held dictation receipts — a leftover would be swept into a later test's
+    # log output, and would count against the pending cap.
+    ("faster_whisper_backend.core.receipt_hold", "_reset_for_tests"),
+    # preload plan registry + warm leases.
+    ("faster_whisper_backend.runtime.preload", "_reset_for_tests"),
+    # The warm predicate is cleared separately from preload's hook: one left
+    # installed in system_stats would keep a later eviction test's model
+    # pinned by a plan this test owned, and the failure would look like a
+    # broken evictor. Also the loaded-model registry behind /stats (stage
+    # tests register stubs in it).
+    ("faster_whisper_backend.runtime.system_stats", "_reset_for_tests"),
+    # session-store caches (the index is rebuilt by init_db)
+    ("faster_whisper_backend.auth.sessions_store", "_reset_for_tests"),
+    # shared per-identity limiters (rate_limit._ALL): one hook clears every
+    # FixedWindow/InFlight bucket, so a limit tripped in one case cannot 429
+    # or refuse a slot in the next. This covers reports' submit limiter too:
+    # reports_routes._rate is a rate_limit.FixedWindow, which registers
+    # itself in rate_limit._ALL on construction.
+    ("faster_whisper_backend.auth.rate_limit", "reset_all"),
+    # streaming session-id registry
+    ("faster_whisper_backend.streaming.routes", "_reset_for_tests"),
+    # translation model LRU + leases
+    ("faster_whisper_backend.audio.translation", "_reset_for_tests"),
+    # Stage-model singletons (pyannote / UVR) + their job leases.
+    ("faster_whisper_backend.audio.diarization", "_reset_for_tests"),
+    ("faster_whisper_backend.audio.bgm_separation", "_reset_for_tests"),
+    # Persisted measured-size ledger: drop the in-memory read cache so a test
+    # that repoints PATH doesn't inherit the previous test's file contents.
+    ("faster_whisper_backend.runtime.model_sizes", "_reset_for_tests"),
+    ("faster_whisper_backend.runtime.stage_rates", "_reset_for_tests"),
+    # main's registries / limiter / leases (these names leave main in later
+    # refactor phases; each new owner module registers its own hook).
+    ("faster_whisper_backend.main", _reset_main),
+)
+
+
 @pytest.fixture(autouse=True)
 def _reset_singletons():
     """Reset module-global mutable state that is NOT tied to a store
@@ -68,171 +131,14 @@ def _reset_singletons():
 
     Store connections themselves are reset by re-`init`/`init_db` in the
     per-store fixtures (each reassigns the module `_conn` global)."""
-    from faster_whisper_backend.stats import metrics
-    from faster_whisper_backend.captures import merge_proposer as proposer
-    from faster_whisper_backend.captures import reapply as captures_reapply
-    from faster_whisper_backend.auth import api_keys_store
-
-    # metrics ring buffers / counters
-    metrics.req_count.clear()
-    metrics.err_count.clear()
-    metrics.guard_hits.clear()
-    metrics._latency.clear()
-    metrics._errors_ts.clear()
-    metrics.model_loads.clear()
-    metrics.in_flight_transcriptions = 0
-    # main.get_inference_semaphore() publishes the gate here and nothing else
-    # resets it; a stale GpuGate is bound to a dead event loop.
-    metrics.gpu_gate = None
-
-    # proposer caches
-    proposer._CACHE.clear()
-    proposer._TRIM_DUR_CACHE.clear()
-
-    # reapply worker state — reset to the module's canonical idle shape.
-    captures_reapply._worker = None
-    captures_reapply._state = {
-        "status": "idle",
-        "started_ts": None,
-        "finished_ts": None,
-        "total": 0,
-        "processed": 0,
-        "captures_updated": 0,
-        "groups_updated": 0,
-        "error": None,
-    }
-
-    # api-key debounce cache (the index/lockdown are rebuilt by init_db)
-    api_keys_store._LAST_USED_CACHE.clear()
-
-    # central running-jobs registry
-    try:
-        from faster_whisper_backend.core import jobs
-        jobs._reset_for_tests()
-    except Exception:
-        pass
-
-    # held dictation receipts — a leftover would be swept into a later test's
-    # log output, and would count against the pending cap.
-    try:
-        from faster_whisper_backend.core import receipt_hold
-        receipt_hold._reset_for_tests()
-    except Exception:
-        pass
-
-    # preload plan registry + warm leases. The warm predicate is cleared
-    # separately from _reset_for_tests: one left installed in system_stats
-    # would keep a later eviction test's model pinned by a plan this test
-    # owned, and the failure would look like a broken evictor.
-    try:
-        from faster_whisper_backend.runtime import preload
-        preload._reset_for_tests()
-    except Exception:
-        pass
-    try:
-        from faster_whisper_backend.runtime import system_stats as _ss
-        _ss.set_warm_predicate(None)
-    except Exception:
-        pass
-
-    # session-store caches (the index is rebuilt by init_db)
-    try:
-        from faster_whisper_backend.auth import sessions_store
-        sessions_store._reset_for_tests()
-    except Exception:
-        pass
-
-    # shared per-identity limiters (rate_limit._ALL): one hook clears every
-    # FixedWindow/InFlight bucket, so a limit tripped in one case cannot 429
-    # or refuse a slot in the next. This covers reports' submit limiter too:
-    # reports_routes._rate is a rate_limit.FixedWindow, which registers
-    # itself in rate_limit._ALL on construction.
-    try:
-        from faster_whisper_backend.auth import rate_limit
-        rate_limit.reset_all()
-    except Exception:
-        pass
-
-    # streaming session-id registry: a socket torn down without the route's
-    # finally would strand an id and make the cap tests' exact-count pins
-    # order-dependent.
-    try:
-        from faster_whisper_backend.streaming import routes as streaming_routes
-        streaming_routes._active_sessions.clear()
-    except Exception:
-        pass
-
-    # translation model LRU (module-global cache of loaded GGUF models —
-    # tests only ever put stubs in it, but they must not leak across tests).
-    try:
-        from faster_whisper_backend.audio import translation
-        translation._models.clear()
-        translation._last_used.clear()
-        # A leaked lease makes every later eviction test see a refusal.
-        translation._active.clear()
-    except Exception:
-        pass
-
-    # Stage-model singletons (pyannote / UVR) + their job leases. Tests only
-    # ever put stubs in them, but a leaked pipeline/lease would change what a
-    # later eviction or cache-hit test observes.
-    try:
-        from faster_whisper_backend.audio import diarization
-        diarization._pipeline = None
-        diarization._pipeline_key = None
-        diarization._leases.clear()
-        diarization._orphans.clear()
-    except Exception:
-        pass
-    try:
-        from faster_whisper_backend.audio import bgm_separation
-        bgm_separation._separator = None
-        bgm_separation._separator_key = None
-        bgm_separation._leases.clear()
-        bgm_separation._orphans.clear()
-    except Exception:
-        pass
-
-    # Loaded-model registry behind /stats: stage tests register stubs in it.
-    try:
-        from faster_whisper_backend.runtime import system_stats
-        system_stats._loaded_models.clear()
-    except Exception:
-        pass
-
-    # Persisted measured-size ledger: drop the in-memory read cache so a test
-    # that repoints PATH doesn't inherit the previous test's file contents.
-    try:
-        from faster_whisper_backend.runtime import model_sizes
-        model_sizes._reset_for_tests()
-        from faster_whisper_backend.runtime import stage_rates
-        stage_rates._reset_for_tests()
-    except Exception:
-        pass
-
-    # /v1/text/translations rate limiter (module-global fixed-window counter):
-    # clear so a rate-limit test can't 429 a later translate test. Guarded on
-    # sys.modules — don't force the heavy main import on pure-unit tests.
-    _main = sys.modules.get("faster_whisper_backend.main")
-    if _main is not None:
-        try:
-            _main._text_translate_rate.clear()
-        except Exception:
-            pass
-        try:
-            _main._JOB_BY_PID.clear()
-        except Exception:
-            pass
-        try:
-            _main._PLAN_BY_PID.clear()
-        except Exception:
-            pass
-        # Whisper job leases: a leaked lease would make a later eviction test
-        # see a refusal instead of the drop it asserts.
-        try:
-            _main._model_leases.clear()
-        except Exception:
-            pass
+    for _name, _hook in _RESET_HOOKS:
+        _mod = sys.modules.get(_name)
+        if _mod is None:
+            continue
+        if isinstance(_hook, str):
+            getattr(_mod, _hook)()
+        else:
+            _hook(_mod)
 
     yield
 
@@ -551,7 +457,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # unconditionally — without this it would wipe the REAL /data/url_media.
     monkeypatch.setenv("WHISPER_URL_MEDIA_DIR", str(tmp_path / "url_media"))
 
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     # Re-apply env onto the already-imported config singleton.
     importlib.reload(cfg)
     monkeypatch.setattr(cfg, "PRELOAD_MODELS", [], raising=False)
@@ -563,7 +469,7 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # state between tests. Repoint both at a per-test temp file. The path is a
     # default ARG (bound at def time), so we rewrite each function's defaults
     # in addition to the module-level constant.
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     _tmp_overrides = str(tmp_path / "config.local.json")
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", _tmp_overrides, raising=False)
     for _fn in (config_store.load_overrides, config_store.save_overrides):

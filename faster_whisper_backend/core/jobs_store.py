@@ -431,7 +431,7 @@ def mark_running_as_failed(error: str) -> int:
     ONE worker (the supported setup): the DB is shared, so with
     SERVER_WORKERS > 1 a respawned worker would fail its siblings' live
     runs — skipped then; prune()'s expiry pass collects the dead rows."""
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     try:
         workers = int(getattr(cfg, "SERVER_WORKERS", 1) or 1)
     except (TypeError, ValueError):
@@ -512,7 +512,7 @@ def sweep_retention() -> int:
     """Hourly sweep entry point (main._jobs_retention_loop): reads the live
     config each call, so a lowered row/byte cap applies on the next tick and
     a lowered TTL to every row stamped (start/finish) from then on."""
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     n = prune(
         ttl_s=float(getattr(cfg, "JOBS_TTL_S", 259_200)),
         max_rows=int(getattr(cfg, "JOBS_MAX_ROWS", 2000)),

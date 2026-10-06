@@ -2,7 +2,7 @@
 header vtag (every shared-header page) / hub build line / settings card."""
 
 from faster_whisper_backend import build_info
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 
 
 def test_header_vtag_shell_carries_no_facts(client):

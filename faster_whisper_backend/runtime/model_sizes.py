@@ -99,7 +99,7 @@ def _read(path: str = PATH) -> dict[str, dict]:
 def _write(models: dict[str, dict], path: str = PATH) -> None:
     # Lazy: config_store drags in pydantic and the whole AdminConfig schema,
     # which this module's importers (system_stats) must not pay for.
-    from faster_whisper_backend.config_store import _save_lock
+    from faster_whisper_backend.settings.config_store import _save_lock
     with _save_lock(path):
         _write_locked(models, path)
 
@@ -108,7 +108,7 @@ def _write_locked(models: dict[str, dict], path: str = PATH) -> None:
     """The write itself; the caller holds config_store._save_lock(path)
     (a plain threading.Lock per path, NOT reentrant — never nest)."""
     global _cache, _cache_mtime
-    from faster_whisper_backend.config_store import _atomic_write_json
+    from faster_whisper_backend.settings.config_store import _atomic_write_json
     doc = {"version": SCHEMA_VERSION, "models": models}
     _atomic_write_json(doc, path, sort_keys=True, tmp_prefix=".model_sizes")
     from faster_whisper_backend.core import store_common
@@ -144,7 +144,7 @@ def record(name: str, device: str, compute_type: str, vram_bytes: int, *,
         # never break a load.
         with contextlib.ExitStack() as stack:
             try:
-                from faster_whisper_backend.config_store import _save_lock
+                from faster_whisper_backend.settings.config_store import _save_lock
                 stack.enter_context(_save_lock(PATH))
                 write = _write_locked
             except OSError:
@@ -263,7 +263,7 @@ def _model_path(name: str) -> "str | None":
 
     The prefixes are the ones preload.stats_key mints: `uvr:`, `gguf:`,
     `pyannote:`, and a bare id for whisper."""
-    from faster_whisper_backend import config as _cfg
+    from faster_whisper_backend.settings import config as _cfg
     root = (getattr(_cfg, "DOWNLOAD_ROOT", "") or "").strip()
     if name.startswith("uvr:"):
         model = name[4:]

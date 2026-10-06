@@ -20,7 +20,7 @@ Conventions:
 import json
 import os
 
-from faster_whisper_backend import config_renames as _renames
+from faster_whisper_backend.settings import config_renames as _renames
 from faster_whisper_backend import paths as _paths  # underscore: not a setting
 
 # Load a local .env file (if present) before any os.environ reads below, so a
@@ -1434,7 +1434,7 @@ del _copy
 #     ENV var  >  config.local.json  >  in-file default (above)
 # Failure to load NEVER raises — see config_store.load_overrides for details.
 try:
-    from faster_whisper_backend.config_store import load_overrides as _load_overrides
+    from faster_whisper_backend.settings.config_store import load_overrides as _load_overrides
 
     for _k, _v in _load_overrides().items():
         globals()[_k] = _v
@@ -1698,8 +1698,8 @@ def _env_reader_kind(field: str, current) -> str:
 
 
 try:
-    from faster_whisper_backend.config_store import AdminConfig as _AdminConfig
-    from faster_whisper_backend.config_store import ENV_VAR_MAPPING as _ENV_VAR_MAPPING
+    from faster_whisper_backend.settings.config_store import AdminConfig as _AdminConfig
+    from faster_whisper_backend.settings.config_store import ENV_VAR_MAPPING as _ENV_VAR_MAPPING
 
     # Snapshot every env-mapped field BEFORE the env layer touches it, so the
     # validation pass at the bottom of this module can put a rejected value
@@ -2189,7 +2189,7 @@ def _legacy_state_warnings(
 # The loader's own constant, so the warning can never name a path the app
 # does not read (the fallback keeps the pydantic-less import path working).
 try:
-    from faster_whisper_backend.config_store import OVERRIDES_PATH as _overrides_path
+    from faster_whisper_backend.settings.config_store import OVERRIDES_PATH as _overrides_path
 except ImportError:
     _overrides_path = (os.environ.get("WHISPER_CONFIG_LOCAL")
                        or os.path.normpath(

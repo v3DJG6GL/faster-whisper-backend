@@ -151,7 +151,7 @@ def test_unreadable_file_degrades_to_no_data(ledger, body):
 # ---------------------------------------------------------------------------
 
 def test_disk_size_reads_a_uvr_onnx_file(ledger, tmp_path, monkeypatch):
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     root = tmp_path / "dl"
     (root / "audio-separator").mkdir(parents=True)
     blob = root / "audio-separator" / "UVR-MDX-NET-Inst_HQ_4.onnx"
@@ -202,7 +202,7 @@ def test_disk_size_uvr_falls_back_to_tempdir_without_download_root(
         ledger, tmp_path, monkeypatch):
     """bgm_separation loads from <tempdir>/audio-separator when DOWNLOAD_ROOT
     is unset — the sizing must look in the same place, not give up."""
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     (tmp_path / "audio-separator").mkdir()
     (tmp_path / "audio-separator" / "Foo.onnx").write_bytes(b"x" * 2048)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
@@ -237,7 +237,7 @@ def test_disk_size_defaults_to_the_hub_cache_without_any_root(
     """Empty DOWNLOAD_ROOT + no HF_HOME is the documented default install
     (.env.example: 'empty = standard HF cache ~/.cache/huggingface'); the
     prior must look there instead of giving up."""
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", "", raising=False)
     # expanduser("~") reads HOME on POSIX and USERPROFILE on Windows (HOME
@@ -258,7 +258,7 @@ def test_disk_size_finds_whisper_under_download_root(
     maps 'large-v3' through faster_whisper's _MODELS table — the prior must
     look where the bytes actually land."""
     pytest.importorskip("faster_whisper")
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
     d = tmp_path / "models--Systran--faster-whisper-large-v3"
@@ -289,7 +289,7 @@ def test_record_merges_a_peer_workers_row_instead_of_clobbering_it(ledger):
 
 
 def test_record_holds_the_cross_process_save_lock(ledger, monkeypatch):
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     entered = []
     real = config_store._save_lock
 

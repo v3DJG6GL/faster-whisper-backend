@@ -330,7 +330,7 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
     if not request_id:
         return
     try:
-        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.settings import config as cfg
         from faster_whisper_backend.stats import recent_transcriptions_store
         if recent_row:
             recent_transcriptions_store.record_timing(
@@ -388,7 +388,7 @@ def record_download(model: str, seconds: float, bytes_done: int, *,
     try:
         import uuid
 
-        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.settings import config as cfg
         from faster_whisper_backend.stats import recent_transcriptions_store
         mb_s = (bytes_done / (1 << 20)) / seconds if seconds > 0 else 0.0
         detail = f"{bytes_done / (1 << 30):.2f} GB · {mb_s:.1f} MB/s"
@@ -500,7 +500,7 @@ def metrics_snapshot(*, include_identity: bool = False,
             "count": len(v),
         }
     try:
-        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.settings import config as cfg
         from faster_whisper_backend.stats import recent_transcriptions_store
         limit = int(getattr(cfg, "STATS_RECENT_TRANSCRIPTIONS_COUNT", 20))
         rows = recent_transcriptions_store.list_recent(limit=max(1, limit),
@@ -532,3 +532,18 @@ def metrics_snapshot(*, include_identity: bool = False,
         "recent_transcriptions": recent,
         "model_loads": loads_summary,
     }
+
+
+def _reset_for_tests() -> None:
+    """Test-only: empty the ring buffers / counters and drop the published
+    GpuGate (get_inference_semaphore() sets it and nothing else resets it; a
+    stale gate is bound to a dead event loop)."""
+    global in_flight_transcriptions, gpu_gate
+    req_count.clear()
+    err_count.clear()
+    guard_hits.clear()
+    _latency.clear()
+    _errors_ts.clear()
+    model_loads.clear()
+    in_flight_transcriptions = 0
+    gpu_gate = None

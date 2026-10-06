@@ -62,7 +62,7 @@ def test_oversize_body_413_before_the_body_is_read(client, monkeypatch):
     # The app-wide Content-Length gate (MAX_REQUEST_BYTES) answers before
     # Starlette buffers the body and json.loads expands it — the store's own
     # blob cap only runs once the dict already exists in memory.
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "MAX_REQUEST_BYTES", 200)
     r = _put(client, {"x": "a" * 5000}, 0)
     assert r.status_code == 413

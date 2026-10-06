@@ -4,7 +4,7 @@ all five sync dialogs against a local list holding an edited rule, a
 not-edited-but-outdated rule and a missing config.json rule, no JS errors.
 """
 
-from faster_whisper_backend import config_store as cs
+from faster_whisper_backend.settings import config_store as cs
 
 
 def _html(client):

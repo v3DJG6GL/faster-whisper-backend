@@ -5,7 +5,7 @@ bare count with a never-disabled add button, so RULE_EDITOR_JS now bakes a
 schema-derived default into the editor itself.
 """
 
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.core import web_common
 
 

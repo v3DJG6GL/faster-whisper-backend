@@ -312,7 +312,7 @@ def _build_host() -> dict[str, Any]:
     cache_dir = os.environ.get("HF_HOME")
     if not cache_dir:
         try:
-            from faster_whisper_backend import config as _cfg
+            from faster_whisper_backend.settings import config as _cfg
             root = (getattr(_cfg, "DOWNLOAD_ROOT", "") or "").strip()
         except Exception:  # noqa: BLE001 — stats only
             root = ""
@@ -378,3 +378,11 @@ def shutdown() -> None:
         except Exception:
             pass
         NVML_OK = False
+
+
+def _reset_for_tests() -> None:
+    """Test-only: clear the warm-lease predicate (one left installed would
+    keep a later eviction test's model pinned by a plan an earlier test
+    owned) and the loaded-model registry stage tests register stubs in."""
+    set_warm_predicate(None)
+    _loaded_models.clear()

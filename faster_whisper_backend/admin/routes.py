@@ -36,12 +36,13 @@ from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend import build_info
-from faster_whisper_backend import config as cfg
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.audio import translation
 from faster_whisper_backend.core import dictation_map
+from faster_whisper_backend.core import log_setup
 from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.auth.dependencies import require_admin
@@ -711,8 +712,7 @@ async def _apply_hot_changes(
     # The console handler's level is read once at import; push the new one.
     # From cfg, not `written`, so an env pin or a reset to baseline wins.
     if "CONSOLE_LOG_LEVEL" in written:
-        from faster_whisper_backend import main as _main
-        _main.apply_console_log_level(getattr(cfg, "CONSOLE_LOG_LEVEL", "warning"))
+        log_setup.apply_console_log_level(getattr(cfg, "CONSOLE_LOG_LEVEL", "warning"))
 
     # save_overrides already bumped the config version when the FILE was
     # written, but the running cfg only got the new values in the setattr loop

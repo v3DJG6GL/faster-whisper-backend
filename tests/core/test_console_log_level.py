@@ -6,21 +6,25 @@ import logging
 
 import pytest
 
+from faster_whisper_backend.core import log_setup
+
 
 @pytest.fixture
 def levels(app_module):
+    # app_module re-imports main, which re-runs log_setup.install(). Read the
+    # handlers through the module afterwards: install() rebinds them.
     # apply_console_log_level moves the ROOT level too; put it back so later
     # tests (caplog) see the import-time state.
     root = logging.getLogger()
-    saved = (app_module._console_handler.level, root.level)
-    yield app_module
-    app_module._console_handler.setLevel(saved[0])
+    saved = (log_setup._console_handler.level, root.level)
+    yield log_setup
+    log_setup._console_handler.setLevel(saved[0])
     root.setLevel(saved[1])
 
 
-def test_default_keeps_info_off_the_console_but_in_the_file(levels):
+def test_default_keeps_info_off_the_console_but_in_the_file(levels, app_module):
     m = levels
-    assert m.cfg.CONSOLE_LOG_LEVEL == "warning"
+    assert app_module.cfg.CONSOLE_LOG_LEVEL == "warning"
     assert m._console_handler.level == logging.WARNING
     assert logging.getLogger().level == logging.INFO
     assert m._file_handler.level == logging.INFO

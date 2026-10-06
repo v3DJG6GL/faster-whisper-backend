@@ -5,7 +5,7 @@ system_stats' loaded-model registry is shared by every model family
 whisper registers bare names), so the card must not read the device off
 whichever family happened to load first."""
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 
 
 def test_identity_device_ignores_cuda_non_decode_model(client, monkeypatch):

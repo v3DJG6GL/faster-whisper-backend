@@ -43,7 +43,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core import net_policy
 from faster_whisper_backend.core import proc as core_proc
 from faster_whisper_backend.core.store_common import log_safe

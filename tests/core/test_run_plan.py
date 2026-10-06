@@ -250,7 +250,7 @@ def test_an_unticked_instant_unit_closes_as_instant(ledger, clock):
 def test_finish_run_writes_the_ledger_once(ledger, clock, monkeypatch):
     """Downloading + diarizing steps + three targets: one locked
     read-modify-write for the whole run, with the same learned rates."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     writes = []
     real = config_store._atomic_write_json
 

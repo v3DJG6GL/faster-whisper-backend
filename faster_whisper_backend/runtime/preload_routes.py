@@ -44,7 +44,7 @@ from typing import Literal
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, Field
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.auth.dependencies import get_current_user
 

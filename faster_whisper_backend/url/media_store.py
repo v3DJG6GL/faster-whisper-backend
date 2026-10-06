@@ -29,10 +29,16 @@ import tempfile
 import time
 import uuid
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core.store_common import secure_dir, secure_file
 
 logger = logging.getLogger("whisper-api")
+
+# A media id is register()'s uuid4().hex. The single definition behind every
+# media-id check: the /v1/audio/url-media|media routes, the package-path body
+# cap in main (built from MEDIA_ID_PATTERN) and the orphan scan below.
+MEDIA_ID_PATTERN = r"[0-9a-f]{32}"
+MEDIA_ID_RE = re.compile(rf"\A{MEDIA_ID_PATTERN}\Z")
 
 # media_id -> {path, ext, kind ("audio"|"video"), user_id,
 #              created (time.monotonic), size, source_url}
@@ -227,9 +233,9 @@ def expires_at_unix(media_id: str) -> "int | None":
     return int(time.time() + max(0.0, remaining))
 
 
-# Name shape register() creates: {32-hex uuid}.{ext}. Anything else in the
-# dir was not put there by this store and is left alone.
-_RETAINED_NAME_RE = re.compile(r"\A[0-9a-f]{32}\Z")
+# Name shape register() creates: {media id}.{ext} (stem checked against
+# MEDIA_ID_RE). Anything else in the dir was not put there by this store and
+# is left alone.
 
 # An on-disk file must be at least this old before the orphan scan trusts
 # "no registry row" — register() moves the file into place from a worker
@@ -257,7 +263,7 @@ def sweep() -> None:
     wall = time.time()
     for name in names:
         stem, _dot, _ext = name.partition(".")
-        if not _RETAINED_NAME_RE.match(stem) or name in live:
+        if not MEDIA_ID_RE.match(stem) or name in live:
             continue
         path = os.path.join(d, name)
         try:

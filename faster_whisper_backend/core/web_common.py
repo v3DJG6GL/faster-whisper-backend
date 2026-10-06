@@ -19,8 +19,8 @@ from typing import Callable
 from fastapi import HTTPException, Request, status
 from starlette.requests import HTTPConnection
 
-from faster_whisper_backend import config as cfg
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import config_store
 
 
 # IPv4-mapped-in-IPv6 prefix surfaces on Windows dual-stack `::` binds when a
@@ -121,7 +121,7 @@ _SEVERITY_LOG: deque[tuple[float, int]] = deque(maxlen=2000)
 class SeverityCounter(logging.Handler):
     """Append (time, levelno) to the in-memory severity ring on every record.
 
-    Attached alongside the existing console+file handlers in main.py. WARNING-
+    Attached alongside the console+file handlers by core/log_setup.py. WARNING-
     and-up only, so the ring stays small under chatty INFO-level traffic."""
 
     def __init__(self) -> None:

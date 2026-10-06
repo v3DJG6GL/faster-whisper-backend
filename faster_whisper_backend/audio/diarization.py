@@ -21,7 +21,7 @@ import os
 import threading
 import time
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.loop_lock import LoopLock
@@ -649,3 +649,14 @@ async def idle_evictor_loop() -> None:
             raise
         except Exception as e:  # noqa: BLE001 — the loop must survive
             logger.error("[diarize] idle evictor error: %s", e)
+
+
+def _reset_for_tests() -> None:
+    """Test-only: drop the pipeline singleton and its job leases; a leaked
+    pipeline/lease would change what a later eviction or cache-hit test
+    observes."""
+    global _pipeline, _pipeline_key
+    _pipeline = None
+    _pipeline_key = None
+    _leases.clear()
+    _orphans.clear()

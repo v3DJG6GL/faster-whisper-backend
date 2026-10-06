@@ -12,7 +12,7 @@ import os
 
 import pytest
 
-from faster_whisper_backend import config
+from faster_whisper_backend.settings import config
 
 
 # ---------------------------------------------------------------------------
@@ -201,7 +201,7 @@ def test_load_defaults_resolves_data_dir_placeholders(monkeypatch, tmp_path):
     # {DATA_DIR}/{DB_DIR}/{MODELS_DIR} placeholders resolve against the data
     # layout knobs (WHISPER_DATA_DIR/WHISPER_DB_DIR/WHISPER_MODELS_DIR —
     # captured at import into _DATA_DIR/_DB_DIR/_MODELS_DIR), NOT the repo
-    # dir. See also tests/config/test_data_dir.py for the end-to-end env → path
+    # dir. See also tests/settings/test_data_dir.py for the end-to-end env → path
     # matrix.
     _write_cfg(tmp_path,
                LOG_FILE="{DATA_DIR}/logs/whisper.log",
@@ -263,7 +263,7 @@ def test_every_admin_field_is_env_mapped():
     # the WebUI "env-pinned" badge, and env > GUI precedence. Every editable
     # AdminConfig field MUST be present (and vice-versa) or it silently loses
     # env-configurability / badging. This guards against future drift.
-    from faster_whisper_backend import config_store as cs
+    from faster_whisper_backend.settings import config_store as cs
     fields = set(cs.AdminConfig.model_fields)
     mapped = set(cs.ENV_VAR_MAPPING)
     assert fields == mapped, (
@@ -272,7 +272,7 @@ def test_every_admin_field_is_env_mapped():
 
 
 def test_env_var_names_are_unique():
-    from faster_whisper_backend import config_store as cs
+    from faster_whisper_backend.settings import config_store as cs
     names = list(cs.ENV_VAR_MAPPING.values())
     assert len(names) == len(set(names)), "duplicate WHISPER_* env var names"
 
@@ -377,7 +377,7 @@ def test_json_pipeline_rules_env_upgrades_an_old_factory_entry(monkeypatch):
     """A WHISPER_PIPELINE_RULES copy written before a factory entry was fixed
     gets the fixed text (config_renames.UPGRADED_RULE_ENTRIES), with a warning."""
     import json as _json
-    from faster_whisper_backend import config_renames
+    from faster_whisper_backend.settings import config_renames
     (old_pat, old_rep), new = config_renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"]
     rules = [
         {"name": "tidy", "label": "Tidy", "type": "regex-list",
@@ -479,7 +479,7 @@ def test_local_overrides_migrate_use_auth_token(tmp_path):
     """A config.local.json from before the rename still carries USE_AUTH_TOKEN;
     load_overrides must migrate the key instead of failing validation (which
     would silently drop EVERY stored override)."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7}),
                  encoding="utf-8")
@@ -563,7 +563,7 @@ def test_reader_level_env_rejection_clears_the_pin(monkeypatch):
     """A value the reader could not parse controls nothing, exactly like one
     the schema pass reverted — so it must land in _ENV_REJECTED and drop out
     of env_pinned_fields(), or the admin's /settings edit never applies."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     try:
         _reload_with_env(
             monkeypatch,
@@ -586,7 +586,7 @@ def test_save_overrides_migrates_use_auth_token(tmp_path):
     surviving pre-rename USE_AUTH_TOKEN key would make AdminConfig
     (extra=forbid) reject EVERY save forever. The first successful write must
     migrate the key and self-heal the file."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"USE_AUTH_TOKEN": "hf_stored", "BEAM_SIZE": 7}),
                  encoding="utf-8")
@@ -687,13 +687,13 @@ def test_legacy_in_repo_state_warns_when_ignored(tmp_path, monkeypatch):
 def test_legacy_state_mapping_uses_the_loader_overrides_path():
     """The startup call feeds config_store.OVERRIDES_PATH (the file the loader
     actually reads) into the mapping — not a re-derived copy of the rule."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     assert config._overrides_path == config_store.OVERRIDES_PATH
 
 def test_legacy_data_dir_root_db_warns_when_ignored(tmp_path):
     """Pre-db-layout compose installs kept SQLite stores at the data-dir
     ROOT; the upgrade note relies on this probe catching them too."""
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     legacy = tmp_path / "api_keys.local.sqlite3"
     legacy.write_bytes(b"")
     warns = cfg._legacy_state_warnings(
@@ -714,7 +714,7 @@ def test_renamed_keys_env_alias_is_table_driven(monkeypatch):
     """Every entry in config_renames.RENAMED_KEYS is honoured as an env alias
     (not only the hand-written HF_TOKEN shim it replaced), and each applied
     alias leaves one startup warning naming both spellings."""
-    from faster_whisper_backend import config_renames
+    from faster_whisper_backend.settings import config_renames
     old, new = "RECENT_TRANSCRIPTIONS_TTL_DAYS", "RECENT_TRANSCRIPTIONS_RETENTION_DAYS"
     assert config_renames.RENAMED_KEYS[old] == new
     try:
@@ -730,7 +730,7 @@ def test_renamed_keys_env_alias_is_table_driven(monkeypatch):
 def test_local_overrides_migrate_renamed_keys(tmp_path):
     """A stored config.local.json still carrying a renamed key is migrated
     for every RENAMED_KEYS entry; a present new key wins over the old one."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"RECENT_TRANSCRIPTIONS_TTL_DAYS": 5,
                              "USE_AUTH_TOKEN": "hf_old", "HF_TOKEN": "hf_new"}),
@@ -749,7 +749,7 @@ def test_local_overrides_survive_legacy_size_cap_keys(tmp_path, old, new, value)
     """The size caps that were folded into MEDIA_MAX_BYTES /
     RETAINED_MEDIA_MAX_BYTES shipped in config.json, so a stored file holds
     them. One such key must not make validation drop every other override."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({old: value, "BEAM_SIZE": 5,
                              "DEFAULT_LANGUAGE": "de"}), encoding="utf-8")
@@ -763,7 +763,7 @@ def test_local_overrides_drop_removed_key_and_keep_siblings(tmp_path, capsys):
     """URL_MAX_BYTES has no successor (its shipped 0 = 'inherit' is not a
     legal MEDIA_MAX_BYTES): it is dropped with a stderr note, never mapped,
     and the rest of the file survives."""
-    from faster_whisper_backend import config_renames, config_store
+    from faster_whisper_backend.settings import config_renames, config_store
     assert "URL_MAX_BYTES" in config_renames.REMOVED_KEYS
     p = tmp_path / "config.local.json"
     p.write_text(json.dumps({"URL_MAX_BYTES": 0, "MAX_UPLOAD_BYTES": 200000000,
@@ -776,7 +776,7 @@ def test_local_overrides_drop_removed_key_and_keep_siblings(tmp_path, capsys):
 def test_removed_keys_are_really_gone():
     """A REMOVED_KEYS entry that is still a config attribute (or also a
     rename source) would be silently discarded from every stored file."""
-    from faster_whisper_backend import config_renames, config_store
+    from faster_whisper_backend.settings import config_renames, config_store
     for key in config_renames.REMOVED_KEYS:
         assert not hasattr(config, key), key
         assert key not in config_store.AdminConfig.model_fields, key
@@ -786,7 +786,7 @@ def test_removed_keys_are_really_gone():
 def test_legacy_upload_cap_env_var_is_aliased():
     """WHISPER_MAX_UPLOAD_BYTES in an existing .env keeps bounding uploads
     instead of silently giving way to the MEDIA_MAX_BYTES default."""
-    from faster_whisper_backend import config_renames
+    from faster_whisper_backend.settings import config_renames
     env = {"WHISPER_MAX_UPLOAD_BYTES": "200000000",
            "WHISPER_URL_MEDIA_MAX_BYTES": "2000000000",
            "WHISPER_URL_MAX_BYTES": "0"}
@@ -800,7 +800,7 @@ def test_every_renamed_key_targets_a_live_field():
     """Each RENAMED_KEYS value must be a real config attribute, and no old
     spelling may still be one — otherwise the alias points into the void or
     the two names silently coexist."""
-    from faster_whisper_backend import config_renames
+    from faster_whisper_backend.settings import config_renames
     for old, new in config_renames.RENAMED_KEYS.items():
         assert hasattr(config, new), new
         assert not hasattr(config, old), old
@@ -810,7 +810,7 @@ def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch):
     """One bad WHISPER_MODEL_OVERRIDE__ value must revert just that field,
     not wipe the whole stored entry from config.local.json for the process
     lifetime (every other env field reverts to its pre-env value)."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     # config.py re-imports load_overrides from config_store on reload and the
     # path default is bound at def time, so patch the function, not the path.
     monkeypatch.setattr(
@@ -830,7 +830,7 @@ def test_per_model_env_override_invalid_keeps_stored_entry(monkeypatch):
 
 
 def test_per_model_env_override_invalid_unknown_field_keeps_stored_entry(monkeypatch):
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(
         config_store, "load_overrides",
         lambda path=None: {"MODEL_OVERRIDES": {"TINY": {"BEAM_SIZE": 3, "VAD_FILTER": False}}})
@@ -860,7 +860,7 @@ def test_per_model_env_override_invalid_without_stored_entry_is_dropped(monkeypa
 def _point_overrides_at(monkeypatch, path):
     """Repoint config_store.load_overrides at `path` the way tests/conftest.py
     does: the module constant AND the def-time-bound default argument."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     monkeypatch.setattr(config_store, "OVERRIDES_PATH", str(path), raising=False)
     _defaults = list(config_store.load_overrides.__defaults__ or ())
     _defaults[-1] = str(path)
@@ -910,7 +910,7 @@ def test_explicitly_empty_env_pins_fields_where_empty_is_a_value(monkeypatch):
     as env-pinned (and the hot-apply path must skip it) instead of letting
     an edit "work" until the next restart. A reader that treats "" as
     "keep current" (BEAM_SIZE) still does not pin."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     try:
         _reload_with_env(
             monkeypatch,

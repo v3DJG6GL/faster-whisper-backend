@@ -7,7 +7,7 @@ import time
 import types
 
 from faster_whisper_backend.auth import api_keys_store
-from faster_whisper_backend import config_store as cs
+from faster_whisper_backend.settings import config_store as cs
 
 
 def _install(monkeypatch, versions):

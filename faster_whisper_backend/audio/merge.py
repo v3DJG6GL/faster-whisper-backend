@@ -46,7 +46,7 @@ MAX_MERGED_SAMPLES = 448_000  # 28 s × 16 kHz (fallback default)
 def _max_merged_samples() -> int:
     """Live merged-WAV sample cap from config (samples = seconds × 16 kHz)."""
     try:
-        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.settings import config as cfg
         cap_s = float(getattr(cfg, "CAPTURES_SAMPLE_MAX_DURATION_S", 29.9))
         return int(cap_s * _REQ_RATE)
     except Exception:

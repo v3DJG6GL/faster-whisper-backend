@@ -33,7 +33,7 @@ import threading
 import time
 from typing import Any
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.captures import store as captures_store
 from faster_whisper_backend.core import store_common
 
@@ -541,3 +541,9 @@ def invalidate(user_id: str | None) -> None:
         return
     _CACHE.pop(_user_cache_key(user_id), None)
     _CACHE.pop(_ALL_USERS, None)
+
+
+def _reset_for_tests() -> None:
+    """Test-only: drop the proposal and trim-duration caches."""
+    _CACHE.clear()
+    _TRIM_DUR_CACHE.clear()

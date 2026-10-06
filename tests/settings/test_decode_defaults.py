@@ -8,7 +8,7 @@ assert the projection, the source categories and the request-profile layering.
 
 import pytest
 
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config_store
 from tests.conftest import bearer
 
 OV = "/settings/overrides"

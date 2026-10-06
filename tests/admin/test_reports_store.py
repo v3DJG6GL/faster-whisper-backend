@@ -222,7 +222,7 @@ def test_clear_all(reports_store_db):
 # ---------------------------------------------------------------------------
 
 def test_evict_closed_before_open(reports_store_db, monkeypatch):
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "REPORTS_MAX", 2, raising=False)
     rs = reports_store_db
     r1, _ = _submit(rs, request_id="r1")
@@ -235,7 +235,7 @@ def test_evict_closed_before_open(reports_store_db, monkeypatch):
 
 
 def test_evict_cap_disabled(reports_store_db, monkeypatch):
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "REPORTS_MAX", 0, raising=False)
     rs = reports_store_db
     for i in range(5):
@@ -248,14 +248,14 @@ def test_evict_cap_disabled(reports_store_db, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_sweep_retention_disabled(reports_store_db, monkeypatch):
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "REPORTS_RETENTION_DAYS", 0, raising=False)
     _submit(reports_store_db)
     assert reports_store_db.sweep_retention() == 0
 
 
 def test_sweep_retention_deletes_old(reports_store_db, monkeypatch):
-    from faster_whisper_backend import config; import time
+    from faster_whisper_backend.settings import config; import time
     monkeypatch.setattr(config, "REPORTS_RETENTION_DAYS", 30, raising=False)
     rs = reports_store_db
     rid, _ = _submit(rs, request_id="old", trace_ts=1.0)

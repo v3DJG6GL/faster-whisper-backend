@@ -508,7 +508,7 @@ def _evict_to_cap(conn: sqlite3.Connection) -> None:
     audio bytes). Drops rows + their audio files in _EVICTION_ORDER
     priority. _lock is already held by the caller."""
     try:
-        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.settings import config as cfg
         row_cap = int(getattr(cfg, "CAPTURES_MAX", 5000))
         mb_cap = int(getattr(cfg, "CAPTURES_MAX_MB", 5000))
     except Exception:
@@ -1226,7 +1226,7 @@ def sweep_retention() -> int:
     the members, which the ordinary sweep below then applies the same age rule
     to. The size and count caps still spare grouped rows; retention does not."""
     try:
-        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.settings import config as cfg
         days = int(getattr(cfg, "CAPTURES_RETENTION_DAYS", 0))
     except Exception:
         return 0

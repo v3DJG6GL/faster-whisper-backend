@@ -124,7 +124,7 @@ def _count(n) -> int:
 
 def _write_locked(rates: dict[str, dict]) -> None:
     global _cache, _cache_mtime
-    from faster_whisper_backend.config_store import _atomic_write_json
+    from faster_whisper_backend.settings.config_store import _atomic_write_json
     from faster_whisper_backend.core import store_common
     path = _path()
     _atomic_write_json({"version": SCHEMA_VERSION, "rates": rates}, path,
@@ -183,7 +183,7 @@ def record_many(samples) -> None:
     with _lock:
         with contextlib.ExitStack() as stack:
             try:
-                from faster_whisper_backend.config_store import _save_lock
+                from faster_whisper_backend.settings.config_store import _save_lock
                 stack.enter_context(_save_lock(_path()))
             except OSError:
                 pass   # lock timeout: write unlocked rather than lose the sample

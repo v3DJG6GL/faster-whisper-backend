@@ -37,7 +37,7 @@ def test_render_page_key_tracks_hot_mutable_cfg(monkeypatch):
     """ADMIN_UI_ENABLED and the two LOG_VIEWER_* values are mutated at runtime
     by the settings save path, so they are part of the key rather than read at
     import."""
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     from faster_whisper_backend.core import web_common
 
     monkeypatch.setattr(cfg, "ADMIN_UI_ENABLED", True, raising=False)

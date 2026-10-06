@@ -254,7 +254,7 @@ def test_open_mode_remote_admits_from_widened_admin_allowlist(
     # Widening ADMIN_WEBUI_ALLOWED_HOSTS (what an operator administering a
     # container from the LAN must already do to reach /settings/api-keys) also
     # extends the open-mode synthetic admin to that host — and no further.
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(
         cfg, "ADMIN_WEBUI_ALLOWED_HOSTS", ["203.0.113.0/24"], raising=False,
     )
@@ -297,7 +297,7 @@ def test_logs_data_locked_no_key_401(client, make_user_key):
 def test_user_host_narrowing_blocks_shell(client, make_user_key, monkeypatch):
     # Narrowing USER_WEBUI_ALLOWED_HOSTS to loopback blocks a remote host from
     # even the user-page shell (the host gate fires before the in-page login).
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     make_user_key("root", is_admin=True)
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False

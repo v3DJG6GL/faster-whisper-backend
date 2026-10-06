@@ -66,7 +66,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
 from faster_whisper_backend.auth import dependencies as auth
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.core import decode_trace
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.stats import metrics
@@ -1896,3 +1896,9 @@ async def dictate_page() -> HTMLResponse:
         web_common.render_page(template, current="dictate"),
         headers={"Cache-Control": "no-store"},
     )
+
+
+def _reset_for_tests() -> None:
+    """Test-only: a socket torn down without the route's finally would strand
+    an id and make the cap tests' exact-count pins order-dependent."""
+    _active_sessions.clear()

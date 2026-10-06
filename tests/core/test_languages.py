@@ -2,7 +2,7 @@
 
 from faster_whisper.tokenizer import _LANGUAGE_CODES
 
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.core import languages
 
 

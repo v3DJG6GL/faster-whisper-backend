@@ -20,7 +20,7 @@ from faster_whisper_backend.paths import REPO_ROOT as _REPO
 _WIN = os.name == "nt"
 
 _PROBE = (
-    "import json; from faster_whisper_backend import config, config_store; "
+    "import json; from faster_whisper_backend.settings import config, config_store; "
     "print(json.dumps({"
     "'api': config.API_KEYS_DB, "
     "'cs': config.CLIENT_SETTINGS_DB, "

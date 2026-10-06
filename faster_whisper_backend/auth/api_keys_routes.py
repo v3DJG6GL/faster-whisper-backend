@@ -157,8 +157,8 @@ async def api_keys_page() -> HTMLResponse:
     dependencies=[Depends(require_admin)],
 )
 async def list_users_api() -> JSONResponse:
-    from faster_whisper_backend import config as cfg
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config as cfg
+    from faster_whisper_backend.settings import config_store
     # Snapshot of every exposed (non-terminal) rule's tag list. Lets
     # the matrix UI render the "Will see: N of M rules" preview live
     # as the admin edits a user's tags — no extra roundtrip.

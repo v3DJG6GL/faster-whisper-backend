@@ -193,7 +193,7 @@ def test_disk_free_reads_the_download_root_drive(monkeypatch, tmp_path):
     """/stats labels it "disk free (model cache)": with HF_HOME unset the
     cache is <DOWNLOAD_ROOT>/hf, not the OS drive's ~/.cache/huggingface —
     and a not-yet-created hf/ dir still resolves to its parent's drive."""
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", str(tmp_path), raising=False)
     seen = []

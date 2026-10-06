@@ -48,7 +48,7 @@ from pydantic import BaseModel, Field
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
 from faster_whisper_backend.captures import store as captures_store
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.auth import rate_limit
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import text_corrections

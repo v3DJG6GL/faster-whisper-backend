@@ -13,8 +13,8 @@ import os
 import pytest
 from pydantic import ValidationError
 
-from faster_whisper_backend import config as cs_config
-from faster_whisper_backend import config_store as cs
+from faster_whisper_backend.settings import config as cs_config
+from faster_whisper_backend.settings import config_store as cs
 
 
 def _ok(**fields):
@@ -845,7 +845,7 @@ def test_sample_sizing_absent_field_uses_baseline_not_live_override(monkeypatch)
     # time (config import) it is the bare default — that asymmetry let a save
     # pass validation, then the next restart's load fail it and silently drop
     # EVERY override on disk.
-    from faster_whisper_backend import config as _cfg
+    from faster_whisper_backend.settings import config as _cfg
 
     # Simulate a server running with a previously-applied TARGET override of 5.
     monkeypatch.setattr(_cfg, "CAPTURES_PROPOSER_TARGET_S", 5.0, raising=False)
@@ -951,7 +951,7 @@ def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
     would stop an admin's edit from ever reaching the live cfg."""
     import importlib
 
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     try:
         monkeypatch.setenv("WHISPER_BEAM_SIZE", "9999")   # fails Field(le=...)
         importlib.reload(config)

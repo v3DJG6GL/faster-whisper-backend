@@ -44,7 +44,7 @@ import time
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
@@ -1436,3 +1436,12 @@ async def translate_segments(
             _release_model(ref)
 
     return results, warnings, meta
+
+
+def _reset_for_tests() -> None:
+    """Test-only: empty the loaded-model LRU (tests only ever put stubs in
+    it) and the job leases — a leaked lease makes every later eviction test
+    see a refusal."""
+    _models.clear()
+    _last_used.clear()
+    _active.clear()

@@ -122,7 +122,7 @@ def test_host_gate_rejects_non_loopback(app_module, monkeypatch):
     # /captures is user-tier (require_user_webui_host / USER_WEBUI_ALLOWED_HOSTS).
     # The list defaults OPEN, so narrow it to loopback to exercise the host gate:
     # a non-loopback host is then 403 before the page-permission check.
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
     )

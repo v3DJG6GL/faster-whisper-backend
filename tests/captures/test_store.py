@@ -523,7 +523,7 @@ def test_clear_all_wipes_rows_and_files(captures_store_db, groups_store_db, monk
 
 def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     # Insert 3 rows then cap to 2 — eviction should drop the dismissed one
     # before any new/ready row (priority order).
     monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
@@ -545,7 +545,7 @@ def test_evict_priority_dismissed_first(captures_store_db, monkeypatch, tmp_path
 def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
     gs = groups_store_db
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_MAX", 5000, raising=False)
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 5000, raising=False)
     member = _make(cs, monkeypatch, tmp_path)
@@ -572,7 +572,7 @@ def test_evict_excludes_group_members(captures_store_db, groups_store_db, monkey
 
 def test_evict_disabled_when_caps_below_one(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_MAX", 0, raising=False)
     monkeypatch.setattr(config, "CAPTURES_MAX_MB", 0, raising=False)
     for _ in range(4):
@@ -630,7 +630,7 @@ def test_reconcile_skips_groups_subtree(captures_store_db, monkeypatch, tmp_path
 
 def test_sweep_retention_disabled(captures_store_db, monkeypatch, tmp_path):
     cs = captures_store_db
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 0, raising=False)
     _make(cs, monkeypatch, tmp_path)
     assert cs.sweep_retention() == 0
@@ -639,7 +639,7 @@ def test_sweep_retention_disabled(captures_store_db, monkeypatch, tmp_path):
 def test_sweep_retention_deletes_old(captures_store_db, monkeypatch, tmp_path):
     import time
     cs = captures_store_db
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     old = _make(cs, monkeypatch, tmp_path)
     _make(cs, monkeypatch, tmp_path)  # fresh
@@ -672,7 +672,7 @@ def test_sweep_retention_protects_members_of_a_current_sample(
     import time
     cs = captures_store_db
     gs = groups_store_db
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     member = _make(cs, monkeypatch, tmp_path)
     _group_one(cs, gs, "gretention000000", member,
@@ -712,7 +712,7 @@ def test_sweep_retention_expires_an_over_age_sample_and_its_members(
     import time
     cs = captures_store_db
     gs = groups_store_db
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "CAPTURES_RETENTION_DAYS", 30, raising=False)
     member = _make(cs, monkeypatch, tmp_path)
     sid = "gretentionold000"

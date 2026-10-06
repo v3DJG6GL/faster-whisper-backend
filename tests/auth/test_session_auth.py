@@ -176,7 +176,7 @@ def test_revoked_key_session_dies(client, make_user_key):
 def test_pre_migration_session_without_key_still_works(client, make_user_key):
     """A session created before login stamped key_id (key_id NULL in the DB)
     keeps authenticating with the old no-key-layer behaviour."""
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     from faster_whisper_backend.auth import sessions_store
     make_user_key("root", is_admin=True)
     uid, _raw = make_user_key("alice", pages={"quick_config": "own"})
@@ -210,7 +210,7 @@ def test_session_use_touches_key_last_used(client, make_user_key):
 # --- Secure flag ------------------------------------------------------------
 
 def test_secure_flag_marks_cookies(client, make_user_key, monkeypatch):
-    from faster_whisper_backend import config
+    from faster_whisper_backend.settings import config
     monkeypatch.setattr(config, "SESSION_COOKIE_SECURE", True)
     _uid, raw = make_user_key("root", is_admin=True)
     r = client.post("/auth/login", json={"key": raw})
@@ -546,7 +546,7 @@ def test_revoke_session_bumps_config_version(client, make_user_key):
     streaming socket re-authenticates only on that counter
     (streaming.routes._refresh_ident), so without the bump it kept decoding
     for the signed-out identity."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     _uid, raw = make_user_key("root", is_admin=True)
     tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
     v0 = config_store.config_version()

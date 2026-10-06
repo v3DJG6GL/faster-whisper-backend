@@ -3,7 +3,7 @@ deliberately importable on its own, stdlib + fastapi + config only)."""
 
 import pytest
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.auth import rate_limit
 
 

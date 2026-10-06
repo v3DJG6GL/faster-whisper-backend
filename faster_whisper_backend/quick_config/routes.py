@@ -44,8 +44,8 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 
-from faster_whisper_backend import config as cfg
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.quick_config import state as quick_config_state
 from faster_whisper_backend.stats import recent_transcriptions_store

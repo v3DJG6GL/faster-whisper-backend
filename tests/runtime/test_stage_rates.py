@@ -87,7 +87,7 @@ def test_a_hand_edited_count_never_raises(ledger):
 
 
 def test_record_many_is_one_write_folded_in_order(ledger, monkeypatch):
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     writes = []
     real = config_store._atomic_write_json
 

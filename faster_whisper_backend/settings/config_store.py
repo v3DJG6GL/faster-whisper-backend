@@ -30,7 +30,7 @@ import time
 from pathlib import PurePath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
-from faster_whisper_backend import config_renames as _renames
+from faster_whisper_backend.settings import config_renames as _renames
 from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.paths import REPO_ROOT
 
@@ -2535,7 +2535,7 @@ class AdminConfig(BaseModel):
         # That asymmetry let a save pass validation, then the next restart's
         # load fail it and silently drop EVERY override on disk. _BASELINE is
         # identical at both times, so the two validations always agree.
-        from faster_whisper_backend import config as _cfg
+        from faster_whisper_backend.settings import config as _cfg
         _base = getattr(_cfg, "_BASELINE", {})
 
         def _default(name: str) -> float:
@@ -2564,7 +2564,7 @@ class AdminConfig(BaseModel):
         # media POST hits the media-specific 413 that names the right setting.
         # Enforce it on the EFFECTIVE values with the same _BASELINE fallback
         # as _validate_sample_sizing (see the rationale there).
-        from faster_whisper_backend import config as _cfg
+        from faster_whisper_backend.settings import config as _cfg
         _base = getattr(_cfg, "_BASELINE", {})
 
         def _default(name: str) -> int:
@@ -2583,7 +2583,7 @@ class AdminConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_recording_duration(self) -> "AdminConfig":
-        from faster_whisper_backend import config as _cfg
+        from faster_whisper_backend.settings import config as _cfg
         _base = getattr(_cfg, "_BASELINE", {})
 
         def _default(name: str) -> float:
@@ -2603,7 +2603,7 @@ class AdminConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_buffer_trim_order(self) -> "AdminConfig":
-        from faster_whisper_backend import config as _cfg
+        from faster_whisper_backend.settings import config as _cfg
         _base = getattr(_cfg, "_BASELINE", {})
 
         def _default(name: str) -> float:
@@ -2623,7 +2623,7 @@ class AdminConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_custom_template(self) -> "AdminConfig":
-        from faster_whisper_backend import config as _cfg
+        from faster_whisper_backend.settings import config as _cfg
         _base = getattr(_cfg, "_BASELINE", {})
         family = (self.TRANSLATION_PROMPT_FAMILY
                   if self.TRANSLATION_PROMPT_FAMILY is not None
@@ -2646,7 +2646,7 @@ class AdminConfig(BaseModel):
     # names make every cookie login fail (the CSRF token is read as the session).
     @model_validator(mode="after")
     def _validate_cookie_names_differ(self) -> "AdminConfig":
-        from faster_whisper_backend import config as _cfg
+        from faster_whisper_backend.settings import config as _cfg
         _base = getattr(_cfg, "_BASELINE", {})
         sess = (self.SESSION_COOKIE_NAME
                 if self.SESSION_COOKIE_NAME is not None
@@ -4011,7 +4011,7 @@ def env_pinned_fields() -> dict[str, str]:
     apply path skips pinned names, so a stale badge would also stop an
     admin's edit from ever reaching the live cfg.
     """
-    from faster_whisper_backend import config as _cfg  # deferred — config imports this module at import
+    from faster_whisper_backend.settings import config as _cfg  # deferred — config imports this module at import
     _rejected = getattr(_cfg, "_ENV_REJECTED", ())
     # An explicitly EMPTY var pins the fields whose reader treats "" as a
     # value (None / "" / [] / empty set — e.g. WHISPER_ALLOWED_MODELS="" is
@@ -4053,7 +4053,7 @@ def format_validation_errors(err: ValidationError) -> list[dict[str, str]]:
 def _canonical_rule_slugs() -> set[str]:
     """The set of rule slugs in the live PIPELINE_RULES list (post-load dicts
     or rule objects), for cross-checking per-identity include/exclude."""
-    from faster_whisper_backend import config as _cfg
+    from faster_whisper_backend.settings import config as _cfg
     out: set[str] = set()
     for r in (getattr(_cfg, "PIPELINE_RULES", None) or []):
         name = r.get("name") if isinstance(r, dict) else getattr(r, "name", None)
@@ -4085,7 +4085,7 @@ def validate_profile_refs(names: Any) -> list[str]:
         return []
     if not isinstance(names, list):
         raise ValueError("profiles must be a list of strings")
-    from faster_whisper_backend import config as _cfg
+    from faster_whisper_backend.settings import config as _cfg
     available = set((getattr(_cfg, "OVERRIDE_PROFILES", None) or {}).keys())
     out: list[str] = []
     seen: set[str] = set()

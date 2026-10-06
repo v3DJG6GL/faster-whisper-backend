@@ -238,7 +238,7 @@ def test_config_version_bumps_on_binding_and_profile_changes(client, make_user_k
     """Saving a profile or a per-user / per-key binding bumps config_store's
     version counter — the signal a live streaming connection polls to know it
     must re-resolve its ident (so edits apply without a reconnect)."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)
     v0 = config_store.config_version()

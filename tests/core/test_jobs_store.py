@@ -253,7 +253,7 @@ def test_mark_running_as_failed_flips_only_running_rows(db):
 
 def test_mark_running_as_failed_is_skipped_with_several_workers(db, monkeypatch):
     # The DB is shared: a respawned worker must not fail its siblings' runs.
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(cfg, "SERVER_WORKERS", 4, raising=False)
     a = _start(db, job_id="a" * 32)
     assert db.mark_running_as_failed("server restarted") == 0
@@ -268,7 +268,7 @@ def test_delete_and_clear(db):
 
 
 def test_sweep_retention_reads_live_config(db, monkeypatch):
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     _start(db, job_id="a" * 32)
     time.sleep(0.01)
     monkeypatch.setattr(cfg, "JOBS_TTL_S", 1, raising=False)

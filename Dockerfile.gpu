@@ -4,7 +4,7 @@
 # HOST requirements: an NVIDIA driver (CUDA 12.x-capable) + the NVIDIA Container
 # Toolkit, and the container must be started with GPU access — see
 # docker-compose.gpu.yml. With no GPU visible at runtime, model load
-# auto-falls back to CPU/int8 (faster_whisper_backend/config.py MODEL_DEVICE_FALLBACK), still functional.
+# auto-falls back to CPU/int8 (faster_whisper_backend/settings/config.py MODEL_DEVICE_FALLBACK), still functional.
 #
 # Build/run:
 #   docker compose -f docker-compose.gpu.yml up -d   (standalone GPU compose file)

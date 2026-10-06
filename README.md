@@ -193,7 +193,7 @@ print(r.text)
 
 ## Configuration
 
-**Every** factory default — models, default prompt, server host/port, log paths, faster-whisper transcribe defaults, **and** the post-processing pipeline rules — lives in the committed **`config.json`** at the repo root (single source of truth; `faster_whisper_backend/config.py` only loads it and layers the overrides below on top). Edit it directly to change a default for every deployment, then restart the service (`systemctl restart whisper-api` / `Restart-Service WhisperAPI` / the `/settings` restart button) to pick up the changes. The algorithm code in `faster_whisper_backend/main.py` doesn't need to be touched.
+**Every** factory default — models, default prompt, server host/port, log paths, faster-whisper transcribe defaults, **and** the post-processing pipeline rules — lives in the committed **`config.json`** at the repo root (single source of truth; `faster_whisper_backend/settings/config.py` only loads it and layers the overrides below on top). Edit it directly to change a default for every deployment, then restart the service (`systemctl restart whisper-api` / `Restart-Service WhisperAPI` / the `/settings` restart button) to pick up the changes. The algorithm code in `faster_whisper_backend/main.py` doesn't need to be touched.
 
 Layers of overrides, **env wins over file wins over in-repo default**:
 
@@ -594,7 +594,7 @@ A single ordered list of rules — `cfg.PIPELINE_RULES` — is applied to each t
 - `callback:upper` — capitalize after sentence terminator
 - `terminal` — final `lstrip(" \t\r") + rstrip(" \t\r")`; always last (preserves leading/trailing `\n`)
 
-The 15 seeded cards handle orthography normalization (`ß`→`ss`), Whisper noise stripping, dictation (`Punkt`→`.`, `neue Zeile`→`\n`, …), and tidy spacing/newlines/capitalization. They live in the committed **`config.json`** (the `PIPELINE_RULES` array, next to all the scalar defaults); `faster_whisper_backend/config.py` loads that file at startup. Each rule carries an optional `note` field documenting its rationale.
+The 15 seeded cards handle orthography normalization (`ß`→`ss`), Whisper noise stripping, dictation (`Punkt`→`.`, `neue Zeile`→`\n`, …), and tidy spacing/newlines/capitalization. They live in the committed **`config.json`** (the `PIPELINE_RULES` array, next to all the scalar defaults); `faster_whisper_backend/settings/config.py` loads that file at startup. Each rule carries an optional `note` field documenting its rationale.
 
 **Ordering invariants:** `de-dictation-map` multi-word phrases must precede their single-word components (the alternation regex is rebuilt longest-first, so the longest phrase wins); the `terminal` trim rule is always last.
 

@@ -17,7 +17,7 @@ def hub_cache_dir() -> "str | None":
     hf_home = os.environ.get("HF_HOME")
     if hf_home:
         return os.path.join(hf_home, "hub")
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     download_root = (getattr(cfg, "DOWNLOAD_ROOT", None) or "").strip()
     if download_root:
         return os.path.join(download_root, "hf", "hub")

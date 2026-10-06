@@ -2,14 +2,14 @@
 
 These exercise effective_config._resolve_from_layers (the pure core) and the
 config_store schema. No faster-whisper / DB needed — runnable on the web-only
-box with `pytest -o addopts="" tests/config/test_effective_config.py`.
+box with `pytest -o addopts="" tests/settings/test_effective_config.py`.
 """
 
 import pytest
 
-from faster_whisper_backend import config as cfg
-from faster_whisper_backend import config_store as cs
-from faster_whisper_backend import effective_config as ec
+from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import config_store as cs
+from faster_whisper_backend.settings import effective_config as ec
 
 
 # --- layer builders -------------------------------------------------------

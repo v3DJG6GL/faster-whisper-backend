@@ -18,7 +18,7 @@ public knowledge as the shared nav links every page already embeds.
 from fastapi import APIRouter, Depends
 from fastapi.responses import HTMLResponse
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.core.web_common import render_page, require_user_webui_host
 
 router = APIRouter()

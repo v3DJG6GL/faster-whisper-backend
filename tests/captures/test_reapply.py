@@ -181,7 +181,7 @@ def test_run_passes_the_row_language_and_updates_the_capture(
     """The rows are sqlite3.Row, which has no .get(): `r.get("language")`
     raised inside the per-row try, so EVERY capture was logged as skipped
     and the job still finished "done" with captures_updated == 0."""
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
 
     cs = captures_store_db
     monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None,
@@ -207,7 +207,7 @@ def test_run_passes_the_row_language_and_updates_the_capture(
 def test_run_training_pass_gets_the_language_too(
         captures_store_db, fake_main, monkeypatch, caplog):
     """Second call site: the captures-excludes training-form pass."""
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
 
     cs = captures_store_db
     monkeypatch.setattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", ["some-rule"],

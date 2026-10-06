@@ -23,7 +23,7 @@ def _fits(monkeypatch, verdict=(True, None)):
 
 
 def _enable(monkeypatch, **over):
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     defaults = {
         "MODEL_PRELOAD_ENABLED": True,
         "MODEL_PRELOAD_WARM_TTL_S": 180,

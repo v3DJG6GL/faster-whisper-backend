@@ -6,7 +6,7 @@ used to be swallowed as "not set".
 
 import json
 
-from faster_whisper_backend import effective_config as ec
+from faster_whisper_backend.settings import effective_config as ec
 from tests.conftest import bearer
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}

@@ -14,7 +14,6 @@ import ctypes
 import functools
 import importlib
 import logging
-import logging.handlers
 import math
 import re
 import shutil
@@ -36,13 +35,13 @@ from faster_whisper_backend.core.languages import (
     language_codes, language_label)
 from faster_whisper_backend.core import seam_holdback as _seam_holdback
 
-from faster_whisper_backend import config as cfg
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import config_store
 # system_stats imports psutil + pynvml at module load and primes psutil's
 # non-blocking counters. Imported here (early) so the priming happens before
 # any request handler runs.
 from faster_whisper_backend.runtime import system_stats
-# Imported for the log-file mode hardening below; module-level cost is nil (os).
+# log_safe (below); module-level cost is nil (os).
 from faster_whisper_backend.core import store_common
 # Text-to-text translation stage (llama.cpp GGUF). Module-level import is
 # deliberate and cheap — like diarization/bgm_separation the module is
@@ -52,125 +51,17 @@ from faster_whisper_backend.audio import translation as _tr
 # Shared per-identity limiters. Imports only stdlib + fastapi + config, so it
 # is safe this early and cannot close an import cycle back through main.
 from faster_whisper_backend.auth import rate_limit as _rl
+# The media-id regex (MEDIA_ID_RE / MEDIA_ID_PATTERN) is defined once there.
+# Imports only stdlib + config + store_common.
+from faster_whisper_backend.url import media_store as url_media_store
 
-# =============================================================================
-# Logging setup: stderr (with colors when TTY) + rotating file (no colors)
-# =============================================================================
-# Log path and rotation policy come from config.py / WHISPER_LOG_FILE.
-# The file copy strips ANSI escape codes so it stays grep-friendly and the
-# /logs web viewer can re-color via CSS based on content.
-# An uncreatable log dir (e.g. the container-first /data default on a
-# bare-metal box without WHISPER_DATA_DIR) must not kill the import — the
-# server degrades to stderr-only logging, the standard container posture.
-_log_dir_ok = True
-_log_dir_new = not os.path.isdir(os.path.dirname(cfg.LOG_FILE) or ".")
-try:
-    os.makedirs(os.path.dirname(cfg.LOG_FILE) or ".", exist_ok=True)
-except OSError as _log_exc:
-    _log_dir_ok = False
-    print(
-        f"WARNING: cannot create log directory for {cfg.LOG_FILE!r} ({_log_exc}) "
-        "— file logging disabled, logging to stderr only. Set WHISPER_LOG_FILE "
-        "or WHISPER_DATA_DIR to a writable location.",
-        file=sys.stderr,
-    )
-
-_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
-
-
-class _StripAnsiFormatter(logging.Formatter):
-    # Emit file timestamps in UTC (ISO-8601 with a trailing 'Z'). The log file
-    # is then unambiguous regardless of the server's timezone; the /logs web
-    # viewer converts each line to the reader's local time (like every other
-    # timestamp surface). gmtime is a class attribute so it applies to asctime.
-    converter = time.gmtime
-
-    def format(self, record: logging.LogRecord) -> str:
-        return _ANSI_ESCAPE_RE.sub("", super().format(record))
-
-
-_root = logging.getLogger()
-_root.setLevel(logging.INFO)
-# Remove any handlers a previous import (or basicConfig) added so we don't
-# double-log on auto-reload.
-for _h in list(_root.handlers):
-    _root.removeHandler(_h)
-    _h.close()
-
-_console_handler = logging.StreamHandler(sys.stderr)
-_console_handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
-_root.addHandler(_console_handler)
-
-class _SecureRotatingFileHandler(logging.handlers.RotatingFileHandler):
-    # Every request block written here carries RAW WHISPER / FINAL transcript
-    # text, the upload filename, the username and the key label — the same
-    # plaintext dictation store_common.secure_db_file() keeps at 0600 in the
-    # SQLite stores. The handler would otherwise create the file at the process
-    # umask (0644 typical), so tighten it on open and after every rollover.
-    def _open(self):  # type: ignore[override]
-        stream = super()._open()
-        store_common.secure_file(self.baseFilename)
-        return stream
-
-
-def _secure_log_dir(path: str, created: bool) -> None:
-    # Only a directory WE created is ours to lock down. LOG_FILE is an
-    # operator-supplied path, so a pre-existing directory (e.g. /var/log on a
-    # root-run install) must not be re-permissioned to 0700 under the server —
-    # that locks every other user and daemon out of it. The log file itself is
-    # still tightened unconditionally by _SecureRotatingFileHandler.
-    if created:
-        store_common.secure_dir(path)
-
-
-if _log_dir_ok:
-    _secure_log_dir(os.path.dirname(cfg.LOG_FILE), _log_dir_new)
-    _file_handler = _SecureRotatingFileHandler(
-        cfg.LOG_FILE, maxBytes=cfg.LOG_MAX_BYTES, backupCount=cfg.LOG_BACKUP_COUNT,
-        encoding="utf-8",
-    )
-    _file_handler.setFormatter(_StripAnsiFormatter(
-        "%(asctime)s %(levelname)s %(name)s %(message)s",
-        datefmt="%Y-%m-%dT%H:%M:%SZ",   # UTC (converter=gmtime); viewer localizes
-    ))
-    # Pinned so the file (and /logs) reads the same whatever the console
-    # level is — CONSOLE_LOG_LEVEL=debug lowers the ROOT level, see below.
-    _file_handler.setLevel(logging.INFO)
-    _root.addHandler(_file_handler)
-
-# Tail WARNING+ records into an in-memory ring used by the nav-row severity
-# pills and the /stats page. Does no I/O — append to a deque and return.
-from faster_whisper_backend.core.web_common import SeverityCounter
+# Logging: root handlers (stderr console, rotating owner-only file, severity
+# ring) — see core/log_setup.py. Installed here, before the heavy imports below,
+# so their import-time log lines already reach the file.
+from faster_whisper_backend.core import log_setup
 from faster_whisper_backend.paths import REPO_ROOT
-_root.addHandler(SeverityCounter())
 
-
-def apply_console_log_level(name: object) -> None:
-    """Point the stderr handler (docker logs / journald) at CONSOLE_LOG_LEVEL.
-
-    The root level follows it down to DEBUG only — never up — so INFO keeps
-    reaching the file handler (pinned at INFO above) at every setting. Called
-    at import and again by the settings save path when the field changes."""
-    lvl = getattr(logging, str(name or "").strip().upper(), None)
-    if not isinstance(lvl, int):
-        lvl = logging.WARNING
-    _console_handler.setLevel(lvl)
-    _root.setLevel(min(logging.INFO, lvl))
-
-
-apply_console_log_level(getattr(cfg, "CONSOLE_LOG_LEVEL", "warning"))
-if _console_handler.level > logging.INFO:
-    # A quiet `docker logs` should not look like a dead server. handle()
-    # skips the level check, and the record goes to the console ONLY — not
-    # the file, not the severity pills.
-    _console_handler.handle(logging.LogRecord(
-        "whisper-api", logging.INFO, __file__, 0,
-        "console log level is %s: INFO lines (including each transcription's "
-        "log block) %s. Change CONSOLE_LOG_LEVEL under Settings > Logging.",
-        (logging.getLevelName(_console_handler.level),
-         f"go only to {cfg.LOG_FILE} and the /logs page" if _log_dir_ok
-         else "are not written anywhere (the log file is unavailable)"),
-        None))
+log_setup.install()
 
 logger = logging.getLogger("whisper-api")
 
@@ -2307,7 +2198,7 @@ def build_ident(user: "dict | None", model_id: "str | None",
     folded) — equivalent to threading ident=None. ``with_provenance`` adds the
     per-field layer stack (GET /v1/request-default-settings names each value's
     source)."""
-    from faster_whisper_backend import effective_config
+    from faster_whisper_backend.settings import effective_config
     user = user or {}
     return effective_config.resolve(
         model_id,
@@ -3880,7 +3771,8 @@ async def _csrf_mw(request: Request, call_next):
 # Non-JSON, non-multipart bodies never legitimately approach the media cap;
 # they keep the pre-media-cap service ceiling.
 _NON_UPLOAD_BODY_BACKSTOP = 268_435_456
-_MEDIA_PACKAGE_PATH_RE = re.compile(r"\A/v1/audio/media/[0-9a-f]{32}/package\Z")
+_MEDIA_PACKAGE_PATH_RE = re.compile(
+    rf"\A/v1/audio/media/{url_media_store.MEDIA_ID_PATTERN}/package\Z")
 
 
 def _media_package_max_body_bytes() -> int:
@@ -4555,7 +4447,7 @@ def _prefetched_audio(media_id: "str | None", url: str,
     for them (its owner rule), kind audio, downloaded from the same
     validated URL. Any miss is None and the run simply downloads — no error
     a caller could use to probe other users' ids."""
-    if not isinstance(media_id, str) or not _URL_MEDIA_ID_RE.match(media_id):
+    if not isinstance(media_id, str) or not url_media_store.MEDIA_ID_RE.match(media_id):
         return None
     from faster_whisper_backend.url import media_store as _ums
     entry = _ums.resolve_entry(media_id, user_id=user_id)
@@ -7549,7 +7441,7 @@ def _scrub_media_refs(payload: dict, *, user_id: "str | None") -> dict:
         if id_key not in payload and exp_key not in payload:
             continue
         mid = payload.get(id_key)
-        ok = (isinstance(mid, str) and _URL_MEDIA_ID_RE.match(mid)
+        ok = (isinstance(mid, str) and url_media_store.MEDIA_ID_RE.match(mid)
               and _ums.resolve_entry(mid, user_id=user_id) is not None)
         if ok:
             payload[exp_key] = _ums.expires_at_unix(mid)
@@ -8056,9 +7948,6 @@ async def url_subtitles(request: Request,
     return {"tracks": tracks, "failed": failed}
 
 
-_URL_MEDIA_ID_RE = re.compile(r"\A[0-9a-f]{32}\Z")
-
-
 @app.get("/v1/audio/url-media/{media_id}")
 async def url_media(media_id: str,
                     user: dict = Depends(_get_current_user_dep)):
@@ -8075,7 +7964,7 @@ async def url_media(media_id: str,
             or getattr(cfg, "MEDIA_PACKAGE_ENABLED", True)):
         raise HTTPException(status_code=403,
                             detail="media retention is not enabled on this server")
-    if not _URL_MEDIA_ID_RE.match(media_id):
+    if not url_media_store.MEDIA_ID_RE.match(media_id):
         raise HTTPException(status_code=422, detail="malformed media id")
     from faster_whisper_backend.url import media_store as _ums
     entry = _ums.resolve_entry(media_id, user_id=user.get("user_id"))
@@ -8528,7 +8417,7 @@ async def media_streams(media_id: str,
     """Codec facts for a retained file — the export panel greys out MP4 with
     the reason before anyone waits for a mux. Same 404 for every miss."""
     _package_gate()
-    if not _URL_MEDIA_ID_RE.match(media_id):
+    if not url_media_store.MEDIA_ID_RE.match(media_id):
         raise HTTPException(status_code=422, detail="malformed media id")
     from faster_whisper_backend.url import media_store as _ums
     entry = _ums.resolve_entry(media_id, user_id=user.get("user_id"))
@@ -8582,7 +8471,7 @@ async def package_media(media_id: str, request: Request,
     the reason). One packaging run per identity at a time."""
     from fastapi.responses import FileResponse
     _package_gate()
-    if not _URL_MEDIA_ID_RE.match(media_id):
+    if not url_media_store.MEDIA_ID_RE.match(media_id):
         raise HTTPException(status_code=422, detail="malformed media id")
     _key = _rl.identity_key(user, request)
     _media_package_rate.hit(_key)
@@ -8786,7 +8675,7 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     allowed_override_profiles: ["*"] | [names…] | []} plus the feature flags
     below. The decode values a caller inherits are GET
     /v1/request-default-settings."""
-    from faster_whisper_backend import effective_config
+    from faster_whisper_backend.settings import effective_config
     caps = effective_config.resolve_capabilities(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
     # The caller's identity layers, for the per_request values below
@@ -8981,7 +8870,7 @@ async def list_override_profiles(user: dict = Depends(_get_current_user_dep)):
     Names only — never the profile contents; empty list when the caller may not
     request any. User-tier auth: any valid key (admin not required); 401 without
     one when the server is locked down."""
-    from faster_whisper_backend import effective_config
+    from faster_whisper_backend.settings import effective_config
     names = effective_config.allowed_profile_names(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
     return {"profiles": names}
@@ -8997,7 +8886,7 @@ async def get_override_profile(name: str,
     profile's OWN contribution projected to the client decode keys; admin locks
     elsewhere can still win at request time (reported then via overrides_ignored).
     User-tier auth."""
-    from faster_whisper_backend import effective_config
+    from faster_whisper_backend.settings import effective_config
     allowed = effective_config.allowed_profile_names(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
     if name not in allowed:
@@ -9068,7 +8957,7 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
     Exposes the global / per-model / bound DEFAULT_PROMPT and DEFAULT_HOTWORDS to
     any key holder — intended: they shape every transcript that key gets back
     (SECURITY-REVIEW_NOTES, "decode defaults are readable"). User-tier auth."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     model = (model or "").strip()
     if len(model) > _DECODE_DEFAULTS_MODEL_MAX:
         raise HTTPException(status_code=400, detail="Model id is too long.")
@@ -9249,7 +9138,7 @@ def _logs_stream_reauth(request: Request, seen_version: int) -> int:
     kept receiving every new request block (raw + final text of every
     user) after the admin revoked it, until the browser closed the
     EventSource."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     current = config_store.config_version()
     if current == seen_version:
         return seen_version
@@ -9262,7 +9151,7 @@ async def _stream_log_lines(request: Request):
     """Yield SSE events: one for each existing tail line, then live tail.
     Re-authenticates `request` whenever the config version moves (see
     _logs_stream_reauth) and ends the stream once access is gone."""
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     seen = config_store.config_version()
     initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     # Off the loop, same as /logs/older: this walks the rotation chain

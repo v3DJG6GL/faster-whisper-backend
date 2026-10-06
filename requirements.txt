@@ -27,8 +27,8 @@ fastapi>=0.142.2
 uvicorn[standard]>=0.54.0
 python-multipart>=0.0.32
 
-# Auto-loads a local .env file at startup (config.py). Optional at runtime:
-# config.py guards the import, so a missing python-dotenv just disables .env
+# Auto-loads a local .env file at startup (faster_whisper_backend/settings/config.py). Optional at runtime:
+# settings/config.py guards the import, so a missing python-dotenv just disables .env
 # loading — real environment variables still work.
 python-dotenv>=1.2.4
 

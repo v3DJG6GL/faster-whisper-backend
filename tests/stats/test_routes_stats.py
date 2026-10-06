@@ -57,7 +57,7 @@ def test_stats_usage_ok(client):
 # list to loopback so a non-loopback host exercises the host gate (403 before
 # the page-permission check).
 def test_stats_snapshot_host_gate_rejects_non_loopback(app_module, monkeypatch):
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
     )
@@ -332,7 +332,7 @@ def test_translate_run_registers_a_job(client, app_module, monkeypatch):
 
 
 def test_stats_page_host_gate_rejects_non_loopback(app_module, monkeypatch):
-    from faster_whisper_backend import config as cfg
+    from faster_whisper_backend.settings import config as cfg
     monkeypatch.setattr(
         cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1", "::1"], raising=False
     )
@@ -517,7 +517,7 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     """The stream re-resolves its StatsScope when the config version moves
     (a permission edit) and ends only when the caller lost access."""
     import inspect
-    from faster_whisper_backend import config_store
+    from faster_whisper_backend.settings import config_store
     from faster_whisper_backend.stats import routes as stats_routes
     from fastapi import HTTPException
     from tests.conftest import fake_request as _fake_request

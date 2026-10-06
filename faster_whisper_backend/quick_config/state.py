@@ -180,7 +180,7 @@ def record_trace(
     }
     if request_id:
         try:
-            from faster_whisper_backend import config as cfg
+            from faster_whisper_backend.settings import config as cfg
             from faster_whisper_backend.stats import recent_transcriptions_store
             recent_transcriptions_store.record_trace(
                 request_id=request_id,

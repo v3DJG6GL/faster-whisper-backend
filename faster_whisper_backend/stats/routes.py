@@ -34,8 +34,8 @@ import hmac
 import hashlib
 
 from faster_whisper_backend import build_info
-from faster_whisper_backend import config as cfg
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.runtime import model_sizes

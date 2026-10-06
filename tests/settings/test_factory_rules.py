@@ -13,7 +13,7 @@ import tempfile
 
 from pydantic import ValidationError
 
-from faster_whisper_backend import config_store as cs
+from faster_whisper_backend.settings import config_store as cs
 
 
 def _regex_rule(name, pattern="x", replacement="y", **kw):

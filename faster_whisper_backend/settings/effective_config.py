@@ -28,9 +28,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
-from faster_whisper_backend import config as cfg
-from faster_whisper_backend import config_renames as _renames
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import config_renames as _renames
+from faster_whisper_backend.settings import config_store
 
 logger = logging.getLogger("whisper-api")
 

@@ -13,7 +13,7 @@ import re
 
 import pytest
 
-from faster_whisper_backend import config_renames as renames
+from faster_whisper_backend.settings import config_renames as renames
 from faster_whisper_backend import paths
 
 
@@ -187,7 +187,7 @@ def test_edited_factory_entry_is_left_alone():
 
 
 def test_load_overrides_upgrades_a_stored_old_quote_entry(tmp_path):
-    from faster_whisper_backend import config_store as cs
+    from faster_whisper_backend.settings import config_store as cs
     rules = copy.deepcopy(_factory_rules())
     old_pat, old_rep = renames.UPGRADED_RULE_ENTRIES["tighten-quote-spacing"][0]
     e = _quote_entry(rules)

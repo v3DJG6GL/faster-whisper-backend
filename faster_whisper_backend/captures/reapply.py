@@ -77,7 +77,7 @@ def _run() -> None:
         from faster_whisper_backend import main
         from faster_whisper_backend.captures import store as captures_store
         from faster_whisper_backend.captures import samples_store as capture_samples_store
-        from faster_whisper_backend import config as cfg
+        from faster_whisper_backend.settings import config as cfg
 
         captures_excludes = getattr(cfg, "CAPTURES_PIPELINE_RULES_EXCLUDE", None)
 
@@ -195,3 +195,19 @@ def _run() -> None:
             _state["status"] = "error"
             _state["error"] = str(e)
             _state["finished_ts"] = time.time()
+
+
+def _reset_for_tests() -> None:
+    """Test-only: back to the module's canonical idle shape."""
+    global _worker, _state
+    _worker = None
+    _state = {
+        "status": "idle",
+        "started_ts": None,
+        "finished_ts": None,
+        "total": 0,
+        "processed": 0,
+        "captures_updated": 0,
+        "groups_updated": 0,
+        "error": None,
+    }

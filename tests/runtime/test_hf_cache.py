@@ -2,7 +2,7 @@
 model-size lookup share."""
 import os
 
-from faster_whisper_backend import config as cfg
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import model_sizes
 

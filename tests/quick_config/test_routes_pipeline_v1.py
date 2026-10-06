@@ -10,7 +10,7 @@ USER_WEBUI_ALLOWED_HOSTS, unlike the browser /quick-config page).
 
 import copy
 
-from faster_whisper_backend import config_store
+from faster_whisper_backend.settings import config_store
 from faster_whisper_backend.quick_config import routes as quick_config_routes
 from tests.conftest import bearer
 
