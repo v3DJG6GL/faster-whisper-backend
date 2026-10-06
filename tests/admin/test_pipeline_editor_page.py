@@ -74,6 +74,18 @@ def test_outdated_rules_are_told_apart_from_edited_ones(client):
     assert "(st === 'edited' || st === 'diverged' || st === 'local-only')" in html
 
 
+def test_promote_all_leaves_diverged_rules_unticked(client):
+    """A diverged rule's config.json side is newer than the base of the local
+    edit; promote-all ticked it by default, so one click replaced that update
+    with no warning (the single-rule promote warns). It is now opt-in."""
+    html = _html(client)
+    body = html[html.index("function _promoteAll("):]
+    body = body[:body.index("\n  }\n")]
+    assert "checked: !diverged," in body
+    assert "checked: true," not in body.split("_missingFactoryRules()")[0]
+    assert "start'\n          + ' unticked: ticking one replaces those newer config.json changes'" in body
+
+
 def _rule(**kw):
     return {"name": "r", "label": "R", "type": "regex-list",
             "entries": [{"pattern": "a", "replacement": "b"}], **kw}

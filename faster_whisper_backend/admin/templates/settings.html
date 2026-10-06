@@ -4520,12 +4520,18 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     factoryRules = fresh;
     refreshControlsVisibility();
     const groups = [];
+    let nDiverged = 0;
     rules.forEach(r => {
       if (r.type === 'terminal') return;
       const st = _ruleStatus(r);
       if (st !== 'edited' && st !== 'diverged' && st !== 'local-only') return;
+      // A diverged rule's config.json side is NEWER than the base of the
+      // local edit: promoting it throws that update away, so it is an
+      // explicit tick (the single-rule promote warns the same way).
+      const diverged = st === 'diverged';
+      if (diverged) nDiverged++;
       groups.push({
-        id: r.name, name: r.label || r.name, pick: true, checked: true,
+        id: r.name, name: r.label || r.name, pick: true, checked: !diverged,
         meta: st === 'local-only' ? 'only on this server · new in config.json'
             : st === 'diverged' ? 'edited here · config.json changed too' : 'edited here',
         rows: _ruleDiffRows(_factoryRule(r.name), r),
@@ -4550,7 +4556,13 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       right: ['After promote', "this server's version"],
       groups,
       extraEls: [_seededOrderDirty() ? _orderChangeEl() : null],
-      warn: _seededOrderDirty() ? 'The rule order on this server differs from config.json and is written as well.' : '',
+      warn: [
+        nDiverged ? nDiverged + ' rule' + (nDiverged === 1 ? '' : 's')
+          + ' also changed in config.json since last sync and start'
+          + ' unticked: ticking one replaces those newer config.json changes'
+          + ' with this server\'s version.' : '',
+        _seededOrderDirty() ? 'The rule order on this server differs from config.json and is written as well.' : '',
+      ].filter(Boolean).join(' '),
       confirm: n => '↑ Promote ' + n + ' selected rule' + (n === 1 ? '' : 's'),
       confirmClass: 'solid-up',
       onConfirm: async (ids) => {
