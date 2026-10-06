@@ -389,17 +389,22 @@ def test_release_drops_the_lease_even_while_the_lock_is_held(monkeypatch):
         lock = asyncio.Lock()
         monkeypatch.setattr(diarization, "_lock", lock)
         async with lock:                       # "a load is in flight"
-            await diarization._release_pipeline("m1", pipe)
+            await asyncio.wait_for(
+                diarization._release_pipeline("m1", pipe), 5)
             assert diarization._leases == {}
 
     asyncio.run(_main())
 
 
-def test_cancel_delivered_at_release_still_drops_the_lease(monkeypatch):
+def test_cancel_during_diarize_still_drops_the_lease(monkeypatch):
     import asyncio
     cfg = diarization.cfg
     monkeypatch.setattr(cfg, "DIARIZATION_MODEL", "m1", raising=False)
     monkeypatch.setattr(cfg, "DIARIZATION_DEVICE", "cpu", raising=False)
+    # The key must match _pipeline_key below: a miss would take _lock, which
+    # _main holds — a hang instead of a failure.
+    monkeypatch.setattr(cfg, "DIARIZATION_EMBEDDING_BATCH_SIZE", 4,
+                        raising=False)
     pipe = object()
     monkeypatch.setattr(diarization, "_pipeline", pipe)
     monkeypatch.setattr(diarization, "_pipeline_key", ("m1", "cpu", 4))
@@ -420,7 +425,8 @@ def test_cancel_delivered_at_release_still_drops_the_lease(monkeypatch):
         monkeypatch.setattr(diarization, "_lock", lock)
         async with lock:
             with pytest.raises(asyncio.CancelledError):
-                await diarization.diarize("a.wav")
+                # A bound, so a release that re-takes _lock fails, not hangs.
+                await asyncio.wait_for(diarization.diarize("a.wav"), 5)
         assert diarization._leases == {}
         assert await diarization.drop_pipeline(force=False) is True
 
@@ -505,3 +511,33 @@ def test_pipeline_load_passes_the_models_volume_cache_dir(monkeypatch,
     monkeypatch.delenv("HF_HOME")
     monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", None, raising=False)
     assert hf_cache.hub_cache_dir() is None
+
+
+def test_placement_error_keeps_raw_torch_text_out_of_the_message(monkeypatch):
+    """str(DiarizationError) lands in the client's `warnings` — torch's own
+    text (VRAM figures, driver paths) must stay in the server log."""
+    import sys
+    import types
+    monkeypatch.setattr(diarization.cfg, "HF_TOKEN", None, raising=False)
+
+    class _Pipe:
+        def to(self, dev):
+            raise RuntimeError("SECRET /opt/path CUDA out of memory")
+
+    class _Pipeline:
+        @classmethod
+        def from_pretrained(cls, model_id, **kw):
+            return _Pipe()
+
+    fake_torch = types.SimpleNamespace(
+        set_num_threads=lambda n: None, device=lambda d: d)
+    pa = types.ModuleType("pyannote.audio")
+    pa.Pipeline = _Pipeline
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "pyannote", types.ModuleType("pyannote"))
+    monkeypatch.setitem(sys.modules, "pyannote.audio", pa)
+
+    with pytest.raises(diarization.DiarizationError) as ei:
+        diarization._load_blocking_inner("p/m", "cuda", 4)
+    assert "SECRET" not in str(ei.value)
+    assert "/opt/path" not in str(ei.value)

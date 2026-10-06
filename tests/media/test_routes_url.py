@@ -557,6 +557,20 @@ def test_on_demand_video_route(client, video_enabled):
                        content=b"nope").status_code == 422
 
 
+@pytest.mark.parametrize("value", [float("inf"), float("-inf"), float("nan")])
+def test_clamp_video_height_non_finite_is_best(value):
+    assert media_video._clamp_video_height(value) is None
+
+
+def test_on_demand_video_infinite_max_height_is_not_a_500(client, video_enabled):
+    # Starlette's json.loads turns 1e999 into inf; int(inf) raises OverflowError.
+    r = client.post("/v1/audio/url-media/video",
+                    content=f'{{"url": "{_URL}", "max_height": 1e999}}',
+                    headers={"Content-Type": "application/json"})
+    assert r.status_code == 200, r.text
+    assert video_enabled._video_calls[-1]["max_height"] is None
+
+
 def test_video_reports_the_container_that_landed(client, video_enabled, monkeypatch):
     # No merge happened: the site's own pre-muxed webm sits behind a rung
     # that predicted "mp4". The client names its export after this field.
@@ -783,6 +797,14 @@ def test_language_check_refuses_a_bad_model_before_downloading(
     assert downloads == [] and url_media_store._REG == {}
 
 
+def test_language_check_refuses_a_dot_en_model_before_downloading(
+        client, url_enabled, downloads, monkeypatch):
+    monkeypatch.setattr(url_enabled.cfg, "ALLOWED_MODELS", {"small.en"}, raising=False)
+    r = client.post("/v1/audio/url-language", json={"url": _URL, "model": "small.en"})
+    assert r.status_code == 400 and "multilingual" in r.json()["detail"]
+    assert downloads == [] and url_media_store._REG == {}
+
+
 def test_language_check_english_only_model_is_400(client, url_enabled, lang_check):
     import types
     lang_check.model = types.SimpleNamespace(is_multilingual=False)
@@ -893,8 +915,9 @@ def test_language_check_samples_only_the_segments(client, hls_link, caplog):
     (lambda t: t.update({_HLS: b"#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n"}),
      "encrypted"),
     (lambda t: t.update({"https://cdn.test/v/s7.ts": 403}), "HTTP 403"),
+    # Undecodable segments: PyAV's own error type is the logged reason.
     (lambda t: t.update({f"https://cdn.test/v/s{i}.ts": b"junk" for i in range(15)}),
-     ""),                                                  # undecodable segments
+     "InvalidDataError"),
 ])
 def test_language_check_falls_back_to_the_full_download(client, hls_link, caplog,
                                                         break_it, why):
@@ -1002,22 +1025,34 @@ def test_prefetched_reuse_owns_its_copy_and_restarts_the_ttl(
         client, url_enabled, downloads, tmp_path, monkeypatch):
     """The retained file can go (TTL sweep, another user's eviction) the
     moment the run holds its copy; the run measures and transcribes its own
-    copy, and the id it hands out gets a fresh TTL, not the check's."""
+    copy, and the id it hands out gets a fresh TTL, not the check's — unless
+    the retained file is already gone, in which case no id is handed out."""
     mid = _prefetched(tmp_path)
     url_media_store._REG[mid]["created"] -= 3000          # an old check
     real = url_media_store.make_pipeline_copy
-    swept: list = []
 
     def _copy_then_sweep(path):
         out = real(path)
-        swept.append(dict(url_media_store._REG[mid]))
         os.unlink(path)                                    # store file gone
         return out
     monkeypatch.setattr(url_media_store, "make_pipeline_copy", _copy_then_sweep)
     r = _post_url(client, prefetched_media_id=mid)
     assert r.status_code == 200, r.text
+    assert downloads == []
+    # The retained file went away after the copy: no id whose GET would 404.
+    assert "source_media_id" not in r.json()
+    assert "source_media_expires_at" not in r.json()
+
+
+def test_prefetched_reuse_restarts_the_ttl(client, url_enabled, downloads,
+                                           tmp_path):
+    mid = _prefetched(tmp_path)
+    url_media_store._REG[mid]["created"] -= 3000          # an old check
+    before = url_media_store._REG[mid]["created"]
+    r = _post_url(client, prefetched_media_id=mid)
+    assert r.status_code == 200, r.text
     assert downloads == [] and r.json()["source_media_id"] == mid
-    assert url_media_store._REG[mid]["created"] > swept[0]["created"] + 2900
+    assert url_media_store._REG[mid]["created"] > before + 2900
 
 
 @pytest.mark.parametrize("case", ["other_url", "video", "expired", "unknown", "malformed"])

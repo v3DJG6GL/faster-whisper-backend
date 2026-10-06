@@ -100,12 +100,11 @@ def _resolve_device() -> str:
 
 
 def _load_blocking(model_id: str, device: str, batch_size: int):
-    """Import pyannote and build the pipeline. Runs in the default executor."""
-    # Keep HF downloads on the models volume (whisper weights already live
-    # there via download_root); a set HF_HOME always wins.
-    download_root = getattr(cfg, "DOWNLOAD_ROOT", None)
-    if download_root:
-        os.environ.setdefault("HF_HOME", os.path.join(download_root, "hf"))
+    """Import pyannote and build the pipeline. Runs in the default executor.
+    The download lands on the models volume through the explicit
+    runtime.hf_cache.hub_cache_dir() the inner load passes (an HF_HOME
+    setdefault here could not redirect the frozen hub, and would pin a
+    stale DOWNLOAD_ROOT process-wide)."""
     # LOCAL_FILES_ONLY is a HOT setting — scope the offline switch to this
     # load and restore it after (same hazard translation._load_blocking
     # documents: one offline load would otherwise poison every later
@@ -204,8 +203,11 @@ def _load_blocking_inner(model_id: str, device: str, batch_size: int):
     except Exception as e:  # noqa: BLE001 — CUDA OOM / driver fault
         logger.error("[diarize] pipeline load failed (placement on %s): %s",
                      device, e)
+        # torch's text (VRAM figures, driver paths) stays in the log —
+        # str(DiarizationError) reaches the client's `warnings`.
         raise DiarizationError(
-            f"could not load {model_id} on {device} — {e}") from e
+            f"could not load {model_id} on {device} — the device is out of "
+            "memory or unavailable; see the server log") from e
     try:
         # pyannote-audio#1963: the default embedding batch spikes several GB
         # of VRAM on hour-long audio; a small batch flattens the peak.

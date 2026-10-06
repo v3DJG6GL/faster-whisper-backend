@@ -120,7 +120,7 @@ def parse_hls(text: str, base_url: str) -> "Media | str":
     lines = [ln.strip() for ln in text.lstrip("\ufeff").splitlines() if ln.strip()]
     if not lines or not lines[0].startswith("#EXTM3U"):
         raise Unsupported("not an HLS playlist")
-    renditions: "list[tuple[bool, str]]" = []
+    renditions: "list[tuple[bool, str | None]]" = []
     variants: "list[tuple[int, str]]" = []
     segments: "list[tuple[Part, float]]" = []
     init: "Part | None" = None
@@ -150,9 +150,13 @@ def parse_hls(text: str, base_url: str) -> "Media | str":
             bandwidth = int(bw) if bw.isdigit() else 0
         elif tag == "#EXT-X-MEDIA":
             a = _attrs(line)
-            if a.get("TYPE") == "AUDIO" and a.get("URI"):
+            if a.get("TYPE") == "AUDIO":
+                # No URI (RFC 8216): this rendition's audio is muxed into the
+                # variants — kept, so a URI-less DEFAULT is not lost to an
+                # alternative (commentary, a dub) that does carry one.
                 renditions.append((a.get("DEFAULT") == "YES",
-                                   urllib.parse.urljoin(base_url, a["URI"])))
+                                   urllib.parse.urljoin(base_url, a["URI"])
+                                   if a.get("URI") else None))
         elif tag == "#EXT-X-ENDLIST":
             ended = True
         elif not line.startswith("#"):
@@ -174,8 +178,14 @@ def parse_hls(text: str, base_url: str) -> "Media | str":
                 extinf, byterange = None, None
             else:
                 raise Unsupported("a segment without a duration")
-    if renditions:
-        return next((u for default, u in renditions if default), renditions[0][1])
+    defaults = [u for d, u in renditions if d]
+    if defaults and defaults[0] is not None:
+        return defaults[0]
+    uris = [u for _d, u in renditions if u is not None]
+    # A URI-less default lives in the variants: read those, not an
+    # alternative track. No default at all keeps the first listed one.
+    if uris and not (defaults and variants):
+        return uris[0]
     if variants:
         return min(variants)[1]
     if not ended:

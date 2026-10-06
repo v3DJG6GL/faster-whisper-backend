@@ -9,7 +9,8 @@ venv/
 # (Windows default, and Linux with WHISPER_DATA_DIR=./data — the same layout
 # .gitignore covers), so the top-level patterns below never see them: Docker
 # matches these with filepath.Match, where * does not cross a /. Without the
-# anchored + ** forms a local `docker build` bakes dictation audio, transcript
+# ** forms (`**/` matches zero directories too, so they cover the context
+# root as well) a local `docker build` bakes dictation audio, transcript
 # text, API-key hashes and session-token hashes into an image layer.
 data/
 models/
@@ -21,16 +22,10 @@ models/
 # `**/captures/`, see tests/test_ci_workflow_config.py).
 **/*.log
 **/*.log.*
-*.local.*
-*.sqlite3
-*.sqlite3-wal
-*.sqlite3-shm
 **/*.local.*
 **/*.sqlite3
 **/*.sqlite3-wal
 **/*.sqlite3-shm
-.env
-.env.*
 **/.env
 **/.env.*
 # The docker-compose files document ./secrets/bootstrap_admin_key.txt (and
@@ -38,8 +33,9 @@ models/
 # It is a bind-mount source, never needed inside the image, and none of the
 # patterns above match it — a local `docker build` baked a full-admin
 # bootstrap key into a layer. Verified by building a context and listing it.
+# Root-relative only: `**/secrets/` would also drop a future
+# faster_whisper_backend/secrets/ package (the `**/logs/` trap above).
 secrets/
-**/secrets/
 # Windows service artifacts (generated on the Windows host).
 WhisperAPI.exe
 WhisperAPI.xml

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import os
 
+from faster_whisper_backend.audio import ffmpeg as audio_ffmpeg
+
 _OUT_FORMAT = "s16"          # signed 16-bit
 _OUT_CODEC = "pcm_s16le"     # WAV's native uncompressed codec
 
@@ -35,15 +37,18 @@ def _open_audio(src_path: str):
     """(container, first audio stream) of `src_path`; the caller closes the
     container. ValueError when there is no audio stream."""
     # The source is an uploaded clip (or a downloaded link) whose bytes AND
-    # filename extension a client chose, and libavformat scores demuxers
-    # partly on the extension (AVPROBE_SCORE_EXTENSION). Without this, a
-    # crafted concat/ffconcat, HLS playlist or SDP input can coax the demuxer
-    # into following external file:// or http:// references — the classic
-    # ffmpeg local-file-read / SSRF surface. streaming/transport.py already pins
-    # "-protocol_whitelist pipe" on the realtime path for exactly this reason;
-    # a real clip is self-contained, so restricting the batch path to the
-    # file protocol rejects nothing legitimate.
+    # filename extension a client chose, so a crafted concat/ffconcat, HLS
+    # playlist or SDP input can coax the demuxer into following external
+    # references — the classic ffmpeg local-file-read / SSRF surface. Two
+    # locks, both needed: the file-protocol whitelist stops http:// (and
+    # every other network protocol) — streaming/transport.py pins
+    # "-protocol_whitelist pipe" on the realtime path for the same reason —
+    # and the demuxer refusal below stops a playlist reading a sibling
+    # local file through the whitelisted file protocol itself.
     container = _av().open(src_path, options={"protocol_whitelist": "file"})
+    if audio_ffmpeg.is_multi_input_format(getattr(container.format, "name", None)):
+        container.close()
+        raise ValueError("unsupported container")
     stream = next((s for s in container.streams if s.type == "audio"), None)
     if stream is None:
         container.close()

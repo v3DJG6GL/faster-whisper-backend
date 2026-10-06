@@ -345,8 +345,10 @@ def _load_blocking(model_filename: str, device: str):
         )
     except Exception as e:  # noqa: BLE001 — setup_torch_device / output dir
         logger.error("[bgm] separator construction failed: %s", e)
+        # The raw text (paths, torch/CUDA driver detail) stays in the log —
+        # str(BgmSeparationError) reaches the client's `warnings`.
         raise BgmSeparationError(
-            f"could not load separation model {model_filename} — {e}"
+            f"could not load separation model {model_filename}"
         ) from e
     if device == "cpu":
         # Separator autodetects CUDA in __init__ (setup_torch_device); there is

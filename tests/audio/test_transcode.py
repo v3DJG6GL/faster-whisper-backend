@@ -141,13 +141,16 @@ def test_transcode_input_open_pins_file_protocol_whitelist(tmp_path, monkeypatch
 
 
 def test_transcode_rejects_ffconcat_playlist_referencing_a_file(tmp_path):
-    """Real ffmpeg under the whitelist refuses the nested ``file`` protocol
-    an ffconcat playlist needs, so the playlist fails and leaves no dst."""
-    wav = _write_src_wav(str(tmp_path / "real.wav"), rate=RATE, nchannels=1)
-    playlist = tmp_path / "list.ffconcat"
-    playlist.write_text(f"ffconcat version 1.0\nfile '{wav}'\n")
+    """The whitelist alone does NOT stop this one: concat is picked by
+    content, its nested open uses the whitelisted file protocol, and safe=1
+    admits a bare same-directory name — so an extensionless upload naming a
+    sibling decodes that sibling. The demuxer refusal is what fails it (and
+    leaves no dst)."""
+    _write_src_wav(str(tmp_path / "real.wav"), rate=RATE, nchannels=1)
+    playlist = tmp_path / "upload"
+    playlist.write_text("ffconcat version 1.0\nfile 'real.wav'\n")
     dst = str(tmp_path / "out.wav")
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="unsupported container"):
         audio_transcode.transcode_to_wav_16k_mono(str(playlist), dst)
     assert not os.path.exists(dst)
 
@@ -199,8 +202,28 @@ def test_decode_pieces_seeks_to_each_start(tmp_path, name):
     assert [round(_peak_hz(p)) for p in pieces[:3]] == [440, 880, 440]
 
 
-def test_decode_pieces_refuses_non_file_protocols(tmp_path):
-    playlist = tmp_path / "x.m3u8"
-    playlist.write_text("#EXTM3U\n#EXTINF:1,\nhttp://127.0.0.1:9/a.wav\n")
-    with pytest.raises(Exception):
+def test_decode_pieces_refuses_non_file_protocols(tmp_path, monkeypatch):
+    """decode_pieces_16k opens through the same pinned whitelist as the
+    transcode path (an HLS playlist fails whatever the whitelist, so only
+    a spy on av.open can pin it)."""
+    import av
+    src = _two_tone(str(tmp_path / "two.wav"))
+    opens = []
+    real_open = av.open
+
+    def spy_open(file, *args, **kwargs):
+        opens.append((file, kwargs))
+        return real_open(file, *args, **kwargs)
+    monkeypatch.setattr(av, "open", spy_open)
+
+    audio_transcode.decode_pieces_16k(src, [0.0], 1.0)
+    assert [kw.get("options") for f, kw in opens if f == src] == [
+        {"protocol_whitelist": "file"}]
+
+
+def test_decode_pieces_refuses_an_ffconcat_sibling(tmp_path):
+    _two_tone(str(tmp_path / "two.wav"))
+    playlist = tmp_path / "upload"
+    playlist.write_text("ffconcat version 1.0\nfile 'two.wav'\n")
+    with pytest.raises(ValueError, match="unsupported container"):
         audio_transcode.decode_pieces_16k(str(playlist), [0.0], 1.0)

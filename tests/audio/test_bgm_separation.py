@@ -221,6 +221,32 @@ def test_model_filename_appends_onnx(app_module, monkeypatch):
     assert bgm_separation._model_filename() == "model_bs_roformer.ckpt"
 
 
+def test_separator_construction_error_keeps_raw_text_out_of_the_message(
+        monkeypatch, tmp_path):
+    """str(BgmSeparationError) lands in the client's `warnings` — the
+    library's own text (an output-dir path, CUDA driver detail) must stay
+    in the server log."""
+    import sys
+    import types
+
+    class _Separator:
+        def __init__(self, **kw):
+            raise PermissionError("[Errno 13] Permission denied: '/secret/path'")
+
+    pkg = types.ModuleType("audio_separator")
+    sub = types.ModuleType("audio_separator.separator")
+    sub.Separator = _Separator
+    monkeypatch.setitem(sys.modules, "audio_separator", pkg)
+    monkeypatch.setitem(sys.modules, "audio_separator.separator", sub)
+    monkeypatch.setattr(bgm_separation, "_shims_installed", True)
+    monkeypatch.setattr(bgm_separation.cfg, "DOWNLOAD_ROOT", str(tmp_path),
+                        raising=False)
+    with pytest.raises(bgm_separation.BgmSeparationError) as ei:
+        bgm_separation._load_blocking("Foo.onnx", "cpu")
+    assert "/secret/path" not in str(ei.value)
+    assert "Foo.onnx" in str(ei.value)
+
+
 # --- actual-device bookkeeping -----------------------------------------------
 
 def test_free_locked_clears_the_session_device(monkeypatch):

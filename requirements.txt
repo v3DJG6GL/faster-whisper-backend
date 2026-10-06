@@ -4,7 +4,8 @@
 # — see requirements-gpu.txt.
 #
 # Direct dependencies only. Transitive deps (numpy, onnxruntime, ctranslate2,
-# tokenizers, av, ...) are resolved fresh by pip. Strict transitive pins tend
+# tokenizers, ...) are resolved fresh by pip; av is the one exception, capped
+# directly in requirements-heavy.txt (see the note there). Strict transitive pins tend
 # to break over time as old wheels are pruned from PyPI for newer Pythons —
 # that is exactly what hit `onnxruntime==1.23.2` on Python 3.13.
 #

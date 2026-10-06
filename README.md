@@ -284,7 +284,7 @@ huggingface_hub into the models volume (`HF_HOME`).
 
 ### Rate limits & concurrency
 
-Eight request budgets, all in the **Concurrency & Request Limits** settings
+Eleven request budgets, all in the **Concurrency & Request Limits** settings
 group, all with `WHISPER_*` env twins, and all **hot** — the limiters re-read
 their ceiling on every call, so raising one applies to the next request with
 no restart and no bucket reset.
@@ -454,14 +454,17 @@ table inet whisper {
   chain egress {
     type filter hook forward priority filter; policy accept;
     # Only traffic leaving the backend's subnet (adjust to your compose net).
-    ip  saddr != 172.20.0.0/16 return
+    ip  saddr != 172.31.9.0/24 return
+    # Replies to connections that came in on the published port (a LAN
+    # client, a reverse proxy) — without this they match the drop below.
+    ct  state established,related return
     ip  daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 127.0.0.0/8, 169.254.0.0/16 } drop
     ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop
   }
 }
 ```
 
-Adjust `172.20.0.0/16` to the compose network's subnet, and drop the `172.16.0.0/12` line only if that subnet overlaps it (it does for Docker's defaults — give the service its own network with an explicit subnet outside the ranges you deny). The commented block in `docker-compose.yml` shows the same idea. On a bare-metal install, the equivalent is an `output` chain matched on the service user (`meta skuid whisper`).
+Only connections the container opens are filtered; host-local clients and Docker's embedded DNS never cross the `forward` hook. Adjust `172.31.9.0/24` (the subnet the compose files' commented `networks:` blocks pin) to the compose network's subnet, and drop the `172.16.0.0/12` line only if that subnet overlaps it (it does for Docker's defaults — give the service its own network with an explicit subnet outside the ranges you deny). The commented block in `docker-compose.yml` shows the same idea. On a bare-metal install, the equivalent is an `output` chain matched on the service user (`meta skuid whisper`).
 
 ### Server jobs
 
@@ -494,7 +497,7 @@ WHISPER_TRUSTED_ORIGINS=https://whisper.example.com  # only if the proxy rewrite
 - `POST /v1/audio/url-preview`, `POST /v1/audio/url-subtitles`, `POST /v1/audio/url-language`, `POST /v1/audio/url-media/{audio,video}`, `GET /v1/audio/url-media/{id}` — transcribe-from-URL helpers: a link's metadata, spoken language and own subtitle tracks; the tracks' text; a spoken-language check whose download a run can reuse (`prefetched_media_id`); the link's audio or video fetched on demand into the media store, and a retained file. 403 while `URL_DOWNLOAD_ENABLED` (or the route's own switch) is off. See [Transcribe from a URL](#transcribe-from-a-url).
 - `POST /v1/text/translations` — **text-to-text** translation of caller-supplied text/segments into arbitrary target languages via local GGUF models (llama.cpp; see the Translation configuration group). Distinct from `/v1/audio/translations`: this translates finished text with a dedicated translation model, not audio with Whisper. 403 while `TRANSLATION_ENABLED` is off.
 - `WS   /v1/audio/transcriptions/stream` — live streaming dictation (raw 16 kHz PCM or browser WebM/Opus); see the Features section.
-- `GET  /v1/models` — list currently-loaded models, the configured default, and the allowlist (if set); each entry names its `device` (`cuda`/`cpu`: where a loaded model sits — a CPU fallback after a failed CUDA load shows as `cpu` — else where a load would put it). Also carries the server's build identity — `server_name` ("faster-whisper-backend"), `server_version`, and the per-process `boot_id` — non-standard fields clients use to recognize the full backend and display its version. The version resolves via `WHISPER_BUILD_VERSION` (baked into container images by CI as `git describe`) or a runtime `git describe` on bare-metal checkouts (see `build_info.py`).
+- `GET  /v1/models` — list currently-loaded models, the configured default, and the allowlist (if set); each entry names its `device` (`cuda`/`cpu`: where a loaded model sits — a CPU fallback after a failed CUDA load shows as `cpu` — else where a load would put it). Also carries the server's build identity — `server_name` ("faster-whisper-backend"), `server_version`, and the per-process `boot_id` — non-standard fields clients use to recognize the full backend and display its version. The version resolves via `WHISPER_BUILD_VERSION` (baked into container images by CI as `git describe`) or a runtime `git describe` on bare-metal checkouts (see `faster_whisper_backend/build_info.py`).
 - `POST /v1/models/preload` — ask the server to warm the models a job is about to need, so a stage's load overlaps the previous stage instead of following it. Always `202` (only a structurally invalid body is a `422`); each entry answers `resident`/`loading`/`queued`/`deferred`. See [Model preloading](#model-preloading).
 - `GET  /v1/me` — the caller's effective request-override capabilities (drives client UI); `media_max_bytes` (always present) is the upload/download ceiling; `server_info` adds the limits a request runs into (`translation_max_targets` for this caller, the URL limits while URL download is on) and what the server keeps (captures, server log, recent transcriptions, usage retention, URL media TTL).
 - `GET  /v1/request-default-settings?model=&override_profile=` — the decode values this caller's requests get when they send no `decode_overrides`: each client decode key with its `value`, `source` (`server`/`model`/`account`/`override_profile`/`builtin`) and admin `locked` flag, the default prompt, the run defaults a file/link run inherits (`language` — `""` = auto-detect —, `word_timestamps`, `diarize`, `separate_bgm`, `diarization_model`, `separation_model`, `translation.context_segments`; same entry shape), and the values live dictation pins on its final decode. Resolved like a request (identity layers incl. the named override profile > per-model > global); `""`/`whisper-1` is the default model, a model the server would refuse is `400`. Drives the client's "Inherit · <value>" labels. The old path `/v1/decode-defaults` is a deprecated alias.
@@ -552,7 +555,7 @@ client.audio.transcriptions.create(model="primeline/whisper-large-v3-turbo-germa
 > short name or an `org/name` repo id, plus whatever `DEFAULT_MODEL` is set to;
 > filesystem paths sent by a client are refused).
 
-First-use of any new model triggers a one-time download (~600 MB to ~1.5 GB depending on the model) into `%USERPROFILE%\.cache\huggingface\hub\`. Subsequent loads come from cache (~5–10 s into VRAM).
+First-use of any new model triggers a one-time download (~600 MB to ~1.5 GB depending on the model) into `WHISPER_DOWNLOAD_ROOT` (the models dir by default: `<repo>\models` on Windows, `/models` in containers and on bare-metal Linux; the standard HuggingFace cache `~/.cache/huggingface` only when it is set empty). Subsequent loads come from cache (~5–10 s into VRAM).
 
 ## Service control
 

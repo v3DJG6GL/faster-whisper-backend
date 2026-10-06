@@ -62,6 +62,9 @@ def main() -> int:
         print(transcription.text)
 
     except Exception as e:
+        # Also a malformed response that broke the printing after `ok` was
+        # set (a word with no start/end) — that is a failure, not a pass.
+        ok = False
         print(f"\n❌ ERROR during request: {e}")
 
     elapsed_time = time.time() - start_time

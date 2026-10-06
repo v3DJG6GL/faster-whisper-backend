@@ -8,8 +8,9 @@ reads the video bitstream (stream copy, no decode — seconds for a feature
 film) and reports whether such captions exist AND are all padding, so the
 packager can drop them while real captions survive.
 
-Same stance as media/subtitle_mux.py: the source is a media-store path, ffmpeg runs
-with `-protocol_whitelist file`, nothing client-supplied becomes an option.
+Same stance as media/subtitle_mux.py: the source is a media-store path the
+probe already accepted (no playlist-type demuxer), ffmpeg runs with
+`-protocol_whitelist file`, nothing client-supplied becomes an option.
 """
 
 from __future__ import annotations

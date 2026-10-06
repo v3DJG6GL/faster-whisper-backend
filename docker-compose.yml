@@ -112,16 +112,20 @@ services:
     #     chain egress {
     #       type filter hook forward priority filter; policy accept;
     #       ip  saddr != 172.31.9.0/24 return          # only this service
+    #       ct  state established,related return       # replies to inbound
     #       ip  daddr { 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16,
     #                   127.0.0.0/8, 169.254.0.0/16 } drop
     #       ip6 daddr { ::1/128, fc00::/7, fe80::/10 } drop
     #     }
     #   }
     #
-    # The subnet below sits inside 172.16/12, so the `ip saddr != … return`
-    # line must come first — it is what lets the container still talk to the
-    # host's DNS/gateway while everything else in the RFC1918 space is
-    # dropped. Adjust both to your network.
+    # The `ip saddr != … return` line scopes the chain to this service's
+    # subnet. The `ct state` line lets through the replies to connections
+    # that came IN (a LAN client or reverse proxy on the published port —
+    # without it those replies match the RFC1918 drop and LAN access dies),
+    # so only connections the container opens are filtered. Host-local
+    # clients and Docker's embedded DNS never cross FORWARD at all. The
+    # subnet below sits inside 172.16/12 — adjust both to your network.
     # networks:
     #   whisper-egress:
     volumes:

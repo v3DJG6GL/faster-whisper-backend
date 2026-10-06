@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import http.server
+import json
 import os
 import shutil
 import socket
@@ -342,13 +343,18 @@ def test_download_refuses_when_the_guard_cannot_install(tmp_path, broken_guard,
 
 
 def test_guard_failure_is_not_sticky(monkeypatch):
+    """The next ORDINARY call (probe()/download() never pass force) retries
+    once the tree is back — no "failed once, refuse until forced" latch."""
+    real_module = udl.GUARD_MODULE
     monkeypatch.setattr(udl, "_guard_ok", False)
     monkeypatch.setattr(udl, "GUARD_MODULE",
                         os.path.join(REPO_ROOT, "no-such-guard.py"))
     with pytest.raises(udl.UrlDownloadError):
         udl.guard_self_check()
-    monkeypatch.undo()  # the tree is back
-    udl.guard_self_check(force=True)
+    assert udl._guard_ok is False
+    monkeypatch.setattr(udl, "GUARD_MODULE", real_module)  # the tree is back
+    udl.guard_self_check()
+    assert udl._guard_ok is True
 
 
 # ---------------------------------------------------------------------------
@@ -368,6 +374,17 @@ def test_guard_uses_the_same_net_policy_module():
     assert guard.MARKER == udl.GUARD_MARKER
 
 
+def test_launcher_marker_matches_the_parent():
+    """The launcher's fail-closed line carries its own copy of the marker;
+    a drift would turn a refused run into an unclassified error."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fwb_launcher_probe",
+                                                  udl.GUARD_LAUNCHER)
+    launcher = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(launcher)   # main() only runs under __main__
+    assert launcher._MARKER == udl.GUARD_MARKER
+
+
 def test_guard_copy_agrees_with_net_policy_address_by_address(guard_tree):
     """The subprocess loads net_policy BY PATH; prove the file it reaches is
     the repo's, verdict for verdict, so the two halves can never drift."""
@@ -378,10 +395,9 @@ def test_guard_copy_agrees_with_net_policy_address_by_address(guard_tree):
          "m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
          "addrs=json.loads(sys.argv[1])\n"
          "print(json.dumps([m.address_is_forbidden(a) for a in addrs]))",
-         __import__("json").dumps(_ADDRESS_CORPUS)],
+         json.dumps(_ADDRESS_CORPUS)],
         capture_output=True, text=True, timeout=60)
     assert child.returncode == 0, child.stderr
-    import json
     child_verdicts = json.loads(child.stdout)
     ours = [net_policy.address_is_forbidden(a) for a in _ADDRESS_CORPUS]
     # 127.0.0.2 is the copy's one deliberate difference (see guard_tree).

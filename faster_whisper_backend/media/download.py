@@ -283,7 +283,7 @@ def _rung_note(f: dict) -> "str | None":
 
 def _video_candidates(formats: list) -> "tuple[list[dict], dict | None]":
     """The rankable video formats and the best separate audio track."""
-    best_audio: "tuple[float, dict] | None" = None
+    best_audio: "tuple[tuple, dict] | None" = None
     vids: "list[dict]" = []
     for f in formats:
         if not isinstance(f, dict) or f.get("has_drm"):
@@ -304,7 +304,16 @@ def _video_candidates(formats: list) -> "tuple[list[dict], dict | None]":
             # the same track — never the leg a merge should carry.
             if acodec and acodec != "none" and \
                     "drc" not in str(f.get("format_note") or "").lower():
-                score = float(f.get("abr") or f.get("tbr") or 0)
+                # yt-dlp's own `ba` ranks the track's language ahead of its
+                # bitrate (the extractor marks the original track 10, a dub
+                # -1, audio description -10) — by bitrate alone a louder
+                # dub became the kept video's soundtrack while the
+                # transcript followed the original.
+                lp = f.get("language_preference")
+                q = f.get("quality")
+                score = (lp if isinstance(lp, (int, float)) else -1,
+                         q if isinstance(q, (int, float)) else 0,
+                         float(f.get("abr") or f.get("tbr") or 0))
                 if best_audio is None or score > best_audio[0]:
                     best_audio = (score, f)
             continue
@@ -372,11 +381,12 @@ def build_video_ladder(info: dict, *, max_bytes: int,
            for f in chosen[:_LADDER_MAX_RUNGS]]
     if out:
         return out
-    # Nothing rankable. A direct file the generic extractor could only name
-    # by extension is still a video; a podcast mp3 is not.
+    # Nothing rankable (no format survived as a video candidate — every one
+    # would have made a rung). A direct file the generic extractor could
+    # only name by extension is still a video; a podcast mp3 is not.
     ext = str(info.get("ext") or "").lower()
     vcodec = info.get("vcodec")
-    if ext in _VIDEO_FILE_EXTS or (vcodec not in (None, "none") and not vids):
+    if ext in _VIDEO_FILE_EXTS or vcodec not in (None, "none"):
         fs = info.get("filesize") or None
         b = int(fs) if fs else None
         return [{
@@ -1297,6 +1307,11 @@ async def download_video(
         find_result=lambda d: _find_video_result(d, container))
 
 
+# At most one progress callback per this many seconds (the terminal line is
+# flushed after EOF regardless). A name so tests can drop it to 0.
+_PROGRESS_EMIT_MIN_S = 0.3
+
+
 async def _run_yt_dlp(
     argv: "list[str]",
     *,
@@ -1454,11 +1469,11 @@ async def _run_yt_dlp(
             if parsed:
                 last_parsed = parsed
                 now = time.monotonic()
-                if now - last_cb >= 0.3:
+                if now - last_cb >= _PROGRESS_EMIT_MIN_S:
                     last_cb = now
                     last_emitted = parsed
                     _emit(parsed)
-        # Flush the terminal line the 0.3 s throttle swallowed (yt-dlp emits
+        # Flush the terminal line the _PROGRESS_EMIT_MIN_S throttle swallowed (yt-dlp emits
         # downloaded==total right on the heels of the previous line), so the
         # UI's download fraction reaches 100 %.
         if last_parsed is not None and last_parsed != last_emitted:

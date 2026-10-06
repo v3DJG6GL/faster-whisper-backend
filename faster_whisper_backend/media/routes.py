@@ -439,6 +439,17 @@ async def url_language(request: Request,
     model_name = tx_models._resolve_model_name(_model.strip() if isinstance(_model, str) else "")
     # Gate the model before the link's audio is fetched, not after.
     tx_models._check_model_name(model_name)
+
+    def _english_only() -> HTTPException:
+        return HTTPException(
+            status_code=400,
+            detail=f"the language check needs a multilingual model; "
+                   f"'{model_name}' is English-only")
+    # A ".en" name is English-only by Whisper's own naming: refuse it before
+    # the download (the loaded model's flag below stays the backstop for a
+    # name that does not say so).
+    if model_name.rstrip("/").rsplit("/", 1)[-1].lower().endswith(".en"):
+        raise _english_only()
     _user_id = user.get("user_id")
 
     def _detect(model, audio) -> "tuple[str | None, float]":
@@ -478,10 +489,7 @@ async def url_language(request: Request,
         try:
             # CTranslate2 raises RuntimeError for an English-only model.
             if not getattr(getattr(model, "model", None), "is_multilingual", True):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"the language check needs a multilingual model; "
-                           f"'{model_name}' is English-only")
+                raise _english_only()
             tx_progress._check_cancelled(pid)
             _w0 = time.perf_counter()
             async with tx_models.get_inference_semaphore():

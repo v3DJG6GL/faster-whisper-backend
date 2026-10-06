@@ -64,6 +64,9 @@ def test_policy_rejects_playlist(monkeypatch):
 def test_policy_rejects_live(monkeypatch):
     with pytest.raises(udl.UrlDownloadError, match="[Ll]ive"):
         udl._policy_check_info({"is_live": True})
+    # Some extractors set only live_status.
+    with pytest.raises(udl.UrlDownloadError, match="[Ll]ive"):
+        udl._policy_check_info({"live_status": "is_live"})
 
 
 def test_policy_rejects_over_duration(monkeypatch):
@@ -951,6 +954,32 @@ def test_video_ladder_groups_by_height_and_picks_best_audio():
     assert prog["audio_format_id"] is None
 
 
+def test_video_ladder_audio_leg_prefers_the_original_language_over_bitrate():
+    """yt-dlp's `ba` ranks language_preference ahead of bitrate: a louder dub
+    (or the audio-description track) must not become the kept video's
+    soundtrack while the transcript follows the original."""
+    vid = _fmt(format_id="616", vcodec="avc1", acodec="none", height=1080,
+               ext="mp4", filesize=20_000_000)
+    dub = _fmt(format_id="251-1", vcodec="none", acodec="opus", abr=140,
+               language_preference=-1, filesize=1_000_000)
+    orig = _fmt(format_id="251-0", vcodec="none", acodec="opus", abr=130,
+                language_preference=10, filesize=1_000_000)
+    desc = _fmt(format_id="251-2", vcodec="none", acodec="opus", abr=160,
+                language_preference=-10, filesize=1_000_000)
+    for formats in ([dub, orig, desc, vid], [orig, dub, desc, vid]):
+        ladder = udl.build_video_ladder({"duration": 100.0, "formats": formats},
+                                        max_bytes=100_000_000)
+        assert ladder[0]["audio_format_id"] == "251-0"
+    # A tie on language falls to bitrate, as before.
+    a = _fmt(format_id="a-lo", vcodec="none", acodec="opus", abr=96,
+             language_preference=10)
+    b = _fmt(format_id="a-hi", vcodec="none", acodec="opus", abr=128,
+             language_preference=10)
+    ladder = udl.build_video_ladder({"duration": 100.0, "formats": [b, a, vid]},
+                                    max_bytes=100_000_000)
+    assert ladder[0]["audio_format_id"] == "a-hi"
+
+
 def test_video_ladder_skips_drm_storyboards_rtmp_and_flags_over_cap():
     ladder = udl.build_video_ladder(_LADDER_INFO, max_bytes=5_000_000)
     assert all(r["height"] not in (2160, 1440) for r in ladder)
@@ -1124,6 +1153,9 @@ def test_parse_progress_fields_carries_the_format_id():
 
 
 def _patch_video_argv(monkeypatch, script: str):
+    # The scripts' middle lines are asserted on: with the 0.3 s throttle on,
+    # a reader scheduled 50 ms late on a loaded runner swallowed one.
+    monkeypatch.setattr(udl, "_PROGRESS_EMIT_MIN_S", 0.0)
     monkeypatch.setattr(
         udl, "build_video_download_argv",
         lambda url, *, dest_dir, max_bytes, max_height=None, container="mkv",

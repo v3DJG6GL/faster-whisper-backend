@@ -8,8 +8,11 @@ Contract (same stance as media/download.py):
   - No client-supplied string ever becomes an ffmpeg input path or an option:
     the SRT texts are written into a private mkdtemp under fixed names, the
     source is a media-store path, and every input runs with
-    `-protocol_whitelist file` (the local-file-read / SSRF surface a crafted
-    playlist-shaped input would otherwise open — see audio/transcode.py).
+    `-protocol_whitelist file` (no network protocol). The whitelist does not
+    stop a playlist-shaped source (ffconcat naming a sibling retained file)
+    reading through the file protocol itself: probe_streams refuses those
+    demuxers (audio/ffmpeg.MULTI_INPUT_DEMUXERS), and the route packages
+    nothing the probe called unreadable.
   - Stream copy only: the picture and the sound are never re-encoded.
 """
 
@@ -139,10 +142,16 @@ def _is_cover_art(stream) -> bool:
 
 def probe_streams(path: str) -> MediaStreams:
     """Codec facts via PyAV (the lean image has no ffprobe). `-protocol_whitelist
-    file` here too: the file came from a client upload or a site download."""
+    file` here too: the file came from a client upload or a site download.
+    ValueError for a demuxer that pulls in other files (an ffconcat upload
+    listing another retained video would otherwise probe as that video and
+    stream-copy it N times past MEDIA_MAX_BYTES) — the route caches that as
+    unreadable."""
     import av  # optional dependency; the route maps ImportError to 503
 
     with av.open(path, options={"protocol_whitelist": "file"}) as c:
+        if audio_ffmpeg.is_multi_input_format(getattr(c.format, "name", None)):
+            raise ValueError("unsupported container")
         videos = [s for s in c.streams if s.type == "video"]
         # A cover-art stream (MJPEG/PNG in an m4a) is not the picture — a
         # file with nothing else has NO video (never fall back to it).
@@ -252,11 +261,11 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
                   video_index: int = 0,
                   video_codec: "str | None" = None) -> str:
     """Mux `tracks` into `src` as soft subtitles; returns the output path
-    inside a fresh `pkg-` workdir the CALLER removes after streaming it.
+    inside a fresh `fwb-pkg-` workdir the CALLER removes after streaming it.
     Every failure removes the workdir here."""
     if container not in CONTAINERS:
         container = "mkv"
-    workdir = tempfile.mkdtemp(prefix="pkg-")
+    workdir = tempfile.mkdtemp(prefix="fwb-pkg-")
     try:
         srt_paths = await asyncio.to_thread(_write_srts, workdir, tracks)
         strip = await _empty_captions_to_strip(src, video_codec, video_index, timeout)
@@ -287,9 +296,11 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
             logger.warning("[package] ffmpeg exited %s: %s", proc.returncode,
                            log_safe(tail[-300:]))
             m = _SRT_HINT_RE.search(tail)
-            # The bare marker only points at a subtitle when there IS one —
-            # with no tracks it is the source that ffmpeg could not demux.
-            if m or (tracks and "Invalid data found" in tail):
+            # The bare marker only points at a subtitle when there IS one and
+            # the line does not name the source (input #0, or its file name)
+            # — otherwise it is the source that ffmpeg could not demux.
+            if m or (tracks and "Invalid data found" in tail
+                     and os.path.basename(src) not in tail and "in#0" not in tail):
                 n = (int(m.group(1)) + 1) if m else 1
                 raise SubtitleParseError(f"subtitle track {n} could not be parsed")
             raise PackageError("packaging failed")
@@ -344,7 +355,7 @@ def _has(listing: str, name: str) -> bool:
 @functools.lru_cache(maxsize=1)
 def ffmpeg_capabilities() -> FfmpegCaps:
     """Whether the server's ffmpeg can package at all, and into which
-    containers. Cached: the binary cannot change without a restart. Two
+    containers. Cached: the binary cannot change without a restart. Three
     subprocesses on first call — the lifespan warms it off the loop."""
     exe = audio_ffmpeg.ffmpeg_exe()
     try:

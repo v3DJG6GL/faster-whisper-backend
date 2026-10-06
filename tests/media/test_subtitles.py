@@ -179,5 +179,7 @@ def test_fetch_caps_each_track_and_the_request(served):
     info = info_with({lang: ("vtt", big) for lang in ("aa", "ab", "ac", "ad", "ae")})
     tracks, failed = _fetch(info, [f"m-{l}" for l in ("aa", "ab", "ac", "ad", "ae")])
     assert len(tracks) == 4 and [f["id"] for f in failed] == ["m-ae"]
-    assert asked == [subs.TRACK_MAX_BYTES] * 4 + [0]
+    # The spent budget fails the fifth id without a request.
+    assert asked == [subs.TRACK_MAX_BYTES] * 4
+    assert "budget" in failed[0]["error"]
     assert sum(len(t["text"]) for t in tracks) <= subs.TOTAL_MAX_BYTES

@@ -153,6 +153,12 @@ async def fetch_tracks(info, ids: "list[str]") -> "tuple[list[dict], list[dict]]
         try:
             if track is None or src is None:
                 raise _udl.UrlDownloadError("the link no longer offers this track")
+            if budget <= 0:
+                # No GET at all: a max_bytes=0 request still costs the site a
+                # connect (YouTube rate-limits timedtext hard), and its "over
+                # the size limit" would blame a track that may be tiny.
+                raise _udl.UrlDownloadError(
+                    "this request's subtitle size budget is used up")
             _ctype, body = await _udl.capped_get(
                 src["url"], max_bytes=min(TRACK_MAX_BYTES, budget),
                 deadline=deadline)

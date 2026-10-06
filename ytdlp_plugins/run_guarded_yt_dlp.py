@@ -29,8 +29,10 @@ _GUARD_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "fwb_ssrf_guard", "yt_dlp_plugins", "extractor", "fwb_ssrf_guard.py")
 
-# Marker the parent greps for; url_download.classify_error maps it to the
-# client-safe "the site could not be reached from the server".
+# Marker the parent greps for; faster_whisper_backend/media/download.py
+# classify_error maps it to the client-safe "the site could not be reached
+# from the server". Must equal download.GUARD_MARKER and the guard's own
+# MARKER (both pinned by tests/media/test_ssrf_guard.py).
 _MARKER = "fwb-ssrf-guard"
 
 

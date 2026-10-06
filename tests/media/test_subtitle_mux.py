@@ -150,7 +150,7 @@ def test_package_success_returns_output_in_a_pkg_workdir(monkeypatch):
     try:
         assert os.path.basename(out) == "out.mkv"
         workdir = os.path.dirname(out)
-        assert os.path.basename(workdir).startswith("pkg-")
+        assert os.path.basename(workdir).startswith("fwb-pkg-")
         with open(os.path.join(workdir, "sub_0.srt"), "rb") as f:
             assert b"\r" not in f.read()   # normalised line endings
     finally:
@@ -159,10 +159,10 @@ def test_package_success_returns_output_in_a_pkg_workdir(monkeypatch):
 
 def test_package_timeout_kills_the_child_and_cleans_the_workdir(monkeypatch):
     _patch_argv(monkeypatch, "import time; time.sleep(30)")
-    before = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("pkg-")}
+    before = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
     with pytest.raises(pk.PackageTimeout):
         _run(pk.package("/x", [], container="mkv", default_track=None, timeout=0.5))
-    after = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("pkg-")}
+    after = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
     assert after <= before
 
 
@@ -182,6 +182,14 @@ def test_package_nonzero_exit_never_echoes_stderr_and_classifies_srt(monkeypatch
         _run(pk.package("/x", [], container="mkv", default_track=None, timeout=10))
     assert not isinstance(ei.value, pk.SubtitleParseError)
     assert str(ei.value) == "packaging failed"
+    # With tracks, a line naming the source still blames the source.
+    for line in ("clip.mkv: Invalid data found when processing input",
+                 "[in#0/matroska,webm @ 0x1] Error during demuxing: Invalid data found"):
+        _patch_argv(monkeypatch, f'import sys; sys.stderr.write({line!r}); sys.exit(1)')
+        with pytest.raises(pk.PackageError) as ei:
+            _run(pk.package("/m/clip.mkv", _tracks(), container="mkv",
+                            default_track=None, timeout=10))
+        assert not isinstance(ei.value, pk.SubtitleParseError), line
 
 
 def test_package_no_output_is_an_error(monkeypatch):
@@ -300,7 +308,8 @@ def test_unreadable_streams_is_flagged_not_no_video():
     assert facts["unreadable"] is True and facts["cover_art_only"] is False
     assert facts["video_codec"] is None and facts["mp4_ok"] is False
     assert facts["mp4_reason"] == pk.UNREADABLE_REASON
-    # The positional shape main.py builds keeps working (flags default off).
+    # The positional shape (the seven original fields) keeps working; the
+    # flags default off.
     legacy = pk.MediaStreams(None, None, None, None, None, False, "x")
     assert legacy.unreadable is False and legacy.video_index == 0
 

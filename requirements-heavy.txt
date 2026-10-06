@@ -1,6 +1,7 @@
 # Heavy, slow-moving dependencies — split out of requirements.txt purely for
-# Docker layer caching. Everything here pulls large compiled wheels; everything
-# left in requirements.txt is small and pure-Python and gets bumped often.
+# Docker layer caching. Everything here pulls large compiled wheels and moves
+# slowly; what stays in requirements.txt is small (a few compiled wheels such
+# as pydantic-core, psutil and uvloop, but nothing large) and gets bumped often.
 #
 # Both Dockerfiles install THIS file in its own layer, before the light one, so
 # a routine pin bump (pydantic, yt-dlp, fastapi) rebuilds a ~30 s layer instead

@@ -140,6 +140,8 @@ def test_generated_clip_with_empty_captions(tmp_path):
 
 def test_generated_clip_with_real_captions_keeps_them(tmp_path):
     src = _video_with(tmp_path, _sei(PAD, HI))
+    # The scan answers False on any doubt — prove the clip carries them.
+    assert _ga94_count(src) >= 5
     assert cc.embedded_captions_empty(src) is False
 
 

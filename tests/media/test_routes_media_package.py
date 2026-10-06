@@ -6,6 +6,8 @@ the middleware and the handlers run real."""
 from __future__ import annotations
 
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -17,6 +19,7 @@ from faster_whisper_backend.media import media_store as ums
 from faster_whisper_backend.media import subtitle_mux as pk
 
 _ID = "a" * 32
+_REAL_PROBE = pk.probe_streams   # before any fixture stubs it
 
 
 def _streams(**kw):
@@ -153,6 +156,31 @@ def test_streams_reports_the_probe_and_caches_it(client, package_enabled):
     assert client.get("/v1/audio/media/NOPE/streams").status_code == 422
 
 
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="needs a system ffmpeg")
+def test_ffconcat_upload_naming_a_retained_video_is_unreadable(
+        client, package_enabled, monkeypatch, tmp_path):
+    """A ~100-byte ffconcat upload listing another retained file N times
+    would probe as THAT video (the whitelisted file protocol admits a bare
+    same-directory name) and stream-copy N x its size past MEDIA_MAX_BYTES
+    and the free-space check: the probe refuses the demuxer instead."""
+    pytest.importorskip("av")
+    monkeypatch.setattr(pk, "probe_streams", _REAL_PROBE)
+    src = str(tmp_path / "a.mkv")
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-f", "lavfi", "-i", "testsrc=size=64x64:rate=10:duration=1",
+                    "-c:v", "mpeg4", src], check=True, timeout=60)
+    with open(src, "rb") as f:
+        id_a = _upload(client, data=f.read(), ext="mkv").json()["media_id"]
+    assert client.get(f"/v1/audio/media/{id_a}/streams").json()["video_codec"]
+    playlist = ("ffconcat version 1.0\n" + f"file '{id_a}.mkv'\n" * 50).encode()
+    id_b = _upload(client, data=playlist, ext="mp4").json()["media_id"]
+    r = client.get(f"/v1/audio/media/{id_b}/streams")
+    assert r.status_code == 200 and r.json()["unreadable"] is True, r.text
+    r = client.post(f"/v1/audio/media/{id_b}/package",
+                    json={"container": "mkv", "subtitles": _tracks()})
+    assert r.status_code == 422 and r.json()["detail"]["code"] == "unreadable"
+
+
 # --- package ------------------------------------------------------------------
 
 def test_package_forwards_original_track_and_audio_language(client, package_enabled, monkeypatch):
@@ -205,7 +233,7 @@ def test_package_forwards_per_track_flags(client, package_enabled, monkeypatch):
 
 def test_package_mkv_happy_path_streams_the_file_and_cleans_up(client, package_enabled):
     mid = _upload(client).json()["media_id"]
-    before = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("pkg-")}
+    before = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
     r = client.post(f"/v1/audio/media/{mid}/package",
                     json={"container": "mkv", "subtitles": _tracks(),
                           "default_track": 0, "filename": "My talk: final?"})
@@ -215,7 +243,7 @@ def test_package_mkv_happy_path_streams_the_file_and_cleans_up(client, package_e
     assert r.headers["cache-control"] == "no-store"
     assert r.content.endswith(b"|muxed:mkv:2")
     assert r.content.startswith(b"video-bytes")
-    after = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("pkg-")}
+    after = {n for n in os.listdir(tempfile.gettempdir()) if n.startswith("fwb-pkg-")}
     assert after <= before
 
 

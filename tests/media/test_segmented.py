@@ -77,6 +77,25 @@ video/480.m3u8
         "https://cdn.test/de/index.m3u8"
 
 
+def test_hls_master_with_a_muxed_default_reads_the_variants_not_the_alternative():
+    """A DEFAULT=YES rendition without a URI has its audio in the variants;
+    the URI-carrying alternative (audio description, a dub) is not it."""
+    text = """#EXTM3U
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="Main",DEFAULT=YES,LANGUAGE="en"
+#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="a",NAME="Described",DEFAULT=NO,LANGUAGE="en",URI="ad/index.m3u8"
+#EXT-X-STREAM-INF:BANDWIDTH=2000000,AUDIO="a"
+video/720.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO="a"
+video/480.m3u8
+"""
+    assert seg.parse_hls(text, "https://cdn.test/master.m3u8") == \
+        "https://cdn.test/video/480.m3u8"
+    # No default at all: the first listed rendition, as before.
+    assert seg.parse_hls(text.replace("DEFAULT=YES,", ""),
+                         "https://cdn.test/master.m3u8") == \
+        "https://cdn.test/ad/index.m3u8"
+
+
 def test_hls_master_without_audio_renditions_picks_the_leanest_variant():
     text = ("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080\n"
             "1080.m3u8\n#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=90000,URI=\"if.m3u8\"\n"

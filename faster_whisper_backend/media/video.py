@@ -70,7 +70,7 @@ def _clamp_video_height(value) -> "int | None":
         return None
     try:
         h = int(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # JSON 1e999 / Infinity
         return None
     if h <= 0:
         return None

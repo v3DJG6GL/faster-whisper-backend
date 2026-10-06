@@ -76,7 +76,7 @@ def test_url_policy_rejection_lands_policy_blocked_on_the_ledger(client, url_ena
     assert tuple(job) == ("policy_blocked", "downloading")
 
 
-def test_failed_stage_row_carries_its_error_class(url_enabled):
+def test_failed_stage_row_carries_its_error_class():
     """A soft-failed stage (the job goes on without it) gets a receipt row
     with the failure class the usage ledger counts; without it a failed
     stage left no row anywhere."""
