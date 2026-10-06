@@ -250,14 +250,14 @@ def test_an_unticked_instant_unit_closes_as_instant(ledger, clock):
 def test_finish_run_writes_the_ledger_once(ledger, clock, monkeypatch):
     """Downloading + diarizing steps + three targets: one locked
     read-modify-write for the whole run, with the same learned rates."""
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.core import atomic_json
     writes = []
-    real = config_store._atomic_write_json
+    real = atomic_json.atomic_write_json
 
     def counting(*a, **kw):
         writes.append(1)
         return real(*a, **kw)
-    monkeypatch.setattr(config_store, "_atomic_write_json", counting)
+    monkeypatch.setattr(atomic_json, "atomic_write_json", counting)
     p = _plan(clock, stages=["transcribing", "diarizing", "translating"])
     p.set_audio_seconds(600.0, src="decoder")
     p.set_segments(80)

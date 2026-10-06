@@ -45,6 +45,7 @@ import time
 from dataclasses import dataclass, field
 
 from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.runtime import model_sizes
 from faster_whisper_backend.runtime import system_stats
@@ -270,10 +271,9 @@ def _placement(family: str, model_id: str = "") -> "tuple[str, str]":
     (MODEL_OVERRIDES > global), not from the global fields alone."""
     if family == "whisper":
         try:
-            from faster_whisper_backend import main  # lazy: main imports this module
             mid = normalize_id(family, model_id) or None
-            return ((main.cfg_for(mid, "MODEL_DEVICE") or "cpu"),
-                    (main.cfg_for(mid, "MODEL_COMPUTE_TYPE") or ""))
+            return ((effective_config.cfg_for(mid, "MODEL_DEVICE") or "cpu"),
+                    (effective_config.cfg_for(mid, "MODEL_COMPUTE_TYPE") or ""))
         except Exception:  # noqa: BLE001 — _admit has no try; never raise
             return ((getattr(cfg, "MODEL_DEVICE", "cpu") or "cpu"),
                     (getattr(cfg, "MODEL_COMPUTE_TYPE", "") or ""))

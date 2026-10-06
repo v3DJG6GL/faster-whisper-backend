@@ -36,7 +36,9 @@ from faster_whisper_backend.core.languages import (
 from faster_whisper_backend.core import seam_holdback as _seam_holdback
 
 from faster_whisper_backend.settings import config as cfg
-from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import effective_config
+from faster_whisper_backend.settings import schema as settings_schema
+from faster_whisper_backend.settings import version as settings_version
 # system_stats imports psutil + pynvml at module load and primes psutil's
 # non-blocking counters. Imported here (early) so the priming happens before
 # any request handler runs.
@@ -204,7 +206,7 @@ if TYPE_CHECKING:
 # map), "callback:dedup" (collapse adjacent punctuation runs), "callback:upper"
 # (capitalize after sentence terminator), or "terminal" (final lstrip+rstrip;
 # always last). See config.py:PIPELINE_RULES for the canonical seeded list and
-# config_store.py for the Pydantic schema.
+# settings/schema.py for the Pydantic schema.
 #
 # rebuild_caches() compiles each rule's regex pattern once at module load and
 # again on admin WebUI save (CACHE_REBUILD_FIELDS = {"PIPELINE_RULES"}).
@@ -1577,15 +1579,15 @@ def _resolve_suppress_chars(model_id: str,
 
 # Per-request decode-param overrides (the client's "decode overrides"). Optional;
 # absent leaves behavior identical to before (config-only). Every value is clamped
-# to the SAME bounds the admin config enforces (config_store.py), so an untrusted
+# to the SAME bounds the admin config enforces (settings/schema.py), so an untrusted
 # client cannot request unbounded compute on the shared server. Applied AFTER config
 # resolution, so the order is: request > per-model override > global default.
 # Only model.transcribe kwargs belong in these tables: every key in them is
 # forwarded as one (live-dictation keys are applied by the streaming route).
 def _client_bounds(key: str) -> "tuple":
     """(min, max) of a client decode key, read from its config field's own
-    bounds (config_store.client_key_bounds) rather than copied by hand."""
-    b = config_store.client_key_bounds()[key]
+    bounds (settings_schema.client_key_bounds) rather than copied by hand."""
+    b = settings_schema.client_key_bounds()[key]
     return b["min"], b["max"]
 
 
@@ -1720,9 +1722,9 @@ def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
             kwargs["vad_parameters"] = None
     if kwargs.get("vad_filter"):
         vp = dict(kwargs.get("vad_parameters") or dict(
-            min_silence_duration_ms=cfg_for(resolved_model, "VAD_MIN_SILENCE_MS", ident),
-            speech_pad_ms=cfg_for(resolved_model, "VAD_SPEECH_PAD_MS", ident),
-            threshold=cfg_for(resolved_model, "VAD_THRESHOLD", ident),
+            min_silence_duration_ms=effective_config.cfg_for(resolved_model, "VAD_MIN_SILENCE_MS", ident),
+            speech_pad_ms=effective_config.cfg_for(resolved_model, "VAD_SPEECH_PAD_MS", ident),
+            threshold=effective_config.cfg_for(resolved_model, "VAD_THRESHOLD", ident),
         ))
         if "vad_min_silence_duration_ms" in overrides:
             cv = _clamp_int(overrides["vad_min_silence_duration_ms"], 0, 10000)
@@ -1790,7 +1792,7 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
     per-model > global. ``ident=None`` is byte-identical to the pre-feature path.
     """
     def cf(field):
-        return cfg_for(resolved_model, field, ident)
+        return effective_config.cfg_for(resolved_model, field, ident)
 
     transcribe_kwargs = dict(
         language=language if language else None,
@@ -1900,7 +1902,7 @@ def assemble_transcribe_kwargs(resolved_model, model, *, language, temperature,
                                      if ident is not None else frozenset()))
     if _chars_from_client:
         _suppress_chars = _client_chars[
-            :config_store.client_key_bounds()["suppress_chars"]["maxlen"]]
+            :settings_schema.client_key_bounds()["suppress_chars"]["maxlen"]]
     if _suppress_chars:
         extra_ids = _resolve_suppress_chars(resolved_model, model, _suppress_chars,
                                             _chars_from_client)
@@ -1959,7 +1961,7 @@ def _output_wrappers(resolved_model, ident, overrides: "dict | None") -> "tuple[
     Shared by the batch route and the streaming wrappers (handshake and
     _refresh_ident)."""
     locked = ident.locked_client_keys if ident is not None else frozenset()
-    bounds = config_store.client_key_bounds()
+    bounds = settings_schema.client_key_bounds()
     out = []
     for field, key in (("OUTPUT_PREFIX", "output_prefix"),
                        ("OUTPUT_SUFFIX", "output_suffix")):
@@ -1967,7 +1969,7 @@ def _output_wrappers(resolved_model, ident, overrides: "dict | None") -> "tuple[
         if isinstance(v, str) and key not in locked:
             out.append(v[:bounds[key]["maxlen"]])
         else:
-            out.append(cfg_for(resolved_model, field, ident) or "")
+            out.append(effective_config.cfg_for(resolved_model, field, ident) or "")
     return out[0], out[1]
 
 
@@ -1981,9 +1983,9 @@ def tail_guard_limits(model_name, ident) -> dict:
     model + identity, as apply_tail_guards kwargs. Shared by the batch route and
     both streaming decodes."""
     return {
-        "burst": float(cfg_for(model_name, "SEGMENT_MAX_WORD_BURST_PER_S", ident) or 0),
-        "zero_tail": int(cfg_for(model_name, "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", ident) or 0),
-        "repeats": int(cfg_for(model_name, "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", ident) or 0),
+        "burst": float(effective_config.cfg_for(model_name, "SEGMENT_MAX_WORD_BURST_PER_S", ident) or 0),
+        "zero_tail": int(effective_config.cfg_for(model_name, "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS", ident) or 0),
+        "repeats": int(effective_config.cfg_for(model_name, "SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS", ident) or 0),
     }
 
 
@@ -2017,7 +2019,7 @@ def head_echo_min_words(model_name, ident) -> int:
     """SEGMENT_HEAD_ECHO_MIN_WORDS resolved for this model + identity (the head
     twin of tail_guard_limits; kept apart because it is not an
     apply_tail_guards kwarg). 1 is treated as off, like the guard does."""
-    n = int(cfg_for(model_name, "SEGMENT_HEAD_ECHO_MIN_WORDS", ident) or 0)
+    n = int(effective_config.cfg_for(model_name, "SEGMENT_HEAD_ECHO_MIN_WORDS", ident) or 0)
     return n if n >= 2 else 0
 
 
@@ -2115,99 +2117,14 @@ def _resolve_model_name(requested: str) -> str:
     return requested
 
 
-# =============================================================================
-# Per-model config resolution (per-model override > global default)
-# =============================================================================
-# cfg_for(model_id, field) is the canonical reader for any G/PM-scoped setting.
-# It walks: cfg.MODEL_OVERRIDES[model_id][field] (if set and not None) → cfg.X
-# (global default). Pure-G fields (DEFAULT_MODEL, ALLOWED_MODELS, server, log)
-# are read with plain cfg.X — they have no per-model meaning.
-#
-# Precedence (highest to lowest):
-#   request-arg  >  per-model override  >  global default  >  faster-whisper
-# The first three are this function's business; the last is whatever
-# faster-whisper itself defaults to when we omit a kwarg.
-
-def cfg_for(model_id: "str | None", field: str, ident=None):
-    """Resolve a G/PM config field for the given model_id (and optional caller
-    identity).
-
-    Precedence: per-identity override (``ident``) > per-model override >
-    global cfg.X. ``ident`` is an effective_config.Resolved whose ``values``
-    already merged the key/user/profile layers; passing ``ident=None`` (the
-    default everywhere except the request paths) is byte-identical to the
-    pre-feature behaviour. Pass model_id=None to skip the per-model layer.
-    """
-    if ident is not None and field in ident.values:
-        return ident.values[field]
-    overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
-    if model_id and isinstance(overrides, dict):
-        m_over = overrides.get(model_id)
-        if isinstance(m_over, dict):
-            v = m_over.get(field)
-            if v is not None:
-                return v
-    return getattr(cfg, field)
-
-# Sentinel for _resolve_request_knob: skip the `or default` coercion entirely.
-# Needed by callers that resolve NUMERIC knobs through the same ladder, where
-# `or ""` would corrupt a legitimate 0 (e.g. TRANSLATION_CONTEXT_SEGMENTS).
-_NO_DEFAULT = object()
-
-
 def _clamp_context_segments(v: "int | None") -> "int | None":
     """A request's TRANSLATION_CONTEXT_SEGMENTS, clamped to the field's own
     bounds (0–10; None = absent, inherit). Shared by the audio routes and the
     text route."""
     if v is None:
         return None
-    b = config_store.field_bounds()["TRANSLATION_CONTEXT_SEGMENTS"]
+    b = settings_schema.field_bounds()["TRANSLATION_CONTEXT_SEGMENTS"]
     return _clamp_int(v, b["min"], b["max"])
-
-
-def _resolve_request_knob(resolved_model, ident, ignored: "list[str]",
-                          cfg_name: str, client_name: str, req_val,
-                          default=""):
-    """The locked-wins / request-wins / config-inherits ladder every
-    per-request string knob shares (the speaker counts use the numeric tuple
-    loop next to their form parsing). Locked: the resolved server value wins
-    and a differing request lands in ``ignored`` under its client name.
-    `default=_NO_DEFAULT` returns the resolved value raw (no falsy coercion)."""
-    if cfg_name in ident.locked:
-        val = cfg_for(resolved_model, cfg_name, ident)
-        if default is not _NO_DEFAULT:
-            val = val or default
-        if req_val is not None and req_val != val:
-            ignored.append(client_name)
-        return val
-    if req_val is not None:
-        return req_val
-    val = cfg_for(resolved_model, cfg_name, ident)
-    return val if default is _NO_DEFAULT else (val or default)
-
-
-
-def build_ident(user: "dict | None", model_id: "str | None",
-                request_overrides: "dict | None" = None,
-                request_profile: "str | None" = None,
-                with_provenance: bool = False):
-    """Resolve the per-identity effective config ONCE for a request / streaming
-    handshake / capture row, to thread through cfg_for / assemble_transcribe_
-    kwargs / _postprocess_text. Open mode and callers with no per-identity
-    config yield a Resolved with no identity layers (per-model rules still
-    folded) — equivalent to threading ident=None. ``with_provenance`` adds the
-    per-field layer stack (GET /v1/request-default-settings names each value's
-    source)."""
-    from faster_whisper_backend.settings import effective_config
-    user = user or {}
-    return effective_config.resolve(
-        model_id,
-        user_id=user.get("user_id"),
-        key_id=user.get("key_id"),
-        request_overrides=request_overrides or {},
-        request_profile=request_profile,
-        with_provenance=with_provenance,
-    )
 
 
 # =============================================================================
@@ -2450,7 +2367,7 @@ def _get_url_download_semaphore() -> "asyncio.Semaphore":
 
 
 # faster-whisper short name OR HuggingFace repo id (org/name) — the same shape
-# config_store._MODEL_ID_PATTERN validates configured model ids against. Used
+# settings_schema._MODEL_ID_PATTERN validates configured model ids against. Used
 # below to bound what an EMPTY ALLOWED_MODELS accepts from a request.
 # \Z, not $: `$` also matches just BEFORE a trailing newline, so "some-repo\n"
 # passed the gate. \Z anchors at the true end of the string and is a pure
@@ -2509,7 +2426,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     from faster_whisper import WhisperModel  # noqa: F401  (used in executor lambdas below)
 
     # The allowlist is read live per request and is in neither
-    # config_store.RESTART_REQUIRED_FIELDS nor LOAD_TIME_FIELDS, so narrowing it
+    # settings_schema.RESTART_REQUIRED_FIELDS nor LOAD_TIME_FIELDS, so narrowing it
     # is reported to the admin as hot-applied and evicts nothing. Gate BEFORE the
     # cache fast path, or a model that is still resident keeps being served to
     # clients after the admin withdrew it (MODEL_IDLE_TIMEOUT_S defaults to 0,
@@ -2543,26 +2460,26 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     loop = asyncio.get_running_loop()
     # Per-model override > global default. Each loaded model can pin its
     # own device/compute_type/etc. independently.
-    primary_device = cfg_for(name, "MODEL_DEVICE")
-    primary_compute = cfg_for(name, "MODEL_COMPUTE_TYPE")
-    fallback_device = cfg_for(name, "MODEL_DEVICE_FALLBACK")
-    fallback_compute = cfg_for(name, "MODEL_COMPUTE_TYPE_FALLBACK")
+    primary_device = effective_config.cfg_for(name, "MODEL_DEVICE")
+    primary_compute = effective_config.cfg_for(name, "MODEL_COMPUTE_TYPE")
+    fallback_device = effective_config.cfg_for(name, "MODEL_DEVICE_FALLBACK")
+    fallback_compute = effective_config.cfg_for(name, "MODEL_COMPUTE_TYPE_FALLBACK")
     # Load-time hardware kwargs (also per-model overrideable).
     load_kwargs = {
         "device": primary_device,
         "compute_type": primary_compute,
-        "device_index": cfg_for(name, "DEVICE_INDEX"),
-        "cpu_threads": cfg_for(name, "CPU_THREADS"),
-        "num_workers": cfg_for(name, "NUM_WORKERS"),
+        "device_index": effective_config.cfg_for(name, "DEVICE_INDEX"),
+        "cpu_threads": effective_config.cfg_for(name, "CPU_THREADS"),
+        "num_workers": effective_config.cfg_for(name, "NUM_WORKERS"),
     }
     # Optional load-time fields — only forwarded if non-default to keep
     # WhisperModel(...) clean for the common path.
-    _download_root = cfg_for(name, "DOWNLOAD_ROOT")
+    _download_root = effective_config.cfg_for(name, "DOWNLOAD_ROOT")
     if _download_root:
         load_kwargs["download_root"] = _download_root
-    if cfg_for(name, "LOCAL_FILES_ONLY"):
+    if effective_config.cfg_for(name, "LOCAL_FILES_ONLY"):
         load_kwargs["local_files_only"] = True
-    _auth_token = cfg_for(name, "HF_TOKEN")
+    _auth_token = effective_config.cfg_for(name, "HF_TOKEN")
     if _auth_token:
         load_kwargs["use_auth_token"] = _auth_token
     # PM-only field (no global counterpart): read directly from override.
@@ -2711,7 +2628,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
         if vram_delta is not None and vram_delta < 0:
             vram_delta = 0
         # Off the loop: register_loaded_model persists the measurement
-        # (model_sizes.record -> config_store._save_lock + fsync), which can
+        # (model_sizes.record -> atomic_json.save_lock + fsync), which can
         # block for the lock timeout when a peer worker holds the file.
         await asyncio.to_thread(
             system_stats.register_loaded_model,
@@ -4107,7 +4024,7 @@ def _progress_close(pid: "str | None") -> None:
             _PROGRESS_CLOSED.pop(k, None)
 _PROGRESS_ID_RE = re.compile(r"\A[0-9a-f]{8,64}\Z")
 
-# Mirrors config_store._TRANSLATION_MODEL_REF_PATTERN — org/repo[:quant].
+# Mirrors settings_schema._TRANSLATION_MODEL_REF_PATTERN — org/repo[:quant].
 _TRANSLATION_REF_RE = re.compile(
     r"\A[A-Za-z0-9][A-Za-z0-9_.\-]*/[A-Za-z0-9_.\-]+(:[A-Za-z0-9_.\-]+)?\Z")
 
@@ -4704,7 +4621,7 @@ async def transcribe(
         # wrappers, and which fields are locked against client overrides.
         # Open mode / no per-identity config → no identity layers (≡ today).
         # `override_profile` (if sent + allowed) joins as the least-specific layer.
-        ident = build_ident(user, resolved_model, request_profile=override_profile)
+        ident = effective_config.build_ident(user, resolved_model, request_profile=override_profile)
 
         form_data = await request.form()
         timestamp_granularities = form_data.getlist("timestamp_granularities[]")
@@ -4908,7 +4825,7 @@ async def transcribe(
             # config knob and the per-request ask. Disabled (False) bypasses
             # the DTW alignment path entirely — required for primeline-style
             # finetunes that hit faster-whisper#1212.
-            gate_word_ts = cfg_for(resolved_model, "WORD_TIMESTAMPS_ENABLED", ident)
+            gate_word_ts = effective_config.cfg_for(resolved_model, "WORD_TIMESTAMPS_ENABLED", ident)
             want_word_ts = gate_word_ts and include_words
 
             # Capture-for-fine-tuning decision. We gate via gate_word_ts
@@ -4956,23 +4873,23 @@ async def transcribe(
             # tnfru/primeline finetunes' documented failure mode).
             ignored: "list[str]" = []
             if "DEFAULT_PROMPT" in ident.locked:
-                _prompt = cfg_for(resolved_model, "DEFAULT_PROMPT", ident)
+                _prompt = effective_config.cfg_for(resolved_model, "DEFAULT_PROMPT", ident)
                 if prompt is not None and prompt != _prompt:
                     ignored.append("prompt")
             elif prompt is not None:
                 _prompt = prompt
             else:
-                _prompt = cfg_for(resolved_model, "DEFAULT_PROMPT", ident)
+                _prompt = effective_config.cfg_for(resolved_model, "DEFAULT_PROMPT", ident)
             initial_prompt_arg = _prompt if _prompt else None
 
-            _vad_filter = cfg_for(resolved_model, "VAD_FILTER", ident)
+            _vad_filter = effective_config.cfg_for(resolved_model, "VAD_FILTER", ident)
             vad_parameters = dict(
-                min_silence_duration_ms=cfg_for(resolved_model, "VAD_MIN_SILENCE_MS", ident),
-                speech_pad_ms=cfg_for(resolved_model, "VAD_SPEECH_PAD_MS", ident),
-                threshold=cfg_for(resolved_model, "VAD_THRESHOLD", ident),
+                min_silence_duration_ms=effective_config.cfg_for(resolved_model, "VAD_MIN_SILENCE_MS", ident),
+                speech_pad_ms=effective_config.cfg_for(resolved_model, "VAD_SPEECH_PAD_MS", ident),
+                threshold=effective_config.cfg_for(resolved_model, "VAD_THRESHOLD", ident),
             ) if _vad_filter else None
 
-            _lead_pad_ms = int(cfg_for(resolved_model, "LEADING_SILENCE_PAD_MS", ident) or 0)
+            _lead_pad_ms = int(effective_config.cfg_for(resolved_model, "LEADING_SILENCE_PAD_MS", ident) or 0)
 
             # Coerce empty to None — faster-whisper validates the value against
             # its accepted-codes list, so "" raises ValueError; None triggers
@@ -4982,19 +4899,19 @@ async def transcribe(
             # (`_decode_language`, not the `_language` ledger field above:
             # that one stays None until the decode has actually run.)
             if "DEFAULT_LANGUAGE" in ident.locked:
-                _decode_language = cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident)
+                _decode_language = effective_config.cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident)
                 if language is not None and language != _decode_language:
                     ignored.append("language")
             else:
                 # Present-but-empty is an explicit "auto-detect" (the client's
                 # cleared state); only an ABSENT field inherits the config.
                 _decode_language = (language if language is not None
-                                    else cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident))
+                                    else effective_config.cfg_for(resolved_model, "DEFAULT_LANGUAGE", ident))
             # Task: absent field inherits the resolved TASK config (per-identity
             # > per-model > global, default "transcribe"); a LOCKED TASK forbids
             # the client's `task` param the way a locked DEFAULT_LANGUAGE binds
             # `language` above.
-            _task = _resolve_request_knob(
+            _task = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TASK", "task", task, default="transcribe")
             _task_now = _task
@@ -5003,13 +4920,13 @@ async def transcribe(
             # is checked at the stage itself and soft-fails into `warnings`.
             _diarize_req = _form_bool(diarize)
             if "DIARIZE" in ident.locked:
-                _diarize = bool(cfg_for(resolved_model, "DIARIZE", ident))
+                _diarize = bool(effective_config.cfg_for(resolved_model, "DIARIZE", ident))
                 if _diarize_req is not None and _diarize_req != _diarize:
                     ignored.append("diarize")
             elif _diarize_req is not None:
                 _diarize = _diarize_req
             else:
-                _diarize = bool(cfg_for(resolved_model, "DIARIZE", ident))
+                _diarize = bool(effective_config.cfg_for(resolved_model, "DIARIZE", ident))
             _spk = {}
             for _cfg_name, _client_name, _client_val in (
                 ("DIARIZATION_NUM_SPEAKERS", "num_speakers", num_speakers),
@@ -5017,13 +4934,13 @@ async def transcribe(
                 ("DIARIZATION_MAX_SPEAKERS", "max_speakers", max_speakers),
             ):
                 if _cfg_name in ident.locked:
-                    _spk[_client_name] = cfg_for(resolved_model, _cfg_name, ident)
+                    _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)
                     if _client_val is not None and _client_val != _spk[_client_name]:
                         ignored.append(_client_name)
                 elif _client_val is not None:
                     _spk[_client_name] = _client_val
                 else:
-                    _spk[_client_name] = cfg_for(resolved_model, _cfg_name, ident)
+                    _spk[_client_name] = effective_config.cfg_for(resolved_model, _cfg_name, ident)
             # pyannote treats num alongside min/max as an error — num wins.
             if _spk.get("num_speakers"):
                 _spk["min_speakers"] = _spk["max_speakers"] = None
@@ -5051,19 +4968,19 @@ async def transcribe(
 
             _sep_req = _form_bool(separate_bgm)
             if "SEPARATE_BGM" in ident.locked:
-                _separate = bool(cfg_for(resolved_model, "SEPARATE_BGM", ident))
+                _separate = bool(effective_config.cfg_for(resolved_model, "SEPARATE_BGM", ident))
                 if _sep_req is not None and _sep_req != _separate:
                     ignored.append("separate_bgm")
             elif _sep_req is not None:
                 _separate = _sep_req
             else:
-                _separate = bool(cfg_for(resolved_model, "SEPARATE_BGM", ident))
+                _separate = bool(effective_config.cfg_for(resolved_model, "SEPARATE_BGM", ident))
             # Per-request stage models (pyannote pipeline id / UVR model):
             # same ladder again. A non-empty allowlist that misses the
             # resolved value soft-fails by skipping THAT stage — before its
             # enabled gate, so the warning names the actual reason.
             _dm_req = (diarization_model or "").strip() or None
-            _diarization_model = _resolve_request_knob(
+            _diarization_model = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "DIARIZATION_MODEL", "diarization_model", _dm_req)
             # The allowlist constrains only the CLIENT-requested value (a
@@ -5074,7 +4991,7 @@ async def transcribe(
             _diar_allowed = set(
                 getattr(cfg, "DIARIZATION_ALLOWED_MODELS", []) or [])
             _diar_allowed.add(getattr(cfg, "DIARIZATION_MODEL", "") or "")
-            _diar_allowed.add(cfg_for(resolved_model, "DIARIZATION_MODEL", ident) or "")
+            _diar_allowed.add(effective_config.cfg_for(resolved_model, "DIARIZATION_MODEL", ident) or "")
             if (_diarize and _dm_req is not None
                     and _diarization_model == _dm_req
                     and _diarization_model not in _diar_allowed):
@@ -5084,13 +5001,13 @@ async def transcribe(
                 _skip("diarizing")
                 _diarize = False
             _sm_req = (separation_model or "").strip() or None
-            _separation_model = _resolve_request_knob(
+            _separation_model = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "BGM_SEPARATION_UVR_MODEL", "separation_model", _sm_req)
             _sep_allowed = set(
                 getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", []) or [])
             _sep_allowed.add(getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "")
-            _sep_allowed.add(cfg_for(resolved_model, "BGM_SEPARATION_UVR_MODEL", ident) or "")
+            _sep_allowed.add(effective_config.cfg_for(resolved_model, "BGM_SEPARATION_UVR_MODEL", ident) or "")
             if (_separate and _sm_req is not None
                     and _separation_model == _sm_req
                     and _separation_model not in _sep_allowed):
@@ -5106,14 +5023,14 @@ async def transcribe(
             # Present-but-empty is an explicit "no targets" (overrides an
             # inherited TRANSLATE_TO); only an ABSENT field inherits.
             _tt_req = translate_to.strip() if translate_to is not None else None
-            _tt_raw = _resolve_request_knob(
+            _tt_raw = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TRANSLATE_TO", "translate_to", _tt_req)
             # csv → deduped ordered list of well-formed codes. Malformed
             # entries drop silently (the sloppy-caller stance of the clamped
             # knobs); the MAX_TARGETS clamp warns, naming what it dropped.
             _translate_to = language_codes(_tt_raw)
-            _translation_max_targets = int(cfg_for(
+            _translation_max_targets = int(effective_config.cfg_for(
                 resolved_model, "TRANSLATION_MAX_TARGETS", ident) or 1)
             if len(_translate_to) > _translation_max_targets:
                 _warnings.append(
@@ -5122,20 +5039,20 @@ async def transcribe(
                     + ", ".join(_translate_to[_translation_max_targets:]))
                 _translate_to = _translate_to[:_translation_max_targets]
             _tm_req = (translation_model or "").strip() or None
-            _translation_model = _resolve_request_knob(
+            _translation_model = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TRANSLATION_MODEL", "translation_model", _tm_req)
             # The identity/per-model effective model: echoing (or being
             # locked to) it is not a client choice the allowlist gates.
-            _tm_inherited = (cfg_for(resolved_model, "TRANSLATION_MODEL",
+            _tm_inherited = (effective_config.cfg_for(resolved_model, "TRANSLATION_MODEL",
                                      ident) or "").strip() or None
-            _translation_mode = _resolve_request_knob(
+            _translation_mode = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TRANSLATION_MODE", "translation_mode", translation_mode,
                 default="fluent")
             # Present-but-empty is an explicit "no glossary" (overrides an
             # inherited TRANSLATION_GLOSSARY); only an ABSENT field inherits.
-            _translation_glossary = _resolve_request_knob(
+            _translation_glossary = effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TRANSLATION_GLOSSARY", "translation_glossary",
                 translation_glossary)
@@ -5144,11 +5061,11 @@ async def transcribe(
             _translation_glossary = (_translation_glossary or "")[:4000]
             # Context segments: the same ladder; a request value is clamped
             # to the field's range like the text route does.
-            _translation_context = int(_resolve_request_knob(
+            _translation_context = int(effective_config._resolve_request_knob(
                 resolved_model, ident, ignored,
                 "TRANSLATION_CONTEXT_SEGMENTS", "context_segments",
                 _clamp_context_segments(context_segments),
-                default=_NO_DEFAULT) or 0)
+                default=effective_config._NO_DEFAULT) or 0)
 
             # The run plan's FINAL stage list and per-stage models, now that
             # every enable/allowlist/soft-skip verdict has landed (a stage
@@ -5261,7 +5178,7 @@ async def transcribe(
             # never going to apply here, so it is not reported either.
             ignored.extend(sorted(
                 k for k in _overrides if k in ident.locked_client_keys
-                and k not in config_store.STREAM_ONLY_CLIENT_KEYS))
+                and k not in settings_schema.STREAM_ONLY_CLIENT_KEYS))
             # A locked TEMPERATURE has to bind the OpenAI-compat `temperature`
             # Form field too, the way a locked DEFAULT_PROMPT/DEFAULT_LANGUAGE
             # binds `prompt`/`language` above. assemble_transcribe_kwargs only
@@ -5273,7 +5190,7 @@ async def transcribe(
             # field became the one way past the lock.
             _temperature = temperature
             if "TEMPERATURE" in ident.locked:
-                _locked_ladder = cfg_for(resolved_model, "TEMPERATURE", ident)
+                _locked_ladder = effective_config.cfg_for(resolved_model, "TEMPERATURE", ident)
                 # Same parse as the assembler: a blank, token-less (",") or
                 # unparseable ladder all leave the Form field in force.
                 if not _temperature_ladder(_locked_ladder):
@@ -5460,12 +5377,12 @@ async def transcribe(
             # the temperature ladder loops there for tens of seconds and the
             # result is dropped anyway. Resolved here (event loop) like every
             # other cfg_for read; the executor thread only carries the bool.
-            _skip_residual = bool(cfg_for(
+            _skip_residual = bool(effective_config.cfg_for(
                 resolved_model, "DECODE_SKIP_RESIDUAL_WINDOWS", ident))
             # Per-rung token limit scaled to the window's length: a decode
             # that loops otherwise runs to the model's hard limit at ~83 ms a
             # token (core/decode_trace.py, "Token cap"). 0 = off.
-            _token_cap = float(cfg_for(
+            _token_cap = float(effective_config.cfg_for(
                 resolved_model, "DECODE_TOKEN_CAP_PER_SECOND", ident) or 0.0)
 
             def _do_transcribe(_model=model, _path=tmp_path,
@@ -5638,7 +5555,7 @@ async def transcribe(
 
             # Post-decode word-rate guard (SEGMENT_MAX_WORDS_PER_S): drops
             # hallucinated echo segments — see segment_exceeds_word_rate.
-            _max_wps = float(cfg_for(resolved_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
+            _max_wps = float(effective_config.cfg_for(resolved_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
             # Tail cuts inside a segment (core/segment_guards.py). They run
             # AFTER the whole-segment verdict, on the survivors: a segment made
             # up from start to end is still dropped whole rather than trimmed to
@@ -6804,15 +6721,15 @@ async def translate_text(request: Request,
         # Per-identity policy (locks + overrides) applies here exactly as on the
         # batch path — reading bare cfg would let a locked-down key bypass its
         # profile by using this endpoint instead of the transcription form.
-        ident = build_ident(user, None)
+        ident = effective_config.build_ident(user, None)
         _ignored: "list[str]" = []
 
         # The module-level locked-wins / request-wins / config-inherits ladder,
         # bound to this request. _NO_DEFAULT: this endpoint resolves numeric
         # knobs (TRANSLATION_MAX_TARGETS, context segments) through the same
         # ladder, where the batch sites' `or ""` would corrupt a legitimate 0.
-        _knob = functools.partial(_resolve_request_knob, None, ident, _ignored,
-                                  default=_NO_DEFAULT)
+        _knob = functools.partial(effective_config._resolve_request_knob, None, ident, _ignored,
+                                  default=effective_config._NO_DEFAULT)
 
         raw_targets = body.get("targets")
         max_targets = int(_knob("TRANSLATION_MAX_TARGETS", "", None) or 1)
@@ -6870,7 +6787,7 @@ async def translate_text(request: Request,
         # Shared allowlist gate; like the batch stage, it constrains only the
         # CLIENT-requested value — an admin-pinned per-identity/per-model
         # TRANSLATION_MODEL is policy and passes.
-        _tm_inherited = (cfg_for(None, "TRANSLATION_MODEL", ident)
+        _tm_inherited = (effective_config.cfg_for(None, "TRANSLATION_MODEL", ident)
                          or "").strip() or None
         if not _translation_model_allowed(_tr_model, requested=_tm_req,
                                           inherited=_tm_inherited):
@@ -8633,7 +8550,7 @@ def _model_device(name: str, loaded_device: "str | None") -> str:
     it is loaded, else where a load would put it (MODEL_DEVICE, per-model
     override > global). "auto" resolves like CTranslate2 does: cuda when it
     sees a GPU, else cpu."""
-    device = str(loaded_device or cfg_for(name, "MODEL_DEVICE") or "cpu").lower()
+    device = str(loaded_device or effective_config.cfg_for(name, "MODEL_DEVICE") or "cpu").lower()
     if device == "auto":
         try:
             import ctranslate2
@@ -8675,12 +8592,11 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     allowed_override_profiles: ["*"] | [names…] | []} plus the feature flags
     below. The decode values a caller inherits are GET
     /v1/request-default-settings."""
-    from faster_whisper_backend.settings import effective_config
     caps = effective_config.resolve_capabilities(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
     # The caller's identity layers, for the per_request values below
     # (TRANSLATE_TO, TRANSLATION_MAX_TARGETS) — resolved once.
-    _ident = build_ident(user, None)
+    _ident = effective_config.build_ident(user, None)
     # Additive: whether the optional pipeline stages exist on this server at
     # all, so the client can disable its "Separate music" / "Speaker
     # diarization" toggles pre-flight instead of letting a request soft-fail
@@ -8786,7 +8702,7 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
         # The CALLER's effective TRANSLATE_TO default (per-identity overrides
         # respected), parsed csv → list like the transcribe handler does.
         caps["translate_to_default"] = language_codes(
-            cfg_for(None, "TRANSLATE_TO", _ident))
+            effective_config.cfg_for(None, "TRANSLATE_TO", _ident))
         # Engine version, yt_dlp_version-style best-effort (null when the
         # optional dependency set isn't installed); cached at module level —
         # it cannot change without a restart.
@@ -8820,7 +8736,7 @@ def _server_info(caps: dict, ident) -> dict:
     per_request and resolved for the caller exactly like the text route."""
     limits: dict = {
         "translation_max_targets": int(
-            cfg_for(None, "TRANSLATION_MAX_TARGETS", ident) or 1),
+            effective_config.cfg_for(None, "TRANSLATION_MAX_TARGETS", ident) or 1),
     }
     if caps.get("url_download_enabled"):
         limits["url_max_duration_s"] = int(getattr(cfg, "URL_MAX_DURATION_S", 0) or 0)
@@ -8870,7 +8786,6 @@ async def list_override_profiles(user: dict = Depends(_get_current_user_dep)):
     Names only — never the profile contents; empty list when the caller may not
     request any. User-tier auth: any valid key (admin not required); 401 without
     one when the server is locked down."""
-    from faster_whisper_backend.settings import effective_config
     names = effective_config.allowed_profile_names(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
     return {"profiles": names}
@@ -8886,7 +8801,6 @@ async def get_override_profile(name: str,
     profile's OWN contribution projected to the client decode keys; admin locks
     elsewhere can still win at request time (reported then via overrides_ignored).
     User-tier auth."""
-    from faster_whisper_backend.settings import effective_config
     allowed = effective_config.allowed_profile_names(
         user_id=user.get("user_id"), key_id=user.get("key_id"))
     if name not in allowed:
@@ -8957,14 +8871,13 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
     Exposes the global / per-model / bound DEFAULT_PROMPT and DEFAULT_HOTWORDS to
     any key holder — intended: they shape every transcript that key gets back
     (SECURITY-REVIEW_NOTES, "decode defaults are readable"). User-tier auth."""
-    from faster_whisper_backend.settings import config_store
     model = (model or "").strip()
     if len(model) > _DECODE_DEFAULTS_MODEL_MAX:
         raise HTTPException(status_code=400, detail="Model id is too long.")
     model_name = _resolve_model_name(model)
     _check_model_name(model_name)
     request_profile = (override_profile or "").strip() or None
-    ident = build_ident(user, model_name, request_profile=request_profile,
+    ident = effective_config.build_ident(user, model_name, request_profile=request_profile,
                         with_provenance=True)
     provenance = ident.provenance or {}
 
@@ -8974,15 +8887,15 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
                 "locked": bool(locked)}
 
     settings: dict = {}
-    for field, client_key in config_store.CONFIG_TO_CLIENT_KEY.items():
-        value = cfg_for(model_name, field, ident)
+    for field, client_key in settings_schema.CONFIG_TO_CLIENT_KEY.items():
+        value = effective_config.cfg_for(model_name, field, ident)
         # Blank text is "unset" to the decoder (hotwords are only sent when
         # non-blank) — say so, rather than ghosting an empty string.
         if isinstance(value, str) and not value.strip() and client_key == "hotwords":
             value = None
         settings[client_key] = _entry(field, value,
                                       client_key in ident.locked_client_keys)
-    prompt = cfg_for(model_name, "DEFAULT_PROMPT", ident)
+    prompt = effective_config.cfg_for(model_name, "DEFAULT_PROMPT", ident)
     prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
     return {
         "model": model_name,
@@ -8993,29 +8906,29 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
         # (not decode keys — locked by config name like the prompt), resolved
         # the way the run resolves them.
         "language": _entry("DEFAULT_LANGUAGE",
-                           cfg_for(model_name, "DEFAULT_LANGUAGE", ident) or "",
+                           effective_config.cfg_for(model_name, "DEFAULT_LANGUAGE", ident) or "",
                            "DEFAULT_LANGUAGE" in ident.locked),
         "word_timestamps": _entry(
             "WORD_TIMESTAMPS_ENABLED",
-            bool(cfg_for(model_name, "WORD_TIMESTAMPS_ENABLED", ident)),
+            bool(effective_config.cfg_for(model_name, "WORD_TIMESTAMPS_ENABLED", ident)),
             "WORD_TIMESTAMPS_ENABLED" in ident.locked),
-        "diarize": _entry("DIARIZE", bool(cfg_for(model_name, "DIARIZE", ident)),
+        "diarize": _entry("DIARIZE", bool(effective_config.cfg_for(model_name, "DIARIZE", ident)),
                           "DIARIZE" in ident.locked),
         "separate_bgm": _entry("SEPARATE_BGM",
-                               bool(cfg_for(model_name, "SEPARATE_BGM", ident)),
+                               bool(effective_config.cfg_for(model_name, "SEPARATE_BGM", ident)),
                                "SEPARATE_BGM" in ident.locked),
         "diarization_model": _entry(
             "DIARIZATION_MODEL",
-            (cfg_for(model_name, "DIARIZATION_MODEL", ident) or "").strip(),
+            (effective_config.cfg_for(model_name, "DIARIZATION_MODEL", ident) or "").strip(),
             "DIARIZATION_MODEL" in ident.locked),
         "separation_model": _entry(
             "BGM_SEPARATION_UVR_MODEL",
-            (cfg_for(model_name, "BGM_SEPARATION_UVR_MODEL", ident) or "").strip(),
+            (effective_config.cfg_for(model_name, "BGM_SEPARATION_UVR_MODEL", ident) or "").strip(),
             "BGM_SEPARATION_UVR_MODEL" in ident.locked),
         "translation": {
             "context_segments": _entry(
                 "TRANSLATION_CONTEXT_SEGMENTS",
-                int(cfg_for(model_name, "TRANSLATION_CONTEXT_SEGMENTS", ident) or 0),
+                int(effective_config.cfg_for(model_name, "TRANSLATION_CONTEXT_SEGMENTS", ident) or 0),
                 "TRANSLATION_CONTEXT_SEGMENTS" in ident.locked),
         },
         # Live dictation's final decode pins condition_on_previous_text (a
@@ -9023,13 +8936,13 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
         # to its own value (a client override still wins).
         "streaming": {
             "condition_on_previous_text": {
-                "final": bool(cfg_for(model_name,
+                "final": bool(effective_config.cfg_for(model_name,
                                       "STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT", ident)),
-                "partial": bool(cfg_for(model_name,
+                "partial": bool(effective_config.cfg_for(model_name,
                                         "STREAMING_PARTIAL_CONDITION_ON_PREVIOUS_TEXT", ident)),
                 "pinned": True,
             },
-            "best_of": {"value": int(cfg_for(model_name, "STREAMING_FINAL_BEST_OF", ident))},
+            "best_of": {"value": int(effective_config.cfg_for(model_name, "STREAMING_FINAL_BEST_OF", ident))},
         },
     }
 
@@ -9129,7 +9042,7 @@ def _read_chain_window(active_path: str, skip: int, want: int) -> "tuple[list[st
 
 def _logs_stream_reauth(request: Request, seen_version: int) -> int:
     """Live-tail helper (the /stats/stream _rescope_on_version_change
-    pattern): when config_store.config_version() moved since `seen_version`
+    pattern): when settings_version.config_version() moved since `seen_version`
     — revoke_user / revoke_key / set_user_permissions / logout all bump it —
     re-resolve the caller through the same "logs" gate the connect used.
     Raises HTTPException when the credential no longer resolves or lost
@@ -9138,8 +9051,7 @@ def _logs_stream_reauth(request: Request, seen_version: int) -> int:
     kept receiving every new request block (raw + final text of every
     user) after the admin revoked it, until the browser closed the
     EventSource."""
-    from faster_whisper_backend.settings import config_store
-    current = config_store.config_version()
+    current = settings_version.config_version()
     if current == seen_version:
         return seen_version
     from faster_whisper_backend.auth.dependencies import resolve_user_for_page_sse
@@ -9151,8 +9063,7 @@ async def _stream_log_lines(request: Request):
     """Yield SSE events: one for each existing tail line, then live tail.
     Re-authenticates `request` whenever the config version moves (see
     _logs_stream_reauth) and ends the stream once access is gone."""
-    from faster_whisper_backend.settings import config_store
-    seen = config_store.config_version()
+    seen = settings_version.config_version()
     initial = int(getattr(cfg, "LOG_VIEWER_INITIAL_LINES", 2000))
     # Off the loop, same as /logs/older: this walks the rotation chain
     # backwards in 8 KB blocks and an async generator inside a

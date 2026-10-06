@@ -87,14 +87,14 @@ def test_a_hand_edited_count_never_raises(ledger):
 
 
 def test_record_many_is_one_write_folded_in_order(ledger, monkeypatch):
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.core import atomic_json
     writes = []
-    real = config_store._atomic_write_json
+    real = atomic_json.atomic_write_json
 
     def counting(*a, **kw):
         writes.append(1)
         return real(*a, **kw)
-    monkeypatch.setattr(config_store, "_atomic_write_json", counting)
+    monkeypatch.setattr(atomic_json, "atomic_write_json", counting)
     stage_rates.record_many([
         ("translating", "m", "cuda", "fluent", 2.0),
         ("separating", "uvr", "cuda", None, float("nan")),   # dropped

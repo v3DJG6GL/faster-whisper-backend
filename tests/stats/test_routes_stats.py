@@ -517,7 +517,7 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     """The stream re-resolves its StatsScope when the config version moves
     (a permission edit) and ends only when the caller lost access."""
     import inspect
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import version as settings_version
     from faster_whisper_backend.stats import routes as stats_routes
     from fastapi import HTTPException
     from tests.conftest import fake_request as _fake_request
@@ -525,12 +525,12 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
 
     src = inspect.getsource(stats_routes.stats_stream)
     assert "await asyncio.to_thread(_rescope_on_version_change, " in src   # SQLite lookups off the loop
-    assert "config_store.config_version()" in src
+    assert "settings_version.config_version()" in src
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"stats": "all"})
     req = _fake_request(headers=bearer(raw))
-    seen = config_store.config_version()
+    seen = settings_version.config_version()
     assert stats_routes._rescope_on_version_change(req, seen) is None
     from faster_whisper_backend.auth import api_keys_store
     api_keys_store.set_user_permissions(uid, {"pages": {"stats": "own"}})

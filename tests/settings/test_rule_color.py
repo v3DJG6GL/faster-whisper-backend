@@ -1,4 +1,4 @@
-"""The `color` card-tint token on pipeline rules (config_store._RuleBase).
+"""The `color` card-tint token on pipeline rules (settings_schema._RuleBase).
 
 Accepts the curated palette + "", and normalises unknown/junk to "" rather than
 raising — forgiving by design: a cosmetic value must never trip load_overrides,
@@ -6,16 +6,16 @@ which drops ALL overrides on any validation error (the lockout failure mode)."""
 
 import pytest
 
-from faster_whisper_backend.settings import config_store as cs
+from faster_whisper_backend.settings import schema as settings_schema
 
 
 def _rule(**kw):
     base = {"name": "r", "label": "R", "type": "regex-list", "entries": []}
     base.update(kw)
-    return cs.RegexListRule.model_validate(base)
+    return settings_schema.RegexListRule.model_validate(base)
 
 
-@pytest.mark.parametrize("tok", list(cs.RULE_CARD_COLORS) + [""])
+@pytest.mark.parametrize("tok", list(settings_schema.RULE_CARD_COLORS) + [""])
 def test_color_accepts_palette_and_empty(tok):
     assert _rule(color=tok).color == tok
 
@@ -37,7 +37,7 @@ def test_color_case_and_space_insensitive():
 def test_color_survives_round_trip():
     dumped = _rule(color="blue").model_dump()
     assert dumped["color"] == "blue"
-    assert cs.RegexListRule.model_validate(dumped).color == "blue"
+    assert settings_schema.RegexListRule.model_validate(dumped).color == "blue"
 
 
 def test_color_empty_survives_exclude_none():
@@ -51,7 +51,7 @@ def test_color_on_every_rule_type():
     # color lives on _RuleBase, so every discriminated-union member carries it.
     from pydantic import TypeAdapter
 
-    ta = TypeAdapter(cs.PipelineRule)
+    ta = TypeAdapter(settings_schema.PipelineRule)
     for payload in (
         {"name": "w", "label": "W", "type": "callback:lowercase-wordlist",
          "pattern": "x", "wordlist": ["foo"]},

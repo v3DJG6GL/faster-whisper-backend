@@ -8,7 +8,7 @@ assert the projection, the source categories and the request-profile layering.
 
 import pytest
 
-from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import schema as settings_schema
 from tests.conftest import bearer
 
 OV = "/settings/overrides"
@@ -43,7 +43,7 @@ def _set_key_binding(client, h, uid, kid, **binding):
 def test_every_client_key_with_value_source_and_lock(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "BEAM_SIZE", 7)
     j = client.get(URL).json()
-    assert set(j["settings"]) == set(config_store.CONFIG_TO_CLIENT_KEY.values())
+    assert set(j["settings"]) == set(settings_schema.CONFIG_TO_CLIENT_KEY.values())
     assert j["model"] == app_module.cfg.DEFAULT_MODEL
     assert j["profile_applied"] is None
     beam = j["settings"]["beam_size"]

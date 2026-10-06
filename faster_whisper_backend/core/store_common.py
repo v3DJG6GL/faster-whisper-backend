@@ -160,7 +160,7 @@ def secure_file(path: str) -> None:
     Used for surfaces that hold the same plaintext dictation as the stores but
     are not SQLite: the rotating server log (every request block carries RAW
     WHISPER / FINAL text — main.py), config.local.json (admin host allowlist
-    and compiled pipeline rules — config_store.py), the model-sizes cache
+    and compiled pipeline rules — settings/config_store.py), the model-sizes cache
     (runtime/model_sizes.py), downloaded URL media files (url/media_store.py) and
     the merged / VAD-trimmed dictation WAVs written through the tmp+os.replace
     swap (audio_merge.merge_wavs, audio_vad_trim.trim_wav) — os.replace

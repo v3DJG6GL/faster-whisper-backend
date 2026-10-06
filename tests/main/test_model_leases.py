@@ -261,7 +261,7 @@ def test_transcribe_releases_the_lease_on_error(client, app_module,
 
 def test_register_loaded_model_runs_off_the_loop(monkeypatch):
     """register_loaded_model persists the measurement (model_sizes.record ->
-    config_store._save_lock + fsync) and can block for the lock timeout when
+    atomic_json.save_lock + fsync) and can block for the lock timeout when
     a peer worker holds the ledger; the load path must hand it to a thread."""
     _stub_load(monkeypatch)
     monkeypatch.setattr(main.cfg, "MAX_LOADED_MODELS", 4, raising=False)

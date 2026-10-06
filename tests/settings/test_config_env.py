@@ -263,17 +263,17 @@ def test_every_admin_field_is_env_mapped():
     # the WebUI "env-pinned" badge, and env > GUI precedence. Every editable
     # AdminConfig field MUST be present (and vice-versa) or it silently loses
     # env-configurability / badging. This guards against future drift.
-    from faster_whisper_backend.settings import config_store as cs
-    fields = set(cs.AdminConfig.model_fields)
-    mapped = set(cs.ENV_VAR_MAPPING)
+    from faster_whisper_backend.settings import schema as settings_schema
+    fields = set(settings_schema.AdminConfig.model_fields)
+    mapped = set(settings_schema.ENV_VAR_MAPPING)
     assert fields == mapped, (
         f"missing from ENV_VAR_MAPPING: {sorted(fields - mapped)}; "
         f"mapping entries not in schema: {sorted(mapped - fields)}")
 
 
 def test_env_var_names_are_unique():
-    from faster_whisper_backend.settings import config_store as cs
-    names = list(cs.ENV_VAR_MAPPING.values())
+    from faster_whisper_backend.settings import schema as settings_schema
+    names = list(settings_schema.ENV_VAR_MAPPING.values())
     assert len(names) == len(set(names)), "duplicate WHISPER_* env var names"
 
 
@@ -776,10 +776,11 @@ def test_local_overrides_drop_removed_key_and_keep_siblings(tmp_path, capsys):
 def test_removed_keys_are_really_gone():
     """A REMOVED_KEYS entry that is still a config attribute (or also a
     rename source) would be silently discarded from every stored file."""
-    from faster_whisper_backend.settings import config_renames, config_store
+    from faster_whisper_backend.settings import config_renames
+    from faster_whisper_backend.settings import schema as settings_schema
     for key in config_renames.REMOVED_KEYS:
         assert not hasattr(config, key), key
-        assert key not in config_store.AdminConfig.model_fields, key
+        assert key not in settings_schema.AdminConfig.model_fields, key
         assert key not in config_renames.RENAMED_KEYS, key
 
 

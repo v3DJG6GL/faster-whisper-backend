@@ -22,6 +22,7 @@ import types
 import pytest
 
 from faster_whisper_backend.captures import reapply as captures_reapply
+from faster_whisper_backend.settings import effective_config
 
 # The module's canonical idle state (start() reads _state["status"]).
 _IDLE = {
@@ -147,7 +148,8 @@ def test_status_reflects_running_after_start(fake_thread):
 def fake_main(monkeypatch):
     """Stand-in for the heavy `main` module. `from faster_whisper_backend
     import main` resolves the package attribute first and sys.modules second,
-    so both are patched."""
+    so both are patched. The owner-identity resolve (effective_config.
+    build_ident) is stubbed too, so no key store is needed."""
     import faster_whisper_backend as pkg
 
     fake = types.ModuleType("faster_whisper_backend.main")
@@ -161,8 +163,8 @@ def fake_main(monkeypatch):
         suffix = " [training]" if kw.get("extra_excludes") else " [final]"
         return text.upper() + suffix
 
-    fake.build_ident = build_ident
     fake._postprocess_text = _postprocess_text
+    monkeypatch.setattr(effective_config, "build_ident", build_ident)
     monkeypatch.setitem(sys.modules, "faster_whisper_backend.main", fake)
     monkeypatch.setattr(pkg, "main", fake, raising=False)
     return fake

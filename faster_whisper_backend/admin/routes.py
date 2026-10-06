@@ -38,6 +38,9 @@ from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend import build_info
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import schema as settings_schema
+from faster_whisper_backend.settings import version as settings_version
+from faster_whisper_backend.settings import descriptions as field_descriptions
 from faster_whisper_backend.audio import diarization
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.audio import translation
@@ -52,7 +55,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("whisper-api")
 
-# Async dropper per config_store.EXTRAS_EVICTION bucket: when a save touches
+# Async dropper per settings_schema.EXTRAS_EVICTION bucket: when a save touches
 # any field in a bucket, post_state awaits the matching dropper so the cached
 # extra's VRAM frees now instead of at the idle timeout. (Correctness doesn't
 # depend on this — both modules re-key on their load params per request.)
@@ -107,7 +110,7 @@ _MO_FIELD_META_OVERLAY: dict[str, dict[str, Any]] = {
 
 def _mo_field_meta() -> dict[str, dict[str, Any]]:
     """Schema-derived ModelOverride widget metadata merged with the overlay."""
-    meta = config_store.override_field_meta(config_store.ModelOverride)
+    meta = settings_schema.override_field_meta(settings_schema.ModelOverride)
     for name, extra in _MO_FIELD_META_OVERLAY.items():
         meta[name] = {**meta.get(name, {}), **extra}
     return meta
@@ -115,7 +118,7 @@ def _mo_field_meta() -> dict[str, dict[str, Any]]:
 
 # Both are static per process (schemas are fixed at import), so serialize once.
 _MO_LOAD_TIME_FIELDS_JSON: str = json.dumps(sorted(
-    config_store.LOAD_TIME_FIELDS & set(config_store.ModelOverride.model_fields)
+    settings_schema.LOAD_TIME_FIELDS & set(settings_schema.ModelOverride.model_fields)
 ))
 _MO_FIELD_META_JSON: str = json.dumps(_mo_field_meta())
 _WHISPER_LANGS_JSON: str = json.dumps(
@@ -124,17 +127,17 @@ _WHISPER_LANGS_JSON: str = json.dumps(
 # Discriminated-union adapter for PIPELINE_RULES canonicalization. Built once
 # at import time — TypeAdapter construction walks every rule subclass and is
 # the dominant cost of _canon_rules, called twice per /settings/state request.
-_PIPELINE_RULE_ADAPTER: TypeAdapter = TypeAdapter(config_store.PipelineRule)
+_PIPELINE_RULE_ADAPTER: TypeAdapter = TypeAdapter(settings_schema.PipelineRule)
 
 # Fields the WebUI is allowed to surface — drives section grouping in the HTML
-# and the /settings/state endpoint's provenance map. Generated in config_store
+# and the /settings/state endpoint's provenance map. Generated in settings/schema.py
 # from the per-field registry metadata (group/subgroup/order on each
-# AdminConfig field); see config_store._GROUP_ORDER for the section layout.
+# AdminConfig field); see settings_schema._GROUP_ORDER for the section layout.
 # Section groups: each section can have one or more SUB-groups. A subgroup
 # title of None means "no subheader" — fields render directly under the
 # section.
 _FIELD_GROUPS: list[tuple[str, list[tuple[str | None, list[str]]]]] = (
-    config_store.FIELD_GROUPS
+    settings_schema.FIELD_GROUPS
 )
 
 def _all_fields() -> list[str]:
@@ -242,7 +245,7 @@ def _field_choices(field: str) -> list[str] | None:
     fields. Unwraps `Literal[...] | None`. The WebUI renders a <select> whenever
     this is non-None (main form AND the per-model pane), so the dropdown options
     can never drift from the schema — they ARE the schema."""
-    fld = config_store.AdminConfig.model_fields.get(field)
+    fld = settings_schema.AdminConfig.model_fields.get(field)
     if fld is None:
         return None
     for cand in (fld.annotation, *get_args(fld.annotation)):
@@ -440,8 +443,8 @@ async def get_state(response: Response) -> dict[str, Any]:
     response.headers["Cache-Control"] = "no-store"
     saved = await asyncio.to_thread(config_store.load_overrides)
     env_pinned = config_store.env_pinned_fields()
-    field_descs = config_store.FIELD_DESCRIPTIONS
-    pyd_fields = config_store.AdminConfig.model_fields
+    field_descs = field_descriptions.FIELD_DESCRIPTIONS
+    pyd_fields = settings_schema.AdminConfig.model_fields
 
     fields: dict[str, dict[str, Any]] = {}
     for name in _all_fields():
@@ -459,7 +462,7 @@ async def get_state(response: Response) -> dict[str, Any]:
             "description": desc,
             "provenance": _provenance(name, env_pinned, saved),
             "env_var": env_pinned.get(name),
-            "restart_required": name in config_store.RESTART_REQUIRED_FIELDS,
+            "restart_required": name in settings_schema.RESTART_REQUIRED_FIELDS,
             "choices": _field_choices(name),
         }
 
@@ -539,7 +542,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
         except ValidationError as e:
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                content={"errors": config_store.format_validation_errors(e)},
+                content={"errors": settings_schema.format_validation_errors(e)},
             )
         except OSError as e:
             logger.error("[config] save failed: %s", e)
@@ -633,9 +636,9 @@ async def _apply_hot_changes(
             baseline = getattr(cfg, "_BASELINE", {}) or {}
             new_val = baseline.get(name, getattr(cfg, name, None))
         setattr(cfg, name, new_val)
-        if name in config_store.CACHE_REBUILD_FIELDS:
+        if name in settings_schema.CACHE_REBUILD_FIELDS:
             needs_cache_rebuild = True
-        if name in config_store.RESTART_REQUIRED_FIELDS:
+        if name in settings_schema.RESTART_REQUIRED_FIELDS:
             cold_changed.append(name)
         else:
             hot_changed.append(name)
@@ -651,7 +654,7 @@ async def _apply_hot_changes(
     try:
         from faster_whisper_backend import main as _main
         load_time_changed_globally = bool(
-            set(written.keys()) & config_store.LOAD_TIME_FIELDS
+            set(written.keys()) & settings_schema.LOAD_TIME_FIELDS
         )
         if load_time_changed_globally:
             # Affects every loaded model that doesn't have a per-model
@@ -667,7 +670,7 @@ async def _apply_hot_changes(
             # reload, matching the global-field rule.
             new_overrides = coerced.get("MODEL_OVERRIDES") or {}
             old_overrides = prev_model_overrides or {}
-            lt = config_store.LOAD_TIME_FIELDS
+            lt = settings_schema.LOAD_TIME_FIELDS
             for model_id in set(old_overrides) | set(new_overrides):
                 o = old_overrides.get(model_id)
                 n = new_overrides.get(model_id)
@@ -685,9 +688,9 @@ async def _apply_hot_changes(
     # Drop the cached extras (pyannote pipeline / BGM separator) when their
     # load parameters changed, so the VRAM frees now instead of at the idle
     # timeout. Buckets and their trigger fields come from the generated
-    # config_store.EXTRAS_EVICTION (per-field `evict=` registry metadata); a
+    # settings_schema.EXTRAS_EVICTION (per-field `evict=` registry metadata); a
     # failed drop never breaks the save response.
-    for _extra, _extra_fields in config_store.EXTRAS_EVICTION.items():
+    for _extra, _extra_fields in settings_schema.EXTRAS_EVICTION.items():
         if not set(written.keys()) & _extra_fields:
             continue
         try:
@@ -720,7 +723,7 @@ async def _apply_hot_changes(
     # in that window stamped the new version while resolving from the OLD cfg
     # and would never re-resolve. Bump again now that cfg is current; consumers
     # only compare for inequality, so the cost is one redundant re-resolve.
-    config_store.bump_config_version()
+    settings_version.bump_config_version()
 
     return {
         "hot_applied": hot_changed,
@@ -782,7 +785,7 @@ async def post_factory_rules(payload: dict[str, Any], request: Request) -> JSONR
         except ValidationError as e:
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                content={"errors": config_store.format_validation_errors(e)},
+                content={"errors": settings_schema.format_validation_errors(e)},
             )
         except OSError as e:
             logger.error("[config] factory-rules save failed: %s", e)
@@ -868,7 +871,7 @@ def _pipeline_rules_max() -> int:
     the derivation has to walk the annotation's arms for the FieldInfo
     carrying a MaxLen constraint. Falls back to the historical 200 if the
     metadata layout ever changes (a test pins the derivation against that)."""
-    field = config_store.AdminConfig.model_fields["PIPELINE_RULES"]
+    field = settings_schema.AdminConfig.model_fields["PIPELINE_RULES"]
     for arm in (field.annotation, *get_args(field.annotation)):
         for fi in getattr(arm, "__metadata__", ()):
             for m in (*getattr(fi, "metadata", ()), fi):

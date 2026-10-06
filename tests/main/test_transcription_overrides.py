@@ -235,27 +235,27 @@ def test_request_block_identity_always_shows_user_even_without_layers():
 
 
 def test_config_version_bumps_on_binding_and_profile_changes(client, make_user_key):
-    """Saving a profile or a per-user / per-key binding bumps config_store's
+    """Saving a profile or a per-user / per-key binding bumps settings.version's
     version counter — the signal a live streaming connection polls to know it
     must re-resolve its ident (so edits apply without a reconnect)."""
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import version as settings_version
     _, raw_admin = make_user_key("admin", is_admin=True)
     admin_h = bearer(raw_admin)
-    v0 = config_store.config_version()
+    v0 = settings_version.config_version()
     _setup_profile(client, admin_h, "pv", BEAM_SIZE=6)
-    v1 = config_store.config_version()
+    v1 = settings_version.config_version()
     assert v1 > v0                                         # profile save bumps
     uid, _ = make_user_key("bob", is_admin=False)
     r = client.patch(f"{PERMS}/{uid}/permissions", headers=admin_h,
                      json={"pages": {}, "config": {"overrides": {}, "profiles": ["pv"], "locks": []}})
     assert r.status_code == 200, r.text
-    v2 = config_store.config_version()
+    v2 = settings_version.config_version()
     assert v2 > v1                                         # per-user binding bumps
     kid = client.get(f"{PERMS}/{uid}/keys", headers=admin_h).json()["keys"][0]["id"]
     r = client.patch(f"{PERMS}/{uid}/keys/{kid}/config", headers=admin_h,
                      json={"overrides": {"BEAM_SIZE": 4}, "profiles": [], "locks": []})
     assert r.status_code == 200, r.text
-    v3 = config_store.config_version()
+    v3 = settings_version.config_version()
     assert v3 > v2                                         # per-key binding bumps
 
 

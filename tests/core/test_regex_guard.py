@@ -150,7 +150,8 @@ def test_shipped_factory_rules_validate_through_the_save_path():
     """Same, through the real AdminConfig save validator (guard_regex context),
     which is what the admin UI and /v1/pipeline-rules actually call."""
     from faster_whisper_backend.settings import config_store as cs
-    cs.AdminConfig.model_validate(
+    from faster_whisper_backend.settings import schema as settings_schema
+    settings_schema.AdminConfig.model_validate(
         {"PIPELINE_RULES": cs.load_factory_rules()},
         context={"guard_regex": True})
 

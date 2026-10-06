@@ -1,6 +1,7 @@
-"""Exhaustive tests for config_store: AdminConfig field bounds & validators,
-ModelOverride, normalize_tags, the overrides load/save layer, the atomic
-writer, and the small helper functions.
+"""Exhaustive tests for config_store + the settings schema: AdminConfig field
+bounds & validators, ModelOverride, normalize_tags, the overrides load/save
+layer (incl. its save lock), and the small helper functions. The atomic writer
+itself is covered in tests/core/test_atomic_json.py.
 
 Factory-rule round-trips (load/save_factory_rules, terminal/dup/bad-regex)
 are already covered by test_factory_rules.py; here we add the
@@ -15,16 +16,18 @@ from pydantic import ValidationError
 
 from faster_whisper_backend.settings import config as cs_config
 from faster_whisper_backend.settings import config_store as cs
+from faster_whisper_backend.settings import schema as settings_schema
+from faster_whisper_backend.core import atomic_json
 
 
 def _ok(**fields):
     """Validate a partial AdminConfig payload; return the model."""
-    return cs.AdminConfig.model_validate(fields)
+    return settings_schema.AdminConfig.model_validate(fields)
 
 
 def _bad(**fields):
     with pytest.raises(ValidationError):
-        cs.AdminConfig.model_validate(fields)
+        settings_schema.AdminConfig.model_validate(fields)
 
 
 # ---------------------------------------------------------------------------
@@ -268,11 +271,11 @@ def test_translation_list_fields_validate_entries():
 
 
 def test_lowercase_wordlist_accepts_uppercase_umlauts():
-    r = cs.LowercaseWordlistRule(name="w", label="W", type="callback:lowercase-wordlist",
+    r = settings_schema.LowercaseWordlistRule(name="w", label="W", type="callback:lowercase-wordlist",
                                  pattern="x", wordlist=["Ärger", "Österreich", "Übung", "ärger", "Und"])
     assert r.wordlist == ["Ärger", "Österreich", "Übung", "ärger", "Und"]
     with pytest.raises(ValidationError):
-        cs.LowercaseWordlistRule(name="w", label="W", type="callback:lowercase-wordlist",
+        settings_schema.LowercaseWordlistRule(name="w", label="W", type="callback:lowercase-wordlist",
                                  pattern="x", wordlist=["Ärger!"])
 
 
@@ -383,24 +386,24 @@ def test_cap_list_over_1000():
 # ---------------------------------------------------------------------------
 
 def test_normalize_tags_basic():
-    assert cs.normalize_tags(None) == []
-    assert cs.normalize_tags([]) == []
-    assert cs.normalize_tags(["B", "a", "a", " c "]) == ["a", "b", "c"]
+    assert settings_schema.normalize_tags(None) == []
+    assert settings_schema.normalize_tags([]) == []
+    assert settings_schema.normalize_tags(["B", "a", "a", " c "]) == ["a", "b", "c"]
 
 
 def test_normalize_tags_drops_empty():
-    assert cs.normalize_tags(["", "   ", "ok"]) == ["ok"]
+    assert settings_schema.normalize_tags(["", "   ", "ok"]) == ["ok"]
 
 
 def test_normalize_tags_rejects_bad():
     with pytest.raises(ValueError):
-        cs.normalize_tags("notalist")
+        settings_schema.normalize_tags("notalist")
     with pytest.raises(ValueError):
-        cs.normalize_tags([123])
+        settings_schema.normalize_tags([123])
     with pytest.raises(ValueError):
-        cs.normalize_tags(["-leadinghyphen"])
+        settings_schema.normalize_tags(["-leadinghyphen"])
     with pytest.raises(ValueError):
-        cs.normalize_tags(["x" * 33])
+        settings_schema.normalize_tags(["x" * 33])
 
 
 # ---------------------------------------------------------------------------
@@ -427,7 +430,7 @@ def test_pipeline_callback_map_skips_pattern_validation():
 def _ok_on_save(**fields):
     """Validate as a SAVE would (guard_regex context) — runs the out-of-process
     regex probe (backref + catastrophic-backtracking guard)."""
-    return cs.AdminConfig.model_validate(fields, context={"guard_regex": True})
+    return settings_schema.AdminConfig.model_validate(fields, context={"guard_regex": True})
 
 
 def test_pipeline_bad_backref_reported():
@@ -530,7 +533,7 @@ def test_pipeline_guard_scoped_to_guard_slugs():
     good = _regex("harmless", pattern="Komma", replacement=",")
 
     def _save(slugs):
-        return cs.AdminConfig.model_validate(
+        return settings_schema.AdminConfig.model_validate(
             {"PIPELINE_RULES": [bad, good, _terminal()]},
             context={"guard_regex": True, "guard_slugs": frozenset(slugs)},
         )
@@ -574,7 +577,7 @@ def test_pipeline_guard_scoping_never_skips_compile_and_template_checks():
     # ALWAYS-on in-process checks (bad backref template) must keep failing
     # even when guard_slugs points at a different rule.
     with pytest.raises(ValidationError) as ei:
-        cs.AdminConfig.model_validate(
+        settings_schema.AdminConfig.model_validate(
             {"PIPELINE_RULES": [_regex("b", pattern="(a)", replacement=r"\3"),
                                 _regex("harmless"), _terminal()]},
             context={"guard_regex": True, "guard_slugs": frozenset({"harmless"})},
@@ -667,21 +670,21 @@ def test_map_meta_pruned_to_map_keys():
 
 def test_model_override_include_exclude_overlap():
     with pytest.raises(ValidationError):
-        cs.ModelOverride.model_validate({
+        settings_schema.ModelOverride.model_validate({
             "PIPELINE_RULES_EXCLUDE": ["a"],
             "PIPELINE_RULES_INCLUDE": ["a"],
         })
 
 
 def test_model_override_bounds_inherit_global():
-    cs.ModelOverride.model_validate({"BEAM_SIZE": 20})
+    settings_schema.ModelOverride.model_validate({"BEAM_SIZE": 20})
     with pytest.raises(ValidationError):
-        cs.ModelOverride.model_validate({"BEAM_SIZE": 21})
+        settings_schema.ModelOverride.model_validate({"BEAM_SIZE": 21})
 
 
 def test_admin_extra_forbid_on_override():
     with pytest.raises(ValidationError):
-        cs.ModelOverride.model_validate({"NONSENSE": 1})
+        settings_schema.ModelOverride.model_validate({"NONSENSE": 1})
 
 
 # ---------------------------------------------------------------------------
@@ -714,19 +717,19 @@ def test_pipeline_rule_slugs_cross_check():
 def test_pipeline_rule_slugs_from_context():
     ctx = {"canonical_slugs": {"known"}}
     with pytest.raises(ValidationError):
-        cs.AdminConfig.model_validate(
+        settings_schema.AdminConfig.model_validate(
             {"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["bogus"]}}}, context=ctx)
     with pytest.raises(ValidationError):
-        cs.AdminConfig.model_validate(
+        settings_schema.AdminConfig.model_validate(
             {"OVERRIDE_PROFILES": {"p": {"PIPELINE_RULES_EXCLUDE": ["bogus"]}}}, context=ctx)
     with pytest.raises(ValidationError):
-        cs.AdminConfig.model_validate(
+        settings_schema.AdminConfig.model_validate(
             {"CAPTURES_PIPELINE_RULES_EXCLUDE": ["bogus"]}, context=ctx)
-    cs.AdminConfig.model_validate(
+    settings_schema.AdminConfig.model_validate(
         {"MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["known"]}}}, context=ctx)
     # An explicit PIPELINE_RULES in the payload wins over the context.
     with pytest.raises(ValidationError):
-        cs.AdminConfig.model_validate(
+        settings_schema.AdminConfig.model_validate(
             {"PIPELINE_RULES": [_regex("known"), _terminal()],
              "MODEL_OVERRIDES": {"m": {"PIPELINE_RULES_EXCLUDE": ["bogus"]}}},
             context={"canonical_slugs": {"bogus"}})
@@ -872,51 +875,6 @@ def test_save_overrides_invalid_raises(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# _atomic_write_json
-# ---------------------------------------------------------------------------
-
-def test_atomic_write_unicode(tmp_path):
-    p = str(tmp_path / "u.json")
-    cs._atomic_write_json({"k": "Müller"}, p, sort_keys=True, tmp_prefix=".t")
-    assert json.loads(open(p, encoding="utf-8").read())["k"] == "Müller"
-    # ensure_ascii=False keeps the literal char on disk.
-    assert "Müller" in open(p, encoding="utf-8").read()
-
-
-def test_atomic_write_retries_then_succeeds(tmp_path, monkeypatch):
-    p = str(tmp_path / "r.json")
-    real_replace = os.replace
-    calls = {"n": 0}
-
-    def flaky(src, dst):
-        calls["n"] += 1
-        if calls["n"] < 3:
-            raise PermissionError("AV lock")
-        return real_replace(src, dst)
-
-    monkeypatch.setattr(cs.os, "replace", flaky)
-    monkeypatch.setattr(cs.time, "sleep", lambda *_: None)
-    cs._atomic_write_json({"ok": 1}, p, sort_keys=True, tmp_prefix=".t")
-    assert calls["n"] == 3
-    assert json.loads(open(p, encoding="utf-8").read()) == {"ok": 1}
-
-
-def test_atomic_write_gives_up_after_retries(tmp_path, monkeypatch):
-    p = str(tmp_path / "x.json")
-
-    def always_fail(src, dst):
-        raise PermissionError("locked")
-
-    monkeypatch.setattr(cs.os, "replace", always_fail)
-    monkeypatch.setattr(cs.time, "sleep", lambda *_: None)
-    with pytest.raises(PermissionError):
-        cs._atomic_write_json({"ok": 1}, p, sort_keys=True, tmp_prefix=".t")
-    # The temp file is cleaned up in finally; only the (untouched) dir remains.
-    leftovers = [f for f in os.listdir(tmp_path) if f != "x.json"]
-    assert leftovers == []
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -959,7 +917,7 @@ def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
         pinned = cs.env_pinned_fields()
         assert "BEAM_SIZE" not in pinned
         # A validly pinned field is unaffected by the exclusion.
-        assert cs.ENV_VAR_MAPPING["BEAM_SIZE"] == "WHISPER_BEAM_SIZE"
+        assert settings_schema.ENV_VAR_MAPPING["BEAM_SIZE"] == "WHISPER_BEAM_SIZE"
     finally:
         monkeypatch.undo()
         importlib.reload(config)  # restore from the clean environment
@@ -967,9 +925,9 @@ def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
 
 def test_format_validation_errors_shape():
     try:
-        cs.AdminConfig.model_validate({"BEAM_SIZE": 999})
+        settings_schema.AdminConfig.model_validate({"BEAM_SIZE": 999})
     except ValidationError as e:
-        out = cs.format_validation_errors(e)
+        out = settings_schema.format_validation_errors(e)
         assert isinstance(out, list) and out
         assert set(out[0]) == {"loc", "msg"}
         assert "BEAM_SIZE" in out[0]["loc"]
@@ -1002,7 +960,7 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
     slow_inside = threading.Event()
     fast_started = threading.Event()
     fast_done = threading.Event()
-    real_validate = cs.AdminConfig.model_validate
+    real_validate = settings_schema.AdminConfig.model_validate
 
     def slow_validate(payload, **kw):
         # Stand in for the guard_regex subprocess: a long window between the
@@ -1012,7 +970,7 @@ def test_concurrent_save_overrides_keep_both_keys(tmp_path, monkeypatch):
             fast_done.wait(10)
         return real_validate(payload, **kw)
 
-    monkeypatch.setattr(cs.AdminConfig, "model_validate", slow_validate)
+    monkeypatch.setattr(settings_schema.AdminConfig, "model_validate", slow_validate)
 
     errors = []
 
@@ -1068,12 +1026,12 @@ def test_save_lock_timeout_surfaces_as_oserror(tmp_path, monkeypatch):
     import threading
 
     p = str(tmp_path / "config.local.json")
-    monkeypatch.setattr(cs, "_SAVE_LOCK_TIMEOUT_S", 0.05)
+    monkeypatch.setattr(atomic_json, "SAVE_LOCK_TIMEOUT_S", 0.05)
     holder_in = threading.Event()
     release = threading.Event()
 
     def hold():
-        with cs._save_lock(p):
+        with atomic_json.save_lock(p):
             holder_in.set()
             release.wait(10)
 
@@ -1108,7 +1066,7 @@ def test_save_lock_cross_process_timeout_surfaces_as_plain_oserror(tmp_path, mon
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         assert child.stdout.readline().strip() == "ready"
-        monkeypatch.setattr(cs, "_SAVE_LOCK_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(atomic_json, "SAVE_LOCK_TIMEOUT_S", 0.2)
         with pytest.raises(OSError, match="peer worker save in progress") as ei:
             cs.save_overrides({"BEAM_SIZE": 5}, p)
         assert type(ei.value) is OSError
@@ -1121,7 +1079,7 @@ def test_save_lock_cross_process_timeout_surfaces_as_plain_oserror(tmp_path, mon
 
 
 def test_save_lock_file_does_not_disturb_the_config_dir(tmp_path):
-    """The lock file must not look like _atomic_write_json's tempfiles (or the
+    """The lock file must not look like atomic_write_json's tempfiles (or the
     config itself) to anything scanning the data dir."""
     p = str(tmp_path / "config.local.json")
     cs.save_overrides({"BEAM_SIZE": 5}, p)
@@ -1201,9 +1159,9 @@ def test_load_overrides_strips_wildcard_origins_keeps_rest(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_extras_eviction_buckets_are_declared():
-    assert set(cs.EXTRAS_EVICTION) <= set(cs._EVICT_BUCKETS)
+    assert set(settings_schema.EXTRAS_EVICTION) <= set(settings_schema._EVICT_BUCKETS)
 
 
 def test_field_helper_rejects_unknown_evict_bucket():
     with pytest.raises(ValueError, match="evict="):
-        cs._F("DEFAULT_MODEL", scope="server", group="Models", evict="diarizaton")
+        settings_schema._F("DEFAULT_MODEL", scope="server", group="Models", evict="diarizaton")

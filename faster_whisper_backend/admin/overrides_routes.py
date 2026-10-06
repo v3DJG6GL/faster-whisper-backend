@@ -27,6 +27,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.auth.dependencies import require_admin
@@ -41,12 +42,12 @@ router = APIRouter(prefix="/settings/overrides")
 def _build_field_meta() -> dict[str, dict[str, Any]]:
     """Widget metadata (kind / min / max / opts) for every overridable field,
     derived from the OverrideProfile JSON schema (via the shared
-    config_store.override_field_meta) so it can never drift from the Pydantic
+    settings_schema.override_field_meta) so it can never drift from the Pydantic
     bounds. Drives the profile editor + direct-override sub-editor. `locks`
     and `requestable` are profile-level metadata, not per-field overrides —
     rendered by dedicated controls, never in the field grid."""
-    return config_store.override_field_meta(
-        config_store.OverrideProfile, exclude={"locks", "requestable"})
+    return settings_schema.override_field_meta(
+        settings_schema.OverrideProfile, exclude={"locks", "requestable"})
 
 
 def _build_defaults() -> dict[str, Any]:
@@ -65,7 +66,7 @@ def _build_groups() -> list[dict[str, Any]]:
     match the rest of the admin UI (Decode / Advanced / VAD / Live streaming /
     Output …). Load-time + server sections drop out entirely."""
     from faster_whisper_backend.admin import routes as admin_routes
-    target = config_store.LOCKABLE_FIELDS
+    target = settings_schema.LOCKABLE_FIELDS
     out: list[dict[str, Any]] = []
     for section, subs in admin_routes._FIELD_GROUPS:
         subgroups = []
@@ -233,7 +234,7 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     except ValidationError as e:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={"errors": config_store.format_validation_errors(e)},
+            content={"errors": settings_schema.format_validation_errors(e)},
         )
     except OSError as e:
         logger.error("[overrides] save failed: %s", e)
@@ -279,7 +280,7 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     if new == old:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "new name is the same as the current name")
-    if not config_store.TAG_RE.match(new):
+    if not settings_schema.TAG_RE.match(new):
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "invalid profile name (a-z 0-9 -, max 32, must start "
                             "with a letter or digit)")
@@ -298,7 +299,7 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     except ValidationError as e:
         return JSONResponse(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            content={"errors": config_store.format_validation_errors(e)},
+            content={"errors": settings_schema.format_validation_errors(e)},
         )
     except OSError as e:
         logger.error("[overrides] rename save failed: %s", e)

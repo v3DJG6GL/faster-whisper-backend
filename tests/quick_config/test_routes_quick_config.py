@@ -236,7 +236,7 @@ def test_post_patch_oversized_map_400(client, app_module):
 
     slug = _expose_first_map_rule(app_module)
     assert slug is not None, "fixture config has no callback:map rule"
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import schema as settings_schema
 
     cap = quick_config_routes._MAP_MAX_ENTRIES
     # Track the schema rather than re-pinning the literal: this still catches
@@ -244,7 +244,7 @@ def test_post_patch_oversized_map_400(client, app_module):
     # layout changes, without failing on a deliberate schema-side cap change.
     expected = next(
         m.max_length
-        for m in config_store.MapRule.model_fields["map"].metadata
+        for m in settings_schema.MapRule.model_fields["map"].metadata
         if getattr(m, "max_length", None) is not None)
     assert cap == expected
     big = {f"wort{i}": str(i) for i in range(cap + 1)}
@@ -449,7 +449,7 @@ def test_hidden_rule_validation_error_is_fully_redacted(
 
 def test_hidden_rule_guard_error_keeps_sentinel_for_page(
         client, app_module, make_user_key):
-    """config_store's compile guard raises `rule {idx} ({slug!r}) entry
+    """The schema's compile guard raises `rule {idx} ({slug!r}) entry
     {eidx}: invalid regex: ...` for a rule the caller may not see. The
     ordinal collapse used to rewrite that to 'a hidden rule: ...', which
     dropped the only token the page's doSave keys on — so the admin rule's
@@ -484,7 +484,7 @@ def test_hidden_rule_guard_error_keeps_sentinel_for_page(
 
 
 def test_redact_collapses_hidden_rule_ordinals():
-    """config_store's guard messages read `rule {idx} ({slug!r}) entry {e}:`
+    """The schema's guard messages read `rule {idx} ({slug!r}) entry {e}:`
     — after the slug swap the ordinal still gave away the hidden rule's list
     position and entry count."""
     from faster_whisper_backend.quick_config import routes as q

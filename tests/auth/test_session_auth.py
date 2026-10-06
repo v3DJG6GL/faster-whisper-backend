@@ -546,13 +546,13 @@ def test_revoke_session_bumps_config_version(client, make_user_key):
     streaming socket re-authenticates only on that counter
     (streaming.routes._refresh_ident), so without the bump it kept decoding
     for the signed-out identity."""
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import version as settings_version
     _uid, raw = make_user_key("root", is_admin=True)
     tok = client.post("/auth/login", json={"key": raw}).json()["csrf_token"]
-    v0 = config_store.config_version()
+    v0 = settings_version.config_version()
     r = client.post("/auth/logout", headers={"X-CSRF-Token": tok})
     assert r.status_code == 200
-    assert config_store.config_version() > v0
+    assert settings_version.config_version() > v0
 
 
 def test_csrf_non_ascii_token_is_403_not_500(client, make_user_key):

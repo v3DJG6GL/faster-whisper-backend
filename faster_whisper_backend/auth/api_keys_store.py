@@ -37,6 +37,7 @@ from typing import Any
 
 from faster_whisper_backend.settings import config_renames
 from faster_whisper_backend.core import store_common
+from faster_whisper_backend.settings import version as settings_version
 
 logger = logging.getLogger("whisper-api")
 
@@ -373,7 +374,7 @@ def _refresh_if_sibling_committed() -> None:
 def data_version() -> int:
     """`PRAGMA data_version` off the shared connection, or -1 before init_db().
 
-    Exposed for config_store.config_version(): every binding writer here bumps
+    Exposed for settings_version.config_version(): every binding writer here bumps
     the config version in ITS OWN process only, so a sibling worker polls this
     to learn that its live idents must re-resolve."""
     if not _DB_READY:
@@ -519,8 +520,7 @@ def revoke_user(user_id: str) -> None:
             (now, user_id),
         )
         _rebuild_index_locked()
-    from faster_whisper_backend.settings import config_store
-    config_store.bump_config_version()   # revoked identity's live idents re-resolve
+    settings_version.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] user revoked id=%s", user_id[:8])
 
 
@@ -677,8 +677,7 @@ def revoke_key(key_id: str) -> None:
             (now, key_id),
         )
         _rebuild_index_locked()
-    from faster_whisper_backend.settings import config_store
-    config_store.bump_config_version()   # revoked identity's live idents re-resolve
+    settings_version.bump_config_version()   # revoked identity's live idents re-resolve
     logger.info("[auth] key revoked kid=%s", key_id[:8])
 
 
@@ -854,7 +853,7 @@ def set_key_config(user_id: str, key_id: str, body: dict[str, Any]) -> dict[str,
         )
         if cur.rowcount == 0:
             raise ValueError("key not found or revoked")
-    config_store.bump_config_version()   # live streaming idents re-resolve
+    settings_version.bump_config_version()   # live streaming idents re-resolve
     logger.info("[auth] key config updated kid=%s user=%s profiles=%s",
                 key_id[:8], user_id[:8], binding["profiles"])
     return binding
@@ -880,7 +879,7 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
         present), which keeps the matrix UI simple.
       - `perms["quick_config_tags"]`, if present, must be a list of
         strings matching TAG_RE. Normalised (lowercased / trimmed /
-        deduped / sorted) via config_store.normalize_tags. None / absent
+        deduped / sorted) via settings_schema.normalize_tags. None / absent
         means "don't touch the stored value".
 
     Raises ValueError on any invalid input. Rebuilds the in-memory index
@@ -904,11 +903,12 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
     # Reuse config_store validators so rule tags / user tags / bindings share
     # one normalisation contract.
     from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import schema as settings_schema
 
     # Tags: present → validate + normalise; absent → preserve stored.
     incoming_tags = perms.get("quick_config_tags")
     if incoming_tags is not None:
-        clean_tags = config_store.normalize_tags(incoming_tags)
+        clean_tags = settings_schema.normalize_tags(incoming_tags)
     else:
         clean_tags = None
 
@@ -955,7 +955,7 @@ def set_user_permissions(user_id: str, perms: dict[str, Any]) -> dict[str, Any]:
         if cur.rowcount == 0:
             raise ValueError("user not found or revoked")
         _rebuild_index_locked()
-    config_store.bump_config_version()   # live streaming idents re-resolve
+    settings_version.bump_config_version()   # live streaming idents re-resolve
     logger.info(
         "[auth] permissions updated user=%s pages=%s tags=%s profiles=%s",
         user_id[:8], merged_pages, merged_tags,
@@ -994,7 +994,6 @@ def rename_profile_refs(old: str, new: str) -> int:
     everywhere, never widening access."""
     if old == new:
         return 0
-    from faster_whisper_backend.settings import config_store
     conn = _require_conn()
     touched = 0
     with _lock:
@@ -1021,7 +1020,7 @@ def rename_profile_refs(old: str, new: str) -> int:
         if touched:
             _rebuild_index_locked()
     if touched:
-        config_store.bump_config_version()   # live idents re-resolve
+        settings_version.bump_config_version()   # live idents re-resolve
     logger.info("[auth] profile rename %r->%r cascaded to %d binding(s)",
                 old, new, touched)
     return touched

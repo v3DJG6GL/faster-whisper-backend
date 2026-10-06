@@ -35,7 +35,7 @@ import hashlib
 
 from faster_whisper_backend import build_info
 from faster_whisper_backend.settings import config as cfg
-from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.stats import metrics
 from faster_whisper_backend.runtime import model_sizes
@@ -241,7 +241,7 @@ def _build_payload(scope: StatsScope = ADMIN_SCOPE, *,
 
 def _rescope_on_version_change(request: Request, seen_version: int
                                ) -> tuple[StatsScope, int] | None:
-    """Stream helper: when config_store.config_version() moved since
+    """Stream helper: when settings_version.config_version() moved since
     `seen_version` (a permission edit bumps it), re-resolve the caller and
     return the fresh (scope, version); None when nothing changed. Raises
     HTTPException when the caller lost access, which ends the stream (the
@@ -251,7 +251,7 @@ def _rescope_on_version_change(request: Request, seen_version: int
     every sibling commit — including a key's debounced last_used_ts touch —
     bumps the version, and an ended stream makes the page discard its
     two-minute sparkline history on reconnect."""
-    current = config_store.config_version()
+    current = settings_version.config_version()
     if current == seen_version:
         return None
     fresh = auth.resolve_user_for_page_sse(request, "stats")
@@ -775,7 +775,7 @@ async def stats_stream(
     without the reconnect churn of ending the stream on every bump."""
     _lite = bool(lite)
     scope = stats_scope_for(user)
-    seen = config_store.config_version()
+    seen = settings_version.config_version()
 
     async def gen():
         nonlocal scope, seen

@@ -66,7 +66,9 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
 from faster_whisper_backend.auth import dependencies as auth
-from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import effective_config
+from faster_whisper_backend.settings import schema as settings_schema
+from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.core import decode_trace
 from faster_whisper_backend.core import jobs
 from faster_whisper_backend.stats import metrics
@@ -156,11 +158,11 @@ _WS_IDLE_TIMEOUT = 4408  # client sent no audio for STREAMING_IDLE_TIMEOUT_S
 # The client decode_override keys the server actually honors (main._apply_decode_
 # overrides consumes the decode ones, _client_stream_values the live-dictation
 # ones; every other key is discarded). Bound once at import from the public
-# config_store.CONFIG_TO_CLIENT_KEY registry so
+# settings_schema.CONFIG_TO_CLIENT_KEY registry so
 # the handshake can narrow the client's dict — and without retaining an
 # unbounded, connection-lifetime dict of attacker-chosen keys.
 _CLIENT_OVERRIDE_KEYS: frozenset[str] = frozenset(
-    config_store.CONFIG_TO_CLIENT_KEY.values())
+    settings_schema.CONFIG_TO_CLIENT_KEY.values())
 
 
 async def _refuse(ws: WebSocket, code: int, reason: str) -> None:
@@ -244,7 +246,7 @@ def authenticate_ws(ws: WebSocket) -> "dict | None":
 
 def _client_stream_values(main, overrides: dict, ident) -> "tuple[dict, list[str]]":
     """The live-dictation knobs this connection's decode_overrides set
-    (config_store.STREAM_ONLY_CLIENT_KEYS), as {STREAMING_* field: value} for
+    (settings_schema.STREAM_ONLY_CLIENT_KEYS), as {STREAMING_* field: value} for
     _stream_config / make_endpointer, plus a note per adjustment made.
 
     Locked keys (ident.locked_client_keys, which also covers the master gate)
@@ -259,10 +261,10 @@ def _client_stream_values(main, overrides: dict, ident) -> "tuple[dict, list[str
     survives the finalize, so hard break <= outer would break after every
     utterance) — else hard break = outer + 1000. Server-only values are the
     admin's and are never adjusted."""
-    bounds = config_store.client_key_bounds()
-    field_of = {ck: f for f, ck in config_store.CONFIG_TO_CLIENT_KEY.items()}
+    bounds = settings_schema.client_key_bounds()
+    field_of = {ck: f for f, ck in settings_schema.CONFIG_TO_CLIENT_KEY.items()}
     values: dict = {}
-    for key in config_store.STREAM_ONLY_CLIENT_KEYS:
+    for key in settings_schema.STREAM_ONLY_CLIENT_KEYS:
         if key not in overrides or key in ident.locked_client_keys:
             continue
         raw, b = overrides[key], bounds[key]
@@ -280,7 +282,7 @@ def _client_stream_values(main, overrides: dict, ident) -> "tuple[dict, list[str
 
     def eff(field):
         return int(values[field] if field in values
-                   else main.cfg_for(None, field, ident))
+                   else effective_config.cfg_for(None, field, ident))
     outer = eff(outer_f)
     if inner_f in values or outer_f in values:
         inner = eff(inner_f)
@@ -342,7 +344,7 @@ def _build_transcribe_kwargs(main, model_name: str, *, final: bool,
     over the model's DEFAULT_LANGUAGE. Pinning it avoids faster-whisper auto-
     detecting per (short, growing) partial buffer, which is unstable — a brief
     German chunk can be mis-detected as e.g. Swedish."""
-    cfg_for = main.cfg_for
+    cfg_for = effective_config.cfg_for
     # Present-but-empty is an explicit "auto-detect" (the client's cleared
     # state); only an ABSENT field inherits DEFAULT_LANGUAGE.
     lang = ((language if language is not None
@@ -773,16 +775,16 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # output wrappers + postprocess use final_model); identity scalar
         # overrides are model-independent, so they apply to the partial decode
         # too via cfg_for's ident layer.
-        ident = main.build_ident(user, final_model, request_profile=req_override_profile)
-        gate_final_words = bool(main.cfg_for(final_model, "WORD_TIMESTAMPS_ENABLED", ident))
-        gate_partial_words = bool(main.cfg_for(partial_model_name, "WORD_TIMESTAMPS_ENABLED", ident))
+        ident = effective_config.build_ident(user, final_model, request_profile=req_override_profile)
+        gate_final_words = bool(effective_config.cfg_for(final_model, "WORD_TIMESTAMPS_ENABLED", ident))
+        gate_partial_words = bool(effective_config.cfg_for(partial_model_name, "WORD_TIMESTAMPS_ENABLED", ident))
 
         # ident is resolved ONCE here, then re-resolved per utterance ONLY when
         # the config version changes (see _refresh_ident) — so admin edits to a
         # binding/profile/setting apply mid-session without a reconnect. Snapshot
         # the version and the client's ORIGINAL (pre-lock) handshake values so the
         # lock re-application stays idempotent across refreshes.
-        _ident_version = config_store.config_version()
+        _ident_version = settings_version.config_version()
         _client_language = req_language
         _client_prompt = req_prompt
         _client_prompt_provided = prompt_provided
@@ -798,17 +800,17 @@ async def transcribe_stream(ws: WebSocket) -> None:
                                    if k in ident.locked_client_keys)
         _note_pinned_condition(req_overrides, overrides_ignored)
         if "DEFAULT_LANGUAGE" in ident.locked:
-            _locked_lang = main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
+            _locked_lang = effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
             if req_language and req_language != _locked_lang:
                 overrides_ignored.append("language")
             req_language = _locked_lang
         main._note_auto_detect_only(
             req_overrides, req_language if req_language is not None
-            else main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
+            else effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
             overrides_ignored)
         main._note_word_ts_only(req_overrides, gate_final_words, overrides_ignored)
         if "DEFAULT_PROMPT" in ident.locked:
-            _locked_prompt = main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
+            _locked_prompt = effective_config.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
             if prompt_provided and req_prompt != _locked_prompt:
                 overrides_ignored.append("prompt")
             req_prompt = _locked_prompt
@@ -935,8 +937,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
             temp = getattr(seg, "temperature", 0.0)
             # Resolve through the per-identity layer like every sibling STREAMING_*
             # decode knob here (cfg_for honours ident > per-model > global).
-            floor = float(main.cfg_for(final_model, "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", ident))
-            ceil = float(main.cfg_for(final_model, "STREAMING_FINAL_DROP_TEMPERATURE", ident))
+            floor = float(effective_config.cfg_for(final_model, "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", ident))
+            ceil = float(effective_config.cfg_for(final_model, "STREAMING_FINAL_DROP_TEMPERATURE", ident))
             return alp < floor and temp >= ceil
 
         async def decode_final(audio, prompt):
@@ -946,7 +948,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # captures row, no quick_config trace, no usage row, no GPU work
                 # attributed to an identity that no longer exists.
                 raise _CredentialRevoked("credential revoked mid-session")
-            tail_pad_ms = int(main.cfg_for(final_model, "STREAMING_TAIL_TRIM_PAD_MS", ident))
+            tail_pad_ms = int(effective_config.cfg_for(final_model, "STREAMING_TAIL_TRIM_PAD_MS", ident))
             # Off the event loop: this is a full Silero sweep over the whole
             # final buffer (up to max_buffer_sec), and decode_final is awaited
             # from the pump task — run inline it stalls the producer's
@@ -958,21 +960,21 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 _trim_trailing_nonspeech,
                 audio,
                 tail_pad_ms,
-                float(main.cfg_for(final_model, "VAD_THRESHOLD", ident)),
+                float(effective_config.cfg_for(final_model, "VAD_THRESHOLD", ident)),
                 session_id[:8])
             _trimmed_s = audio.shape[0] / SAMPLE_RATE
             kwargs = _build_transcribe_kwargs(
                 main, final_model, final=True, prompt=prompt,
                 want_words=gate_final_words, language=req_language,
                 model_obj=final_model_obj, overrides=req_overrides, ident=ident)
-            skip_residual = bool(main.cfg_for(
+            skip_residual = bool(effective_config.cfg_for(
                 final_model, "DECODE_SKIP_RESIDUAL_WINDOWS", ident))
-            token_cap = float(main.cfg_for(
+            token_cap = float(effective_config.cfg_for(
                 final_model, "DECODE_TOKEN_CAP_PER_SECOND", ident) or 0.0)
             segs, info, trace = await _transcribe(
                 final_model_obj, audio, kwargs, trace=True,
                 skip_residual=skip_residual, token_cap_per_s=token_cap)
-            max_wps = float(main.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
+            max_wps = float(effective_config.cfg_for(final_model, "SEGMENT_MAX_WORDS_PER_S", ident) or 0)
             # Tail cuts inside a segment — AFTER the whole-segment verdicts, on
             # the survivors (a segment made up from start to end is still
             # dropped whole). See core/segment_guards.py.
@@ -1100,9 +1102,9 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 "tail_trim_cut": main.PlainText(
                     f"{_untrimmed_s - _trimmed_s:.2f}s  "
                     f"({_untrimmed_s:.2f}s → {_trimmed_s:.2f}s)"),
-                "final_drop_min_avg_logprob": float(main.cfg_for(
+                "final_drop_min_avg_logprob": float(effective_config.cfg_for(
                     final_model, "STREAMING_FINAL_DROP_MIN_AVG_LOGPROB", ident)),
-                "final_drop_temperature": float(main.cfg_for(
+                "final_drop_temperature": float(effective_config.cfg_for(
                     final_model, "STREAMING_FINAL_DROP_TEMPERATURE", ident)),
             })
             return raw, words_out, dropped_all
@@ -1359,20 +1361,20 @@ async def transcribe_stream(ws: WebSocket) -> None:
                                   for k, v in sorted(client_knobs.items())),
                         f" (adjusted: {'; '.join(knob_notes)})" if knob_notes else "")
         session = StreamSession(
-            config=_stream_config(main.cfg_for, ident, client=client_knobs),
+            config=_stream_config(effective_config.cfg_for, ident, client=client_knobs),
             endpointer=make_endpointer(
-                main.cfg_for(final_model, "STREAMING_VAD_BACKEND", ident),
+                effective_config.cfg_for(final_model, "STREAMING_VAD_BACKEND", ident),
                 threshold=float(client_knobs.get(
                     "STREAMING_VAD_THRESHOLD",
-                    main.cfg_for(final_model, "STREAMING_VAD_THRESHOLD", ident))),
-                energy_dbfs=float(main.cfg_for(final_model, "STREAMING_GATE_RMS_DBFS", ident)),
+                    effective_config.cfg_for(final_model, "STREAMING_VAD_THRESHOLD", ident))),
+                energy_dbfs=float(effective_config.cfg_for(final_model, "STREAMING_GATE_RMS_DBFS", ident)),
             ),
             decode_partial=decode_partial,
             decode_final=decode_final,
             postprocess=postprocess,
             emit=emit,
             base_prompt=(req_prompt if prompt_provided
-                         else (main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or "")),
+                         else (effective_config.cfg_for(final_model, "DEFAULT_PROMPT", ident) or "")),
             on_final=on_final,
             session_id=session_id,
             # Seam hooks (streaming/session.py). Lambdas, not bound values: they
@@ -1391,7 +1393,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             binding / profile / setting takes effect on the next utterance instead
             of requiring the client to reconnect. The no-change case is an
             integer compare plus, at most every 0.25 s per process, a sibling
-            data_version PRAGMA (see config_store._KEYS_PROBE_MIN_INTERVAL_S);
+            data_version PRAGMA (see settings_version._KEYS_PROBE_MIN_INTERVAL_S);
             a real change costs a couple of indexed SQLite reads,
             paid at the utterance boundary (not per partial frame). Session-shaping
             STREAMING_*/endpointer params (the client's own knobs included) and
@@ -1416,7 +1418,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             nonlocal req_language, req_prompt, overrides_ignored
             nonlocal user, _auth_revoked
             try:
-                v = config_store.config_version()
+                v = settings_version.config_version()
                 if v == _ident_version:
                     return
                 _ident_version = v
@@ -1444,7 +1446,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # revocation) takes effect too, instead of the connection running
                 # on the permissions it captured at the handshake.
                 user = fresh
-                ident = main.build_ident(user, final_model, request_profile=req_override_profile)
+                ident = effective_config.build_ident(user, final_model, request_profile=req_override_profile)
                 out_prefix, out_suffix = main._output_wrappers(
                     final_model, ident, req_overrides)
                 overrides_ignored = sorted(k for k in req_overrides
@@ -1452,20 +1454,20 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 _note_pinned_condition(req_overrides, overrides_ignored)
                 req_language = _client_language
                 if "DEFAULT_LANGUAGE" in ident.locked:
-                    _ll = main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
+                    _ll = effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident) or ""
                     if _client_language and _client_language != _ll:
                         overrides_ignored.append("language")
                     req_language = _ll
                 main._note_auto_detect_only(
                     req_overrides, req_language if req_language is not None
-                    else main.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
+                    else effective_config.cfg_for(final_model, "DEFAULT_LANGUAGE", ident),
                     overrides_ignored)
                 main._note_word_ts_only(req_overrides, gate_final_words,
                                         overrides_ignored)
                 req_prompt = _client_prompt
                 _provided = _client_prompt_provided
                 if "DEFAULT_PROMPT" in ident.locked:
-                    _lp = main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
+                    _lp = effective_config.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""
                     if _client_prompt_provided and _client_prompt != _lp:
                         overrides_ignored.append("prompt")
                     req_prompt = _lp
@@ -1475,7 +1477,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                 # _make_prompt() (one-utterance convergence). An explicitly cleared
                 # client prompt (_provided + "") keeps the seed empty (no fallback).
                 session.base_prompt = (req_prompt if _provided
-                                       else (main.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""))
+                                       else (effective_config.cfg_for(final_model, "DEFAULT_PROMPT", ident) or ""))
             except Exception as _re:  # noqa: BLE001 — never break dictation on refresh
                 logger.warning("[stream %s] ident refresh failed: %s", session_id[:8], _re)
 
@@ -1669,7 +1671,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
         # It must never await a decode (that wedged the socket) — enqueue and move on.
         # Per-identity idle timeout (a trusted profile may allow a longer silence
         # grace); resolved now that the model + identity are known.
-        idle_timeout = float(main.cfg_for(final_model, "STREAMING_IDLE_TIMEOUT_S", ident) or 0.0)
+        idle_timeout = float(effective_config.cfg_for(final_model, "STREAMING_IDLE_TIMEOUT_S", ident) or 0.0)
         # The deadline is anchored to the last AUDIO byte, not the last frame.
         # Wrapping each receive() in the FULL timeout made the control defeatable
         # by any inbound frame — an empty binary frame (a no-op sink write) or an

@@ -189,10 +189,10 @@ def test_enum_choices_match_schema(client):
     every enum field, and None for non-enum fields — so the UI <select> and the
     server-side validation can never disagree. Guards the _field_choices dedup."""
     import typing
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import schema as settings_schema
 
     def literal_args(field):
-        ann = config_store.AdminConfig.model_fields[field].annotation
+        ann = settings_schema.AdminConfig.model_fields[field].annotation
         for c in (ann, *typing.get_args(ann)):
             if typing.get_origin(c) is typing.Literal:
                 return list(typing.get_args(c))
@@ -201,7 +201,7 @@ def test_enum_choices_match_schema(client):
     fields = client.get("/settings/state").json()["fields"]
     enum_count = 0
     for name in fields:
-        if name not in config_store.AdminConfig.model_fields:
+        if name not in settings_schema.AdminConfig.model_fields:
             continue
         expected = literal_args(name)
         assert fields[name].get("choices") == expected, name
@@ -209,8 +209,8 @@ def test_enum_choices_match_schema(client):
             enum_count += 1
 
     # Concrete spot-checks: API choices ARE the Literal (catch a broken extractor).
-    assert fields["MODEL_COMPUTE_TYPE"]["choices"] == list(config_store.ComputeLit.__args__)
-    assert fields["CONVERT_QUANTIZATION"]["choices"] == list(config_store.ConvertQuantLit.__args__)
+    assert fields["MODEL_COMPUTE_TYPE"]["choices"] == list(settings_schema.ComputeLit.__args__)
+    assert fields["CONVERT_QUANTIZATION"]["choices"] == list(settings_schema.ConvertQuantLit.__args__)
     assert fields["MODEL_DEVICE"]["choices"] == ["cuda", "cpu"]
     assert fields["BEST_OF"]["choices"] is None        # non-enum -> free input, no dropdown
     assert enum_count >= 6                              # sanity: the sweep found the enums
@@ -491,9 +491,9 @@ def test_test_pipeline_rule_cap_tracks_schema():
     from typing import get_args
 
     from faster_whisper_backend.admin import routes as admin_routes
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import schema as settings_schema
 
-    ann = config_store.AdminConfig.model_fields["PIPELINE_RULES"].annotation
+    ann = settings_schema.AdminConfig.model_fields["PIPELINE_RULES"].annotation
     fi = get_args(ann)[0].__metadata__[0]
     expected = next(m.max_length for m in fi.metadata
                     if getattr(m, "max_length", None) is not None)
@@ -573,9 +573,9 @@ def test_settings_page_injects_mo_constants(client):
     # Every FIELD_META key is a real ModelOverride field — the payload once
     # shipped seven CAPTURES_* rows no renderer could ever read.
     from faster_whisper_backend.admin import routes as admin_routes
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import schema as settings_schema
     assert (set(json.loads(admin_routes._MO_FIELD_META_JSON))
-            <= set(config_store.ModelOverride.model_fields))
+            <= set(settings_schema.ModelOverride.model_fields))
 
 
 def test_model_sections_cover_every_model_override_field(client):
@@ -585,7 +585,7 @@ def test_model_sections_cover_every_model_override_field(client):
     Mirrors test_field_groups_cover_every_setting for the per-model pane."""
     import re
 
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import schema as settings_schema
 
     text = client.get("/settings").text
     m = re.search(r"const SECTIONS = \[(.*?)\n  \];", text, re.S)
@@ -593,7 +593,7 @@ def test_model_sections_cover_every_model_override_field(client):
     listed = set()
     for arr in re.findall(r"(?:basic|adv):\s*\[([^\]]*)\]", m.group(1)):
         listed.update(re.findall(r"'([A-Z][A-Z0-9_]*)'", arr))
-    expected = (set(config_store.ModelOverride.model_fields)
+    expected = (set(settings_schema.ModelOverride.model_fields)
                 - {"PIPELINE_RULES_INCLUDE", "PIPELINE_RULES_EXCLUDE"})
     missing = expected - listed
     stale = listed - expected
@@ -652,11 +652,11 @@ def test_field_groups_cover_every_setting():
     Regression guard — adding a config field without wiring its WebUI group (as
     happened with STREAMING_HARD_BREAK_*) should fail here, not ship invisible."""
     from faster_whisper_backend.admin import routes as admin_routes
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import schema as settings_schema
 
     displayed = admin_routes._all_fields()
     assert len(displayed) == len(set(displayed)), "duplicate field in _FIELD_GROUPS"
-    schema = set(config_store.AdminConfig.model_fields)
+    schema = set(settings_schema.AdminConfig.model_fields)
     # Fields intentionally edited on a DEDICATED page, not the /settings form.
     # OVERRIDE_PROFILES has its own master-detail editor on /settings/overrides
     # (served by /settings/overrides/state), so it is not in _FIELD_GROUPS.

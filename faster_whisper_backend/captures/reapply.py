@@ -28,6 +28,8 @@ import threading
 import time
 from typing import Any
 
+from faster_whisper_backend.settings import effective_config
+
 logger = logging.getLogger("whisper-api")
 
 _state_lock = threading.Lock()
@@ -107,7 +109,7 @@ def _run() -> None:
         def _ident_for(uid, model_id):
             key = (uid, model_id)
             if key not in ident_cache:
-                ident_cache[key] = main.build_ident({"user_id": uid}, model_id)
+                ident_cache[key] = effective_config.build_ident({"user_id": uid}, model_id)
             return ident_cache[key]
 
         for r in rows:

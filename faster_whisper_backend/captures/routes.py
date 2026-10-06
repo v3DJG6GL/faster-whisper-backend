@@ -49,6 +49,7 @@ from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.captures import merge_proposer as captures_merge_proposer
 from faster_whisper_backend.captures import store as captures_store
 from faster_whisper_backend.settings import config as cfg
+from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.auth import rate_limit
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core import text_corrections
@@ -946,7 +947,7 @@ async def reprocess_capture_api(
     # Resolve the CAPTURE OWNER's effective pipeline (not the caller's — an admin
     # may reprocess another user's row; the result must reflect that user's
     # rules). Pipeline-only: no key / no per-request layer on reprocess.
-    ident = main.build_ident({"user_id": row.get("user_id")}, row.get("model"))
+    ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
     try:
         new_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
     except Exception as e:
@@ -2049,7 +2050,7 @@ def _refresh_final_if_stale(
         # GLOBAL rules and write the result back, silently reverting any
         # per-identity reprocess and producing wrong text for owners with
         # per-identity pipeline rules.
-        ident = main.build_ident({"user_id": row.get("user_id")}, row.get("model"))
+        ident = effective_config.build_ident({"user_id": row.get("user_id")}, row.get("model"))
         fresh_final = main._postprocess_text(raw, model_name=row.get("model"), ident=ident, language=row.get("language"))
     except Exception:
         return
@@ -2355,14 +2356,13 @@ def _align_member_words(
     words = m.get("words") or []
     final = m.get("final") or ""
     training = m.get("text_for_training") or final
-    from faster_whisper_backend import main  # owner identity so per-word post matches the identity-aware final
     uid, mdl = m.get("user_id"), m.get("model")
     if ident_cache is None:
-        ident = main.build_ident({"user_id": uid}, mdl)
+        ident = effective_config.build_ident({"user_id": uid}, mdl)
     else:
         ckey = (uid, mdl)
         if ckey not in ident_cache:
-            ident_cache[ckey] = main.build_ident({"user_id": uid}, mdl)
+            ident_cache[ckey] = effective_config.build_ident({"user_id": uid}, mdl)
         ident = ident_cache[ckey]
     _lang = m.get("language")
     ws = _align_words_to_final(words, final, model_name=m.get("model"), ident=ident, language=_lang)

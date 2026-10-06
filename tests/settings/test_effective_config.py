@@ -8,7 +8,7 @@ box with `pytest -o addopts="" tests/settings/test_effective_config.py`.
 import pytest
 
 from faster_whisper_backend.settings import config as cfg
-from faster_whisper_backend.settings import config_store as cs
+from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import effective_config as ec
 
 
@@ -31,58 +31,58 @@ def _resolve(layers, model_id=None, req=None, prov=False):
 # --- schema ---------------------------------------------------------------
 
 def test_lockable_excludes_pipeline_lists():
-    assert "BEAM_SIZE" in cs.LOCKABLE_FIELDS
-    assert "STREAMING_PARTIAL_BEAM" in cs.LOCKABLE_FIELDS
+    assert "BEAM_SIZE" in settings_schema.LOCKABLE_FIELDS
+    assert "STREAMING_PARTIAL_BEAM" in settings_schema.LOCKABLE_FIELDS
     # the idle timeout is a per-caller policy → per-identity overridable + lockable
-    assert "STREAMING_IDLE_TIMEOUT_S" in cs.LOCKABLE_FIELDS
-    assert "PIPELINE_RULES_EXCLUDE" not in cs.LOCKABLE_FIELDS
-    assert "PIPELINE_RULES_INCLUDE" not in cs.LOCKABLE_FIELDS
+    assert "STREAMING_IDLE_TIMEOUT_S" in settings_schema.LOCKABLE_FIELDS
+    assert "PIPELINE_RULES_EXCLUDE" not in settings_schema.LOCKABLE_FIELDS
+    assert "PIPELINE_RULES_INCLUDE" not in settings_schema.LOCKABLE_FIELDS
     # load-time model fields are never per-identity overridable
-    assert "MODEL_DEVICE" not in cs.LOCKABLE_FIELDS
+    assert "MODEL_DEVICE" not in settings_schema.LOCKABLE_FIELDS
     # hard server-capacity caps are server-wide, never per-identity
-    assert "STREAMING_MAX_SESSIONS" not in cs.LOCKABLE_FIELDS
+    assert "STREAMING_MAX_SESSIONS" not in settings_schema.LOCKABLE_FIELDS
 
 
 def test_translation_lockable_membership():
     # Per-request translation defaults are lockable; the capacity master
     # switch and the server-side model plumbing are not.
-    assert "TRANSLATE_TO" in cs.LOCKABLE_FIELDS
-    assert "TRANSLATION_MODEL" in cs.LOCKABLE_FIELDS
-    assert "TRANSLATION_MODE" in cs.LOCKABLE_FIELDS
-    assert "TRANSLATION_ENABLED" not in cs.LOCKABLE_FIELDS
-    assert "TRANSLATION_DEFAULT_MODEL" not in cs.LOCKABLE_FIELDS
-    assert "TRANSLATION_ALLOWED_MODELS" not in cs.LOCKABLE_FIELDS
-    assert "TRANSLATION_MAX_LOADED_MODELS" not in cs.LOCKABLE_FIELDS
+    assert "TRANSLATE_TO" in settings_schema.LOCKABLE_FIELDS
+    assert "TRANSLATION_MODEL" in settings_schema.LOCKABLE_FIELDS
+    assert "TRANSLATION_MODE" in settings_schema.LOCKABLE_FIELDS
+    assert "TRANSLATION_ENABLED" not in settings_schema.LOCKABLE_FIELDS
+    assert "TRANSLATION_DEFAULT_MODEL" not in settings_schema.LOCKABLE_FIELDS
+    assert "TRANSLATION_ALLOWED_MODELS" not in settings_schema.LOCKABLE_FIELDS
+    assert "TRANSLATION_MAX_LOADED_MODELS" not in settings_schema.LOCKABLE_FIELDS
 
 
 def test_stage_model_fields_now_per_request():
     # The scope flip: a caller (or profile / per-model bundle) may pick the
     # diarization pipeline and the UVR model; the allowlists stay server-only.
-    assert "DIARIZATION_MODEL" in cs.OverrideProfile.model_fields
-    assert "DIARIZATION_MODEL" in cs.ModelOverride.model_fields
-    assert "DIARIZATION_MODEL" in cs.LOCKABLE_FIELDS
-    assert "BGM_SEPARATION_UVR_MODEL" in cs.LOCKABLE_FIELDS
-    assert "DIARIZATION_ALLOWED_MODELS" not in cs.OverrideProfile.model_fields
-    assert "BGM_SEPARATION_ALLOWED_MODELS" not in cs.OverrideProfile.model_fields
+    assert "DIARIZATION_MODEL" in settings_schema.OverrideProfile.model_fields
+    assert "DIARIZATION_MODEL" in settings_schema.ModelOverride.model_fields
+    assert "DIARIZATION_MODEL" in settings_schema.LOCKABLE_FIELDS
+    assert "BGM_SEPARATION_UVR_MODEL" in settings_schema.LOCKABLE_FIELDS
+    assert "DIARIZATION_ALLOWED_MODELS" not in settings_schema.OverrideProfile.model_fields
+    assert "BGM_SEPARATION_ALLOWED_MODELS" not in settings_schema.OverrideProfile.model_fields
     # VRAM-capacity knob deliberately stays server-scoped.
-    assert "DIARIZATION_EMBEDDING_BATCH_SIZE" not in cs.LOCKABLE_FIELDS
+    assert "DIARIZATION_EMBEDDING_BATCH_SIZE" not in settings_schema.LOCKABLE_FIELDS
 
 
 def test_model_override_keeps_loadtime_and_calltime():
-    f = set(cs.ModelOverride.model_fields)
+    f = set(settings_schema.ModelOverride.model_fields)
     assert {"MODEL_DEVICE", "NUM_WORKERS", "REVISION"} <= f      # load-time
     assert {"BEAM_SIZE", "PIPELINE_RULES_EXCLUDE"} <= f          # call-time mixin
 
 
 def test_profile_rejects_loadtime_and_bad_lock():
     with pytest.raises(Exception):
-        cs.OverrideProfile.model_validate({"MODEL_DEVICE": "cpu"})
+        settings_schema.OverrideProfile.model_validate({"MODEL_DEVICE": "cpu"})
     with pytest.raises(Exception):
-        cs.OverrideProfile.model_validate({"locks": ["NOPE"]})
+        settings_schema.OverrideProfile.model_validate({"locks": ["NOPE"]})
 
 
 def test_profile_roundtrip_through_adminconfig():
-    ac = cs.AdminConfig.model_validate({"OVERRIDE_PROFILES": {
+    ac = settings_schema.AdminConfig.model_validate({"OVERRIDE_PROFILES": {
         "clinic-de": {"DEFAULT_LANGUAGE": "de", "BEAM_SIZE": 8,
                       "STREAMING_PARTIAL_BEAM": 3, "locks": ["DEFAULT_LANGUAGE"]}}})
     out = ac.model_dump(exclude_none=True)["OVERRIDE_PROFILES"]["clinic-de"]
@@ -562,7 +562,7 @@ def test_none_sentinel_suppresses_bound_profile(monkeypatch):
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}})
     _bindings(monkeypatch, key={"direct": {}, "profiles": ["clinic"]})
     assert ec.resolve("m", key_id="k").values["BEAM_SIZE"] == 7   # bound profile applies
-    r = ec.resolve("m", key_id="k", request_profile=cs.NO_PROFILE_SENTINEL)
+    r = ec.resolve("m", key_id="k", request_profile=settings_schema.NO_PROFILE_SENTINEL)
     assert "BEAM_SIZE" not in r.values            # bound profile suppressed
     assert r.request_profile_applied is None       # the sentinel adds no layer
 
@@ -572,7 +572,7 @@ def test_none_sentinel_keeps_direct_identity_config(monkeypatch):
     # config (direct isn't a "profile").
     _set_profiles(monkeypatch, {"clinic": {"DEFAULT_LANGUAGE": "de"}})
     _bindings(monkeypatch, key={"direct": {"BEAM_SIZE": 5}, "profiles": ["clinic"]})
-    r = ec.resolve("m", key_id="k", request_profile=cs.NO_PROFILE_SENTINEL)
+    r = ec.resolve("m", key_id="k", request_profile=settings_schema.NO_PROFILE_SENTINEL)
     assert r.values["BEAM_SIZE"] == 5             # direct config retained
     assert "DEFAULT_LANGUAGE" not in r.values     # bound profile suppressed
 
@@ -583,13 +583,13 @@ def test_none_sentinel_refused_when_gated_off(monkeypatch):
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}}, allow=False)
     _bindings(monkeypatch, key={"direct": {}, "profiles": ["clinic"]})
     assert ec.resolve("m", key_id="k",
-                      request_profile=cs.NO_PROFILE_SENTINEL).values["BEAM_SIZE"] == 7
+                      request_profile=settings_schema.NO_PROFILE_SENTINEL).values["BEAM_SIZE"] == 7
     # Per-identity gate off (global on) → also refused.
     _set_profiles(monkeypatch, {"clinic": {"BEAM_SIZE": 7}}, allow=True)
     _bindings(monkeypatch, key={"direct": {}, "profiles": ["clinic"],
                                 "allow_request_override_profile": False})
     assert ec.resolve("m", key_id="k",
-                      request_profile=cs.NO_PROFILE_SENTINEL).values["BEAM_SIZE"] == 7
+                      request_profile=settings_schema.NO_PROFILE_SENTINEL).values["BEAM_SIZE"] == 7
 
 
 # --- admin per-key apply_no_profiles force --------------------------------

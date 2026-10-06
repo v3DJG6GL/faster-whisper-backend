@@ -289,14 +289,14 @@ def test_record_merges_a_peer_workers_row_instead_of_clobbering_it(ledger):
 
 
 def test_record_holds_the_cross_process_save_lock(ledger, monkeypatch):
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.core import atomic_json
     entered = []
-    real = config_store._save_lock
+    real = atomic_json.save_lock
 
     def spy(path):
         entered.append(path)
         return real(path)
-    monkeypatch.setattr(config_store, "_save_lock", spy)
+    monkeypatch.setattr(atomic_json, "save_lock", spy)
     model_sizes.record("a", "cuda", "float16", 1 * GB)
     # Once around the whole read-modify-write — never re-acquired inside
     # the write (the per-path lock is not reentrant).

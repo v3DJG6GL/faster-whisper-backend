@@ -409,8 +409,8 @@ def test_streaming_partial_conditioning_unaffected(app_module, fake_model):
 # ---------------------------------------------------------------------------
 
 def test_admin_config_accepts_new_fields():
-    from faster_whisper_backend.settings import config_store
-    m = config_store.AdminConfig(
+    from faster_whisper_backend.settings import schema as settings_schema
+    m = settings_schema.AdminConfig(
         SEGMENT_MAX_WORDS_PER_S=8.0,
         STREAMING_TAIL_TRIM_PAD_MS=500,
         STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT=True,
@@ -423,18 +423,18 @@ def test_admin_config_accepts_new_fields():
 def test_admin_config_rejects_out_of_range():
     import pytest as _pytest
     from pydantic import ValidationError
-    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import schema as settings_schema
     with _pytest.raises(ValidationError):
-        config_store.AdminConfig(SEGMENT_MAX_WORDS_PER_S=-1.0)
+        settings_schema.AdminConfig(SEGMENT_MAX_WORDS_PER_S=-1.0)
     with _pytest.raises(ValidationError):
-        config_store.AdminConfig(STREAMING_TAIL_TRIM_PAD_MS=999999)
+        settings_schema.AdminConfig(STREAMING_TAIL_TRIM_PAD_MS=999999)
     for bad in ({"SEGMENT_MAX_WORD_BURST_PER_S": -1.0},
                 {"SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 21},
                 {"SEGMENT_REPEAT_COLLAPSE_MIN_REPEATS": -1},
                 {"SEGMENT_HEAD_ECHO_MIN_WORDS": 1},
                 {"SEGMENT_HEAD_ECHO_MIN_WORDS": 33}):
         with _pytest.raises(ValidationError):
-            config_store.AdminConfig(**bad)
+            settings_schema.AdminConfig(**bad)
 
 
 def test_defaults_present_in_config(app_module):
@@ -507,15 +507,15 @@ _NEW_FIELDS = ("SEGMENT_MAX_WORDS_PER_S", "STREAMING_TAIL_TRIM_PAD_MS",
 
 
 def test_new_fields_in_override_profile_and_lockable(app_module):
-    from faster_whisper_backend.settings import config_store
-    p = config_store.OverrideProfile(
+    from faster_whisper_backend.settings import schema as settings_schema
+    p = settings_schema.OverrideProfile(
         SEGMENT_MAX_WORDS_PER_S=8.0,
         STREAMING_TAIL_TRIM_PAD_MS=500,
         STREAMING_FINAL_CONDITION_ON_PREVIOUS_TEXT=True,
     )
     assert p.SEGMENT_MAX_WORDS_PER_S == 8.0
     for f in _NEW_FIELDS:
-        assert f in config_store.LOCKABLE_FIELDS
+        assert f in settings_schema.LOCKABLE_FIELDS
 
 
 def test_new_fields_on_overrides_page(app_module):

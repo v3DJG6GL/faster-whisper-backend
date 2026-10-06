@@ -13,12 +13,12 @@ lock state. A locked field cannot be replaced by the client's per-request
 layer mentioning a slug in include/exclude decides; exclude wins within a
 layer), folding the per-model layer in too — locking does not apply to rules.
 
-This is a LEAF module: it imports only ``config``, ``config_store`` and
-``api_keys_store`` and is itself imported by ``main`` / ``streaming_routes`` /
-``captures_*``. It never imports ``main`` (no cycles). The runtime reader
-``main.cfg_for(model_id, field, ident)`` consults a resolved object's
-``values`` first, so threading ``ident=None`` anywhere is byte-identical to the
-pre-feature behaviour.
+This is a LEAF module: it imports only ``config``, ``config_store``,
+``schema`` and ``api_keys_store`` and is itself imported by ``main`` /
+``streaming_routes`` / ``captures_*``. It never imports ``main`` (no cycles).
+The runtime reader ``cfg_for(model_id, field, ident)`` (bottom of this module)
+consults a resolved object's ``values`` first, so threading ``ident=None``
+anywhere is byte-identical to the pre-feature behaviour.
 """
 
 from __future__ import annotations
@@ -31,6 +31,7 @@ from typing import Any
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_renames as _renames
 from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import schema as settings_schema
 
 logger = logging.getLogger("whisper-api")
 
@@ -47,15 +48,15 @@ _FETCH_FAILED = object()
 # Overridable scalar fields = every call-time + streaming field EXCEPT the
 # pipeline include/exclude lists (those resolve via the rule path, not here).
 # Single-sourced from the schema so it cannot drift.
-SCALAR_OVERRIDE_FIELDS: frozenset[str] = config_store.LOCKABLE_FIELDS
+SCALAR_OVERRIDE_FIELDS: frozenset[str] = settings_schema.LOCKABLE_FIELDS
 
 # Map an UPPER_CASE config field → the lowercase client decode_override key it
 # governs. Mirrors the allow-list enforced by main._apply_decode_overrides, so
 # a lock on the config field blocks the matching client key. Fields absent here
 # are not client-overridable, so a lock on them is a no-op for the client gate.
-# Generated from the per-field `client_key` registry metadata in config_store;
+# Generated from the per-field `client_key` registry metadata in settings/schema.py;
 # the historical module-level alias name is kept for existing consumers.
-_CONFIG_TO_CLIENT_KEY: dict[str, str] = config_store.CONFIG_TO_CLIENT_KEY
+_CONFIG_TO_CLIENT_KEY: dict[str, str] = settings_schema.CONFIG_TO_CLIENT_KEY
 
 # Identity carriers that have no per-identity config: the synthetic open-mode
 # admin and the cookie-session pseudo key id. Both resolve to "no layer."
@@ -66,7 +67,7 @@ _SENTINEL_IDS: frozenset[str] = frozenset({"(open-mode)", "(session)"})
 class Resolved:
     """The effective per-identity config for one request / handshake / row.
 
-    Threaded into ``main.cfg_for`` / ``assemble_transcribe_kwargs`` /
+    Threaded into ``cfg_for`` / ``assemble_transcribe_kwargs`` /
     ``_apply_decode_overrides`` / ``_postprocess_text`` and the streaming
     builders. Computed ONCE per request and reused across all partial + final
     decodes of a stream.
@@ -244,7 +245,7 @@ def _gather_identity_layers(key_binding: Any,
     request layer), leaving only the ``direct`` identity layers + per-model +
     global — i.e. plain defaults — fires on EITHER of two paths:
 
-    1. The reserved request name ``config_store.NO_PROFILE_SENTINEL`` ("apply no
+    1. The reserved request name ``settings_schema.NO_PROFILE_SENTINEL`` ("apply no
        profile"), a CLIENT opt-out gated by the same global + per-identity switch
        as a profile *request*, so an admin who forces profiles by turning the gate
        off is not bypassed; the allowlist doesn't apply, since opting OUT of
@@ -257,7 +258,7 @@ def _gather_identity_layers(key_binding: Any,
     # Admin force, ungated, key-scoped: this key always resolves to plain defaults.
     admin_force = bool(key_binding.get("apply_no_profiles")) if isinstance(key_binding, dict) else False
     # Client opt-out, gated like any profile request.
-    request_none = (request_profile == config_store.NO_PROFILE_SENTINEL
+    request_none = (request_profile == settings_schema.NO_PROFILE_SENTINEL
                     and getattr(cfg, "ALLOW_REQUEST_OVERRIDE_PROFILE", True)
                     and request_allowed)
     suppress = admin_force or request_none
@@ -310,7 +311,7 @@ def _request_profile_layer(request_profile: str | None, *,
         return None
     if not allowed:
         return None
-    if not config_store.TAG_RE.match(request_profile):
+    if not settings_schema.TAG_RE.match(request_profile):
         return None
     if not _allowlist_permits(allowlist, request_profile):
         return None
@@ -639,3 +640,87 @@ def project_profile_to_client(blob: Any) -> tuple[dict[str, Any], list[str]]:
         if f in _CONFIG_TO_CLIENT_KEY
     )
     return values, locked
+
+
+# =============================================================================
+# Per-model config resolution (per-model override > global default)
+# =============================================================================
+# cfg_for(model_id, field) is the canonical reader for any G/PM-scoped setting.
+# It walks: cfg.MODEL_OVERRIDES[model_id][field] (if set and not None) → cfg.X
+# (global default). Pure-G fields (DEFAULT_MODEL, ALLOWED_MODELS, server, log)
+# are read with plain cfg.X — they have no per-model meaning.
+#
+# Precedence (highest to lowest):
+#   request-arg  >  per-model override  >  global default  >  faster-whisper
+# The first three are this function's business; the last is whatever
+# faster-whisper itself defaults to when we omit a kwarg.
+
+def cfg_for(model_id: "str | None", field: str, ident=None):
+    """Resolve a G/PM config field for the given model_id (and optional caller
+    identity).
+
+    Precedence: per-identity override (``ident``) > per-model override >
+    global cfg.X. ``ident`` is an effective_config.Resolved whose ``values``
+    already merged the key/user/profile layers; passing ``ident=None`` (the
+    default everywhere except the request paths) is byte-identical to the
+    pre-feature behaviour. Pass model_id=None to skip the per-model layer.
+    """
+    if ident is not None and field in ident.values:
+        return ident.values[field]
+    overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
+    if model_id and isinstance(overrides, dict):
+        m_over = overrides.get(model_id)
+        if isinstance(m_over, dict):
+            v = m_over.get(field)
+            if v is not None:
+                return v
+    return getattr(cfg, field)
+
+# Sentinel for _resolve_request_knob: skip the `or default` coercion entirely.
+# Needed by callers that resolve NUMERIC knobs through the same ladder, where
+# `or ""` would corrupt a legitimate 0 (e.g. TRANSLATION_CONTEXT_SEGMENTS).
+_NO_DEFAULT = object()
+
+
+def _resolve_request_knob(resolved_model, ident, ignored: "list[str]",
+                          cfg_name: str, client_name: str, req_val,
+                          default=""):
+    """The locked-wins / request-wins / config-inherits ladder every
+    per-request string knob shares (the speaker counts use the numeric tuple
+    loop next to their form parsing). Locked: the resolved server value wins
+    and a differing request lands in ``ignored`` under its client name.
+    `default=_NO_DEFAULT` returns the resolved value raw (no falsy coercion)."""
+    if cfg_name in ident.locked:
+        val = cfg_for(resolved_model, cfg_name, ident)
+        if default is not _NO_DEFAULT:
+            val = val or default
+        if req_val is not None and req_val != val:
+            ignored.append(client_name)
+        return val
+    if req_val is not None:
+        return req_val
+    val = cfg_for(resolved_model, cfg_name, ident)
+    return val if default is _NO_DEFAULT else (val or default)
+
+
+
+def build_ident(user: "dict | None", model_id: "str | None",
+                request_overrides: "dict | None" = None,
+                request_profile: "str | None" = None,
+                with_provenance: bool = False):
+    """Resolve the per-identity effective config ONCE for a request / streaming
+    handshake / capture row, to thread through cfg_for / assemble_transcribe_
+    kwargs / _postprocess_text. Open mode and callers with no per-identity
+    config yield a Resolved with no identity layers (per-model rules still
+    folded) — equivalent to threading ident=None. ``with_provenance`` adds the
+    per-field layer stack (GET /v1/request-default-settings names each value's
+    source)."""
+    user = user or {}
+    return resolve(
+        model_id,
+        user_id=user.get("user_id"),
+        key_id=user.get("key_id"),
+        request_overrides=request_overrides or {},
+        request_profile=request_profile,
+        with_provenance=with_provenance,
+    )

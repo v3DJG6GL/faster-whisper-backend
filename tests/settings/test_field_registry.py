@@ -13,7 +13,7 @@ metadata typo. Update a snapshot only when the change is intentional.
 """
 
 from faster_whisper_backend.settings import config
-from faster_whisper_backend.settings import config_store as cs
+from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import effective_config
 
 
@@ -721,22 +721,22 @@ def test_every_field_has_registry_metadata_with_valid_scope():
     """Every AdminConfig field must carry x_registry metadata declaring a
     valid scope — _F() enforces this at import, this guards against a field
     ever bypassing _F()."""
-    for name, fi in cs.AdminConfig.model_fields.items():
+    for name, fi in settings_schema.AdminConfig.model_fields.items():
         extra = fi.json_schema_extra
         assert isinstance(extra, dict) and "x_registry" in extra, (
             f"{name} has no x_registry metadata")
         reg = extra["x_registry"]
-        assert reg["scope"] in cs._SCOPES, (name, reg["scope"])
+        assert reg["scope"] in settings_schema._SCOPES, (name, reg["scope"])
 
 
 def test_registry_scope_membership():
     """Scope buckets match the historical model memberships exactly."""
-    per_request = {n for n, r in cs._REGISTRY.items()
+    per_request = {n for n, r in settings_schema._REGISTRY.items()
                    if r["scope"] == "per_request"}
-    per_model = {n for n, r in cs._REGISTRY.items()
+    per_model = {n for n, r in settings_schema._REGISTRY.items()
                  if r["scope"] == "per_model"}
-    mixin_union = (set(cs._CallTimeOverrideMixin.model_fields)
-                   | set(cs._StreamingOverrideMixin.model_fields))
+    mixin_union = (set(settings_schema._CallTimeOverrideMixin.model_fields)
+                   | set(settings_schema._StreamingOverrideMixin.model_fields))
     assert per_request == mixin_union - {"PIPELINE_RULES_EXCLUDE",
                                          "PIPELINE_RULES_INCLUDE"}
     assert per_model == {"MODEL_DEVICE", "MODEL_COMPUTE_TYPE",
@@ -749,68 +749,68 @@ def test_registry_scope_membership():
 # ---------------------------------------------------------------------------
 
 def test_env_var_mapping_matches_snapshot():
-    assert cs.ENV_VAR_MAPPING == ENV_VAR_MAPPING_SNAPSHOT
+    assert settings_schema.ENV_VAR_MAPPING == ENV_VAR_MAPPING_SNAPSHOT
 
 
 def test_restart_required_matches_snapshot():
-    assert cs.RESTART_REQUIRED_FIELDS == RESTART_REQUIRED_SNAPSHOT
+    assert settings_schema.RESTART_REQUIRED_FIELDS == RESTART_REQUIRED_SNAPSHOT
 
 
 def test_load_time_matches_snapshot():
-    assert cs.LOAD_TIME_FIELDS == LOAD_TIME_SNAPSHOT
+    assert settings_schema.LOAD_TIME_FIELDS == LOAD_TIME_SNAPSHOT
 
 
 def test_cache_rebuild_matches_snapshot():
-    assert cs.CACHE_REBUILD_FIELDS == CACHE_REBUILD_SNAPSHOT
+    assert settings_schema.CACHE_REBUILD_FIELDS == CACHE_REBUILD_SNAPSHOT
 
 
 def test_config_to_client_key_matches_snapshot():
-    assert cs.CONFIG_TO_CLIENT_KEY == CONFIG_TO_CLIENT_KEY_SNAPSHOT
+    assert settings_schema.CONFIG_TO_CLIENT_KEY == CONFIG_TO_CLIENT_KEY_SNAPSHOT
     # effective_config keeps its historical alias pointing at the same dict.
-    assert effective_config._CONFIG_TO_CLIENT_KEY is cs.CONFIG_TO_CLIENT_KEY
+    assert effective_config._CONFIG_TO_CLIENT_KEY is settings_schema.CONFIG_TO_CLIENT_KEY
 
 
 def test_stream_only_client_keys_are_the_streaming_ones():
     # Derived from the registry (client_key ∩ not model_override), never a
     # hand list: every streaming_* client key and nothing else.
-    assert cs.STREAM_ONLY_CLIENT_KEYS == frozenset(
+    assert settings_schema.STREAM_ONLY_CLIENT_KEYS == frozenset(
         k for k in CONFIG_TO_CLIENT_KEY_SNAPSHOT.values()
         if k.startswith("streaming_"))
 
 
 def test_client_key_bounds_follow_the_field_schema():
-    b = cs.client_key_bounds()
-    assert set(b) == set(cs.CONFIG_TO_CLIENT_KEY.values())
+    b = settings_schema.client_key_bounds()
+    assert set(b) == set(settings_schema.CONFIG_TO_CLIENT_KEY.values())
     assert b["beam_size"] == {"kind": "int", "min": 1, "max": 20}
     assert b["streaming_vad_outer_silence_ms"] == {"kind": "int", "min": 100, "max": 10000}
     assert b["streaming_hard_break_separator"] == {"kind": "str", "maxlen": 8}
-    assert cs.client_key_bounds() is b   # cached
+    assert settings_schema.client_key_bounds() is b   # cached
 
 
 def test_lockable_fields_match_snapshot():
-    assert cs.LOCKABLE_FIELDS == LOCKABLE_SNAPSHOT
+    assert settings_schema.LOCKABLE_FIELDS == LOCKABLE_SNAPSHOT
 
 
 def test_field_groups_match_snapshot():
-    assert cs.FIELD_GROUPS == FIELD_GROUPS_SNAPSHOT
+    assert settings_schema.FIELD_GROUPS == FIELD_GROUPS_SNAPSHOT
 
 
 def test_field_groups_cover_every_admin_config_field():
     """The snapshot pins the table against edits but cannot see a NEW field
     whose _F(...) forgot its group — that field simply never shows up in the
     admin form. Assert completeness in both directions."""
-    grouped = {f for _g, subs in cs.FIELD_GROUPS for _sub, fields in subs
+    grouped = {f for _g, subs in settings_schema.FIELD_GROUPS for _sub, fields in subs
                for f in fields}
     # OVERRIDE_PROFILES is deliberately ungrouped: profiles are edited on
     # their own admin page, there is no admin-form widget for the raw dict.
-    assert set(cs.AdminConfig.model_fields) - grouped == {"OVERRIDE_PROFILES"}
-    assert grouped - set(cs.AdminConfig.model_fields) == set()
+    assert set(settings_schema.AdminConfig.model_fields) - grouped == {"OVERRIDE_PROFILES"}
+    assert grouped - set(settings_schema.AdminConfig.model_fields) == set()
 
 
 def test_env_var_mapping_covers_every_admin_config_field():
     """Same gap for env vars: a field missing from ENV_VAR_MAPPING is silently
     unsettable from the environment."""
-    assert set(cs.AdminConfig.model_fields) == set(cs.ENV_VAR_MAPPING)
+    assert set(settings_schema.AdminConfig.model_fields) == set(settings_schema.ENV_VAR_MAPPING)
 
 
 # ---------------------------------------------------------------------------
@@ -822,10 +822,10 @@ def test_config_set_fields_mirror_post_load_coercers():
     (config.py needs it before config_store can be imported) — the two must
     name the same set-coerced fields."""
     assert config._SET_FIELDS == {
-        k for k, v in cs._POST_LOAD_COERCERS.items() if v is set
+        k for k, v in settings_schema._POST_LOAD_COERCERS.items() if v is set
     }
     # ... and today every coercer IS `set`.
-    assert set(cs._POST_LOAD_COERCERS) == config._SET_FIELDS
+    assert set(settings_schema._POST_LOAD_COERCERS) == config._SET_FIELDS
 
 
 MODEL_OVERRIDE_FIELDS_SNAPSHOT = frozenset(
@@ -980,17 +980,17 @@ OVERRIDE_PROFILE_FIELDS_SNAPSHOT = frozenset(
 # ---------------------------------------------------------------------------
 
 def test_model_override_fields_match_snapshot():
-    assert frozenset(cs.ModelOverride.model_fields) == \
+    assert frozenset(settings_schema.ModelOverride.model_fields) == \
         MODEL_OVERRIDE_FIELDS_SNAPSHOT
 
 
 def test_override_profile_fields_match_snapshot():
-    assert frozenset(cs.OverrideProfile.model_fields) == \
+    assert frozenset(settings_schema.OverrideProfile.model_fields) == \
         OVERRIDE_PROFILE_FIELDS_SNAPSHOT
 
 
 def test_extras_eviction_buckets():
-    assert cs.EXTRAS_EVICTION == {
+    assert settings_schema.EXTRAS_EVICTION == {
         "diarization": frozenset({"DIARIZATION_MODEL", "DIARIZATION_DEVICE",
                                   "DIARIZATION_EMBEDDING_BATCH_SIZE",
                                   "DIARIZATION_ALLOWED_MODELS"}),

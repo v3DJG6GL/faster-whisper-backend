@@ -2,13 +2,13 @@
 
 from faster_whisper.tokenizer import _LANGUAGE_CODES
 
-from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.core import languages
 
 
 def test_whisper_table_matches_faster_whisper():
     assert set(languages.WHISPER_LANGUAGE_NAMES) == set(_LANGUAGE_CODES)
-    assert config_store.WHISPER_LANGUAGE_CODES == set(_LANGUAGE_CODES)
+    assert settings_schema.WHISPER_LANGUAGE_CODES == set(_LANGUAGE_CODES)
 
 
 def test_extra_codes_are_not_whisper_codes():

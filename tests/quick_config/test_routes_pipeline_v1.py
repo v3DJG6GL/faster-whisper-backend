@@ -10,7 +10,7 @@ USER_WEBUI_ALLOWED_HOSTS, unlike the browser /quick-config page).
 
 import copy
 
-from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.quick_config import routes as quick_config_routes
 from tests.conftest import bearer
 
@@ -74,7 +74,7 @@ def test_v1_get_open_mode_shape(client):
     # off the schema here too — the module's 10_000 fallback would otherwise
     # make a hardcoded literal pass even after the introspection went blind.
     caps = [m.max_length
-            for m in config_store.MapRule.model_fields["map"].metadata
+            for m in settings_schema.MapRule.model_fields["map"].metadata
             if getattr(m, "max_length", None) is not None]
     assert caps, "MapRule.map lost its max_length — _MAP_MAX_ENTRIES silently fell back"
     assert body["map_max_entries"] == caps[0] == quick_config_routes._MAP_MAX_ENTRIES

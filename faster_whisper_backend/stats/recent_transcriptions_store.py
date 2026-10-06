@@ -61,7 +61,7 @@ _CAP_TOKEN_FIELD = 64
 # The model id arrives verbatim from the request form field. A name outside the
 # allowlist is rejected with a 400, but the outer `finally` in main.transcribe
 # still records the attempt, so the rejected string reaches this table anyway.
-# 96 matches config_store.ModelId's max_length — no legitimate id is affected.
+# 96 matches settings_schema.ModelId's max_length — no legitimate id is affected.
 _CAP_MODEL = 96
 # The one client-originated column that had no cap. A streaming handshake's
 # {"type":"config","language":...} is only length-bounded by the 1 MiB frame

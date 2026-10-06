@@ -14,6 +14,7 @@ import tempfile
 from pydantic import ValidationError
 
 from faster_whisper_backend.settings import config_store as cs
+from faster_whisper_backend.settings import schema as settings_schema
 
 
 def _regex_rule(name, pattern="x", replacement="y", **kw):
@@ -148,14 +149,14 @@ def test_map_meta_round_trips():
 
 def test_map_meta_prunes_unknown_keys():
     """A map_meta key with no matching `map` entry is dropped on validation."""
-    rule = cs.MapRule(**_map_rule(
+    rule = settings_schema.MapRule(**_map_rule(
         "words", mapping={"foo": "=>"}, map_meta={"foo": 5, "ghost": 9}))
     assert rule.map_meta == {"foo": 5}, rule.map_meta
 
 
 def test_map_meta_defaults_empty():
     """A cb:map rule with no map_meta validates and defaults to {}."""
-    rule = cs.MapRule(**_map_rule("words", mapping={"foo": "=>"}))
+    rule = settings_schema.MapRule(**_map_rule("words", mapping={"foo": "=>"}))
     assert rule.map_meta == {}
 
 

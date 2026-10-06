@@ -46,6 +46,8 @@ from pydantic import BaseModel, Field, ValidationError
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import schema as settings_schema
+from faster_whisper_backend.settings import version as settings_version
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.quick_config import state as quick_config_state
 from faster_whisper_backend.stats import recent_transcriptions_store
@@ -90,7 +92,7 @@ _GUARDED_SAVE_EXECUTOR = ThreadPoolExecutor(
 # so two overlapping patches would both snapshot the pre-update list and the
 # second save would silently revert the first caller's edit. This closes the
 # single-worker window only; with SERVER_WORKERS > 1 the cross-process case
-# still relies on config_store._save_lock + the per-slug fingerprints.
+# still relies on atomic_json.save_lock + the per-slug fingerprints.
 # A LoopLock (one asyncio.Lock per event loop): an asyncio.Lock binds to the
 # first loop that awaits it, and this module (unlike main) is not reloaded
 # per test, so a plain module-level Lock would raise "bound to a different
@@ -110,7 +112,7 @@ def _patch_lock() -> LoopLock:
 # twice on the event loop.
 _MAP_MAX_ENTRIES: int = next(
     (m.max_length
-     for m in config_store.MapRule.model_fields["map"].metadata
+     for m in settings_schema.MapRule.model_fields["map"].metadata
      if getattr(m, "max_length", None) is not None),
     10_000,  # fallback mirrors MapRule.map's max_length
 )
@@ -146,13 +148,13 @@ def require_user_or_admin_sse(request: Request) -> dict[str, Any]:
 def _reauth_on_version_change(request: Request, seen_version: int
                               ) -> tuple[dict[str, Any], int] | None:
     """stream_recent helper (the /stats/stream _rescope_on_version_change
-    pattern): when config_store.config_version() moved since `seen_version`
+    pattern): when settings_version.config_version() moved since `seen_version`
     (revoke / permission edit / logout bump it), re-resolve the caller and
     return the fresh (record, version); None when nothing changed. Raises
     HTTPException when the caller lost access, which ends the stream —
     otherwise a revoked user's open tab kept receiving every new trace in
     its old scope until the browser closed the EventSource."""
-    current = config_store.config_version()
+    current = settings_version.config_version()
     if current == seen_version:
         return None
     return require_user_or_admin_sse(request), current
@@ -312,9 +314,9 @@ def _redact_invisible_slugs(
         for key in ("loc", "msg"):
             val = str(red.get(key) or "")
             for slug in hidden:
-                # config_store formats the slug with !r, hence the quotes.
+                # settings/schema.py formats the slug with !r, hence the quotes.
                 val = val.replace(f"'{slug}'", "'<hidden rule>'")
-            # config_store's guard messages read `rule {idx} ({slug!r}) entry
+            # The schema's guard messages read `rule {idx} ({slug!r}) entry
             # {eidx}: ...` — after the slug swap the ordinal still gives away
             # the hidden rule's list position and entry count. Collapse it,
             # but the '<hidden rule>' sentinel MUST survive: the page's doSave
@@ -555,7 +557,7 @@ async def _apply_rules_patch_locked(
             ),
         )
     except ValidationError as e:
-        errs = config_store.format_validation_errors(e)
+        errs = settings_schema.format_validation_errors(e)
         # Unlike the success line below, this branch used to return with NO
         # log at all — a save could fail for every user while the log showed
         # only interleaved successes. Full (unredacted) detail is fine here:
@@ -1122,7 +1124,7 @@ async def stream_recent(
     perms = user["permissions"]
     caller_uid = user.get("user_id") or ""
     sees_all = perms.scope("quick_config") == "all"
-    seen = config_store.config_version()
+    seen = settings_version.config_version()
 
     def _visible(entry: dict[str, Any] | None) -> bool:
         if sees_all:

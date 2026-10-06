@@ -20,7 +20,7 @@ from fastapi import HTTPException, Request, status
 from starlette.requests import HTTPConnection
 
 from faster_whisper_backend.settings import config as cfg
-from faster_whisper_backend.settings import config_store
+from faster_whisper_backend.settings import schema as settings_schema
 
 
 # IPv4-mapped-in-IPv6 prefix surfaces on Windows dual-stack `::` binds when a
@@ -2217,7 +2217,7 @@ NOT_ADMIN_LANDING_GLOBAL_JS = "<script>" + NOT_ADMIN_LANDING_JS + "</script>"
 # setAvailable }`. Caller mounts the returned element wherever and
 # subscribes to `opts.onChange(newTags)`.
 #
-# Tag format matches the server-side `config_store.TAG_RE`: lowercase
+# Tag format matches the server-side `settings_schema.TAG_RE`: lowercase
 # letters/digits/hyphens, 1-32 chars, no leading/trailing hyphen.
 # Validation happens BOTH client-side (visual red border on bad input)
 # AND server-side (set_user_permissions / Pydantic validator) so a
@@ -3135,19 +3135,19 @@ ACTIVITY_CLUSTER_JS = """
 # input/change event inside an editor; each page implements its own dirty-
 # tracking on top of that callback.
 #
-# Keep the per-type rendering here in lockstep with config_store.py rule
+# Keep the per-type rendering here in lockstep with settings/schema.py rule
 # schemas. Adding a new rule type requires:
-#   1. New Pydantic class in config_store.py
+#   1. New Pydantic class in settings/schema.py
 #   2. New `if (rule.type === '<type>')` branch in renderTypeEditor below
 #   3. New entry in _PIPELINE_TYPES for the pill label
-# Schema-derived cap on cb:map entries, read off config_store.MapRule so the
+# Schema-derived cap on cb:map entries, read off settings_schema.MapRule so the
 # editor's "n / cap" readout can never drift from the save-path bound. Baked
 # into RULE_EDITOR_JS below so EVERY page embedding the shared editor ships
 # it -- previously only /quick-config's load() assigned window.__mme, leaving
 # /settings with a bare count and a never-disabled add button.
 _MAP_MAX_ENTRIES: int = next(
     (m.max_length
-     for m in config_store.MapRule.model_fields["map"].metadata
+     for m in settings_schema.MapRule.model_fields["map"].metadata
      if getattr(m, "max_length", None) is not None),
     10_000,  # fallback mirrors MapRule.map's max_length
 )

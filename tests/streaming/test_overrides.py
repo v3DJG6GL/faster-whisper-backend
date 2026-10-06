@@ -5,6 +5,7 @@ final decode. Driven in-process; no faster-whisper needed."""
 import logging
 import time
 
+from faster_whisper_backend.settings import effective_config
 from tests._streaming_helpers import const_pcm, ws_drain
 from tests.conftest import bearer
 
@@ -209,7 +210,7 @@ def test_setup_window_error_delivers_internal_error_and_closes(
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_alice = make_user_key("alice")
 
-    real_cfg_for = app_module.cfg_for
+    real_cfg_for = effective_config.cfg_for
 
     def boom(model_id, field, ident=None):
         # The per-identity idle-timeout read happens AFTER the consumer task is
@@ -218,7 +219,7 @@ def test_setup_window_error_delivers_internal_error_and_closes(
             raise RuntimeError("kaboom in setup window")
         return real_cfg_for(model_id, field, ident)
 
-    monkeypatch.setattr(app_module, "cfg_for", boom)
+    monkeypatch.setattr(effective_config, "cfg_for", boom)
 
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:

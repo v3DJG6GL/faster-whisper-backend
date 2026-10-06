@@ -5,6 +5,7 @@ not-edited-but-outdated rule and a missing config.json rule, no JS errors.
 """
 
 from faster_whisper_backend.settings import config_store as cs
+from faster_whisper_backend.settings import schema as settings_schema
 
 
 def _html(client):
@@ -79,10 +80,10 @@ def _rule(**kw):
 
 
 def test_config_rev_is_stored_and_forgiving():
-    ok = cs.AdminConfig.model_validate({"PIPELINE_RULES": [_rule(config_rev="09efe7b7acfad2")]})
+    ok = settings_schema.AdminConfig.model_validate({"PIPELINE_RULES": [_rule(config_rev="09efe7b7acfad2")]})
     assert ok.model_dump(exclude_none=True)["PIPELINE_RULES"][0]["config_rev"] == "09efe7b7acfad2"
     # A malformed value must never fail validation (that drops ALL overrides).
-    bad = cs.AdminConfig.model_validate({"PIPELINE_RULES": [_rule(config_rev="not hex!")]})
+    bad = settings_schema.AdminConfig.model_validate({"PIPELINE_RULES": [_rule(config_rev="not hex!")]})
     assert "config_rev" not in bad.model_dump(exclude_none=True)["PIPELINE_RULES"][0]
 
 

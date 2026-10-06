@@ -37,6 +37,7 @@ from hashlib import sha256
 from typing import Any
 
 from faster_whisper_backend.core import store_common
+from faster_whisper_backend.settings import version as settings_version
 
 logger = logging.getLogger("whisper-api")
 
@@ -386,8 +387,7 @@ def revoke_session(raw_token: str) -> None:
         # move PRAGMA data_version on this connection, and re-stamping would
         # swallow a sibling's commit that landed since the last check.
         _SESSION_INDEX.pop(th, None)
-    from faster_whisper_backend.settings import config_store   # local import: mirrors api_keys_store
-    config_store.bump_config_version()   # signed-out identity's live streaming idents re-auth
+    settings_version.bump_config_version()   # signed-out identity's live streaming idents re-auth
 
 
 def purge_expired() -> None:

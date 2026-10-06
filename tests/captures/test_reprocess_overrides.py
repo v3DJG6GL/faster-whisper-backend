@@ -3,6 +3,7 @@ pipeline (not the caller's), and tolerates owner-less captures."""
 
 import wave
 
+from faster_whisper_backend.settings import effective_config
 from tests.conftest import RATE, bearer
 
 
@@ -37,12 +38,12 @@ def test_reprocess_resolves_owner_not_caller(client, make_user_key, app_module,
     cid = _make_capture(tmp_path, user_id=uid_alice)
 
     calls = []
-    orig = app_module.build_ident
+    orig = effective_config.build_ident
 
     def spy(user, model_id, *a, **k):
         calls.append((dict(user or {}), model_id))
         return orig(user, model_id, *a, **k)
-    monkeypatch.setattr(app_module, "build_ident", spy)
+    monkeypatch.setattr(effective_config, "build_ident", spy)
 
     # Admin reprocesses alice's capture → ident must resolve ALICE's config.
     r = client.post(f"/captures/api/{cid}/reprocess", headers=bearer(raw_admin))
