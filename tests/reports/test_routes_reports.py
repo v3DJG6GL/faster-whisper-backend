@@ -76,6 +76,19 @@ def test_reports_page_model_filter_keeps_colliding_ids_apart(client):
     assert "#list > .report-card { margin-bottom: 0; min-width: 0; }" in html
 
 
+def test_reports_page_notes_draft_survives_a_rerender(client):
+    """render() rebuilds every card (search keystroke, filter, a delete,
+    Refresh): a notes draft held only in the old textarea was lost, and a
+    save cleared the "unsaved" marker even for text typed mid-request."""
+    html = client.get("/reports").text
+    assert "ta.value = _hasDraft(r.id) ? _drafts[r.id] : (r.admin_notes || '');" in html
+    assert "if (changed) _drafts[r.id] = ta.value; else delete _drafts[r.id];" in html
+    save = html[html.index("async function onSaveNotes("):]
+    save = save[:save.index("\n  }\n")]
+    assert "btn.disabled = true;" not in save
+    assert "btn.disabled = !changed;" in save
+
+
 def test_reports_list(client):
     client.post(_SUBMIT, json=_payload(request_id="list-1"))
     r = client.get("/reports/api/list")
@@ -187,7 +200,8 @@ def test_list_signals_truncation_with_uncapped_counts(client, monkeypatch):
     reports_store.delete_report(body["reports"][0]["id"])
     body = client.get("/reports/api/list").json()
     assert len(body["reports"]) == 3
-    assert body["truncated"] is True  # exactly at the ceiling still flags
+    # Exactly at the ceiling nothing is hidden (a full store sits there).
+    assert body["truncated"] is False
     reports_store.delete_report(body["reports"][0]["id"])
     body = client.get("/reports/api/list").json()
     assert len(body["reports"]) == 2 and body["truncated"] is False
@@ -255,3 +269,45 @@ def test_realistic_steps_and_stages_still_accepted(client):
         "stages": stages,
     })
     assert r.status_code == 200
+
+
+def test_patch_waits_for_the_store_lock_off_the_loop(client, app_module):
+    """update_report waits on reports_store._lock, which a submit's eviction
+    or the retention sweep holds for a full-table pass; called inline, that
+    wait froze the whole event loop (streaming sockets and SSE included)."""
+    import asyncio
+    import threading
+    import time
+
+    import httpx
+
+    from faster_whisper_backend.reports import store as reports_store
+    rid = client.post(_SUBMIT, json=_payload()).json()["id"]
+    held = threading.Event()
+    released: dict = {}
+
+    def _hold():
+        with reports_store._lock:
+            held.set()
+            time.sleep(0.3)
+            released["t"] = time.monotonic()
+
+    async def _probe():
+        await asyncio.sleep(0.05)
+        return time.monotonic()
+
+    async def drive():
+        th = threading.Thread(target=_hold)
+        th.start()
+        held.wait()
+        transport = httpx.ASGITransport(app=app_module.app)
+        async with httpx.AsyncClient(transport=transport,
+                                     base_url="http://127.0.0.1") as ac:
+            r, probe_t = await asyncio.gather(
+                ac.patch(f"/reports/api/{rid}", json={"status": "resolved"}),
+                _probe())
+        th.join()
+        assert r.status_code == 200, r.text
+        assert probe_t < released["t"]
+
+    asyncio.run(drive())

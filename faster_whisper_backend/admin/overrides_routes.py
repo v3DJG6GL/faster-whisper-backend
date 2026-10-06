@@ -318,10 +318,25 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     if old in aliased:
         aliased[new] = aliased[old]
         setattr(cfg, "OVERRIDE_PROFILES", aliased)
+    #    A failed cascade must not hot-apply the rename: the bindings still
+    #    name `old` (the cascade is one transaction), so a cfg holding only
+    #    `new` would drop their profile layer and its locks. Write the
+    #    original profiles back and re-apply them instead; if even that
+    #    fails, the alias above keeps both names resolving in this process.
     try:
         affected = await asyncio.to_thread(api_keys_store.rename_profile_refs, old, new)
-    finally:
-        applied = await pl_apply.apply_hot_changes(written)
+    except Exception as e:
+        logger.error("[overrides] rename %r->%r cascade failed: %s", old, new, e)
+        try:
+            restored = await asyncio.to_thread(
+                config_store.save_overrides, {"OVERRIDE_PROFILES": profiles},
+            )
+            await pl_apply.apply_hot_changes(restored)
+        except Exception as rb_err:  # noqa: BLE001 — the alias stays live
+            logger.error("[overrides] rename rollback failed: %s", rb_err)
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            f"could not update the profile bindings: {e}")
+    applied = await pl_apply.apply_hot_changes(written)
     client_host = request.client.host if request.client else "?"
     logger.info("[overrides] profile renamed %r->%r from=%s bindings=%d",
                 old, new, client_host, affected)

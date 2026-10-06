@@ -2290,6 +2290,14 @@ function translationTemplateEditor(name, v) {
   rawPre.style.whiteSpace = 'pre-wrap';
   rawDetails.appendChild(rawPre);
   right.appendChild(rawDetails);
+  // Initial visibility from the configured family: renderPrompt() redoes it
+  // on every successful preview, but a failed one (403 translation off,
+  // 400/422, network) would leave the custom textarea showing beside the
+  // built-in template reference.
+  const fam0 = currentValue('TRANSLATION_PROMPT_FAMILY');
+  t.style.display = fam0 === 'custom' ? '' : 'none';
+  rawDetails.style.display = fam0 === 'custom' ? 'none' : '';
+  if (fam0 !== 'custom') rawPre.textContent = RAW_TPL[fam0] || '';
 
   wrap.appendChild(left);
   wrap.appendChild(right);
@@ -2854,15 +2862,30 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   // Both push the whole rule list into the global dirty overlay via setDirty
   // so the page-level Save → /settings/state persists it to config.local.json.
   // Promoting (a separate action) writes config.json instead.
+  // config_rev is editor bookkeeping (_stampConfigRevs adds it to every
+  // in-sync rule), and the server value of a list never saved here is the
+  // canonical config.json, which carries none. Compare without it, so an
+  // edit undone by hand clears the dirty entry instead of leaving Save lit
+  // (and a Save then pinning this server to a full local copy of the rules).
+  function _sansRevs(v) {
+    return JSON.stringify((v || []).map(r => {
+      const c = Object.assign({}, r); delete c.config_rev; return c;
+    }));
+  }
+  function _setRulesDirty() {
+    const cur = fieldDef(name).value;
+    setDirty(name, _sansRevs(rules) === _sansRevs(cur)
+      ? cur : JSON.parse(JSON.stringify(rules)));
+  }
   function commitData() {
     if (isChecklist) return;   // checklist mode is read-only — no setDirty
     _stampConfigRevs();
-    setDirty(name, JSON.parse(JSON.stringify(rules)));
+    _setRulesDirty();
     refreshControlsVisibility();
   }
   function commitFull() {
     _stampConfigRevs();
-    setDirty(name, JSON.parse(JSON.stringify(rules)));
+    _setRulesDirty();
     paintAll();
   }
 
@@ -4323,9 +4346,17 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     const missing = _missingFactoryRules();
     if (!missing.length) return;
     const order = factoryRules.map(b => b.name);
+    // The NEAREST config.json successor present here: walking `after` in
+    // config.json order, not `rules` in local order — after a local reorder
+    // the first local rule that is any successor can sit before b's own
+    // config.json predecessors.
     const nextLocal = (b) => {
       const after = order.slice(order.indexOf(b.name) + 1);
-      return rules.find(r => after.indexOf(r.name) !== -1) || null;
+      for (const n of after) {
+        const r = rules.find(x => x.name === n);
+        if (r) return r;
+      }
+      return null;
     };
     _reviewDialog({
       title: 'Add ' + missing.length + ' rule' + (missing.length === 1 ? '' : 's') + ' from config.json to this server?',
@@ -4424,7 +4455,12 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
         if (b.type === 'terminal') return;
         if (out.some(o => o.name === b.name)) return;
         const after = fo.slice(fo.indexOf(b.name) + 1);
-        let at = out.findIndex(o => after.indexOf(o.name) !== -1);
+        // Nearest config.json successor present (walk config.json order).
+        let at = -1;
+        for (const n of after) {
+          at = out.findIndex(o => o.name === n);
+          if (at !== -1) break;
+        }
         if (at === -1) at = out.length;
         out.splice(at, 0, JSON.parse(JSON.stringify(b)));
       });

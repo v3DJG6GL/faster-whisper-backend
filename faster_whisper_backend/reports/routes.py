@@ -278,7 +278,13 @@ async def list_reports_api(
     effective_user = perms.effective_user_id_for("reports", caller_uid)
     def _render() -> str:
         limit = reports_store.LIST_LIMIT
-        rows = reports_store.list_reports(user_id=effective_user, limit=limit)
+        # One row past the ceiling tells "older rows exist" apart from "the
+        # scope holds exactly LIST_LIMIT" (a full store sits at REPORTS_MAX,
+        # which defaults to LIST_LIMIT, forever).
+        rows = reports_store.list_reports(user_id=effective_user,
+                                          limit=limit + 1)
+        truncated = len(rows) > limit
+        rows = rows[:limit]
         usernames = api_keys_store.get_usernames(
             [r.get("user_id") for r in rows],
         )
@@ -287,9 +293,9 @@ async def list_reports_api(
         return json.dumps({
             "reports": rows,
             # counts are UNCAPPED (the toolbar states scope totals) while
-            # `reports` stops at LIST_LIMIT; `truncated` tells the page the
-            # ceiling was hit so it can say that older rows exist.
-            "truncated": len(rows) >= limit,
+            # `reports` stops at LIST_LIMIT; `truncated` tells the page that
+            # older rows exist past the ceiling.
+            "truncated": truncated,
             "counts": reports_store.counts_by_status(user_id=effective_user),
             "retention_days": int(getattr(cfg, "REPORTS_RETENTION_DAYS", 0)),
             "is_admin": bool(user.get("is_admin")),
@@ -321,7 +327,10 @@ async def patch_report_api(
 ) -> JSONResponse:
     """Mark a report status/notes. `scope=own` users can edit only their
     own; `scope=all` users (incl. admins) can edit any."""
-    existing = reports_store.get_report(rid)
+    # Store calls off the loop, like submit/clear: they wait on
+    # reports_store._lock, which a submit's eviction or the retention sweep
+    # holds for a full-table pass — inline, that wait froze the event loop.
+    existing = await asyncio.to_thread(reports_store.get_report, rid)
     if existing is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
     user["permissions"].assert_can_read_row(
@@ -334,7 +343,7 @@ async def patch_report_api(
     if payload.admin_notes is not None:
         patch["admin_notes"] = payload.admin_notes
     try:
-        updated = reports_store.update_report(rid, patch)
+        updated = await asyncio.to_thread(reports_store.update_report, rid, patch)
     except ValueError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     if updated is None:
@@ -362,14 +371,15 @@ async def delete_my_report_api(
     # an authenticated caller whose user_id has no matching report row.
     # In open mode user_id is the literal "(open-mode)" sentinel — a
     # real value — so the query runs and matches the admin's own row.
-    existing = reports_store.find_by_request_user(
-        request_id, user.get("user_id"),
+    # Off the loop (see patch_report_api): both wait on reports_store._lock.
+    existing = await asyncio.to_thread(
+        reports_store.find_by_request_user, request_id, user.get("user_id"),
     )
     if not existing:
         raise HTTPException(
             status.HTTP_404_NOT_FOUND, "no report to delete",
         )
-    reports_store.delete_report(existing.get("id"))
+    await asyncio.to_thread(reports_store.delete_report, existing.get("id"))
     return JSONResponse({"ok": True})
 
 
@@ -387,14 +397,15 @@ async def delete_report_api(
     """Delete a single report. `scope=own` users can delete only their
     own; `scope=all` users (incl. admins) can delete any. Bulk wipe is
     via /clear which stays admin-only. Does NOT touch capture chips."""
-    report = reports_store.get_report(rid)
+    # Off the loop (see patch_report_api): both wait on reports_store._lock.
+    report = await asyncio.to_thread(reports_store.get_report, rid)
     if report is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "report not found")
     user["permissions"].assert_can_read_row(
         report, "reports", user.get("user_id") or "",
         detail="report not found",
     )
-    reports_store.delete_report(rid)
+    await asyncio.to_thread(reports_store.delete_report, rid)
     return JSONResponse({"ok": True})
 
 

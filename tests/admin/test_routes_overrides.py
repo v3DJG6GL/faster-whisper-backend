@@ -309,6 +309,40 @@ def test_rename_profile_keeps_locks_while_the_cascade_commits(
     assert "clinic-deutsch" in j["profiles"]
 
 
+def test_rename_profile_failed_cascade_keeps_the_old_name(
+        client, make_user_key, monkeypatch):
+    """A cascade that raises (SQLite locked / disk I/O) leaves every binding on
+    `old`; the route must roll the saved rename back instead of hot-applying
+    it, so the bound identity keeps its profile layer and locks."""
+    import sqlite3
+
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.settings import config as cfg
+    from faster_whisper_backend.settings import config_store
+    from faster_whisper_backend.settings import effective_config
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de",
+                  locks=["DEFAULT_LANGUAGE"])
+    uid, _ = make_user_key("alice", is_admin=False)
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
+                                "locks": []}})
+    assert r.status_code == 200, r.text
+
+    def _locked(old, new):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(api_keys_store, "rename_profile_refs", _locked)
+    r = client.post(f"{OV}/profiles/rename", headers=h,
+                    json={"old": "clinic-de", "new": "clinic-deutsch"})
+    assert r.status_code == 500, r.text
+    assert set(cfg.OVERRIDE_PROFILES) == {"clinic-de"}
+    on_disk = config_store.load_overrides()["OVERRIDE_PROFILES"]
+    assert set(on_disk) == {"clinic-de"}
+    assert api_keys_store.get_user_config(uid)["profiles"] == ["clinic-de"]
+    assert "DEFAULT_LANGUAGE" in effective_config.resolve(None, user_id=uid).locked
+
+
 def test_rename_profile_unknown_404(client, make_user_key):
     _, _, h = _admin(make_user_key)
     r = client.post(f"{OV}/profiles/rename", headers=h,

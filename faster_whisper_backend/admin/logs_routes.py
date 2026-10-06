@@ -140,9 +140,19 @@ async def _stream_log_lines(request: Request):
     # backwards in 8 KB blocks and an async generator inside a
     # StreamingResponse runs on the event loop, so doing it inline let one
     # subscriber stall every other request while it read.
-    backlog, _ = await asyncio.to_thread(
-        _read_chain_window, cfg.LOG_FILE, 0, initial,
-    )
+    # The tail's start offset is sampled in the same thread BEFORE the
+    # backlog read: sampled after the backlog was yielded (which waits on a
+    # slow client), every line logged in between was in neither. Now such a
+    # line shows twice at worst (backlog + tail), never not at all.
+    def _size_then_backlog() -> "tuple[int, list[str]]":
+        try:
+            size = os.path.getsize(cfg.LOG_FILE)
+        except OSError:
+            size = 0
+        lines, _ = _read_chain_window(cfg.LOG_FILE, 0, initial)
+        return size, lines
+
+    pos, backlog = await asyncio.to_thread(_size_then_backlog)
     for line in backlog:
         yield f"data: {line}\n\n"
 
@@ -151,9 +161,8 @@ async def _stream_log_lines(request: Request):
     # are driven entirely by SEV_POLLER_JS against severity_counts().
     yield "data: __LIVE_TAIL__\n\n"
 
-    # Live tail: open at end-of-file, poll for new lines. Reopen on rotation
-    # (when the file shrinks below our last position).
-    pos = os.path.getsize(cfg.LOG_FILE) if os.path.exists(cfg.LOG_FILE) else 0
+    # Live tail: poll for new lines from the offset sampled above. Reopen on
+    # rotation (when the file shrinks below our last position).
     while True:
         await asyncio.sleep(0.5)
         try:

@@ -13,6 +13,10 @@ import pytest
 
 from faster_whisper_backend.admin import restart_service
 
+# Bound at import, before the autouse _guard stubs the module attribute, so
+# the direct-call test exercises the real function rather than the stub.
+_REAL_FLUSH = restart_service._flush_before_exit
+
 
 class _FakeTimer:
     """Captures (delay, callback) instead of scheduling a real timer."""
@@ -47,7 +51,8 @@ def _guard(monkeypatch):
     monkeypatch.setattr(restart_service.os, "_exit", _boom_exit)
     # The real flush drains receipt_hold and calls system_stats.shutdown()
     # (which flips the module-global NVML_OK for the rest of the session); only
-    # the tests that opt in (_order_probe / the direct-call test) run it.
+    # _order_probe swaps in its own recorder; the direct-call test runs the
+    # real function through _REAL_FLUSH with both halves stubbed.
     monkeypatch.setattr(restart_service, "_flush_before_exit", lambda: None)
     monkeypatch.setattr(
         restart_service.subprocess, "Popen",
@@ -237,14 +242,24 @@ def test_winsw_restart_bang_flushes_before_exit(monkeypatch):
 
 
 def test_flush_before_exit_swallows_failures(monkeypatch):
-    """A broken flush must never block the restart itself."""
+    """A broken flush must never block the restart itself, and a failing
+    receipt flush must not skip the NVML shutdown after it."""
     from faster_whisper_backend.runtime import system_stats
+    from faster_whisper_backend.transcription import receipt_hold
 
-    def _boom():
+    reached = []
+
+    def _boom_flush(*a, **k):
+        raise RuntimeError("receipt flush exploded")
+
+    def _boom_shutdown():
+        reached.append("shutdown")
         raise RuntimeError("nvml exploded")
 
-    monkeypatch.setattr(system_stats, "shutdown", _boom)
-    restart_service._flush_before_exit()  # must not raise
+    monkeypatch.setattr(receipt_hold, "flush_all", _boom_flush)
+    monkeypatch.setattr(system_stats, "shutdown", _boom_shutdown)
+    _REAL_FLUSH()  # must not raise
+    assert reached == ["shutdown"]
 
 
 # --- hard-restart TMPDIR sweep ----------------------------------------------

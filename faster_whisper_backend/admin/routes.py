@@ -232,13 +232,6 @@ def _prune_defaults_to_removal(payload: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-# Stats-registry prefixes of the NON-decode model families, which share
-# runtime/model_registry's loaded-model registry with whisper (whisper registers bare
-# model names): translation._STATS_PREFIX / diarization._STATS_PREFIX /
-# bgm_separation._STATS_PREFIX.
-_NON_DECODE_PREFIXES = ("gguf:", "pyannote:", "uvr:")
-
-
 def _server_ident_fields() -> dict[str, str]:
     """The "This server" identity card's values (build + runtime facts), built
     per request so the uptime is fresh. They ride the admin-gated
@@ -259,10 +252,13 @@ def _server_ident_fields() -> dict[str, str]:
     # decode (whisper) model's observed device may drive the device word — a
     # cuda pyannote pipeline on a MODEL_DEVICE=cpu box must not flip the card
     # (and a cpu gguf translator loaded first must not hide a cuda decode).
+    # model_role() reads the family prefixes from their one home,
+    # model_registry.MODEL_ROLE_PREFIXES; whisper's bare names are "transcribing".
     loaded = model_registry.loaded_models_snapshot()
     _dec = next(
         (e for e in loaded
-         if not str(e.get("name") or "").startswith(_NON_DECODE_PREFIXES)),
+         if model_registry.model_role(str(e.get("name") or ""))[0]
+         == "transcribing"),
         None)
     device = str((_dec.get("device") if _dec else None)
                  or getattr(cfg, "MODEL_DEVICE", "") or "")
@@ -861,8 +857,6 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                     "error": None, "slow": True}
             step["ordinal"] = idx + 1
             steps.append(step)
-            if rule.get("type") == "terminal":
-                saw_terminal = True
             continue
         # _run_rule blocks for up to 2 s on its guard thread's join — run it on
         # a worker so one pathological pattern cannot stall unrelated requests.

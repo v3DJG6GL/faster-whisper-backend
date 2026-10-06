@@ -132,13 +132,37 @@ def test_promote_keeps_an_absent_config_json_rule_in_place(client):
     """A config.json rule missing here (a new es-punctuation in the middle of
     the list) was re-appended at the END of the payload: a silent pipeline
     reorder for every other deployment. It is spliced in before the next
-    config.json rule that exists here instead."""
+    config.json rule that exists here instead — the NEAREST one in config.json
+    order: after a local reorder (config A,B,C,D; local D,A,C) the first local
+    rule that is any successor (D) put B before its own predecessor A."""
     html = _html(client)
     body = html[html.index("function _buildFactoryPayload("):]
     body = body[:body.index("\n  }\n")]
     assert "if (!out.some(o => o.name === b.name)) out.push(" not in body
-    assert "let at = out.findIndex(o => after.indexOf(o.name) !== -1);" in body
+    assert "after.indexOf(o.name) !== -1" not in body
+    assert "for (const n of after) {" in body
+    assert "at = out.findIndex(o => o.name === n);" in body
     assert "out.splice(at, 0, JSON.parse(JSON.stringify(b)));" in body
+    # _addFromConfig's nextLocal mirrors it (insert position + dialog meta).
+    nl = html[html.index("const nextLocal = (b) => {"):]
+    nl = nl[:nl.index("\n    };\n")]
+    assert "after.indexOf(r.name) !== -1" not in nl
+    assert "for (const n of after) {" in nl
+
+
+def test_commit_compares_rules_without_config_rev(client):
+    """_stampConfigRevs adds config_rev to every in-sync rule, but a never-saved
+    list's server value (canonical config.json) has none, so an edit undone by
+    hand kept Save lit — and a Save pinned the server to a local copy."""
+    html = _html(client)
+    assert "delete c.config_rev;" in html
+    for fn in ("function commitData() {", "function commitFull() {"):
+        body = html[html.index(fn):]
+        body = body[:body.index("\n  }\n")]
+        assert "_setRulesDirty();" in body, fn
+        assert "setDirty(name, JSON.parse(JSON.stringify(rules)));" not in body, fn
+    helper = html[html.index("function _setRulesDirty() {"):]
+    assert "_sansRevs(rules) === _sansRevs(cur)" in helper[:helper.index("\n  }\n")]
 
 
 def test_entry_diff_pairs_duplicate_labels_separately(client):

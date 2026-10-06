@@ -414,13 +414,17 @@
     return n;
   }
   function _unfold(ctl, n) {
-    let done = 0;
+    let done = 0, last = null;
     for (let e = ctl.nextSibling; e && done < n; e = e.nextSibling) {
       if (!e.classList || !e.classList.contains('line')) continue;
       if (e.classList.contains('folded')) {
-        e.classList.remove('folded'); applyFilter(e); done++;
+        e.classList.remove('folded'); applyFilter(e); done++; last = e;
       } else if (!e.classList.contains('fold-ctl')) break;
     }
+    // Move the control past the rows it just revealed so it sits directly
+    // before the rows it still hides; left where it was, _foldRemaining would
+    // stop at the first revealed row and strand the rest with no control.
+    if (last) last.after(ctl);
     const left = _foldRemaining(ctl);
     if (left <= 0) { ctl.remove(); return; }
     ctl.firstChild.textContent = '    ▸ ' + left + ' more ' + ctl.dataset.noun;
@@ -576,13 +580,18 @@
   // Persists across append() calls so a skipped step's 3 lines (arriving as 3
   // separate SSE events) dim as one group.
   const _liveDim = { dimLeft: 0 };
-  let _liveStarted = false;
+  // Whenever #log is emptied (Clear, reconnect replay) the render state must
+  // go too: a stale inSeg/pipe block would fold the next rows with no control
+  // in the DOM to reveal them, and a stale stage hue would tint them.
+  function _resetLiveDim() {
+    for (const k of Object.keys(_liveDim)) delete _liveDim[k];
+    _liveDim.dimLeft = 0;
+  }
   function append(line) {
     // __LIVE_TAIL__ sentinel marks the boundary between backlog and the
     // live poll loop. After it fires we know the freshest page is in the
     // DOM and the "Load older" button can become active.
     if (line === '__LIVE_TAIL__') {
-      _liveStarted = true;
       const lo = document.getElementById('loadOlderBtn');
       if (lo) lo.style.display = '';
       return;
@@ -644,6 +653,7 @@
   });
   clearBtn.addEventListener('click', () => {
     log.innerHTML = '';
+    _resetLiveDim();
     // Resetting the DOM after Clear: the next live append re-fills
     // from the bottom, but the older-chain pointer is unchanged so
     // the user can still walk back if they want.
@@ -704,8 +714,8 @@
     // Clear stale DOM + cursors so the replayed backlog doesn't duplicate
     // (onerror closes the source, so this is the only reconnect path).
     log.innerHTML = '';
+    _resetLiveDim();
     _logsSkip = 0;
-    _liveStarted = false;
     const lo = document.getElementById('loadOlderBtn');
     if (lo) lo.style.display = 'none';
     es = new EventSource('/logs/stream');

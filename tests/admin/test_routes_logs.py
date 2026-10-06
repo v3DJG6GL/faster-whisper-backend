@@ -15,3 +15,62 @@ def test_logs_page_search_skips_fold_controls_and_button_labels(client):
     # makeLine records the line's own text for the filter to read.
     m = html[html.index("function makeLine(line, st)"):]
     assert "_lineText.set(el, txt);" in m[:m.index("\n  }\n")]
+
+
+def test_logs_page_unfold_moves_the_control_past_revealed_rows(client):
+    """"show 50" revealed rows in place, so the control was followed by an
+    unfolded row; _foldRemaining stopped there, returned 0 and the control
+    was removed, stranding every row past the first 50 with no way back."""
+    html = client.get("/logs").text
+    f = html[html.index("function _unfold(ctl, n)"):]
+    f = f[:f.index("\n  }\n")]
+    assert "last = e;" in f
+    assert f.index("if (last) last.after(ctl);") \
+        < f.index("const left = _foldRemaining(ctl);")
+
+
+def test_logs_page_resets_render_state_when_the_log_is_emptied(client):
+    """Clear and the reconnect replay empty #log; a stale inSeg/pipe state
+    would fold the next rows with no control in the DOM to reveal them."""
+    html = client.get("/logs").text
+    clear = html[html.index("clearBtn.addEventListener('click'"):]
+    assert "_resetLiveDim();" in clear[:clear.index("});")]
+    reopen = html[html.index("function openLogStream()"):]
+    reopen = reopen[:reopen.index("es = new EventSource")]
+    assert "log.innerHTML = '';" in reopen and "_resetLiveDim();" in reopen
+    assert "_liveStarted" not in html
+
+
+def test_logs_stream_delivers_a_line_logged_during_the_backlog(
+        app_module, monkeypatch, tmp_path):
+    """A line logged after the backlog read but before the tail took its
+    offset was in neither; the offset is now sampled before the read."""
+    import asyncio
+
+    from faster_whisper_backend.admin import logs_routes
+
+    log = tmp_path / "live.log"
+    log.write_text("first\n", encoding="utf-8")
+    monkeypatch.setattr(app_module.cfg, "LOG_FILE", str(log), raising=False)
+    real = logs_routes._read_chain_window
+
+    def _read_then_log(*a, **k):
+        out = real(*a, **k)
+        with open(log, "a", encoding="utf-8") as f:
+            f.write("during\n")
+        return out
+
+    monkeypatch.setattr(logs_routes, "_read_chain_window", _read_then_log)
+    monkeypatch.setattr(logs_routes, "_logs_stream_reauth",
+                        lambda request, seen: seen)
+
+    async def drive():
+        gen = logs_routes._stream_log_lines(None)
+        try:
+            assert await gen.__anext__() == "data: first\n\n"
+            assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
+            assert await gen.__anext__() == "data: during\n\n"
+        finally:
+            await gen.aclose()
+
+    asyncio.run(drive())

@@ -469,6 +469,11 @@
   var _allReports = [];
   var _counts = { open: 0, resolved: 0, dismissed: 0 };
   var _truncated = false;
+  // Unsaved admin-notes drafts by report id. render() rebuilds every card
+  // (search keystroke, filter change, a delete, Refresh), so a draft held
+  // only in the old textarea was silently lost; renderCard seeds from here.
+  var _drafts = {};
+  function _hasDraft(id) { return Object.prototype.hasOwnProperty.call(_drafts, id); }
 
   // absTime / relTime / fmtWhen / timeTick are injected via TIME_HELPERS_JS.
   function escapeHtml(s) {
@@ -697,7 +702,7 @@
     sec4.className = 'rc-section rc-notes';
     sec4.innerHTML = '<h3>Admin notes</h3>';
     var ta = document.createElement('textarea');
-    ta.value = r.admin_notes || '';
+    ta.value = _hasDraft(r.id) ? _drafts[r.id] : (r.admin_notes || '');
     ta.placeholder = 'Notes about how this was triaged, what was changed, follow-ups…';
     sec4.appendChild(ta);
     var row = document.createElement('div');
@@ -714,11 +719,14 @@
     sec4.appendChild(row);
     card.appendChild(sec4);
 
-    ta.addEventListener('input', function() {
+    function syncNotesDirty() {
       var changed = ta.value !== (r.admin_notes || '');
+      if (changed) _drafts[r.id] = ta.value; else delete _drafts[r.id];
       saveBtn.disabled = !changed;
       dirty.classList.toggle('hidden', !changed);
-    });
+    }
+    syncNotesDirty();
+    ta.addEventListener('input', syncNotesDirty);
     saveBtn.addEventListener('click', function() {
       onSaveNotes(r, ta, saveBtn, dirty);
     });
@@ -758,8 +766,14 @@
       var j = await api('PATCH', '/reports/api/' + encodeURIComponent(r.id),
         { admin_notes: ta.value });
       r.admin_notes = j.report.admin_notes;
-      btn.disabled = true;
-      dirty.classList.add('hidden');
+      // Text typed while the PATCH was in flight was not sent: keep it
+      // marked unsaved. _drafts holds the latest text even if a re-render
+      // replaced `ta` meanwhile.
+      var cur = _hasDraft(r.id) ? _drafts[r.id] : ta.value;
+      var changed = cur !== (r.admin_notes || '');
+      if (!changed) delete _drafts[r.id];
+      btn.disabled = !changed;
+      dirty.classList.toggle('hidden', !changed);
       toast('Notes saved.');
     } catch (e) {
       toast('Failed to save notes: ' + e.message, true);
@@ -771,6 +785,7 @@
     try {
       await api('DELETE', '/reports/api/' + encodeURIComponent(r.id));
       _allReports = _allReports.filter(function(x) { return x.id !== r.id; });
+      delete _drafts[r.id];
       render();
       adjustCounts(r.status, null);
       toast('Deleted.');
