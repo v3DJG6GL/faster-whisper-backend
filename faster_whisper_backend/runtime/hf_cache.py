@@ -26,8 +26,15 @@ def hub_cache_dir() -> "str | None":
 
 def hub_lookup_dir() -> str:
     """Where a download made with `hub_cache_dir()` actually sits: that dir,
-    or — when it is None — the hub's own default (HF_HUB_CACHE, else
-    ~/.cache/huggingface/hub)."""
-    return (hub_cache_dir()
-            or os.environ.get("HF_HUB_CACHE")
-            or os.path.join(os.path.expanduser("~/.cache/huggingface"), "hub"))
+    or — when it is None — the hub's own default, read from the hub itself
+    (HF_HUB_CACHE as frozen at its import, XDG_CACHE_HOME included); the
+    env/home chain only stands in when huggingface_hub is not installed."""
+    explicit = hub_cache_dir()
+    if explicit:
+        return explicit
+    try:
+        from huggingface_hub import constants
+        return constants.HF_HUB_CACHE
+    except ImportError:
+        return (os.environ.get("HF_HUB_CACHE")
+                or os.path.join(os.path.expanduser("~/.cache/huggingface"), "hub"))

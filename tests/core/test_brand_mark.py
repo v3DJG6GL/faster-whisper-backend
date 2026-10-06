@@ -48,6 +48,9 @@ def test_every_inline_brand_mark_copy_has_the_canonical_geometry():
         "login gate": _mark(login_gate_js, 'class="lg-mark"'),
         "hub hero": _mark(home_routes._HUB_HTML, 'class="mark"'),
         "docs/brand/logo.html": _mark(_read("docs", "brand", "logo.html"), '<svg viewBox="0 0 120 120"'),
+        # The generator of the committed logo-{dark,light}.svg.
+        "docs/brand/gen-logo-svg.py": _read("docs", "brand", "gen-logo-svg.py")
+        .split('BE_MARK = """', 1)[1].split('"""', 1)[0],
     }
     for name, svg in copies.items():
         assert _geometry(svg) == canonical, f"{name}: brand mark drifted from docs/brand/icon.svg"

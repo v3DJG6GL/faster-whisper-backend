@@ -9,8 +9,9 @@ Why the fit check reads the DRIVER's free VRAM rather than summing our own
 registry: other processes on the machine (a second worker, a game, a desktop
 compositor) consume the same card, and our bookkeeping cannot see them.
 
-Import-light on purpose: it is reached from model_registry (via system_stats,
-which main imports very early). The writer (core/atomic_json) is stdlib-only.
+Import-light on purpose: model_registry.register_loaded_model imports it
+lazily, and it imports system_stats (which imports model_registry). The writer
+(core/atomic_json) is stdlib-only.
 """
 
 from __future__ import annotations

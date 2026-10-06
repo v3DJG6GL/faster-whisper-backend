@@ -18,11 +18,13 @@ def test_hf_home_wins_then_download_root_then_hub_default(monkeypatch, tmp_path)
 
 
 def test_lookup_follows_hf_hub_cache_when_downloads_use_the_hub_default(monkeypatch):
-    # Downloads pass cache_dir=None here, so the hub writes to HF_HUB_CACHE;
-    # the size lookup must look there too (it used to look in ~/.cache).
+    # Downloads pass cache_dir=None here, so the hub writes to its own
+    # HF_HUB_CACHE (frozen at its import: HF_HUB_CACHE / HF_HOME /
+    # XDG_CACHE_HOME); the size lookup must look there too.
+    from huggingface_hub import constants
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
-    monkeypatch.setenv("HF_HUB_CACHE", "/custom/hub")
+    monkeypatch.setattr(constants, "HF_HUB_CACHE", "/custom/hub")
     assert hf_cache.hub_lookup_dir() == "/custom/hub"
     assert model_sizes._model_path("gguf:org/repo:Q4") == os.path.join(
         "/custom/hub", "models--org--repo")

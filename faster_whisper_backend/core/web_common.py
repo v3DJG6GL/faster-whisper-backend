@@ -605,7 +605,7 @@ def _render_page_cached(
     ~270 KB of egress at will.
 
     The key is exhaustive by construction. All 24 placeholders were traced:
-    14 substitute module-level constants; {{SEV_PILLS}} hardcodes n = 0 by
+    13 substitute module-level constants; {{SEV_PILLS}} hardcodes n = 0 by
     design (see sev_pills_html); {{HEADER_VTAG}} is computed once at import;
     {{NAV}} varies only on `current` plus cfg.ADMIN_UI_ENABLED; the rest vary
     on `current`, the two LOG_VIEWER_* values, LOG_SEGMENT_ROWS_SHOWN or

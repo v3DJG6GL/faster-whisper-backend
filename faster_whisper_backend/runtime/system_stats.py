@@ -121,20 +121,16 @@ def _build_gpu() -> dict[str, Any] | None:
 
 def _build_host() -> dict[str, Any]:
     vmem = psutil.virtual_memory()
-    # Disk free on the drive containing the model cache — the same
-    # precedence model_sizes._model_path resolves (HF_HOME, else
-    # DOWNLOAD_ROOT/hf where every whisper / GGUF / UVR download actually
-    # lands on bare metal, else the hub's default). Walk up to the nearest
-    # existing ancestor so a not-yet-created cache dir still reads its drive.
-    cache_dir = os.environ.get("HF_HOME")
-    if not cache_dir:
-        try:
-            from faster_whisper_backend.settings import config as _cfg
-            root = (getattr(_cfg, "DOWNLOAD_ROOT", "") or "").strip()
-        except Exception:  # noqa: BLE001 — stats only
-            root = ""
-        cache_dir = os.path.join(root, "hf") if root else \
-            os.path.expanduser("~/.cache/huggingface")
+    # Disk free on the drive containing the model cache — the dir
+    # model_sizes looks in (runtime.hf_cache.hub_lookup_dir: HF_HOME, else
+    # DOWNLOAD_ROOT/hf where every whisper / GGUF / UVR download lands on bare
+    # metal, else the hub's own default). Walk up to the nearest existing
+    # ancestor so a not-yet-created cache dir still reads its drive.
+    try:
+        from faster_whisper_backend.runtime import hf_cache
+        cache_dir = hf_cache.hub_lookup_dir()
+    except Exception:  # noqa: BLE001 — stats only
+        cache_dir = os.path.expanduser("~/.cache/huggingface")
     while not os.path.exists(cache_dir) and \
             os.path.dirname(cache_dir) not in ("", cache_dir):
         cache_dir = os.path.dirname(cache_dir)
