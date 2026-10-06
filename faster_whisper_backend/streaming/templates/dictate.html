@@ -264,7 +264,15 @@
       setStatus("loading model " + (m.model || "") + "…");
     }
     else if (m.type === "error") { setStatus("error: " + (m.message || m.code), "error"); }
-    else if (m.type === "closing") { finishStop(); }
+    else if (m.type === "closing") {
+      // Also the server's own close (idle timeout) while the mic still runs:
+      // release it, and keep a preceding error frame's text on screen.
+      const hadError = statusEl.className === "error";
+      const prevText = statusEl.textContent;
+      releaseMic();
+      finishStop();
+      if (hadError) setStatus(prevText, "error");
+    }
   }
 
   function idleLabel() { return mode() === "batch" ? "Record" : "Start dictation"; }
@@ -420,11 +428,15 @@
     setStatus("idle");
   }
 
-  function stop() {
+  function releaseMic() {
     running = false;
     if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
     if (audioCtx) audioCtx.close();
     audioCtx = null; workletNode = null; mediaStream = null;
+  }
+
+  function stop() {
+    releaseMic();
     // The server emits the held final + the last document AFTER "stop" and
     // closes the socket itself after {"type":"closing"} — so keep onmessage
     // attached and the socket open until then; the timer is only a fallback

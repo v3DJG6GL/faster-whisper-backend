@@ -316,7 +316,9 @@ class StreamSession:
         release final."""
         if self._in_utterance:
             await self._finalize(forced=True, flush_hold=True)
-        elif self._has_held():
+        # Also after a finalize that dropped the utterance (near-silence,
+        # failed decode): those paths never reach the release.
+        if self._has_held():
             await self._release_held()
 
     async def close(self) -> None:

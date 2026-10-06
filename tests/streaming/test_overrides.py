@@ -683,6 +683,32 @@ def test_stream_knobs_locked_are_ignored(client, make_user_key, monkeypatch):
     assert seen["threshold"] == 0.3
 
 
+def test_stream_knobs_never_move_a_locked_partner(client, make_user_key, monkeypatch):
+    """A client outer that would push a LOCKED inner or hard break is dropped;
+    the admin's locked pair stays exactly as set."""
+    _, raw_admin = make_user_key("admin", is_admin=True)
+    h = bearer(raw_admin)
+    _profile(client, h, "p", STREAMING_HARD_BREAK_SILENCE_MS=5000,
+             STREAMING_VAD_INNER_SILENCE_MS=800,
+             locks=["STREAMING_HARD_BREAK_SILENCE_MS",
+                    "STREAMING_VAD_INNER_SILENCE_MS"])
+    uid, raw_alice = make_user_key("alice")
+    _bind(client, h, uid, profiles=["p"])
+    for outer in (6000, 300):
+        _, seen = _knobs_handshake(
+            client, monkeypatch, {"streaming_vad_outer_silence_ms": outer},
+            headers=bearer(raw_alice))
+        assert seen["client"] == {}
+        assert seen["config"].hard_break_silence_ms == 5000
+        assert seen["config"].vad_min_silence_ms == 800
+    # A compatible client outer still applies.
+    _, seen = _knobs_handshake(
+        client, monkeypatch, {"streaming_vad_outer_silence_ms": 2000},
+        headers=bearer(raw_alice))
+    assert seen["config"].commit_silence_ms == 2000
+    assert seen["config"].hard_break_silence_ms == 5000
+
+
 def test_stream_knobs_master_gate_off(client, app_module, monkeypatch):
     monkeypatch.setattr(app_module.cfg, "ALLOW_REQUEST_DECODE_OVERRIDES", False)
     ready, seen = _knobs_handshake(client, monkeypatch,

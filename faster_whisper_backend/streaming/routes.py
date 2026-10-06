@@ -268,7 +268,8 @@ def _client_stream_values(overrides: dict, ident) -> "tuple[dict, list[str]]":
     break must be off (0) or longer than outer (the idle-silence clock
     survives the finalize, so hard break <= outer would break after every
     utterance) — else hard break = outer + 1000. Server-only values are the
-    admin's and are never adjusted."""
+    admin's and are never adjusted; a LOCKED partner is never adjusted either
+    — a client outer that conflicts with one is dropped instead."""
     bounds = settings_schema.client_key_bounds()
     field_of = {ck: f for f, ck in settings_schema.CONFIG_TO_CLIENT_KEY.items()}
     values: dict = {}
@@ -291,6 +292,14 @@ def _client_stream_values(overrides: dict, ident) -> "tuple[dict, list[str]]":
     def eff(field):
         return int(values[field] if field in values
                    else effective_config.cfg_for(None, field, ident))
+    locked = {f for f in (inner_f, hb_f)
+              if settings_schema.CONFIG_TO_CLIENT_KEY[f] in ident.locked_client_keys}
+    if outer_f in values:
+        inner, hb = eff(inner_f), eff(hb_f)
+        if ((inner_f in locked and inner >= values[outer_f])
+                or (hb_f in locked and hb and hb <= values[outer_f])):
+            notes.append(f"outer {values.pop(outer_f)} ms dropped "
+                         f"(locked inner {inner} / hard break {hb} ms)")
     outer = eff(outer_f)
     if inner_f in values or outer_f in values:
         inner = eff(inner_f)

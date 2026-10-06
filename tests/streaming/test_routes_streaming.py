@@ -143,6 +143,9 @@ def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
         body = client.get("/dictate").text
     assert 'm.type === "closing"' in body
     assert "finishStop" in body
+    # A server-initiated close (idle timeout) also releases the microphone.
+    closing = body.split('m.type === "closing"', 1)[1].split("}", 1)[0]
+    assert "releaseMic()" in closing
     assert "stopTimer" in body
     assert "finishing" in body
 

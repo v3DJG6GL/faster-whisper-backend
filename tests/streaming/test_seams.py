@@ -22,7 +22,6 @@ import logging
 import random
 import re
 
-import pytest
 
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import EnergyEndpointer
@@ -173,13 +172,12 @@ def _check(main, corpus, modes, caplog):
     return checked, warned
 
 
-@pytest.mark.parametrize("mode", ["de", "auto"])
-def test_german_documents_never_rewrite_sent_text(app_module, caplog, mode):
-    # auto: the route has the language before formatting the first final
-    # (decode_final sets it) — before the fix this mode formatted with EVERY
-    # language's rules and put '¿' on German questions.
-    language_of = (lambda k: "de") if mode == "de" else (lambda k: "de" if k else None)
-    checked, warned = _check(app_module, DE, [(mode, language_of)], caplog)
+def test_german_documents_never_rewrite_sent_text(app_module, caplog):
+    # Auto language is not a separate case here: _run sets the language
+    # before every compose, exactly as the route does. That route ordering
+    # (no '¿' on German questions under auto) is pinned by
+    # test_routes_streaming.py::test_stream_formats_the_first_final_in_the_detected_language.
+    checked, warned = _check(app_module, DE, [("de", lambda k: "de")], caplog)
     assert checked > 700
     # Only the Punkt | Strichpunkt splits may hit the safety net.
     assert warned <= 8

@@ -516,6 +516,34 @@ def test_flush_in_utterance_finalizes_with_the_hold_released():
     assert final.get("forced") is True and "utterance" in final
 
 
+def test_flush_releases_the_hold_when_the_utterance_is_dropped():
+    """A flush whose in-flight utterance is dropped (here: its final decode
+    fails) still gives the client everything — the held tail of the one
+    before goes out as a release final."""
+    texts = ["bla neue"]
+
+    async def decode_final(audio, prompt):
+        if not texts:
+            raise RuntimeError("decode failed")
+        return (texts.pop(0), [], False)
+    s, msgs = _make_session(
+        postprocess=_neue_zeile, decode_final=decode_final,
+        cfg=StreamConfig(**_FAST, hard_break_silence_ms=0),
+        holdback=_hold_trailing("neue"))
+
+    async def run():
+        await s.feed_pcm(_pcm(8000, 300))
+        await s.feed_pcm(_pcm(0, 400))
+        await s.feed_pcm(_pcm(8000, 300))
+        assert s._in_utterance
+        await s.flush_utterance()
+
+    asyncio.run(run())
+    finals = _finals(msgs)
+    assert finals[0]["committed"] + finals[0]["tail"] == "bla"
+    assert finals[-1]["committed"] == "bla neue" and finals[-1].get("flush") is True
+
+
 def test_idle_release_when_hard_breaks_are_off():
     """With hard breaks off nothing else would release a held word while the
     speaker stays quiet: 5 s of silence release it, once."""
