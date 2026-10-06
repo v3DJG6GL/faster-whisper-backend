@@ -13,3 +13,5 @@ c4a8aa22d028727a8a1f37e5da3093661aaa5788
 fc47ca7d73db748ae4ade5622178c350b582fe87
 # audio/translation.py -> translation/engine.py (rename only).
 e42f49a1f3a1b5203f9bc558869f59f197c0ac87
+# url/ -> media/, package.py -> subtitle_mux.py (rename only).
+05b9bbe49424ef3d854556449585cb6ce54f5bcd
