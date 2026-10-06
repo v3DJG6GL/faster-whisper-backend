@@ -51,7 +51,7 @@ from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import model_registry
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
-    canonical_code, language_codes, language_name, lookup)
+    canonical_code, language_codes, language_name, lookup, same_language)
 from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-server")
@@ -1057,7 +1057,7 @@ _RATIO_LO, _RATIO_HI = 0.4, 3.0
 _RATIO_FLOOR_CHARS = 20
 
 
-_CJK_TARGETS = {"zh", "ja", "ko"}
+_CJK_TARGETS = {"zh", "ja", "ko", "yue"}
 _CJK_CHAR_RE = re.compile(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]")
 
 
@@ -1107,12 +1107,6 @@ def _guard_reason(src: str, out: str, *,
 # =============================================================================
 # Main entry
 # =============================================================================
-
-def _same_lang(a: "str | None", b: "str | None") -> bool:
-    if not a or not b:
-        return False
-    return a.strip().lower().split("-")[0] == b.strip().lower().split("-")[0]
-
 
 def _context_lines(segments: "list[dict]", upto: int, count: int) -> str:
     """The previous ``count`` SOURCE segment texts before index ``upto``,
@@ -1364,7 +1358,7 @@ async def translate_segments(
         unit_state["done"] = 0
         unit_state["bucket"] = 0
         unit_state["t0"] = time.perf_counter()
-        unit_state["instant"] = _same_lang(target, source_lang)
+        unit_state["instant"] = same_language(target, source_lang)
         if unit_state["instant"]:
             # Same-language short-circuit: copy each text verbatim.
             for i, seg in enumerate(segments):
@@ -1503,8 +1497,10 @@ async def translate_segments(
 
 def _reset_for_tests() -> None:
     """Test-only: empty the loaded-model LRU (tests only ever put stubs in
-    it) and the job leases — a leaked lease makes every later eviction test
-    see a refusal."""
+    it), the job leases — a leaked lease makes every later eviction test
+    see a refusal — and the model-card language lists a predownload test
+    records."""
     _models.clear()
     _last_used.clear()
     _active.clear()
+    _card_languages.clear()

@@ -96,14 +96,18 @@ _ISO639_3_TO_1: "dict[str, str]" = dict(pair.split("=")[::-1] for pair in """
     zu=zul zh=cmn ar=arb fa=pes ms=zsm et=ekk lv=lvs mn=khk uz=uzn sw=swh
     mg=plt ne=npi az=azj ps=pbt sq=als yi=ydd
 """.split())
+# 639-1 spellings the table does not use: the withdrawn codes YouTube and
+# yt-dlp still send ("iw" Hebrew, "in" Indonesian, "ji" Yiddish, "mo"
+# Moldavian) and the standard "jv" for Whisper's "jw".
+_LEGACY_639_1: "dict[str, str]" = {
+    "iw": "he", "in": "id", "ji": "yi", "mo": "ro", "jv": "jw"}
 
 # The inverse: 639-1 → ISO 639-2/T (terminology codes — `deu` not `ger`,
 # `fra` not `fre`: what ffmpeg writes and what Matroska/MP4 players expect).
 # Built in reverse so the FIRST 3-letter code per language wins ("zh" →
-# "zho", not "cmn"); "jv" is the standard spelling of Whisper's "jw".
+# "zho", not "cmn").
 _ISO639_1_TO_2T: "dict[str, str]" = {
-    **{one: three for three, one in reversed(_ISO639_3_TO_1.items())},
-    "jv": "jav"}
+    one: three for three, one in reversed(_ISO639_3_TO_1.items())}
 
 
 def iso639_2t(code: "str | None") -> str:
@@ -112,6 +116,7 @@ def iso639_2t(code: "str | None") -> str:
     table lacks already is one ("yue", "haw"), and an unknown code becomes
     "und" rather than an invalid tag."""
     base = (code or "").strip().lower().split("-")[0]
+    base = _LEGACY_639_1.get(base, base)
     if len(base) == 3 and base.isalpha() and base not in _ISO639_1_TO_2T:
         return base
     return _ISO639_1_TO_2T.get(base, "und")
@@ -122,16 +127,38 @@ def canonical_code(code: str) -> "str | None":
     the table cannot name it ("rm", "multilingual"). An ISO 639-3 base maps
     to its 639-1 code ("deu" → "de"); a script subtag stays only where the
     table names it ("zh_hant" → "zh-Hant", "eng_Latn" → "en"); a region
-    stays ("pt-br" → "pt-BR")."""
+    stays ("pt-br" → "pt-BR"); a script ahead of a region keeps the script
+    rule ("zh_Hant_TW" → "zh-Hant"); a withdrawn 639-1 code maps to its
+    successor ("iw" → "he")."""
     base, _, sub = code.strip().replace("_", "-").partition("-")
-    base = _ISO639_3_TO_1.get(base.lower(), base.lower())
+    base = base.lower()
+    base = _LEGACY_639_1.get(base, _ISO639_3_TO_1.get(base, base))
     if base not in _NAMES:
         return None
-    if len(sub) == 4 and sub.isalpha():
-        full = f"{base}-{sub.title()}"
+    script = sub.split("-", 1)[0]
+    if len(script) == 4 and script.isalpha():
+        full = f"{base}-{script.title()}"
         return full if full.lower() in _NAMES else base
     full = f"{base}-{sub.upper()}" if sub else base
     return full if TRANSLATE_CODE_RE.match(full) else None
+
+
+def same_language(a: "str | None", b: "str | None") -> bool:
+    """Whether two codes name the same written language: the base subtag
+    decides ("pt-BR" == "pt"), except that a script subtag on either side
+    must match ("zh" != "zh-Hant": Whisper's Chinese is not Traditional
+    Chinese). False when either is empty."""
+    if not a or not b:
+        return False
+    a_base, _, a_sub = a.strip().lower().replace("_", "-").partition("-")
+    b_base, _, b_sub = b.strip().lower().replace("_", "-").partition("-")
+    if a_base != b_base:
+        return False
+
+    def script(sub: str) -> str:
+        head = sub.split("-", 1)[0]
+        return head if len(head) == 4 and head.isalpha() else ""
+    return script(a_sub) == script(b_sub)
 
 
 # One translation language code: a 2-3 letter base ("en", "de", "gsw") plus an

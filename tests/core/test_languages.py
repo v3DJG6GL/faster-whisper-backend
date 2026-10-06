@@ -51,6 +51,10 @@ def test_canonical_code():
     assert c("zh_hant") == "zh-Hant" and c("sr-Latn") == "sr"
     assert c("pt-br") == "pt-BR" and c("haw") == "haw"
     assert c("rm") is None and c("multilingual") is None and c("") is None
+    # Script ahead of a region; withdrawn and alternate 639-1 spellings.
+    assert c("zh-Hant-TW") == "zh-Hant" and c("zh_Hant_HK") == "zh-Hant"
+    assert c("sr-Latn-RS") == "sr"
+    assert c("iw") == "he" and c("in") == "id" and c("jv") == "jw"
     # Every mapped code lands on a code the table names.
     assert all(v in languages.ALL_LANGUAGE_NAMES
                for v in languages._ISO639_3_TO_1.values())
@@ -61,9 +65,18 @@ def test_iso639_2t_terminology_codes():
     assert t("en") == "eng" and t("de") == "deu" and t("fr") == "fra"
     assert t("zh") == "zho" and t("nl") == "nld" and t("pt-BR") == "por"
     assert t("jw") == "jav" and t("jv") == "jav"
+    assert t("iw") == "heb" and t("in") == "ind"
     assert t("yue") == "yue" and t("haw") == "haw" and t("deu") == "deu"
     assert t("xx") == "und" and t("") == "und" and t(None) == "und"
     # The extra translation languages get their tag, not "und".
     assert t("nb") == "nob" and t("ug") == "uig" and t("zu") == "zul"
     # Every named language has a real tag.
     assert all(t(code) != "und" for code in languages.ALL_LANGUAGE_NAMES)
+
+
+def test_same_language():
+    s = languages.same_language
+    assert s("pt-BR", "pt") and s("de", "DE") and s("de-CH", "de_AT")
+    assert not s("zh-Hant", "zh") and not s("zh", "zh-Hans")
+    assert s("zh-Hant", "zh-hant-TW") and not s("zh-Hant", "zh-Hans")
+    assert not s("en", "de") and not s("", "en") and not s("en", None)

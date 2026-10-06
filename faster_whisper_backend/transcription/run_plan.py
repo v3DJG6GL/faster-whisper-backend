@@ -30,6 +30,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from faster_whisper_backend.core.languages import same_language
 from faster_whisper_backend.runtime import stage_rates
 
 STAGES: tuple[str, ...] = (
@@ -64,15 +65,6 @@ _PROJECT_MIN_FRAC = 0.05
 _PROJECT_MIN_ELAPSED_S = 10.0
 # Below this wall time a finished stage teaches nothing (timer noise).
 _MIN_SAMPLE_S = 0.5
-
-
-def same_lang(a: str | None, b: str | None) -> bool:
-    """Base-subtag compare ("pt-BR" == "pt"); False when either is empty.
-    Mirrors translation/engine._same_lang without importing that module
-    (it drags the llama.cpp family tables in)."""
-    if not a or not b:
-        return False
-    return a.split("-")[0].lower() == b.split("-")[0].lower()
 
 
 # The diarizing stage's units, in pyannote's order. The hook maps whatever
@@ -481,7 +473,7 @@ class RunPlan:
             return
         for u in st.units:
             if u.state == "queued":
-                u.instant = same_lang(u.target, self._source_lang)
+                u.instant = same_language(u.target, self._source_lang)
 
     def _quantity_now(self, st: Stage) -> float | None:
         """The stage's cost driver from the facts known at the END of the

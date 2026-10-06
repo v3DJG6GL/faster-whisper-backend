@@ -434,6 +434,19 @@ def test_same_language_short_circuit_no_model_calls(base_cfg, monkeypatch):
                     "kept": {}}
 
 
+def test_script_target_is_not_a_same_language_short_circuit(base_cfg,
+                                                            monkeypatch):
+    """Whisper names Chinese "zh"; "zh-Hant" is a different written
+    language, so it must reach the model, not come back as a copy."""
+    calls = []
+    _install_fake(monkeypatch, lambda t: "我們昨天重複了測量。", calls)
+    res, _, _ = _run(translation.translate_segments(
+        _segs("我们昨天重复了测量。"), ["zh-Hant"], source_lang="zh",
+        mode="faithful"))
+    assert len(calls) == 1
+    assert res[0]["zh-Hant"] == "我們昨天重複了測量。"
+
+
 def test_faithful_batches_as_numbered_list(base_cfg, monkeypatch):
     calls = []
     _install_fake(monkeypatch, _xlate, calls)
@@ -1567,6 +1580,8 @@ def test_cjk_target_ratio_bounds_admit_compressed_output():
     src = "Wir haben die Messung gestern wiederholt und dokumentiert."
     out = "我们昨天重复了测量。"  # ~0.17x the chars — valid Chinese
     assert translation._guard_reason(src, out, target="zh") is None
+    # Cantonese is written in Han characters too.
+    assert translation._guard_reason(src, out, target="yue") is None
     # …and the default band still rejects it for a Latin target.
     assert translation._guard_reason(src, out, target="fr") is not None
 
