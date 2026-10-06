@@ -190,6 +190,36 @@ def test_named_backref_is_not_a_group_frame():
     assert g._first_repeated_char(r"(?P<x>a)(?P=x)b+") == "b"
 
 
+def test_conditional_group_is_a_real_frame():
+    """`(?(1)yes|no)` used to be read as self-closing like `(?P=name)`: its
+    own `)` popped the ENCLOSING group, so the exponential `(\\w+\\s?)+#`
+    shape hidden behind a condition passed the screen (and every timed probe,
+    none of which contains the `x` that arms group 1). Its yes/no `|` is not
+    an overlapping alternation."""
+    assert g._nested_repetition(r"(x)?((?(1)\w+\s?|b))+#")
+    assert not g._nested_repetition(r"(x)?((?(1)a|b))+")
+    assert not g._nested_repetition(r"(?P<q>x)?((?(q)a|a))+c")
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", r"(x)?((?(1)\w+\s?|b))+#", "")])
+
+
+def test_verbose_mode_is_scanned_without_its_whitespace_and_comments():
+    """Under `(?x)` whitespace is ignored and `#` starts a comment, so the
+    `+` in `(?x)(a+) +#` repeats the group — the screen used to count it as
+    a root-level repeat and accept the pattern."""
+    assert g._nested_repetition(r"(?x)(a+) +#")
+    assert g._nested_repetition(r"(?x)(a|a) +#")
+    assert g._nested_repetition(r"(?x)z*([nd]+\ ?) +\#")
+    assert g._nested_repetition(r"(?x:(a+) +)b")
+    # whitespace and `#` stay literal in a class, after a backslash and
+    # outside verbose mode; a `)` inside a comment closes nothing
+    assert not g._nested_repetition(r"(?x)[ #]+ \d")
+    assert not g._nested_repetition(r"(?x:a b) (c+) +")
+    assert not g._nested_repetition("(?x)(a+) # ) +\n b")
+    with pytest.raises(ValueError, match="nested repetition"):
+        g.validate([("r", r"(?x)z*([nd]+\ ?) +\#", "")])
+
+
 def test_short_literal_expansions_are_accepted():
     """A bounded literal expansion of a short token is a normal dictation
     rule; the analytic growth bound must not refuse it."""

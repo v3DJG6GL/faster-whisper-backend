@@ -132,10 +132,11 @@ def test_close_commits_unterminated_tail():
     assert finals[-1].get("last") is True
 
 
-def test_close_survives_failed_final_decode_and_still_commits():
+def test_close_falls_back_on_a_failed_final_decode_and_still_commits():
     """A decode error in the in-flight utterance's final decode on close() is
-    logged, not raised: the closing document still commits the confirmed text
-    (the pump already tolerates the same error mid-session)."""
+    absorbed by _finalize_inner's decode_failed fallback (the partial
+    transcript), so close() never sees it: the closing document still commits
+    the confirmed text. close()'s own tolerance is pinned by the next test."""
     async def _df(audio, prompt):
         raise RuntimeError("CUDA out of memory")
 
@@ -153,6 +154,35 @@ def test_close_survives_failed_final_decode_and_still_commits():
     assert msgs[-1]["type"] == "final"
     assert msgs[-1]["committed"] == "erster satz." and msgs[-1]["tail"] == ""
     assert msgs[-1].get("last") is True
+
+
+def test_close_survives_failing_on_final_and_still_commits(caplog):
+    """The finalize failures that DO reach close()'s tolerance: postprocess,
+    the emit or on_final raising during the drain finalize. Logged, not
+    raised — the closing document still commits the confirmed text."""
+    import logging
+
+    s, msgs = _make_session(postprocess=lambda raw: raw,
+                            cfg=StreamConfig(min_speech_ms=0, rms_gate_dbfs=-200.0))
+
+    async def _boom(info):
+        raise RuntimeError("capture store down")
+    s.on_final = _boom
+
+    async def run():
+        s.raw_confirmed = "erster satz."
+        await s._emit_update()
+        await s.feed_pcm(const_pcm(8000, 1000))
+        assert s._in_utterance
+        with caplog.at_level(logging.WARNING, logger="faster_whisper_backend.streaming.session"):
+            await s.close()
+
+    asyncio.run(run())
+    assert msgs[-1]["type"] == "final"
+    assert "erster satz." in msgs[-1]["committed"]
+    assert msgs[-1].get("last") is True
+    assert any("finalize failed on close (RuntimeError)" in r.getMessage()
+               for r in caplog.records)
 
 
 def test_close_abort_still_propagates_without_closing_document():

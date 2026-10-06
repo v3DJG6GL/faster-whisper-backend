@@ -16,8 +16,8 @@ earlier final could be rewritten by a later one (quotes typed twice, a stray
 rule could still join with the next utterance (pl_engine.holdback_start) and
 never re-formats sent text.
 
-Uses pl_engine._postprocess_text / pl_engine.holdback_start under the
-app_module fixture.
+Uses pl_engine._postprocess_text / pl_engine.holdback_start; the app_module
+fixture is requested only for its side effects (isolated config + stores).
 """
 
 import asyncio
@@ -29,7 +29,7 @@ from faster_whisper_backend.streaming.vad import EnergyEndpointer
 from faster_whisper_backend.pipeline import engine as pl_engine
 
 
-def _run_stream(main, utterances, language):
+def _run_stream(utterances, language):
     """Drive a session through a sequence of finalized raw utterances (bypassing
     audio/VAD) and return the final frames (the last one is the closing
     document)."""
@@ -90,13 +90,12 @@ def _cases():
     ]
 
 
+@pytest.mark.usefixtures("app_module")
 @pytest.mark.parametrize("language", [None, "de"])
-def test_streaming_finals_extend_and_reconstruct_batch_output(app_module, language):
-    main = app_module
-
+def test_streaming_finals_extend_and_reconstruct_batch_output(language):
     for utterances in _cases():
         full = pl_engine._postprocess_text("".join(utterances), model_name="", language=language)
-        finals = _run_stream(main, utterances, language)
+        finals = _run_stream(utterances, language)
         docs = [m["committed"] + m["tail"] for m in finals]
         committeds = [m["committed"] for m in finals]
         # the committed document, once the session closes, equals batch output.
@@ -116,9 +115,10 @@ def test_streaming_finals_extend_and_reconstruct_batch_output(app_module, langua
                 f" was: {a!r}\n now: {b!r}")
 
 
-def test_split_dictation_phrase_is_never_sent_half_resolved(app_module):
+@pytest.mark.usefixtures("app_module")
+def test_split_dictation_phrase_is_never_sent_half_resolved():
     """'neue' ending one utterance is held back, not sent: no document ever
     contains the literal word before the newline it becomes."""
-    finals = _run_stream(app_module, [" Befund unauffällig Punkt neue", " Zeile Therapie Punkt"], "de")
+    finals = _run_stream([" Befund unauffällig Punkt neue", " Zeile Therapie Punkt"], "de")
     assert all("neue" not in (m["committed"] + m["tail"]) for m in finals)
     assert finals[-1]["committed"] == "Befund unauffällig.\nTherapie."

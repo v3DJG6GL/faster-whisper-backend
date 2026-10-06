@@ -243,7 +243,11 @@
       // the end of the phrase and is running the final decode — without this the
       // page said "listening" through the whole decode, as if nothing was
       // happening. "dropped" = it ended with no text (noise); back to listening.
+      // No final follows a dropped utterance, so its partial would stay faded on
+      // screen — words that never reach the document. Clearing it is harmless
+      // after Stop too, so it runs before the guard.
       // Unknown states are ignored on purpose (the server may grow more).
+      if (m.state === "dropped") renderPartial("", "");
       if (!running) return;
       if (m.state === "decoding") setStatus("transcribing…", "live");
       else if (m.state === "dropped") setStatus("listening", "live");

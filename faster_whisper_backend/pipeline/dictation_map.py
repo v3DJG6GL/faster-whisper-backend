@@ -34,8 +34,11 @@ from typing import Callable
 # Values that count as punctuation for the "dictated punctuation wins" prefix.
 _PUNCT_VALUE_CHARS = frozenset(".,:;!?")
 # What Whisper puts before a dictated punctuation word: its own marks
-# (the ellipsis as three periods or as one character), then spaces.
-_WHISPER_PUNCT = r"[.,:;!?…]+[ \t]*"
+# (the ellipsis as three periods or as one character), then spaces. Starts
+# only at the beginning of a run and is possessive: a plain greedy run was
+# retried from every position inside a long hallucinated "……" / "::::" run,
+# each attempt backtracking char by char into the failed lookahead — O(n²).
+_WHISPER_PUNCT = r"(?<![.,:;!?…])[.,:;!?…]++[ \t]*+"
 
 
 def _is_punct_value(value: str) -> bool:

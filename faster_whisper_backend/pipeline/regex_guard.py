@@ -248,6 +248,71 @@ def _strip_outer_group(branch: str) -> str:
     return branch
 
 
+def _strip_verbose(pat: str) -> str:
+    """``pat`` with its VERBOSE-mode whitespace and ``#`` comments removed.
+
+    Under ``(?x)`` (or a scoped ``(?x:...)``) unescaped whitespace is ignored
+    and ``#`` runs a comment to the end of the line, so the quantifier in
+    ``(?x)(a+) +#`` really applies to the group — but a scanner that reads a
+    quantifier only directly after ``)`` counted it as a root-level repeat,
+    and a ``)`` inside a comment popped the wrong frame. Escapes, character
+    classes and ``(?#...)`` are copied verbatim (whitespace and ``#`` are
+    literal there). Returns ``pat`` unchanged when no verbose mode applies.
+    """
+    if "x" not in pat:
+        return pat
+    import re
+    try:
+        verbose = bool(re.compile(pat).flags & re.VERBOSE)
+    except Exception:  # noqa: BLE001 - an uncompilable pattern is refused elsewhere
+        return pat
+    scoped = re.compile(r"\(\?([aiLmsux]*)(?:-([imsx]*))?:")
+    if not verbose and not any("x" in m.group(1) for m in scoped.finditer(pat)):
+        return pat
+    n = len(pat)
+    out: list[str] = []
+    modes = [verbose]
+    i = 0
+    while i < n:
+        c = pat[i]
+        v = modes[-1]
+        if c == "\\":
+            out.append(pat[i:i + 2])
+            i += 2
+            continue
+        if c == "[":
+            end = _skip_class(pat, i)[1]
+            out.append(pat[i:end + 1])
+            i = end + 1
+            continue
+        if c == "(":
+            if pat.startswith("(?#", i):
+                end = pat.find(")", i)
+                end = n - 1 if end == -1 else end
+                out.append(pat[i:end + 1])
+                i = end + 1
+                continue
+            m = scoped.match(pat, i)
+            if m:
+                modes.append((v or "x" in m.group(1)) and "x" not in (m.group(2) or ""))
+                out.append(m.group(0))
+                i = m.end()
+                continue
+            modes.append(v)
+        elif c == ")" and len(modes) > 1:
+            modes.pop()
+        elif v and c in " \t\n\r\f\v":
+            i += 1
+            continue
+        elif v and c == "#":
+            nl = pat.find("\n", i)
+            i = n if nl == -1 else nl + 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _nested_repetition(pat: str) -> bool:
     """True if ``pat`` contains a repeated group that itself repeats.
 
@@ -270,11 +335,16 @@ def _nested_repetition(pat: str) -> bool:
     and no stdlib API that exposes the parse tree. `(`, `)`, `*`, `+` and `{`
     are LITERAL inside a character class and after a backslash, so both are
     skipped — a scanner that miscounts them rejects perfectly good rules.
+    A verbose-mode pattern is scanned with its whitespace and comments
+    removed (``_strip_verbose``).
     """
+    pat = _strip_verbose(pat)
     n = len(pat)
     # One frame per open group plus a root frame. "rep": this level contains a
     # repetition; "start"/"alts": body slice + top-level `|` offsets, for the
-    # (a|a)* overlap check; "atomic": (?>...) can't backtrack into itself.
+    # (a|a)* overlap check; "atomic": (?>...) can't backtrack into itself;
+    # "conditional": (?(1)yes|no), whose `|` picks a branch by the condition
+    # and is not an overlapping alternation.
     stack = [{"rep": False, "start": 0, "alts": [], "atomic": False}]
     i = 0
     while i < n:
@@ -288,6 +358,7 @@ def _nested_repetition(pat: str) -> bool:
         if c == "(":
             atomic = False
             lookaround = False
+            conditional = False
             j = i + 1
             if j < n and pat[j] == "?":
                 k = j + 1
@@ -303,6 +374,13 @@ def _nested_repetition(pat: str) -> bool:
                     lookaround, j = True, k + 1
                 elif k < n and pat[k] == "<" and k + 1 < n and pat[k + 1] in "=!":
                     lookaround, j = True, k + 2
+                elif k < n and pat[k] == "(":
+                    # (?(1)yes|no) / (?(name)...) — a real group whose body
+                    # starts after the condition's `)`. Treating it as
+                    # self-closing let its own `)` pop the ENCLOSING group,
+                    # so `(x)?((?(1)\w+\s?|b))+#` slipped past the screen.
+                    close = pat.find(")", k)
+                    conditional, j = True, (n if close == -1 else close + 1)
                 else:
                     # (?P<name>, (?P=name), (?<name>, inline flags (?i) / (?i:
                     end = pat.find(">", k)
@@ -315,7 +393,7 @@ def _nested_repetition(pat: str) -> bool:
                         continue
                     j = min(cand) + 1
             stack.append({"rep": False, "start": j, "alts": [], "atomic": atomic,
-                          "lookaround": lookaround})
+                          "lookaround": lookaround, "conditional": conditional})
             i = j
             continue
         if c == ")" and len(stack) > 1:
@@ -332,7 +410,7 @@ def _nested_repetition(pat: str) -> bool:
                 # (a|ab)+, (x|xx)+y, (n|d|nd)+# all let one run of input be
                 # split many ways, which backtracks exponentially. An empty
                 # branch — (|a)+ — is the degenerate case of the same thing.
-                if frame["alts"]:
+                if frame["alts"] and not frame.get("conditional"):
                     cuts = [frame["start"]] + [x + 1 for x in frame["alts"]]
                     ends = frame["alts"] + [frame["start"] + len(body)]
                     branches = [pat[a:b] for a, b in zip(cuts, ends)]

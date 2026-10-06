@@ -334,6 +334,18 @@ def test_handshake_drops_unknown_decode_override_keys(
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_alice = make_user_key("alice")
 
+    # The retained dict: _client_stream_values receives the narrowed
+    # req_overrides the decode closures hold for the life of the connection.
+    from faster_whisper_backend.streaming import routes as streaming_routes
+    seen_keys: list = []
+    real_values = streaming_routes._client_stream_values
+
+    def _spy(overrides, ident):
+        seen_keys.append(sorted(overrides))
+        return real_values(overrides, ident)
+
+    monkeypatch.setattr(streaming_routes, "_client_stream_values", _spy)
+
     with client.websocket_connect(
             "/v1/audio/transcriptions/stream", headers=bearer(raw_alice)) as ws:
         ws.send_json({"type": "config", "model": "whisper-1",
@@ -354,6 +366,7 @@ def test_handshake_drops_unknown_decode_override_keys(
     # ...and the unknown keys reached neither the kwargs nor the retained dict.
     assert "not_a_real_key" not in fake_model.last_kwargs
     assert "__proto__" not in fake_model.last_kwargs
+    assert seen_keys and all(k == ["beam_size"] for k in seen_keys), seen_keys
 
 
 # --- mid-connection credential revalidation ----------------------------------
@@ -369,8 +382,6 @@ def test_stream_closes_when_key_is_revoked_mid_session(
     """Revoking the user mid-stream cuts the session: no further transcripts,
     an `unauthorized` notice, and a 4401 close. revoke_user bumps the config
     version, which is the signal _refresh_ident already consumes."""
-    import time
-
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
@@ -411,8 +422,6 @@ def test_revoked_session_closes_without_a_further_client_frame(
     a client that then goes silent (sends no further frame) must not keep the
     revoked session open until the idle timeout; the producer's own
     _auth_revoked branch is only the backstop."""
-    import time
-
     from faster_whisper_backend.auth import api_keys_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
@@ -442,8 +451,6 @@ def test_stream_survives_an_unrelated_config_bump(
         client, make_user_key, fake_model, app_module, monkeypatch):
     """The other direction: a settings save bumps the same config version, and
     the still-valid credential must NOT be treated as revoked."""
-    import time
-
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
     _, raw_admin = make_user_key("admin", is_admin=True)
     h = bearer(raw_admin)
@@ -505,8 +512,6 @@ def test_stream_closes_when_session_cookie_is_revoked_mid_session(
     """The cookie-authenticated dictation page (no bearer) must lose its
     stream on sign-out: sessions_store.revoke_session (/auth/logout) bumps the
     config version, which is the only signal _refresh_ident consumes."""
-    import time
-
     from faster_whisper_backend.auth import sessions_store
     from faster_whisper_backend.streaming.routes import _WS_UNAUTH
 
@@ -608,7 +613,7 @@ def _knobs_handshake(client, monkeypatch, overrides, headers=None):
 
 def test_stream_knobs_applied(client, app_module, monkeypatch, caplog):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_INNER_SILENCE_MS", 700)
-    with caplog.at_level(logging.INFO, logger="whisper-api"):
+    with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
         ready, seen = _knobs_handshake(client, monkeypatch, {
             "streaming_vad_threshold": 0.35,
             "streaming_vad_outer_silence_ms": 2500,
@@ -640,7 +645,7 @@ def test_stream_knobs_clamped_to_field_bounds(client, monkeypatch):
 
 def test_stream_knobs_inner_kept_below_outer(client, app_module, monkeypatch, caplog):
     monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_OUTER_SILENCE_MS", 1200)
-    with caplog.at_level(logging.INFO, logger="whisper-api"):
+    with caplog.at_level(logging.INFO, logger="faster_whisper_backend.streaming.routes"):
         _, seen = _knobs_handshake(client, monkeypatch,
                                    {"streaming_vad_inner_silence_ms": 3000})
     assert seen["config"].vad_min_silence_ms == 1150

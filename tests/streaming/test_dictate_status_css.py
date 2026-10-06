@@ -11,6 +11,10 @@ signal stayed --dim forever.
 
 def test_dictate_status_colours_win_the_cascade(client):
     html = client.get("/dictate").text
-    shared = html.index("#status:not(.pill)")
+    # Anchor on the nav.css RULE: the page's own CSS comment above its rules
+    # names the same selector (followed by a backtick, not " {"), and moving
+    # comment and rules together above {{NAV_CSS}} would match it instead.
+    assert html.count("#status:not(.pill) {") == 1
+    shared = html.index("header .subbar #status:not(.pill) {")
     assert shared < html.index("header .subbar #status.live")
     assert shared < html.index("header .subbar #status.error")

@@ -333,13 +333,17 @@ class StreamSession:
                 except CloseAbort:
                     raise
                 except Exception as exc:  # noqa: BLE001
-                    # Same tolerance as the pump: a failed final decode of the
+                    # Same tolerance as the pump: a failed finalize of the
                     # in-flight utterance must not lose the closing document
                     # (the frame that locks everything confirmed so far as
-                    # committed). Type only — the message can carry a
-                    # client-chosen handshake string.
-                    logger.warning("final decode failed on close (%s); committing confirmed text",
-                                   type(exc).__name__)
+                    # committed). A failed final DECODE never gets here —
+                    # _finalize_inner falls back to the partial transcript —
+                    # so this is postprocess, the emit or on_final raising.
+                    # Type only — the message can carry a client-chosen
+                    # handshake string.
+                    logger.warning("[stream %s] finalize failed on close (%s); "
+                                   "committing confirmed text",
+                                   self.session_id[:8], type(exc).__name__)
             await self._emit_update(flush_hold=True, flush_all=True, last=True)
         finally:
             # One thread per session; releasing it here (rather than leaving it

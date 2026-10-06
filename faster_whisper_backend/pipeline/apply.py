@@ -141,15 +141,12 @@ async def rebuild_caches_off_loop(reason: str) -> None:
     at 1000, 250 ms at 2000, and a *changed* map (exactly what every caller
     here produces) always misses re._cache.
 
-    rebuild_caches mutates module globals, so this is only safe under a
-    single-writer assumption. That assumption already had to hold:
-    save_overrides — the far heavier writer one frame up the same call
-    chain — has been offloaded to a worker thread for a while, so the write
-    side of this path was already running off the loop. Moving the rebuild
-    alongside it does not widen the window; both are awaited in sequence, so
-    no two rebuilds from a single request's chain can overlap, and
-    concurrent requests were already able to interleave at the
-    save_overrides await."""
+    rebuild_caches mutates module globals. Not every caller holds
+    rules_lock() (an admin save takes it only when PIPELINE_RULES is in the
+    payload), so two requests' rebuild threads can overlap; rebuild_caches
+    serialises itself on engine._REBUILD_LOCK, and since each caller's cfg
+    setattr lands before its own rebuild starts, the last rebuild to run
+    compiles the latest cfg."""
     try:
         await asyncio.to_thread(pl_engine.rebuild_caches)
         logger.info("[config] rebuilt pipeline caches after %s", reason)

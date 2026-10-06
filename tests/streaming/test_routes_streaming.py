@@ -87,12 +87,16 @@ def test_stream_announces_the_utterance_lifecycle(app_module, monkeypatch):
 def test_dictate_page_shows_the_decode_as_transcribing(app_module):
     """The page said "listening" through the whole final decode. It now follows
     the utterance frames — and only while running, so the post-Stop drain's
-    frames can't overwrite "finishing…"."""
+    frames can't overwrite "finishing…". A dropped utterance gets no final, so
+    the frame itself clears the faded partial (before the guard: harmless
+    after Stop)."""
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         body = client.get("/dictate").text
-    assert 'm.type === "utterance"' in body
-    assert 'm.state === "decoding"' in body
-    assert "transcribing" in body
+    block = body.split('m.type === "utterance"', 1)[1].split("else if (m.type", 1)[0]
+    guard = block.index("if (!running) return;")
+    decoding = block.index('m.state === "decoding") setStatus("transcribing…", "live")')
+    clear = block.index('if (m.state === "dropped") renderPartial("", "");')
+    assert clear < guard < decoding
 
 
 def test_stream_rejects_unsupported_audio_format(app_module):
@@ -105,6 +109,42 @@ def test_stream_rejects_unsupported_audio_format(app_module):
             msg = ws.receive_json()
             assert msg["type"] == "error"
             assert msg["code"] == "unsupported_format"
+
+
+@pytest.mark.parametrize("fmt", [["x"], {"a": 1}])
+def test_stream_rejects_a_non_string_audio_format(app_module, monkeypatch, caplog, fmt):
+    """An unhashable audio.format used to raise TypeError at the set-membership
+    test and reach the handler's blanket except: a full traceback, an error
+    usage row, and a generic error frame instead of unsupported_format."""
+    import logging
+
+    from faster_whisper_backend.stats import metrics
+    rows = []
+    monkeypatch.setattr(metrics, "record_transcription", lambda **kw: rows.append(kw))
+    caplog.set_level(logging.ERROR, logger="faster_whisper_backend.streaming.routes")
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            ws.send_json({"type": "config", "model": ["whisper-1"],
+                          "audio": {"format": fmt}})
+            msg = ws.receive_json()
+    assert msg["type"] == "error"
+    assert msg["code"] == "unsupported_format"
+    assert not [r for r in caplog.records if r.getMessage().startswith("[stream")]
+    assert not [r for r in rows if r.get("status") == "error"]
+
+
+def test_stream_treats_a_non_string_model_as_absent(app_module):
+    """A non-string handshake `model` falls back to whisper-1 instead of riding
+    into the job row and the model load."""
+    with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
+        with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+            ws.send_json({"type": "config", "model": ["x"],
+                          "audio": {"format": "pcm_s16le"}})
+            ready = ws.receive_json()
+            assert ready["type"] == "ready"
+            assert ready["model"] == tx_models._resolve_model_name("whisper-1")
+            ws.send_json({"type": "stop"})
+            _drain(ws)
 
 
 def test_dictate_page_served(app_module):
@@ -141,13 +181,18 @@ def test_dictate_page_keeps_the_socket_open_until_closing(app_module):
     (regression of fb90091): it waits for "closing" with a fallback timer."""
     with TestClient(app_module.app, client=("127.0.0.1", 12345)) as client:
         body = client.get("/dictate").text
-    assert 'm.type === "closing"' in body
-    assert "finishStop" in body
+    stop_body = body.split("function stop() {", 1)[1].split("\n  }\n", 1)[0]
+    assert 'ws.send(JSON.stringify({ type: "stop" }))' in stop_body
+    assert 'setStatus("finishing…")' in stop_body
+    assert "stopTimer = setTimeout(finishStop" in stop_body
+    # finishStop() runs synchronously only in the two fallbacks: the send
+    # failed, or there is no open socket to wait on.
+    assert stop_body.count("finishStop()") == 2
+    assert "catch { finishStop(); return; }" in stop_body
+    assert "} else {\n      finishStop();" in stop_body
     # A server-initiated close (idle timeout) also releases the microphone.
     closing = body.split('m.type === "closing"', 1)[1].split("}", 1)[0]
     assert "releaseMic()" in closing
-    assert "stopTimer" in body
-    assert "finishing" in body
 
 
 @pytest.mark.parametrize("exc", [OSError("gone"), ValueError("CR line endings")])

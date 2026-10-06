@@ -7,15 +7,16 @@ decode can only re-hear the remaining buffer — its result used to REPLACE the
 whole utterance, deleting the already-committed-and-shown opening (observed
 live: a 16 s dictation losing its first clause). The fix banks the cut words'
 text, folds it into the rolling prompt (seam context), and prepends it to the
-final decode's result; captures pair the buffer audio with the buffer-aligned
-text only.
+final decode's result; on_final hands captures the WHOLE utterance — the
+banked audio slices plus the buffer, and the banked words plus the decode's
+words re-based onto the utterance timeline.
 """
 
 import asyncio
 
 import numpy as np
 
-from tests._streaming_helpers import const_pcm
+from tests._streaming_helpers import const_pcm, ws_drain
 from faster_whisper_backend.streaming.session import StreamConfig, StreamSession
 from faster_whisper_backend.streaming.vad import FRAME_MS, FRAME_SAMPLES, EnergyEndpointer
 
@@ -463,3 +464,57 @@ def test_buffer_counter_matches_the_array_after_every_frame():
 
     asyncio.run(run())
     assert trimmed, "trim never fired — the trim writer went untested"
+
+
+def test_capture_segments_share_the_utterance_timeline(client, app_module, monkeypatch):
+    """Route level: after a mid-utterance trim the capture's audio and words
+    span the whole utterance, so its segments must too. The final decode's
+    segments are relative to the TRIMMED buffer; they used to be stored
+    unshifted, trimmed_sec seconds early against the stored audio."""
+    from faster_whisper_backend.captures import store as captures_store
+    from faster_whisper_backend.streaming import routes as streaming_routes
+
+    for name, val in (("STREAMING_VAD_BACKEND", "energy"),
+                      ("STREAMING_BUFFER_TRIM_S", 2.0),
+                      ("STREAMING_BUFFER_TRIM_KEEP_S", 1.0),
+                      ("STREAMING_PARTIAL_INTERVAL_MS", 300),
+                      ("WORD_TIMESTAMPS_ENABLED", True),
+                      ("CAPTURES_RECORDING_ENABLED", True)):
+        monkeypatch.setattr(app_module.cfg, name, val, raising=False)
+    caps: list[dict] = []
+    monkeypatch.setattr(captures_store, "create_capture",
+                        lambda **kw: caps.append(kw) or "cap-test-id")
+    # trimmed_sec rides on the session's on_final info, not the capture call.
+    finals: list[dict] = []
+    real_session = streaming_routes.StreamSession
+
+    def _session(*a, **kw):
+        inner = kw["on_final"]
+
+        async def on_final(info):
+            finals.append(info)
+            await inner(info)
+        kw["on_final"] = on_final
+        return real_session(*a, **kw)
+
+    monkeypatch.setattr(streaming_routes, "StreamSession", _session)
+
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        ws.send_json({"type": "config", "model": "whisper-1", "response_format": "verbose_json",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000}})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(const_pcm(8000, 3500))
+        ws.send_bytes(const_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        ws_drain(ws, 200)
+
+    assert finals and caps, (finals, caps)
+    off = finals[-1]["trimmed_sec"]
+    assert off > 0.0, "setup failed: the buffer was never trimmed"
+    segs = caps[-1]["segments"]
+    # The fake decode's one segment sits at 0.0-1.0 in the trimmed buffer.
+    assert [(sd["start"], sd["end"]) for sd in segs] == [(off, off + 1.0)]
+    # ...which is where the capture's re-based decode words now sit too.
+    words = caps[-1]["words"]
+    assert words[-2]["start"] == segs[0]["start"]
+    assert words[-1]["end"] == segs[0]["end"]

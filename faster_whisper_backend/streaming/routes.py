@@ -636,7 +636,11 @@ async def transcribe_stream(ws: WebSocket) -> None:
         elif first.get("bytes") is not None:
             pending_audio = first["bytes"]
 
-        model_req = conf.get("model") or "whisper-1"
+        # A non-string `model` (a list, a number) would otherwise ride into
+        # jobs.job_update and the model load before failing; treat it as absent.
+        _req_model = conf.get("model")
+        model_req = (_req_model if isinstance(_req_model, str) and _req_model.strip()
+                     else "whisper-1")
         _req_language = conf.get("language")
         # Tri-state, same as batch: key ABSENT → None → inherit DEFAULT_LANGUAGE;
         # present-but-empty → "" → explicit auto-detect (the client's cleared state).
@@ -706,9 +710,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
         if not isinstance(audio_obj, dict):
             audio_obj = {}
         audio_fmt = audio_obj.get("format", "pcm_s16le")
-        if audio_fmt not in RAW_FORMATS and audio_fmt not in ENCODED_FORMATS:
+        # Type-check before the set-membership test: an unhashable value (a
+        # list, a dict) raises TypeError there, which escaped to the handler's
+        # blanket except Exception — a full traceback and an error usage row
+        # instead of the documented unsupported_format frame.
+        if not isinstance(audio_fmt, str) or (
+                audio_fmt not in RAW_FORMATS and audio_fmt not in ENCODED_FORMATS):
             await _safe_ws_send(ws, {"type": "error", "code": "unsupported_format",
-                                    "message": f"audio format {audio_fmt!r} not supported "
+                                    "message": f"audio format {repr(audio_fmt)[:64]} not supported "
                                                f"(raw: {sorted(RAW_FORMATS)}, "
                                                f"encoded via ffmpeg: {sorted(ENCODED_FORMATS)})"},
                                 close=True)
@@ -793,9 +802,10 @@ async def transcribe_stream(ws: WebSocket) -> None:
         gate_final_words = bool(effective_config.cfg_for(final_model, "WORD_TIMESTAMPS_ENABLED", ident))
         gate_partial_words = bool(effective_config.cfg_for(partial_model_name, "WORD_TIMESTAMPS_ENABLED", ident))
 
-        # ident is resolved ONCE here, then re-resolved per utterance ONLY when
-        # the config version changes (see _refresh_ident) — so admin edits to a
-        # binding/profile/setting apply mid-session without a reconnect. Snapshot
+        # ident is resolved ONCE here, then re-resolved on the next decode
+        # (partial or final) ONLY when the config version changes (see
+        # _refresh_ident) — so admin edits to a binding/profile/setting apply
+        # mid-session without a reconnect. Snapshot
         # the version and the client's ORIGINAL (pre-lock) handshake values so the
         # lock re-application stays idempotent across refreshes.
         _ident_version = settings_version.config_version()
@@ -1265,13 +1275,23 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
             captured_id = None
             if cap_enabled and raw_text.strip():
+                # seg_diag is on the decode BUFFER's timeline; after a trim the
+                # capture's audio and words span the whole utterance (the
+                # session re-bases the decode's words by the same offset, which
+                # equals trimmed_sec), so shift the stored segments to match.
+                # seg_diag itself stays buffer-relative for the log and trace.
+                cap_segs = seg_diag
+                _off = info.get("trimmed_sec") or 0.0
+                if decoded and _off:
+                    cap_segs = [{**sd, "start": sd["start"] + _off, "end": sd["end"] + _off}
+                                for sd in seg_diag]
                 # OFF the loop: _maybe_capture writes a WAV and then runs
                 # captures_store.create_capture, which re-transcodes it through
                 # PyAV — the same blocking work the batch route offloads. This
                 # fires per finalized utterance on every live session.
                 captured_id = await asyncio.to_thread(
                     _maybe_capture, rid, info, raw_text, final_text, words,
-                    fw_info, seg_diag)
+                    fw_info, cap_segs)
 
             # One `transcribing` stage per live utterance — but none at all when
             # the gate skipped the decode: a 0.00 s stage that never ran would
@@ -1404,12 +1424,14 @@ async def transcribe_stream(ws: WebSocket) -> None:
         def _refresh_ident():
             """Re-resolve this connection's per-identity config when the global
             config version changed since we last resolved — so an admin editing a
-            binding / profile / setting takes effect on the next utterance instead
-            of requiring the client to reconnect. The no-change case is an
-            integer compare plus, at most every 0.25 s per process, a sibling
-            data_version PRAGMA (see settings_version._KEYS_PROBE_MIN_INTERVAL_S);
-            a real change costs a couple of indexed SQLite reads,
-            paid at the utterance boundary (not per partial frame). Session-shaping
+            binding / profile / setting takes effect on the next decode instead
+            of requiring the client to reconnect. Called by every decode,
+            partials included (about once a second): a revocation stops the
+            partials too, and one utterance's partials may straddle a change.
+            The no-change case is an integer compare plus, at most every 0.25 s
+            per process, a sibling data_version PRAGMA (see
+            settings_version._KEYS_PROBE_MIN_INTERVAL_S); a real change costs a
+            couple of indexed SQLite reads. Session-shaping
             STREAMING_*/endpointer params (the client's own knobs included) and
             the word-timestamp gates stay fixed for the connection: a lock added
             mid-session applies to them from the next connection. Never raises —

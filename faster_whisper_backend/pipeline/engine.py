@@ -9,6 +9,7 @@ _COMPILED_RULES, so a ``from ... import`` of it would go stale.
 import functools
 import logging
 import re
+import threading
 
 from faster_whisper_backend.pipeline import dictation_map as _dictation_map
 from faster_whisper_backend.pipeline import seam_holdback as _seam_holdback
@@ -29,7 +30,8 @@ logger = logging.getLogger("whisper-api")
 # settings/schema.py for the Pydantic schema.
 #
 # rebuild_caches() compiles each rule's regex pattern once at module load and
-# again on admin WebUI save (CACHE_REBUILD_FIELDS = {"PIPELINE_RULES"}).
+# again on admin WebUI save of a cache_rebuild field (settings/schema.py
+# CACHE_REBUILD_FIELDS).
 # Disabled rules and skipped types (terminal, empty patterns) are filtered
 # out of the compiled list — the runtime walker is just a tight for-loop.
 
@@ -143,6 +145,15 @@ def _make_lowercase_wordlist_replacer(wordlist: frozenset):
     return replace
 
 
+# Serialises rebuild_caches: it runs in asyncio.to_thread (apply.py), and not
+# every hot-apply caller holds rules_lock(). Without it two rebuild threads
+# could finish out of order — a stale compile overwriting the newer one — and
+# the unsynchronised `_RULES_GEN += 1` could store the same gen twice. Every
+# cfg setattr happens before its own rebuild thread starts, so the thread that
+# compiles last also reads the latest cfg.
+_REBUILD_LOCK = threading.Lock()
+
+
 def rebuild_caches() -> None:
     """(Re)compile every rule in cfg.PIPELINE_RULES into _COMPILED_RULES.
 
@@ -157,6 +168,11 @@ def rebuild_caches() -> None:
     usually catches these, but a hand-edited config.py or a runtime
     catastrophic-backtracking case might surface here).
     """
+    with _REBUILD_LOCK:
+        _rebuild_caches_locked()
+
+
+def _rebuild_caches_locked() -> None:
     global _COMPILED_RULES, _TERMINAL_NAME, _TERMINAL_LABEL, _TERMINAL_CARD_NO, _RULES_GEN
     compiled: list[_CompiledRule] = []
     terminal_name = _TERMINAL_NAME

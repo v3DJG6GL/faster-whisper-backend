@@ -1,7 +1,7 @@
 """The finalize paths that reach on_final WITHOUT a final decode, and the
 handshake refusals' close codes.
 
-The near-silence gate (streaming_session._finalize) skips the decoder but
+The near-silence gate (StreamSession._finalize_inner) skips the decoder but
 still reports the partial-committed text. on_final then has no decode of its
 own to describe, so every sink that used to assume "on_final follows
 decode_final" is exercised here: the diagnostics snapshot, the word list,
