@@ -59,6 +59,40 @@ def test_lock_wait_is_not_billed_as_load_time(monkeypatch):
         model_registry._loaded_models.clear()
 
 
+def test_hardware_change_during_a_queued_load_reaches_the_constructor(
+        monkeypatch):
+    """A MODEL_DEVICE change saved while a cold load is still downloading or
+    queued behind another model's load finds nothing cached for
+    drain_then_evict to drop; the load must still build the model with the
+    NEW device, not the one it would have read before it waited."""
+    _stub_load(monkeypatch)
+    built = []
+    fw = types.ModuleType("faster_whisper")
+    fw.WhisperModel = lambda path, **kw: built.append(kw) or FakeModel()
+    monkeypatch.setitem(sys.modules, "faster_whisper", fw)
+    monkeypatch.setattr(tx_models, "_model_load_lock", asyncio.Lock())
+    monkeypatch.setattr(tx_models.cfg, "MODEL_DEVICE", "cpu", raising=False)
+
+    async def run():
+        await tx_models._model_load_lock.acquire()
+        try:
+            task = asyncio.create_task(tx_models._get_or_load_model("x"))
+            await asyncio.sleep(0.05)       # the load now waits on the lock
+            assert "x" not in tx_models._loaded_models  # nothing to evict yet
+            monkeypatch.setattr(tx_models.cfg, "MODEL_DEVICE", "cuda",
+                                raising=False)
+        finally:
+            tx_models._model_load_lock.release()
+        await task
+
+    try:
+        asyncio.run(run())
+        assert [kw["device"] for kw in built] == ["cuda"]
+    finally:
+        tx_models._loaded_models.clear()
+        model_registry._loaded_models.clear()
+
+
 def _run_one_evictor_tick(monkeypatch):
     calls = {"n": 0}
 

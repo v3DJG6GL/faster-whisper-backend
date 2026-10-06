@@ -10,7 +10,6 @@ import pytest
 from faster_whisper_backend.media import download as url_download
 from faster_whisper_backend.media import media_store as url_media_store
 from faster_whisper_backend.media.download import UrlMediaInfo
-from faster_whisper_backend.transcription import receipt as tx_receipt
 
 _URL = "https://www.youtube.com/watch?v=abc123xyz"
 
@@ -74,18 +73,3 @@ def test_url_policy_rejection_lands_policy_blocked_on_the_ledger(client, url_ena
         "SELECT error_class, error_stage FROM usage_jobs ORDER BY created_ts DESC LIMIT 1"
     ).fetchone()
     assert tuple(job) == ("policy_blocked", "downloading")
-
-
-def test_failed_stage_row_carries_its_error_class():
-    """A soft-failed stage (the job goes on without it) gets a receipt row
-    with the failure class the usage ledger counts; without it a failed
-    stage left no row anywhere."""
-    import time
-    row = tx_receipt._failed_stage(
-        "diarizing", time.perf_counter() - 1.0, "pyannote/x",
-        RuntimeError("CUDA failed with error out of memory"))
-    assert row["name"] == "diarizing" and row["model"] == "pyannote/x"
-    assert row["error"] == "cuda_oom" and row["detail"] == "failed"
-    assert 0.9 <= row["secs"] <= 5.0
-    assert tx_receipt._failed_stage("translating", time.perf_counter(), None,
-                                    TimeoutError())["error"] == "timeout"

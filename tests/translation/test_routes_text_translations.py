@@ -4,6 +4,9 @@ already-held transcript. llama_cpp is never imported: the tests stub
 test_diarization pattern)."""
 
 import logging
+import re
+import threading
+import time
 
 import pytest
 
@@ -314,6 +317,128 @@ def test_422_malformed_shapes(client, app_module, monkeypatch):
     assert calls == []
 
 
+def test_targets_cap_fires_before_the_whole_list_is_walked(client, app_module,
+                                                          monkeypatch):
+    """De-dup is a set and the cap is checked inside the loop: a body of
+    10k distinct valid codes is one cheap 422, not a quadratic walk on the
+    event loop. Duplicates under the cap still collapse."""
+    _enable(app_module, monkeypatch)
+    monkeypatch.setattr(app_module.cfg, "TRANSLATION_MAX_TARGETS", 2)
+    calls = []
+    _stub_translate(monkeypatch, calls=calls)
+    many = [f"ab-{i:04d}" for i in range(10_000)]
+    t0 = time.monotonic()
+    r = client.post(URL, json=_body(targets=many))
+    assert r.status_code == 422 and "capped at" in r.json()["detail"]
+    assert time.monotonic() - t0 < 2.0
+    r = client.post(URL, json=_body(targets=["en", "fr", "en", "fr"]))
+    assert r.status_code == 200, r.text
+    assert calls[-1]["targets"] == ["en", "fr"]
+    # Normalised like the batch csv (core.languages.language_codes).
+    r = client.post(URL, json=_body(targets=["DE", "fr-ca", "fr-CA"]))
+    assert r.status_code == 200, r.text
+    assert calls[-1]["targets"] == ["de", "fr-CA"]
+
+
+def test_source_must_be_a_language_code(client, app_module, monkeypatch):
+    """`source` reaches every prompt and the receipt: a code, "auto" or
+    nothing — never a forged log line."""
+    _enable(app_module, monkeypatch)
+    calls = []
+    _stub_translate(monkeypatch, calls=calls)
+    r = client.post(URL, json=_body(source="de\n[translate] req=deadbeef forged"))
+    assert r.status_code == 422, r.text
+    assert calls == []
+    r = client.post(URL, json=_body(source="de"))
+    assert r.status_code == 200 and calls[-1]["source_lang"] == "de"
+    r = client.post(URL, json=_body(source="auto"))
+    assert r.status_code == 200 and calls[-1]["source_lang"] is None
+    r = client.post(URL, json=_body(source="DE"))
+    assert r.status_code == 200 and calls[-1]["source_lang"] == "de"
+
+
+def test_speaker_is_clipped_and_counted_against_the_char_cap(
+        client, app_module, monkeypatch):
+    """The speaker prefixes every context line of every prompt: clipped at
+    parse time, control characters neutralised, and counted in the cap."""
+    _enable(app_module, monkeypatch)
+    calls = []
+    _stub_translate(monkeypatch, calls=calls)
+    r = client.post(URL, json={"segments": [
+        {"id": 0, "text": "eins", "speaker": "S\nPEAKER" + "x" * 500}],
+        "targets": ["en"]})
+    assert r.status_code == 200, r.text
+    spk = calls[-1]["segments"][0]["speaker"]
+    assert len(spk) == tr_routes._TEXT_TRANSLATE_MAX_SPEAKER
+    assert spk.startswith("S?PEAKER")
+    n = tr_routes._TEXT_TRANSLATE_MAX_CHARS // 100
+    r = client.post(URL, json={"segments": [
+        {"id": i, "text": "x" * 90, "speaker": "y" * 64} for i in range(n)],
+        "targets": ["en"]})
+    assert r.status_code == 413, r.text
+
+
+def test_ok_run_stamps_its_job_row_off_the_event_loop(client, app_module,
+                                                      monkeypatch):
+    """The success payload (up to 2000 segments x 10 targets) is encoded and
+    written on a worker thread, never on the loop."""
+    import asyncio
+
+    from faster_whisper_backend.transcription import jobs_store
+    _enable(app_module, monkeypatch)
+    _stub_translate(monkeypatch)
+    seen = []
+    _orig = jobs_store.finish
+
+    def _spy(**kw):
+        try:
+            asyncio.get_running_loop()
+            on_loop = True
+        except RuntimeError:
+            on_loop = False
+        seen.append((kw.get("state"), on_loop, threading.current_thread().name))
+        return _orig(**kw)
+    monkeypatch.setattr(jobs_store, "finish", _spy)
+    r = client.post(URL, json=_body(progress_id=_PID))
+    assert r.status_code == 200, r.text
+    assert [(st, on_loop) for st, on_loop, _ in seen] == [("done", False)]
+
+
+def test_held_receipt_survives_a_queued_translation(client, app_module,
+                                                    monkeypatch):
+    """Queued for the GPU slot (or loading a model) the request reports no
+    progress; the heartbeat keeps the held receipt's idle timer fresh, so
+    the sweeper does not release it as "no result" meanwhile."""
+    from faster_whisper_backend.transcription import receipt_hold
+
+    _enable(app_module, monkeypatch)
+    monkeypatch.setattr(tr_routes, "_HOLD_HEARTBEAT_S", 0.05)
+    monkeypatch.setattr(translation, "is_resident", lambda ref: False)
+    swept = []
+
+    async def _slow(segments, targets, **kwargs):
+        # A model that is still loading: no progress callback for 0.5 s,
+        # a hold of 0.2 s, the sweeper running all along.
+        import asyncio
+        for _ in range(10):
+            await asyncio.sleep(0.05)
+            swept.extend(receipt_hold.sweep())
+        per_seg = [{t: f"{seg['text']}-{t}" for t in targets}
+                   for seg in segments]
+        return per_seg, [], {"model": "org/d:Q4", "source": "", "mode": "fluent"}
+    monkeypatch.setattr(translation, "translate_segments", _slow)
+    receipt_hold.park("cap-q", {"file_label": "utt#1", "model_name": "m",
+                                "raw": "r", "final": "f", "seg_diag": [],
+                                "kwargs": {}, "info": None}, hold_s=0.2)
+    try:
+        r = client.post(URL, json=_body(captured_id="cap-q"))
+        assert r.status_code == 200, r.text
+        assert swept == []
+        assert receipt_hold.pending() == 0          # claimed by the request
+    finally:
+        receipt_hold._reset_for_tests()
+
+
 def test_translation_error_maps_to_400(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
 
@@ -581,7 +706,7 @@ def test_admin_pinned_model_passes_the_allowlist_gate(
 
 
 def test_translation_error_records_status_error(client, app_module,
-                                                monkeypatch):
+                                                monkeypatch, make_user_key):
     # The terminal-error status is "error" — the batch handler's spelling
     # and metrics.py's default — never "failed": both land in the same
     # recent_transcriptions.status column rendered verbatim by /stats.
@@ -597,11 +722,15 @@ def test_translation_error_records_status_error(client, app_module,
         recorded.append(kw)
         return _orig(**kw)
     monkeypatch.setattr(app_module.metrics, "record_transcription", _spy)
-    r = client.post(URL, json=_body())
+    from faster_whisper_backend.auth import api_keys_store
+    make_user_key("root", is_admin=True)            # lock the server down
+    uid = api_keys_store.create_user("alice", is_admin=False)
+    raw, _ = api_keys_store.create_key(uid, label="alice-laptop")
+    r = client.post(URL, json=_body(), headers=bearer(raw))
     assert r.status_code == 400, r.text
     assert recorded and recorded[-1]["status"] == "error"
     assert recorded[-1]["kind"] == "translate"
-    assert "key_label" in recorded[-1]
+    assert recorded[-1]["key_label"] == "alice-laptop"
     from faster_whisper_backend.stats import recent_transcriptions_store
     rows = recent_transcriptions_store.list_recent(limit=5)
     assert rows and rows[0]["status"] == "error"
@@ -662,7 +791,6 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
     plain API caller) still gets ONE receipt block with the model, targets
     and identity — not just the progress lines."""
     _enable(app_module, monkeypatch)
-    from faster_whisper_backend.translation import engine as translation
 
     async def _fake(segments, targets, *, progress_cb=None, download_cb=None,
                     **kwargs):
@@ -679,7 +807,7 @@ def test_unheld_request_logs_a_standalone_receipt(client, app_module,
     assert len(blocks) == 1
     blk = blocks[0]
     assert "org/d:Q4" in blk
-    assert "targets" in blk and "en" in blk
+    assert re.search(r"^\s+targets\s+en\s*$", blk, re.M), blk
     assert "Identity" in blk
     # Links to the session's utterance receipts by the same `job=` token.
     assert "job=aaaaaaaa" in blk

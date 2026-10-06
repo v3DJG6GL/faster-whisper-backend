@@ -563,4 +563,65 @@ def test_receipt_shows_the_cap_and_the_guard_row(app_module):
     lines = tx_receipt._format_decode_trace_section(t)
     text = "\n".join(lines)
     assert "[cap 101]" in text and "hit cap" in text
+    seg = [{"id": 0, "start": 0.0, "end": 7.0, "alp": -0.22, "nsp": 0.01,
+            "cr": 0.8, "temp": 0.2, "text": "x", "dropped": False}]
+    base = dict(file_label="stream utt#4", model_name="m",
+                info=FakeInfo(duration=7.06), kwargs={"beam_size": 10},
+                seg_diag=seg, raw="", final="", decode_trace=t)
+    block = tx_receipt._format_request_block(
+        **base, guards={"token_cap_per_second": 10.0})
+    guard = next(l for l in block.splitlines() if "token_cap_per_second" in l)
+    assert guard.rstrip().endswith("10.0"), "default 10: no non-default marker"
+    off = tx_receipt._format_request_block(
+        **base, guards={"token_cap_per_second": 0.0})
+    assert next(l for l in off.splitlines()
+                if "token_cap_per_second" in l).rstrip().endswith("0.0 *")
+
+
+def test_best_of_sibling_that_ran_to_the_cap_marks_the_rung():
+    """CT2 returns best_of candidates best-first and runs them all until the
+    last one ends (2026-09-19: a 17-token answer waited on a looping
+    sibling). The rung counts the chosen answer's tokens, but the cap is
+    judged on the longest candidate, which the trace reports as max_tokens."""
+    class _Multi:
+        def __init__(self, seqs):
+            self.sequences_ids = seqs
+            self.scores = [-0.2] * len(seqs)
+            self.no_speech_prob = 0.01
+
+    class _Inner:
+        def generate(self, enc, prompts, **kw):
+            return [_Multi([[5] * 17, [100] * 101])]
+
+    proxy = dt._GenerateProxy(_Inner())
+    with dt.capture(_KW, token_cap_per_s=10) as tr:
+        tr.pending_len_frames = 706                 # 7.06 s window → cap 101
+        w = tr.open_window()
+        proxy.generate("enc", [list(range(224))], max_length=448,
+                       num_hypotheses=5, sampling_temperature=0.2)
+    rung = w["rungs"][0]
+    assert rung["tokens"] == 17 and rung["max_tokens"] == 101
+    assert rung["capped"] is True
+    tr.close_window(w, None)
+    out = dt.finish(tr, [], FakeInfo(duration=7.06))
+    assert out["windows"][0]["rungs"][0]["outcome"].endswith(
+        " · max 101 tok · hit cap")
+
+
+def test_residual_stop_yields_to_the_hallucination_silence_skip():
+    """faster-whisper's hallucination_silence_threshold (word timestamps on)
+    discards a short window's segments and re-seeks INSIDE it; refusing the
+    window that follows would lose the re-decode, so the stop stands down."""
+    kw = dict(_KW, hallucination_silence_threshold=2.0, word_timestamps=True)
+    with dt.capture(kw, skip_residual=True) as tr:
+        assert tr.skip_residual is False
+    with dt.capture(dict(kw, word_timestamps=False), skip_residual=True) as tr:
+        assert tr.skip_residual is True, "inert without word timestamps"
+    m = dt.install(_incident_model())
+    with dt.capture(kw, skip_residual=True) as tr:
+        segs, info = m.transcribe(None)
+        segs = dt.consume(segs)
+        t = dt.finish(tr, segs, info)
+    assert len(m.model.calls) == 7, "the window after the short one is decoded"
+    assert t["skipped_windows"] == 0
 

@@ -461,11 +461,9 @@ def _load_blocking(ref: str, device: str, family: str, download_cb=None):
     """Import llama_cpp and load the GGUF model. Runs in the default
     executor. ``download_cb(done_bytes, total_bytes)`` (optional) receives
     byte progress while the weights download."""
-    # Keep HF downloads on the models volume (whisper weights already live
-    # there via download_root); a set HF_HOME always wins.
-    download_root = getattr(cfg, "DOWNLOAD_ROOT", None)
-    if download_root:
-        os.environ.setdefault("HF_HOME", os.path.join(download_root, "hf"))
+    # Where the GGUF lands is hf_cache.hub_cache_dir(), passed explicitly to
+    # every hub call below — an HF_HOME setdefault here could not redirect
+    # a download (the hub froze its cache path at import).
     # LOCAL_FILES_ONLY is a HOT setting — scope the offline env var to this
     # load and restore it after, or one offline load would poison every later
     # huggingface_hub download until a process restart. Snapshot the flag
@@ -929,21 +927,33 @@ def _complete(llm, family: str, prompt_or_msgs, max_tokens: int) -> str:
 # Fluent-mode helpers (pure)
 # =============================================================================
 
-# Sentence-final punctuation that closes a fluent-mode group.
-_SENTENCE_FINAL = ".!?…。"
+# Sentence-final punctuation that closes a fluent-mode group (the full-width
+# forms are what whisper writes for Chinese / Japanese).
+_SENTENCE_FINAL = ".!?…。！？"
+# Closing quotes / brackets that may follow the sentence end ('."', '?»', '」').
+_CLOSERS = "\"'”’»«」』）)]】"
 # Max segments merged into one fluent group.
 _MAX_GROUP_SEGMENTS = 6
 
 
 def _merge_sentences(segments: "list[dict]") -> "list[list[int]]":
     """Merge consecutive segments into sentence groups: accumulate until a
-    segment's text ends with sentence-final punctuation or the group already
-    spans _MAX_GROUP_SEGMENTS segments. Returns groups of segment indices."""
+    segment's text ends with sentence-final punctuation (closing quotes and
+    brackets after it allowed) or the group already spans
+    _MAX_GROUP_SEGMENTS segments. A speaker change closes the group too, so
+    the proportional redistribution never moves one speaker's words into the
+    other's cue. Returns groups of segment indices."""
     groups: "list[list[int]]" = []
     current: "list[int]" = []
     for i, seg in enumerate(segments):
+        if current:
+            prev = segments[current[-1]].get("speaker")
+            spk = seg.get("speaker")
+            if prev and spk and prev != spk:
+                groups.append(current)
+                current = []
         current.append(i)
-        text = (seg.get("text") or "").rstrip()
+        text = (seg.get("text") or "").rstrip().rstrip(_CLOSERS)
         if (text and text[-1] in _SENTENCE_FINAL) or \
                 len(current) >= _MAX_GROUP_SEGMENTS:
             groups.append(current)
@@ -1084,7 +1094,8 @@ def _guard_reason(src: str, out: str, *,
     changed number; number-word normalization in EITHER direction is legal,
     spoken-transcript MT constantly writes "sechzehn" as "16" and an exact
     multiset check rejected correct translations en masse); verbatim input
-    copy (when the target differs from the source); repetition loop."""
+    copy of two words or more (when the target differs from the source);
+    repetition loop."""
     s = (src or "").strip()
     o = (out or "").strip()
     if not o:
@@ -1097,7 +1108,9 @@ def _guard_reason(src: str, out: str, *,
     out_digits = Counter(re.findall(r"\d", o))
     if out_digits and (Counter(re.findall(r"\d", s)) - out_digits):
         return "digit mismatch"
-    if o == s:
+    # A one-word line ("OK.", "Netflix.", "Hm.") often translates to
+    # itself; only a copied phrase is evidence of an untranslated output.
+    if o == s and len(re.findall(r"\w+", s)) >= 2:
         return "output copies input"
     if _REPETITION_RE.search(o[:_REPETITION_SCAN_CHARS]):
         return "repetition loop"
@@ -1152,6 +1165,17 @@ async def _run_completion(llm, family: str, text: str, source_code: str,
             logger.warning("translation cancelled — executor thread will "
                            "complete on its own (%s)", family)
             raise
+        except TranslationError:
+            raise
+        except Exception as e:  # noqa: BLE001 — the failure contract
+            # llama.cpp raises ValueError for a prompt past n_ctx; a CUDA
+            # OOM or any other runtime error lands here too. Raw text stays
+            # in the log (module docstring: failure contract).
+            logger.error("[translate] inference failed (%s): %s", family, e)
+            raise TranslationError(
+                "translation inference failed (input too long for the "
+                "model's context window, or a runtime error) — see the "
+                "server log") from None
 
 
 async def translate_segments(

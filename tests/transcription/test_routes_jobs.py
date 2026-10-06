@@ -219,7 +219,7 @@ def test_expired_row_reads_as_unknown(client):
     js.start(job_id=_PID, request_id="req", kind="transcribe", user_id=None,
              key_id=None, model="m", source_kind="file", source_name="a",
              ttl_s=0.0, max_rows=100, max_bytes=0)
-    import time; time.sleep(0.01)
+    time.sleep(0.01)
     assert client.get(f"/v1/jobs/{_PID}").status_code == 404
     assert client.get("/v1/jobs").json() == {"jobs": []}
 
@@ -227,9 +227,9 @@ def test_expired_row_reads_as_unknown(client):
 def test_list_filters_state_and_rejects_unknown_state(client, app_module,
                                                       monkeypatch):
     assert _post(client, progress_id=_PID).status_code == 200
-    monkeypatch.setattr(app_module.cfg, "MEDIA_MAX_BYTES", 1, raising=False)
-    assert _post(client, progress_id="b" * 32).status_code == 413
-    monkeypatch.undo()
+    with monkeypatch.context() as m:
+        m.setattr(app_module.cfg, "MEDIA_MAX_BYTES", 1, raising=False)
+        assert _post(client, progress_id="b" * 32).status_code == 413
     rows = client.get("/v1/jobs").json()["jobs"]
     assert [r["job_id"] for r in rows] == ["b" * 32, _PID]  # newest first
     assert "result_json" not in rows[0] and "progress" not in rows[0]
@@ -281,6 +281,30 @@ def test_result_drops_dangling_media_ids(client):
         "source_video_expires_at": 2, "source_video_pending": True})
     body = client.get(f"/v1/jobs/{_PID}/result").json()
     assert body == {"text": "hallo"}
+
+
+def test_result_drops_every_key_of_an_expired_video(client):
+    assert _post(client, progress_id=_PID).status_code == 200
+    js.finish(job_id=_PID, state="done", ttl_s=3600, result={
+        "text": "hallo", "source_video_media_id": "cd" * 16,
+        "source_video_expires_at": 2, "source_video_height": 720,
+        "source_video_container": "mp4", "source_video_bytes": 123})
+    assert client.get(f"/v1/jobs/{_PID}/result").json() == {"text": "hallo"}
+
+
+def test_result_keeps_the_pending_video_flag_while_the_run_is_open(client):
+    """The handler stored `source_video_pending` and the video fetch still
+    runs (its progress entry stays open until media/video.py patches the
+    row): a client re-attaching via /result must keep polling."""
+    assert _post(client, progress_id=_PID).status_code == 200
+    js.finish(job_id=_PID, state="done", ttl_s=3600, result={
+        "text": "hallo", "source_video_pending": True})
+    tx_progress._BATCH_PROGRESS[_PID] = {"stage": "downloading", "updated": 0}
+    try:
+        body = client.get(f"/v1/jobs/{_PID}/result").json()
+    finally:
+        tx_progress._BATCH_PROGRESS.pop(_PID, None)
+    assert body == {"text": "hallo", "source_video_pending": True}
 
 
 def test_result_refreshes_a_live_media_expiry(client, tmp_path):
@@ -377,9 +401,30 @@ def test_jobs_finish_logs_a_row_that_vanished(client, app_module, caplog):
     assert any("gone before finish" in r.getMessage() for r in caplog.records)
 
 
+def test_video_landing_before_the_finish_is_attached_by_the_handler(
+        client, app_module, monkeypatch):
+    """The video fetch can end while the handler's own finish is still on
+    its thread: the fetch-side attach then sees `running` and gives up, and
+    the handler-side attach after its finish is what patches the row. The
+    swap pops the flag, so trying from both sides is safe."""
+    _seed_running(app_module)
+    tx_progress._BATCH_PROGRESS.pop(_PID, None)
+    monkeypatch.setattr(media_video.time, "sleep", lambda s: None)
+    state = {"state": "done", "media_id": "cd" * 16, "expires_at": 5,
+             "height": 720, "container": "mp4", "bytes": 88}
+    media_video._jobs_attach_video_sync(_PID, dict(state))   # still running
+    assert js.get_result(_PID) is None
+    js.finish(job_id=_PID, state="done", ttl_s=3600,
+              result={"text": "hallo", "source_video_pending": True})
+    media_video._jobs_attach_video_sync(_PID, dict(state))   # handler side
+    stored = js.get_result(_PID)
+    assert "source_video_pending" not in stored
+    assert stored["source_video_media_id"] == "cd" * 16
+
+
 def test_late_video_outcome_is_patched_into_the_finished_row(client, app_module):
     assert _post(client, progress_id=_PID).status_code == 200
-    row = js.get(_PID)
+    row = js.get(_PID, side_blobs=True)
     js.finish(job_id=_PID, state="done", ttl_s=3600, stages=row["stages"],
               plan=row["plan"],
               result={"text": "hallo", "source_video_pending": True})
@@ -392,7 +437,7 @@ def test_late_video_outcome_is_patched_into_the_finished_row(client, app_module)
     assert "source_video_pending" not in stored
     assert stored["source_video_media_id"] == "cd" * 16
     assert stored["source_video_container"] == "mp4" and stored["text"] == "hallo"
-    assert js.get(_PID)["plan"] == row["plan"]
+    assert js.get(_PID, side_blobs=True)["plan"] == row["plan"]
     # The video landing is not a second finish: finished_at and the TTL stay.
     after = js.get(_PID)
     assert after["finished_ts"] == before["finished_ts"]

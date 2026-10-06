@@ -104,14 +104,15 @@ _MIGRATIONS: tuple[tuple[str, str], ...] = (
     ("plan_json", "TEXT"),
 )
 
-# Every column except the result blob — what `get` / `list_jobs` return.
+# Every column except the result blob — what `get(side_blobs=True)` returns.
 _META_COLS = (
     "job_id, request_id, kind, user_id, key_id, state, created_ts, "
     "finished_ts, expires_ts, model, source_kind, source_name, task, "
     "response_format, error, result_bytes, stages_json, plan_json"
 )
-# The list route never emits the side blobs — don't decode two JSON columns
-# per row on every poll (get() keeps them).
+# No route emits the side blobs (stages / plan, up to 64 kB each), and get()
+# runs on every poll — don't select and decode two JSON columns per row for
+# nothing; they read back as None unless asked for.
 _LIST_COLS = _META_COLS.replace(", stages_json, plan_json", "")
 
 
@@ -339,11 +340,13 @@ def patch_result(job_id: str, patch: Callable[[dict], bool]) -> bool:
         return bool(cur.rowcount)
 
 
-def get(job_id: str) -> dict[str, Any] | None:
-    """Every column except the result blob (polls must not load MBs)."""
+def get(job_id: str, *, side_blobs: bool = False) -> dict[str, Any] | None:
+    """Every column except the result blob (polls must not load MBs); the
+    stages / plan side blobs only with `side_blobs`."""
     conn = _require_conn()
     row = conn.execute(
-        f"SELECT {_META_COLS} FROM jobs WHERE job_id = ?", (job_id,)
+        f"SELECT {_META_COLS if side_blobs else _LIST_COLS} FROM jobs "
+        "WHERE job_id = ?", (job_id,)
     ).fetchone()
     return _row_to_dict(row) if row else None
 

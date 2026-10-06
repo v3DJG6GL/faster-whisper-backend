@@ -18,7 +18,6 @@ import pytest
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.translation import engine as translation
-from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.core import languages
 
 
@@ -264,6 +263,10 @@ def test_guard_reasons():
     assert g("Ein normaler Satz hier mit Laenge",
              "abcdefghijkl" * 4) == "repetition loop"
     assert g("Hallo Welt", "Hello world") is None
+    # A one-word line that translates to itself is a correct output, not
+    # an untranslated copy.
+    assert g("OK.", "OK.") is None
+    assert g("Netflix.", "Netflix.") is None
 
 
 def test_guard_repetition_scan_is_fast_on_large_clean_output():
@@ -302,6 +305,23 @@ def test_merge_sentences_caps_group_size():
 def test_merge_sentences_trailing_open_group():
     assert translation._merge_sentences(_segs("Fertig.", "offen")) == \
         [[0], [1]]
+
+
+def test_merge_sentences_closes_on_a_speaker_change():
+    segs = [{"text": "yeah", "speaker": "A"},
+            {"text": "so what I meant", "speaker": "B"},
+            {"text": "was this", "speaker": "B"}]
+    assert translation._merge_sentences(segs) == [[0], [1, 2]]
+    # No labels (or one side unlabelled): merged exactly as before.
+    assert translation._merge_sentences(_segs("yeah", "so what I meant")) == \
+        [[0, 1]]
+
+
+def test_merge_sentences_sees_full_width_and_quoted_sentence_ends():
+    groups = translation._merge_sentences(
+        _segs("你好！", "真的吗？", 'He said "go."', "Er fragte »wann?«",
+              "「行こう。」", "offen"))
+    assert groups == [[0], [1], [2], [3], [4], [5]]
 
 
 def test_redistribute_proportional_word_boundaries():
@@ -521,6 +541,22 @@ def test_guards_keep_original_after_one_retry(base_cfg, monkeypatch,
     assert "segment 1 (en): kept original" in warns[0]
     assert reason in warns[0]
     assert meta["kept"] == {0: ["en"]}
+
+
+def test_inference_error_surfaces_as_a_client_safe_translation_error(
+        base_cfg, monkeypatch):
+    """llama.cpp raises ValueError for a prompt past n_ctx (and anything can
+    raise on a CUDA OOM): the failure contract still holds — a
+    TranslationError with our own wording, never the raw text."""
+    def boom(llm, family, prompt_or_msgs, max_tokens):
+        raise ValueError("Requested tokens (9000) exceed context window of 2048")
+    monkeypatch.setattr(translation, "_complete", boom)
+    _stub_get_model(monkeypatch)
+    with pytest.raises(translation.TranslationError) as ei:
+        _run(translation.translate_segments(
+            _segs("Hallo Welt"), ["en"], source_lang="de", mode="faithful"))
+    assert "context window" in str(ei.value)
+    assert "9000" not in str(ei.value)
 
 
 def _install_hunyuan_model(monkeypatch):
@@ -1081,12 +1117,6 @@ def test_from_pretrained_fallback_passes_cache_dir(monkeypatch, tmp_path):
     assert record[0][1]["cache_dir"] == str(tmp_path / "hf" / "hub")
 
 
-def test_hf_cache_dir_none_without_root_or_hf_home(monkeypatch):
-    monkeypatch.delenv("HF_HOME", raising=False)
-    monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
-    assert hf_cache.hub_cache_dir() is None
-
-
 def test_offline_env_restored_when_flag_flips_mid_load(monkeypatch):
     """LOCAL_FILES_ONLY is snapshotted ONCE per load: an admin flipping the
     hot setting during the (minutes-long) load must not leak
@@ -1363,9 +1393,10 @@ def _two_overlapping_loads(monkeypatch, made, refs=("o/a", "o/b")):
 
 
 def test_contended_locks_survive_a_second_event_loop(lru_env, monkeypatch):
-    """audio/* is not reloaded per test, and a plain asyncio.Lock binds to
-    the loop it was first CONTENDED on: the per-ref load lock and the infer
-    gate, contended in one loop, must still work in the next one."""
+    """translation/engine.py is not reloaded per test, and a plain
+    asyncio.Lock binds to the loop it was first CONTENDED on — hence the
+    core.loop_lock.LoopLock: the per-ref load lock and the infer gate,
+    contended in one loop, must still work in the next one."""
     made, _stats = lru_env
 
     async def contend_gate():

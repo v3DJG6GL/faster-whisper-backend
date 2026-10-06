@@ -19,6 +19,7 @@ from faster_whisper_backend.transcription import receipt_hold
 from faster_whisper_backend.transcription import run_plan as _run_plan
 from faster_whisper_backend.core import store_common
 from faster_whisper_backend.core.languages import TRANSLATE_CODE_RE as _TRANSLATE_CODE_RE
+from faster_whisper_backend.core.languages import _normalise_code
 from faster_whisper_backend.runtime import preload
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
@@ -63,6 +64,13 @@ _text_translate_rate = _rl.FixedWindow(
 # body cap (main._max_body_mw) bounds the wire size before either check runs.
 _TEXT_TRANSLATE_MAX_SEGMENTS = 2000
 _TEXT_TRANSLATE_MAX_CHARS = 200_000
+# A speaker label prefixes every context line of every prompt: clipped, and
+# counted against the character cap like the text it rides with.
+_TEXT_TRANSLATE_MAX_SPEAKER = 64
+# While the request queues for the GPU slot or its model loads, nothing
+# reports progress — this keeps a held dictation receipt's idle timer fresh
+# meanwhile (LOG_RECEIPT_HOLD_S is at least 5 s).
+_HOLD_HEARTBEAT_S = 2.0
 
 # translate_segments' warning strings name segments by 1-based POSITION
 # ("segment 2", "segments 1-3"). On this endpoint clients address segments by
@@ -156,10 +164,11 @@ async def translate_text(request: Request,
                     status_code=422,
                     detail=f"segments[{i}] must be an object with a string "
                            "'text'")
-            total_chars += len(seg["text"])
             speaker = seg.get("speaker")
-            seg_in.append({"text": seg["text"],
-                           "speaker": speaker if isinstance(speaker, str) else None})
+            speaker = (_log_safe(speaker.strip())[:_TEXT_TRANSLATE_MAX_SPEAKER]
+                       or None) if isinstance(speaker, str) else None
+            total_chars += len(seg["text"]) + len(speaker or "")
+            seg_in.append({"text": seg["text"], "speaker": speaker})
             ids.append(seg.get("id", i))
         if total_chars > _TEXT_TRANSLATE_MAX_CHARS:
             raise HTTPException(
@@ -187,23 +196,38 @@ async def translate_text(request: Request,
                                 detail="targets must be a non-empty list of "
                                        "language codes")
         targets: "list[str]" = []
+        _seen: "set[str]" = set()
         for t in raw_targets:
-            code = t.strip() if isinstance(t, str) else ""
+            # The spelling core.languages.language_codes gives the batch
+            # path's csv: "DE" is "de", "fr-ca" the same target as "fr-CA".
+            code = _normalise_code(t) if isinstance(t, str) else ""
             if not _TRANSLATE_CODE_RE.match(code):
                 raise HTTPException(
                     status_code=422,
                     detail=f"targets contains an invalid language code: {t!r}")
-            if code not in targets:
+            if code.lower() not in _seen:
+                _seen.add(code.lower())
                 targets.append(code)
-        if len(targets) > max_targets:
-            raise HTTPException(
-                status_code=422,
-                detail=f"targets is capped at TRANSLATION_MAX_TARGETS "
-                       f"({max_targets})")
+                # Inside the loop: a 4 MiB body holds ~400k distinct valid
+                # codes, and this runs on the event loop.
+                if len(targets) > max_targets:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"targets is capped at TRANSLATION_MAX_TARGETS "
+                               f"({max_targets})")
 
         source = body.get("source")
         if source is not None and not isinstance(source, str):
             raise HTTPException(status_code=422, detail="source must be a string")
+        # Spliced into every prompt and the receipt: a language code or
+        # nothing ("auto" reads as nothing — the engine's unknown source).
+        source = _normalise_code(source or "")
+        if source == "auto":
+            source = ""
+        if source and not _TRANSLATE_CODE_RE.match(source):
+            raise HTTPException(
+                status_code=422,
+                detail=f"source is not a valid language code: {source[:40]!r}")
         mode = body.get("translation_mode")
         if mode is not None and mode not in ("fluent", "faithful"):
             raise HTTPException(
@@ -274,7 +298,7 @@ async def translate_text(request: Request,
     # first_cb approximates "model ready" — good enough to split load from
     # infer on the completion line when the model was cold.
     _hb = {"last_log": _t0, "last_pct": 0, "first_cb": None}
-    _was_loaded = _tr_model in _tr._models
+    _was_loaded = _tr.is_resident(_tr_model)
     # Take the in-flight slot HERE rather than next to the rate check at
     # the top: a dozen `raise HTTPException` validation exits sit between
     # the two, and each one would have to remember to release a slot it
@@ -303,6 +327,7 @@ async def translate_text(request: Request,
     # finished by _record_run on every non-ok exit and by the success tail.
     _job_row = False
     _job_finished = False
+    _hold_beat: "asyncio.Task | None" = None
     try:
         # Central running-jobs registry entry. Progress feeds in directly from
         # _on_progress below (works whether or not the client sent a progress_id).
@@ -440,8 +465,24 @@ async def translate_text(request: Request,
             # Same policy as the batch stage: the GPU inference semaphore is
             # held only when translation actually runs on cuda — a llama.cpp
             # CPU run must not occupy a GPU slot for its duration.
-            if _tr._resolve_device() == "cuda":
+            _on_gpu = _tr._resolve_device() == "cuda"
+            _queued = {"waiting": _on_gpu}
+            if _held_key:
+                # The held receipt is an IDLE timer only progress restamps:
+                # queued behind long batch runs, or loading a model from a
+                # warm disk cache, the request reports nothing, and the
+                # sweeper would release the receipt as "no result" while the
+                # translation is merely waiting. Stops once the slot is held
+                # and the model is resident — from then on progress (or its
+                # absence: a wedged run) decides, as receipt_hold promises.
+                async def _keep_hold():
+                    while _queued["waiting"] or not _tr.is_resident(_tr_model):
+                        receipt_hold.touch(_held_key)
+                        await asyncio.sleep(_HOLD_HEARTBEAT_S)
+                _hold_beat = asyncio.create_task(_keep_hold())
+            if _on_gpu:
                 async with tx_models.get_inference_semaphore():
+                    _queued["waiting"] = False
                     tx_progress._check_cancelled(_pid)
                     per_seg, warnings, meta = await _run_translation()
             else:
@@ -493,6 +534,8 @@ async def translate_text(request: Request,
         if _inflight_held is not None:
             _translate_inflight.release(_inflight_held)
             _inflight_held = None
+        if _hold_beat is not None:
+            _hold_beat.cancel()      # synchronous: no await in this finally
         # Same reasoning for the held dictation receipt: the five except arms
         # above cover every exception, but a dropped connection raises
         # CancelledError past all of them, and the receipt would then survive
@@ -626,9 +669,13 @@ async def translate_text(request: Request,
         ],
     }
     if _job_row:
-        # Text results are small (segments in, translations out) — inline.
-        tx_progress._jobs_finish_sync(_pid, status="ok", payload=_result,
-                          plan=_result["plan"], model=(meta.get("model") or _tr_model or None))
+        # Off the loop: up to 2000 segments x 10 targets of JSON, encoded and
+        # written under jobs_store's lock (which the retention prune also
+        # holds). Shielded, so a cancellation here cannot leave the row
+        # `running`.
+        await tx_progress._jobs_finish(
+            _pid, status="ok", payload=_result, plan=_result["plan"],
+            model=(meta.get("model") or _tr_model or None))
     # Teach the rates ledger — off the loop (a locked, fsync'd file rewrite)
     # and LAST, so a cancellation landing on this await skips nothing.
     try:

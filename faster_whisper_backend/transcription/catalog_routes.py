@@ -184,7 +184,9 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # diarization/separation stages, so building from the allowlist alone
     # published [] for a server that accepts one model — and a picker
     # pre-flighting on it showed nothing. This is exactly those stages'
-    # admission rule (allowlist ∪ configured). Translation differs: its
+    # admission rule (allowlist ∪ configured, where "configured" is the
+    # CALLER's effective value — an identity override — ahead of the global
+    # one, so a picker defaults to what the caller runs). Translation differs: its
     # EMPTY allowlist is permissive at request time (_translation_model_
     # allowed admits any well-formed ref), so translation_models is "what
     # the picker offers", not "all the server accepts". The list
@@ -192,11 +194,15 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     # allowed model must not be offered (every request naming it would be
     # refused); residency is reported per row by the "loaded" flag instead.
     def _stage_refs(configured, allowed) -> "list[str]":
-        refs = [configured] if configured else []
-        for _m in (allowed or []):
+        refs = []
+        for _m in (*configured, *(allowed or [])):
             if _m and _m not in refs:
                 refs.append(_m)
         return refs
+
+    def _configured(field) -> "tuple[str, str]":
+        return ((effective_config.cfg_for(None, field, _ident) or "").strip(),
+                (getattr(cfg, field, "") or "").strip())
 
     # Additive: text-to-text translation capability surface. The flag is
     # always present (pre-flight for the client's Translate control); the
@@ -205,14 +211,19 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     caps["translation_enabled"] = bool(
         getattr(cfg, "TRANSLATION_ENABLED", False))
     if caps["translation_enabled"]:
-        _t_default = tr_gating._translation_default_model()
+        # The caller's effective TRANSLATION_MODEL (an identity pin or lock)
+        # is what the text route and the batch stage actually run — it leads
+        # the list and names the languages below; the server default follows.
+        _t_server = tr_gating._translation_default_model()
+        _t_default = ((effective_config.cfg_for(None, "TRANSLATION_MODEL", _ident)
+                       or "").strip() or _t_server)
         # "languages": the codes the model supports (TRANSLATION_LANGUAGES
         # override, else its family table ∪ model card), null = unknown.
         caps["translation_models"] = [
             {"id": _ref, "loaded": preload.is_resident("translation", _ref),
              "languages": _tr.languages_for(_ref)}
             for _ref in _stage_refs(
-                _t_default,
+                (_t_default, _t_server),
                 sorted(getattr(cfg, "TRANSLATION_ALLOWED_MODELS", None)
                        or set()))]
         # DEPRECATED — clients read translation_models[].languages. Kept for
@@ -237,12 +248,12 @@ async def whoami_capabilities(user: dict = Depends(_get_current_user_dep)):
     caps["diarization_models"] = [
         {"id": _m, "loaded": preload.is_resident("diarization", _m)}
         for _m in _stage_refs(
-            (getattr(cfg, "DIARIZATION_MODEL", "") or "").strip(),
+            _configured("DIARIZATION_MODEL"),
             getattr(cfg, "DIARIZATION_ALLOWED_MODELS", None))]
     caps["separation_models"] = [
         {"id": _m, "loaded": preload.is_resident("separation", _m)}
         for _m in _stage_refs(
-            (getattr(cfg, "BGM_SEPARATION_UVR_MODEL", "") or "").strip(),
+            _configured("BGM_SEPARATION_UVR_MODEL"),
             getattr(cfg, "BGM_SEPARATION_ALLOWED_MODELS", None))]
     caps["server_info"] = _server_info(caps, _ident)
     return caps

@@ -96,7 +96,7 @@ def test_all_leased_overflows_the_cap(monkeypatch, caplog):
     _register("a")
     tx_models._model_leases["a"] = 1
 
-    with caplog.at_level(logging.WARNING, logger="whisper-server"):
+    with caplog.at_level(logging.WARNING, logger="whisper-api"):
         asyncio.run(tx_models._get_or_load_model("b"))
 
     assert set(tx_models._loaded_models) == {"a", "b"}

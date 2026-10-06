@@ -9,7 +9,7 @@ import re
 from faster_whisper_backend.settings import config as cfg
 
 
-# Mirrors settings_schema._TRANSLATION_MODEL_REF_PATTERN — org/repo[:quant].
+# Mirrors settings/schema.py _TRANSLATION_MODEL_REF_PATTERN — org/repo[:quant].
 _TRANSLATION_REF_RE = re.compile(
     r"\A[A-Za-z0-9][A-Za-z0-9_.\-]*/[A-Za-z0-9_.\-]+(:[A-Za-z0-9_.\-]+)?\Z")
 

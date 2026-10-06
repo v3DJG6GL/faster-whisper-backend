@@ -127,6 +127,20 @@ def test_download_rate_is_learned_under_the_extractor_key(ledger, clock):
     assert _stage(p2.snapshot(), "downloading")["est_s"] == pytest.approx(5.0)
 
 
+def test_a_download_that_teaches_nothing_leaves_the_rate_alone(ledger, clock):
+    """A URL run that reuses the language check's prefetched audio still
+    closes "downloading" with the full file size — over a resolve plus a
+    local copy, not a fetch. learn=False keeps that out of the ledger."""
+    p = _plan(clock, kind="url", stages=["downloading", "transcribing"])
+    p.set_download_bytes(50_000_000, extractor="Youtube")
+    p.tick(stage="downloading", progress=0.0)
+    clock.advance(3)
+    p.stage_done("downloading", learn=False)
+    p.tick(stage="transcribing", progress=0.0)
+    p.finish_run("ok")
+    assert stage_rates.lookup("downloading", "Youtube", None)["src"] == "seed"
+
+
 # --- progression --------------------------------------------------------------
 
 def test_took_replaces_est_and_overall_is_monotone(ledger, clock):
@@ -185,6 +199,37 @@ def test_subphase_ticks_do_not_transition(ledger, clock):
     assert _stage(snap, "translating")["phase"] == "downloading"
     assert [s["stage"] for s in snap["plan"]] == \
         ["separating", "transcribing", "translating"]
+
+
+def test_eta_holds_through_a_wait_in_progress(ledger, clock):
+    """wait_s grows only when a wait ENDS, and _fraction freezes the bar in
+    a warm-up phase: the ETA must not count the estimate down meanwhile and
+    snap back once the phase moves on."""
+    p = _plan(clock)
+    p.set_audio_seconds(600.0, src="decoder")
+    p.tick(stage="waiting")
+    est = p.snapshot()["eta_s"]
+    assert est == pytest.approx(_stage(p.snapshot(), "transcribing")["est_s"])
+    for _ in range(3):
+        clock.advance(60)
+        assert p.snapshot()["eta_s"] == pytest.approx(est)
+    p.tick(stage="analyzing")
+    assert p.snapshot()["eta_s"] == pytest.approx(est)
+
+
+def test_eta_holds_the_unit_sum_through_a_cold_model_fetch(ledger, clock):
+    p = _plan(clock, stages=["translating"], kind="text")
+    p.set_segments(80)
+    p.set_translation(["fr", "de"], model="org/m:Q4", device="cuda",
+                      mode="faithful", source_lang="en")
+    p.tick(stage="translating", progress=0.0)
+    units = _stage(p.snapshot(), "translating")["units"]
+    total = sum(u["est_s"] for u in units)
+    p.tick(stage="downloading")        # labels the active stage
+    clock.advance(60)
+    assert p.snapshot()["eta_s"] == pytest.approx(total, abs=0.2)
+    clock.advance(total)
+    assert p.snapshot()["eta_s"] == pytest.approx(total, abs=0.2)
 
 
 def test_waiting_time_is_billed_apart_from_the_stage(ledger, clock):
@@ -336,6 +381,10 @@ def test_diarizing_units_split_the_stage_and_learn_per_step(ledger, clock):
     assert clu["state"] == "queued"
     # Unit-weighted stage fraction: segmentation's 1 s + a quarter of the
     # embeddings estimate over the three estimates.
+    st = p._get("diarizing")
+    emb_est, clu_est = st.units[1].est_s, st.units[2].est_s
+    assert p._fraction(st, clock()) == pytest.approx(
+        (1.0 + 0.25 * emb_est) / (1.0 + emb_est + clu_est))
     clock.advance(30)
     p.tick(stage="diarizing", target="embeddings", target_progress=1.0)
     p.tick(stage="diarizing", target="clustering", target_progress=None)

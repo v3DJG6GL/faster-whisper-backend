@@ -931,36 +931,28 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     load_path = await _ensure_ct2_model(name)
 
     loop = asyncio.get_running_loop()
-    # Per-model override > global default. Each loaded model can pin its
-    # own device/compute_type/etc. independently.
-    primary_device = effective_config.cfg_for(name, "MODEL_DEVICE")
-    primary_compute = effective_config.cfg_for(name, "MODEL_COMPUTE_TYPE")
-    fallback_device = effective_config.cfg_for(name, "MODEL_DEVICE_FALLBACK")
-    fallback_compute = effective_config.cfg_for(name, "MODEL_COMPUTE_TYPE_FALLBACK")
-    # Load-time hardware kwargs (also per-model overrideable).
-    load_kwargs = {
-        "device": primary_device,
-        "compute_type": primary_compute,
-        "device_index": effective_config.cfg_for(name, "DEVICE_INDEX"),
-        "cpu_threads": effective_config.cfg_for(name, "CPU_THREADS"),
-        "num_workers": effective_config.cfg_for(name, "NUM_WORKERS"),
-    }
+    # Only the DOWNLOAD inputs are read out here, for the pre-download below
+    # (per-model override > global default). The device / compute / thread
+    # kwargs are resolved under the lock: a hardware change saved while this
+    # load is still downloading or queued finds nothing cached to evict
+    # (drain_then_evict), so a value read now would be built and cached stale.
     # Optional load-time fields — only forwarded if non-default to keep
     # WhisperModel(...) clean for the common path.
+    dl_kwargs: dict = {}
     _download_root = effective_config.cfg_for(name, "DOWNLOAD_ROOT")
     if _download_root:
-        load_kwargs["download_root"] = _download_root
+        dl_kwargs["download_root"] = _download_root
     if effective_config.cfg_for(name, "LOCAL_FILES_ONLY"):
-        load_kwargs["local_files_only"] = True
+        dl_kwargs["local_files_only"] = True
     _auth_token = effective_config.cfg_for(name, "HF_TOKEN")
     if _auth_token:
-        load_kwargs["use_auth_token"] = _auth_token
+        dl_kwargs["use_auth_token"] = _auth_token
     # PM-only field (no global counterpart): read directly from override.
     _overrides = getattr(cfg, "MODEL_OVERRIDES", None) or {}
     _m_over = _overrides.get(name) if isinstance(_overrides, dict) else None
     _revision = _m_over.get("REVISION") if isinstance(_m_over, dict) else None
     if _revision:
-        load_kwargs["revision"] = _revision
+        dl_kwargs["revision"] = _revision
 
     # Pre-download the repo under a progress capture when the weights
     # will come from the Hub — faster-whisper hardcodes a disabled tqdm,
@@ -975,7 +967,7 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
     # EVERY other whisper load on the server for its whole duration. The
     # re-check under the lock below is what keeps a concurrent loader that
     # won the race honoured.
-    if not load_kwargs.get("local_files_only") and not os.path.isdir(load_path):
+    if not dl_kwargs.get("local_files_only") and not os.path.isdir(load_path):
         try:
             from faster_whisper_backend.runtime import download_progress
             from huggingface_hub import snapshot_download
@@ -1054,6 +1046,22 @@ async def _get_or_load_model(name: str, *, lease: bool = False) -> "WhisperModel
             logger.info("Evicting model from VRAM (LRU, max=%d): %s",
                         cfg.MAX_LOADED_MODELS, evicted_name)
             _drop_loaded_model(evicted_name)
+
+        # Each loaded model can pin its own device/compute_type/etc.
+        # independently (per-model override > global default); read here,
+        # under the lock drain_then_evict also takes (see above).
+        primary_device = effective_config.cfg_for(name, "MODEL_DEVICE")
+        primary_compute = effective_config.cfg_for(name, "MODEL_COMPUTE_TYPE")
+        fallback_device = effective_config.cfg_for(name, "MODEL_DEVICE_FALLBACK")
+        fallback_compute = effective_config.cfg_for(name, "MODEL_COMPUTE_TYPE_FALLBACK")
+        load_kwargs = {
+            "device": primary_device,
+            "compute_type": primary_compute,
+            "device_index": effective_config.cfg_for(name, "DEVICE_INDEX"),
+            "cpu_threads": effective_config.cfg_for(name, "CPU_THREADS"),
+            "num_workers": effective_config.cfg_for(name, "NUM_WORKERS"),
+            **dl_kwargs,
+        }
 
         logger.info("Loading model: %s", name)
         # NVML delta sampling: compare GPU memory before/after construction

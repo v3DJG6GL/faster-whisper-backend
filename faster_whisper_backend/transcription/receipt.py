@@ -250,7 +250,7 @@ def _format_translate_block(
     lines.append(_section_rule("Translation"))
     rows = [
         ("targets", ", ".join(targets) if targets else "—"),
-        ("source_lang", (source or "").strip() or "auto"),
+        ("source_lang", _log_safe((source or "").strip()) or "auto"),
         ("mode", mode or "—"),
         ("result", result),
         ("wall", f"{secs:.1f}s" + (f"  (load {load_secs:.1f}s)" if load_secs > 0 else "")),

@@ -122,6 +122,7 @@ class Stage:
     frac: float | None = None      # last stage-local fraction from a tick
     phase: str | None = None       # active sub-phase label
     units: list[Unit] | None = None
+    learn: bool = True             # False: ran, but its wall time is no rate sample
 
     def elapsed(self, now: float) -> float:
         if self.started is None:
@@ -256,8 +257,16 @@ class RunPlan:
         with self._lock:
             self._close(name, "failed", None)
 
-    def stage_done(self, name: str, *, took_s: float | None = None) -> None:
+    def stage_done(self, name: str, *, took_s: float | None = None,
+                   learn: bool = True) -> None:
+        """Close `name` as done. `learn=False` keeps it out of the rate
+        ledger: the stage ran, but not at the rate its key stands for (a URL
+        run that reuses the language check's prefetched audio "downloads" a
+        full file in the time of a resolve plus a local copy)."""
         with self._lock:
+            st = self._get(name)
+            if st is not None and not learn:
+                st.learn = False
             self._close(name, "done", took_s)
 
     # ── observation ────────────────────────────────────────────────────
@@ -363,7 +372,7 @@ class RunPlan:
             if status != "ok":
                 return
             for st in self._stages:
-                if st.state != "done" or st.took_s is None:
+                if st.state != "done" or st.took_s is None or not st.learn:
                     continue
                 if st.name == "translating":
                     n = self._segments_for_estimate()
@@ -678,6 +687,13 @@ class RunPlan:
                 return est - elapsed
         return None   # overrun with no evidence: the client says "estimating"
 
+    @staticmethod
+    def _work_elapsed(st: Stage, now: float) -> float:
+        """The stage's wall time minus its queue time — a wait still in
+        progress included (wait_s only grows when a wait ENDS)."""
+        waiting = (now - st.wait_started) if st.wait_started is not None else 0.0
+        return max(0.0, st.elapsed(now) - st.wait_s - waiting)
+
     def _eta_locked(self, now: float) -> float | None:
         eta = 0.0
         for st in self._stages:
@@ -689,10 +705,19 @@ class RunPlan:
                 eta += st.est_s
                 continue
             # active
-            if st.units and st.frac is not None and not self._units_moved(st):
+            # A warm-up phase with no fraction to go on: _fraction holds the
+            # bar there, so the ETA holds too — counting the estimate down by
+            # the clock only to snap back up once the phase ends said nothing.
+            warmup = st.phase is not None and (
+                st.frac is None or st.frac < _PROJECT_MIN_FRAC)
+            if warmup and not st.units and st.est_s is not None:
+                eta += st.est_s
+                continue
+            if (st.units and st.frac is not None and not warmup
+                    and not self._units_moved(st)):
                 # Same stand-in as _fraction: the bar moves on the stage
                 # fraction, so the ETA must not stay the queued-unit sum.
-                r = self._remaining(st.est_s, st.elapsed(now) - st.wait_s,
+                r = self._remaining(st.est_s, self._work_elapsed(st, now),
                                     st.frac)
                 if r is not None:
                     eta += r
@@ -714,7 +739,7 @@ class RunPlan:
                         return None
                     eta += r
                 continue
-            r = self._remaining(st.est_s, st.elapsed(now) - st.wait_s,
+            r = self._remaining(st.est_s, self._work_elapsed(st, now),
                                 st.frac)
             if r is None:
                 return None

@@ -11,8 +11,10 @@ site. These tests pin the two halves of the fix:
     receipt assertions depend on (`✗`, "unchanged", "N step").
 """
 
+import os
 import re
 
+from faster_whisper_backend import paths
 from tests.conftest import FakeInfo
 from faster_whisper_backend.transcription import guards as tx_guards
 from faster_whisper_backend.transcription import receipt as tx_receipt
@@ -55,7 +57,7 @@ def test_no_stage_sections_without_stages(app_module):
     for label in ("Pipeline", "Separation", "Diarization", "Translation",
                   "Notes"):
         assert f"─── {label}" not in block
-    assert "spk" not in block.splitlines()[1]
+    assert "spk" not in block
 
 
 def test_stage_sections_appear_only_for_stages_that_ran(app_module):
@@ -194,40 +196,6 @@ def test_zero_cap_means_unlimited(app_module, monkeypatch):
 # The `*` marker now reaches stage params
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# The /logs viewer parses this block with JS regexes. Nothing else connects
-# the two, so a renamed section or a re-spaced row breaks colouring silently
-# and nobody finds out until someone opens the page.
-# ---------------------------------------------------------------------------
-
-def test_viewer_section_regex_matches_every_section(app_module):
-    block = _block(app_module, stages=_STAGES,
-                   separation={"model": "UVR.onnx", "device": "cuda"},
-                   diarization={"model": "pyannote/x", "min_speakers": 2},
-                   translation={"model": "HY", "targets": ["en", "fr"],
-                                "mode": "fluent"},
-                   guards={"max_words_per_second": 8.0},
-                   warnings=["w"], skipped=["s"])
-    # Mirrors _SEC_RE in the viewer's decorate().
-    sec = re.compile(r"^\s+─── ([A-Za-z][A-Za-z \-]*?)(?:\s\s|\s─)")
-    found = [m.group(1) for m in
-             (sec.match(l) for l in block.splitlines()) if m]
-    for label in ("Pipeline", "Audio", "Separation", "Diarization",
-                  "Translation", "Post-decode guards", "Decode params",
-                  "Segments", "Notes"):
-        assert label in found, f"{label} no longer matches the viewer regex"
-
-
-def test_viewer_segment_row_regex_skips_the_pipeline_table(app_module):
-    """Both tables are indented numeric rows. If the segment-row pattern also
-    matched Pipeline rows, the fold control would hide stage timings."""
-    block = _block(app_module, stages=_STAGES)
-    seg = re.compile(r"^\s+\d+\s+[-\d]")
-    matched = [l for l in block.splitlines() if seg.match(l)]
-    assert len(matched) == len(_SEG)
-    assert not any("separating" in l or "transcribing" in l for l in matched)
-
-
 def test_stage_params_can_be_marked_non_default(app_module):
     """_is_non_default is a whitelist keyed by _KWARG_TO_CFG; without the
     stage entries a diarization knob could stray arbitrarily far from the
@@ -242,6 +210,74 @@ def test_stage_params_can_be_marked_non_default(app_module):
     })
     row = next(l for l in block.splitlines() if "min_speakers" in l)
     assert row.rstrip().endswith("*")
+
+
+def test_task_renders_in_decode_params_with_the_non_default_marker(app_module):
+    """`task` is the one kwarg that changes the output language, yet it was
+    missing from both the order tuple and _KWARG_TO_CFG, so a translate run's
+    decode block was byte-identical to a plain transcription's."""
+    baseline = getattr(app_module.cfg, "_BASELINE", {})
+    assert baseline.get("TASK") == "transcribe"
+    rows = tx_receipt._format_decode_params({"task": "translate", "beam_size": 5})
+    assert rows[0].split()[0] == "task"
+    assert "translate" in rows[0]
+    assert rows[0].rstrip().endswith("*")
+    assert not any(r.split()[0] == "task"
+                   for r in tx_receipt._format_decode_params({"beam_size": 5}))
+
+
+# ---------------------------------------------------------------------------
+# The /logs viewer parses this block with JS regexes. Nothing else connects
+# the two, so a renamed section or a re-spaced row breaks colouring silently
+# and nobody finds out until someone opens the page.
+# ---------------------------------------------------------------------------
+
+def _viewer_re(name):
+    """The viewer's own JS regex literal `const <name> = /…/;`, compiled as
+    Python (the patterns use no JS-only syntax) — a copy here would keep
+    passing after the template changed."""
+    with open(os.path.join(paths.REPO_ROOT, "faster_whisper_backend", "admin",
+                           "templates", "log_viewer.html"),
+              encoding="utf-8") as f:
+        html = f.read()
+    m = re.search(rf"const {name} = /(.+)/;", html)
+    assert m, f"{name} is gone from log_viewer.html"
+    return re.compile(m.group(1))
+
+
+def test_viewer_section_regex_matches_every_section(app_module):
+    block = _block(app_module, stages=_STAGES,
+                   separation={"model": "UVR.onnx", "device": "cuda"},
+                   diarization={"model": "pyannote/x", "min_speakers": 2},
+                   translation={"model": "HY", "targets": ["en", "fr"],
+                                "mode": "fluent"},
+                   guards={"max_words_per_second": 8.0},
+                   warnings=["w"], skipped=["s"])
+    sec = _viewer_re("_SEC_RE")
+    found = [m.group(1) for m in
+             (sec.match(l) for l in block.splitlines()) if m]
+    for label in ("Pipeline", "Audio", "Separation", "Diarization",
+                  "Translation", "Post-decode guards", "Decode params",
+                  "Segments", "Notes"):
+        assert label in found, f"{label} no longer matches the viewer regex"
+
+
+def test_viewer_segment_row_regex_skips_the_pipeline_table(app_module):
+    """Both tables are indented numeric rows. If the segment-row pattern also
+    matched Pipeline rows, the fold control would hide stage timings."""
+    block = _block(app_module, stages=_STAGES)
+    seg = _viewer_re("_SEG_ROW")
+    matched = [l for l in block.splitlines() if seg.match(l)]
+    assert len(matched) == len(_SEG)
+    assert not any("separating" in l or "transcribing" in l for l in matched)
+
+
+def test_viewer_pipeline_row_regex_matches_only_stage_rows(app_module):
+    block = _block(app_module, stages=_STAGES)
+    pipe = _viewer_re("_PIPE_ROW")
+    matched = [m.group(1) for m in (pipe.match(l) for l in block.splitlines())
+               if m]
+    assert matched == [st["name"] for st in _STAGES]
 
 
 def test_speaker_labels_stay_on_the_kept_rows_after_a_drop(app_module):
@@ -293,20 +329,6 @@ def test_downloading_stage_leads_the_pipeline_table(app_module):
     assert "Youtube" in lines[lines.index(rows[0]) + 1]
 
 
-def test_task_renders_in_decode_params_with_the_non_default_marker(app_module):
-    """`task` is the one kwarg that changes the output language, yet it was
-    missing from both the order tuple and _KWARG_TO_CFG, so a translate run's
-    decode block was byte-identical to a plain transcription's."""
-    baseline = getattr(app_module.cfg, "_BASELINE", {})
-    assert baseline.get("TASK") == "transcribe"
-    rows = tx_receipt._format_decode_params({"task": "translate", "beam_size": 5})
-    assert rows[0].split()[0] == "task"
-    assert "translate" in rows[0]
-    assert rows[0].rstrip().endswith("*")
-    assert not any(r.split()[0] == "task"
-                   for r in tx_receipt._format_decode_params({"beam_size": 5}))
-
-
 def test_tail_cut_rows_are_capped_with_a_count(app_module):
     cut = {"rules": ["zero_length"], "n": 2, "from": 1.5, "text": " zu Ende"}
     few = tx_guards.tail_cut_rows([cut] * 3)
@@ -333,3 +355,34 @@ def test_one_fmt_secs_helper(app_module):
     import inspect
     assert inspect.getsource(tx_receipt).count("def _fmt_secs(") == 1
     assert "def _fmt_secs(" not in inspect.getsource(app_module)
+
+
+def test_failed_stage_row_carries_its_error_class():
+    """A soft-failed stage (the job goes on without it) gets a receipt row
+    with the failure class the usage ledger counts; without it a failed
+    stage left no row anywhere."""
+    import time
+    row = tx_receipt._failed_stage(
+        "diarizing", time.perf_counter() - 1.0, "pyannote/x",
+        RuntimeError("CUDA failed with error out of memory"))
+    assert row["name"] == "diarizing" and row["model"] == "pyannote/x"
+    assert row["error"] == "cuda_oom" and row["detail"] == "failed"
+    assert 0.9 <= row["secs"] <= 5.0
+    assert tx_receipt._failed_stage("translating", time.perf_counter(), None,
+                                    TimeoutError())["error"] == "timeout"
+
+
+# ---------------------------------------------------------------------------
+# Standalone translate receipt
+# ---------------------------------------------------------------------------
+
+def test_translate_block_neutralises_a_forged_source_line(app_module):
+    """`source` is client-supplied: a newline in it must not write an
+    attacker-shaped record into the /logs viewer."""
+    block = tx_receipt._format_translate_block(
+        request_id="r", model_name="m", device="cpu", targets=["en"],
+        source="de\n2026-10-06 12:00:00 ERROR [audit] forged", mode="fluent",
+        result="ok", secs=1.0, load_secs=0.0)
+    assert not any(l.startswith("2026-10-06") for l in block.splitlines())
+    row = next(l for l in block.splitlines() if "source_lang" in l)
+    assert "de?2026-10-06" in row

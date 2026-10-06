@@ -46,6 +46,13 @@ hook raises ``ResidualWindowSkipped`` before the encoder runs, and
 long file are untouched: a full 30 s window never sets the flag. Language
 detection pads the first window before any decode and cannot set it either.
 
+The stop is OFF whenever faster-whisper's ``hallucination_silence_threshold``
+is active (it needs word timestamps): that path throws a short window's
+segments away and re-seeks INSIDE the audio it just decoded (to the speech
+after a long silent lead-in, or to a suspected hallucination), and refusing
+that window would drop the re-decode: an empty transcript, or everything
+after the anomaly.
+
 Token cap (``capture(..., token_cap_per_s=10)``)
 ------------------------------------------------
 A decode that falls into a repetition loop runs to the model's hard limit
@@ -235,8 +242,12 @@ def capture(kwargs: "dict | None" = None, *, skip_residual: bool = False,
     ``skip_residual`` the generator must be drained through ``consume()``,
     which absorbs the ``ResidualWindowSkipped`` stop. ``token_cap_per_s``
     (DECODE_TOKEN_CAP_PER_SECOND, 0 = off) bounds every rung's token count by
-    the window's length; see the module docstring."""
+    the window's length; see the module docstring. An active
+    hallucination_silence_threshold turns ``skip_residual`` off (its re-seek
+    starts a window after a short one; module docstring)."""
     kw = kwargs or {}
+    if kw.get("hallucination_silence_threshold") and kw.get("word_timestamps"):
+        skip_residual = False
     tr = DecodeTrace(
         no_speech_threshold=kw.get("no_speech_threshold"),
         log_prob_threshold=kw.get("log_prob_threshold"),
@@ -285,7 +296,7 @@ class _GenerateProxy:
         secs = time.perf_counter() - t0
         try:
             rung = _describe_rung(results, kwargs, secs, tr)
-            if cap is not None and rung.get("tokens", 0) >= cap:
+            if cap is not None and rung.get("max_tokens", rung.get("tokens", 0)) >= cap:
                 rung["capped"] = True
             tr.note_rung(rung)
         except Exception:  # never let bookkeeping break a decode
@@ -316,6 +327,11 @@ def _describe_rung(results, kwargs: dict, secs: float, tr: DecodeTrace) -> dict:
     r0 = results[0]
     tokens = list(r0.sequences_ids[0]) if getattr(r0, "sequences_ids", None) else []
     n = len(tokens)
+    # CT2 runs every best_of candidate until the last one ends and returns
+    # them best-first: [0] is the chosen answer, the longest one is what the
+    # rung's wall time (and the cap) was spent on.
+    max_tokens = max((len(q) for q in (getattr(r0, "sequences_ids", None) or [])),
+                     default=0)
     rung: dict[str, Any] = {
         "secs": secs,
         "tokens": n,
@@ -326,6 +342,8 @@ def _describe_rung(results, kwargs: dict, secs: float, tr: DecodeTrace) -> dict:
         "alp": None,
         "cr": None,
     }
+    if max_tokens > n:
+        rung["max_tokens"] = max_tokens
     scores = getattr(r0, "scores", None)
     if scores:
         # Same arithmetic as generate_with_fallback (transcribe.py:1463-1466).
@@ -538,6 +556,9 @@ def finish(tr: "DecodeTrace | None", segments, info=None) -> "dict | None":
             else:
                 r["outcome"] = _window_outcome(w, r, seg_count, reasons, silence,
                                                ns_thr, lp_thr)
+            if r.get("max_tokens"):
+                # A best_of sibling ran longer than the chosen answer.
+                r["outcome"] += f" · max {r['max_tokens']} tok"
             if r.get("capped"):
                 r["outcome"] += " · hit cap"
         entry = {

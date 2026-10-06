@@ -121,15 +121,23 @@ def _job_for_caller(job_id: str, user: dict, request: Request) -> dict:
     return row
 
 
-def _scrub_media_refs(payload: dict, *, user_id: "str | None") -> dict:
+def _scrub_media_refs(payload: dict, *, user_id: "str | None",
+                      run_open: bool = False) -> dict:
     """A stored result may name retained media (source_media_id and the
     video twin) that has since expired or died with a restart — re-validate
-    each id against the media store and refresh its expiry, or drop the pair
-    so the client never receives a dangling id. A video still pending when
-    the run finished never got its id into the payload; the flag goes too."""
-    for id_key, exp_key in (("source_media_id", "source_media_expires_at"),
-                            ("source_video_media_id",
-                             "source_video_expires_at")):
+    each id against the media store and refresh its expiry, or drop the id
+    with every key describing that media (a video's height / container /
+    bytes too; its client-safe error stays) so the client never receives a
+    dangling id. A video still pending when the run finished keeps its flag
+    while the run is open (`run_open`: media/video.py patches the stored row
+    with the video keys once the fetch ends, so the client keeps polling);
+    once the run closed without that patch (task died, restart) the flag
+    goes too."""
+    for id_key, exp_key, extra in (
+            ("source_media_id", "source_media_expires_at", ()),
+            ("source_video_media_id", "source_video_expires_at",
+             ("source_video_height", "source_video_container",
+              "source_video_bytes"))):
         if id_key not in payload and exp_key not in payload:
             continue
         mid = payload.get(id_key)
@@ -138,9 +146,10 @@ def _scrub_media_refs(payload: dict, *, user_id: "str | None") -> dict:
         if ok:
             payload[exp_key] = url_media_store.expires_at_unix(mid)
         else:
-            payload.pop(id_key, None)
-            payload.pop(exp_key, None)
-    payload.pop("source_video_pending", None)
+            for k in (id_key, exp_key, *extra):
+                payload.pop(k, None)
+    if not run_open:
+        payload.pop("source_video_pending", None)
     return payload
 
 
@@ -194,7 +203,9 @@ async def job_result(job_id: str, request: Request,
     if payload is None:
         raise HTTPException(status_code=404, detail="no result for this job")
     if isinstance(payload, dict):
-        payload = _scrub_media_refs(payload, user_id=user.get("user_id"))
+        payload = _scrub_media_refs(
+            payload, user_id=user.get("user_id"),
+            run_open=tx_progress._progress_entry_for(job_id, user) is not None)
     return _JSONResponse(payload, headers={"Cache-Control": "no-store"})
 
 

@@ -57,7 +57,7 @@ def test_start_and_finish_round_trip_dict_result(db):
     assert db.finish(job_id=jid, state="done", result={"text": "hallo"},
                      stages=[{"name": "transcribing", "secs": 1.5}],
                      plan=[{"stage": "transcribing"}], ttl_s=_TTL)
-    row = db.get(jid)
+    row = db.get(jid, side_blobs=True)
     assert row["state"] == "done" and row["result_available"] is True
     assert row["error"] is None and row["finished_ts"] is not None
     assert row["result_bytes"] == len(b'{"text": "hallo"}')
@@ -148,7 +148,8 @@ def test_list_jobs_skips_the_side_blobs(db):
     db.finish(job_id=jid, state="done", result={"text": "x"},
               stages=[{"name": "transcribing"}], plan=[{"stage": "t"}],
               ttl_s=_TTL)
-    assert db.get(jid)["stages"] == [{"name": "transcribing"}]
+    assert db.get(jid, side_blobs=True)["stages"] == [{"name": "transcribing"}]
+    assert db.get(jid)["stages"] is None, "a poll never decodes them"
     (row,) = db.list_jobs(user_id="u1", key_id="k1")
     assert row["stages"] is None and row["plan"] is None
     assert row["result_available"] is True
@@ -268,20 +269,23 @@ def test_delete_and_clear(db):
 
 
 def test_sweep_retention_reads_live_config(db, monkeypatch):
+    """A lowered row / byte cap applies on the next sweep tick."""
     from faster_whisper_backend.settings import config as cfg
-    _start(db, job_id="a" * 32)
-    time.sleep(0.01)
-    monkeypatch.setattr(cfg, "JOBS_TTL_S", 1, raising=False)
-    monkeypatch.setattr(cfg, "JOBS_MAX_ROWS", 0, raising=False)
+    monkeypatch.setattr(cfg, "JOBS_MAX_ROWS", 100, raising=False)
     monkeypatch.setattr(cfg, "JOBS_MAX_BYTES", 0, raising=False)
-    # Row expiry is stamped at start (ttl 3600) — the sweep honours the
-    # stored expires_ts, so nothing goes yet.
+    ids = []
+    for jid in ("a" * 32, "b" * 32, "c" * 32):
+        _start(db, job_id=jid)
+        db.finish(job_id=jid, state="done", result={"t": 1}, ttl_s=_TTL)
+        ids.append(jid)
+        time.sleep(0.01)                    # created_ts apart: a oldest
+    a, b, c = ids
     assert db.sweep_retention() == 0
-    db.finish(job_id="a" * 32, state="done", result={"t": 1}, ttl_s=0.0)
-    time.sleep(0.01)
+    monkeypatch.setattr(cfg, "JOBS_MAX_ROWS", 2, raising=False)
     assert db.sweep_retention() == 1
-    # A lowered TTL applies to every row stamped from then on.
-    b = _start(db, job_id="b" * 32)
-    db.finish(job_id=b, state="done", result={"t": 1},
-              ttl_s=float(cfg.JOBS_TTL_S))
-    assert db.get(b)["expires_ts"] <= time.time() + 1.5
+    assert db.get(a) is None and db.get(b) is not None
+    monkeypatch.setattr(cfg, "JOBS_MAX_ROWS", 0, raising=False)
+    monkeypatch.setattr(cfg, "JOBS_MAX_BYTES", db.get(c)["result_bytes"],
+                        raising=False)
+    assert db.sweep_retention() == 1
+    assert db.get(b) is None and db.get(c) is not None
