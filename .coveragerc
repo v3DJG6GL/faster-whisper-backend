@@ -1,5 +1,5 @@
 # Coverage configuration. Measures the application package and the yt-dlp
-# SSRF guard plugin (tests/url/test_url_ssrf_guard.py loads the guard
+# SSRF guard plugin (test_ssrf_guard.py loads the guard
 # in-process by path, so its lines map back to ytdlp_plugins/).
 #
 # Omitted:

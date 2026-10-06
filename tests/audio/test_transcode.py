@@ -122,7 +122,7 @@ def test_transcode_input_open_pins_file_protocol_whitelist(tmp_path, monkeypatch
     """A PyAV upgrade or an av.open refactor must not silently drop the
     ``protocol_whitelist: file`` option — it is what stops a crafted
     ffconcat/HLS/SDP input from following external file:// or http://
-    references (tests/url/test_url_ssrf_guard.py is the URL-side twin)."""
+    references (test_ssrf_guard.py is the URL-side twin)."""
     import av
     src = _write_src_wav(str(tmp_path / "in.wav"), rate=RATE, nchannels=1)
     dst = str(tmp_path / "out.wav")

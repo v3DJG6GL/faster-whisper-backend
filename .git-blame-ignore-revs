@@ -5,3 +5,5 @@
 # (Forgejo and GitHub honour the file automatically.)
 b5318937703a1665ac9873852acdda467bacc4eb
 7dbfef0f0510e8c6a828836479b4aa0f05d7c17d
+# 2026-10-06 structure fixes: test files moved to the package they test.
+3ca8bdd1a04566fc7e9cb22613bdf5ea53ee599a

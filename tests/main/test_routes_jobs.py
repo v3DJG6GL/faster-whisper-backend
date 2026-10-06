@@ -89,8 +89,9 @@ def test_cancelled_run_lands_as_cancelled(client, app_module):
 
 def test_text_translation_run_gets_a_translate_row(client, app_module,
                                                     monkeypatch):
-    from tests.audio.test_routes_text_translations import (
-        _body, _enable, _stub_translate)
+    from tests._translation_helpers import (
+        enable_translation as _enable, stub_translate as _stub_translate,
+        text_translation_body as _body)
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
     r = client.post("/v1/text/translations",
@@ -106,7 +107,8 @@ def test_text_translation_run_gets_a_translate_row(client, app_module,
 def test_text_translation_failure_records_failed(client, app_module,
                                                   monkeypatch):
     from faster_whisper_backend.audio import translation
-    from tests.audio.test_routes_text_translations import _body, _enable
+    from tests._translation_helpers import (
+        enable_translation as _enable, text_translation_body as _body)
     _enable(app_module, monkeypatch)
 
     async def _fail(*a, **kw):

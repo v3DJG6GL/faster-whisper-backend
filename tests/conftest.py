@@ -679,3 +679,20 @@ def make_user_key(app_module):
 def bearer(raw_key):
     """Authorization header dict for a raw API key."""
     return {"Authorization": f"Bearer {raw_key}"}
+
+
+def fake_request(headers=None, client=("127.0.0.1", 12345)):
+    """A bare GET Request on /stats/stream for exercising auth dependencies
+    directly (the SSE bodies are infinite, so they are never driven over HTTP)."""
+    from starlette.requests import Request
+    raw_headers = [
+        (k.lower().encode(), v.encode()) for k, v in (headers or {}).items()
+    ]
+    return Request({
+        "type": "http",
+        "method": "GET",
+        "path": "/stats/stream",
+        "headers": raw_headers,
+        "query_string": b"",
+        "client": client,
+    })

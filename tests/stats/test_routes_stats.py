@@ -520,7 +520,7 @@ def test_stream_rechecks_version(client, make_user_key, app_module):
     from faster_whisper_backend import config_store
     from faster_whisper_backend.stats import routes as stats_routes
     from fastapi import HTTPException
-    from tests.auth.test_sse_auth_shared import _fake_request
+    from tests.conftest import fake_request as _fake_request
     from tests.conftest import bearer
 
     src = inspect.getsource(stats_routes.stats_stream)

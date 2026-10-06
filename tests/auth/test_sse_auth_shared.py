@@ -7,24 +7,10 @@ we exercise the dependencies directly with a constructed ASGI scope instead of
 driving them over HTTP."""
 
 from fastapi import HTTPException
-from starlette.requests import Request
 
 from tests.conftest import bearer
+from tests.conftest import fake_request as _fake_request
 from faster_whisper_backend.auth import dependencies as auth
-
-
-def _fake_request(headers=None, client=("127.0.0.1", 12345)):
-    raw_headers = [
-        (k.lower().encode(), v.encode()) for k, v in (headers or {}).items()
-    ]
-    return Request({
-        "type": "http",
-        "method": "GET",
-        "path": "/stats/stream",
-        "headers": raw_headers,
-        "query_string": b"",
-        "client": client,
-    })
 
 
 _REMOTE = ("203.0.113.9", 1234)  # TEST-NET-3, outside the admin allowlist

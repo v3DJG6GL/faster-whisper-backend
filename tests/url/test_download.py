@@ -550,7 +550,7 @@ def test_probe_selects_download_format(monkeypatch):
     # The stand-in yt_dlp has no .networking, so the SSRF guard cannot install
     # into it — and probe() fails closed when it can't. Nothing here reaches
     # the network, so stub the check out along with the downloader itself.
-    # (The guard's own behaviour is covered by tests/url/test_url_ssrf_guard.py.)
+    # (The guard's own behaviour is covered by test_ssrf_guard.py.)
     monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
     monkeypatch.setattr(udl, "match_extractor", lambda u: "Youtube")
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
@@ -599,7 +599,7 @@ def test_probe_rejects_channel_page_as_playlist(monkeypatch):
     # The stand-in yt_dlp has no .networking, so the SSRF guard cannot install
     # into it — and probe() fails closed when it can't. Nothing here reaches
     # the network, so stub the check out along with the downloader itself.
-    # (The guard's own behaviour is covered by tests/url/test_url_ssrf_guard.py.)
+    # (The guard's own behaviour is covered by test_ssrf_guard.py.)
     monkeypatch.setattr(udl, "guard_self_check", lambda **kw: None)
     monkeypatch.setattr(udl, "match_extractor", lambda u: "YoutubeTab")
     monkeypatch.setattr(udl.cfg, "URL_ALLOWED_EXTRACTORS", [], raising=False)
