@@ -491,6 +491,10 @@
      so it is dimmed and inert until another preset is picked. */
   body.preset-usage .rings-label, body.preset-usage #live-range, body.preset-usage #ring-scrub,
   body.preset-usage #status { opacity: .35; pointer-events: none; }
+  /* No machine tiles at all (machine=false scope): the rings controls have
+     nothing to drive, so they go; #status stays as the connection pill. */
+  body.no-machine .rings-label, body.no-machine #live-range,
+  body.no-machine #ring-scrub { display: none; }
   /* ...and the 'ops' preset has no usage cards, so the measure control
      (and the usage sub-bar) is dimmed the same way. */
   body.preset-ops .subbar-usage { opacity: .35; pointer-events: none; }
@@ -1095,7 +1099,7 @@ function nearestIdx(xs, ts) {
 // spark follows through the sync key) and freezes the readouts there; Space
 // pauses at the newest sample, L returns to live. In range mode the sparks
 // show the sampled history from /stats/history instead of the ring
-// (refreshed each minute) and the scrubber is off.
+// (refreshed each minute) and the scrubber walks that history instead.
 let liveMode = 'live';          // 'live' | seconds of history window
 let rangeTimer = null;
 const SPARK_METRIC = { gpu_util: 'gpu_util', gpu_mem: 'gpu_mem_mb', gpu_temp: 'gpu_temp',
@@ -1258,6 +1262,13 @@ function setLiveMode(v) {
   rangeTimer = setInterval(loadRangeSparks, 60000);
   refreshStatusPill();
 }
+// No ring tile on the page (machine=false scope, or the 'usage' preset):
+// Space / arrows / L would pause rings nobody sees — in own scope the pill
+// then counted "N s behind" forever, since applyFreeze never runs there.
+function ringsInert() {
+  return document.body.classList.contains('no-machine')
+    || document.body.classList.contains('preset-usage');
+}
 // Wired from the SSE section, once `$` and statusEl exist (this block
 // sits above their declarations in the file).
 function wireRingControls() {
@@ -1284,6 +1295,7 @@ function wireRingControls() {
     if (e.defaultPrevented) return;
     if (/^(INPUT|SELECT|TEXTAREA|BUTTON|A)$/.test(tgt.tagName) || tgt.isContentEditable) return;
     if (e.altKey || e.ctrlKey || e.metaKey) return;
+    if (ringsInert()) return;
     if (e.key === ' ') {
       e.preventDefault();
       if (frozenTs == null) scrubTo(scrubAxis().length - 1); else backToLive();
@@ -1529,6 +1541,7 @@ function applyScope(snap) {
     if (typeof window._fwUsageReload === 'function') window._fwUsageReload();
   }
   if (snap.machine === false) {
+    document.body.classList.add('no-machine');
     // Presets pick machine tiles that are gone for this scope: force the
     // full set (without overwriting the remembered choice) and hide the
     // control; the '-own' key keeps this layout apart from an admin's.
@@ -1602,6 +1615,11 @@ function renderModels(snap) {
     const srcBadge = m.size_src && m.size_src !== 'measured'
       ? ` <span class="badge est" title="${m.size_src === 'disk' ? 'on-disk prior, never measured on this placement' : 'measured on another device / compute type'}">est</span>`
       : '';
+    // A cuda load whose NVML delta came back 0 reports vram_mb 0: no reading,
+    // so fall back to the size estimate — and the est badge describes that
+    // estimate, so it rides only on that branch.
+    const vramCell = m.vram_mb ? m.vram_mb.toFixed(0)
+      : (m.size_bytes != null ? (m.size_bytes / 1048576).toFixed(0) + srcBadge : '—');
     const disk = m.disk_bytes != null ? fmtBytes(m.disk_bytes / 1048576) : '—';
     return `<tr>
       <td data-label="role"><span class="role"><i style="background:${role[1]}"></i>${esc(role[0])}</span></td>
@@ -1610,7 +1628,7 @@ function renderModels(snap) {
       <td data-label="compute">${esc(m.compute_type || '—')}</td>
       <td class="num" data-label="audio">${audio}</td>
       <td class="num" data-label="RTF">${rtf}</td>
-      <td class="num" data-label="VRAM (MB)">${m.vram_mb != null ? m.vram_mb.toFixed(0) : (m.size_bytes != null ? (m.size_bytes / 1048576).toFixed(0) : '—')}${srcBadge}</td>
+      <td class="num" data-label="VRAM (MB)">${vramCell}</td>
       <td class="num" data-label="disk">${disk}</td>
       <td data-label="state"><span class="badge ${warm ? 'warm' : 'cold'}">${warm ? 'warm' : 'cold'}</span></td>
       <td class="num" data-label="age">${fmtSec(m.age_sec)}</td>
@@ -1974,6 +1992,11 @@ let rjExhausted = false;
 // the table would silently skip those jobs.
 let rjAnchored = false;
 let rjHeld = [];
+// rjHeld grows at the server's job rate while the tab stays open, and every
+// held row is rebuilt each frame. Past the cap the anchor is dropped as a
+// whole (trimming the middle would recreate the gap) and the foot says so.
+const RJ_HELD_MAX = 500;
+let rjDropped = false;
 
 function rjView() {
   const b = document.querySelector('#rj-view button.active');
@@ -1986,7 +2009,7 @@ let rjGen = 0;
 function rjResetPages() {
   rjGen++;
   rjExtra = []; rjCursor = null; rjExhausted = false;
-  rjAnchored = false; rjHeld = [];
+  rjAnchored = false; rjHeld = []; rjDropped = false;
   const btn = $('rj-more'); if (btn) { btn.disabled = false; btn.textContent = 'load older jobs'; }
 }
 function rjServerParams() {
@@ -2004,7 +2027,7 @@ function rjServerParams() {
 function rjLoadMore() {
   const btn = $('rj-more'); if (!btn || rjExhausted) return;
   const rt = ((lastJobsSnap && lastJobsSnap.recent_transcriptions) || []).concat(rjHeld);
-  rjAnchored = true;
+  rjAnchored = true; rjDropped = false;
   const oldest = rjExtra.length ? rjExtra[rjExtra.length - 1].ts
     : rt.reduce((m, r) => (r.ts && (m == null || r.ts < m)) ? r.ts : m, null);
   const p = rjServerParams();
@@ -2041,6 +2064,7 @@ function renderJobs(snap) {
     const left = (lastJobsSnap.recent_transcriptions || [])
       .filter(r => !now.has(rjId(r)) && !held.has(rjId(r)));
     if (left.length) rjHeld = left.concat(rjHeld).sort((a, b) => (b.ts || 0) - (a.ts || 0));
+    if (rjHeld.length > RJ_HELD_MAX) { rjResetPages(); rjDropped = true; }
   }
   lastJobsSnap = snap;
   const flt = rjFilter();
@@ -2148,6 +2172,7 @@ function renderJobs(snap) {
   const note = $('rj-foot-note');
   if (note) note.textContent = rjExtra.length
     ? `${rjExtra.length} older job${rjExtra.length === 1 ? '' : 's'} loaded` + (rjExhausted ? ' · that is all' : '')
+    : rjDropped ? `older pages dropped after ${RJ_HELD_MAX} new jobs · load older again`
     : (rt.length ? 'newest jobs from the live snapshot' : '');
 }
 
@@ -2213,6 +2238,12 @@ function openStream() {
       console.warn('[stats] parse error', err);
     }
   };
+  es.onopen = () => {
+    // The browser reconnects an EventSource by itself after a blip: a
+    // (re)connect ends recovery polling, or the probe would wipe the ring
+    // history (and a freeze) and reopen a healthy stream.
+    if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }
+  };
   es.onerror = () => {
     setStatus('reconnecting…', 'paused');
     // Service may have restarted. Mirror /settings: poll a cheap idempotent
@@ -2223,6 +2254,7 @@ function openStream() {
     const probe = async () => {
       try {
         const r = await fetch('/v1/models', { cache: 'no-store' });
+        if (!recoveryTimer) return;   // onopen / a tab hide cancelled it meanwhile
         if (r.ok) {
           clearTimeout(recoveryTimer);
           recoveryTimer = null;
@@ -2233,6 +2265,7 @@ function openStream() {
           return;
         }
       } catch {}
+      if (!recoveryTimer) return;
       delay = Math.min(delay * 1.7, 30000);
       recoveryTimer = setTimeout(probe, delay);
     };

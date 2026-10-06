@@ -155,7 +155,10 @@ def record_trace(
         username = api_keys_store.get_username(user_id)
     except Exception:
         username = None
-    final_text = final or ""
+    from faster_whisper_backend.stats import recent_transcriptions_store as _rts
+    # Same caps as the durable row: the live entry is what /quick-config's
+    # Report posts, and the report route's edge bounds 422 anything past them.
+    raw, final_text, steps = _rts.cap_trace_fields(raw or "", final or "", steps or [])
     tokens = _tokenize(final_text)
     bigrams = _extract_bigrams(final_text)
     created_ts = time.time()
@@ -168,8 +171,7 @@ def record_trace(
         "source": source or "file",
         "raw": raw or "",
         "raw_text": raw or "",
-        "steps": [list(s) if isinstance(s, (tuple, list)) else s
-                  for s in (steps or [])],
+        "steps": steps,
         "final": final_text,
         "final_text": final_text,
         "tokens": tokens,

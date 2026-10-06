@@ -138,3 +138,18 @@ def test_broadcast_drops_on_full_queue():
     q._broadcast({"event": "trace"})
     assert sub.qsize() == q._SUBSCRIBER_QUEUE_MAX
     assert sub in q._subscribers
+
+
+def test_live_trace_entry_carries_the_stored_caps():
+    """The live entry is what /quick-config's Report button posts; uncapped,
+    a long file job's report 422'd at the report route's edge bounds while
+    the same entry worked after a reload (the stored copy is capped)."""
+    from faster_whisper_backend.reports.routes import ReportSubmitIn
+    sub = q.subscribe()
+    q.record_trace(model="m", raw="w " * 40_000, final="f " * 40_000,
+                   steps=[("lbl", "x" * 70_000, "y" * 70_000)] * 20)
+    e = sub.get_nowait()["data"]
+    assert len(e["raw"]) <= 50_000 and len(e["final"]) <= 50_000
+    assert e["raw_text"] == e["raw"] and e["final_text"] == e["final"]
+    ReportSubmitIn(user_comment="x", raw=e["raw"], final=e["final"],
+                   steps=e["steps"])

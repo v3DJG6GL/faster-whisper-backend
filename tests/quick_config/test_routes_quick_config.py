@@ -525,6 +525,36 @@ def test_quick_config_page_save_and_recent_guards(client):
     assert body.index("await api(") < body.index("_seenReqIds = new Set();")
 
 
+def test_quick_config_page_reload_failure_and_reapply_guards(client):
+    """No JS harness: pin the strings. loadOlder bails while a reload is in
+    flight (its gen was already bumped, so the gen guard passed and the old
+    cursor paged the new term); a failed reload keeps the list instead of
+    wiping it to "No transcriptions yet"; sub-second audio does not read
+    "0 s"; the re-apply strip keeps polling after one failed status fetch
+    and a thrown POST shows the error."""
+    html = client.get("/quick-config").text
+    older = html[html.index("async function loadOlder()"):
+                 html.index("function rebuildDatalist()")]
+    assert older.index("if (_pushedDuringReload) return;") < older.index(
+        "const gen = _recentGen;")
+    body = html[html.index("async function reloadRecent()"):
+                html.index("async function loadOlder()")]
+    fail = body.index("if (!j) {")
+    assert body.index(
+        "if (gen !== _recentGen) return;   // a newer reload owns the list now"
+    ) < fail < body.index("list.innerHTML = '';")
+    assert body.index("return;", fail) < body.index("_seenReqIds = new Set();")
+    dur = html[html.index("function traceDur("):]
+    assert dur.index("if (s < 0.5) return '<1 s';") < dur.index(
+        "return Math.round(s) + ' s';")
+    start = html[html.index("async function startReapplyJobSilent("):
+                 html.index("function doDiscard()")]
+    assert "catch (e) { fail(String(e)); return; }" in start
+    assert ("if (status !== 'done' && status !== 'error' "
+            "&& status !== 'idle') {") in start
+    assert "status === 'running'" not in start
+
+
 def test_redact_collapses_hidden_rule_ordinals():
     """The schema's guard messages read `rule {idx} ({slug!r}) entry {e}:`
     — after the slug swap the ordinal still gave away the hidden rule's list
@@ -617,6 +647,43 @@ def test_redact_keeps_own_map_keys_that_equal_a_hidden_slug():
     out = q._redact_invisible_slugs(
         [{"loc": "PIPELINE_RULES", "msg": msg}], user, rules)
     assert out == [{"loc": "PIPELINE_RULES", "msg": msg}]
+
+
+def test_redact_blanks_stale_slug_errors_listing_hidden_rules():
+    """A stale stored slug reference (CAPTURES_PIPELINE_RULES_EXCLUDE,
+    MODEL_OVERRIDES[...] EXCLUDE) fails the model-level check with loc ''
+    and "Valid: [every slug]" — bare quoted slugs that neither the
+    PIPELINE_RULES.N branch nor the slug swap matched, so a non-admin's
+    quick-config save got the full list of admin-hidden rule names."""
+    from pydantic import ValidationError
+    from faster_whisper_backend.quick_config import routes as q
+    from faster_whisper_backend.settings.schema import (
+        AdminConfig, format_validation_errors)
+
+    rules = [{"name": name, "label": name, "type": "regex-list",
+              "entries": [{"pattern": "x", "replacement": "y"}]}
+             for name in ("strip-stray-symbols", "geheim-map",
+                          "strip-trailing-period")]
+    hidden = {"strip-stray-symbols", "geheim-map"}
+
+    class _Perms:
+        def can_see_rule(self, rule):
+            return rule.get("name") not in hidden
+
+    user = {"is_admin": False, "permissions": _Perms()}
+    for extra in ({"CAPTURES_PIPELINE_RULES_EXCLUDE": ["gone-rule"]},
+                  {"MODEL_OVERRIDES": {"large-v3": {
+                      "PIPELINE_RULES_EXCLUDE": ["gone-rule"]}}}):
+        with pytest.raises(ValidationError) as ei:
+            AdminConfig.model_validate({"PIPELINE_RULES": rules, **extra})
+        errs = format_validation_errors(ei.value)
+        assert any("'strip-stray-symbols'" in e["msg"] for e in errs)
+        out = q._redact_invisible_slugs(errs, user, rules)
+        for e in out:
+            for slug in hidden:
+                assert f"'{slug}'" not in e["loc"], (slug, e)
+                assert f"'{slug}'" not in e["msg"], (slug, e)
+        assert {"loc": "<hidden rule>", "msg": "<hidden rule>"} in out
 
 
 def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,

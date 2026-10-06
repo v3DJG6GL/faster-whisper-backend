@@ -54,6 +54,12 @@ def init_db(path: str) -> None:
     store_common.secure_db_file(path)
 
 
+def is_open() -> bool:
+    """True once init_db() opened the DB. The sampler checks it so a store
+    that failed at startup is not re-reported on every flush."""
+    return _conn is not None
+
+
 def _require_conn() -> sqlite3.Connection:
     if _conn is None:
         raise RuntimeError("system_metrics_store.init_db() was not called before use.")

@@ -209,6 +209,28 @@ def test_dictation_targets_per_language_with_kept_count(usage_store_db):
     assert narrowed["dictation"]["targets"] == doc["dictation"]["targets"]
 
 
+def test_with_document_dictation_targets_honour_the_kind_filter(usage_store_db):
+    """The with= document claims every figure is kind-scoped, but
+    dictation.targets hard-coded kind='dictation' and ignored the filter:
+    kind=file listed the dictation targets next to dictation.sessions 0."""
+    us = usage_store_db
+    tr = lambda code: [{"name": "translating", "secs": 1.0, "targets": [code]}]
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
+                    kind="dictation", job_id="d" * 32, stages=tr("de"))
+    us.record_usage(key_id="k", user_id="u", audio_s=5.0, words=20, status="ok",
+                    kind="file", job_id="f" * 32, stages=tr("fr"))
+    files = us.document("u", days=1, tz=_UTC, tz_name="UTC",
+                        with_stages=("translating",), kinds=("file",))
+    assert files["range"].get("kind_scoped") is not False
+    assert files["dictation"]["sessions"] == 0
+    assert files["total"]["all"]["sessions"] == 1
+    assert files["dictation"]["targets"] == []
+    dicts = us.document("u", days=1, tz=_UTC, tz_name="UTC",
+                        with_stages=("translating",), kinds=("dictation",))
+    assert dicts["dictation"]["targets"] == [
+        {"code": "de", "runs": 1, "kept_original": 0}]
+
+
 def test_stage_and_target_rollups(usage_store_db):
     us = usage_store_db
     us.record_usage(
@@ -620,7 +642,9 @@ def test_sweep_marks_unreported_and_prunes(usage_store_db):
     # Hourly retention takes the old rollup rows in every hour-keyed table.
     counts = us.sweep(unreported_after_h=24, jobs_retention_days=0,
                       app_retention_days=0, hourly_retention_days=1)
-    assert counts["hourly"] >= 3
+    assert counts["hourly"] == 4
+    assert conn.execute(
+        "SELECT COUNT(*) FROM usage_stage_hourly").fetchone()[0] == 0
     assert us.totals_for_user("u")["words"] == 30
     assert conn.execute(
         "SELECT COUNT(*) FROM usage_dictation_hourly").fetchone()[0] == 1

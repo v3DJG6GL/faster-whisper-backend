@@ -195,9 +195,10 @@ def test_leaderboard_user_filter(usage_store_db):
 
 
 def test_series_and_leaderboard_carry_proc_s_and_sessions(usage_store_db):
-    """processing_s and sessions were written on every request and read by nobody
-    on /stats; both readers now sum them and the leaderboard can rank by
-    them."""
+    """processing_s and sessions are written on every request; the rollup
+    readers series() and leaderboard() sum them and the leaderboard can rank
+    by them. Neither has a /stats caller (overview() builds that page's
+    series and leaderboard)."""
     us = usage_store_db
     us.record_usage(key_id="k1", user_id="a", audio_s=10.0, words=1, status="ok",
                     hour=1, processing_s=2.0, job_id="j1", kind="file")

@@ -329,6 +329,16 @@ def _redact_invisible_slugs(
         if swapped and not _HIDDEN_GUARD_REASON.search(red.get("msg") or ""):
             red["loc"] = "<hidden rule>"
             red["msg"] = "<hidden rule>"
+        # Errors off PIPELINE_RULES (model-level stale-slug checks on
+        # MODEL_OVERRIDES / OVERRIDE_PROFILES / CAPTURES_PIPELINE_RULES_EXCLUDE)
+        # quote slugs bare inside a list and append "Valid: [every slug]".
+        # Map-key collisions always carry loc "PIPELINE_RULES", so a bare
+        # quoted match here cannot be the caller's own map key.
+        elif not loc.startswith("PIPELINE_RULES") and any(
+                f"'{slug}'" in str(red.get(key) or "")
+                for slug in hidden for key in ("loc", "msg")):
+            red["loc"] = "<hidden rule>"
+            red["msg"] = "<hidden rule>"
         out.append(red)
     return out
 

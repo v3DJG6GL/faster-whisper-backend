@@ -80,6 +80,24 @@ def test_flush_writes_once_and_prune_drops_old(sampler, sm_store, monkeypatch):
     assert sampler.prune() == 0
 
 
+def test_flush_without_an_open_store_drops_quietly(sampler, monkeypatch):
+    """init_db failed at startup: flush() used to call record(), get
+    "init_db() was not called" and log "flush failed" every minute for the
+    life of the process (eating the shared _warn budget). It now drops the
+    queued rows without a warning; prune() skips too."""
+    from faster_whisper_backend.stats import system_metrics_store
+    monkeypatch.setattr(system_metrics_store, "_conn", None)
+    monkeypatch.setattr(sampler.cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 1, raising=False)
+    warned = []
+    monkeypatch.setattr(sampler, "_warn", lambda *a: warned.append(a))
+    for i in range(3):
+        sampler.tick(4_000_000 + i)
+    assert len(sampler._pending) == 3
+    assert sampler.flush() == 0
+    assert sampler._pending == [] and warned == []
+    assert sampler.prune() == 0
+
+
 def test_nvml_failure_yields_none_fields_not_an_exception(sampler, monkeypatch):
     def _boom():
         raise RuntimeError("NVML down")

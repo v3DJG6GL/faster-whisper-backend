@@ -847,6 +847,8 @@ function traceDur(secs) {
   const m = Math.round(s / 60);
   if (m >= 60) return Math.floor(m / 60) + ' h ' + (m % 60) + ' min';
   if (Math.round(s) >= 60) return m + ' min';
+  // Sub-second audio would round back to the "0 s" the guard above hides.
+  if (s < 0.5) return '<1 s';
   return Math.round(s) + ' s';
 }
 
@@ -1789,6 +1791,13 @@ async function reloadRecent() {
     showToast('Recent load failed: ' + e, 'err');
   }
   if (gen !== _recentGen) return;   // a newer reload owns the list now
+  if (!j) {
+    // A failed load is not an empty result: keep the rows, seen set and
+    // cursor on screen (live pushes during the wait already landed there)
+    // instead of wiping the panel to "No transcriptions yet".
+    _pushedDuringReload = null;
+    return;
+  }
   const live = _pushedDuringReload || [];
   _pushedDuringReload = null;
   // Reset only now: a trace pushed during the await went into the OLD seen
@@ -1817,6 +1826,10 @@ async function reloadRecent() {
 
 async function loadOlder() {
   if (_loadOlderBusy) return;
+  // A reload in flight has already bumped _recentGen, so the gen guard below
+  // would pass: the old list's cursor would page the new search term and
+  // overwrite the cursor the reload is about to set.
+  if (_pushedDuringReload) return;
   const list = document.getElementById('recent-list');
   const btn = document.getElementById('btn-load-older');
   if (!list || !btn) return;
@@ -2374,21 +2387,24 @@ async function _pollStripOnce() {
 }
 async function startReapplyJobSilent(n) {
   _showStrip(n);
-  const r = await api('POST', '/quick-config/reapply-rules');
-  if (!r.ok) {
+  const fail = (why) => {
     const strip = document.getElementById('reapply-strip');
     strip.classList.add('err');
-    strip.querySelector('.r-label').textContent =
-      'Re-apply failed: HTTP ' + r.status;
-    return;
-  }
+    strip.querySelector('.r-label').textContent = 'Re-apply failed: ' + why;
+  };
+  let r;
+  try { r = await api('POST', '/quick-config/reapply-rules'); }
+  catch (e) { fail(String(e)); return; }
+  if (!r.ok) { fail('HTTP ' + r.status); return; }
   // Reset any prior interval before scheduling — guards against a double
   // click triggering two concurrent polls.
   if (_stripPoll) { clearInterval(_stripPoll); _stripPoll = null; }
   const status = await _pollStripOnce();
-  // Only schedule the recurring poll while the job is actually running;
-  // status==='done'|'error' already cleared the strip via _pollStripOnce.
-  if (status === 'running') {
+  // Keep polling unless the job is already over: status==='done'|'error'
+  // already settled the strip via _pollStripOnce, and 'idle' means nothing
+  // runs. A null (one failed status fetch) keeps polling — stopping there
+  // left the strip stuck at "0 / N" while the job ran to completion.
+  if (status !== 'done' && status !== 'error' && status !== 'idle') {
     _stripPoll = setInterval(_pollStripOnce, 1500);
   }
 }

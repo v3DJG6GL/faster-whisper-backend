@@ -1395,8 +1395,78 @@ def test_jobs_chip_is_not_rewritten_every_snapshot(client):
     """renderJobs() runs at 1 Hz; the chip's DOM is only replaced when its
     text changed (like renderWindowChips)."""
     html = client.get("/stats").text
-    guard = html.index("if (sig === _rjChipSig) return;")
-    assert guard < html.index("el.innerHTML = html;", guard)
+    start = html.index("let _rjChipSig = null;")
+    body = html[start:html.index("\n}\n", start)]
+    assert body.index("if (sig === _rjChipSig) return;") < body.index(
+        "el.innerHTML = html;")
+
+
+def test_stats_board_sort_resets_when_its_column_leaves(client):
+    """'words' is a leaderboard column only while it is the measure: a words
+    sort kept ordering the rows after a measure switch, with no header
+    showing it. renderBoard drops a sort whose column is gone."""
+    js = pathlib.Path(REPO_ROOT, "static", "stats.js").read_text(encoding="utf-8")
+    board = js[js.index("function renderBoard() {"):]
+    reset = board.index(
+        "if (boardSort.key && !cols.some(c => c[0] === boardSort.key)) "
+        "boardSort = { key: null, dir: -1 };")
+    assert reset < board.index("if (head) head.innerHTML")
+    assert reset < board.index("if (boardSort.key) {")
+
+
+def test_stats_rings_keys_inert_without_ring_tiles(client):
+    """Own scope without machine tiles (and the 'usage' preset) has no
+    rings: Space paused them anyway and the pill counted "N s behind"
+    forever. The keydown handler returns first, and machine=false hides
+    the rings controls."""
+    html = client.get("/stats").text
+    keys = html[html.index("document.addEventListener('keydown', (e) => {"):]
+    assert keys.index("if (ringsInert()) return;") < keys.index("if (e.key === ' ') {")
+    assert "document.body.classList.contains('no-machine')" in html
+    assert "document.body.classList.contains('preset-usage')" in html
+    scope = html[html.index("function applyScope(snap) {"):]
+    assert "document.body.classList.add('no-machine');" in scope[
+        :scope.index("function renderServer(")]
+    assert "body.no-machine #ring-scrub { display: none; }" in html
+
+
+def test_stats_loaded_models_zero_vram_falls_back_to_estimate(client):
+    """A cuda load with an NVML delta of 0 reports vram_mb 0.0: the cell
+    read "0 est", the badge describing a size estimate it never showed."""
+    html = client.get("/stats").text
+    assert ("const vramCell = m.vram_mb ? m.vram_mb.toFixed(0)\n"
+            "      : (m.size_bytes != null ? (m.size_bytes / 1048576).toFixed(0) "
+            "+ srcBadge : '—');") in html
+    assert '<td class="num" data-label="VRAM (MB)">${vramCell}</td>' in html
+    assert "m.vram_mb != null ? m.vram_mb.toFixed(0)" not in html
+
+
+def test_stats_held_jobs_are_capped(client):
+    """rjHeld grew at the server's job rate after one "load older" click,
+    each held row rebuilt every frame. Past RJ_HELD_MAX the anchor is
+    dropped whole and the foot says so."""
+    html = client.get("/stats").text
+    assert "const RJ_HELD_MAX = 500;" in html
+    jobs = html[html.index("function renderJobs(snap) {"):]
+    cap = jobs.index(
+        "if (rjHeld.length > RJ_HELD_MAX) { rjResetPages(); rjDropped = true; }")
+    assert cap < jobs.index("lastJobsSnap = snap;")
+    assert "older pages dropped after ${RJ_HELD_MAX} new jobs" in jobs
+
+
+def test_stats_stream_onopen_cancels_recovery(client):
+    """The browser reconnects an EventSource by itself; without an onopen
+    the recovery probe still fired, wiped the ring history and reopened a
+    healthy stream."""
+    html = client.get("/stats").text
+    stream = html[html.index("function openStream() {"):
+                  html.index("document.addEventListener('visibilitychange'")]
+    opened = stream.index("es.onopen = () => {")
+    assert stream.index(
+        "if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }",
+        opened) < stream.index("es.onerror = () => {")
+    probe = stream[stream.index("const probe = async () => {"):]
+    assert probe.index("if (!recoveryTimer) return;") < probe.index("histX.length = 0;")
 
 
 def test_stats_toolbar_reflows_without_hard_breaks(client):

@@ -103,6 +103,12 @@ def flush() -> int:
     _last_flush = time.time()
     if not _pending:
         return 0
+    if not system_metrics_store.is_open():
+        # init_db failed at startup (already logged there); the busy ring
+        # still needs the ticks, but a "flush failed" warning a minute for
+        # the life of the process would also eat the shared _warn budget.
+        _pending.clear()
+        return 0
     rows = _pending[:]
     try:
         system_metrics_store.record(rows)
@@ -119,7 +125,7 @@ def prune() -> int:
     global _last_prune
     _last_prune = time.time()
     days = int(getattr(cfg, "STATS_SYSTEM_METRICS_RETENTION_DAYS", 30) or 0)
-    if days <= 0:
+    if days <= 0 or not system_metrics_store.is_open():
         return 0
     return system_metrics_store.prune(days)
 

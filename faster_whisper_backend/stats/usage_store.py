@@ -2306,7 +2306,7 @@ def _fill_from_jobs(conn, doc, user_id, tz, today, with_stages,
         "delivery": delivery,
         "translation": translation,
         "targets": _dictation_targets(conn, user_id, start_ts, end_ts, with_stages,
-                                      key_id=key_id),
+                                      key_id=key_id, kinds=kinds),
     }
     doc["apps"] = [
         {"app_id": a, **v} for a, v in sorted(
@@ -2459,14 +2459,20 @@ def _dictation(conn: sqlite3.Connection, user_id: str | None, start_hour: int,
 def _dictation_targets(conn: sqlite3.Connection, user_id: str | None,
                        start_ts: float, end_ts: float,
                        with_stages: tuple[str, ...] = (),
-                       key_id: str | None = None) -> list[dict[str, Any]]:
+                       key_id: str | None = None,
+                       kinds: Sequence[str] = ()) -> list[dict[str, Any]]:
     """Which languages dictations were translated into, over the window:
     `[{code, runs, kept_original}]`, busiest first, at most 16. Read from
     the per-job stage rows (a dictation that translated carries a
     translating stage with its target codes) joined to the job's reported
     outcome, so `kept_original` says how many of those runs reverted to
     the original. Per-job rows keep USAGE_JOBS_RETENTION_DAYS, so a window
-    beyond that shows fewer runs here than the outcome buckets do."""
+    beyond that shows fewer runs here than the outcome buckets do.
+
+    `kinds` narrows the with= document, which claims every figure is
+    kind-scoped: a filter without dictation leaves no dictation targets."""
+    if kinds and "dictation" not in kinds:
+        return []
     by_code: dict[str, dict[str, int]] = {}
     where, params = _scope_where(user_id, key_id, col="usage_jobs.user_id",
                                  key_col="usage_jobs.key_id")

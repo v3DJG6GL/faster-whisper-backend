@@ -189,6 +189,14 @@ def _truncate_steps(steps: list) -> list:
     return out[len(out) - keep:]
 
 
+def cap_trace_fields(raw: str, final: str, steps: list) -> tuple[str, str, list]:
+    """The caps record_trace applies to the durable row, for callers that also
+    hand the entry out live (recent_feed's SSE broadcast) — so a live entry
+    never carries more than its reloaded copy."""
+    return ((raw or "")[:_CAP_RAW], (final or "")[:_CAP_FINAL],
+            _truncate_steps(list(steps or [])))
+
+
 def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
     """Materialize a row to the wire shape expected by /quick-config and
     /stats consumers. Decodes the JSON-bearing columns; computes the

@@ -1384,6 +1384,10 @@ function renderBoard() {
     ...[['sessions', 'sessions', 'num'], ['requests', 'requests', 'num'], ['audio_s', 'audio duration', 'num'],
         ['processing_s', 'processing time', 'num'], ['rtf', 'RTF', 'num'], ['errors', 'err', 'num']]
       .filter(c => c[0] !== Q.metric)];
+  // A sort on a column the new measure dropped ('words' is a column only
+  // while it is the measure) would keep the rows in that order with no
+  // header showing it: fall back to the server's ranking.
+  if (boardSort.key && !cols.some(c => c[0] === boardSort.key)) boardSort = { key: null, dir: -1 };
   if (head) head.innerHTML = '<tr><th class="rank">#</th>' + cols.map(([k, lab, cls]) =>
     '<th class="' + cls + ' sortable' + (boardSort.key === k ? ' on' : '') + '" data-k="' + k + '" title="sort by ' + lab + '">'
     + lab + (boardSort.key === k ? (boardSort.dir < 0 ? ' ▾' : ' ▴') : '') + '</th>').join('') + '</tr>';
@@ -1580,7 +1584,7 @@ function hoursPhrase(cells) {
 // row) each relative to a flat distribution, quantile shading, a peak
 // line, a phrase in the title, tooltips split by kind, and compare rows.
 //   hours  — weekday × hour of day, from the document's hour slots
-//   days   — weekday × week of the window, from the per-day series
+//   days   — hour of day × day of month, from the document's dom_hours
 //   months — year × month, from the per-day series
 const RHYTHMS = ['hours', 'days', 'months'];
 const MON_LONG = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
@@ -1856,11 +1860,9 @@ function renderHours() {
   const title = $('hours-title'); if (title) title.textContent = 'Busy ' + mode;
   setSeg('hours-mode', mode);
 }
-// Days: the weekday group holding most of the measure (weekdays /
-// weekends / one weekday), like hoursPhrase; months: the top month when
-// it carries 40 %+, else the top two.
+// Days: the third of the month (1st–10th / 11th–20th / 21st–31st), else
+// the part of the day, holding 60 %+ of the measure, like hoursPhrase.
 function domPhrase(colTot, rowTot) {
-  // Which third of the month, or which part of the day, holds most.
   const total = colTot.reduce((a, v) => a + v, 0);
   const third = n => colTot.slice(n * 10, n === 2 ? 31 : n * 10 + 10).reduce((a, v) => a + v, 0);
   const thirds = [['1st–10th', third(0)], ['11th–20th', third(1)], ['21st–31st', third(2)]];
@@ -1868,6 +1870,7 @@ function domPhrase(colTot, rowTot) {
   for (const [label, a, b] of DAY_PARTS) if (rowTot.slice(a, b).reduce((x, v) => x + v, 0) / total >= 0.6) return 'mostly ' + label;
   return '–';
 }
+// Months: the top month when it carries 40 %+, else the top two.
 function monthPhrase(colTot) {
   const total = colTot.reduce((a, v) => a + v, 0);
   const order = colTot.map((v, i) => [v, i]).sort((a, b) => b[0] - a[0]);
