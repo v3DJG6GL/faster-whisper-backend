@@ -7,6 +7,7 @@ import pytest
 from faster_whisper_backend.core import jobs_store as js
 from faster_whisper_backend.transcription import progress as tx_progress
 from tests.conftest import bearer
+from faster_whisper_backend.media import video as media_video
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "cafe" * 8
@@ -384,7 +385,7 @@ def test_late_video_outcome_is_patched_into_the_finished_row(client, app_module)
               result={"text": "hallo", "source_video_pending": True})
     before = js.get(_PID)
     time.sleep(0.05)
-    app_module._jobs_attach_video_sync(_PID, {
+    media_video._jobs_attach_video_sync(_PID, {
         "state": "done", "media_id": "cd" * 16, "expires_at": 5, "height": 720,
         "container": "mp4", "bytes": 88})
     stored = js.get_result(_PID)
@@ -398,5 +399,5 @@ def test_late_video_outcome_is_patched_into_the_finished_row(client, app_module)
     assert after["expires_ts"] == before["expires_ts"]
     # A row that never said "pending" is left alone.
     js.finish(job_id=_PID, state="done", ttl_s=3600, result={"text": "hallo"})
-    app_module._jobs_attach_video_sync(_PID, {"state": "failed", "error": "x"})
+    media_video._jobs_attach_video_sync(_PID, {"state": "failed", "error": "x"})
     assert js.get_result(_PID) == {"text": "hallo"}

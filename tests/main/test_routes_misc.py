@@ -1,6 +1,8 @@
 """Misc app-level routes: /v1/models, /logs, /sev, /auth/whoami."""
 
 from tests.conftest import bearer
+from faster_whisper_backend.admin import logs_routes
+from faster_whisper_backend.transcription import catalog_routes as tx_catalog_routes
 
 
 def test_v1_models_requires_a_user(client, make_user_key):
@@ -57,9 +59,9 @@ def test_model_device_resolves_auto(app_module, monkeypatch):
     import types
     fake = types.SimpleNamespace(get_cuda_device_count=lambda: 1)
     monkeypatch.setitem(sys.modules, "ctranslate2", fake)
-    assert app_module._model_device("tiny", "AUTO") == "cuda"
+    assert tx_catalog_routes._model_device("tiny", "AUTO") == "cuda"
     fake.get_cuda_device_count = lambda: 0
-    assert app_module._model_device("tiny", "auto") == "cpu"
+    assert tx_catalog_routes._model_device("tiny", "auto") == "cpu"
 
 
 def test_logs_page_open_no_auth(client):
@@ -137,7 +139,7 @@ def test_logs_older_past_the_page_cap_terminates_paging(client, app_module,
     # every further "Load older" click while the viewer's own cursor grew.
     monkeypatch.setattr(app_module.cfg, "LOG_VIEWER_INITIAL_LINES", 10,
                         raising=False)
-    cap = 10 * app_module._LOG_OLDER_MAX_PAGES
+    cap = 10 * logs_routes._LOG_OLDER_MAX_PAGES
     r = client.get(f"/logs/older?skip={cap + 10}")
     assert r.status_code == 200
     assert r.json() == {"lines": [], "next_skip": None}

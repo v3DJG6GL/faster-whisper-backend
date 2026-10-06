@@ -4,6 +4,7 @@ non-admin keys, host gate, cross-user 404, and the SSE credential carriers."""
 from starlette.testclient import TestClient
 
 from tests.conftest import bearer
+from faster_whisper_backend.admin import logs_routes
 
 
 def test_open_mode_admin_everywhere(client):
@@ -340,7 +341,7 @@ def test_logs_stream_ends_after_revoke(client, make_user_key, app_module,
     uid, raw = make_user_key("alice", pages={"logs": "all"})
 
     async def drive():
-        gen = app_module._stream_log_lines(_sse_request("/logs/stream", raw))
+        gen = logs_routes._stream_log_lines(_sse_request("/logs/stream", raw))
         assert await gen.__anext__() == "data: first\n\n"
         assert await gen.__anext__() == "data: __LIVE_TAIL__\n\n"
         # One idle tick first: the tail records its file offset only when

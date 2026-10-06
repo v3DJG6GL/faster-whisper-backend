@@ -32,8 +32,10 @@ job-object fight.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 
@@ -126,10 +128,44 @@ def trigger_self_restart(delay_sec: float = 1.5) -> str:
         # Python's atexit hooks. The lossy lifespan duties (held receipts,
         # NVML) are flushed below; everything else — temp files, child
         # processes — is reclaimed by the OS plus the next startup's TMPDIR
-        # sweep (main._reclaim_hard_restart_orphans).
+        # sweep (reclaim_hard_restart_orphans below).
         time.sleep(0.2)
         _flush_before_exit()
         os._exit(0)
 
     threading.Timer(delay_sec, do_restart).start()
     return "winsw-restart-bang"
+
+
+def reclaim_hard_restart_orphans() -> None:
+    """Startup sweep of TMPDIR for temp artifacts a hard restart orphaned.
+
+    The admin restart path (trigger_self_restart: os.execv / os._exit) skips the
+    ASGI shutdown, so in-flight requests leak their `urldl-` job dirs,
+    `urlmedia-` pipeline copies (url_media_store.make_pipeline_copy),
+    `whisperup-` upload spools and `sepsrc-`/`vocals-` separation WAVs with
+    no finally to reclaim them — url_media_store.startup_reset() wipes only
+    URL_MEDIA_DIR (a same-fs `urlmedia-` copy is a hardlink whose retained
+    name that reset already dropped). Single-service
+    assumption (as documented for SERVER_WORKERS); a small age guard keeps
+    the sweep off files a just-overlapping process may still be writing."""
+    tmp = tempfile.gettempdir()
+    try:
+        names = os.listdir(tmp)
+    except OSError:
+        return
+    now = time.time()
+    for name in names:
+        if not name.startswith(("urldl-", "urlmedia-", "whisperup-",
+                                "sepsrc-", "vocals-", "pkg-")):
+            continue
+        path = os.path.join(tmp, name)
+        try:
+            if os.path.islink(path) or now - os.path.getmtime(path) < 60.0:
+                continue
+            if name.startswith(("urldl-", "pkg-")) and os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.isfile(path):
+                os.unlink(path)
+        except OSError:
+            continue

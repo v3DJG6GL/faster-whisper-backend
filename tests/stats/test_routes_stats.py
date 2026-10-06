@@ -10,6 +10,7 @@ from faster_whisper_backend.stats import metrics
 import pytest
 from faster_whisper_backend.translation import engine as translation
 from faster_whisper_backend.paths import REPO_ROOT
+from faster_whisper_backend.admin import logs_routes
 
 
 def test_stats_page_loopback_ok(client):
@@ -167,7 +168,6 @@ def test_stage_hues_have_one_definition():
     /logs receipt, /quick-config traces, captures) reference the tokens
     rather than carrying their own hexes."""
     import pathlib
-    from faster_whisper_backend import main as app_main
     from faster_whisper_backend.quick_config import routes as quick_config_routes
     from faster_whisper_backend.stats import routes as stats_routes
     from faster_whisper_backend.core import web_common
@@ -196,7 +196,7 @@ def test_stage_hues_have_one_definition():
     assert "getPropertyValue('--kind-' + k)" in js
     hexes = set(web_common.STAGE_COLORS.values())
     for src in (stats_routes._STATS_VIEWER_HTML, quick_config_routes._QUICK_CONFIG_HTML,
-                app_main._LOG_VIEWER_HTML):
+                logs_routes._LOG_VIEWER_HTML):
         assert not any(h in src for h in hexes), "stage hex copied instead of var(--stage-*)"
 
 

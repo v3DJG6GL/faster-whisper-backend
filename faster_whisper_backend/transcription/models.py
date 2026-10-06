@@ -218,6 +218,16 @@ def _clamp_float(v, lo, hi):
     return max(lo, min(hi, r))
 
 
+def _clamp_context_segments(v: "int | None") -> "int | None":
+    """A request's TRANSLATION_CONTEXT_SEGMENTS, clamped to the field's own
+    bounds (0–10; None = absent, inherit). Shared by the audio routes (main) and
+    the text route (translation/routes.py)."""
+    if v is None:
+        return None
+    b = settings_schema.field_bounds()["TRANSLATION_CONTEXT_SEGMENTS"]
+    return _clamp_int(v, b["min"], b["max"])
+
+
 def _apply_decode_overrides(kwargs, resolved_model, overrides, ident=None):
     """Merge clamped per-request decode overrides into transcribe_kwargs (request
     wins). Unknown keys and unparseable values are ignored. Keys LOCKED by an

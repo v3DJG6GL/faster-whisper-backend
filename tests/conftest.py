@@ -95,10 +95,10 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     ("faster_whisper_backend.auth.sessions_store", "_reset_for_tests"),
     # shared per-identity limiters (rate_limit._ALL): one hook clears every
     # FixedWindow/InFlight bucket, so a limit tripped in one case cannot 429
-    # or refuse a slot in the next. This covers reports' submit limiter and
-    # main's /v1/text/translations limiter too: both are rate_limit
-    # FixedWindows, which register themselves in rate_limit._ALL on
-    # construction.
+    # or refuse a slot in the next. This covers reports' submit limiter, the
+    # /v1/text/translations, url/media and /v1/jobs limiters and the
+    # /auth/login failure lockout too: all are rate_limit FixedWindows /
+    # InFlights, which register themselves in rate_limit._ALL on construction.
     ("faster_whisper_backend.auth.rate_limit", "reset_all"),
     # streaming session-id registry
     ("faster_whisper_backend.streaming.routes", "_reset_for_tests"),
@@ -123,6 +123,14 @@ _RESET_HOOKS: tuple[tuple[str, Any], ...] = (
     # plan / run-plan bindings (a leftover entry would answer a later test's
     # progress poll or keep its id "in flight").
     ("faster_whisper_backend.transcription.progress", "_reset_for_tests"),
+    # detached keep_video download tasks (a leftover would keep a dead test
+    # loop's task referenced and its progress id "in flight").
+    ("faster_whisper_backend.media.video", "_reset_for_tests"),
+    # the origin-rejection log throttle: a rejection logged by one test must
+    # not silence the WARNING the next test's caplog asserts.
+    ("faster_whisper_backend.auth.hosts", "_reset_for_tests"),
+    # the cached llama-cpp-python version behind /v1/me.
+    ("faster_whisper_backend.transcription.catalog_routes", "_reset_for_tests"),
 )
 
 
@@ -518,7 +526,8 @@ def app_module(tmp_path, monkeypatch, fake_model):
     # — neuter it here; test_routes_url exercises the real function against
     # a fake tempdir directly. (The URL retention dir is temp-rooted via
     # WHISPER_URL_MEDIA_DIR above for the same reason.)
-    monkeypatch.setattr(main, "_reclaim_hard_restart_orphans", lambda: None)
+    from faster_whisper_backend.admin import restart_service
+    monkeypatch.setattr(restart_service, "reclaim_hard_restart_orphans", lambda: None)
 
     # The recent-transcriptions prune counter is process-global and only the
     # tx_store fixture resets it: every 50th insert across the session prunes

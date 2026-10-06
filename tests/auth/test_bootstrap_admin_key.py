@@ -7,6 +7,7 @@ import logging
 
 import pytest
 
+from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.runtime import model_registry
 
 _KEY = "bootstrap-key-with-enough-entropy-1234"
@@ -14,61 +15,56 @@ _KEY = "bootstrap-key-with-enough-entropy-1234"
 
 def test_existing_key_below_todays_floor_is_silently_accepted(
         api_keys_db, monkeypatch, caplog):
-    from faster_whisper_backend import main
-    main._bootstrap_admin_from_env(_KEY)
+    api_keys_store.bootstrap_admin_from_env(_KEY)
     h = api_keys_db.hash_key(_KEY)
     assert api_keys_db._KEY_INDEX.get(h) is not None
     # The floor moves up; the key is now "weak" — but it already exists.
-    monkeypatch.setattr(main, "_BOOTSTRAP_KEY_MIN_LEN", 999)
-    assert not main._bootstrap_key_is_strong(_KEY)
+    monkeypatch.setattr(api_keys_store, "_BOOTSTRAP_KEY_MIN_LEN", 999)
+    assert not api_keys_store._bootstrap_key_is_strong(_KEY)
     with caplog.at_level(logging.ERROR, logger="whisper-api"):
-        main._bootstrap_admin_from_env(_KEY)
+        api_keys_store.bootstrap_admin_from_env(_KEY)
     assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
     assert api_keys_db._KEY_INDEX.get(h) is not None
     assert api_keys_db.is_locked_down() is True
 
 
 def test_new_weak_key_is_still_refused(api_keys_db, monkeypatch, caplog):
-    from faster_whisper_backend import main
     with caplog.at_level(logging.ERROR, logger="whisper-api"):
-        main._bootstrap_admin_from_env("short")
+        api_keys_store.bootstrap_admin_from_env("short")
     assert any("too weak" in r.getMessage() for r in caplog.records)
     assert api_keys_db.is_locked_down() is False
 
 
 def test_revoked_key_raises_bootstrap_admin_error(api_keys_db):
-    from faster_whisper_backend import main
-    main._bootstrap_admin_from_env(_KEY)
+    api_keys_store.bootstrap_admin_from_env(_KEY)
     h = api_keys_db.hash_key(_KEY)
     uid2 = api_keys_db.create_user("second-admin", is_admin=True)
     api_keys_db.create_key(uid2)
     api_keys_db.revoke_key(api_keys_db._KEY_INDEX[h]["key_id"])
-    with pytest.raises(main.BootstrapAdminError, match="REVOKED"):
-        main._bootstrap_admin_from_env(_KEY)
+    with pytest.raises(api_keys_store.BootstrapAdminError, match="REVOKED"):
+        api_keys_store.bootstrap_admin_from_env(_KEY)
 
 
 def test_revoked_bootstrap_user_with_new_key_raises_bootstrap_admin_error(api_keys_db):
     # list_users() hides revoked rows, so a revoked bootstrap-admin used to
     # fall through to create_user, hit UNIQUE(username) and surface as a
     # bare ValueError that the lifespan relabels as a store-init failure.
-    from faster_whisper_backend import main
-    main._bootstrap_admin_from_env(_KEY)
+    api_keys_store.bootstrap_admin_from_env(_KEY)
     uid2 = api_keys_db.create_user("second-admin", is_admin=True)
     api_keys_db.create_key(uid2)
     uid = [u for u in api_keys_db.list_users()
            if u["username"] == "bootstrap-admin"][0]["id"]
     api_keys_db.revoke_user(uid)
-    with pytest.raises(main.BootstrapAdminError, match="REVOKED"):
-        main._bootstrap_admin_from_env("another-bootstrap-key-with-entropy-5678")
+    with pytest.raises(api_keys_store.BootstrapAdminError, match="REVOKED"):
+        api_keys_store.bootstrap_admin_from_env("another-bootstrap-key-with-entropy-5678")
 
 
 def test_nonadmin_bootstrap_user_raises_bootstrap_admin_error(api_keys_db):
     # A non-admin user already named bootstrap-admin must not silently boot
     # the server OPEN with the env key dropped.
-    from faster_whisper_backend import main
     api_keys_db.create_user("bootstrap-admin", is_admin=False)
-    with pytest.raises(main.BootstrapAdminError, match="is_admin=False"):
-        main._bootstrap_admin_from_env(_KEY)
+    with pytest.raises(api_keys_store.BootstrapAdminError, match="is_admin=False"):
+        api_keys_store.bootstrap_admin_from_env(_KEY)
     assert api_keys_db.is_locked_down() is False
 
 
@@ -78,17 +74,17 @@ def test_lifespan_passes_bootstrap_errors_through_unwrapped(
                         raising=False)
 
     def _boom(_raw):
-        raise app_module.BootstrapAdminError(
+        raise api_keys_store.BootstrapAdminError(
             "WHISPER_BOOTSTRAP_ADMIN_KEY matches an API key that has been "
             "REVOKED.")
-    monkeypatch.setattr(app_module, "_bootstrap_admin_from_env", _boom)
+    monkeypatch.setattr(api_keys_store, "bootstrap_admin_from_env", _boom)
 
     async def run():
         async with app_module.lifespan(app_module.app):
             pass
 
     with caplog.at_level(logging.CRITICAL, logger="whisper-api"):
-        with pytest.raises(app_module.BootstrapAdminError) as ei:
+        with pytest.raises(api_keys_store.BootstrapAdminError) as ei:
             asyncio.run(run())
     assert "REVOKED" in str(ei.value)
     assert "API keys store unavailable" not in str(ei.value)

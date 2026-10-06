@@ -57,7 +57,7 @@ KINDS = ("audio", "video")
 # on the same filesystem, not a multi-GB copy across TMPDIR → data dir).
 _STAGING_NAME = "staging"
 _STAGING_PREFIX = "vid-"
-# Raw-body upload spools (main.upload_media): `upload-<hex>.<ext>.part` while
+# Raw-body upload spools (media/routes.py upload_media): `upload-<hex>.<ext>.part` while
 # the body streams in, `upload-<hex>.<ext>` between the rename and register().
 _UPLOAD_PREFIX = "upload-"
 # How long an upload spool may sit untouched before the reaper calls it

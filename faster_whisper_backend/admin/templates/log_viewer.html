@@ -1,0 +1,775 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>{{HEADER_TITLE}}</title>
+{{PAGE_META}}
+{{SCALE_BOOTSTRAP_HEAD}}
+<script>(function(){var v=localStorage.getItem('whisper-log-zoom');
+  if(v)document.documentElement.style.setProperty('--log-zoom',v);})();</script>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --fg: #c9d1d9; --dim: #6e7681;
+    --cyan: #79c0ff; --green: #7ee787; --yellow: #f2cc60;
+    --red: #ff7b72; --magenta: #d2a8ff; --bold: #f0f6fc;
+    --border: #30363d;
+  }
+  /* Font tokens, --font-sans, --font-mono and html font-size live in
+     NAV_CSS (injected further down). Important: never embed the NAV_CSS
+     template placeholder inside another comment block — render_page() does
+     a naive string replace and would inject NAV_CSS into this comment,
+     prematurely closing it (NAV_CSS contains its own internal comments)
+     and silently dropping every CSS rule that follows. Header chrome
+     (title, pills, buttons) gets --font-sans by default; the log lines
+     themselves opt into --font-mono via .line so timestamps and tabular
+     fields stay aligned. */
+  html { height: 100%; }
+  body { background: var(--bg); color: var(--fg);
+    font: 1rem/1.5 var(--font-sans);
+    margin: 0; padding: 0; min-height: 100%; }
+  input, textarea, select, kbd, code, pre { font-family: var(--font-mono); }
+  /* header / .header-inner / .title / page-toolbar controls (buttons,
+     pills, the #filter input) are all centralized in NAV_CSS. */
+  /* width:100% + box-sizing:border-box are the fix for the "tiny centered
+     column with text clipped at the start" rendering — without them the
+     container sits on a content-sized box that overflows the viewport.
+     No max-width: log content uses the full viewport so long lines (HF
+     URLs, model paths) sit on a single line on wide monitors instead of
+     wrapping into the empty side-bands. The header bar stays centered at
+     the page canvas (col-fluid, 150rem) so controls remain in a predictable
+     spot. pre-wrap still wraps lines that genuinely exceed the viewport.
+     font-size = global rem * --log-zoom is the multiplicative log-only
+     zoom; bumping the global picker grows logs and chrome together, and
+     the [-]/[+] buttons in the header then scale logs only on top. */
+  #log { padding: 0.5rem 0.875rem;
+    width: 100%;
+    box-sizing: border-box;
+    font-family: var(--font-mono);
+    font-size: calc(1rem * var(--log-zoom, 1));
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    overflow-anchor: none; }
+  .line { display: block; word-break: break-word; }
+  /* Log-zoom control — independent from the global UI scale picker. */
+  .log-zoom { display: inline-flex; align-items: center; gap: 0.25rem;
+    border: 1px solid var(--border); border-radius: 4px;
+    padding: 0.125rem 0.25rem; flex-shrink: 0;
+    font-size: var(--fs-xs); }
+  .log-zoom button { background: transparent; border: none; color: var(--fg);
+    cursor: pointer; padding: 0 0.375rem; line-height: 1;
+    font-size: var(--fs-md); font-family: var(--font-mono); }
+  .log-zoom button:hover:not(:disabled) { color: var(--cyan); }
+  .log-zoom button:disabled { opacity: 0.35; cursor: not-allowed; }
+  .log-zoom #log-zoom-pct { color: var(--dim); font-variant-numeric: tabular-nums;
+    min-width: 2.75rem; text-align: center; }
+  #load-older-row { display: flex; justify-content: center;
+    padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+  #loadOlderBtn { background: transparent; color: var(--cyan);
+    border: 1px solid var(--border); padding: 0.375rem 1rem;
+    border-radius: 4px; font: inherit; cursor: pointer; }
+  #loadOlderBtn:hover:not([disabled]) { background: var(--panel); }
+  #loadOlderBtn[disabled] { opacity: 0.5; cursor: default; }
+  .tz-hint { color: var(--dim); font-size: var(--fs-xs); cursor: help; }
+  .line.hidden { display: none; }
+  /* Search: every hit is tinted, the one the ↑/↓ keys sit on is brighter. */
+  .line.match { background: color-mix(in srgb, var(--yellow) 14%, transparent); }
+  .line.match-cur { background: color-mix(in srgb, var(--yellow) 34%, transparent);
+    outline: 1px solid var(--yellow); }
+  #log.hide-mode .line.match:not(.match-cur) { background: transparent; outline: none; }
+  #filter-nav { display: inline-flex; align-items: center; gap: 0.25rem; margin-left: 0.375rem; }
+  #filter-nav.hidden { display: none; }
+  #filter-nav button { background: transparent; color: var(--cyan); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 0.375rem; font: inherit; cursor: pointer; line-height: 1.4; }
+  #filter-nav button:hover { background: var(--panel); }
+  #filter-count { color: var(--dim); font-size: var(--fs-xs); min-width: 4ch; text-align: center; }
+  .filter-mode { margin-left: 0.5rem; }
+  .line.rule    { color: var(--dim); }
+  .line.title   { color: var(--bold); font-weight: 600; }
+  .line.meta    { color: var(--cyan); }
+  .line.raw     { color: var(--bold); }
+  .line.step    { color: var(--cyan); }
+  .line.before  { color: var(--dim); }
+  .line.after   { color: var(--green); }
+  .line.final   { color: var(--green); font-weight: 600; }
+  .line.warning { color: var(--yellow); }
+  .line.error   { color: var(--red); }
+  .line.info    { color: var(--fg); }
+  /* Dimmed pipeline no-ops — a rule force-EXCLUDED for this model or globally
+     disabled (SKIPPED). Mirrors the /quick-config skipped-step treatment;
+     opacity (not a color) so the label/before/after keep their hue, just faded. */
+  .line.dim     { opacity: 0.55; }
+  /* Per-stage hues for the request receipt: the shared --stage-* tokens
+     (web_common.STAGE_COLORS, the desktop app's stage-rail values), so a
+     stage reads the same color in the log as it did while the user watched
+     it run. Before this, every receipt line that described the job fell
+     through classify()'s last branch to .line.info and the whole block read
+     as one monochrome wall. */
+  .line.st-sep  { color: var(--stage-separating); }
+  .line.st-whi  { color: var(--stage-transcribing); }
+  .line.st-dia  { color: var(--stage-diarizing); }
+  .line.st-tra  { color: var(--stage-translating); }
+  .line.st-dl   { color: var(--stage-downloading); }
+  /* Not a stage: the Identity section (user / key / profiles) and the
+     file / model header lines. Cyan like `meta`, so they stop being the one
+     grey island in an otherwise colored receipt. */
+  .line.st-id   { color: var(--cyan); }
+  /* F2: on a stage PARAM row only the key column takes the hue; the value
+     stays --fg. Ten rows of solid pink drowns the numbers you opened the
+     log to read, and a row scrolled away from its section header still
+     needs to say which stage it belongs to. */
+  .line .v      { color: var(--fg); }
+  /* Folded segment rows. The rows exist in the DOM (and in the log file) —
+     this is display only, which is the whole difference from the old inert
+     "(+610 more)" tail, where the rows were never written at all. */
+  .line.folded  { display: none; }
+  /* Controls, not log text: the selection highlight skips them, and the
+     copy handler drops them from the clipboard. */
+  .fold-ctl { color: var(--dim); cursor: default; user-select: none; }
+  .fold-ctl button { background: transparent; color: var(--cyan);
+    border: 1px solid var(--border); border-radius: 4px; font: inherit;
+    font-size: 0.9em; padding: 0 0.5rem; margin-left: 0.5rem;
+    cursor: pointer; }
+  .fold-ctl button:hover { background: var(--panel); }
+  /* Long transcript lines — RAW WHISPER, FINAL, a pipeline step's before /
+     after — clamp at 3 lines with a size-honest "Show all" button, the same
+     folding the /quick-config trace viewer applies to raw/final. */
+  .line .clip { display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3; overflow: hidden; }
+  .line .clip-btn { display: inline-block; margin: 0.15rem 0 0.2rem 2rem;
+    background: transparent; color: var(--cyan); border: 1px solid var(--border);
+    border-radius: 4px; font: inherit; font-size: 0.9em; padding: 0 0.5rem;
+    cursor: pointer; user-select: none; }
+  .line .clip-btn:hover { background: var(--panel); }
+  {{NAV_CSS}}
+</style></head>
+<body class="{{PAGE_CLASS}}">
+<header>
+  <div class="header-inner">
+    <span class="title">{{HEADER_BRAND}}</span>{{HEADER_VTAG}}
+    <span class="brand-sep" aria-hidden="true"></span>
+    {{NAV}}
+    <span class="spacer"></span>
+    <span class="hdr-right">{{SEV_PILLS}}{{SCALE_PICKER}}{{RELOAD}}{{LOGOUT}}</span>
+  </div>
+  <div class="subbar">
+    <span class="subbar-title">Logs</span>
+    <div class="subbar-left">
+      <input id="filter" type="text" placeholder="search (case-insensitive substring)…">
+      <span id="filter-nav" class="hidden">
+        <button id="filterPrev" type="button" title="older match (Enter)">↑</button>
+        <span id="filter-count"></span>
+        <button id="filterNext" type="button" title="newer match (Shift+Enter)">↓</button>
+      </span>
+      <span id="filter-mode" class="status-btn-group filter-mode" role="radiogroup" aria-label="search mode" title="search: highlight matches and step through them · filter: hide every line that does not match"><button type="button" class="status-btn active" role="radio" aria-checked="true" data-mode="search">search</button><button type="button" class="status-btn" role="radio" aria-checked="false" data-mode="filter">filter</button></span>
+    </div>
+    <div class="subbar-right">
+      <span class="log-zoom" title="zoom log content only">
+        <button id="log-zoom-out" type="button" aria-label="decrease log size">−</button>
+        <span id="log-zoom-pct">100%</span>
+        <button id="log-zoom-in" type="button" aria-label="increase log size">+</button>
+      </span>
+      <span class="tz-hint" title="log timestamps are stored in UTC and shown here in your browser's local timezone">local time</span>
+      <button id="pauseBtn">pause</button>
+      <button id="clearBtn">clear</button>
+      <span id="status" class="pill live">live</span>
+    </div>
+  </div>
+</header>
+<div id="load-older-row">
+  <button id="loadOlderBtn" type="button" style="display:none;">Load older</button>
+</div>
+<div id="log"></div>
+<script>
+  const log = document.getElementById('log');
+  const statusEl = document.getElementById('status');
+  const filterEl = document.getElementById('filter');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const clearBtn = document.getElementById('clearBtn');
+  let paused = false;
+  let filterText = '';
+  // Search modes: by default every hit is highlighted and the view jumps
+  // to the newest one (↑/↓ step through them, folded hits get unfolded);
+  // in "filter" mode (segmented search | filter control), non-matching
+  // lines are hidden instead.
+  const modeBtns = Array.from(document.querySelectorAll('#filter-mode .status-btn'));
+  function syncModeUI() {
+    modeBtns.forEach(b => {
+      const on = (b.dataset.mode === 'filter') === hideMode;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-checked', on ? 'true' : 'false');
+    });
+  }
+  const navEl = document.getElementById('filter-nav');
+  const countEl = document.getElementById('filter-count');
+  let hideMode = false;
+  let matchCurEl = null;
+
+  // Honor ?filter=... so the severity pills in the nav can deep-link. A
+  // pill means "show me only those", so the deep link starts in hide mode.
+  const initialFilter = new URLSearchParams(location.search).get('filter');
+  if (initialFilter) {
+    filterEl.value = initialFilter;
+    filterText = initialFilter.toLowerCase();
+    hideMode = true;
+    syncModeUI();
+    log.classList.add('hide-mode');
+  }
+
+  function classify(line) {
+    if (/^═+$/.test(line.trim()) || /^─+$/.test(line.trim())) return 'rule';
+    if (/\/v1\/audio\/transcriptions/.test(line)) return 'title';
+    if (/RAW WHISPER/.test(line)) return 'raw';
+    if (/FINAL\s+'/.test(line)) return 'final';
+    // Step label: "▸ #1.1 …" / "▸ #18 …" (the leading # arrived with the
+    // card-position numbering) — and the older bare "▸ 8 …" rotated format.
+    if (/▸\s+#?\d/.test(line)) return 'step';
+    if (/^\s*→\s/.test(line)) return 'after';
+    // WARNING/ERROR must outrank `meta`: the meta test matches any line
+    // containing lang= or duration=, so a warning that happens to mention
+    // one used to render cyan and read as ordinary metadata.
+    if (/(WARNING|WARN)/.test(line)) return 'warning';
+    if (/(ERROR|CRITICAL)/.test(line)) return 'error';
+    if (/file=|lang=|duration=|segments=|words=|format=/.test(line)) return 'meta';
+    // The receipt's header rows: "  file   stream 3789c1a7 utt#0 …",
+    // "  model  Systran/… compute=bfloat16 device=cuda", "  for    dictation job=…".
+    if (/^  (file|model|for) {2,}\S/.test(line)) return 'meta';
+    // A step's "before" text is a Python repr: single-quoted, or double-quoted
+    // when the text itself contains an apostrophe ("I'm").
+    if (/^\s+['"].*['"]$/.test(line)) return 'before';
+    return 'info';
+  }
+  // Receipt section headers: "  ─── Diarization  (* = non-default) ─────…".
+  // classify()'s `rule` branch only matches lines that are PURE box-drawing
+  // after trim, so these fell through to 'info' — which is why every section
+  // header in the block rendered the same grey as its body.
+  const _SEC_RE = /^\s+─── ([A-Za-z][A-Za-z \-]*?)(?:\s\s|\s─)/;
+  const _SEC_STAGE = {
+    'Pipeline': '', 'Separation': 'st-sep', 'Diarization': 'st-dia',
+    'Translation': 'st-tra', 'Audio': 'st-whi', 'Decode params': 'st-whi',
+    'Post-decode guards': 'st-whi', 'Segments': 'st-whi',
+    'Identity': 'st-id', 'Notes': '', 'Timing': 'st-tra', 'Output': 'st-tra',
+  };
+  // Pipeline stage table rows: "     2  translating  tencent/… cuda 0.0s 2.9s"
+  // take the hue of the stage they name; a detail continuation under a row
+  // ("        2 segs → fr,de,cs") inherits the row above it. The header row
+  // ("     #  stage …") stays plain.
+  const _PIPE_ROW = /^ {1,6}\d+\s+([a-z-]+)\b/;
+  const _PIPE_ROW_STAGE = {
+    'downloading': 'st-dl', 'separating': 'st-sep', 'vad': 'st-whi',
+    'transcribing': 'st-whi', 'diarizing': 'st-dia', 'translating': 'st-tra',
+    'translate': 'st-tra', 'transcribe': 'st-whi',
+  };
+  // Live per-stage progress lines OUTSIDE the receipt, so a whole job reads
+  // in one color scheme rather than only its trailing block.
+  const _LIVE_STAGE = [
+    [/\[bgm\]/, 'st-sep'], [/\[diarize\]/, 'st-dia'],
+    [/\[translate\]/, 'st-tra'], [/\[transcribe\]/, 'st-whi'],
+    [/\[vad-trim\]|\[lead-pad\]/, 'st-whi'], [/\[preload\]/, 'st-tra'],
+  ];
+  const _SEG_SHOWN = {{LOG_SEGMENT_ROWS_SHOWN}};
+  // LOG_STAGE_COLORS: false → no per-stage hue classes (monochrome log).
+  const _STAGE_COLORS = {{LOG_STAGE_COLORS}};
+  const _SEG_STEP = 50;
+  // Chars past which a transcript line clamps (the /quick-config threshold).
+  const _CLIP_CHARS = 400;
+  // A segment data row: "      0    0.31s   13.29s  …". The header row starts
+  // with '#' and must not be counted or folded.
+  const _SEG_ROW = /^\s+\d+\s+[-\d]/;
+  // Pipeline steps that didn't run — force-EXCLUDED for this model, or globally
+  // disabled (SKIPPED) — are logged as a 3-line group: a ▸ label carrying the
+  // marker, then an identical before/after pair. Dim the whole group (same as
+  // the /quick-config + /reports trace viewers) so the eye skips the no-ops.
+  // `st.dimLeft` is threaded per render pass (live stream vs "Load older" batch
+  // each get their own state object) so groups never dim across a boundary.
+  const _SKIP_MARK = /\[(EXCLUDED|SKIPPED)/;
+  // The PIPELINE block: its header stays, every step line under it (▸ label,
+  // before, after — each before/after a full transcript) folds by default
+  // behind a "show all" control, like /quick-config's "Show pipeline steps".
+  const _PIPE_HDR = /^\s+PIPELINE\s+\(/;
+  function _pipeFold(st, cls) {
+    st.pipeRows = (st.pipeRows || 0) + 1;
+    if (st.pipeRows === 1) st.needCtl = 'pipe';
+    return cls + ' pipe folded';
+  }
+  function decorate(line, st) {
+    // Section scope. A bare row like "    min_speakers      2 *" carries
+    // nothing that identifies it as diarization, so no per-line regex can
+    // ever colour it — the section header has to set the scope and the rows
+    // inherit it. Same shape as the dimLeft group tracking below, which is
+    // the precedent for cross-line state on this render pass.
+    const sec = _SEC_RE.exec(line);
+    if (sec) {
+      const label = sec[1].trim();
+      st.stage = _STAGE_COLORS ? (_SEC_STAGE[label] || '') : '';
+      st.inSeg = (label === 'Segments');
+      st.inPipeTable = (label === 'Pipeline'); st.rowStage = '';
+      st.segRows = 0; st.ctl = null;
+      st.dimLeft = 0;
+      return 'rule' + (st.stage ? ' ' + st.stage : '');
+    }
+    if (_PIPE_HDR.test(line)) {
+      st.pipe = true; st.pipeRows = 0; st.ctl = null; st.dimLeft = 0;
+      return 'info';
+    }
+    const cls = classify(line);
+    if (cls === 'step') {
+      let out = cls;
+      if (_SKIP_MARK.test(line)) { st.dimLeft = 2; out += ' dim'; }
+      else st.dimLeft = 0;                   // a step that ran resets the group
+      return st.pipe ? _pipeFold(st, out) : out;
+    }
+    if (cls === 'rule' || cls === 'title' || cls === 'raw' || cls === 'final') {
+      // Block boundary: end the dim group AND the section scope, so a stage
+      // hue can never bleed past the receipt it belongs to.
+      st.dimLeft = 0; st.stage = ''; st.inSeg = false; st.ctl = null;
+      st.pipe = false; st.inPipeTable = false; st.rowStage = '';
+      return cls;
+    }
+    if (st.inPipeTable && _STAGE_COLORS) {
+      const row = _PIPE_ROW.exec(line);
+      if (row) {
+        st.rowStage = _PIPE_ROW_STAGE[row[1]] || '';
+        return cls + (st.rowStage ? ' ' + st.rowStage : '');
+      }
+      // Continuation line under a stage row (deeper indent, no ordinal).
+      if (st.rowStage && /^ {7,}\S/.test(line)) return cls + ' ' + st.rowStage;
+    }
+    if (st.dimLeft > 0) {
+      st.dimLeft--;
+      return st.pipe ? _pipeFold(st, cls + ' dim') : cls + ' dim';
+    }
+    // Everything under the PIPELINE header up to the closing rule is a step
+    // line, whatever classify() made of it — a before text that happens to
+    // contain "lang=" would otherwise surface as 'meta', unfolded.
+    if (st.pipe) return _pipeFold(st, cls);
+    if (st.inSeg && _SEG_ROW.test(line)) {
+      st.segRows = (st.segRows || 0) + 1;
+      if (st.segRows > _SEG_SHOWN) {
+        if (st.segRows === _SEG_SHOWN + 1) st.needCtl = true;
+        return cls + ' ' + (_STAGE_COLORS ? (st.stage || 'st-whi') : '')
+          + ' folded';
+      }
+    }
+    if (st.stage && /^ {4}\S/.test(line)) return cls + ' ' + st.stage;
+    if (st.stage && cls === 'info') return cls + ' ' + st.stage;
+    if (!st.stage && _STAGE_COLORS) {
+      for (const [re, k] of _LIVE_STAGE) if (re.test(line)) return cls + ' ' + k;
+    }
+    return cls;
+  }
+  // One line element, shared by the live tail and the "Load older" batch so
+  // the two can never render the same text differently. Content always via
+  // textContent — never innerHTML — which is what keeps a transcript
+  // containing markup inert.
+  function makeLine(line, st) {
+    const el = document.createElement('span');
+    const cls = decorate(line, st);
+    el.className = 'line ' + cls;
+    const txt = localizeLogTs(line);
+    const stage = /\bst-\w+\b/.test(cls);
+    // F2: split at the receipt's fixed 32-char name column so the key takes
+    // the stage hue and the value stays readable. Fixed width, so no parsing.
+    // 4 spaces for a section key, 6 for a nested one (vad_parameters):
+    // the value column sits at 32 either way. Table rows (Pipeline,
+    // Segments) start with a digit or '#' and must stay whole.
+    if (stage && !/\brule\b/.test(cls) && /^ {4,6}[^\s\d#]/.test(txt) && txt.length > 32) {
+      const k = document.createElement('span');
+      k.textContent = txt.slice(0, 32);
+      const v = document.createElement('span');
+      v.className = 'v';
+      v.textContent = txt.slice(32) + '\n';
+      el.appendChild(k); el.appendChild(v);
+      return el;
+    }
+    if (/\b(raw|final|before|after|pipe)\b/.test(cls) && txt.length > _CLIP_CHARS) {
+      const body = document.createElement('span');
+      body.className = 'clip';
+      body.textContent = txt;
+      const label = 'Show all · ' + txt.length.toLocaleString() + ' chars ▾';
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'clip-btn';
+      btn.textContent = label;
+      btn.addEventListener('click', () => {
+        const clipped = body.classList.toggle('clip');
+        btn.textContent = clipped ? label : 'Show less ▴';
+      });
+      const nl = document.createElement('span');
+      nl.textContent = '\n';
+      el.appendChild(body); el.appendChild(btn); el.appendChild(nl);
+      return el;
+    }
+    el.textContent = txt + '\n';
+    return el;
+  }
+  function _foldRemaining(ctl) {
+    let n = 0;
+    for (let e = ctl.nextSibling; e; e = e.nextSibling) {
+      if (!e.classList || !e.classList.contains('line')) continue;
+      if (e.classList.contains('folded')) { n++; continue; }
+      if (e.classList.contains('fold-ctl')) continue;
+      break;
+    }
+    return n;
+  }
+  function _unfold(ctl, n) {
+    let done = 0;
+    for (let e = ctl.nextSibling; e && done < n; e = e.nextSibling) {
+      if (!e.classList || !e.classList.contains('line')) continue;
+      if (e.classList.contains('folded')) {
+        e.classList.remove('folded'); applyFilter(e); done++;
+      } else if (!e.classList.contains('fold-ctl')) break;
+    }
+    const left = _foldRemaining(ctl);
+    if (left <= 0) { ctl.remove(); return; }
+    ctl.firstChild.textContent = '    ▸ ' + left + ' more ' + ctl.dataset.noun;
+  }
+  // kind: 'seg' (segment rows, revealed 50 at a time or all at once) or
+  // 'pipe' (pipeline step lines — 3-line groups, so only "show all").
+  function makeFoldCtl(kind) {
+    const el = document.createElement('span');
+    el.className = 'line fold-ctl';
+    el.dataset.noun = kind === 'pipe' ? 'pipeline lines' : 'segment rows';
+    const lbl = document.createElement('span');
+    lbl.textContent = '    ▸ more ' + el.dataset.noun;
+    el.appendChild(lbl);
+    if (kind !== 'pipe') {
+      const b50 = document.createElement('button');
+      b50.type = 'button';
+      b50.textContent = 'show ' + _SEG_STEP;
+      b50.addEventListener('click', () => _unfold(el, _SEG_STEP));
+      el.appendChild(b50);
+    }
+    const ball = document.createElement('button');
+    ball.type = 'button';
+    ball.textContent = 'show all';
+    ball.addEventListener('click', () => _unfold(el, 1e9));
+    el.appendChild(ball);
+    const nl = document.createElement('span');
+    nl.textContent = '\n';
+    el.appendChild(nl);
+    return el;
+  }
+  // Append one rendered line, inserting the fold control immediately before
+  // the first row it hides. decorate() raises st.needCtl while classifying
+  // that row, so the control always lands on the right side of it.
+  function appendLine(container, line, st) {
+    const el = makeLine(line, st);
+    if (st.needCtl) {
+      const ctl = makeFoldCtl(st.needCtl === 'pipe' ? 'pipe' : 'seg');
+      st.needCtl = false;
+      container.appendChild(ctl);
+      st.ctl = ctl;
+    }
+    applyFilter(el);
+    container.appendChild(el);
+    if (st.ctl) {
+      const left = _foldRemaining(st.ctl);
+      if (left > 0) st.ctl.firstChild.textContent =
+        '    ▸ ' + left + ' more ' + st.ctl.dataset.noun;
+    }
+    return el;
+  }
+  function applyFilter(el) {
+    if (!filterText) {
+      el.classList.remove('hidden', 'match', 'match-cur');
+      return;
+    }
+    const hit = el.textContent.toLowerCase().includes(filterText);
+    el.classList.toggle('match', hit);
+    if (!hit) el.classList.remove('match-cur');
+    el.classList.toggle('hidden', hideMode && !hit);
+  }
+  // Copy what was selected, not what the viewer happens to show. Folded
+  // segment / pipeline rows (display:none) and the clamped tail of a long
+  // transcript line lie inside the selection's DOM range, but the browser's
+  // own copy drops or clips them — and copies the fold and "Show all" button
+  // labels instead. Cloning the range keeps every node in it (and the classes
+  // of the partly selected first and last rows, so those stay trimmed to the
+  // selection); the controls and the rows the search filter hides are then
+  // removed — hide mode means "not these". The range is clamped to #log, so
+  // Ctrl+A copies the log, not the header or this script. A selection that
+  // never touches the log keeps the browser's own copy.
+  document.addEventListener('copy', (e) => {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || !e.clipboardData) return;
+    const whole = document.createRange();
+    whole.selectNodeContents(log);
+    const parts = [];
+    for (let i = 0; i < sel.rangeCount; i++) {
+      const r = sel.getRangeAt(i).cloneRange();
+      if (!r.intersectsNode(log)) continue;
+      if (r.compareBoundaryPoints(Range.START_TO_START, whole) < 0)
+        r.setStart(whole.startContainer, whole.startOffset);
+      if (r.compareBoundaryPoints(Range.END_TO_END, whole) > 0)
+        r.setEnd(whole.endContainer, whole.endOffset);
+      const frag = r.cloneContents();
+      frag.querySelectorAll('.line.hidden, .fold-ctl, button')
+        .forEach((n) => n.remove());
+      parts.push(frag.textContent);
+    }
+    if (!parts.length) return;
+    e.clipboardData.setData('text/plain', parts.join('\n'));
+    e.preventDefault();
+  });
+  function _matches() { return Array.from(log.querySelectorAll('.line.match')); }
+  let _navQueued = false;
+  function updateNav(list) {
+    // `list`: the caller's own _matches() result, so one DOM scan serves both.
+    if (navEl) navEl.classList.toggle('hidden', !filterText);
+    if (!filterText || !countEl) return;
+    if (!list) list = _matches();
+    const m = list.length;
+    const cur = matchCurEl ? list.indexOf(matchCurEl) : -1;
+    countEl.textContent = !m ? 'no match' : (cur >= 0 ? (cur + 1) + '/' + m : String(m));
+  }
+  function queueNav() {
+    if (_navQueued || !filterText) return;
+    _navQueued = true;
+    requestAnimationFrame(() => { _navQueued = false; updateNav(); });
+  }
+  function refilter() {
+    for (const el of log.children) applyFilter(el);
+    if (matchCurEl && !matchCurEl.classList.contains('match')) matchCurEl = null;
+    updateNav();
+  }
+  // dir: -1 = older, +1 = newer, 0 = restart at the newest hit.
+  function jumpMatch(dir) {
+    const m = _matches();
+    if (!m.length) { matchCurEl = null; updateNav(m); return; }
+    let i = matchCurEl ? m.indexOf(matchCurEl) : -1;
+    if (dir === 0 || i < 0) i = m.length - 1;
+    else i = (i + dir + m.length) % m.length;
+    if (matchCurEl) matchCurEl.classList.remove('match-cur');
+    matchCurEl = m[i];
+    matchCurEl.classList.add('match-cur');
+    if (matchCurEl.classList.contains('folded')) {
+      // A hit inside a folded block: open the block so the line can show.
+      let c = matchCurEl.previousSibling;
+      while (c && !(c.classList && c.classList.contains('fold-ctl'))) c = c.previousSibling;
+      if (c) _unfold(c, 1e9);
+    }
+    matchCurEl.scrollIntoView({ block: 'center' });
+    updateNav(m);
+  }
+  function _p2(n) { return (n < 10 ? '0' : '') + n; }
+  // Log lines start with a UTC ISO-8601 'Z' timestamp; show it in the reader's
+  // local time as 'YYYY-MM-DD HH:MM:SS'. Lines that don't start with that token
+  // (continuation/traceback lines, or pre-UTC rotated lines) pass through as-is.
+  function localizeLogTs(line) {
+    const m = line.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)\s/);
+    if (!m) return line;
+    const d = new Date(m[1]);
+    if (isNaN(d.getTime())) return line;
+    const local = d.getFullYear() + '-' + _p2(d.getMonth() + 1) + '-' + _p2(d.getDate())
+      + ' ' + _p2(d.getHours()) + ':' + _p2(d.getMinutes()) + ':' + _p2(d.getSeconds());
+    return local + line.slice(m[1].length);
+  }
+  // DOM cap for live-tail appends only. The "Load older" path bypasses
+  // this so the user can scroll back through arbitrarily many rotated
+  // lines without their click silently dropping the freshest content.
+  const _LOG_DOM_MAX = {{LOG_VIEWER_DOM_MAX}};
+  // Persists across append() calls so a skipped step's 3 lines (arriving as 3
+  // separate SSE events) dim as one group.
+  const _liveDim = { dimLeft: 0 };
+  let _liveStarted = false;
+  function append(line) {
+    // __LIVE_TAIL__ sentinel marks the boundary between backlog and the
+    // live poll loop. After it fires we know the freshest page is in the
+    // DOM and the "Load older" button can become active.
+    if (line === '__LIVE_TAIL__') {
+      _liveStarted = true;
+      const lo = document.getElementById('loadOlderBtn');
+      if (lo) lo.style.display = '';
+      return;
+    }
+    appendLine(log, line, _liveDim);
+    _logsSkip++;
+    while (log.childElementCount > _LOG_DOM_MAX) {
+      // Trimming away a fold control would strand its hidden rows with no
+      // way to reveal them, so unfold them on the way out.
+      const first = log.firstChild;
+      if (first && first.classList && first.classList.contains('fold-ctl')) {
+        _unfold(first, 1e9);
+        if (first.parentNode) first.remove();
+      } else {
+        // The trimmed line is no longer in the DOM, so the "Load older"
+        // cursor must step back too — else the first click skips past the
+        // trimmed window and it vanishes from the scrollback with no gap.
+        if (first && first.classList && first.classList.contains('line')) _logsSkip--;
+        log.firstChild.remove();
+      }
+    }
+    if (filterText) queueNav();
+    if (!paused && !(filterText && !hideMode)) window.scrollTo(0, document.body.scrollHeight);
+  }
+
+  filterEl.addEventListener('input', () => {
+    filterText = filterEl.value.toLowerCase();
+    refilter();
+    if (!filterText) { matchCurEl = null; if (!paused) window.scrollTo(0, document.body.scrollHeight); }
+    else if (!hideMode) jumpMatch(0);
+  });
+  filterEl.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { filterEl.value = ''; filterText = ''; refilter(); return; }
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    if (!filterText) return;
+    jumpMatch(e.shiftKey ? +1 : -1);
+  });
+  const prevBtn = document.getElementById('filterPrev');
+  const nextBtn = document.getElementById('filterNext');
+  if (prevBtn) prevBtn.addEventListener('click', () => jumpMatch(-1));
+  if (nextBtn) nextBtn.addEventListener('click', () => jumpMatch(+1));
+  modeBtns.forEach(b => b.addEventListener('click', () => {
+    const want = b.dataset.mode === 'filter';
+    if (want === hideMode) return;
+    hideMode = want;
+    syncModeUI();
+    log.classList.toggle('hide-mode', hideMode);
+    refilter();
+    if (!hideMode && filterText) jumpMatch(0);
+    else if (!paused) window.scrollTo(0, document.body.scrollHeight);
+  }));
+  pauseBtn.addEventListener('click', () => {
+    paused = !paused;
+    pauseBtn.textContent = paused ? 'resume' : 'pause';
+    statusEl.textContent = paused ? 'paused' : 'live';
+    statusEl.className = 'pill ' + (paused ? 'paused' : 'live');
+    if (!paused) window.scrollTo(0, document.body.scrollHeight);
+  });
+  clearBtn.addEventListener('click', () => {
+    log.innerHTML = '';
+    // Resetting the DOM after Clear: the next live append re-fills
+    // from the bottom, but the older-chain pointer is unchanged so
+    // the user can still walk back if they want.
+  });
+
+  // "Load older" cursor: how many lines from the chain head are already
+  // in the DOM. Reset by openLogStream(), advanced by every append()
+  // (backlog + live) and by each successful /logs/older batch length.
+  let _logsSkip = 0;
+  let _logsOlderBusy = false;
+  const loadOlderBtn = document.getElementById('loadOlderBtn');
+  if (loadOlderBtn) {
+    loadOlderBtn.addEventListener('click', async () => {
+      if (_logsOlderBusy) return;
+      _logsOlderBusy = true;
+      loadOlderBtn.disabled = true;
+      const prevLabel = loadOlderBtn.textContent;
+      loadOlderBtn.textContent = 'Loading…';
+      try {
+        // Session cookie is sent automatically with the fetch.
+        const url = '/logs/older?skip=' + encodeURIComponent(_logsSkip)
+                  + '&limit={{LOG_VIEWER_INITIAL_LINES}}';
+        const r = await fetch(url);
+        if (!r.ok) {
+          console.warn('load-older failed', r.status);
+          return;
+        }
+        const j = await r.json();
+        const lines = (j && j.lines) || [];
+        // Prepend to top of #log, preserving line order (oldest-first
+        // batch → first inserted ends up at the very top, last inserted
+        // sits just above the existing content). Filter is reapplied per
+        // line so the new batch honors any active substring search.
+        const frag = document.createDocumentFragment();
+        const olderDim = { dimLeft: 0 };   // batch-local; no leak to live tail
+        for (const line of lines) appendLine(frag, line, olderDim);
+        log.insertBefore(frag, log.firstChild);
+        _logsSkip += lines.length;
+        if (j.next_skip == null) loadOlderBtn.style.display = 'none';
+      } catch (e) {
+        console.warn('load-older error', e);
+      } finally {
+        _logsOlderBusy = false;
+        loadOlderBtn.disabled = false;
+        loadOlderBtn.textContent = prevLabel;
+      }
+    });
+  }
+
+  // EventSource sends the HttpOnly session cookie automatically (same-origin),
+  // so the server's _require_logs_page_sse dependency resolves the user
+  // without the legacy ?key= fallback.
+  let es = null;
+  let _logRecoveryTimer = null;
+  let _logReconnectDelay = 3000;
+  function openLogStream() {
+    if (es) { try { es.close(); } catch (_) {} es = null; }
+    // Clear stale DOM + cursors so the replayed backlog doesn't duplicate
+    // (onerror closes the source, so this is the only reconnect path).
+    log.innerHTML = '';
+    _logsSkip = 0;
+    _liveStarted = false;
+    const lo = document.getElementById('loadOlderBtn');
+    if (lo) lo.style.display = 'none';
+    es = new EventSource('/logs/stream');
+    es.onmessage = (e) => append(e.data);
+    es.onerror = () => {
+      // Close so the browser's native retry can't reconnect behind our back
+      // and replay the backlog into an un-cleared DOM; openLogStream() is
+      // the single reconnect entry point.
+      if (es) { try { es.close(); } catch (_) {} es = null; }
+      statusEl.textContent = 'reconnecting…';
+      statusEl.className = 'pill paused';
+      if (_logRecoveryTimer) return;
+      const probe = async () => {
+        try {
+          const r = await fetch('/v1/models', { cache: 'no-store' });
+          if (r.ok) {
+            clearTimeout(_logRecoveryTimer);
+            _logRecoveryTimer = null;
+            _logReconnectDelay = 3000;
+            openLogStream();
+            return;
+          }
+        } catch (_) { /* keep polling */ }
+        _logReconnectDelay = Math.min(_logReconnectDelay * 1.7, 30000);
+        _logRecoveryTimer = setTimeout(probe, _logReconnectDelay);
+      };
+      _logRecoveryTimer = setTimeout(probe, _logReconnectDelay);
+    };
+    es.onopen = () => {
+      if (_logRecoveryTimer) { clearTimeout(_logRecoveryTimer); _logRecoveryTimer = null; }
+      _logReconnectDelay = 3000;
+      if (!paused) {
+        statusEl.textContent = 'live';
+        statusEl.className = 'pill live';
+      }
+    };
+  }
+  openLogStream();
+
+  // --- Log-only zoom (independent of the global UI scale picker) ---------
+  // Multiplies on top of --fs-base via #log { font-size: calc(1rem * --log-zoom) }.
+  // Discrete steps so clicks "snap" to recognizable sizes like browser zoom.
+  (function(){
+    const KEY='whisper-log-zoom';
+    // Down to 40%: on a wide monitor a dense, small log fits far more
+    // lines per screen than the UI scale alone allows.
+    const STEPS=[0.4, 0.5, 0.6, 0.7, 0.85, 1, 1.2, 1.4, 1.6, 1.8, 2.0];
+    const DEFAULT_IDX = STEPS.indexOf(1);
+    const minus=document.getElementById('log-zoom-out');
+    const plus =document.getElementById('log-zoom-in');
+    const pct  =document.getElementById('log-zoom-pct');
+    if(!minus||!plus||!pct) return;
+    function nearestIdx(v){
+      let best=DEFAULT_IDX, dist=Infinity;
+      STEPS.forEach((s,i)=>{ const d=Math.abs(s-v); if(d<dist){dist=d;best=i;} });
+      return best;
+    }
+    let idx = nearestIdx(parseFloat(localStorage.getItem(KEY)) || 1);
+    function apply(){
+      const v = STEPS[idx];
+      document.documentElement.style.setProperty('--log-zoom', v);
+      pct.textContent = Math.round(v*100) + '%';
+      minus.disabled = idx === 0;
+      plus.disabled  = idx === STEPS.length - 1;
+      localStorage.setItem(KEY, v);
+    }
+    minus.addEventListener('click', () => { if(idx>0){idx--; apply();} });
+    plus .addEventListener('click', () => { if(idx<STEPS.length-1){idx++; apply();} });
+    apply();
+  })();
+</script>
+{{SCALE_PICKER_JS}}
+{{SEV_POLLER_JS}}
+</body></html>

@@ -52,6 +52,22 @@ _NOT_RESET = {
     # Stateless since P16: the registry moved to model_registry. Listed so a
     # container added back here is caught without a hook.
     "faster_whisper_backend.runtime.system_stats": {},
+    # P14: the route groups and helpers carved out of main.py.
+    "faster_whisper_backend.media.video": {},
+    "faster_whisper_backend.media.routes": {
+        "_VIDEO_MIME": "constant container → mime map",
+    },
+    "faster_whisper_backend.transcription.jobs_routes": {},
+    "faster_whisper_backend.transcription.catalog_routes": {},
+    "faster_whisper_backend.translation.routes": {},
+    "faster_whisper_backend.admin.logs_routes": {},
+    "faster_whisper_backend.auth.routes": {},
+    "faster_whisper_backend.auth.hosts": {
+        "_cors_origins": "configuration main installs at app build "
+                         "(configure_origins), re-armed by its reload",
+        "_trusted_origins": "configuration main installs at app build "
+                            "(configure_origins), re-armed by its reload",
+    },
     "faster_whisper_backend.pipeline.apply": {
         "EVICTORS": "constant bucket → drop-callable table",
         "_RULES_LOCK": "a LoopLock keeps one asyncio.Lock per running loop and "
@@ -285,3 +301,87 @@ def test_model_registry_hook_clears_the_warm_predicate():
     _hook("faster_whisper_backend.runtime.model_registry")()
     assert model_registry._warm_predicate is None
     assert not model_registry.is_warm("x")
+
+
+# P14: the remaining route groups left main.py — media/{video,routes},
+# transcription/{jobs_routes,catalog_routes}, translation/routes,
+# admin/logs_routes, auth/{routes,hosts} — plus the bootstrap-admin ingest
+# (auth/api_keys_store.py) and the hard-restart TMPDIR sweep
+# (admin/restart_service.py). A stale twin in main would be what a test
+# patches while every caller runs the moved copy.
+_P14_OWNERS = (
+    "faster_whisper_backend.media.video",
+    "faster_whisper_backend.media.routes",
+    "faster_whisper_backend.transcription.jobs_routes",
+    "faster_whisper_backend.transcription.catalog_routes",
+    "faster_whisper_backend.translation.routes",
+    "faster_whisper_backend.admin.logs_routes",
+    "faster_whisper_backend.auth.routes",
+    "faster_whisper_backend.auth.hosts",
+)
+# main still computes the two origin lists itself (the CORS middleware needs
+# them) and hands them to auth.hosts.configure_origins.
+_P14_SHARED = _SHARED | {"router", "_cors_origins", "_trusted_origins"}
+
+
+def test_main_no_longer_defines_p14_names():
+    from faster_whisper_backend import main
+    moved = {"bootstrap_admin_from_env", "_bootstrap_admin_from_env",
+             "BootstrapAdminError", "_BOOTSTRAP_KEY_MIN_LEN",
+             "_BOOTSTRAP_KEY_MIN_DISTINCT", "_bootstrap_key_is_strong",
+             "reclaim_hard_restart_orphans", "_reclaim_hard_restart_orphans",
+             "_clamp_context_segments"}
+    for owner in _P14_OWNERS:
+        moved |= set(_top_level_names(importlib.import_module(owner))) - _P14_SHARED
+    stale = sorted(n for n in moved if hasattr(main, n))
+    assert not stale, f"main.py still defines moved names: {stale}"
+    for name in ("_download_video_for_run", "_VIDEO_TASKS", "url_preview",
+                 "package_media", "jobs_list", "_jobs_gate", "translate_text",
+                 "_translate_inflight", "list_models", "get_decode_defaults",
+                 "_LOG_VIEWER_HTML", "_stream_log_lines", "severity_snapshot",
+                 "login", "_login_failures", "_origin_is_allowed",
+                 "require_user_webui_host", "_to_ip"):
+        assert name in moved, name
+    from faster_whisper_backend.admin import restart_service
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.transcription import models as tx_models
+    assert callable(api_keys_store.bootstrap_admin_from_env)
+    assert issubclass(api_keys_store.BootstrapAdminError, RuntimeError)
+    assert callable(restart_service.reclaim_hard_restart_orphans)
+    assert callable(tx_models._clamp_context_segments)
+
+
+def test_web_common_host_gate_is_auth_hosts():
+    """web_common re-exports the host gate; each alias must BE auth.hosts'
+    object (a copy would split a patch), and web_common keeps no twin of the
+    private helpers."""
+    from faster_whisper_backend.auth import hosts as auth_hosts
+    from faster_whisper_backend.core import web_common
+    for name in ("require_allowed_host", "host_in_allowlist",
+                 "require_user_webui_host", "require_admin_webui_host"):
+        assert getattr(web_common, name) is getattr(auth_hosts, name), name
+    for name in ("_to_ip", "_build_networks"):
+        assert not hasattr(web_common, name), name
+
+
+def test_no_package_module_imports_main():
+    """Nothing inside the package reaches back into main (the old lazy
+    `from faster_whisper_backend import main` cycle breakers are gone); only
+    the `python -m faster_whisper_backend` entry point imports it."""
+    import pathlib
+    from faster_whisper_backend.paths import REPO_ROOT
+    pkg = pathlib.Path(REPO_ROOT) / "faster_whisper_backend"
+    offenders = []
+    for py in sorted(pkg.rglob("*.py")):
+        if py.name == "__main__.py":
+            continue
+        for node in ast.walk(ast.parse(py.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.ImportFrom) and node.module == "faster_whisper_backend"
+                    and any(a.name == "main" for a in node.names)):
+                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
+            elif isinstance(node, ast.ImportFrom) and node.module == "faster_whisper_backend.main":
+                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
+            elif isinstance(node, ast.Import) and any(
+                    a.name == "faster_whisper_backend.main" for a in node.names):
+                offenders.append(f"{py.relative_to(pkg)}:{node.lineno}")
+    assert not offenders, offenders

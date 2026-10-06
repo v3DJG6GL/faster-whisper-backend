@@ -45,8 +45,8 @@ Protocol (see streaming_session for the emission contract):
     {"type":"boundary",utterance,separator}  long-silence hard break: fresh document
     {"type":"closing"}  the server is done; the socket closes next
 
-main.py is imported lazily inside the handler (for cfg and the origin gate
-only) to avoid the main → streaming_routes → main import cycle.
+The handshake's same-origin check is auth/hosts.py's, shared with main's
+CSRF middleware; this module never imports main.
 """
 
 import asyncio
@@ -66,6 +66,8 @@ from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
 from faster_whisper_backend.auth import dependencies as auth
+from faster_whisper_backend.auth import hosts as auth_hosts
+from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import effective_config
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.settings import version as settings_version
@@ -76,6 +78,7 @@ from faster_whisper_backend.auth import rate_limit
 from faster_whisper_backend.core import receipt_hold
 from faster_whisper_backend.core import segment_guards
 from faster_whisper_backend.core import store_common
+from faster_whisper_backend.core import templates
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.pipeline import engine as pl_engine
 from faster_whisper_backend.transcription import guards as tx_guards
@@ -85,7 +88,6 @@ from faster_whisper_backend.transcription import receipt as tx_receipt
 from faster_whisper_backend.streaming.session import CloseAbort, StreamConfig, StreamSession
 from faster_whisper_backend.streaming.transport import ENCODED_FORMATS, RAW_FORMATS, make_transport
 from faster_whisper_backend.streaming.vad import SAMPLE_RATE, make_endpointer
-from faster_whisper_backend.paths import REPO_ROOT
 
 logger = logging.getLogger(__name__)
 
@@ -125,8 +127,9 @@ def _write_pcm16_wav(audio: np.ndarray, sample_rate: int = SAMPLE_RATE) -> str:
     path. Used to hand a streamed utterance's audio to the captures pipeline
     (which re-transcodes any source file to its canonical 16 kHz mono WAV)."""
     pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype("<i2")
-    # "whisperup-" is one of the prefixes main's hard-restart TMPDIR sweep
-    # reclaims, so an orphaned capture WAV does not outlive the process.
+    # "whisperup-" is one of the prefixes the hard-restart TMPDIR sweep
+    # (admin/restart_service.py) reclaims, so an orphaned capture WAV does not
+    # outlive the process.
     fd, path = tempfile.mkstemp(prefix="whisperup-", suffix=".wav")
     os.close(fd)
     with wave.open(path, "wb") as wf:
@@ -508,9 +511,6 @@ def _parse_translate_expect(conf: dict) -> "dict | None":
 
 @router.websocket("/v1/audio/transcriptions/stream")
 async def transcribe_stream(ws: WebSocket) -> None:
-    from faster_whisper_backend import main  # lazy — avoids the import cycle and is loaded by connect time
-
-    cfg = main.cfg
     if not getattr(cfg, "STREAMING_ENABLED", True):
         await _refuse(ws, _WS_DISABLED, "live dictation is disabled on this server")
         return
@@ -524,8 +524,8 @@ async def transcribe_stream(ws: WebSocket) -> None:
     # allow, so non-browser clients (curl, SDKs, the desktop client) are
     # unaffected; a proxy that rewrites Host is handled by TRUSTED_ORIGINS
     # exactly as on the HTTP side.
-    if not main._origin_is_allowed(ws):
-        main._log_origin_rejected(ws)
+    if not auth_hosts._origin_is_allowed(ws):
+        auth_hosts._log_origin_rejected(ws)
         await _refuse(ws, _WS_BAD_ORIGIN, "handshake rejected (origin)")
         return
     user = authenticate_ws(ws)
@@ -1573,7 +1573,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
             # an unthrottled line per item let it roll the whole retained log
             # history (LOG_MAX_BYTES x LOG_BACKUP_COUNT) off disk — taking the
             # origin-rejection and auth records with it. Same reasoning as
-            # main._ORIGIN_REJECT_LOG_INTERVAL_S.
+            # auth_hosts._ORIGIN_REJECT_LOG_INTERVAL_S.
             if _shed_items:
                 _now_m = time.monotonic()
                 _pending_shed_items += _shed_items
@@ -1871,7 +1871,6 @@ async def transcribe_stream(ws: WebSocket) -> None:
 
 
 # --- Dictation page -----------------------------------------------------------
-_DICTATE_HTML_PATH = os.path.join(REPO_ROOT, "static", "dictate.html")
 
 
 @router.get("/dictate", response_class=HTMLResponse,
@@ -1889,13 +1888,16 @@ async def dictate_page() -> HTMLResponse:
     allowlist only, nothing sensitive rendered server-side); the WebSocket and
     the transcription endpoint each enforce their own credential.
 
-    The template lives in static/ rather than inline here because it is large
-    and mostly client JS; it is read per request so an edit shows up on reload,
-    matching how the other page shells behave under --reload.
+    The template is templates/dictate.html next to this module (not under
+    static/, which is served raw and publicly — this is an un-substituted
+    server-side template). Unlike the other page templates it is read PER
+    REQUEST, deliberately not cached at import: it is large and mostly client
+    JS, and re-reading it means an edit shows up on a browser reload without a
+    restart. templates.load resolves the file from this module's own
+    directory, which is the right anchor here.
     """
     try:
-        with open(_DICTATE_HTML_PATH, "r", encoding="utf-8") as fh:
-            template = fh.read()
+        template = templates.load(__file__, "dictate.html")
     except OSError as exc:
         logger.error("[dictate] cannot read page template: %s", exc)
         return HTMLResponse("<h1>dictate unavailable</h1>", status_code=500)

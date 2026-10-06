@@ -1026,6 +1026,162 @@ def rename_profile_refs(old: str, new: str) -> int:
     return touched
 
 
+# Strength floor for the operator-supplied bootstrap admin key. Well below
+# generate_raw_key()'s output (wk_ + 43 chars) so nothing machine-generated
+# trips it; the distinct-character test rejects "aaaaaaaa..."-shaped values
+# that clear the length bar without carrying the entropy it implies.
+_BOOTSTRAP_KEY_MIN_LEN = 20
+_BOOTSTRAP_KEY_MIN_DISTINCT = 8
+
+
+def _bootstrap_key_is_strong(raw_key: str) -> bool:
+    key = (raw_key or "").strip()
+    return (
+        len(key) >= _BOOTSTRAP_KEY_MIN_LEN
+        and len(set(key)) >= _BOOTSTRAP_KEY_MIN_DISTINCT
+    )
+
+
+class BootstrapAdminError(RuntimeError):
+    """WHISPER_BOOTSTRAP_ADMIN_KEY could not be honoured. Its message names
+    the actual cause (a revoked key, a hash race) — the lifespan passes it
+    through unwrapped instead of relabelling it as a store-init failure."""
+
+
+def bootstrap_admin_from_env(raw_key: str) -> None:
+    """If WHISPER_BOOTSTRAP_ADMIN_KEY is set, ensure a `bootstrap-admin`
+    user holds that exact key. Idempotent — if the key hash is already in
+    the DB we no-op. The raw key never gets persisted in plaintext;
+    only the SHA-256 hash hits disk.
+
+    A minimum strength is enforced before the key is ever created. Keys are
+    stored as an unsalted single-round SHA-256, which this module justifies
+    with "high-entropy random keys (256-bit) make slow password hashes
+    pointless" — true for generate_raw_key()'s output, but this value is
+    human-chosen, the login route is only rate-limited per client IP and every
+    bearer-authenticated route has no lockout at all, so a short one is
+    brute-forceable online straight to full admin.
+
+    Rejection is safe for an existing install: the live-hash check runs FIRST
+    and no-ops when the key is already in the DB, so a key created before this
+    floor existed keeps working without a complaint on every boot. Only
+    first-time creation of a weak value is refused, and the server then stays
+    in its usual no-admin-key state rather than failing to boot.
+    """
+    h = hash_key(raw_key)
+    # If this hash already maps to an active key, nothing to do — and nothing
+    # to complain about, however weak the value is by today's floor.
+    if _KEY_INDEX.get(h) is not None:
+        logger.debug("[auth] bootstrap key already present — skipping")
+        return
+    if not _bootstrap_key_is_strong(raw_key):
+        logger.error(
+            "[auth] WHISPER_BOOTSTRAP_ADMIN_KEY is too weak — refusing to "
+            "create an admin key from it. It must be at least %d characters "
+            "with at least %d distinct ones. Generate one with: "
+            "python -c \"import secrets; print('wk_' + secrets.token_urlsafe(32))\"",
+            _BOOTSTRAP_KEY_MIN_LEN, _BOOTSTRAP_KEY_MIN_DISTINCT,
+        )
+        return
+    # _KEY_INDEX is built from live rows only (revoked_ts IS NULL), so a hash
+    # belonging to a REVOKED key is invisible above and used to fall through to
+    # the INSERT, hit the UNIQUE on key_hash, and get swallowed silently — the
+    # server then booted into OPEN mode with the operator believing the env key
+    # had locked it down, which is exactly the failure main.py's lifespan calls
+    # fatal. Fail loudly instead. Un-revoking here would resurrect a key the
+    # operator deliberately killed, so that is not the answer either.
+    _revoked = _require_conn().execute(
+        "SELECT id FROM api_keys WHERE key_hash = ? AND revoked_ts IS NOT NULL",
+        (h,),
+    ).fetchone()
+    if _revoked is not None:
+        raise BootstrapAdminError(
+            "WHISPER_BOOTSTRAP_ADMIN_KEY matches an API key that has been "
+            "REVOKED. Refusing to start: silently ignoring it would leave the "
+            "server with no admin key while you believe it is locked down. "
+            "Set the variable to a different key, or clear it and use the "
+            "existing admin credentials."
+        )
+    # Reuse or create the bootstrap-admin user. Direct SELECT rather than
+    # list_users(): that helper hides revoked rows, and a revoked
+    # bootstrap-admin would then fall through to create_user, hit the UNIQUE
+    # on username and surface as a bare ValueError that the lifespan
+    # relabels as a store-init failure (filesystem permissions).
+    _urow = _require_conn().execute(
+        "SELECT id, is_admin, revoked_ts FROM users WHERE username = ?",
+        ("bootstrap-admin",),
+    ).fetchone()
+    if _urow is not None and _urow["revoked_ts"] is not None:
+        raise BootstrapAdminError(
+            "WHISPER_BOOTSTRAP_ADMIN_KEY is set but the bootstrap-admin user "
+            "has been REVOKED. Refusing to start: the key cannot be attached "
+            "to a revoked user and silently ignoring it would leave the "
+            "server without the admin key you configured. Clear the "
+            "variable and use the existing admin credentials."
+        )
+    if _urow is not None and not int(_urow["is_admin"]):
+        # Not escalated — resurrecting admin on a user someone deliberately
+        # created as non-admin is not ours to do. But booting OPEN while the
+        # operator believes the env key locked the server down is the exact
+        # failure the lifespan calls fatal, so fail loudly instead.
+        raise BootstrapAdminError(
+            "WHISPER_BOOTSTRAP_ADMIN_KEY is set but the bootstrap-admin user "
+            "exists with is_admin=False; refusing to attach an admin key to "
+            "it. Clear the variable, or rename/revoke that user and restart."
+        )
+    if _urow is not None:
+        uid = _urow["id"]
+    else:
+        uid = create_user("bootstrap-admin", is_admin=True)
+    # Insert the raw key (bypass generate path so we honour the env value).
+    kp, k4 = _split_display_parts(raw_key)
+    new_key_id = uuid.uuid4().hex
+    try:
+        with _lock:
+            _require_conn().execute(
+                "INSERT INTO api_keys"
+                " (id, user_id, key_hash, key_prefix, key_last4, label,"
+                "  created_ts, revoked_ts, last_used_ts)"
+                " VALUES (?,?,?,?,?,?,?,NULL,NULL)",
+                (
+                    new_key_id, uid, h, kp, k4,
+                    "bootstrap (env)", time.time(),
+                ),
+            )
+            _rebuild_index_locked()
+        # Deliberately NOT logging kp here: unlike a generated key, this value
+        # is human-chosen and only has to clear _BOOTSTRAP_KEY_MIN_LEN, so the
+        # 8-char display prefix is a real fraction of the secret — and the
+        # server log is readable by every non-admin, who get the /logs page by
+        # default. The hash prefix identifies the key without revealing it.
+        logger.info(
+            "[auth] bootstrap admin key registered from "
+            "WHISPER_BOOTSTRAP_ADMIN_KEY (user=bootstrap-admin, sha256=%s)",
+            h[:8],
+        )
+        other_env_keys = sum(
+            1 for k in list_keys(uid)
+            if k.get("label") == "bootstrap (env)"
+            and k.get("id") != new_key_id
+        )
+        if other_env_keys:
+            logger.warning(
+                "[auth] %d previous bootstrap (env) key(s) for "
+                "bootstrap-admin are still live — revoke them manually "
+                "if the old value should no longer work",
+                other_env_keys,
+            )
+    except sqlite3.IntegrityError:
+        # The live-hash check and the revoked-hash check above both passed, so
+        # a UNIQUE violation here means the row appeared underneath us. Never
+        # silent: the same open-mode-without-noticing outcome applies.
+        raise BootstrapAdminError(
+            "WHISPER_BOOTSTRAP_ADMIN_KEY could not be registered (the key hash "
+            "already exists). Refusing to start rather than leaving the server "
+            "without the admin key you configured."
+        )
+
+
 def is_locked_down() -> bool:
     """Server is locked down iff at least one active admin key exists.
     Open mode (return False) lets every request through as the synthetic

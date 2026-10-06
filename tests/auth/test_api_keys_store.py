@@ -10,6 +10,8 @@ import threading
 
 import pytest
 
+from faster_whisper_backend.auth import api_keys_store
+
 
 # ---------------------------------------------------------------------------
 # Hashing / generation (pure)
@@ -460,18 +462,17 @@ def test_update_key_label_missing_returns_none(api_keys_db):
 
 
 # ---------------------------------------------------------------------------
-# WHISPER_BOOTSTRAP_ADMIN_KEY ingest (main._bootstrap_admin_from_env)
+# WHISPER_BOOTSTRAP_ADMIN_KEY ingest (api_keys_store.bootstrap_admin_from_env)
 # ---------------------------------------------------------------------------
 
 _BOOTSTRAP_KEY = "bootstrap-key-with-enough-entropy-1234"
 
 
 def test_bootstrap_admin_from_env_is_idempotent(api_keys_db):
-    from faster_whisper_backend import main
-    main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+    api_keys_store.bootstrap_admin_from_env(_BOOTSTRAP_KEY)
     assert api_keys_db.is_locked_down() is True
     # Re-running with the same live key is a no-op, not a duplicate insert.
-    main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+    api_keys_store.bootstrap_admin_from_env(_BOOTSTRAP_KEY)
     h = api_keys_db.hash_key(_BOOTSTRAP_KEY)
     rows = api_keys_db._require_conn().execute(
         "SELECT COUNT(*) FROM api_keys WHERE key_hash = ?", (h,)).fetchone()[0]
@@ -483,15 +484,14 @@ def test_bootstrap_admin_from_env_refuses_a_revoked_key(api_keys_db):
     # to the idempotence check: the insert then hit the UNIQUE on key_hash and
     # the IntegrityError was swallowed, booting the server without the admin
     # key the operator had configured — silently.
-    from faster_whisper_backend import main
-    main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+    api_keys_store.bootstrap_admin_from_env(_BOOTSTRAP_KEY)
     h = api_keys_db.hash_key(_BOOTSTRAP_KEY)
     uid2 = api_keys_db.create_user("second-admin", is_admin=True)
     api_keys_db.create_key(uid2)
     api_keys_db.revoke_key(api_keys_db._KEY_INDEX[h]["key_id"])
 
     with pytest.raises(RuntimeError, match="REVOKED"):
-        main._bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+        api_keys_store.bootstrap_admin_from_env(_BOOTSTRAP_KEY)
 
 
 def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):

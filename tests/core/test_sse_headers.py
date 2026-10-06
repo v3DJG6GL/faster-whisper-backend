@@ -37,7 +37,7 @@ def test_sse_response_sets_proxy_safe_headers():
 # (source file, snippet proving the stream endpoint is wired to the helper)
 _ROUTE_FILES = ["faster_whisper_backend/stats/routes.py",
                 "faster_whisper_backend/quick_config/routes.py",
-                "faster_whisper_backend/main.py"]
+                "faster_whisper_backend/admin/logs_routes.py"]
 _REPO = pathlib.Path(REPO_ROOT)
 
 

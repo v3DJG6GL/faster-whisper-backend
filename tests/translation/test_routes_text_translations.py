@@ -16,6 +16,7 @@ from tests._translation_helpers import (
     text_translation_body as _body,
 )
 from tests.conftest import bearer
+from faster_whisper_backend.translation import routes as tr_routes
 
 URL = "/v1/text/translations"
 _PID = "feed" * 8  # 32 hex chars — passes _PROGRESS_ID_RE
@@ -138,7 +139,7 @@ def test_per_minute_backstop_429s_and_releases_the_held_receipt(
 
     _enable(app_module, monkeypatch, TRANSLATE_RATE_PER_MIN=2)
     _stub_translate(monkeypatch)
-    window = app_module._text_translate_rate
+    window = tr_routes._text_translate_rate
     window._state.clear()
     try:
         for _ in range(2):
@@ -173,7 +174,7 @@ def test_inflight_cap_rejects_when_the_identity_is_full(client, app_module,
                                                         monkeypatch):
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
-    gauge = app_module._translate_inflight
+    gauge = tr_routes._translate_inflight
     limit = int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)
     for _ in range(limit):
         gauge.acquire(_open_key())
@@ -196,7 +197,7 @@ def test_inflight_slot_is_released_on_success(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
     assert client.post(URL, json=_body()).status_code == 200
-    assert app_module._translate_inflight._counts == {}
+    assert tr_routes._translate_inflight._counts == {}
 
 
 @pytest.mark.parametrize("make_exc,status", [
@@ -212,7 +213,7 @@ def test_inflight_slot_is_released_on_every_error_path(
         raise make_exc()
     monkeypatch.setattr(translation, "translate_segments", _boom)
     assert client.post(URL, json=_body()).status_code == status
-    assert app_module._translate_inflight._counts == {}
+    assert tr_routes._translate_inflight._counts == {}
 
 
 def test_inflight_slot_is_released_on_cancellation(client, app_module,
@@ -230,14 +231,14 @@ def test_inflight_slot_is_released_on_cancellation(client, app_module,
 
     with pytest.raises(BaseException):
         client.post(URL, json=_body())
-    assert app_module._translate_inflight._counts == {}
+    assert tr_routes._translate_inflight._counts == {}
 
 
 def test_inflight_zero_is_unlimited(client, app_module, monkeypatch):
     _enable(app_module, monkeypatch, TRANSLATE_MAX_INFLIGHT_PER_USER=0)
     _stub_translate(monkeypatch)
     # A stale count from before the field was zeroed must not gate anything.
-    app_module._translate_inflight._counts[_open_key()] = 99
+    tr_routes._translate_inflight._counts[_open_key()] = 99
     assert client.post(URL, json=_body()).status_code == 200
 
 
@@ -249,7 +250,7 @@ def test_inflight_cap_is_per_user(client, app_module, make_user_key,
     _stub_translate(monkeypatch)
     uid_a, key_a = make_user_key("alice", is_admin=True)
     _uid_b, key_b = make_user_key("bob", is_admin=False)
-    gauge = app_module._translate_inflight
+    gauge = tr_routes._translate_inflight
     for _ in range(int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)):
         gauge.acquire(uid_a)
 
@@ -303,7 +304,7 @@ def test_422_malformed_shapes(client, app_module, monkeypatch):
         _body(context_segments=True),                         # bool is not an int here
         "just a string",
         {"segments": [{"id": i, "text": "x"} for i
-                      in range(app_module._TEXT_TRANSLATE_MAX_SEGMENTS + 1)],
+                      in range(tr_routes._TEXT_TRANSLATE_MAX_SEGMENTS + 1)],
          "targets": ["en"]},                                  # over entry cap
     ]
     for case in cases:
@@ -491,7 +492,7 @@ def test_inflight_refusal_releases_the_held_receipt(client, app_module,
 
     _enable(app_module, monkeypatch)
     _stub_translate(monkeypatch)
-    gauge = app_module._translate_inflight
+    gauge = tr_routes._translate_inflight
     for _ in range(int(app_module.cfg.TRANSLATE_MAX_INFLIGHT_PER_USER)):
         gauge.acquire(_open_key())
     receipt_hold.park("cap1", {"file_label": "utt#1", "model_name": "m",

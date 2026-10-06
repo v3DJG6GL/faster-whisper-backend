@@ -2,7 +2,8 @@
 Shared helpers used by the /logs, /settings, /stats, and /quick-config pages.
 
   - require_allowed_host(allowlist) — FastAPI dependency that 403s callers
-    not in the allowlist. Allowlist accepts bare IPs or CIDRs.
+    not in the allowlist. Allowlist accepts bare IPs or CIDRs. Defined in
+    auth/hosts.py, re-exported here with the two tier gates.
   - nav_html(current)               — server-rendered nav row HTML.
   - severity_counts()               — WARNING+ counts since process start
                                       (bounded by the 2000-entry ring).
@@ -11,100 +12,20 @@ Shared helpers used by the /logs, /settings, /stats, and /quick-config pages.
 from __future__ import annotations
 
 import functools
-import ipaddress
 import logging
 from collections import deque
-from typing import Callable
-
-from fastapi import HTTPException, Request, status
-from starlette.requests import HTTPConnection
 
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.settings import schema as settings_schema
 from faster_whisper_backend.core import templates
-
-
-# IPv4-mapped-in-IPv6 prefix surfaces on Windows dual-stack `::` binds when a
-# v4 client connects, e.g. "::ffff:127.0.0.1". `ipaddress.ip_address` already
-# parses these, but the .ipv4_mapped attribute is what we actually compare on.
-def _to_ip(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return None
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        return ip.ipv4_mapped
-    return ip
-
-
-def _build_networks(allowlist: list[str]) -> list[ipaddress._BaseNetwork]:
-    nets: list[ipaddress._BaseNetwork] = []
-    for entry in allowlist or []:
-        entry = entry.strip()
-        if not entry:
-            continue
-        try:
-            nets.append(ipaddress.ip_network(entry, strict=False))
-        except ValueError:
-            # Bad entry — skip silently. The /settings endpoint validates inputs;
-            # this is a runtime defense for handwritten config edits.
-            continue
-    return nets
-
-
-def require_allowed_host(allowlist_ref: Callable[[], list[str]]) -> Callable[[Request], None]:
-    """Returns a FastAPI dependency that rejects callers outside the allowlist.
-
-    `allowlist_ref` is a zero-arg callable that returns the current allowlist —
-    NOT the list itself. This indirection matters: the admin WebUI can edit
-    cfg.ADMIN_WEBUI_ALLOWED_HOSTS at runtime, and we want the next request to pick
-    up the new value without re-creating the dependency.
-
-    Loopback (`127.0.0.1`, `::1`) is ALWAYS allowed in addition to the
-    configured list, so a misconfigured CIDR can never lock the local
-    operator out of /settings — they can still fix the entry from the box.
-    """
-
-    def _dep(request: Request) -> None:
-        client = request.client
-        if client is None:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "no client info")
-        if _to_ip(client.host) is None:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "unparseable client host")
-        if not host_in_allowlist(request, allowlist_ref()):
-            raise HTTPException(status.HTTP_403_FORBIDDEN, "host not in allowlist")
-
-    return _dep
-
-
-def host_in_allowlist(request: HTTPConnection, allowlist: list[str]) -> bool:
-    """True if the client IP is loopback or inside `allowlist`. Non-raising —
-    the boolean core behind `require_allowed_host` (which turns False into a
-    403). Loopback is always allowed, matching require_allowed_host's contract.
-
-    Typed on HTTPConnection, not Request: auth.open_mode_host_ok also passes
-    the streaming WebSocket, and `.client` is all this reads.
-    """
-    client = request.client
-    if client is None:
-        return False
-    ip = _to_ip(client.host)
-    if ip is None:
-        return False
-    if ip.is_loopback:
-        return True
-    return any(ip in net for net in _build_networks(allowlist))
-
-
-# Concrete tier gates, bucketed by privilege (loopback always allowed). The
-# lambdas re-read cfg per request so the admin WebUI can broaden/narrow access
-# without a restart. Both are the OUTER host layer; the INNER key layer
-# (require_page(...) / require_admin) is stacked on the data endpoints.
-#   require_admin_webui_host — /settings, /settings/api-keys, /docs.
-#   require_user_webui_host  — /quick-config, /captures, /reports, /stats,
-#                              /logs, /dictate, /sev (default-open allowlist).
-require_admin_webui_host = require_allowed_host(lambda: cfg.ADMIN_WEBUI_ALLOWED_HOSTS)
-require_user_webui_host = require_allowed_host(lambda: cfg.USER_WEBUI_ALLOWED_HOSTS)
+# The client-host allowlist gate lives in auth/hosts.py (beside the
+# same-origin guard); re-exported here because the page routers reference it
+# as web_common.require_user_webui_host / require_admin_webui_host. Plain
+# function objects that nothing patches, so each alias IS auth.hosts' object.
+from faster_whisper_backend.auth.hosts import host_in_allowlist as host_in_allowlist
+from faster_whisper_backend.auth.hosts import require_admin_webui_host as require_admin_webui_host
+from faster_whisper_backend.auth.hosts import require_allowed_host as require_allowed_host
+from faster_whisper_backend.auth.hosts import require_user_webui_host as require_user_webui_host
 
 
 # --- Severity ring (in-memory log-level counts, since process start) ---------

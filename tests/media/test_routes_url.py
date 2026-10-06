@@ -16,6 +16,7 @@ from faster_whisper_backend.media import media_store as url_media_store
 from faster_whisper_backend.media.download import UrlDownloadError, UrlMediaInfo
 from faster_whisper_backend.transcription import models as tx_models
 from faster_whisper_backend.transcription import progress as tx_progress
+from faster_whisper_backend.media import video as media_video
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 _PID = "beef" * 8
@@ -334,80 +335,6 @@ def test_preview_rate_limit_is_per_user(client, url_enabled, make_user_key,
                        headers=bearer(key_b)).status_code == 200
 
 
-# --- hard-restart TMPDIR sweep ----------------------------------------------
-
-def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
-    """The startup sweep reclaims what an admin restart (os.execv/os._exit,
-    no ASGI shutdown) orphaned — urldl- job dirs, sepsrc-/vocals- WAVs —
-    while leaving fresh entries (a just-overlapping process) and unrelated
-    names alone. (No app_module fixture: that fixture stubs the sweep out
-    so TestClient startups never touch the real tempdir.)"""
-    import time as _time
-
-    from faster_whisper_backend import main as app_module
-
-    fake_tmp = tmp_path / "faketmp"
-    fake_tmp.mkdir()
-    monkeypatch.setattr(app_module.tempfile, "gettempdir",
-                        lambda: str(fake_tmp))
-
-    old = _time.time() - 3600
-    old_dir = fake_tmp / "urldl-dead"
-    old_dir.mkdir()
-    (old_dir / "media.m4a.part").write_bytes(b"x")
-    os.utime(old_dir, (old, old))
-    for name in ("sepsrc-dead.wav", "vocals-dead.wav"):
-        p = fake_tmp / name
-        p.write_bytes(b"x")
-        os.utime(p, (old, old))
-    fresh_dir = fake_tmp / "urldl-live"
-    fresh_dir.mkdir()
-    (fake_tmp / "sepsrc-live.wav").write_bytes(b"x")
-    (fake_tmp / "unrelated.txt").write_bytes(b"x")
-
-    app_module._reclaim_hard_restart_orphans()
-
-    assert not old_dir.exists()
-    assert not (fake_tmp / "sepsrc-dead.wav").exists()
-    assert not (fake_tmp / "vocals-dead.wav").exists()
-    assert fresh_dir.exists()
-    assert (fake_tmp / "sepsrc-live.wav").exists()
-    assert (fake_tmp / "unrelated.txt").exists()
-
-
-def test_reclaim_hard_restart_orphans_covers_pipeline_copies_and_uploads(
-        tmp_path, monkeypatch):
-    """The sweep also reclaims the `urlmedia-` pipeline copies
-    (url_media_store.make_pipeline_copy) and the `whisperup-` batch upload
-    spools — neither carried a matchable name before, so no sweep could
-    ever see them — under the same 60 s age guard."""
-    import time as _time
-
-    from faster_whisper_backend import main as app_module
-
-    fake_tmp = tmp_path / "faketmp"
-    fake_tmp.mkdir()
-    monkeypatch.setattr(app_module.tempfile, "gettempdir",
-                        lambda: str(fake_tmp))
-    old = _time.time() - 3600
-    for name in ("urlmedia-dead.m4a", "whisperup-dead.wav"):
-        p = fake_tmp / name
-        p.write_bytes(b"x")
-        os.utime(p, (old, old))
-    (fake_tmp / "urlmedia-live.m4a").write_bytes(b"x")
-    (fake_tmp / "whisperup-live.wav").write_bytes(b"x")
-    (fake_tmp / "tmpabc123.wav").write_bytes(b"x")   # someone else's tempfile
-    os.utime(fake_tmp / "tmpabc123.wav", (old, old))
-
-    app_module._reclaim_hard_restart_orphans()
-
-    assert not (fake_tmp / "urlmedia-dead.m4a").exists()
-    assert not (fake_tmp / "whisperup-dead.wav").exists()
-    assert (fake_tmp / "urlmedia-live.m4a").exists()
-    assert (fake_tmp / "whisperup-live.wav").exists()
-    assert (fake_tmp / "tmpabc123.wav").exists()
-
-
 # --- keep_video: the run-time video fetch --------------------------------------
 
 _LADDER = [
@@ -524,7 +451,7 @@ def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
     assert entry is not None, "the handler must leave the entry to the video task"
     assert entry["video"]["state"] == "downloading"
     assert entry["video"]["progress"] == 0.4
-    assert _PID in video_enabled._VIDEO_TASKS
+    assert _PID in media_video._VIDEO_TASKS
     prog = client.get(f"/v1/audio/transcriptions/progress/{_PID}").json()
     assert prog["video"]["state"] == "downloading"
     # Release the download: the task registers the file and pops the entry.
@@ -535,7 +462,7 @@ def test_keep_video_pending_then_progress_reports_done(client, video_enabled):
             break
         _time.sleep(0.01)
     assert prog.get("stage") == "unknown"
-    assert _PID not in video_enabled._VIDEO_TASKS
+    assert _PID not in media_video._VIDEO_TASKS
     # The retained video is fetchable with a video mime.
     ids = [m for m, e in url_media_store._REG.items() if e.get("kind") == "video"]
     assert len(ids) == 1

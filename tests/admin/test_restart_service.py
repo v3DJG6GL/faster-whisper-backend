@@ -1,4 +1,4 @@
-"""Tests for restart_service.trigger_self_restart.
+"""Tests for restart_service: trigger_self_restart and the startup TMPDIR sweep.
 
 trigger_self_restart ARMS a threading.Timer that, after the delay, calls
 os.execv / subprocess.Popen / os._exit. We MUST NOT let that fire (it would
@@ -7,6 +7,7 @@ kill pytest). Every test monkeypatches threading.Timer to a capture-only stub
 and subprocess.Popen so even an accidental direct invocation can't escape.
 """
 
+import os
 
 import pytest
 
@@ -245,3 +246,73 @@ def test_flush_before_exit_swallows_failures(monkeypatch):
 
     monkeypatch.setattr(system_stats, "shutdown", _boom)
     restart_service._flush_before_exit()  # must not raise
+
+
+# --- hard-restart TMPDIR sweep ----------------------------------------------
+
+def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
+    """The startup sweep reclaims what an admin restart (os.execv/os._exit,
+    no ASGI shutdown) orphaned — urldl- job dirs, sepsrc-/vocals- WAVs —
+    while leaving fresh entries (a just-overlapping process) and unrelated
+    names alone. (No app_module fixture: that fixture stubs the sweep out
+    so TestClient startups never touch the real tempdir.)"""
+    import time as _time
+
+    fake_tmp = tmp_path / "faketmp"
+    fake_tmp.mkdir()
+    monkeypatch.setattr(restart_service.tempfile, "gettempdir",
+                        lambda: str(fake_tmp))
+
+    old = _time.time() - 3600
+    old_dir = fake_tmp / "urldl-dead"
+    old_dir.mkdir()
+    (old_dir / "media.m4a.part").write_bytes(b"x")
+    os.utime(old_dir, (old, old))
+    for name in ("sepsrc-dead.wav", "vocals-dead.wav"):
+        p = fake_tmp / name
+        p.write_bytes(b"x")
+        os.utime(p, (old, old))
+    fresh_dir = fake_tmp / "urldl-live"
+    fresh_dir.mkdir()
+    (fake_tmp / "sepsrc-live.wav").write_bytes(b"x")
+    (fake_tmp / "unrelated.txt").write_bytes(b"x")
+
+    restart_service.reclaim_hard_restart_orphans()
+
+    assert not old_dir.exists()
+    assert not (fake_tmp / "sepsrc-dead.wav").exists()
+    assert not (fake_tmp / "vocals-dead.wav").exists()
+    assert fresh_dir.exists()
+    assert (fake_tmp / "sepsrc-live.wav").exists()
+    assert (fake_tmp / "unrelated.txt").exists()
+
+
+def test_reclaim_hard_restart_orphans_covers_pipeline_copies_and_uploads(
+        tmp_path, monkeypatch):
+    """The sweep also reclaims the `urlmedia-` pipeline copies
+    (url_media_store.make_pipeline_copy) and the `whisperup-` batch upload
+    spools — neither carried a matchable name before, so no sweep could
+    ever see them — under the same 60 s age guard."""
+    import time as _time
+
+    fake_tmp = tmp_path / "faketmp"
+    fake_tmp.mkdir()
+    monkeypatch.setattr(restart_service.tempfile, "gettempdir",
+                        lambda: str(fake_tmp))
+    old = _time.time() - 3600
+    for name in ("urlmedia-dead.m4a", "whisperup-dead.wav"):
+        p = fake_tmp / name
+        p.write_bytes(b"x")
+        os.utime(p, (old, old))
+    (fake_tmp / "urlmedia-live.m4a").write_bytes(b"x")
+    (fake_tmp / "whisperup-live.wav").write_bytes(b"x")
+    (fake_tmp / "tmpabc123.wav").write_bytes(b"x")   # someone else's tempfile
+    os.utime(fake_tmp / "tmpabc123.wav", (old, old))
+
+    restart_service.reclaim_hard_restart_orphans()
+
+    assert not (fake_tmp / "urlmedia-dead.m4a").exists()
+    assert not (fake_tmp / "whisperup-dead.wav").exists()
+    assert (fake_tmp / "urlmedia-live.m4a").exists()
+    assert (fake_tmp / "whisperup-live.wav").exists()
+    assert (fake_tmp / "tmpabc123.wav").exists()

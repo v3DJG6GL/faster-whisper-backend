@@ -1,7 +1,7 @@
 """Durable job resource for batch runs: status + the verbatim result, keyed
 by the client's progress id, so a client that lost its HTTP connection (app
 quit, laptop lid, network blip) can list, re-attach to and fetch the run it
-started. Served through GET/DELETE /v1/jobs* (main.py).
+started. Served through GET/DELETE /v1/jobs* (transcription/jobs_routes.py).
 
 Why a second table beside core/jobs.py: that registry is the LIVE picture
 (one process-wide dict, gone with the handler); this store is the durable
