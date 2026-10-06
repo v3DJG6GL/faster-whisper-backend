@@ -1434,10 +1434,15 @@ del _copy
 # Loaded between in-file defaults and env-var overrides so precedence is:
 #     ENV var  >  config.local.json  >  in-file default (above)
 # Failure to load NEVER raises — see config_store.load_overrides for details.
+# The keys config.local.json actually set (the env validation pass checks
+# per-model entries against a STORED allowlist only).
+_LOCAL_KEYS: "frozenset[str]" = frozenset()
 try:
     from faster_whisper_backend.settings.config_store import load_overrides as _load_overrides
 
-    for _k, _v in _load_overrides().items():
+    _local_overrides = _load_overrides()
+    _LOCAL_KEYS = frozenset(_local_overrides)
+    for _k, _v in _local_overrides.items():
         globals()[_k] = _v
 except ImportError:
     # config_store depends on pydantic; if it isn't installed we still want
@@ -1744,8 +1749,6 @@ try:
         if _kind in _EMPTY_IS_VALUE_KINDS:
             _EMPTY_IS_VALUE.add(_field)
         globals()[_field] = _ENV_READER_FUNCS[_kind](_env, _cur)
-    globals()["CAPTURES_PIPELINE_RULES_EXCLUDE"] = _renames.rename_slugs(
-        globals()["CAPTURES_PIPELINE_RULES_EXCLUDE"])
 
     # --- JSON-encoded structured fields (escape hatch) ----------------------
     for _field in _ENV_JSON_FIELDS:
@@ -1754,7 +1757,15 @@ try:
             continue
         try:
             _parsed = json.loads(_raw)
-            # Renamed rule slugs (config_renames.RENAMED_RULES) keep working.
+            # Renamed field keys / locks inside the bundles keep working (the
+            # bundles are extra="forbid": one old key fails the whole value)...
+            _renamed_keys = _renames.migrate_bundle_keys({_field: _parsed})
+            if _renamed_keys:
+                _ENV_WARNINGS.append(
+                    f"{_ENV_VAR_MAPPING[_field]} uses the renamed field(s) "
+                    f"{_renamed_keys}; they were mapped to the new names — the "
+                    f"old names still work but will be removed in a later release.")
+            # ...and so do renamed rule slugs (config_renames.RENAMED_RULES).
             _parsed = _renames.migrate_rule_slugs({_field: _parsed})[_field]
             # ...and so does a factory entry whose text was fixed since the
             # JSON was written (config_renames.UPGRADED_RULE_ENTRIES).
@@ -1786,6 +1797,9 @@ for _f in sorted(_SET_FIELDS):
     _raw = os.environ.get("WHISPER_" + _f)
     if _raw is not None:
         globals()[_f] = {s.strip() for s in _raw.split(",") if s.strip()}
+# Renamed rule slugs (config_renames.RENAMED_RULES) keep working in the env
+# value too — this must run AFTER the reader above, which writes it.
+CAPTURES_PIPELINE_RULES_EXCLUDE = _renames.rename_slugs(CAPTURES_PIPELINE_RULES_EXCLUDE)
 # "" is a value for the set fields (empty set) and for CONVERT_QUANTIZATION
 # (→ float16); the two ALLOWED_HOSTS lists `or current` and are NOT listed.
 _EMPTY_IS_VALUE.update(_SET_FIELDS)
@@ -1871,7 +1885,8 @@ def _coerce_override_value(field: str, raw: str) -> object:
         except ValueError:
             return raw
     if field in _OVERRIDE_LIST_FIELDS:
-        return [s.strip() for s in raw.split(",") if s.strip()]
+        # Rule slugs: a renamed one (config_renames.RENAMED_RULES) keeps working.
+        return _renames.rename_slugs([s.strip() for s in raw.split(",") if s.strip()])
     return raw
 
 
@@ -1879,6 +1894,12 @@ _OVERRIDE_PREFIX = "WHISPER_MODEL_OVERRIDE__"
 # model id -> set of ModelOverride field names the env supplied, so the
 # validation pass below can revert just those and keep the stored entry.
 _ENV_OVERRIDE_FIELDS: "dict[str, set[str]]" = {}
+# model id -> {field: value} of the env-supplied fields that survived the
+# validation pass below (the live env layer). config_store.save_overrides
+# keeps these out of config.local.json when the per-model editor round-trips
+# the merged dict, and with_env_model_overrides() puts them back on top of a
+# reloaded file — env values stay env values, never become stored ones.
+_ENV_OVERRIDE_VALUES: "dict[str, dict[str, object]]" = {}
 for _k, _v in os.environ.items():
     if not _k.startswith(_OVERRIDE_PREFIX):
         continue
@@ -1933,13 +1954,17 @@ for _k, _v in os.environ.items():
 # =============================================================================
 
 
-def _env_validation_reason(exc: BaseException) -> str:
+def _env_validation_reason(exc: BaseException, skip: "set[tuple]" = frozenset()) -> str:
     """The human-readable half of a pydantic ValidationError, without the
-    docs URL line that str(exc) ends on."""
+    docs URL line that str(exc) ends on. `skip` holds (loc, msg) signatures
+    not to report (errors that predate the env layer)."""
     errs = getattr(exc, "errors", None)
     if callable(errs):
         try:
-            first = errs()[0]
+            _all = errs()
+            first = next((e for e in _all
+                          if (tuple(e.get("loc") or ()), e.get("msg", "")) not in skip),
+                         _all[0])
             loc = ".".join(str(p) for p in first.get("loc", ()))
             msg = first.get("msg", "invalid value")
             return f"{loc}: {msg}" if loc else msg
@@ -2016,6 +2041,44 @@ try:
         for _f in sorted(_ENV_PRE)
         if _f not in _ENV_VALIDATE_SKIP and globals().get(_f) != _ENV_PRE[_f]
     }
+    def _error_sigs(_exc: BaseException) -> "set[tuple]":
+        """(loc, msg) of every error in a pydantic ValidationError; empty for
+        anything else."""
+        _fn = getattr(_exc, "errors", None)
+        if not callable(_fn):
+            return set()
+        try:
+            return {(tuple(_e.get("loc") or ()), _e.get("msg", ""))
+                    for _e in _fn()}
+        except Exception:  # noqa: BLE001
+            return set()
+
+    def _env_caused(_exc: BaseException) -> bool:
+        """Whether a validation failure holds an error the env scalars cause,
+        i.e. one that is not already there with every env scalar reverted."""
+        _sigs = _error_sigs(_exc)
+        return not _sigs or bool(_sigs - _PRE_ENV_SIGS)
+
+    # Errors the effective config has with EVERY env scalar reverted — e.g. a
+    # WHISPER_PIPELINE_RULES JSON that drops a rule the stored / default
+    # CAPTURES_PIPELINE_RULES_EXCLUDE still names. Such an error fails every
+    # isolation and backstop validation below whatever field is under test,
+    # so without this set every env scalar (the session-cookie flag
+    # included) was reverted and blamed for it. Reported once, as itself.
+    _PRE_ENV_SIGS: "set[tuple]" = set()
+    if _changed:
+        try:
+            _AdminConfig.model_validate(
+                _effective_env_dict(**{_o: _ENV_PRE[_o] for _o in _changed}),
+                context=_env_slug_ctx())
+        except Exception as _perr:  # noqa: BLE001
+            _PRE_ENV_SIGS = _error_sigs(_perr)
+            if _PRE_ENV_SIGS:
+                _ENV_WARNINGS.append(
+                    "the configuration is invalid independently of the WHISPER_* "
+                    f"scalar values: {_env_validation_reason(_perr)} — fix that "
+                    "value; the env values were validated without being blamed "
+                    "for it")
     if _changed:
         try:
             _full = _effective_env_dict()
@@ -2035,6 +2098,8 @@ try:
             _unattributed = not _err_list
             for _e in _err_list:
                 _loc = _e.get("loc") or ()
+                if (tuple(_loc), _e.get("msg", "")) in _PRE_ENV_SIGS:
+                    continue  # predates the env layer: not this env value's
                 _f0 = str(_loc[0]) if _loc else ""
                 if _f0 in _changed:
                     if _f0 in _ENV_REJECTED:
@@ -2057,7 +2122,9 @@ try:
                                if _o != _field and _o not in _ENV_REJECTED})
                         _AdminConfig.model_validate(_iso, context=_env_slug_ctx())
                     except Exception as _ferr:  # noqa: BLE001
-                        _revert_env_field(_field, _env_validation_reason(_ferr))
+                        if _env_caused(_ferr):
+                            _revert_env_field(
+                                _field, _env_validation_reason(_ferr, _PRE_ENV_SIGS))
         # Cross-field / empty-loc backstop. A model validator (the sample-sizing
         # triple) reports loc=() so nothing above is attributed, and each half
         # of an inconsistent pair passes in isolation — the one failure the
@@ -2075,13 +2142,17 @@ try:
                                             context=_env_slug_ctx())
                 break
             except Exception as _gerr:  # noqa: BLE001
-                _reason = _env_validation_reason(_gerr)
+                if not _env_caused(_gerr):
+                    break   # only the pre-env errors are left
+                _reason = _env_validation_reason(_gerr, _PRE_ENV_SIGS)
                 _named: list[str] = []
                 _errs_fn2 = getattr(_gerr, "errors", None)
                 if callable(_errs_fn2):
                     try:
                         for _ge in _errs_fn2():
                             _gloc = _ge.get("loc") or ()
+                            if (tuple(_gloc), _ge.get("msg", "")) in _PRE_ENV_SIGS:
+                                continue
                             _gf0 = str(_gloc[0]) if _gloc else ""
                             if _gf0 and _gf0 in _left and _gf0 not in _named:
                                 _named.append(_gf0)
@@ -2118,6 +2189,20 @@ try:
     # _revert_env_field's revert-to-pre-env contract for scalar fields.
     if MODEL_OVERRIDES:
         _clean_overrides = {}
+        # An allowlist the admin or operator set (config.local.json / env)
+        # rides along, so an entry for a model outside it
+        # (WHISPER_MODEL_OVERRIDE__tiny__… with a stored ALLOWED_MODELS=
+        # [large-v3]) takes the revert/drop branch instead of booting
+        # silently — the orphan would make every later per-model save 422
+        # (save merges onto the stored allowlist). The factory allowlist alone
+        # is not checked, like a save that carries no ALLOWED_MODELS.
+        _allowed_ctx = (
+            {"ALLOWED_MODELS": sorted(ALLOWED_MODELS)}
+            if ALLOWED_MODELS and (
+                "ALLOWED_MODELS" in _LOCAL_KEYS
+                or ("WHISPER_ALLOWED_MODELS" in os.environ
+                    and "ALLOWED_MODELS" not in _ENV_REJECTED))
+            else {})
         for _mid, _entry in MODEL_OVERRIDES.items():
             try:
                 # Keep the VALIDATED dump, not the raw entry: pydantic's lax
@@ -2125,8 +2210,14 @@ try:
                 # frozenset lookup above missed, so a field newly added to
                 # ModelOverride can never stay live as a raw string.
                 _clean_overrides[_mid] = _AdminConfig.model_validate(
-                    {"MODEL_OVERRIDES": {_mid: _entry}}, context=_env_slug_ctx()
+                    {**_allowed_ctx, "MODEL_OVERRIDES": {_mid: _entry}},
+                    context=_env_slug_ctx()
                 ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
+                _env_vals = {_ef: _clean_overrides[_mid][_ef]
+                             for _ef in (_ENV_OVERRIDE_FIELDS.get(_mid) or ())
+                             if _ef in _clean_overrides[_mid]}
+                if _env_vals:
+                    _ENV_OVERRIDE_VALUES[_mid] = _env_vals
             except Exception as _verr:  # noqa: BLE001
                 _env_fields = _ENV_OVERRIDE_FIELDS.get(_mid) or set()
                 _pre_entry = (_ENV_PRE.get("MODEL_OVERRIDES") or {}).get(_mid)
@@ -2140,7 +2231,7 @@ try:
                                 _reverted[_ef] = _pre_entry[_ef]
                     try:
                         _reverted = _AdminConfig.model_validate(
-                            {"MODEL_OVERRIDES": {_mid: _reverted}},
+                            {**_allowed_ctx, "MODEL_OVERRIDES": {_mid: _reverted}},
                             context=_env_slug_ctx()
                         ).model_dump(exclude_none=True)["MODEL_OVERRIDES"][_mid]
                     except Exception:  # noqa: BLE001

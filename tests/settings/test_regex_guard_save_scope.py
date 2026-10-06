@@ -34,7 +34,8 @@ def test_settings_only_save_ignores_a_stored_rule_that_fails_the_screen(tmp_path
     assert changed == {"BEST_OF": 3}
     on_disk = json.loads(p.read_text(encoding="utf-8"))
     assert on_disk["BEST_OF"] == 3
-    # The untouched rule survives byte-for-byte; the save did not rewrite it.
+    # The untouched rule's pattern survives: it is not re-screened (the save
+    # does re-serialise the validated document).
     assert on_disk["PIPELINE_RULES"][0]["entries"][0]["pattern"] == r"(\w+ ?)+"
 
 

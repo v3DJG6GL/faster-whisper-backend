@@ -32,14 +32,21 @@ _PROBE = (
 )
 
 
-def _resolve(extra_env):
+def _resolve(extra_env, cwd=_REPO):
     """Import config in a clean subprocess (no inherited WHISPER_*) and return
-    the resolved paths."""
+    the resolved paths.
+
+    config.py calls load_dotenv() at import, and under `python -c` it searches
+    from the cwd — a developer's own .env (cp .env.example .env) would
+    re-inject the WHISPER_* vars scrubbed here, so it is disabled."""
     env = {k: v for k, v in os.environ.items() if not k.startswith("WHISPER_")}
+    env["PYTHON_DOTENV_DISABLED"] = "1"
+    env["PYTHONPATH"] = os.pathsep.join(
+        p for p in (_REPO, env.get("PYTHONPATH")) if p)
     env.update(extra_env)
     out = subprocess.run(
         [sys.executable, "-c", _PROBE],
-        cwd=_REPO, env=env, capture_output=True, text=True, check=True,
+        cwd=cwd, env=env, capture_output=True, text=True, check=True,
     )
     return json.loads(out.stdout.strip().splitlines()[-1])
 
@@ -69,6 +76,14 @@ def test_defaults_land_on_the_platform_layout():
     assert got["overrides"] == _j(_DATA_ROOT, "config.local.json")
     assert got["dl"] == _MODELS_ROOT
     assert got["conv"] == _j(_MODELS_ROOT, "converted")
+
+
+def test_a_dotenv_in_the_cwd_does_not_leak_into_the_probe(tmp_path):
+    (tmp_path / ".env").write_text("WHISPER_DATA_DIR=/srv/fromdotenv\n",
+                                   encoding="utf-8")
+    got = _resolve({}, cwd=tmp_path)
+    assert got["api"] == _j(_DATA_ROOT, "db", "api_keys.local.sqlite3")
+    assert got["overrides"] == _j(_DATA_ROOT, "config.local.json")
 
 
 def test_data_dir_moves_everything():

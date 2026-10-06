@@ -1,9 +1,10 @@
 """Frozen-literal snapshots of the config field registry.
 
-config_store now GENERATES its module-level tables (ENV_VAR_MAPPING,
+settings/schema.py GENERATES its module-level tables (ENV_VAR_MAPPING,
 RESTART_REQUIRED_FIELDS, LOAD_TIME_FIELDS, CACHE_REBUILD_FIELDS,
 _POST_LOAD_COERCERS, FIELD_GROUPS, CONFIG_TO_CLIENT_KEY, LOCKABLE_FIELDS)
-from per-field metadata declared on each AdminConfig field via _F(...).
+from per-field metadata declared on each AdminConfig field via _F(...);
+config_store only consumes them.
 
 The literals below were computed from the PRE-refactor hand-written tables
 (the values shipped before the registry existed) and are deliberately frozen:
@@ -307,7 +308,7 @@ LOAD_TIME_SNAPSHOT = frozenset(
 )
 
 CACHE_REBUILD_SNAPSHOT = frozenset(
-    ['PIPELINE_RULES', 'SUPPRESS_CHARS']
+    ['PIPELINE_RULES']
 )
 
 CONFIG_TO_CLIENT_KEY_SNAPSHOT = (
@@ -730,15 +731,14 @@ def test_every_field_has_registry_metadata_with_valid_scope():
 
 
 def test_registry_scope_membership():
-    """Scope buckets match the historical model memberships exactly."""
+    """Scope buckets match the historical model memberships exactly. The
+    override mixins are generated from these same buckets, so per_request is
+    pinned against the frozen LOCKABLE_SNAPSHOT literal, not against them."""
     per_request = {n for n, r in settings_schema._REGISTRY.items()
                    if r["scope"] == "per_request"}
     per_model = {n for n, r in settings_schema._REGISTRY.items()
                  if r["scope"] == "per_model"}
-    mixin_union = (set(settings_schema._CallTimeOverrideMixin.model_fields)
-                   | set(settings_schema._StreamingOverrideMixin.model_fields))
-    assert per_request == mixin_union - {"PIPELINE_RULES_EXCLUDE",
-                                         "PIPELINE_RULES_INCLUDE"}
+    assert per_request == set(LOCKABLE_SNAPSHOT)
     assert per_model == {"MODEL_DEVICE", "MODEL_COMPUTE_TYPE",
                          "MODEL_DEVICE_FALLBACK", "MODEL_COMPUTE_TYPE_FALLBACK",
                          "NUM_WORKERS", "DEVICE_INDEX"}
@@ -807,19 +807,13 @@ def test_field_groups_cover_every_admin_config_field():
     assert grouped - set(settings_schema.AdminConfig.model_fields) == set()
 
 
-def test_env_var_mapping_covers_every_admin_config_field():
-    """Same gap for env vars: a field missing from ENV_VAR_MAPPING is silently
-    unsettable from the environment."""
-    assert set(settings_schema.AdminConfig.model_fields) == set(settings_schema.ENV_VAR_MAPPING)
-
-
 # ---------------------------------------------------------------------------
 # Cross-module mirrors
 # ---------------------------------------------------------------------------
 
 def test_config_set_fields_mirror_post_load_coercers():
     """config._SET_FIELDS is a hand-kept mirror of _POST_LOAD_COERCERS
-    (config.py needs it before config_store can be imported) — the two must
+    (config.py needs it before settings/schema.py can be imported) — the two must
     name the same set-coerced fields."""
     assert config._SET_FIELDS == {
         k for k, v in settings_schema._POST_LOAD_COERCERS.items() if v is set

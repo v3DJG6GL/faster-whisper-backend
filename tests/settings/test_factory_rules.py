@@ -2,9 +2,13 @@
 
 Covers config_store.load_factory_rules / save_factory_rules: validation,
 round-trip, the `note` field, the terminal-rule invariant, and the
-fail-fast behaviour on a missing/corrupt file.
+fail-fast behaviour on a missing/corrupt file. Also the behaviour of the
+shipped rules themselves: the dictation map (Neuenzeile at the end of an
+utterance, ß keys matching their ss spelling, dictated punctuation winning
+over Whisper's) and tighten-quote-spacing's left-to-right quote pairing.
 
-Only depends on pydantic (same as config_store) — not the full app stack.
+Not the full app stack: config_store (pydantic) plus, for the shipped-rule
+tests, pipeline.dictation_map.
 """
 
 import json

@@ -244,7 +244,7 @@ def normalize_languages(raw: Any) -> list[str]:
         if norm not in WHISPER_LANGUAGE_CODES:
             raise ValueError(
                 f"unknown language code {code!r} — must be one of Whisper's "
-                f"{len(WHISPER_LANGUAGE_CODES)} supported codes (ISO 639-1)"
+                f"{len(WHISPER_LANGUAGE_CODES)} supported codes"
             )
         if norm in seen:
             continue
@@ -294,7 +294,8 @@ class _RuleBase(BaseModel):
     name: RuleSlug
     label: RuleLabel
     enabled: bool = True
-    languages: list[str] = Field(default_factory=list, max_length=99)
+    languages: list[str] = Field(default_factory=list,
+                                 max_length=len(WHISPER_LANGUAGE_CODES))
     locked: bool = False
     seeded: bool = False
     # When True, the rule is shown on /quick-config so end-users (non-admin
@@ -493,6 +494,19 @@ _VIRTUAL_OVERRIDE_FIELDS: dict[str, dict[str, Any]] = {
 # Value rules shared by AdminConfig and the per-model / per-profile override
 # models (_CallTimeOverrideBase): create_model copies annotations, not
 # validators, so each rule lives here once and both sides call it.
+def _language_code(v: str | None) -> str | None:
+    """DEFAULT_LANGUAGE: empty (auto-detect) or one of Whisper's codes. The
+    field pattern only checks the shape, and an unknown code ("xx", "jp")
+    saved cleanly, then failed every request without an explicit language
+    at decode time (faster-whisper raises on it)."""
+    if v and v not in WHISPER_LANGUAGE_CODES:
+        raise ValueError(
+            f"unknown language code {v!r} — must be empty (auto-detect) or "
+            f"one of Whisper's {len(WHISPER_LANGUAGE_CODES)} supported codes"
+        )
+    return v
+
+
 def _guard_words_not_one(v: int | None) -> int | None:
     """SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS / SEGMENT_HEAD_ECHO_MIN_WORDS: 1 is
     refused rather than shown as a rule that is on but off — a single
@@ -544,6 +558,27 @@ def _suppress_tokens_csv(v: str | None) -> str | None:
                 f"suppress_tokens must be comma-separated ints; got '{token}'"
             )
     return v
+
+
+def _effective(model: BaseModel, name: str, fallback: Any = None) -> Any:
+    """The EFFECTIVE value of `name` for a cross-field model validator: the
+    submitted value, or — None meaning "revert to default" — the in-repo
+    default. The default comes from config._BASELINE (the pre-override
+    snapshot), NOT the live config attribute: the live value already carries
+    any applied override, so at save time (server running) it reflects the OLD
+    override while at load time (config import) it is the bare default. That
+    asymmetry let a save pass validation, then the next restart's load fail it
+    and silently drop EVERY override on disk. _BASELINE is identical at both
+    times, so the two validations always agree. The live attribute (then
+    `fallback`) is used only if the snapshot is unavailable (partial import)."""
+    v = getattr(model, name)
+    if v is not None:
+        return v
+    from faster_whisper_backend.settings import config as _cfg
+    base = getattr(_cfg, "_BASELINE", {})
+    if name in base:
+        return base[name]
+    return getattr(_cfg, name, fallback)
 
 
 class AdminConfig(BaseModel):
@@ -718,7 +753,6 @@ class AdminConfig(BaseModel):
     SUPPRESS_CHARS: Annotated[str, Field(max_length=64)] | None = _F(
         "SUPPRESS_CHARS", scope="per_request", group="Decode params",
         subgroup="Advanced — anti-hallucination & token control",
-        cache_rebuild=True,
         client_key="suppress_chars")
     PREPEND_PUNCTUATIONS: Annotated[str, Field(max_length=64)] | None = _F(
         "PREPEND_PUNCTUATIONS", scope="per_request", group="Decode params",
@@ -1435,30 +1469,12 @@ class AdminConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_sample_sizing(self) -> "AdminConfig":
-        # Enforce MIN ≤ TARGET ≤ MAX ≤ 30 on the EFFECTIVE values (a None
-        # override means "revert to default", so fall back to the in-repo
-        # default for the comparison — catches e.g. lowering MAX below the
-        # target). Use config._BASELINE (the pre-override snapshot), NOT the
-        # live config attribute: the live value already carries any applied
-        # override, so at save time (server running) it reflects the OLD
-        # override while at load time (config import) it is the bare default.
-        # That asymmetry let a save pass validation, then the next restart's
-        # load fail it and silently drop EVERY override on disk. _BASELINE is
-        # identical at both times, so the two validations always agree.
-        from faster_whisper_backend.settings import config as _cfg
-        _base = getattr(_cfg, "_BASELINE", {})
-
-        def _default(name: str) -> float:
-            # Prefer the immutable baseline; fall back to the live attribute
-            # only if the snapshot is somehow unavailable (partial import).
-            return float(_base[name] if name in _base else getattr(_cfg, name))
-
-        mn = self.CAPTURES_SAMPLE_MIN_DURATION_S
-        tg = self.CAPTURES_PROPOSER_TARGET_S
-        mx = self.CAPTURES_SAMPLE_MAX_DURATION_S
-        mn = mn if mn is not None else _default("CAPTURES_SAMPLE_MIN_DURATION_S")
-        tg = tg if tg is not None else _default("CAPTURES_PROPOSER_TARGET_S")
-        mx = mx if mx is not None else _default("CAPTURES_SAMPLE_MAX_DURATION_S")
+        # Enforce MIN ≤ TARGET ≤ MAX ≤ 30 on the EFFECTIVE values (catches
+        # e.g. lowering MAX below the target); see _effective for why the
+        # default side is config._BASELINE.
+        mn = float(_effective(self, "CAPTURES_SAMPLE_MIN_DURATION_S"))
+        tg = float(_effective(self, "CAPTURES_PROPOSER_TARGET_S"))
+        mx = float(_effective(self, "CAPTURES_SAMPLE_MAX_DURATION_S"))
         if not (mn <= tg <= mx):
             raise ValueError(
                 "require CAPTURES_SAMPLE_MIN_DURATION_S ≤ "
@@ -1472,18 +1488,9 @@ class AdminConfig(BaseModel):
         # MAX_REQUEST_BYTES is documented (config.py, FIELD_DESCRIPTIONS,
         # main._max_body_mw) as sitting ABOVE MEDIA_MAX_BYTES so an oversized
         # media POST hits the media-specific 413 that names the right setting.
-        # Enforce it on the EFFECTIVE values with the same _BASELINE fallback
-        # as _validate_sample_sizing (see the rationale there).
-        from faster_whisper_backend.settings import config as _cfg
-        _base = getattr(_cfg, "_BASELINE", {})
-
-        def _default(name: str) -> int:
-            return int(_base[name] if name in _base else getattr(_cfg, name))
-
-        up = self.MEDIA_MAX_BYTES
-        rq = self.MAX_REQUEST_BYTES
-        up = up if up is not None else _default("MEDIA_MAX_BYTES")
-        rq = rq if rq is not None else _default("MAX_REQUEST_BYTES")
+        # Enforce it on the EFFECTIVE values (see _effective).
+        up = int(_effective(self, "MEDIA_MAX_BYTES"))
+        rq = int(_effective(self, "MAX_REQUEST_BYTES"))
         if rq < up:
             raise ValueError(
                 "require MAX_REQUEST_BYTES >= MEDIA_MAX_BYTES "
@@ -1493,16 +1500,8 @@ class AdminConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_recording_duration(self) -> "AdminConfig":
-        from faster_whisper_backend.settings import config as _cfg
-        _base = getattr(_cfg, "_BASELINE", {})
-
-        def _default(name: str) -> float:
-            return float(_base[name] if name in _base else getattr(_cfg, name))
-
-        mn = self.CAPTURES_RECORDING_MIN_DURATION_S
-        mx = self.CAPTURES_RECORDING_MAX_DURATION_S
-        mn = mn if mn is not None else _default("CAPTURES_RECORDING_MIN_DURATION_S")
-        mx = mx if mx is not None else _default("CAPTURES_RECORDING_MAX_DURATION_S")
+        mn = float(_effective(self, "CAPTURES_RECORDING_MIN_DURATION_S"))
+        mx = float(_effective(self, "CAPTURES_RECORDING_MAX_DURATION_S"))
         if mn > mx:
             raise ValueError(
                 "require CAPTURES_RECORDING_MIN_DURATION_S <= "
@@ -1513,16 +1512,8 @@ class AdminConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_buffer_trim_order(self) -> "AdminConfig":
-        from faster_whisper_backend.settings import config as _cfg
-        _base = getattr(_cfg, "_BASELINE", {})
-
-        def _default(name: str) -> float:
-            return float(_base[name] if name in _base else getattr(_cfg, name))
-
-        trim = self.STREAMING_BUFFER_TRIM_S
-        keep = self.STREAMING_BUFFER_TRIM_KEEP_S
-        trim = trim if trim is not None else _default("STREAMING_BUFFER_TRIM_S")
-        keep = keep if keep is not None else _default("STREAMING_BUFFER_TRIM_KEEP_S")
+        trim = float(_effective(self, "STREAMING_BUFFER_TRIM_S"))
+        keep = float(_effective(self, "STREAMING_BUFFER_TRIM_KEEP_S"))
         if keep >= trim:
             raise ValueError(
                 "require STREAMING_BUFFER_TRIM_KEEP_S < "
@@ -1533,16 +1524,8 @@ class AdminConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_custom_template(self) -> "AdminConfig":
-        from faster_whisper_backend.settings import config as _cfg
-        _base = getattr(_cfg, "_BASELINE", {})
-        family = (self.TRANSLATION_PROMPT_FAMILY
-                  if self.TRANSLATION_PROMPT_FAMILY is not None
-                  else _base.get("TRANSLATION_PROMPT_FAMILY",
-                                 getattr(_cfg, "TRANSLATION_PROMPT_FAMILY", "auto")))
-        tpl = (self.TRANSLATION_PROMPT_TEMPLATE
-               if self.TRANSLATION_PROMPT_TEMPLATE is not None
-               else _base.get("TRANSLATION_PROMPT_TEMPLATE",
-                              getattr(_cfg, "TRANSLATION_PROMPT_TEMPLATE", "")))
+        family = _effective(self, "TRANSLATION_PROMPT_FAMILY", "auto")
+        tpl = _effective(self, "TRANSLATION_PROMPT_TEMPLATE", "")
         if family == "custom" and not (tpl or "").strip():
             raise ValueError(
                 "TRANSLATION_PROMPT_FAMILY is 'custom' but "
@@ -1556,16 +1539,8 @@ class AdminConfig(BaseModel):
     # names make every cookie login fail (the CSRF token is read as the session).
     @model_validator(mode="after")
     def _validate_cookie_names_differ(self) -> "AdminConfig":
-        from faster_whisper_backend.settings import config as _cfg
-        _base = getattr(_cfg, "_BASELINE", {})
-        sess = (self.SESSION_COOKIE_NAME
-                if self.SESSION_COOKIE_NAME is not None
-                else _base.get("SESSION_COOKIE_NAME",
-                               getattr(_cfg, "SESSION_COOKIE_NAME", "whisper_session")))
-        csrf = (self.SESSION_CSRF_COOKIE_NAME
-                if self.SESSION_CSRF_COOKIE_NAME is not None
-                else _base.get("SESSION_CSRF_COOKIE_NAME",
-                               getattr(_cfg, "SESSION_CSRF_COOKIE_NAME", "whisper_csrf")))
+        sess = _effective(self, "SESSION_COOKIE_NAME", "whisper_session")
+        csrf = _effective(self, "SESSION_CSRF_COOKIE_NAME", "whisper_csrf")
         if sess == csrf:
             raise ValueError(
                 f"SESSION_COOKIE_NAME and SESSION_CSRF_COOKIE_NAME must differ "
@@ -1578,6 +1553,11 @@ class AdminConfig(BaseModel):
     @classmethod
     def _guard_words_not_one(cls, v: int | None) -> int | None:
         return _guard_words_not_one(v)
+
+    @field_validator("DEFAULT_LANGUAGE")
+    @classmethod
+    def _validate_default_language(cls, v: str | None) -> str | None:
+        return _language_code(v)
 
     @field_validator("LOG_FILE")
     @classmethod
@@ -1677,7 +1657,11 @@ class AdminConfig(BaseModel):
             # the compiler lowercases all keys, so two keys differing only by
             # case silently shadow each other.
             if rtype == "callback:map":
-                if (info.context or {}).get("guard_regex"):
+                ctx = info.context or {}
+                guard_slugs = ctx.get("guard_slugs")
+                # Scoped like the regex probe: an untouched rule must not
+                # block someone else's save (quick_config apply_rules_patch).
+                if ctx.get("guard_regex") and (guard_slugs is None or slug in guard_slugs):
                     m = getattr(rule, "map", None) or {}
                     lc: dict[str, list[str]] = {}
                     for k in m:
@@ -1777,6 +1761,14 @@ class AdminConfig(BaseModel):
             )
         return self
 
+    def _canonical_slugs(self, info: ValidationInfo) -> "set[str] | frozenset[str]":
+        """The slug set the reference validators below check against: this
+        payload's own PIPELINE_RULES when it carries them, else the
+        `canonical_slugs` validation context; empty = unknown, skip."""
+        if self.PIPELINE_RULES is not None:
+            return {r.name for r in self.PIPELINE_RULES}
+        return (info.context or {}).get("canonical_slugs") or set()
+
     @model_validator(mode="after")
     def _validate_pipeline_rule_slugs(self, info: ValidationInfo) -> "AdminConfig":
         """Reject any per-model EXCLUDE / INCLUDE that references a rule slug
@@ -1790,10 +1782,7 @@ class AdminConfig(BaseModel):
         """
         if self.MODEL_OVERRIDES is None:
             return self
-        if self.PIPELINE_RULES is not None:
-            canonical = {r.name for r in self.PIPELINE_RULES}
-        else:
-            canonical = (info.context or {}).get("canonical_slugs") or set()
+        canonical = self._canonical_slugs(info)
         if not canonical:
             return self
         for model_id, override in self.MODEL_OVERRIDES.items():
@@ -1818,10 +1807,7 @@ class AdminConfig(BaseModel):
         context; a bare partial validation with neither still skips."""
         if self.OVERRIDE_PROFILES is None:
             return self
-        if self.PIPELINE_RULES is not None:
-            canonical = {r.name for r in self.PIPELINE_RULES}
-        else:
-            canonical = (info.context or {}).get("canonical_slugs") or set()
+        canonical = self._canonical_slugs(info)
         if not canonical:
             return self
         for pname, prof in self.OVERRIDE_PROFILES.items():
@@ -1845,10 +1831,7 @@ class AdminConfig(BaseModel):
         validation with neither still skips."""
         if self.CAPTURES_PIPELINE_RULES_EXCLUDE is None:
             return self
-        if self.PIPELINE_RULES is not None:
-            canonical = {r.name for r in self.PIPELINE_RULES}
-        else:
-            canonical = (info.context or {}).get("canonical_slugs") or set()
+        canonical = self._canonical_slugs(info)
         if not canonical:
             return self
         unknown = [s for s in self.CAPTURES_PIPELINE_RULES_EXCLUDE
@@ -2232,6 +2215,11 @@ class _CallTimeOverrideBase(BaseModel):
     @classmethod
     def _validate_temperature(cls, v: str | None) -> str | None:
         return _temperature_csv(v)
+
+    @field_validator("DEFAULT_LANGUAGE", check_fields=False)
+    @classmethod
+    def _validate_default_language(cls, v: str | None) -> str | None:
+        return _language_code(v)
 
     @field_validator("SUPPRESS_TOKENS", check_fields=False)
     @classmethod

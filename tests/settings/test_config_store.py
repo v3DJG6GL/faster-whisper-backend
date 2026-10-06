@@ -123,7 +123,14 @@ def test_capture_max_duration_min_is_0_1():
     # Pair with MIN=0 so the cross-field validator passes.
     _ok(CAPTURES_RECORDING_MAX_DURATION_S=0.1,
         CAPTURES_RECORDING_MIN_DURATION_S=0.0)
-    _bad(CAPTURES_RECORDING_MAX_DURATION_S=0.0)
+    # Paired with MIN=0 too: alone, the baseline MIN (1.0) > MAX would trip the
+    # cross-field check and hide a loosened field bound.
+    with pytest.raises(ValidationError) as ei:
+        settings_schema.AdminConfig.model_validate(
+            {"CAPTURES_RECORDING_MAX_DURATION_S": 0.0,
+             "CAPTURES_RECORDING_MIN_DURATION_S": 0.0})
+    assert [e["loc"] for e in ei.value.errors()] == [
+        ("CAPTURES_RECORDING_MAX_DURATION_S",)]
 
 
 def test_recording_duration_min_le_max():
@@ -655,6 +662,37 @@ def test_map_meta_pruned_to_map_keys():
     assert m.PIPELINE_RULES[0].map_meta == {"Komma": 5}
 
 
+def test_map_key_collision_check_is_scoped_to_guard_slugs():
+    """An untouched dictionary with colliding keys (it loads fine: load runs
+    without the guard context) must not 422 a save scoped to another rule."""
+    rule = {"name": "m", "label": "m", "type": "callback:map",
+            "map": {"Passwort": "x", "passwort": "y"}}
+    payload = {"PIPELINE_RULES": [rule, _terminal()]}
+    settings_schema.AdminConfig.model_validate(
+        payload, context={"guard_regex": True, "guard_slugs": {"other"}})
+    for ctx in ({"guard_regex": True, "guard_slugs": {"m"}}, {"guard_regex": True}):
+        with pytest.raises(ValidationError, match="collide when lowercased"):
+            settings_schema.AdminConfig.model_validate(payload, context=ctx)
+
+
+def test_rule_scoped_to_every_whisper_language_validates():
+    # The languages cap tracks the code table (100 with yue), not a stale 99.
+    langs = sorted(settings_schema.WHISPER_LANGUAGE_CODES)
+    rule = {"name": "rl", "label": "RL", "type": "regex-list",
+            "entries": [{"pattern": "a"}], "languages": langs}
+    m = _ok(PIPELINE_RULES=[rule, _terminal()])
+    assert m.PIPELINE_RULES[0].languages == langs
+
+
+def test_default_language_must_be_a_whisper_code():
+    for model in (settings_schema.AdminConfig, settings_schema.ModelOverride,
+                  settings_schema.OverrideProfile):
+        with pytest.raises(ValidationError, match="unknown language code"):
+            model.model_validate({"DEFAULT_LANGUAGE": "xx"})
+        for ok in ("yue", "de", ""):
+            model.model_validate({"DEFAULT_LANGUAGE": ok})
+
+
 # NOTE: the validator's "took > 2 s" catastrophic-backtracking branch is
 # deliberately NOT tested here. Triggering it requires a pattern that never
 # terminates (e.g. (.+)+# against the validator's fixed ~1 KB fixture); the
@@ -935,12 +973,14 @@ def test_env_pinned_fields_excludes_rejected_env_values(monkeypatch):
     from faster_whisper_backend.settings import config
     try:
         monkeypatch.setenv("WHISPER_BEAM_SIZE", "9999")   # fails Field(le=...)
+        monkeypatch.setenv("WHISPER_BEST_OF", "3")        # valid
         importlib.reload(config)
         assert "BEAM_SIZE" in config._ENV_REJECTED
+        assert "BEST_OF" not in config._ENV_REJECTED
         pinned = cs.env_pinned_fields()
         assert "BEAM_SIZE" not in pinned
         # A validly pinned field is unaffected by the exclusion.
-        assert settings_schema.ENV_VAR_MAPPING["BEAM_SIZE"] == "WHISPER_BEAM_SIZE"
+        assert pinned.get("BEST_OF") == "WHISPER_BEST_OF"
     finally:
         monkeypatch.undo()
         importlib.reload(config)  # restore from the clean environment
@@ -1188,3 +1228,67 @@ def test_extras_eviction_buckets_are_declared():
 def test_field_helper_rejects_unknown_evict_bucket():
     with pytest.raises(ValueError, match="evict="):
         settings_schema._F("DEFAULT_MODEL", scope="server", group="Models", evict="diarizaton")
+
+
+# ---------------------------------------------------------------------------
+# Stored values a later-tightened validator refuses (load must not drop all)
+# ---------------------------------------------------------------------------
+
+def test_stored_bundle_values_refused_since_are_migrated_not_fatal(tmp_path, capsys):
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({
+        "SERVER_PORT": 9000,
+        "DEFAULT_LANGUAGE": "jp",
+        "OVERRIDE_PROFILES": {"p": {"SEGMENT_HEAD_ECHO_MIN_WORDS": 1,
+                                    "SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS": 1,
+                                    "TEMPERATURE": "0,abc", "BEAM_SIZE": 2,
+                                    "locks": ["TEMPERATURE", "BEAM_SIZE"]}},
+        "MODEL_OVERRIDES": {"large-v3": {"TEMPERATURE": "banana",
+                                         "SUPPRESS_TOKENS": "x,1",
+                                         "DEFAULT_LANGUAGE": "xx",
+                                         "BEAM_SIZE": 3}},
+    }), encoding="utf-8")
+    out = cs.load_overrides(str(p))
+    assert out["SERVER_PORT"] == 9000
+    assert "DEFAULT_LANGUAGE" not in out
+    assert out["OVERRIDE_PROFILES"]["p"]["SEGMENT_HEAD_ECHO_MIN_WORDS"] == 0
+    assert out["OVERRIDE_PROFILES"]["p"]["SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS"] == 0
+    prof = out["OVERRIDE_PROFILES"]["p"]
+    assert "TEMPERATURE" not in prof and prof["locks"] == ["BEAM_SIZE"]
+    mo = out["MODEL_OVERRIDES"]["large-v3"]
+    assert "TEMPERATURE" not in mo and "SUPPRESS_TOKENS" not in mo
+    assert "DEFAULT_LANGUAGE" not in mo
+    assert mo["BEAM_SIZE"] == 3
+    assert "banana" in capsys.readouterr().err
+    # ...and a later save merges onto the migrated file instead of 422ing.
+    cs.save_overrides({"BEST_OF": 3}, str(p))
+    on_disk = json.loads(p.read_text(encoding="utf-8"))
+    assert on_disk["SERVER_PORT"] == 9000 and on_disk["BEST_OF"] == 3
+
+
+# ---------------------------------------------------------------------------
+# WHISPER_MODEL_OVERRIDE__ values stay env values on a per-model save
+# ---------------------------------------------------------------------------
+
+def test_save_keeps_env_per_model_values_out_of_the_file(tmp_path, monkeypatch):
+    monkeypatch.setattr(cs_config, "_ENV_OVERRIDE_VALUES",
+                        {"x": {"BEAM_SIZE": 3}, "y": {"BEAM_SIZE": 4}}, raising=False)
+    p = tmp_path / "config.local.json"
+    p.write_text(json.dumps({"MODEL_OVERRIDES": {"y": {"BEAM_SIZE": 2}}}),
+                 encoding="utf-8")
+    # The editor round-trips the live dict, env values included.
+    cs.save_overrides({"MODEL_OVERRIDES": {
+        "x": {"BEAM_SIZE": 3, "PATIENCE": 1.0},
+        "y": {"BEAM_SIZE": 4},
+        "z": {"BEAM_SIZE": 5}}}, str(p))
+    stored = json.loads(p.read_text(encoding="utf-8"))["MODEL_OVERRIDES"]
+    assert stored["x"] == {"PATIENCE": 1.0}          # env value not persisted
+    assert stored["y"] == {"BEAM_SIZE": 2}           # stored value restored
+    assert stored["z"] == {"BEAM_SIZE": 5}           # not env-supplied
+    # An admin edit that differs from the env value is theirs to keep.
+    cs.save_overrides({"MODEL_OVERRIDES": {"x": {"BEAM_SIZE": 6}}}, str(p))
+    assert json.loads(p.read_text(encoding="utf-8"))["MODEL_OVERRIDES"]["x"] == {
+        "BEAM_SIZE": 6}
+    # The hot-apply path lays the env layer back over the reloaded file.
+    assert cs.with_env_model_overrides({"x": {"PATIENCE": 1.0}}) == {
+        "x": {"PATIENCE": 1.0, "BEAM_SIZE": 3}, "y": {"BEAM_SIZE": 4}}

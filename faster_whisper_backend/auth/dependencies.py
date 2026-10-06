@@ -35,7 +35,7 @@ from starlette.requests import HTTPConnection
 from faster_whisper_backend.auth import api_keys_store
 from faster_whisper_backend.settings import config as cfg
 from faster_whisper_backend.auth import sessions_store
-from faster_whisper_backend.core import web_common
+from faster_whisper_backend.auth import hosts as auth_hosts
 
 logger = logging.getLogger("whisper-api")
 
@@ -181,7 +181,7 @@ def open_mode_host_ok(conn: HTTPConnection) -> bool:
     Takes any HTTPConnection: the streaming WebSocket resolves auth through
     the same core, and `.client` is all the allowlist reads.
     """
-    return web_common.host_in_allowlist(conn, cfg.ADMIN_WEBUI_ALLOWED_HOSTS)
+    return auth_hosts.host_in_allowlist(conn, cfg.ADMIN_WEBUI_ALLOWED_HOSTS)
 
 
 def user_from_session_cookie(request: Request) -> dict[str, Any] | None:

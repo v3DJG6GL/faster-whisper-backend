@@ -158,8 +158,12 @@ CREATE INDEX IF NOT EXISTS idx_api_keys_user   ON api_keys(user_id);
 def init_db(db_path: str) -> None:
     """Open the SQLite DB (WAL) and ensure the schema exists. Idempotent.
     Builds the in-memory key index from active rows."""
-    global _conn, _DB_READY
+    global _conn, _DB_READY, _KEY_INDEX, _IS_LOCKED_DOWN
     _DB_READY = False  # a re-init that raises partway must fail closed
+    # ...and must not leave the previous DB's keys authenticating from the
+    # cache (lookup_by_raw_key also refuses while not ready).
+    _KEY_INDEX = {}
+    _IS_LOCKED_DOWN = True
     # Close the previous handle before rebinding, or every re-init leaks a
     # connection (plus its WAL/-shm handles). Safe here: _DB_READY is already
     # False, so a caller racing in fails closed via _require_conn().
@@ -288,7 +292,10 @@ def _parse_binding(raw: "str | dict | None") -> dict[str, Any]:
         # Bindings never pass through config_store's load-path key migration,
         # so map a pre-rename field/lock spelling here (the resolver does the
         # same) — then the admin's next re-save stores the current name.
+        # Renamed rule slugs in the include/exclude lists likewise, or the
+        # re-save fails validate_binding's unknown-slug check.
         direct = config_renames.migrate_keys(dict(direct))
+        config_renames.migrate_rule_slugs(direct)
         if isinstance(direct.get("locks"), list):
             direct["locks"] = [config_renames.RENAMED_KEYS.get(lk, lk)
                                for lk in direct["locks"]]
@@ -692,6 +699,10 @@ def lookup_by_raw_key(raw_key: str) -> dict[str, Any] | None:
     O(1) via in-memory hash index. Touches last_used_ts (debounced)."""
     if not raw_key:
         return None
+    if not _DB_READY:
+        # Fail closed, like is_locked_down(): a failed (re-)init must not
+        # authenticate from whatever the index last held.
+        return None
     _refresh_if_sibling_committed()
     h = hash_key(raw_key)
     rec = _KEY_INDEX.get(h)
@@ -1048,6 +1059,36 @@ class BootstrapAdminError(RuntimeError):
     through unwrapped instead of relabelling it as a store-init failure."""
 
 
+def _bootstrap_admin_uid() -> str | None:
+    """The bootstrap-admin user's id, or None when no such row exists.
+    Raises BootstrapAdminError when that user is revoked or not an admin."""
+    _urow = _require_conn().execute(
+        "SELECT id, is_admin, revoked_ts FROM users WHERE username = ?",
+        ("bootstrap-admin",),
+    ).fetchone()
+    if _urow is None:
+        return None
+    if _urow["revoked_ts"] is not None:
+        raise BootstrapAdminError(
+            "WHISPER_BOOTSTRAP_ADMIN_KEY is set but the bootstrap-admin user "
+            "has been REVOKED. Refusing to start: the key cannot be attached "
+            "to a revoked user and silently ignoring it would leave the "
+            "server without the admin key you configured. Clear the "
+            "variable and use the existing admin credentials."
+        )
+    if not int(_urow["is_admin"]):
+        # Not escalated — resurrecting admin on a user someone deliberately
+        # created as non-admin is not ours to do. But booting OPEN while the
+        # operator believes the env key locked the server down is the exact
+        # failure the lifespan calls fatal, so fail loudly instead.
+        raise BootstrapAdminError(
+            "WHISPER_BOOTSTRAP_ADMIN_KEY is set but the bootstrap-admin user "
+            "exists with is_admin=False; refusing to attach an admin key to "
+            "it. Clear the variable, or rename/revoke that user and restart."
+        )
+    return _urow["id"]
+
+
 def bootstrap_admin_from_env(raw_key: str) -> None:
     """If WHISPER_BOOTSTRAP_ADMIN_KEY is set, ensure a `bootstrap-admin`
     user holds that exact key. Idempotent — if the key hash is already in
@@ -1069,6 +1110,9 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
     in its usual no-admin-key state rather than failing to boot.
     """
     h = hash_key(raw_key)
+    # Every uvicorn worker runs this at boot (SERVER_WORKERS > 1), so a sibling
+    # may have registered the key since this worker's init_db built its index.
+    _refresh_if_sibling_committed()
     # If this hash already maps to an active key, nothing to do — and nothing
     # to complain about, however weak the value is by today's floor.
     if _KEY_INDEX.get(h) is not None:
@@ -1107,32 +1151,16 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
     # bootstrap-admin would then fall through to create_user, hit the UNIQUE
     # on username and surface as a bare ValueError that the lifespan
     # relabels as a store-init failure (filesystem permissions).
-    _urow = _require_conn().execute(
-        "SELECT id, is_admin, revoked_ts FROM users WHERE username = ?",
-        ("bootstrap-admin",),
-    ).fetchone()
-    if _urow is not None and _urow["revoked_ts"] is not None:
-        raise BootstrapAdminError(
-            "WHISPER_BOOTSTRAP_ADMIN_KEY is set but the bootstrap-admin user "
-            "has been REVOKED. Refusing to start: the key cannot be attached "
-            "to a revoked user and silently ignoring it would leave the "
-            "server without the admin key you configured. Clear the "
-            "variable and use the existing admin credentials."
-        )
-    if _urow is not None and not int(_urow["is_admin"]):
-        # Not escalated — resurrecting admin on a user someone deliberately
-        # created as non-admin is not ours to do. But booting OPEN while the
-        # operator believes the env key locked the server down is the exact
-        # failure the lifespan calls fatal, so fail loudly instead.
-        raise BootstrapAdminError(
-            "WHISPER_BOOTSTRAP_ADMIN_KEY is set but the bootstrap-admin user "
-            "exists with is_admin=False; refusing to attach an admin key to "
-            "it. Clear the variable, or rename/revoke that user and restart."
-        )
-    if _urow is not None:
-        uid = _urow["id"]
-    else:
-        uid = create_user("bootstrap-admin", is_admin=True)
+    uid = _bootstrap_admin_uid()
+    if uid is None:
+        try:
+            uid = create_user("bootstrap-admin", is_admin=True)
+        except ValueError:
+            # A sibling worker created the user between the SELECT and the
+            # INSERT: use its row (the same revoked / non-admin checks apply).
+            uid = _bootstrap_admin_uid()
+            if uid is None:
+                raise
     # Insert the raw key (bypass generate path so we honour the env value).
     kp, k4 = _split_display_parts(raw_key)
     new_key_id = uuid.uuid4().hex
@@ -1173,8 +1201,15 @@ def bootstrap_admin_from_env(raw_key: str) -> None:
             )
     except sqlite3.IntegrityError:
         # The live-hash check and the revoked-hash check above both passed, so
-        # a UNIQUE violation here means the row appeared underneath us. Never
-        # silent: the same open-mode-without-noticing outcome applies.
+        # a UNIQUE violation here means the row appeared underneath us —
+        # normally a sibling worker registering the same key at boot. A live
+        # row under that hash is the outcome we wanted; anything else is
+        # never silent: the same open-mode-without-noticing outcome applies.
+        with _lock:
+            _rebuild_index_locked()
+        if _KEY_INDEX.get(h) is not None:
+            logger.debug("[auth] bootstrap key registered by a sibling — skipping")
+            return
         raise BootstrapAdminError(
             "WHISPER_BOOTSTRAP_ADMIN_KEY could not be registered (the key hash "
             "already exists). Refusing to start rather than leaving the server "

@@ -177,17 +177,51 @@ def upgrade_rule_entries(raw: dict[str, Any]) -> list[str]:
 
 def alias_env(environ: MutableMapping[str, str]) -> list[str]:
     """Copy each set ``WHISPER_<old>[_FILE]`` onto ``WHISPER_<new>[_FILE]``
-    when the new name is unset. A set new-name value always wins. Returns
-    one warning line per alias applied, for the startup log."""
+    when the new name is unset. A set new-name value always wins — in EITHER
+    spelling: a stale ``WHISPER_USE_AUTH_TOKEN`` must not be copied onto
+    ``WHISPER_HF_TOKEN`` when the operator moved to ``WHISPER_HF_TOKEN_FILE``
+    (the plain var would then shadow the file). Returns one warning line per
+    alias applied or old name ignored, for the startup log."""
     warnings: list[str] = []
     for old, new in RENAMED_KEYS.items():
+        new_set = [ENV_PREFIX + new + sfx for sfx in ("", "_FILE")
+                   if ENV_PREFIX + new + sfx in environ]
         for sfx in ("", "_FILE"):
             o, n = ENV_PREFIX + old + sfx, ENV_PREFIX + new + sfx
-            if environ.get(o) and n not in environ:
-                environ[n] = environ[o]
-                warnings.append(f"{o} was renamed to {n}; the old name still "
-                                f"works but will be removed in a later release.")
+            if not environ.get(o):
+                continue
+            if new_set:
+                warnings.append(f"{o} is ignored: {new_set[0]} (its new name) "
+                                f"is set.")
+                continue
+            environ[n] = environ[o]
+            warnings.append(f"{o} was renamed to {n}; the old name still "
+                            f"works but will be removed in a later release.")
     return warnings
+
+
+def migrate_bundle_keys(raw: dict[str, Any]) -> list[str]:
+    """Apply migrate_keys, and the same rename to each ``locks`` entry, inside
+    every OVERRIDE_PROFILES / MODEL_OVERRIDES bundle of an overrides dict (in
+    place). The bundles are extra="forbid", so one pre-rename key there fails
+    validation of the whole value. Returns the old names that were renamed,
+    for the caller's log line; empty when nothing matched."""
+    renamed: list[str] = []
+    for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
+        group = raw.get(group_key)
+        if not isinstance(group, dict):
+            continue
+        for bundle in group.values():
+            if not isinstance(bundle, dict):
+                continue
+            renamed.extend(k for k in RENAMED_KEYS if k in bundle)
+            migrate_keys(bundle)
+            locks = bundle.get("locks")
+            if isinstance(locks, list):
+                renamed.extend(lk for lk in locks
+                               if isinstance(lk, str) and lk in RENAMED_KEYS)
+                bundle["locks"] = [RENAMED_KEYS.get(lk, lk) for lk in locks]
+    return sorted(set(renamed))
 
 
 def migrate_keys(raw: dict[str, Any]) -> dict[str, Any]:

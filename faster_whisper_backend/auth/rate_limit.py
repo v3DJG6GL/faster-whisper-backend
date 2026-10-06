@@ -270,7 +270,7 @@ class InFlight:
             if n < limit:
                 self._counts[key] = n + 1
                 return
-        # Compute the rejection under the lock, raise outside it.
+        # Lock released; build and raise the rejection outside it.
         raise RateLimited(
             message=self.message.format(limit=limit,
                                         retry_after=self.RETRY_AFTER_S),

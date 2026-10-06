@@ -329,7 +329,9 @@ def lookup_session(raw_token: str) -> dict[str, Any] | None:
 
 def _slide_expiry_debounced(token_hash: str, rec: dict[str, Any]) -> None:
     """Refresh expires_ts at most once per _SLIDE_DEBOUNCE_S per session.
-    Preserves the original lifetime (expires - created) as the window.
+    Preserves the original lifetime (expires - created) as the window, so
+    created_ts moves with it: it marks the start of the current window. Left
+    at login, each slide would grow the next window by the session's age.
 
     The whole read-check-write runs under _lock: _rebuild_index_locked()
     iterates _SLIDE_CACHE under the lock, so mutating it from an unlocked
@@ -346,11 +348,12 @@ def _slide_expiry_debounced(token_hash: str, rec: dict[str, Any]) -> None:
         lifetime = rec["expires_ts"] - rec["created_ts"]
         new_expires = now + lifetime
         rec["expires_ts"] = new_expires  # keep the in-memory index current
+        rec["created_ts"] = now
         try:
             conn.execute(
-                "UPDATE sessions SET expires_ts = ?"
+                "UPDATE sessions SET expires_ts = ?, created_ts = ?"
                 " WHERE token_hash = ? AND revoked_ts IS NULL",
-                (new_expires, token_hash),
+                (new_expires, now, token_hash),
             )
         except sqlite3.Error:
             pass  # non-fatal: the in-memory expiry was already bumped

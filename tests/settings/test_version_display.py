@@ -1,18 +1,33 @@
 """The three WebUI version surfaces render the build version:
 header vtag (every shared-header page) / hub build line / settings card."""
 
+import importlib.metadata
+import platform
+import re
+
 from faster_whisper_backend import build_info
 from faster_whisper_backend.settings import config as cfg
 
+# A short or generic real version ("dev", the Dockerfile default) is a
+# substring of ordinary markup ("device"), so the absence checks look for a
+# unique stand-in instead. The renderers read build_info by attribute.
+_SENTINEL = "v0.0.0-sentinel-7f3a9c"
 
-def test_header_vtag_shell_carries_no_facts(client):
+
+def _sentinel_version(monkeypatch):
+    monkeypatch.setattr(build_info, "APP_VERSION", _SENTINEL)
+    monkeypatch.setattr(build_info, "VERSION_SHORT", "v0.0.0-sentinel")
+
+
+def test_header_vtag_shell_carries_no_facts(client, monkeypatch):
     """The shared header rides host-gated (keyless) pages, so the chip ships
     as an empty shell — the facts arrive via /auth/whoami."""
+    _sentinel_version(monkeypatch)
     r = client.get("/logs")
     assert r.status_code == 200
     assert 'id="hdr-vtag"' in r.text
     assert 'onclick="_fwCopyBuild(this)"></button>' in r.text
-    assert build_info.APP_VERSION not in r.text
+    assert "v0.0.0-sentinel" not in r.text
     assert build_info.BOOT_ID[:8] not in r.text
     # The placeholder must be substituted, never leak literally.
     assert "{{HEADER_VTAG}}" not in r.text
@@ -30,25 +45,28 @@ def test_whoami_carries_build_fields(client):
 
 
 def test_shared_header_page_leaks_no_build_to_unauthenticated_caller(
-    client, make_user_key,
+    client, make_user_key, monkeypatch,
 ):
     """Locked down + no credential: the page shell still renders (it is only
     host-gated) but must not disclose the version or the boot id."""
     make_user_key("admin", is_admin=True)
+    _sentinel_version(monkeypatch)
     r = client.get("/logs")
     assert r.status_code == 200
-    assert build_info.APP_VERSION not in r.text
+    assert 'onclick="_fwCopyBuild(this)"></button>' in r.text
+    assert "v0.0.0-sentinel" not in r.text
     assert build_info.BOOT_ID[:8] not in r.text
     assert client.get("/auth/whoami").status_code == 401
 
 
-def test_hub_hero_build_line_shell_carries_no_facts(client):
+def test_hub_hero_build_line_shell_carries_no_facts(client, monkeypatch):
     """The hub is host-gated but keyless, so the hero's build caption ships as
     an empty shell — the facts arrive via /auth/whoami, like the header chip."""
+    _sentinel_version(monkeypatch)
     r = client.get("/")
     assert r.status_code == 200
     assert '<p class="buildline"></p>' in r.text
-    assert build_info.APP_VERSION not in r.text
+    assert "v0.0.0-sentinel" not in r.text
     assert build_info.BOOT_ID[:8] not in r.text
     # The placeholder must be gone, never leak literally.
     assert "{{BUILD_LINE}}" not in r.text
@@ -64,6 +82,16 @@ def test_settings_identity_card_shell_carries_no_facts(client):
     assert cfg._DATA_DIR not in r.text
     assert cfg._DB_DIR not in r.text
     assert build_info.engine_versions() not in r.text
+    # Each engine fact on its own (a per-part render would leave the joined
+    # string absent), scoped to the card so an unrelated version string
+    # elsewhere on the page cannot make this flaky.
+    card = re.search(r'<div id="srv-ident">.*?</section></div>', r.text, re.S)
+    assert card is not None
+    for fact in (platform.python_version(),
+                 importlib.metadata.version("faster-whisper"),
+                 importlib.metadata.version("ctranslate2"),
+                 "faster-whisper", "CTranslate2"):
+        assert fact not in card.group(0), fact
 
 
 def test_settings_state_carries_identity_fields(client):

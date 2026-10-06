@@ -177,12 +177,43 @@ def test_empty_translate_to_and_glossary_form_fields_override_the_profile(
 
 # --- dictation handshake ----------------------------------------------------------
 
-def test_stream_handshake_language_is_tri_state(monkeypatch):
+def _stream_decode_languages(client, app_module, fake_model, monkeypatch, **conf):
+    """Run one dictation utterance and return the language= of every decode."""
+    from tests._streaming_helpers import const_pcm, ws_drain
+    monkeypatch.setattr(app_module.cfg, "STREAMING_VAD_BACKEND", "energy", raising=False)
+    seen = []
+    orig = fake_model.transcribe
+
+    def _transcribe(path, **kwargs):
+        seen.append(kwargs.get("language"))
+        return orig(path, **kwargs)
+    monkeypatch.setattr(fake_model, "transcribe", _transcribe)
+    with client.websocket_connect("/v1/audio/transcriptions/stream") as ws:
+        ws.send_json({"type": "config", "model": "whisper-1",
+                      "audio": {"format": "pcm_s16le", "sample_rate": 16000},
+                      **conf})
+        assert ws.receive_json()["type"] == "ready"
+        ws.send_bytes(const_pcm(8000, 2500))
+        ws.send_bytes(const_pcm(0, 1500))
+        ws.send_json({"type": "stop"})
+        msgs, _code = ws_drain(ws)
+    assert any(m["type"] == "final" for m in msgs), msgs
+    assert seen, "no decode ran"
+    return seen
+
+
+def test_stream_handshake_language_is_tri_state(client, app_module, fake_model,
+                                                monkeypatch):
     """Absent → inherit DEFAULT_LANGUAGE; present-but-empty → auto-detect."""
-    from faster_whisper_backend.streaming import routes as streaming_routes
-    src = __import__("inspect").getsource(streaming_routes)
-    assert 'req_language = _req_language.strip() if isinstance(_req_language, str) else None' in src
-    assert 'language if language is not None' in src
+    monkeypatch.setattr(app_module.cfg, "DEFAULT_LANGUAGE", "de", raising=False)
+    inherited = _stream_decode_languages(client, app_module, fake_model, monkeypatch)
+    assert set(inherited) == {"de"}, inherited
+    cleared = _stream_decode_languages(client, app_module, fake_model, monkeypatch,
+                                       language="")
+    assert set(cleared) == {None}, cleared
+    pinned = _stream_decode_languages(client, app_module, fake_model, monkeypatch,
+                                      language="fr")
+    assert set(pinned) == {"fr"}, pinned
 
 
 def test_client_suppress_chars_replace_config_and_empty_means_none(monkeypatch):

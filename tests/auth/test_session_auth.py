@@ -141,6 +141,38 @@ def test_active_session_slides_expiry(client, make_user_key):
     assert after > before
 
 
+def test_sliding_window_stays_equal_to_the_ttl(tmp_path, monkeypatch):
+    # The slide keeps the original lifetime (expires - created) as the window.
+    # created_ts used to stay at login, so every slide grew the next window by
+    # the session's age: 1000, 1400, 2200, 3400 s for a 1000 s TTL slid every
+    # 400 s, and a raw token used outside a browser outlived SESSION_TTL_S.
+    import types
+    from faster_whisper_backend.auth import sessions_store
+    clock = [10_000.0]
+    monkeypatch.setattr(sessions_store, "time",
+                        types.SimpleNamespace(time=lambda: clock[0]))
+    sessions_store.init_db(str(tmp_path / "sessions.sqlite3"))
+    try:
+        raw, _csrf = sessions_store.create_session("u" * 32, ttl_s=1000.0)
+        for _ in range(4):
+            clock[0] += sessions_store._SLIDE_DEBOUNCE_S + 100.0
+            rec = sessions_store.lookup_session(raw)
+            assert rec is not None
+            assert rec["expires_ts"] - clock[0] == 1000.0
+            stored = sessions_store._require_conn().execute(
+                "SELECT expires_ts FROM sessions").fetchone()[0]
+            assert stored - clock[0] == 1000.0
+        # The rebuilt index (purge, sibling commit) keeps the same window.
+        sessions_store.purge_expired()
+        clock[0] += sessions_store._SLIDE_DEBOUNCE_S + 100.0
+        rec = sessions_store.lookup_session(raw)
+        assert rec["expires_ts"] - clock[0] == 1000.0
+    finally:
+        sessions_store._require_conn().close()
+        sessions_store._conn = None
+        sessions_store._reset_for_tests()
+
+
 # --- user revocation kills live sessions ------------------------------------
 
 def test_revoked_user_session_dies(client, make_user_key):

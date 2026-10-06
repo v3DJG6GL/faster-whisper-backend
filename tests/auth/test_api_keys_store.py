@@ -479,19 +479,40 @@ def test_bootstrap_admin_from_env_is_idempotent(api_keys_db):
     assert rows == 1
 
 
-def test_bootstrap_admin_from_env_refuses_a_revoked_key(api_keys_db):
-    # _KEY_INDEX holds live rows only, so a REVOKED hash used to be invisible
-    # to the idempotence check: the insert then hit the UNIQUE on key_hash and
-    # the IntegrityError was swallowed, booting the server without the admin
-    # key the operator had configured — silently.
-    api_keys_store.bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+def test_bootstrap_admin_from_env_accepts_a_key_a_sibling_worker_registered(
+        api_keys_db, tmp_path):
+    # Every uvicorn worker runs the bootstrap at boot. A sibling that commits
+    # the user + key after this worker's init_db built its index must not make
+    # this worker refuse to start over a key that is in fact registered.
+    import time
+    import uuid
+    db_path = api_keys_db._require_conn().execute(
+        "PRAGMA database_list").fetchone()["file"]
     h = api_keys_db.hash_key(_BOOTSTRAP_KEY)
-    uid2 = api_keys_db.create_user("second-admin", is_admin=True)
-    api_keys_db.create_key(uid2)
-    api_keys_db.revoke_key(api_keys_db._KEY_INDEX[h]["key_id"])
+    sibling = sqlite3.connect(db_path)
+    try:
+        uid = uuid.uuid4().hex
+        with sibling:
+            sibling.execute(
+                "INSERT INTO users (id, username, is_admin, created_ts,"
+                " revoked_ts, permissions) VALUES (?,?,1,?,NULL,'{}')",
+                (uid, "bootstrap-admin", time.time()))
+            sibling.execute(
+                "INSERT INTO api_keys (id, user_id, key_hash, key_prefix,"
+                " key_last4, label, created_ts, revoked_ts, last_used_ts)"
+                " VALUES (?,?,?,?,?,?,?,NULL,NULL)",
+                (uuid.uuid4().hex, uid, h, "bootstra", "1234",
+                 "bootstrap (env)", time.time()))
+    finally:
+        sibling.close()
+    assert api_keys_db._KEY_INDEX.get(h) is None   # this worker's stale index
 
-    with pytest.raises(RuntimeError, match="REVOKED"):
-        api_keys_store.bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+    api_keys_store.bootstrap_admin_from_env(_BOOTSTRAP_KEY)
+
+    rows = api_keys_db._require_conn().execute(
+        "SELECT COUNT(*) FROM api_keys WHERE key_hash = ?", (h,)).fetchone()[0]
+    assert rows == 1
+    assert api_keys_db.is_locked_down() is True
 
 
 def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):
@@ -499,12 +520,18 @@ def test_failed_reinit_clears_db_ready(api_keys_db, tmp_path):
     must leave _DB_READY False so the stale _KEY_INDEX/_IS_LOCKED_DOWN caches
     fail closed instead of being trusted. Mirrors sessions_store.init_db."""
     assert api_keys_db._DB_READY is True
+    uid = api_keys_db.create_user("admin", is_admin=True)
+    raw, _rec = api_keys_db.create_key(uid)
+    assert api_keys_db.lookup_by_raw_key(raw) is not None
     old = api_keys_db._conn
     garbage = tmp_path / "garbage.sqlite3"
     garbage.write_bytes(b"this is not a sqlite database")
     with pytest.raises(sqlite3.DatabaseError):   # "file is not a database"
         api_keys_db.init_db(str(garbage))
     assert api_keys_db._DB_READY is False
+    # The previous DB's keys no longer authenticate from the stale index.
+    assert api_keys_db.lookup_by_raw_key(raw) is None
+    assert api_keys_db.is_locked_down() is True
     # Re-init must close the previous connection instead of leaking it (plus
     # its WAL/-shm handles) on every re-init.
     with pytest.raises(sqlite3.ProgrammingError):
@@ -522,3 +549,21 @@ def test_parse_binding_migrates_renamed_direct_keys_and_locks():
     b = api_keys_store._parse_binding(raw)
     assert b["direct"] == {"SEGMENT_MAX_WORDS_PER_S": 3.0, "BEAM_SIZE": 2,
                            "locks": ["SEGMENT_MAX_WORDS_PER_S", "BEAM_SIZE"]}
+
+
+def test_parse_binding_migrates_renamed_rule_slugs():
+    # A binding stored before a RENAMED_RULES rename still names the old slug;
+    # it must come back under the current one, or re-saving the binding
+    # unchanged fails validate_binding's unknown-slug check.
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.settings import config_store
+    inc = api_keys_store._parse_binding(
+        '{"direct": {"PIPELINE_RULES_INCLUDE": ["dictation-map"]}, "profiles": []}')
+    assert inc["direct"]["PIPELINE_RULES_INCLUDE"] == ["de-dictation-map"]
+    b = api_keys_store._parse_binding(
+        '{"direct": {"PIPELINE_RULES_EXCLUDE": ["dictation-map"]}, "profiles": []}')
+    assert b["direct"]["PIPELINE_RULES_EXCLUDE"] == ["de-dictation-map"]
+    stored = config_store.validate_binding(
+        {"overrides": {k: v for k, v in b["direct"].items() if k != "locks"},
+         "profiles": b["profiles"]})
+    assert stored["direct"]["PIPELINE_RULES_EXCLUDE"] == ["de-dictation-map"]

@@ -87,7 +87,13 @@ def test_engine_versions_omits_llama_cpp_when_absent(monkeypatch):
 
 
 def test_reload_does_not_leak_a_new_boot_id(monkeypatch):
+    # Bind the by-value copies BEFORE the reload re-mints the id, so the next
+    # test checks real survival even when this file runs alone.
+    from faster_whisper_backend import main
+    from faster_whisper_backend.transcription import catalog_routes
     before = build_info.BOOT_ID
+    assert catalog_routes.BOOT_ID == before
+    assert main.BOOT_ID == before
     monkeypatch.setenv("WHISPER_BUILD_VERSION", "v0.0.0-reload")
     try:
         importlib.reload(build_info)

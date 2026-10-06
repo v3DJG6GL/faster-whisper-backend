@@ -44,6 +44,60 @@ OVERRIDES_PATH = os.environ.get("WHISPER_CONFIG_LOCAL") or os.path.normpath(
 # fixes can be git-pushed to every deployment. See load_factory_rules().
 FACTORY_PATH = os.path.join(_REPO_DIR, "config.json")
 
+
+def _migrate_tightened_bundle_values(raw: dict[str, Any]) -> None:
+    """Rewrite stored values that the validators started refusing after they
+    were stored, mostly inside OVERRIDE_PROFILES / MODEL_OVERRIDES bundles
+    (in place).
+
+    The bundles gained AdminConfig's value rules late: the two segment guards
+    refuse 1, TEMPERATURE / SUPPRESS_TOKENS must parse as CSV. The per-profile
+    / per-model grid accepted those values before, and one of them left in a
+    stored bundle fails load_overrides' whole-file validation — every admin
+    override is then ignored at boot, and every save 422s. A guard at 1 was
+    already off at runtime, so it becomes 0 (off); an unparseable CSV is
+    dropped (inherit), with its lock. DEFAULT_LANGUAGE (top level too) gained
+    a Whisper-code membership check: an unknown code failed every decode
+    that relied on it, so it is dropped (inherit)."""
+    _lang = raw.get("DEFAULT_LANGUAGE")
+    if isinstance(_lang, str):
+        try:
+            settings_schema._language_code(_lang)
+        except ValueError as e:
+            del raw["DEFAULT_LANGUAGE"]
+            print(f"[config_store] dropped DEFAULT_LANGUAGE {_lang!r}: {e}",
+                  file=sys.stderr)
+    for group_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
+        group = raw.get(group_key)
+        if not isinstance(group, dict):
+            continue
+        for name, bundle in group.items():
+            if not isinstance(bundle, dict):
+                continue
+            for guard in ("SEGMENT_ZERO_LENGTH_TAIL_MIN_WORDS",
+                          "SEGMENT_HEAD_ECHO_MIN_WORDS"):
+                if bundle.get(guard) == 1 and not isinstance(bundle[guard], bool):
+                    bundle[guard] = 0
+                    print(f"[config_store] {group_key}[{name!r}].{guard}=1 is "
+                          f"no longer accepted; stored as 0 (off, as 1 already "
+                          f"behaved)", file=sys.stderr)
+            for key, check in (("TEMPERATURE", settings_schema._temperature_csv),
+                               ("SUPPRESS_TOKENS", settings_schema._suppress_tokens_csv),
+                               ("DEFAULT_LANGUAGE", settings_schema._language_code)):
+                val = bundle.get(key)
+                if not isinstance(val, str):
+                    continue
+                try:
+                    check(val)
+                except ValueError as e:
+                    del bundle[key]
+                    locks = bundle.get("locks")
+                    if isinstance(locks, list):
+                        bundle["locks"] = [lk for lk in locks if lk != key]
+                    print(f"[config_store] dropped {group_key}[{name!r}].{key} "
+                          f"{val!r}: {e}", file=sys.stderr)
+
+
 def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     """One-time key migration (config_renames.RENAMED_KEYS). AdminConfig forbids
     unknown keys and a validation failure drops ALL overrides, so a stored
@@ -65,17 +119,8 @@ def _migrate_legacy_keys(raw: dict[str, Any]) -> dict[str, Any]:
     if upgraded:
         print(f"[config_store] upgraded stored factory rule entries {upgraded} "
               f"to the current factory text", file=sys.stderr)
-    for profiles_key in ("OVERRIDE_PROFILES", "MODEL_OVERRIDES"):
-        profiles = raw.get(profiles_key)
-        if isinstance(profiles, dict):
-            for bundle in profiles.values():
-                if isinstance(bundle, dict):
-                    _renames.migrate_keys(bundle)
-                    locks = bundle.get("locks")
-                    if isinstance(locks, list):
-                        bundle["locks"] = [
-                            _renames.RENAMED_KEYS.get(lk, lk) for lk in locks
-                        ]
+    _renames.migrate_bundle_keys(raw)
+    _migrate_tightened_bundle_values(raw)
     # Wildcard-host origins ('https://*.example.com') used to pass the origin
     # validators but never matched anything (both the CORS middleware and the
     # trusted-origin guard compare the Origin header by exact string). They
@@ -202,6 +247,58 @@ def save_factory_rules(rules: list[Any], path: str = FACTORY_PATH) -> list[dict[
     return out_rules
 
 
+def _strip_env_model_overrides(submitted: dict[str, Any],
+                               stored: Any) -> dict[str, Any]:
+    """Keep WHISPER_MODEL_OVERRIDE__<id>__<FIELD> values out of a saved
+    MODEL_OVERRIDES. The per-model editor round-trips the live dict, which
+    carries the env layer; persisting it would leave each env value in force
+    from config.local.json after the operator unsets the var. A submitted
+    value still equal to the live env value is put back to the stored one
+    (or dropped when the file had none); a different value is the admin's
+    edit and is kept. Returns a new dict; `submitted` is not modified."""
+    from faster_whisper_backend.settings import config as _cfg  # deferred — config imports this module at import
+    env_vals = getattr(_cfg, "_ENV_OVERRIDE_VALUES", None) or {}
+    if not env_vals:
+        return submitted
+    stored = stored if isinstance(stored, dict) else {}
+    out = dict(submitted)
+    for mid, fields in env_vals.items():
+        entry = out.get(mid)
+        if not isinstance(entry, dict):
+            continue
+        stored_entry = stored.get(mid) if isinstance(stored.get(mid), dict) else {}
+        entry = dict(entry)
+        for field, env_value in fields.items():
+            if field in entry and entry[field] == env_value:
+                if field in stored_entry:
+                    entry[field] = stored_entry[field]
+                else:
+                    del entry[field]
+        if entry or mid in stored:
+            out[mid] = entry
+        else:
+            del out[mid]
+    return out
+
+
+def with_env_model_overrides(model_overrides: Any) -> Any:
+    """`model_overrides` (a MODEL_OVERRIDES dict as loaded from the file) with
+    the live WHISPER_MODEL_OVERRIDE__ values laid on top — the inverse of
+    _strip_env_model_overrides, for the hot-apply path that reloads the file
+    into the running cfg. A non-dict passes through."""
+    from faster_whisper_backend.settings import config as _cfg  # deferred — config imports this module at import
+    env_vals = getattr(_cfg, "_ENV_OVERRIDE_VALUES", None) or {}
+    if not env_vals or not isinstance(model_overrides, dict):
+        return model_overrides
+    out = {mid: dict(e) if isinstance(e, dict) else e
+           for mid, e in model_overrides.items()}
+    for mid, fields in env_vals.items():
+        entry = out.setdefault(mid, {})
+        if isinstance(entry, dict):
+            entry.update(fields)
+    return out
+
+
 def save_overrides(
     payload: dict[str, Any],
     path: str = OVERRIDES_PATH,
@@ -259,6 +356,10 @@ def save_overrides(
                     raw = None
             if isinstance(raw, dict):
                 existing = _migrate_legacy_keys(raw)
+
+        if isinstance(payload.get("MODEL_OVERRIDES"), dict):
+            payload = {**payload, "MODEL_OVERRIDES": _strip_env_model_overrides(
+                payload["MODEL_OVERRIDES"], existing.get("MODEL_OVERRIDES"))}
 
         # Merge: payload wins over existing. None means "remove this override."
         merged = dict(existing)

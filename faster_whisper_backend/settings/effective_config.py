@@ -13,9 +13,11 @@ lock state. A locked field cannot be replaced by the client's per-request
 layer mentioning a slug in include/exclude decides; exclude wins within a
 layer), folding the per-model layer in too — locking does not apply to rules.
 
-This is a LEAF module: it imports only ``config``, ``config_store``,
-``schema`` and ``api_keys_store`` and is itself imported by ``main`` /
-``streaming_routes`` / ``captures_*``. It never imports ``main`` (no cycles).
+This is a LEAF module: it imports only ``config``, ``config_renames``,
+``config_store``, ``schema`` and (lazily) ``auth.api_keys_store``, and is
+itself imported by the request-path packages (``main``, ``streaming.routes``,
+``transcription.*``, ``translation.routes``, ``captures.*``,
+``admin.overrides_routes``). It never imports ``main`` (no cycles).
 The runtime reader ``cfg_for(model_id, field, ident)`` (bottom of this module)
 consults a resolved object's ``values`` first, so threading ``ident=None``
 anywhere is byte-identical to the pre-feature behaviour.

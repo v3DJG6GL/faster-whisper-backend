@@ -36,26 +36,40 @@ def gauge(monkeypatch):
 
 def test_inflight_is_thread_safe_under_contention(monkeypatch):
     import threading
+    import time
 
-    monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", 1,
+    # limit >= 2: with limit 1 the gauge can only ever read 0 or 1, so a lost
+    # update (two threads both read 0, both write 1) is invisible to count().
+    limit = 3
+    monkeypatch.setattr(cfg, "TRANSLATE_MAX_INFLIGHT_PER_USER", limit,
                         raising=False)
     g = rate_limit.InFlight(
-        config_field="TRANSLATE_MAX_INFLIGHT_PER_USER", default_max=1,
+        config_field="TRANSLATE_MAX_INFLIGHT_PER_USER", default_max=limit,
         message="{limit} at a time",
     )
     try:
-        over_limit = []
+        # The real number of holders, tracked by the test under its own lock:
+        # an over-admitted slot shows up here even when the gauge itself lost
+        # the update that would have refused it.
+        holders = 0
+        max_holders = 0
+        holders_lock = threading.Lock()
         barrier = threading.Barrier(8)
 
         def worker():
+            nonlocal holders, max_holders
             barrier.wait()
             for _ in range(500):
                 try:
                     g.acquire("alice")
                 except rate_limit.RateLimited:
                     continue
-                if g.count("alice") > 1:
-                    over_limit.append(g.count("alice"))
+                with holders_lock:
+                    holders += 1
+                    max_holders = max(max_holders, holders)
+                time.sleep(0)   # hold the slot across a thread switch
+                with holders_lock:
+                    holders -= 1
                 g.release("alice")
 
         threads = [threading.Thread(target=worker) for _ in range(8)]
@@ -63,9 +77,9 @@ def test_inflight_is_thread_safe_under_contention(monkeypatch):
             t.start()
         for t in threads:
             t.join()
-        assert over_limit == []
+        assert max_holders <= limit
         # Every acquire was paired with a release: the gauge returns to zero,
-        # so no slot was lost to an interleaved check-then-set.
+        # so no slot was lost to an interleaved read-modify-write in release.
         assert g.count("alice") == 0
     finally:
         rate_limit._ALL.remove(g)
