@@ -408,6 +408,28 @@ def test_test_pipeline_nested_repetition_screened_not_run(client):
     assert steps[1].get("not_run") is True
 
 
+def test_test_pipeline_regex_list_screen_message_beats_compile_error(client):
+    """A regex-list step whose screened entry follows a bad-compile entry still
+    explains why it is not_run, and keeps the valid entries' real output."""
+    r = client.post(
+        "/settings/test-pipeline",
+        json={
+            "sample": "abc",
+            "rules": [
+                {"name": "mixed", "type": "regex-list", "enabled": True,
+                 "entries": [{"pattern": "(", "replacement": ""},
+                             {"pattern": r"(\w+ )+$", "replacement": ""},
+                             {"pattern": "b", "replacement": "B"}]},
+            ],
+        },
+    )
+    assert r.status_code == 200, r.text
+    step = r.json()["steps"][0]
+    assert step.get("not_run") is True
+    assert "nested repetition" in (step["error"] or "")
+    assert step["after"] == "aBc" and step["matches"] == 1
+
+
 def test_test_pipeline_map_rule_non_dict_map_is_step_error(client):
     """A callback:map rule whose `map` is a list/string (editor rules skip
     pl_apply._PIPELINE_RULE_ADAPTER) must degrade into a per-step error card, not an
@@ -572,6 +594,8 @@ def test_settings_page_injects_mo_constants(client):
     assert meta["NUM_WORKERS"]["min"] == 1 and meta["NUM_WORKERS"]["max"] == 8
     # Overlay extras survive the merge (kinds the schema can't express).
     assert meta["DEFAULT_PROMPT"]["kind"] == "textarea"
+    # Line-based values need a textarea: an <input> drops the newlines.
+    assert meta["TRANSLATION_GLOSSARY"]["kind"] == "textarea"
     assert meta["NO_SPEECH_THRESHOLD"]["kind"] == "nullable_float"
 
     # Every FIELD_META key is a real ModelOverride field — the payload once
@@ -685,10 +709,51 @@ def test_settings_page_wires_translation_model_editors(client):
     assert "allowed: 'TRANSLATION_ALLOWED_MODELS'" in text
     assert "preload: 'TRANSLATION_PRELOAD_MODELS'" in text
     # …and the UVR model from the separation allowlist (no preload concept).
-    assert "{ allowed: 'BGM_SEPARATION_ALLOWED_MODELS' }" in text
+    assert "{ allowed: 'BGM_SEPARATION_ALLOWED_MODELS',\n" in text
     # The re-render event fires for the new source lists too.
     assert "name === 'TRANSLATION_ALLOWED_MODELS'" in text
     assert "name === 'BGM_SEPARATION_ALLOWED_MODELS'" in text
+    # No editor reads the diarization allowlist (DIARIZATION_MODEL stays on
+    # its Literal <select>), so its keystrokes must not re-render them all.
+    assert "name === 'DIARIZATION_ALLOWED_MODELS'" not in text
+
+
+def test_off_list_default_is_not_called_failing_where_the_gate_admits_it(client):
+    """The translation and separation gates always admit the configured
+    default, so an off-allowlist default there is labelled "admitted", not
+    "request will fail" (which stays for the whisper DEFAULT_MODEL)."""
+    text = client.get("/settings").text
+    tr = text[text.index("const TR_LISTS = {"):]
+    assert "defaultAdmitted: true" in tr[:tr.index("};")]
+    bgm = text[text.index("{ allowed: 'BGM_SEPARATION_ALLOWED_MODELS',"):]
+    assert "defaultAdmitted: true" in bgm[:bgm.index("}")]
+    ed = text[text.index("function modelDropdownEditor("):]
+    ed = ed[:ed.index("\n}\n")]
+    assert "lists.defaultAdmitted" in ed
+    assert "admitted as the configured default" in ed
+    assert "request will fail" in ed
+
+
+def test_per_model_override_seed_honours_the_field_min(client):
+    """+ override on a field whose global is null seeded 0, below e.g.
+    DIARIZATION_NUM_SPEAKERS' ge=1, so the next Save 422'd the whole payload."""
+    text = client.get("/settings").text
+    assert "defaultForKind(meta) : globalVal" in text
+    f = text[text.index("function defaultForKind(meta)"):]
+    f = f[:f.index("\n  }\n")]
+    assert "meta.min > 0" in f
+
+
+def test_prompt_lab_preview_clears_on_any_error(client):
+    """Only r.ok and 403 were handled: a 400 (off-allowlist model, unknown
+    family) or 422 (sample bounds) left the previous inputs' prompt, family
+    chip and sampling line on show as if current."""
+    text = client.get("/settings").text
+    f = text[text.index("function schedulePreview()"):]
+    f = f[:f.index("\n  }\n")]
+    assert "'preview unavailable: '" in f
+    assert "famChip.textContent = '';" in f
+    assert "sampling.textContent = '';" in f
 
 
 def test_settings_page_ships_template_editor_and_preview(client):

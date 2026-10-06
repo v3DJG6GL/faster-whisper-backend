@@ -1997,7 +1997,8 @@
               + parsed.formatVersion + ') — made by a newer app', 'err');
             return;
           }
-          if (!parsed.categories || typeof parsed.categories !== 'object') {
+          if (!parsed.categories || typeof parsed.categories !== 'object'
+              || Array.isArray(parsed.categories)) {
             showToast('Not a settings export — no categories inside', 'err');
             return;
           }

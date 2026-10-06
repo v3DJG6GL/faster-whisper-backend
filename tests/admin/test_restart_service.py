@@ -45,8 +45,8 @@ def _guard(monkeypatch):
 
     monkeypatch.setattr(restart_service.os, "execv", _boom_execv)
     monkeypatch.setattr(restart_service.os, "_exit", _boom_exit)
-    # The real flush imports main and calls system_stats.shutdown() (which
-    # flips the module-global NVML_OK for the rest of the session); only
+    # The real flush drains receipt_hold and calls system_stats.shutdown()
+    # (which flips the module-global NVML_OK for the rest of the session); only
     # the tests that opt in (_order_probe / the direct-call test) run it.
     monkeypatch.setattr(restart_service, "_flush_before_exit", lambda: None)
     monkeypatch.setattr(
@@ -163,10 +163,9 @@ def test_win32_winsw_restart_bang(monkeypatch):
 
     # Fire the callback: it should spawn WinSW then sleep+_exit. Stub Popen,
     # time.sleep, and os._exit so nothing real happens.
-    # _flush_before_exit imports main, whose import chain shells out to
-    # `git describe` through the SAME monkeypatched subprocess.Popen, so the
-    # recorder must collect every call and select the WinSW spawn rather
-    # than assume the callback makes exactly one Popen call.
+    # The autouse fixture already stubs _flush_before_exit, so the WinSW
+    # spawn is the only Popen call; the recorder still selects it by name so
+    # an extra Popen elsewhere in the callback cannot mask a missing spawn.
     popen_calls = []
 
     def fake_popen(args, **kwargs):
@@ -285,6 +284,30 @@ def test_reclaim_hard_restart_orphans(tmp_path, monkeypatch):
     assert fresh_dir.exists()
     assert (fake_tmp / "sepsrc-live.wav").exists()
     assert (fake_tmp / "unrelated.txt").exists()
+
+
+def test_reclaim_hard_restart_orphans_spares_foreign_pkg_dirs(tmp_path, monkeypatch):
+    """The subtitle-package workdir carries the app-specific `fwb-pkg-`
+    prefix: a bare `pkg-` dir is a generic name another same-user program
+    may own in the shared TMPDIR, so the sweep must not rmtree it."""
+    import time as _time
+
+    fake_tmp = tmp_path / "faketmp"
+    fake_tmp.mkdir()
+    monkeypatch.setattr(restart_service.tempfile, "gettempdir",
+                        lambda: str(fake_tmp))
+    old = _time.time() - 3600
+    ours = fake_tmp / "fwb-pkg-x"
+    foreign = fake_tmp / "pkg-foreign"
+    for d in (ours, foreign):
+        d.mkdir()
+        (d / "out.mkv").write_bytes(b"x")
+        os.utime(d, (old, old))
+
+    restart_service.reclaim_hard_restart_orphans()
+
+    assert not ours.exists()
+    assert (foreign / "out.mkv").exists()
 
 
 def test_reclaim_hard_restart_orphans_covers_pipeline_copies_and_uploads(

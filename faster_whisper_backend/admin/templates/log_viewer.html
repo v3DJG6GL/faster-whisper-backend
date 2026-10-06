@@ -354,6 +354,9 @@
     }
     return cls;
   }
+  // The line's own text, for the search filter: textContent would also
+  // match the "Show all · N chars" button label on a clamped line.
+  const _lineText = new WeakMap();
   // One line element, shared by the live tail and the "Load older" batch so
   // the two can never render the same text differently. Content always via
   // textContent — never innerHTML — which is what keeps a transcript
@@ -363,6 +366,7 @@
     const cls = decorate(line, st);
     el.className = 'line ' + cls;
     const txt = localizeLogTs(line);
+    _lineText.set(el, txt);
     const stage = /\bst-\w+\b/.test(cls);
     // F2: split at the receipt's fixed 32-char name column so the key takes
     // the stage hue and the value stays readable. Fixed width, so no parsing.
@@ -468,11 +472,14 @@
     return el;
   }
   function applyFilter(el) {
-    if (!filterText) {
+    // Fold controls are UI, not log content: never a hit, never hidden
+    // (hiding one would strand the matching rows it folds).
+    if (!filterText || el.classList.contains('fold-ctl')) {
       el.classList.remove('hidden', 'match', 'match-cur');
       return;
     }
-    const hit = el.textContent.toLowerCase().includes(filterText);
+    const txt = _lineText.has(el) ? _lineText.get(el) : el.textContent;
+    const hit = txt.toLowerCase().includes(filterText);
     el.classList.toggle('match', hit);
     if (!hit) el.classList.remove('match-cur');
     el.classList.toggle('hidden', hideMode && !hit);

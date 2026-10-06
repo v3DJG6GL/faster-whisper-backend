@@ -782,8 +782,14 @@
   async function onClearAll() {
     var m = document.getElementById('confirm-modal');
     var msg = document.getElementById('confirm-msg');
-    msg.textContent = 'This permanently deletes ' + _allReports.length +
-      ' report' + (_allReports.length === 1 ? '' : 's') +
+    // The list is capped (LIST_LIMIT) but /reports/api/clear deletes the
+    // whole table: quote the uncapped totals (Clear all is admin-only, so
+    // _counts is scope=all, i.e. the table total).
+    var total = _counts.open + _counts.resolved + _counts.dismissed;
+    if (!(total > 0)) total = _allReports.length;
+    msg.textContent = 'This permanently deletes ' + total +
+      ' report' + (total === 1 ? '' : 's') +
+      (_truncated ? ' (including older reports not shown)' : '') +
       '. There is no undo.';
     m.classList.add('show');
     document.getElementById('confirm-cancel').onclick = function() {

@@ -1041,12 +1041,13 @@ function setDirty(name, value) {
   $('save-btn').disabled = empty;
   $('discard-btn').disabled = empty;
   // Notify dependent editors when a model source-list changes. The
-  // model dropdown / multi-select editors (whisper, translation, stage
-  // models) listen for this and re-render their option sets.
+  // model dropdown / multi-select editors (whisper, translation, UVR
+  // separator) listen for this and re-render their option sets.
+  // DIARIZATION_MODEL stays on its Literal <select>, so its allowlist has
+  // no listener here.
   if (name === 'ALLOWED_MODELS' || name === 'PRELOAD_MODELS'
       || name === 'TRANSLATION_ALLOWED_MODELS'
       || name === 'TRANSLATION_PRELOAD_MODELS'
-      || name === 'DIARIZATION_ALLOWED_MODELS'
       || name === 'BGM_SEPARATION_ALLOWED_MODELS') {
     document.dispatchEvent(new CustomEvent('admin:model-lists-changed'));
   }
@@ -1273,14 +1274,18 @@ function makeEditor(name) {
   // lists. DIARIZATION_MODEL deliberately stays on its Literal-derived
   // choices <select> below — the Literal already enumerates exactly the
   // supported pipelines (the allowlist's own element type).
+  // defaultAdmitted: the translation / separation gates always admit the
+  // configured default, so an off-list default is a note, not an error.
   const TR_LISTS = { allowed: 'TRANSLATION_ALLOWED_MODELS',
-                     preload: 'TRANSLATION_PRELOAD_MODELS' };
+                     preload: 'TRANSLATION_PRELOAD_MODELS',
+                     defaultAdmitted: true };
   if (name === 'TRANSLATION_DEFAULT_MODEL') return modelDropdownEditor(name, v, TR_LISTS);
   if (name === 'TRANSLATION_PRELOAD_MODELS') return modelMultiSelectEditor(name, v, TR_LISTS);
   // UVR separator model: dropdown over the separation allowlist (no preload
   // list concept → no "(preloaded)" suffix), free text when the list is empty.
   if (name === 'BGM_SEPARATION_UVR_MODEL') {
-    return modelDropdownEditor(name, v, { allowed: 'BGM_SEPARATION_ALLOWED_MODELS' });
+    return modelDropdownEditor(name, v, { allowed: 'BGM_SEPARATION_ALLOWED_MODELS',
+                                          defaultAdmitted: true });
   }
   // Prompt lab: server-rendered preview + model test-run for EVERY prompt
   // family; the custom-template textarea appears inside it when family=custom.
@@ -1809,7 +1814,7 @@ function modelOverridesEditor(name, v) {
         // Seed with the current global value so the admin starts from the
         // inherited value (not from a zero/empty default that overrides it).
         const seed = (globalVal === null || globalVal === undefined)
-          ? defaultForKind(meta.kind) : globalVal;
+          ? defaultForKind(meta) : globalVal;
         setOverrideValue(selectedId, field, seed);
         renderMain();
         renderSidebar();
@@ -1820,9 +1825,14 @@ function modelOverridesEditor(name, v) {
     return row;
   }
 
-  function defaultForKind(kind) {
+  // A null global (e.g. DIARIZATION_*_SPEAKERS) seeds the kind's zero, raised
+  // to the field's min so the seed itself validates (ge=1 would 422 the save).
+  function defaultForKind(meta) {
+    const kind = meta.kind;
     if (kind === 'bool') return false;
-    if (kind === 'int' || kind === 'float' || kind === 'nullable_float') return 0;
+    if (kind === 'int' || kind === 'float' || kind === 'nullable_float') {
+      return (typeof meta.min === 'number' && meta.min > 0) ? meta.min : 0;
+    }
     return '';
   }
 
@@ -2049,7 +2059,9 @@ function modelDropdownEditor(name, v, lists) {
     if (cur && !curInList) {
       const opt = document.createElement('option');
       opt.value = cur;
-      opt.textContent = cur + '  (NOT in ' + lists.allowed + ' — request will fail)';
+      opt.textContent = lists.defaultAdmitted
+        ? cur + '  (not in ' + lists.allowed + ' — admitted as the configured default)'
+        : cur + '  (NOT in ' + lists.allowed + ' — request will fail)';
       opt.selected = true;
       sel.insertBefore(opt, sel.firstChild);
     }
@@ -2338,8 +2350,16 @@ function translationTemplateEditor(name, v) {
         // for the current inputs.
         if (seq !== previewSeq) return;
         if (r.ok && j.prompt) renderPrompt(j.prompt);
-        else if (r.status === 403) {
-          readout.textContent = 'translation is disabled (TRANSLATION_ENABLED)';
+        else {
+          // Any other answer (400 off-allowlist model / unknown family, 422
+          // sample bounds) must not leave the PREVIOUS inputs' prompt on show.
+          famChip.textContent = '';
+          sampling.textContent = '';
+          readout.textContent = r.status === 403
+            ? 'translation is disabled (TRANSLATION_ENABLED)'
+            : 'preview unavailable: ' + (j.error
+              || (Array.isArray(j.detail) ? j.detail.map(d => d.msg).join('; ') : j.detail)
+              || ('HTTP ' + r.status));
         }
       } catch (e) { /* preview is best-effort; the test button reports errors */ }
     }, 300);
@@ -2773,8 +2793,8 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
 
   function refreshControlsVisibility() {
     if (isChecklist) return;   // checklist rows have no reset/dirty controls
-    // Per row: repaint the origin badge, toggle the ⇪ promote button, and
-    // show the per-row reset button only when the rule differs from config.json.
+    // Per row: repaint the origin badge, toggle the ↑ Promote (.row-promote)
+    // and ↓ Reset (.row-reset) buttons in the head row's sync slot.
     let nReset = 0;      // rules that differ from config.json (any reason)
     let nPromote = 0;    // rules with something of their own to write up
     list.querySelectorAll('.rule-row').forEach(r => {
@@ -3325,9 +3345,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // The colour palette popover is built after headActions (its anchor)
     // exists — see just below the action-cluster setup.
 
-    // Right-aligned action cluster: colour + edit/expand. Rare/destructive
-    // actions (promote / reset / delete) live in the body footer instead, so
-    // the header stays scannable and stops jumping width as state changes.
+    // Right-aligned action cluster: colour + edit/expand. Promote / reset sit
+    // in the sync slot on the "applies to" line and delete in the body footer,
+    // so the header stays scannable and stops jumping width as state changes.
     const headActions = document.createElement('div');
     headActions.className = 'head-actions';
     if (rule.type !== 'terminal') headActions.appendChild(colorBtn);
@@ -3407,10 +3427,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       });
     }
 
-    // ⇪ Promote — push this rule into the committed config.json. Built here,
-    // appended to the body footer (with reset/delete) further down. Shown only
-    // when the rule differs from config.json (refreshControlsVisibility toggles
-    // it via the .promote-btn selector regardless of where it lives).
+    // ↑ Promote — push this rule into the committed config.json. Built here,
+    // mounted in the head row's sync slot further down. Shown only when the
+    // rule has edits of its own (refreshControlsVisibility toggles it via the
+    // .row-promote selector).
     let promoteBtnEl = null;
     if (rule.type !== 'terminal') {
       promoteBtnEl = document.createElement('button');
@@ -3503,12 +3523,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       head.appendChild(headLine2);
     }
 
-    // ----- Body footer destructive actions (reset / delete). Moved
-    // out of the head row per the new layout — these are rare +
-    // destructive, so they live in the expanded body where mis-clicks
-    // are less likely (PatternFly guidance). The variables are built
-    // here so the closures capture `rule`/`idx`/`expandedNames`; the
-    // button itself is appended to the body footer further down. ------
+    // ----- Reset / delete. ↓ Reset mounts in the head row's sync slot
+    // (toggled via .row-reset); × delete is rare + destructive, so it lives
+    // in the expanded body footer where mis-clicks are less likely
+    // (PatternFly guidance). Built here so the closures capture
+    // `rule`/`idx`/`expandedNames`; delete is appended further down. ------
     const _destructiveBtns = [];
     // A rule present in config.json (factory / edited) can be reset to its
     // committed value; a local-only rule (not in config.json) can be deleted.
@@ -3617,8 +3636,11 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
             // already-saved rule of this shape still runs in the engine.
             // Tested BEFORE the regex-list advisory: a screened regex-list
             // step carries both flags and must not claim "pattern skipped".
+            // Its other entries DID run, so it keeps their match count.
             status.className = 'regex-status warn';
-            status.textContent = '⚠ ' + step.error;
+            const n = step.matches || 0;
+            status.textContent = '⚠ ' + (step.type === 'regex-list'
+              ? n + ' match' + (n === 1 ? '' : 'es') + ' · ' : '') + step.error;
           } else if (step.error && step.type === 'regex-list') {
             // Advisory: the bad entry is skipped, the valid ones still applied.
             status.className = 'regex-status warn';
@@ -3648,9 +3670,9 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
       if (row.classList.contains('expanded')) requestAnimationFrame(refresh);
     }
 
-    // Destructive actions live in a body-footer (out of the scannable
-    // head row). Append AFTER the rule editor + test panel so the
-    // visual order reads: edit body → run test → reset/delete.
+    // Promote joins reset in the sync slot; delete lives in a body footer
+    // (out of the scannable head row), appended AFTER the rule editor + test
+    // panel so the visual order reads: edit body → run test → delete.
     if (promoteBtnEl && syncSlot) syncSlot.appendChild(promoteBtnEl);
     if (_destructiveBtns.length) {
       const footer = document.createElement('div');
@@ -4231,7 +4253,14 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
   async function _resetOne(rule) {
     if (!(await _refreshFactory())) return;
     const base = _factoryRule(rule.name);
-    if (!base) return;
+    if (!base) {
+      // config.json dropped this rule since the row was painted: say so and
+      // repaint, so the row trades its stale "↓ Reset" for "× delete".
+      paintAll();
+      _toast('“' + (rule.label || rule.name) + '” is no longer in config.json — '
+        + 'nothing to reset to; it is now a rule only on this server.');
+      return;
+    }
     const st = _ruleStatus(rule);
     const rows = _ruleDiffRows(rule, base);
     const label = rule.label || rule.name;
@@ -4585,24 +4614,47 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     // from the running pipeline — an order-promote excludes them; "Promote all"
     // includes them, so this is normally empty after a Promote all.
     const orphaned = _localOnlyNames();
+    // Promote-all lets the admin untick rules and an order-promote writes no
+    // content, so config.json can still differ from what runs here: rules
+    // whose local edits were not promoted (dropping the list loses them) and
+    // config.json rules removed here but not ticked for removal (they come
+    // back). Both make the drop as destructive as an orphaned rule.
+    const unpromoted = rules.filter(r => {
+      const st = _ruleStatus(r);
+      return st === 'edited' || st === 'diverged';
+    }).map(r => r.label || r.name);
+    const returning = _missingFactoryRules().map(b => b.label || b.name);
+    const lossy = orphaned.length || unpromoted.length || returning.length;
     const body = document.createElement('div');
     const p = document.createElement('div');
     p.className = 'help';
-    p.textContent = orphaned.length
+    p.textContent = lossy
       ? 'This server keeps its own saved rule list, which is used instead of '
-        + 'config.json — but config.json does NOT contain every rule running here.'
+        + 'config.json — but config.json does NOT match every rule running here.'
       : 'config.json now holds your rules. This server still keeps its own saved '
         + 'rule list, which is used instead of config.json. Drop it so config.json '
         + 'runs directly here? config.json can be committed either way.';
     body.appendChild(p);
-    if (orphaned.length) {
+    const _warn = (text) => {
       const w = document.createElement('div');
       w.className = 'promote-unsaved-note';
-      w.textContent = '⚠ Dropping this server\'s list would REMOVE ' + orphaned.length
+      w.textContent = text;
+      body.appendChild(w);
+    };
+    if (orphaned.length) {
+      _warn('⚠ Dropping this server\'s list would REMOVE ' + orphaned.length
         + ' rule(s) from the running pipeline: ' + orphaned.join(', ')
         + '. They are not in config.json. Keep the list, or run "↑ Promote all" '
-        + 'first to write them into config.json.';
-      body.appendChild(w);
+        + 'first to write them into config.json.');
+    }
+    if (unpromoted.length) {
+      _warn('⚠ Dropping this server\'s list would DISCARD the local edits to '
+        + unpromoted.length + ' rule(s) that were not promoted: '
+        + unpromoted.join(', ') + '. config.json still holds their committed version.');
+    }
+    if (returning.length) {
+      _warn('⚠ Dropping this server\'s list would bring BACK ' + returning.length
+        + ' config.json rule(s) removed on this server: ' + returning.join(', ') + '.');
     }
     const _doClear = async (close) => {
       let r;
@@ -4618,10 +4670,10 @@ function makeRuleListEditor(name, initialRules, mode, opts) {
     _modal({
       title: 'Promoted to config.json',
       bodyEl: body,
-      buttons: orphaned.length
+      buttons: lossy
         ? [
             { label: "Keep this server's list", primary: true },
-            { label: 'Drop it anyway (removes those rules)', onClick: _doClear },
+            { label: 'Drop it anyway (loses those changes)', onClick: _doClear },
           ]
         : [
             { label: "Keep this server's list" },
@@ -4726,7 +4778,10 @@ function pipelineTestPanel() {
       // matches alongside `error`. Show the output, not just the warning.
       const advisory = step.error && step.type === 'regex-list';
       if (step.skipped) badge = testBadge('empty', 'skipped');
-      else if (step.not_run) badge = testBadge('warn', '⚠ not run');
+      // A screened regex-list entry is not run, but the step's other entries
+      // are: the badge says so instead of "not run" next to real output.
+      else if (step.not_run) badge = testBadge('warn', step.type === 'regex-list'
+        ? '⚠ ' + (step.matches || 0) + ' matches · entry not run' : '⚠ not run');
       else if (advisory) badge = testBadge('warn', '⚠ ' + (step.matches || 0) + ' matches · bad pattern skipped');
       else if (step.error) badge = testBadge('err', '✗');
       else if (step.slow) badge = testBadge('warn', '⚠ slow');

@@ -72,6 +72,9 @@ _MO_FIELD_META_OVERLAY: dict[str, dict[str, Any]] = {
                          "placeholder": "e.g. en, de (empty = auto)"},
     "DEFAULT_PROMPT": {"kind": "textarea"},
     "DEFAULT_HOTWORDS": {"kind": "textarea"},
+    # One "source = target" pair per line (translation engine splitlines);
+    # a single-line <input> would join the pairs on the first keystroke.
+    "TRANSLATION_GLOSSARY": {"kind": "textarea"},
     "NO_SPEECH_THRESHOLD": {"kind": "nullable_float", "step": 0.05},
     "LOG_PROB_THRESHOLD": {"kind": "nullable_float", "step": 0.1},
     "COMPRESSION_RATIO_THRESHOLD": {"kind": "nullable_float", "step": 0.1},
@@ -435,6 +438,13 @@ async def post_state(payload: dict[str, Any], request: Request) -> JSONResponse:
     are applied to the running cfg module immediately and any derived caches
     are rebuilt; cold fields stick around in the JSON file for the restart to
     pick up."""
+    # OVERRIDE_PROFILES is edited only on /settings/overrides (group=None, so
+    # this page never sends it), and that route owns the "profile still bound
+    # to a user or key" 409 guard. Accepting it here let a curl POST of
+    # {"OVERRIDE_PROFILES": null} delete bound profiles and their locks.
+    if "OVERRIDE_PROFILES" in payload:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "edit OVERRIDE_PROFILES on /settings/overrides")
     # A field submitted at its in-repo default is NOT an override — drop it from
     # config.local.json instead of rewriting it with the default value, so the
     # "↺ Reset to default" button actually clears the "local.json" badge.
@@ -735,8 +745,9 @@ async def test_pipeline(payload: dict[str, Any]) -> JSONResponse:
                         if not ep:
                             continue
                         if regex_guard._nested_repetition(str(ep)):
-                            if bad is None:
-                                bad = _NESTED_REP_MSG
+                            # Wins over an earlier compile error: `not_run`
+                            # needs its "not executed here" caveat shown.
+                            bad = _NESTED_REP_MSG
                             lout["not_run"] = True
                             continue
                         try:

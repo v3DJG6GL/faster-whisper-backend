@@ -44,7 +44,7 @@ def _rotated_chain(active_path: str) -> list[str]:
 
 # How deep the "Load older" cursor may go, in pages of LOG_VIEWER_INITIAL_LINES.
 # Past this the reader walks the whole chain for a window no browser is still
-# holding, so the cursor is clamped rather than served.
+# holding, so paging ends there (next_skip=null) rather than being served.
 _LOG_OLDER_MAX_PAGES = 500
 
 

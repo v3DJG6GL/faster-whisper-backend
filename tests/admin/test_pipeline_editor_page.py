@@ -172,3 +172,27 @@ def test_language_badge_mentions_the_unknown_language_case(client):
     assert ov.status_code == 200
     assert "Only runs when the detected language is" not in ov.text
     assert "(or when the language is unknown)" in ov.text
+
+
+def test_drop_local_list_after_promote_counts_unpromoted_edits(client):
+    """Promote-all lets the admin untick edited rules and an order-promote
+    writes no content, so "config.json now holds your rules" with Drop as
+    the primary button discarded those local edits (and brought back
+    unticked removals). The safe-check covers both, not only local-only."""
+    html = _html(client)
+    body = html[html.index("function _afterPromoteAll("):]
+    body = body[:body.index("\n  }\n")]
+    assert "const orphaned = _localOnlyNames();" in body
+    assert "st === 'edited' || st === 'diverged'" in body
+    assert "_missingFactoryRules()" in body
+    assert "buttons: lossy" in body
+
+
+def test_reset_on_a_rule_config_json_dropped_says_so(client):
+    """↓ Reset on a rule config.json dropped since the paint returned
+    silently, leaving a dead button and no × delete until a full repaint."""
+    html = _html(client)
+    body = html[html.index("async function _resetOne("):]
+    body = body[:body.index("\n  }\n")]
+    assert "if (!base) return;" not in body
+    assert "paintAll();" in body and "_toast(" in body

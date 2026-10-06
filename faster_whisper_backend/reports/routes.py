@@ -10,14 +10,16 @@ Two surfaces:
                                                               undoes
                                                               own row
 
-  /reports                          — admin page + APIs:
+  /reports                          — triage page + APIs:
     GET   /reports                  HTML triage page
-    GET   /reports/api/list         all reports (newest first)
+    GET   /reports/api/list         reports in scope (newest first)
     PATCH /reports/api/{rid}        status + admin_notes
     DELETE /reports/api/{rid}       single delete
     POST  /reports/api/clear        wipe all (confirm dialog)
     GET   /reports/api/export       full JSON dump (envelope-wrapped)
-  Mutating routes use Depends(require_admin) — admin-only API keys.
+  list / PATCH / DELETE gate on require_page("reports") plus the per-row
+  scope check, so a scope=own user reads, edits and deletes their own
+  rows; only /clear and /export use Depends(require_admin).
 
 Reports are an independent store: submitting or deleting a report does
 NOT touch any capture's chip corrections. End users edit PIPELINE_RULES

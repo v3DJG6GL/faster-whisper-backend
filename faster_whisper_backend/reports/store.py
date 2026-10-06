@@ -309,14 +309,15 @@ def upsert_report(
     # COALESCEs stages, so an oversized resubmission must keep what the
     # first submission recorded rather than blank it (recent_transcriptions_store
     # .record does the same). _row_to_dict maps NULL to [] on read.
+    # Stored whole or not at all: a sliced JSON array is never valid JSON.
     stages_t: str | None = None
     if stages:
         try:
-            cand = json.dumps(stages, ensure_ascii=False)[:_CAP_STAGES_JSON]
-            json.loads(cand)   # truncation may have cut mid-token
-            stages_t = cand
+            blob = json.dumps(stages, ensure_ascii=False)
         except (TypeError, ValueError):
-            stages_t = None
+            blob = None
+        if blob is not None and len(blob) <= _CAP_STAGES_JSON:
+            stages_t = blob
 
     conn = _require_conn()
     # Lookup and write share one lock span: with the lookup outside, two

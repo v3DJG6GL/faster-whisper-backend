@@ -143,9 +143,9 @@ def reclaim_hard_restart_orphans() -> None:
     The admin restart path (trigger_self_restart: os.execv / os._exit) skips the
     ASGI shutdown, so in-flight requests leak their `urldl-` job dirs,
     `urlmedia-` pipeline copies (url_media_store.make_pipeline_copy),
-    `whisperup-` upload spools and `sepsrc-`/`vocals-` separation WAVs with
-    no finally to reclaim them — url_media_store.startup_reset() wipes only
-    URL_MEDIA_DIR (a same-fs `urlmedia-` copy is a hardlink whose retained
+    `whisperup-` upload spools, `sepsrc-`/`vocals-` separation WAVs and
+    `fwb-pkg-` subtitle-package workdirs with no finally to reclaim them —
+    url_media_store.startup_reset() wipes only URL_MEDIA_DIR (a same-fs `urlmedia-` copy is a hardlink whose retained
     name that reset already dropped). Single-service
     assumption (as documented for SERVER_WORKERS); a small age guard keeps
     the sweep off files a just-overlapping process may still be writing."""
@@ -157,13 +157,13 @@ def reclaim_hard_restart_orphans() -> None:
     now = time.time()
     for name in names:
         if not name.startswith(("urldl-", "urlmedia-", "whisperup-",
-                                "sepsrc-", "vocals-", "pkg-")):
+                                "sepsrc-", "vocals-", "fwb-pkg-")):
             continue
         path = os.path.join(tmp, name)
         try:
             if os.path.islink(path) or now - os.path.getmtime(path) < 60.0:
                 continue
-            if name.startswith(("urldl-", "pkg-")) and os.path.isdir(path):
+            if name.startswith(("urldl-", "fwb-pkg-")) and os.path.isdir(path):
                 shutil.rmtree(path, ignore_errors=True)
             elif os.path.isfile(path):
                 os.unlink(path)

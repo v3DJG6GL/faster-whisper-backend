@@ -309,9 +309,19 @@ async def rename_profile(payload: _RenameProfileIn, request: Request) -> JSONRes
     #    holds the new key, the binding set stays referentially consistent).
     #    Off the loop like the save above: the cascade is a full users+keys
     #    scan with per-row UPDATEs under the store lock.
-    affected = await asyncio.to_thread(api_keys_store.rename_profile_refs, old, new)
-
-    applied = await pl_apply.apply_hot_changes(written)
+    #    The save above reached disk only: the running cfg still holds `old`
+    #    alone until apply_hot_changes, so a request resolving a binding the
+    #    cascade already moved to `new` would drop that profile layer and its
+    #    locks (fail-open). Alias both names to the same bundle meanwhile so a
+    #    binding resolves under either name; the hot-apply leaves only `new`.
+    aliased = dict(getattr(cfg, "OVERRIDE_PROFILES", None) or {})
+    if old in aliased:
+        aliased[new] = aliased[old]
+        setattr(cfg, "OVERRIDE_PROFILES", aliased)
+    try:
+        affected = await asyncio.to_thread(api_keys_store.rename_profile_refs, old, new)
+    finally:
+        applied = await pl_apply.apply_hot_changes(written)
     client_host = request.client.host if request.client else "?"
     logger.info("[overrides] profile renamed %r->%r from=%s bindings=%d",
                 old, new, client_host, affected)

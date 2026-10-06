@@ -34,7 +34,7 @@ def test_overrides_page_renders(client):
                    "ov-wrap", "tab-explorer", "/settings/overrides",
                    # save() surfaces the server 409 in-use guard's detail
                    # instead of a bare "save failed (409)"
-                   "profile still in use"):
+                   "setStatus(jc.detail || 'profile still in use'"):
         assert marker in body, marker
 
 
@@ -124,6 +124,25 @@ def test_delete_guard_refuses_null_profiles_payload(client, make_user_key):
     assert r.status_code == 409
     assert "clinic-de" in r.json()["detail"]
     # the profile survived the attempt
+    j = client.get(f"{OV}/state", headers=h).json()
+    assert "clinic-de" in j["profiles"]
+
+
+def test_settings_state_refuses_override_profiles(client, make_user_key):
+    # The in-use guard lives on /settings/overrides/state only, so the
+    # generic /settings/state save must not accept OVERRIDE_PROFILES at all:
+    # a null or {} there would delete a bound profile and its locks.
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de")
+    uid, _ = make_user_key("alice", is_admin=False)
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
+                                "locks": []}})
+    assert r.status_code == 200, r.text
+
+    for body in ({"OVERRIDE_PROFILES": None}, {"OVERRIDE_PROFILES": {}}):
+        r = client.post("/settings/state", headers=h, json=body)
+        assert r.status_code == 400, r.text
     j = client.get(f"{OV}/state", headers=h).json()
     assert "clinic-de" in j["profiles"]
 
@@ -253,6 +272,41 @@ def test_rename_profile_cascades_to_user_and_key(client, make_user_key):
                     params={"user_id": uid, "model": "whisper-1"}).json()
     assert rj["fields"]["DEFAULT_LANGUAGE"]["winner_layer"] \
         == "user.profile:clinic-deutsch"
+
+
+def test_rename_profile_keeps_locks_while_the_cascade_commits(
+        client, make_user_key, monkeypatch):
+    """The cascade commits bindings to the new name BEFORE the hot-apply
+    installs it in the running cfg: in that window a bound identity must
+    still resolve its profile (and the profile's locks), not drop the layer."""
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.settings import effective_config
+    _, _, h = _admin(make_user_key)
+    _make_profile(client, h, "clinic-de", DEFAULT_LANGUAGE="de",
+                  locks=["DEFAULT_LANGUAGE"])
+    uid, _ = make_user_key("alice", is_admin=False)
+    r = client.patch(f"{PERMS}/{uid}/permissions", headers=h, json={
+        "pages": {}, "config": {"overrides": {}, "profiles": ["clinic-de"],
+                                "locks": []}})
+    assert r.status_code == 200, r.text
+
+    real = api_keys_store.rename_profile_refs
+    seen = {}
+
+    def _cascade_then_resolve(old, new):
+        n = real(old, new)
+        seen["locked"] = effective_config.resolve(None, user_id=uid).locked
+        return n
+
+    monkeypatch.setattr(api_keys_store, "rename_profile_refs", _cascade_then_resolve)
+    r = client.post(f"{OV}/profiles/rename", headers=h,
+                    json={"old": "clinic-de", "new": "clinic-deutsch"})
+    assert r.status_code == 200, r.text
+    assert "DEFAULT_LANGUAGE" in seen["locked"]
+    # The alias is gone once the hot-apply ran.
+    j = client.get(f"{OV}/state", headers=h).json()
+    assert "clinic-de" not in j["profiles"]
+    assert "clinic-deutsch" in j["profiles"]
 
 
 def test_rename_profile_unknown_404(client, make_user_key):

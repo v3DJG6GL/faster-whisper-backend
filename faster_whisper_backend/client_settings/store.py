@@ -262,8 +262,10 @@ def force_put(
     sees a newer server copy: the imported settings propagate through
     the devices' normal merge path with no device-side changes.
 
-    Raises ValueError if the serialized blob exceeds _CAP_BLOB (the
-    route maps it to 413, same as put())."""
+    Raises InvalidBlob for a non-finite float (NaN/Infinity) and
+    ValueError if the serialized blob exceeds _CAP_BLOB (the route maps
+    them to 422 and 413, same as put()). InvalidBlob subclasses
+    ValueError, so callers must catch it first."""
     try:
         blob_json = json.dumps(
             blob, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
