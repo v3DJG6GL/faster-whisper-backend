@@ -17,7 +17,6 @@ test first restores the canonical idle state (the shape start() expects).
 
 import logging
 import sys
-import threading
 import types
 
 import pytest

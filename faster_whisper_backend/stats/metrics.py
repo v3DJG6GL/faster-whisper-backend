@@ -425,8 +425,10 @@ def record_model_load(model: str, load_seconds: float) -> None:
         del bucket[1 : len(bucket) - _MODEL_LOAD_KEEP + 1]
 
 
-def _quantile(sorted_vals: list[float], q: float) -> float:
-    """Nearest-rank quantile. Fine for N <= 200 and human display."""
+def quantile(sorted_vals: list[float], q: float) -> float:
+    """Nearest-rank quantile of an already-sorted list (0.0 when empty).
+    Fine for N <= a few thousand and human display; the usage rollups in
+    usage_store use the same rule so the two dashboards agree."""
     if not sorted_vals:
         return 0.0
     k = max(0, min(len(sorted_vals) - 1, int(round(q * (len(sorted_vals) - 1)))))
@@ -523,9 +525,9 @@ def metrics_snapshot(*, include_identity: bool = False,
         },
         "latency_ms": {
             "n": len(durations),
-            "p50": round(_quantile(durations, 0.50), 1),
-            "p95": round(_quantile(durations, 0.95), 1),
-            "p99": round(_quantile(durations, 0.99), 1),
+            "p50": round(quantile(durations, 0.50), 1),
+            "p95": round(quantile(durations, 0.95), 1),
+            "p99": round(quantile(durations, 0.99), 1),
         },
         "recent_transcriptions": recent,
         "model_loads": loads_summary,

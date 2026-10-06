@@ -11,7 +11,6 @@ leave existing rows intact.
 import contextlib
 import sqlite3
 
-import pytest
 
 
 def _cols(conn, table):

@@ -1,4 +1,11 @@
-"""Filesystem hardening shared by the SQLite stores.
+"""Shared helpers for the persistent stores (SQLite and JSON files).
+
+- `secure_db_file()` / `secure_file()` / `secure_dir()`: filesystem hardening.
+- `log_safe()` / `LOG_FIELD_MAX`: cap + control-character screen for
+  caller-supplied labels in log lines (used well beyond the stores).
+- `BUSY_TIMEOUT_S` / `open_wal_db()`: the one way a store opens its WAL DB.
+- `job_columns_ddl()` / `missing_job_columns()`: the job-label columns shared
+  by usage_jobs and recent_transcriptions.
 
 Every store creates its DB at the process umask (0644 file / 0755 dir on a
 typical Linux box) and nothing narrows it afterwards, yet those files hold
@@ -55,7 +62,7 @@ BUSY_TIMEOUT_S = 5.0
 # must answer "which model / how long / did it fail" on its own after the
 # other has been pruned — so they are declared ONCE here and each schema
 # renders them through job_columns_ddl(). A field added to one table and
-# forgotten in the other fails tests/test_job_columns.py.
+# forgotten in the other fails test_job_columns.py.
 #
 # (name, SQLite type). Constraints (NOT NULL / DEFAULT) are per table: the
 # ledger insists on values, the detail row tolerates NULL for an error-path

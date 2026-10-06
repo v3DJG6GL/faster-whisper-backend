@@ -103,7 +103,7 @@ CREATE INDEX IF NOT EXISTS idx_rt_user_created ON recent_transcriptions(user_id,
 def init_db(path: str) -> None:
     """Open (or create) the DB at `path` in WAL mode. Idempotent — call
     once on service startup before any other function in this module.
-    Mirrors reports_store.init_db / captures_store.init pattern."""
+    Mirrors reports_store.init_db / captures_store.init_db."""
     global _conn
     _conn = store_common.open_wal_db(path)
     _conn.execute("PRAGMA temp_store=MEMORY;")

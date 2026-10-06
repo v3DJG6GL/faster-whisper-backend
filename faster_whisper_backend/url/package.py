@@ -26,6 +26,7 @@ import subprocess
 import tempfile
 import time
 
+from faster_whisper_backend.core import proc as core_proc
 from faster_whisper_backend.core.languages import iso639_2t, language_label
 from faster_whisper_backend.core.store_common import log_safe
 
@@ -277,10 +278,10 @@ async def package(src: str, tracks: "list[SubtitleTrack]", *, container: str,
         try:
             _out, err = await asyncio.wait_for(proc.communicate(), timeout)
         except asyncio.TimeoutError:
-            await _kill(proc)
+            await core_proc.terminate_then_kill(proc)
             raise PackageTimeout("packaging timed out") from None
         except asyncio.CancelledError:
-            await _kill(proc)
+            await core_proc.terminate_then_kill(proc)
             raise
         tail = (err or b"")[-_STDERR_TAIL_MAX:].decode("utf-8", "replace")
         if proc.returncode != 0:
@@ -333,21 +334,6 @@ def ffmpeg_has_bsf(name: str) -> bool:
     return re.search(rf"^\s*{re.escape(name)}\s*$", out or "", re.M) is not None
 
 
-async def _kill(proc, grace: float = 5.0) -> None:
-    if proc.returncode is not None:
-        return
-    try:
-        proc.terminate()
-    except ProcessLookupError:
-        return
-    try:
-        await asyncio.wait_for(proc.wait(), grace)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:
-            pass
-        await proc.wait()
 
 
 def _has(listing: str, name: str) -> bool:

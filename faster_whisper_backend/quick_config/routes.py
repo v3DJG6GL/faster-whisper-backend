@@ -57,7 +57,7 @@ from faster_whisper_backend.admin.routes import (
 )
 from faster_whisper_backend.core.web_common import require_user_webui_host
 from faster_whisper_backend.auth import dependencies as auth
-from faster_whisper_backend.auth.dependencies import Permissions, get_current_user, require_page
+from faster_whisper_backend.auth.dependencies import get_current_user, require_page
 
 logger = logging.getLogger("whisper-api")
 

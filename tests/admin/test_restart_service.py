@@ -7,9 +7,6 @@ kill pytest). Every test monkeypatches threading.Timer to a capture-only stub
 and subprocess.Popen so even an accidental direct invocation can't escape.
 """
 
-import os
-import subprocess
-import threading
 
 import pytest
 

@@ -156,19 +156,19 @@ def test_merge_member_scope_guard_precedes_state_checks(
     from faster_whisper_backend.captures import routes as captures_routes
     from fastapi import HTTPException
 
-    cs = captures_store_db
+    captures_store = captures_store_db
     _fake_wav_transcode(monkeypatch)
 
     src = tmp_path / "src.bin"
     src.write_bytes(b"junk")
-    cid = cs.create_capture(
+    cid = captures_store.create_capture(
         audio_src_path=str(src), request_id="r1", model="small",
         language="de", audio_s=1.0, raw="r", final="f",
         words=[], segments=[], user_id="alice",
     )
     # Delete the audio so the OLD ordering would raise 410 ("audio is missing"),
     # leaking that the row exists; the fix must 404 for a non-owner first.
-    os.unlink(cs.abs_audio_path(cs.get_capture(cid)["audio_relpath"]))
+    os.unlink(captures_store.abs_audio_path(captures_store.get_capture(cid)["audio_relpath"]))
 
     # bob: scope=own captures user, NOT the owner and NOT admin → uniform 404.
     bob = {
@@ -229,9 +229,9 @@ def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
     from faster_whisper_backend.captures import routes as captures_routes
     from fastapi import HTTPException
 
-    cs = captures_store_db
+    captures_store = captures_store_db
     gs = groups_store_db
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
 
     _insert_sample(conn, gs, "locked00sid", locked=True)
     _insert_member(conn, "locked00cid", "locked00sid")
@@ -247,7 +247,7 @@ def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
                 {"pages": {"captures": "own"}}, is_admin=is_admin),
         }
 
-    locked_row = cs.get_capture("locked00cid")
+    locked_row = captures_store.get_capture("locked00cid")
     # Non-admin (even the owner) is refused on a locked sample's member.
     with pytest.raises(HTTPException) as ei:
         captures_routes._assert_member_sample_not_locked(locked_row, _user(False))
@@ -256,9 +256,9 @@ def test_member_delete_respects_sample_lock(captures_store_db, groups_store_db):
     captures_routes._assert_member_sample_not_locked(locked_row, _user(True))
     # A member of an UNLOCKED sample, and a member of NO sample, pass through.
     captures_routes._assert_member_sample_not_locked(
-        cs.get_capture("open000cid"), _user(False))
+        captures_store.get_capture("open000cid"), _user(False))
     captures_routes._assert_member_sample_not_locked(
-        cs.get_capture("free0000cid"), _user(False))
+        captures_store.get_capture("free0000cid"), _user(False))
 
 
 def _fake_wav_transcode(monkeypatch):
@@ -289,11 +289,11 @@ def test_merge_member_404_body_uniform_missing_vs_foreign(
     from faster_whisper_backend.captures import routes as captures_routes
     from fastapi import HTTPException
 
-    cs = captures_store_db
+    captures_store = captures_store_db
     _fake_wav_transcode(monkeypatch)
     src = tmp_path / "src.bin"
     src.write_bytes(b"junk")
-    cid = cs.create_capture(
+    cid = captures_store.create_capture(
         audio_src_path=str(src), request_id="r1", model="small",
         language="de", audio_s=1.0, raw="r", final="f",
         words=[], segments=[], user_id="alice",
@@ -318,7 +318,7 @@ def test_capture_404_body_uniform_missing_vs_foreign(
         client, make_user_key, monkeypatch, tmp_path):
     """GET /captures/api/{cid}: a scope=own caller gets byte-identical 404
     bodies for a nonexistent id and for another user's id."""
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     make_user_key("root", is_admin=True)
     owner_uid, _raw_owner = make_user_key("alice", pages={"captures": "own"})
@@ -327,7 +327,7 @@ def test_capture_404_body_uniform_missing_vs_foreign(
     _fake_wav_transcode(monkeypatch)
     src = tmp_path / "src.bin"
     src.write_bytes(b"junk")
-    cid = cs.create_capture(
+    cid = captures_store.create_capture(
         audio_src_path=str(src), request_id="r1", model="small",
         language="de", audio_s=1.0, raw="r", final="f",
         words=[], segments=[], user_id=owner_uid,
@@ -346,11 +346,11 @@ def test_locked_member_mutations_blocked_at_endpoints(client, make_user_key):
     non-admin owner. (Removing the _assert_member_sample_not_locked call
     sites would pass the helper test but fail this one.)"""
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     _insert_sample(conn, gs, "locked01sid", locked=True, user_id=uid)
     _insert_member(conn, "locked01cid", "locked01sid", user_id=uid)
 
@@ -365,7 +365,7 @@ def test_locked_member_mutations_blocked_at_endpoints(client, make_user_key):
         "/captures/api/locked01cid/reprocess", headers=h,
     ).status_code == 409
     # Row untouched and still present.
-    row = cs.get_capture("locked01cid")
+    row = captures_store.get_capture("locked01cid")
     assert row is not None and row["status"] == "new"
 
 
@@ -374,11 +374,11 @@ def test_nonadmin_can_unlock_but_not_edit_a_locked_sample(client, make_user_key)
     be RELEASABLE by them — otherwise it is a one-way switch only an admin can
     undo. A non-admin may send the unlock and nothing else while locked."""
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     _insert_sample(conn, gs, "unlock01sid", locked=True, user_id=uid)
     h = bearer(raw)
 
@@ -414,11 +414,11 @@ def test_locked_member_view_does_not_rewrite_text(
     self-heal-rewrite the member's stored text: the lock freezes what was
     curated. An UNLOCKED member still self-heals on view (contrast case)."""
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     _insert_sample(conn, gs, "locked02sid", locked=True, user_id=uid)
     _insert_member(conn, "locked02cid", "locked02sid", user_id=uid)
     _insert_sample(conn, gs, "open0002sid", locked=False, user_id=uid)
@@ -432,14 +432,14 @@ def test_locked_member_view_does_not_rewrite_text(
     h = bearer(raw)
     # Locked member: the GET succeeds but the stored text stays frozen.
     assert client.get("/captures/api/locked02cid", headers=h).status_code == 200
-    assert cs.get_capture("locked02cid")["final"] == "f"
+    assert captures_store.get_capture("locked02cid")["final"] == "f"
     # Locked sample view (the _enrich_sample member loop): still frozen.
     assert client.get(
         "/captures/api/samples/locked02sid", headers=h).status_code == 200
-    assert cs.get_capture("locked02cid")["final"] == "f"
+    assert captures_store.get_capture("locked02cid")["final"] == "f"
     # Contrast: an unlocked member self-heals to the current pipeline output.
     assert client.get("/captures/api/open0002cid", headers=h).status_code == 200
-    assert cs.get_capture("open0002cid")["final"] == "REWRITTEN"
+    assert captures_store.get_capture("open0002cid")["final"] == "REWRITTEN"
 
 
 def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
@@ -447,12 +447,12 @@ def test_list_toolbar_counts_scoped_to_caller(client, make_user_key):
     only their OWN rows (the global cross-user breakdown must not leak);
     an admin keeps the global numbers. Pins the user_id= plumbing from the
     route into captures_store.count/counts_by_status."""
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     _uid_root, raw_root = make_user_key("root", is_admin=True)
     uid_a, raw_a = make_user_key("alice", pages={"captures": "own"})
     uid_b, _raw_b = make_user_key("bob", pages={"captures": "own"})
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     _insert_member(conn, "alicecap0001", None, user_id=uid_a)
     _insert_member(conn, "bobcap000001", None, user_id=uid_b)
     _insert_member(conn, "bobcap000002", None, user_id=uid_b)
@@ -485,11 +485,11 @@ def _insert_sample_at(conn, gs, sid, *, ts, user_id="alice"):
 
 def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key):
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     # Deliberately give two of them an IDENTICAL created_ts: samples merged in
     # one call share a timestamp, and a timestamp-only cursor drops whichever
     # ties land on a page boundary.
@@ -521,11 +521,11 @@ def test_samples_are_paged_and_the_cursor_walks_every_row(client, make_user_key)
 
 def test_last_page_reports_no_cursor(client, make_user_key):
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     for i in range(2):
         _insert_sample_at(conn, gs, f"exact{i}sid0000", ts=float(i), user_id=uid)
 
@@ -560,12 +560,12 @@ def test_by_request_id_audits_cross_user_read(client, make_user_key, caplog):
     cross-user read-by-key path with no log line — DSARs are answered from
     this log stream."""
     import logging
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     make_user_key("root", is_admin=True)
     uid_owner, _raw_owner = make_user_key("alice", pages={"captures": "own"})
     _uid_v, raw_viewer = make_user_key("viewer", pages={"captures": "all"})
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     _insert_capture_with_request(conn, "byreqcap0001", "req-xyz", uid_owner)
 
     with caplog.at_level(logging.INFO, logger="whisper-api"):
@@ -689,17 +689,17 @@ def _export_manifest(only_status="ready"):
     return [json.loads(line) for line in text.splitlines() if line]
 
 
-def _ready_capture(cs, monkeypatch, tmp_path, *, language, translations):
+def _ready_capture(captures_store, monkeypatch, tmp_path, *, language, translations):
     _fake_wav_transcode(monkeypatch)
     src = tmp_path / "src.bin"
     src.write_bytes(b"junk")
-    cid = cs.create_capture(
+    cid = captures_store.create_capture(
         audio_src_path=str(src), request_id="r1", model="small",
         language=language, audio_s=1.0, raw="r", final="quelle",
         words=[], segments=[], user_id="alice", translations=translations,
         translation_model="HY-MT", translation_source="cascade-mt",
     )
-    cs.update_capture(cid, {"status": "ready"})
+    captures_store.update_capture(cid, {"status": "ready"})
     return cid
 
 
@@ -732,11 +732,11 @@ def test_export_skips_translate_row_for_translate_task_capture(
     row (English text, source language, task=translate). A cascade-MT track
     on the same row would emit a second task=translate line with other text
     and another model for the same audio file."""
-    cs = captures_store_db
-    cid = _ready_capture(cs, monkeypatch, tmp_path,
+    captures_store = captures_store_db
+    cid = _ready_capture(captures_store, monkeypatch, tmp_path,
                          language="de", translations={"en": "other text"})
-    with cs._lock:
-        with cs._require_conn() as conn:
+    with captures_store._lock:
+        with captures_store._require_conn() as conn:
             conn.execute("UPDATE captures SET task = 'translate' WHERE id = ?",
                          (cid,))
     rows = _export_manifest()
@@ -792,11 +792,11 @@ def test_rebuild_lock_contextmanager_pins_and_unpins():
     assert sid not in cr._rebuild_locks
 
 
-def _grouped_capture(cs, monkeypatch, tmp_path, sid):
+def _grouped_capture(captures_store, monkeypatch, tmp_path, sid):
     """One ready capture packed into sample `sid`; returns the capture id."""
     from faster_whisper_backend.captures import routes as cr
 
-    cid = _ready_capture(cs, monkeypatch, tmp_path, language="de",
+    cid = _ready_capture(captures_store, monkeypatch, tmp_path, language="de",
                          translations=None)
     cr._insert_sample_with_sid(
         sid=sid, user_id="alice", member_ids=[cid], transcript="quelle",
@@ -847,8 +847,8 @@ def test_create_sample_rejects_member_already_grouped(
 
     from faster_whisper_backend.captures import routes as cr
 
-    cs = captures_store_db
-    cid = _grouped_capture(cs, monkeypatch, tmp_path, "b" * 32)
+    captures_store = captures_store_db
+    cid = _grouped_capture(captures_store, monkeypatch, tmp_path, "b" * 32)
     with pytest.raises(HTTPException) as ei:
         cr._insert_sample_with_sid(
             sid="c" * 32, user_id="alice", member_ids=[cid],
@@ -857,11 +857,11 @@ def test_create_sample_rejects_member_already_grouped(
             member_trims={},
         )
     assert ei.value.status_code == 409
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     ids = [r[0] for r in conn.execute(
         "SELECT id FROM capture_samples ORDER BY id").fetchall()]
     assert ids == ["b" * 32]
-    assert cs.get_capture(cid)["sample_id"] == "b" * 32
+    assert captures_store.get_capture(cid)["sample_id"] == "b" * 32
 
 
 def test_insert_sample_with_sid_holds_captures_lock(
@@ -873,9 +873,9 @@ def test_insert_sample_with_sid_holds_captures_lock(
     merge's ROLLBACK."""
     from faster_whisper_backend.captures import routes as cr
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
-    cid = _ready_capture(cs, monkeypatch, tmp_path, language="de",
+    cid = _ready_capture(captures_store, monkeypatch, tmp_path, language="de",
                          translations=None)
     real_conn = gs._require_conn()
     seen: dict[str, bool] = {}
@@ -883,7 +883,7 @@ def test_insert_sample_with_sid_holds_captures_lock(
     class _Conn:
         def execute(self, sql, *args, **kwargs):
             if str(sql).lstrip().upper().startswith("BEGIN"):
-                seen["captures_lock_held"] = cs._lock.locked()
+                seen["captures_lock_held"] = captures_store._lock.locked()
             return real_conn.execute(sql, *args, **kwargs)
 
         def __getattr__(self, name):
@@ -897,7 +897,7 @@ def test_insert_sample_with_sid_holds_captures_lock(
         duration_ms=1000, language="de", member_trims={},
     )
     assert seen == {"captures_lock_held": True}
-    assert cs.get_capture(cid)["sample_id"] == sid
+    assert captures_store.get_capture(cid)["sample_id"] == sid
 
 
 def test_list_samples_projects_chip_offsets_without_hydrating_words(
@@ -906,11 +906,11 @@ def test_list_samples_projects_chip_offsets_without_hydrating_words(
     get_members' word_count alone — no per-member get_capture (that was a
     full SELECT * + words JSON decode per member per page)."""
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     sid = "chipsid000000001"
     _insert_sample(conn, gs, sid, locked=False, user_id=uid)
     _insert_member(conn, "chipmember00", sid, user_id=uid)
@@ -926,7 +926,7 @@ def test_list_samples_projects_chip_offsets_without_hydrating_words(
          "chipmember01"))
 
     monkeypatch.setattr(
-        cs, "get_capture",
+        captures_store, "get_capture",
         lambda cid: pytest.fail("list path must not hydrate members"))
     body = client.get("/captures/api/samples", headers=bearer(raw)).json()
     groups = [g for g in body["samples"] if g["id"] == sid]
@@ -940,11 +940,11 @@ def test_list_samples_carries_what_the_filters_match_on(client, make_user_key):
     (they stayed on screen whatever was typed): a group has no model or
     request of its own. The list now projects both from its members."""
     from faster_whisper_backend.captures import samples_store as gs
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
     make_user_key("root", is_admin=True)
     uid, raw = make_user_key("alice", pages={"captures": "own"})
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     sid = "filtersid0000001"
     _insert_sample(conn, gs, sid, locked=False, user_id=uid)
     _insert_member(conn, "filtmember00", sid, user_id=uid)
@@ -976,15 +976,15 @@ def test_audio_original_switch_serves_the_untrimmed_file(client):
     """The default is the trimmed WAV (what the player + export use);
     `?original=1` serves the utterance the decode received. Both are reachable
     for a capture of ANY status — Export ready only covers `ready` rows."""
-    from faster_whisper_backend.captures import store as cs
+    from faster_whisper_backend.captures import store as captures_store
 
-    conn = cs._require_conn()
+    conn = captures_store._require_conn()
     cid = "origaudio001"
     _insert_member(conn, cid, None)
     rel = os.path.join(cid[0:2], cid[2:4], f"{cid}.wav")
     trel = os.path.join(cid[0:2], cid[2:4], f"{cid}.trim.wav")
     for r, payload in ((rel, b"RIFF....WAVEoriginal"), (trel, b"RIFF....WAVEtrimmed")):
-        path = cs.abs_audio_path(r)
+        path = captures_store.abs_audio_path(r)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "wb") as fh:
             fh.write(payload)

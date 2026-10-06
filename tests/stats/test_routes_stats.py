@@ -1,6 +1,5 @@
 """Integration tests for the /stats router (host-gated dashboard)."""
 
-import json
 import pathlib
 
 from starlette.testclient import TestClient

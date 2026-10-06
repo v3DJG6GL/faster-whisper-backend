@@ -45,6 +45,7 @@ import urllib.request
 
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.core import net_policy
+from faster_whisper_backend.core import proc as core_proc
 from faster_whisper_backend.core.store_common import log_safe
 from faster_whisper_backend.paths import REPO_ROOT
 
@@ -1336,21 +1337,8 @@ async def _run_yt_dlp(
             if len(stderr_tail) > _STDERR_TAIL_MAX:
                 del stderr_tail[:len(stderr_tail) - _STDERR_TAIL_MAX]
 
-    async def _kill(grace: float = 5.0) -> None:
-        if proc.returncode is not None:
-            return
-        try:
-            proc.terminate()
-        except ProcessLookupError:
-            return
-        try:
-            await asyncio.wait_for(proc.wait(), grace)
-        except asyncio.TimeoutError:
-            try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
+    async def _kill() -> None:
+        await core_proc.terminate_then_kill(proc)
 
     # yt-dlp prints one `dl:` series per file it fetches (a merge = video
     # then audio, each restarting at 0). `completed` carries the finished

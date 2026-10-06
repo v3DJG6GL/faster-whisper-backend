@@ -4,10 +4,6 @@ Covers config_store.load_factory_rules / save_factory_rules: validation,
 round-trip, the `note` field, the terminal-rule invariant, and the
 fail-fast behaviour on a missing/corrupt file.
 
-Runnable two ways:
-    pytest test_factory_rules.py
-    python  test_factory_rules.py        (no pytest needed)
-
 Only depends on pydantic (same as config_store) — not the full app stack.
 """
 
@@ -333,20 +329,3 @@ def test_dictated_punctuation_wins_over_whisper_punctuation():
     custom = _factory_map_sub({"Komma": ",", "Komma Strich": "x"})
     assert custom("a. Komma Strich") == "a. x"
     assert custom("a. Komma") == "a,"
-
-
-if __name__ == "__main__":
-    tests = sorted(
-        (name, obj) for name, obj in globals().items()
-        if name.startswith("test_") and callable(obj)
-    )
-    failed = 0
-    for name, fn in tests:
-        try:
-            fn()
-            print(f"  PASS  {name}")
-        except Exception as e:
-            failed += 1
-            print(f"  FAIL  {name}: {type(e).__name__}: {e}")
-    print(f"\n{len(tests) - failed}/{len(tests)} passed")
-    raise SystemExit(1 if failed else 0)

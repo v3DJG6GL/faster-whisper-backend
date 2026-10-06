@@ -16,7 +16,7 @@ from tests.conftest import bearer
 
 
 # --------------------------------------------------------------------------
-# Helpers (mirror tests/test_routes_quick_config.py)
+# Helpers (mirror test_routes_quick_config.py)
 # --------------------------------------------------------------------------
 
 def _expose_first_regex_list_rule(app_module):

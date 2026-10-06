@@ -4031,7 +4031,7 @@ def _render_page_cached(
     very response), so an unauthenticated caller can drive both the CPU and the
     ~270 KB of egress at will.
 
-    The key is exhaustive by construction. All 20 placeholders were traced:
+    The key is exhaustive by construction. All 24 placeholders were traced:
     14 substitute module-level constants; {{SEV_PILLS}} hardcodes n = 0 by
     design (see sev_pills_html); {{HEADER_VTAG}} is computed once at import;
     {{NAV}} varies only on `current` plus cfg.ADMIN_UI_ENABLED; the rest vary

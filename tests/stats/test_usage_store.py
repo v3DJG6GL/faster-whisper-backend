@@ -104,7 +104,7 @@ def test_leaderboard_invalid_metric_falls_back(usage_store_db):
     rows = us.leaderboard(metric="words); DROP TABLE usage_hourly;--")
     assert rows and rows[0]["user_id"] == "u"
     # Table survived the injection attempt.
-    assert not us.is_empty()
+    assert not _is_empty(us)
 
 
 def test_leaderboard_by_key_vs_user(usage_store_db):
@@ -116,21 +116,26 @@ def test_leaderboard_by_key_vs_user(usage_store_db):
 
 
 # ---------------------------------------------------------------------------
-# prune / is_empty
+# prune
 # ---------------------------------------------------------------------------
 
-def test_is_empty(usage_store_db):
+def _is_empty(us) -> bool:
+    return us._require_conn().execute(
+        "SELECT 1 FROM usage_hourly LIMIT 1").fetchone() is None
+
+
+def test_record_usage_fills_the_hourly_table(usage_store_db):
     us = usage_store_db
-    assert us.is_empty() is True
+    assert _is_empty(us)
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=1)
-    assert us.is_empty() is False
+    assert not _is_empty(us)
 
 
 def test_prune_noop_when_non_positive(usage_store_db):
     us = usage_store_db
     us.record_usage(key_id="k", user_id="u", audio_s=1.0, words=1, status="ok", hour=1)
     assert us.prune(retention_days=0) == 0
-    assert not us.is_empty()
+    assert not _is_empty(us)
 
 
 def test_prune_drops_old(usage_store_db):

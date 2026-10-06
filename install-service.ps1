@@ -353,7 +353,8 @@ def restore_quantized_state(*args, **kwargs):
 # binary nor Gyan's default static build ship. Provisioning order: shared
 # ffmpeg already on PATH -> repo-local copy from an earlier run -> winget ->
 # pinned BtbN shared zip extracted to <repo>\ffmpeg (hash-verified like
-# WinSW; main.py prepends ffmpeg\bin to the service PATH at startup).
+# WinSW; faster_whisper_backend/main.py prepends ffmpeg\bin to the service
+# PATH at startup).
 function Test-FfmpegShared($cmd) {
     # Shared builds ship avutil-*.dll next to ffmpeg.exe; static builds don't.
     return [bool]($cmd -and (Get-ChildItem -Path (Split-Path $cmd.Source) -Filter "avutil-*.dll" -ErrorAction SilentlyContinue))

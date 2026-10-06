@@ -11,22 +11,17 @@ Covers:
 Silero VAD isn't installed in CI, so the planner tests inject a deterministic
 fake `faster_whisper.vad` that treats any non-zero PCM as speech. The
 route-layer tests are skipped unless fastapi (the full app stack) is present.
-
-Runnable two ways:
-    pytest test_group_trim.py
-    python  test_group_trim.py
 """
 
 import sys
 import tempfile
-import types
 import wave
 
-import numpy as np
 import pytest
 
 from faster_whisper_backend.audio import merge as audio_merge
 from faster_whisper_backend.audio import vad_trim as audio_vad_trim
+from tests.conftest import _pcm_from_spec as _pcm
 
 RATE = 16000
 
@@ -34,48 +29,6 @@ RATE = 16000
 # --------------------------------------------------------------------------
 # Helpers
 # --------------------------------------------------------------------------
-
-def _pcm(spec):
-    """Build int16 PCM from [(kind, ms), ...] where kind is 'sil' or 'speech'.
-    Returns (pcm_bytes, n_samples)."""
-    parts = []
-    for kind, ms in spec:
-        n = int(ms * RATE / 1000)
-        val = 0 if kind == "sil" else 4000
-        parts.append(np.full(n, val, dtype=np.int16))
-    a = np.concatenate(parts) if parts else np.zeros(0, dtype=np.int16)
-    return a.tobytes(), len(a)
-
-
-def _install_fake_vad(monkeypatch):
-    """Inject a faster_whisper.vad whose get_speech_timestamps marks every
-    contiguous non-zero run as a speech segment."""
-    def get_speech_timestamps(audio, opts, sampling_rate=RATE):
-        # Vectorized contiguous non-zero runs (kept fast for multi-second clips).
-        nz = np.abs(audio) > 1e-6
-        if not nz.any():
-            return []
-        d = np.diff(nz.astype(np.int8))
-        starts = list(np.where(d == 1)[0] + 1)
-        ends = list(np.where(d == -1)[0] + 1)
-        if nz[0]:
-            starts = [0] + starts
-        if nz[-1]:
-            ends = ends + [len(audio)]
-        return [{"start": int(s), "end": int(e)} for s, e in zip(starts, ends)]
-
-    class VadOptions:
-        def __init__(self, **kw):
-            self.__dict__.update(kw)
-
-    pkg = types.ModuleType("faster_whisper")
-    vad = types.ModuleType("faster_whisper.vad")
-    vad.VadOptions = VadOptions
-    vad.get_speech_timestamps = get_speech_timestamps
-    pkg.vad = vad
-    monkeypatch.setitem(sys.modules, "faster_whisper", pkg)
-    monkeypatch.setitem(sys.modules, "faster_whisper.vad", vad)
-
 
 def _write_wav(path, pcm):
     with wave.open(path, "wb") as w:
@@ -89,8 +42,7 @@ def _write_wav(path, pcm):
 # trim_pcm_for_merge
 # --------------------------------------------------------------------------
 
-def test_trim_collapses_internal_gap_and_edges(monkeypatch):
-    _install_fake_vad(monkeypatch)
+def test_trim_collapses_internal_gap_and_edges(monkeypatch, fake_vad):
     # 200ms sil | 300ms speech | 1000ms sil (internal) | 300ms speech | 200ms sil
     pcm, n = _pcm([
         ("sil", 200), ("speech", 300), ("sil", 1000),
@@ -116,8 +68,7 @@ def test_trim_collapses_internal_gap_and_edges(monkeypatch):
     assert res["new_n_samples"] < n
 
 
-def test_trim_no_speech_is_identity(monkeypatch):
-    _install_fake_vad(monkeypatch)
+def test_trim_no_speech_is_identity(monkeypatch, fake_vad):
     pcm, n = _pcm([("sil", 500)])
     res = audio_vad_trim.trim_pcm_for_merge(pcm, n)
     assert res["trimmed"] is False
@@ -125,8 +76,7 @@ def test_trim_no_speech_is_identity(monkeypatch):
     assert res["segments"] == [[0, 500, 0]]
 
 
-def test_trim_all_speech_is_noop(monkeypatch):
-    _install_fake_vad(monkeypatch)
+def test_trim_all_speech_is_noop(monkeypatch, fake_vad):
     pcm, n = _pcm([("speech", 500)])
     res = audio_vad_trim.trim_pcm_for_merge(pcm, n, edge_pad_ms=50)
     # Nothing meaningful to cut (pad covers the whole clip) → identity.
@@ -147,8 +97,7 @@ def test_trim_unavailable_vad_is_identity(monkeypatch):
 # merge_wavs
 # --------------------------------------------------------------------------
 
-def test_merge_trims_each_member(monkeypatch):
-    _install_fake_vad(monkeypatch)
+def test_merge_trims_each_member(monkeypatch, fake_vad):
     m1, _ = _pcm([("sil", 200), ("speech", 300), ("sil", 200)])
     m2, _ = _pcm([("sil", 300), ("speech", 300), ("sil", 100)])
     with tempfile.TemporaryDirectory() as d:
@@ -171,11 +120,10 @@ def test_merge_trims_each_member(monkeypatch):
     assert res["members"][1]["offset_ms"] == 650
 
 
-def test_merge_accepts_raw_over_cap_when_trimmed_fits(monkeypatch):
+def test_merge_accepts_raw_over_cap_when_trimmed_fits(monkeypatch, fake_vad):
     # Two members of ~15 s raw each (mostly silence) → raw sum ~30 s exceeds the
     # 28 s cap, but each trims to ~13 s so the merged WAV (~26.5 s) fits. This is
     # exactly the proposer/batch case that used to be rejected by the raw cap.
-    _install_fake_vad(monkeypatch)
     m1, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
     m2, _ = _pcm([("sil", 1000), ("speech", 13000), ("sil", 1000)])
     with tempfile.TemporaryDirectory() as d:
@@ -350,8 +298,7 @@ def test_build_merged_words_legacy(monkeypatch):
 # Proposer trimmed durations + caching
 # --------------------------------------------------------------------------
 
-def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path):
-    _install_fake_vad(monkeypatch)
+def test_proposer_trimmed_duration_and_caching(monkeypatch, tmp_path, fake_vad):
     from faster_whisper_backend.captures import merge_proposer as P
     from faster_whisper_backend.captures import store as captures_store
 
@@ -401,7 +348,3 @@ def test_build_proposal_uses_trimmed_durations():
     assert prop["member_previews"][1]["duration_s"] == 1.0
     # total = trimmed sum (2.2) + one 0.3s gap.
     assert abs(prop["total_duration_s"] - 2.5) < 1e-6
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q"]))

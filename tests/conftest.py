@@ -15,6 +15,13 @@ file provides:
 
 Everything here only depends on the base requirements (which CI installs in
 full), so all fixtures are usable on every matrix leg.
+
+Where a test file goes: the tree mirrors the package. A test lives in
+tests/<sub-package>/ for the module whose code it exercises (an HTTP test
+goes with the package that DEFINES the route), tests/main/ covers
+faster_whisper_backend/main.py, and repo-meta checks (CI workflows,
+installers, ignore files) sit at the tests/ root. Name a file after its
+module: test_<module>.py, test_routes_<area>.py for HTTP tests.
 """
 
 from __future__ import annotations
@@ -26,7 +33,7 @@ import sys
 import time
 import types
 import wave
-from typing import Any, Callable
+from typing import Any
 
 import numpy as np
 import pytest
@@ -360,15 +367,9 @@ def _pcm_from_spec(spec):
 
 
 @pytest.fixture
-def pcm_spec():
-    """Expose the PCM builder so tests can assemble silence/speech timelines."""
-    return _pcm_from_spec
-
-
-@pytest.fixture
 def fake_vad(monkeypatch):
     """Install a deterministic faster_whisper.vad: every contiguous non-zero
-    run is one speech segment. Mirrors test_group_trim._install_fake_vad."""
+    run is one speech segment."""
     def get_speech_timestamps(audio, opts, sampling_rate=RATE):
         nz = np.abs(audio) > 1e-6
         if not nz.any():

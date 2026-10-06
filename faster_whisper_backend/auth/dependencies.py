@@ -336,14 +336,17 @@ def require_page(name: str):
     """Dependency factory: 403 if the user has no access to the named
     page. Admins bypass via Permissions.can(). Mount on the APIRouter
     constructor so every present + future sub-route inherits the check
-    — closes the "forgot to gate this endpoint" hole.
+    — closes the "forgot to gate this endpoint" hole — but ONLY when no
+    route of that router is a navigable HTML page: a browser navigation
+    carries no bearer, so a router-level gate would 401 the page itself
+    (captures/routes.py gates per route for exactly that reason).
 
-    Usage:
+    Usage (an API-only router):
         router = APIRouter(
-            prefix="/captures",
+            prefix="/v1/example",
             dependencies=[
                 Depends(require_user_webui_host),
-                Depends(require_page("captures")),
+                Depends(require_page("example")),
             ],
         )
     """

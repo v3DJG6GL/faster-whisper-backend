@@ -18,8 +18,9 @@ client cannot inflate its own word counts through it.
 Security model:
   - User-tier bearer auth ONLY: Depends(get_current_user). No require_page
     gate (outcomes belong to the key that dictated, not to a WebUI page) and
-    no host allowlist, for the same reason /v1/usage and the settings sync
-    have none: remote desktop clients must reach it.
+    no host allowlist, for the same reason the settings sync has neither
+    and /v1/usage has no host allowlist (it does keep the quick_config page
+    gate): remote desktop clients must reach it.
   - Strictly self-scoped: an outcome only ever attaches to a job the caller
     owns. Someone else's job id reads as `duplicate` — the same answer as a
     re-send, so the endpoint confirms nothing about other users' sessions.

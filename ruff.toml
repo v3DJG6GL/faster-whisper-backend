@@ -1,0 +1,21 @@
+# Lint config — enforced in CI (`ruff check .`, Linux test leg).
+#
+# Enforced: ruff's default set (pyflakes F: unused / undefined names,
+# E4/E7/E9: import placement, statement and syntax errors), minus the style
+# codes this codebase deliberately uses:
+#   E402  main.py configures logging and the Windows DLL / ffmpeg preload
+#         before importing the heavy modules (the order is load-bearing)
+#   E701/E702  compact one-line `if x: return` / `a = 1; b = 2` forms
+#   E731  named lambdas used as small local key / predicate functions
+#   E741  `l` / `I` loop names in the parsing helpers
+#
+# The `# noqa: BLE001 / PLC0415 / N802` markers in the code are review-time
+# annotations (broad except on purpose, lazy import on purpose — the package
+# breaks its documented import cycles that way). They are not enforced here;
+# audit them on demand with `ruff check --select BLE001,PLC0415 .`.
+target-version = "py312"
+extend-exclude = ["venv"]
+
+[lint]
+select = ["E4", "E7", "E9", "F"]
+ignore = ["E402", "E701", "E702", "E731", "E741"]

@@ -1,7 +1,6 @@
 """stats_sampler: the 1 Hz busy ring, the sampled machine history and its
 flush / prune, and the loop's off-thread contract."""
 
-import asyncio
 import inspect
 
 import pytest

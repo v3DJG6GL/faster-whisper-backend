@@ -10,28 +10,28 @@ from faster_whisper_backend.stats import metrics
 
 
 # ---------------------------------------------------------------------------
-# _quantile (pure, nearest-rank)
+# quantile (pure, nearest-rank)
 # ---------------------------------------------------------------------------
 
 def test_quantile_empty_is_zero():
-    assert metrics._quantile([], 0.5) == 0.0
+    assert metrics.quantile([], 0.5) == 0.0
 
 
 def test_quantile_single_element():
-    assert metrics._quantile([7.0], 0.99) == 7.0
+    assert metrics.quantile([7.0], 0.99) == 7.0
 
 
 def test_quantile_p50_p95_p99():
     vals = [float(i) for i in range(1, 101)]  # 1..100 sorted
     # Nearest rank: p50 lands on 51 (round(49.5) banker's-rounds to 50).
-    assert metrics._quantile(vals, 0.50) == 51.0
-    assert metrics._quantile(vals, 0.95) == 95.0
-    assert metrics._quantile(vals, 0.99) == 99.0
+    assert metrics.quantile(vals, 0.50) == 51.0
+    assert metrics.quantile(vals, 0.95) == 95.0
+    assert metrics.quantile(vals, 0.99) == 99.0
 
 
 def test_quantile_clamps_index():
-    assert metrics._quantile([1.0, 2.0], 1.0) == 2.0
-    assert metrics._quantile([1.0, 2.0], 0.0) == 1.0
+    assert metrics.quantile([1.0, 2.0], 1.0) == 2.0
+    assert metrics.quantile([1.0, 2.0], 0.0) == 1.0
 
 
 # ---------------------------------------------------------------------------

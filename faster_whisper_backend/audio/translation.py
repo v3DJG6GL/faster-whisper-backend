@@ -45,6 +45,7 @@ from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 
 from faster_whisper_backend import config as cfg
+from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.core.languages import (
     canonical_code, language_codes, language_name, lookup)
@@ -453,22 +454,6 @@ def render_prompt(text: str, target: str, *, source: "str | None" = None,
 # Model loading / LRU cache
 # =============================================================================
 
-def _hf_cache_dir() -> "str | None":
-    """The hub cache directory to pass EXPLICITLY to every hub download.
-    huggingface_hub freezes HF_HUB_CACHE from the environment at import
-    time, long before a translation job runs, so the HF_HOME setdefault in
-    _load_blocking alone cannot redirect the multi-GB GGUF; a set HF_HOME
-    always wins, else <DOWNLOAD_ROOT>/hf/hub (the layout model_sizes
-    reads), else None (the hub's own default)."""
-    hf_home = os.environ.get("HF_HOME")
-    if hf_home:
-        return os.path.join(hf_home, "hub")
-    download_root = getattr(cfg, "DOWNLOAD_ROOT", None)
-    if download_root:
-        return os.path.join(download_root, "hf", "hub")
-    return None
-
-
 def _load_blocking(ref: str, device: str, family: str, download_cb=None):
     """Import llama_cpp and load the GGUF model. Runs in the default
     executor. ``download_cb(done_bytes, total_bytes)`` (optional) receives
@@ -552,7 +537,7 @@ def _load_blocking_inner(ref: str, device: str, family: str,
         return llama_cpp.Llama.from_pretrained(
             repo_id=repo,
             filename=(f"*{quant}.gguf" if quant else "*.gguf"),
-            cache_dir=_hf_cache_dir(),
+            cache_dir=hf_cache.hub_cache_dir(),
             n_gpu_layers=(-1 if device == "cuda" else 0),
             n_ctx=_ctx_for(family),
             verbose=False,
@@ -615,7 +600,7 @@ def _predownload_gguf(repo: str, quant: "str | None",
     try:
         with download_progress.capture(label, cb=_hook) as cap:
             return hf_hub_download(repo_id=repo, filename=matches[0],
-                                   cache_dir=_hf_cache_dir(),
+                                   cache_dir=hf_cache.hub_cache_dir(),
                                    **cap.tqdm_kwargs)
     finally:
         jobs.job_end(job_id)
@@ -632,7 +617,7 @@ def _cached_gguf(repo: str, quant: "str | None") -> "str | None":
 
     pattern = (f"*{quant}.gguf" if quant else "*.gguf").lower()
     try:
-        info = scan_cache_dir(cache_dir=_hf_cache_dir())
+        info = scan_cache_dir(cache_dir=hf_cache.hub_cache_dir())
     except CacheNotFound:
         return None
     # Keyed by file name so the same file across revisions counts once.

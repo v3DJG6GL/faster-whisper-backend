@@ -3,7 +3,6 @@ behaviour itself was exercised in headless Chromium when it was written:
 all five sync dialogs against a local list holding an edited rule, a
 not-edited-but-outdated rule and a missing config.json rule, no JS errors.
 """
-import pytest
 
 from faster_whisper_backend import config_store as cs
 

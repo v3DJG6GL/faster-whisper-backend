@@ -84,6 +84,7 @@ def _proposer_pool() -> "concurrent.futures.ThreadPoolExecutor":
 
 
 router = APIRouter(
+    prefix="/captures",
     dependencies=[Depends(require_user_webui_host)],
 )
 
@@ -212,7 +213,7 @@ class ClearIn(BaseModel):
 # ---------------------------------------------------------------------
 
 @router.get(
-    "/captures",
+    "",
     response_class=HTMLResponse,
 )
 async def captures_page() -> HTMLResponse:
@@ -257,7 +258,7 @@ def _effective_owner_filter(
 
 
 @router.get(
-    "/captures/api/list",
+    "/api/list",
     dependencies=[Depends(require_page("captures"))],
 )
 async def list_captures_api(
@@ -307,7 +308,7 @@ async def list_captures_api(
 
 
 @router.get(
-    "/captures/api/stats",
+    "/api/stats",
     dependencies=[Depends(require_page("captures"))],
 )
 async def captures_stats_api(
@@ -351,7 +352,7 @@ async def captures_stats_api(
 
 
 @router.get(
-    "/captures/api/propose-merges",
+    "/api/propose-merges",
     dependencies=[Depends(require_page("captures"))],
 )
 async def propose_merges_api(
@@ -421,7 +422,7 @@ async def propose_merges_api(
 
 
 @router.get(
-    "/captures/api/by-request/{request_id}",
+    "/api/by-request/{request_id}",
     dependencies=[Depends(require_page("captures"))],
 )
 async def by_request_id_api(
@@ -457,7 +458,7 @@ async def by_request_id_api(
 # /captures/api/samples with cid="samples" (which silently 404s the
 # group-list fetch and hides newly created groups from the UI).
 @router.get(
-    "/captures/api/export",
+    "/api/export",
     dependencies=[
         Depends(require_page("captures")),
         Depends(require_admin),
@@ -481,7 +482,7 @@ async def export_captures_api(
 
 
 @router.get(
-    "/captures/api/samples",
+    "/api/samples",
     dependencies=[Depends(require_page("captures"))],
 )
 async def list_samples_api(
@@ -565,7 +566,7 @@ async def list_samples_api(
 
 
 @router.get(
-    "/captures/api/{cid}",
+    "/api/{cid}",
     dependencies=[Depends(require_page("captures"))],
 )
 async def get_capture_api(
@@ -649,7 +650,7 @@ def _sniff_audio_mime(abs_path: str, fallback_ext: str) -> str:
 
 
 @router.get(
-    "/captures/api/{cid}/audio",
+    "/api/{cid}/audio",
     dependencies=[Depends(require_page("captures"))],
 )
 async def get_audio_api(
@@ -753,7 +754,7 @@ def _bulk_guard(
 
 
 @router.patch(
-    "/captures/api/bulk",
+    "/api/bulk",
     dependencies=[Depends(require_page("captures"))],
 )
 async def bulk_status_api(
@@ -789,7 +790,7 @@ async def bulk_status_api(
 
 
 @router.post(
-    "/captures/api/bulk-delete",
+    "/api/bulk-delete",
     dependencies=[Depends(require_page("captures"))],
 )
 async def bulk_delete_api(
@@ -812,7 +813,7 @@ async def bulk_delete_api(
 
 
 @router.patch(
-    "/captures/api/{cid}",
+    "/api/{cid}",
     dependencies=[Depends(require_page("captures"))],
 )
 async def patch_capture_api(
@@ -862,7 +863,7 @@ async def patch_capture_api(
 
 
 @router.delete(
-    "/captures/api/{cid}",
+    "/api/{cid}",
     dependencies=[Depends(require_page("captures"))],
 )
 async def delete_capture_api(
@@ -887,7 +888,7 @@ async def delete_capture_api(
 
 
 @router.post(
-    "/captures/api/clear",
+    "/api/clear",
     dependencies=[
         Depends(require_page("captures")),
         Depends(require_admin),
@@ -912,7 +913,7 @@ async def clear_captures_api(payload: ClearIn, request: Request) -> JSONResponse
 # ---------------------------------------------------------------------
 
 @router.post(
-    "/captures/api/{cid}/reprocess",
+    "/api/{cid}/reprocess",
     dependencies=[Depends(require_page("captures"))],
 )
 async def reprocess_capture_api(
@@ -985,7 +986,7 @@ async def reprocess_capture_api(
 
 
 @router.post(
-    "/captures/api/reprocess-all",
+    "/api/reprocess-all",
     dependencies=[
         Depends(require_page("captures")),
         Depends(require_admin),
@@ -1003,7 +1004,7 @@ async def reprocess_all_captures_api() -> JSONResponse:
 
 
 @router.get(
-    "/captures/api/reprocess-all/status",
+    "/api/reprocess-all/status",
     dependencies=[Depends(require_page("captures")), Depends(require_admin)],
 )
 async def reprocess_all_status_api() -> JSONResponse:
@@ -1014,7 +1015,7 @@ async def reprocess_all_status_api() -> JSONResponse:
 
 
 @router.post(
-    "/captures/api/reprocess-vad",
+    "/api/reprocess-vad",
     dependencies=[Depends(require_page("captures")), Depends(require_admin)],
 )
 async def reprocess_vad_api() -> JSONResponse:
@@ -1028,7 +1029,7 @@ async def reprocess_vad_api() -> JSONResponse:
 
 
 @router.get(
-    "/captures/api/reprocess-vad/status",
+    "/api/reprocess-vad/status",
     dependencies=[Depends(require_page("captures")), Depends(require_admin)],
 )
 async def reprocess_vad_status_api() -> JSONResponse:
@@ -1466,7 +1467,7 @@ def _preview_member_trims(
 
 
 @router.post(
-    "/captures/api/samples",
+    "/api/samples",
     dependencies=[Depends(require_page("captures"))],
 )
 async def create_sample_api(
@@ -1545,7 +1546,7 @@ async def create_sample_api(
 
 
 @router.post(
-    "/captures/api/samples/preview-audio",
+    "/api/samples/preview-audio",
     dependencies=[Depends(require_page("captures"))],
 )
 async def preview_merge_audio_api(
@@ -1619,7 +1620,7 @@ async def preview_merge_audio_api(
 
 
 @router.post(
-    "/captures/api/samples/preview-words",
+    "/api/samples/preview-words",
     dependencies=[Depends(require_page("captures"))],
 )
 async def preview_merge_words_api(
@@ -1663,7 +1664,7 @@ async def preview_merge_words_api(
 
 
 @router.post(
-    "/captures/api/samples/merge-estimate",
+    "/api/samples/merge-estimate",
     dependencies=[Depends(require_page("captures"))],
 )
 async def merge_estimate_api(
@@ -1704,7 +1705,7 @@ async def merge_estimate_api(
 
 
 @router.post(
-    "/captures/api/samples/preview-save-chips",
+    "/api/samples/preview-save-chips",
     dependencies=[Depends(require_page("captures"))],
 )
 async def preview_save_chips_api(
@@ -1825,7 +1826,7 @@ def _insert_sample_with_sid(
 
 
 @router.get(
-    "/captures/api/samples/{sid}",
+    "/api/samples/{sid}",
     dependencies=[Depends(require_page("captures"))],
 )
 async def get_sample_api(
@@ -2494,7 +2495,7 @@ def _build_merged_words(
 
 
 @router.patch(
-    "/captures/api/samples/{sid}",
+    "/api/samples/{sid}",
     dependencies=[Depends(require_page("captures"))],
 )
 async def patch_sample_api(
@@ -2593,7 +2594,7 @@ async def patch_sample_api(
 
 
 @router.post(
-    "/captures/api/samples/{sid}/regenerate",
+    "/api/samples/{sid}/regenerate",
     dependencies=[Depends(require_page("captures"))],
 )
 async def regenerate_sample_api(
@@ -2640,7 +2641,7 @@ async def regenerate_sample_api(
 
 
 @router.delete(
-    "/captures/api/samples/{sid}",
+    "/api/samples/{sid}",
     dependencies=[Depends(require_page("captures"))],
 )
 async def dissolve_sample_api(
@@ -2785,7 +2786,7 @@ def _ensure_sample_wav(g: dict[str, Any]) -> str:
 
 
 @router.get(
-    "/captures/api/samples/{sid}/audio",
+    "/api/samples/{sid}/audio",
     dependencies=[Depends(require_page("captures"))],
 )
 async def get_sample_audio_api(

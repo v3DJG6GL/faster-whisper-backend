@@ -1,8 +1,8 @@
 """Helpers shared by the streaming test modules (PCM frames + WebSocket drain).
 
-Kept out of conftest.py so the fixture file stays about fixtures; import with
-the same style the module already uses for conftest (``from _streaming_helpers
-import ...`` or ``from tests._streaming_helpers import ...``).
+Kept out of conftest.py so the fixture file stays about fixtures; import as
+``from tests._streaming_helpers import ...`` (tests/ is a package and
+pytest.ini puts the repo root on sys.path).
 """
 
 import numpy as np

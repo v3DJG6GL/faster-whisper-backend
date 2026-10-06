@@ -161,6 +161,11 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
+      # Lint (config in ruff.toml): unused / undefined names and syntax-level
+      # errors. Cheap, so every Linux leg runs it.
+      - name: Lint (ruff)
+        run: ruff check .
+
       # Coverage is gated: the suite must exercise at least this percent of
       # the application modules, so coverage can only ratchet upward. A
       # shortfall fails this leg, which fails the `all-ci` gate below, which

@@ -49,7 +49,7 @@ log = logging.getLogger(__name__)
 from faster_whisper_backend.auth.dependencies import require_page
 from faster_whisper_backend.paths import REPO_ROOT
 
-router = APIRouter()
+router = APIRouter(prefix="/stats")
 
 _require_stats_host = web_common.require_user_webui_host
 
@@ -259,7 +259,7 @@ def _rescope_on_version_change(request: Request, seen_version: int
 
 
 @router.get(
-    "/stats",
+    "",
     response_class=HTMLResponse,
     # HTML page is host-only — the bearer isn't available on initial
     # navigation. API endpoints below gate by `require_page("stats")`;
@@ -280,7 +280,7 @@ async def stats_page() -> HTMLResponse:
 
 
 @router.get(
-    "/stats/snapshot",
+    "/snapshot",
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_snapshot(
@@ -380,7 +380,7 @@ def _opaque_key_label(key_id: str) -> str:
 
 
 @router.get(
-    "/stats/usage",
+    "/usage",
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_usage(
@@ -501,7 +501,7 @@ async def stats_usage(
 
 
 @router.get(
-    "/stats/pick",
+    "/pick",
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_pick(
@@ -577,7 +577,7 @@ JOB_STATUSES: frozenset[str] = frozenset(("ok", "error", "cancelled", "failed"))
 
 
 @router.get(
-    "/stats/jobs",
+    "/jobs",
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_jobs(
@@ -644,7 +644,7 @@ async def stats_jobs(
 
 
 @router.get(
-    "/stats/tail",
+    "/tail",
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_tail(
@@ -710,7 +710,7 @@ async def stats_tail(
 
 
 @router.get(
-    "/stats/history",
+    "/history",
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_history(
@@ -756,7 +756,7 @@ async def stats_history(
 
 
 @router.get(
-    "/stats/stream",
+    "/stream",
     dependencies=[Depends(_require_stats_host)],
 )
 async def stats_stream(

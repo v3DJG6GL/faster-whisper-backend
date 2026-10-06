@@ -254,8 +254,8 @@ PIPELINE_RULES: list[dict] = _D("PIPELINE_RULES")
 # Logging
 # =============================================================================
 
-# Default log file path lives next to this file in logs/. Changing it doesn't
-# require the directory to exist; main.py creates it at startup.
+# Default log file: {DATA_DIR}/logs/whisper.log (config.json). Changing it
+# doesn't require the directory to exist; main.py creates it at startup.
 LOG_FILE = _D("LOG_FILE")
 
 # Rotation: 10 MB per file, keep 10 historical files (~100 MB max).
@@ -1136,8 +1136,9 @@ USAGE_UNREPORTED_AFTER_H = _D("USAGE_UNREPORTED_AFTER_H")
 API_KEYS_DB = _D("API_KEYS_DB")
 
 # Durable browser-session store (SQLite, WAL). Maps an opaque session token
-# to a user_id (+ per-session CSRF token + sliding expiry). Sits next to
-# config.local.json; .gitignore matches the *.local.sqlite3* triple.
+# to a user_id (+ per-session CSRF token + sliding expiry). Defaults to
+# {DB_DIR}/sessions.local.sqlite3; .gitignore matches the *.local.sqlite3*
+# triple wherever it lands inside the checkout.
 SESSIONS_DB = _D("SESSIONS_DB")
 
 # If set, on startup we insert (or no-op) a user named `bootstrap-admin`

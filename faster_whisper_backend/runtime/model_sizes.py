@@ -28,6 +28,7 @@ import time
 # behind gpu_mem_free_bytes() returning None.
 import psutil
 
+from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.runtime import system_stats
 from faster_whisper_backend.paths import REPO_ROOT
 
@@ -272,18 +273,14 @@ def _model_path(name: str) -> "str | None":
         # so a default install (no DOWNLOAD_ROOT) is still sizeable.
         return os.path.join(root or tempfile.gettempdir(), "audio-separator",
                             model)
-    # Same default as system_stats._build_host: no HF_HOME and no
-    # DOWNLOAD_ROOT means the hub's standard cache, ~/.cache/huggingface.
-    hf_home = os.environ.get("HF_HOME") or (
-        os.path.join(root, "hf") if root
-        else os.path.expanduser("~/.cache/huggingface"))
-    if not hf_home:
-        return None
+    # Where translation / diarization downloads land (hf_cache owns the
+    # precedence: HF_HOME, else <DOWNLOAD_ROOT>/hf, else the hub default).
+    hub = hf_cache.hub_lookup_dir()
     if name.startswith("gguf:"):
         repo = name[5:].split(":", 1)[0]
-        return _hf_repo_dir(hf_home, repo)
+        return _hf_repo_dir(hub, repo)
     if name.startswith("pyannote:"):
-        return _hf_repo_dir(hf_home, name[9:])
+        return _hf_repo_dir(hub, name[9:])
     # Whisper: main resolves a bare id ('large-v3') through faster_whisper's
     # _MODELS table and passes DOWNLOAD_ROOT itself as snapshot_download's
     # cache_dir (no `/hf` sub-dir — that convention belongs to
@@ -300,19 +297,18 @@ def _model_path(name: str) -> "str | None":
         repo = name
     leaf = "models--" + repo.replace("/", "--")
     candidates = [os.path.join(root, leaf)] if root else []
-    candidates.append(os.path.join(hf_home, "hub", leaf))
+    candidates.append(os.path.join(hub, leaf))
     for c in candidates:
         if os.path.exists(c):
             return c
     return candidates[0]
 
 
-def _hf_repo_dir(hf_home: str, repo: str) -> "str | None":
-    """`<HF_HOME>/hub/models--org--repo`, the layout huggingface_hub uses."""
+def _hf_repo_dir(hub: str, repo: str) -> "str | None":
+    """`<hub cache>/models--org--repo`, the layout huggingface_hub uses."""
     if not repo:
         return None
-    return os.path.join(hf_home, "hub",
-                        "models--" + repo.replace("/", "--"))
+    return os.path.join(hub, "models--" + repo.replace("/", "--"))
 
 
 def fits(name: str, device: str, compute_type: str, *,

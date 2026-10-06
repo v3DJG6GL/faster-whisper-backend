@@ -1,0 +1,33 @@
+"""Where Hugging Face hub downloads land — one precedence for every caller.
+
+huggingface_hub freezes HF_HUB_CACHE from the environment at import time
+(faster_whisper imports the hub at startup), so a later HF_HOME setdefault
+cannot redirect a download: the translation GGUFs and the pyannote pipeline
+pass `hub_cache_dir()` EXPLICITLY as their cache_dir, and runtime.model_sizes
+looks for the same files through `hub_lookup_dir()`.
+"""
+from __future__ import annotations
+
+import os
+
+
+def hub_cache_dir() -> "str | None":
+    """The cache_dir to pass to a hub download: a set HF_HOME wins, else
+    <DOWNLOAD_ROOT>/hf/hub, else None (the hub's own default)."""
+    hf_home = os.environ.get("HF_HOME")
+    if hf_home:
+        return os.path.join(hf_home, "hub")
+    from faster_whisper_backend import config as cfg
+    download_root = (getattr(cfg, "DOWNLOAD_ROOT", None) or "").strip()
+    if download_root:
+        return os.path.join(download_root, "hf", "hub")
+    return None
+
+
+def hub_lookup_dir() -> str:
+    """Where a download made with `hub_cache_dir()` actually sits: that dir,
+    or — when it is None — the hub's own default (HF_HUB_CACHE, else
+    ~/.cache/huggingface/hub)."""
+    return (hub_cache_dir()
+            or os.environ.get("HF_HUB_CACHE")
+            or os.path.join(os.path.expanduser("~/.cache/huggingface"), "hub"))

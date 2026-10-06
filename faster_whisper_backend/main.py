@@ -1,9 +1,18 @@
+"""The FastAPI application: process setup (logging, the Windows CUDA-DLL and
+ffmpeg preload), the lifespan (store init, preload, retention and sampler
+loops), middleware (CORS, CSRF, body cap, metrics, security headers), the
+OpenAI-compatible transcription / translation routes, and the router
+includes for every sub-package. Launched via the root main.py shim or
+``python -m faster_whisper_backend``.
+"""
+import asyncio
 import os
 import json
 import random
 import sys
 import ctypes
 import functools
+import importlib
 import logging
 import logging.handlers
 import math
@@ -12,6 +21,7 @@ import shutil
 import tempfile
 import time
 import uuid
+from collections import OrderedDict
 from contextlib import asynccontextmanager, contextmanager
 
 # BOOT_ID (the per-process restart marker surfaced via /v1/models) lives in
@@ -903,6 +913,12 @@ def _section_rule(label: str) -> str:
     return head + ("─" * fill)
 
 
+def _short_id(v):
+    """A user / key id shortened for the receipt (8 chars; "(…)" markers kept)."""
+    v = v or ""
+    return v if v.startswith("(") else (v[:8] if v else "—")
+
+
 def _format_translate_block(
     *,
     request_id: str | None,
@@ -951,10 +967,6 @@ def _format_translate_block(
     ]
     for name, val in rows:
         lines.append(f"    {name:<{_NAME_COL - 4}}{val}")
-
-    def _short_id(v):
-        v = v or ""
-        return v if v.startswith("(") else (v[:8] if v else "—")
 
     if user_id or key_id:
         lines.append(_section_rule("Identity"))
@@ -1514,10 +1526,6 @@ def _format_request_block(
     # user/key (and any applied per-identity overrides, or their ABSENCE) is
     # visible at a glance. This was previously suppressed for no-config
     # requests, which made per-identity mismatches invisible in the log.
-    def _short_id(v):
-        v = v or ""
-        return v if v.startswith("(") else (v[:8] if v else "—")
-
     _ident_detail = ident is not None and (getattr(ident, "layers", None)
                                            or getattr(ident, "locked", None)
                                            or overrides_ignored)
@@ -1589,10 +1597,6 @@ def _format_request_block(
 # Set WHISPER_ALLOWED_MODELS to restrict which model names are accepted (a
 # comma-separated allowlist; empty = any well-formed model id goes, useful on
 # a private LAN).
-import asyncio
-import functools
-from collections import OrderedDict
-
 # Source: cfg.DEFAULT_MODEL / cfg.ALLOWED_MODELS / cfg.MAX_LOADED_MODELS.
 
 # Insertion order = LRU order (oldest at front). move_to_end on hit.
@@ -4649,8 +4653,9 @@ async def transcribe(
         raise HTTPException(status_code=403,
                             detail="URL download is not enabled on this server")
 
-    # Bracket the entire request with metrics.in_flight + record_transcription
-    # so failed loads / failed transcriptions still surface in the dashboard.
+    # Bracket the entire request with metrics.in_flight_transcriptions +
+    # record_transcription so failed loads / failed transcriptions still
+    # surface in the dashboard.
     # request_id is generated up-front (was deferred to post-transcribe) so
     # the outer finally can correlate timing-only writes to the SQLite store
     # on the error path too.
@@ -5029,7 +5034,7 @@ async def transcribe(
             if (getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
                     and gate_word_ts):
                 try:
-                    from faster_whisper_backend.captures import store as _cap_store
+                    from faster_whisper_backend.captures import store as captures_store
                     cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
                     hard_lim = int(getattr(
                         cfg, "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT",
@@ -5038,7 +5043,7 @@ async def transcribe(
                     sample_rate = float(getattr(
                         cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0,
                     ))
-                    if (_cap_store.count_evictable() < cap_max
+                    if (captures_store.count_evictable() < cap_max
                             and audio_bytes < hard_lim
                             and random.random() < sample_rate):
                         will_capture = True
@@ -6222,7 +6227,7 @@ async def transcribe(
             # path is unchanged.
             if will_capture:
                 try:
-                    from faster_whisper_backend.captures import store as _cap_store
+                    from faster_whisper_backend.captures import store as captures_store
                     audio_dur_s = float(getattr(info, "duration", 0.0) or 0.0)
                     min_s = float(getattr(cfg, "CAPTURES_RECORDING_MIN_DURATION_S", 0.5))
                     max_s = float(getattr(cfg, "CAPTURES_RECORDING_MAX_DURATION_S", 600.0))
@@ -6260,7 +6265,7 @@ async def transcribe(
                             # unlinks tmp_path after this returns.
                             captured_id = await asyncio.to_thread(
                                 functools.partial(
-                                    _cap_store.create_capture,
+                                    captures_store.create_capture,
                                     audio_src_path=tmp_path,
                                     request_id=request_id,
                                     model=resolved_model,
@@ -9147,7 +9152,7 @@ async def get_decode_defaults(model: str = "", override_profile: str = "",
 # file, then streams new lines via Server-Sent Events. Color is reapplied
 # client-side based on content (since we strip ANSI before writing the file).
 import io
-from fastapi.responses import HTMLResponse, StreamingResponse
+from fastapi.responses import HTMLResponse
 
 def _rotated_chain(active_path: str) -> list[str]:
     """Newest→oldest list of paths in the rotation chain: the active log
@@ -10335,21 +10340,29 @@ async def severity_snapshot():
     return web_common.severity_counts()
 
 
+def _include_router(label: str, module: str, attr: str = "router") -> bool:
+    """Import `module` and mount its `attr` router. Fail-soft per router: an
+    import error drops only this router, logged with its traceback, so the
+    rest of the app (and every other router) still comes up."""
+    try:
+        app.include_router(getattr(importlib.import_module(module), attr))
+    except Exception:
+        logger.exception("Failed to load %s router", label)
+        return False
+    return True
+
+
 # =============================================================================
 # /stats - system overview dashboard (always on, user-tier allowlist-gated)
 # =============================================================================
 # Always registered. The route's host gate reads cfg.USER_WEBUI_ALLOWED_HOSTS
 # at request time, so the admin UI can broaden/narrow access without a service
 # restart. Loopback is always allowed; the data endpoints require a "stats" key.
-try:
-    from faster_whisper_backend.stats.routes import router as _stats_router
-    app.include_router(_stats_router)
+if _include_router("stats", "faster_whisper_backend.stats.routes"):
     logger.info(
         "Stats dashboard at /stats (allowlist=%s; loopback always permitted)",
         cfg.USER_WEBUI_ALLOWED_HOSTS,
     )
-except Exception as _e:
-    logger.error("Failed to load stats router: %s", _e)
 
 
 # =============================================================================
@@ -10359,15 +10372,11 @@ except Exception as _e:
 # signed-in ones a launcher filtered to the pages their key can reach (plus
 # the admin section for admins). Same host tier as the other user page
 # shells; nothing sensitive is rendered server-side. See home_routes.py.
-try:
-    from faster_whisper_backend.admin.home_routes import router as _home_router
-    app.include_router(_home_router)
+if _include_router("home", "faster_whisper_backend.admin.home_routes"):
     logger.info(
         "Landing hub at / (allowlist=%s; loopback always permitted)",
         cfg.USER_WEBUI_ALLOWED_HOSTS,
     )
-except Exception as _e:
-    logger.error("Failed to load home router: %s", _e)
 
 
 # =============================================================================
@@ -10376,17 +10385,13 @@ except Exception as _e:
 # Always registered; the handler self-gates on cfg.STREAMING_ENABLED (toggleable
 # at runtime) and resolves auth per connection (same user records as the batch
 # route). Reuses the model cache + _postprocess_text; see streaming/routes.py.
-try:
-    from faster_whisper_backend.streaming.routes import router as _streaming_router
-    app.include_router(_streaming_router)
+if _include_router("streaming", "faster_whisper_backend.streaming.routes"):
     logger.info(
         "Streaming transcription at /v1/audio/transcriptions/stream "
         "(enabled=%s, max_sessions=%s)",
         getattr(cfg, "STREAMING_ENABLED", True),
         getattr(cfg, "STREAMING_MAX_SESSIONS", 10),
     )
-except Exception as _e:
-    logger.error("Failed to load streaming router: %s", _e)
 
 
 # =============================================================================
@@ -10398,12 +10403,8 @@ except Exception as _e:
 # quick_config_routes), but in the /v1 namespace with NO host allowlist — auth is
 # the per-user API key (bearer) plus the quick_config page permission. Lets the
 # desktop client view + edit the post-processing rules the caller is permitted to.
-try:
-    from faster_whisper_backend.quick_config.routes import v1_router as _pipeline_v1_router
-    app.include_router(_pipeline_v1_router)
+if _include_router("pipeline-rules v1", "faster_whisper_backend.quick_config.routes", "v1_router"):
     logger.info("Pipeline-rules client API at GET/PATCH /v1/pipeline-rules")
-except Exception as _e:
-    logger.error("Failed to load pipeline-rules v1 router: %s", _e)
 
 
 # =============================================================================
@@ -10413,26 +10414,19 @@ except Exception as _e:
 # Always registered (a route-level 404 must keep meaning "backend build too
 # old for sync"). User-tier bearer auth only — deliberately NO page gate and
 # NO host allowlist: settings sync is account infrastructure for remote
-# desktop clients (same rationale as /v1/usage). One opaque blob per account
+# desktop clients (/v1/usage skips the host allowlist for the same reason, but
+# keeps its quick_config page gate). One opaque blob per account
 # with optimistic versioning; see client_settings/routes.py.
-try:
-    from faster_whisper_backend.client_settings.routes import router as _client_settings_router
-    app.include_router(_client_settings_router)
+if _include_router("client-settings", "faster_whisper_backend.client_settings.routes"):
     logger.info(
         "Client-settings sync at GET/PUT/DELETE /v1/synced-client-settings"
     )
-except Exception as _e:
-    logger.error("Failed to load client-settings router: %s", _e)
 
 # Dictation outcomes from the desktop app (activation / delivery / app /
 # translation per session). Same always-on, user-tier, no-host-gate stance
 # as the settings sync above; see usage_routes.py.
-try:
-    from faster_whisper_backend.stats.usage_routes import router as _usage_router
-    app.include_router(_usage_router)
+if _include_router("usage", "faster_whisper_backend.stats.usage_routes"):
     logger.info("Usage outcomes at POST /v1/usage/outcome")
-except Exception as _e:
-    logger.error("Failed to load usage router: %s", _e)
 
 
 # =============================================================================
@@ -10444,13 +10438,9 @@ except Exception as _e:
 # User-tier bearer auth only (the tier /v1/models and /v1/me already use to
 # publish `loaded` flags for these exact models); no page gate, no host
 # allowlist. See preload_routes.py.
-try:
-    from faster_whisper_backend.runtime.preload_routes import router as _preload_router
-    app.include_router(_preload_router)
+if _include_router("preload", "faster_whisper_backend.runtime.preload_routes"):
     logger.info("Model preloading at POST /v1/models/preload (enabled=%s)",
                 bool(getattr(cfg, "MODEL_PRELOAD_ENABLED", True)))
-except Exception as _e:
-    logger.error("Failed to load preload router: %s", _e)
 
 
 # =============================================================================
@@ -10462,52 +10452,42 @@ except Exception as _e:
 # In OPEN mode (no admin key in DB) every caller is the synthetic admin so the
 # operator can bootstrap.
 if cfg.ADMIN_UI_ENABLED:
-    try:
-        from faster_whisper_backend.admin.routes import router as _admin_router
-        app.include_router(_admin_router)
-        # /settings/api-keys — admin UI for per-user key management. Same
-        # auth shape (admin host + admin key) as /settings.
-        from faster_whisper_backend.auth.api_keys_routes import router as _api_keys_router
-        app.include_router(_api_keys_router)
-        # /settings/overrides — admin UI for layered per-identity config
-        # profiles + the effective-config Explorer. Same auth shape as /settings.
-        from faster_whisper_backend.admin.overrides_routes import router as _overrides_router
-        app.include_router(_overrides_router)
+    if _include_router("admin settings", "faster_whisper_backend.admin.routes"):
         logger.info(
             "Admin UI enabled at /settings (allowlist=%s; auth=API key)",
             cfg.ADMIN_WEBUI_ALLOWED_HOSTS,
         )
-        # /quick-config is a user-tier page (USER_WEBUI_ALLOWED_HOSTS) with
-        # per-user API key auth; it just rides the same ADMIN_UI_ENABLED switch.
-        from faster_whisper_backend.quick_config.routes import router as _quick_router
-        app.include_router(_quick_router)
+    # /settings/api-keys — admin UI for per-user key management. Same
+    # auth shape (admin host + admin key) as /settings.
+    _include_router("api-keys", "faster_whisper_backend.auth.api_keys_routes")
+    # /settings/overrides — admin UI for layered per-identity config
+    # profiles + the effective-config Explorer. Same auth shape as /settings.
+    _include_router("overrides", "faster_whisper_backend.admin.overrides_routes")
+    # /quick-config is a user-tier page (USER_WEBUI_ALLOWED_HOSTS) with
+    # per-user API key auth; it just rides the same ADMIN_UI_ENABLED switch.
+    if _include_router("quick-config", "faster_whisper_backend.quick_config.routes"):
         logger.info("Quick-config UI enabled at /quick-config")
-        # /reports: admin-only triage page for user-submitted transcription
-        # error reports. The submission endpoint /quick-config/reports/api/submit
-        # lives on the same router and accepts any active API key.
-        from faster_whisper_backend.admin.reports_routes import router as _reports_router
-        app.include_router(_reports_router)
+    # /reports: admin-only triage page for user-submitted transcription
+    # error reports. The submission endpoint /quick-config/reports/api/submit
+    # lives on the same router and accepts any active API key.
+    if _include_router("reports", "faster_whisper_backend.admin.reports_routes"):
         logger.info(
             "Reports UI enabled at /reports (admin key required for triage; "
             "user submissions %s)",
             "enabled" if getattr(cfg, "REPORTS_ALLOW_USER_SUBMIT", True)
             else "disabled",
         )
-        # /captures: admin-only Whisper fine-tuning data capture + review.
-        # Master switch is cfg.CAPTURES_RECORDING_ENABLED — the page is
-        # always registered so the admin can browse existing rows even
-        # after disabling new capture.
-        from faster_whisper_backend.captures.routes import router as _captures_router
-        app.include_router(_captures_router)
+    # /captures: admin-only Whisper fine-tuning data capture + review.
+    # Master switch is cfg.CAPTURES_RECORDING_ENABLED — the page is
+    # always registered so the admin can browse existing rows even
+    # after disabling new capture.
+    if _include_router("captures", "faster_whisper_backend.captures.routes"):
         logger.info(
             "Captures UI enabled at /captures (admin token required; "
             "new capture %s)",
             "enabled" if getattr(cfg, "CAPTURES_RECORDING_ENABLED", False)
             else "disabled",
         )
-    except Exception as _e:
-        logger.error("Failed to load admin router: %s", _e)
-
 
 def run() -> None:
     """Serve the app. Called by the root main.py shim, by `python -m

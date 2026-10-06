@@ -9,6 +9,7 @@ import huggingface_hub.constants
 import pytest
 
 from faster_whisper_backend.audio import diarization
+from faster_whisper_backend.runtime import hf_cache
 
 _FILE = {"file": ("a.wav", b"RIFFxxxxWAVE", "audio/wav")}
 
@@ -500,7 +501,7 @@ def test_pipeline_load_passes_the_models_volume_cache_dir(monkeypatch,
 
     # A set HF_HOME wins; neither set falls through to the hub's default.
     monkeypatch.setenv("HF_HOME", "/elsewhere")
-    assert diarization._hf_cache_dir() == os.path.join("/elsewhere", "hub")
+    assert hf_cache.hub_cache_dir() == os.path.join("/elsewhere", "hub")
     monkeypatch.delenv("HF_HOME")
     monkeypatch.setattr(diarization.cfg, "DOWNLOAD_ROOT", None, raising=False)
-    assert diarization._hf_cache_dir() is None
+    assert hf_cache.hub_cache_dir() is None

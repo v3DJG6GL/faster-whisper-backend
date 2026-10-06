@@ -18,6 +18,7 @@ import pytest
 
 from faster_whisper_backend import config as cfg
 from faster_whisper_backend.audio import translation
+from faster_whisper_backend.runtime import hf_cache
 from faster_whisper_backend.core import languages
 
 
@@ -1070,7 +1071,7 @@ def test_from_pretrained_fallback_passes_cache_dir(monkeypatch, tmp_path):
 def test_hf_cache_dir_none_without_root_or_hf_home(monkeypatch):
     monkeypatch.delenv("HF_HOME", raising=False)
     monkeypatch.setattr(cfg, "DOWNLOAD_ROOT", None, raising=False)
-    assert translation._hf_cache_dir() is None
+    assert hf_cache.hub_cache_dir() is None
 
 
 def test_offline_env_restored_when_flag_flips_mid_load(monkeypatch):

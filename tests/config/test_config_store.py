@@ -3,13 +3,12 @@ ModelOverride, normalize_tags, the overrides load/save layer, the atomic
 writer, and the small helper functions.
 
 Factory-rule round-trips (load/save_factory_rules, terminal/dup/bad-regex)
-are already covered by test_factory_rules.py at the repo root; here we add the
+are already covered by test_factory_rules.py; here we add the
 override layer, the scalar/model validators, and the helpers it does not touch.
 """
 
 import json
 import os
-import time
 
 import pytest
 from pydantic import ValidationError
@@ -481,7 +480,7 @@ def test_pipeline_prefix_ambiguous_alternation_rejected():
     # prefix-ambiguous forms — one run of input that splits many ways — walked
     # through and then backtracked exponentially on real transcripts.
     # (The _nested_repetition unit assertions for the full family live in
-    # tests/test_regex_guard.py with the rest of the helper's coverage.)
+    # test_regex_guard.py with the rest of the helper's coverage.)
     with pytest.raises(ValidationError) as ei:
         _ok_on_save(PIPELINE_RULES=[
             _regex("boom", pattern="(n|d|nd)+#", replacement="X"), _terminal()])

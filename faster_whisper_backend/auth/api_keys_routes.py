@@ -514,7 +514,7 @@ async def import_client_settings_api(
     from faster_whisper_backend.client_settings import store as client_settings_store
     try:
         # Off the loop: force_put json.dumps + encodes the whole blob BEFORE
-        # the 512 KB cap can reject it (see client_settings_routes.put).
+        # the 512 KB cap can reject it (see client_settings_routes.put_client_settings).
         state = await asyncio.to_thread(
             client_settings_store.force_put,
             uid, payload.blob, device="WebUI import",

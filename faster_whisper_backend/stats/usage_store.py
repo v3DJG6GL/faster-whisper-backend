@@ -81,6 +81,7 @@ import zoneinfo
 from typing import Any
 
 from faster_whisper_backend.core import store_common
+from faster_whisper_backend.stats import metrics
 
 logger = logging.getLogger("whisper-api")
 
@@ -966,12 +967,6 @@ def leaderboard(
     return [dict(r) for r in cur.fetchall()]
 
 
-def is_empty() -> bool:
-    conn = _require_conn()
-    row = conn.execute("SELECT 1 FROM usage_hourly LIMIT 1").fetchone()
-    return row is None
-
-
 # Every hour-keyed statistics table shares USAGE_RETENTION_DAYS: they are the
 # same grain, and pruning one without the others would leave stage meters
 # denominated over jobs that no longer exist. usage_app_hourly has its own,
@@ -1762,13 +1757,6 @@ def _jobs_where(user_id: Ids, key_id: Ids, kind: Ids,
     return where, params
 
 
-def _nearest_rank(sorted_vals: list[float], q: float) -> float:
-    if not sorted_vals:
-        return 0.0
-    k = max(0, min(len(sorted_vals) - 1, int(round(q * (len(sorted_vals) - 1)))))
-    return sorted_vals[k]
-
-
 def truncated_to_days(start_ts: float, retention_days: int,
                       now: float | None = None) -> int | None:
     """The per-job rows keep USAGE_JOBS_RETENTION_DAYS: a window that starts
@@ -1823,8 +1811,8 @@ def wait_series_by_day(*, start_ts: float, end_ts: float,
     out = []
     for d in sorted(by_day):
         vals = sorted(by_day[d])
-        out.append({"day": d, "n": len(vals), "p50": round(_nearest_rank(vals, 0.5), 3),
-                    "p95": round(_nearest_rank(vals, 0.95), 3)})
+        out.append({"day": d, "n": len(vals), "p50": round(metrics.quantile(vals, 0.5), 3),
+                    "p95": round(metrics.quantile(vals, 0.95), 3)})
     return out
 
 
@@ -1863,8 +1851,8 @@ def turnaround_histogram(*, start_ts: float, end_ts: float,
                        for i in range(len(edges))],
         "by_kind": by_kind,
         "n": len(turns),
-        "p50": round(_nearest_rank(turns, 0.5), 3),
-        "p95": round(_nearest_rank(turns, 0.95), 3),
+        "p50": round(metrics.quantile(turns, 0.5), 3),
+        "p95": round(metrics.quantile(turns, 0.95), 3),
         "max": round(turns[-1], 3) if turns else 0.0,
     }
 

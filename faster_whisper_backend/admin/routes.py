@@ -28,7 +28,7 @@ import logging
 import os
 import re
 import time
-from typing import Annotated, Any, Literal, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Literal, get_args, get_origin
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -45,6 +45,9 @@ from faster_whisper_backend.core import dictation_map
 from faster_whisper_backend.core.languages import WHISPER_LANGUAGE_NAMES
 from faster_whisper_backend.core import web_common
 from faster_whisper_backend.auth.dependencies import require_admin
+
+if TYPE_CHECKING:
+    from faster_whisper_backend.core.loop_lock import LoopLock
 
 logger = logging.getLogger("whisper-api")
 

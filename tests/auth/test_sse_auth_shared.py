@@ -2,7 +2,7 @@
 variants (stats /stream, quick-config /stream), plus the open-mode host
 confinement on the existing per-module gates.
 
-The /stream bodies are infinite generators, so like tests/test_routes_auth.py
+The /stream bodies are infinite generators, so like test_routes_auth.py
 we exercise the dependencies directly with a constructed ASGI scope instead of
 driving them over HTTP."""
 

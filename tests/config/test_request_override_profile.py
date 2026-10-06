@@ -8,7 +8,6 @@ the resolver, `profile_applied` is echoed, an admin binding/lock still wins over
 the request profile, the gate disables it, and the names endpoint behaves.
 """
 
-import json
 
 from faster_whisper_backend import config as cfg
 from tests.conftest import bearer

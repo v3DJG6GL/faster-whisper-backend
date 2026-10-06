@@ -7,7 +7,6 @@ broken plan when a loader raises. Stage modules are stubbed at the same
 boundary as test_stage_models — nothing here imports pyannote or onnxruntime.
 """
 
-import asyncio
 
 from faster_whisper_backend.audio import bgm_separation
 from faster_whisper_backend.audio import diarization

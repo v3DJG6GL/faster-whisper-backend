@@ -1139,13 +1139,13 @@ async def transcribe_stream(ws: WebSocket) -> None:
             """Persist a fine-tuning capture for this utterance, mirroring the batch
             route's eligibility gate (sampling / count cap / size / duration / disk)."""
             try:
-                from faster_whisper_backend.captures import store as _cap_store
+                from faster_whisper_backend.captures import store as captures_store
                 audio = info["audio"]
                 pcm_bytes = int(getattr(audio, "size", 0)) * 2
                 cap_max = int(getattr(cfg, "CAPTURES_MAX", 5000))
                 hard_lim = int(getattr(cfg, "CAPTURES_RECORDING_AUDIO_BYTES_HARD_LIMIT", 100_000_000))
                 sample = float(getattr(cfg, "CAPTURES_RECORDING_SAMPLE_RATE", 1.0))
-                if not (_cap_store.count_evictable() < cap_max and pcm_bytes < hard_lim
+                if not (captures_store.count_evictable() < cap_max and pcm_bytes < hard_lim
                         and random.random() < sample):
                     return None
                 dur = float(info["audio_dur"])
@@ -1169,7 +1169,7 @@ async def transcribe_stream(ws: WebSocket) -> None:
                     ident=ident, language=_fmt_lang())
                 wav_path = _write_pcm16_wav(audio)
                 try:
-                    return _cap_store.create_capture(
+                    return captures_store.create_capture(
                         audio_src_path=wav_path, request_id=rid, model=final_model,
                         language=(getattr(fw_info, "language", None) or req_language or ""),
                         audio_s=dur, raw=raw_text, final=final_text,

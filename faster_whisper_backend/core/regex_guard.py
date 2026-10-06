@@ -36,9 +36,11 @@ hang the MAIN process at match time (rule application is in-process re.sub) —
 accepted residual risk for a rule surface that is user-editable by design.
 
 Two roles, one file:
-  * parent  ->  ``import regex_guard; regex_guard.validate(checks)``
-  * child   ->  ``python core/regex_guard.py``   (reads a JSON list of ``[pattern,
-                replacement]`` pairs on stdin, writes a JSON verdict on stdout)
+  * parent  ->  ``regex_guard.validate(checks)`` (imported from the package)
+  * child   ->  this file run as a script, ``[sys.executable, _SELF]`` (reads a
+                JSON list of ``[pattern, replacement]`` pairs on stdin, writes a
+                JSON verdict on stdout). Keep it stdlib-only: the child runs
+                outside the package with this file's directory on sys.path.
 """
 from __future__ import annotations
 
