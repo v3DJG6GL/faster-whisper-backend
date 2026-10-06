@@ -622,6 +622,10 @@ class _WallClockCutoff:
     def __init__(self, seconds: float):
         self._socks: list = []
         self._lock = threading.Lock()
+        # Set once the timer has shut the sockets: a body read cut here
+        # ends in a short b"" (http.client never raises IncompleteRead for
+        # read(amt)), which a caller must not take for a complete body.
+        self.fired = False
         self._timer = threading.Timer(max(0.0, seconds), self.cut)
         self._timer.daemon = True
 
@@ -631,6 +635,7 @@ class _WallClockCutoff:
 
     def cut(self) -> None:
         with self._lock:
+            self.fired = True
             socks, self._socks = self._socks, []
         for sock in socks:
             try:
@@ -975,6 +980,12 @@ def _capped_get(url: str, *, max_bytes: int, timeout: float,
                 raise UrlDownloadError("the file is over the server's size limit")
             if time.monotonic() - t0 > timeout:
                 raise UrlTimeoutError("the site took too long to answer")
+        if cutoff.fired:
+            raise UrlTimeoutError("the site took too long to answer")
+        length = resp.headers.get("Content-Length")
+        if (length and length.isdigit() and not getattr(resp, "chunked", False)
+                and len(buf) < int(length)):
+            raise UrlDownloadError("the site sent an incomplete file")
     return ctype, bytes(buf)
 
 

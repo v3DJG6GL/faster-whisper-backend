@@ -45,6 +45,9 @@ def url_enabled(app_module, tmp_path, monkeypatch):
                         raising=False)
     monkeypatch.setattr(app_module.cfg, "URL_MEDIA_DIR",
                         str(tmp_path / "url_media"), raising=False)
+    # No allowlist: app_module blanks DEFAULT_MODEL, which the factory list
+    # would refuse at the language check's up-front model gate.
+    monkeypatch.setattr(app_module.cfg, "ALLOWED_MODELS", set(), raising=False)
     url_media_store.startup_reset()
 
     async def _probe(url, *, timeout):
@@ -772,6 +775,22 @@ def test_language_check_undecodable_audio_is_400(client, url_enabled):
     assert r.status_code == 400 and "decoded" in r.json()["detail"]
 
 
+def test_language_check_refuses_a_bad_model_before_downloading(
+        client, url_enabled, downloads, monkeypatch):
+    monkeypatch.setattr(url_enabled.cfg, "ALLOWED_MODELS", {"small"}, raising=False)
+    r = client.post("/v1/audio/url-language", json={"url": _URL, "model": "large-v3"})
+    assert r.status_code == 400 and "allowed list" in r.json()["detail"]
+    assert downloads == [] and url_media_store._REG == {}
+
+
+def test_language_check_english_only_model_is_400(client, url_enabled, lang_check):
+    import types
+    lang_check.model = types.SimpleNamespace(is_multilingual=False)
+    r = client.post("/v1/audio/url-language", json={"url": _URL})
+    assert r.status_code == 400 and "multilingual" in r.json()["detail"]
+    assert lang_check.released == [url_enabled.cfg.DEFAULT_MODEL]
+
+
 def test_language_check_votes_and_keeps_the_audio(client, url_enabled, lang_check,
                                                   monkeypatch):
     monkeypatch.setattr(url_enabled.cfg, "INFERENCE_CONCURRENCY", 1, raising=False)
@@ -977,6 +996,28 @@ def test_prefetched_audio_is_reused(client, url_enabled, downloads, tmp_path, fa
     assert os.path.basename(fake_model.last_audio).startswith("urlmedia-")
     # The retained file survives the run (the pipeline owned a copy).
     assert client.get(f"/v1/audio/url-media/{mid}").content == b"prefetched" * 4
+
+
+def test_prefetched_reuse_owns_its_copy_and_restarts_the_ttl(
+        client, url_enabled, downloads, tmp_path, monkeypatch):
+    """The retained file can go (TTL sweep, another user's eviction) the
+    moment the run holds its copy; the run measures and transcribes its own
+    copy, and the id it hands out gets a fresh TTL, not the check's."""
+    mid = _prefetched(tmp_path)
+    url_media_store._REG[mid]["created"] -= 3000          # an old check
+    real = url_media_store.make_pipeline_copy
+    swept: list = []
+
+    def _copy_then_sweep(path):
+        out = real(path)
+        swept.append(dict(url_media_store._REG[mid]))
+        os.unlink(path)                                    # store file gone
+        return out
+    monkeypatch.setattr(url_media_store, "make_pipeline_copy", _copy_then_sweep)
+    r = _post_url(client, prefetched_media_id=mid)
+    assert r.status_code == 200, r.text
+    assert downloads == [] and r.json()["source_media_id"] == mid
+    assert url_media_store._REG[mid]["created"] > swept[0]["created"] + 2900
 
 
 @pytest.mark.parametrize("case", ["other_url", "video", "expired", "unknown", "malformed"])

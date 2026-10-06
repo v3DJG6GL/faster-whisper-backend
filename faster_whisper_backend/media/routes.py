@@ -437,6 +437,8 @@ async def url_language(request: Request,
                                    what="the language check")
     _model = body.get("model")
     model_name = tx_models._resolve_model_name(_model.strip() if isinstance(_model, str) else "")
+    # Gate the model before the link's audio is fetched, not after.
+    tx_models._check_model_name(model_name)
     _user_id = user.get("user_id")
 
     def _detect(model, audio) -> "tuple[str | None, float]":
@@ -474,6 +476,12 @@ async def url_language(request: Request,
         tx_progress._progress_set(pid, stage="waiting", progress=None)
         model = await tx_models._get_or_load_model(model_name, lease=True)
         try:
+            # CTranslate2 raises RuntimeError for an English-only model.
+            if not getattr(getattr(model, "model", None), "is_multilingual", True):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"the language check needs a multilingual model; "
+                           f"'{model_name}' is English-only")
             tx_progress._check_cancelled(pid)
             _w0 = time.perf_counter()
             async with tx_models.get_inference_semaphore():

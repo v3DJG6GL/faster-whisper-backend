@@ -1542,7 +1542,9 @@ async def transcribe(
                         _reused_copy = await asyncio.to_thread(
                             url_media_store.make_pipeline_copy, _reuse["path"])
                     if _reused_copy:
-                        _dl_path = _reuse["path"]
+                        # The run's own copy: the retained file can be
+                        # swept or evicted from under it at any moment.
+                        _dl_path = _reused_copy
                         logger.info("[url-dl] reusing the audio the language"
                                     " check downloaded (host %s)",
                                     media_video._url_host_for_log(_url))
@@ -1591,8 +1593,10 @@ async def transcribe(
                 # (TMPDIR → URL_MEDIA_DIR) — up to MEDIA_MAX_BYTES of blocking
                 # I/O that must not pin the event loop.
                 if _reused_copy:
-                    # Already retained under the check's id: hand that out.
+                    # Already retained under the check's id: hand that out,
+                    # with a TTL that starts now, not at the check.
                     tmp_path, _source_media_id = _reused_copy, prefetched_media_id
+                    url_media_store.touch(prefetched_media_id)
                 else:
                     tmp_path = await asyncio.to_thread(
                         url_media_store.make_pipeline_copy, _dl_path)

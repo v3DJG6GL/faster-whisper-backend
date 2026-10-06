@@ -681,10 +681,13 @@ def test_thumbnail_fetch_runs_on_probe_pool(monkeypatch):
     assert seen["thread"].startswith("url-probe")
 
 
-def _fake_opener(monkeypatch, body: bytes, ctype: str = "text/vtt"):
-    """Swap the guarded opener for one that serves `body` in 1 KB chunks."""
+def _fake_opener(monkeypatch, body: bytes, ctype: str = "text/vtt",
+                 length: "int | None" = None):
+    """Swap the guarded opener for one that serves `body` in 1 KB chunks
+    (`length`: a Content-Length header, which may claim more)."""
     class _Resp:
-        headers = {"Content-Type": ctype}
+        headers = {"Content-Type": ctype,
+                   **({"Content-Length": str(length)} if length else {})}
 
         def __init__(self):
             self._chunks = [body[i:i + 1024] for i in range(0, len(body), 1024)]
@@ -721,6 +724,28 @@ def test_capped_get_caps_filters_and_refuses_hosts(monkeypatch):
     monkeypatch.setattr(udl, "_host_is_forbidden", lambda h: True)
     with pytest.raises(udl.UrlDownloadError, match="could not be reached"):
         udl._capped_get("https://e.com/a", max_bytes=10, timeout=1.0)
+
+
+def test_capped_get_refuses_a_short_or_cut_body(monkeypatch):
+    """A body cut short — fewer bytes than Content-Length, or a read ended
+    by the wall-clock cutoff's socket shutdown (http.client answers b"",
+    not IncompleteRead) — is an error, never a complete file."""
+    _fake_opener(monkeypatch, b"x" * 3000, length=5000)
+    with pytest.raises(udl.UrlDownloadError, match="incomplete"):
+        udl._capped_get("https://e.com/a", max_bytes=9999, timeout=1.0)
+    _fake_opener(monkeypatch, b"x" * 5000, length=5000)
+    assert udl._capped_get("https://e.com/a", max_bytes=9999,
+                           timeout=1.0)[1] == b"x" * 5000
+
+    class _Fired(udl._WallClockCutoff):
+        def __enter__(self):
+            super().__enter__()
+            self.fired = True
+            return self
+    monkeypatch.setattr(udl, "_WallClockCutoff", _Fired)
+    _fake_opener(monkeypatch, b"x" * 3000)
+    with pytest.raises(udl.UrlTimeoutError):
+        udl._capped_get("https://e.com/a", max_bytes=9999, timeout=1.0)
 
 
 def _rebinding_server(monkeypatch, content_type):

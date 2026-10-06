@@ -144,6 +144,14 @@ def register(src_path: str, *, user_id: "str | None", kind: str = "audio",
     return media_id if media_id in _REG else None
 
 
+def touch(media_id: str) -> None:
+    """Restart an entry's TTL clock and eviction age: a transcription that
+    reuses a language check's audio hands that id out as its own."""
+    entry = _REG.get(media_id)
+    if entry is not None:
+        entry["created"] = time.monotonic()
+
+
 def make_pipeline_copy(src: str) -> "str | None":
     """A tempdir copy of `src` for the transcription pipeline to own and
     unlink (hardlink when the tempdir shares a filesystem, else a real

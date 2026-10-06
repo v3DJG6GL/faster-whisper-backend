@@ -309,7 +309,10 @@ async def _empty_captions_to_strip(src: str, video_codec: "str | None",
     """Whether this H.264 source carries only empty broadcast captions (and
     the server's ffmpeg can drop them). Never fails the package: any doubt
     keeps the captions."""
-    if (video_codec or "").lower() != "h264" or not ffmpeg_has_bsf("filter_units"):
+    if (video_codec or "").lower() != "h264":
+        return False
+    # Off the loop: the first call per process spawns `ffmpeg -bsfs`.
+    if not await asyncio.to_thread(ffmpeg_has_bsf, "filter_units"):
         return False
     from faster_whisper_backend.media import captions as _cc
     try:
