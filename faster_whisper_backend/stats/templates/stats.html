@@ -915,7 +915,7 @@
        wait p50/p95 by day beneath. Fed by /stats/tail (static/stats.js). -->
   <div class="grid-stack-item" gs-id="turnaround" gs-x="0" gs-y="46" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3>Turnaround <span class="tag" id="turnaround-tag"></span> <span class="win" data-win="usage"></span></h3>
+    <h3>Turnaround <span class="tag" id="turnaround-tag"></span> <span class="win" data-win="usage" data-nostage></span></h3>
     <div class="ta-hist" id="turnaround-hist"></div>
     <div class="ta-wait" id="turnaround-wait"></div>
     <div class="meta" id="turnaround-note"></div>
@@ -926,7 +926,7 @@
        soft-failed stages (the job went on without them). -->
   <div class="grid-stack-item" gs-id="failures" gs-x="6" gs-y="46" gs-w="6" gs-h="5">
    <div class="grid-stack-item-content"><div class="card usage-fed">
-    <h3>Failures <span class="tag" id="failures-tag"></span> <span class="win" data-win="usage"></span></h3>
+    <h3>Failures <span class="tag" id="failures-tag"></span> <span class="win" data-win="usage" data-nostage></span></h3>
     <div class="fl" id="failures-list"><span class="empty">— loading —</span></div>
    </div></div>
   </div>
@@ -1615,8 +1615,11 @@ function render(snap) {
     // the header cluster are all there is to draw.
     renderServer(snap.server);
     renderJobs(snap);
+    // This payload has no top-level gpu (pinned server-side); the coarse one
+    // the lite stream gives every other page sits under server.gpu. Without
+    // it the header cluster showed '–' for GPU / VRAM on /stats only.
     if (typeof window._fwFeedActivity === 'function') {
-      try { window._fwFeedActivity(snap); } catch (_) {}
+      try { window._fwFeedActivity(Object.assign({}, snap, { gpu: snap.server && snap.server.gpu })); } catch (_) {}
     }
     return;
   }
@@ -1813,15 +1816,17 @@ const rjExpanded = new Set();
 // a finished row's user_id (scrubbed viewers' rows carry none, so a pick
 // shows no rows, as before); running rows carry only a username, so those
 // match the picker's display names (userNames). Usage kinds map onto the
-// job kinds the snapshot rows carry: files and links are transcribe jobs
-// (a link's download job too), dictation is dictate, text is translate;
-// preload jobs always show.
+// job kinds the snapshot rows carry: files and links are transcribe jobs,
+// dictation is dictate, text is translate. Preload and download jobs always
+// show: a finished 'download' row is a MODEL download
+// (metrics.record_download), no user's link, and a running one is either
+// that or a link's media fetch.
 const RJ_KIND_OF = { dictation: ['dictate'], file: ['transcribe'],
-                     url: ['transcribe', 'download'], text: ['translate'] };
+                     url: ['transcribe'], text: ['translate'] };
 function rjFilter() {
   const f = window.__statsFilter || {};
   const kinds = (f.kinds || []).flatMap(k => RJ_KIND_OF[k] || []);
-  return { kinds: kinds.length ? Array.from(new Set(kinds)).concat(['preload']) : null,
+  return { kinds: kinds.length ? Array.from(new Set(kinds)).concat(['preload', 'download']) : null,
            users: (f.users || []).length ? f.users : null,
            userNames: (f.users || []).length ? (f.userNames || f.users) : null };
 }
@@ -1953,7 +1958,12 @@ function rjView() {
   const b = document.querySelector('#rj-view button.active');
   return b ? b.dataset.v : '';
 }
+// Bumped by rjResetPages: a "load older" response for the filter that was
+// on before the reset is dropped instead of appending its rows and setting
+// the new filter's cursor / exhausted flag.
+let rjGen = 0;
 function rjResetPages() {
+  rjGen++;
   rjExtra = []; rjCursor = null; rjExhausted = false;
   const btn = $('rj-more'); if (btn) { btn.disabled = false; btn.textContent = 'load older jobs'; }
 }
@@ -1978,9 +1988,11 @@ function rjLoadMore() {
   if (rjCursor != null) p.set('cursor', String(rjCursor));
   else if (oldest != null) p.set('cursor', String(oldest));
   btn.disabled = true; btn.textContent = 'loading…';
+  const gen = rjGen;
   fetch('/stats/jobs?' + p.toString(), { cache: 'no-store' })
     .then(r => r.ok ? r.json() : null)
     .then(j => {
+      if (gen !== rjGen) return;   // the filter changed; rjResetPages reset the button
       btn.disabled = false; btn.textContent = 'load older jobs';
       if (!j) return;
       rjExtra = rjExtra.concat(j.jobs || []);
@@ -1988,9 +2000,15 @@ function rjLoadMore() {
       rjExhausted = j.next_cursor == null;
       if (lastJobsSnap) renderJobs(lastJobsSnap);
     })
-    .catch(() => { btn.disabled = false; btn.textContent = 'load older jobs'; });
+    .catch(() => {
+      if (gen !== rjGen) return;
+      btn.disabled = false; btn.textContent = 'load older jobs';
+    });
 }
 
+// renderJobs' last full write: its volatile-free signature and the
+// [data-vol] cell contents it wrote.
+let _rtSig = null, _rtVals = [];
 function renderJobs(snap) {
   lastJobsSnap = snap;
   const flt = rjFilter();
@@ -2003,69 +2021,91 @@ function renderJobs(snap) {
     rjExtra.filter(r => !seen.has(r.request_id || String(r.ts))));
   const running = view === 'slow' ? [] : (snap.jobs || []);
 
-  const runRows = running
-    .filter(j => !flt.kinds || flt.kinds.includes(j.kind))
-    .filter(j => !flt.userNames || flt.userNames.includes(j.user))   // j.user is the username (no user_id on running rows)
-    .filter(() => !warnOnly)
-    .map(j => {
-      const pct = j.progress != null ? Math.round(j.progress * 100) : null;
-      // The cancel handle rides the row for admins and for the job's own
-      // owner; the endpoint re-checks ownership either way.
-      const cancel = j.progress_id
-        ? `<button type="button" class="rj-cancel" data-pid="${esc(j.progress_id)}" title="cancel this job">cancel</button>`
-        : '';
-      return `<tr class="rj-run">
-      <td><span class="rj-spin" title="running"></span></td>
-      <td class="ts">running · ${fmtSec(j.elapsed_s)}</td>
-      <td><span class="kindchip ${esc(j.kind)}">${esc(j.kind)}</span></td>
-      <td>${esc(j.stage || '')}</td>
-      <td>${esc(j.model || '—')}</td>
-      <td>${esc(j.user || '')}</td>
-      <td class="num">${esc(j.detail || '—')}</td>
-      <td class="num">—</td>
-      <td class="num">—</td>
-      <td class="num">${pct != null
-        ? `<span class="rj-runbar"><i style="width:${pct}%"></i></span> ${pct}%`
-        : (esc(j.step || '') || '—')}</td>
-      <td><span class="badge warm">running</span> ${cancel}</td>
-    </tr>`;
-    });
+  // Rows are built twice: with V = identity for the real markup and with
+  // V = '' for a signature without the cells that change every tick
+  // (elapsed, progress, "n s ago"). Same signature: only those [data-vol]
+  // cells are patched, so a click that straddles a 1 Hz frame still lands on
+  // a live cancel button / row instead of a detached one.
+  const build = (V) => {
+    const runRows = running
+      .filter(j => !flt.kinds || flt.kinds.includes(j.kind))
+      .filter(j => !flt.userNames || flt.userNames.includes(j.user))   // j.user is the username (no user_id on running rows)
+      .filter(() => !warnOnly)
+      .map(j => {
+        const pct = j.progress != null ? Math.round(j.progress * 100) : null;
+        // The cancel handle rides the row for admins and for the job's own
+        // owner; the endpoint re-checks ownership either way.
+        // A cancel already sent stays disabled across frames (the activity
+        // cluster owns the in-flight set; its popover does the same).
+        const busy = j.progress_id && typeof window._fwIsCancelling === 'function'
+          && window._fwIsCancelling(j.progress_id);
+        const cancel = j.progress_id
+          ? `<button type="button" class="rj-cancel" data-pid="${esc(j.progress_id)}" title="cancel this job"${busy ? ' disabled' : ''}>cancel</button>`
+          : '';
+        return `<tr class="rj-run">
+        <td><span class="rj-spin" title="running"></span></td>
+        <td class="ts" data-vol>${V('running · ' + fmtSec(j.elapsed_s))}</td>
+        <td><span class="kindchip ${esc(j.kind)}">${esc(j.kind)}</span></td>
+        <td>${esc(j.stage || '')}</td>
+        <td>${esc(j.model || '—')}</td>
+        <td>${esc(j.user || '')}</td>
+        <td class="num">${esc(j.detail || '—')}</td>
+        <td class="num">—</td>
+        <td class="num">—</td>
+        <td class="num" data-vol>${V(pct != null
+          ? `<span class="rj-runbar"><i style="width:${pct}%"></i></span> ${pct}%`
+          : (esc(j.step || '') || '—'))}</td>
+        <td><span class="badge warm">running</span> ${cancel}</td>
+      </tr>`;
+      });
 
-  const doneRows = (view === 'running' ? [] : rt)
-    .filter(r => !flt.kinds || flt.kinds.includes(r.kind))
-    .filter(r => !warnOnly || r.status !== 'ok')
-    .filter(r => view !== 'slow' || (r.audio_s > 0 && r.processing_s > 0.5 * r.audio_s))
-    .filter(r => !flt.users || flt.users.includes(r.user_id))
-    .map(r => {
-      const key = String(r.ts || 0);
-      const open = rjExpanded.has(key);
-      const who = [r.username, r.key_label].filter(Boolean).join(' · ');
-      const main = `<tr class="rj-main${open ? ' open' : ''}" data-key="${esc(key)}">
-      <td><span class="rj-caret">▸</span></td>
-      <td class="ts" data-label="when" data-ts="${r.ts || 0}" title="${absTime(r.ts)}">${fmtWhen(r.ts)}</td>
-      <td data-label="type"><span class="kindchip ${esc(r.kind)}">${esc(r.kind)}</span></td>
-      <td data-label="pipeline">${pipeGlyph(r)}</td>
-      <td data-label="model">${esc(r.model)}</td>
-      <td data-label="user·key">${esc(who || '—')}</td>
-      <td class="num" data-label="input">${jobInput(r)}</td>
-      <td class="num${r.wait_s > 0 ? ' warn' : ''}" data-label="wait">${r.wait_s != null ? r.wait_s.toFixed(1) + ' s' : '—'}</td>
-      <td class="num" data-label="wall">${r.processing_s.toFixed(2)} s</td>
-      <td class="num" data-label="speed">${jobSpeed(r)}</td>
-      <td data-label="status"><span class="badge ${r.status === 'ok' ? 'ok' : 'err'}" title="${esc(r.error_class ? r.error_class + (r.error_stage ? ' in ' + r.error_stage : '') : r.status)}">${esc(r.status === 'ok' ? 'ok' : (r.error_class || r.status))}</span></td>
-    </tr>`;
-      const detail = open
-        ? `<tr class="rj-expand"><td colspan="11">${stageRows(r)}</td></tr>`
-        : '';
-      return main + detail;
-    });
+    const doneRows = (view === 'running' ? [] : rt)
+      .filter(r => !flt.kinds || flt.kinds.includes(r.kind))
+      .filter(r => !warnOnly || r.status !== 'ok')
+      .filter(r => view !== 'slow' || (r.audio_s > 0 && r.processing_s > 0.5 * r.audio_s))
+      .filter(r => !flt.users || flt.users.includes(r.user_id))
+      .map(r => {
+        const key = String(r.ts || 0);
+        const open = rjExpanded.has(key);
+        const who = [r.username, r.key_label].filter(Boolean).join(' · ');
+        const main = `<tr class="rj-main${open ? ' open' : ''}" data-key="${esc(key)}">
+        <td><span class="rj-caret">▸</span></td>
+        <td class="ts" data-label="when" data-ts="${r.ts || 0}" title="${absTime(r.ts)}" data-vol>${V(fmtWhen(r.ts))}</td>
+        <td data-label="type"><span class="kindchip ${esc(r.kind)}">${esc(r.kind)}</span></td>
+        <td data-label="pipeline">${pipeGlyph(r)}</td>
+        <td data-label="model">${esc(r.model)}</td>
+        <td data-label="user·key">${esc(who || '—')}</td>
+        <td class="num" data-label="input">${jobInput(r)}</td>
+        <td class="num${r.wait_s > 0 ? ' warn' : ''}" data-label="wait">${r.wait_s != null ? r.wait_s.toFixed(1) + ' s' : '—'}</td>
+        <td class="num" data-label="wall">${r.processing_s.toFixed(2)} s</td>
+        <td class="num" data-label="speed">${jobSpeed(r)}</td>
+        <td data-label="status"><span class="badge ${r.status === 'ok' ? 'ok' : 'err'}" title="${esc(r.error_class ? r.error_class + (r.error_stage ? ' in ' + r.error_stage : '') : r.status)}">${esc(r.status === 'ok' ? 'ok' : (r.error_class || r.status))}</span></td>
+      </tr>`;
+        const detail = open
+          ? `<tr class="rj-expand"><td colspan="11">${stageRows(r)}</td></tr>`
+          : '';
+        return main + detail;
+      });
 
-  const all = runRows.concat(doneRows);
+    return runRows.concat(doneRows);
+  };
+  const vals = [];
+  const all = build(h => { vals.push(h); return h; });
+  const sig = build(() => '').join('');
   // Count what the table actually shows: running rows included, kind /
   // warnings-only / user filters applied -- not the raw finished list.
   $('rt-n').textContent = all.length;
-  $('rt-rows').innerHTML = all.length
-    ? all.join('')
-    : '<tr><td colspan="11" class="empty">— no jobs yet —</td></tr>';
+  const body = $('rt-rows');
+  if (sig === _rtSig && all.length) {
+    body.querySelectorAll('[data-vol]').forEach((el, i) => {
+      if (vals[i] !== _rtVals[i]) el.innerHTML = vals[i];
+    });
+  } else {
+    body.innerHTML = all.length
+      ? all.join('')
+      : '<tr><td colspan="11" class="empty">— no jobs yet —</td></tr>';
+  }
+  _rtSig = sig; _rtVals = vals;
   const more = $('rj-more');
   if (more) more.classList.toggle('hidden', view === 'running' || rjExhausted || !rt.length);
   const note = $('rj-foot-note');
@@ -2174,6 +2214,11 @@ document.addEventListener('visibilitychange', () => {
     if (recoveryTimer) { clearTimeout(recoveryTimer); recoveryTimer = null; }
     setStatus('paused (hidden)', 'paused');
   } else {
+    // The ring is sized in samples, not time: after a long hide the sparks
+    // would join stale samples to fresh ones across the gap, as the
+    // recovery probe already avoids.
+    histX.length = 0;
+    for (const k in hist) hist[k].length = 0;
     openStream();
   }
 });

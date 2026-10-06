@@ -185,7 +185,7 @@ def test_recent_get_no_longer_filters_by_query_string(client):
     import time as _time
     from faster_whisper_backend.stats import recent_transcriptions_store
     # Current timestamps: an epoch-era row is a prune casualty by design
-    # (older than RECENT_TRANSCRIPTIONS_TTL_DAYS), so it must not be what
+    # (older than RECENT_TRANSCRIPTIONS_RETENTION_DAYS), so it must not be what
     # the assertion depends on.
     _base = _time.time() + 1000.0
     recent_transcriptions_store.record_trace(
@@ -483,6 +483,31 @@ def test_hidden_rule_guard_error_keeps_sentinel_for_page(
         assert not re.search(r"\b(rule|entry) \d+", e["msg"]), e
 
 
+def test_quick_config_page_save_and_recent_guards(client):
+    """No JS harness: pin the strings. doSave is reentrancy-guarded and
+    re-applies edits made while its POST was in flight; reloadRecent /
+    loadOlder drop a response a newer reload superseded and keep live traces
+    pushed during the wait; a client cancel renders as a neutral chip, not
+    an error; a failed live session's source chip comes from its kind."""
+    html = client.get("/quick-config").text
+    for s in ("if (_saving) return;",
+              "const inflight = _diffsSince(sent);",
+              "if (_reapplyDiffs(inflight)) {",
+              "const gen = ++_recentGen;",
+              "if (gen !== _recentGen) return;   // a newer reload owns the list now",
+              "if (gen !== _recentGen) return;   // a reload replaced the list meanwhile",
+              "for (const entry of live) pushTrace(entry);",
+              "const cancelled = entry.status === 'cancelled';",
+              "addPill('cancelled', 'cancel-chip', 'cancelled by the client');",
+              "kind === 'dictate' ? TRACE_SRC_CHIPS.stream",
+              "'whitespace only'",
+              "if (Math.round(s) >= 60) return m + ' min';"):
+        assert s in html, s
+    # The seen-set reset moved AFTER the await.
+    body = html[html.index("async function reloadRecent()"):html.index("async function loadOlder()")]
+    assert body.index("await api(") < body.index("_seenReqIds = new Set();")
+
+
 def test_redact_collapses_hidden_rule_ordinals():
     """The schema's guard messages read `rule {idx} ({slug!r}) entry {e}:`
     — after the slug swap the ordinal still gave away the hidden rule's list
@@ -497,9 +522,11 @@ def test_redact_collapses_hidden_rule_ordinals():
     rules = [{"name": "geheim", "exposed": False},
              {"name": "meins", "exposed": True}]
     out = q._redact_invisible_slugs(
-        [{"loc": "PIPELINE_RULES", "msg": "rule 0 ('geheim') entry 2: boom"}],
+        [{"loc": "PIPELINE_RULES",
+          "msg": "rule 0 ('geheim') entry 2: invalid regex: boom"}],
         user, rules)
-    assert out == [{"loc": "PIPELINE_RULES", "msg": "<hidden rule>: boom"}]
+    assert out == [{"loc": "PIPELINE_RULES",
+                    "msg": "<hidden rule>: invalid regex: boom"}]
     # The sentinel must survive the collapse — static/page doSave keys on it
     # to route the error to the generic "contact admin" toast — and no
     # digit-bearing ordinal may remain.
@@ -519,6 +546,88 @@ def test_redact_collapses_hidden_rule_ordinals():
         user, rules)
     assert out == [{"loc": "PIPELINE_RULES.1.regex-list.entries.0.pattern",
                     "msg": "rule 1 ('meins'): bad"}]
+
+
+def test_redact_blanks_non_guard_errors_naming_a_hidden_rule():
+    """Only the regex-guard forms keep a reason. A map-key collision on a
+    hidden rule used to reach a non-admin as "<hidden rule>: map keys
+    ['Passwort', 'passwort'] collide ...", i.e. the admin dictionary's own
+    keys, and a duplicate-name error kept the hidden rule's index."""
+    from faster_whisper_backend.quick_config import routes as q
+
+    class _Perms:
+        def can_see_rule(self, rule):
+            return bool(rule.get("exposed"))
+
+    user = {"is_admin": False, "permissions": _Perms()}
+    rules = [{"name": "geheim", "exposed": False},
+             {"name": "meins", "exposed": True}]
+    out = q._redact_invisible_slugs(
+        [{"loc": "PIPELINE_RULES",
+          "msg": "Value error, rule 0 ('geheim'): map keys "
+                 "['Passwort', 'passwort'] collide when lowercased"}],
+        user, rules)
+    assert out == [{"loc": "<hidden rule>", "msg": "<hidden rule>"}]
+    out = q._redact_invisible_slugs(
+        [{"loc": "PIPELINE_RULES",
+          "msg": "Value error, duplicate rule name 'geheim' at index 3"}],
+        user, rules)
+    assert out == [{"loc": "<hidden rule>", "msg": "<hidden rule>"}]
+    # The caller's own rule keeps its collision message.
+    msg = ("Value error, rule 1 ('meins'): map keys ['A', 'a'] collide "
+           "when lowercased")
+    out = q._redact_invisible_slugs(
+        [{"loc": "PIPELINE_RULES", "msg": msg}], user, rules)
+    assert out == [{"loc": "PIPELINE_RULES", "msg": msg}]
+
+
+def test_stream_recent_rechecks_access_after_the_wait(client, make_user_key,
+                                                      app_module):
+    """stream_recent re-resolved the caller only at the top of the loop,
+    BEFORE its up-to-15 s q.get(): a revoke landing during that wait let the
+    trace it woke up for through in the old scope. Driven directly, never
+    via TestClient streaming."""
+    import asyncio
+    from starlette.requests import Request
+    from faster_whisper_backend.auth import api_keys_store
+    from faster_whisper_backend.quick_config import routes as qc
+    from faster_whisper_backend.quick_config import recent_feed as qc_recent_feed
+
+    make_user_key("root", is_admin=True)
+    uid, raw = make_user_key("alice", pages={"quick_config": "all"})
+
+    async def _receive():
+        await asyncio.Event().wait()
+
+    req = Request({
+        "type": "http", "method": "GET", "path": "/quick-config/stream",
+        "headers": [(b"authorization", f"Bearer {raw}".encode())],
+        "query_string": b"", "client": ("127.0.0.1", 12345),
+    }, _receive)
+
+    async def drive():
+        resp = await qc.stream_recent(req, qc.require_user_or_admin_sse(req))
+        body = resp.body_iterator
+
+        async def revoke_then_push():
+            await asyncio.sleep(0.1)   # the generator is parked in q.get()
+            await asyncio.to_thread(
+                api_keys_store.set_user_permissions,
+                uid, {"pages": {"quick_config": "none"}})
+            qc_recent_feed._broadcast({"event": "trace",
+                                       "data": {"user_id": "someone-else",
+                                                "final": "leaked"}})
+
+        task = asyncio.create_task(revoke_then_push())
+        try:
+            got = await asyncio.wait_for(body.__anext__(), timeout=10)
+        except StopAsyncIteration:
+            return
+        finally:
+            await task
+        raise AssertionError(f"trace delivered after revoke: {got!r}")
+
+    asyncio.run(drive())
 
 
 def test_concurrent_patches_do_not_lose_an_update(client, app_module,

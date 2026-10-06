@@ -126,3 +126,24 @@ def test_tail_document_and_compare(usage_store_db):
     assert old["range"]["truncated_to_days"] == 30
     assert us.truncated_to_days(NOW - 10 * 86400, 30, now=NOW) is None
     assert us.truncated_to_days(NOW - 40 * 86400, 0, now=NOW) is None
+
+
+def test_outcome_stubs_stay_out_of_the_tail_distributions(usage_store_db):
+    """record_outcome's stub (a hands-free session that ended without an
+    utterance) is a session, not a decode: it used to count as a 0 s job of
+    model "(unknown)" in the turnaround, wait, by-model and failure figures."""
+    import time
+    us = usage_store_db
+    us.record_usage(key_id="k", user_id="u", audio_s=10.0, words=5, status="ok",
+                    kind="dictation", job_id="r" * 32, processing_s=8.0,
+                    model="large-v3")
+    for i in range(3):
+        assert us.record_outcome(user_id="u", job_id=f"{i}" * 32, activation="handsfree",
+                                 delivery="none", translation="not_asked") == "accepted"
+    now = time.time()
+    win = dict(start_ts=now - 3600, end_ts=now + 3600)
+    turn = us.turnaround_histogram(**win)
+    assert turn["n"] == 1 and turn["p50"] == 8.0
+    assert us.wait_quantiles(**win)["n"] == 1
+    assert us.failures(**win)["jobs"] == 1
+    assert [m["model"] for m in us.by_model(**win)] == ["large-v3"]

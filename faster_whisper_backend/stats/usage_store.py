@@ -541,9 +541,12 @@ def record_usage(
             conn.execute("BEGIN")
             try:
                 new_session = True
+                late_outcome: sqlite3.Row | None = None
                 if jid is not None:
                     owner = conn.execute(
-                        "SELECT user_id FROM usage_jobs WHERE job_id = ?", (jid,)
+                        "SELECT user_id, utterances, created_ts, reported_ts,"
+                        " activation, delivery, translation, app_id"
+                        " FROM usage_jobs WHERE job_id = ?", (jid,)
                     ).fetchone()
                     if owner is not None and owner["user_id"] != uid:
                         # Client-minted ids can collide across users in
@@ -551,7 +554,13 @@ def record_usage(
                         # someone else's job.
                         jid = None
                     else:
-                        new_session = owner is None
+                        # A row with no utterance yet is record_outcome's
+                        # stub (the report raced the utterances): the session
+                        # is still uncounted in usage_hourly, and the stub's
+                        # open-mode key_id gives way to the real one.
+                        new_session = owner is None or not owner["utterances"]
+                        if owner is not None and owner["reported_ts"] is not None:
+                            late_outcome = owner
                         conn.execute(
                             "INSERT INTO usage_jobs"
                             " (job_id, user_id, key_id, kind, created_ts, status,"
@@ -559,6 +568,8 @@ def record_usage(
                             "  wait_s, error_class, error_stage)"
                             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)"
                             " ON CONFLICT(job_id) DO UPDATE SET"
+                            "  key_id      = CASE WHEN utterances = 0"
+                            "                THEN excluded.key_id ELSE key_id END,"
                             "  utterances  = utterances + 1,"
                             "  audio_s     = audio_s + excluded.audio_s,"
                             "  words       = words + excluded.words,"
@@ -589,6 +600,8 @@ def record_usage(
                 )
                 for st in stage_rows:
                     _record_stage(conn, h, uid, jid, a, st)
+                if late_outcome is not None and (w or a):
+                    _roll_late_utterance(conn, late_outcome, w, a)
                 conn.execute("COMMIT")
             except Exception:
                 conn.execute("ROLLBACK")
@@ -677,6 +690,29 @@ def _roll_outcome(conn: sqlite3.Connection, job: sqlite3.Row,
         )
 
 
+def _roll_late_utterance(conn: sqlite3.Connection, job: sqlite3.Row,
+                         words: int, audio_s: float) -> None:
+    """An utterance that landed AFTER its job's outcome was rolled (a raced
+    report's stub, or a sweep-marked job): add its words / audio to the
+    outcome buckets _roll_outcome already counted the session in. No
+    session is added, and a bucket the prune already dropped stays gone."""
+    hour = hour_for_ts(float(job["created_ts"]))
+    conn.execute(
+        "UPDATE usage_dictation_hourly SET words = words + ?,"
+        " audio_s = audio_s + ?"
+        " WHERE hour = ? AND user_id = ? AND activation = ? AND delivery = ?"
+        " AND translation = ?",
+        (words, audio_s, hour, job["user_id"], job["activation"],
+         job["delivery"], job["translation"]),
+    )
+    if job["app_id"]:
+        conn.execute(
+            "UPDATE usage_app_hourly SET words = words + ?"
+            " WHERE hour = ? AND user_id = ? AND app_id = ?",
+            (words, hour, job["user_id"], job["app_id"]),
+        )
+
+
 def record_outcome(
     *,
     user_id: str,
@@ -703,7 +739,11 @@ def record_outcome(
             cur = conn.execute(
                 "UPDATE usage_jobs SET activation = ?, delivery = ?,"
                 " translation = ?, app_id = ?, reported_ts = ?"
-                " WHERE job_id = ? AND user_id = ? AND reported_ts IS NULL",
+                " WHERE job_id = ? AND user_id = ? AND reported_ts IS NULL"
+                # Only a dictation reports an outcome (the sweep reads the
+                # same kind): naming one's own file / url job id must not
+                # fold its words and audio into the dictation rollups.
+                " AND kind = 'dictation'",
                 (activation, delivery, translation, app_id, now, job_id, user_id),
             )
             if cur.rowcount == 0:
@@ -1134,7 +1174,9 @@ def _from_epoch_day(n: int) -> datetime.date:
     return _EPOCH + datetime.timedelta(days=int(n))
 
 
-_MAX_EPOCH_DAY = _epoch_day(datetime.date.max) - 1  # to+1 day must still be a date
+# to+1 day must still be a date, and the month axis steps to the first of the
+# month AFTER to_day: 9999-12 has no successor, so the range ends in November.
+_MAX_EPOCH_DAY = _epoch_day(datetime.date(9999, 11, 30))
 
 
 def resolve_window(
@@ -1313,10 +1355,12 @@ def document(
         from_day=f, to_day=t, tz=tz_name,
         source="jobs" if with_stages else "rollups",
         jobs_retention_days=jobs_retention_days, first_day=first_day)
-    if key_id is not None:
-        # Partial by construction: see the docstring.
+    # Partial by construction (see the docstring), but only on the rollup
+    # path: the with= document reads every figure from the per-job rows,
+    # which carry both the key and the kind.
+    if key_id is not None and not with_stages:
         doc["range"]["key_scoped"] = False
-    if kinds:
+    if kinds and not with_stages:
         doc["range"]["kind_scoped"] = False
     start_hour = _midnight_hour(_from_epoch_day(f), tz)
     end_hour = _midnight_hour(_from_epoch_day(t) + datetime.timedelta(days=1), tz)
@@ -1626,8 +1670,9 @@ def overview(
         "range": doc["range"],
         "filter": {"user_id": user_id, "key_id": key_id, "kinds": list(kinds),
                    "key_scoped": key_scoped if key_id is not None else True,
-                   # every breakdown but stage honours the kinds filter
-                   "kind_scoped": not kinds or by != "stage"},
+                   # every breakdown but the stage rollup honours the kinds
+                   # filter (with= reads stages off the narrowed job rows)
+                   "kind_scoped": not kinds or by != "stage" or bool(with_stages)},
         "totals": doc["total"],
         "today": doc["today"],
         "stages": doc["stages"],
@@ -1746,13 +1791,19 @@ def _jobs_where(user_id: Ids, key_id: Ids, kind: Ids,
                 ) -> tuple[str, list[Any]]:
     """`(" WHERE …", params)` over usage_jobs for a window, optional
     owner(s) / key(s) / kind(s). `alias` prefixes the columns for joined
-    queries."""
+    queries.
+
+    record_outcome's stubs (a dictation row with no utterance: an empty
+    session, or a report that raced its utterances) are left out. They are
+    sessions, not decodes, and would count as 0 s jobs of model "(unknown)"
+    in every tail distribution."""
     p = alias + "." if alias else ""
     kinds = [kind] if isinstance(kind, str) else list(kind or ())
     where, params = _scope_where(user_id, key_id, col=p + "user_id",
                                  key_col=p + "key_id", kinds=kinds,
                                  kind_col=p + "kind")
     where += f" AND {p}created_ts >= ? AND {p}created_ts < ?"
+    where += f" AND NOT ({p}kind = 'dictation' AND {p}utterances = 0)"
     params += [float(start_ts), float(end_ts)]
     return where, params
 

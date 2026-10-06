@@ -1,16 +1,16 @@
 """Integration tests for the /stats router (host-gated dashboard)."""
 
 import pathlib
+import re
 
+import pytest
 from starlette.testclient import TestClient
 
-from faster_whisper_backend.core import jobs
-import re
-from faster_whisper_backend.stats import metrics
-import pytest
-from faster_whisper_backend.translation import engine as translation
-from faster_whisper_backend.paths import REPO_ROOT
 from faster_whisper_backend.admin import logs_routes
+from faster_whisper_backend.core import jobs
+from faster_whisper_backend.paths import REPO_ROOT
+from faster_whisper_backend.stats import metrics
+from faster_whisper_backend.translation import engine as translation
 
 
 def test_stats_page_loopback_ok(client):
@@ -32,6 +32,10 @@ def test_stats_usage_out_of_range_window_is_422(client):
     assert client.get("/stats/usage?to=1000000000").status_code == 422
     assert client.get("/stats/pick?dim=user&to=1000000000").status_code == 422
     assert client.get("/stats/tail?to=1000000000").status_code == 422
+    # /stats/history: finite but past SQLite's 64-bit INTEGER.
+    assert client.get("/stats/history?metric=gpu_util&from=1e300&to=1e301").status_code == 422
+    r = client.get("/stats/history?metric=gpu_util&step=99999999999999999999999")
+    assert r.status_code == 200 and r.json()["step"] <= 3600
 
 
 def test_stats_usage_ok(client):
@@ -167,7 +171,6 @@ def test_stage_hues_have_one_definition():
     (the app.css values), and the consumers (stats page + stats.js, the
     /logs receipt, /quick-config traces, captures) reference the tokens
     rather than carrying their own hexes."""
-    import pathlib
     from faster_whisper_backend.quick_config import routes as quick_config_routes
     from faster_whisper_backend.stats import routes as stats_routes
     from faster_whisper_backend.core import web_common
@@ -276,16 +279,18 @@ def test_recent_jobs_counter_counts_rendered_rows(client):
 def test_stats_page_renders_every_job_kind(client):
     """jobs.KINDS is the single source of truth; each kind needs a kindchip
     colour, and the Recent-jobs table (which follows the sub-bar's usage
-    kinds) must map every job kind from some usage kind — or preload, which
-    always shows — or it becomes unfilterable."""
+    kinds) must map every job kind from some usage kind — or preload /
+    download, which always show — or it becomes unfilterable. A finished
+    'download' row is a model download, so "link" must not pull it in."""
     html = client.get("/stats").text
     m = re.search(r"const RJ_KIND_OF = \{(.*?)\};", html, re.S)
     assert m, "RJ_KIND_OF map missing"
     mapped = set(re.findall(r"'([a-z]+)'", m.group(1)))
     for kind in jobs.KINDS:
         assert f".kindchip.{kind}" in html, kind
-        assert kind in mapped or kind == "preload", kind
-    assert ".concat(['preload'])" in html
+        assert kind in mapped or kind in ("preload", "download"), kind
+    assert "download" not in mapped
+    assert ".concat(['preload', 'download'])" in html
 
 
 def test_log_stage_colors_flag_reaches_logs_page(client, app_module,
@@ -852,7 +857,6 @@ def test_transcription_records_the_gate_wait(client):
     job = usage_store._require_conn().execute(
         "SELECT wait_s FROM usage_jobs ORDER BY created_ts DESC LIMIT 1").fetchone()
     assert job is not None and job["wait_s"] >= 0.0
-    from faster_whisper_backend.stats import metrics
     assert metrics.gpu_gate is not None and metrics.gpu_gate.held == 0
 
 
@@ -1003,6 +1007,58 @@ def test_stats_jobs_users_filter(client, make_user_key):
     assert client.get(f"/stats/jobs?users={bob}", headers=bearer(raw_alice)).status_code == 403
     r = client.get("/stats/jobs?users=user-deadbeef", headers=bearer(raw_bob))
     assert r.status_code == 200 and r.json()["jobs"] == []
+
+
+def test_stats_usage_echoes_display_names_for_picked_users(client, make_user_key):
+    """A pasted `users=` link never opened the picker, so the page had no
+    name for the id and the jobs table's running rows (keyed by username)
+    matched nothing. The usage doc echoes the names; a scrubbed viewer gets
+    only their own."""
+    from tests.conftest import bearer
+    _, raw_admin = make_user_key("root", is_admin=True)
+    alice, _ = make_user_key("alice", pages={"stats": "own"})
+    bob, raw_bob = make_user_key("bob", pages={"stats": "all"})
+    doc = client.get(f"/stats/usage?by=kind&users={alice},{bob}",
+                     headers=bearer(raw_admin)).json()
+    assert doc["filter"]["user_labels"] == {alice: "alice", bob: "bob"}
+    scrubbed = client.get(f"/stats/usage?by=kind&users={alice},{bob}",
+                          headers=bearer(raw_bob)).json()
+    assert scrubbed["filter"]["user_labels"] == {bob: "bob"}
+    assert "user_labels" not in client.get(
+        "/stats/usage?by=kind", headers=bearer(raw_admin)).json()["filter"]
+
+
+def test_stats_page_jobs_table_survives_filter_changes_and_frames(client):
+    """No JS harness: pin the strings. A "load older" response that lands
+    after the filter changed is dropped (generation token); the 1 Hz
+    re-render patches only the volatile cells when nothing else changed, so
+    a cancel / expand click does not hit a detached node; an in-flight
+    cancel stays disabled; the own-scope header cluster gets server.gpu;
+    the sparks restart after a hidden tab; stats.js re-renders the table
+    only when kinds / users changed, and takes the server's names for
+    picked users."""
+    html = client.get("/stats").text
+    for s in ("const gen = rjGen;",
+              "if (gen !== rjGen) return;",
+              "rjGen++;",
+              "if (sig === _rtSig && all.length) {",
+              "body.querySelectorAll('[data-vol]')",
+              "window._fwIsCancelling(j.progress_id)",
+              "Object.assign({}, snap, { gpu: snap.server && snap.server.gpu })",
+              'data-win="usage" data-nostage>'):
+        assert s in html, s
+    hidden = html[html.index("document.addEventListener('visibilitychange'"):]
+    assert hidden.index("histX.length = 0;") < hidden.index("openStream();")
+    with pathlib.Path(REPO_ROOT, "static", "stats.js").open(encoding="utf-8") as f:
+        js = f.read()
+    for s in ("if (sig === _publishedSig) return;",
+              "Object.assign(pickLabels.user, (j.filter || {}).user_labels || {});",
+              "el.hasAttribute('data-nostage') ? htmlNoStage : html",
+              "!(taPrev > 0) ? '<span class=\"delta flat\">new vs prev</span>'",
+              "Number(rg.from) < todayDay() - ret",
+              "((lastDoc.filter || {}).key_scoped === false)"):
+        assert s in js, s
+    assert "Math.floor(Date.now() / 86400000)" not in js
 
 
 def test_stats_page_jobs_table_v2(client):
@@ -1252,7 +1308,8 @@ def test_stats_js_discloses_unscoped_stage_rollups_and_small_fixes(client):
               "lastDoc.bucket !== Q.bucket) setSeg('usage-bucket', lastDoc.bucket);",
               '<td colspan="9" class="empty">— not available for your scope —</td>',
               "if (e.altKey || e.ctrlKey || e.metaKey) return;   // Cmd+M",
-              "rtf > 0 ? '× · ' + (1 / rtf).toFixed(0) + '× live' : '×'",
+              "rtf > 0 ? '× · ' + liveX(rtf) + '× live' : '×'",
+              "(1 / r >= 10 ? (1 / r).toFixed(0) : (1 / r).toFixed(1))",
               "'\">new vs ' + cmpWord()",
               "if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }",
               "try { localStorage.removeItem(GS_LAYOUT_KEY); } catch (_) {}",

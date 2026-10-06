@@ -524,6 +524,57 @@ def test_outcome_scoped_to_owner(usage_store_db):
                        tz_name="UTC")["dictation"]["delivery"]["typed"] == 0
 
 
+def _outcome_rollups(us):
+    conn = us._require_conn()
+    dictation = conn.execute(
+        "SELECT SUM(sessions) AS s, SUM(words) AS w, SUM(audio_s) AS a"
+        " FROM usage_dictation_hourly").fetchone()
+    app = conn.execute(
+        "SELECT SUM(sessions) AS s, SUM(words) AS w FROM usage_app_hourly").fetchone()
+    return (dictation["s"], dictation["w"], dictation["a"]), (app["s"], app["w"])
+
+
+def test_utterance_after_the_outcome_matches_the_usual_order(usage_store_db):
+    """record_outcome's stub (the report raced the utterance) used to keep
+    the late utterance's session out of usage_hourly, pin the job to the
+    open-mode key, and leave the outcome rollups at 0 words."""
+    us = usage_store_db
+    jid = "c" * 32
+    assert us.record_outcome(user_id="alice", job_id=jid, activation="hold",
+                             delivery="typed", translation="not_asked",
+                             app_id="thunderbird") == "accepted"
+    us.record_usage(key_id="k", user_id="alice", audio_s=15.0, words=25,
+                    status="ok", kind="dictation", job_id=jid)
+    conn = us._require_conn()
+    hourly = conn.execute(
+        "SELECT key_id, requests, sessions, words FROM usage_hourly").fetchall()
+    assert [tuple(r) for r in hourly] == [("k", 1, 1, 25)]
+    job = conn.execute("SELECT key_id, utterances FROM usage_jobs").fetchone()
+    assert tuple(job) == ("k", 1)
+    assert _outcome_rollups(us) == ((1, 25, 15.0), (1, 25))
+    # A second utterance adds words, never a session (and keeps the key).
+    us.record_usage(key_id="other", user_id="alice", audio_s=5.0, words=5,
+                    status="ok", kind="dictation", job_id=jid)
+    assert conn.execute("SELECT SUM(sessions) FROM usage_hourly").fetchone()[0] == 1
+    assert conn.execute("SELECT key_id FROM usage_jobs").fetchone()[0] == "k"
+    assert _outcome_rollups(us) == ((1, 30, 20.0), (1, 30))
+
+
+def test_outcome_naming_a_non_dictation_job_is_a_duplicate(usage_store_db):
+    """Only a dictation reports an outcome: naming one's own file job id
+    folded its words and audio into the dictation and app rollups."""
+    us = usage_store_db
+    us.record_usage(key_id="k", user_id="u", audio_s=600.0, words=5000,
+                    status="ok", kind="file", job_id="aaaaaaaa")
+    assert us.record_outcome(user_id="u", job_id="aaaaaaaa", activation="hold",
+                             delivery="typed", translation="not_asked",
+                             app_id="thunderbird") == "duplicate"
+    conn = us._require_conn()
+    assert conn.execute("SELECT COUNT(*) FROM usage_dictation_hourly").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM usage_app_hourly").fetchone()[0] == 0
+    assert conn.execute("SELECT reported_ts FROM usage_jobs").fetchone()[0] is None
+
+
 def test_sweep_marks_unreported_and_prunes(usage_store_db):
     us = usage_store_db
     now_h = us.now_hour()
@@ -596,7 +647,8 @@ def test_empty_document_shape_matches_populated(usage_store_db):
                                      "requests", "errors"}
 
 
-def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(usage_store_db):
+def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(
+        usage_store_db, tmp_path):
     """The rename and the copy are separate steps; if the process dies in
     between, the next init finds the parking table and finishes the job."""
     us = usage_store_db
@@ -605,7 +657,11 @@ def test_fold_runs_on_every_init_so_a_crash_mid_migration_heals(usage_store_db):
     table_only = _LEGACY_SCHEMA.split("CREATE INDEX")[0]
     conn.executescript(table_only.replace("usage_hourly", "usage_hourly_legacy"))
     conn.execute("INSERT INTO usage_hourly_legacy VALUES (7, 'k', 'u', 2, 0, 5, 1.0)")
-    us._fold_legacy_hourly(conn)
+    conn.commit()
+    conn.close()
+    # The next start: init_db itself must find the parking table and fold it.
+    us.init_db(str(tmp_path / "usage.sqlite3"))
+    conn = us._require_conn()
     assert us.totals_for_user("u")["requests"] == 2
     assert conn.execute(
         "SELECT 1 FROM sqlite_master WHERE name='usage_hourly_legacy'").fetchone() is None
@@ -675,6 +731,12 @@ def test_document_user_id_none_aggregates_all_users(usage_store_db):
     narrowed = us.document(None, days=7, tz=_UTC, tz_name="UTC", now=now,
                            with_stages=("diarizing",))
     assert narrowed["total"]["all"]["sessions"] == 1
+    # The jobs path reads key and kind off the job rows, so a key or kinds
+    # filter there is fully applied and no flag says otherwise.
+    keyed_jobs = us.document("alice", days=7, tz=_UTC, tz_name="UTC", now=now,
+                             key_id="ka", kinds=["file"], with_stages=("diarizing",))
+    assert "key_scoped" not in keyed_jobs["range"]
+    assert "kind_scoped" not in keyed_jobs["range"]
     assert narrowed["range"]["first_day"] == everyone["range"]["first_day"]
 
 
@@ -696,6 +758,12 @@ def test_parse_window_params_matches_v1_route(usage_store_db):
     with pytest.raises(ValueError, match="'from' out of range"):
         us.parse_window_params(from_day=-1)
     assert us.parse_window_params(from_day=0, to_day=us._MAX_EPOCH_DAY).to_day == us._MAX_EPOCH_DAY
+    # The month axis steps one month past to_day: December 9999 has none, so
+    # the last accepted day is in November and the axis there still builds.
+    with pytest.raises(ValueError, match="'to' out of range"):
+        us.parse_window_params(to_day=_D("9999-12-15"))
+    us.overview(user_id=None, tz=_UTC, tz_name="UTC", from_day=us._MAX_EPOCH_DAY - 100,
+                to_day=us._MAX_EPOCH_DAY, bucket="month")
 
 
 # --------------------------------------------------------------------------

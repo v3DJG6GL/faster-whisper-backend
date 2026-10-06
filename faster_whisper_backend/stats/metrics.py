@@ -321,7 +321,8 @@ def record_transcription(model: str, audio_dur: float, proc_dur: float,
 
     ``wait_s`` is the time the request spent queued for a GPU slot;
     ``error_class`` / ``error_stage`` say why and where a failed job
-    failed (see ERROR_CLASSES). All three land in both stores.
+    failed (see ERROR_CLASSES). All three land in both stores, except with
+    ``recent_row=False``, where only the usage rollup gets them.
 
     ``recent_row=False`` skips the recent-jobs row and keeps only the usage
     rollup — for a dictation's follow-up translation, which is folded into

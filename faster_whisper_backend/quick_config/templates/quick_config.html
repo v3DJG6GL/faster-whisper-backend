@@ -205,6 +205,10 @@
   .trace-meta .err-chip { font-family: var(--font-mono); color: var(--red);
     border-color: rgba(255,123,114,0.5); background: rgba(255,123,114,0.12);
     text-transform: uppercase; letter-spacing: 0.04em; }
+  /* A client cancel is not a failure (main.py records it as 'cancelled' on
+     purpose): a muted chip, no red stripe. */
+  .trace-meta .cancel-chip { font-family: var(--font-mono); color: var(--dim);
+    text-transform: uppercase; letter-spacing: 0.04em; }
   .trace-notext { color: var(--dim); font-style: italic;
     font-size: var(--fs-sm); }
   /* Stage cost rail: the stage list drawn to scale instead of only listed.
@@ -485,6 +489,10 @@
 let initialRules = [];      // last-loaded rules from server (deep-copy snapshot)
 let liveRules = [];         // editable rules — diffed against initialRules to build patch
 let dirty = new Set();      // slugs with changes
+// Set while a save's POST and the reload after it are in flight. doSave is
+// wired to the bar's button, every per-card button and Enter in each map/text
+// input, so without it a second trigger re-sent the same patch.
+let _saving = false;
 
 async function api(method, path, body) {
   // Session cookie sent automatically; mutations carry the CSRF token.
@@ -575,15 +583,21 @@ function _buildPerCardSaveBtn(slug) {
   _perCardSaveBtns.set(slug, btn);
   return btn;
 }
+function _syncSaveBtns() {
+  const has = dirty.size > 0;
+  // Off while a save is in flight (_saving): a second click would POST the
+  // same pre-save fingerprints and come back as a spurious conflict.
+  document.getElementById('save-btn').disabled = !has || _saving;
+  document.getElementById('discard-btn').disabled = !has || _saving;
+  for (const [slug, btn] of _perCardSaveBtns) {
+    btn.disabled = _saving || _lockedSlugs.has(slug) || !dirty.has(slug);
+  }
+}
 function updateButtons() {
   const has = dirty.size > 0;
-  document.getElementById('save-btn').disabled = !has;
-  document.getElementById('discard-btn').disabled = !has;
   setStatus(has ? (dirty.size + ' rule' + (dirty.size === 1 ? '' : 's') + ' modified')
                 : (initialRules.length + ' rule' + (initialRules.length === 1 ? '' : 's') + ' loaded'));
-  for (const [slug, btn] of _perCardSaveBtns) {
-    btn.disabled = _lockedSlugs.has(slug) || !dirty.has(slug);
-  }
+  _syncSaveBtns();
 }
 
 function renderCards() {
@@ -681,6 +695,13 @@ let _seenReqIds = new Set();
 let _searchQuery = '';
 // Active stream-recovery poller (mirrors /stats); non-null while reconnecting.
 let _recoveryTimer = null;
+// Bumped by every reloadRecent: a response (reload or load-older) that lands
+// after a newer reload began is dropped, so an older search term's rows and
+// cursor never overwrite the current one's.
+let _recentGen = 0;
+// Live traces pushTrace placed while a reload was in flight; the reload's
+// list rebuild would wipe them, so it re-pushes them. null when none is.
+let _pushedDuringReload = null;
 
 function _entryKey(entry) {
   if (!entry) return '';
@@ -821,15 +842,18 @@ function traceDur(secs) {
   if (!Number.isFinite(s) || s <= 0) return '';
   // Round to whole minutes FIRST so the carry lands in the hour
   // (7185 s -> "2 h 0 min", not "1 h 60 min").
+  // The seconds branch decides on the ROUNDED value too: 59.6 s is "1 min",
+  // not "60 s".
   const m = Math.round(s / 60);
   if (m >= 60) return Math.floor(m / 60) + ' h ' + (m % 60) + ' min';
-  if (s >= 60) return m + ' min';
+  if (Math.round(s) >= 60) return m + ' min';
   return Math.round(s) + ' s';
 }
 
 // The stage list drawn to scale, in the canonical stage hues. Returns null
-// when there is nothing to draw — a live utterance records one stage and rows
-// written before the stages migration record none.
+// when there is nothing to draw: no stage with a positive duration (rows
+// written before the stages migration record none). A live utterance's one
+// stage draws a one-segment rail.
 function traceRail(stages, audioDur) {
   let total = 0;
   for (const st of stages) total += Math.max(0, Number(st.secs) || 0);
@@ -887,7 +911,11 @@ function renderTrace(entry) {
   const item = document.createElement('div');
   // A failed job used to render as a row with nothing in it — no chip, no
   // stripe, just empty raw/final blocks.
-  const failed = !!(entry.status && entry.status !== 'ok');
+  // A client cancel is recorded as 'cancelled', explicitly NOT an error
+  // (main.py, metrics._USAGE_NON_ERROR_STATUSES): neutral chip, no stripe.
+  const cancelled = entry.status === 'cancelled';
+  const failed = !!(entry.status && entry.status !== 'ok' && !cancelled);
+  const noText = !(entry.raw || '') && !(entry.final || '');
   item.className = 'trace-item' + (failed ? ' st-error' : '');
   // Stash the entry so rebuildDatalist() can read tokens/bigrams without
   // a separate cache. JSON encoding is fine — tokens/bigrams are small.
@@ -922,8 +950,14 @@ function renderTrace(entry) {
     // but wrote it only to the log line, never to the row. Suppressed
     // entirely for kinds that consume no audio — the source column still
     // says 'file' on those rows, and repeating it would be a lie.
-    if (!TRACE_KINDS_NO_AUDIO[kind]) {
-      const spec = TRACE_SRC_CHIPS[entry.source] || TRACE_SRC_CHIPS.file;
+    // Error rows go through record_timing(), which writes no source, so the
+    // column holds its 'file' default: a failed live session reads its
+    // source off the kind, and any other failed row with no text has no
+    // known source at all.
+    const spec = kind === 'dictate' ? TRACE_SRC_CHIPS.stream
+      : (failed && noText) ? null
+      : (TRACE_SRC_CHIPS[entry.source] || TRACE_SRC_CHIPS.file);
+    if (spec && !TRACE_KINDS_NO_AUDIO[kind]) {
       addPill(spec[0], 'src-chip ' + spec[1], spec[2]);
     }
     // 'live' already says 'dictate'. Two chips saying one thing is noise.
@@ -957,6 +991,8 @@ function renderTrace(entry) {
     addPill('error', 'err-chip', 'status: ' + String(entry.status)
       + (entry.error_stage ? ' · stage ' + String(entry.error_stage) : '')
       + (entry.error_class ? ' · ' + String(entry.error_class) : ''));
+  } else if (cancelled) {
+    addPill('cancelled', 'cancel-chip', 'cancelled by the client');
   }
   // Size readout. Used to render only when the text was longer than
   // TRACE_CLAMP_CHARS, which meant a short dictation showed neither its
@@ -990,7 +1026,7 @@ function renderTrace(entry) {
   // stages has been on the row since the preload work and reaches the
   // browser already decoded; the viewer just never looked at it. Placed
   // above `raw` so "how this run executed" precedes "what it produced".
-  // Batch rows only for now — a live utterance records one stage.
+  // Live rows carry one stage (the utterance's decode) and get it too.
   {
     const stages = (Array.isArray(entry.stages) ? entry.stages : [])
       .filter(st => st && st.name);
@@ -1018,8 +1054,7 @@ function renderTrace(entry) {
   // the two empty RAW/FINAL blocks would just be furniture. One honest line
   // replaces them; the action row below still renders, because a failed job
   // is exactly the kind of thing worth reporting.
-  const noText = !(entry.raw || '') && !(entry.final || '');
-  if (failed && noText) {
+  if ((failed || cancelled) && noText) {
     const none = document.createElement('div');
     none.className = 'trace-notext';
     none.textContent = 'No transcript recorded \u2014 the job did not finish.';
@@ -1043,7 +1078,7 @@ function renderTrace(entry) {
       const first = changed.find(c =>
         (c[1] || '').length > TRACE_DIFF_CHARS
         || (c[2] || '').length > TRACE_DIFF_CHARS) || changed[0];
-      const A = (first[1] || '').split(/\s+/), B = (first[2] || '').split(/\s+/);
+      const A = (first[1] || '').trim().split(/\s+/), B = (first[2] || '').trim().split(/\s+/);
       const regions = wordDiffRegions(A, B);
       if (regions.length) {
         const teaser = diffExcerpt(A, B, regions[0]);
@@ -1108,13 +1143,17 @@ function renderTrace(entry) {
         continue;
       }
       // Long text: word-diff excerpts instead of two full copies.
-      const A = (before || '').split(/\s+/), B = (after || '').split(/\s+/);
+      // Trimmed so a leading/trailing whitespace change is no '' "word"; a
+      // step that changed only whitespace then has no word regions at all.
+      const A = (before || '').trim().split(/\s+/), B = (after || '').trim().split(/\s+/);
       const regions = wordDiffRegions(A, B);
       const head = document.createElement('span');
       head.className = 'step-label';
       head.innerHTML = '\u25b8 ' + lblHtml
-        + ' <span class="skipped-tag">changed ' + fmtCount(regions.length)
-        + ' spot' + (regions.length === 1 ? '' : 's') + '</span>';
+        + ' <span class="skipped-tag">' + (regions.length
+          ? 'changed ' + fmtCount(regions.length)
+            + ' spot' + (regions.length === 1 ? '' : 's')
+          : 'whitespace only') + '</span>';
       stepEl.appendChild(head);
       for (const r of regions.slice(0, TRACE_DIFF_SAMPLE)) {
         stepEl.appendChild(diffExcerpt(A, B, r));
@@ -1147,7 +1186,7 @@ function renderTrace(entry) {
     item.appendChild(det);
   }
 
-  if (!(failed && noText)) {
+  if (!((failed || cancelled) && noText)) {
     item.appendChild(traceTextBlock('final', entry.final || '', 'trace-final'));
   }
 
@@ -1701,6 +1740,7 @@ function pushTrace(entry) {
   const empty = list.querySelector('.empty-recent');
   if (empty) empty.remove();
   list.insertBefore(renderTrace(entry), list.firstChild);
+  if (_pushedDuringReload) _pushedDuringReload.push(entry);
   // Server caps row count via RECENT_TRANSCRIPTIONS_MAX + TTL prune; no
   // client-side trim. The "Load older" cursor walks back through the
   // store from whatever the user has on screen.
@@ -1732,8 +1772,8 @@ async function reloadRecent() {
   const list = document.getElementById('recent-list');
   const btn = document.getElementById('btn-load-older');
   if (!list) return;
-  _seenReqIds = new Set();
-  _oldestLoadedTs = null;
+  const gen = ++_recentGen;
+  if (!_pushedDuringReload) _pushedDuringReload = [];
   const q = _searchQuery;
   let j = null;
   try {
@@ -1748,12 +1788,22 @@ async function reloadRecent() {
   } catch (e) {
     showToast('Recent load failed: ' + e, 'err');
   }
+  if (gen !== _recentGen) return;   // a newer reload owns the list now
+  const live = _pushedDuringReload || [];
+  _pushedDuringReload = null;
+  // Reset only now: a trace pushed during the await went into the OLD seen
+  // set, and the rebuild below would wipe it while the new set skipped it.
+  _seenReqIds = new Set();
+  _oldestLoadedTs = null;
   const rows = (j && j.recent) || [];
   // Server returns newest-first; appending in order leaves newest at the top.
   list.innerHTML = '';
   for (const entry of rows) appendTraceAtBottom(entry);
+  // Live traces that arrived during the wait and are not in the response
+  // (pushTrace dedupes the ones that are, and re-checks the search term).
+  for (const entry of live) pushTrace(entry);
   _oldestLoadedTs = j && j.next_before_ts ? j.next_before_ts : null;
-  if (!rows.length) {
+  if (!list.querySelector('.trace-item')) {
     const d = document.createElement('div');
     d.className = 'empty-recent';
     d.textContent = q
@@ -1781,6 +1831,7 @@ async function loadOlder() {
     }
   }
   if (_oldestLoadedTs == null) { btn.style.display = 'none'; return; }
+  const gen = _recentGen;
   _loadOlderBusy = true;
   btn.disabled = true;
   const prevLabel = btn.textContent;
@@ -1792,8 +1843,10 @@ async function loadOlder() {
                   { q: _searchQuery, before_ts: _oldestLoadedTs })
       : await api('GET', '/quick-config/recent?before_ts='
                   + encodeURIComponent(_oldestLoadedTs));
+    if (gen !== _recentGen) return;   // a reload replaced the list meanwhile
     if (!r.ok) { showToast('Load older failed (' + r.status + ')', 'err'); return; }
     const j = await r.json();
+    if (gen !== _recentGen) return;
     const rows = (j && j.recent) || [];
     for (const entry of rows) appendTraceAtBottom(entry);
     _oldestLoadedTs = j && j.next_before_ts ? j.next_before_ts : null;
@@ -2087,10 +2140,60 @@ async function loadMyUsage() {
   }
 }
 
+// Per-field diffs between `base` (a rules snapshot) and the current
+// liveRules, keyed by slug: the edits made since that snapshot.
+function _diffsSince(base, slugs) {
+  const out = new Map();
+  for (const live of liveRules) {
+    if (slugs && !slugs.has(live.name)) continue;
+    const orig = base.find(r => r.name === live.name);
+    if (!orig) continue;
+    const allowed = _ALLOWED_BY_TYPE[live.type] || new Set(['enabled']);
+    const fieldDiffs = {};
+    for (const k of allowed) {
+      const d = _fieldDiff(orig[k], live[k], _diffKindFor(k));
+      if (d) fieldDiffs[k] = d;
+    }
+    if (Object.keys(fieldDiffs).length) out.set(live.name, fieldDiffs);
+  }
+  return out;
+}
+// Re-apply diffs from _diffsSince onto the (freshly loaded) liveRules and
+// mark those rules dirty. Returns how many rules took a diff.
+function _reapplyDiffs(diffsBySlug) {
+  let merged = 0;
+  for (const [slug, fieldDiffs] of diffsBySlug) {
+    const idx = liveRules.findIndex(r => r.name === slug);
+    if (idx < 0) continue;  // rule was deleted / un-exposed server-side
+    for (const [field, diff] of Object.entries(fieldDiffs)) {
+      liveRules[idx][field] = _applyFieldDiff(liveRules[idx][field], diff);
+    }
+    dirty.add(slug);
+    merged++;
+  }
+  return merged;
+}
+
 async function doSave() {
+  if (_saving) return;
   const { patch, fingerprints } = buildPatchAndFingerprints();
   if (!Object.keys(patch).length) return;
+  _saving = true;
+  _syncSaveBtns();
+  try {
+    await _doSave(patch, fingerprints);
+  } finally {
+    _saving = false;
+    _syncSaveBtns();
+  }
+}
+
+async function _doSave(patch, fingerprints) {
   setStatus('saving…');
+  // What this POST sends. Anything edited after this point, on any rule, is
+  // NOT in the save, and the load() below would silently discard it, so it
+  // is diffed against this snapshot and re-applied after the reload.
+  const sent = JSON.parse(JSON.stringify(liveRules));
   const r = await api('POST', '/quick-config/state',
                       { rules_patch: patch, fingerprints });
   if (r.status === 422) {
@@ -2135,21 +2238,13 @@ async function doSave() {
     // replacement, enabled) the user's new value still wins (no way to
     // merge two scalar edits), but the user reviews before re-saving.
     const conflictSlugs = conflicts.map(c => c.slug);
+    const conflictSet = new Set(conflictSlugs);
 
     // Snapshot diffs BEFORE await load() — load() resets initialRules.
-    const diffsBySlug = new Map();
-    for (const slug of conflictSlugs) {
-      const live = liveRules.find(r => r.name === slug);
-      const orig = initialRules.find(r => r.name === slug);
-      if (!live || !orig) continue;
-      const allowed = _ALLOWED_BY_TYPE[live.type] || new Set(['enabled']);
-      const fieldDiffs = {};
-      for (const k of allowed) {
-        const d = _fieldDiff(orig[k], live[k], _diffKindFor(k));
-        if (d) fieldDiffs[k] = d;
-      }
-      if (Object.keys(fieldDiffs).length) diffsBySlug.set(slug, fieldDiffs);
-    }
+    const diffsBySlug = _diffsSince(initialRules, conflictSet);
+    // Edits made to the OTHER rules while the POST was in flight.
+    const inflight = _diffsSince(sent);
+    for (const slug of conflictSet) inflight.delete(slug);
 
     await load();   // refetches; clears dirty; renders fresh server state
 
@@ -2157,15 +2252,10 @@ async function doSave() {
     // re-populated so the next Save sends an updated patch with the
     // FRESH fingerprint (which now matches the server) plus the
     // user's intent overlaid.
-    let merged = 0;
-    for (const [slug, fieldDiffs] of diffsBySlug) {
-      const idx = liveRules.findIndex(r => r.name === slug);
-      if (idx < 0) continue;  // rule was deleted / un-exposed server-side
-      for (const [field, diff] of Object.entries(fieldDiffs)) {
-        liveRules[idx][field] = _applyFieldDiff(liveRules[idx][field], diff);
-      }
-      dirty.add(slug);
-      merged++;
+    const merged = _reapplyDiffs(diffsBySlug);
+    if (_reapplyDiffs(inflight) && !merged) {
+      renderCards();
+      updateButtons();
     }
 
     if (merged) {
@@ -2194,7 +2284,12 @@ async function doSave() {
     // re-apply button anymore.
     startReapplyJobSilent(result.captures_count);
   }
+  const inflight = _diffsSince(sent);
   await load();
+  if (_reapplyDiffs(inflight)) {
+    renderCards();
+    updateButtons();
+  }
 }
 
 

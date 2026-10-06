@@ -36,6 +36,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -86,16 +87,12 @@ _GUARDED_SAVE_EXECUTOR = ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="regex-guard",
 )
 
-# Ingress cap for a callback:map patch, read off the schema so the two can
-# never drift. The same bound is enforced by Pydantic inside save_overrides,
-# but only AFTER the stamping loop below has already walked the caller's dict
-# twice on the event loop.
-_MAP_MAX_ENTRIES: int = next(
-    (m.max_length
-     for m in settings_schema.MapRule.model_fields["map"].metadata
-     if getattr(m, "max_length", None) is not None),
-    10_000,  # fallback mirrors MapRule.map's max_length
-)
+# Ingress cap for a callback:map patch: the schema-derived value web_common
+# bakes into the shared editor, so the save path and the editor's "n / cap"
+# readout read one copy. The same bound is enforced by Pydantic inside
+# save_overrides, but only AFTER the stamping loop below has already walked
+# the caller's dict twice on the event loop.
+_MAP_MAX_ENTRIES: int = web_common._MAP_MAX_ENTRIES
 # Request-wide bound for a patch naming SEVERAL map rules: it caps the
 # event-loop work of one POST, and is deliberately NOT the per-dictionary
 # cap above — the page sends every dirty map in full in a single request, so
@@ -233,6 +230,13 @@ def build_word_suggestions(user: dict[str, Any], *, max_words: int) -> list[str]
     return list(seen.values())
 
 
+# The regex-guard reasons (settings/schema.py's compile/template checks and
+# pipeline/regex_guard.validate) after the ordinal collapse below. Their reason
+# is the actionable part of a guard error and names nothing but the failure.
+_HIDDEN_GUARD_REASON = re.compile(
+    r"<hidden rule>: (?:invalid regex|regex test failed|regex took)\b")
+
+
 def _redact_invisible_slugs(
     errors: list[dict[str, str]],
     user: dict[str, Any],
@@ -243,7 +247,8 @@ def _redact_invisible_slugs(
     save_overrides re-validates the ENTIRE merged rule list, and config_store
     builds its messages as `rule {idx} ({slug!r}) ...` regardless of who asked.
     Rule visibility is a real authorization boundary — the GET path filters on
-    `can_see_rule` and the PATCH path 403s an invisible slug — so returning
+    `can_see_rule` and the PATCH path answers an invisible slug with the same
+    400 as an unknown one — so returning
     those messages verbatim to a non-admin leaks the names (and list positions)
     of rules they cannot otherwise learn exist. Two ways that fires: a rule that
     compiles but fails the guard (the load path validates without `guard_regex`,
@@ -275,7 +280,6 @@ def _redact_invisible_slugs(
             hidden_idx.add(i)
     if not hidden:
         return errors
-    import re
     # format_validation_errors returns {"loc": ..., "msg": ...} dicts, not
     # bare strings — redact each field rather than the mapping.
     out: list[dict[str, str]] = []
@@ -291,11 +295,14 @@ def _redact_invisible_slugs(
             red["msg"] = "<hidden rule>"
             out.append(red)
             continue
+        swapped = False
         for key in ("loc", "msg"):
-            val = str(red.get(key) or "")
+            orig = str(red.get(key) or "")
+            val = orig
             for slug in hidden:
                 # settings/schema.py formats the slug with !r, hence the quotes.
                 val = val.replace(f"'{slug}'", "'<hidden rule>'")
+            swapped = swapped or val != orig
             # The schema's guard messages read `rule {idx} ({slug!r}) entry
             # {eidx}: ...` — after the slug swap the ordinal still gives away
             # the hidden rule's list position and entry count. Collapse it,
@@ -307,6 +314,13 @@ def _redact_invisible_slugs(
                 "<hidden rule>", val,
             )
             red[key] = val
+        # Only the regex-guard forms keep their reason. Anything else that
+        # named a hidden rule (map keys colliding when lowercased, "duplicate
+        # rule name ... at index N") carries the rule's own content or
+        # position in the rest of the message, so it is blanked wholesale.
+        if swapped and not _HIDDEN_GUARD_REASON.search(red.get("msg") or ""):
+            red["loc"] = "<hidden rule>"
+            red["msg"] = "<hidden rule>"
         out.append(red)
     return out
 
@@ -328,9 +342,9 @@ async def apply_rules_patch(
     Returns (status_code, body): 200 on success or conflict-only; 422
     {"errors": [...]} when save validation fails (an error may name a rule the
     user didn't touch — the admin's pipeline is invalid). Raises HTTPException
-    for 400 (malformed patch / unknown slug / disallowed field), 403 (rule not
-    visible to this user / terminal rule / rule locked by an admin) or 500
-    (config write failure)."""
+    for 400 (malformed patch / unknown or invisible slug / disallowed field),
+    403 (terminal rule / rule locked by an admin / an admin naming a rule
+    outside their view) or 500 (config write failure)."""
     async with pl_apply.rules_lock():
         return await _apply_rules_patch_locked(
             user, rules_patch, fingerprints, client_host=client_host,
@@ -647,7 +661,8 @@ async def v1_patch_pipeline_rules(
     editable here, and rules can't be added/removed/reordered (admin-only, on
     the /settings WebUI). Body `{rules_patch:{slug:{field:val}}, fingerprints:
     {slug:fp}}`. 200 `{saved, conflicts, requires_restart, …}`; 422
-    `{errors:[…]}` on validation; 400/403 on malformed/forbidden patches.
+    `{errors:[…]}` on validation; 400 on a malformed patch or an unknown (or
+    invisible) slug, 403 on a terminal or admin-locked rule.
     Identical semantics to POST /quick-config/state (shared apply_rules_patch)."""
     client_host = request.client.host if request.client else "?"
     code, body = await apply_rules_patch(
@@ -1110,8 +1125,23 @@ async def stream_recent(
         # silently excluded for a caller whose own user_id is missing.
         return bool(entry) and (entry.get("user_id") or "") == caller_uid
 
-    async def gen():
+    async def _rescope() -> bool:
+        """Re-resolve the caller when the config version moved; False when
+        they lost access (the stream ends)."""
         nonlocal caller_uid, sees_all, seen
+        try:
+            # Off the loop: config_version() + the re-resolve hit SQLite.
+            fresh = await asyncio.to_thread(
+                _reauth_on_version_change, request, seen)
+        except HTTPException:
+            return False
+        if fresh is not None:
+            rec, seen = fresh
+            caller_uid = rec.get("user_id") or ""
+            sees_all = rec["permissions"].scope("quick_config") == "all"
+        return True
+
+    async def gen():
         q = qc_recent_feed.subscribe()
         try:
             # Replay the freshest page from the durable store (oldest-
@@ -1132,25 +1162,23 @@ async def stream_recent(
             while True:
                 if await request.is_disconnected():
                     break
-                try:
-                    # Off the loop: config_version() + the re-resolve hit SQLite.
-                    fresh = await asyncio.to_thread(
-                        _reauth_on_version_change, request, seen)
-                except HTTPException:
+                if not await _rescope():
                     break
-                if fresh is not None:
-                    rec, seen = fresh
-                    caller_uid = rec.get("user_id") or ""
-                    sees_all = rec["permissions"].scope("quick_config") == "all"
                 try:
                     item = await asyncio.wait_for(q.get(), timeout=15.0)
-                    ev = item.get("event", "trace")
-                    payload = item.get("data") or {}
-                    if ev == "trace" and not _visible(payload):
-                        continue
-                    yield f"event: {ev}\ndata: {json.dumps(payload)}\n\n"
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
+                    continue
+                # Again after the wait: a revoke or a downgrade to own that
+                # landed during the up-to-15 s q.get() must apply to the item
+                # it woke up for, not only to the next one.
+                if not await _rescope():
+                    break
+                ev = item.get("event", "trace")
+                payload = item.get("data") or {}
+                if ev == "trace" and not _visible(payload):
+                    continue
+                yield f"event: {ev}\ndata: {json.dumps(payload)}\n\n"
         finally:
             qc_recent_feed.unsubscribe(q)
 

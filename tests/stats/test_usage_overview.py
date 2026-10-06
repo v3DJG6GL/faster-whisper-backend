@@ -235,6 +235,8 @@ def test_overview_with_stages_narrows_every_breakdown(usage_store_db):
     assert [(r["id"], r["totals"]["sessions"]) for r in by_stage["leaderboard"]] == [
         ("diarizing", 1), ("translating", 1)]
     assert by_stage["breakdown"] == {"source": "jobs", "key_scoped": True}
+    # The jobs path narrows the stage rows by kind too: no "unscoped" flag.
+    assert _ov(us, by="stage", kinds=["file"], **win)["filter"]["kind_scoped"] is True
     # Without the stage filter the rollups still feed the board (all three jobs).
     plain = _ov(us, by="user", from_day=_D("2025-06-02"), to_day=_D("2025-06-11"))
     assert [(r["id"], r["totals"]["sessions"]) for r in plain["leaderboard"]] == [("bob", 2), ("alice", 1)]

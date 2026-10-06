@@ -4,8 +4,16 @@
 Routes (all gated by web_common.require_user_webui_host):
 
   GET /stats           HTML page (single-file inline-HTML+CSS+JS, mirrors /logs)
-  GET /stats/snapshot  one-shot JSON: ts + metrics_snapshot() + system_snapshot() + severity_counts()
+  GET /stats/snapshot  one-shot JSON (_build_payload): ts + metrics + system +
+                       severity counts, cut to the viewer's StatsScope (scope /
+                       machine / server for own scope); `lite=1` is the
+                       header activity cluster's diet payload
   GET /stats/stream    SSE: same JSON, ~1 Hz (1 s data cadence defeats idle-proxy timeouts; no separate keepalive frame)
+  GET /stats/usage     the usage document (usage_store.overview) for a window
+  GET /stats/pick      the who / keys pickers' ranked rows
+  GET /stats/jobs      one page of the recent-jobs table (cursor paging)
+  GET /stats/tail      wait / turnaround / failures / per-model (usage_store.tail)
+  GET /stats/history   range-mode machine history from system_metrics_store
 
 Access control (user tier): the shell is gated only by the host allowlist
 cfg.USER_WEBUI_ALLOWED_HOSTS (loopback always allowed); the data endpoints
@@ -496,6 +504,16 @@ async def stats_usage(
         out["scope"] = scope.scope
         # What the page asked for, as it asked (labels for scrubbed viewers).
         out["filter"].update({"kinds": kind_list, "users": user_list, "keys": key_list})
+        # Display names for the picked user ids. The page otherwise learns
+        # them only from the who picker or a by=user board, so a pasted or
+        # reloaded `users=` link matched the jobs table's running rows (keyed
+        # by username) against raw ids. Names only where the viewer already
+        # sees identities, or for their own id.
+        if user_list:
+            names = api_keys_store.get_usernames(user_list)
+            out["filter"]["user_labels"] = {
+                u: names[u] for u in user_list
+                if names.get(u) and (not scrub or u == caller_uid)}
         return out
 
     return await asyncio.to_thread(_gather)
@@ -739,13 +757,20 @@ async def stats_history(
     t0 = float(from_) if from_ is not None else t1 - 3600
     if not (math.isfinite(t0) and math.isfinite(t1)):
         raise HTTPException(422, detail="'from'/'to' must be finite numbers")
+    # Finite is not enough: int() of 1e300 (or of a huge `step`) overflows
+    # SQLite's 64-bit INTEGER in list_series, a 500 instead of a 422.
+    if t0 < 0 or t1 > now + 86400:
+        raise HTTPException(422, detail="'from'/'to' out of range")
     if t0 >= t1:
         raise HTTPException(422,
                             detail="'from' is not before 'to'")
     t0 = max(t0, t1 - 3650 * 86400)
     cadence = max(1, int(getattr(cfg, "STATS_SYSTEM_METRICS_SAMPLE_S", 10) or 10))
     auto = max(cadence, int(-(-(t1 - t0) // 2000)))
-    step_s = max(cadence, int(step)) if step else auto
+    # A step longer than the window is one bucket anyway; capping it keeps
+    # an absurd value inside SQLite's integer range.
+    step_s = (min(max(cadence, int(step)), max(cadence, int(t1 - t0)))
+              if step else auto)
     series = await asyncio.to_thread(
         system_metrics_store.list_series, metric=metric, from_ts=t0,
         to_ts=t1, step_s=step_s)
@@ -803,7 +828,6 @@ _STATS_VIEWER_HTML = templates.load(__file__, "stats.html")
 # so browsers kept serving a stale copy). Substituted once at import —
 # render_page() has a fixed placeholder list and caches by template string.
 def _asset_version() -> str:
-    import hashlib
     from pathlib import Path
     try:
         digest = hashlib.sha1((Path(REPO_ROOT) / "static" / "stats.js").read_bytes()).hexdigest()[:10]

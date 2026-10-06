@@ -214,14 +214,19 @@ def test_v1_usage_403_without_quick_config_page(client, make_user_key):
     assert client.get("/v1/usage", headers=bearer(raw)).status_code == 403
 
 
-def test_v1_usage_not_host_gated(app_module, make_user_key):
-    """A remote desktop client (non-loopback) must reach it with a bearer."""
+def test_v1_usage_not_host_gated(app_module, make_user_key, monkeypatch):
+    """A remote desktop client (non-loopback) must reach it with a bearer,
+    even with USER_WEBUI_ALLOWED_HOSTS narrowed (its default is open, which
+    would let a host gate on /v1/usage pass unnoticed)."""
     from starlette.testclient import TestClient
+    monkeypatch.setattr(app_module.cfg, "USER_WEBUI_ALLOWED_HOSTS", ["127.0.0.1/32"])
     with TestClient(app_module.app, client=("203.0.113.9", 4242)) as remote:
         make_user_key("root", is_admin=True)
         _uid, raw = make_user_key("alice", pages={"quick_config": "own"})
         assert remote.get("/v1/usage").status_code == 401
         assert remote.get("/v1/usage", headers=bearer(raw)).status_code == 200
+        # Control: the host-gated sibling refuses the same remote peer.
+        assert remote.get("/quick-config/usage", headers=bearer(raw)).status_code == 403
 
 
 def test_v1_usage_zeroed_when_store_unavailable(client, make_user_key, monkeypatch):

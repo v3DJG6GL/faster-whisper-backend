@@ -458,8 +458,9 @@ function renderChips() {
     // keep forever). Only a window that starts before that cutoff is cut
     // short, so only then say so — "30 d" inside retention needs no note.
     const ret = Number(rg.jobs_retention_days) || 0;
-    const todayDay = Math.floor(Date.now() / 86400000);
-    const truncated = rg.source === 'jobs' && ret > 0 && Number(rg.from) < todayDay - ret;
+    // todayDay(): the caller-local epoch day rg.from is counted in (a UTC
+    // day here was off by one around local midnight).
+    const truncated = rg.source === 'jobs' && ret > 0 && Number(rg.from) < todayDay() - ret;
     summary.textContent = s;
     summary.title = s;
     if (truncated) {
@@ -540,8 +541,15 @@ function wirePickers() {
 }
 // The recent-jobs table (inline dashboard) follows the kind and user-id
 // filters: it reads this and re-renders from its last snapshot.
+// Only a change to what the table follows re-renders it: _fwRerenderJobs
+// drops the "load older" pages, and renderChips (so publishFilter) runs
+// twice on every load(), metric / bucket / range changes included.
+let _publishedSig = null;
 function publishFilter() {
   window.__statsFilter = { kinds: Q.kinds.slice(), kindsLabel: kindsLabel(), users: Q.users.slice(), userNames: Q.users.map(u => pickLabel('user', u)) };
+  const sig = Q.kinds.join(',') + '|' + Q.users.join(',') + '|' + window.__statsFilter.userNames.join(',');
+  if (sig === _publishedSig) return;
+  _publishedSig = sig;
   if (typeof window._fwRerenderJobs === 'function') { try { window._fwRerenderJobs(); } catch (_) {} }
 }
 
@@ -709,6 +717,9 @@ function load() {
       if (j._scopeDenied) return;
       hideError();
       lastDoc = j;
+      // Names for picked user ids the picker never resolved (a pasted or
+      // reloaded users= link): the jobs table matches running rows by name.
+      Object.assign(pickLabels.user, (j.filter || {}).user_labels || {});
       renderChips();
       renderAll();
     })
@@ -869,10 +880,14 @@ function renderTurnaround() {
     note.innerHTML = 'Hatched = waiting for a GPU slot'
       + (anyWait ? ' (queue wait p50 <b>' + esc(fmtDur(w.p50 || 0)) + '</b> · p95 <b>' + esc(fmtDur(w.p95 || 0)) + '</b> · max ' + esc(fmtDur(w.max || 0)) + ')' : ' (no queueing in this window)')
       + '. Turnaround = processing + wait.'
-      + (r.truncated_to_days ? ' Per-job rows cover the last ' + r.truncated_to_days + ' days only.' : '');
+      + (r.truncated_to_days ? ' Per-job rows cover the last ' + r.truncated_to_days + ' days only.' : '')
+      + (Q.with.length ? ' ' + NO_STAGE_NOTE + '.' : '');
   }
 }
 
+// /stats/tail has no stage filter (tailQuery drops `with`): the cards it
+// feeds say so while one is on, and their window chip leaves it uncounted.
+const NO_STAGE_NOTE = 'Stage filter not applied: all jobs in the window';
 // ---- failures: by stage · class, terminal + soft-failed, with counts.
 function renderFailures() {
   const el = $('failures-list'); if (!el) return;
@@ -885,8 +900,9 @@ function renderFailures() {
   Object.entries(f.by_stage || {}).forEach(([stage, classes]) => {
     Object.entries(classes).forEach(([cls, n]) => rows.push({ stage, cls, n }));
   });
+  const noStage = Q.with.length ? '<div class="meta">' + esc(NO_STAGE_NOTE) + '</div>' : '';
   if (!rows.length) {
-    el.innerHTML = '<span class="empty">No failures in this window' + (Q.kinds.length ? ' for ' + esc(kindsLabel()) : '') + '.</span>';
+    el.innerHTML = '<span class="empty">No failures in this window' + (Q.kinds.length ? ' for ' + esc(kindsLabel()) : '') + '.</span>' + noStage;
     return;
   }
   rows.sort((a, b) => b.n - a.n || a.stage.localeCompare(b.stage));
@@ -897,7 +913,8 @@ function renderFailures() {
     + esc(r.stage === '(job)' ? 'job' : r.stage) + ' · <span class="cls">' + esc(r.cls) + '</span></span>'
     + '<span class="n"><b>' + r.n + '</b> · ' + Math.round(r.n / total * 100) + ' %</span>'
     + '<div class="m"><i style="width:' + (r.n / total * 100).toFixed(0) + '%"></i></div></div>').join('')
-    + (cmp && lastDoc && lastDoc.compare ? '<div class="meta">' + cmp.cur + ' failed jobs vs ' + cmp.prev + ' prev</div>' : '');
+    + (cmp && lastDoc && lastDoc.compare ? '<div class="meta">' + cmp.cur + ' failed jobs vs ' + cmp.prev + ' prev</div>' : '')
+    + noStage;
 }
 
 // Headline strip: five numbers for the window (+ deltas vs the compare
@@ -926,12 +943,21 @@ function renderHeadline() {
   const ta = lastTail && lastTail.turnaround;
   const tc = lastTail && lastTail.compare;
   // /stats/tail always compares against the preceding window (no yoy mode), so the tail deltas are labelled "prev" regardless of Q.compare.
-  const taDelta = (ta && tc && lastDoc.compare)
-    ? '<span class="delta ' + (tc.turnaround_p50.delta < -0.05 ? 'good' : tc.turnaround_p50.delta > 0.05 ? 'bad' : 'flat') + '">'
+  // An empty window's p50 is 0, so the delta needs jobs on BOTH sides: an
+  // empty previous window is "new", an empty current one has nothing to
+  // compare (as delta() does for the other tiles).
+  const taPrev = tc && tc.runs ? Number(tc.runs.prev) || 0 : 0;
+  const taDelta = !(ta && tc && lastDoc.compare) ? ''
+    : !(ta.n > 0) ? '<span class="delta flat">— vs prev</span>'
+    : !(taPrev > 0) ? '<span class="delta flat">new vs prev</span>'
+    : '<span class="delta ' + (tc.turnaround_p50.delta < -0.05 ? 'good' : tc.turnaround_p50.delta > 0.05 ? 'bad' : 'flat') + '">'
       + (tc.turnaround_p50.delta > 0.05 ? '▲' : tc.turnaround_p50.delta < -0.05 ? '▼' : '—') + ' '
-      + fmtDur(Math.abs(tc.turnaround_p50.delta)) + ' vs prev</span>'
-    : '';
-  // [label, value, sub, delta, measure the tile stands for (click picks it)]
+      + fmtDur(Math.abs(tc.turnaround_p50.delta)) + ' vs prev</span>';
+  // "× live" is 1 / rtf; below 10 one decimal, or a slower-than-real-time
+  // host (rtf 1.6) read "1× live" and rtf 2.5 "0× live".
+  const liveX = (r) => (1 / r >= 10 ? (1 / r).toFixed(0) : (1 / r).toFixed(1));
+  // [label, value, sub, delta, measure the tile stands for (click picks it),
+  //  title for a tile that picks no measure]
   const cells = [
     ['audio duration', fmtDur(tot.audio_s), '· ' + fmtCount(tot.words) + ' words',
      delta(tot.audio_s, cmp && cmp.audio_s), Q.metric === 'words' ? 'words' : 'audio_s'],
@@ -939,14 +965,16 @@ function renderHeadline() {
      delta(tot.sessions, cmp && cmp.sessions), Q.metric === 'requests' ? 'requests' : 'sessions'],
     ['failed', (failed * 100).toFixed(1), '% · ' + fmtCount(tot.errors) + ' errors', delta(failed, cfailed, true), 'errors'],
     ['turnaround p50', ta && ta.n ? fmtDur(ta.p50) : '—',
-     ta && ta.n ? '· p95 ' + fmtDur(ta.p95) : '', taDelta, null],
-    ['RTF', rtf == null ? '—' : rtf.toFixed(2), rtf == null ? '' : rtf > 0 ? '× · ' + (1 / rtf).toFixed(0) + '× live' : '×',
+     ta && ta.n ? '· p95 ' + fmtDur(ta.p95) : '', taDelta, null,
+     Q.with.length ? NO_STAGE_NOTE : ''],
+    ['RTF', rtf == null ? '—' : rtf.toFixed(2), rtf == null ? '' : rtf > 0 ? '× · ' + liveX(rtf) + '× live' : '×',
      delta(rtf, crtf, true), null],
     ['processing time', fmtDur(tot.processing_s), '', delta(tot.processing_s, cmp && cmp.processing_s), 'processing_s'],
   ];
   el.innerHTML = cells.map(c =>
     '<div class="hl' + (c[4] && c[4] === Q.metric ? ' active' : '') + '"'
-    + (c[4] ? ' data-m="' + c[4] + '" tabindex="0" role="button" title="show ' + METRIC_LABEL[c[4]] + ' on every usage card"' : '')
+    + (c[4] ? ' data-m="' + c[4] + '" tabindex="0" role="button" title="show ' + METRIC_LABEL[c[4]] + ' on every usage card"'
+      : c[5] ? ' title="' + esc(c[5]) + '"' : '')
     + '><div class="l">' + esc(c[0]) + '</div><div class="v'
     + (c[0] === 'failed' && failed > 0.02 ? ' warn' : '') + '">' + esc(c[1])
     + '<small>' + esc(c[2]) + '</small></div>' + c[3] + '</div>').join('');
@@ -959,7 +987,7 @@ function renderHeadline() {
 // the reader sees which cards follow the control. Ring cards get theirs
 // from the inline dashboard (refreshRingChips).
 let _winSig = null;
-function windowChipHtml() {
+function windowChipHtml(noStage) {
   const rg = lastDoc.range || {};
   let html;
   if (Q.range === 'all') html = '<b>all</b> · since ' + esc(fmtDayShort(rg.from, true));
@@ -969,8 +997,11 @@ function windowChipHtml() {
     html = '<b>' + rg.days + ' d</b> · ' + esc(fmtDayShort(rg.from, cross)) + ' – ' + esc(fmtDayShort(rg.to, cross));
   }
   if (lastDoc.compare) html += ' <em>vs ' + (lastDoc.compare.mode === 'yoy' ? 'last year' : 'previous') + '</em>';
-  const n = filterCount();
+  // noStage: a tail-fed card (data-nostage), which the stage filter skips.
+  const skip = noStage && Q.with.length > 0;
+  const n = filterCount() - (skip ? 1 : 0);
   if (n) html += ' <span class="fn" title="' + n + ' filter' + (n > 1 ? 's' : '') + ' on: see the FILTERS row">⏷ ' + n + '</span>';
+  if (skip) html += ' <span class="fn" title="' + esc(NO_STAGE_NOTE) + '">no stage filter</span>';
   return html;
 }
 function renderWindowChips() {
@@ -978,8 +1009,10 @@ function renderWindowChips() {
   const pulse = _winSig != null && sig !== _winSig;
   _winSig = sig;
   const html = windowChipHtml(), title = ($('sb-summary') || {}).textContent || '';
+  const htmlNoStage = windowChipHtml(true);
   document.querySelectorAll('.card .win[data-win="usage"]').forEach(el => {
-    el.innerHTML = html; el.title = title + ' — click to jump to the range control';
+    el.innerHTML = el.hasAttribute('data-nostage') ? htmlNoStage : html;
+    el.title = title + ' — click to jump to the range control';
     if (pulse) { el.classList.remove('pulse'); void el.offsetWidth; el.classList.add('pulse'); }
   });
 }
@@ -1319,10 +1352,12 @@ function renderTable() {
 // server's metric order is the default and the rank column follows.
 let boardSort = { key: null, dir: -1 };
 // The stage rollups carry no kind / key column: with a kinds chip or a
-// keys pick on, the server says so (filter.kind_scoped / breakdown.key_scoped
+// keys pick on, the server says so (filter.kind_scoped / filter.key_scoped
 // false) and the by=stage cards say it too, instead of wearing the filter.
+// Not breakdown.key_scoped: that is false for every by=stage rollup, key
+// filter or not.
 function breakdownUnscoped() {
-  return ((lastDoc.filter || {}).kind_scoped === false) || ((lastDoc.breakdown || {}).key_scoped === false);
+  return ((lastDoc.filter || {}).kind_scoped === false) || ((lastDoc.filter || {}).key_scoped === false);
 }
 function renderBoard() {
   const tb = $('usage-board-rows'); if (!tb) return;

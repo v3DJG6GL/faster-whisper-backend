@@ -349,10 +349,12 @@ def record_timing(
     stages_blob = None
     if stages:
         try:
-            stages_blob = json.dumps(list(stages),
-                                     ensure_ascii=False)[:_CAP_STAGES_JSON]
-            json.loads(stages_blob)   # truncation may have cut mid-token
+            stages_blob = json.dumps(list(stages), ensure_ascii=False)
         except (TypeError, ValueError):
+            stages_blob = None
+        # Over the cap the list is dropped whole, as append_stage does: a
+        # truncated JSON array never parses back, so no partial list survives.
+        if stages_blob is not None and len(stages_blob) > _CAP_STAGES_JSON:
             stages_blob = None
     ts = float(created_ts) if created_ts else time.time()
     conn = _require_conn()

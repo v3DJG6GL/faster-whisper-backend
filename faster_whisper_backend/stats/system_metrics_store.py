@@ -1,7 +1,8 @@
 """SQLite store for the machine-load history behind /stats.
 
 One row per STATS_SYSTEM_METRICS_SAMPLE_S grid second: GPU utilisation,
-VRAM, GPU temperature, CPU, RAM and the busy decode-slot count, written in
+VRAM, GPU temperature, CPU, RAM and the busy share of the decode slots
+(0..1, averaged over the sample window), written in
 batches by stats_sampler and read back downsampled by /stats/history. Rows
 older than STATS_SYSTEM_METRICS_RETENTION_DAYS are pruned hourly.
 
